@@ -109,19 +109,26 @@ async fn an_observer_disconnect_leaves_exactly_one_durable_tool_result() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_later_steer_reaches_the_current_turn_after_a_real_tool_boundary() {
     let mock = mock_provider::start_mock_provider().await;
-    let server = TestServer::start(mock_provider::make_test_config(mock.port())).await;
+    let mut server = TestServer::start(mock_provider::make_test_config(mock.port())).await;
     let command = install_gate(server.workspace.path());
     let first = mock.mock(|when, then| {
         when.method(Method::POST)
             .path("/v1/messages")
             .matches(|request| !request_contains_tool_result(request));
-        then.status(200).body(tool_response(
-            "run_command",
-            "gated-tool",
-            json!({
-                "command":command,"timeout":TOOL_TIMEOUT.as_secs(),"brief":"wait for a file"
-            }),
-        ));
+        then.status(200)
+            .body(mock_provider::anthropic_sse_response(json!({
+                "content":[
+                    {"type":"text","text":"Running the gate."},
+                    {"type":"tool_use","id":"gated-tool","name":"run_command","input":{
+                        "command":command,"timeout":TOOL_TIMEOUT.as_secs(),"brief":"wait for a file"
+                    }}
+                ],
+                "stop_reason":"tool_use",
+                "usage":{
+                    "input_tokens":72_000,"output_tokens":6,
+                    "cache_read_input_tokens":20_000,"cache_creation_input_tokens":8_000
+                }
+            })));
     });
     let steer = mock.mock(|when, then| {
         when.method(Method::POST)
@@ -166,6 +173,15 @@ async fn a_later_steer_reaches_the_current_turn_after_a_real_tool_boundary() {
     assert_eq!("queued", inserted["status"]);
     let waiting = server.snapshot(id, "main").await;
     assert_eq!(2, waiting["agent"]["pending_inputs"]);
+    assert_eq!("running", waiting["agent"]["status"]);
+    let in_progress = usage(&waiting);
+    assert_eq!(Some(100_000), in_progress.input_tokens);
+    assert_eq!(Some(6), in_progress.output_tokens);
+    assert_eq!(Some(50.0), in_progress.context_percent());
+    assert_eq!(Some(20.0), in_progress.cache_hit_percent());
+    assert!(in_progress
+        .output_tokens_per_second()
+        .is_some_and(|rate| rate.is_finite() && rate > 0.0));
     assert!(waiting.get("progress").is_none());
     let progress = server
         .session_request(id, "snapshot", &[("agent", "main"), ("progress", "true")])
@@ -203,11 +219,15 @@ async fn a_later_steer_reaches_the_current_turn_after_a_real_tool_boundary() {
             < inserted["receipt"]["event_id"].as_u64().unwrap()
     );
     fs::write(server.workspace.path().join("release-tool"), b"run").unwrap();
-    server
+    let completed = server
         .wait_for_snapshot(id, "main", |snapshot| {
             snapshot["agent"]["last_output"] == "next turn ran"
         })
         .await;
+    let cumulative = usage(&completed);
+    assert_eq!(Some(100_016), cumulative.input_tokens);
+    assert_eq!(Some(14), cumulative.output_tokens);
+    assert_eq!(3, cumulative.model_requests);
     let turns = EventStore::replay(server.events_path(id))
         .unwrap()
         .into_iter()
@@ -231,6 +251,21 @@ async fn a_later_steer_reaches_the_current_turn_after_a_real_tool_boundary() {
     first.assert_hits(1);
     steer.assert_hits(1);
     next.assert_hits(1);
+
+    server.restart().await;
+    assert_eq!(cumulative, usage(&server.snapshot(id, "main").await));
+    server
+        .submit(
+            id,
+            json!({"type":"create_agent","agent":"reviewer","command_id":"reviewer","config":{}}),
+        )
+        .await;
+    let reviewer = usage(&server.snapshot(id, "reviewer").await);
+    assert_eq!(None, reviewer.input_tokens);
+    assert_eq!(None, reviewer.output_tokens);
+    assert_eq!(None, reviewer.context_percent());
+    assert_eq!(None, reviewer.cache_hit_percent());
+    assert_eq!(None, reviewer.output_tokens_per_second());
 
     let history: Value = server
         .session_request(id, "history", &[("limit", "256")])
@@ -268,6 +303,10 @@ async fn a_later_steer_reaches_the_current_turn_after_a_real_tool_boundary() {
         .unwrap();
     assert_eq!(3, more["output"]["offset"]);
     assert_eq!(false, more["output"]["has_more"]);
+}
+
+fn usage(snapshot: &Value) -> kuku::UsageTotals {
+    serde_json::from_value(snapshot["agent"]["usage"].clone()).unwrap()
 }
 
 #[tokio::test]

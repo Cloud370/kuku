@@ -353,7 +353,7 @@ impl Pane {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     use kuku_client::{
         Acknowledgement, Error, HistoryPage, Observation, Receipt, Snapshot, Timing,
@@ -455,6 +455,167 @@ mod tests {
             "tool.result",
             json!({"entry":{"id":id,"agent":"main","type":"tool_result","tool_call_id":tool_call_id}}),
         );
+    }
+
+    fn usage_snapshot(app: &App, cursor: u64, input: Option<u64>) -> Box<Snapshot> {
+        let mut snapshot = snapshot(app, cursor, "running", Some(5), 0, Value::Null, None);
+        snapshot.agent.usage.input_tokens = input;
+        snapshot
+    }
+
+    fn input_tokens(app: &App) -> Option<u64> {
+        app.pane().snapshot.as_ref()?.agent.usage.input_tokens
+    }
+
+    #[test]
+    fn footer_workspace_uses_the_resolved_service_path_and_active_agent_override() {
+        let endpoint = "http://127.0.0.1:6789".to_owned();
+        let mut app = App::new(PathBuf::from("/client-local"), Some(endpoint.clone()));
+        assert_eq!(None, app.resolved_workspace());
+        app.update(Update::Connected {
+            endpoint,
+            workspace: PathBuf::from("/host-workspace"),
+        });
+        assert_eq!(Some(Path::new("/host-workspace")), app.resolved_workspace());
+
+        let main = app.active.clone();
+        app.select(main.clone(), true, String::new());
+        let mut active = usage_snapshot(&app, 6, None);
+        active.agent.config.workspace = Some(PathBuf::from("/host-workspace/next"));
+        active.agent.active_config = Some(kuku_client::AgentConfig {
+            workspace: Some(PathBuf::from("/host-workspace/active")),
+            ..kuku_client::AgentConfig::default()
+        });
+        loaded(&mut app, active, Vec::new());
+        app.update(Update::WatchReconnecting(
+            app.selection(),
+            "disconnected".into(),
+        ));
+        assert_eq!(
+            Some(Path::new("/host-workspace/active")),
+            app.resolved_workspace()
+        );
+        app.select(
+            Address::new(main.session, "reviewer".into()),
+            true,
+            String::new(),
+        );
+        assert_eq!(Some(Path::new("/host-workspace")), app.resolved_workspace());
+    }
+
+    #[test]
+    fn committed_responses_refresh_usage_during_the_turn_and_share_a_covering_snapshot() {
+        let mut app = connected();
+        app.select(app.active.clone(), true, String::new());
+        let initial = usage_snapshot(&app, 6, None);
+        loaded(&mut app, initial, Vec::new());
+        app.effects.clear();
+        committed(&mut app, 7, "model.response", json!({"agent": "reviewer"}));
+        assert!(app.effects.is_empty());
+        committed(&mut app, 8, "model.response", json!({}));
+        assert!(matches!(app.effects.pop(), Some(Job::Refresh(_))));
+        committed(&mut app, 9, "model.response", json!({}));
+        assert!(app.effects.is_empty());
+
+        let first = usage_snapshot(&app, 10, Some(410));
+        app.update(Update::Refreshed(app.selection(), Ok(first)));
+        assert_eq!(Some(410), input_tokens(&app));
+        assert!(
+            app.effects.is_empty(),
+            "the returned cursor covers queued work"
+        );
+        committed(&mut app, 10, "model.response", json!({}));
+        assert!(app.effects.is_empty());
+
+        committed(&mut app, 11, "model.response", json!({}));
+        assert!(matches!(app.effects.pop(), Some(Job::Refresh(_))));
+        committed(&mut app, 12, "model.response", json!({}));
+        let partial = usage_snapshot(&app, 11, Some(500));
+        app.update(Update::Refreshed(app.selection(), Ok(partial)));
+        assert!(matches!(app.effects.as_slice(), [Job::Refresh(_)]));
+    }
+
+    #[test]
+    fn new_step_or_configuration_hides_the_previous_request_sample() {
+        let boundaries = [
+            ("runtime.step_prepared", json!({})),
+            (
+                "runtime.operation",
+                json!({"operation":"step_configured","state_changed":true}),
+            ),
+        ];
+        for (kind, event) in boundaries {
+            let mut app = connected();
+            app.select(app.active.clone(), true, String::new());
+            let mut measured = usage_snapshot(&app, 6, Some(50));
+            measured.agent.usage.latest_request = Some(
+                serde_json::from_value(json!({
+                    "input_tokens":50,"output_tokens":20,"context_window_tokens":100,"elapsed_us":20_000
+                }))
+                .unwrap(),
+            );
+            loaded(&mut app, measured, Vec::new());
+            app.effects.clear();
+            assert_eq!(
+                Some(50.0),
+                app.pane()
+                    .current_request_usage()
+                    .unwrap()
+                    .context_percent()
+            );
+
+            committed(&mut app, 7, kind, event);
+            assert!(app.pane().current_request_usage().is_none());
+            assert_eq!(Some(50), input_tokens(&app));
+            assert!(matches!(app.effects.pop(), Some(Job::Refresh(_))));
+
+            committed(&mut app, 8, "model.response", json!({}));
+            let unreported = usage_snapshot(&app, 8, Some(50));
+            app.update(Update::Refreshed(app.selection(), Ok(unreported)));
+            let current = app.pane().current_request_usage().unwrap();
+            assert_eq!(None, current.context_percent());
+            assert_eq!(None, current.output_tokens_per_second());
+            assert!(app.effects.is_empty());
+        }
+    }
+
+    #[test]
+    fn usage_reloads_on_reconnect_and_old_updates_stay_with_their_target_generation() {
+        let mut app = connected();
+        let main = app.active.clone();
+        app.select(main.clone(), true, String::new());
+        let initial = usage_snapshot(&app, 7, Some(62));
+        loaded(&mut app, initial, Vec::new());
+        let original = app.selection();
+        app.effects.clear();
+
+        app.update(Update::WatchReconnecting(
+            original.clone(),
+            "disconnected".into(),
+        ));
+        assert_eq!(Some(62), input_tokens(&app));
+        app.update(Update::WatchConnected(original.clone()));
+        app.update(Update::Observation(
+            original.clone(),
+            Observation::Lagged { skipped: 0 },
+        ));
+        assert!(matches!(app.effects.as_slice(), [Job::Refresh(_)]));
+        let delayed = usage_snapshot(&app, 13, Some(120));
+        app.select(
+            Address::new(main.session.clone(), "reviewer".into()),
+            true,
+            String::new(),
+        );
+        let reviewer = usage_snapshot(&app, 9, None);
+        loaded(&mut app, reviewer, Vec::new());
+        app.update(Update::Refreshed(original.clone(), Ok(delayed.clone())));
+        assert_eq!(None, input_tokens(&app));
+
+        app.select(main, true, String::new());
+        let attached = usage_snapshot(&app, 12, Some(108));
+        loaded(&mut app, attached, Vec::new());
+        app.update(Update::Refreshed(original, Ok(delayed)));
+        assert_eq!(Some(108), input_tokens(&app));
     }
 
     #[test]

@@ -1,10 +1,10 @@
 use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use kuku_client::{
     new_id, Action, AgentConfig, Command, Error, HistoryEntry, HistoryKind, HistoryPage,
-    ModelSelection, Observation, Snapshot, Target, Timing,
+    ModelSelection, Observation, Snapshot, Target, Timing, UsageTotals,
 };
 
 use crate::editor::Editor;
@@ -24,6 +24,30 @@ pub(crate) use pending::{PendingItem, PendingStage};
 const DEFAULT_AGENT: &str = "main";
 const CLEANUP_REFRESH: Duration = Duration::from_secs(1);
 const CACHED_PANES: usize = 4;
+
+#[derive(Debug, Clone, Copy)]
+enum SnapshotRefresh {
+    Current,
+    AfterCommit(u64),
+}
+
+impl SnapshotRefresh {
+    fn needed(self, snapshot: Option<&Snapshot>) -> bool {
+        match self {
+            Self::Current => true,
+            Self::AfterCommit(id) => snapshot.is_none_or(|snapshot| snapshot.cursor < id),
+        }
+    }
+
+    fn merge(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::AfterCommit(first), Self::AfterCommit(second)) => {
+                Self::AfterCommit(first.max(second))
+            }
+            (Self::Current, _) | (_, Self::Current) => Self::Current,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct Address {
@@ -63,11 +87,12 @@ pub(crate) struct Pane {
     watch: Watch,
     progress: ExecutionProgress,
     submission: Option<(u64, SubmissionStatus)>,
+    request_usage_floor: u64,
     last_event: u64,
     live_floor: u64,
     retired_execution_floor: u64,
     execution: Option<u64>,
-    refresh_due: bool,
+    refresh_due: Option<SnapshotRefresh>,
     refresh_in_flight: bool,
     cleanup_at: Option<Instant>,
     history_in_flight: Option<HistoryRequest>,
@@ -80,6 +105,13 @@ impl Pane {
 
     pub(crate) fn observation_problem(&self) -> Option<&str> {
         self.watch.problem()
+    }
+
+    pub(crate) fn current_request_usage(&self) -> Option<&UsageTotals> {
+        self.snapshot
+            .as_ref()
+            .filter(|snapshot| snapshot.cursor >= self.request_usage_floor)
+            .map(|snapshot| &snapshot.agent.usage)
     }
 
     pub(crate) fn config(&self) -> &AgentConfig {
@@ -311,6 +343,22 @@ impl App {
 
     pub(crate) fn available(&self) -> bool {
         !self.connecting && self.connection_problem.is_none()
+    }
+
+    pub(crate) fn resolved_workspace(&self) -> Option<&Path> {
+        if !self.resolved_workspace {
+            return None;
+        }
+        let configured = self.pane().snapshot.as_ref().and_then(|snapshot| {
+            let agent = &snapshot.agent;
+            agent
+                .active_config
+                .as_ref()
+                .unwrap_or(&agent.config)
+                .workspace
+                .as_deref()
+        });
+        Some(configured.unwrap_or(&self.workspace))
     }
 
     pub(crate) fn selection(&self) -> Selection {
@@ -677,7 +725,7 @@ impl App {
         pane.opening = false;
         pane.watch = Watch::Detached;
         pane.refresh_in_flight = false;
-        pane.refresh_due = false;
+        pane.refresh_due = None;
         pane.history_in_flight = None;
         if !self.available() {
             self.effects.push(Job::StopObserving);
@@ -788,7 +836,15 @@ impl App {
                 }
                 pane.last_event = id;
                 let same_agent = agent.as_deref() == Some(&active_agent);
-                let prepared = same_agent && kind == "runtime.step_prepared";
+                let request_changed = same_agent
+                    && (matches!(kind.as_str(), "runtime.step_prepared" | "model.response")
+                        || matches!(
+                            operation.as_deref(),
+                            Some("agent_configured" | "step_configured")
+                        ));
+                if request_changed {
+                    pane.request_usage_floor = id;
+                }
                 if same_agent {
                     pane.observe_execution(
                         id,
@@ -809,8 +865,8 @@ impl App {
                     }
                     pane.transcript.apply(*entry, pane.execution);
                 }
-                if state_changed || prepared {
-                    self.refresh();
+                if state_changed || request_changed {
+                    self.request_refresh(SnapshotRefresh::AfterCommit(id));
                 }
             }
             Observation::Live {
@@ -847,27 +903,35 @@ impl App {
     }
 
     fn refresh(&mut self) {
-        if self.available() && self.pane().exists {
-            let pane = self.pane_mut();
-            if pane.refresh_in_flight {
-                pane.refresh_due = true;
-            } else {
-                pane.refresh_in_flight = true;
-                self.effects.push(Job::Refresh(self.selection()));
-            }
+        self.request_refresh(SnapshotRefresh::Current);
+    }
+
+    fn request_refresh(&mut self, refresh: SnapshotRefresh) {
+        if !self.available() || !self.pane().exists {
+            return;
+        }
+        let pane = self.pane_mut();
+        if !refresh.needed(pane.snapshot.as_deref()) {
+            return;
+        }
+        if pane.refresh_in_flight {
+            pane.refresh_due = Some(pane.refresh_due.map_or(refresh, |due| due.merge(refresh)));
+        } else {
+            pane.refresh_in_flight = true;
+            self.effects.push(Job::Refresh(self.selection()));
         }
     }
 
     fn refreshed(&mut self, result: Result<Box<Snapshot>, Error>) {
         let pane = self.pane_mut();
         pane.refresh_in_flight = false;
-        let refresh_due = std::mem::take(&mut pane.refresh_due);
+        let refresh_due = pane.refresh_due.take();
         match result {
             Ok(snapshot) => pane.set_snapshot(snapshot),
             Err(error) => self.problem(format!("Agent state · {error} · /reconnect")),
         }
-        if refresh_due {
-            self.refresh();
+        if let Some(refresh) = refresh_due {
+            self.request_refresh(refresh);
         }
     }
 }
