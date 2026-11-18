@@ -5,8 +5,13 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 
-use crate::markup::{render_literal, render_markdown, wrap_bounded, ACCENT, MUTED};
+use crate::keys::Shortcut;
+use crate::markup::{render_literal, render_markdown, wrap_bounded};
 use crate::text::{cap, shorten, single_line};
+use crate::theme::{
+    emphasis, surface, ACCENT, ERROR, MIN_TRANSCRIPT_INDENT_WIDTH, MUTED, TRANSCRIPT_INDENT,
+    USER_LEFT_EDGE, WARNING,
+};
 
 mod tool;
 
@@ -29,7 +34,13 @@ enum Key {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Anchor {
     key: Key,
-    line: usize,
+    line: AnchorLine,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AnchorLine {
+    Turn,
+    Body(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,18 +95,18 @@ impl Transcript {
     }
 
     pub(crate) fn apply(&mut self, entry: HistoryEntry, execution: Option<u64>) {
-        let Some(record) = Record::from_entry(entry) else {
-            return;
-        };
-        if matches!(record.body, Body::Assistant(_)) {
+        let assistant = entry.kind == HistoryKind::Assistant;
+        let record = Record::from_entry(entry);
+        if assistant {
             if let Some(execution) = execution.or(self.current_execution) {
                 let key = Key::Preview(execution);
                 self.recent.remove(&key);
                 if let Some(reading) = &mut self.reading {
-                    reading.replace(&key, record.clone());
+                    reading.settle_preview(&key, record.as_ref());
                 }
             }
         }
+        let Some(record) = record else { return };
         if let Some(reading) = &mut self.reading {
             if matches!(record.key, Key::Tool { .. }) && reading.window.contains(&record.key) {
                 reading.window.insert(record.clone());
@@ -116,7 +127,7 @@ impl Transcript {
                     let key = Key::Preview(execution);
                     let record = self
                         .recent
-                        .record_or_insert(key, || Body::Assistant(String::new()));
+                        .record_or_insert(key, turn, || Body::Assistant(String::new()));
                     if let Body::Assistant(body) = &mut record.body {
                         append_bounded(body, text, MAX_BODY_BYTES);
                         record.rendered = None;
@@ -131,10 +142,10 @@ impl Transcript {
                     };
                     if let Some(reading) = &mut self.reading {
                         if reading.window.contains(&key) {
-                            reading.window.tool_live(key.clone(), event);
+                            reading.window.tool_live(key.clone(), turn, event);
                         }
                     }
-                    self.recent.tool_live(key, event);
+                    self.recent.tool_live(key, turn, event);
                 }
             }
             Some("done" | "cancelled" | "error") => self.clear_preview(),
@@ -160,7 +171,10 @@ impl Transcript {
                     .find(|record| record.position.is_some())
                     .map(|record| record.key.clone())
                 {
-                    reading.anchor = Anchor { key, line: 0 };
+                    reading.anchor = Anchor {
+                        key,
+                        line: AnchorLine::Body(0),
+                    };
                 }
             }
             reading.window.clear_preview();
@@ -312,26 +326,43 @@ impl Transcript {
         };
         let mut lines = Vec::with_capacity(height);
         let mut row_insets = Vec::with_capacity(height);
+        let mut tool_visible = false;
         let mut skip = start;
-        for record in &mut window.records {
-            let block = record.lines(width, self.details);
-            if skip >= block.len() {
-                skip -= block.len();
-                continue;
-            }
-            for row in block.iter().skip(skip).take(height - lines.len()) {
-                lines.push(row.line.clone());
-                row_insets.push(row.inset);
-            }
+        for block in window.blocks(width, self.details) {
             if lines.len() == height {
                 break;
             }
+            if skip >= block.height() {
+                skip -= block.height();
+                continue;
+            }
+            if let Some(turn) = block.heading {
+                if skip == 0 {
+                    lines.push(render_turn(turn, width));
+                    row_insets.push(0);
+                }
+                skip = skip.saturating_sub(1);
+            }
+            for row in block.rows.iter().skip(skip).take(height - lines.len()) {
+                lines.push(row.line.clone());
+                row_insets.push(row.inset);
+                tool_visible |= block.tool && !row.line.spans.is_empty();
+            }
             skip = 0;
         }
+        let tool_hint = tool_visible.then(|| {
+            let action = if self.details == ToolDetails::Expanded {
+                "hide"
+            } else {
+                "show"
+            };
+            format!("{} {action}", Shortcut::TOOL_DETAILS.label)
+        });
         TranscriptView {
             lines,
             row_insets,
             following,
+            tool_hint,
         }
     }
 }
@@ -340,6 +371,7 @@ pub(crate) struct TranscriptView {
     pub(crate) lines: Vec<Line<'static>>,
     pub(crate) row_insets: Vec<u16>,
     pub(crate) following: bool,
+    pub(crate) tool_hint: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -385,18 +417,35 @@ impl Reading {
                 record.position?.saturating_add(1),
                 Anchor {
                     key: record.key.clone(),
-                    line: 0,
+                    line: AnchorLine::Body(0),
                 },
             ))
         }
     }
 
-    fn replace(&mut self, key: &Key, record: Record) {
-        if let Some(preview) = self.window.records.iter_mut().find(|old| &old.key == key) {
-            if &self.anchor.key == key {
+    fn settle_preview(&mut self, key: &Key, record: Option<&Record>) {
+        let Some(index) = self.window.records.iter().position(|old| &old.key == key) else {
+            return;
+        };
+        if let Some(record) = record {
+            if self.anchor.key == *key {
                 self.anchor.key = record.key.clone();
             }
-            *preview = record;
+            self.window.records[index] = record.clone();
+        } else {
+            self.window.records.remove(index);
+            if self.anchor.key == *key {
+                if let Some(previous) = self.window.records[..index]
+                    .iter()
+                    .rev()
+                    .find(|old| old.position.is_some())
+                {
+                    self.anchor = Anchor {
+                        key: previous.key.clone(),
+                        line: AnchorLine::Body(0),
+                    };
+                }
+            }
         }
     }
 }
@@ -480,12 +529,20 @@ impl Window {
         });
     }
 
-    fn record_or_insert(&mut self, key: Key, body: impl FnOnce() -> Body) -> &mut Record {
+    fn record_or_insert(
+        &mut self,
+        key: Key,
+        turn: Option<u64>,
+        body: impl FnOnce() -> Body,
+    ) -> &mut Record {
         if let Some(index) = self.records.iter().position(|record| record.key == key) {
-            return &mut self.records[index];
+            let record = &mut self.records[index];
+            record.turn = record.turn.or(turn);
+            return record;
         }
         self.records.push(Record {
             key,
+            turn,
             position: None,
             body: body(),
             rendered: None,
@@ -493,8 +550,8 @@ impl Window {
         self.records.last_mut().expect("inserted record")
     }
 
-    fn tool_live(&mut self, key: Key, event: &Value) {
-        let record = self.record_or_insert(key, || Body::Tool(Box::default()));
+    fn tool_live(&mut self, key: Key, turn: Option<u64>, event: &Value) {
+        let record = self.record_or_insert(key, turn, || Body::Tool(Box::default()));
         if let Body::Tool(tool) = &mut record.body {
             if tool.apply_live(event) {
                 record.rendered = None;
@@ -503,45 +560,100 @@ impl Window {
     }
 
     fn row_count(&mut self, width: usize, details: ToolDetails) -> usize {
-        self.records
-            .iter_mut()
-            .map(|record| record.lines(width, details).len())
+        self.blocks(width, details)
+            .map(|block| block.height())
             .sum()
     }
 
     fn position_of(&mut self, anchor: &Anchor, width: usize, details: ToolDetails) -> usize {
         let mut start = 0;
-        for record in &mut self.records {
-            let height = record.lines(width, details).len();
-            if record.key == anchor.key {
-                return start + anchor.line.min(height.saturating_sub(1));
+        for block in self.blocks(width, details) {
+            if block.key == &anchor.key {
+                return start + block.offset(anchor.line);
             }
-            start += height;
+            start += block.height();
         }
         0
     }
 
     fn anchor_at(&mut self, mut row: usize, width: usize, details: ToolDetails) -> Option<Anchor> {
-        for record in &mut self.records {
-            let height = record.lines(width, details).len();
-            if row < height {
+        for block in self.blocks(width, details) {
+            if row < block.height() {
                 return Some(Anchor {
-                    key: record.key.clone(),
-                    line: row,
+                    key: block.key.clone(),
+                    line: match (block.heading, row) {
+                        (Some(_), 0) => AnchorLine::Turn,
+                        (Some(_), row) => AnchorLine::Body(row - 1),
+                        (None, row) => AnchorLine::Body(row),
+                    },
                 });
             }
-            row -= height;
+            row -= block.height();
         }
-        self.records.last().map(|record| Anchor {
-            key: record.key.clone(),
-            line: 0,
+        None
+    }
+
+    fn blocks(&mut self, width: usize, details: ToolDetails) -> impl Iterator<Item = Block<'_>> {
+        let mut records = self
+            .records
+            .iter_mut()
+            .filter(|record| record.visible())
+            .peekable();
+        let from_start = self.older.is_none();
+        let mut previous_turn = None;
+        std::iter::from_fn(move || {
+            let record = records.next()?;
+            let heading = record.turn.filter(|&turn| {
+                Some(turn) != previous_turn && (previous_turn.is_some() || from_start)
+            });
+            previous_turn = record.turn.or(previous_turn);
+            let tool = matches!(record.body, Body::Tool(_));
+            let adjacent_tool = tool
+                && records.peek().is_some_and(|next| {
+                    next.turn == record.turn && matches!(next.body, Body::Tool(_))
+                });
+            let (key, rows) = record.render(width, details);
+            let rows = if adjacent_tool {
+                &rows[..rows.len() - 1]
+            } else {
+                rows
+            };
+            Some(Block {
+                key,
+                heading,
+                rows,
+                tool,
+            })
         })
+    }
+}
+
+struct Block<'a> {
+    key: &'a Key,
+    heading: Option<u64>,
+    rows: &'a [Row],
+    tool: bool,
+}
+
+impl Block<'_> {
+    fn height(&self) -> usize {
+        self.rows.len() + usize::from(self.heading.is_some())
+    }
+
+    fn offset(&self, line: AnchorLine) -> usize {
+        match line {
+            AnchorLine::Turn => 0,
+            AnchorLine::Body(line) => {
+                line.min(self.rows.len().saturating_sub(1)) + usize::from(self.heading.is_some())
+            }
+        }
     }
 }
 
 #[derive(Debug)]
 struct Record {
     key: Key,
+    turn: Option<u64>,
     position: Option<u64>,
     body: Body,
     rendered: Option<(usize, ToolDetails, Vec<Row>)>,
@@ -551,6 +663,7 @@ impl Clone for Record {
     fn clone(&self) -> Self {
         Self {
             key: self.key.clone(),
+            turn: self.turn,
             position: self.position,
             body: self.body.clone(),
             rendered: None,
@@ -571,6 +684,7 @@ impl Record {
                     .map(str::to_owned),
                 text,
             },
+            HistoryKind::Assistant if text.trim().is_empty() => return None,
             HistoryKind::Assistant => Body::Assistant(text),
             HistoryKind::ToolCall | HistoryKind::ToolResult => {
                 if let Some(id) = entry.details.get("tool_call_id").and_then(Value::as_str) {
@@ -581,8 +695,8 @@ impl Record {
                 }
                 Body::Tool(Box::new(Tool::from_entry(&entry)))
             }
-            HistoryKind::Question => Body::Notice("Question", text, Color::Yellow),
-            HistoryKind::Permission => Body::Notice("Permission", text, Color::Yellow),
+            HistoryKind::Question => Body::Notice("Question", text, WARNING),
+            HistoryKind::Permission => Body::Notice("Permission", text, WARNING),
             HistoryKind::QuestionReply => Body::Notice("Answer", text, ACCENT),
             HistoryKind::PermissionReply => {
                 let decision = match entry.details.get("allow").and_then(Value::as_bool) {
@@ -594,16 +708,17 @@ impl Record {
             }
             HistoryKind::Status => {
                 if entry.details.get("status").and_then(Value::as_str) == Some("interrupted") {
-                    Body::Notice("Execution interrupted", text, Color::Yellow)
+                    Body::Notice("Execution interrupted", text, WARNING)
                 } else {
                     Body::Notice("Execution stopped", text, MUTED)
                 }
             }
-            HistoryKind::Error => Body::Notice("Provider error", text, Color::Red),
+            HistoryKind::Error => Body::Notice("Provider error", text, ERROR),
             HistoryKind::Other => return None,
         };
         Some(Self {
             key,
+            turn: entry.turn,
             position: Some(entry.id),
             body,
             rendered: None,
@@ -622,7 +737,11 @@ impl Record {
         }
     }
 
-    fn lines(&mut self, width: usize, details: ToolDetails) -> &[Row] {
+    fn visible(&self) -> bool {
+        !matches!(&self.body, Body::Assistant(text) if text.trim().is_empty())
+    }
+
+    fn render(&mut self, width: usize, details: ToolDetails) -> (&Key, &[Row]) {
         let mode = if matches!(self.body, Body::Tool(_)) {
             details
         } else {
@@ -636,22 +755,19 @@ impl Record {
             let lines = match &self.body {
                 Body::User { sender, text } => {
                     let title = match sender {
-                        Some(sender) => shorten(&format!("From {}", single_line(sender)), width),
+                        Some(sender) => shorten(
+                            &format!("From {}", single_line(sender)),
+                            width.saturating_sub(usize::from(body_inset(width))),
+                        ),
                         None if width >= 10 => "You (sent)".to_owned(),
                         None => "You".to_owned(),
                     };
-                    render_record(
-                        &title,
-                        ACCENT,
-                        render_literal(text, Style::default()),
-                        width,
-                        body_inset(width),
-                    )
+                    render_user(&title, text, width)
                 }
                 Body::Assistant(text) => render_record(
                     if width >= 9 { "Assistant" } else { "AI" },
-                    Color::Green,
-                    render_markdown(text),
+                    MUTED,
+                    render_markdown(text, width, MAX_VISUAL_ROWS),
                     width,
                     0,
                 ),
@@ -666,7 +782,10 @@ impl Record {
             };
             self.rendered = Some((width, mode, lines));
         }
-        &self.rendered.as_ref().expect("rendered record").2
+        (
+            &self.key,
+            &self.rendered.as_ref().expect("rendered record").2,
+        )
     }
 }
 
@@ -694,8 +813,8 @@ impl Row {
 }
 
 fn body_inset(width: usize) -> u16 {
-    if width >= 12 {
-        2
+    if width >= MIN_TRANSCRIPT_INDENT_WIDTH {
+        TRANSCRIPT_INDENT
     } else {
         0
     }
@@ -718,6 +837,41 @@ fn render_rows(
         })
 }
 
+fn render_turn(turn: u64, width: usize) -> Line<'static> {
+    let label = if width < 6 {
+        format!("T{turn}")
+    } else {
+        format!("Turn {turn}")
+    };
+    Line::styled(shorten(&label, width), emphasis(MUTED))
+}
+
+fn render_user(title: &str, text: &str, width: usize) -> Vec<Row> {
+    let inset = body_inset(width);
+    let surface = surface();
+    let mut lines = vec![Line::styled(
+        title.to_owned(),
+        surface.add_modifier(Modifier::BOLD),
+    )];
+    lines.extend(render_literal(text, surface));
+    let mut rows: Vec<_> = wrap_bounded(
+        lines,
+        width.saturating_sub(usize::from(inset)),
+        MAX_VISUAL_ROWS,
+    )
+    .into_iter()
+    .map(|mut line| {
+        if inset > 0 {
+            line.spans
+                .insert(0, Span::styled(USER_LEFT_EDGE, surface.fg(ACCENT)));
+        }
+        Row { line, inset }
+    })
+    .collect();
+    rows.push(Row::plain(Line::default()));
+    rows
+}
+
 fn render_record(
     title: &str,
     color: Color,
@@ -725,8 +879,7 @@ fn render_record(
     width: usize,
     inset: u16,
 ) -> Vec<Row> {
-    let style = Style::default().fg(color).add_modifier(Modifier::BOLD);
-    let title = Line::styled(title.to_owned(), style);
+    let title = Line::styled(title.to_owned(), emphasis(color));
     if lines.last().is_some_and(|line| !line.spans.is_empty()) {
         lines.push(Line::default());
     }
@@ -752,228 +905,4 @@ fn append_bounded(out: &mut String, text: &str, limit: usize) {
 }
 
 #[cfg(test)]
-mod tests {
-    use kuku_client::{HistoryEntry, HistoryKind, HistoryPage};
-    use serde_json::json;
-
-    use super::{HistoryRequest, Transcript, HISTORY_PAGE};
-
-    fn response(id: u64, body: String) -> HistoryEntry {
-        HistoryEntry {
-            id,
-            agent: "main".into(),
-            turn: Some(1),
-            kind: HistoryKind::Assistant,
-            text: Some(body),
-            details: Default::default(),
-        }
-    }
-
-    fn page(first: u64, before: u64) -> HistoryPage {
-        HistoryPage {
-            entries: (first..before)
-                .map(|id| response(id, format!("Answer {id}")))
-                .collect(),
-            next_before: (first > 1).then_some(first),
-        }
-    }
-
-    fn rows(transcript: &mut Transcript) -> Vec<String> {
-        transcript
-            .project(44, 10)
-            .lines
-            .iter()
-            .map(ToString::to_string)
-            .collect()
-    }
-
-    #[test]
-    fn frozen_history_survives_older_page_arrival_and_many_recent_commits() {
-        let mut transcript = Transcript::default();
-        transcript.replace_recent(page(51, 70));
-        let older = transcript.scroll(-200, 44, 10);
-        assert_eq!(Some(HistoryRequest::Older(51)), older);
-        let anchored = rows(&mut transcript);
-        transcript.apply_page(older.unwrap(), page(3, 51));
-        for id in 70..240 {
-            transcript.apply(response(id, format!("Answer {id}")), Some(100));
-        }
-        assert_eq!(anchored, rows(&mut transcript));
-        transcript.show_latest();
-        assert!(rows(&mut transcript)
-            .iter()
-            .any(|row| row.contains("Answer 239")));
-    }
-
-    #[test]
-    fn evicted_view_restores_its_saved_anchor_from_durable_history() {
-        let mut transcript = Transcript::default();
-        transcript.replace_recent(page(51, 91));
-        transcript.scroll(-36, 44, 10);
-        let anchored = rows(&mut transcript);
-        transcript.suspend();
-        let request = transcript.restore_request().unwrap();
-        let before = request.before();
-        transcript.replace_recent(page(101, 141));
-        transcript.apply_page(request, page(before - HISTORY_PAGE as u64, before));
-        assert_eq!(anchored, rows(&mut transcript));
-    }
-
-    #[test]
-    fn durable_response_replaces_its_live_preview() {
-        let mut transcript = Transcript::default();
-        transcript.live(
-            7,
-            Some(1),
-            &json!({"type":"text","content":"temporary preview"}),
-        );
-        assert!(rows(&mut transcript)
-            .iter()
-            .any(|row| row.contains("temporary preview")));
-        transcript.apply(response(8, "settled response".into()), Some(7));
-        let rendered = rows(&mut transcript).join("\n");
-        assert!(!rendered.contains("temporary preview"));
-        assert!(rendered.contains("settled response"));
-    }
-
-    #[test]
-    fn roles_and_file_details_are_readable_without_styles_at_narrow_widths() {
-        let mut transcript = Transcript::default();
-        let mut question = response(1, "看一下 e\u{301} 👩‍💻".into());
-        question.kind = HistoryKind::User;
-        transcript.apply(question, None);
-        transcript.apply(response(2, "我来检查".into()), None);
-        transcript.apply(
-            serde_json::from_value(json!({
-                "id": 3, "agent": "main", "turn": 1, "type": "tool_call",
-                "tool": "read_file", "tool_call_id": "read", "args": {"path": "中文.txt"}
-            }))
-            .unwrap(),
-            None,
-        );
-        transcript.apply(
-            serde_json::from_value(json!({
-                "id": 4, "agent": "main", "turn": 1, "type": "tool_result",
-                "tool_call_id": "read", "status": "error", "summary": "Unable to read",
-                "model_content": "文件丢失"
-            }))
-            .unwrap(),
-            None,
-        );
-
-        for width in [17, 72] {
-            let view = transcript.project(width, 32);
-            let plain: Vec<_> = view.lines.iter().map(ToString::to_string).collect();
-            assert_eq!("You (sent)", plain[0]);
-            assert_eq!("  看一下 e\u{301} 👩‍💻", plain[1]);
-            assert_eq!(2, view.row_insets[1]);
-            assert!(plain
-                .windows(2)
-                .any(|pair| pair == ["Assistant", "我来检查"]));
-            assert!(plain.iter().any(|row| row.starts_with("Tool read_file")));
-            assert!(plain.iter().any(|row| row.contains("error")));
-            assert!(plain.iter().any(|row| row == "  中文.txt"));
-            assert!(plain.iter().any(|row| row == "  文件丢失"));
-            assert!(view.lines.iter().all(|line| line.width() <= width));
-        }
-
-        let compact: Vec<_> = transcript
-            .project(8, 40)
-            .lines
-            .iter()
-            .map(ToString::to_string)
-            .collect();
-        assert_eq!("You", compact[0]);
-        assert!(compact.iter().any(|row| row == "AI"));
-        assert!(compact.iter().any(|row| row == "文件丢失"));
-    }
-
-    #[test]
-    fn toggling_tool_previews_preserves_the_reading_anchor_through_settlement() {
-        let mut transcript = Transcript::default();
-        transcript.apply(response(1, "Earlier reply".into()), None);
-        transcript.apply(
-            serde_json::from_value(json!({
-                "id": 2, "agent": "main", "turn": 1, "type": "tool_call",
-                "tool": "run_command", "tool_call_id": "cmd", "args": {"command": "check-workspace"}
-            }))
-            .unwrap(),
-            None,
-        );
-        assert!(rows(&mut transcript)
-            .iter()
-            .any(|row| row.contains("requested")));
-        assert!(rows(&mut transcript)
-            .iter()
-            .any(|row| row.contains("check-workspace")));
-
-        transcript.live(
-            9,
-            Some(1),
-            &json!({
-                "type": "tool_start", "id": "cmd", "tool": "run_command", "summary": "Checking"
-            }),
-        );
-        transcript.scroll(-50, 60, 5);
-        let anchor = transcript.reading.as_ref().unwrap().anchor.clone();
-        assert!(!transcript.toggle_details());
-        transcript.live(
-            9,
-            Some(1),
-            &json!({
-                "type": "tool_output", "id": "cmd", "event": {"stdout": "working output"}
-            }),
-        );
-        let collapsed = rows(&mut transcript).join("\n");
-        assert!(collapsed.contains("running"));
-        assert!(!collapsed.contains("working output"));
-        assert!(transcript.toggle_details());
-        assert!(rows(&mut transcript)
-            .iter()
-            .any(|row| row.contains("working output")));
-
-        transcript.live(
-            9,
-            Some(1),
-            &json!({
-                "type": "tool_end", "id": "cmd", "status": "error", "summary": "Live failure",
-                "model_content": "live diagnostic"
-            }),
-        );
-        assert!(rows(&mut transcript)
-            .iter()
-            .any(|row| row.contains("live diagnostic")));
-        transcript.apply(serde_json::from_value(json!({
-            "id": 3, "agent": "main", "turn": 1, "type": "tool_result",
-            "tool_call_id": "cmd", "status": "ok", "summary": "Command completed",
-            "model_content": "durable diagnostic", "structured": {"exit_code": 7, "output_id": "out"}
-        })).unwrap(), Some(9));
-        transcript.live(
-            9,
-            Some(1),
-            &json!({
-                "type": "tool_output", "id": "cmd", "event": {"stderr": "late duplicate"}
-            }),
-        );
-        let settled = transcript.project(60, 20);
-        let plain: Vec<_> = settled.lines.iter().map(ToString::to_string).collect();
-        assert_eq!(&anchor, &transcript.reading.as_ref().unwrap().anchor);
-        assert_eq!("Assistant", plain[0]);
-        assert_eq!(
-            1,
-            plain
-                .iter()
-                .filter(|row| row.starts_with("Tool run_command"))
-                .count()
-        );
-        assert!(plain.iter().any(|row| row.contains("failed · exit 7")));
-        assert!(plain.iter().any(|row| row == "  durable diagnostic"));
-        assert!(plain.iter().any(|row| row == "  Saved output · /tools"));
-        assert!(!plain
-            .iter()
-            .any(|row| row.contains("live diagnostic") || row.contains("late duplicate")));
-        let tools = transcript.tools();
-        assert_eq!(Some("out"), tools[0].output_id.as_deref());
-        assert_eq!("check-workspace", tools[0].invocation);
-    }
-}
+mod tests;

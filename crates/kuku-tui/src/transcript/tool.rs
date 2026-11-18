@@ -1,12 +1,12 @@
 use kuku_client::{HistoryEntry, HistoryKind};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use serde_json::{Map, Value};
 use unicode_width::UnicodeWidthStr;
 
-use crate::keys::Shortcut;
-use crate::markup::{render_diff, render_literal, ACCENT, MUTED};
+use crate::markup::{render_diff, render_literal};
 use crate::text::{cap, shorten, single_line};
+use crate::theme::{emphasis, ACCENT, ERROR, MUTED, SUCCESS, WARNING};
 
 use super::{append_bounded, body_inset, capped, render_rows, Row, ToolDetails, ToolView};
 
@@ -16,6 +16,7 @@ const MAX_PREVIEW_BYTES: usize = 2048;
 const MAX_INVOCATION_ROWS: usize = 2;
 const MAX_SUMMARY_ROWS: usize = 2;
 const MAX_RESULT_ROWS: usize = 6;
+const MAX_FILE_ROWS: usize = 3;
 const MAX_WARNING_ROWS: usize = 3;
 
 #[derive(Debug, Clone, Default)]
@@ -141,11 +142,13 @@ impl Tool {
 
     pub(super) fn render(&self, width: usize, details: ToolDetails) -> Vec<Row> {
         let expanded = details == ToolDetails::Expanded;
-        let inset = body_inset(width);
-        let mut rows = self.render_header(width, expanded);
+        let heading_inset = body_inset(width);
+        let inset = heading_inset + body_inset(width.saturating_sub(usize::from(heading_inset)));
+        let caption = self.file_caption();
+        let mut rows = self.render_header(width, heading_inset, inset, caption.as_deref());
         let invocation = self.invocation();
         let summary = self.summary();
-        if expanded {
+        if expanded && caption.is_none() {
             rows.extend(render_preview(
                 invocation,
                 ACCENT,
@@ -154,7 +157,7 @@ impl Tool {
                 inset,
             ));
         }
-        if !expanded || summary != invocation {
+        if caption.is_none() && (!expanded || summary != invocation) {
             let limit = if expanded { MAX_SUMMARY_ROWS } else { 1 };
             rows.extend(render_preview(summary, Color::Reset, width, limit, inset));
         }
@@ -174,11 +177,16 @@ impl Tool {
                     render_excerpt(text, |text| render_literal(text, Style::default()))
                 }
             };
-            rows.extend(render_rows(result, width, MAX_RESULT_ROWS, inset));
+            let limit = if caption.is_some() {
+                MAX_FILE_ROWS
+            } else {
+                MAX_RESULT_ROWS
+            };
+            rows.extend(render_rows(result, width, limit, inset));
             if let Some(preview) = command {
                 rows.extend(render_preview(
                     &preview.notes,
-                    Color::Yellow,
+                    WARNING,
                     width,
                     MAX_WARNING_ROWS,
                     inset,
@@ -198,7 +206,14 @@ impl Tool {
         rows
     }
 
-    fn render_header(&self, width: usize, expanded: bool) -> Vec<Row> {
+    fn render_header(
+        &self,
+        width: usize,
+        inset: u16,
+        detail_inset: u16,
+        caption: Option<&str>,
+    ) -> Vec<Row> {
+        let columns = width.saturating_sub(usize::from(inset));
         let (status, color) = self.state.label();
         let status = shorten(&single_line(status), 24);
         let exit = self
@@ -207,39 +222,65 @@ impl Tool {
             .and_then(|outcome| outcome.exit_code)
             .map_or_else(String::new, |exit| format!(" · exit {exit}"));
         let status = format!("{status}{exit}");
-        let tool = shorten(
-            &single_line(&self.name),
-            width.saturating_sub("Tool ".len()),
-        );
-        let title = if tool.is_empty() {
-            "Tool".to_owned()
-        } else {
-            format!("Tool {tool}")
+        let title = match self.name.as_str() {
+            "" if caption.is_some() => "Read file".to_owned(),
+            "" => "Tool".to_owned(),
+            "read_file" => "Read file".to_owned(),
+            name => format!("Tool {}", single_line(name)),
         };
-        let style = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
+        let style = emphasis(ACCENT);
         let status_style = Style::default().fg(color);
-        let hint = format!(
-            "{} {}",
-            Shortcut::TOOL_DETAILS.label,
-            if expanded { "hide" } else { "show" }
-        );
+        let mut title = Line::styled(shorten(&title, columns), style);
+        let status_inline = title.width() + status.width() + 3 <= columns;
+        if status_inline {
+            title.push_span(Span::styled(format!(" · {status}"), status_style));
+        }
+        let separate_caption = caption
+            .filter(|caption| !status_inline || title.width() + caption.width() + 3 > columns);
+        if let Some(caption) = caption.filter(|_| separate_caption.is_none()) {
+            title.push_span(Span::styled(format!(" · {caption}"), Style::new()));
+        }
+        let mut lines = vec![title];
+        if !status_inline {
+            lines.push(Line::styled(status, status_style));
+        }
+        let mut rows: Vec<_> = render_rows(lines, width, 4, inset).collect();
+        if let Some(caption) = separate_caption {
+            rows.extend(render_preview(
+                caption,
+                Color::Reset,
+                width,
+                MAX_INVOCATION_ROWS,
+                detail_inset,
+            ));
+        }
+        rows
+    }
 
-        let mut title = Line::styled(title, style);
-        if title.width() + status.width() + 3 <= width {
-            title
-                .spans
-                .push(Span::styled(format!(" · {status}"), status_style));
-            append_hint(&mut title, &hint, width);
-            vec![Row::plain(title)]
+    fn file_caption(&self) -> Option<String> {
+        if !matches!(self.name.as_str(), "read_file" | "") {
+            return None;
+        }
+        let path = single_line(self.invocation());
+        if path.is_empty() {
+            return None;
+        }
+        let read = self
+            .state
+            .outcome()
+            .and_then(|outcome| outcome.file_read.as_ref());
+        if let Some(read) = read {
+            return Some(format!("{path} · {}", read.caption()));
+        }
+        if self.name == "read_file" && self.state.outcome().is_none() {
+            Some(path)
         } else {
-            let mut status = Line::styled(status, status_style);
-            append_hint(&mut status, &hint, width);
-            render_rows(vec![title, status], width, 4, 0).collect()
+            None
         }
     }
 
     fn invocation(&self) -> &str {
-        if self.invocation.is_empty() || self.name == "run_command" {
+        if self.invocation.is_empty() || matches!(self.name.as_str(), "run_command" | "read_file") {
             if let Some(outcome) = self
                 .state
                 .outcome()
@@ -305,10 +346,10 @@ impl State {
             Self::Requested => ("requested", MUTED),
             Self::Running => ("running", ACCENT),
             Self::Reported(outcome) | Self::Recorded(outcome) => match outcome.status.as_str() {
-                "ok" if outcome.exit_code.is_some_and(|code| code != 0) => ("failed", Color::Red),
-                "ok" => ("ok", Color::Green),
-                "error" => ("error", Color::Red),
-                "blocked" | "cancelled" => (&outcome.status, Color::Yellow),
+                "ok" if outcome.exit_code.is_some_and(|code| code != 0) => ("failed", ERROR),
+                "ok" => ("ok", SUCCESS),
+                "error" => ("error", ERROR),
+                "blocked" | "cancelled" => (&outcome.status, WARNING),
                 "" => ("finished", MUTED),
                 status => (status, MUTED),
             },
@@ -326,6 +367,7 @@ struct Outcome {
     exit_code: Option<i64>,
     output_id: Option<String>,
     command_preview: Option<CommandPreview>,
+    file_read: Option<FileRead>,
 }
 
 impl Outcome {
@@ -339,6 +381,10 @@ impl Outcome {
         let output_id = get("output_id")
             .or_else(|| structured["output_id"].as_str())
             .or_else(|| structured["output_ref"]["id"].as_str());
+        let truncated = fields
+            .get("truncated")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         Self {
             status: capped(get("status"), MAX_LABEL_BYTES),
             summary: capped(get("summary").or(fallback_summary), MAX_DETAIL_BYTES),
@@ -356,7 +402,58 @@ impl Outcome {
             exit_code: structured["exit_code"].as_i64(),
             output_id: output_id.map(str::to_owned),
             command_preview: CommandPreview::from_result(content, structured, output_id),
+            file_read: FileRead::from_result(structured, truncated),
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct FileRead {
+    start: u64,
+    count: u64,
+    total: u64,
+    cached: bool,
+    truncated: bool,
+}
+
+impl FileRead {
+    fn from_result(structured: &Value, truncated: bool) -> Option<Self> {
+        if structured["kind"].as_str() != Some("file_content") {
+            return None;
+        }
+        Some(Self {
+            start: structured["start_line"].as_u64()?,
+            count: structured["line_count"].as_u64()?,
+            total: structured["total_lines"].as_u64()?,
+            cached: structured["cached"].as_bool().unwrap_or(false),
+            truncated,
+        })
+    }
+
+    fn caption(&self) -> String {
+        let Self {
+            start,
+            count,
+            total,
+            cached,
+            truncated,
+        } = *self;
+        let mut caption = match (total, count) {
+            (0, _) => "empty file".to_owned(),
+            (_, 0) => format!("no lines at {start} of {total}"),
+            (_, 1) => format!("line {start} of {total}"),
+            _ => {
+                let end = start.saturating_add(count - 1);
+                format!("lines {start}–{end} of {total}")
+            }
+        };
+        if cached {
+            caption.push_str(" · cached");
+        }
+        if truncated {
+            caption.push_str(" · truncated");
+        }
+        caption
     }
 }
 
@@ -448,15 +545,6 @@ fn edit_preview(args: &Value) -> Option<String> {
     Some(preview)
 }
 
-fn append_hint(line: &mut Line<'static>, hint: &str, width: usize) {
-    if line.width() + hint.width() + 3 <= width {
-        line.spans.push(Span::styled(
-            format!("   {hint}"),
-            Style::default().fg(MUTED),
-        ));
-    }
-}
-
 fn render_excerpt(
     text: &str,
     render: impl FnOnce(&str) -> Vec<Line<'static>>,
@@ -521,9 +609,9 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(rendered.contains("command timed out; output truncated"));
-        assert!(rendered.contains("stdout:\n  Output: from the process"));
+        assert!(rendered.contains("stdout:\n    Output: from the process"));
         assert!(rendered.contains(&format!(
-            "stderr:\n  try fewer inputs\n  {warning}\n  Saved output · /tools"
+            "stderr:\n    try fewer inputs\n    {warning}\n    Saved output · /tools"
         )));
         assert!(!rendered.contains(marker));
         assert_eq!(raw, transcript.tools()[0].details);
@@ -566,5 +654,56 @@ mod tests {
         let tools = transcript.tools();
         assert!(tools[0].details.ends_with("later line"));
         assert_eq!(Some("retained"), tools[0].output_id.as_deref());
+    }
+
+    #[test]
+    fn adjacent_reads_share_one_hint_and_show_each_path_with_its_actual_line_range() {
+        let mut transcript = Transcript::default();
+        let raw = "17\talpha\n18\tbeta\n19\tgamma\n20\tdelta\n21\tepsilon";
+        for (first, name, path) in [(1, "read-a", "src/lib.rs"), (4, "read-b", "src/main.rs")] {
+            for (id, entry) in (first..).zip([
+                json!({"type": "assistant", "text": "", "thinking": "Read this file"}),
+                json!({"type": "tool_call", "tool": "read_file", "tool_call_id": name, "args": {"path": format!("./{path}")}}),
+                json!({"type": "tool_result", "tool_call_id": name, "status": "ok", "summary": format!("read {path}, lines 17-21 of 30, results truncated"), "model_content": raw, "truncated": true, "structured": {"kind": "file_content", "path": path, "start_line": 17, "line_count": 5, "total_lines": 30, "cached": true}}),
+            ]) {
+                let mut entry = entry.as_object().unwrap().clone();
+                entry.extend([
+                    ("id".into(), json!(id)),
+                    ("agent".into(), json!("main")),
+                    ("turn".into(), json!(7)),
+                ]);
+                transcript.apply(serde_json::from_value(entry.into()).unwrap(), None);
+            }
+        }
+
+        let view = transcript.project(84, 24);
+        let rendered = view
+            .lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(1, rendered.matches("Turn 7").count());
+        assert_eq!(1, rendered.matches("src/lib.rs").count());
+        assert_eq!(1, rendered.matches("src/main.rs").count());
+        assert!(rendered
+            .contains("Read file · ok · src/lib.rs · lines 17–21 of 30 · cached · truncated"));
+        assert!(rendered.contains("…\n  Read file") && !rendered.contains("Assistant"));
+        assert!(rendered.contains("19    gamma") && !rendered.contains("epsilon"));
+        assert_eq!(Some("Ctrl+O hide"), view.tool_hint.as_deref());
+        assert!(!rendered.contains("Ctrl+O"));
+        assert_eq!(raw, transcript.tools()[0].details);
+
+        transcript.toggle_details();
+        let collapsed = transcript.project(84, 24);
+        assert_eq!(Some("Ctrl+O show"), collapsed.tool_hint.as_deref());
+        assert!(!collapsed
+            .lines
+            .iter()
+            .any(|line| line.to_string().contains("alpha")));
+        assert!(collapsed
+            .lines
+            .iter()
+            .any(|line| line.to_string().contains("src/lib.rs")));
     }
 }
