@@ -412,12 +412,13 @@ fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (us
         render_editor(frame, field, &mut picker.query, true, "Search…");
     }
     let cell_height = if list.height >= 6 { 2 } else { 1 };
-    let count = (usize::from(list.height) / cell_height).max(1);
+    let count = usize::from(list.height / cell_height).max(1);
     let options = picker.visible_choices();
     let first = picker
         .selected
         .saturating_sub(count - 1)
         .min(options.len().saturating_sub(count));
+    let last = (first + count).min(options.len());
     let mut lines = Vec::new();
     for (index, choice) in options.iter().enumerate().skip(first).take(count) {
         let active = index == picker.selected;
@@ -456,6 +457,7 @@ fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (us
         ));
     }
     frame.render_widget(Paragraph::new(lines), list);
+    picker.set_rows(list, first..last, cell_height);
     let footer_text = if let Some(error) = &picker.problem {
         Line::styled(
             shorten(&single_line(error), width),

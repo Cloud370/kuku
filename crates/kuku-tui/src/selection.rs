@@ -2,12 +2,19 @@ use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::buffer::{Buffer, CellWidth};
 use ratatui::layout::{Position, Rect};
 
+use crate::menu::PickerHit;
 use crate::theme;
 use crate::transcript::DetailKey;
 
+#[derive(PartialEq, Eq)]
+pub(crate) enum ClickTarget {
+    Detail(DetailKey),
+    Picker(PickerHit),
+}
+
 pub(crate) enum MouseAction {
     Copy(String),
-    ToggleDetail(DetailKey),
+    Click(ClickTarget),
 }
 
 #[derive(Default)]
@@ -56,7 +63,7 @@ impl TextSelection {
         &mut self,
         mouse: MouseEvent,
         buffer: &Buffer,
-        detail: Option<&DetailKey>,
+        click: Option<ClickTarget>,
     ) -> Option<MouseAction> {
         if mouse.modifiers.contains(KeyModifiers::SHIFT) {
             self.drag = None;
@@ -77,7 +84,7 @@ impl TextSelection {
                             insets_for(&self.transcript_insets, *area),
                         );
                         if mouse.modifiers.is_empty() {
-                            drag.detail = detail.cloned();
+                            drag.click = click;
                         }
                         drag
                     });
@@ -98,11 +105,8 @@ impl TextSelection {
                     buffer,
                     insets_for(&self.transcript_insets, drag.area),
                 );
-                if mouse.modifiers.is_empty()
-                    && drag.detail.is_some()
-                    && drag.detail.as_ref() == detail
-                {
-                    return drag.detail.map(MouseAction::ToggleDetail);
+                if mouse.modifiers.is_empty() && drag.click == click && drag.click.is_some() {
+                    return drag.click.map(MouseAction::Click);
                 }
                 return (drag.anchor != drag.end && !drag.text.trim().is_empty())
                     .then_some(MouseAction::Copy(drag.text));
@@ -136,7 +140,7 @@ fn insets_for(transcript: &Option<(Rect, Vec<u16>)>, area: Rect) -> &[u16] {
 struct Drag {
     area: Rect,
     anchor: Position,
-    detail: Option<DetailKey>,
+    click: Option<ClickTarget>,
     end: Position,
     text: String,
 }
@@ -146,7 +150,7 @@ impl Drag {
         let mut drag = Self {
             area,
             anchor,
-            detail: None,
+            click: None,
             end: anchor,
             text: String::new(),
         };
@@ -160,7 +164,7 @@ impl Drag {
             point.y.clamp(self.area.top(), self.area.bottom() - 1),
         );
         if self.end != end {
-            self.detail = None;
+            self.click = None;
             self.end = end;
             self.text = self.project(buffer, insets).0;
         }

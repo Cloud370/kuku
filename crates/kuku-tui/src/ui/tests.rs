@@ -4,7 +4,7 @@ use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use kuku_client::{
-    Action, Error, HistoryEntry, HistoryKind, HistoryPage, Observation, Snapshot, Timing,
+    Action, Error, HistoryEntry, HistoryKind, HistoryPage, Observation, Snapshot, Target, Timing,
 };
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -16,6 +16,7 @@ use serde_json::json;
 use super::render;
 use crate::app::{Address, App, Modal};
 use crate::jobs::{Job, Update};
+use crate::menu::{Choice, ChoiceKind, PickerKind, PromptKind};
 use crate::output::OutputViewer;
 use crate::transcript::ToolView;
 
@@ -61,6 +62,18 @@ fn mouse(kind: MouseEventKind, point: (u16, u16), modifiers: KeyModifiers) -> Ev
         row: point.1,
         modifiers,
     })
+}
+
+fn click(app: &mut App, buffer: &Buffer, point: (u16, u16)) {
+    let left = MouseButton::Left;
+    app.event(
+        mouse(MouseEventKind::Down(left), point, KeyModifiers::NONE),
+        buffer,
+    );
+    app.event(
+        mouse(MouseEventKind::Up(left), point, KeyModifiers::NONE),
+        buffer,
+    );
 }
 
 fn cell(buffer: &Buffer, symbol: &str) -> (u16, u16) {
@@ -404,6 +417,128 @@ fn mouse_drag_copies_sanitized_text_from_tool_output_popup() {
     app.event(mouse(MouseEventKind::Drag(left), end, modifiers), buffer);
     app.event(mouse(MouseEventKind::Up(left), end, modifiers), buffer);
     assert!(matches!(app.effects.as_slice(), [Job::Copy(text)] if text == "␛[2J\nE"));
+}
+
+#[test]
+fn picker_drag_copies_and_click_opens_the_scrolled_model_detail_row() {
+    let mut app = app();
+    let mut choices: Vec<_> = (0..14)
+        .map(|index| {
+            let tier = format!("route-{index}");
+            Choice::new(&tier, "Configured tier", ChoiceKind::Tier(tier.clone()))
+        })
+        .collect();
+    choices.push(Choice::new(
+        "Connection",
+        "XYZ",
+        ChoiceKind::Connection("proxy".into()),
+    ));
+    app.picker(PickerKind::Models, choices).move_by(14);
+    let mut terminal = Terminal::new(TestBackend::new(82, 24)).unwrap();
+    let buffer = terminal
+        .draw(|frame| render(frame, &mut app))
+        .unwrap()
+        .buffer;
+    let start = cell(buffer, "X");
+    let end = cell(buffer, "Z");
+    let left = MouseButton::Left;
+    let modifiers = KeyModifiers::NONE;
+    app.event(mouse(MouseEventKind::Down(left), start, modifiers), buffer);
+    app.event(mouse(MouseEventKind::Drag(left), end, modifiers), buffer);
+    assert!(app.effects.is_empty());
+    let buffer = terminal
+        .draw(|frame| render(frame, &mut app))
+        .unwrap()
+        .buffer;
+    assert!(buffer[start].modifier.contains(Modifier::REVERSED));
+    app.event(mouse(MouseEventKind::Up(left), end, modifiers), buffer);
+    assert!(matches!(std::mem::take(&mut app.effects).as_slice(),
+        [Job::Copy(text)] if text == "XYZ"));
+    assert!(matches!(app.modal, Some(Modal::Picker(_))));
+
+    click(&mut app, buffer, start);
+    assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
+        if matches!(&prompt.kind, PromptKind::Model { connection } if connection == "proxy")));
+    assert!(matches!(app.effects.as_slice(), [Job::ClosePicker]));
+}
+
+#[test]
+fn picker_click_cannot_switch_agents_when_the_visible_choice_was_replaced() {
+    let mut app = app();
+    app.pane_mut().exists = true;
+    let workspace = app.workspace.clone();
+    let session_id = app.active.session.clone();
+    let choice = |agent: &str| {
+        Choice::new(
+            "评审者",
+            "Ready",
+            ChoiceKind::Agent {
+                target: Target {
+                    workspace: workspace.clone(),
+                    session_id: session_id.clone(),
+                    agent: agent.into(),
+                },
+            },
+        )
+    };
+    app.picker(PickerKind::Agents, vec![choice("reviewer")]);
+    let mut terminal = Terminal::new(TestBackend::new(39, 11)).unwrap();
+    let buffer = terminal
+        .draw(|frame| render(frame, &mut app))
+        .unwrap()
+        .buffer;
+    let point = cell(buffer, "评");
+    let left = MouseButton::Left;
+    let modifiers = KeyModifiers::NONE;
+    app.event(mouse(MouseEventKind::Down(left), point, modifiers), buffer);
+    let Some(Modal::Picker(picker)) = &mut app.modal else {
+        panic!("expected the Agent picker")
+    };
+    picker.set_local(vec![choice("tester")]);
+    let buffer = terminal
+        .draw(|frame| render(frame, &mut app))
+        .unwrap()
+        .buffer;
+    assert_eq!(point, cell(buffer, "评"));
+    app.event(mouse(MouseEventKind::Up(left), point, modifiers), buffer);
+    assert_eq!("main", app.active.agent);
+    assert!(app.effects.is_empty());
+
+    click(&mut app, buffer, point);
+    assert_eq!("tester", app.active.agent);
+    assert!(app.modal.is_none());
+    assert!(app.effects.iter().all(|job| !matches!(job, Job::Save(_))));
+}
+
+#[test]
+fn picker_click_focuses_permission_and_enter_confirms_it() {
+    let mut app = app();
+    let choice = |allow| ChoiceKind::Permission {
+        request_id: "request-1".into(),
+        allow,
+    };
+    app.picker(
+        PickerKind::Permission,
+        vec![
+            Choice::new("Deny", "", choice(false)),
+            Choice::new("允许", "", choice(true)),
+        ],
+    );
+    let mut terminal = Terminal::new(TestBackend::new(82, 21)).unwrap();
+    let buffer = terminal
+        .draw(|frame| render(frame, &mut app))
+        .unwrap()
+        .buffer;
+    click(&mut app, buffer, cell(buffer, "允"));
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker)) if picker.selected == 1));
+    assert!(app.effects.is_empty());
+
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(
+        matches!(app.effects.as_slice(), [Job::ClosePicker, Job::Save(command)]
+        if matches!(&command.action, Action::ReplyPermission { request_id, allow: true }
+            if request_id == "request-1"))
+    );
 }
 
 #[test]

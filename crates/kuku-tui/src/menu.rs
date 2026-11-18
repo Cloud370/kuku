@@ -1,6 +1,7 @@
 use std::ops::Range;
 
 use kuku_client::Target;
+use ratatui::layout::{Position, Rect};
 
 use crate::editor::Editor;
 use crate::keys::Shortcut;
@@ -163,6 +164,35 @@ pub(crate) enum ChoiceKind {
     Restart,
 }
 
+impl ChoiceKind {
+    fn opens_on_click(&self) -> bool {
+        matches!(
+            self,
+            Self::Command(
+                CommandMenu::Resume
+                    | CommandMenu::Agents
+                    | CommandMenu::Back
+                    | CommandMenu::Withdraw
+                    | CommandMenu::Reply
+                    | CommandMenu::Pending
+                    | CommandMenu::Model
+                    | CommandMenu::Thinking
+                    | CommandMenu::StatusLine
+                    | CommandMenu::Details
+                    | CommandMenu::Tools
+                    | CommandMenu::Server
+            ) | Self::Session { .. }
+                | Self::Agent { .. }
+                | Self::CreateAgent
+                | Self::Connection(_)
+                | Self::Pending(_)
+                | Self::PendingOpen { .. }
+                | Self::Detail(_)
+                | Self::Tool(_)
+        )
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct Choice {
     pub(crate) label: String,
@@ -268,6 +298,20 @@ pub(crate) struct Ticket {
     revision: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PickerHit {
+    id: u64,
+    revision: u64,
+    index: usize,
+}
+
+#[derive(Debug)]
+struct PickerRows {
+    area: Rect,
+    indices: Range<usize>,
+    row_height: u16,
+}
+
 #[derive(Debug)]
 pub(crate) struct Picker {
     pub(crate) kind: PickerKind,
@@ -280,6 +324,8 @@ pub(crate) struct Picker {
     pub(crate) ticket: Ticket,
     local: Vec<Choice>,
     remote: Vec<Choice>,
+    rows: Option<PickerRows>,
+    row_revision: u64,
 }
 
 impl Picker {
@@ -295,10 +341,13 @@ impl Picker {
             ticket: Ticket { id, revision: 0 },
             local,
             remote: Vec::new(),
+            rows: None,
+            row_revision: 0,
         }
     }
 
     pub(crate) fn begin_search(&mut self) -> Ticket {
+        self.invalidate_rows();
         self.loading = true;
         self.problem = None;
         self.remote.clear();
@@ -328,6 +377,7 @@ impl Picker {
     }
 
     pub(crate) fn clamp_selection(&mut self) {
+        self.invalidate_rows();
         self.selected = self
             .selected
             .min(self.visible_choices().len().saturating_sub(1));
@@ -371,6 +421,42 @@ impl Picker {
         self.visible_choices()
             .get(self.selected)
             .map(|choice| choice.kind.clone())
+    }
+
+    pub(crate) fn set_rows(&mut self, area: Rect, indices: Range<usize>, row_height: u16) {
+        self.rows = Some(PickerRows {
+            area,
+            indices,
+            row_height,
+        });
+    }
+
+    pub(crate) fn hit(&self, point: Position) -> Option<PickerHit> {
+        let rows = self.rows.as_ref()?;
+        if !rows.area.contains(point) {
+            return None;
+        }
+        let index = rows.indices.start + usize::from((point.y - rows.area.y) / rows.row_height);
+        rows.indices.contains(&index).then_some(PickerHit {
+            id: self.ticket.id,
+            revision: self.row_revision,
+            index,
+        })
+    }
+
+    pub(crate) fn click(&mut self, hit: PickerHit) -> Option<ChoiceKind> {
+        if hit.id != self.ticket.id || hit.revision != self.row_revision {
+            return None;
+        }
+        let choice = &self.visible_choices().get(hit.index)?.kind;
+        let opened = choice.opens_on_click().then(|| choice.clone());
+        self.selected = hit.index;
+        opened
+    }
+
+    fn invalidate_rows(&mut self) {
+        self.rows = None;
+        self.row_revision = self.row_revision.wrapping_add(1);
     }
 }
 

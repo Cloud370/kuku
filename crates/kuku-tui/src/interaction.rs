@@ -1,10 +1,11 @@
 use std::ops::Range;
 
 use crossterm::event::{
-    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use kuku_client::{Action, AgentConfig, Error, Timing};
 use ratatui::buffer::Buffer;
+use ratatui::layout::Position;
 
 use crate::app::{Address, App, Modal, PendingItem, PendingStage};
 use crate::editor::Editor;
@@ -12,7 +13,7 @@ use crate::jobs::{Job, Search, Selection};
 use crate::keys::Shortcut;
 use crate::menu::{Choice, ChoiceKind, CommandMenu, Picker, PickerKind, Prompt, PromptKind};
 use crate::output::OutputViewer;
-use crate::selection::MouseAction;
+use crate::selection::{ClickTarget, MouseAction};
 use crate::text::{shorten, single_line, TAB};
 use crate::transcript::{ReplySource, ToolView};
 
@@ -32,27 +33,47 @@ impl App {
                 ..
             }) => self.wheel(MOUSE_SCROLL_LINES),
             Event::Mouse(mouse) => {
-                let detail = match mouse.kind {
-                    MouseEventKind::Down(_) | MouseEventKind::Up(_) => {
-                        self.text_selection.transcript_row(mouse).and_then(|row| {
-                            self.panes
-                                .get(&self.active)?
-                                .transcript
-                                .detail_at(row)
-                        })
-                    }
-                    _ => None,
-                };
-                match self.text_selection.mouse(mouse, screen, detail) {
+                let click = self.click_target(mouse);
+                match self.text_selection.mouse(mouse, screen, click) {
                     Some(MouseAction::Copy(text)) => self.copy_text(text),
-                    Some(MouseAction::ToggleDetail(key)) => {
+                    Some(MouseAction::Click(ClickTarget::Detail(key))) => {
                         self.pane_mut().transcript.toggle_detail(&key);
+                    }
+                    Some(MouseAction::Click(ClickTarget::Picker(hit))) => {
+                        if let Some(Modal::Picker(picker)) = &mut self.modal {
+                            if let Some(choice) = picker.click(hit) {
+                                let kind = picker.kind.clone();
+                                self.choose(kind, choice);
+                            }
+                        }
                     }
                     None => {}
                 }
             }
             Event::FocusLost | Event::Resize(_, _) => self.text_selection.clear(),
             Event::FocusGained | Event::Key(_) => {}
+        }
+    }
+
+    fn click_target(&self, mouse: MouseEvent) -> Option<ClickTarget> {
+        if !matches!(
+            mouse.kind,
+            MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left)
+        ) || !mouse.modifiers.is_empty()
+        {
+            return None;
+        }
+        match &self.modal {
+            Some(Modal::Picker(picker)) => picker
+                .hit(Position::new(mouse.column, mouse.row))
+                .map(ClickTarget::Picker),
+            Some(Modal::Prompt(_) | Modal::Output(_) | Modal::StatusLineEditor(_)) => None,
+            None => self
+                .text_selection
+                .transcript_row(mouse)
+                .and_then(|row| self.pane().transcript.detail_at(row))
+                .cloned()
+                .map(ClickTarget::Detail),
         }
     }
 
