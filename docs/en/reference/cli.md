@@ -175,6 +175,8 @@ Subcommands:
 | policy allow | `kuku config policy allow <risk>` |
 | policy deny | `kuku config policy deny <risk>` |
 
+`config validate` resolves each configured model tier with the same checks the service uses for new Sessions. It reports the tier that failed and does not call the provider.
+
 `policy allow` and `policy deny` currently print a not-yet-implemented message instead of editing `policy.md`.
 
 ## `kuku prompts`

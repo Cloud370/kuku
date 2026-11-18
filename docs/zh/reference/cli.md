@@ -175,6 +175,8 @@ kuku config [--config <path>] [show|validate|set|policy]
 | policy allow | `kuku config policy allow <risk>` |
 | policy deny | `kuku config policy deny <risk>` |
 
+`config validate` 按服务创建 Session 时的规则逐档解析模型。失败时会标出对应的 tier，校验期间不会调用模型服务。
+
 `policy allow` 和 `policy deny` 当前只输出未实现提示，不修改 `policy.md`。
 
 ## `kuku prompts`
