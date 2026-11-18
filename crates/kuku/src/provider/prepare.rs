@@ -151,6 +151,17 @@ fn apply_settings(config: &ResolvedProvider, body: &mut Value) {
         if config.capabilities.profile == ProviderProfile::OpenAi {
             body["include"] = json!(["reasoning.encrypted_content"]);
         }
+        if matches!(
+            config.capabilities.profile,
+            ProviderProfile::OpenAi | ProviderProfile::OpenRouter
+        ) {
+            if let Some(tools) = body.get_mut("tools").and_then(Value::as_array_mut) {
+                for tool in tools.iter_mut().filter(|tool| tool["type"] == "function") {
+                    // Preserve the runtime's original optional parameters on Responses.
+                    tool["strict"] = Value::Bool(false);
+                }
+            }
+        }
     }
 }
 
@@ -225,7 +236,7 @@ fn validate_replay(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::{CanonicalMessage, ContextAssembly};
+    use crate::context::{CanonicalMessage, ContextAssembly, ToolSchema};
     use crate::provider::types::{CanonicalPromptInput, ProviderSettings};
 
     fn assembly() -> ContextAssembly {
@@ -323,5 +334,54 @@ mod tests {
         assert_eq!(false, responses.body["store"]);
         assert_eq!("none", responses.body["reasoning"]["effort"]);
         assert!(responses.body.get("previous_response_id").is_none());
+    }
+
+    #[test]
+    fn openai_and_routed_responses_preserve_optional_function_parameters() {
+        let catalog = crate::prompt::builtin_prompt_catalog();
+        let schema = json!({
+            "type": "object",
+            "properties": {"task": {"type": "string"}, "connection": {"type": "string"}},
+            "required": ["task"],
+        });
+        let mut assembly = assembly();
+        assembly.tools.push(ToolSchema {
+            name: "create_agent".into(),
+            description: "Start an Agent".into(),
+            input_schema: schema.clone(),
+        });
+        let request = ProviderRequest {
+            assembly,
+            catalog: &catalog,
+            current_input: CanonicalPromptInput { parts: Vec::new() },
+            model: "fixture".into(),
+            max_output_tokens: Some(64),
+            temperature: None,
+            stream: true,
+            think_level: crate::config::ThinkLevel::Off,
+            thinking: Default::default(),
+        };
+        let mut config = ResolvedProvider {
+            kind: ProviderKind::OpenAiResponses,
+            model: request.model.clone(),
+            ..Default::default()
+        };
+        for (profile, expected_strict) in [
+            (ProviderProfile::OpenAi, Some(false)),
+            (ProviderProfile::OpenRouter, Some(false)),
+            (ProviderProfile::DeepSeek, None),
+            (ProviderProfile::Compatible, None),
+        ] {
+            config.capabilities.profile = profile;
+            let prepared = prepare_provider_request(&config, &request, None).unwrap();
+            let tool = &prepared.body["tools"][0];
+            assert_eq!("function", tool["type"]);
+            assert_eq!(expected_strict, tool["strict"].as_bool());
+            assert_eq!(schema, tool["parameters"]);
+        }
+        config.kind = ProviderKind::OpenAiCompatible;
+        config.capabilities.profile = ProviderProfile::OpenAi;
+        let chat = prepare_provider_request(&config, &request, None).unwrap();
+        assert!(chat.body["tools"][0]["function"].get("strict").is_none());
     }
 }
