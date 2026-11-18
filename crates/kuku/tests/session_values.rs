@@ -77,9 +77,10 @@ async fn original_value_survives_name_replacement_in_a_durable_child_input() {
     let output_dir = session.events_path().parent().unwrap().join("outputs");
     assert_eq!(1, std::fs::read_dir(output_dir).unwrap().count());
     let events_path = session.events_path().to_owned();
-    assert!(!std::fs::read_to_string(&events_path)
-        .unwrap()
-        .contains(ORIGINAL));
+    assert_eq!(
+        vec![original.clone()],
+        Session::read_named_values(&events_path, "main").unwrap()
+    );
 
     let mut handoff = Input::new("share", "child", READ_TASK);
     handoff.source = InputSource::Agent("main".into());
@@ -106,6 +107,9 @@ async fn original_value_survives_name_replacement_in_a_durable_child_input() {
     assert_ne!(original.reference.id, replacement.reference.id);
     options.session_id = Some(session.id().into());
     session.close().await.unwrap();
+    assert!(!std::fs::read_to_string(&events_path)
+        .unwrap()
+        .contains(ORIGINAL));
     assert_eq!(
         vec![replacement.clone()],
         Session::read_named_values(&events_path, "main").unwrap()

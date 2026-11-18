@@ -7,7 +7,6 @@ use std::time::SystemTime;
 
 use crate::event::EventPayload;
 use crate::tool::builtin::run_command::output::{framed_bytes, output_path};
-use crate::util::fs_sync;
 use crate::{Error, Result};
 
 use super::record::Record;
@@ -277,7 +276,7 @@ pub(super) fn open_retained_output(dir: &Path, id: &str) -> Result<fs::File> {
         io::ErrorKind::NotFound => Error::OutputUnavailable(id.into()),
         _ => error.into(),
     })?;
-    fs_sync::lock_reader(&file, &path).map_err(|error| match error.kind() {
+    lock_output(&file, &path, OutputLock::Read).map_err(|error| match error.kind() {
         io::ErrorKind::WouldBlock => Error::OutputUnavailable(id.into()),
         _ => error.into(),
     })?;
@@ -308,7 +307,7 @@ fn reclaim_file(path: &Path) -> io::Result<bool> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(true),
         Err(error) => return Err(error),
     };
-    if let Err(error) = fs_sync::lock_writer(&file, path) {
+    if let Err(error) = lock_output(&file, path, OutputLock::Reclaim) {
         return if error.kind() == io::ErrorKind::WouldBlock {
             Ok(false)
         } else {
@@ -321,11 +320,92 @@ fn reclaim_file(path: &Path) -> io::Result<bool> {
     }
 }
 
+enum OutputLock {
+    Read,
+    Reclaim,
+}
+
+#[cfg(not(windows))]
+fn lock_output(file: &fs::File, path: &Path, mode: OutputLock) -> io::Result<()> {
+    use crate::util::fs_sync;
+
+    match mode {
+        OutputLock::Read => fs_sync::lock_reader(file, path),
+        OutputLock::Reclaim => fs_sync::lock_writer(file, path),
+    }
+}
+
+#[cfg(windows)]
+fn lock_output(file: &fs::File, path: &Path, mode: OutputLock) -> io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+
+    use windows_sys::Win32::Foundation::ERROR_LOCK_VIOLATION;
+    use windows_sys::Win32::Storage::FileSystem::{
+        LockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
+    };
+    use windows_sys::Win32::System::IO::{OVERLAPPED, OVERLAPPED_0, OVERLAPPED_0_0};
+
+    use crate::tool::builtin::run_command::output::MAX_OUTPUT_BYTES;
+
+    const LOCK_OFFSET: u64 = 1 << 32;
+    const _: () = assert!(LOCK_OFFSET > MAX_OUTPUT_BYTES);
+    let flags = LOCKFILE_FAIL_IMMEDIATELY
+        | match mode {
+            OutputLock::Read => 0,
+            OutputLock::Reclaim => LOCKFILE_EXCLUSIVE_LOCK,
+        };
+    let mut range = OVERLAPPED {
+        Anonymous: OVERLAPPED_0 {
+            Anonymous: OVERLAPPED_0_0 {
+                Offset: LOCK_OFFSET as u32,
+                OffsetHigh: (LOCK_OFFSET >> 32) as u32,
+            },
+        },
+        ..OVERLAPPED::default()
+    };
+    // SAFETY: The synchronous File handle and range outlive the immediate call.
+    // Rust's whole-file locks would also block capture writes through other handles.
+    if unsafe { LockFileEx(file.as_raw_handle(), flags, 0, 1, 0, &mut range) } != 0 {
+        return Ok(());
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(ERROR_LOCK_VIOLATION as i32) {
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            format!("retained output {} is already locked", path.display()),
+        ));
+    }
+    Err(error)
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, SystemTime};
 
+    use crate::tool::builtin::run_command::output::{read_open_output, OutputLimits, OutputWriter};
+    use crate::{OutputRead, OutputStream};
+
     use super::{open_retained_output, output_path, OutputStore};
+
+    #[tokio::test]
+    async fn capture_writes_continue_while_output_readers_hold_locks() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut writer = OutputWriter::create(dir.path(), "capture", OutputLimits::default())
+            .await
+            .unwrap();
+        let first = open_retained_output(dir.path(), "capture").unwrap();
+        let second = open_retained_output(dir.path(), "capture").unwrap();
+        writer
+            .write(OutputStream::Stdout, b"capture")
+            .await
+            .unwrap();
+        writer.finish(false).await.unwrap();
+        for reader in [first, second] {
+            let chunk = read_open_output(reader, "capture", OutputRead::default()).unwrap();
+            assert!(chunk.complete);
+            assert_eq!(b"capture", chunk.segments[0].as_bytes());
+        }
+    }
 
     #[test]
     fn expired_output_with_an_active_reader_is_still_charged() {
