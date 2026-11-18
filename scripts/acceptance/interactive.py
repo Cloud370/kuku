@@ -568,7 +568,6 @@ def delegated_agent_cards(client):
     parent_reply = "Parent finished and left the review running"
     card = "Agent reviewer · Input delivered"
     screens = []
-    live_failure = None
 
     def click_card(terminal, screen):
         row, column = next((row, line.index(card) + 1)
@@ -603,40 +602,37 @@ def delegated_agent_cards(client):
 
         with child.streaming_text(initial, f"\n\n{conclusion}"):
             parent.text(parent_reply)
-            try:
-                eventually("parent to settle while reviewer is streaming", lambda: (
-                    (parent_state := client.snapshot(workspace, session))["status"] == "idle"
-                    and parent_state["last_output"] == parent_reply
-                    and reviewer_snapshot()["status"] == "running"
-                ))
-                terminal.expect(f"{card} · Agent now Streaming reply")
-                open_reviewer(terminal)
-                attached = terminal.expect(initial, state="Streaming reply")["screen"]
-                assert attached.count(initial) == 1 and "reviewer draft to keep" in attached, attached
-                screens.append(("Attaching to a reviewer mid-reply", attached))
-                terminal.press("\x1b[1;3A")
-                terminal.expect(f"{card} · Agent now Streaming reply", state="To main")
-                terminal.press("\x0f")
-                expanded = terminal.expect("Live Agent reply")["screen"]
-                assert "Requested instructions" in expanded and "Requested task" in expanded and task in expanded, expanded
-                assert initial in expanded and conclusion not in expanded, expanded
-                screens.append(("Expanded streaming Agent card", expanded))
+            eventually("parent to settle while reviewer is streaming", lambda: (
+                (parent_state := client.snapshot(workspace, session))["status"] == "idle"
+                and parent_state["last_output"] == parent_reply
+                and reviewer_snapshot()["status"] == "running"
+            ))
+            terminal.expect(f"{card} · Agent now Streaming reply")
+            open_reviewer(terminal)
+            attached = terminal.expect(initial, state="Streaming reply")["screen"]
+            assert attached.count(initial) == 1 and "reviewer draft to keep" in attached, attached
+            screens.append(("Attaching to a reviewer mid-reply", attached))
+            terminal.press("\x1b[1;3A")
+            terminal.expect(f"{card} · Agent now Streaming reply", state="To main")
+            terminal.press("\x0f")
+            expanded = terminal.expect("Live Agent reply")["screen"]
+            assert "Requested instructions" in expanded and "Requested task" in expanded and task in expanded, expanded
+            assert initial in expanded and conclusion not in expanded, expanded
+            screens.append(("Expanded streaming Agent card", expanded))
 
-                def collapsed_card():
-                    screen = terminal.request("screen")["screen"]
-                    return screen if card in screen and initial in screen and "Requested task" not in screen else None
+            def collapsed_card():
+                screen = terminal.request("screen")["screen"]
+                return screen if card in screen and initial in screen and "Requested task" not in screen else None
 
-                click_card(terminal, expanded)
-                collapsed = eventually("mouse to collapse the Agent reply", collapsed_card)
-                assert "Requested instructions" in collapsed and "Live Agent reply" not in collapsed, collapsed
-                screens.append(("Collapsed streaming Agent card", collapsed))
-                click_card(terminal, collapsed)
-                terminal.expect("Live Agent reply")
-                terminal.press("\x0f")
-                globally_collapsed = eventually("Ctrl+O to collapse Agent details", collapsed_card)
-                assert "Requested instructions" not in globally_collapsed, globally_collapsed
-            except AssertionError as error:
-                live_failure = error
+            click_card(terminal, expanded)
+            collapsed = eventually("mouse to collapse the Agent reply", collapsed_card)
+            assert "Requested instructions" in collapsed and "Live Agent reply" not in collapsed, collapsed
+            screens.append(("Collapsed streaming Agent card", collapsed))
+            click_card(terminal, collapsed)
+            terminal.expect("Live Agent reply")
+            terminal.press("\x0f")
+            globally_collapsed = eventually("Ctrl+O to collapse Agent details", collapsed_card)
+            assert "Requested instructions" not in globally_collapsed, globally_collapsed
 
         eventually("reviewer to settle independently", lambda: (
             (reviewer := reviewer_snapshot())["status"] == "idle" and reviewer["last_output"] == reply
@@ -682,8 +678,6 @@ def delegated_agent_cards(client):
     client.provider.assert_idle()
     for caption, screen in screens:
         print(f"{caption}\n{screen.rstrip()}")
-    if live_failure is not None:
-        raise live_failure
 
 
 def dense_transcript(client, reference=False):
