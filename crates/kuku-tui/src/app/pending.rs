@@ -412,7 +412,7 @@ impl App {
                 self.message("Settings saved for the next safe model boundary");
             }
             Action::ReplyPermission { .. } | Action::ReplyQuestion { .. } => {
-                self.message("Reply received")
+                self.confirmation("Reply received")
             }
             Action::Withdraw { .. } => {
                 if ack.status.is_some() {

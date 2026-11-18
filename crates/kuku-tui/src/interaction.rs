@@ -120,7 +120,7 @@ impl App {
             key if Shortcut::MODEL.matches(key) => self.perform(CommandMenu::Model),
             key if Shortcut::TOOL_DETAILS.matches(key) => {
                 let expanded = self.pane_mut().transcript.toggle_details();
-                self.message(if expanded {
+                self.confirmation(if expanded {
                     "Tool details expanded · /tools for saved output"
                 } else {
                     "Tool details collapsed"

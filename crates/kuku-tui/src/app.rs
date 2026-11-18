@@ -266,6 +266,13 @@ pub(crate) enum Modal {
 pub(crate) struct Notice {
     pub(crate) text: String,
     pub(crate) error: bool,
+    expires_at: Option<Instant>,
+}
+
+impl Notice {
+    pub(crate) fn transient(&self) -> bool {
+        self.expires_at.is_some()
+    }
 }
 
 pub(crate) struct App {
@@ -377,6 +384,15 @@ impl App {
         self.notice = Some(Notice {
             text: text.into(),
             error: false,
+            expires_at: None,
+        });
+    }
+
+    pub(crate) fn confirmation(&mut self, text: impl Into<String>) {
+        self.notice = Some(Notice {
+            text: text.into(),
+            error: false,
+            expires_at: Some(Instant::now() + Duration::from_secs(4)),
         });
     }
 
@@ -384,6 +400,7 @@ impl App {
         self.notice = Some(Notice {
             text: text.into(),
             error: true,
+            expires_at: None,
         });
     }
 
@@ -550,7 +567,15 @@ impl App {
         }
     }
 
-    pub(crate) fn tick(&mut self) {
+    pub(crate) fn tick(&mut self) -> bool {
+        let expired = self
+            .notice
+            .as_ref()
+            .and_then(|n| n.expires_at)
+            .is_some_and(|at| at <= Instant::now());
+        if expired {
+            self.notice = None;
+        }
         if self
             .pane()
             .cleanup_at
@@ -559,6 +584,7 @@ impl App {
             self.pane_mut().cleanup_at = None;
             self.refresh();
         }
+        expired
     }
 
     pub(crate) fn update(&mut self, update: Update) {

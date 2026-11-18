@@ -69,7 +69,7 @@ pub(crate) async fn run(options: ConnectionOptions) -> io::Result<()> {
                 }
             },
             _ = frames.tick() => {
-                app.tick();
+                dirty |= app.tick();
                 if dirty {
                     screen = terminal.draw(&mut app)?;
                     dirty = false;
@@ -85,7 +85,7 @@ fn dispatch(app: &mut App, jobs: &mut Jobs, clipboard: &mut Clipboard) {
     for effect in std::mem::take(&mut app.effects) {
         if let Job::Copy(text) = effect {
             match clipboard.copy(text) {
-                Ok(method) => app.message(method),
+                Ok(method) => app.confirmation(method),
                 Err(error) => app.problem(format!("Clipboard · {error}")),
             }
         } else {
