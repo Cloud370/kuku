@@ -321,27 +321,27 @@ impl Picker {
                 _ => '\0',
             })
             .to_lowercase();
-        self.local
+        let mut choices: Vec<_> = self
+            .local
             .iter()
             .filter(|choice| choice.matches(&query))
             .chain(self.remote.iter().filter(|choice| {
                 !matches!(self.kind, PickerKind::Agents | PickerKind::Models)
                     || choice.matches(&query)
             }))
-            .collect()
+            .collect();
+        if matches!(self.kind, PickerKind::Commands) && !query.is_empty() {
+            choices.sort_by_key(|choice| match choice.kind {
+                ChoiceKind::Command(command) if command.name() == query => 0,
+                ChoiceKind::Command(command) if command.name().starts_with(&query) => 1,
+                _ => 2,
+            });
+        }
+        choices
     }
 
     pub(crate) fn selected_choice(&self) -> Option<ChoiceKind> {
-        let query = self.query.text().trim().trim_start_matches('/');
-        let candidates = self.visible_choices();
-        if self.selected == 0 && matches!(self.kind, PickerKind::Commands) {
-            if let Some(choice) = candidates.iter().find(|choice| {
-                matches!(choice.kind, ChoiceKind::Command(command) if command.name() == query)
-            }) {
-                return Some(choice.kind.clone());
-            }
-        }
-        candidates
+        self.visible_choices()
             .get(self.selected)
             .map(|choice| choice.kind.clone())
     }
@@ -361,4 +361,29 @@ pub(crate) struct Prompt {
     pub(crate) instructions: String,
     pub(crate) instructions_top: usize,
     pub(crate) editor: Editor,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Choice, ChoiceKind, CommandMenu, Picker, PickerKind};
+
+    #[test]
+    fn slash_command_names_rank_before_description_matches() {
+        let mut picker = Picker::new(PickerKind::Commands, 0, Choice::commands());
+        for query in ["/pend", "/pending"] {
+            picker.query.set_text(query.into());
+            picker.selected = 0;
+            assert_eq!("/pending", picker.visible_choices()[0].label);
+            assert!(matches!(
+                picker.selected_choice(),
+                Some(ChoiceKind::Command(CommandMenu::Pending))
+            ));
+            picker.move_by(1);
+            assert_eq!("/reply", picker.visible_choices()[1].label);
+            assert!(matches!(
+                picker.selected_choice(),
+                Some(ChoiceKind::Command(CommandMenu::Reply))
+            ));
+        }
+    }
 }
