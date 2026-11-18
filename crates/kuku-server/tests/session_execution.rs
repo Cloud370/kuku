@@ -24,7 +24,8 @@ async fn one_observer_gets_selected_text_and_bounded_activity_from_a_streaming_p
     let text = "界".repeat(400);
     let between = " text produced between snapshot and attach.";
     let tail = " Final delta after attaching.";
-    let (port, begin, additional, finish, provider) = paused_peer_reply(&text, between, tail).await;
+    let (port, begin, additional, final_delta, finish, provider) =
+        paused_peer_reply(&text, between, tail).await;
     let mut server = TestServer::start(mock_provider::make_test_config(port)).await;
     let id = "peer-preview";
     server
@@ -39,6 +40,7 @@ async fn one_observer_gets_selected_text_and_bounded_activity_from_a_streaming_p
     server.submit(id, json!({"type":"create_agent","command_id":"create-peer","agent":"reviewer","config":{}})).await;
     let snapshot = server.snapshot(id, "main").await;
     let cursor = snapshot["cursor"].as_u64().unwrap();
+    server.submit(id, json!({"type":"send","command_id":"peer-input","agent":"reviewer","text":"hold peer stream"})).await;
     let mut parent = observe_agent_activity(&server, id, "main", cursor)
         .await
         .bytes_stream();
@@ -47,12 +49,22 @@ async fn one_observer_gets_selected_text_and_bounded_activity_from_a_streaming_p
         .bytes_stream();
     let mut parent_buffer = Vec::new();
     let mut reviewer_buffer = Vec::new();
-
-    server.submit(id, json!({"type":"send","command_id":"peer-input","agent":"reviewer","text":"hold peer stream"})).await;
     let step =
         |frame: &Value| frame["agent"] == "reviewer" && frame["kind"] == "runtime.step_prepared";
-    seek_frame(&mut parent, &mut parent_buffer, step).await;
-    seek_frame(&mut reviewer, &mut reviewer_buffer, step).await;
+    seek_frame(
+        &mut parent,
+        &mut parent_buffer,
+        "peer Step on parent stream",
+        step,
+    )
+    .await;
+    seek_frame(
+        &mut reviewer,
+        &mut reviewer_buffer,
+        "reviewer Step on selected stream",
+        step,
+    )
+    .await;
     let running = activity_snapshot(&server, id, "main").await;
     let peer = agent_summary(&running, "reviewer");
     assert_eq!("running", peer["status"]);
@@ -62,8 +74,20 @@ async fn one_observer_gets_selected_text_and_bounded_activity_from_a_streaming_p
 
     let text_frame =
         |frame: &Value| frame["agent"] == "reviewer" && frame["event"]["type"] == "text";
-    let related = seek_frame(&mut parent, &mut parent_buffer, text_frame).await;
-    let selected = seek_frame(&mut reviewer, &mut reviewer_buffer, text_frame).await;
+    let related = seek_frame(
+        &mut parent,
+        &mut parent_buffer,
+        "bounded initial peer text",
+        text_frame,
+    )
+    .await;
+    let selected = seek_frame(
+        &mut reviewer,
+        &mut reviewer_buffer,
+        "selected initial text",
+        text_frame,
+    )
+    .await;
     assert_eq!(peer["execution_id"], related["execution_id"]);
     assert_eq!(text.as_str(), selected["event"]["content"]);
     let preview = &text[..text.floor_char_boundary(512)];
@@ -85,7 +109,13 @@ async fn one_observer_gets_selected_text_and_bounded_activity_from_a_streaming_p
     );
     let after = snapshot["cursor"].as_u64().unwrap();
     additional.send(()).unwrap();
-    let middle = seek_frame(&mut reviewer, &mut reviewer_buffer, text_frame).await;
+    let middle = seek_frame(
+        &mut reviewer,
+        &mut reviewer_buffer,
+        "text before reattachment",
+        text_frame,
+    )
+    .await;
     assert_eq!(between, middle["event"]["content"]);
     drop(reviewer);
 
@@ -93,9 +123,12 @@ async fn one_observer_gets_selected_text_and_bounded_activity_from_a_streaming_p
         .await
         .bytes_stream();
     let mut reattached_buffer = Vec::new();
-    let prefix = seek_frame(&mut reattached, &mut reattached_buffer, |frame| {
-        frame["agent"] == "reviewer" && frame["event"]["type"] == "reply_preview"
-    })
+    let prefix = seek_frame(
+        &mut reattached,
+        &mut reattached_buffer,
+        "replacement prefix on reattachment",
+        |frame| frame["agent"] == "reviewer" && frame["event"]["type"] == "reply_preview",
+    )
     .await;
     assert_eq!(format!("{text}{between}"), prefix["event"]["content"]);
     assert_eq!(
@@ -103,21 +136,34 @@ async fn one_observer_gets_selected_text_and_bounded_activity_from_a_streaming_p
         prefix["execution_id"]
     );
     assert_eq!(snapshot["reply_preview"]["turn"], prefix["turn"]);
+    final_delta.send(()).unwrap();
+    let next = seek_frame(
+        &mut reattached,
+        &mut reattached_buffer,
+        "new live text after reattachment",
+        text_frame,
+    )
+    .await;
+    assert_eq!(tail, next["event"]["content"]);
     finish.send(()).unwrap();
 
-    let next = seek_frame(&mut reattached, &mut reattached_buffer, text_frame).await;
-    assert_eq!(tail, next["event"]["content"]);
     let full = format!("{text}{between}{tail}");
-    let committed = seek_frame(&mut reattached, &mut reattached_buffer, |frame| {
-        frame["agent"] == "reviewer" && frame["entry"]["type"] == "assistant"
-    })
+    let committed = seek_frame(
+        &mut reattached,
+        &mut reattached_buffer,
+        "committed reviewer reply",
+        |frame| frame["agent"] == "reviewer" && frame["entry"]["type"] == "assistant",
+    )
     .await;
     assert_eq!(full, committed["entry"]["text"]);
     drop(reattached);
 
-    let end = seek_frame(&mut parent, &mut parent_buffer, |frame| {
-        frame["agent"] == "reviewer" && frame["operation"] == "turn_settled"
-    })
+    let end = seek_frame(
+        &mut parent,
+        &mut parent_buffer,
+        "reviewer settlement on parent stream",
+        |frame| frame["agent"] == "reviewer" && frame["operation"] == "turn_settled",
+    )
     .await;
     assert_eq!("idle", end["settlement"]["status"]);
     assert_eq!(preview, end["settlement"]["output"]);
@@ -142,6 +188,7 @@ async fn paused_peer_reply(
     oneshot::Sender<()>,
     oneshot::Sender<()>,
     oneshot::Sender<()>,
+    oneshot::Sender<()>,
     tokio::task::JoinHandle<()>,
 ) {
     let response = text_response(text);
@@ -154,13 +201,16 @@ async fn paused_peer_reply(
     };
     let (begin, wait_for_begin) = oneshot::channel();
     let (additional, wait_for_additional) = oneshot::channel();
+    let (final_delta, wait_for_final_delta) = oneshot::channel();
     let (finish, wait_for_finish) = oneshot::channel();
     let pending = Arc::new(Mutex::new(Some((
         response[..split].to_owned(),
         delta(between),
-        format!("{}{}", delta(tail), &response[split..]),
+        delta(tail),
+        response[split..].to_owned(),
         wait_for_begin,
         wait_for_additional,
+        wait_for_final_delta,
         wait_for_finish,
     ))));
     let app = Router::new().route(
@@ -169,7 +219,7 @@ async fn paused_peer_reply(
             let pending = pending.clone();
             async move {
                 let body = if body.contains("hold peer stream") {
-                    let (first, middle, rest, begin, additional, finish) =
+                    let (first, middle, tail, rest, begin, additional, final_delta, finish) =
                         pending.lock().await.take().unwrap();
                     let (send, read) = mpsc::channel(1);
                     tokio::spawn(async move {
@@ -180,6 +230,9 @@ async fn paused_peer_reply(
                         }
                         if additional.await.is_ok() {
                             let _ = send.send(Ok(Bytes::from(middle))).await;
+                        }
+                        if final_delta.await.is_ok() {
+                            let _ = send.send(Ok(Bytes::from(tail))).await;
                         }
                         if finish.await.is_ok() {
                             let _ = send.send(Ok(Bytes::from(rest))).await;
@@ -196,7 +249,7 @@ async fn paused_peer_reply(
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let handle = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    (port, begin, additional, finish, handle)
+    (port, begin, additional, final_delta, finish, handle)
 }
 
 async fn observe_agent_activity(
@@ -225,18 +278,19 @@ async fn observe_agent_activity(
 async fn seek_frame(
     stream: &mut (impl tokio_stream::Stream<Item = Result<Bytes, wreq::Error>> + Unpin),
     buffer: &mut Vec<u8>,
+    boundary: &str,
     predicate: impl Fn(&Value) -> bool,
 ) -> Value {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            let frame = common::stream::next_json_line(stream, buffer, "peer observation").await;
+            let frame = common::stream::next_json_line(stream, buffer, boundary).await;
             if predicate(&frame) {
                 return frame;
             }
         }
     })
     .await
-    .expect("the peer observation should reach the requested boundary")
+    .unwrap_or_else(|_| panic!("timed out waiting for {boundary}"))
 }
 
 fn agent_summary<'a>(snapshot: &'a Value, address: &str) -> &'a Value {
