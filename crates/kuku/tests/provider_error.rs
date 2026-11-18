@@ -55,6 +55,7 @@ fn exhausted_quota_and_temporary_rate_limit_remain_distinct() {
         r#"{"error":{"type":"insufficient_quota","code":429}}"#,
     ] {
         assert!(!classify_http_error(429, body).retryable);
+        assert!(!classify_http_error(503, body).retryable);
     }
     assert!(classify_http_error(429, r#"{"error":{"code":"rate_limit_exceeded"}}"#).retryable);
 }

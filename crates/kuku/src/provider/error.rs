@@ -20,8 +20,7 @@ pub(crate) fn classify_http_error(status: u16, body_snippet: &str) -> ProviderFa
         status: Some(status),
         provider_request_id: None,
         retry_after: None,
-        retryable: RETRYABLE_STATUSES.contains(&status)
-            && !(status == 429 && quota_exhausted(body_snippet)),
+        retryable: RETRYABLE_STATUSES.contains(&status) && !quota_exhausted(body_snippet),
     }
 }
 

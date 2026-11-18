@@ -107,10 +107,32 @@ async fn temporary_rate_limit_retries_once_and_terminal_limits_return_control() 
     let server = MockServer::start_async().await;
     let root = tempfile::tempdir().unwrap();
     prepare(root.path(), &server, "finish the task");
-    for (header, body, attempts) in [
-        ("0", r#"{"error":{"code":"rate_limit_exceeded"}}"#, 2),
-        ("0", r#"{"error":{"code":"insufficient_quota"}}"#, 1),
-        ("120", r#"{"error":{"code":"rate_limit_exceeded"}}"#, 1),
+    let budget = ["--max-requests", "1"];
+    for (header, body, attempts, options) in [
+        (
+            "0",
+            r#"{"error":{"code":"rate_limit_exceeded"}}"#,
+            2,
+            &[][..],
+        ),
+        (
+            "0",
+            r#"{"error":{"code":"insufficient_quota"}}"#,
+            1,
+            &[][..],
+        ),
+        (
+            "120",
+            r#"{"error":{"code":"rate_limit_exceeded"}}"#,
+            1,
+            &[][..],
+        ),
+        (
+            "60",
+            r#"{"error":{"code":"rate_limit_exceeded"}}"#,
+            1,
+            &budget[..],
+        ),
     ] {
         let provider = server
             .mock_async(move |when, then| {
@@ -119,7 +141,12 @@ async fn temporary_rate_limit_retries_once_and_terminal_limits_return_control() 
             })
             .await;
         let output = format!("rate-{attempts}-{header}.json");
-        let report = run_example(root.path(), &output, &[], false).await;
+        let report = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            run_example(root.path(), &output, options, false),
+        )
+        .await
+        .expect("terminal failures must return control without a retry delay");
         provider.assert_hits_async(attempts).await;
         assert_eq!(
             attempts,

@@ -250,6 +250,7 @@ async fn dispatch_prepared(
     if pending.query.runtime.is_none()
         || !pending.query.runtime_limits.retry_transient_provider_errors
         || !failure.retryable
+        || crate::query::budget::exhausted(&pending.query)
         || failure
             .retry_after
             .is_some_and(|delay| delay > MAX_AUTOMATIC_RETRY_DELAY)
