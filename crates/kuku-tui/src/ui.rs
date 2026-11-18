@@ -135,11 +135,7 @@ fn render_transcript(
         "New session".into()
     };
     let hint = if view.following {
-        [view.agent_hint, view.tool_hint]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join(" · ")
+        view.tool_hint.unwrap_or_default()
     } else {
         format!("Reading · {} latest", Shortcut::LATEST.label)
     };

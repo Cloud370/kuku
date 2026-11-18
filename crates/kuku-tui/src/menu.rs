@@ -4,7 +4,7 @@ use kuku_client::Target;
 
 use crate::editor::Editor;
 use crate::keys::Shortcut;
-use crate::transcript::ToolView;
+use crate::transcript::{AgentCardKey, ToolView};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CommandMenu {
@@ -20,6 +20,7 @@ pub(crate) enum CommandMenu {
     Model,
     Thinking,
     Copy,
+    Details,
     Tools,
     Server,
     Reconnect,
@@ -29,7 +30,7 @@ pub(crate) enum CommandMenu {
 }
 
 impl CommandMenu {
-    pub(crate) const ALL: [Self; 18] = [
+    pub(crate) const ALL: [Self; 19] = [
         Self::New,
         Self::Resume,
         Self::Agents,
@@ -42,6 +43,7 @@ impl CommandMenu {
         Self::Model,
         Self::Thinking,
         Self::Copy,
+        Self::Details,
         Self::Tools,
         Self::Server,
         Self::Reconnect,
@@ -64,6 +66,7 @@ impl CommandMenu {
             Self::Model => "model",
             Self::Thinking => "thinking",
             Self::Copy => "copy",
+            Self::Details => "details",
             Self::Tools => "tools",
             Self::Server => "server",
             Self::Reconnect => "reconnect",
@@ -77,12 +80,7 @@ impl CommandMenu {
         let (description, shortcut) = match self {
             Self::New => ("Open a fresh draft", None),
             Self::Resume => ("Find a conversation in this workspace", None),
-            Self::Agents => {
-                return format!(
-                    "Choose or create a recipient · {} toggles Agent details",
-                    Shortcut::AGENT_DETAILS.label
-                )
-            }
+            Self::Agents => ("Choose or create a recipient", None),
             Self::Queue => ("Send on the next Turn", Some(Shortcut::NEXT_TURN)),
             Self::Withdraw => ("Withdraw input still in the queue", None),
             Self::Advance => ("Continue queued work", None),
@@ -92,12 +90,13 @@ impl CommandMenu {
             Self::Model => ("Choose a configured model route", Some(Shortcut::MODEL)),
             Self::Thinking => ("Choose the model's reasoning setting", None),
             Self::Copy => ("Copy the latest reply", None),
-            Self::Tools => {
+            Self::Details => {
                 return format!(
-                    "Browse tools and saved output · {} toggles previews",
-                    Shortcut::TOOL_DETAILS.label
+                    "Choose a visible Agent card · {} toggles previews",
+                    Shortcut::DETAILS.label
                 );
             }
+            Self::Tools => ("Browse tools and saved output", None),
             Self::Server => ("Inspect the connected service", None),
             Self::Reconnect => (
                 "Reconnect and check unconfirmed commands",
@@ -145,6 +144,7 @@ pub(crate) enum ChoiceKind {
         request_id: String,
         allow: bool,
     },
+    AgentCard(AgentCardKey),
     Tool(ToolView),
     Restart,
 }
@@ -206,6 +206,7 @@ pub(crate) enum PickerKind {
     Pending,
     PendingItem,
     Permission,
+    AgentDetails,
     Tools,
     Server,
 }
@@ -223,6 +224,7 @@ impl PickerKind {
             Self::Pending => "Unconfirmed commands",
             Self::PendingItem => "Recover command",
             Self::Permission => "Authorization required",
+            Self::AgentDetails => "Agent details",
             Self::Tools => "Tool details and saved output",
             Self::Server => "Service status",
         }
@@ -236,6 +238,7 @@ impl PickerKind {
                 | Self::Sessions
                 | Self::Agents
                 | Self::Models
+                | Self::AgentDetails
                 | Self::Tools
         )
     }
