@@ -134,6 +134,18 @@ def original_font(pid, original):
     return grid if grid == original else None
 
 
+def capture_workspace_menus(desktop, window):
+    desktop.key(window, "ctrl+p")
+    screens = {"actions": desktop.screen("07a-actions")}
+    desktop.key(window, "Escape")
+    for name in ("model", "statusline"):
+        desktop.type(window, "/" + name)
+        desktop.key(window, "Return")
+        screens[name] = desktop.screen("07b-" + name)
+        desktop.key(window, "Escape")
+    return screens
+
+
 def exercise(client, desktop, checks):
     workspace = client.workspace("work-desktop")
     state = client.directory / "terminal.json"
@@ -207,6 +219,7 @@ def exercise(client, desktop, checks):
                           "clipboard_text": REPLY, "screenshot": desktop.screen("07-reply-copied")}
         client.provider.assert_idle(duration=0.25)
 
+        checks["menus"] = capture_workspace_menus(desktop, window)
         desktop.type(window, "Review the CSV checks")
         desktop.key(window, "Return")
         overview = csv_review(client, workspace, client.provider.next("Review the CSV checks"))
