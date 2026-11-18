@@ -50,14 +50,15 @@ def usd(value):
 
 @dataclass(frozen=True)
 class RunLimits:
-    requests: int
+    requests: int | None
     request_bytes: int
     output_tokens: int
     byte_ceiling: InitVar[int] = 262144
     output_ceiling: InitVar[int] = 32768
 
     def __post_init__(self, byte_ceiling, output_ceiling):
-        if not (1 <= self.requests <= 48 and 1 <= self.request_bytes <= byte_ceiling
+        request_limit_valid = self.requests is None or 1 <= self.requests <= 48
+        if not (request_limit_valid and 1 <= self.request_bytes <= byte_ceiling
                 and 1 <= self.output_tokens <= output_ceiling):
             raise ValueError("Invalid request, byte, or output token limit")
 
@@ -104,6 +105,8 @@ class Route:
         return self.context * self.input_ceiling + output_tokens * self.output_rate
 
     def reserve(self, limits):
+        if limits.requests is None:
+            raise ValueError("An aggregate provider reservation requires a finite request limit")
         return limits.requests * self.request_ceiling(limits.output_tokens)
 
     def evidence(self, limits):
@@ -118,7 +121,7 @@ class Route:
                 "prompt": str(self.prompt_rate * MILLION), "cache_read": str(self.cache_read_rate * MILLION),
                 "cache_write": str(self.cache_write_rate * MILLION), "completion": str(self.output_rate * MILLION),
             },
-            "reservation_usd": str(self.reserve(limits)),
+            "reservation_usd": str(self.reserve(limits)) if limits.requests is not None else None,
         }
 
     def config(self, endpoint, limits, *, context_window=None):
@@ -346,7 +349,8 @@ class RequestBoundary:
                     return self.send_error(400, "outside the selected model, route, effort or output limit")
                 output, tools = checked
                 with boundary.lock:
-                    if not boundary.armed or len(boundary.attempts) >= boundary.limits.requests:
+                    request_limit = boundary.limits.requests
+                    if not boundary.armed or request_limit is None or len(boundary.attempts) >= request_limit:
                         boundary.reject("unreserved request or request limit")
                         return self.send_error(429, "acceptance request limit reached or no budget reservation")
                     if not boundary.attempts and not boundary.required_tools <= set(tools):

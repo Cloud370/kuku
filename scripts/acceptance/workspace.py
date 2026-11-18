@@ -252,10 +252,15 @@ def run_sdk(args, scratch, workspace, config, environment, provider, evidence, r
         command = [
             caller, "--workspace", workspace, "--prompt-file", prompt_file, "--config", config,
             "--data-dir", data, "--output", result, "--session-id", session_id, "--command-id", label,
-            "--max-steps", str(args.max_requests), "--max-requests", str(args.max_requests),
+            "--max-requests", str(args.max_requests),
             "--max-output-tokens", str(args.max_output_tokens), "--max-context-tokens", "131072",
             "--timeout", str(TURN_TIMEOUT), "--inspect-named-value", VALUE_NAME,
         ]
+        if isinstance(provider, RequestBoundary):
+            if "--max-request-bytes" in help_text:
+                command.extend(["--max-request-bytes", str(provider.limits.request_bytes)])
+            if "--no-provider-retry" in help_text:
+                command.append("--no-provider-retry")
         if args.handoff_only:
             command.extend(["--seed-named-json", seed_file])
         turn = {"name": label}
@@ -302,7 +307,7 @@ def run_sdk(args, scratch, workspace, config, environment, provider, evidence, r
                 and saved.get("complete") is True and saved.get("value") == EXPECTED
         checks["runtime_completed"] = sdk["session_id"] == session_id and sdk["runtime_completed"] \
             and sdk["cleanup"]["closed"]
-        inspected = inspect_sdk(result, data, connection)
+        inspected = inspect_sdk(result, data, connection, require_fixed_limits=isinstance(provider, RequestBoundary))
         turn["sdk_inspection"] = inspected
         checks["sdk_history_and_close_verified"] = inspected["passed"]
         if "fixture_error" in turn:

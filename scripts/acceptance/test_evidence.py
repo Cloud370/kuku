@@ -63,7 +63,8 @@ class Fixture:
                        "events_path": "/kuku/data/p/app/sessions/fixture/events.jsonl", "last_event_id": len(self.records),
                        "facts": {"tool_calls": 1, "tool_results": 1, "model_responses": 2, "prepared_steps": 2, "turns_completed": 1},
                        "provider_settings": [first, second], "provider_reports": [], "limits": {"max_steps": 12,
-                       "max_request_bytes": 65536, "max_output_tokens": 4096, "automatic_retries": 0},
+                       "max_request_bytes": 65536, "max_context_tokens": 131072, "max_output_tokens": 4096,
+                       "automatic_retries": 0},
                        "runtime_completed": True, "error": None, "cleanup": {"closed": True}}
 
     def add(self, kind, **fields):
@@ -151,12 +152,28 @@ class Fixture:
         self.report["facts"] = {key: value * 2 for key, value in self.report["facts"].items()}
         self.report["agent"]["turn"] = self.turn
 
-    def inspect(self):
+    def inspect(self, **options):
         self.write()
-        return inspect_sdk(self.report_path, self.data, "fixture", "/kuku/data", "fixture")
+        return inspect_sdk(self.report_path, self.data, "fixture", "/kuku/data", "fixture", **options)
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_metered_limits_can_declare_no_count_limit_and_one_retry(self):
+        limits = self.fixture.report["limits"]
+        limits.pop("max_steps")
+        limits.update(max_requests=None, automatic_retries=1)
+        evidence = self.fixture.inspect()
+        self.assertTrue(evidence["passed"], evidence.get("error"))
+        self.assertIsNone(evidence["limits"]["max_requests"])
+        self.assertEqual(evidence["limits"]["max_request_bytes"], 65536)
+        self.assertEqual(evidence["limits"]["max_context_tokens"], 131072)
+        self.assertEqual(evidence["limits"]["automatic_retries"], 1)
+        self.assertFalse(self.fixture.inspect(require_fixed_limits=True)["passed"])
+        limits["max_requests"] = 22
+        self.assertFalse(self.fixture.inspect(require_fixed_limits=True)["passed"])
+        limits["automatic_retries"] = 0
+        self.assertTrue(self.fixture.inspect(require_fixed_limits=True)["passed"])
+
     def test_windows_extended_paths_preserve_drive_and_share_containment(self):
         def within(path, root):
             return comparison_path(PureWindowsPath(path)).is_relative_to(comparison_path(PureWindowsPath(root)))

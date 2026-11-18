@@ -464,7 +464,8 @@ def benchmark_attempt(args, case, source, image, directory, mode, secrets, *, sd
             record["sdk_result"] = str(logs / "agent" / "result.json")
             include_final_process_usage(record["resources"], Path(record["sdk_result"]))
             record["sdk_evidence"] = inspect_sdk(Path(record["sdk_result"]), data_dir, args.connection,
-                                                  "/kuku/data", record["session_id"], args.require_streaming)
+                                                  "/kuku/data", record["session_id"], args.require_streaming,
+                                                  require_fixed_limits=args.suite == "legacy")
         else:
             record["execution"] = {"exit_code": 0, "scope": "untouched environment; no Agent or oracle"}
         if record["execution"].get("timed_out"):
@@ -853,8 +854,8 @@ def main():
                 raise ValueError("Frontier live requires --sdk-binary and generates its own config and connection")
             if args.reserve_usd is not None or args.reservation_reason:
                 raise ValueError("Frontier live uses --case-cap-usd for its host-metered budget")
-            if min(args.case_cap_usd, args.max_output_tokens, args.max_requests,
-                   1 if args.agent_timeout_sec is None else args.agent_timeout_sec) <= 0:
+            limits = (args.case_cap_usd, args.max_output_tokens, args.max_requests, args.agent_timeout_sec)
+            if any(limit is not None and limit <= 0 for limit in limits):
                 raise ValueError("Frontier live limits must be positive")
         elif args.reserve_usd is None or not args.reservation_reason:
             raise ValueError("paid calls need --reserve-usd and --reservation-reason before execution")
@@ -879,6 +880,10 @@ def main():
                 if not args.sdk_binary or not args.config or not args.connection:
                     raise ValueError("live benchmark requires --sdk-binary, --config and --connection")
                 args.sdk_args = args.sdk_args[1:] if args.sdk_args[:1] == ["--"] else args.sdk_args
+                if "--max-requests" not in args.sdk_args:
+                    args.sdk_args.extend(["--max-requests", "12"])
+                if "--no-provider-retry" not in args.sdk_args:
+                    args.sdk_args.append("--no-provider-retry")
             record["config"] = config_record(args.config)
             Budget(args.ledger).reserve(run_id, args.reserve_usd, args.reservation_reason)
             reserved = True
@@ -917,7 +922,7 @@ def main():
                 for check in record["checks"])
             if paid:
                 record["sdk_evidence"] = inspect_sdk(args.sdk_result.resolve(), args.session_data.resolve(), args.connection,
-                                                      require_streaming=args.require_streaming)
+                                                      require_streaming=args.require_streaming, require_fixed_limits=True)
                 record["passed"] = record["passed"] and record["sdk_evidence"]["passed"]
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, tarfile.TarError, zipfile.BadZipFile) as error:
         record.update(passed=False, error=redact(str(error), secrets.values()))

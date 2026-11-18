@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import tarfile
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 import zipfile
@@ -91,6 +92,10 @@ class AcceptanceTests(unittest.TestCase):
             route = route_for("openrouter", model="sample/model", effort="high", upstream="example/standard")
         limits = RunLimits(requests=2, request_bytes=2048, output_tokens=1000)
         self.assertEqual(str(route.reserve(limits)), "0.084000")
+        larger_wire = RunLimits(requests=2, request_bytes=8192, output_tokens=1000)
+        self.assertEqual(route.reserve(larger_wire), route.reserve(limits))
+        self.assertEqual(route.evidence(limits)["max_bytes"], 2048)
+        self.assertEqual(route.evidence(limits)["provider_context_tokens"], 10_000)
         payload = {"model": "sample/model", "stream": True, "store": False, "max_output_tokens": 1000,
                    "reasoning": {"effort": "high"}, "provider": {
                        "order": ["example/standard"], "only": ["example/standard"],
@@ -123,6 +128,26 @@ class AcceptanceTests(unittest.TestCase):
             self.assertEqual(paid_budget(ledger, "deepseek").path, ledger.resolve())
             with self.assertRaises(ValueError):
                 paid_budget(ledger, "openrouter")
+
+    def test_paid_workspace_passes_provider_byte_bound_separately_from_context_tokens(self):
+        from paid_model import RequestBoundary, RunLimits
+        from workspace import run_sdk
+
+        caller = self.directory / "session_task"
+        caller.write_bytes(b"local fixture")
+        help_log = self.directory / "sdk-help.log"
+        help_log.write_text("--inspect-named-value --max-request-bytes --no-provider-retry")
+        args = SimpleNamespace(sdk=caller, handoff_only=False, max_requests=2, max_output_tokens=1024)
+        provider = RequestBoundary(SimpleNamespace(connection="fixture"), RunLimits(2, 8192, 1024), "unused", "unused")
+        check = {"log": str(help_log), "exit_code": 0, "timed_out": False}
+        with mock.patch.object(provider, "reserve"), mock.patch("workspace.capture", return_value=check) as capture:
+            with self.assertRaisesRegex(ValueError, "did not produce its result"):
+                run_sdk(args, self.directory, self.directory, self.directory / "config.toml", {}, provider,
+                        self.directory, {"run_id": "fixture"}, None)
+        command = capture.call_args.args[0]
+        self.assertEqual(command[command.index("--max-request-bytes") + 1], "8192")
+        self.assertEqual(command[command.index("--max-context-tokens") + 1], "131072")
+        self.assertIn("--no-provider-retry", command)
 
     def test_scratch_cleanup_uses_extended_windows_paths(self):
         from interactive_fixture import cleanup_path
@@ -273,6 +298,10 @@ class AcceptanceTests(unittest.TestCase):
         ):
             args = parser.parse_args([*base, "--suite", "frontier", "--mode", "live", *flags])
             self.assertEqual((args.provider, args.upstream), expected)
+            self.assertIsNone(args.max_requests)
+        for limit in (22, 48):
+            args = parser.parse_args([*base, "--suite", "frontier", "--max-requests", str(limit)])
+            self.assertEqual(args.max_requests, limit)
 
     def test_frontier_sources_are_independently_pinned_and_exclude_solution(self):
         from benchmark_source import prepare_source
@@ -335,10 +364,29 @@ class AcceptanceTests(unittest.TestCase):
         parsed, case, source, built, directory, secrets = fake.call_args.args
         self.assertEqual(parsed.run_id, directory.name)
         self.assertEqual((parsed.provider, parsed.upstream), ("openrouter", None))
-        self.assertEqual((parsed.case_cap_usd, parsed.max_output_tokens, parsed.max_requests), (0.75, 131072, 22))
+        self.assertEqual((parsed.case_cap_usd, parsed.max_output_tokens, parsed.max_requests), (0.75, 131072, None))
         self.assertEqual(parsed.agent_timeout_sec, 1200)
         self.assertEqual(source, self.directory / "source" / "tasks" / case["id"])
         self.assertEqual((built, secrets), (image, creds))
+
+    def test_legacy_paid_benchmark_keeps_finite_transport_count_and_disables_retries(self):
+        config = self.directory / "config.toml"
+        config.write_text("# local fixture\n")
+        base = ["run.py", "--output", str(self.directory), "benchmark", "--mode", "live", "--case", "regex-log",
+                "--sdk-binary", "/fixture/sdk", "--config", str(config), "--connection", "fixture",
+                "--reserve-usd", "0.5", "--reservation-reason", "local fixture"]
+
+        def benchmark(_args, _directory, record, _secrets):
+            record["passed"] = True
+
+        for supplied, expected in (([], "12"), (["--", "--max-requests", "22"], "22")):
+            with mock.patch.object(sys, "argv", [*base, *supplied]), \
+                    mock.patch.object(ACCEPTANCE, "load_secrets", return_value={"KUKU_TEST_KEY": "fixture"}), \
+                    mock.patch.object(ACCEPTANCE, "tree_state", return_value={}), \
+                    mock.patch.object(ACCEPTANCE, "Budget"), \
+                    mock.patch.object(ACCEPTANCE, "run_benchmark", side_effect=benchmark) as run, mock.patch("builtins.print"):
+                self.assertEqual(ACCEPTANCE.main(), 0)
+            self.assertEqual(run.call_args.args[0].sdk_args, ["--max-requests", expected, "--no-provider-retry"])
 
     def test_grader_cannot_reuse_a_report_left_by_the_agent(self):
         logs = self.directory / "logs"

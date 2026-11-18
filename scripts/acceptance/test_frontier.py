@@ -1,6 +1,7 @@
 import concurrent.futures
 from decimal import Decimal
 from email.message import Message
+import http.client
 from io import BytesIO
 import json
 import os
@@ -65,7 +66,7 @@ class FrontierTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.directory = Path(temporary.name)
 
-    def meter(self, route=DIRECT, output=131072, requests=22, cap="0.75"):
+    def meter(self, route=DIRECT, output=131072, requests=None, cap="0.75"):
         limits = RunLimits(requests, WIRE_BYTES, output, byte_ceiling=WIRE_BYTES, output_ceiling=route.completion_limit)
         meter = CaseMeter(route, limits, KEY, TOKEN, Decimal(cap), "fixture-case", 300, self.directory / "meter.json")
         meter.arm()
@@ -97,6 +98,42 @@ class FrontierTests(unittest.TestCase):
                 self.assertEqual(sorted(future.result().status for future in futures), [200, 429, 429])
         self.assertEqual(meter.accounting()["unknown_requests"], 1)
         self.assertEqual([row["reason"] for row in meter.rejections], ["case USD cap", "case USD cap"])
+
+    def test_request_count_is_only_enforced_when_selected(self):
+        def transfer(client, _body):
+            reply_to_client(client, 200)
+            return {"status": "completed", "response_ended": True, "http_status": 200, "stream_done": True,
+                    "model_received": DIRECT.model, "usage": dict(prompt_tokens=100, completion_tokens=100,
+                                                                    prompt_cache_hit_tokens=60, prompt_cache_miss_tokens=40)}
+
+        for request_limit, last_status in ((None, 200), (48, 429)):
+            with self.subTest(request_limit=request_limit):
+                meter = self.meter(requests=request_limit)
+                with mock.patch.object(meter, "transfer", side_effect=transfer), serve(meter.handler()) as endpoint:
+                    self.assertEqual([request(endpoint, DIRECT, DIRECT_PAYLOAD).status for _ in range(49)],
+                                     [200] * 48 + [last_status])
+                self.assertEqual(json.loads(meter.evidence.read_text())["limits"]["max_requests"], request_limit)
+                self.assertEqual(len(meter.attempts), 49 if request_limit is None else 48)
+
+    def test_transport_failure_before_response_headers_is_retryable_and_accounted(self):
+        for failure, status, basis in (
+            ("connect", "connection_failed", "no_upstream_charge"),
+            ("getresponse", "transport_error", "request_upper_bound"),
+        ):
+            with self.subTest(failure=failure):
+                meter = self.meter()
+                connection = mock.Mock()
+                getattr(connection, failure).side_effect = http.client.RemoteDisconnected("private network detail")
+                with mock.patch("frontier.http.client.HTTPSConnection", return_value=connection), serve(meter.handler()) as endpoint:
+                    response = request(endpoint, DIRECT, DIRECT_PAYLOAD)
+                self.assertEqual(response.status, 503)
+                self.assertEqual(response.content_type, "application/json")
+                self.assertIn("error", json.loads(response.body))
+                self.assertNotIn(b"private network detail", response.body)
+                self.assertEqual(connection.request.call_count, int(failure == "getresponse"))
+                row = meter.attempts[0]
+                self.assertEqual((row["status"], row["basis"], row["proxy_http_status"]), (status, basis, 503))
+                self.assertNotIn("http_status", row)
 
     def test_partial_usage_and_connection_failure_are_distinct(self):
         meter = self.meter(requests=3)
@@ -335,6 +372,8 @@ class FrontierTests(unittest.TestCase):
             self.assertEqual(flags["--max-request-bytes"], str(WIRE_BYTES))
             self.assertEqual(flags["--max-context-tokens"], str(ROUTER.context))
             self.assertEqual(flags["--max-output-tokens"], directory.name)
+            self.assertEqual(flags.get("--max-requests"), None if directory.name == "131072" else "48")
+            self.assertNotIn("--no-provider-retry", caller.sdk_args)
             self.assertEqual(sdk_timeout_sec, 945)
             endpoint = re.search(r'base_url = "(http://[^\"]+)"', config)[1]
             exposures.append((token, endpoint))
@@ -349,7 +388,8 @@ class FrontierTests(unittest.TestCase):
             directory = self.directory / str(output)
             directory.mkdir()
             args = SimpleNamespace(provider="openrouter", upstream=None, sdk_binary=binary, ledger=ledger.path,
-                                   max_requests=22, max_output_tokens=output, case_cap_usd=0.75, agent_timeout_sec=None,
+                                   max_requests=None if output == 131072 else 48, max_output_tokens=output,
+                                   case_cap_usd=0.75, agent_timeout_sec=None,
                                    require_streaming=True, run_id=None)
             result = run_live(args, case, directory, "fake-image", directory, {ROUTER.credential: KEY, DIRECT.credential: "unused"})
             return result, json.loads((directory / "meter.json").read_text())
@@ -369,6 +409,7 @@ class FrontierTests(unittest.TestCase):
         for result, meter in outputs:
             self.assertEqual(result["meter"], "meter.json")
             self.assertEqual(meter["sdk_binary_sha256"], "b" * 64)
+        self.assertEqual([meter["limits"]["max_requests"] for _, meter in outputs], [None, 48])
 
     def test_cap_below_one_provider_ceiling_fails_before_docker_or_reservation(self):
         ledger = Budget(self.directory / "shared.json")

@@ -384,7 +384,7 @@ class SessionFacts:
                 self.admitted_results.add(matches[0])
                 pending.pop(call_id)
 
-    def finish(self, report):
+    def finish(self, report, require_fixed_limits):
         snapshot = report.get("agent") or {}
         require(report.get("session_id") == self.session_id, "SDK report names a different durable Session")
         require(report.get("last_event_id") == self.last_id, "SDK event cursor differs from the durable log")
@@ -412,12 +412,20 @@ class SessionFacts:
         require(self.steps.keys() == self.responses.keys() == self.usages.keys(),
                 "prepared requests do not have paired model response and usage facts")
         limits = report.get("limits", {})
-        require(type(limits.get("max_steps")) is int and limits["max_steps"] > 0
+        max_requests, max_steps = limits.get("max_requests"), limits.get("max_steps")
+        retries = limits.get("automatic_retries")
+        require(("max_requests" in limits or max_steps is not None)
+                and (max_requests is None or type(max_requests) is int and max_requests > 0)
+                and (max_steps is None or type(max_steps) is int and max_steps > 0)
                 and type(limits.get("max_request_bytes")) is int and limits["max_request_bytes"] >= 4096
                 and type(limits.get("max_output_tokens")) is int and limits["max_output_tokens"] > 0
-                and limits.get("automatic_retries") == 0, "SDK report has no explicit bounded request/retry limits")
-        require(all(count <= limits["max_steps"] for count in Counter(step.get("turn") for step in self.steps.values()).values()),
-                "durable model requests exceeded the declared per-turn limit")
+                and type(retries) is int and retries in (0, 1), "SDK report has invalid request/retry limits")
+        if require_fixed_limits:
+            require(max_requests is not None and retries == 0,
+                    "paid SDK evidence requires a finite request limit and disabled automatic retries")
+        if max_steps is not None:
+            require(all(count <= max_steps for count in Counter(step.get("turn") for step in self.steps.values()).values()),
+                    "durable model requests exceeded the declared per-turn limit")
         usage = usage_summary(self.steps, self.usages, self.reports)
         normalized = snapshot.get("usage", {})
         require(normalized.get("model_requests") == len(self.usages)
@@ -435,7 +443,8 @@ class SessionFacts:
                 "connections": sorted({step["connection"] for step in self.steps.values()})}
 
 
-def inspect_sdk(result_path, data_dir, connection=None, container_data=None, session_id=None, require_streaming=False):
+def inspect_sdk(result_path, data_dir, connection=None, container_data=None, session_id=None, require_streaming=False,
+                *, require_fixed_limits=False):
     inspected = {"passed": False, "result_path": str(result_path), "data_dir": str(data_dir)}
     try:
         report = json_file(result_path)
@@ -463,7 +472,8 @@ def inspect_sdk(result_path, data_dir, connection=None, container_data=None, ses
                     records += 1
                     require(records <= 100_000, "event log exceeds the diagnostic record limit")
                     facts.accept(json.loads(line))
-        inspected.update(facts.finish(report), events_path=str(path), events_sha256=digest.hexdigest(), records=records)
+        inspected.update(facts.finish(report, require_fixed_limits), events_path=str(path),
+                         events_sha256=digest.hexdigest(), records=records)
         if require_streaming:
             require(inspected["streaming"]["coverage_complete"], "required SDK streaming coverage is missing, empty or lagged")
     except (OSError, ValueError, TypeError, KeyError, AttributeError) as error:

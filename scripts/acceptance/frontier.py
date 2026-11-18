@@ -286,7 +286,8 @@ class CaseMeter(RequestBoundary):
             ceiling = self.route.request_ceiling(output)
             if not self.armed or not self.reconciled:
                 return None, "case closed"
-            if len(self.attempts) >= self.limits.requests:
+            request_limit = self.limits.requests
+            if request_limit is not None and len(self.attempts) >= request_limit:
                 return None, "request limit"
             if self.spent + ceiling > self.cap:
                 return None, "case USD cap"
@@ -377,7 +378,17 @@ class CaseMeter(RequestBoundary):
                     observation["timing"]["request_to_response_headers_seconds"] = round(time.monotonic() - started, 6)
                     self.relay(client, reply, observation, started)
             except (OSError, http.client.HTTPException):
-                pass
+                if "http_status" not in observation and not self.closed.is_set():
+                    observation["proxy_http_status"] = 503
+                    reason = ("could not connect to upstream provider" if observation["status"] == "connection_failed"
+                              else "upstream transport failed before response headers")
+                    failure_body = json.dumps({"error": {"message": reason}}, separators=(",", ":")).encode()
+                    with contextlib.suppress(OSError):
+                        client.send_response(503)
+                        client.send_header("Content-Type", "application/json")
+                        client.send_header("Content-Length", str(len(failure_body)))
+                        client.end_headers()
+                        client.wfile.write(failure_body)
             finally:
                 with self.lock:
                     self.active_socket = None
@@ -457,8 +468,8 @@ class CaseMeter(RequestBoundary):
     def account(self, row, observation):
         route = self.route
         router = route.router
-        row.update({field: observation[field] for field in ("http_status", "response_ended", "seconds", "status", "upstream_error")
-                    if field in observation})
+        relay_fields = ("http_status", "proxy_http_status", "response_ended", "seconds", "status", "upstream_error")
+        row.update({field: observation[field] for field in relay_fields if field in observation})
         if observation.get("response_status") in RESPONSE_STATUS:
             row["response_status"] = observation["response_status"]
         ceiling = Decimal(row["reserved_usd"])
@@ -669,13 +680,13 @@ def run_live(args, case, source, image, directory, secrets):
             config = Path(scratch) / "config.toml"
             config.write_text(route.config(f"http://{gateway}:{server.server_port}", limits,
                                           context_window=route.context), encoding="utf-8")
+            sdk_args = ["--reasoning-effort", route.effort, "--timeout", str(timeout),
+                        "--max-output-tokens", str(limits.output_tokens), "--max-agents", "16",
+                        "--max-context-tokens", str(route.context), "--max-request-bytes", str(WIRE_BYTES)]
+            if limits.requests is not None:
+                sdk_args.extend(["--max-requests", str(limits.requests)])
             caller = SimpleNamespace(sdk_binary=args.sdk_binary, config=config, connection=route.connection,
-                                     require_streaming=args.require_streaming, sdk_args=[
-                                         "--reasoning-effort", route.effort, "--timeout", str(timeout),
-                                         "--max-requests", str(limits.requests), "--max-steps", str(limits.requests),
-                                         "--max-output-tokens", str(limits.output_tokens), "--max-agents", "16",
-                                         "--max-context-tokens", str(route.context), "--max-request-bytes", str(WIRE_BYTES),
-                                     ])
+                                     require_streaming=args.require_streaming, sdk_args=sdk_args, suite="frontier")
             ledger_edit(budget.reserve, run_id, float(cap),
                         f"{case['id']} single-case cap on {route.model} via {route.host}/{route.upstream}")
             thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
