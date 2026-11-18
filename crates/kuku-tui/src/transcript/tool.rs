@@ -1,4 +1,4 @@
-use kuku_client::{HistoryEntry, HistoryKind};
+use kuku_client::{HistoryEntry, HistoryKind, Receipt};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use serde_json::{Map, Value};
@@ -8,6 +8,7 @@ use crate::markup::{render_diff, render_literal};
 use crate::text::{cap, shorten, single_line};
 use crate::theme::{emphasis, ACCENT, ERROR, MUTED, SUCCESS, WARNING};
 
+use super::agent::{AgentCard, AgentRequest};
 use super::{append_bounded, body_inset, capped, render_rows, Row, ToolDetails, ToolView};
 
 const MAX_DETAIL_BYTES: usize = 12 * 1024;
@@ -27,6 +28,7 @@ pub(super) struct Tool {
     requested_change: String,
     progress: String,
     state: State,
+    agent_request: Option<AgentRequest>,
 }
 
 impl Tool {
@@ -46,6 +48,7 @@ impl Tool {
 
         let args = entry.details.get("args").unwrap_or(&Value::Null);
         let invocation = invocation(&name, args);
+        let agent_request = AgentRequest::from_call(&name, args);
         let requested_change = if name == "edit_file" {
             edit_preview(args).unwrap_or_default()
         } else {
@@ -55,6 +58,7 @@ impl Tool {
             name,
             invocation,
             requested_change,
+            agent_request,
             ..Self::default()
         }
     }
@@ -68,6 +72,9 @@ impl Tool {
         }
         if !incoming.requested_change.is_empty() {
             self.requested_change = incoming.requested_change;
+        }
+        if incoming.agent_request.is_some() {
+            self.agent_request = incoming.agent_request;
         }
         if let State::Recorded(outcome) = incoming.state {
             self.progress.clear();
@@ -100,8 +107,10 @@ impl Tool {
                 else {
                     return false;
                 };
+                let changed = append_bounded(&mut self.progress, text, MAX_DETAIL_BYTES)
+                    || !matches!(self.state, State::Running);
                 self.state = State::Running;
-                append_bounded(&mut self.progress, text, MAX_DETAIL_BYTES);
+                return changed;
             }
             Some("tool_end") => {
                 let Some(fields) = event.as_object() else {
@@ -138,6 +147,27 @@ impl Tool {
             diff: self.diff().unwrap_or_default().to_owned(),
             output_id: outcome.and_then(|outcome| outcome.output_id.clone()),
         }
+    }
+
+    pub(super) fn agent_card(&self) -> Option<AgentCard<'_>> {
+        let request = self.agent_request.as_ref()?;
+        let outcome = self.state.outcome();
+        let status = self.state.label().0;
+        let status = if status == "ok" { "reported" } else { status };
+        let receipt = match &self.state {
+            State::Recorded(outcome) => outcome.receipt.as_ref(),
+            State::Requested | State::Running | State::Reported(_) => None,
+        };
+        let error = outcome
+            .filter(|outcome| outcome.status != "ok")
+            .map_or("", |outcome| {
+                if outcome.content.is_empty() {
+                    &outcome.summary
+                } else {
+                    &outcome.content
+                }
+            });
+        Some(request.card(receipt, status, error))
     }
 
     pub(super) fn render(&self, width: usize, details: ToolDetails) -> Vec<Row> {
@@ -368,6 +398,7 @@ struct Outcome {
     output_id: Option<String>,
     command_preview: Option<CommandPreview>,
     file_read: Option<FileRead>,
+    receipt: Option<Receipt>,
 }
 
 impl Outcome {
@@ -403,8 +434,25 @@ impl Outcome {
             output_id: output_id.map(str::to_owned),
             command_preview: CommandPreview::from_result(content, structured, output_id),
             file_read: FileRead::from_result(structured, truncated),
+            receipt: (get("status") == Some("ok"))
+                .then(|| agent_receipt(structured))
+                .flatten(),
         }
     }
+}
+
+fn agent_receipt(structured: &Value) -> Option<Receipt> {
+    let agent = structured["agent"].as_str()?;
+    let command_id = structured["command_id"].as_str()?;
+    let event_id = structured["event_id"].as_u64()?;
+    if agent.is_empty() || command_id.is_empty() || event_id == 0 {
+        return None;
+    }
+    Some(Receipt {
+        agent: agent.to_owned(),
+        command_id: command_id.to_owned(),
+        event_id,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -583,6 +631,20 @@ mod tests {
 
     use crate::transcript::Transcript;
 
+    use super::{Tool, MAX_DETAIL_BYTES};
+
+    #[test]
+    fn late_live_output_does_not_change_a_full_preview() {
+        let mut tool = Tool::default();
+        let first = json!({"type":"tool_output", "event":{"stdout":"中".repeat(MAX_DETAIL_BYTES)}});
+        assert!(tool.apply_live(&first));
+        let details = tool.view().details;
+        assert!(details.ends_with("Display limit reached"));
+        let extra = json!({"type":"tool_output", "event":{"stdout":"Late output"}});
+        assert!(!tool.apply_live(&extra));
+        assert_eq!(details, tool.view().details);
+    }
+
     #[test]
     fn command_preview_keeps_stdout_and_warnings_without_the_model_output_reference() {
         let mut transcript = Transcript::default();
@@ -671,6 +733,7 @@ mod tests {
                     ("id".into(), json!(id)),
                     ("agent".into(), json!("main")),
                     ("turn".into(), json!(7)),
+                    ("turn_number".into(), json!(3)),
                 ]);
                 transcript.apply(serde_json::from_value(entry.into()).unwrap(), None);
             }
@@ -683,7 +746,7 @@ mod tests {
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join("\n");
-        assert_eq!(1, rendered.matches("Turn 7").count());
+        assert_eq!(1, rendered.matches("Turn 3").count());
         assert_eq!(1, rendered.matches("src/lib.rs").count());
         assert_eq!(1, rendered.matches("src/main.rs").count());
         assert!(rendered

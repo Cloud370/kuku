@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
 use kuku_client::{HistoryEntry, HistoryKind, HistoryPage};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 
@@ -9,12 +9,16 @@ use crate::keys::Shortcut;
 use crate::markup::{render_literal, render_markdown, wrap_bounded};
 use crate::text::{cap, shorten, single_line};
 use crate::theme::{
-    emphasis, surface, ACCENT, ERROR, MIN_TRANSCRIPT_INDENT_WIDTH, MUTED, TRANSCRIPT_INDENT,
-    USER_LEFT_EDGE, WARNING,
+    emphasis, ACCENT, ERROR, MIN_TRANSCRIPT_INDENT_WIDTH, MUTED, TRANSCRIPT_INDENT, WARNING,
 };
 
+mod agent;
+mod message;
 mod tool;
 
+pub(crate) use self::agent::AgentCardKey;
+use self::agent::{AgentCard, AgentCards, VisibleAgent};
+use self::message::{render_record, render_user};
 use self::tool::Tool;
 
 pub(crate) const HISTORY_PAGE: usize = 48;
@@ -23,6 +27,7 @@ const MAX_LIVE_RECORDS: usize = 32;
 const MAX_BODY_BYTES: usize = 64 * 1024;
 const MAX_BACKTRACK_PAGES: usize = 128;
 const MAX_VISUAL_ROWS: usize = 768;
+const DISPLAY_LIMIT_NOTICE: &str = "\n… Display limit reached";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Key {
@@ -72,12 +77,14 @@ pub(crate) struct Transcript {
     restore: Option<(u64, Anchor)>,
     details: ToolDetails,
     current_execution: Option<u64>,
+    agent_cards: AgentCards,
 }
 
 impl Transcript {
     pub(crate) fn replace_recent(&mut self, page: HistoryPage) {
         self.recent = Window::from_page(page);
         self.current_execution = None;
+        self.agent_cards.visible.clear();
     }
 
     pub(crate) fn suspend(&mut self) {
@@ -86,6 +93,7 @@ impl Transcript {
         }
         self.recent = Window::default();
         self.current_execution = None;
+        self.agent_cards.visible.clear();
     }
 
     pub(crate) fn restore_request(&self) -> Option<HistoryRequest> {
@@ -116,21 +124,29 @@ impl Transcript {
         self.recent.trim_front();
     }
 
-    pub(crate) fn live(&mut self, execution: u64, turn: Option<u64>, event: &Value) {
+    pub(crate) fn live(
+        &mut self,
+        execution: u64,
+        turn: Option<u64>,
+        turn_number: Option<u64>,
+        event: &Value,
+    ) {
         if self.current_execution != Some(execution) {
             self.clear_preview();
             self.current_execution = Some(execution);
         }
+        let count = self.recent.records.len();
         match event["type"].as_str() {
             Some("text") => {
                 if let Some(text) = event["content"].as_str() {
                     let key = Key::Preview(execution);
-                    let record = self
-                        .recent
-                        .record_or_insert(key, turn, || Body::Assistant(String::new()));
+                    let record = self.recent.record_or_insert(key, turn, turn_number, || {
+                        Body::Assistant(String::new())
+                    });
                     if let Body::Assistant(body) = &mut record.body {
-                        append_bounded(body, text, MAX_BODY_BYTES);
-                        record.rendered = None;
+                        if append_bounded(body, text, MAX_BODY_BYTES) {
+                            record.rendered = None;
+                        }
                     }
                 }
             }
@@ -142,16 +158,20 @@ impl Transcript {
                     };
                     if let Some(reading) = &mut self.reading {
                         if reading.window.contains(&key) {
-                            reading.window.tool_live(key.clone(), turn, event);
+                            reading
+                                .window
+                                .tool_live(key.clone(), turn, turn_number, event);
                         }
                     }
-                    self.recent.tool_live(key, turn, event);
+                    self.recent.tool_live(key, turn, turn_number, event);
                 }
             }
             Some("done" | "cancelled" | "error") => self.clear_preview(),
             Some(_) | None => {}
         }
-        self.recent.limit_live();
+        if self.recent.records.len() > count {
+            self.recent.limit_live();
+        }
     }
 
     pub(crate) fn clear_preview(&mut self) {
@@ -188,11 +208,14 @@ impl Transcript {
     }
 
     pub(crate) fn toggle_details(&mut self) -> bool {
-        self.details = match self.details {
-            ToolDetails::Expanded => ToolDetails::Collapsed,
-            ToolDetails::Collapsed => ToolDetails::Expanded,
+        let expanded = self.details_can_expand();
+        self.details = if expanded {
+            ToolDetails::Expanded
+        } else {
+            ToolDetails::Collapsed
         };
-        self.details == ToolDetails::Expanded
+        self.agent_cards.set_details(expanded);
+        expanded
     }
 
     pub(crate) fn last_reply(&self) -> Option<&str> {
@@ -228,13 +251,19 @@ impl Transcript {
         width: usize,
         height: usize,
     ) -> Option<HistoryRequest> {
+        self.link_recent_agent_cards();
         if self.reading.is_none() {
             if !amount.is_negative() || self.recent.records.is_empty() {
                 return None;
             }
             let mut window = self.recent.clone();
-            let rows = window.row_count(width, self.details);
-            let anchor = window.anchor_at(rows.saturating_sub(height), width, self.details)?;
+            let rows = window.row_count(width, self.details, &self.agent_cards);
+            let anchor = window.anchor_at(
+                rows.saturating_sub(height),
+                width,
+                self.details,
+                &self.agent_cards,
+            )?;
             self.reading = Some(Reading {
                 window,
                 anchor,
@@ -242,13 +271,19 @@ impl Transcript {
             });
         }
         let reading = self.reading.as_mut().expect("read window");
-        let rows = reading.window.row_count(width, self.details);
-        let start = reading
+        let rows = reading
             .window
-            .position_of(&reading.anchor, width, self.details);
+            .row_count(width, self.details, &self.agent_cards);
+        let start =
+            reading
+                .window
+                .position_of(&reading.anchor, width, self.details, &self.agent_cards);
         let bottom = rows.saturating_sub(height);
         let next = start.saturating_add_signed(amount).min(bottom);
-        if let Some(anchor) = reading.window.anchor_at(next, width, self.details) {
+        if let Some(anchor) = reading
+            .window
+            .anchor_at(next, width, self.details, &self.agent_cards)
+        {
             reading.anchor = anchor;
         }
         if amount.is_negative() && next == 0 {
@@ -315,20 +350,25 @@ impl Transcript {
     }
 
     pub(crate) fn project(&mut self, width: usize, height: usize) -> TranscriptView {
+        self.link_recent_agent_cards();
         let (window, start, following) = if let Some(reading) = &mut self.reading {
-            let start = reading
-                .window
-                .position_of(&reading.anchor, width, self.details);
+            let start =
+                reading
+                    .window
+                    .position_of(&reading.anchor, width, self.details, &self.agent_cards);
             (&mut reading.window, start, false)
         } else {
-            let rows = self.recent.row_count(width, self.details);
+            let rows = self
+                .recent
+                .row_count(width, self.details, &self.agent_cards);
             (&mut self.recent, rows.saturating_sub(height), true)
         };
         let mut lines = Vec::with_capacity(height);
         let mut row_insets = Vec::with_capacity(height);
         let mut tool_visible = false;
+        let mut visible_agents = Vec::new();
         let mut skip = start;
-        for block in window.blocks(width, self.details) {
+        for block in window.blocks(width, self.details, &self.agent_cards) {
             if lines.len() == height {
                 break;
             }
@@ -343,20 +383,39 @@ impl Transcript {
                 }
                 skip = skip.saturating_sub(1);
             }
+            let first = lines.len();
             for row in block.rows.iter().skip(skip).take(height - lines.len()) {
                 lines.push(row.line.clone());
                 row_insets.push(row.inset);
                 tool_visible |= block.tool && !row.line.spans.is_empty();
             }
+            if let Some(agent) = block.agent {
+                let last = lines.len()
+                    - usize::from(
+                        lines.len() > first
+                            && lines.last().is_some_and(|line| line.spans.is_empty()),
+                    );
+                if last > first {
+                    visible_agents.push(VisibleAgent {
+                        rows: first..last,
+                        key: block.key.clone(),
+                        address: agent.address.to_owned(),
+                        summary: agent.choice_summary(),
+                    });
+                }
+            }
             skip = 0;
         }
-        let tool_hint = tool_visible.then(|| {
-            let action = if self.details == ToolDetails::Expanded {
-                "hide"
-            } else {
+        self.agent_cards.visible = visible_agents;
+        let agent_visible = !self.agent_cards.visible.is_empty();
+        let tool_hint = (tool_visible || agent_visible).then(|| {
+            let action = if self.details_can_expand() {
                 "show"
+            } else {
+                "hide"
             };
-            format!("{} {action}", Shortcut::TOOL_DETAILS.label)
+            let menu = if agent_visible { " · /details" } else { "" };
+            format!("{} {action}{menu}", Shortcut::DETAILS.label)
         });
         TranscriptView {
             lines,
@@ -364,6 +423,10 @@ impl Transcript {
             following,
             tool_hint,
         }
+    }
+
+    fn details_can_expand(&self) -> bool {
+        self.details == ToolDetails::Collapsed || self.agent_cards.has_collapsed_visible()
     }
 }
 
@@ -533,16 +596,19 @@ impl Window {
         &mut self,
         key: Key,
         turn: Option<u64>,
+        turn_number: Option<u64>,
         body: impl FnOnce() -> Body,
     ) -> &mut Record {
         if let Some(index) = self.records.iter().position(|record| record.key == key) {
             let record = &mut self.records[index];
             record.turn = record.turn.or(turn);
+            record.turn_number = record.turn_number.or(turn_number);
             return record;
         }
         self.records.push(Record {
             key,
             turn,
+            turn_number,
             position: None,
             body: body(),
             rendered: None,
@@ -550,8 +616,8 @@ impl Window {
         self.records.last_mut().expect("inserted record")
     }
 
-    fn tool_live(&mut self, key: Key, turn: Option<u64>, event: &Value) {
-        let record = self.record_or_insert(key, turn, || Body::Tool(Box::default()));
+    fn tool_live(&mut self, key: Key, turn: Option<u64>, turn_number: Option<u64>, event: &Value) {
+        let record = self.record_or_insert(key, turn, turn_number, || Body::Tool(Box::default()));
         if let Body::Tool(tool) = &mut record.body {
             if tool.apply_live(event) {
                 record.rendered = None;
@@ -559,15 +625,21 @@ impl Window {
         }
     }
 
-    fn row_count(&mut self, width: usize, details: ToolDetails) -> usize {
-        self.blocks(width, details)
+    fn row_count(&mut self, width: usize, details: ToolDetails, agents: &AgentCards) -> usize {
+        self.blocks(width, details, agents)
             .map(|block| block.height())
             .sum()
     }
 
-    fn position_of(&mut self, anchor: &Anchor, width: usize, details: ToolDetails) -> usize {
+    fn position_of(
+        &mut self,
+        anchor: &Anchor,
+        width: usize,
+        details: ToolDetails,
+        agents: &AgentCards,
+    ) -> usize {
         let mut start = 0;
-        for block in self.blocks(width, details) {
+        for block in self.blocks(width, details, agents) {
             if block.key == &anchor.key {
                 return start + block.offset(anchor.line);
             }
@@ -576,8 +648,14 @@ impl Window {
         0
     }
 
-    fn anchor_at(&mut self, mut row: usize, width: usize, details: ToolDetails) -> Option<Anchor> {
-        for block in self.blocks(width, details) {
+    fn anchor_at(
+        &mut self,
+        mut row: usize,
+        width: usize,
+        details: ToolDetails,
+        agents: &AgentCards,
+    ) -> Option<Anchor> {
+        for block in self.blocks(width, details, agents) {
             if row < block.height() {
                 return Some(Anchor {
                     key: block.key.clone(),
@@ -593,7 +671,12 @@ impl Window {
         None
     }
 
-    fn blocks(&mut self, width: usize, details: ToolDetails) -> impl Iterator<Item = Block<'_>> {
+    fn blocks<'a>(
+        &'a mut self,
+        width: usize,
+        details: ToolDetails,
+        agents: &'a AgentCards,
+    ) -> impl Iterator<Item = Block<'a>> {
         let mut records = self
             .records
             .iter_mut()
@@ -603,16 +686,20 @@ impl Window {
         let mut previous_turn = None;
         std::iter::from_fn(move || {
             let record = records.next()?;
-            let heading = record.turn.filter(|&turn| {
-                Some(turn) != previous_turn && (previous_turn.is_some() || from_start)
-            });
+            let known_number = record.turn_number.filter(|&number| number > 0);
+            let heading = record
+                .turn
+                .filter(|&turn| {
+                    Some(turn) != previous_turn && (previous_turn.is_some() || from_start)
+                })
+                .map(|_| known_number.map_or(TurnHeading::Unnumbered, TurnHeading::Numbered));
             previous_turn = record.turn.or(previous_turn);
             let tool = matches!(record.body, Body::Tool(_));
             let adjacent_tool = tool
                 && records.peek().is_some_and(|next| {
                     next.turn == record.turn && matches!(next.body, Body::Tool(_))
                 });
-            let (key, rows) = record.render(width, details);
+            let (key, rows, agent) = record.render(width, details, agents);
             let rows = if adjacent_tool {
                 &rows[..rows.len() - 1]
             } else {
@@ -622,7 +709,8 @@ impl Window {
                 key,
                 heading,
                 rows,
-                tool,
+                tool: tool && agent.is_none(),
+                agent,
             })
         })
     }
@@ -630,9 +718,16 @@ impl Window {
 
 struct Block<'a> {
     key: &'a Key,
-    heading: Option<u64>,
+    heading: Option<TurnHeading>,
     rows: &'a [Row],
     tool: bool,
+    agent: Option<AgentCard<'a>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum TurnHeading {
+    Numbered(u64),
+    Unnumbered,
 }
 
 impl Block<'_> {
@@ -654,9 +749,10 @@ impl Block<'_> {
 struct Record {
     key: Key,
     turn: Option<u64>,
+    turn_number: Option<u64>,
     position: Option<u64>,
     body: Body,
-    rendered: Option<(usize, ToolDetails, Vec<Row>)>,
+    rendered: Option<((usize, ToolDetails, u64), Vec<Row>)>,
 }
 
 impl Clone for Record {
@@ -664,6 +760,7 @@ impl Clone for Record {
         Self {
             key: self.key.clone(),
             turn: self.turn,
+            turn_number: self.turn_number,
             position: self.position,
             body: self.body.clone(),
             rendered: None,
@@ -719,6 +816,7 @@ impl Record {
         Some(Self {
             key,
             turn: entry.turn,
+            turn_number: entry.details.get("turn_number").and_then(Value::as_u64),
             position: Some(entry.id),
             body,
             rendered: None,
@@ -726,6 +824,7 @@ impl Record {
     }
 
     fn merge(&mut self, record: Self) {
+        self.turn_number = self.turn_number.or(record.turn_number);
         if let (Body::Tool(tool), Body::Tool(incoming)) = (&mut self.body, record.body) {
             tool.merge(*incoming);
             self.position = match (self.position, record.position) {
@@ -741,16 +840,29 @@ impl Record {
         !matches!(&self.body, Body::Assistant(text) if text.trim().is_empty())
     }
 
-    fn render(&mut self, width: usize, details: ToolDetails) -> (&Key, &[Row]) {
-        let mode = if matches!(self.body, Body::Tool(_)) {
-            details
-        } else {
-            ToolDetails::Expanded
+    fn render(
+        &mut self,
+        width: usize,
+        details: ToolDetails,
+        agents: &AgentCards,
+    ) -> (&Key, &[Row], Option<AgentCard<'_>>) {
+        let (card, mode, facts) = match &self.body {
+            Body::Tool(tool) => {
+                let card = tool.agent_card();
+                let (mode, facts) = card.as_ref().map_or((details, None), |card| {
+                    agents.display(&self.key, self.position, card.address)
+                });
+                (card, mode, facts)
+            }
+            Body::User { .. } | Body::Assistant(_) | Body::Notice(..) => {
+                (None, ToolDetails::Expanded, None)
+            }
         };
+        let layout = (width, mode, facts.map_or(0, |facts| facts.paint_revision));
         if self
             .rendered
             .as_ref()
-            .is_none_or(|(stored, details, _)| *stored != width || *details != mode)
+            .is_none_or(|(stored, _)| *stored != layout)
         {
             let lines = match &self.body {
                 Body::User { sender, text } => {
@@ -778,13 +890,17 @@ impl Record {
                     width,
                     0,
                 ),
-                Body::Tool(tool) => tool.render(width, mode),
+                Body::Tool(tool) => card.as_ref().map_or_else(
+                    || tool.render(width, mode),
+                    |card| card.render(width, mode, facts),
+                ),
             };
-            self.rendered = Some((width, mode, lines));
+            self.rendered = Some((layout, lines));
         }
         (
             &self.key,
-            &self.rendered.as_ref().expect("rendered record").2,
+            &self.rendered.as_ref().expect("rendered record").1,
+            card,
         )
     }
 }
@@ -837,55 +953,13 @@ fn render_rows(
         })
 }
 
-fn render_turn(turn: u64, width: usize) -> Line<'static> {
-    let label = if width < 6 {
-        format!("T{turn}")
-    } else {
-        format!("Turn {turn}")
+fn render_turn(turn: TurnHeading, width: usize) -> Line<'static> {
+    let label = match turn {
+        TurnHeading::Numbered(number) if width < 6 => format!("T{number}"),
+        TurnHeading::Numbered(number) => format!("Turn {number}"),
+        TurnHeading::Unnumbered => "Turn".to_owned(),
     };
     Line::styled(shorten(&label, width), emphasis(MUTED))
-}
-
-fn render_user(title: &str, text: &str, width: usize) -> Vec<Row> {
-    let inset = body_inset(width);
-    let surface = surface();
-    let mut lines = vec![Line::styled(
-        title.to_owned(),
-        surface.add_modifier(Modifier::BOLD),
-    )];
-    lines.extend(render_literal(text, surface));
-    let mut rows: Vec<_> = wrap_bounded(
-        lines,
-        width.saturating_sub(usize::from(inset)),
-        MAX_VISUAL_ROWS,
-    )
-    .into_iter()
-    .map(|mut line| {
-        if inset > 0 {
-            line.spans
-                .insert(0, Span::styled(USER_LEFT_EDGE, surface.fg(ACCENT)));
-        }
-        Row { line, inset }
-    })
-    .collect();
-    rows.push(Row::plain(Line::default()));
-    rows
-}
-
-fn render_record(
-    title: &str,
-    color: Color,
-    mut lines: Vec<Line<'static>>,
-    width: usize,
-    inset: u16,
-) -> Vec<Row> {
-    let title = Line::styled(title.to_owned(), emphasis(color));
-    if lines.last().is_some_and(|line| !line.spans.is_empty()) {
-        lines.push(Line::default());
-    }
-    let mut rows: Vec<_> = render_rows(vec![title], width, MAX_VISUAL_ROWS, 0).collect();
-    rows.extend(render_rows(lines, width, MAX_VISUAL_ROWS, inset));
-    rows
 }
 
 fn capped(text: Option<&str>, bytes: usize) -> String {
@@ -893,15 +967,22 @@ fn capped(text: Option<&str>, bytes: usize) -> String {
     let cut = cap(text, bytes);
     let mut result = cut.to_owned();
     if cut.len() < text.len() {
-        result.push_str("\n… Display limit reached");
+        result.push_str(DISPLAY_LIMIT_NOTICE);
     }
     result
 }
 
-fn append_bounded(out: &mut String, text: &str, limit: usize) {
-    if out.len() < limit {
-        out.push_str(&capped(Some(text), limit - out.len()));
+fn append_bounded(out: &mut String, text: &str, limit: usize) -> bool {
+    let remaining = limit.saturating_sub(out.len());
+    if remaining == 0 || text.is_empty() {
+        return false;
     }
+    let prefix = cap(text, remaining);
+    out.push_str(prefix);
+    if prefix.len() < text.len() {
+        out.push_str(DISPLAY_LIMIT_NOTICE);
+    }
+    true
 }
 
 #[cfg(test)]
