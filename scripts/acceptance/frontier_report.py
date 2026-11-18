@@ -4,7 +4,7 @@
 import argparse
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from hashlib import sha256
 from http.client import HTTPException
 import json
@@ -52,6 +52,12 @@ TEST_FIELDS = ('tests', 'passed', 'failed', 'skipped', 'pending', 'other')
 MEMORY_FIELDS = ('peak_rss_kib', 'mean_rss_kib', 'samples', 'observed_seconds', 'window_seconds', 'coverage_ratio')
 SELF_USAGE_FIELDS = ('user_cpu_seconds', 'system_cpu_seconds', 'peak_rss_kib', 'input_blocks', 'output_blocks')
 IO_FIELDS = ('rchar', 'wchar', 'read_bytes', 'write_bytes', 'syscr', 'syscw', 'cancelled_write_bytes')
+BLOCK_IO_SIZE = re.compile(r'([0-9]{1,10}(?:\.[0-9]{1,12})?(?:[eE][+-]?[0-9]{1,2})?)[ \t]*([A-Za-z]{1,3})')
+BYTE_UNIT_SCALES = {
+    'B': 1, 'kB': 1000,
+    **{f'{prefix}B': 1000**power for power, prefix in enumerate('KMGTPEZY', 1)},
+    **{f'{prefix}iB': 1024**power for power, prefix in enumerate('KMGTPEZY', 1)},
+}
 PROXY_TIMINGS = {
     'request_to_response_headers_seconds': 'seconds',
     'request_to_first_body_byte_seconds': 'seconds',
@@ -667,22 +673,49 @@ def measured_fields(source, fields):
     return values if any(value is not None for value in values.values()) else None
 
 
+def latest_container_block_io(snapshots):
+    for snapshot in reversed(snapshots):
+        value = object_value(snapshot).get('BlockIO')
+        if not isinstance(value, str) or len(value) > 96:
+            continue
+        read, _, write = value.partition('/')
+        sizes = [BLOCK_IO_SIZE.fullmatch(part.strip()) for part in (read, write)]
+        if any(size is None or size[2] not in BYTE_UNIT_SCALES for size in sizes):
+            continue
+        read_bytes, write_bytes = (
+            int((Decimal(size[1]) * BYTE_UNIT_SCALES[size[2]]).to_integral_value(rounding=ROUND_HALF_UP))
+            for size in sizes
+        )
+        return {'read_bytes': read_bytes, 'write_bytes': write_bytes,
+                'display': ' / '.join(size[1] + size[2] for size in sizes)}
+    return None
+
+
 def resource_summary(source):
     resources = object_value(source)
     snapshots = resources.get('container_snapshots')
+    capture_incomplete = boolean(resources.get('capture_incomplete'))
+    completed_split_sampler = (resources.get('container_scope') == 'sdk_and_tools'
+                               and 'process_io_scope' in resources and capture_incomplete is False)
+    default_errors = 0 if completed_split_sampler else None
     return {
         'harness': {
             'memory': measured_fields(resources.get('harness_memory'), MEMORY_FIELDS),
             'cpu_seconds': number(resources.get('harness_cpu_seconds')),
             'self_usage': measured_fields(resources.get('harness_self_usage'), SELF_USAGE_FIELDS),
         },
-        'process_including_waited_children': {'io': measured_fields(resources.get('process_io'), IO_FIELDS)},
+        'process_including_waited_children': {
+            'io': measured_fields(resources.get('process_io'), IO_FIELDS),
+            'sampling_errors': count(resources.get('process_sampling_errors', default_errors)),
+        },
         'container': {
             'samples': count(resources.get('container_samples')),
             'retained_snapshot_count': len(snapshots) if isinstance(snapshots, list) else None,
-            'capture_incomplete': boolean(resources.get('capture_incomplete')),
-            'sampling_errors': count(resources.get('sampling_errors')),
+            'capture_incomplete': capture_incomplete,
+            'sampling_errors': count(resources.get('container_sampling_errors', default_errors)),
+            'block_io': latest_container_block_io(snapshots) if isinstance(snapshots, list) else None,
         },
+        'legacy_combined_sampling_errors': count(resources.get('sampling_errors')),
     }
 
 
@@ -811,7 +844,9 @@ def build_report(feed, attempts, official_live_sha256=None, *, receipt_key=None)
             'local_resources': ('Harness memory is sampled RSS in KiB. End-of-run self usage is from getrusage(RUSAGE_SELF), '
                                 'with I/O in blocks. Process I/O is the last sample, including children already waited on. '
                                 'Its rchar and wchar count logical characters. The read_bytes and write_bytes fields count storage I/O bytes. '
-                                'Container sample counts cover the entire container, including tools.'),
+                                'Block I/O covers the entire container, including tools. Its byte values come from the latest valid '
+                                'retained Docker stats display and may be rounded or precede final writes. '
+                                'Sampling error counters track caught sampling exceptions. Earlier records combine the two samplers.'),
         },
         'official': official,
         'local_attempts': records,

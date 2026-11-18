@@ -20,6 +20,7 @@ class ResourceSampler:
         self.stopped = threading.Event()
         self.threads = [threading.Thread(target=method, daemon=True) for method in (self.sample_process, self.sample_container)]
         self.data = {'container_scope': 'sdk_and_tools', 'container_samples': 0, 'container_snapshots': [],
+                     'process_sampling_errors': 0, 'container_sampling_errors': 0,
                      'sdk_process_samples': 0, 'sdk_peak_rss_kib': None, 'sdk_peak_rss_high_water_kib': None,
                      'sdk_cpu_seconds': None, 'sdk_threads_max': None, 'process_io': None}
         self.previous = None
@@ -69,7 +70,7 @@ class ResourceSampler:
                 if result.returncode == 0 and not self.stopped.is_set():
                     self.observe(result.stdout, time.monotonic())
             except (OSError, ValueError, subprocess.TimeoutExpired):
-                self.data['process_sampling_errors'] = self.data.get('process_sampling_errors', 0) + 1
+                self.data['process_sampling_errors'] += 1
             self.stopped.wait(0.5)
 
     def sample_container(self):
@@ -83,7 +84,7 @@ class ResourceSampler:
                     self.data['container_snapshots'].append({key:snapshot.get(key) for key in ('CPUPerc','MemUsage','PIDs','BlockIO')})
                     self.data['container_snapshots'] = self.data['container_snapshots'][-8:]
             except (OSError, ValueError, subprocess.TimeoutExpired):
-                self.data['container_sampling_errors'] = self.data.get('container_sampling_errors', 0) + 1
+                self.data['container_sampling_errors'] += 1
             self.stopped.wait(1)
 
     def finish(self):

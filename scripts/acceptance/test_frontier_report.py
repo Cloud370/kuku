@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from frontier_report import (CASES, DATASET, DELAYED_RECEIPTS, MODEL_ID, PRIVATE_RECEIPTS,
-                             SDK_REQUEST_BYTES_ERROR, EvidenceError, build_report, main, official_report)
+                             SDK_REQUEST_BYTES_ERROR, EvidenceError, build_report, main, official_report, resource_summary)
 
 
 SECRET = 'do-not-publish-local-identity'
@@ -274,7 +274,11 @@ class FrontierReportTests(unittest.TestCase):
                 'harness_self_usage': {'peak_rss_kib': 32000, 'user_cpu_seconds': 2, 'system_cpu_seconds': 0.3,
                                        'input_blocks': 6, 'output_blocks': 2},
                 'process_io': {'rchar': 20, 'syscr': 2, 'unknown_field': SECRET},
-                'container_samples': 9, 'container_snapshots': [SECRET],
+                'process_sampling_errors': 3, 'container_sampling_errors': 1,
+                'container_samples': 9, 'container_snapshots': [
+                    {'BlockIO': '135kB / 1.39GB'}, {'BlockIO': '0B / 32.60MB', 'MemUsage': SECRET},
+                    {'BlockIO': f'0B / {SECRET}'},
+                ],
             }})
             events = next((live / 'session-data').glob('p/*/sessions/*/events.jsonl'))
             events.write_text(json.dumps({'kind': 'runtime.operation', 'record': {
@@ -294,9 +298,42 @@ class FrontierReportTests(unittest.TestCase):
             self.assertEqual(attempt['resources']['harness']['cpu_seconds'], 2.3)
             self.assertEqual(attempt['resources']['harness']['self_usage']['input_blocks'], 6)
             self.assertEqual(attempt['resources']['process_including_waited_children']['io']['syscr'], 2)
+            self.assertIsNone(attempt['resources']['process_including_waited_children']['io']['read_bytes'])
+            self.assertEqual(attempt['resources']['process_including_waited_children']['sampling_errors'], 3)
             self.assertEqual(attempt['resources']['container']['samples'], 9)
+            self.assertEqual(attempt['resources']['container']['retained_snapshot_count'], 3)
+            self.assertEqual(attempt['resources']['container']['sampling_errors'], 1)
+            self.assertEqual(attempt['resources']['container']['block_io'], {
+                'read_bytes': 0, 'write_bytes': 32_600_000, 'display': '0B / 32.60MB',
+            })
             self.assertNotIn(SDK_REQUEST_BYTES_ERROR, json.dumps(attempt))
             self.assertNotIn(SECRET, json.dumps(attempt))
+
+    def test_container_io_supports_decimal_exponents_and_binary_units(self):
+        summary = resource_summary({'container_snapshots': [{'BlockIO': '1e+03kB / 1.2 KiB'}, {'BlockIO': '-- / --'}]})
+        self.assertEqual(summary['container']['block_io'], {
+            'read_bytes': 1_000_000, 'write_bytes': 1229, 'display': '1e+03kB / 1.2KiB',
+        })
+        for sample in ('1QB / 2GB', '0B / --', '-1MB / 2MB', '0B / 1MB / 2MB', None):
+            with self.subTest(sample=sample):
+                summary = resource_summary({'container_snapshots': [{'BlockIO': sample}]})
+                self.assertIsNone(summary['container']['block_io'])
+
+    def test_resource_sampler_zero_errors_and_unknown_io_remain_distinct(self):
+        split = {'container_scope': 'sdk_and_tools', 'process_io_scope': SECRET,
+                 'harness_self_usage': {'input_blocks': 0, 'output_blocks': 0}}
+        complete = resource_summary({**split, 'capture_incomplete': False})
+        self.assertEqual(complete['process_including_waited_children'], {'io': None, 'sampling_errors': 0})
+        self.assertEqual(complete['container']['sampling_errors'], 0)
+        self.assertIsNone(complete['container']['block_io'])
+        self.assertEqual(complete['harness']['self_usage']['input_blocks'], 0)
+        incomplete = resource_summary({**split, 'capture_incomplete': True})
+        self.assertIsNone(incomplete['container']['sampling_errors'])
+        self.assertIsNone(incomplete['process_including_waited_children']['sampling_errors'])
+        legacy = resource_summary({'sampling_errors': 6})
+        self.assertIsNone(legacy['container']['sampling_errors'])
+        self.assertIsNone(legacy['process_including_waited_children']['sampling_errors'])
+        self.assertEqual(legacy['legacy_combined_sampling_errors'], 6)
 
     def test_delayed_receipt_is_bound_to_meter_and_reused_without_recounting(self):
         with tempfile.TemporaryDirectory() as temporary:
