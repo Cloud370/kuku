@@ -1,20 +1,24 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::Json;
+use axum::{Extension, Json};
 use kuku::event::{EventPayload, EventStore};
 use kuku::session::{Observation, OutputRead, Session};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
+use tokio::sync::{mpsc, watch};
+use tokio_stream::wrappers::{ReceiverStream, WatchStream};
+use tokio_stream::Stream;
 
 use super::Params;
 use super::{manager, SessionTarget};
@@ -117,20 +121,31 @@ pub(super) async fn history(
 
 pub(super) async fn observe(
     State(state): State<Arc<AppState>>,
+    Extension(stop): Extension<watch::Receiver<bool>>,
     Path(id): Path<String>,
     Params(query): Params<ObserveQuery>,
 ) -> Result<Response> {
     let target = SessionTarget::new(&state, &query.workspace, &id)?;
-    target.require_exists()?;
     let after = query.after.unwrap_or_default();
-    if after != 0 && after > EventStore::read_head(&target.path)? {
-        return Err(ApiError::invalid(
-            "observation cursor is ahead of the Session",
-        ));
+    {
+        let stopping = stop.borrow();
+        if *stopping {
+            return Err(ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "service_draining",
+                "the server is stopping",
+            ));
+        }
+        target.require_exists()?;
+        if after != 0 && after > EventStore::read_head(&target.path)? {
+            return Err(ApiError::invalid(
+                "observation cursor is ahead of the Session",
+            ));
+        }
     }
     let manager = manager(&state).await;
     let (send, read) = mpsc::channel(1);
-    tokio::spawn(async move {
+    let follow = async move {
         if let Err(error) = follow(
             &manager,
             &target,
@@ -145,14 +160,20 @@ pub(super) async fn observe(
             value["type"] = json!("error");
             let _ = write_frame(&send, value).await;
         }
-    });
+    };
+    let body = ObservationBody {
+        frames: ReceiverStream::new(read),
+        follow: Some(Box::pin(follow)),
+        stopped: WatchStream::from_changes(stop.clone()),
+        stop,
+    };
     Ok((
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, "application/x-ndjson"),
             (header::CACHE_CONTROL, "no-store"),
         ],
-        Body::from_stream(ReceiverStream::new(read)),
+        Body::from_stream(body),
     )
         .into_response())
 }
@@ -238,7 +259,36 @@ fn add_tool_names(entries: &mut [Value]) {
     }
 }
 
-type FrameWriter = mpsc::Sender<std::result::Result<String, Infallible>>;
+type Frame = std::result::Result<String, Infallible>;
+type FrameWriter = mpsc::Sender<Frame>;
+
+struct ObservationBody<F> {
+    frames: ReceiverStream<Frame>,
+    follow: Option<Pin<Box<F>>>,
+    stopped: WatchStream<bool>,
+    stop: watch::Receiver<bool>,
+}
+
+impl<F: Future<Output = ()>> Stream for ObservationBody<F> {
+    type Item = Frame;
+
+    fn poll_next(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        let stop_event = Pin::new(&mut this.stopped).poll_next(context);
+        // Hold the stop watch's read guard while the follower may touch the journal.
+        let stopping = this.stop.borrow();
+        if *stopping || matches!(stop_event, Poll::Ready(None)) {
+            this.follow = None;
+            return Poll::Ready(None);
+        }
+        if let Some(follow) = &mut this.follow {
+            if follow.as_mut().poll(context).is_ready() {
+                this.follow = None;
+            }
+        }
+        Pin::new(&mut this.frames).poll_next(context)
+    }
+}
 
 async fn follow(
     manager: &RunManager,

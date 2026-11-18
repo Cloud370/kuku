@@ -290,6 +290,11 @@ async fn restart_defers_during_execution_and_releases_a_durable_wait() {
         .unwrap();
     let status = reply.status();
     assert_eq!(202, status, "{}", reply.text().await.unwrap());
+    let journal = fs::File::open(&log).unwrap();
+    journal
+        .try_lock_shared()
+        .expect("accepted restart must release the exclusive Session writer");
+    drop(journal);
     daemon.wait_for_stop().await;
 
     let mut options = SessionOptions::new(&canonical, &home, config);

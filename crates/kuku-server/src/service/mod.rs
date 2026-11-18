@@ -200,6 +200,7 @@ pub(crate) fn app(state: Arc<AppState>) -> Router {
 fn router(service: Arc<ServiceState>, web: Option<Router>) -> Router {
     let sessions = routes::interactive()
         .with_state(service.app.clone())
+        .layer(Extension(service.stop.subscribe()))
         .layer(middleware::from_fn_with_state(service.clone(), admit));
     let protected = Router::new()
         .route("/service/status", get(status))
