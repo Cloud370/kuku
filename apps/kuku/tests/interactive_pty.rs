@@ -135,7 +135,7 @@ fn host_terminal(
                     #[cfg(windows)]
                     let console_restored = exit_code == Some(0);
                     json!({
-                        "screen": screen.contents(),
+                        "screen": screen.rows(0, screen.size().1.get()).collect::<Vec<_>>().join("\n"),
                         "alternate_screen": screen.alternate_screen(),
                         "cursor_hidden": screen.hide_cursor(),
                         "bracketed_paste": screen.bracketed_paste(),
