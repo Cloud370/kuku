@@ -425,6 +425,7 @@ class RequestBoundary:
 
     def confirm_generation(self, attempt):
         if not attempt.get("generation_id"):
+            attempt["receipt_lookup"] = "missing_generation_id"
             return None
         route = self.route
         query = urlencode({"id": attempt["generation_id"]})
@@ -433,8 +434,10 @@ class RequestBoundary:
                 time.sleep(delay)
             try:
                 status, data = upstream_json(route.host, "/api/v1/generation?" + query, self.key)
-            except (OSError, http.client.HTTPException):
+            except (OSError, http.client.HTTPException) as error:
+                attempt["receipt_lookup"] = type(error).__name__
                 return None
+            attempt["receipt_lookup"] = status
             if status == 200:
                 break
             if status != 404:
