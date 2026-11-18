@@ -114,8 +114,8 @@ def two_workspaces_and_disconnect(client):
     final = "left tool completed once"
     tool_id = "native-gated-command"
     with client.terminal(workspace) as left:
-        with client.terminal(other) as right:
-            left.expect("New session", state="Ready")
+        left.expect("New session", state="Ready")
+        with client.full_footer(), client.terminal(other) as right:
             right.expect("New session", state="Ready")
             original = client.connection()
             status = client.status(original)
@@ -159,6 +159,10 @@ def two_workspaces_and_disconnect(client):
             print(status.strip())
             assert (other / "right-marker.txt").read_text(encoding="utf-8") == "right workspace\n"
             assert not (workspace / "right-marker.txt").exists(), "Work crossed the terminal workspace boundary"
+            right.submit("Summarize the result")
+            client.provider.next("Summarize the result").text("Summary confirmed.")
+            turns = right.expect("Summary confirmed.", state="Turn 2")["screen"]
+            assert "Turn 1" in turns and "Turn 2" in turns, turns
             right.exit_cleanly()
         client.assert_current_service(original)
         assert client.session(other)
@@ -186,6 +190,9 @@ def two_workspaces_and_disconnect(client):
         screen = reopened.expect(final)["screen"]
         assert screen.count(final) == 1, "Restored terminal must show one durable response"
         assert screen.count("run_command") == 1, "Restored terminal must show one tool result"
+        compact = reopened.expect("TPS")["screen"].splitlines()[-1]
+        assert "main" in compact and "Context" in compact and "Cache hit" not in compact, compact
+        assert not re.search(r"\d(?:[.\d]*[KMB])? (?:in|out)\b", compact), compact
         details = reopened.expect("Saved output")["screen"]
         assert "--gated-tool" in details
         reopened.press("\x0f")
@@ -199,6 +206,27 @@ def two_workspaces_and_disconnect(client):
     print("Two native workspaces shared a service. The terminal distinguished a draft, model wait, and running tool.")
     print("Busy restart was deferred. The resumed terminal showed saved tool details and toggled their preview.")
     return workspace, session, prompt
+
+
+def fast_markdown_stream(client):
+    workspace = client.workspace("work-fast-stream")
+    prompt = "Render the streaming report"
+    first = "## Progress\n\n" + "".join(f"Row {i:04d}: 一项完成。\n" for i in range(160))
+    last = "\n\nFinal marker"
+    draft = "draft kept during burst"
+    with client.terminal(workspace) as terminal:
+        terminal.expect("New session", state="Ready")
+        terminal.submit(prompt)
+        with client.provider.next(prompt).streaming_text(first, last, chunk_size=2):
+            terminal.expect("Row 0159", state="Streaming")
+            terminal.type(draft)
+        terminal.expect("Final marker", state="Finished")
+        assert draft in terminal.request("screen")["screen"]
+        snapshot = client.snapshot(workspace, client.session(workspace))
+        assert snapshot["last_output"].strip() == (first + last).strip()
+        terminal.press("\x03")
+        terminal.exit_cleanly()
+    print(f"Fast stream retained {len(first + last)} characters and the editable draft.")
 
 
 def preserve_draft_after_interrupt(client):
@@ -438,6 +466,127 @@ def lost_first_receipt(client):
     print("Relaunched client recovered its lost first receipt and ran the tool just once")
 
 
+def delegated_agent_cards(client):
+    workspace = client.workspace("work-agent-cards")
+    prompt = "Ask the reviewer to check the sample totals"
+    instructions = "Review the selected material independently."
+    task = "Check only the forwarded sample"
+    initial = "Reviewer is checking the sample"
+    conclusion = "Reviewer confirmed the totals"
+    reply = f"{initial}\n\n{conclusion}"
+    parent_reply = "Parent finished and left the review running"
+    card = "Agent reviewer · Input delivered"
+    screens = []
+    live_failure = None
+
+    def click_card(terminal, screen):
+        row, column = next((row, line.index(card) + 1)
+                           for row, line in enumerate(screen.splitlines(), 1) if card in line)
+        terminal.press(f"\x1b[<0;{column};{row}M\x1b[<0;{column};{row}m")
+
+    with client.terminal(workspace) as terminal:
+        terminal.expect("New session", state="Ready")
+        terminal.request("resize", rows=32, cols=140)
+        terminal.submit(prompt)
+        client.provider.next(prompt).tool(
+            "create_agent", "create-reviewer", address="reviewer", tier="balanced",
+            instructions=instructions,
+        )
+        client.provider.next("create-reviewer").tool(
+            "send_message", "send-reviewer", to="reviewer", message=task,
+        )
+        first, second = client.provider.next(), client.provider.next()
+        if "send-reviewer" in json.dumps(first.request["messages"]):
+            parent, child = first, second
+        else:
+            parent, child = second, first
+        parent.expect("send-reviewer")
+        child.expect(task)
+        child_input = json.dumps(child.request["messages"])
+        assert prompt not in child_input and "send-reviewer" not in child_input, (
+            "The reviewer must receive the delegated input in its own context"
+        )
+        session = client.session(workspace)
+
+        def reviewer_snapshot():
+            params = urlencode({"workspace": workspace, "agent": "reviewer"})
+            return client.request("GET", f"/sessions/{session}/snapshot?{params}").as_json()["agent"]
+
+        with child.streaming_text(initial, f"\n\n{conclusion}"):
+            parent.text(parent_reply)
+            try:
+                eventually("parent to settle while reviewer is streaming", lambda: (
+                    (parent_state := client.snapshot(workspace, session))["status"] == "idle"
+                    and parent_state["last_output"] == parent_reply
+                    and reviewer_snapshot()["status"] == "running"
+                ))
+                terminal.expect(f"{card} · Agent now Streaming reply")
+                terminal.press("\x0f")
+                expanded = terminal.expect("Live Agent reply")["screen"]
+                assert "Requested instructions" in expanded and "Requested task" in expanded and task in expanded, expanded
+                assert initial in expanded and conclusion not in expanded, expanded
+                screens.append(("Expanded streaming Agent card", expanded))
+
+                def collapsed_card():
+                    screen = terminal.request("screen")["screen"]
+                    return screen if card in screen and initial in screen and "Requested task" not in screen else None
+
+                click_card(terminal, expanded)
+                collapsed = eventually("mouse to collapse the Agent reply", collapsed_card)
+                assert "Requested instructions" in collapsed and "Live Agent reply" not in collapsed, collapsed
+                screens.append(("Collapsed streaming Agent card", collapsed))
+                click_card(terminal, collapsed)
+                terminal.expect("Live Agent reply")
+                terminal.press("\x0f")
+                globally_collapsed = eventually("Ctrl+O to collapse Agent details", collapsed_card)
+                assert "Requested instructions" not in globally_collapsed, globally_collapsed
+            except AssertionError as error:
+                live_failure = error
+
+        eventually("reviewer to settle independently", lambda: (
+            (reviewer := reviewer_snapshot())["status"] == "idle" and reviewer["last_output"] == reply
+        ))
+        terminal.expect(f"{card} · Agent now Finished")
+        terminal.exit_cleanly()
+
+    with client.terminal(workspace) as reopened:
+        reopened.request("resize", rows=32, cols=140)
+        reopened.resume(prompt)
+        reopened.expect(f"{card} · Agent now Finished")
+        reopened.press("\x10")
+        reopened.expect("Actions and Skills")
+        reopened.press("\x1b")
+        reopened.press("/details\r")
+        reopened.expect("Agent details")
+        reopened.press("reviewer")
+
+        def details_menu():
+            screen = reopened.request("screen")["screen"]
+            menu = "\n".join(line.partition("│")[2].rpartition("│")[0]
+                             for line in screen.splitlines())
+            if menu.count("reviewer") >= 3 and task in menu and instructions in menu:
+                return screen, menu
+            return None
+
+        choices, menu = eventually("search to show both reviewer cards", details_menu)
+        assert menu.index(task) < menu.index(instructions), menu
+        screens.append(("Searching the two reviewer cards", choices))
+        reopened.press("\x1b[B\r")
+        focused = reopened.expect("Requested instructions")["screen"]
+        assert "Agent reviewer · Created" in focused and "Requested task" not in focused, focused
+        screens.append(("Earlier Agent card opened from the details menu", focused))
+        click_card(reopened, focused)
+        restored = reopened.expect("Latest Agent reply")["screen"]
+        assert conclusion in restored and "Live Agent reply" not in restored, restored
+        screens.append(("Restored completed Agent card", restored))
+        reopened.exit_cleanly()
+    client.provider.assert_idle()
+    for caption, screen in screens:
+        print(f"{caption}\n{screen.rstrip()}")
+    if live_failure is not None:
+        raise live_failure
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", required=True, type=Path)
@@ -450,12 +599,14 @@ def main():
         if options.upgrade:
             installed_upgrade(client, *options.upgrade)
         workspace, session, title = two_workspaces_and_disconnect(client)
+        fast_markdown_stream(client)
         preserve_draft_after_interrupt(client)
         editable_multiline_paste(client)
         wait_restart_and_recover_crash(client, workspace, session, title)
         remote_authorization_and_script_json(client, client.workspace("work-script"))
         recover_from_provider_failure(client)
         lost_first_receipt(client)
+        delegated_agent_cards(client)
         if options.browser:
             from interactive_browser import browser_handoff
             browser_handoff(client)

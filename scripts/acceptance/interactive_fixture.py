@@ -121,7 +121,7 @@ class ProviderCall:
         )
         return self
 
-    def reply(self, content, usage=None, release=None):
+    def reply(self, content, usage=None, release=None, chunk_size=None):
         has_tool = any(block["type"] == "tool_use" for block in content)
         message = {
             "id": self.id, "type": "message", "role": "assistant", "content": content,
@@ -134,17 +134,31 @@ class ProviderCall:
         result = subprocess.run([self.bridge, "--anthropic-response"],
                                 input=json.dumps(message).encode("utf-8"),
                                 capture_output=True, timeout=TIMEOUT, check=True)
+        stream = result.stdout
+        if chunk_size:
+            records = []
+            for record in stream.split(b"\n\n"):
+                if record.startswith(b"event: content_block_delta\n"):
+                    _, data = record.split(b"\ndata: ", 1)
+                    event = json.loads(data)
+                    text = event["delta"]["text"]
+                    for offset in range(0, len(text), chunk_size):
+                        event["delta"]["text"] = text[offset:offset + chunk_size]
+                        records.append(b"event: content_block_delta\ndata: " + json.dumps(event).encode())
+                else:
+                    records.append(record)
+            stream = b"\n\n".join(records)
         pause_at = None
         if release is not None:
             marker = b"event: content_block_start"
-            offset = result.stdout.index(marker, result.stdout.index(marker) + len(marker))
+            offset = stream.index(marker, stream.index(marker) + len(marker))
             pause_at = (offset, release)
-        self.response.put_nowait(Response(200, result.stdout, "text/event-stream", pause_at))
+        self.response.put_nowait(Response(200, stream, "text/event-stream", pause_at))
 
     @contextlib.contextmanager
-    def streaming_text(self, first, last, *, usage=None):
+    def streaming_text(self, first, last, *, usage=None, chunk_size=None):
         release = threading.Event()
-        self.reply([{"type": "text", "text": first}, {"type": "text", "text": last}], usage, release)
+        self.reply([{"type": "text", "text": first}, {"type": "text", "text": last}], usage, release, chunk_size)
         try:
             yield
         finally:
@@ -187,11 +201,12 @@ class Provider:
         except queue.Empty:
             return json_response({}, 503)
 
-    def next(self, expected):
+    def next(self, expected=None):
         try:
-            return self.calls.get(timeout=TIMEOUT).expect(expected)
+            call = self.calls.get(timeout=TIMEOUT)
         except queue.Empty as error:
             raise AssertionError(f"No provider call for {expected!r}") from error
+        return call if expected is None else call.expect(expected)
 
     def assert_idle(self, duration=0):
         try:
@@ -330,6 +345,18 @@ class InstalledClient:
             self.stop()
         finally:
             self.fixture.close()
+
+    @contextlib.contextmanager
+    def full_footer(self):
+        path = self.home / "tui.toml"
+        fields = ["connection", "execution", "agent", "workspace", "model", "context",
+                  "tokens_in", "tokens_out", "cache", "tps"]
+        assert not path.exists()
+        path.write_text("[statusline]\nfields = " + json.dumps(fields) + "\n", encoding="utf-8")
+        try:
+            yield
+        finally:
+            path.unlink()
 
     def workspace(self, name):
         workspace = self.directory / name

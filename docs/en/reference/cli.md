@@ -49,7 +49,7 @@ Put options before the prompt in `kuku run`, because it consumes the remaining w
 | Alt+Enter | Queue the draft for the next Turn. |
 | Shift+Enter or Ctrl+J | Insert a newline in the draft. |
 | Esc | Close the focused menu, or interrupt the selected execution and keep the draft. |
-| `/` in an empty composer, or F1 | Search available actions and Skills. Choosing a Skill inserts an editable `/skill:NAME` prefix for the next send. |
+| Ctrl+P, F1, or `/` in an empty composer | Search available actions and Skills. Choosing a Skill inserts an editable `/skill:NAME` prefix for the next send. |
 | `@` or Tab | Complete workspace-relative paths as draft text. |
 | `/new`, `/resume` | Open a blank draft or find a retained Session. |
 | `/agents` | Choose a recipient or create another Agent in the Session. |
@@ -58,10 +58,10 @@ Put options before the prompt in `kuku run`, because it consumes the remaining w
 | `/pending` | Check, retry or discard an unconfirmed submission. |
 | `/model`, `/thinking` | Select model or reasoning settings for the selected Agent. |
 | Ctrl+O, `/tools`, `/copy` | Tool details start expanded with a bounded preview. Toggle them with Ctrl+O, choose a saved result with `/tools`, or use `/copy` to copy the assistant’s reply. |
-| F3 or click an Agent card | Expand or collapse its task and reply preview. F3 acts on the focused card, initially the last visible one. Shift+F3 cycles through visible cards. |
+| Ctrl+O, `/details`, or click an Agent card | Toggle execution previews together with Ctrl+O. Search visible Agent cards by name or task in `/details` and press Enter to toggle the selected card. Clicking a card toggles it directly. |
 | Left-button drag | Highlight visible text and copy the selected range to the clipboard on release. |
 | Page Up, Page Down, Ctrl+End | Scroll the transcript or return to the latest output. |
-| Ctrl+P, Ctrl+N | Recall the previous or next sent prompt into the editor. |
+| ↑, ↓ in the editor | Move within a multiline draft. At the first or last visual line, browse sent prompts and return to the draft. |
 | `/server`, `/reconnect`, `/restart` | Inspect the connected service, reconnect, or restart the managed local service. |
 | Arrow keys, Tab, Enter in a menu | Move the highlight, complete editable text, or activate the selected action, respectively. |
 | `/web`, `/quit` | Open the conversation in the browser or leave the terminal client. |
