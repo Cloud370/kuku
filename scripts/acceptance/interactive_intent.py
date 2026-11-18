@@ -10,10 +10,9 @@ import re
 import secrets
 import shutil
 import sys
-import tempfile
 from urllib.parse import urlencode
 
-from interactive_fixture import EXE, InstalledClient, eventually, install, serve
+from interactive_fixture import EXE, InstalledClient, eventually, install, scratch_directory, serve
 from paid_model import RequestBoundary, RunLimits, paid_budget, route_for
 from run import ROOT, config_record, load_secrets, now, redact, write_json
 
@@ -370,8 +369,8 @@ def main():
               **route.evidence(limits), "ledger": str(budget.path), "requests": boundary.attempts,
               "transport_rejections": boundary.rejections, "cases": []}
     try:
-        with tempfile.TemporaryDirectory(prefix="kuku-live-intent-", dir=args.scratch_base) as directory, serve(boundary.handler()) as endpoint:
-            scratch = Path(directory)
+        with (scratch_directory(args.scratch_base, report, prefix="kuku-live-intent-") as scratch,
+              serve(boundary.handler()) as endpoint):
             executable = scratch / "data" / "bin" / ("kuku" + EXE)
             client = InstalledClient(executable, args.bridge.resolve(), scratch)
             client.env.update(KUKU_INTENT_FIXTURE_TOKEN=loopback_key,

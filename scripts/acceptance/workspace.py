@@ -12,7 +12,7 @@ import tempfile
 from urllib.parse import urlencode, urlsplit
 
 from evidence import comparison_path, inspect_sdk
-from interactive_fixture import CONFIG, EXE, InstalledClient, Provider, http_fixture, serve
+from interactive_fixture import CONFIG, EXE, InstalledClient, Provider, http_fixture, scratch_directory, serve
 from interactive_intent import history, sanitize_report, save_screen, submit, wait_for_turn
 from paid_model import REQUIRED_WORKSPACE_TOOLS, RequestBoundary, RunLimits, paid_budget, route_for
 from run import (ROOT, capture, command_environment, config_record, extract_release_binary, load_secrets, now,
@@ -617,35 +617,6 @@ def verify_handoff(turn, sdk, entries, seed, workspace, evidence):
     return checks
 
 
-def cleanup_path(path):
-    if os.name != "nt":
-        return path
-    absolute = str(path)
-    if absolute.startswith("\\\\?\\"):
-        return absolute
-    if absolute.startswith("\\\\"):
-        return "\\\\?\\UNC\\" + absolute[2:]
-    return "\\\\?\\" + absolute
-
-
-@contextlib.contextmanager
-def workspace_scratch(base, report):
-    scratch = Path(tempfile.mkdtemp(prefix="kuku-workspace-", dir=base))
-    failed = False
-    try:
-        yield scratch
-    except BaseException:
-        failed = True
-        raise
-    finally:
-        try:
-            shutil.rmtree(cleanup_path(scratch))
-        except OSError as error:
-            report["scratch_cleanup_error"] = f"{error.__class__.__name__}: {error}"
-            if not failed:
-                raise
-
-
 def run_workspace(args, directory, record):
     if args.handoff_only and not args.sdk:
         raise ValueError("--handoff-only requires --sdk")
@@ -677,7 +648,7 @@ def run_workspace(args, directory, record):
     evidence.mkdir()
     try:
         with contextlib.ExitStack() as stack:
-            scratch = stack.enter_context(workspace_scratch(base, report))
+            scratch = stack.enter_context(scratch_directory(base, report, prefix="kuku-workspace-"))
             (scratch / "bin").mkdir()
             workspace = scratch / "workspace 中文"
             workspace.mkdir()
@@ -691,7 +662,7 @@ def run_workspace(args, directory, record):
                 run_sdk(args, scratch, workspace, config, environment, provider, evidence, report, budget)
             else:
                 run_native(args, scratch, workspace, config, environment, provider, evidence, report, bridge, masked, budget)
-            report["passed"] = True
+        report["passed"] = True
     except Exception as error:
         report["error"] = type(error).__name__ + ": " + redact(str(error), masked)[:2400]
     finally:

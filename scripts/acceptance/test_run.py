@@ -3,7 +3,7 @@ import importlib.util
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import sys
 import tempfile
 import time
@@ -123,14 +123,35 @@ class AcceptanceTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 paid_budget(ledger, "openrouter")
 
-    def test_workspace_cleanup_keeps_the_execution_error(self):
-        from workspace import workspace_scratch
+    def test_scratch_cleanup_uses_extended_windows_paths(self):
+        from interactive_fixture import cleanup_path
+
+        for path, expected in (
+            (r"W:\accept\long\leaf", r"\\?\W:\accept\long\leaf"),
+            (r"\\host\share\accept\long\leaf", r"\\?\UNC\host\share\accept\long\leaf"),
+            (r"\\?\W:\accept\long\leaf", r"\\?\W:\accept\long\leaf"),
+        ):
+            self.assertEqual(cleanup_path(PureWindowsPath(path)), expected)
+
+    def test_scratch_cleanup_preserves_the_execution_error(self):
+        from interactive_fixture import scratch_directory
 
         report = {}
-        with mock.patch("workspace.shutil.rmtree", side_effect=OSError("cleanup failed")):
+        with mock.patch("interactive_fixture.shutil.rmtree", side_effect=OSError("cleanup failed")):
             with self.assertRaisesRegex(ValueError, "execution failed"):
-                with workspace_scratch(self.directory, report):
+                with scratch_directory(self.directory, report, prefix="fixture-") as scratch:
                     raise ValueError("execution failed")
+        self.assertIn("cleanup failed", report["scratch_cleanup_error"])
+        self.assertEqual(report["scratch_path"], str(scratch))
+
+    def test_scratch_cleanup_error_fails_a_completed_fixture(self):
+        from interactive_fixture import scratch_directory
+
+        report = {}
+        with mock.patch("interactive_fixture.shutil.rmtree", side_effect=OSError("cleanup failed")):
+            with self.assertRaisesRegex(OSError, "cleanup failed"):
+                with scratch_directory(self.directory, report, prefix="fixture-"):
+                    pass
         self.assertIn("cleanup failed", report["scratch_cleanup_error"])
 
     def test_workspace_restore_verifies_successful_script_reads_against_saved_reference(self):

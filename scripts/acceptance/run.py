@@ -698,7 +698,7 @@ def run_desktop(args, binary, bridge, scratch, directory, record, checked):
 
 
 def run_interactive(args, directory, record):
-    from interactive_fixture import EXE
+    from interactive_fixture import EXE, scratch_directory
 
     record["desktop"] = args.desktop
     if args.windows_terminal and (not args.desktop or os.name != "nt"):
@@ -738,8 +738,7 @@ def run_interactive(args, directory, record):
                             "--no-run", "--message-format=json"], "native-pty-build")
         return pty_artifact(compiled["log"])
 
-    with tempfile.TemporaryDirectory(prefix="kuku-interactive-", dir=scratch) as temporary:
-        scratch_dir = Path(temporary)
+    with scratch_directory(scratch, record, prefix="kuku-interactive-") as scratch_dir:
         if args.live or args.intent:
             from interactive_intent import run_selected_live
 
@@ -967,7 +966,7 @@ def main():
                                                       require_streaming=args.require_streaming)
                 record["passed"] = record["passed"] and record["sdk_evidence"]["passed"]
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, tarfile.TarError, zipfile.BadZipFile) as error:
-        record["error"] = redact(str(error), secrets.values())
+        record.update(passed=False, error=redact(str(error), secrets.values()))
         record.setdefault("failure_kind", "infrastructure")
     finally:
         if reserved:
