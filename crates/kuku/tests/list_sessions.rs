@@ -56,6 +56,7 @@ fn finds_sessions_in_workspace() {
         &session_events("s_test1", "2026-05-01T00:00:00Z", "hello world"),
     );
 
+    let _writer = EventStore::open(sessions_dir.join("s_test1").join("events.jsonl")).unwrap();
     let sessions = list_sessions(home, Some(&workspace)).unwrap();
     assert_eq!(sessions.len(), 1);
     assert_eq!(sessions[0].session_id, "s_test1");
