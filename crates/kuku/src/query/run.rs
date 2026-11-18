@@ -722,7 +722,7 @@ impl Run {
                 )));
             }
         };
-        let result = crate::tool::ToolResultEnvelope::cancelled("permission request cancelled");
+        let result = super::workspace_script::cancelled_permission(waiting)?;
         let mut store = EventStore::open(&waiting.pending.events_path)?;
         store.append(EventPayload::ToolResult {
             turn: waiting.pending.turn,

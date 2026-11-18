@@ -271,6 +271,51 @@ await workspace.write_file({path:"after-approval",content:"should not run"});
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelling_a_reopened_script_approval_retains_completed_actions() {
+    let work = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    std::fs::write(work.path().join("approval.txt"), "before").unwrap();
+    let mut options = options(
+        &work,
+        &data,
+        r#"
+await workspace.write_file({path:"prefix",content:"done"});
+await workspace.read_file({path:"approval.txt"});
+await workspace.edit_file({path:"approval.txt",old_text:"before",new_text:"changed"});
+"#,
+    );
+    options.session_id = Some("cancelapproval".into());
+    let session = start(options.clone()).await;
+    until(|| session.agent("main").unwrap().permission).await;
+    session.close().await.unwrap();
+    let reopened = Session::open(options).await.unwrap();
+    reopened.cancel("main").await.unwrap();
+    let facts = until(|| script_facts(&reopened)).await;
+    assert_eq!(
+        std::fs::read_to_string(work.path().join("approval.txt")).unwrap(),
+        "before"
+    );
+    assert_eq!(
+        std::fs::read_to_string(work.path().join("prefix")).unwrap(),
+        "done"
+    );
+    let statuses: Vec<_> = facts
+        .actions
+        .iter()
+        .map(|action| (action.tool.name(), action.status))
+        .collect();
+    assert_eq!(
+        statuses,
+        [
+            ("write_file", WorkspaceScriptActionStatus::Ok),
+            ("read_file", WorkspaceScriptActionStatus::Ok),
+            ("edit_file", WorkspaceScriptActionStatus::Cancelled)
+        ]
+    );
+    reopened.close().await.unwrap();
+}
+
 #[derive(Debug)]
 struct SteerGate {
     reached: std::sync::atomic::AtomicBool,

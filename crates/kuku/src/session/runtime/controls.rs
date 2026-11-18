@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::event::{EventPayload, EventStore};
 use crate::{Error, Result};
@@ -181,6 +181,7 @@ impl Session {
         let mut cursor = turn;
         let mut open = BTreeSet::new();
         let mut dispatched = BTreeSet::new();
+        let mut suspended = BTreeMap::new();
         let mut started = false;
         let mut terminal = false;
         let mut stop_event_id = None;
@@ -214,6 +215,7 @@ impl Session {
                         && conversation.as_deref().is_none_or(|agent| agent == address) =>
                     {
                         open.remove(&tool_call_id);
+                        suspended.remove(&tool_call_id);
                     }
                     EventPayload::Unknown(value)
                         if value["kind"] == "runtime.tool_dispatched"
@@ -221,7 +223,18 @@ impl Session {
                             && value["agent"] == address =>
                     {
                         if let Some(id) = value["tool_call_id"].as_str() {
+                            suspended.remove(id);
                             dispatched.insert(id.to_owned());
+                        }
+                    }
+                    EventPayload::Unknown(mut value)
+                        if value["kind"] == "workspace.deferred"
+                            && value["turn"] == turn
+                            && value["agent"] == address =>
+                    {
+                        if let Some(id) = value["tool_call_id"].as_str().map(str::to_owned) {
+                            dispatched.remove(&id);
+                            suspended.insert(id, value["continuation"].take());
                         }
                     }
                     EventPayload::TurnStarted {
@@ -250,7 +263,13 @@ impl Session {
         }
         let mut writer = EventStore::open(self.events_path())?;
         for id in open.difference(&dispatched) {
-            writer.append(cancelled_tool_result(address, turn, id)?)?;
+            let result = match suspended.remove(id) {
+                Some(continuation) => crate::query::cancelled_deferred_script(continuation)?,
+                None => crate::tool::ToolResultEnvelope::cancelled(
+                    "pending action cancelled before dispatch",
+                ),
+            };
+            writer.append(cancelled_tool_result(address, turn, id, result)?)?;
         }
         if let Some(id) = open.intersection(&dispatched).next() {
             return Err(Error::InterruptedOpenTool(format!("agent '{address}' tool call '{id}' from turn {turn} has no confirmed result after cancellation")));
@@ -398,9 +417,12 @@ impl Session {
     }
 }
 
-fn cancelled_tool_result(address: &str, turn: u64, id: &str) -> Result<EventPayload> {
-    let result =
-        crate::tool::ToolResultEnvelope::cancelled("pending action cancelled before dispatch");
+fn cancelled_tool_result(
+    address: &str,
+    turn: u64,
+    id: &str,
+    result: crate::tool::ToolResultEnvelope,
+) -> Result<EventPayload> {
     Ok(EventPayload::ToolResult {
         turn,
         ts: timestamp()?,

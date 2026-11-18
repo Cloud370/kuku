@@ -18,6 +18,7 @@ mod types;
 mod workspace_script;
 
 pub(crate) use runtime_tools::definitions as runtime_tool_definitions;
+pub(crate) use workspace_script::cancelled_deferred_script;
 
 pub use types::{
     ModelPhase, ModelRecoveryInfo, PermissionChoice, PermissionRequest, Query, Run, RunOutput,

@@ -148,6 +148,12 @@ impl Continuation {
         ))
     }
 
+    pub(super) fn cancel(self) -> ToolResultEnvelope {
+        self.complete(ToolResultEnvelope::cancelled(
+            "prepared action cancelled before dispatch",
+        ))
+    }
+
     pub(super) async fn resume(
         self,
         host: &WorkspaceHost,

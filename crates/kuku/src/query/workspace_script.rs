@@ -486,3 +486,20 @@ pub(super) fn changed_file_target(
 pub(super) fn declined(pending: &PendingRun, id: &str) -> Result<Option<ToolResultEnvelope>> {
     Ok(deferred::load(pending, id)?.map(deferred::Continuation::decline))
 }
+
+pub(crate) fn cancelled_deferred_script(continuation: Value) -> Result<ToolResultEnvelope> {
+    Ok(serde_json::from_value::<deferred::Continuation>(continuation)?.cancel())
+}
+
+pub(super) fn cancelled_permission(
+    waiting: &super::types::PendingPermission,
+) -> Result<ToolResultEnvelope> {
+    if waiting.request.source == "workspace_script" {
+        if let Some(action) = deferred::load(&waiting.pending, &waiting.request.tool_call_id)? {
+            return Ok(action.cancel());
+        }
+    }
+    Ok(ToolResultEnvelope::cancelled(
+        "permission request cancelled",
+    ))
+}
