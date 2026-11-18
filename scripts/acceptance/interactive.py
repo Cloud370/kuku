@@ -11,7 +11,8 @@ import sys
 from urllib.parse import urlencode, urlsplit
 
 from interactive_fixture import (
-    InstalledClient, TOOL_OUTPUT, eventually, http_fixture, install, json_response, local_request,
+    DenseTranscript, InstalledClient, TOOL_OUTPUT, eventually, http_fixture, install, json_response,
+    local_request,
 )
 
 
@@ -513,6 +514,22 @@ def delegated_agent_cards(client):
             params = urlencode({"workspace": workspace, "agent": "reviewer"})
             return client.request("GET", f"/sessions/{session}/snapshot?{params}").as_json()["agent"]
 
+        terminal.type("parent draft to keep")
+        terminal.press("\x1b[1;3B")
+        terminal.expect("reviewer")
+        terminal.press("reviewer\r")
+        terminal.expect("To reviewer")
+        terminal.type("reviewer draft to keep")
+        terminal.press("\x1b[1;3A")
+        original_draft = terminal.expect("parent draft to keep", state="To main")["screen"]
+        assert "reviewer draft to keep" not in original_draft
+        terminal.press("\x1b[1;3A")
+        terminal.expect("reviewer draft to keep", state="To reviewer")
+        terminal.press("\x1b[1;3A")
+        terminal.expect("parent draft to keep", state="To main")
+        terminal.press("\x03")
+        client.provider.assert_idle()
+
         with child.streaming_text(initial, f"\n\n{conclusion}"):
             parent.text(parent_reply)
             try:
@@ -563,9 +580,12 @@ def delegated_agent_cards(client):
 
         def details_menu():
             screen = reopened.request("screen")["screen"]
-            menu = "\n".join(line.partition("│")[2].rpartition("│")[0]
-                             for line in screen.splitlines())
-            if menu.count("reviewer") >= 3 and task in menu and instructions in menu:
+            rows = screen.splitlines()
+            selected = next((i for i, row in enumerate(rows) if "› Agent reviewer" in row), None)
+            if selected is None:
+                return None
+            menu = "\n".join(rows[selected:selected + 4])
+            if menu.count("reviewer") >= 2 and task in menu and instructions in menu:
                 return screen, menu
             return None
 
@@ -586,6 +606,45 @@ def delegated_agent_cards(client):
         print(f"{caption}\n{screen.rstrip()}")
     if live_failure is not None:
         raise live_failure
+
+
+def dense_transcript(client, reference=False):
+    workspace = client.workspace("dense-transcript")
+    scenario = DenseTranscript(client, workspace)
+    screens = []
+    with client.terminal(workspace) as terminal:
+        terminal.expect("New session", state="Ready")
+        terminal.request("resize", rows=32, cols=140)
+        terminal.submit(scenario.prompt)
+        with scenario.running_tool():
+            terminal.expect("Running tools")
+            terminal.type(scenario.draft)
+            wide = terminal.expect(scenario.missing)["screen"]
+            screens.append(("Dense tool turn with a running command and local draft", wide))
+            if not reference:
+                terminal.expect(scenario.read_group)
+            terminal.request("resize", rows=26, cols=74)
+            narrow = terminal.expect(scenario.missing, state="Running tools")["screen"]
+            assert scenario.draft in narrow, narrow
+            screens.append(("Narrow tool turn with the same draft", narrow))
+            terminal.request("resize", rows=32, cols=140)
+        with scenario.streaming_reply():
+            wide = terminal.expect(scenario.source, state="Streaming")["screen"]
+            assert scenario.heading in wide and scenario.draft in wide and scenario.end not in wide, wide
+            screens.append(("Wide Chinese report while the Rust fence is open", wide))
+            terminal.request("resize", rows=26, cols=74)
+            narrow = terminal.expect(scenario.source, state="Streaming")["screen"]
+            assert scenario.draft in narrow and scenario.end not in narrow, narrow
+            screens.append(("Narrow Chinese report while the Rust fence is open", narrow))
+        complete = terminal.expect(scenario.end, state="Finished")["screen"]
+        assert scenario.draft in complete and "验证项目" in complete and "十二项通过" in complete, complete
+        screens.append(("Complete report and unchanged draft", complete))
+        verification = scenario.verify()
+        terminal.press("\x03")
+        terminal.exit_cleanly()
+    for label, screen in screens:
+        print(label + "\n" + "\n".join(line.rstrip() for line in screen.splitlines()).rstrip())
+    print("Dense transcript: " + json.dumps(verification, ensure_ascii=False))
 
 
 def main():
@@ -609,6 +668,7 @@ def main():
         recover_from_provider_failure(client)
         lost_first_receipt(client)
         delegated_agent_cards(client)
+        dense_transcript(client)
         if options.browser:
             from interactive_browser import browser_handoff
             browser_handoff(client)
