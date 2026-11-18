@@ -60,6 +60,7 @@
 | `reply_question` | `request_id`、`text` | 回答精确的待决问题。 |
 | `reply_permission` | `request_id`、`allow` | 决定精确的待决授权。 |
 | `withdraw` | `input_command_id` | 撤回排队输入或返回其当前状态。 |
+| `replace_queued` | `input_command_id`、`text` | 在接纳前替换文本，保留队列位置和投递时机。 |
 | `advance` | | 显式继续 Agent 的工作。 |
 | `cancel` | `execution_id` | 取消观察到的那次执行并等待清理。 |
 
@@ -69,29 +70,35 @@
 
 通过 `send` 的 `bootstrap_skill` 为该条输入指定 Skill，在接纳时应用。
 
+`replace_queued` 在同一次提交中记录新回执，并将原输入标为已撤回。若原输入已经接纳或因其他原因离开队列，命令返回 `409` 和 `input_not_queued`。
+
 如果没有收到响应，带上 `workspace` 查询回执接口。缺失的回执返回 HTTP `404` 和 `receipt_not_found`。要重发时，保持原 Session、Agent、命令标识和请求内容。重放已提交命令会返回原回执。以相同的命令标识提交冲突内容会返回 HTTP `409`。`?replay_only=true` 用于校验重放请求，命令尚未提交时返回 `receipt_not_found`。
 
 客户端错误返回 `{"ok":false,"code":"...","message":"..."}`。无效请求返回 `400`，不存在的资源返回 `404`，冲突操作返回 `409`，执行名额耗尽返回 `429`。过期的执行标识或不匹配的回复会触发冲突。投递结果不确定时，保留原命令标识用于重试。
 
 ## 快照、历史与观察
 
-1. 请求 `/snapshot?workspace=...&agent=...`。JSON 响应包含 `session_id`、`workspace`、已提交 `cursor`、所选 `agent` 快照、`agents` 摘要、`pending` 输入和模型 `selection`。模型设置解析失败时返回 `selection_error`。Agent 状态包含相应的执行标识以及待决问题或授权。每个待接纳条目都含有 `receipt` 和 `input`。Agent 不存在时返回 `404` 和 `agent_not_found`。`/agents?workspace=...` 可直接取得所有 Agent 摘要及游标。 连接正在执行的 Agent 时可以加上 `progress=true`。如果最近的持久事件足以确定阶段，`progress.phase` 为 `waiting_for_model` 或 `running_tools`；后者还包含 `tool_call_ids`。这些信息对应同一快照游标。
+1. 请求 `/snapshot?workspace=...&agent=...`。JSON 响应包含 `session_id`、`workspace`、已提交 `cursor`、所选 `agent` 快照、`agents` 摘要、`pending` 输入和模型 `selection`。模型设置解析失败时返回 `selection_error`。Agent 状态包含相应的执行标识以及待决问题或授权。每个待接纳条目都含有 `receipt` 和 `input`。Agent 不存在时返回 `404` 和 `agent_not_found`。`/agents?workspace=...` 可直接取得所有 Agent 摘要及游标。加上 `progress=true` 可请求快照游标处已观察到的执行阶段。`progress.phase` 可以是 `waiting_for_model`、`thinking`、`streaming`、`tool_arguments` 或 `running_tools`。`running_tools` 会带有 `tool_call_ids`。
 2. 请求 `/history?workspace=...&agent=...&before=CURSOR_PLUS_ONE&limit=...`，取得截至该快照、按升序排列的最新一页。用返回的 `next_before` 读取上一页。`before` 为排他游标。
 3. 连接 `/observe?workspace=...&agent=...&after=CURSOR`，接收包含快照之后提交记录的 NDJSON。省略 `agent` 可以观察整个 Session。从已提交的条目更新续读游标。断开或落后时，从最后的已提交游标重连。对所选 Agent 设置 `include_agent_activity=true`，同一订阅即可收到其他 Agent 的活动。其增量文本及结算预览有长度上限，工具输出仅在切换到对应 Agent 后提供。重连后，Agent 摘要提供最近的输出或错误预览。
 
-所选 Agent 的 `agent.usage` 包含累计 token 数，以及报告输入、输出或缓存读取量的请求数。有测量时，`latest_request` 提供同一次请求的 `input_tokens`、`output_tokens`、`context_window_tokens` 和 `elapsed_us`。旧记录可能缺少可选测量字段。[终端用量字段](cli.md#终端界面)
+所选 Agent 的 `agent.usage` 包含累计 token 数，以及报告输入或输出量的请求数。`cache_measured_input_tokens` 和 `cache_measured_read_tokens` 分别汇总同一批提供有效成对计数的请求中的输入与缓存读取量。有测量时，`latest_request` 提供同一次请求的 `input_tokens`、`output_tokens`、`context_window_tokens` 和 `elapsed_us`。旧记录可能缺少可选测量字段。[终端用量字段](cli.md#终端界面)
 
 `committed` 行包含 `id` 和 `kind`，适用时还包含 Agent 地址、对话条目或状态变更标记。`live` 行包含 `agent`、`execution_id`、`turn`、`cursor` 和临时 `event`。核对它们与当前视图的标识，收到正式结果后替换临时预览。`lagged` 行包含跳过的临时观察数 `skipped`。观察流还可以发送 `heartbeat` 或 `error` 行。观察落后后仍可读取持久状态。
 
-带 `progress=true` 的快照可以包含所选 Agent 的 `reply_preview`，其中有 `execution_id`、`turn`、可选的 `turn_number`、`text` 和 `truncated`。文本是活动请求回复的 UTF-8 前缀，最多 64 KiB。`truncated` 表示回复已经超过保留前缀的上限。
+已提交帧可通过 `delivery` 将队列变化关联到命令标识。`accepted` 带有 `input_ids`，`withdrawn` 带有 `input_id`，`replaced` 带有 `input_id` 和 `replacement_id`。
 
-在同一快照游标处，`agents` 中其他正在生成回复的 Agent 条目可将 `progress.phase` 标为 `streaming`。其 `progress.preview` 包含该 Agent 当前回复开头的 UTF-8 文本，最多 512 字节。请求至今仅流出思考内容时，该字符串为空。
+带 `progress=true` 的快照可以包含所选 Agent 的 `reply_preview`，其中有 `execution_id`、`turn`、可选的 `turn_number`、`phase`、`text` 和 `truncated`。阶段为 `thinking`、`streaming` 或 `tool_arguments`。文本是活动请求的可见回复 UTF-8 前缀，最多 64 KiB。`truncated` 表示回复已经超过保留前缀的上限。
 
-指定 Agent 且设置 `include_agent_activity=true` 时，观察流也可以发送 `event.type` 为 `reply_preview` 的 `live` 行。前缀放在 `event.content`，截断标志放在 `event.truncated`。用该前缀替换对应的内存预览，再应用后续增量。取得前缀与开始接收新增量共用同一接入边界。续读游标只随已提交记录推进。
+在同一快照游标处，`agents` 中其他 Agent 的条目也可包含 `progress.phase`。`streaming` 条目的 `progress.preview` 包含该 Agent 当前回复开头的 UTF-8 文本，最多 512 字节。`thinking` 与 `tool_arguments` 仅报告活动。
+
+指定 Agent 且设置 `include_agent_activity=true` 时，观察流也可以发送 `event.type` 为 `reply_preview` 的 `live` 行。阶段放在 `event.phase`，前缀放在 `event.content`，截断标志放在 `event.truncated`。用该前缀替换对应的内存预览，再应用后续增量。取得前缀与开始接收新增量共用同一接入边界。在此订阅范围内，实时 `thinking` 与 `tool_arguments` 事件仅报告活动。工具从已提交的派发开始执行。续读游标只随已提交记录推进。
 
 历史条目包含持久的 `id`、Agent 地址、可选的 Turn 标识、在该 Agent 内的显示序号（已知时提供 `turn_number`），以及 `user`、`assistant`、`tool_call`、`tool_result`、`question`、`permission`、`question_reply`、`permission_reply`、`status` 或 `error` 等 `type`。工具结果可以包含摘要、结构化详情以及保留的 `output_id`。已提交条目也可以带有运行时 `operation` 或记录该轮结果的 `settlement`。
 
 在 `user` 条目中，`agent` 标识接收者。可信运行时输入记录了发送 Agent 时，`from` 包含该 Agent 在 Session 内的地址。开启一轮的输入也保留此字段。
+
+显式打断可以产生 `status` 为 `"interrupted"` 的 `status` 条目，包含 `execution_id`，也会提供已知的轮次标识和序号。`text` 保留最多 64 KiB 的中断回复，未保留可见正文时为 `null`。`truncated` 表示中断回复超过上限。原始日志可用 `stop_event_id` 将 `turn.cancelled` 对应到停止记录。
 
 Agent 快照和摘要可以包含 `admitted_task` 和 `queued_task`。这两个可为空的字符串分别摘录最近接纳的任务输入和仍在排队的最新任务输入，摘录长度有限。任务摘录不含问题回复。排队数量和待决事项分别读取 `pending_inputs`、`question` 和 `permission`。
 

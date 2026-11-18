@@ -143,7 +143,7 @@ The starter config file lives in `crates/kuku/assets/default-config.toml`.
 
 The terminal reads `tui.toml` at startup from the local client data directory for both managed and explicit remote connections. The directory comes from `--data-dir`, then `KUKU_HOME`, then `~/.kuku`. SDK and service execution settings use `config.toml`.
 
-Missing `tui.toml` or `fields` selects the built-in order `model,connection,execution,agent,workspace,context,tps`. The default model and connection fields show the resolved model ID and service state. Explicitly selecting `model` or `connection` allows route details or the endpoint to appear when it fits.
+Missing `tui.toml` or `fields` selects the built-in order `model,connection,agent,workspace,context,tps`. The default model and connection fields show the resolved model ID and service state. Explicitly selecting `model` or `connection` allows route details or the endpoint to appear when it fits. `execution` is an optional field.
 
 Open `/statusline` from the action menu to edit the layout in the terminal. Use ↑ and ↓ to select a field, Space to toggle it, and ← and → to move enabled fields. The footer previews your changes. Press R to preview the built-in layout, Enter to save the layout to `tui.toml`, or Esc to discard the edits. Saving the built-in layout removes `statusline.fields`.
 

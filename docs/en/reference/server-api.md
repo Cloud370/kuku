@@ -60,6 +60,7 @@ Use `create: {}` for the configured default settings. Supply initial model setti
 | `reply_question` | `request_id`, `text` | Answer the exact pending question. |
 | `reply_permission` | `request_id`, `allow` | Decide the exact pending authorization. |
 | `withdraw` | `input_command_id` | Withdraw a queued input or return its current status. |
+| `replace_queued` | `input_command_id`, `text` | Replace text before admission while preserving the queue position and timing. |
 | `advance` | | Explicitly resume an Agent. |
 | `cancel` | `execution_id` | Cancel the observed execution and await cleanup. |
 
@@ -69,29 +70,35 @@ To pair an existing Agent's new input with selection changes, send `config_patch
 
 Use `bootstrap_skill` on `send` to attach a Skill to that input at its admission boundary.
 
+`replace_queued` records a new receipt and marks the original input as withdrawn in the same commit. If the original input is already admitted or otherwise absent from the queue, the command returns `409` with `input_not_queued`.
+
 If a response is lost, query the receipt endpoint with `workspace`. A missing receipt returns `404` and `receipt_not_found`. If you resend, keep the original Session, Agent, command ID and payload. Replaying a committed command returns the original receipt. Reusing a command ID for a conflicting intent returns HTTP `409`. `?replay_only=true` validates a candidate replay and returns `receipt_not_found` if the command has yet to commit.
 
 Client errors use `{"ok":false,"code":"...","message":"..."}`. Invalid requests return `400`, absent resources `404`, conflicting operations `409`, and an exhausted execution limit `429`. A stale execution identity or mismatched reply is a conflict. Retain the original command identity when retrying an uncertain delivery.
 
 ## Snapshot, history and observation
 
-1. Request `/snapshot?workspace=...&agent=...`. The JSON response includes `session_id`, `workspace`, the committed `cursor`, a selected `agent` snapshot, an `agents` summary, `pending` inputs and the model `selection`. A selection failure appears as `selection_error`. Agent state carries the execution identity and pending question or permission where applicable. Each pending item includes its `receipt` and `input`. A missing Agent returns `404` with `agent_not_found`. `/agents?workspace=...` provides all Agent summaries and a cursor without selecting a recipient. Add `progress=true` when attaching to an active Agent to request its most recent known phase. If available, `progress.phase` is `waiting_for_model` or `running_tools`; the latter includes `tool_call_ids`. The server derives the phase from recent committed events at that snapshot cursor.
+1. Request `/snapshot?workspace=...&agent=...`. The JSON response includes `session_id`, `workspace`, the committed `cursor`, a selected `agent` snapshot, an `agents` summary, `pending` inputs and the model `selection`. A selection failure appears as `selection_error`. Agent state carries the execution identity and pending question or permission where applicable. Each pending item includes its `receipt` and `input`. A missing Agent returns `404` with `agent_not_found`. `/agents?workspace=...` provides all Agent summaries and a cursor without selecting a recipient. Add `progress=true` to request the observed phase at the snapshot cursor. `progress.phase` can be `waiting_for_model`, `thinking`, `streaming`, `tool_arguments` or `running_tools`. `running_tools` includes `tool_call_ids`.
 2. Request `/history?workspace=...&agent=...&before=CURSOR_PLUS_ONE&limit=...` for the most recent page through that snapshot, in ascending order. Use the returned `next_before` for an earlier page. `before` is exclusive.
 3. Connect to `/observe?workspace=...&agent=...&after=CURSOR` for NDJSON with commits after the snapshot. Add `include_agent_activity=true` with a selected Agent to receive sibling activity in the same subscription. Sibling text deltas and settlement previews are bounded, and sibling tool output is omitted. Agent summaries provide the last output or error preview when reconnecting. Omit `agent` to observe Session-wide. Update your resume cursor from committed records. Reconnect after the last committed cursor on disconnect or lag.
 
-The selected Agent’s `agent.usage` contains cumulative token counts and the number of requests that reported input, output or cache reads. When available, `latest_request` carries `input_tokens`, `output_tokens`, `context_window_tokens` and `elapsed_us` for one request. Optional measurements may be absent on older records. [Terminal usage fields](cli.md#terminal-interface)
+The selected Agent’s `agent.usage` contains cumulative token counts and counts of requests that reported input or output. `cache_measured_input_tokens` and `cache_measured_read_tokens` sum input and cache reads over the same requests with valid paired counts. When available, `latest_request` carries `input_tokens`, `output_tokens`, `context_window_tokens` and `elapsed_us` for one request. Optional measurements may be absent on older records. [Terminal usage fields](cli.md#terminal-interface)
 
 `committed` lines contain `id` and `kind`, plus an Agent address, conversation entry or state-change indicator when applicable. `live` lines carry `agent`, `execution_id`, `turn`, `cursor` and a transient `event`. Match those identities to the current view and replace previews when committed results arrive. A `lagged` line carries `skipped` transient observations. The stream can also emit `heartbeat` or `error` lines. Durable state remains readable after lag.
 
-A snapshot requested with `progress=true` may include `reply_preview` for the selected Agent. It carries `execution_id`, `turn`, optional `turn_number`, `text` and `truncated`. The text is a UTF-8 prefix of the active request's reply capped at 64 KiB. `truncated` means the reply has already exceeded the retained prefix.
+When present, a committed frame's `delivery` associates queue changes with command IDs. `accepted` carries `input_ids`, `withdrawn` carries `input_id`, and `replaced` carries `input_id` and `replacement_id`.
 
-At the same snapshot cursor, another streaming Agent's entry in `agents` can have `progress.phase` set to `streaming`. Its `progress.preview` contains up to 512 UTF-8 bytes from the start of that Agent's active reply. The string is empty if the request has emitted only reasoning so far.
+A snapshot requested with `progress=true` may include `reply_preview` for the selected Agent. It carries `execution_id`, `turn`, optional `turn_number`, `phase`, `text` and `truncated`. The phase is `thinking`, `streaming` or `tool_arguments`. The text is a UTF-8 prefix of the active request's visible reply capped at 64 KiB. `truncated` means the reply has already exceeded the retained prefix.
 
-On an Agent-scoped attachment with `include_agent_activity=true`, the stream can also send a `live` line with `event.type` set to `reply_preview`, the prefix in `event.content` and the limit flag in `event.truncated`. Replace the matching in-memory preview with this prefix, then apply later deltas. The stream captures the prefix and begins following new deltas at the same attachment boundary. Only committed records advance the resume cursor.
+At the same snapshot cursor, other Agents can also have `progress.phase` in their entries in `agents`. A `streaming` entry includes `progress.preview`, up to 512 UTF-8 bytes from the start of that Agent's active reply. Phases `thinking` and `tool_arguments` carry activity only.
+
+On an Agent-scoped attachment with `include_agent_activity=true`, the stream can also send a `live` line with `event.type` set to `reply_preview`, the phase in `event.phase`, the prefix in `event.content` and the limit flag in `event.truncated`. Replace the matching in-memory preview with this prefix, then apply later deltas. The stream captures the prefix and begins following new deltas at the same attachment boundary. In this scope, live `thinking` and `tool_arguments` events indicate activity only. Tool execution begins at committed dispatch. Only committed records advance the resume cursor.
 
 History entries carry a durable `id`, Agent address, optional Turn identity, its per-Agent display ordinal (`turn_number`) when known, and a `type` such as `user`, `assistant`, `tool_call`, `tool_result`, `question`, `permission`, `question_reply`, `permission_reply`, `status` or `error`. A tool result can include a summary, structured details and a retained `output_id`. A committed frame can also carry the runtime `operation` or a `settlement` with the Turn result.
 
 For a `user` entry, `agent` identifies the recipient. When trusted runtime input records an Agent sender, `from` contains that sender's Session-local address, including on the input that opens a Turn.
+
+An explicit interruption can produce a `status` entry with `status: "interrupted"`, the `execution_id`, and the Turn identity and number when available. Its `text` holds up to 64 KiB of the interrupted reply, or is `null` if no visible text was retained. `truncated` indicates a longer partial reply. The raw journal can link its `turn.cancelled` event to the stop record with `stop_event_id`.
 
 Agent snapshots and summaries can include `admitted_task` and `queued_task`. These nullable strings are bounded excerpts of the latest admitted task input and the latest task input still queued, respectively. Replies to questions are excluded from task excerpts. Use `pending_inputs`, `question` and `permission` for queue and decision state.
 

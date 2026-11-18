@@ -143,7 +143,7 @@ custom = "https://example.com/latest.json"
 
 终端启动时从本机客户端数据目录读取 `tui.toml`，对受管服务和显式远程连接都生效。目录按 `--data-dir`、`KUKU_HOME`、`~/.kuku` 的顺序选取。SDK 和服务的执行设置使用 `config.toml`。
 
-`tui.toml` 或 `fields` 缺省时，使用内置顺序 `model,connection,execution,agent,workspace,context,tps`。默认模型和连接字段显示已解析的模型 ID 和服务状态。显式选择 `model` 或 `connection` 时，空间足够也可显示路由详情或端点。
+`tui.toml` 或 `fields` 缺省时，使用内置顺序 `model,connection,agent,workspace,context,tps`。默认模型和连接字段显示已解析的模型 ID 和服务状态。显式选择 `model` 或 `connection` 时，空间足够也可显示路由详情或端点。`execution` 是可选字段。
 
 从动作菜单打开 `/statusline` 即可在终端内编辑。用 ↑ 和 ↓ 选择字段，Space 勾选或取消，← 和 → 移动已勾选的字段。底栏会实时预览。R 预览内置布局，Enter 保存到 `tui.toml`，Esc 放弃修改。保存内置布局会移除 `statusline.fields`。
 

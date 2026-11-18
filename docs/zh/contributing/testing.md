@@ -164,6 +164,13 @@ OpenRouter 当前默认路由综合考虑有效价格，包括观察到的缓存
 
 罕见或不确定出现的错误、批次，以及可能被网关规范化的供应商特有重放数据，使用针对性的原生协议固定输入补充验证。OpenRouter 覆盖属于网关覆盖，不证明同样请求可直连 OpenAI 或 Anthropic 官方端点。具备凭据时增加官方直连检查，但不把开通新账号作为启动重构的前提。准确记录跑过的路径，缺少的真实覆盖标记为未验证。
 
+用固定流录制验证模型服务的思考活动、可见正文、交替到达的参数片段和工具派发。检查参数片段对应正确的调用、工具在派发后才执行，以及协议原生思考数据在工具续接与 Session 重开后仍可用。核对对话只呈现思考活动状态和可见回复，私有思考原文保持私有。
+
+- OpenAI Responses 按 `output_index` 和 `item_id` 关联参数片段，用 `call_id` 配对工具结果。无状态重放核对输出顺序、加密思考项和助手消息阶段。[流式事件](https://developers.openai.com/api/reference/resources/responses/streaming-events) · [思考](https://developers.openai.com/api/docs/guides/reasoning)
+- Anthropic Messages 按内容块索引分别装配工具输入和思考。加入省略正文但带签名的思考块，核对续接保留原块和签名。[流式消息](https://platform.claude.com/docs/en/build-with-claude/streaming) · [思考](https://platform.claude.com/docs/en/build-with-claude/thinking)
+- DeepSeek Chat Completions 在携带 `tools` 的请求中核对早先各轮的 `reasoning_content` 重放，包含没有工具调用的轮次。DeepSeek Responses 验证无状态路径上的原生思考项与 `reasoning_text` 事件。[思考模式](https://api-docs.deepseek.com/guides/thinking_mode/) · [Responses](https://api-docs.deepseek.com/guides/responses_api/)
+- OpenRouter Chat Completions 核对续接中 `reasoning_details` 的顺序及其签名或加密数据。OpenRouter Responses 保留有序输出项。通过实际回报的上游元数据确认真实请求由哪家供应商处理。[思考](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens) · [供应商路由](https://openrouter.ai/docs/guides/routing/provider-selection)
+
 DeepSeek Responses 无状态，不支持 `previous_response_id`；其 Messages 兼容层会忽略 `service_tier`、`cache_control` 等选项。HTTP 成功不能证明这些设置已生效。显式不支持的选择必须可见，并区分端点能力和线路协议本身。
 
 ## 凭据与运行产物
