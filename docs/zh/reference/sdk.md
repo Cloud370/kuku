@@ -76,17 +76,17 @@ cargo run -p kuku --example session_task -- \
   --workspace /path/to/work --prompt-file /path/to/task.txt \
   --config /path/to/config.toml --data-dir /path/to/session-data \
   --connection deepseek --reasoning-effort low \
-  --max-steps 12 --max-requests 32 --max-output-tokens 32768 --max-context-tokens 131072 \
+  --max-output-tokens 32768 --max-context-tokens 131072 \
   --output /path/to/result.json
 ```
 
-使用 `--session-id` 重开，使用 `--command-id` 在回执丢失后重试。结果包含持久模型／工具／Turn 事实数、日志路径／游标、provider 设置／报告、限额、耗时和清理状态。`runtime_completed` 表示执行结算，benchmark 仍需实际判定器。`--max-requests` 限制本次打开期间所有 Agent 的总请求，默认等于 `--max-steps`。`--max-agents` 设置保留的 Agent 上限。不自动重试付费请求。请求序列化字节数受 `--max-context-tokens` 约束，作为保守输入 token 上界。
+使用 `--session-id` 重开，使用 `--command-id` 在回执丢失后重试。结果包含持久模型、工具和 Turn 事实数、日志路径和游标、provider 设置和报告、限额、耗时和清理状态。`runtime_completed` 表示执行结算，benchmark 仍需实际判定器。`--max-requests N` 可限制本次打开期间的尝试次数。省略时，示例用 `null` 报告 `max_requests`。`--max-agents` 设置保留的 Agent 上限。`--max-context-tokens` 按 token 设置配置上下文窗口的上限。`--max-request-bytes` 独立限制序列化请求字节数，省略时继承 SDK 默认值。
 
 ## 限额与用量
 
-默认：64 个 Agent、每 Agent 128 条待处理输入、65,536 输入字节、每请求 512 KiB、四个模型流、每 Turn 20 次请求、每 Agent 八个工具、每份保留输出 8 MiB、首次预览 16 KiB、128 条临时观察。`RuntimeLimits.max_output_tokens_per_request` 可限制每个 Agent 请求的有效输出 token；显式 Agent 值取 `min`，选择查询和 prepared 事实反映有效值。`session_task --max-output-tokens` 同时设置宿主上限与主 Agent 选择。`RuntimeLimits.max_requests_per_open` 可限制所有 Agent Turn 的总尝试数，重开后重置，超额工作在发送前拒绝；默认 `None`。零值或不支持边界会失败；预览至少 1 KiB，保留完整引用与标志。
+默认限额允许 64 个 Agent、每 Agent 128 条待处理输入、65,536 输入字节、每次已准备请求 512 KiB、四个模型流、每 Agent 八个工具、每份保留输出 8 MiB、首次预览 16 KiB 和 128 条临时观察。`RuntimeLimits.max_requests_per_open` 可限制所有 Agent Turn 的总尝试数，重开后重置，超额工作在发送前拒绝。默认值为 `None`。`RuntimeLimits.max_output_tokens_per_request` 可限制每个 Agent 的有效输出 token。选择和准备记录提供有效值。`session_task --max-output-tokens` 同时设置宿主上限与主 Agent 选择。零值或不支持的边界会导致校验失败。预览至少 1 KiB，以保留完整引用和标志。
 
-`RuntimeLimits.retry_transient_provider_errors` 默认为 true。如果流尚未打开，且遇到可重试的传输故障或模型服务不可用，SDK 可以重试一次。重试沿用已准备请求，并计入同一请求预算。有界 `session_task` 调用程序将此选项设为 false，关闭该重试。
+`RuntimeLimits.retry_transient_provider_errors` 默认为 true。如果流尚未打开，且遇到可重试的传输故障或模型服务不可用，SDK 可以重试一次。重试沿用已准备请求，并计入同一请求预算。可将此选项设为 false 或使用 `session_task --no-provider-retry` 关闭重试。示例在 `limits.automatic_retries` 中报告允许的重试次数。
 
 日志每记录最多 1 MiB。分页最多 256 条，达到 1 MiB 目标停止，单条超出时整页小于 2 MiB。输出读取最多 80,000 字节。保留输出配额含捕获帧及元信息。达到配额时运行时继续排空管道，并将保留结果标记为不完整。Session 默认保留总计 128 MiB 的数据与 64 个命名绑定。没有引用的普通输出保留 24 小时后可被回收。可通过 `RuntimeLimits` 中的 `max_retained_output_bytes`、`max_named_values` 和 `output_retention_secs` 调整这些限额。
 
@@ -106,11 +106,11 @@ cargo run -p kuku --example session_orchestrate -- \
   --continue-prompt-file /path/to/continue.txt \
   --writer-connection direct --writer-tier balanced \
   --reviewer-connection openrouter-openai-responses --reviewer-tier light \
-  --max-steps 8 --max-requests 16 --timer-ms 250 \
+  --max-requests 16 --timer-ms 250 \
   --max-output-tokens 32768 --max-context-tokens 131072 \
   --data-dir /path/to/session-data --output /path/to/result.json
 ```
 
-宿主用 `Activation::Enqueue` 投递前两个输入，分别显式推进接收者，再通过带关联的 `InputSource::External("timer")` 投递定时器输入。每次投递都有稳定的命令 ID，并核对相同重试的回执。示例固定持有两个 Agent，禁用模型创建 Agent 和原生 Skill，分别限制两次打开期间的模型请求总数。重开会续用宿主新授权的请求额度。输出和上下文默认值保持为 32,768 和 131,072 tokens。
+宿主用 `Activation::Enqueue` 投递前两个输入，分别显式推进接收者，再通过带关联的 `InputSource::External("timer")` 投递定时器输入。每次投递都有稳定的命令 ID，并核对相同重试的回执。示例固定持有两个 Agent，禁用模型创建 Agent 和原生 Skill，分别限制两次打开期间的模型请求总数。重开会续用宿主新授权的请求额度。输出和上下文默认值为 32,768 和 131,072 tokens。省略 `--max-request-bytes` 时继承 SDK 的请求字节上限。
 
 宿主负责定时器的生命周期，并在重开后启动它；Session 持久化已投递的输入。观察者在执行稳定后才消费事件，因此观察订阅不会驱动工作。JSON 结果保留逐轮回执与快照、provider 和工具事实、有界的保留命令输出、休眠请求计数，以及关闭和重开证据。`runtime_completed` 要求三轮都稳定为空闲、没有待处理输入，并成功完成持久化关闭；任务产物仍需独立验证。等待中的 Agent 会报告为未完成。

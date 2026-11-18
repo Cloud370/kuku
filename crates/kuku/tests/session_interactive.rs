@@ -27,8 +27,7 @@ struct Call {
 
 #[derive(Debug)]
 enum Reply {
-    Tool,
-    ToolBatch,
+    Tools(Vec<String>),
     Text(&'static str),
     TemporaryFailure,
 }
@@ -42,18 +41,13 @@ impl ModelAdapter for Model {
                 request_id: "fixture".into(),
             }];
             match receive.await.unwrap() {
-                reply @ (Reply::Tool | Reply::ToolBatch) => {
-                    let ids = if matches!(reply, Reply::ToolBatch) {
-                        &['a', 'b'][..]
-                    } else {
-                        &['a'][..]
-                    };
-                    for (index, id) in ids.iter().enumerate() {
+                Reply::Tools(ids) => {
+                    for (index, id) in ids.into_iter().enumerate() {
                         let index = index as u64;
                         events.extend([
                             ModelEvent::ToolCallStart {
                                 index,
-                                id: id.to_string(),
+                                id,
                                 name: "hold".into(),
                             },
                             ModelEvent::ToolCallArgDelta {
@@ -186,7 +180,10 @@ async fn separate_authorization_replies_restore_only_undispatched_batch_calls() 
         .send(Input::new("start", "main", "authorize the batch"))
         .unwrap();
     let first = next_call(&mut calls).await;
-    first.response.send(Reply::ToolBatch).unwrap();
+    first
+        .response
+        .send(Reply::Tools(vec!["a".into(), "b".into()]))
+        .unwrap();
     ready(&session, AgentStatus::Waiting).await;
     let first_wait = session.agent("main").unwrap().permission.unwrap();
     assert_eq!("a", first_wait.tool_call_id);
@@ -490,7 +487,7 @@ async fn steering_waits_for_tools_and_skips_an_earlier_next_turn_receipt() {
         .unwrap();
     let first = next_call(&mut calls).await;
     let first_execution = session.agent("main").unwrap().execution_id.unwrap();
-    first.response.send(Reply::Tool).unwrap();
+    first.response.send(Reply::Tools(vec!["a".into()])).unwrap();
     tokio::time::timeout(WAIT, tool.started.notified())
         .await
         .unwrap();
@@ -644,7 +641,10 @@ async fn cancelling_a_tool_batch_settles_undispatched_calls_and_new_send_restart
         .send(Input::new("start", "main", "start tool batch"))
         .unwrap();
     let first = next_call(&mut calls).await;
-    first.response.send(Reply::ToolBatch).unwrap();
+    first
+        .response
+        .send(Reply::Tools(vec!["a".into(), "b".into()]))
+        .unwrap();
     tokio::time::timeout(WAIT, tool.started.notified())
         .await
         .unwrap();
@@ -726,7 +726,7 @@ async fn retry_uses_the_prepared_body_and_leaves_new_input_and_selection_for_the
         InputStatus::Queued,
         session.input_status("main", "steer").unwrap()
     );
-    retry.response.send(Reply::Tool).unwrap();
+    retry.response.send(Reply::Tools(vec!["a".into()])).unwrap();
     tokio::time::timeout(WAIT, tool.started.notified())
         .await
         .unwrap();
@@ -765,6 +765,59 @@ async fn retry_uses_the_prepared_body_and_leaves_new_input_and_selection_for_the
     }
     assert!(tagged);
     session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn long_turn_accepts_input_and_can_finish_or_be_cancelled() {
+    for complete in [true, false] {
+        let (_root, session, mut calls, tool) = open_model().await;
+        session
+            .send(Input::new(
+                "start",
+                "main",
+                "continue through several tool steps",
+            ))
+            .unwrap();
+        for step in 1..=21 {
+            let call = next_call(&mut calls).await;
+            assert_eq!(format!("req_{step}"), call.request.request_id);
+            if step == 20 {
+                session
+                    .send(Input::new("steer", "main", "consider this active update"))
+                    .unwrap();
+            }
+            call.response
+                .send(Reply::Tools(vec![format!("tool-{step}")]))
+                .unwrap();
+            tokio::time::timeout(WAIT, tool.started.notified())
+                .await
+                .unwrap();
+            tool.finished.notify_one();
+        }
+        let last = next_call(&mut calls).await;
+        assert_eq!("req_22", last.request.request_id);
+        assert!(last
+            .request
+            .body
+            .to_string()
+            .contains("consider this active update"));
+        if complete {
+            last.response
+                .send(Reply::Text("finished naturally"))
+                .unwrap();
+            ready(&session, AgentStatus::Idle).await;
+            assert_eq!(
+                Some("finished naturally"),
+                session.agent("main").unwrap().last_output.as_deref()
+            );
+        } else {
+            session.cancel("main").await.unwrap();
+            assert_eq!(AgentStatus::Stopped, session.agent("main").unwrap().status);
+            assert!(last.response.send(Reply::Text("stale response")).is_err());
+        }
+        assert_eq!(22, session.agent("main").unwrap().usage.model_requests);
+        session.close().await.unwrap();
+    }
 }
 
 #[tokio::test]

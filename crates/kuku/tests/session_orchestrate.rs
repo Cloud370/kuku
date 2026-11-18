@@ -310,6 +310,10 @@ async fn example_controls_independent_agents_and_timer_continuation_through_publ
     );
     assert_eq!(32768, report["limits"]["max_output_tokens"]);
     assert_eq!(131072, report["limits"]["max_context_tokens"]);
+    assert_eq!(
+        kuku::RuntimeLimits::default().max_request_bytes,
+        report["limits"]["max_request_bytes"]
+    );
     assert_eq!(16, report["limits"]["max_requests_per_open"]);
     assert_eq!(2, report["limits"]["max_opens"]);
     let persisted =

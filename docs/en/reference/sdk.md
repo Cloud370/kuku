@@ -76,17 +76,17 @@ cargo run -p kuku --example session_task -- \
   --workspace /path/to/work --prompt-file /path/to/task.txt \
   --config /path/to/config.toml --data-dir /path/to/session-data \
   --connection deepseek --reasoning-effort low \
-  --max-steps 12 --max-requests 32 --max-output-tokens 32768 --max-context-tokens 131072 \
+  --max-output-tokens 32768 --max-context-tokens 131072 \
   --output /path/to/result.json
 ```
 
-Use `--session-id` to reopen and `--command-id` to retry delivery after losing a receipt. Results include durable model/tool/turn fact counts, journal path/cursor, provider settings/reports, limits, duration, and cleanup. `runtime_completed` means execution settled; a benchmark still needs its actual judge. `--max-requests` limits all Agent requests across this open runtime; it defaults to `--max-steps`. `--max-agents` sets the retained Agent limit. Automatic paid retries are disabled. Serialized request bytes are capped by `--max-context-tokens`, a conservative input-token bound.
+Use `--session-id` to reopen and `--command-id` to retry delivery after losing a receipt. Results include durable model, tool, and Turn counts, the journal path and cursor, provider settings and reports, limits, duration, and cleanup. `runtime_completed` means execution settled. A benchmark still needs its actual judge. `--max-requests N` optionally caps attempts across this open runtime. The example reports `null` for `max_requests` when this option is omitted. `--max-agents` sets the retained Agent limit. `--max-context-tokens` caps the configured context window in tokens. `--max-request-bytes` independently caps serialized request bytes and inherits the SDK default when omitted.
 
 ## Limits and accounting
 
-Defaults: 64 agents, 128 pending inputs per agent, 65,536 input bytes, 512 KiB per prepared request, four simultaneous model streams, 20 requests per turn, eight tools per agent, 8 MiB per retained output, 16 KiB first preview, and 128 transient observations. `RuntimeLimits.max_output_tokens_per_request` optionally caps every Agent’s resolved output tokens; explicit Agent values are reduced with `min` and selection/prepared facts expose that effective value. `session_task --max-output-tokens` sets this host ceiling as well as the primary Agent’s selection. `RuntimeLimits.max_requests_per_open` optionally caps total attempts across all Agent turns, resets on reopen, and rejects excess work before dispatch; its default is `None`. Zero or unsupported bounds fail validation; output previews require at least 1 KiB for a complete reference and flags.
+The default limits allow 64 Agents, 128 pending inputs per Agent, 65,536 input bytes, 512 KiB per prepared request, four simultaneous model streams, eight tools per Agent, 8 MiB per retained output, a 16 KiB first preview, and 128 transient observations. `RuntimeLimits.max_requests_per_open` optionally caps total attempts across all Agent Turns, resets on reopen, and rejects excess work before dispatch. Its default is `None`. `RuntimeLimits.max_output_tokens_per_request` optionally caps each Agent's resolved output tokens. Selection and preparation records expose the effective value. `session_task --max-output-tokens` sets this host ceiling as well as the primary Agent's selection. Zero or unsupported bounds fail validation. Output previews require at least 1 KiB for a complete reference and flags.
 
-`RuntimeLimits.retry_transient_provider_errors` defaults to true. The SDK can retry once after a retryable transport or provider-unavailable error before the stream opens. It reuses the prepared request and charges the retry to the same request budget. Set the option to false to disable this retry, as the bounded `session_task` caller does.
+`RuntimeLimits.retry_transient_provider_errors` defaults to true. The SDK can retry once after a retryable transport or provider-unavailable error before the stream opens. It reuses the prepared request and charges the retry to the same request budget. Set the option to false or pass `session_task --no-provider-retry` to disable it. The example reports the permitted retry count under `limits.automatic_retries`.
 
 Journal records are capped at 1 MiB. Pages contain at most 256 records and stop at a 1 MiB target, with one-record overrun below 2 MiB. Output reads return at most 80,000 bytes. The retained-output quota includes capture framing and metadata. When capture hits its quota, the runtime continues draining the pipes and marks the retained result incomplete. The default Session budget is 128 MiB of retained data and 64 named bindings. Unreferenced ordinary outputs become eligible for reclamation after 24 hours. Set `max_retained_output_bytes`, `max_named_values`, and `output_retention_secs` in `RuntimeLimits` to change these bounds.
 
@@ -106,11 +106,11 @@ cargo run -p kuku --example session_orchestrate -- \
   --continue-prompt-file /path/to/continue.txt \
   --writer-connection direct --writer-tier balanced \
   --reviewer-connection openrouter-openai-responses --reviewer-tier light \
-  --max-steps 8 --max-requests 16 --timer-ms 250 \
+  --max-requests 16 --timer-ms 250 \
   --max-output-tokens 32768 --max-context-tokens 131072 \
   --data-dir /path/to/session-data --output /path/to/result.json
 ```
 
-The host sends the first two inputs with `Activation::Enqueue`, explicitly advances each recipient, and delivers the timer input as `InputSource::External("timer")` with a correlation. Every delivery has a stable command ID and verifies an identical retry's receipt. The example owns two Agents, disables model-created Agents and Skills, and caps requests separately for each of its two opens. Reopening renews that host-selected request allowance. Output and context defaults remain 32,768 and 131,072 tokens.
+The host sends the first two inputs with `Activation::Enqueue`, explicitly advances each recipient, and delivers the timer input as `InputSource::External("timer")` with a correlation. Every delivery has a stable command ID and verifies an identical retry's receipt. The example owns two Agents, disables model-created Agents and Skills, and caps requests separately for each of its two opens. Reopening renews that host-selected request allowance. Output and context default to 32,768 and 131,072 tokens. `--max-request-bytes` inherits the SDK's request byte limit when omitted.
 
 The host owns the timer lifetime and starts it after reopen; the Session persists the delivered input. Observers are drained after execution settles, so subscription consumption cannot drive the work. JSON results retain per-round receipts and snapshots, provider and tool facts, bounded retained command output, dormant request counters, and close/reopen evidence. `runtime_completed` requires all three rounds to settle idle with no pending input and a successful durable close; verify task artifacts separately. A waiting Agent is reported as incomplete.

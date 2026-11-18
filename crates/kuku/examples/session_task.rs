@@ -109,8 +109,9 @@ async fn main() {
 
 pub(crate) async fn execute(args: BTreeMap<String, String>) -> Result<bool, AnyError> {
     if args.contains_key("help") {
-        println!("session_task --workspace DIR --prompt-file FILE --config FILE --data-dir DIR --output FILE [--session-id ID --agent main --connection NAME --model MODEL --tier TIER --reasoning-effort low --service-tier VALUE --max-steps 12 --max-requests 12 --max-agents 64 --max-output-tokens 32768 --max-context-tokens 131072 --max-request-bytes BYTES --timeout 300 --command-id KEY --inspect-named-value NAME --seed-named-json FILE]");
-        println!("--max-request-bytes caps the serialized provider request. If omitted, its default is the numeric value of --max-context-tokens.");
+        println!("session_task --workspace DIR --prompt-file FILE --config FILE --data-dir DIR --output FILE [--session-id ID --agent main --connection NAME --model MODEL --tier TIER --reasoning-effort low --service-tier VALUE --max-requests N --no-provider-retry --max-agents 64 --max-output-tokens 32768 --max-context-tokens 131072 --max-request-bytes BYTES --timeout 300 --command-id KEY --inspect-named-value NAME --seed-named-json FILE]");
+        println!("--max-requests optionally caps provider attempts across this open session. --no-provider-retry disables the default pre-stream retry.");
+        println!("--max-request-bytes caps the serialized provider request. It defaults to the SDK's request byte limit.");
         return Ok(true);
     }
     let workspace = PathBuf::from(required(&args, "workspace")?);
@@ -119,19 +120,13 @@ pub(crate) async fn execute(args: BTreeMap<String, String>) -> Result<bool, AnyE
     let prompt = std::fs::read_to_string(required(&args, "prompt-file")?)?;
     let mut config =
         kuku::config::load_config(&PathBuf::from(required(&args, "config")?))?.resolve()?;
-    let max_steps = number(&args, "max-steps", 12_u64)?;
-    let max_requests = number(&args, "max-requests", max_steps)?;
+    let max_requests = optional_number(&args, "max-requests")?;
     let max_agents = number(&args, "max-agents", 64_usize)?;
     let max_output_tokens = number(&args, "max-output-tokens", 32_768_u32)?;
     let max_context_tokens = number(&args, "max-context-tokens", 131_072_u32)?;
     if max_context_tokens == 0 {
         return Err("--max-context-tokens must be positive".into());
     }
-    let max_request_bytes = number(
-        &args,
-        "max-request-bytes",
-        usize::try_from(max_context_tokens)?,
-    )?;
     let timeout = number(&args, "timeout", 300_u64)?;
     for tier in config.tiers.values_mut() {
         tier.context_window = tier.context_window.min(max_context_tokens);
@@ -139,12 +134,16 @@ pub(crate) async fn execute(args: BTreeMap<String, String>) -> Result<bool, AnyE
     let mut options = SessionOptions::new(workspace, data_dir, config);
     options.session_id = args.get("session-id").cloned();
     options.prompts_dir = args.get("prompts-dir").map(PathBuf::from);
-    options.limits.max_steps_per_turn = max_steps;
-    options.limits.max_requests_per_open = Some(max_requests);
-    options.limits.retry_transient_provider_errors = false;
+    if let Some(max_requests) = max_requests {
+        options.limits.max_requests_per_open = Some(max_requests);
+    }
+    if args.contains_key("no-provider-retry") {
+        options.limits.retry_transient_provider_errors = false;
+    }
     options.limits.max_output_tokens_per_request = Some(max_output_tokens);
     options.limits.max_agents = max_agents;
-    options.limits.max_request_bytes = max_request_bytes;
+    options.limits.max_request_bytes =
+        number(&args, "max-request-bytes", options.limits.max_request_bytes)?;
     let limits = options.limits.clone();
     let inspected_name = args.get("inspect-named-value");
     let seed = args
@@ -308,7 +307,7 @@ pub(crate) async fn execute(args: BTreeMap<String, String>) -> Result<bool, AnyE
         && snapshot.as_ref().is_some_and(|snapshot| {
             snapshot.status == AgentStatus::Idle && snapshot.pending_inputs == 0
         });
-    let mut result = json!({"session_id":session.id(),"agent":snapshot,"agents":session.agents(),"events_path":session.events_path(),"last_event_id":after,"facts":facts,"provider_settings":settings,"provider_reports":reports,"streaming":streaming,"limits":{"max_steps":limits.max_steps_per_turn,"max_requests":limits.max_requests_per_open,"max_agents":limits.max_agents,"max_output_tokens":limits.max_output_tokens_per_request,"max_request_bytes":limits.max_request_bytes,"max_context_tokens":max_context_tokens,"automatic_retries":0},"elapsed_ms":started.elapsed().as_millis(),"cleanup":{"closed":close.is_ok()},"runtime_completed":passed,"error":error});
+    let mut result = json!({"session_id":session.id(),"agent":snapshot,"agents":session.agents(),"events_path":session.events_path(),"last_event_id":after,"facts":facts,"provider_settings":settings,"provider_reports":reports,"streaming":streaming,"limits":{"max_requests":limits.max_requests_per_open,"max_agents":limits.max_agents,"max_output_tokens":limits.max_output_tokens_per_request,"max_request_bytes":limits.max_request_bytes,"max_context_tokens":max_context_tokens,"automatic_retries":u8::from(limits.retry_transient_provider_errors)},"elapsed_ms":started.elapsed().as_millis(),"cleanup":{"closed":close.is_ok()},"runtime_completed":passed,"error":error});
     result["process_resources"] = json!(process_resources::sample());
     if inspected_name.is_some() {
         result["workspace"] = json!({"named_before": named_before, "named_after": named_after, "outcomes": workspace_outcomes});
@@ -367,7 +366,10 @@ pub(crate) fn arguments(
         let name = flag
             .strip_prefix("--")
             .ok_or_else(|| format!("unexpected positional argument '{flag}'"))?;
-        if matches!(name, "help" | "no-agents" | "no-skills") {
+        if matches!(
+            name,
+            "help" | "no-agents" | "no-skills" | "no-provider-retry"
+        ) {
             args.insert(name.into(), String::new());
             continue;
         }
@@ -385,7 +387,6 @@ pub(crate) fn arguments(
                 | "tier"
                 | "reasoning-effort"
                 | "service-tier"
-                | "max-steps"
                 | "max-requests"
                 | "max-agents"
                 | "max-output-tokens"
@@ -420,10 +421,18 @@ fn number<T: std::str::FromStr>(
     name: &str,
     default: T,
 ) -> Result<T, AnyError> {
-    match args.get(name) {
-        Some(value) => value
-            .parse()
-            .map_err(|_| format!("invalid numeric value for '--{name}'").into()),
-        None => Ok(default),
-    }
+    Ok(optional_number(args, name)?.unwrap_or(default))
+}
+
+fn optional_number<T: std::str::FromStr>(
+    args: &BTreeMap<String, String>,
+    name: &str,
+) -> Result<Option<T>, AnyError> {
+    args.get(name)
+        .map(|value| {
+            value
+                .parse()
+                .map_err(|_| format!("invalid numeric value for '--{name}'").into())
+        })
+        .transpose()
 }

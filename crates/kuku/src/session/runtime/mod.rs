@@ -754,8 +754,6 @@ fn validate_limits(limits: &RuntimeLimits) -> Result<()> {
         || limits.max_input_bytes > 262_144
         || limits.max_model_requests == 0
         || limits.max_model_requests > 256
-        || limits.max_steps_per_turn == 0
-        || limits.max_steps_per_turn > 1024
         || limits.max_tools_per_agent == 0
         || limits.max_tools_per_agent > 128
         || limits.max_output_bytes < 4096

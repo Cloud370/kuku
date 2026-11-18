@@ -13,20 +13,16 @@ use kuku::event::{EventPayload, EventStore};
 use kuku::Session;
 
 const CONTEXT_TOKENS: u32 = 16_384;
-const REQUEST_BYTES: usize = 131_072;
-
 #[tokio::test]
 async fn example_separates_request_bytes_from_context_tokens_and_reports_settlement() {
     let server = MockServer::start_async().await;
     let root = tempfile::tempdir().unwrap();
     let root = root.path();
-    fs::create_dir(root.join("workspace")).unwrap();
-    fs::write(root.join("config.toml"), config(&server)).unwrap();
-    fs::write(
-        root.join("prompt.txt"),
-        "A line of example task input.\n".repeat(1024),
-    )
-    .unwrap();
+    prepare(
+        root,
+        &server,
+        &"A line of example task input.\n".repeat(1024),
+    );
     let response = common::openai_sse_response(json!({
         "choices": [{"message": {"content": "done"}, "finish_reason": "stop"}],
         "usage": {"prompt_tokens": 7000, "completion_tokens": 1},
@@ -40,7 +36,13 @@ async fn example_separates_request_bytes_from_context_tokens_and_reports_settlem
         })
         .await;
 
-    let failed = run_example(root, "failed.json", None, false).await;
+    let failed = run_example(
+        root,
+        "failed.json",
+        &["--max-request-bytes", &CONTEXT_TOKENS.to_string()],
+        false,
+    )
+    .await;
     assert_eq!(CONTEXT_TOKENS, failed["limits"]["max_context_tokens"]);
     assert_eq!(CONTEXT_TOKENS, failed["limits"]["max_request_bytes"]);
     assert_eq!("interrupted", failed["agent"]["status"]);
@@ -53,22 +55,60 @@ async fn example_separates_request_bytes_from_context_tokens_and_reports_settlem
     assert_terminal(&failed, "turn.interrupted");
     provider.assert_hits_async(0).await;
 
-    let completed = run_example(root, "completed.json", Some(REQUEST_BYTES), true).await;
+    let completed = run_example(root, "completed.json", &[], true).await;
+    let request_byte_limit = kuku::RuntimeLimits::default().max_request_bytes;
     assert_eq!(CONTEXT_TOKENS, completed["limits"]["max_context_tokens"]);
-    assert_eq!(REQUEST_BYTES, completed["limits"]["max_request_bytes"]);
+    assert_eq!(request_byte_limit, completed["limits"]["max_request_bytes"]);
     assert_eq!("idle", completed["agent"]["status"]);
     assert_eq!("done", completed["agent"]["last_output"]);
     assert_eq!(Value::Null, completed["error"]);
     assert_eq!(1, completed["agent"]["usage"]["model_requests"]);
     let settings = &completed["provider_settings"][0];
     assert_eq!(CONTEXT_TOKENS, settings["context_window_tokens"]);
-    assert_eq!(REQUEST_BYTES, settings["max_request_bytes"]);
+    assert_eq!(request_byte_limit, settings["max_request_bytes"]);
     assert!(settings["request_bytes"].as_u64().unwrap() > u64::from(CONTEXT_TOKENS));
     assert_terminal(&completed, "turn.completed");
     provider.assert_hits_async(1).await;
 }
 
-async fn run_example(root: &Path, output: &str, byte_cap: Option<usize>, passed: bool) -> Value {
+#[tokio::test]
+async fn example_inherits_retry_policy_and_bounds_attempts_only_when_requested() {
+    let server = MockServer::start_async().await;
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path();
+    prepare(root, &server, "finish the task");
+    let provider = server
+        .mock_async(|when, then| {
+            when.method(POST).path("/chat/completions");
+            then.status(503).body("provider temporarily unavailable");
+        })
+        .await;
+
+    let default = run_example(root, "default.json", &[], false).await;
+    assert_eq!(Value::Null, default["limits"]["max_requests"]);
+    assert_eq!(1, default["limits"]["automatic_retries"]);
+    assert_eq!(2, default["agent"]["usage"]["model_requests"]);
+    provider.assert_hits_async(2).await;
+
+    let capped = run_example(root, "capped.json", &["--max-requests", "1"], false).await;
+    assert_eq!(1, capped["limits"]["max_requests"]);
+    assert_eq!(1, capped["limits"]["automatic_retries"]);
+    assert_eq!(1, capped["agent"]["usage"]["model_requests"]);
+    provider.assert_hits_async(3).await;
+
+    let no_retry = run_example(root, "no-retry.json", &["--no-provider-retry"], false).await;
+    assert_eq!(0, no_retry["limits"]["automatic_retries"]);
+    assert_eq!(1, no_retry["agent"]["usage"]["model_requests"]);
+    provider.assert_hits_async(4).await;
+}
+
+fn prepare(root: &Path, server: &MockServer, prompt: &str) {
+    fs::create_dir(root.join("workspace")).unwrap();
+    fs::write(root.join("config.toml"), config(server)).unwrap();
+    fs::write(root.join("prompt.txt"), prompt).unwrap();
+}
+
+async fn run_example(root: &Path, output: &str, extra_args: &[&str], passed: bool) -> Value {
     let mut args = Vec::new();
     for (flag, path) in [
         ("--workspace", "workspace"),
@@ -89,9 +129,7 @@ async fn run_example(root: &Path, output: &str, byte_cap: Option<usize>, passed:
         "--no-agents".into(),
         "--no-skills".into(),
     ]);
-    if let Some(byte_cap) = byte_cap {
-        args.extend(["--max-request-bytes".into(), byte_cap.to_string()]);
-    }
+    args.extend(extra_args.iter().map(|value| (*value).to_owned()));
     let args = example::arguments(args.into_iter()).unwrap();
     assert_eq!(passed, example::execute(args).await.unwrap());
     let report: Value = serde_json::from_slice(&fs::read(root.join(output)).unwrap()).unwrap();

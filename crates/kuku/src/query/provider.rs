@@ -30,7 +30,6 @@ use super::types::{PendingRun, PendingStep, UiEvent};
 
 pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<PendingStep> {
     pending.request_num += 1;
-    check_loop_limit(&pending)?;
 
     apply_runtime_boundary(&mut pending)?;
     ensure_resolved(&mut pending)?;
@@ -526,42 +525,6 @@ pub(super) fn emit_runtime_log(
     record.turn = Some(pending.turn);
     record.data = data;
     pending.pending_events.push_back(UiEvent::Log { record });
-    Ok(())
-}
-
-fn check_loop_limit(pending: &PendingRun) -> Result<()> {
-    if pending.request_num > pending.query.runtime_limits.max_steps_per_turn {
-        let provider_name = pending
-            .resolved
-            .as_ref()
-            .map(|r| r.config.kind.as_str().to_string())
-            .unwrap_or_else(|| "unknown".to_string());
-        let model = pending
-            .resolved
-            .as_ref()
-            .map(|r| r.config.model.clone())
-            .unwrap_or_else(|| "unknown".to_string());
-        append_model_error(
-            &pending.events_path,
-            &pending.conversation,
-            pending.turn,
-            format!("req_{}", pending.request_num),
-            "loop_limit",
-            "tool loop exceeded maximum provider requests",
-        )?;
-        append_turn_interrupted(
-            &pending.events_path,
-            &pending.conversation,
-            pending.turn,
-            "loop_limit",
-        )?;
-        return Err(crate::error::Error::Provider {
-            kind: crate::provider::types::ProviderFailureKind::Unknown,
-            message: "tool loop exceeded maximum provider requests".to_string(),
-            provider: Some(provider_name),
-            model: Some(model),
-        });
-    }
     Ok(())
 }
 

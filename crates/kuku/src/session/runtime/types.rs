@@ -76,8 +76,6 @@ pub struct RuntimeLimits {
     pub retry_transient_provider_errors: bool,
     /// Optional host output-token ceiling applied to every agent's resolved request.
     pub max_output_tokens_per_request: Option<u32>,
-    /// Maximum logical model requests in one turn, including recovery requests.
-    pub max_steps_per_turn: u64,
     /// Maximum simultaneous tools within one agent's step.
     pub max_tools_per_agent: usize,
     /// Maximum retained bytes for one command or host-tool output.
@@ -109,7 +107,6 @@ impl Default for RuntimeLimits {
             max_requests_per_open: None,
             retry_transient_provider_errors: default_provider_retry(),
             max_output_tokens_per_request: None,
-            max_steps_per_turn: 20,
             max_tools_per_agent: 8,
             max_output_bytes: 8 * 1024 * 1024,
             max_retained_output_bytes: default_retained_output_bytes(),

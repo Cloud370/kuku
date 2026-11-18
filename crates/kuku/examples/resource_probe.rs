@@ -136,7 +136,6 @@ async fn probe(args: &BTreeMap<String, String>) -> Result<Value, AnyError> {
     options.session_id = Some("resource-probe".into());
     options.limits.max_agents = idle_agents;
     options.limits.max_model_requests = workers;
-    options.limits.max_steps_per_turn = 4;
     options.limits.max_request_bytes = 256 * 1024;
     options.limits.max_output_bytes = quota as u64;
     options.workspace_host = workspace_workload.host()?;

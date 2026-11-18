@@ -29,9 +29,7 @@ fn options(
     config.tiers.get_mut("balanced").unwrap().think = kuku::config::ThinkLevel::Off;
     config.handoff.enabled = false;
     config.plugin.enabled = false;
-    let mut options = SessionOptions::new(workspace, data, config);
-    options.limits.max_steps_per_turn = 8;
-    options
+    SessionOptions::new(workspace, data, config)
 }
 
 fn tool_count(request: &HttpMockRequest) -> usize {

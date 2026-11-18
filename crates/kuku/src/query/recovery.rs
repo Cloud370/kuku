@@ -8,7 +8,6 @@ use super::helpers::{append_model_error, append_turn_interrupted, now_timestamp}
 use super::request::RecoveredRequest;
 use super::types::{ModelRecoveryInfo, PendingRun, PendingStep, StreamingChunkState, UiEvent};
 
-const MAX_REQUEST_LOOP: u64 = 20;
 const MAX_RECOVERY_ATTEMPTS: u8 = 1;
 const RECOVERY_SUFFIX_OVERHEAD_BYTES: usize = 128;
 
@@ -28,9 +27,6 @@ pub(super) async fn schedule(
     let next_request_num = pending.request_num.checked_add(1).ok_or_else(|| {
         Error::InvalidEventStream("provider request id overflow during recovery".to_string())
     })?;
-    if next_request_num > MAX_REQUEST_LOOP {
-        return interrupt(pending, "loop_limit");
-    }
     let Some(base) = pending.request_base.as_ref() else {
         return interrupt(pending, "length");
     };
