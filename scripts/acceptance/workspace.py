@@ -11,7 +11,7 @@ import shutil
 import tempfile
 from urllib.parse import urlencode, urlsplit
 
-from evidence import inspect_sdk
+from evidence import comparison_path, inspect_sdk
 from interactive_fixture import CONFIG, EXE, InstalledClient, Provider, http_fixture, serve
 from interactive_intent import history, sanitize_report, save_screen, submit, wait_for_turn
 from paid_model import REQUIRED_WORKSPACE_TOOLS, RequestBoundary, RunLimits, paid_budget, route_for
@@ -387,7 +387,7 @@ def verify_analysis(turn, workspace, evidence):
         "one_replay": len(replay) == 1,
         "typed_exit_and_capture": len(replay) == 1 and replay[0]["termination"] == "exited"
             and replay[0]["exit_code"] == 7 and replay[0]["capture_complete"]
-            and Path(replay[0]["cwd"]).resolve() == workspace.resolve()
+            and comparison_path(Path(replay[0]["cwd"]).resolve()) == comparison_path(workspace.resolve())
             and replay[0]["stdout_lines"] == EXPECTED["records"] and replay[0]["stderr_lines"] == 1
             and replay[0]["output_ref"]["bytes"] == replay[0]["stdout_bytes"] + replay[0]["stderr_bytes"]
             and replay[0]["stdout_bytes"] > 500000 and replay[0]["preview_truncated"],
