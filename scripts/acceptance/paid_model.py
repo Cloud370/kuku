@@ -1,7 +1,7 @@
 """Selected provider settings, transport bounds, and accounting for live acceptance."""
 
 import concurrent.futures
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass
 from decimal import Decimal
 import http.client
 from http.server import BaseHTTPRequestHandler
@@ -53,10 +53,12 @@ class RunLimits:
     requests: int
     request_bytes: int
     output_tokens: int
+    byte_ceiling: InitVar[int] = 262144
+    output_ceiling: InitVar[int] = 32768
 
-    def __post_init__(self):
-        if not (1 <= self.requests <= 48 and 1 <= self.request_bytes <= 262144
-                and 1 <= self.output_tokens <= 32768):
+    def __post_init__(self, byte_ceiling, output_ceiling):
+        if not (1 <= self.requests <= 48 and 1 <= self.request_bytes <= byte_ceiling
+                and 1 <= self.output_tokens <= output_ceiling):
             raise ValueError("Invalid request, byte, or output token limit")
 
 
@@ -78,6 +80,7 @@ class Route:
     cache_write_rate: Decimal
     output_rate: Decimal
     price_source: str
+    excluded_upstreams: tuple[str, ...] = ()
 
     @property
     def credential(self):
@@ -95,10 +98,13 @@ class Route:
     def input_ceiling(self):
         return max(self.prompt_rate, self.cache_read_rate, self.cache_write_rate)
 
-    def reserve(self, limits):
-        if limits.output_tokens > self.completion_limit:
+    def request_ceiling(self, output_tokens):
+        if not 0 < output_tokens <= self.completion_limit:
             raise ValueError("Output token limit exceeds the selected upstream's model limit")
-        return limits.requests * (self.context * self.input_ceiling + limits.output_tokens * self.output_rate)
+        return self.context * self.input_ceiling + output_tokens * self.output_rate
+
+    def reserve(self, limits):
+        return limits.requests * self.request_ceiling(limits.output_tokens)
 
     def evidence(self, limits):
         return {
@@ -115,7 +121,8 @@ class Route:
             "reservation_usd": str(self.reserve(limits)),
         }
 
-    def config(self, endpoint, limits):
+    def config(self, endpoint, limits, *, context_window=None):
+        context_window = min(self.context, 65536) if context_window is None else context_window
         prefix = 'default_model = "balanced"\n'
         quote = json.dumps
         for tier in ("balanced", "strong", "light"):
@@ -125,7 +132,7 @@ provider = {quote(self.connection)}
 model = {quote(self.model)}
 think = {quote(self.effort if self.effort in ("low", "medium", "high") else "high")}
 reasoning_effort = {quote(self.effort)}
-context_window = {min(self.context, 65536)}
+context_window = {context_window}
 max_output_tokens = {limits.output_tokens}
 """
         template = f"""
@@ -153,7 +160,7 @@ auto_discover = false
 """
 
 
-def route_for(name, *, model=None, effort="low", upstream=None, key=None):
+def route_for(name, *, model=None, effort="low", upstream=None, key=None, verify_catalog=False):
     if name == "deepseek":
         model = model or "deepseek-flash"
         if model not in DEEPSEEK or effort not in ("low", "high", "max") or upstream not in (None, "deepseek"):
@@ -175,7 +182,7 @@ def route_for(name, *, model=None, effort="low", upstream=None, key=None):
     model = model or "openai/gpt-6-luna"
     upstream = upstream or "openai"
     if (not re.fullmatch(r"[A-Za-z0-9._-]+/[A-Za-z0-9._:-]+", model)
-            or not re.fullmatch(r"[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)?", upstream)
+            or not re.fullmatch(r"[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*", upstream)
             or effort not in KNOWN_EFFORTS):
         raise ValueError("Choose an explicit OpenRouter model, endpoint tag and reasoning effort")
     host = "openrouter.ai"
@@ -187,6 +194,15 @@ def route_for(name, *, model=None, effort="low", upstream=None, key=None):
     if len(endpoints) != 1 or not {"tools", "reasoning_effort"} <= set(endpoints[0]["supported_parameters"]):
         raise ValueError("The selected OpenRouter endpoint must declare tools and reasoning_effort")
     endpoint, = endpoints
+    excluded = ()
+    if verify_catalog:
+        status, selected = upstream_json(host, f"/api/v1/model/{model}")
+        if (status != 200 or selected.get("id") != model or data.get("id") != model
+                or effort not in (selected.get("reasoning") or {}).get("supported_efforts", [])
+                or endpoint.get("status") != 0 or "max_tokens" not in endpoint["supported_parameters"]):
+            raise ValueError("The selected OpenRouter endpoint or model does not confirm the requested settings")
+        excluded = tuple(candidate["tag"] for candidate in data["endpoints"]
+                         if candidate["tag"].startswith(upstream + "/"))
     pricing = endpoint["pricing"]
     tiers = [pricing, *pricing.get("overrides", [])]
 
@@ -199,7 +215,7 @@ def route_for(name, *, model=None, effort="low", upstream=None, key=None):
                  upstream, endpoint["provider_name"], endpoint["name"].split(" | ")[-1],
                  endpoint["context_length"], endpoint["max_completion_tokens"],
                  maximum("prompt"), maximum("input_cache_read"), maximum("input_cache_write"),
-                 maximum("completion"), "https://" + host + path)
+                 maximum("completion"), "https://" + host + path, excluded)
 
 
 def paid_budget(path, service):
@@ -262,13 +278,13 @@ class RequestBoundary:
             return None
         return output, sorted(names)
 
-    def observe(self, attempt, line):
+    def observe(self, attempt, line, *, event=None):
         if not line.startswith(b"data:") or not any(marker in line for marker in (
             b'"usage"', b'"tool_calls"', b'"response.output_item.done"'
         )):
             return
         try:
-            event = json.loads(line[5:])
+            event = json.loads(line[5:]) if event is None else event
             if self.route.router:
                 if event.get("type") == "response.output_item.done" and event.get("item", {}).get("type") == "function_call":
                     attempt.setdefault("streamed_tool_names", []).append(event["item"]["name"])
@@ -423,13 +439,13 @@ class RequestBoundary:
             confirmations = list(pool.map(self.confirm_generation, self.attempts))
         return False if False in confirmations else (None if None in confirmations else True)
 
-    def confirm_generation(self, attempt):
+    def confirm_generation(self, attempt, *, delays=(0, 1, 2, 4), require_matching_cost=True):
         if not attempt.get("generation_id"):
             attempt["receipt_lookup"] = "missing_generation_id"
             return None
         route = self.route
         query = urlencode({"id": attempt["generation_id"]})
-        for delay in (0, 1, 2, 4):
+        for delay in delays:
             if delay:
                 time.sleep(delay)
             try:
@@ -445,14 +461,18 @@ class RequestBoundary:
         else:
             return None
         attempt["receipt"] = {
-            **{field: data.get(field) for field in ("model", "provider_name", "service_tier", "total_cost")},
+            **{field: data.get(field) for field in ("model", "provider_name", "service_tier", "total_cost", "cancelled")},
             "input_tokens": data.get("native_tokens_prompt"), "output_tokens": data.get("native_tokens_completion"),
+            "cache_read_input_tokens": data.get("native_tokens_cached"),
+            "cache_write_input_tokens": data.get("native_tokens_cache_write"),
+            "reasoning_tokens": data.get("native_tokens_reasoning"),
+            "latency_ms": data.get("latency"), "generation_time_ms": data.get("generation_time"),
         }
         attempt["reported_upstream"] = data.get("provider_name")
         stream_cost = attempt.get("usage", {}).get("cost")
         matched = (data.get("id") == attempt["generation_id"] and data.get("provider_name") == route.upstream_name
                    and data.get("model") in (route.upstream_model, route.model)
-                   and (stream_cost is None or usd(data["total_cost"]) == usd(stream_cost)))
+                   and (not require_matching_cost or stream_cost is None or usd(data["total_cost"]) == usd(stream_cost)))
         attempt["receipt_matches_route"] = matched
         return matched
 

@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path, PureWindowsPath
+import subprocess
 import sys
 import tempfile
 import time
@@ -246,6 +247,98 @@ class AcceptanceTests(unittest.TestCase):
             self.assertFalse(ACCEPTANCE.attempt_passed("live", execution, verification, 1, incomplete))
         self.assertFalse(ACCEPTANCE.attempt_passed("live", execution, verification, 1, dict(complete, passed=1)))
         self.assertFalse(ACCEPTANCE.attempt_passed("live", execution, verification, 1, {"tests": 1, "passed": 1}))
+
+    def test_frontier_selection_keeps_legacy_cases_and_pins_public_source(self):
+        manifest, case = ACCEPTANCE.manifest_case("large-scale-text-editing", "frontier")
+        self.assertEqual([item["id"] for item in manifest["cases"]], [
+            "log-summary-date-ranges", "cancel-async-tasks", "regex-log", "large-scale-text-editing",
+        ])
+        self.assertEqual(case["artifacts"], ["/app/apply_macros.vim"])
+        legacy, legacy_case = ACCEPTANCE.manifest_case("cancel-async-tasks")
+        frontier, frontier_case = ACCEPTANCE.manifest_case("cancel-async-tasks", "frontier")
+        self.assertEqual(legacy_case, frontier_case)
+        self.assertNotEqual(legacy["source"]["revision"], frontier["source"]["revision"])
+        for case_id, suite in (("large-scale-text-editing", "legacy"), ("openssl-selfsigned-cert", "frontier")):
+            with self.assertRaisesRegex(ValueError, "unknown benchmark case"):
+                ACCEPTANCE.manifest_case(case_id, suite)
+
+    def test_benchmark_parser_selects_frontier_route_and_preserves_legacy_default(self):
+        parser = ACCEPTANCE.parser()
+        base = ["benchmark", "--case", "regex-log"]
+        self.assertEqual(parser.parse_args(base).suite, "legacy")
+        for flags, expected in (
+            ([], ("openrouter", None)),
+            (["--upstream", "provider/variant"], ("openrouter", "provider/variant")),
+            (["--provider", "deepseek"], ("deepseek", None)),
+        ):
+            args = parser.parse_args([*base, "--suite", "frontier", "--mode", "live", *flags])
+            self.assertEqual((args.provider, args.upstream), expected)
+
+    def test_frontier_sources_are_independently_pinned_and_exclude_solution(self):
+        from benchmark_source import prepare_source
+
+        upstream = self.directory / "upstream"
+        upstream.mkdir()
+
+        def git(*args):
+            return subprocess.check_output(["git", "-C", str(upstream), *args], text=True).strip()
+
+        git("init", "--quiet")
+        git("config", "uploadpack.allowFilter", "true")
+        for case_id in ("one", "two"):
+            for name in ("instruction.md", "task.toml", "environment/Dockerfile", "tests/test.sh", "solution/solve.sh"):
+                path = upstream / "tasks" / case_id / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(name)
+        git("add", ".")
+        git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--quiet", "-m", "benchmark")
+        spec = {"repository": upstream.as_uri(), "revision": git("rev-parse", "HEAD"),
+                "cache_key": "frontier-fixture", "task_root": "tasks"}
+
+        def prepare(case_id):
+            return prepare_source(self.directory, {"source": spec}, self.directory / "logs" / case_id, {"id": case_id})
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            first, second = executor.map(prepare, ("one", "two"))
+        self.assertNotEqual(first, second)
+        self.assertFalse((first / "tasks" / "two").exists())
+        self.assertFalse((first / "tasks" / "one" / "solution").exists())
+        self.assertTrue((second / "tasks" / "two" / "tests" / "test.sh").is_file())
+        self.assertEqual(prepare("one"), first)
+        (first / "tasks" / "one" / "instruction.md").write_text("edited")
+        with self.assertRaisesRegex(ValueError, "benchmark source is modified"):
+            prepare("one")
+        self.assertEqual(prepare("two"), second)
+
+    def test_frontier_main_uses_host_meter_without_legacy_budget_or_config(self):
+        fake = mock.Mock(return_value={"passed": True})
+        creds = {"KUKU_TEST_KEY": "fixture"}
+        image = "sha256:fixture-image"
+        args = ["run.py", "--output", str(self.directory), "benchmark", "--suite", "frontier",
+                "--mode", "live", "--case", "large-scale-text-editing", "--sdk-binary", "/fixture/sdk"]
+
+        def capture(command, directory, label, **kwargs):
+            if label == "image-build":
+                Path(command[command.index("--iidfile") + 1]).write_text(image)
+            output = directory / (label + ".log")
+            output.write_text(image)
+            return {"log": str(output), "exit_code": 0, "timed_out": False}
+
+        with mock.patch.object(sys, "argv", args), mock.patch.dict(sys.modules, {"frontier": mock.Mock(run_live=fake)}), \
+                mock.patch.object(ACCEPTANCE, "load_secrets", return_value=creds), \
+                mock.patch.object(ACCEPTANCE, "prepare_source", return_value=self.directory / "source"), \
+                mock.patch.object(ACCEPTANCE, "tree_state", return_value={}), \
+                mock.patch.object(ACCEPTANCE, "capture", side_effect=capture), \
+                mock.patch.object(ACCEPTANCE, "Budget") as budget, mock.patch("builtins.print"):
+            self.assertEqual(ACCEPTANCE.main(), 0)
+        budget.assert_not_called()
+        parsed, case, source, built, directory, secrets = fake.call_args.args
+        self.assertEqual(parsed.run_id, directory.name)
+        self.assertEqual((parsed.provider, parsed.upstream), ("openrouter", None))
+        self.assertEqual((parsed.case_cap_usd, parsed.max_output_tokens, parsed.max_requests), (0.75, 131072, 22))
+        self.assertEqual(parsed.agent_timeout_sec, 1200)
+        self.assertEqual(source, self.directory / "source" / "tasks" / case["id"])
+        self.assertEqual((built, secrets), (image, creds))
 
     def test_grader_cannot_reuse_a_report_left_by_the_agent(self):
         logs = self.directory / "logs"

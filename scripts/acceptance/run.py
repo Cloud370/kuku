@@ -25,6 +25,7 @@ import time
 import uuid
 import zipfile
 
+from benchmark_resources import ResourceSampler, include_final_process_usage
 from evidence import inspect_sdk
 
 
@@ -284,40 +285,21 @@ def command_environment(secrets=None):
     return env
 
 
-def manifest_case(case_id):
+def manifest_case(case_id, suite="legacy"):
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    if suite != "legacy":
+        selection = manifest["suites"][suite]
+        available = {case["id"]: case for case in manifest["cases"] + selection["additional_cases"]}
+        manifest = {"source": selection["source"], "cases": [available[name] for name in selection["case_ids"]]}
     case = next((case for case in manifest["cases"] if case["id"] == case_id), None)
     if case is None:
-        raise ValueError("unknown benchmark case")
+        raise ValueError(f"unknown benchmark case for {suite}: {case_id}")
     return manifest, case
 
 
-def prepare_source(manifest, directory):
-    source = ROOT / "benchmarks" / "sources" / "terminal-bench-2"
-    revision = manifest["source"]["revision"]
-    with locked(source.parent / "terminal-bench-2.lock"):
-        existing = (source / ".git").exists()
-        if not existing:
-            require_success(capture(["git", "clone", "--filter=blob:none", "--no-checkout",
-                                     manifest["source"]["repository"], str(source)],
-                                    directory, "source-clone", timeout=600))
-        if existing and subprocess.check_output(["git", "-C", str(source), "status", "--porcelain"]):
-            raise ValueError("benchmark source is modified; preserve and inspect it before continuing")
-        present = subprocess.run(["git", "-C", str(source), "cat-file", "-e", revision],
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if present.returncode:
-            require_success(capture(["git", "-C", str(source), "fetch", "--depth", "1", "origin", revision],
-                                    directory, "source-fetch", timeout=600))
-        require_success(capture(["git", "-C", str(source), "sparse-checkout", "init", "--cone"],
-                                directory, "source-sparse-init"))
-        require_success(capture(["git", "-C", str(source), "sparse-checkout", "set",
-                                 *[case["id"] for case in manifest["cases"]]],
-                                directory, "source-sparse-set", timeout=600))
-        require_success(capture(["git", "-C", str(source), "checkout", "--detach", revision],
-                                directory, "source-checkout", timeout=600))
-        if subprocess.check_output(["git", "-C", str(source), "status", "--porcelain"]):
-            raise ValueError("benchmark source is modified; preserve and inspect it before continuing")
-    return source
+def prepare_source(manifest, directory, case=None):
+    from benchmark_source import prepare_source as checkout
+    return checkout(ROOT, manifest, directory, case)
 
 
 def bundle_binary(binary, directory):
@@ -426,58 +408,7 @@ def attempt_passed(mode, execution, verification, value, summary):
         summary.get(field) == 0 for field in ("failed", "skipped", "pending", "other"))
 
 
-class ResourceSampler:
-    def __init__(self, container):
-        self.container = container
-        self.stopped = threading.Event()
-        self.thread = threading.Thread(target=self.sample, daemon=True)
-        self.data = {"container_scope": "sdk_and_tools", "container_samples": 0,
-                     "sdk_process_samples": 0, "sdk_peak_rss_kib": None,
-                     "sdk_peak_rss_high_water_kib": None, "sdk_cpu_seconds": None,
-                     "sdk_threads_max": None, "container_snapshots": []}
-
-    def start(self):
-        self.thread.start()
-
-    def finish(self):
-        self.stopped.set()
-        self.thread.join(timeout=20)
-        self.data["capture_incomplete"] = self.thread.is_alive()
-        return self.data
-
-    def sample(self):
-        while not self.stopped.is_set():
-            try:
-                proc = subprocess.run([
-                    "docker", "exec", self.container, "sh", "-c",
-                    'p=$(cat /logs/agent/sdk.pid 2>/dev/null) || exit; '
-                    'cat "/proc/$p/status" "/proc/$p/stat" 2>/dev/null',
-                ], capture_output=True, text=True, timeout=5)
-                if proc.returncode == 0:
-                    self.data["sdk_process_samples"] += 1
-                    for field, key in (("VmRSS", "sdk_peak_rss_kib"), ("VmHWM", "sdk_peak_rss_high_water_kib"),
-                                       ("Threads", "sdk_threads_max")):
-                        match = re.search(rf"^{field}:\s+(\d+)", proc.stdout, re.MULTILINE)
-                        if match:
-                            self.data[key] = max(self.data[key] or 0, int(match[1]))
-                    stat = proc.stdout.splitlines()[-1].rsplit(")", 1)[-1].split()
-                    if len(stat) > 12:
-                        self.data["sdk_cpu_seconds"] = round(
-                            (int(stat[11]) + int(stat[12])) / os.sysconf("SC_CLK_TCK"), 4)
-                stats = subprocess.run(["docker", "stats", "--no-stream", "--format", "{{json .}}", self.container],
-                                       capture_output=True, text=True, timeout=5)
-                if stats.returncode == 0 and stats.stdout.strip():
-                    snapshot = json.loads(stats.stdout)
-                    self.data["container_samples"] += 1
-                    self.data["container_snapshots"].append({key: snapshot.get(key) for key in
-                                                           ("CPUPerc", "MemUsage", "PIDs", "BlockIO")})
-                    self.data["container_snapshots"] = self.data["container_snapshots"][-8:]
-            except (OSError, ValueError, subprocess.TimeoutExpired):
-                self.data["sampling_errors"] = self.data.get("sampling_errors", 0) + 1
-            self.stopped.wait(1)
-
-
-def benchmark_attempt(args, case, source, image, directory, mode, secrets):
+def benchmark_attempt(args, case, source, image, directory, mode, secrets, *, sdk_timeout_sec=None, on_sdk_finished=None):
     attempt = directory / mode
     logs = attempt / "logs"
     (logs / "verifier").mkdir(parents=True)
@@ -525,10 +456,13 @@ def benchmark_attempt(args, case, source, image, directory, mode, secrets):
                 record["execution"] = capture([
                     "docker", "exec", container, "sh", "-c",
                     'printf "%s\\n" "$$" > /logs/agent/sdk.pid; exec "$@"', "sh", *sdk_command,
-                ], attempt, "sdk", timeout=case["timeout_sec"], secrets=secrets.values())
+                ], attempt, "sdk", timeout=sdk_timeout_sec or case["timeout_sec"], secrets=secrets.values())
             finally:
+                if on_sdk_finished is not None:
+                    on_sdk_finished()
                 record["resources"] = sampler.finish()
             record["sdk_result"] = str(logs / "agent" / "result.json")
+            include_final_process_usage(record["resources"], Path(record["sdk_result"]))
             record["sdk_evidence"] = inspect_sdk(Path(record["sdk_result"]), data_dir, args.connection,
                                                   "/kuku/data", record["session_id"], args.require_streaming)
         else:
@@ -570,19 +504,33 @@ def benchmark_attempt(args, case, source, image, directory, mode, secrets):
 
 
 def run_benchmark(args, directory, record, secrets):
-    manifest, case = manifest_case(args.case)
-    source = prepare_source(manifest, directory) / case["id"]
-    record["benchmark"] = {"source": manifest["source"], "case": case,
-                           "task_files_sha256": file_hashes(source)}
-    image = f"kuku-acceptance/{case['id']}:{manifest['source']['revision'][:12]}"
-    require_success(capture(["docker", "build", "--force-rm", "--tag", image, str(source / "environment")],
+    manifest, case = manifest_case(args.case, args.suite)
+    spec = manifest["source"]
+    source = prepare_source(manifest, directory, case) / spec.get("task_root", "") / case["id"]
+    frontier = args.suite == "frontier"
+    image = f"kuku-acceptance/{case['id']}:{spec['revision'][:12]}"
+    record["benchmark"] = {"suite": args.suite, "source": spec, "case": case,
+                           "task_files_sha256": file_hashes(source), "image_tag": image}
+    image_id_file = directory / "image-id.txt"
+    build = ["docker", "build", "--force-rm", "--tag", image]
+    if frontier:
+        build += ["--iidfile", str(image_id_file)]
+    require_success(capture([*build, str(source / "environment")],
                             directory, "image-build", timeout=600))
-    inspected = require_success(capture(["docker", "image", "inspect", "--format", "{{.Id}}", image],
+    inspected = require_success(capture(["docker", "image", "inspect", "--format", "{{.Id}}",
+                                         image_id_file.read_text().strip() if frontier else image],
                                         directory, "image-inspect"))
-    record["benchmark"]["image_id"] = Path(inspected["log"]).read_text().strip()
-    modes = ("negative", "oracle") if args.mode == "preflight" else ("live",)
-    record["attempts"] = [benchmark_attempt(args, case, source, image, directory, mode, secrets)
-                          for mode in modes]
+    image_id = record["benchmark"]["image_id"] = Path(inspected["log"]).read_text().strip()
+    if frontier and args.mode == "live":
+        from frontier import run_live
+        args.agent_timeout_sec = args.agent_timeout_sec or case["timeout_sec"]
+        record["attempts"] = [run_live(args, case, source, image_id, directory, secrets)]
+    else:
+        modes = ("live",) if args.mode == "live" else ("negative",)
+        if not frontier and args.mode == "preflight":
+            modes += ("oracle",)
+        record["attempts"] = [benchmark_attempt(args, case, source, image_id if frontier else image,
+                                                 directory, mode, secrets) for mode in modes]
     record["passed"] = all(attempt["passed"] for attempt in record["attempts"])
 
 
@@ -873,12 +821,8 @@ def parser():
             paid.add_argument("--connection")
             paid.add_argument("command", nargs=argparse.REMAINDER, help="public SDK/CLI caller after --")
         else:
-            paid.add_argument("--case", required=True)
-            paid.add_argument("--mode", choices=("preflight", "live"), default="preflight")
-            paid.add_argument("--sdk-binary", type=Path)
-            paid.add_argument("--config", type=Path)
-            paid.add_argument("--connection")
-            paid.add_argument("sdk_args", nargs=argparse.REMAINDER, help="additional bounded session_task args after --")
+            from benchmark_source import add_benchmark_arguments
+            add_benchmark_arguments(paid)
     return root
 
 
@@ -901,9 +845,18 @@ def main():
                           "remaining_usd": round(data["limit_usd"] - budget.committed(data), 9)}, indent=2))
         return 0
     paid = args.group == "live" or (args.group == "benchmark" and args.mode == "live")
+    metered = paid and args.group == "benchmark" and args.suite == "frontier"
     secrets = {}
     if paid:
-        if args.reserve_usd is None or not args.reservation_reason:
+        if metered:
+            if not args.sdk_binary or args.config or args.connection or args.sdk_args:
+                raise ValueError("Frontier live requires --sdk-binary and generates its own config and connection")
+            if args.reserve_usd is not None or args.reservation_reason:
+                raise ValueError("Frontier live uses --case-cap-usd for its host-metered budget")
+            if min(args.case_cap_usd, args.max_output_tokens, args.max_requests,
+                   1 if args.agent_timeout_sec is None else args.agent_timeout_sec) <= 0:
+                raise ValueError("Frontier live limits must be positive")
+        elif args.reserve_usd is None or not args.reservation_reason:
             raise ValueError("paid calls need --reserve-usd and --reservation-reason before execution")
         secrets = load_secrets(args.secrets)
         if not secrets:
@@ -911,6 +864,7 @@ def main():
     run_id = args.run_id or datetime.datetime.now().strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:8]
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,100}", run_id):
         raise ValueError("run id must be a short filename component")
+    args.run_id = run_id
     directory = args.output.resolve() / run_id
     directory.mkdir(parents=True, exist_ok=False)
     record = {"schema_version": 1, "run_id": run_id, "group": args.group, "started_at": now(),
@@ -920,12 +874,12 @@ def main():
               "manifest_sha256": hashlib.sha256(MANIFEST.read_bytes()).hexdigest()}
     reserved = False
     try:
-        if paid:
-            record["config"] = config_record(args.config)
+        if paid and not metered:
             if args.group == "benchmark":
                 if not args.sdk_binary or not args.config or not args.connection:
                     raise ValueError("live benchmark requires --sdk-binary, --config and --connection")
                 args.sdk_args = args.sdk_args[1:] if args.sdk_args[:1] == ["--"] else args.sdk_args
+            record["config"] = config_record(args.config)
             Budget(args.ledger).reserve(run_id, args.reserve_usd, args.reservation_reason)
             reserved = True
             record["budget"] = {"ledger": str(args.ledger), "reserved_usd": args.reserve_usd,
