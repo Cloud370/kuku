@@ -191,7 +191,7 @@ impl TrackedAgent {
         agent.progress = ExecutionProgress::from_snapshot(summary.progress.as_ref());
         if let Some(AgentProgress::Streaming { preview }) = &summary.progress {
             agent.preview = excerpt(Some(preview));
-            agent.snapshot_prefix = true;
+            agent.snapshot_prefix = !agent.preview.is_empty();
         } else if summary.status != AgentStatus::Running {
             agent.preview = excerpt(
                 summary
@@ -296,6 +296,14 @@ impl TrackedAgent {
         if cursor < self.phase_cursor {
             return false;
         }
+        let kind = event["type"].as_str();
+        if cursor == self.phase_cursor
+            && self.snapshot_prefix
+            && self.execution == Some(execution)
+            && matches!(kind, Some("model_request" | "model_recovery"))
+        {
+            return false;
+        }
         let before = self.activity();
         let mut preview_changed = false;
         if self.execution != Some(execution) {
@@ -309,7 +317,13 @@ impl TrackedAgent {
         }
         self.phase_cursor = cursor;
         self.progress.live(event);
-        match event["type"].as_str() {
+        match kind {
+            Some("reply_preview") => {
+                let preview = excerpt(event["content"].as_str());
+                preview_changed |= self.preview != preview;
+                self.preview = preview;
+                self.snapshot_prefix = !self.preview.is_empty();
+            }
             Some("text") if !self.snapshot_prefix => {
                 if let Some(text) = event["content"].as_str() {
                     let suffix = cap(text, PREVIEW_BYTES - self.preview.len());
@@ -443,6 +457,24 @@ mod tests {
     fn apply_live(app: &mut App, selection: Selection, execution: u64, cursor: u64, text: &str) {
         let frame = serde_json::from_value(live_frame(execution, cursor, text)).unwrap();
         app.update(Update::Observation(selection, frame));
+    }
+
+    #[test]
+    fn attaching_after_a_peer_delta_keeps_the_recovered_preview_once() {
+        let mut app = attached();
+        load(&mut app, 10, "running", Some(8), None);
+        let frame = |kind: &str, content: &str| {
+            json!({
+                "type":"live","agent":"reviewer","execution_id":8,"cursor":11,
+                "event":{"type":kind,"phase":"streaming","content":content},
+            })
+        };
+        observe(&mut app, frame("reply_preview", "First reply fragment"));
+        observe(&mut app, frame("model_request", ""));
+        observe(&mut app, frame("text", "First reply fragment"));
+        let activity = reviewer(&app).unwrap();
+        assert_eq!(Activity::Streaming, activity.status);
+        assert_eq!(Some("First reply fragment"), activity.preview);
     }
 
     #[test]
