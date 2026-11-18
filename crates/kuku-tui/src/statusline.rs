@@ -3,11 +3,12 @@ use std::cmp::Reverse;
 use kuku_client::UsageTotals;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{Activity, App, ServiceStatus, SubmissionStatus};
-use crate::text::{compact_token_count, shorten, single_line, single_line_path};
+use crate::text::{
+    compact_token_count, shorten, shorten_middle, single_line, single_line_path, tail_start,
+};
 use crate::theme::{emphasis, ERROR, EXECUTION, MODEL, MUTED, USAGE, WARNING};
 
 mod editor;
@@ -15,6 +16,8 @@ mod editor;
 pub(crate) use editor::StatusLineEditor;
 
 const SEPARATOR: &str = " · ";
+const WIDE_SEPARATOR: &str = "  ";
+const GROUP_GAP: &str = "    ";
 const COMPACT_DETAILS_WIDTH: usize = 12;
 const COMPACT_MODEL_WIDTH: usize = 28;
 const COMPACT_STATUS_WIDTH: usize = 96;
@@ -77,7 +80,12 @@ impl StatusLine {
             .map(|fields| fields.iter().copied().map(Field::name).collect())
     }
 
-    pub(crate) fn render_line(&self, app: &App, width: usize) -> Option<Line<'static>> {
+    pub(crate) fn render_line(
+        &self,
+        app: &App,
+        width: usize,
+        activity: Activity,
+    ) -> Option<Line<'static>> {
         let usage = app
             .pane()
             .snapshot
@@ -91,9 +99,27 @@ impl StatusLine {
             .filter(|field| {
                 custom || usage.is_some() || !matches!(field, Field::Context | Field::Throughput)
             })
-            .filter_map(|field| field.segment(app, usage, compact, custom))
-            .collect();
-        render_segments(segments, width)
+            .filter_map(|field| {
+                field
+                    .segment(app, usage, compact, custom, activity)
+                    .map(|segment| (*field, segment))
+            });
+        if custom || compact {
+            return render_segments(
+                segments.map(|(_, segment)| segment).collect(),
+                width,
+                SEPARATOR,
+            );
+        }
+        let mut identity = Vec::new();
+        let mut measurements = Vec::new();
+        for (field, segment) in segments {
+            match field {
+                Field::Context | Field::Throughput => measurements.push(segment),
+                _ => identity.push(segment),
+            }
+        }
+        render_groups(identity, measurements, width)
     }
 
     fn fields(&self) -> &[Field] {
@@ -165,10 +191,11 @@ impl Field {
         usage: Option<&UsageTotals>,
         compact: bool,
         custom: bool,
+        activity: Activity,
     ) -> Option<Segment> {
         let segment = match self {
             Self::Connection => connection(app, custom),
-            Self::Execution => return execution(app),
+            Self::Execution => return execution(app, activity),
             Self::Input => return input(app, true),
             Self::Agent => Segment::details(
                 format!("Agent {}", single_line(&app.active.agent)),
@@ -375,17 +402,37 @@ impl Segment {
     }
 }
 
-fn render_segments(segments: Vec<Segment>, width: usize) -> Option<Line<'static>> {
+fn render_groups(
+    identity: Vec<Segment>,
+    usage: Vec<Segment>,
+    width: usize,
+) -> Option<Line<'static>> {
+    let Some(right) = render_segments(usage, width / 3, WIDE_SEPARATOR) else {
+        return render_segments(identity, width, WIDE_SEPARATOR);
+    };
+    let left_width = width - right.width();
+    let mut line = render_segments(
+        identity,
+        left_width.saturating_sub(GROUP_GAP.width()),
+        WIDE_SEPARATOR,
+    )
+    .unwrap_or_default();
+    line.push_span(" ".repeat(left_width - line.width()));
+    line.extend(right.spans);
+    Some(line)
+}
+
+fn render_segments(
+    segments: Vec<Segment>,
+    width: usize,
+    gap: &'static str,
+) -> Option<Line<'static>> {
     let mut by_priority: Vec<_> = (0..segments.len()).collect();
     by_priority.sort_by_key(|index| Reverse(segments[*index].priority));
     let mut reserved = vec![0; segments.len()];
     let mut remaining = width;
     for &index in &by_priority {
-        let separator = if remaining == width {
-            0
-        } else {
-            SEPARATOR.width()
-        };
+        let separator = if remaining == width { 0 } else { gap.width() };
         let compact = segments[index].compact_width();
         if compact + separator <= remaining || separator == 0 {
             reserved[index] = compact.min(remaining);
@@ -405,7 +452,7 @@ fn render_segments(segments: Vec<Segment>, width: usize) -> Option<Line<'static>
     let mut spans = spans.into_iter().flatten();
     let mut line = vec![spans.next()?];
     for span in spans {
-        line.push(Span::styled(SEPARATOR, Style::default().fg(MUTED)));
+        line.push(Span::styled(gap, Style::default().fg(MUTED)));
         line.push(span);
     }
     Some(Line::from(line))
@@ -439,9 +486,8 @@ fn connection(app: &App, show_endpoint: bool) -> Segment {
     Segment::labels(labels, color, priority)
 }
 
-fn execution(app: &App) -> Option<Segment> {
+fn execution(app: &App, activity: Activity) -> Option<Segment> {
     let pane = app.pane();
-    let activity = pane.activity();
     let connected = app.service_status() == ServiceStatus::Connected;
     if !connected && pane.snapshot.is_none() && activity == Activity::Ready {
         return None;
@@ -537,28 +583,6 @@ fn tokens_per_second(rate: f64) -> String {
     } else {
         format!("{rate:.1} TPS")
     }
-}
-
-fn shorten_middle(text: &str, width: usize) -> String {
-    if text.width() <= width || width < 8 {
-        return shorten(text, width);
-    }
-    let (tail, used) = tail_start(text, width / 2);
-    format!("{}{}", shorten(&text[..tail], width - used), &text[tail..])
-}
-
-fn tail_start(text: &str, width: usize) -> (usize, usize) {
-    let mut used = 0;
-    let mut tail = text.len();
-    for (offset, grapheme) in text.grapheme_indices(true).rev() {
-        let cells = grapheme.width();
-        if used + cells > width {
-            break;
-        }
-        used += cells;
-        tail = offset;
-    }
-    (tail, used)
 }
 
 #[cfg(test)]

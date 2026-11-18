@@ -23,21 +23,25 @@ mod activity;
 mod delivery;
 mod header;
 
-pub(crate) use activity::{animation_active, ActivityClock};
+pub(crate) use activity::{ActivityClock, ActivityFrame};
 
 const MAX_BANNER_ROWS: u16 = 5;
 const MIN_TRANSCRIPT_ROWS: u16 = 2;
 const MIN_ACTIVITY_WIDTH: u16 = 8;
+const FOOTER_SPACE_HEIGHT: u16 = 16;
+const COMPOSER_SPACE_HEIGHT: u16 = 20;
+const COMPOSER_SPACE_WIDTH: usize = 42;
 
 #[cfg(test)]
 pub(crate) fn render(frame: &mut Frame<'_>, app: &mut App) {
-    render_at(frame, app, None);
+    let activity = ActivityFrame::test_frame(app, None);
+    render_at(frame, app, activity);
 }
 
 pub(crate) fn render_at(
     frame: &mut Frame<'_>,
     app: &mut App,
-    activity_step: Option<usize>,
+    activity_frame: ActivityFrame,
 ) -> bool {
     let outer = frame.area();
     if outer.is_empty() {
@@ -49,8 +53,12 @@ pub(crate) fn render_at(
     }
     let area = outer.inner(Margin::new(horizontal_gutter(outer.width), 0));
     let width = usize::from(area.width);
-    let footer = app.displayed_statusline().render_line(app, width);
+    let footer =
+        app.displayed_statusline()
+            .render_line(app, width, activity_frame.agent_activity(app));
     let status_height = u16::from(footer.is_some());
+    let status_gap = u16::from(status_height > 0 && area.height >= FOOTER_SPACE_HEIGHT);
+    let below_editor = status_height + status_gap;
     let chrome_rows = if area.height > 3 {
         MIN_TRANSCRIPT_ROWS
     } else {
@@ -61,7 +69,7 @@ pub(crate) fn render_at(
     let composer_gap = u16::from(area.height >= 16);
     let space_above_editor = area
         .height
-        .saturating_sub(status_height + chrome_rows + padding_rows + composer_gap + 2);
+        .saturating_sub(below_editor + chrome_rows + padding_rows + composer_gap + 2);
     let reading = (space_above_editor > 0)
         .then(|| reading_line(app, width))
         .flatten();
@@ -71,7 +79,7 @@ pub(crate) fn render_at(
     let above_editor = composer_gap + delivery_height + reading_height;
     let editor_limit = area
         .height
-        .saturating_sub(status_height + chrome_rows + padding_rows + above_editor);
+        .saturating_sub(below_editor + chrome_rows + padding_rows + above_editor);
     let unobstructed = app.modal.is_none();
     let focused = unobstructed && app.composer_focused();
     let mut composer = Block::new().style(surface());
@@ -83,16 +91,23 @@ pub(crate) fn render_at(
     }
     let content_width = usize::from(composer.inner(area).width);
     let heading_rows = u16::from(editor_limit >= 2);
-    let draft_limit = usize::from(editor_limit - heading_rows).min(MAX_DRAFT_ROWS);
+    let heading_gap = u16::from(
+        editor_limit >= 3
+            && area.height >= COMPOSER_SPACE_HEIGHT
+            && content_width >= COMPOSER_SPACE_WIDTH,
+    );
+    let draft_limit = usize::from(editor_limit - heading_rows - heading_gap).min(MAX_DRAFT_ROWS);
     let draft = (draft_limit > 0).then(|| app.pane_mut().draft.project(content_width, draft_limit));
-    let editor_height =
-        padding_rows + heading_rows + draft.as_ref().map_or(0, |view| view.lines.len() as u16);
+    let editor_height = padding_rows
+        + heading_rows
+        + heading_gap
+        + draft.as_ref().map_or(0, |view| view.lines.len() as u16);
     let banner_rows = area
         .height
-        .saturating_sub(editor_height + above_editor + status_height + MIN_TRANSCRIPT_ROWS)
+        .saturating_sub(editor_height + above_editor + below_editor + MIN_TRANSCRIPT_ROWS)
         .min(MAX_BANNER_ROWS);
     let banner = banner(app, width, usize::from(banner_rows));
-    let [transcript, banner_area, _gap, delivery_area, reading_area, editor, status] =
+    let [transcript, banner_area, _gap, delivery_area, reading_area, editor, _status_gap, status] =
         Layout::vertical([
             Constraint::Min(0),
             Constraint::Length(banner.len() as u16),
@@ -100,6 +115,7 @@ pub(crate) fn render_at(
             Constraint::Length(delivery_height),
             Constraint::Length(reading_height),
             Constraint::Length(editor_height),
+            Constraint::Length(status_gap),
             Constraint::Length(status_height),
         ])
         .areas(area);
@@ -111,16 +127,24 @@ pub(crate) fn render_at(
         frame.render_widget(Paragraph::new(line), reading_area);
     }
     app.reading_area = reading_area;
-    let [heading, inner] = Layout::vertical([Constraint::Length(heading_rows), Constraint::Min(0)])
-        .areas(composer.inner(editor));
+    let [heading, _heading_gap, inner] = Layout::vertical([
+        Constraint::Length(heading_rows),
+        Constraint::Length(heading_gap),
+        Constraint::Min(0),
+    ])
+    .areas(composer.inner(editor));
     frame.render_widget(composer, editor);
     app.editor_width = content_width.max(1);
     app.composer_area = inner;
     let activity_visible =
         unobstructed && heading.width >= MIN_ACTIVITY_WIDTH && !heading.is_empty();
     if !heading.is_empty() {
-        let step = activity_step.filter(|_| activity_visible);
-        let line = activity::render_heading(app, usize::from(heading.width), step);
+        let state = if activity_visible {
+            activity_frame
+        } else {
+            activity_frame.still()
+        };
+        let line = activity::render_heading(app, usize::from(heading.width), state);
         frame.render_widget(Paragraph::new(line), heading);
     }
     if let Some(draft) = draft {

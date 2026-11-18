@@ -1,5 +1,5 @@
 use std::io::{self, Stdout, Write};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use crossterm::cursor::{Hide, Show};
@@ -17,7 +17,7 @@ use ratatui::{CompletedFrame, Terminal};
 use crate::app::{Address, App};
 use crate::config::load_statusline;
 use crate::jobs::{Job, Jobs, Update};
-use crate::ui::{self, ActivityClock};
+use crate::ui::{self, ActivityClock, ActivityFrame};
 
 #[cfg(windows)]
 mod windows;
@@ -49,10 +49,19 @@ impl PaintSchedule {
     }
 }
 
-fn apply_update(app: &mut App, update: Update, paint: &mut PaintSchedule) {
+fn apply_update(
+    app: &mut App,
+    update: Update,
+    activity: &mut ActivityClock,
+    paint: &mut PaintSchedule,
+) {
+    if matches!(update, Update::Observation(_, Observation::Heartbeat)) {
+        return;
+    }
     let delta = matches!(&update, Update::Observation(_, Observation::Live { event, .. })
         if matches!(event["type"].as_str(), Some("text" | "thinking" | "tool_arguments" | "tool_output")));
     app.update(update);
+    activity.observe(app, Instant::now());
     paint.request(!delta);
 }
 
@@ -77,9 +86,9 @@ pub(crate) async fn run(options: ConnectionOptions) -> io::Result<()> {
     let mut clipboard = Clipboard::default();
     let mut frames = tokio::time::interval(FRAME_INTERVAL);
     frames.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let (mut screen, mut activity_visible) = terminal.draw(&mut app, None)?;
     let mut activity = ActivityClock::default();
-    let mut painted_step = None;
+    let mut painted_activity = activity.sample(&app, Instant::now(), SystemTime::now());
+    let (mut screen, mut activity_visible) = terminal.draw(&mut app, painted_activity)?;
     dispatch(&mut app, &mut jobs, &mut clipboard);
     let mut paint = PaintSchedule {
         dirty: false,
@@ -91,6 +100,7 @@ pub(crate) async fn run(options: ConnectionOptions) -> io::Result<()> {
             event = events.next() => match event {
                 Some(Ok(event)) => {
                     app.event(event, screen.buffer);
+                    activity.observe(&app, Instant::now());
                     paint.request(true);
                 }
                 Some(Err(error)) => return Err(error),
@@ -98,10 +108,10 @@ pub(crate) async fn run(options: ConnectionOptions) -> io::Result<()> {
             },
             event = jobs.next() => {
                 if let Some(event) = event {
-                    apply_update(&mut app, event, &mut paint);
+                    apply_update(&mut app, event, &mut activity, &mut paint);
                     for _ in 1..UPDATE_BATCH {
                         let Some(event) = jobs.try_next() else { break };
-                        apply_update(&mut app, event, &mut paint);
+                        apply_update(&mut app, event, &mut activity, &mut paint);
                     }
                 }
             },
@@ -110,13 +120,13 @@ pub(crate) async fn run(options: ConnectionOptions) -> io::Result<()> {
                     paint.request(true);
                 }
                 let start = Instant::now();
-                let step = activity.frame_at(start, activity_visible && ui::animation_active(&app));
-                if step.is_some() && step != painted_step {
+                let frame = activity.sample(&app, start, SystemTime::now());
+                if activity_visible && frame != painted_activity {
                     paint.request(false);
                 }
                 if paint.ready(start) {
-                    (screen, activity_visible) = terminal.draw(&mut app, step)?;
-                    painted_step = step;
+                    (screen, activity_visible) = terminal.draw(&mut app, frame)?;
+                    painted_activity = frame;
                     paint.painted(start, Instant::now());
                 }
             },
@@ -162,7 +172,7 @@ impl Screen {
     fn draw(
         &mut self,
         app: &mut App,
-        activity_step: Option<usize>,
+        activity: ActivityFrame,
     ) -> io::Result<(CompletedFrame<'_>, bool)> {
         let target_changed = self.painted_target != app.active;
         if target_changed {
@@ -170,7 +180,7 @@ impl Screen {
         }
         let mut activity_visible = false;
         let render = |frame: &mut ratatui::Frame<'_>| {
-            activity_visible = ui::render_at(frame, app, activity_step);
+            activity_visible = ui::render_at(frame, app, activity);
         };
         let frame = if target_changed {
             io::stdout().sync_update(|_| {

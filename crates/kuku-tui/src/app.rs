@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use kuku_client::{
     new_id, Action, AgentConfig, AgentStatus, Command, Error, HistoryKind, HistoryPage,
-    ModelSelection, Observation, Snapshot, Target, Timing, UsageTotals,
+    ModelSelection, Snapshot, Target, Timing, UsageTotals,
 };
 use ratatui::layout::Rect;
 
@@ -23,6 +23,7 @@ mod delivery;
 mod navigation;
 mod pending;
 mod reading;
+mod timing;
 
 pub(crate) use activity::{Activity, ServiceStatus, SubmissionStatus};
 use activity::{ExecutionProgress, Watch};
@@ -32,6 +33,7 @@ pub(crate) use delivery::DeliveryRow;
 use navigation::AgentNavigation;
 pub(crate) use pending::{PendingItem, PendingStage};
 use reading::KeyboardFocus;
+pub(crate) use timing::TurnTiming;
 
 const DEFAULT_AGENT: &str = "main";
 const CLEANUP_REFRESH: Duration = Duration::from_secs(1);
@@ -92,6 +94,7 @@ pub(crate) struct Pane {
     pub(crate) deliveries: Deliveries,
     keyboard_focus: KeyboardFocus,
     pub(crate) snapshot: Option<Box<Snapshot>>,
+    observed_timing: Option<(u64, TurnTiming)>,
     pub(crate) pending_reply_copy: Option<u64>,
     pub(crate) initial_config: AgentConfig,
     initial_model: Option<ModelSelection>,
@@ -850,100 +853,6 @@ impl App {
         pane.watch = state;
         pane.progress.clear_stream();
         pane.transcript.clear_preview();
-    }
-
-    fn observe(&mut self, event: Observation) {
-        let active_agent = self.active.agent.clone();
-        self.related_agents.observe(&event, &active_agent);
-        let pane = self.pane_mut();
-        match event {
-            Observation::Committed {
-                id,
-                agent,
-                entry,
-                state_changed,
-                kind,
-                operation,
-                delivery,
-                tool_call_id,
-                ..
-            } => {
-                if id <= pane.last_event {
-                    return;
-                }
-                pane.last_event = id;
-                let same_agent = agent.as_deref() == Some(&active_agent);
-                let request_changed = same_agent
-                    && (matches!(kind.as_str(), "runtime.step_prepared" | "model.response")
-                        || matches!(
-                            operation.as_deref(),
-                            Some("agent_configured" | "step_configured")
-                        ));
-                if request_changed {
-                    pane.request_usage_floor = id;
-                }
-                if same_agent {
-                    if let Some(delivery) = delivery {
-                        pane.deliveries.committed(id, delivery);
-                    }
-                    pane.observe_execution(
-                        id,
-                        &kind,
-                        operation.as_deref(),
-                        entry.as_deref(),
-                        tool_call_id,
-                    );
-                    if operation.as_deref() == Some("inputs_accepted") {
-                        pane.record_submission(id, SubmissionStatus::Accepted);
-                    }
-                }
-                if let Some(entry) = entry.filter(|entry| entry.agent == active_agent) {
-                    if entry.kind == HistoryKind::User {
-                        if let Some(text) = &entry.text {
-                            pane.draft.remember(text);
-                        }
-                    }
-                    pane.transcript.apply(*entry, pane.execution);
-                }
-                if state_changed || request_changed {
-                    self.request_refresh(SnapshotRefresh::AfterCommit(id));
-                }
-            }
-            Observation::Live {
-                agent,
-                execution_id,
-                turn,
-                turn_number,
-                cursor,
-                event,
-            } => {
-                let terminal =
-                    matches!(event["type"].as_str(), Some("done" | "cancelled" | "error"));
-                if agent == active_agent
-                    && cursor >= pane.live_floor
-                    && execution_id > pane.retired_execution_floor
-                    && pane
-                        .execution
-                        .is_none_or(|execution| execution_id >= execution)
-                {
-                    if !terminal && pane.execution != Some(execution_id) {
-                        pane.execution = Some(execution_id);
-                        pane.progress = ExecutionProgress::default();
-                    }
-                    pane.note_live_reply(cursor, &event);
-                    pane.transcript
-                        .live(execution_id, turn, turn_number, &event);
-                }
-            }
-            Observation::Lagged { .. } => {
-                pane.progress.clear_stream();
-                pane.transcript.clear_preview();
-                let cursor = pane.last_event;
-                self.related_agents.invalidate(cursor);
-                self.request_refresh(SnapshotRefresh::Progress);
-            }
-            Observation::Heartbeat => {}
-        }
     }
 
     fn refresh(&mut self) {

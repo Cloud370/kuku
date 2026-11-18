@@ -44,7 +44,7 @@ pub(super) fn render_session(
         .as_ref()
         .is_some_and(|snapshot| snapshot.agents.len() > 1)
     {
-        "Alt+↑/↓ Switch · /agents"
+        "Alt+←/→ Switch · /agents"
     } else {
         "/agents"
     };

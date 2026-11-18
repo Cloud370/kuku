@@ -1,116 +1,184 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{Activity, App, ServiceStatus};
-use crate::text::{shorten, single_line};
-use crate::theme::{ACCENT, ERROR, EXECUTION, KUKU_MARK, MUTED, WARNING};
+use crate::text::{format_elapsed, shorten, shorten_middle, single_line};
+use crate::theme::{emphasis, ACCENT, ERROR, EXECUTION, MUTED, SURFACE_TEXT, WARNING};
 
-const FRAME_INTERVAL: Duration = Duration::from_millis(160);
-const WINGS: [&str; 8] = ["▖", "▚", "▙", "▛", "▘", "▞", "▗", "▚"];
+mod clock;
+mod motion;
+
+pub(crate) use clock::ActivityClock;
+use motion::Sprite;
+
 const COMPACT_WIDTH: usize = 37;
+const WIDE_WIDTH: usize = 66;
+const PHASE_SLOT: usize = 22;
+const TIME_SLOT: usize = 12;
 const FEEDBACK_LIMIT: usize = 48;
-const LABEL_SEPARATOR: &str = " · ";
+const RECIPIENT_LIMIT: usize = 28;
+const SEPARATOR: &str = " · ";
 
-#[derive(Default)]
-pub(crate) struct ActivityClock {
-    started: Option<Instant>,
-}
-
-impl ActivityClock {
-    pub(crate) fn frame_at(&mut self, now: Instant, active: bool) -> Option<usize> {
-        if !active {
-            self.started = None;
-            return None;
-        }
-        let started = *self.started.get_or_insert(now);
-        let step = now.duration_since(started).as_millis() / FRAME_INTERVAL.as_millis();
-        Some((step % WINGS.len() as u128) as usize)
-    }
-}
-
-struct ObservedActivity {
-    label: &'static str,
-    color: Color,
-    moving: bool,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ObservedActivity {
+    Service(ServiceStatus),
+    Agent(Activity),
 }
 
 impl ObservedActivity {
     fn of(app: &App) -> Self {
         let service = app.service_status();
-        let service_color = match service {
-            ServiceStatus::Offline | ServiceStatus::UpdatesUnavailable => Some(ERROR),
-            ServiceStatus::Connecting | ServiceStatus::Reconnecting | ServiceStatus::Restarting => {
-                Some(MUTED)
-            }
-            ServiceStatus::Connected => None,
-        };
-        if let Some(color) = service_color {
-            return Self {
-                label: service.label(),
-                color,
-                moving: false,
-            };
+        if service == ServiceStatus::Connected {
+            Self::Agent(app.pane().activity())
+        } else {
+            Self::Service(service)
         }
-        let activity = app.pane().activity();
-        let (color, moving) = match activity {
-            Activity::Running
-            | Activity::WaitingForModel
-            | Activity::RetryingModel
-            | Activity::Thinking
-            | Activity::Streaming
-            | Activity::ToolArguments
-            | Activity::RunningTools
-            | Activity::Stopping => (EXECUTION, true),
-            Activity::Waiting | Activity::Configuration | Activity::Stopped => (WARNING, false),
-            Activity::Interrupted | Activity::Failed => (ERROR, false),
-            Activity::Ready | Activity::Opening | Activity::Finished => (MUTED, false),
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Service(service) => service.label(),
+            Self::Agent(activity) => activity.label(),
+        }
+    }
+
+    fn color(self) -> Color {
+        match self {
+            Self::Service(ServiceStatus::Offline | ServiceStatus::UpdatesUnavailable)
+            | Self::Agent(Activity::Interrupted | Activity::Failed) => ERROR,
+            Self::Service(ServiceStatus::Reconnecting)
+            | Self::Agent(
+                Activity::Waiting
+                | Activity::Configuration
+                | Activity::Stopping
+                | Activity::Stopped,
+            ) => WARNING,
+            phase if phase.motion().is_some() => EXECUTION,
+            _ => MUTED,
+        }
+    }
+
+    fn motion(self) -> Option<Activity> {
+        match self {
+            Self::Agent(
+                activity @ (Activity::Running
+                | Activity::WaitingForModel
+                | Activity::RetryingModel
+                | Activity::Thinking
+                | Activity::Streaming
+                | Activity::ToolArguments
+                | Activity::RunningTools),
+            ) => Some(activity),
+            _ => None,
+        }
+    }
+
+    fn can_coalesce(self) -> bool {
+        self.motion().is_some()
+    }
+
+    fn clock_runs(self) -> bool {
+        self.motion().is_some()
+            || matches!(self, Self::Agent(Activity::Waiting | Activity::Stopping))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ActivityFrame {
+    status: ObservedActivity,
+    sprite: Sprite,
+    elapsed: Option<u64>,
+}
+
+impl ActivityFrame {
+    #[cfg(test)]
+    pub(super) fn test_frame(app: &App, step: Option<u128>) -> Self {
+        let elapsed = app
+            .pane()
+            .turn_timing()
+            .and_then(|timing| timing.elapsed_ms);
+        Self::new(ObservedActivity::of(app), step, elapsed.map(|ms| ms / 1000))
+    }
+
+    fn new(status: ObservedActivity, step: Option<u128>, elapsed: Option<u64>) -> Self {
+        let tone = match status.color() {
+            color @ (ERROR | WARNING) => color,
+            _ => ACCENT,
         };
+        let sprite = status.motion().zip(step).map_or_else(
+            || Sprite::resting(tone),
+            |(phase, step)| Sprite::moving(phase, step),
+        );
         Self {
-            label: activity.label(),
-            color,
-            moving,
+            status,
+            sprite,
+            elapsed,
+        }
+    }
+
+    pub(super) fn still(self) -> Self {
+        Self::new(self.status, None, self.elapsed)
+    }
+
+    pub(super) fn agent_activity(self, app: &App) -> Activity {
+        match self.status {
+            ObservedActivity::Agent(activity) => activity,
+            ObservedActivity::Service(_) => app.pane().activity(),
         }
     }
 }
 
-pub(crate) fn animation_active(app: &App) -> bool {
-    ObservedActivity::of(app).moving
-}
-
-pub(super) fn render_heading(app: &App, width: usize, step: Option<usize>) -> Line<'static> {
-    let activity = ObservedActivity::of(app);
+pub(super) fn render_heading(app: &App, width: usize, frame: ActivityFrame) -> Line<'static> {
     let compact = width < COMPACT_WIDTH;
-    let mut line = mark(&activity, compact, step);
-    let left_min = line.width() + 1 + activity.label.width();
+    let wide = width >= WIDE_WIDTH;
+    let mut line = frame.sprite.line(compact);
+    let muted = Style::default().fg(MUTED);
+    let name = single_line(&app.active.agent);
+    let separator = if compact { " " } else { SEPARATOR };
+    let fixed_width = line.width() + " To ".width() + separator.width();
+    let reserved = if wide { PHASE_SLOT + TIME_SLOT + 2 } else { 0 };
+    let name_width = (width / 3).clamp(4, RECIPIENT_LIMIT);
+    let name_width = name_width.min(width.saturating_sub(fixed_width + reserved));
+    if name_width > 0 {
+        line.push_span(Span::styled(" To ", muted));
+        line.push_span(Span::styled(
+            shorten_middle(&name, name_width),
+            emphasis(SURFACE_TEXT),
+        ));
+    }
+    if line.width() + separator.width() < width {
+        line.push_span(Span::styled(separator, muted));
+    }
+    let label = frame.status.label();
+    let elapsed = frame
+        .elapsed
+        .map(|seconds| format_elapsed(Duration::from_secs(seconds)));
+    let elapsed = elapsed.filter(|text| {
+        wide || line.width() + label.width() + text.width() + 2 <= width.saturating_sub(6)
+    });
+    let time_space = if wide {
+        TIME_SLOT + 2
+    } else {
+        elapsed.as_ref().map_or(0, |text| text.width() + 2)
+    };
+    let phase_space = if wide { PHASE_SLOT } else { label.width() };
     let feedback_width = width
-        .saturating_sub(left_min + 1)
+        .saturating_sub(line.width() + phase_space + time_space + 1)
         .min(width / 3)
         .min(FEEDBACK_LIMIT);
     let left_width = width - feedback_width - usize::from(feedback_width > 0);
-    if line.width() < left_width {
-        line.push_span(" ");
-    }
-    let recipient = format!("To {}", single_line(&app.active.agent));
-    let separator = if compact { " " } else { LABEL_SEPARATOR };
-    let recipient_width =
-        left_width.saturating_sub(line.width() + activity.label.width() + separator.width());
-    let show_recipient = recipient_width >= "To x".width();
-    let recipient = Span::styled(
-        shorten(&recipient, recipient_width),
-        Style::default().fg(MUTED),
-    );
-    let separator = Span::styled(separator, Style::default().fg(MUTED));
-    let status = Span::styled(
-        shorten(activity.label, left_width.saturating_sub(line.width())),
-        Style::default().fg(activity.color),
-    );
-    match (compact, show_recipient) {
-        (true, true) => line.extend([status, separator, recipient]),
-        (false, true) => line.extend([recipient, separator, status]),
-        (_, false) => line.push_span(status),
+    let status = shorten(label, left_width.saturating_sub(line.width()));
+    let status_width = status.width();
+    line.push_span(Span::styled(
+        status,
+        Style::default().fg(frame.status.color()),
+    ));
+    if let Some(elapsed) = elapsed {
+        line.push_span(" ".repeat(2 + phase_space.saturating_sub(status_width)));
+        line.push_span(Span::styled(shorten(&elapsed, TIME_SLOT), muted));
     }
     if let Some(feedback) = app
         .displayed_statusline()
@@ -120,48 +188,4 @@ pub(super) fn render_heading(app: &App, width: usize, step: Option<usize>) -> Li
         line.push_span(feedback);
     }
     line
-}
-
-fn mark(activity: &ObservedActivity, compact: bool, step: Option<usize>) -> Line<'static> {
-    let [rest, head] = KUKU_MARK;
-    let wing = step
-        .filter(|_| activity.moving)
-        .map_or(rest, |step| WINGS[step]);
-    let color = if matches!(activity.color, WARNING | ERROR) {
-        activity.color
-    } else {
-        ACCENT
-    };
-    let style = Style::default().fg(color);
-    let mut line = Line::from(Span::styled(wing, style));
-    if !compact {
-        line.push_span(Span::styled(head, style));
-    }
-    line
-}
-
-#[cfg(test)]
-mod tests {
-    use std::time::{Duration, Instant};
-
-    use super::{ActivityClock, FRAME_INTERVAL, WINGS};
-
-    #[test]
-    fn clock_skips_delayed_frames_and_resets_after_hidden_or_idle() {
-        let mut clock = ActivityClock::default();
-        let now = Instant::now();
-        assert_eq!(None, clock.frame_at(now, false));
-        assert_eq!(Some(0), clock.frame_at(now, true));
-        assert_eq!(
-            Some(0),
-            clock.frame_at(now + Duration::from_millis(100), true)
-        );
-        assert_eq!(Some(3), clock.frame_at(now + FRAME_INTERVAL * 3, true));
-        assert_eq!(
-            Some(0),
-            clock.frame_at(now + FRAME_INTERVAL * WINGS.len() as u32, true)
-        );
-        assert_eq!(None, clock.frame_at(now + Duration::from_secs(3), false));
-        assert_eq!(Some(0), clock.frame_at(now + Duration::from_secs(10), true));
-    }
 }

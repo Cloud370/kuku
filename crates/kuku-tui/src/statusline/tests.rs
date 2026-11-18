@@ -6,6 +6,7 @@ use kuku_client::{
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 use serde_json::{json, Value};
+use unicode_width::UnicodeWidthStr;
 
 use super::{
     compact_token_count, render_segments, Field, Priority, Segment, StatusLine, SEPARATOR,
@@ -146,6 +147,7 @@ fn short_status_line_fits_complete_graphemes_and_keeps_urgent_segments() {
             Segment::labels(vec!["Offline".into()], ERROR, Priority::ConnectionProblem),
         ],
         17,
+        SEPARATOR,
     )
     .unwrap();
     assert_eq!(
@@ -160,6 +162,7 @@ fn short_status_line_fits_complete_graphemes_and_keeps_urgent_segments() {
             "/dir/e\u{0301}e\u{0301}e\u{0301}/👩‍💻末".into(),
         )],
         10,
+        SEPARATOR,
     )
     .unwrap();
     assert!(line.width() <= 10);
@@ -219,11 +222,11 @@ fn draft_receipt_and_copy_feedback_keep_the_footer_in_place() {
     app.pane_mut().draft.insert("First input");
     let rows = screen(&mut app, &statusline, 140, 24);
     assert_eq!(footer, rows[23]);
-    assert!(rows[21].trim_end().ends_with("Draft"));
+    assert!(rows[19].trim_end().ends_with("Draft"));
     let id = submit_draft(&mut app);
     let rows = screen(&mut app, &statusline, 140, 24);
     assert_eq!(footer, rows[23]);
-    assert!(rows[21].contains("Awaiting receipt"));
+    assert!(rows[19].contains("Awaiting receipt"));
     app.update(Update::Sent(
         id.clone(),
         Ok(Acknowledgement {
@@ -238,11 +241,11 @@ fn draft_receipt_and_copy_feedback_keep_the_footer_in_place() {
     ));
     let rows = screen(&mut app, &statusline, 140, 24);
     assert_eq!(footer, rows[23]);
-    assert!(rows[21].contains("Input accepted"));
+    assert!(rows[19].contains("Input accepted"));
     app.confirmation("Copied to clipboard");
     let rows = screen(&mut app, &statusline, 140, 24);
     assert_eq!(footer, rows[23]);
-    assert!(rows[21].contains("Copied to clipboard"));
+    assert!(rows[19].contains("Copied to clipboard"));
     assert_eq!(
         1,
         rows.iter()
@@ -252,7 +255,7 @@ fn draft_receipt_and_copy_feedback_keep_the_footer_in_place() {
     app.pane_mut().draft.insert("Second input");
     let rows = screen(&mut app, &statusline, 140, 24);
     assert_eq!(footer, rows[23]);
-    assert!(rows[21].contains("Draft") && !rows[21].contains("Input accepted"));
+    assert!(rows[19].contains("Draft") && !rows[19].contains("Input accepted"));
     assert!(!rows.iter().any(|row| row.contains("Copied to clipboard")));
 }
 
@@ -261,19 +264,19 @@ fn composer_follows_wrapped_draft_rows_and_caps_the_visible_paste() {
     let mut app = connected_app();
     let statusline = StatusLine::default();
     let rows = screen(&mut app, &statusline, 80, 20);
-    assert!(rows[17].contains("To main"));
-    assert!(rows[18].contains("Type a prompt"));
+    assert!(rows[15].contains("To main"));
+    assert!(rows[17].contains("Type a prompt"));
     app.pane_mut().draft.insert(&"a".repeat(76));
     let rows = screen(&mut app, &statusline, 80, 20);
-    assert!(rows[16].contains("To main") && rows[18].trim_end().ends_with('a'));
+    assert!(rows[14].contains("To main") && rows[17].trim_end().ends_with('a'));
     app.pane_mut()
         .draft
         .set_text("line 1\nline 2\nline 3\nline 4\nline 5\n中文\nline 7".into());
     let rows = screen(&mut app, &statusline, 80, 20);
-    assert!(rows[14].contains("To main"));
-    assert!(rows[15].contains("line 4"));
-    assert!(rows[17].contains("中") && rows[17].contains("文"));
-    assert!(rows[18].contains("line 7"));
+    assert!(rows[12].contains("To main"));
+    assert!(rows[14].contains("line 4"));
+    assert!(rows[16].contains("中") && rows[16].contains("文"));
+    assert!(rows[17].contains("line 7"));
     let rows = screen(&mut app, &statusline, 29, 6);
     assert!(rows[2].contains("To main"));
     assert!(rows[2].contains("Ready") && rows[4].contains("line 7"));
@@ -308,24 +311,44 @@ fn default_status_line_shows_context_tps_and_workspace_in_one_row() {
     ] {
         assert!(footer.contains(label), "missing {label:?} in {footer}");
     }
-    assert!(footer.starts_with("Model pending · Connected · Agent main"));
+    assert!(footer.starts_with("Model pending  Connected  Agent main"));
     for detail in ["Running", "http://", "129M in", "210K out", "Cache hit"] {
         assert!(!footer.contains(detail), "{footer}");
     }
     assert!(!footer.contains(workspace.to_string_lossy().as_ref()));
-    assert!(rows[21].contains("To main") && rows[21].contains("2 queued, Draft"));
-    assert!(rows[21].contains("Running"));
-    assert!(rows[22].contains("Local draft"));
+    assert!(rows[19].contains("To main") && rows[19].contains("2 queued, Draft"));
+    assert!(rows[19].contains("Running"));
+    assert!(rows[21].contains("Local draft"));
     let rows = screen(&mut app, &statusline, 80, 24);
     assert!(rows[23].contains("Ctx 89%"));
-    assert!(rows[23].contains("work-right") && rows[22].contains("Local draft"));
+    assert!(rows[23].contains("work-right") && rows[21].contains("Local draft"));
     let rows = screen(&mut app, &statusline, 29, 24);
-    assert!(rows[21].contains("Running") && rows[21].contains("2 queued"));
+    assert!(rows[20].contains("Running") && rows[20].contains("To main"));
     let rows = screen(&mut app, &StatusLine::parse("none").unwrap(), 80, 24);
     assert!(
         rows[23].contains("Local draft"),
         "the status row should be reclaimed"
     );
+}
+
+#[test]
+fn wide_status_line_keeps_metrics_anchored_while_identity_width_changes() {
+    let layout = StatusLine::default();
+    let mut short = connected_workspace(PathBuf::from("/short"));
+    let mut long = connected_workspace(PathBuf::from("/really-long-directory".repeat(20)));
+    for app in [&mut short, &mut long] {
+        load_agent(app, "running", 0, Value::Null, measured_usage());
+    }
+    let first = screen(&mut short, &layout, 120, 24);
+    long.pane_mut().draft.insert("正在输入");
+    let second = screen(&mut long, &layout, 120, 24);
+    let measures = "Context 89% used  18.4 TPS";
+    assert_ne!(first[23], second[23]);
+    let position = |row: &str| row.split_once(measures).map(|(prefix, _)| prefix.width());
+    assert_eq!(position(&first[23]), position(&second[23]));
+    assert!(first[23].trim_end().ends_with(measures));
+    assert!(second[23].trim_end().ends_with(measures));
+    assert_eq!("", second[22].trim());
 }
 
 #[test]
@@ -354,7 +377,7 @@ fn default_model_field_keeps_the_resolved_identifier_first_at_every_width() {
     for width in [60, 80, 140] {
         let rows = screen(&mut app, &layout, width, 20);
         assert!(
-            rows[19].trim().starts_with("openai/gpt-6-luna ·"),
+            rows[19].trim().starts_with("openai/gpt-6-luna "),
             "{}",
             rows[19]
         );
@@ -364,7 +387,7 @@ fn default_model_field_keeps_the_resolved_identifier_first_at_every_width() {
     assert!(rows[19]
         .trim()
         .starts_with("openai/gpt-6-luna (configured-model-gateway · high) ·"));
-    let line = layout.render_line(&app, 80).unwrap();
+    let line = layout.render_line(&app, 80, app.pane().activity()).unwrap();
     assert_eq!(Some(MODEL), line.spans[0].style.fg);
 }
 
@@ -383,7 +406,7 @@ fn configured_status_line_can_show_full_metrics_and_connection_details() {
         footer.ends_with("Context 89% used · 129M in · 210K out · Cache hit 75% · 18.4 TPS"),
         "{footer}"
     );
-    assert!(rows[22].contains("Type a prompt"));
+    assert!(rows[21].contains("Type a prompt"));
 }
 
 #[test]
@@ -398,7 +421,7 @@ fn selected_agent_metrics_change_with_the_address_and_custom_order() {
         "Agent main · 18.4 TPS · 210K out · /workspace",
         rows[19].trim()
     );
-    assert!(rows[18].contains("Type a prompt"));
+    assert!(rows[17].contains("Type a prompt"));
 
     app.select(
         Address::new(main.session.clone(), "reviewer".into()),

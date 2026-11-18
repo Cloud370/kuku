@@ -96,6 +96,28 @@ pub(crate) fn shorten(text: &str, cells: usize) -> String {
     shortened
 }
 
+pub(crate) fn shorten_middle(text: &str, width: usize) -> String {
+    if text.width() <= width || width < 8 {
+        return shorten(text, width);
+    }
+    let (tail, used) = tail_start(text, width / 2);
+    format!("{}{}", shorten(&text[..tail], width - used), &text[tail..])
+}
+
+pub(crate) fn tail_start(text: &str, width: usize) -> (usize, usize) {
+    let mut used = 0;
+    let mut tail = text.len();
+    for (offset, grapheme) in text.grapheme_indices(true).rev() {
+        let cells = grapheme.width();
+        if used + cells > width {
+            break;
+        }
+        used += cells;
+        tail = offset;
+    }
+    (tail, used)
+}
+
 #[cfg(windows)]
 fn ordinary_windows_path(path: &Path) -> Option<PathBuf> {
     let mut components = path.components();
