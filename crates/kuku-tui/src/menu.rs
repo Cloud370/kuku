@@ -180,7 +180,7 @@ impl Choice {
             .map(|command| {
                 Self::new(
                     format!("/{}", command.name()),
-                    format!("Action · {}", command.description()),
+                    command.description(),
                     ChoiceKind::Command(*command),
                 )
             })
@@ -317,6 +317,10 @@ impl Picker {
         self.selected = self
             .selected
             .min(self.visible_choices().len().saturating_sub(1));
+    }
+
+    pub(crate) fn choice_count(&self) -> usize {
+        self.local.len() + self.remote.len()
     }
 
     pub(crate) fn visible_choices(&self) -> Vec<&Choice> {

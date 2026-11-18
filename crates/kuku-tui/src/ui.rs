@@ -10,13 +10,13 @@ use crate::app::{App, Modal, ServiceStatus};
 use crate::editor::{Editor, EditorView};
 use crate::keys::Shortcut;
 use crate::markup::{render_literal, wrap};
-use crate::menu::{Picker, PickerKind, Prompt};
+use crate::menu::{Picker, PickerKind, Prompt, PromptKind};
 use crate::output::OutputViewer;
 use crate::statusline::StatusLine;
 use crate::text::{shorten, single_line};
 use crate::theme::{
     composer_padding, emphasis, focused_row, horizontal_gutter, panel, panel_padding, surface,
-    ACCENT, ERROR, MAX_DRAFT_ROWS, MUTED, OUTPUT_WIDTH, PICKER_HEIGHT, PICKER_WIDTH, WARNING,
+    ACCENT, ERROR, MAX_DRAFT_ROWS, MUTED, OUTPUT_WIDTH, PICKER_HEIGHT, PICKER_WIDTH, SHORT_PROMPT_HEIGHT, WARNING,
 };
 
 const MAX_BANNER_ROWS: u16 = 5;
@@ -311,7 +311,14 @@ fn waiting(app: &App, width: usize) -> Vec<Line<'static>> {
 fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Rect> {
     Some(match app.modal.as_mut()? {
         Modal::Picker(picker) => {
-            let area = popup(area, PICKER_WIDTH, PICKER_HEIGHT);
+            let height = match picker.kind {
+                PickerKind::Models | PickerKind::Thinking | PickerKind::Agents => {
+                    let rows = picker.choice_count().clamp(4, 8) as u16;
+                    9 + rows * 2
+                }
+                _ => PICKER_HEIGHT,
+            };
+            let area = popup(area, PICKER_WIDTH, height);
             let inner = render_popup(frame, area, picker.kind.title());
             let (width, page, header) = render_picker(frame, inner, picker);
             app.modal_editor_width = width;
@@ -320,7 +327,11 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Rect
             inner
         }
         Modal::Prompt(prompt) => {
-            let area = popup(area, PICKER_WIDTH, PICKER_HEIGHT);
+            let height = match prompt.kind {
+                PromptKind::Agent | PromptKind::Model { .. } => SHORT_PROMPT_HEIGHT,
+                PromptKind::Question { .. } => PICKER_HEIGHT,
+            };
+            let area = popup(area, PICKER_WIDTH, height);
             let inner = render_popup(frame, area, &prompt.title);
             let (width, header) = render_prompt(frame, inner, prompt);
             app.modal_editor_width = width;
@@ -368,11 +379,10 @@ fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (us
         ),
         information,
     );
+    let marker_width = u16::from(search_rows > 0 && search.width >= 8) * 2;
+    let [marker, field] =
+        Layout::horizontal([Constraint::Length(marker_width), Constraint::Min(0)]).areas(search);
     if search_rows > 0 {
-        let marker_width = u16::from(search.width >= 8) * 2;
-        let [marker, field] =
-            Layout::horizontal([Constraint::Length(marker_width), Constraint::Min(0)])
-                .areas(search);
         frame.render_widget(Paragraph::new(Span::styled("/ ", emphasis(ACCENT))), marker);
         render_editor(frame, field, &mut picker.query, true, "Search…");
     }
@@ -406,7 +416,7 @@ fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (us
                 &format!("  {detail}"),
                 width,
                 active,
-                style.fg(MUTED),
+                if active { style } else { style.fg(MUTED) },
             ));
         }
     }
@@ -452,11 +462,7 @@ fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (us
         Line::styled(shorten(&help, width), Style::default().fg(MUTED))
     };
     frame.render_widget(Paragraph::new(footer_text), footer);
-    (
-        (width.saturating_sub(usize::from(search_rows > 0 && width >= 8) * 2)).max(1),
-        count,
-        header_rows,
-    )
+    (usize::from(field.width).max(1), count, header_rows)
 }
 
 fn picker_line(text: &str, width: usize, selected: bool, style: Style) -> Line<'static> {
@@ -470,7 +476,7 @@ fn picker_line(text: &str, width: usize, selected: bool, style: Style) -> Line<'
 fn render_prompt(frame: &mut Frame<'_>, inner: Rect, prompt: &mut Prompt) -> (usize, usize) {
     let width = usize::from(inner.width);
     let instructions = wrap(
-        render_literal(&prompt.instructions, Style::default().fg(WARNING)),
+        render_literal(&prompt.instructions, Style::default().fg(MUTED)),
         width,
     );
     let header_rows = instructions

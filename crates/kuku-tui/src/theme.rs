@@ -7,9 +7,9 @@ pub(crate) const ACCENT: Color = Color::Rgb(70, 161, 163);
 pub(crate) const MUTED: Color = Color::Rgb(133, 146, 157);
 pub(crate) const SURFACE: Color = Color::Rgb(38, 48, 58);
 pub(crate) const SURFACE_TEXT: Color = Color::Rgb(229, 236, 240);
-pub(crate) const SUCCESS: Color = Color::Green;
-pub(crate) const WARNING: Color = Color::Yellow;
-pub(crate) const ERROR: Color = Color::Red;
+pub(crate) const SUCCESS: Color = Color::Rgb(152, 202, 162);
+pub(crate) const WARNING: Color = Color::Rgb(232, 191, 122);
+pub(crate) const ERROR: Color = Color::Rgb(243, 145, 145);
 
 pub(crate) fn emphasis(color: Color) -> Style {
     Style::default().fg(color).add_modifier(Modifier::BOLD)
@@ -29,6 +29,7 @@ pub(crate) const USER_LEFT_EDGE: &str = "│ ";
 pub(crate) const MAX_DRAFT_ROWS: usize = 4;
 pub(crate) const PICKER_WIDTH: u16 = 88;
 pub(crate) const PICKER_HEIGHT: u16 = 25;
+pub(crate) const SHORT_PROMPT_HEIGHT: u16 = 13;
 pub(crate) const OUTPUT_WIDTH: u16 = 112;
 const PANEL: Color = Color::Rgb(28, 35, 44);
 const FOCUS: Color = Color::Rgb(53, 73, 85);
@@ -55,9 +56,13 @@ pub(crate) fn horizontal_gutter(width: u16) -> u16 {
 }
 
 pub(crate) fn composer_padding(area: Rect) -> Padding {
+    if area.width < 4 {
+        return Padding::ZERO;
+    }
+    let sides = horizontal_gutter(area.width).max(1);
     Padding::new(
-        horizontal_gutter(area.width).max(1),
-        horizontal_gutter(area.width).max(1),
+        sides,
+        sides,
         u16::from(area.height >= 26),
         u16::from(area.height >= 26),
     )
