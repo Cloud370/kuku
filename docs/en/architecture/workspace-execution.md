@@ -26,7 +26,7 @@ Start from the existing [module contracts](module-contracts.md) and [retained ou
 
 A test runner with a recognized report can yield counts, the first failing case, a bounded excerpt and a reference. An unfamiliar runner can yield an exit status and a useful excerpt. Never infer a passing suite from a successful script return. Keep model evidence bounded but sufficient for the next judgment. Hosts must be able to handle results without parsing model prose. Preserve the exact view already accepted into model context.
 
-The current edit and overwrite contracts rely on a read visible in conversation history. Distinguish the version and extent actually read by an executor, the evidence visible to the model, and the actions the host permits. A deterministic script should be able to transform a fully read file and check for a concurrent change without sending the whole file to the model. An edit based on a preview remains bounded by the observed range. Authorization and conflicting writes still require validation at dispatch.
+A writer that supplied the entire contents of a file and received confirmation of its successful write knows that version. It should be able to edit or overwrite that same version without reading its own output back. Scope this evidence to the originating actor and its effective history. A partial read or edit establishes only the range observed. A deterministic script can transform a fully read file without sending the whole file to the model. The host must still authorize the action and verify the current version at dispatch.
 
 ## Output and named data
 
