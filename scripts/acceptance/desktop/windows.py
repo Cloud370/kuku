@@ -2,7 +2,7 @@
 
 import argparse
 import base64
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 import ctypes
 from ctypes import wintypes
 import hashlib
@@ -24,10 +24,17 @@ from interactive_fixture import InstalledClient, eventually
 TITLE = "Kuku Windows Terminal Acceptance"
 PASTE = "粘贴第一行 e\u0301 👩‍💻\r\n粘贴第二行\r\n最后X"
 PROMPT = "粘贴第一行 e\u0301 👩‍💻\n粘贴第二行\n最后\nshiftline\nctrlline"
-REPLY = "**复制检查**\n\n```text\na\u0301  👩‍💻\n```\n终端回显"
+SELECTION = "selectable desktop text"
+REPLY = f"**复制检查**\n\n```text\na\u0301  👩‍💻\n```\n终端回显\n\nBefore {SELECTION} after"
 SCREENSHOT_LIMIT = 1024 * 1024
 VK_BACK, VK_RETURN, VK_SHIFT, VK_CONTROL, VK_SPACE = 0x08, 0x0D, 0x10, 0x11, 0x20
 VK_LWIN, VK_NUMPAD_PLUS, VK_OEM_SLASH = 0x5B, 0x6B, 0xBF
+VK_LEFT_BUTTON, VK_ALT, VK_RWIN = 0x01, 0x12, 0x5C
+MOUSE_MOVE, MOUSE_LEFT_DOWN, MOUSE_LEFT_UP = 0x01, 0x02, 0x04
+MOUSE_MOVE_NOCOALESCE, MOUSE_VIRTUAL_DESKTOP, MOUSE_ABSOLUTE = 0x2000, 0x4000, 0x8000
+VIRTUAL_SCREEN_METRICS = (76, 77, 78, 79)
+PER_MONITOR_AWARE_V2 = -4
+ROOT_WINDOW = 2
 LANG_CHINESE, LANG_ENGLISH = 0x0804, 0x0409
 
 
@@ -64,6 +71,17 @@ class Desktop:
         user.SendInput.restype = wintypes.UINT
         user.SetForegroundWindow.argtypes = (wintypes.HWND,)
         user.PostMessageW.argtypes = (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+        user.GetAsyncKeyState.argtypes = (ctypes.c_int,)
+        user.GetAsyncKeyState.restype = ctypes.c_short
+        user.SetThreadDpiAwarenessContext.argtypes = (wintypes.HANDLE,)
+        user.SetThreadDpiAwarenessContext.restype = wintypes.HANDLE
+        if not user.SetThreadDpiAwarenessContext(PER_MONITOR_AWARE_V2):
+            raise ctypes.WinError(ctypes.get_last_error())
+        user.GetSystemMetrics.argtypes = (ctypes.c_int,)
+        user.WindowFromPhysicalPoint.argtypes = (wintypes.POINT,)
+        user.WindowFromPhysicalPoint.restype = wintypes.HWND
+        user.GetAncestor.argtypes = (wintypes.HWND, wintypes.UINT)
+        user.GetAncestor.restype = wintypes.HWND
         self.evidence = evidence
         self.screenshots = screenshots
         self.title = title
@@ -89,10 +107,69 @@ class Desktop:
         self.focus()
         presses = [Input(1, InputEvent(keyboard=KeyboardInput(key, 0, 0))) for key in keys]
         releases = [Input(1, InputEvent(keyboard=KeyboardInput(key, 0, 2))) for key in reversed(keys)]
-        events = (Input * (2 * len(keys)))(*presses, *releases)
-        if self.user.SendInput(len(events), events, ctypes.sizeof(Input)) != len(events):
-            raise ctypes.WinError(ctypes.get_last_error())
+        self.send(*presses, *releases)
         time.sleep(0.08)
+
+    def send(self, *events):
+        inputs = (Input * len(events))(*events)
+        if self.user.SendInput(len(events), inputs, ctypes.sizeof(Input)) != len(events):
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    def visible_selection(self):
+        self.focus()
+        result = powershell(f"""
+Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, WindowsBase
+$window = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]::new({self.window}))
+$condition = [System.Windows.Automation.PropertyCondition]::new(
+    [System.Windows.Automation.AutomationElement]::IsTextPatternAvailableProperty, $true)
+foreach ($element in $window.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)) {{
+    $pattern = $element.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern)
+    foreach ($visible in $pattern.GetVisibleRanges()) {{
+        if (-not $visible.GetText(-1).Contains('{SELECTION}')) {{ continue }}
+        $match = $visible.FindText('{SELECTION}', $false, $false)
+        if ($match -and $match.GetText(-1) -ceq '{SELECTION}') {{
+            $boxes = $match.GetBoundingRectangles()
+            if ($boxes.Count -eq 1 -and $boxes[0].Width -gt 0 -and $boxes[0].Height -gt 0) {{
+                $box = $boxes[0]
+                @{{ left = $box.Left; top = $box.Top; width = $box.Width; height = $box.Height }} | ConvertTo-Json -Compress
+                return
+            }}
+        }}
+    }}
+}}
+""")
+        return json.loads(result) if result else None
+
+    def move_cursor(self, point):
+        left, top, width, height = (self.user.GetSystemMetrics(index) for index in VIRTUAL_SCREEN_METRICS)
+        x, y = point[0] - left, point[1] - top
+        assert 0 <= x < width and 0 <= y < height, "Mouse position outside the virtual desktop"
+        flags = MOUSE_MOVE | MOUSE_MOVE_NOCOALESCE | MOUSE_VIRTUAL_DESKTOP | MOUSE_ABSOLUTE
+        absolute_x = (x * 65536 + width - 1) // width
+        absolute_y = (y * 65536 + height - 1) // height
+        self.send(Input(0, InputEvent(mouse=MouseInput(absolute_x, absolute_y, 0, flags))))
+
+    @contextmanager
+    def drag(self, start, end):
+        self.focus()
+        keys = (VK_LEFT_BUTTON, VK_SHIFT, VK_CONTROL, VK_ALT, VK_LWIN, VK_RWIN)
+        assert not any(self.user.GetAsyncKeyState(key) & 0x8000 for key in keys), (
+            "Mouse selection requires the left button and modifiers to be released"
+        )
+        for point in (start, end):
+            hit = self.user.WindowFromPhysicalPoint(wintypes.POINT(*point))
+            assert self.user.GetAncestor(hit, ROOT_WINDOW) == self.window, (
+                "Mouse selection must stay inside Windows Terminal"
+            )
+        self.move_cursor(start)
+        self.send(Input(0, InputEvent(mouse=MouseInput(0, 0, 0, MOUSE_LEFT_DOWN))))
+        try:
+            self.move_cursor(((start[0] + end[0]) // 2, start[1]))
+            time.sleep(0.1)
+            self.move_cursor(end)
+            yield
+        finally:
+            self.send(Input(0, InputEvent(mouse=MouseInput(0, 0, 0, MOUSE_LEFT_UP))))
 
     def spell(self, letters):
         for letter in letters:
@@ -161,6 +238,30 @@ def read_state(state):
     return {}
 
 
+def check_mouse_selection(desktop, checks):
+    sentinel = f"previous clipboard value {secrets.token_hex(8)}"
+    clipboard(sentinel)
+    assert clipboard() == sentinel, "Windows clipboard did not hold the mouse selection sentinel"
+    bounds = eventually("the visible transcript text for mouse selection", desktop.visible_selection, timeout=8)
+    cell = bounds["width"] / len(SELECTION)
+    y = int(bounds["top"] + bounds["height"] / 2)
+    start = (int(bounds["left"] + cell / 4), y)
+    end = (int(bounds["left"] + bounds["width"] - 3 * cell / 4), y)
+    result = checks["mouse_selection"] = {"button": "left", "modifiers": [], "start": start, "end": end,
+                                          "expected_text": SELECTION}
+    with desktop.drag(start, end):
+        result["screenshot"] = desktop.picture("01a-mouse-selection")
+        assert clipboard() == sentinel, "Mouse selection changed the clipboard before the button was released"
+        result["clipboard_unchanged_while_dragging"] = True
+
+    def copied_text():
+        actual = clipboard()
+        result["clipboard_text"] = actual[:512]
+        return actual == SELECTION
+
+    eventually("the exact dragged text in the Windows clipboard after release", copied_text, timeout=8)
+
+
 def exercise(client, desktop, workspace, state, checks):
     def grid():
         return read_state(state).get("grid")
@@ -187,6 +288,7 @@ def exercise(client, desktop, workspace, state, checks):
     eventually("the exact response in the Windows clipboard", lambda: clipboard() == REPLY, timeout=12)
     checks["copy"] = {"command": "/copy", "clipboard_utf8_sha256": hashlib.sha256(REPLY.encode()).hexdigest(),
                       "screenshot": desktop.picture("01-reply-copied")}
+    check_mouse_selection(desktop, checks)
     client.provider.assert_idle(duration=0.25)
 
     original = grid()
