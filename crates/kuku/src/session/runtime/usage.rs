@@ -121,6 +121,11 @@ impl AgentUsage {
             self.totals.latest_request = Some(latest);
         }
         let complete = report.input_tokens.is_some() && report.output_tokens.is_some();
+        let (measured_output_tokens, measured_elapsed_us) = match (report.output_tokens, elapsed_us)
+        {
+            (Some(output), Some(elapsed)) if elapsed > 0 => (output, elapsed),
+            _ => (0, 0),
+        };
         let delta = UsageTotals {
             input_tokens: report.input_tokens,
             output_tokens: report.output_tokens,
@@ -129,6 +134,8 @@ impl AgentUsage {
             input_reported_requests: u64::from(report.input_tokens.is_some()),
             output_reported_requests: u64::from(report.output_tokens.is_some()),
             cache_reported_requests: u64::from(report.cache_input_counts().is_some()),
+            measured_output_tokens,
+            measured_elapsed_us,
             ..UsageTotals::default()
         };
         for total in [&mut self.totals, usage] {
@@ -263,6 +270,11 @@ fn add_totals(total: &mut UsageTotals, delta: &UsageTotals) -> Result<()> {
             &mut total.cache_reported_requests,
             delta.cache_reported_requests,
         ),
+        (
+            &mut total.measured_output_tokens,
+            delta.measured_output_tokens,
+        ),
+        (&mut total.measured_elapsed_us, delta.measured_elapsed_us),
     ] {
         *count = checked_add(*count, add)?;
     }
@@ -284,62 +296,89 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn replay_accepts_legacy_totals_and_counts_each_request_attempt_once() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.jsonl");
-        let mut store = EventStore::open(&path).unwrap();
+    fn create_agent(store: &mut EventStore, address: &str) {
         store
             .append(
                 Record::AgentCreated {
-                    command_id: "create-main".into(),
+                    command_id: format!("create-{address}"),
                     fingerprint: String::new(),
-                    address: "main".into(),
+                    address: address.into(),
                     config: Default::default(),
                 }
                 .payload()
                 .unwrap(),
             )
             .unwrap();
-        let accept = Record::InputsAccepted {
-            address: "main".into(),
-            input_ids: Vec::new(),
-            turn: None,
-        };
-        let settle = |turn, usage| {
-            EventPayload::Unknown(json!({
-                "kind": "runtime.operation",
-                "record": {"operation": "turn_settled", "address": "main",
-                    "status": "idle", "turn": turn, "usage": usage}
-            }))
-        };
-        let legacy = store.append(accept.payload().unwrap()).unwrap().id;
+    }
+
+    fn begin_turn(store: &mut EventStore, address: &str) -> u64 {
         store
-            .append(settle(
-                legacy,
-                json!({"input_tokens":17,"output_tokens":9,"cache_read_input_tokens":10,
-                    "model_requests":1,"unreported_requests":0}),
-            ))
+            .append(
+                Record::InputsAccepted {
+                    address: address.into(),
+                    input_ids: Vec::new(),
+                    turn: None,
+                }
+                .payload()
+                .unwrap(),
+            )
+            .unwrap()
+            .id
+    }
+
+    fn settle_turn(store: &mut EventStore, address: &str, turn: u64, usage: Value) {
+        store
+            .append(EventPayload::Unknown(json!({
+                "kind": "runtime.operation",
+                "record": {"operation": "turn_settled", "address": address,
+                    "status": "idle", "turn": turn, "usage": usage}
+            })))
             .unwrap();
+    }
+
+    fn model_fact(
+        store: &mut EventStore,
+        address: &str,
+        turn: u64,
+        request: &str,
+        mut fact: Value,
+    ) {
+        fact["agent"] = json!(address);
+        fact["turn"] = json!(turn);
+        fact["request_id"] = json!(request);
+        store.append(EventPayload::Unknown(fact)).unwrap();
+    }
+
+    #[test]
+    fn replay_accepts_legacy_totals_and_counts_each_request_attempt_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        let mut store = EventStore::open(&path).unwrap();
+        create_agent(&mut store, "main");
+        let legacy = begin_turn(&mut store, "main");
+        settle_turn(
+            &mut store,
+            "main",
+            legacy,
+            json!({"input_tokens":17,"output_tokens":9,"cache_read_input_tokens":10,
+                "model_requests":1,"unreported_requests":0}),
+        );
         let loaded = Session::read_view(&path, "main").unwrap().snapshot.usage;
         assert_eq!(Some(17), loaded.input_tokens);
         assert!(loaded.input_tokens_complete() && loaded.output_tokens_complete());
         assert_eq!(None, loaded.cache_hit_percent());
         assert_eq!(None, loaded.latest_request);
+        assert_eq!(None, loaded.average_output_tokens_per_second());
 
-        let turn = store.append(accept.payload().unwrap()).unwrap().id;
+        let turn = begin_turn(&mut store, "main");
         let model_facts = [
             json!({"kind":"runtime.step_prepared","context_window_tokens":100}),
             json!({"kind":"runtime.model_retry","attempt":2}),
             json!({"kind":"runtime.model_usage","usage":{"input_tokens":8,"cache_read_input_tokens":3}}),
         ];
-        for mut fact in model_facts {
-            fact["agent"] = json!("main");
-            fact["turn"] = json!(turn);
-            fact["request_id"] = json!("req_1");
-            let event = EventPayload::Unknown(fact);
-            store.append(event.clone()).unwrap();
-            store.append(event).unwrap();
+        for fact in model_facts {
+            model_fact(&mut store, "main", turn, "req_1", fact.clone());
+            model_fact(&mut store, "main", turn, "req_1", fact);
         }
         let before = Session::read_view(&path, "main").unwrap().snapshot.usage;
         assert_eq!(3, before.model_requests);
@@ -349,18 +388,84 @@ mod tests {
         assert!(!before.input_tokens_complete() && !before.output_tokens_complete());
         assert_eq!(Some(8.0), before.context_percent());
         assert_eq!(None, before.output_tokens_per_second());
+        assert_eq!(None, before.average_output_tokens_per_second());
         assert_eq!(None, before.cache_hit_percent());
-        store
-            .append(settle(
-                turn,
-                json!({"input_tokens":8,"cache_read_input_tokens":3,
-                    "model_requests":2,"unreported_requests":2}),
-            ))
-            .unwrap();
+        settle_turn(
+            &mut store,
+            "main",
+            turn,
+            json!({"input_tokens":8,"cache_read_input_tokens":3,
+                "model_requests":2,"unreported_requests":2}),
+        );
         assert_eq!(
             before,
             Session::read_view(&path, "main").unwrap().snapshot.usage
         );
+    }
+
+    #[test]
+    fn replays_weighted_throughput_for_each_agent_across_turns() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        let mut store = EventStore::open(&path).unwrap();
+        for (agent, output) in [("main", 40), ("reviewer", 0)] {
+            create_agent(&mut store, agent);
+            let turn = begin_turn(&mut store, agent);
+            let measurement = json!({
+                "kind": "runtime.model_usage", "elapsed_us": 1_000_000,
+                "usage": {"output_tokens": output}
+            });
+            model_fact(&mut store, agent, turn, "req_1", measurement.clone());
+            model_fact(&mut store, agent, turn, "req_1", measurement);
+            let usage = Session::read_view(&path, agent).unwrap().snapshot.usage;
+            assert_eq!(
+                Some(f64::from(output)),
+                usage.average_output_tokens_per_second()
+            );
+            settle_turn(&mut store, agent, turn, json!(usage));
+        }
+
+        let turn = begin_turn(&mut store, "main");
+        model_fact(
+            &mut store,
+            "main",
+            turn,
+            "req_1",
+            json!({"kind": "runtime.step_prepared", "context_window_tokens": 100}),
+        );
+        let running = Session::read_view(&path, "main").unwrap().snapshot.usage;
+        assert_eq!(None, running.output_tokens_per_second());
+        assert_eq!(Some(40.0), running.average_output_tokens_per_second());
+
+        for (request, output, elapsed) in [
+            ("req_1", Some(8), Some(3_000_000)),
+            ("req_2", Some(0), Some(2_000_000)),
+            ("req_3", Some(50), None),
+            ("req_4", Some(50), Some(0)),
+            ("req_5", None, Some(5_000_000)),
+        ] {
+            model_fact(
+                &mut store,
+                "main",
+                turn,
+                request,
+                json!({
+                    "kind": "runtime.model_usage", "elapsed_us": elapsed,
+                    "usage": {"output_tokens": output}
+                }),
+            );
+        }
+        let main = Session::read_view(&path, "main").unwrap().snapshot.usage;
+        assert_eq!(Some(148), main.output_tokens);
+        assert_eq!(48, main.measured_output_tokens);
+        assert_eq!(6_000_000, main.measured_elapsed_us);
+        assert_eq!(Some(8.0), main.average_output_tokens_per_second());
+        assert_eq!(None, main.output_tokens_per_second());
+        let reviewer = Session::read_view(&path, "reviewer")
+            .unwrap()
+            .snapshot
+            .usage;
+        assert_eq!(Some(0.0), reviewer.average_output_tokens_per_second());
     }
 
     #[test]
@@ -381,5 +486,6 @@ mod tests {
         assert_eq!(None, usage.cache_hit_percent());
         assert_eq!(None, usage.context_percent());
         assert_eq!(None, usage.output_tokens_per_second());
+        assert_eq!(None, usage.average_output_tokens_per_second());
     }
 }

@@ -234,15 +234,13 @@ async fn provider_measurements_are_request_bound_and_replay_per_agent() {
     assert_eq!(Some(0.0), main.cache_hit_percent());
     assert_eq!(Some(50), main.output_tokens);
     assert!(main.input_tokens_complete() && main.output_tokens_complete());
-    let sample = main.latest_request.unwrap();
+    let rate = main.average_output_tokens_per_second();
+    let sample = main.latest_request.as_ref().unwrap();
     assert_eq!(
         Some(50.0 * 1_000_000.0 / sample.elapsed_us.unwrap() as f64),
-        session
-            .agent("main")
-            .unwrap()
-            .usage
-            .output_tokens_per_second()
+        rate
     );
+    assert_eq!(rate, main.output_tokens_per_second());
     assert_eq!(None, reviewer.context_percent());
     assert_eq!(None, reviewer.input_tokens);
     assert_eq!(Some(30), reviewer.output_tokens);
@@ -269,6 +267,7 @@ async fn provider_measurements_are_request_bound_and_replay_per_agent() {
     assert!(main.input_tokens_complete() && !main.output_tokens_complete());
     assert_eq!(Some(20.0), main.context_percent());
     assert_eq!(None, main.output_tokens_per_second());
+    assert_eq!(rate, main.average_output_tokens_per_second());
     assert_eq!(None, main.cache_hit_percent());
     assert_eq!(reviewer, session.agent("reviewer").unwrap().usage);
 

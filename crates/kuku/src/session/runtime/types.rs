@@ -302,6 +302,12 @@ pub struct UsageTotals {
     /// Requests that reported both total input and cache reads.
     #[serde(default)]
     pub cache_reported_requests: u64,
+    /// Output tokens summed from requests with a known output count and positive duration.
+    #[serde(default)]
+    pub measured_output_tokens: u64,
+    /// Total microseconds spent on the requests counted in measured output tokens.
+    #[serde(default)]
+    pub measured_elapsed_us: u64,
     /// Provider measurement for the most recently prepared request, once available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latest_request: Option<ModelUsageSample>,
@@ -340,8 +346,12 @@ impl UsageTotals {
     /// Return the latest provider output tokens per second from dispatch to stream completion.
     pub fn output_tokens_per_second(&self) -> Option<f64> {
         let latest = self.latest_request.as_ref()?;
-        let elapsed = latest.elapsed_us.filter(|elapsed| *elapsed > 0)?;
-        Some(latest.output_tokens? as f64 * 1_000_000.0 / elapsed as f64)
+        output_rate(latest.output_tokens?, latest.elapsed_us?)
+    }
+
+    /// Return total measured output tokens divided by total measured request duration.
+    pub fn average_output_tokens_per_second(&self) -> Option<f64> {
+        output_rate(self.measured_output_tokens, self.measured_elapsed_us)
     }
 
     fn complete(&self, tokens: Option<u64>, reported: u64) -> bool {
@@ -349,6 +359,10 @@ impl UsageTotals {
             && tokens.is_some()
             && (reported == self.model_requests || self.unreported_requests == 0)
     }
+}
+
+fn output_rate(output_tokens: u64, elapsed_us: u64) -> Option<f64> {
+    (elapsed_us > 0).then(|| output_tokens as f64 * 1_000_000.0 / elapsed_us as f64)
 }
 
 /// Provider usage and timing bound to one prepared model request.
