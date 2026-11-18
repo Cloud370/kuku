@@ -108,6 +108,7 @@ impl Window {
             position: None,
             body: body(),
             turn_summary: None,
+            reasoning_summary: String::new(),
             rendered: RenderCache::default(),
         });
         self.records.last_mut().expect("inserted record")

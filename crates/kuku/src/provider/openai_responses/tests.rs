@@ -673,3 +673,25 @@ fn truncated_stream_does_not_emit_stream_end() {
         .iter()
         .any(|chunk| matches!(chunk, ProviderChunk::StreamEnd)));
 }
+
+#[test]
+fn final_summary_supplies_missing_text_once_and_excludes_encrypted_content() {
+    let mut parser = OpenAiResponsesSseParser::new();
+    let item = json!({"type":"reasoning","id":"rs_a","encrypted_content":"opaque","summary":[
+        {"type":"summary_text","text":"Check totals."},{"type":"summary_text","text":"Compare dates."}
+    ]});
+    let mut summary = String::new();
+    for value in [
+        json!({"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":0,"delta":"Check "}),
+        json!({"type":"response.reasoning_summary_text.done","output_index":0,"summary_index":0,"text":"Check totals."}),
+        json!({"type":"response.output_item.done","output_index":0,"item":item}),
+        json!({"type":"response.completed","response":{"status":"completed","output":[item]}}),
+    ] {
+        for chunk in parser.feed(&format!("data: {value}")).unwrap() {
+            if let ProviderChunk::ThinkingDelta { text } = chunk {
+                summary.push_str(&text);
+            }
+        }
+    }
+    assert_eq!(summary, "Check totals.\n\nCompare dates.");
+}

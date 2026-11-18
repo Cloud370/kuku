@@ -90,7 +90,7 @@ When available, `agent.turn_started_at_ms` is the latest Turn's first admission 
 
 When present, a committed frame's `delivery` associates queue changes with command IDs. `accepted` carries `input_ids`, `withdrawn` carries `input_id`, and `replaced` carries `input_id` and `replacement_id`.
 
-A snapshot requested with `progress=true` may include `reply_preview` for the selected Agent. It carries `execution_id`, `turn`, optional `turn_number`, `phase`, `text` and `truncated`. The phase is `thinking`, `streaming` or `tool_arguments`. The text is a UTF-8 prefix of the active request's visible reply capped at 64 KiB. `truncated` means the reply has already exceeded the retained prefix.
+A snapshot requested with `progress=true` may include `reply_preview` for the selected Agent. It carries `execution_id`, `turn`, optional `turn_number`, `phase`, `text` and `truncated`. The phase is `thinking`, `streaming` or `tool_arguments`. The text is a UTF-8 prefix of the active request's visible reply capped at 64 KiB. `truncated` means the reply has already exceeded the retained prefix. An optional `reasoning_summary` carries a bounded prefix of explicitly published summary text for the selected Agent. Live `reasoning_summary` events append to it. Committed assistant entries can carry the same field.
 
 At the same snapshot cursor, other Agents can also have `progress.phase` in their entries in `agents`. A `streaming` entry includes `progress.preview`, up to 512 UTF-8 bytes from the start of that Agent's active reply. Phases `thinking` and `tool_arguments` carry activity only.
 

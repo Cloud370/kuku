@@ -105,6 +105,8 @@ fn apply_settings(config: &ResolvedProvider, body: &mut Value) {
                     json!({"type": "disabled"})
                 } else if config.capabilities.profile == ProviderProfile::DeepSeek {
                     json!({"type": "enabled"})
+                } else if config.capabilities.profile == ProviderProfile::Anthropic {
+                    json!({"type": "adaptive", "display": "summarized"})
                 } else {
                     json!({"type": "adaptive"})
                 };
@@ -127,6 +129,14 @@ fn apply_settings(config: &ResolvedProvider, body: &mut Value) {
             }
             ProviderKind::OpenAiResponses => {
                 body["reasoning"] = json!({"effort": effort});
+                if effort != "none"
+                    && matches!(
+                        config.capabilities.profile,
+                        ProviderProfile::OpenAi | ProviderProfile::OpenRouter
+                    )
+                {
+                    body["reasoning"]["summary"] = json!("auto");
+                }
             }
         }
     }

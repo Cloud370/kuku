@@ -32,6 +32,7 @@ pub(crate) struct DetailKey {
 enum DetailKind {
     Agent,
     Group,
+    Reasoning,
     Tool,
 }
 
@@ -39,7 +40,7 @@ enum DetailKind {
 pub(super) struct Details {
     pub(super) visible: Vec<VisibleDetail>,
     groups: VecDeque<Key>,
-    tools: VecDeque<Key>,
+    inspections: VecDeque<Key>,
 }
 
 impl Details {
@@ -57,22 +58,31 @@ impl Details {
     }
 
     pub(super) fn tool_mode(&self, key: &Key, fallback: ToolDetails) -> ToolDetails {
-        if self.tools.contains(key) {
+        if self.inspections.contains(key) {
             ToolDetails::Inspection
         } else {
             fallback
         }
     }
 
-    pub(super) fn has_closed_group(&self) -> bool {
-        self.visible
-            .iter()
-            .any(|item| item.key.kind == DetailKind::Group && !item.open)
+    pub(super) fn has_collapsed_detail(&self) -> bool {
+        self.visible.iter().any(|item| {
+            matches!(item.key.kind, DetailKind::Group | DetailKind::Reasoning) && !item.open
+        })
+    }
+
+    pub(super) fn settle_inspection(&mut self, key: &Key, committed: Option<&Key>) {
+        if let Some(index) = self.inspections.iter().position(|opened| opened == key) {
+            self.inspections.remove(index);
+            if let Some(committed) = committed {
+                remember(&mut self.inspections, committed);
+            }
+        }
     }
 
     pub(super) fn clear_expansions(&mut self) {
         self.groups.clear();
-        self.tools.clear();
+        self.inspections.clear();
     }
 }
 
@@ -100,6 +110,14 @@ impl VisibleDetail {
 
     pub(super) fn record(rows: Range<usize>, key: &Key, item: DetailRecord<'_>) -> Self {
         match item {
+            DetailRecord::Reasoning(open) => Self::new(
+                rows,
+                key,
+                DetailKind::Reasoning,
+                "Thinking summary".into(),
+                "Provider summary".into(),
+                open,
+            ),
             DetailRecord::Agent(agent) => Self::new(
                 rows,
                 key,
@@ -137,6 +155,7 @@ impl VisibleDetail {
 }
 
 pub(super) enum DetailRecord<'a> {
+    Reasoning(bool),
     Agent(AgentCard<'a>),
     Tool(&'a Tool),
 }
@@ -166,20 +185,20 @@ impl Transcript {
             .map_or(&self.recent, |reading| &reading.window);
         match key.kind {
             DetailKind::Agent => self.toggle_agent_record(&key.record),
-            DetailKind::Tool if window.contains(&key.record) => {
+            DetailKind::Tool | DetailKind::Reasoning if window.contains(&key.record) => {
                 if let Some(index) = self
                     .detail_items
-                    .tools
+                    .inspections
                     .iter()
                     .position(|opened| opened == &key.record)
                 {
-                    self.detail_items.tools.remove(index);
+                    self.detail_items.inspections.remove(index);
                 } else {
-                    remember(&mut self.detail_items.tools, &key.record);
+                    remember(&mut self.detail_items.inspections, &key.record);
                 }
                 true
             }
-            DetailKind::Tool => false,
+            DetailKind::Tool | DetailKind::Reasoning => false,
             DetailKind::Group => {
                 let Some(span) = groups(&window.records).into_iter().find(|span| {
                     window.records[span.range.clone()]
@@ -213,6 +232,9 @@ impl Transcript {
             self.detail_items.clear_expansions();
         }
         for item in &mut self.detail_items.visible {
+            if item.key.kind == DetailKind::Reasoning && open && !item.open {
+                remember(&mut self.detail_items.inspections, &item.key.record);
+            }
             if item.key.kind != DetailKind::Group {
                 continue;
             }

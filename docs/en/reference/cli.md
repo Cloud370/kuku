@@ -95,6 +95,8 @@ If you interrupt a streaming reply, its bounded preview stays under that Turn an
 
 By default, a fence labeled `md` or `markdown` in an assistant reply previews the enclosed document, including its headings, lists, tables and code blocks. The label is case-insensitive. Inner code uses its declared language. Ordinary code fences display their contents literally, with syntax highlighting for supported languages.
 
+A provider-published reasoning summary appears above the reply. Click its header or press Ctrl+O to expand it. For activity-only reasoning, the composer shows the Thinking phase and timer. Copy and Markdown source operate on the reply itself.
+
 ### Status and usage
 
 An empty Session opens with the kuku title. Once work starts, the Session header contracts to one line. The default status bar leads with the effective model and shows connection state, the selected Agent and its workspace. At phone widths, the workspace and usage move to a second row. Very short terminals keep a single row to leave room for your draft. Click a character in a draft to move the caret there, including on wrapped lines. Elapsed time appears directly beside the current activity.

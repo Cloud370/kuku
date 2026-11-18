@@ -15,6 +15,7 @@ use crate::theme::{
 mod agent;
 mod details;
 mod message;
+mod preview;
 mod reply;
 mod tool;
 mod turn_summary;
@@ -148,6 +149,13 @@ impl Transcript {
         if let Some(execution) = previous_preview {
             let key = Key::Preview(execution);
             self.recent.remove(&key);
+            self.detail_items.settle_inspection(
+                &key,
+                record
+                    .as_ref()
+                    .filter(|r| !r.reasoning_summary.is_empty())
+                    .map(|r| &r.key),
+            );
             if let Some(reading) = &mut self.reading {
                 reading.settle_preview(&key, record.as_ref());
             }
@@ -190,6 +198,11 @@ impl Transcript {
                     }
                 }
             }
+            Some("reasoning_summary") => {
+                if let Some(text) = event["content"].as_str() {
+                    self.update_summary(execution, turn, turn_number, text);
+                }
+            }
             Some("reply_preview") => {
                 if let Some(text) = event["content"].as_str() {
                     self.replace_reply_preview(
@@ -198,6 +211,15 @@ impl Transcript {
                         turn_number,
                         text.to_owned(),
                         event["truncated"].as_bool().unwrap_or_default(),
+                    );
+                }
+                if let Some(text) = event["reasoning_summary"].as_str() {
+                    self.replace_summary(
+                        execution,
+                        turn,
+                        turn_number,
+                        text,
+                        event["reasoning_summary_truncated"] == true,
                     );
                 }
             }
@@ -224,43 +246,6 @@ impl Transcript {
         }
         if self.recent.records.len() > count {
             self.recent.limit_live();
-        }
-    }
-
-    pub(crate) fn replace_reply_preview(
-        &mut self,
-        execution: u64,
-        turn: Option<u64>,
-        turn_number: Option<u64>,
-        mut text: String,
-        truncated: bool,
-    ) {
-        if self.current_execution != Some(execution) {
-            self.clear_preview();
-            self.current_execution = Some(execution);
-        }
-        if text.is_empty() {
-            self.clear_reply_preview();
-            return;
-        }
-        if text.len() > MAX_BODY_BYTES || truncated {
-            text.truncate(text.floor_char_boundary(MAX_BODY_BYTES.min(text.len())));
-            text.push_str(DISPLAY_LIMIT_NOTICE);
-        }
-        let key = Key::Preview(execution);
-        let record = self
-            .recent
-            .record_or_insert(key, turn, turn_number, || Body::Assistant(String::new()));
-        if !matches!(&record.body, Body::Assistant(previous) if previous == &text) {
-            record.body = Body::Assistant(text);
-            record.rendered = RenderCache::default();
-            self.mark_unseen();
-        }
-    }
-
-    pub(crate) fn clear_reply_preview(&mut self) {
-        if let Some(execution) = self.current_execution {
-            self.recent.remove(&Key::Preview(execution));
         }
     }
 
@@ -516,6 +501,15 @@ impl Transcript {
                         lines.len() > first
                             && lines.last().is_some_and(|line| line.spans.is_empty()),
                     );
+                let last = if matches!(detail, DetailRecord::Reasoning(_)) {
+                    if skip == 0 {
+                        last.min(first + 1)
+                    } else {
+                        first
+                    }
+                } else {
+                    last
+                };
                 if last > first {
                     visible.push(VisibleDetail::record(first..last, block.key, detail));
                 }
@@ -541,7 +535,7 @@ impl Transcript {
 
     fn details_can_expand(&self) -> bool {
         self.details == ToolDetails::Collapsed
-            || self.detail_items.has_closed_group()
+            || self.detail_items.has_collapsed_detail()
             || self
                 .detail_items
                 .agent_keys()
@@ -641,6 +635,7 @@ struct Record {
     owner: Option<String>,
     position: Option<u64>,
     body: Body,
+    reasoning_summary: String,
     turn_summary: Option<TurnSummary>,
     rendered: RenderCache,
 }
@@ -654,6 +649,7 @@ impl Clone for Record {
             owner: self.owner.clone(),
             position: self.position,
             body: self.body.clone(),
+            reasoning_summary: self.reasoning_summary.clone(),
             turn_summary: self.turn_summary.clone(),
             rendered: RenderCache::default(),
         }
@@ -670,6 +666,13 @@ impl Record {
     fn from_entry(entry: HistoryEntry) -> Option<Self> {
         let mut key = Key::Event(entry.id);
         let mut text = capped(entry.text.as_deref(), MAX_BODY_BYTES);
+        let reasoning_summary = capped(
+            entry
+                .details
+                .get("reasoning_summary")
+                .and_then(Value::as_str),
+            MAX_BODY_BYTES,
+        );
         let body = match entry.kind {
             HistoryKind::User => Body::User {
                 sender: entry
@@ -679,7 +682,9 @@ impl Record {
                     .map(str::to_owned),
                 text,
             },
-            HistoryKind::Assistant if text.trim().is_empty() => return None,
+            HistoryKind::Assistant if text.trim().is_empty() && reasoning_summary.is_empty() => {
+                return None
+            }
             HistoryKind::Assistant => Body::Assistant(text),
             HistoryKind::ToolCall | HistoryKind::ToolResult => {
                 if let Some(id) = entry.details.get("tool_call_id").and_then(Value::as_str) {
@@ -728,6 +733,7 @@ impl Record {
             owner: (!entry.agent.is_empty()).then_some(entry.agent),
             position: Some(entry.id),
             body,
+            reasoning_summary,
             turn_summary: entry.turn_summary,
             rendered: RenderCache::default(),
         })
@@ -754,7 +760,7 @@ impl Record {
     }
 
     fn visible(&self) -> bool {
-        !matches!(&self.body, Body::Assistant(text) if text.trim().is_empty())
+        !matches!(&self.body, Body::Assistant(text) if text.trim().is_empty() && self.reasoning_summary.is_empty())
     }
 
     fn tool(&self) -> Option<&Tool> {
@@ -808,6 +814,11 @@ impl Record {
                 );
                 (card, mode, facts)
             }
+            Body::Assistant(_) if !self.reasoning_summary.is_empty() => (
+                None,
+                items.tool_mode(&self.key, ToolDetails::Collapsed),
+                None,
+            ),
             Body::User { .. }
             | Body::Assistant(_)
             | Body::Interrupted(_)
@@ -833,12 +844,11 @@ impl Record {
                     };
                     render_user(&title, text, width)
                 }
-                Body::Assistant(text) => render_record(
-                    if width >= 9 { "Assistant" } else { "AI" },
-                    MUTED,
-                    render_markdown(text, width, MAX_VISUAL_ROWS),
+                Body::Assistant(text) => preview::render_assistant(
+                    text,
+                    &self.reasoning_summary,
                     width,
-                    0,
+                    mode == ToolDetails::Inspection,
                 ),
                 Body::Interrupted(text) => render_record(
                     "Interrupted",
@@ -872,7 +882,11 @@ impl Record {
             &self.key,
             &self.rendered.preview.as_ref().expect("rendered record").1,
             card.map(DetailRecord::Agent)
-                .or_else(|| self.tool().map(DetailRecord::Tool)),
+                .or_else(|| self.tool().map(DetailRecord::Tool))
+                .or_else(|| {
+                    (!self.reasoning_summary.is_empty())
+                        .then_some(DetailRecord::Reasoning(mode == ToolDetails::Inspection))
+                }),
         )
     }
 }

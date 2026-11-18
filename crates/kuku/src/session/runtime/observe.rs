@@ -28,6 +28,11 @@ pub struct ReplyPreview {
     pub phase: ModelPhase,
     /// UTF-8 prefix from the start of this request's reply.
     pub text: String,
+    /// Public summary prefix for the selected Agent.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub reasoning_summary: String,
+    /// Additional public summary text exists beyond the retained prefix.
+    pub reasoning_summary_truncated: bool,
     /// The reply already exceeded the preview's byte limit.
     pub truncated: bool,
 }
@@ -39,17 +44,14 @@ impl ReplyPreview {
             turn,
             phase,
             text: String::new(),
+            reasoning_summary: String::new(),
+            reasoning_summary_truncated: false,
             truncated: false,
         }
     }
 
     fn append(&mut self, text: &str) {
-        if self.truncated {
-            return;
-        }
-        let end = text.floor_char_boundary(text.len().min(REPLY_PREVIEW_BYTES - self.text.len()));
-        self.text.push_str(&text[..end]);
-        self.truncated = end < text.len();
+        append_prefix(&mut self.text, &mut self.truncated, text);
     }
 
     fn excerpt(&self) -> Self {
@@ -58,10 +60,21 @@ impl ReplyPreview {
             .floor_char_boundary(self.text.len().min(PEER_PREVIEW_BYTES));
         Self {
             text: self.text[..end].to_owned(),
+            reasoning_summary: String::new(),
+            reasoning_summary_truncated: false,
             truncated: self.truncated || end < self.text.len(),
             ..*self
         }
     }
+}
+
+fn append_prefix(prefix: &mut String, truncated: &mut bool, text: &str) {
+    if *truncated {
+        return;
+    }
+    let end = text.floor_char_boundary(text.len().min(REPLY_PREVIEW_BYTES - prefix.len()));
+    prefix.push_str(&text[..end]);
+    *truncated = end < text.len();
 }
 
 /// Active reply previews captured with one Session cursor.
@@ -304,6 +317,12 @@ impl Session {
                 preview.phase = phase;
                 if let UiEvent::TextDelta { text } = &event {
                     preview.append(text);
+                } else if let UiEvent::ThinkingDelta { text } = &event {
+                    append_prefix(
+                        &mut preview.reasoning_summary,
+                        &mut preview.reasoning_summary_truncated,
+                        text,
+                    );
                 }
             }
         }

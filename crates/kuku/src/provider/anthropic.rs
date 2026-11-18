@@ -173,6 +173,8 @@ pub(crate) async fn stream_prepared(
     let url = prepared.url.clone();
     let parser = Arc::new(Mutex::new(AnthropicSseParser::new(
         config.capabilities.profile == ProviderProfile::Anthropic,
+        prepared.body["thinking"]["display"] == "summarized"
+            && config.capabilities.profile == ProviderProfile::Anthropic,
     )));
     let frame_parser = Arc::clone(&parser);
     let eof_parser = Arc::clone(&parser);
@@ -197,6 +199,7 @@ pub(crate) async fn stream_prepared(
 struct AnthropicSseParser {
     chunks: Vec<ProviderChunk>,
     require_thinking_signature: bool,
+    publish_summary: bool,
     tool_blocks: BTreeSet<u64>,
     invalid_tool_stream: bool,
     saw_terminal: bool,
@@ -208,10 +211,11 @@ struct AnthropicSseParser {
 }
 
 impl AnthropicSseParser {
-    fn new(require_thinking_signature: bool) -> Self {
+    fn new(require_thinking_signature: bool, publish_summary: bool) -> Self {
         Self {
             chunks: Vec::new(),
             require_thinking_signature,
+            publish_summary,
             tool_blocks: BTreeSet::new(),
             invalid_tool_stream: false,
             saw_terminal: false,
@@ -221,6 +225,15 @@ impl AnthropicSseParser {
             replay_budget: ReplayBudget::default(),
             reports: ReportAccumulator::default(),
         }
+    }
+
+    fn observe_thinking(&mut self, text: &str) {
+        self.chunks
+            .push(if self.publish_summary && !text.is_empty() {
+                ProviderChunk::ThinkingDelta { text: text.into() }
+            } else {
+                ProviderChunk::Reasoning
+            });
     }
 
     fn feed(&mut self, frame: &str) -> Result<Vec<ProviderChunk>, ProviderFailure> {
@@ -283,9 +296,10 @@ impl AnthropicSseParser {
                                     .push(ProviderChunk::TextDelta { text: text.into() });
                             }
                         }
-                        Some("thinking" | "redacted_thinking") => {
-                            self.chunks.push(ProviderChunk::Reasoning)
+                        Some("thinking") => {
+                            self.observe_thinking(block["thinking"].as_str().unwrap_or_default())
                         }
+                        Some("redacted_thinking") => self.chunks.push(ProviderChunk::Reasoning),
                         Some("tool_use") => {
                             self.tool_blocks.insert(index);
                             let id = block
@@ -345,7 +359,7 @@ impl AnthropicSseParser {
                             if self.append_native(index, "thinking", "thinking", text)?
                                 && !text.is_empty()
                             {
-                                self.chunks.push(ProviderChunk::Reasoning);
+                                self.observe_thinking(text);
                             }
                         }
                         Some("signature_delta") => {
@@ -649,7 +663,7 @@ mod tests {
 
     #[test]
     fn messages_initial_output_is_not_normalized_as_final_usage() {
-        let mut parser = AnthropicSseParser::new(true);
+        let mut parser = AnthropicSseParser::new(true, false);
         let start = parser.feed(
             "event: message_start\ndata: {\"message\":{\"id\":\"msg_use\",\"usage\":{\"input_tokens\":80,\"cache_read_input_tokens\":15,\"cache_creation_input_tokens\":5,\"output_tokens\":1}}}",
         ).unwrap();
@@ -678,7 +692,7 @@ mod tests {
 
     #[test]
     fn truncated_stream_does_not_emit_stream_end() {
-        let mut parser = AnthropicSseParser::new(true);
+        let mut parser = AnthropicSseParser::new(true, false);
         let mut chunks = parser
             .feed(
             "event: message_start\ndata: {\"message\":{\"id\":\"msg_truncated\",\"usage\":{\"input_tokens\":1}}}",
@@ -703,7 +717,7 @@ mod tests {
 
     #[test]
     fn text_content_block_stop_remains_generic_content() {
-        let mut parser = AnthropicSseParser::new(true);
+        let mut parser = AnthropicSseParser::new(true, false);
         parser
             .feed(
                 "event: content_block_start\ndata: {\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}",
@@ -722,7 +736,7 @@ mod tests {
 
     #[test]
     fn tool_content_block_stop_is_typed_as_tool_completion() {
-        let mut parser = AnthropicSseParser::new(true);
+        let mut parser = AnthropicSseParser::new(true, false);
         parser
             .feed(
                 "event: content_block_start\ndata: {\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tool_1\",\"name\":\"read_file\",\"input\":{}}}",
@@ -743,7 +757,7 @@ mod tests {
     #[test]
     fn a_completed_tool_cannot_dispatch_with_incomplete_or_unsigned_thinking() {
         for close_thinking in [false, true] {
-            let mut parser = AnthropicSseParser::new(true);
+            let mut parser = AnthropicSseParser::new(true, false);
             let initial = parser.feed(r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"private fixture"}}"#).unwrap();
             assert!(matches!(initial.as_slice(), [ProviderChunk::Reasoning]));
             if close_thinking {
@@ -776,7 +790,7 @@ mod tests {
 
     #[test]
     fn text_delta_addressed_to_a_thinking_block_is_never_visible_text() {
-        let mut parser = AnthropicSseParser::new(true);
+        let mut parser = AnthropicSseParser::new(true, false);
         parser.feed(r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}"#).unwrap();
         let chunks = parser.feed(r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"private fixture"}}"#).unwrap();
         assert!(matches!(
@@ -788,7 +802,7 @@ mod tests {
     #[test]
     fn missing_or_malformed_tool_index_is_invalid() {
         for index in ["null", "\"zero\""] {
-            let mut parser = AnthropicSseParser::new(true);
+            let mut parser = AnthropicSseParser::new(true, false);
             parser.feed(&format!(
                 "event: content_block_start\ndata: {{\"index\":{index},\"content_block\":{{\"type\":\"tool_use\",\"id\":\"tool_1\",\"name\":\"read_file\",\"input\":{{}}}}}}"
             )).unwrap();
@@ -798,7 +812,7 @@ mod tests {
             assert!(chunks.iter().any(|chunk| matches!(chunk, ProviderChunk::StopReason { reason } if reason == &ModelStopReason::InvalidResponse)));
         }
 
-        let mut parser = AnthropicSseParser::new(true);
+        let mut parser = AnthropicSseParser::new(true, false);
         let chunks = parser.feed(
             "event: content_block_start\ndata: {\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tool_1\",\"name\":\"read_file\",\"input\":{}}}",
         ).unwrap();

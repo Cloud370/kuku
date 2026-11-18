@@ -191,7 +191,7 @@ impl ExecutionProgress {
                 self.request = ModelRequest::Retrying;
                 self.clear_stream();
             }
-            Some("thinking")
+            Some("thinking" | "reasoning_summary")
                 if event
                     .get("content")
                     .is_none_or(|value| value.as_str().is_some_and(|text| !text.is_empty())) =>
@@ -533,6 +533,13 @@ impl Pane {
             reply.turn_number,
             reply.text,
             reply.truncated,
+        );
+        self.transcript.replace_summary(
+            reply.execution_id,
+            Some(reply.turn),
+            reply.turn_number,
+            &reply.reasoning_summary,
+            reply.reasoning_summary_truncated,
         );
     }
 

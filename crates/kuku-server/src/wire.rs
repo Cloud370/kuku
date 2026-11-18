@@ -197,9 +197,15 @@ pub(crate) fn history_entry(event: &StoredEvent, turns: &TurnLookup) -> Option<V
             turn,
             text,
             request_id,
+            thinking,
             ..
-        } if !text.is_empty() => {
-            json!({"type":"assistant","turn":turn,"text":text,"request_id":request_id})
+        } if !text.is_empty() || thinking.as_ref().is_some_and(|text| !text.is_empty()) => {
+            let mut entry =
+                json!({"type":"assistant","turn":turn,"text":text,"request_id":request_id});
+            if let Some(summary) = thinking.as_ref().filter(|text| !text.is_empty()) {
+                entry["reasoning_summary"] = json!(summary);
+            }
+            entry
         }
         EventPayload::ModelError {
             turn,
@@ -393,10 +399,15 @@ pub(crate) fn live_frame(
     turn: u64,
     cursor: u64,
     turn_number: Option<u64>,
-    activity_only_reasoning: bool,
+    agent_scoped: bool,
 ) -> Option<Value> {
-    let event = if activity_only_reasoning {
-        selected_event_value(event)?
+    let event = if agent_scoped {
+        match event {
+            UiEvent::ThinkingDelta { text } if !text.is_empty() => {
+                json!({"type":"reasoning_summary", "content":text})
+            }
+            _ => event_value(event)?,
+        }
     } else {
         event_value(event)?
     };
@@ -421,7 +432,7 @@ pub(crate) fn agent_activity_frame(
         UiEvent::ThinkingDelta { .. }
         | UiEvent::ModelProgress { .. }
         | UiEvent::ModelRequest { .. }
-        | UiEvent::ModelRecovery { .. } => selected_event_value(event)?,
+        | UiEvent::ModelRecovery { .. } => peer_event_value(event)?,
         _ => return None,
     };
     Some(live_payload(event, agent, execution_id, turn, cursor))
@@ -438,6 +449,8 @@ pub(crate) fn reply_preview_frame(
         "phase": reply.phase,
         "content": reply.text,
         "truncated": reply.truncated,
+        "reasoning_summary": reply.reasoning_summary,
+        "reasoning_summary_truncated": reply.reasoning_summary_truncated,
     });
     let mut frame = live_payload(event, agent, reply.execution_id, reply.turn, cursor);
     if let Some(number) = turn_number {
@@ -508,7 +521,7 @@ fn interaction_entry(record: &Value) -> Option<Value> {
     }
 }
 
-fn selected_event_value(event: &UiEvent) -> Option<Value> {
+fn peer_event_value(event: &UiEvent) -> Option<Value> {
     match event {
         UiEvent::ThinkingDelta { text } => (!text.is_empty()).then(|| json!({"type":"thinking"})),
         _ => event_value(event),

@@ -439,6 +439,16 @@ impl OpenAiCompatSseParser {
             }
             if let Some(details) = details {
                 self.merge_reasoning_details(details)?;
+                for detail in details {
+                    if detail["type"] == "reasoning.summary" {
+                        if let Some(text) =
+                            detail["summary"].as_str().filter(|text| !text.is_empty())
+                        {
+                            self.chunks
+                                .push(ProviderChunk::ThinkingDelta { text: text.into() });
+                        }
+                    }
+                }
             }
         }
         Ok(())
@@ -665,6 +675,26 @@ mod tests {
                 }
             )));
         }
+    }
+
+    #[test]
+    fn only_explicit_summary_details_publish_text() {
+        let mut parser = OpenAiCompatSseParser::new();
+        let delta = json!({"reasoning_content":"raw","reasoning_details":[
+            {"type":"reasoning.encrypted","index":0,"data":"opaque"},
+            {"type":"reasoning.summary","index":1,"summary":"Checking dates."}
+        ]});
+        let event = json!({"choices":[{"delta":delta}]});
+        let published: Vec<_> = parser
+            .feed(&format!("data: {event}"))
+            .unwrap()
+            .into_iter()
+            .filter_map(|chunk| match chunk {
+                ProviderChunk::ThinkingDelta { text } => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(published, ["Checking dates."]);
     }
 
     #[test]
