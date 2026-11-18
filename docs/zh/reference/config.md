@@ -63,7 +63,7 @@ HTTP 服务默认读取所选数据目录下的 `config.toml`，也可通过 `--
 
 SDK 按配置名称选择连接。多个连接可以使用同一个 `format`；单独选择协议不会选择第一条匹配连接。显式模型设置覆盖选中的 tier。选择其他连接不会携带无关默认 tier 的原生设置；显式选择的 tier 仍提供默认值，不兼容的选择会失败。
 
-`auto` 根据已知端点主机名选择端点 profile。自定义网关使用 `compatible`，使用原生设置时必须显式声明能力。Profile 描述文档规定的适配行为，不代表上游已经确认。显式选择不支持的思考或服务值会在派发前失败。`think` 保持为可移植的 tier 偏好：直接 DeepSeek 的 `medium` 映射为原生 `high`，请求值与有效值分别记录。`reasoning_effort` 精确选择原生值，不会静默改档。启用服务 tier 不改变模型或思考设置。
+`auto` 根据已知端点主机名选择端点 profile。自定义网关使用 `compatible`，使用原生设置时必须显式声明能力。Profile 描述文档规定的适配行为，不代表上游已经确认。显式选择不支持的思考或服务值会在派发前失败。`think` 是可移植的 tier 偏好。所选模型和连接声明支持对应档位时，适配器才发送映射后的值；否则请求沿用上游默认行为，并记录原始偏好，有效档位留空。直连 DeepSeek 会把 `medium` 映射为 `high`。`reasoning_effort` 精确选择原生值，不会静默改档。启用服务 tier 不改变模型或思考设置。
 
 Messages 默认使用 `x-api-key` 认证；OpenRouter 三种协议都使用 Bearer。DeepSeek Messages 将 `thinking.type` 发送为 `enabled` 或 `disabled`，省略不支持的缓存控制并拒绝服务 tier。DeepSeek Responses 发送完整的无状态历史，绝不使用 `previous_response_id`。参见 [DeepSeek 思考](https://api-docs.deepseek.com/guides/thinking_mode/)、[Messages](https://api-docs.deepseek.com/guides/anthropic_api/) 和 [Responses](https://api-docs.deepseek.com/guides/responses_api/) 契约，以及 [OpenRouter Messages 认证](https://openrouter.ai/docs/api/api-reference/anthropic-messages/create-a-message)。
 

@@ -57,6 +57,7 @@
 | `/pending` | 检查、重试或丢弃未确认的提交。 |
 | `/model`、`/thinking` | 为所选 Agent 选择模型或思考设置。 |
 | Ctrl+O、`/tools`、`/copy` | 展开或收起内联工具详情、读取保留输出，或复制回复正文。 |
+| 鼠标左键拖动 | 高亮选区，松开时将所选文字复制到剪贴板。 |
 | Page Up、Page Down、Ctrl+End | 滚动对话或回到最新输出。 |
 | Ctrl+P、Ctrl+N | 在编辑区调出上一条或下一条已发送的提示词。 |
 | `/server`、`/reconnect`、`/restart` | 检查所连服务、重新连接，或重启受管本地服务。 |

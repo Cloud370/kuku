@@ -57,6 +57,7 @@ Put options before the prompt in `kuku run`, because it consumes the remaining w
 | `/pending` | Check, retry or discard an unconfirmed submission. |
 | `/model`, `/thinking` | Select model or reasoning settings for the selected Agent. |
 | Ctrl+O, `/tools`, `/copy` | Toggle inline tool details, read saved tool output, or copy response text. |
+| Left-button drag | Highlight visible text and copy the selected range to the clipboard on release. |
 | Page Up, Page Down, Ctrl+End | Scroll the transcript or return to the latest output. |
 | Ctrl+P, Ctrl+N | Recall the previous or next sent prompt into the editor. |
 | `/server`, `/reconnect`, `/restart` | Inspect the connected service, reconnect, or restart the managed local service. |
