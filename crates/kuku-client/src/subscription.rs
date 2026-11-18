@@ -68,7 +68,7 @@ pub enum Observation {
         /// Operation code for a runtime-state fact.
         operation: Option<String>,
         /// Delivery outcome for the selected Agent, when present.
-        delivery: Option<InputDelivery>,
+        delivery: Option<Box<InputDelivery>>,
         /// Durable status and output returned for a settled turn.
         settlement: Option<Box<AgentSettlement>>,
         /// Whether a committed stop still had owned work to clean up.

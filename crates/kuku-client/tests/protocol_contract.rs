@@ -71,7 +71,7 @@ fn shared_protocol_preserves_the_command_id_for_each_queue_transition() {
             Observation::Committed {
                 delivery: Some(delivery),
                 ..
-            } => delivery,
+            } => *delivery,
             other => panic!("unexpected queue observation: {other:?}"),
         })
         .collect();

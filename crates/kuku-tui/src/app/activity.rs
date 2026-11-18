@@ -333,7 +333,7 @@ impl App {
                         elapsed.and_then(|summary| summary.elapsed_ms),
                     );
                     if let Some(delivery) = delivery {
-                        pane.deliveries.committed(id, delivery);
+                        pane.deliveries.committed(id, *delivery);
                     }
                     pane.observe_execution(
                         id,
