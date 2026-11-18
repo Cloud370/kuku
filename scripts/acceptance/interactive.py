@@ -834,7 +834,7 @@ def dense_transcript(client, reference=False):
         assert scenario.read_target not in collapsed and scenario.draft in collapsed, collapsed
         anchor = row_of(collapsed, scenario.activity_group)
         click(terminal, collapsed, scenario.activity_composition)
-        opened = terminal.expect(scenario.read_target, state="Search text · sample-marker in samples")["screen"]
+        opened = terminal.expect(scenario.read_target, state="Search text · sample-marker in samples", also=(scenario.draft,))["screen"]
         assert row_of(opened, scenario.activity_group) == anchor and "sample-marker 12" not in opened, opened
         assert all(f"samples/read-{index:02d}.txt" in opened for index in range(1, 13)), opened
         assert "Find files · read-0*.txt in samples" in opened and "Search text · sample-marker in samples" in opened, opened
@@ -887,14 +887,14 @@ def dense_transcript(client, reference=False):
             screens.append(("Narrow tool turn with the same draft", narrow))
             terminal.request("resize", rows=32, cols=140)
         with scenario.streaming_reply():
-            wide = terminal.expect(scenario.source, state="Streaming")["screen"]
+            wide = terminal.expect(scenario.source, state="Streaming", also=(scenario.draft, scenario.heading), rows=32)["screen"]
             assert scenario.heading in wide and scenario.draft in wide and scenario.end not in wide and "rust" in wide, wide
             screens.append(("Wide Chinese report while the Rust fence is open", wide))
             terminal.request("resize", rows=26, cols=74)
-            narrow = terminal.expect(scenario.source, state="Streaming")["screen"]
+            narrow = terminal.expect(scenario.source, state="Streaming", also=(scenario.draft,), rows=26)["screen"]
             assert scenario.draft in narrow and scenario.end not in narrow, narrow
             screens.append(("Narrow Chinese report while the Rust fence is open", narrow))
-        complete = terminal.expect(scenario.end, state="Finished")["screen"]
+        complete = terminal.expect(scenario.end, state="Finished", also=(scenario.draft,), rows=26)["screen"]
         assert all(text in complete for text in (scenario.draft, "验证项目", "十二项通过", "dense-literal verification saved")), complete
         screens.append(("Complete report and unchanged draft", complete))
         verification = scenario.verify()

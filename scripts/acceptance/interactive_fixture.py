@@ -508,15 +508,19 @@ class Terminal:
         self.expect(title)
         self.press("\r")
 
-    def expect(self, text, state=None):
+    def expect(self, text, state=None, *, also=(), rows=None):
         viewport = {}
+        required = (text, *also) if state is None else (text, state, *also)
 
         def contains_text():
             viewport.update(self.request("screen"))
-            return viewport if text in viewport["screen"] and (state is None or state in viewport["screen"]) else None
+            screen = viewport["screen"]
+            if rows is not None and screen.count("\n") + 1 != rows:
+                return None
+            return viewport if all(item in screen for item in required) else None
 
         try:
-            return eventually(f"terminal text {text!r} in state {state!r}", contains_text)
+            return eventually(f"terminal text {required!r} at {rows or 'any'} rows", contains_text)
         except AssertionError as error:
             raise AssertionError(f"{error}\nLast terminal screen:\n{viewport.get('screen', '')}") from error
 
