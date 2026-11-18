@@ -16,7 +16,7 @@ $KUKU_HOME/config.toml
 
 HTTP 服务默认读取所选数据目录下的 `config.toml`，也可通过 `--config` 指定路径。运行 `kuku server status` 可查看正在运行的受管服务的生效配置。[配置指南](../start/configuration.md)
 
-本地终端的状态栏通过 `KUKU_TUI_STATUSLINE` 配置。[环境变量](environment-variables.md)
+终端客户端使用独立的偏好文件。[终端偏好](#终端偏好)
 
 ## 顶层键
 
@@ -138,3 +138,23 @@ custom = "https://example.com/latest.json"
 ## 默认配置示例
 
 起始配置文件位于 `crates/kuku/assets/default-config.toml`。
+
+## 终端偏好
+
+终端启动时从本机客户端数据目录读取 `tui.toml`，对受管服务和显式远程连接都生效。目录按 `--data-dir`、`KUKU_HOME`、`~/.kuku` 的顺序选取。SDK 和服务的执行设置使用 `config.toml`。
+
+`tui.toml` 或 `fields` 缺省时，使用内置顺序 `connection,execution,agent,workspace,context,tps`。默认连接字段显示服务状态。显式选择 `connection` 时，空间足够也可显示端点。
+
+在 `tui.toml` 中添加以下内容可选择全部字段。
+
+```toml
+[statusline]
+fields = [
+  "connection", "execution", "input", "agent", "workspace", "model",
+  "context", "tokens_in", "tokens_out", "cache", "tps",
+]
+```
+
+按想要的顺序填写所需字段。用 `fields = []` 可隐藏状态栏。选择 `input` 会把输入反馈放在状态栏，默认位置为编辑区。[字段含义](cli.md#终端界面)
+
+将 `KUKU_TUI_STATUSLINE` 设为逗号分隔的字段列表，可在本次启动时覆盖文件设置。`none` 隐藏状态栏，空白值选择内置字段。当前设置无效时，终端会显示错误并回退到内置字段。[环境变量](environment-variables.md)

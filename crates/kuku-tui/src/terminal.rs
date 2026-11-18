@@ -15,6 +15,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::{CompletedFrame, Terminal};
 
 use crate::app::App;
+use crate::config::load_statusline;
 use crate::jobs::{Job, Jobs, Update};
 use crate::statusline::StatusLine;
 use crate::ui;
@@ -63,8 +64,8 @@ pub(crate) async fn run(options: ConnectionOptions) -> io::Result<()> {
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_default();
     let mut app = App::new(workspace, options.remote.clone());
-    let statusline = StatusLine::from_env().unwrap_or_else(|problem| {
-        app.problem(problem);
+    let statusline = load_statusline(&options).unwrap_or_else(|problem| {
+        app.problem(format!("Using the default status line · {problem}"));
         StatusLine::default()
     });
     let mut jobs = Jobs::new(options);

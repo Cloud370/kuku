@@ -5,7 +5,7 @@
 | Variable | Meaning |
 |---|---|
 | `KUKU_HOME` | 覆盖默认运行时 home 目录 |
-| `KUKU_TUI_STATUSLINE` | 终端启动时读取，以逗号分隔。默认顺序为 `connection,execution,agent,workspace,model,context,tokens_in,tokens_out,cache,tps`。输入反馈默认出现在编辑区，加上 `input` 可放在底栏。可按所需顺序只写要显示的字段，设为 `none` 可隐藏整个状态栏。[字段含义](cli.md#终端界面) |
+| `KUKU_TUI_STATUSLINE` | 用逗号分隔的状态栏字段列表覆盖本次终端启动的 `tui.toml` 设置。[终端偏好](config.md#终端偏好) |
 | `KUKU_TOKEN` | 用于显式连接服务的客户端令牌 |
 | `KUKU_SERVER_PASSWORD` | 通过 `kuku server` 显式启动服务时使用的令牌 |
 | `ANTHROPIC_API_KEY` | `provider.anthropic` 常用的 API key 来源 |

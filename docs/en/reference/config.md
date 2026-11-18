@@ -16,7 +16,7 @@ $KUKU_HOME/config.toml
 
 The HTTP server defaults to `config.toml` in its data directory and accepts an explicit `--config` path. An already running managed server reports its effective configuration with `kuku server status`. [Configuration](../start/configuration.md)
 
-Configure the local terminal footer with `KUKU_TUI_STATUSLINE`. [Environment variables](environment-variables.md)
+The terminal client uses a separate preferences file. [Terminal preferences](#terminal-preferences)
 
 ## Top-Level Keys
 
@@ -138,3 +138,23 @@ custom = "https://example.com/latest.json"
 ## Default Config Example
 
 The starter config file lives in `crates/kuku/assets/default-config.toml`.
+
+## Terminal Preferences
+
+The terminal reads `tui.toml` at startup from the local client data directory for both managed and explicit remote connections. The directory comes from `--data-dir`, then `KUKU_HOME`, then `~/.kuku`. SDK and service execution settings use `config.toml`.
+
+Missing `tui.toml` or `fields` selects the built-in order `connection,execution,agent,workspace,context,tps`. The default connection field displays the service state. Explicitly selecting `connection` also allows the endpoint to appear when it fits.
+
+To choose all available fields, add this to `tui.toml`.
+
+```toml
+[statusline]
+fields = [
+  "connection", "execution", "input", "agent", "workspace", "model",
+  "context", "tokens_in", "tokens_out", "cache", "tps",
+]
+```
+
+List just the fields you want in display order. Use `fields = []` to hide the status line. Selecting `input` places input feedback in the status line. The default placement is in the editor. [Field meanings](cli.md#terminal-interface)
+
+Set `KUKU_TUI_STATUSLINE` to a comma-separated list to override the file for that launch. Use `none` to hide the line or a blank value to use the built-in fields. The terminal reports an invalid active setting and falls back to the built-in fields. [Environment variables](environment-variables.md)

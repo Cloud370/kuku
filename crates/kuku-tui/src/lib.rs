@@ -5,6 +5,7 @@ use std::io::{self, IsTerminal};
 use kuku_client::ConnectionOptions;
 
 mod app;
+mod config;
 mod editor;
 mod interaction;
 mod jobs;

@@ -1,5 +1,4 @@
 use std::cmp::Reverse;
-use std::env;
 
 use kuku_client::UsageTotals;
 use ratatui::style::{Color, Style};
@@ -11,23 +10,22 @@ use crate::app::{Activity, App, ServiceStatus, SubmissionStatus};
 use crate::text::{shorten, single_line, single_line_path};
 use crate::theme::{emphasis, ERROR, MUTED, WARNING};
 
-const SETTING: &str = "KUKU_TUI_STATUSLINE";
 const SEPARATOR: &str = " · ";
 const COMPACT_DETAILS_WIDTH: usize = 12;
 const COMPACT_STATUS_WIDTH: usize = 96;
-const PRIMARY_FIELDS: [Field; 5] = [
+const PRIMARY_FIELDS: [Field; 4] = [
     Field::Connection,
     Field::Execution,
     Field::Agent,
     Field::Workspace,
-    Field::Model,
 ];
-const METRIC_FIELDS: [Field; 5] = [
-    Field::Context,
+const METRIC_FIELDS: [Field; 2] = [Field::Context, Field::Throughput];
+const OPTIONAL_FIELDS: [Field; 5] = [
+    Field::Model,
     Field::InputTokens,
     Field::OutputTokens,
     Field::Cache,
-    Field::Throughput,
+    Field::Input,
 ];
 const TOKEN_UNITS: [(u64, &str); 3] = [(1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K")];
 
@@ -37,14 +35,35 @@ pub(crate) struct StatusLine {
 }
 
 impl StatusLine {
-    pub(crate) fn from_env() -> Result<Self, String> {
-        match env::var(SETTING) {
-            Ok(value) => Self::parse(&value),
-            Err(env::VarError::NotPresent) => Ok(Self::default()),
-            Err(env::VarError::NotUnicode(_)) => Err(format!(
-                "{SETTING} must be Unicode. Using the default status line."
-            )),
+    pub(crate) fn parse(value: &str) -> Result<Self, String> {
+        match value.trim() {
+            "" => Ok(Self::default()),
+            "none" => Self::from_fields([]),
+            value => Self::from_fields(value.split(',')),
         }
+    }
+
+    pub(crate) fn from_fields<'a>(
+        names: impl IntoIterator<Item = &'a str>,
+    ) -> Result<Self, String> {
+        let mut fields = Vec::new();
+        for name in names {
+            let name = name.trim();
+            let field = Field::all()
+                .find(|field| field.name() == name)
+                .ok_or_else(|| {
+                    let name = shorten(&single_line(name), 24);
+                    let valid = Field::all().map(Field::name).collect::<Vec<_>>().join(", ");
+                    format!("unknown field {name:?}. Valid fields are {valid}.")
+                })?;
+            if fields.contains(&field) {
+                return Err(format!("Field list repeats {name}."));
+            }
+            fields.push(field);
+        }
+        Ok(Self {
+            fields: Some(fields),
+        })
     }
 
     pub(crate) fn render_line(&self, app: &App, width: usize) -> Option<Line<'static>> {
@@ -53,7 +72,8 @@ impl StatusLine {
             .snapshot
             .as_ref()
             .map(|snapshot| &snapshot.agent.usage);
-        let compact = self.fields.is_none() && width < COMPACT_STATUS_WIDTH;
+        let custom = self.fields.is_some();
+        let compact = !custom && width < COMPACT_STATUS_WIDTH;
         let (fields, metrics) = self.fields.as_deref().map_or_else(
             || {
                 let metrics = usage.map_or(&[][..], |_| METRIC_FIELDS.as_slice());
@@ -64,7 +84,7 @@ impl StatusLine {
         let segments = fields
             .iter()
             .chain(metrics)
-            .filter_map(|field| field.segment(app, usage, compact))
+            .filter_map(|field| field.segment(app, usage, compact, custom))
             .collect();
         render_segments(segments, width)
     }
@@ -105,38 +125,6 @@ impl StatusLine {
             )
         })
     }
-
-    fn parse(value: &str) -> Result<Self, String> {
-        match value.trim() {
-            "" => Ok(Self::default()),
-            "none" => Ok(Self {
-                fields: Some(Vec::new()),
-            }),
-            value => {
-                let mut fields = Vec::new();
-                for name in value.split(',').map(str::trim) {
-                    let field = Field::all()
-                        .find(|field| field.name() == name)
-                        .ok_or_else(|| {
-                            let name = shorten(&single_line(name), 24);
-                            let valid = Field::all().map(Field::name).collect::<Vec<_>>().join(",");
-                            format!(
-                                "{SETTING} has an unknown field {name:?}. Using the default status line. Use {valid} or none."
-                            )
-                        })?;
-                    if fields.contains(&field) {
-                        return Err(format!(
-                            "{SETTING} repeats {name}. Using the default status line."
-                        ));
-                    }
-                    fields.push(field);
-                }
-                Ok(Self {
-                    fields: Some(fields),
-                })
-            }
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,7 +147,7 @@ impl Field {
         PRIMARY_FIELDS
             .into_iter()
             .chain(METRIC_FIELDS)
-            .chain([Self::Input])
+            .chain(OPTIONAL_FIELDS)
     }
 
     fn name(self) -> &'static str {
@@ -178,9 +166,15 @@ impl Field {
         }
     }
 
-    fn segment(self, app: &App, usage: Option<&UsageTotals>, compact: bool) -> Option<Segment> {
+    fn segment(
+        self,
+        app: &App,
+        usage: Option<&UsageTotals>,
+        compact: bool,
+        custom: bool,
+    ) -> Option<Segment> {
         let segment = match self {
-            Self::Connection => connection(app),
+            Self::Connection => connection(app, custom),
             Self::Execution => return execution(app),
             Self::Input => return input(app, true),
             Self::Agent => Segment::details(
@@ -394,7 +388,7 @@ fn render_segments(segments: Vec<Segment>, width: usize) -> Option<Line<'static>
     Some(Line::from(line))
 }
 
-fn connection(app: &App) -> Segment {
+fn connection(app: &App, show_endpoint: bool) -> Segment {
     let status = app.service_status();
     let (color, priority) = match status {
         ServiceStatus::Connected => (Color::Reset, Priority::Connected),
@@ -405,19 +399,19 @@ fn connection(app: &App) -> Segment {
             (ERROR, Priority::ConnectionProblem)
         }
     };
-    let kind = if app.remote { "Remote" } else { "Local" };
-    let location = format!("{} {kind}", status.label());
     let mut labels = vec![status.label().to_owned()];
     if status == ServiceStatus::UpdatesUnavailable {
         labels.insert(0, "No updates".into());
     }
-    labels.push(location);
-    if let Some(endpoint) = &app.endpoint {
-        labels.push(format!(
-            "{} {kind} {}",
-            status.label(),
-            single_line(endpoint)
-        ));
+    if show_endpoint {
+        let kind = if app.remote { "Remote" } else { "Local" };
+        let location = format!("{} {kind}", status.label());
+        if let Some(endpoint) = &app.endpoint {
+            labels.push(location.clone());
+            labels.push(format!("{location} {}", single_line(endpoint)));
+        } else {
+            labels.push(location);
+        }
     }
     Segment::labels(labels, color, priority)
 }
@@ -571,7 +565,6 @@ mod tests {
 
     use super::{
         compact_token_count, render_segments, Field, Priority, Segment, StatusLine, SEPARATOR,
-        SETTING,
     };
     use crate::app::{Address, App};
     use crate::jobs::{Job, Update};
@@ -690,7 +683,6 @@ mod tests {
     #[test]
     fn status_line_setting_reports_duplicates_and_unknown_fields() {
         let duplicate = StatusLine::parse("workspace,workspace").unwrap_err();
-        assert!(duplicate.contains(SETTING));
         assert!(duplicate.contains("repeats workspace"));
         let unknown = StatusLine::parse("model,network").unwrap_err();
         assert!(unknown.contains("unknown field \"network\""));
@@ -847,7 +839,7 @@ mod tests {
     }
 
     #[test]
-    fn measured_usage_and_workspace_share_one_line_with_compact_narrow_fields() {
+    fn default_status_line_shows_context_tps_and_workspace_in_one_row() {
         let workspace = PathBuf::from("/workspace")
             .join("archived-projects".repeat(12))
             .join("work-right");
@@ -863,18 +855,25 @@ mod tests {
             "Agent main",
             "work-right",
             "Context 89% used",
-            "129M in",
-            "210K out",
-            "Cache hit 75%",
             "18.4 TPS",
         ] {
             assert!(footer.contains(label), "missing {label:?} in {footer}");
+        }
+        assert!(footer.starts_with("Connected · Running"));
+        for detail in [
+            "http://",
+            "Model pending",
+            "129M in",
+            "210K out",
+            "Cache hit",
+        ] {
+            assert!(!footer.contains(detail), "{footer}");
         }
         assert!(!footer.contains(workspace.to_string_lossy().as_ref()));
         assert!(rows[21].contains("To main") && rows[21].contains("2 queued, Draft"));
         assert!(rows[22].contains("Local draft"));
         let rows = screen(&mut app, &statusline, 80, 24);
-        assert!(rows[23].contains("Ctx 89%") && rows[23].contains("129M in"));
+        assert!(rows[23].contains("Ctx 89%") && rows[23].contains("18.4 TPS"));
         assert!(rows[23].contains("work-right") && rows[22].contains("Local draft"));
         let rows = screen(&mut app, &statusline, 29, 24);
         assert!(rows[23].contains("Running") && rows[21].contains("2 queued"));
@@ -883,6 +882,24 @@ mod tests {
             rows[23].contains("Local draft"),
             "the status row should be reclaimed"
         );
+    }
+
+    #[test]
+    fn configured_status_line_can_show_full_metrics_and_connection_details() {
+        let mut app = connected_app();
+        load_agent(&mut app, "running", 0, Value::Null, measured_usage());
+        let statusline = StatusLine::parse(
+            "connection,execution,agent,workspace,model,context,tokens_in,tokens_out,cache,tps",
+        )
+        .unwrap();
+        let rows = screen(&mut app, &statusline, 140, 24);
+        let footer = rows[23].trim();
+        assert!(footer.starts_with("Connected Local · Running"), "{footer}");
+        assert!(
+            footer.ends_with("Context 89% used · 129M in · 210K out · Cache hit 75% · 18.4 TPS"),
+            "{footer}"
+        );
+        assert!(rows[22].contains("Type a prompt"));
     }
 
     #[test]
