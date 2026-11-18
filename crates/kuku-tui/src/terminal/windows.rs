@@ -278,13 +278,17 @@ impl Decoder {
     }
 
     fn character(&mut self, character: char) {
-        self.trailing_escape = character == '\x1b';
+        let escape = character == '\x1b';
+        if escape && self.trailing_escape {
+            self.finish_batch();
+        }
+        self.trailing_escape = escape;
         self.parser
             .parse(character.encode_utf8(&mut [0; 4]).as_bytes(), true);
     }
 
     fn finish_batch(&mut self) {
-        // NOTE: A timeout disambiguates Escape. An incomplete CSI prefix may still be a paste marker.
+        // NOTE: Completing a standalone Escape leaves incomplete CSI and paste data buffered.
         if std::mem::take(&mut self.trailing_escape) {
             self.parser.parse(&[], false);
         }
@@ -497,6 +501,21 @@ mod tests {
         assert_eq!(None, decoder.next());
         input(&mut decoder, "\r");
         assert_eq!(Some(Event::Key(KeyCode::Enter.into())), decoder.next());
+    }
+
+    #[test]
+    fn standalone_escape_in_the_same_batch_keeps_the_next_paste_marker_intact() {
+        let mut decoder = Decoder::default();
+        input(
+            &mut decoder,
+            "\x1b\x1b[200~first\r\nsecond\x1b\x1bline\x1b[201~",
+        );
+        assert_eq!(Some(Event::Key(KeyCode::Esc.into())), decoder.next());
+        assert_eq!(
+            Some(Event::Paste("first\r\nsecond\x1b\x1bline".into())),
+            decoder.next()
+        );
+        assert_eq!(None, decoder.next());
     }
 
     #[test]
