@@ -16,7 +16,7 @@ use crate::text::{shorten, single_line};
 use crate::theme::{
     composer_padding, emphasis, focused_row, horizontal_gutter, panel, panel_padding, surface,
     ACCENT, ERROR, MAX_DRAFT_ROWS, MUTED, OUTPUT_WIDTH, PICKER_HEIGHT, PICKER_WIDTH,
-    SHORT_PROMPT_HEIGHT, WARNING,
+    SHORT_PROMPT_HEIGHT, STATUS_EDITOR_HEIGHT, WARNING,
 };
 
 const MAX_BANNER_ROWS: u16 = 5;
@@ -362,7 +362,7 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Rect
                 height: area.height.saturating_sub(1),
                 ..area
             };
-            let area = popup(available, PICKER_WIDTH, PICKER_HEIGHT);
+            let area = popup(available, PICKER_WIDTH, STATUS_EDITOR_HEIGHT);
             let inner = render_popup(frame, area, "Status line settings");
             editor.render(frame, inner);
             inner

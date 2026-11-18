@@ -30,6 +30,7 @@ pub(crate) const MAX_DRAFT_ROWS: usize = 4;
 pub(crate) const PICKER_WIDTH: u16 = 88;
 pub(crate) const PICKER_HEIGHT: u16 = 25;
 pub(crate) const SHORT_PROMPT_HEIGHT: u16 = 13;
+pub(crate) const STATUS_EDITOR_HEIGHT: u16 = 19;
 pub(crate) const OUTPUT_WIDTH: u16 = 112;
 const PANEL: Color = Color::Rgb(28, 35, 44);
 const FOCUS: Color = Color::Rgb(53, 73, 85);
