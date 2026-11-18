@@ -564,6 +564,15 @@ impl App {
         self.effects.push(Job::Connect);
     }
 
+    pub(crate) fn next_deadline(&self) -> Option<Instant> {
+        self.notice
+            .as_ref()
+            .and_then(|notice| notice.expires_at)
+            .into_iter()
+            .chain(self.pane().cleanup_at)
+            .min()
+    }
+
     pub(crate) fn tick(&mut self) -> bool {
         let expired = self
             .notice
@@ -894,6 +903,7 @@ impl App {
             Ok(mut snapshot) => {
                 snapshot.reply_preview = None;
                 pane.set_snapshot(snapshot);
+                self.sync_withdraw_picker();
             }
             Err(error) => self.problem(format!("Agent state · {error} · /reconnect")),
         }

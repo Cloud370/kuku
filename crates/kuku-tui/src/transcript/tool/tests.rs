@@ -166,12 +166,6 @@ fn file_cards_preview_saved_content_and_diff_without_using_requested_text_as_evi
             json!({"status":"ok", "structured":{"kind":"file_edit", "path":"notes.txt", "replacement_count":1, "raw_text_after":"new line", "change":{"added_lines":1,"removed_lines":2,"preview":"-first\n-second\n+new line"}}}),
         ),
         (
-            "edit_file",
-            "older.txt",
-            json!({"old_text":"sentinel old", "new_text":"sentinel new"}),
-            json!({"status":"ok", "structured":{"kind":"file_edit", "path":"older.txt", "replacement_count":1, "raw_text_after":"recorded legacy result\n"}}),
-        ),
-        (
             "write_file",
             "failed.txt",
             json!({"content":"failed request sentinel"}),
@@ -211,8 +205,6 @@ fn file_cards_preview_saved_content_and_diff_without_using_requested_text_as_evi
         "-second",
         "+new line",
         "+1 −2",
-        "Edit file · ok · older.txt",
-        "1 replacement · 1 line after edit",
         "No permission for failed.txt",
     ] {
         assert!(rendered.contains(fact), "missing {fact}\n{rendered}");

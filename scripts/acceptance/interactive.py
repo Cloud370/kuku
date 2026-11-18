@@ -570,16 +570,40 @@ def check_agent_reading_position(client, terminal):
     terminal.expect(markers[-1], state="Finished")
     follow_up = "Record a checkpoint while the terminal is reading history"
     queued = "Process this after the checkpoint report"
+    original = "First version of the checkpoint follow-up"
+    discarded = "Obsolete checkpoint follow-up"
     beginning = "Streaming checkpoint update"
     new_content = "Another checkpoint arrived while reading"
     terminal.submit(follow_up)
     with client.provider.next(follow_up).streaming_text(beginning, f"\n\n{new_content}", "\n\nCheckpoint stream finished") as pauses:
         terminal.expect(beginning, state="Streaming")
-        terminal.type(queued)
+        terminal.type(original)
         terminal.press("\x1bOPqueue\r")
+        terminal.expect(original, state="Queued · next Turn")
+        terminal.press("\x1b[A")
+        terminal.expect("Edit queued input")
+        terminal.press("\r")
+        terminal.expect(original)
+        terminal.press("\x03")
+        terminal.type(queued)
+        terminal.press("\r")
         terminal.expect(queued, state="Queued · next Turn")
+        terminal.type(discarded)
+        terminal.press("\x1bOPqueue\r")
+        terminal.expect(discarded, state="Queued · next Turn")
+        terminal.press("/withdraw\r")
+        terminal.expect("Withdraw queued input")
+        terminal.press(discarded)
+        terminal.expect(f"› {discarded}", state="Withdraw queued input")
+        terminal.press("\r")
+        eventually("withdrawn request to leave the pending area",
+                   lambda: "Input withdrawn" in (screen := terminal.request("screen")["screen"])
+                   and discarded not in screen and queued in screen)
         check_reading_focus(terminal, markers, pauses[0], new_content, queued)
-    client.provider.next(queued).text("Queued checkpoint processed")
+    delivered = client.provider.next(queued)
+    messages = json.dumps(delivered.request["messages"], ensure_ascii=False)
+    assert original not in messages and discarded not in messages and messages.count(queued) == 1
+    delivered.text("Queued checkpoint processed")
     terminal.expect("Queued checkpoint processed", state="Finished")
     terminal.press("\x03")
     client.provider.assert_idle()
@@ -611,7 +635,8 @@ def check_reading_focus(terminal, markers, stream_pause, new_content, queued):
     assert "Switch Agent" not in terminal.expect("To reviewer")["screen"]
     terminal.press("\x1b[1;3D")
     restored = terminal.expect("draft at checkpoint", state="Reading history · Editing")["screen"]
-    assert [line for line in markers if line in restored] == visible, restored
+    restored_lines = restored.splitlines()
+    assert anchor in restored_lines[row], (visible, row, restored)
     terminal.press("\x1b[1;3A")
     terminal.expect(new_content, state=queued)
     terminal.press("\x1b[<64;5;7M")

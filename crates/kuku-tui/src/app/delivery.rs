@@ -68,8 +68,7 @@ impl Deliveries {
     ) {
         let id = &ack.receipt.command_id;
         match ack.status {
-            Some(InputStatus::Accepted) => self.accept(id),
-            Some(InputStatus::Withdrawn) => self.withdraw(id),
+            Some(InputStatus::Accepted | InputStatus::Withdrawn) => self.settle(id),
             Some(InputStatus::Queued) | None => {
                 if self.settled.iter().any(|known| known == id) {
                     return;
@@ -120,11 +119,9 @@ impl Deliveries {
         });
         for row in &mut self.rows {
             if let Some(entry) = queue.remove(row.id.as_str()) {
-                if row.status != SubmissionStatus::Withdrawn {
-                    row.status = SubmissionStatus::Queued;
-                    row.receipt = Some(entry.receipt.event_id);
-                    row.timing = input_timing(entry);
-                }
+                row.status = SubmissionStatus::Queued;
+                row.receipt = Some(entry.receipt.event_id);
+                row.timing = input_timing(entry);
             }
         }
         for entry in &snapshot.pending {
@@ -147,10 +144,10 @@ impl Deliveries {
         match delivery {
             InputDelivery::Accepted { input_ids } => {
                 for id in input_ids {
-                    self.accept(&id);
+                    self.settle(&id);
                 }
             }
-            InputDelivery::Withdrawn { input_id } => self.withdraw(&input_id),
+            InputDelivery::Withdrawn { input_id } => self.settle(&input_id),
             InputDelivery::Replaced {
                 input_id,
                 replacement_id,
@@ -158,36 +155,22 @@ impl Deliveries {
         }
     }
 
-    pub(super) fn withdraw(&mut self, id: &str) {
-        if let Some(row) = self.rows.iter_mut().find(|row| row.id == id) {
-            row.status = SubmissionStatus::Withdrawn;
-            row.withdrawal = None;
-        }
-        self.remember_settled(id);
-        self.trim_terminal_rows();
-    }
-
     pub(super) fn withdrawal(&mut self, id: &str, status: Option<SubmissionStatus>) {
-        if let Some(row) = self
-            .rows
-            .iter_mut()
-            .find(|row| row.id == id && row.status != SubmissionStatus::Withdrawn)
-        {
+        if let Some(row) = self.rows.iter_mut().find(|row| row.id == id) {
             row.withdrawal = status;
         }
     }
 
     pub(super) fn acknowledge_withdrawal(&mut self, id: &str, status: Option<InputStatus>) {
         match status {
-            Some(InputStatus::Accepted) => self.accept(id),
-            Some(InputStatus::Withdrawn) => self.withdraw(id),
+            Some(InputStatus::Accepted | InputStatus::Withdrawn) => self.settle(id),
             Some(InputStatus::Queued) | None => self.withdrawal(id, None),
         }
     }
 
     pub(super) fn replace(&mut self, original: &str, replacement: &str, receipt: u64) {
         let original_position = self.rows.iter().position(|row| row.id == original);
-        self.accept(original);
+        self.settle(original);
         if self.settled.iter().any(|id| id == replacement) {
             return;
         }
@@ -204,7 +187,7 @@ impl Deliveries {
         self.rows.retain(|row| row.id != id);
     }
 
-    fn accept(&mut self, id: &str) {
+    fn settle(&mut self, id: &str) {
         self.remove(id);
         self.remember_settled(id);
     }
@@ -243,12 +226,7 @@ impl Deliveries {
     }
 
     fn trim_terminal_rows(&mut self) {
-        let terminal = |row: &DeliveryRow| {
-            matches!(
-                row.status,
-                SubmissionStatus::Withdrawn | SubmissionStatus::Rejected
-            )
-        };
+        let terminal = |row: &DeliveryRow| row.status == SubmissionStatus::Rejected;
         let mut excess = self
             .rows
             .iter()

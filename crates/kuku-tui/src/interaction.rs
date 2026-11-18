@@ -517,6 +517,15 @@ impl App {
     }
 
     fn open_queue(&mut self) {
+        self.picker(PickerKind::Queue, Vec::new());
+        self.sync_withdraw_picker();
+    }
+
+    pub(crate) fn sync_withdraw_picker(&mut self) {
+        if !matches!(&self.modal, Some(Modal::Picker(picker)) if matches!(picker.kind, PickerKind::Queue))
+        {
+            return;
+        }
         let choices = self.pane().snapshot.as_ref().map_or_else(Vec::new, |snap| {
             snap.pending
                 .iter()
@@ -532,7 +541,9 @@ impl App {
                 })
                 .collect()
         });
-        self.picker(PickerKind::Queue, choices);
+        if let Some(Modal::Picker(picker)) = &mut self.modal {
+            picker.set_local(choices);
+        }
     }
 
     fn open_reply(&mut self) {

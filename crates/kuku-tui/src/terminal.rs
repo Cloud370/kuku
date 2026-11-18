@@ -84,8 +84,7 @@ pub(crate) async fn run(options: ConnectionOptions) -> io::Result<()> {
     #[cfg(windows)]
     let mut events = windows::Input::new()?;
     let mut clipboard = Clipboard::default();
-    let mut frames = tokio::time::interval(FRAME_INTERVAL);
-    frames.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut next_frame = Instant::now();
     let mut activity = ActivityClock::default();
     let mut painted_activity = activity.sample(&app, Instant::now(), SystemTime::now());
     let (mut screen, mut activity_visible) = terminal.draw(&mut app, painted_activity)?;
@@ -96,6 +95,14 @@ pub(crate) async fn run(options: ConnectionOptions) -> io::Result<()> {
         next_stream: Instant::now(),
     };
     while !app.quit {
+        let wake = if paint.dirty
+            || activity.confirming_phase()
+            || (activity_visible && painted_activity.changes_with_time())
+        {
+            Some(next_frame)
+        } else {
+            app.next_deadline()
+        };
         tokio::select! {
             event = events.next() => match event {
                 Some(Ok(event)) => {
@@ -115,13 +122,14 @@ pub(crate) async fn run(options: ConnectionOptions) -> io::Result<()> {
                     }
                 }
             },
-            _ = frames.tick() => {
+            _ = tokio::time::sleep_until(wake.unwrap_or(next_frame).into()), if wake.is_some() => {
                 if app.tick() {
                     paint.request(true);
                 }
                 let start = Instant::now();
+                next_frame = start + FRAME_INTERVAL;
                 let frame = activity.sample(&app, start, SystemTime::now());
-                if activity_visible && frame != painted_activity {
+                if frame.phase_changed(painted_activity) || (activity_visible && frame != painted_activity) {
                     paint.request(false);
                 }
                 if paint.ready(start) {

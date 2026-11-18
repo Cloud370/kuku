@@ -8,8 +8,6 @@ use crate::theme::{MUTED, SUCCESS};
 
 use super::MAX_PREVIEW_BYTES;
 
-const MAX_LEGACY_LINE_COUNT_BYTES: usize = 64 * 1024;
-
 #[derive(Debug, Clone)]
 pub(super) struct FileChange {
     tool: &'static str,
@@ -32,29 +30,19 @@ impl FileChange {
             }
             "file_edit" => {
                 let change = &result["change"];
-                if let (Some(added), Some(removed)) = (
-                    change["added_lines"].as_u64(),
-                    change["removed_lines"].as_u64(),
-                ) {
-                    let stats = if added == 0 && removed == 0 {
-                        "No lines changed".to_owned()
-                    } else {
-                        format!("+{added} −{removed}")
-                    };
-                    return Some(Self::new(
-                        "edit_file",
-                        change["preview"].as_str(),
-                        stats,
-                        true,
-                        change["preview_truncated"].as_bool().unwrap_or(false),
-                    ));
-                }
+                let added = change["added_lines"].as_u64()?;
+                let removed = change["removed_lines"].as_u64()?;
+                let stats = if added == 0 && removed == 0 {
+                    "No lines changed".to_owned()
+                } else {
+                    format!("+{added} −{removed}")
+                };
                 Some(Self::new(
                     "edit_file",
-                    content,
-                    legacy_edit_stats(result, content, truncated),
-                    false,
-                    truncated,
+                    change["preview"].as_str(),
+                    stats,
+                    true,
+                    change["preview_truncated"].as_bool().unwrap_or(false),
                 ))
             }
             _ => None,
@@ -109,20 +97,6 @@ impl FileChange {
             truncated: truncated || head.len() != content.len(),
         }
     }
-}
-
-fn legacy_edit_stats(result: &Value, text: Option<&str>, truncated: bool) -> String {
-    let mut stats = result["replacement_count"].as_u64().map_or_else(
-        || "Edited".to_owned(),
-        |count| format!("{count} {}", plural(count, "replacement", "replacements")),
-    );
-    if let Some(text) = text.filter(|text| !truncated && text.len() <= MAX_LEGACY_LINE_COUNT_BYTES)
-    {
-        let count = text.lines().count();
-        let unit = if count == 1 { "line" } else { "lines" };
-        stats.push_str(&format!(" · {count} {unit} after edit"));
-    }
-    stats
 }
 
 fn plural(count: u64, one: &'static str, many: &'static str) -> &'static str {

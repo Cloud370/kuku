@@ -51,7 +51,7 @@ impl Sprite {
                 mark.tones[cell] = ACTIVITY_BRIGHT;
             }
             Activity::RunningTools => {
-                if step % 5 == 0 {
+                if step.is_multiple_of(5) {
                     mark.glyphs[0] = "▛";
                     mark.tones = [ACTIVITY_BRIGHT; 3];
                 }

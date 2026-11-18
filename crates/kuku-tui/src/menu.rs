@@ -294,6 +294,7 @@ impl PickerKind {
                 | Self::Agents
                 | Self::Models
                 | Self::Queued
+                | Self::Queue
                 | Self::Details
                 | Self::Tools
         )

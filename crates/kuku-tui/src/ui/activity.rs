@@ -94,6 +94,14 @@ pub(crate) struct ActivityFrame {
 }
 
 impl ActivityFrame {
+    pub(crate) fn phase_changed(self, previous: Self) -> bool {
+        self.status != previous.status
+    }
+
+    pub(crate) fn changes_with_time(self) -> bool {
+        self.status.motion().is_some() || (self.elapsed.is_some() && self.status.clock_runs())
+    }
+
     #[cfg(test)]
     pub(super) fn test_frame(app: &App, step: Option<u128>) -> Self {
         let elapsed = app

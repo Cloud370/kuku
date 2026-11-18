@@ -16,6 +16,10 @@ pub(crate) struct ActivityClock {
 }
 
 impl ActivityClock {
+    pub(crate) fn confirming_phase(&self) -> bool {
+        self.phase.next.is_some()
+    }
+
     pub(crate) fn observe(&mut self, app: &App, now: Instant) {
         self.update_phase(app, now);
     }
