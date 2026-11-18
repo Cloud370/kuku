@@ -834,7 +834,7 @@ def dense_transcript(client, reference=False):
         assert scenario.read_target not in collapsed and scenario.draft in collapsed, collapsed
         anchor = row_of(collapsed, scenario.activity_group)
         click(terminal, collapsed, scenario.activity_composition)
-        opened = terminal.expect(scenario.read_target)["screen"]
+        opened = terminal.expect(scenario.read_target, state="Search text · sample-marker in samples")["screen"]
         assert row_of(opened, scenario.activity_group) == anchor and "sample-marker 12" not in opened, opened
         assert all(f"samples/read-{index:02d}.txt" in opened for index in range(1, 13)), opened
         assert "Find files · read-0*.txt in samples" in opened and "Search text · sample-marker in samples" in opened, opened
