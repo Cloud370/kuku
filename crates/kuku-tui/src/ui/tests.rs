@@ -226,6 +226,54 @@ fn switching_agent_keeps_drafts_and_read_position_and_ignores_old_observer() {
 }
 
 #[test]
+fn source_action_completes_on_tab_and_toggles_one_pane_without_changing_copy() {
+    let mut app = app();
+    let main = app.active.clone();
+    let reviewer = Address::new(main.session.clone(), "reviewer".into());
+    let raw = "````markdown\n# Document\n\n```rust\nlet x = 1;\n```\n````";
+    app.select(main.clone(), true, "Example".into());
+    app.pane_mut()
+        .transcript
+        .apply(entry(1, "main", HistoryKind::Assistant, raw), None);
+    app.pane_mut().draft.insert("main draft");
+    app.select(reviewer.clone(), true, "Example".into());
+    app.pane_mut().transcript.apply(
+        entry(2, "reviewer", HistoryKind::Assistant, "**Reviewer reply**"),
+        None,
+    );
+    app.pane_mut().draft.insert("reviewer draft");
+    app.select(main.clone(), true, "Example".into());
+
+    key(&mut app, KeyCode::F(1), KeyModifiers::NONE);
+    for character in "sou".chars() {
+        key(&mut app, KeyCode::Char(character), KeyModifiers::NONE);
+    }
+    key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker)) if picker.query.text() == "/source"));
+    app.effects.clear();
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(matches!(app.effects.as_slice(), [Job::ClosePicker]));
+    let source = screen(&mut app, 100, 24);
+    assert!(source.contains("Assistant · source"));
+    assert!(source.contains("````markdown") && source.contains("```rust"));
+    assert!(source.contains("main draft"));
+
+    command(&mut app, "copy");
+    assert!(app
+        .effects
+        .iter()
+        .any(|job| matches!(job, Job::Copy(text) if text == raw)));
+    app.select(reviewer, true, "Example".into());
+    let other = screen(&mut app, 100, 24);
+    assert!(other.contains("Reviewer reply") && other.contains("reviewer draft"));
+    assert!(!other.contains("**Reviewer reply**"));
+    app.select(main, true, "Example".into());
+    assert!(screen(&mut app, 100, 24).contains("````markdown"));
+    command(&mut app, "source");
+    assert!(!screen(&mut app, 100, 24).contains("````markdown"));
+}
+
+#[test]
 fn waiting_request_is_explicit_and_escape_preserves_message_draft() {
     let mut app = app();
     app.select(app.active.clone(), true, "Waiting conversation".into());

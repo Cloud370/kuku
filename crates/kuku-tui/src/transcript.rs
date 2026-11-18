@@ -22,7 +22,7 @@ mod window;
 use self::agent::AgentCards;
 pub(crate) use self::details::DetailKey;
 use self::details::{DetailRecord, Details, VisibleDetail};
-use self::message::{render_record, render_user};
+use self::message::{render_assistant_source, render_record, render_user};
 use self::reply::LatestReply;
 pub(crate) use self::reply::ReplySource;
 use self::tool::Tool;
@@ -80,6 +80,13 @@ enum ToolDetails {
     Inspection,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum AssistantView {
+    #[default]
+    Preview,
+    Source,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct Transcript {
     recent: Window,
@@ -87,6 +94,7 @@ pub(crate) struct Transcript {
     reading: Option<Reading>,
     restore: Option<(u64, Anchor)>,
     details: ToolDetails,
+    assistant_view: AssistantView,
     current_execution: Option<u64>,
     agent_cards: AgentCards,
     detail_items: Details,
@@ -159,7 +167,7 @@ impl Transcript {
                     });
                     if let Body::Assistant(body) = &mut record.body {
                         if append_bounded(body, text, MAX_BODY_BYTES) {
-                            record.rendered = None;
+                            record.rendered = RenderCache::default();
                         }
                     }
                 }
@@ -225,7 +233,7 @@ impl Transcript {
             .recent
             .record_or_insert(key, turn, turn_number, || Body::Assistant(String::new()));
         record.body = Body::Assistant(text);
-        record.rendered = None;
+        record.rendered = RenderCache::default();
     }
 
     pub(crate) fn clear_reply_preview(&mut self) {
@@ -280,6 +288,14 @@ impl Transcript {
         expanded
     }
 
+    pub(crate) fn toggle_source(&mut self) -> bool {
+        self.assistant_view = match self.assistant_view {
+            AssistantView::Preview => AssistantView::Source,
+            AssistantView::Source => AssistantView::Preview,
+        };
+        self.assistant_view == AssistantView::Source
+    }
+
     pub(crate) fn last_reply(&self) -> Option<ReplySource<'_>> {
         self.latest_reply.source(&self.recent.records)
     }
@@ -310,6 +326,7 @@ impl Transcript {
         let layout = Layout {
             width,
             tools: self.details,
+            assistant: self.assistant_view,
             agents: &self.agent_cards,
             items: &self.detail_items,
         };
@@ -402,6 +419,7 @@ impl Transcript {
         let layout = Layout {
             width,
             tools: self.details,
+            assistant: self.assistant_view,
             agents: &self.agent_cards,
             items: &self.detail_items,
         };
@@ -575,7 +593,7 @@ struct Record {
     owner: Option<String>,
     position: Option<u64>,
     body: Body,
-    rendered: Option<((usize, ToolDetails, u64), Vec<Row>)>,
+    rendered: RenderCache,
 }
 
 impl Clone for Record {
@@ -587,9 +605,15 @@ impl Clone for Record {
             owner: self.owner.clone(),
             position: self.position,
             body: self.body.clone(),
-            rendered: None,
+            rendered: RenderCache::default(),
         }
     }
+}
+
+#[derive(Debug, Default)]
+struct RenderCache {
+    preview: Option<((usize, ToolDetails, u64), Vec<Row>)>,
+    source: Option<(usize, Vec<Row>)>,
 }
 
 impl Record {
@@ -644,7 +668,7 @@ impl Record {
             owner: (!entry.agent.is_empty()).then_some(entry.agent),
             position: Some(entry.id),
             body,
-            rendered: None,
+            rendered: RenderCache::default(),
         })
     }
 
@@ -660,7 +684,7 @@ impl Record {
                 (None, Some(incoming)) => Some(incoming),
                 (current, None) => current,
             };
-            self.rendered = None;
+            self.rendered = RenderCache::default();
         }
     }
 
@@ -675,13 +699,25 @@ impl Record {
         }
     }
 
-    fn render(
-        &mut self,
-        width: usize,
-        details: ToolDetails,
-        agents: &AgentCards,
-        items: &Details,
-    ) -> (&Key, &[Row], Option<DetailRecord<'_>>) {
+    fn render(&mut self, layout: Layout<'_>) -> (&Key, &[Row], Option<DetailRecord<'_>>) {
+        let Layout {
+            width,
+            tools: details,
+            assistant,
+            agents,
+            items,
+        } = layout;
+        if let (AssistantView::Source, Body::Assistant(text)) = (assistant, &self.body) {
+            let source = &mut self.rendered.source;
+            if source.as_ref().is_none_or(|(cached, _)| *cached != width) {
+                *source = Some((width, render_assistant_source(text, width)));
+            }
+            return (
+                &self.key,
+                &source.as_ref().expect("rendered Markdown source").1,
+                None,
+            );
+        }
         let (card, mode, facts) = match &self.body {
             Body::Tool(tool) => {
                 let card = tool.agent_card();
@@ -695,11 +731,12 @@ impl Record {
                 (None, ToolDetails::Expanded, None)
             }
         };
-        let layout = (width, mode, facts.map_or(0, |facts| facts.paint_revision));
+        let cache_key = (width, mode, facts.map_or(0, |facts| facts.paint_revision));
         if self
             .rendered
+            .preview
             .as_ref()
-            .is_none_or(|(stored, _)| *stored != layout)
+            .is_none_or(|(stored, _)| *stored != cache_key)
         {
             let lines = match &self.body {
                 Body::User { sender, text } => {
@@ -732,11 +769,11 @@ impl Record {
                     |card| card.render(width, mode, facts),
                 ),
             };
-            self.rendered = Some((layout, lines));
+            self.rendered.preview = Some((cache_key, lines));
         }
         (
             &self.key,
-            &self.rendered.as_ref().expect("rendered record").1,
+            &self.rendered.preview.as_ref().expect("rendered record").1,
             card.map(DetailRecord::Agent)
                 .or_else(|| self.tool().map(DetailRecord::Tool)),
         )

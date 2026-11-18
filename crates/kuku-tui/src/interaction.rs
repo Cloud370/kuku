@@ -499,6 +499,14 @@ impl App {
             CommandMenu::Thinking => self.open_thinking(),
             CommandMenu::StatusLine => self.open_statusline(),
             CommandMenu::Copy => self.copy_reply(),
+            CommandMenu::Source => {
+                let showing_source = self.pane_mut().transcript.toggle_source();
+                self.confirmation(if showing_source {
+                    "Markdown source · /source for preview"
+                } else {
+                    "Markdown preview"
+                });
+            }
             CommandMenu::Details => self.open_details(),
             CommandMenu::Tools => self.open_tools(),
             CommandMenu::Server => self.open_server(),

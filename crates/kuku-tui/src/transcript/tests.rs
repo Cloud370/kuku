@@ -1,7 +1,7 @@
 use kuku_client::{HistoryEntry, HistoryKind, HistoryPage};
 use serde_json::json;
 
-use super::{HistoryRequest, ReplySource, Transcript, HISTORY_PAGE};
+use super::{HistoryRequest, Key, ReplySource, Transcript, HISTORY_PAGE};
 
 fn response(id: u64, body: String) -> HistoryEntry {
     HistoryEntry {
@@ -400,6 +400,81 @@ fn assistant_markdown_keeps_the_model_sections_as_prose_and_raw_copy() {
     assert!(rendered.contains("Should I proceed?"));
     assert!(!rendered.contains("Permission") && !rendered.contains("F2"));
     assert_eq!(Some(ReplySource::Local(reply)), transcript.last_reply());
+}
+
+#[test]
+fn source_keeps_nested_fences_and_both_renderings_are_cached_until_the_reply_changes() {
+    let mut transcript = Transcript::default();
+    let chunk = "````markdown\n# Document\n\n```text\nsafe\u{001b}[31m\n```\n";
+    transcript.live(7, Some(1), Some(1), &json!({"type":"text","content":chunk}));
+    let preview = rows(&mut transcript);
+    let cached_preview = transcript.recent.records[0]
+        .rendered
+        .preview
+        .as_ref()
+        .unwrap()
+        .1
+        .as_ptr();
+
+    assert!(transcript.toggle_source());
+    let raw = rows(&mut transcript).join("\n");
+    assert!(raw.contains("````markdown\n# Document\n\n```text\nsafe␛[31m\n```"));
+    assert!(!raw.contains('\u{001b}'));
+    let cache = &transcript.recent.records[0].rendered;
+    let cached_source = cache.source.as_ref().unwrap().1.as_ptr();
+    assert_eq!(cached_preview, cache.preview.as_ref().unwrap().1.as_ptr());
+
+    assert!(!transcript.toggle_source());
+    assert_eq!(preview, rows(&mut transcript));
+    let cache = &transcript.recent.records[0].rendered;
+    assert_eq!(cached_preview, cache.preview.as_ref().unwrap().1.as_ptr());
+    assert_eq!(cached_source, cache.source.as_ref().unwrap().1.as_ptr());
+
+    assert!(transcript.toggle_source());
+    transcript.live(
+        7,
+        Some(1),
+        Some(1),
+        &json!({"type":"text","content":"````\n"}),
+    );
+    assert!(transcript.recent.records[0].rendered.preview.is_none());
+    assert!(rows(&mut transcript).iter().any(|row| row == "````"));
+
+    let committed = format!("{chunk}````\n");
+    transcript.apply(response(9, committed.clone()), Some(7));
+    assert!(rows(&mut transcript).iter().any(|row| row == "````"));
+    assert_eq!(
+        Some(ReplySource::Local(&committed)),
+        transcript.last_reply()
+    );
+}
+
+#[test]
+fn toggling_markdown_source_keeps_the_reading_anchor_and_round_trips_the_view() {
+    let mut transcript = Transcript::default();
+    transcript.apply(response(1, "Earlier answer".into()), None);
+    let body = (0..30)
+        .map(|index| format!("## Section {index}\n\n- Item {index}"))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    transcript.apply(response(2, body), None);
+    transcript.apply(response(3, "Latest answer".into()), None);
+    transcript.scroll(-20, 44, 10);
+    let anchor = transcript.reading.as_ref().unwrap().anchor.clone();
+    assert_eq!(Key::Event(2), anchor.key);
+    let preview = rows(&mut transcript);
+
+    assert!(transcript.toggle_source());
+    let source = transcript.project(44, 10);
+    assert!(!source.following);
+    assert!(source
+        .lines
+        .iter()
+        .any(|row| row.to_string().starts_with("## Section")));
+    assert_eq!(&anchor, &transcript.reading.as_ref().unwrap().anchor);
+
+    assert!(!transcript.toggle_source());
+    assert_eq!(preview, rows(&mut transcript));
 }
 
 #[test]

@@ -1,8 +1,9 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use unicode_width::UnicodeWidthStr;
 
 use crate::markup::{render_literal, wrap_bounded};
-use crate::theme::{emphasis, surface, ACCENT, USER_LEFT_EDGE};
+use crate::theme::{emphasis, surface, ACCENT, MUTED, USER_LEFT_EDGE};
 
 use super::{body_inset, render_rows, Row, MAX_VISUAL_ROWS};
 
@@ -31,6 +32,22 @@ pub(super) fn render_user(title: &str, text: &str, width: usize) -> Vec<Row> {
     .collect();
     rows.push(Row::plain(Line::default()));
     rows
+}
+
+pub(super) fn render_assistant_source(text: &str, width: usize) -> Vec<Row> {
+    const TITLE: &str = "Assistant · source";
+    let title = if width >= TITLE.width() {
+        TITLE
+    } else {
+        "Source"
+    };
+    render_record(
+        title,
+        MUTED,
+        render_literal(text, Style::default()),
+        width,
+        0,
+    )
 }
 
 pub(super) fn render_record(

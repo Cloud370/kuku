@@ -4,8 +4,8 @@ use serde_json::Value;
 use super::agent::AgentCards;
 use super::details::{groups, DetailRecord, Details, GroupHeading};
 use super::{
-    Anchor, AnchorLine, Body, HistoryRequest, Key, Record, Row, ToolDetails, MAX_LIVE_RECORDS,
-    MAX_RECORDS,
+    Anchor, AnchorLine, AssistantView, Body, HistoryRequest, Key, Record, RenderCache, Row,
+    ToolDetails, MAX_LIVE_RECORDS, MAX_RECORDS,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -49,7 +49,7 @@ impl Window {
         for record in &mut self.records {
             if let Body::Tool(tool) = &mut record.body {
                 if tool.clear_live() {
-                    record.rendered = None;
+                    record.rendered = RenderCache::default();
                 }
             }
         }
@@ -107,7 +107,7 @@ impl Window {
             owner: None,
             position: None,
             body: body(),
-            rendered: None,
+            rendered: RenderCache::default(),
         });
         self.records.last_mut().expect("inserted record")
     }
@@ -122,7 +122,7 @@ impl Window {
         let record = self.record_or_insert(key, turn, turn_number, || Body::Tool(Box::default()));
         if let Body::Tool(tool) = &mut record.body {
             if tool.apply_live(event) {
-                record.rendered = None;
+                record.rendered = RenderCache::default();
             }
         }
     }
@@ -235,8 +235,10 @@ impl Window {
                 } else {
                     layout.tools
                 };
-                let (key, rows, detail) =
-                    record.render(layout.width, mode, layout.agents, layout.items);
+                let (key, rows, detail) = record.render(Layout {
+                    tools: mode,
+                    ..layout
+                });
                 (
                     key,
                     if trim { &rows[..rows.len() - 1] } else { rows },
@@ -260,6 +262,7 @@ impl Window {
 pub(super) struct Layout<'a> {
     pub(super) width: usize,
     pub(super) tools: ToolDetails,
+    pub(super) assistant: AssistantView,
     pub(super) agents: &'a AgentCards,
     pub(super) items: &'a Details,
 }

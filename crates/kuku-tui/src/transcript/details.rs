@@ -428,9 +428,11 @@ mod tests {
             assert!(rendered.contains(term), "{term} missing\n{rendered}");
         }
         assert!(!rendered.contains("samples/read-12.txt"));
-        assert!(transcript.recent.records[..12]
-            .iter()
-            .all(|record| record.rendered.is_none()));
+        assert!(transcript.recent.records[..12].iter().all(|record| record
+            .rendered
+            .preview
+            .is_none()
+            && record.rendered.source.is_none()));
         assert_eq!(Some("Ctrl+O show · /details"), compact.tool_hint.as_deref());
         let group = transcript
             .detail_at(line(&compact, "Read 12 files"))
