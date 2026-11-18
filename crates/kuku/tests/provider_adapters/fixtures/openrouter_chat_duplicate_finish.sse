@@ -16,7 +16,7 @@ data: {"id":"gateway_1","object":"chat.completion.chunk","model":"deepseek/deeps
 
 data: {"id":"gateway_1","object":"chat.completion.chunk","model":"deepseek/deepseek-v4.1-flash-1017","provider":"Wafer","choices":[{"index":0,"delta":{"content":null,"role":"assistant","tool_calls":[{"index":0,"function":{"arguments":""}}]},"finish_reason":null,"native_finish_reason":null}]}
 
-data: {"id":"gateway_1","object":"chat.completion.chunk","model":"deepseek/deepseek-v4.1-flash-1017","provider":"Wafer","choices":[{"index":0,"delta":{"content":null,"role":"assistant","tool_calls":[{"index":0,"function":{"arguments":"{\"command\": \"ls -la && echo"}}]},"finish_reason":null,"native_finish_reason":null}]}
+data: {"id":"gateway_1","object":"chat.completion.chunk","model":"deepseek/deepseek-v4.1-flash-1017","provider":"Wafer","choices":[{"index":0,"delta":{"content":null,"role":"assistant","tool_calls":[{"index":0,"function":{"arguments":"{\"shell\":\"sh\",\"cwd\":\".\",\"command\": \"ls -la && echo"}}]},"finish_reason":null,"native_finish_reason":null}]}
 
 data: {"id":"gateway_1","object":"chat.completion.chunk","model":"deepseek/deepseek-v4.1-flash-1017","provider":"Wafer","choices":[{"index":0,"delta":{"content":null,"role":"assistant","tool_calls":[{"index":0,"function":{"arguments":" \\\"---\\\" && sha"}}]},"finish_reason":null,"native_finish_reason":null}]}
 

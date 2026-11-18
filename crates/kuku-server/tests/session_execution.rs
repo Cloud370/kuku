@@ -4,7 +4,7 @@ mod interruptions;
 
 use std::env;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -416,7 +416,7 @@ async fn an_observer_disconnect_leaves_exactly_one_durable_tool_result() {
 async fn a_later_steer_reaches_the_current_turn_after_a_real_tool_boundary() {
     let mock = mock_provider::start_mock_provider().await;
     let mut server = TestServer::start(mock_provider::make_test_config(mock.port())).await;
-    let command = install_gate(server.workspace.path());
+    let program = install_gate(server.workspace.path());
     let first = mock.mock(|when, then| {
         when.method(Method::POST)
             .path("/v1/messages")
@@ -426,7 +426,8 @@ async fn a_later_steer_reaches_the_current_turn_after_a_real_tool_boundary() {
                 "content":[
                     {"type":"text","text":"Running the gate."},
                     {"type":"tool_use","id":"gated-tool","name":"run_command","input":{
-                        "command":command,"timeout":TOOL_TIMEOUT.as_secs(),"brief":"wait for a file"
+                        "program":program,"args":["--ignored","--exact","gated_command_fixture","--nocapture"],
+                        "cwd":".","timeout":TOOL_TIMEOUT.as_secs(),"brief":"wait for a file"
                     }}
                 ],
                 "stop_reason":"tool_use",
@@ -769,18 +770,14 @@ fn gate_filename() -> String {
     format!("tool-gate{}", env::consts::EXE_SUFFIX)
 }
 
-fn install_gate(workspace: &Path) -> String {
+fn install_gate(workspace: &Path) -> PathBuf {
     let executable = env::current_exe().unwrap();
     let filename = gate_filename();
     let installed = workspace.join(&filename);
     if fs::hard_link(&executable, &installed).is_err() {
         fs::copy(&executable, installed).unwrap();
     }
-    let local = Path::new(".").join(filename);
-    format!(
-        "{} --ignored --exact gated_command_fixture --nocapture",
-        local.display()
-    )
+    Path::new(".").join(filename)
 }
 
 #[test]

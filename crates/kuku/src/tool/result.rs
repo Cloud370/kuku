@@ -1,5 +1,7 @@
 use serde_json::Value;
 
+use crate::execution::CommandExecutionFacts;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ToolErrorReason {
     SnapshotRequired,
@@ -36,6 +38,26 @@ pub(crate) struct ToolResultEnvelope {
 }
 
 impl ToolResultEnvelope {
+    pub(crate) fn command(
+        status: &str,
+        summary: String,
+        model_content: String,
+        truncated: bool,
+        facts: CommandExecutionFacts,
+    ) -> Self {
+        Self {
+            status: status.to_string(),
+            summary,
+            model_content,
+            truncated,
+            faults: ToolFaults {
+                cleanup_incomplete: facts.cleanup_incomplete,
+                ..Default::default()
+            },
+            structured: Some(serde_json::to_value(facts).expect("command facts serialize to JSON")),
+        }
+    }
+
     pub(crate) fn blocked_marker() -> Value {
         serde_json::json!({"kind": "blocked"})
     }

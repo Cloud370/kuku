@@ -114,7 +114,7 @@ async fn captured(
     } else {
         "cat captured.bin"
     };
-    let first = fixture(server, |request| producing(request) && results(request).is_empty(), json!({"tool_calls":[tool("command", "run_command", json!({"command":command,"timeout":5,"brief":"retain output"}))]}), "tool_calls").await;
+    let first = fixture(server, |request| producing(request) && results(request).is_empty(), json!({"tool_calls":[tool("command", "run_command", json!({"shell":if cfg!(windows) {"cmd"} else {"sh"},"cwd":".","command":command,"timeout":5,"brief":"retain output"}))]}), "tool_calls").await;
     let second = fixture(
         server,
         |request| producing(request) && results(request).len() == 1,

@@ -226,7 +226,7 @@ mod tests {
         let denied = denied_event("tool_command");
         let gated = dispatch(
             "run_command",
-            &serde_json::json!({"command": "cargo test", "timeout": 1, "brief": "run tests"}),
+            &serde_json::json!({"program": "cargo", "args": ["test"], "cwd": ".", "timeout": 1, "brief": "run tests"}),
             dir.path(),
             dir.path(),
             &[denied],

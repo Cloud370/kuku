@@ -112,7 +112,7 @@ fn chat_continuation(request: &HttpMockRequest) -> bool {
     calls.len() == 1
         && calls[0]["id"] == "gateway_2"
         && calls[0]["function"]["name"] == "run_command"
-        && calls[0]["function"]["arguments"].as_str().and_then(|args| serde_json::from_str::<Value>(args).ok()).is_some_and(|args| args["command"] == "ls -la && echo \"---\" && sha256sum seed.txt && echo \"---\" && xxd seed.txt | head -5" && args["timeout"] == 30)
+        && calls[0]["function"]["arguments"].as_str().and_then(|args| serde_json::from_str::<Value>(args).ok()).is_some_and(|args| args["shell"] == "sh" && args["cwd"] == "." && args["command"] == "ls -la && echo \"---\" && sha256sum seed.txt && echo \"---\" && xxd seed.txt | head -5" && args["timeout"] == 30)
         && results.len() == 1
         && results[0]["tool_call_id"] == "gateway_2"
         && results[0]["content"].as_str().is_some_and(|output| output.contains("seed.txt") && output.contains("gateway seed con"))

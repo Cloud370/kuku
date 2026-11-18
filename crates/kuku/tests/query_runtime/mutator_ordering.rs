@@ -100,7 +100,7 @@ async fn command_mutation_finishes_before_same_run_edit_starts() {
                 "content": [
                     {"type": "text", "text": "Mutating the target."},
                     {"type": "tool_use", "id": "toolu_command", "name": "run_command", "input": {
-                        "command": "saved=$(cat race.txt); printf ready > command-read; while [ ! -f release-command ]; do sleep 0.01; done; printf '%s\\ncommand\\n' \"$saved\" > race.txt",
+                        "shell":"sh","cwd":".","command": "saved=$(cat race.txt); printf ready > command-read; while [ ! -f release-command ]; do sleep 0.01; done; printf '%s\\ncommand\\n' \"$saved\" > race.txt",
                         "timeout": 10,
                         "brief": "write from a captured copy"
                     }},
@@ -201,7 +201,7 @@ async fn command_mutation_finishes_before_same_run_memory_write_starts() {
                 "role": "assistant",
                 "content": [
                     {"type": "tool_use", "id": "toolu_memory_command", "name": "run_command", "input": {
-                        "command": command,
+                        "shell":"sh","cwd":".","command": command,
                         "timeout": 10,
                         "brief": "restore captured memory"
                     }},
@@ -290,7 +290,7 @@ async fn read_only_tool_starts_while_ordered_tool_waits_for_active_mutation() {
                 "role": "assistant",
                 "content": [
                     {"type": "tool_use", "id": "toolu_blocking_command", "name": "run_command", "input": {
-                        "command": "printf ready > mixed-command-ready; while [ ! -f release-mixed-command ]; do sleep 0.01; done",
+                        "shell":"sh","cwd":".","command": "printf ready > mixed-command-ready; while [ ! -f release-mixed-command ]; do sleep 0.01; done",
                         "timeout": 10,
                         "brief": "wait for release"
                     }},

@@ -8,6 +8,7 @@ pub mod conversation;
 pub(crate) mod discovery;
 pub mod error;
 pub mod event;
+pub mod execution;
 pub mod log;
 pub(crate) mod notice;
 pub mod permission;

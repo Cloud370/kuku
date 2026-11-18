@@ -51,12 +51,7 @@ pub(super) fn permission_candidate(
     args: &serde_json::Value,
 ) -> String {
     match name {
-        "run_command" => args
-            .get("command")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("")
-            .trim()
-            .to_string(),
+        "run_command" => crate::tool::builtin::run_command::command_permission_candidate(args),
         "remember_memory" | "forget_memory" => match args
             .get("scope")
             .and_then(serde_json::Value::as_str)
@@ -116,6 +111,9 @@ pub(super) fn display_summary(
         "run_command" => args
             .get("brief")
             .and_then(|v| v.as_str())
+            .filter(|brief| !brief.trim().is_empty())
+            .or_else(|| args["program"].as_str())
+            .or_else(|| args["shell"].as_str())
             .unwrap_or(tool)
             .to_string(),
         "agent" => args
@@ -619,17 +617,17 @@ mod tests {
 
     #[test]
     fn display_summary_run_command() {
-        let args = serde_json::json!({"command": "cargo build --release", "timeout": 60, "brief": "build release"});
+        let args = serde_json::json!({"program": "cargo", "args": ["build", "--release"], "cwd": ".", "timeout": 60, "brief": "build release"});
         let s = display_summary("run_command", &args, None);
         assert_eq!(s, "build release");
     }
 
     #[test]
     fn display_summary_run_command_truncated() {
-        let args = serde_json::json!({"command": "echo hi", "timeout": 60, "brief": "cargo build --release --features=full,test --target=x86_64-unknown-linux-gnu"});
+        let args = serde_json::json!({"program": "echo", "args": ["hi"], "cwd": ".", "timeout": 60, "brief": "cargo build --release --features=full,test --target=x86_64-unknown-linux-gnu"});
         let s = display_summary("run_command", &args, Some(30));
         assert!(s.ends_with("..."), "should end with ...");
-        let cjk_args = serde_json::json!({"command": "echo hi", "timeout": 60, "brief": "构建项目/src/文件.txt"});
+        let cjk_args = serde_json::json!({"program": "echo", "args": ["hi"], "cwd": ".", "timeout": 60, "brief": "构建项目/src/文件.txt"});
         let s2 = display_summary("run_command", &cjk_args, Some(5));
         assert!(s2.ends_with("..."), "CJK truncation should not panic: {s2}");
     }

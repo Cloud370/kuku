@@ -138,18 +138,27 @@ pub(crate) fn builtin_registry(agent_enabled: bool, skills_enabled: bool) -> Vec
         tool(
             "run_command",
             if cfg!(windows) {
-                "Run a command in the workspace using Windows cmd.exe /S /C. Use cmd syntax, or explicitly invoke PowerShell for PowerShell syntax. timeout is required in seconds."
+                "Start an installed program with literal args. Use shell='cmd' for cmd commands and .bat/.cmd files, or name an installed PowerShell interpreter for its syntax. Reports the observed exit status and captured output."
             } else {
-                "Run a command in the workspace using sh -c (POSIX shell syntax). timeout is required in seconds."
+                "Start an installed program with literal args. Select an installed shell explicitly for pipes, redirection or shell builtins. Reports the observed exit status and captured output."
             },
             serde_json::json!({
                 "type": "object",
+                "additionalProperties": false,
                 "properties": {
-                    "command": {"type": "string", "description": "The command string to execute."},
-                    "timeout": {"type": "integer", "description": "Timeout in seconds."},
-                    "brief": {"type": "string", "description": "What this command does, in 3-5 words."}
+                    "program": {"type": "string", "description": "Executable name or path relative to cwd. Provide args with program."},
+                    "args": {"type": "array", "items": {"type": "string"}, "description": "Literal arguments without shell expansion. Use [] for no arguments."},
+                    "shell": {"type": "string", "enum": ["sh", "bash", "zsh", "cmd", "powershell", "pwsh"], "description": "Selected interpreter. Provide command with shell."},
+                    "command": {"type": "string", "description": "Original shell text evaluated by the selected interpreter."},
+                    "cwd": {"type": "string", "description": "Working directory relative to the workspace or absolute. Use '.' for workspace root."},
+                    "timeout": {"type": "integer", "minimum": 1, "maximum": 600, "description": "Timeout in seconds."},
+                    "brief": {"type": "string", "description": "Optional short description of the action."}
                 },
-                "required": ["command", "timeout"]
+                "required": ["cwd", "timeout"],
+                "oneOf": [
+                    {"required": ["program", "args"], "not": {"anyOf": [{"required": ["shell"]}, {"required": ["command"]}]}},
+                    {"required": ["shell", "command"], "not": {"anyOf": [{"required": ["program"]}, {"required": ["args"]}]}}
+                ]
             }),
             false,
             80_000,

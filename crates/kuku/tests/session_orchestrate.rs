@@ -204,7 +204,7 @@ async fn writer_fixtures(server: &MockServer) -> Vec<Mock<'_>> {
     )
     .await;
     let edit = fixture(server, "/writer/chat/completions", |request| tool_count(request) == 1, json!({"tool_calls":[tool("draft-edit", "edit_file", json!({"path":"answer.txt","old_text":"before","new_text":"after","brief":"apply draft"}))]}), "tool_calls").await;
-    let check = fixture(server, "/writer/chat/completions", |request| tool_count(request) == 2, json!({"tool_calls":[tool("draft-check", "run_command", json!({"command":command(),"timeout":3,"brief":"verify draft"}))]}), "tool_calls").await;
+    let check = fixture(server, "/writer/chat/completions", |request| tool_count(request) == 2, json!({"tool_calls":[tool("draft-check", "run_command", json!({"shell":if cfg!(windows) {"cmd"} else {"sh"},"cwd":".","command":command(),"timeout":3,"brief":"verify draft"}))]}), "tool_calls").await;
     let draft = fixture(
         server,
         "/writer/chat/completions",
@@ -229,7 +229,7 @@ async fn writer_fixtures(server: &MockServer) -> Vec<Mock<'_>> {
     )
     .await;
     let revise = fixture(server, "/writer/chat/completions", |request| tool_count(request) == 4, json!({"tool_calls":[tool("timer-edit", "edit_file", json!({"path":"answer.txt","old_text":"after","new_text":"reviewed","brief":"apply review"}))]}), "tool_calls").await;
-    let recheck = fixture(server, "/writer/chat/completions", |request| tool_count(request) == 5, json!({"tool_calls":[tool("timer-check", "run_command", json!({"command":command(),"timeout":3,"brief":"verify review"}))]}), "tool_calls").await;
+    let recheck = fixture(server, "/writer/chat/completions", |request| tool_count(request) == 5, json!({"tool_calls":[tool("timer-check", "run_command", json!({"shell":if cfg!(windows) {"cmd"} else {"sh"},"cwd":".","command":command(),"timeout":3,"brief":"verify review"}))]}), "tool_calls").await;
     let final_result = fixture(
         server,
         "/writer/chat/completions",

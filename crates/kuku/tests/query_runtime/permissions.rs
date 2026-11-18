@@ -12,7 +12,7 @@ async fn run_emits_permission_requested_for_gated_tool() {
                 "role": "assistant",
                 "content": [
                     {"type": "text", "text": "Need approval."},
-                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"command": "cargo test", "timeout": 60, "brief": "run tests"}}
+                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"program": "cargo", "args": ["test"], "cwd": ".", "timeout": 60, "brief": "run tests"}}
                 ],
                 "stop_reason": "tool_use",
                 "usage": {"input_tokens": 5, "output_tokens": 6}
@@ -72,7 +72,10 @@ async fn run_emits_permission_requested_for_gated_tool() {
             assert_eq!(tool, "run_command");
             assert_eq!(risk, "command");
             assert_eq!(summary, "run tests");
-            assert_eq!(candidate, "cargo test");
+            assert_eq!(
+                serde_json::json!({"cwd":".","invocation":{"mode":"program","program":"cargo","args":["test"]}}),
+                serde_json::from_str::<serde_json::Value>(&candidate).unwrap()
+            );
             assert_eq!(source, "default_ask");
         }
         other => panic!("expected permission.requested, got {other:?}"),
@@ -122,7 +125,7 @@ async fn session_scope_allow_is_reused_on_later_turn_in_same_session() {
                 "role": "assistant",
                 "content": [
                     {"type": "text", "text": "Need approval."},
-                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"command": "cargo test", "timeout": 60, "brief": "run tests"}}
+                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"program": "cargo", "args": ["test"], "cwd": ".", "timeout": 60, "brief": "run tests"}}
                 ],
                 "stop_reason": "tool_use",
                 "usage": {"input_tokens": 5, "output_tokens": 6}
@@ -194,7 +197,7 @@ async fn session_scope_allow_is_reused_on_later_turn_in_same_session() {
                 "role": "assistant",
                 "content": [
                     {"type": "text", "text": "Need approval again."},
-                    {"type": "tool_use", "id": "toolu_cmd_2", "name": "run_command", "input": {"command": "cargo test", "timeout": 60, "brief": "run tests"}}
+                    {"type": "tool_use", "id": "toolu_cmd_2", "name": "run_command", "input": {"program": "cargo", "args": ["test"], "cwd": ".", "timeout": 60, "brief": "run tests"}}
                 ],
                 "stop_reason": "tool_use",
                 "usage": {"input_tokens": 5, "output_tokens": 6}
@@ -242,7 +245,7 @@ async fn pending_permission_cancel_writes_cancelled_result_without_deny() {
                 "role": "assistant",
                 "content": [
                     {"type": "text", "text": "Need approval."},
-                    {"type": "tool_use", "id": "toolu_resume_cancel", "name": "run_command", "input": {"command": "printf should-not-run", "timeout": 60, "brief": "print cancelled marker"}}
+                    {"type": "tool_use", "id": "toolu_resume_cancel", "name": "run_command", "input": {"program": "printf", "args": ["should-not-run"], "cwd": ".", "timeout": 60, "brief": "print cancelled marker"}}
                 ],
                 "stop_reason": "tool_use",
                 "usage": {"input_tokens": 5, "output_tokens": 6}
@@ -332,7 +335,7 @@ async fn run_convenience_path_auto_denies_and_continues_when_approval_is_needed(
                 "role": "assistant",
                 "content": [
                     {"type": "text", "text": "Need approval."},
-                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"command": "cargo test", "timeout": 60, "brief": "run tests"}}
+                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"program": "cargo", "args": ["test"], "cwd": ".", "timeout": 60, "brief": "run tests"}}
                 ],
                 "stop_reason": "tool_use",
                 "usage": {"input_tokens": 5, "output_tokens": 6}
@@ -370,9 +373,14 @@ async fn run_convenience_path_auto_denies_and_continues_when_approval_is_needed(
             _ => None,
         })
         .expect("permission.requested event");
+    let (tool, risk, candidate, source) = requested;
     assert_eq!(
-        requested,
-        ("run_command", "command", "cargo test", "default_ask")
+        ("run_command", "command", "default_ask"),
+        (tool, risk, source)
+    );
+    assert_eq!(
+        serde_json::json!({"cwd":".","invocation":{"args":["test"],"mode":"program","program":"cargo"}}),
+        serde_json::from_str::<serde_json::Value>(candidate).unwrap()
     );
     assert!(events
         .iter()
@@ -495,7 +503,7 @@ async fn run_with_permission_choice_allows_gated_tool_and_continues() {
                 "role": "assistant",
                 "content": [
                     {"type": "text", "text": "Need approval."},
-                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"command": "printf allowed", "timeout": 60, "brief": "print marker"}}
+                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"shell":if cfg!(windows) {"cmd"} else {"sh"},"command":"echo allowed","cwd":".","timeout":60,"brief":"print marker"}}
                 ],
                 "stop_reason": "tool_use",
                 "usage": {"input_tokens": 5, "output_tokens": 6}

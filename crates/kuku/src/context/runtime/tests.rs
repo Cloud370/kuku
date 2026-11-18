@@ -377,7 +377,7 @@ fn startup_keeps_request_counters_and_pending_arguments_without_response_bodies(
             request_id: "req_3".into(),
             index: 0,
             tool: "run_command".into(),
-            args: json!({"command":"echo exact"}),
+            args: json!({"program":"echo","args":["exact"],"cwd":".","timeout":5}),
         })
         .unwrap();
     writer
@@ -408,7 +408,7 @@ fn startup_keeps_request_counters_and_pending_arguments_without_response_bodies(
     )));
     assert!(events.iter().any(|event| matches!(&event.payload,
         EventPayload::ToolCall { conversation: Some(agent), args, .. }
-        if agent == "reviewer" && args["command"] == "echo exact"
+        if agent == "reviewer" && args["program"] == "echo" && args["args"] == json!(["exact"])
     )));
 }
 

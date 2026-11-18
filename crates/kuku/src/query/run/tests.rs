@@ -200,7 +200,7 @@ fn make_waiting_run(
         tool_call: ProviderToolCall {
             id: queued_tool_call_id.to_string(),
             name: "run_command".to_string(),
-            args: serde_json::json!({"command": "printf hi", "timeout": 60, "brief": "print hi"}),
+            args: serde_json::json!({"program": "printf", "args": ["hi"], "cwd": ".", "timeout": 60, "brief": "print hi"}),
             index: 0,
         },
         display_summary: "print hi".to_string(),
@@ -220,7 +220,9 @@ fn make_waiting_run(
                 tool: "run_command".to_string(),
                 risk: "command".to_string(),
                 summary: "print hi".to_string(),
-                candidate: "printf hi".to_string(),
+                candidate: crate::tool::builtin::run_command::command_permission_candidate(
+                    &serde_json::json!({"program":"printf","args":["hi"],"cwd":"."}),
+                ),
                 source: "default_ask".to_string(),
             },
         })),
@@ -268,7 +270,7 @@ fn make_queued_run(events_path: std::path::PathBuf, dir: &std::path::Path) -> Ru
         tool_call: ProviderToolCall {
             id: "tool_queued".to_string(),
             name: "run_command".to_string(),
-            args: serde_json::json!({"command": "printf hi", "timeout": 60, "brief": "print hi"}),
+            args: serde_json::json!({"program": "printf", "args": ["hi"], "cwd": ".", "timeout": 60, "brief": "print hi"}),
             index: 0,
         },
         display_summary: "print hi".to_string(),

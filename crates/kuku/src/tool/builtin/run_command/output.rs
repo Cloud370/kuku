@@ -7,7 +7,10 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
+use crate::execution::ReportedTests;
+
 use super::encoding::display_text;
+use super::reports::ReportCollector;
 
 const HEADER_BYTES: usize = 4096;
 const MAGIC: &[u8; 8] = b"KUKUOUT1";
@@ -158,6 +161,7 @@ pub(crate) struct OutputWriter {
     metadata: CaptureMetadata,
     stdout: StreamSummary,
     stderr: StreamSummary,
+    reports: Option<ReportCollector>,
 }
 
 impl OutputWriter {
@@ -192,7 +196,18 @@ impl OutputWriter {
             metadata,
             stdout: StreamSummary::default(),
             stderr: StreamSummary::default(),
+            reports: None,
         })
+    }
+
+    pub(super) async fn create_command(
+        output_dir: &Path,
+        output_id: &str,
+        limits: OutputLimits,
+    ) -> io::Result<Self> {
+        let mut writer = Self::create(output_dir, output_id, limits).await?;
+        writer.reports = Some(ReportCollector::default());
+        Ok(writer)
     }
 
     pub(crate) async fn write(&mut self, stream: OutputStream, bytes: &[u8]) -> io::Result<()> {
@@ -200,7 +215,7 @@ impl OutputWriter {
             OutputStream::Stdout => &mut self.stdout,
             OutputStream::Stderr => &mut self.stderr,
         };
-        summary.observe(bytes, &mut self.metadata.summary);
+        summary.observe(bytes, &mut self.metadata.summary, &mut self.reports);
         let remaining = self.quota.saturating_sub(self.file_bytes);
         let kept = bytes
             .len()
@@ -219,9 +234,22 @@ impl OutputWriter {
         Ok(())
     }
 
-    pub(crate) async fn finish(mut self, cleanup_incomplete: bool) -> io::Result<CaptureMetadata> {
-        self.stdout.finish(&mut self.metadata.summary);
-        self.stderr.finish(&mut self.metadata.summary);
+    pub(crate) async fn finish(self, cleanup_incomplete: bool) -> io::Result<CaptureMetadata> {
+        self.finish_command(cleanup_incomplete)
+            .await
+            .map(|(metadata, _)| metadata)
+    }
+
+    pub(super) async fn finish_command(
+        mut self,
+        cleanup_incomplete: bool,
+    ) -> io::Result<(CaptureMetadata, Vec<ReportedTests>)> {
+        if !cleanup_incomplete {
+            self.stdout
+                .finish(&mut self.metadata.summary, &mut self.reports);
+            self.stderr
+                .finish(&mut self.metadata.summary, &mut self.reports);
+        }
         self.metadata.stdout_bytes = self.stdout.bytes;
         self.metadata.stderr_bytes = self.stderr.bytes;
         self.metadata.stdout_lines = self.stdout.line_count();
@@ -235,7 +263,11 @@ impl OutputWriter {
         let file = self.file.into_std().await;
         crate::util::fs_sync::sync_file(&file)?;
         crate::util::fs_sync::sync_parent(&self.path)?;
-        Ok(self.metadata)
+        let reports = self
+            .reports
+            .map(ReportCollector::finish)
+            .unwrap_or_default();
+        Ok((self.metadata, reports))
     }
 }
 
@@ -249,13 +281,18 @@ struct StreamSummary {
 }
 
 impl StreamSummary {
-    fn observe(&mut self, bytes: &[u8], summary: &mut Vec<String>) {
+    fn observe(
+        &mut self,
+        bytes: &[u8],
+        summary: &mut Vec<String>,
+        reports: &mut Option<ReportCollector>,
+    ) {
         self.bytes = self.bytes.saturating_add(bytes.len() as u64);
         for &byte in bytes {
             self.last_newline = byte == b'\n';
             if self.last_newline {
                 self.newlines = self.newlines.saturating_add(1);
-                self.finish(summary);
+                self.finish(summary, reports);
             } else if self.pending.len() < MAX_PENDING_LINE_BYTES {
                 self.pending.push(byte);
             } else {
@@ -264,9 +301,14 @@ impl StreamSummary {
         }
     }
 
-    fn finish(&mut self, summary: &mut Vec<String>) {
-        let (text, _) = display_text(&self.pending, true, !self.long_line);
+    fn finish(&mut self, summary: &mut Vec<String>, reports: &mut Option<ReportCollector>) {
+        let (text, lossy) = display_text(&self.pending, true, !self.long_line);
         let text = text.trim();
+        if !self.long_line && !lossy {
+            if let Some(reports) = reports {
+                reports.observe(text);
+            }
+        }
         if !self.long_line && is_summary_line(text) {
             let mut line = text
                 .chars()

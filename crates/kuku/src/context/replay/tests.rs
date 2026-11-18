@@ -371,7 +371,7 @@ fn ignores_permission_metadata_tool_call_duplicate() {
                 request_id: "req_1".to_string(),
                 index: 0,
                 tool: "run_command".to_string(),
-                args: json!({"command": "pwd"}),
+                args: json!({"program": "pwd", "args": [], "cwd": ".", "timeout": 5}),
             },
         ),
         event(
@@ -432,7 +432,7 @@ fn ignores_permission_metadata_tool_call_duplicate() {
                 MessageBlock::ToolUse(ToolUse {
                     id: "tool_1".to_string(),
                     name: "run_command".to_string(),
-                    args: json!({"command": "pwd"}),
+                    args: json!({"program": "pwd", "args": [], "cwd": ".", "timeout": 5}),
                 }),
             ]),
             CanonicalMessage::user(vec![MessageBlock::ToolResult(ToolResult {
