@@ -164,7 +164,8 @@ class CaseMeter(RequestBoundary):
                 or not text_input(payload.get("input" if router else "messages"), router)):
             return None
         if router:
-            if (payload.get("reasoning") != {"effort": self.route.effort}
+            effort = {"effort": self.route.effort}
+            if (payload.get("reasoning") not in (effort, {**effort, "summary": "auto"})
                     or set(payload.get("provider", {})) != {"order", "only", "allow_fallbacks", "require_parameters", "max_price"}
                     or set(payload["provider"]["max_price"]) != {"prompt", "completion"}):
                 return None

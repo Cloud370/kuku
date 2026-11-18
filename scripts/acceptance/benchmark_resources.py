@@ -10,7 +10,8 @@ import time
 IO_FIELDS = ('rchar', 'wchar', 'syscr', 'syscw', 'read_bytes', 'write_bytes', 'cancelled_write_bytes')
 PROC = '''p=$(cat /logs/agent/sdk.pid 2>/dev/null) || exit 1
 d=/proc/$p
-cat "$d/stat" "$d/status" "$d/io" 2>/dev/null
+cat "$d/stat" "$d/status" 2>/dev/null || exit 1
+cat "$d/io" 2>/dev/null || :
 '''
 
 class ResourceSampler:
@@ -103,6 +104,8 @@ class ResourceSampler:
 
 def include_final_process_usage(resources, result_path):
     try:
+        if result_path.stat().st_size > 4 * 1024 * 1024:
+            return
         stats = json.loads(result_path.read_text())['process_resources']
         keys = ('user_cpu_seconds','system_cpu_seconds','peak_rss_kib','input_blocks','output_blocks')
         if not isinstance(stats,dict) or not all(type(stats.get(k)) in (int,float) and stats[k]>=0 for k in keys):
