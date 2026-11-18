@@ -244,7 +244,11 @@ fn delegation_groups_only_its_own_checks_and_keeps_the_result_separate_from_hist
     assert!(transcript.toggle_detail(&check));
     let inspected = text(&transcript.project(82, 64));
     assert!(
-        inspected.contains(r#""writer","status":"running""#),
+        inspected
+            .lines()
+            .map(str::trim_start)
+            .collect::<String>()
+            .contains(r#""writer","status":"running""#),
         "{inspected}"
     );
     assert!(opened.contains("Agent writer · Created"));
@@ -421,7 +425,7 @@ fn a_full_window_of_large_agent_polls_keeps_default_paint_compact() {
     let mut transcript = journal.load();
     for width in [32, 72, 150].into_iter().cycle().take(120) {
         let view = transcript.project(width, 20);
-        assert!(view.lines.len() <= 5);
+        assert!(view.lines.len() <= 7);
         assert!(text(&view).contains("Agent at check"));
         assert!(!text(&view).contains("archived Markdown"));
     }
@@ -454,7 +458,7 @@ fn older_page_can_extend_an_open_group_without_moving_the_reader_or_invalidating
         .unwrap()
         .clone();
     assert!(transcript.toggle_detail(&group));
-    transcript.scroll(2, 72, 3);
+    transcript.scroll(4, 72, 3);
     let before = text(&transcript.project(72, 3));
     assert!(before.starts_with("  Read file · p5.txt"), "{before}");
     let anchor = transcript.reading.as_ref().unwrap().anchor.clone();
@@ -469,7 +473,9 @@ fn older_page_can_extend_an_open_group_without_moving_the_reader_or_invalidating
     );
     assert_eq!(before, text(&transcript.project(72, 3)));
     assert!(transcript.toggle_detail(&group));
-    assert!(text(&transcript.project(72, 3)).starts_with("▸ Read 8 files · ok"));
+    assert!(text(&transcript.project(72, 3))
+        .trim_start()
+        .starts_with("▸ Read 8 files · ok"));
     assert_eq!(&anchor, &transcript.reading.as_ref().unwrap().anchor);
     assert!(transcript.toggle_detail(&group));
     assert_eq!(before, text(&transcript.project(72, 3)));
@@ -496,12 +502,12 @@ fn a_wrapped_group_caption_is_a_stable_reading_and_pointer_target() {
     );
     let mut transcript = journal.load();
     transcript.scroll(-100, 37, 3);
-    transcript.scroll(2, 37, 3);
+    transcript.scroll(3, 37, 3);
     let view = transcript.project(37, 3);
     let caption = view.lines[0].to_string();
     assert!(caption.contains("1 file read · 1 file search"), "{caption}");
     let anchor = transcript.reading.as_ref().unwrap().anchor.clone();
-    assert_eq!(AnchorLine::Group(1), anchor.line);
+    assert_eq!(AnchorLine::Group(2), anchor.line);
     let key = transcript.detail_at(0).unwrap().clone();
     assert!(transcript.toggle_detail(&key));
     assert_eq!(&anchor, &transcript.reading.as_ref().unwrap().anchor);

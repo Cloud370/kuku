@@ -548,7 +548,7 @@ mod tests {
         assert!(before_fence.iter().any(|line| line.contains("中文 │ a|b")));
         assert!(before_fence
             .iter()
-            .any(|line| line.starts_with("│ let 值 ")));
+            .any(|line| line.starts_with("│  let 值 ")));
         assert!(before_fence.iter().any(|line| line.starts_with('╰')));
 
         source.push_str(" = 1;\n```\n\nFinished.");
@@ -557,7 +557,7 @@ mod tests {
             1,
             complete
                 .iter()
-                .filter(|line| line.starts_with("│ let 值 = 1; "))
+                .filter(|line| line.starts_with("│  let 值 = 1; "))
                 .count()
         );
         assert_eq!(
@@ -577,7 +577,7 @@ mod tests {
         assert!(plain[0].starts_with("╭─ text "));
         assert!(plain
             .iter()
-            .any(|line| line.starts_with("│ | 项目 | Result | Cost | ")));
+            .any(|line| line.starts_with("│  | 项目 | Result | Cost | ")));
         assert!(plain.iter().any(|line| line == "Ordinary paragraph."));
         assert!(plain.iter().all(|line| !line.starts_with('┌')));
     }
@@ -619,8 +619,8 @@ mod tests {
             LIMIT,
         ));
         assert_eq!(format!("╭{}╮", "─".repeat(width - 2)), plain[0]);
-        assert!(plain[1].starts_with("│ # Literal "));
-        assert!(plain[2].starts_with("│     second "));
+        assert!(plain[2].starts_with("│  # Literal "));
+        assert!(plain[3].starts_with("│      second "));
     }
 
     #[test]
@@ -637,19 +637,19 @@ mod tests {
         let plain = rows(&lines);
         assert!(plain[0].starts_with("╭─ rust "));
         assert!(!plain[0].contains("linenos"));
-        assert!(plain[3].starts_with("│    let still a comment */"));
-        assert!(plain[5].starts_with('╰'));
-        assert!(lines[..6].iter().all(|line| line.width() == 48));
-        assert!(lines[..6].iter().all(|line| line
+        assert!(plain[4].starts_with("│     let still a comment */"));
+        assert!(plain[7].starts_with('╰'));
+        assert!(lines[..8].iter().all(|line| line.width() == 48));
+        assert!(lines[..8].iter().all(|line| line
             .spans
             .iter()
             .all(|span| { line.style.patch(span.style).bg == Some(CODE_BACKGROUND) })));
         for (row, part, color) in [
-            (1, "let", CODE_KEYWORD),
-            (1, "let 中文", CODE_STRING),
-            (2, "let 42", CODE_COMMENT),
-            (3, "let still a comment", CODE_COMMENT),
-            (4, "let", CODE_KEYWORD),
+            (2, "let", CODE_KEYWORD),
+            (2, "let 中文", CODE_STRING),
+            (3, "let 42", CODE_COMMENT),
+            (4, "let still a comment", CODE_COMMENT),
+            (5, "let", CODE_KEYWORD),
         ] {
             assert!(
                 lines[row]
@@ -862,12 +862,12 @@ mod tests {
                 .filter(|line| line.contains("Markdown preview"))
                 .count()
         );
-        assert!(plain.iter().any(|line| line.contains("│ ```markdown ")));
+        assert!(plain.iter().any(|line| line.contains("│  ```markdown ")));
         assert!(plain
             .iter()
-            .any(|line| line.contains("│ # Source, not a heading ")));
+            .any(|line| line.contains("│  # Source, not a heading ")));
         assert!(plain.iter().any(|line| line == "Rendered heading"));
-        assert!(plain.iter().any(|line| line.contains("│ # Inner source ")));
+        assert!(plain.iter().any(|line| line.contains("│  # Inner source ")));
     }
 
     #[test]

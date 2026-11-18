@@ -74,6 +74,12 @@ def targeted_delegation(client):
                 eventually(f"Agent and code borders align at {columns} columns", aligned)
             except AssertionError as error:
                 raise AssertionError(terminal.request("screen")["screen"]) from error
+            action = "Open →" if columns == 44 else "Open agent →"
+            scene = terminal.expect(action, state="╭─ Agent writer")["screen"]
+            terminal.click_text(scene, action)
+            terminal.expect("To writer", state="Proof of delivery")
+            terminal.press("/back\r")
+            terminal.expect("To main", state="Received the delegated document.")
         terminal.exit_cleanly()
     client.provider.assert_idle()
 
@@ -125,8 +131,10 @@ def windows_diagnostic(client):
         assert "␍" not in screen and "�" not in screen and "command exited" not in screen and "Saved output" not in screen
         rows = screen.splitlines()
         header = next(i for i, line in enumerate(rows) if "╭─ Check for missing example" in line)
-        assert "exit 1" not in rows[header] and command in rows[header + 1], screen
-        assert diagnostic in rows[header + 2] and "exit 1" in rows[header + 3], screen
+        assert "exit 1" not in rows[header] and not rows[header + 1].strip(" │"), screen
+        assert command in rows[header + 2], screen
+        assert diagnostic in rows[header + 3] and not rows[header + 4].strip(" │"), screen
+        assert "exit 1" in rows[header + 5], screen
         terminal.click_text(screen, "Check for missing example")
         terminal.expect("Requested arguments", state=diagnostic)
         terminal.exit_cleanly()

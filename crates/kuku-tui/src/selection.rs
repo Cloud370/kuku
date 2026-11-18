@@ -9,6 +9,7 @@ use crate::transcript::DetailKey;
 #[derive(PartialEq, Eq)]
 pub(crate) enum ClickTarget {
     Detail(DetailKey),
+    Agent(kuku_client::Target),
     Picker(PickerHit),
     Queued,
     Transcript,
@@ -57,13 +58,16 @@ impl TextSelection {
         }
     }
 
-    pub(crate) fn transcript_row(&self, mouse: MouseEvent) -> Option<usize> {
+    pub(crate) fn transcript_cell(&self, mouse: MouseEvent) -> Option<(usize, usize)> {
         let (area, _) = self.transcript_insets.as_ref()?;
         let point = Position::new(mouse.column, mouse.row);
         if !area.contains(point) || mouse.row == area.y {
             return None;
         }
-        Some(usize::from(mouse.row - area.y - 1))
+        Some((
+            usize::from(mouse.row - area.y - 1),
+            usize::from(mouse.column - area.x),
+        ))
     }
 
     pub(crate) fn mouse(
@@ -190,13 +194,16 @@ impl Drag {
         let mut text = String::new();
         let mut highlights = Vec::new();
         for row in start.y..=end.y {
-            if row != start.y {
-                text.push('\n');
-            }
             let inset = insets
                 .get(usize::from(row - self.area.top()))
                 .copied()
                 .unwrap_or(0);
+            if inset >= self.area.width {
+                continue;
+            }
+            if !highlights.is_empty() {
+                text.push('\n');
+            }
             let line_start = self.area.left() + inset;
             let from = if row == start.y {
                 start.x.max(line_start)

@@ -85,7 +85,7 @@ fn custom_tool_arguments_and_output_have_bounded_inline_previews() {
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(view.lines.len() <= 14);
+    assert!(view.lines.len() <= 16);
     assert!(plain.contains("{\"key\":\"中文"));
     assert!(plain.contains("first␛line"));
     assert!(plain.contains('…'));
@@ -229,10 +229,10 @@ fn file_cards_preview_saved_content_and_diff_without_using_requested_text_as_evi
     assert!(view.lines[edit_header]
         .to_string()
         .starts_with("╭─ Edit file"));
-    assert!(view.lines[edit_header..edit_header + 5]
+    assert!(view.lines[edit_header..edit_header + 7]
         .iter()
         .all(|line| line.width() == 90));
-    assert!(view.lines[edit_header + 4].to_string().contains("╰─ +1 −2"));
+    assert!(view.lines[edit_header + 6].to_string().contains("╰─ +1 −2"));
     let key = transcript.detail_at(edit_header).unwrap().clone();
     assert!(transcript.toggle_detail(&key));
     let inspected = transcript
@@ -273,9 +273,11 @@ fn short_command_results_show_stdout_without_capture_metadata_or_a_trailing_carr
         .position(|line| line.starts_with("╭─ Verify file removal"))
         .unwrap();
     assert!(lines[heading].ends_with('╮') && !lines[heading].contains("exit"));
-    assert_eq!(lines[heading + 1].trim_matches('│').trim(), "check-file");
-    assert_eq!(lines[heading + 2].trim_matches('│').trim(), "GONE");
-    assert!(lines[heading + 3].starts_with("╰─ ok · exit 0"));
+    assert!(lines[heading + 1].trim_matches('│').trim().is_empty());
+    assert!(lines[heading + 2].starts_with("│   check-file"));
+    assert_eq!(lines[heading + 3].trim_matches('│').trim(), "GONE");
+    assert!(lines[heading + 4].trim_matches('│').trim().is_empty());
+    assert!(lines[heading + 5].starts_with("╰─ ok · exit 0"));
     let key = transcript.detail_at(heading).unwrap().clone();
     assert!(transcript.toggle_detail(&key));
     let inspected = transcript.project(80, 24);

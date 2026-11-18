@@ -1,15 +1,16 @@
-use super::{code_surface, emphasis, MUTED};
+use super::{card_padding, code_surface, emphasis, MUTED};
 use crate::text::shorten;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
+use ratatui::widgets::Padding;
+use std::ops::Range;
 use unicode_width::UnicodeWidthStr;
 const MIN_FRAME_WIDTH: usize = 4;
-const PADDED_FRAME_WIDTH: usize = 8;
 
 pub(crate) struct CardFrame {
     width: usize,
     bordered: bool,
-    padding: usize,
+    padding: Padding,
     surface: Style,
 }
 
@@ -19,7 +20,7 @@ impl CardFrame {
             width,
             surface: code_surface(),
             bordered: width >= MIN_FRAME_WIDTH,
-            padding: usize::from(width >= PADDED_FRAME_WIDTH),
+            padding: card_padding(width),
         }
     }
 
@@ -43,11 +44,41 @@ impl CardFrame {
     }
 
     pub(crate) fn content_inset(&self) -> usize {
-        usize::from(self.bordered) + self.padding
+        usize::from(self.bordered) + usize::from(self.padding.left)
+    }
+
+    pub(crate) fn padding_line(&self) -> Option<Line<'static>> {
+        (self.padding.top > 0).then(|| self.line(Line::default()))
     }
 
     pub(crate) fn title(&self, label: &str, color: Color) -> Line<'static> {
         self.caption(label, '╭', '╮', self.surface.patch(emphasis(color)))
+    }
+
+    pub(crate) fn agent_action(width: usize) -> Option<(&'static str, Range<usize>)> {
+        let action = match width {
+            0..=17 => return None,
+            18..=47 => "Open →",
+            _ => "Open agent →",
+        };
+        let end = width - 2;
+        Some((action, end - action.width()..end))
+    }
+
+    pub(crate) fn agent_title(&self, label: &str, confirmed: bool) -> Line<'static> {
+        let color = super::MODEL;
+        let Some((action, columns)) = Self::agent_action(self.width).filter(|_| confirmed) else {
+            return self.title(label, color);
+        };
+        let label = shorten(label, columns.start.saturating_sub(5));
+        let fill = columns.start - 5 - label.width();
+        Line::from(vec![
+            Span::styled("╭─ ", self.edge()),
+            Span::styled(label, self.surface.patch(emphasis(color))),
+            Span::styled(format!(" {} ", "─".repeat(fill)), self.edge()),
+            Span::styled(action, self.surface.fg(color).underlined()),
+            Span::styled(" ╮", self.edge()),
+        ])
     }
 
     pub(crate) fn status_foot(&self, label: &str, color: Color) -> Line<'static> {
@@ -66,7 +97,7 @@ impl CardFrame {
         if !self.bordered {
             return Line::from(Span::styled(shorten(label, self.width), style));
         }
-        let (prefix, tail) = if self.padding > 0 {
+        let (prefix, tail) = if self.padding.left > 0 {
             (format!("{left}─ "), " ")
         } else {
             (left.to_string(), "")
@@ -87,16 +118,22 @@ impl CardFrame {
         if self.bordered {
             spans.push(Span::styled("│", self.edge()));
         }
-        if self.padding != 0 {
-            spans.push(Span::styled(" ", self.surface));
+        if self.padding.left != 0 {
+            spans.push(Span::styled(
+                " ".repeat(usize::from(self.padding.left)),
+                self.surface,
+            ));
         }
         let base = self.surface.patch(line.style);
         spans.extend(line.spans.into_iter().map(|mut span| {
             span.style = base.patch(span.style);
             span
         }));
-        if room + self.padding != 0 {
-            spans.push(Span::styled(" ".repeat(room + self.padding), self.surface));
+        if room + usize::from(self.padding.right) != 0 {
+            spans.push(Span::styled(
+                " ".repeat(room + usize::from(self.padding.right)),
+                self.surface,
+            ));
         }
         if self.bordered {
             spans.push(Span::styled("│", self.edge()));

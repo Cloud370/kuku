@@ -77,6 +77,8 @@ impl CodeBlock {
         if output.len() == limit {
             return output;
         }
+        let padding = frame.padding_line().filter(|_| !self.text.is_empty());
+        output.extend(padding.iter().cloned());
         let mut highlighter = self
             .language
             .as_deref()
@@ -98,6 +100,9 @@ impl CodeBlock {
         }
         if self.text.is_empty() && output.len() < limit {
             output.push(frame.line(Line::default()));
+        }
+        if output.len() < limit {
+            output.extend(padding);
         }
         if frame.bordered() && output.len() < limit {
             output.push(frame.border('╰', '╯'));

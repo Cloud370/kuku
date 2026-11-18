@@ -9,15 +9,18 @@ use crate::app::Activity;
 use crate::markup::{render_literal, render_markdown};
 use crate::text::{cap, shorten, single_line};
 use crate::theme::{
-    emphasis, CardFrame, ACCENT, ACTIVITY_EXCERPT_CELLS, ERROR, MODEL, MUTED, SUCCESS, WARNING,
+    emphasis, CardFrame, ACCENT, ACTIVITY_EXCERPT_CELLS, ERROR, MODEL, MUTED, SUCCESS,
+    SURFACE_TEXT, WARNING,
 };
 
 use super::{
-    body_inset, capped, render_rows, Body, Key, Row, ToolDetails, Transcript, MAX_RECORDS,
+    body_inset, capped, render_rows, Body, Key, Row, ToolDetails, Transcript, MAX_BODY_BYTES,
+    MAX_RECORDS, MAX_VISUAL_ROWS,
 };
 
 const MAX_ACTIVITY_BYTES: usize = 4 * 1024;
 const MAX_SECTION_ROWS: usize = 4;
+const INSTRUCTION_PREVIEW_ROWS: usize = 3;
 const MAX_CHOICE_CELLS: usize = 120;
 
 impl Transcript {
@@ -194,7 +197,14 @@ impl AgentRequest {
         Some(Self {
             kind,
             target: capped(Some(target), MAX_ACTIVITY_BYTES),
-            task: capped(args[task].as_str(), MAX_ACTIVITY_BYTES),
+            task: capped(
+                args[task].as_str(),
+                if matches!(kind, AgentAction::Create) {
+                    MAX_BODY_BYTES
+                } else {
+                    MAX_ACTIVITY_BYTES
+                },
+            ),
         })
     }
 
@@ -270,7 +280,9 @@ impl AgentCard<'_> {
     ) -> Vec<Row> {
         let frame = CardFrame::agent(width);
         let title = format!("Agent {}", single_line(self.address));
-        let mut rows = vec![Row::plain(frame.title(&title, MODEL))];
+        let mut rows = vec![Row::plain(
+            frame.agent_title(&title, self.receipt_cursor.is_some()),
+        )];
         let (label, color) = facts.map_or(("Delivered", Style::new().fg(MUTED)), |facts| {
             (facts.status.label(), activity_style(facts.status))
         });
@@ -314,6 +326,7 @@ impl AgentCard<'_> {
                 if checks == 1 { "check" } else { "checks" }
             )
         };
+        Row::pad_framed_body(&mut rows, &frame);
         rows.push(Row::plain(frame.foot(&timeline)));
         if !open {
             rows.push(Row::plain(Line::default()));
@@ -340,8 +353,12 @@ impl AgentCard<'_> {
         } else {
             frame.content_width()
         };
-        let inset = body_inset(width);
-        let body_inset = inset + body_inset(width.saturating_sub(usize::from(inset)));
+        let inset = if in_timeline { body_inset(width) } else { 0 };
+        let body_inset = if in_timeline {
+            inset + body_inset(width.saturating_sub(usize::from(inset)))
+        } else {
+            0
+        };
         let expanded = details == ToolDetails::Expanded;
         let header = self.header(width.saturating_sub(usize::from(inset)), facts, in_timeline);
         let mut rows: Vec<_> = render_rows(header, width, 3, inset).collect();
@@ -351,40 +368,76 @@ impl AgentCard<'_> {
         }
         let preview = facts.map_or("", |facts| facts.preview.as_str());
         if !in_timeline || !expanded {
-            let (label, text) = if !self.error.is_empty() {
-                ("Error", self.error)
-            } else if !preview.is_empty() {
-                let label = if facts.is_some_and(|facts| facts.status == Activity::Failed) {
-                    "Error"
-                } else {
-                    "Reply"
-                };
-                (label, preview)
-            } else {
-                match self.kind {
-                    AgentAction::Create => ("Instructions", self.task),
-                    AgentAction::Send => ("Task", self.task),
-                }
-            };
-            if let Some(excerpt) = first_content_line(text) {
-                let mut line = Line::from(Span::styled(format!("{label}  "), emphasis(MUTED)));
-                let remaining = width.saturating_sub(usize::from(body_inset) + line.width());
-                line.push_span(Span::styled(
-                    shorten(&single_line(excerpt), remaining.min(ACTIVITY_EXCERPT_CELLS)),
-                    Style::new().fg(MUTED),
+            if matches!(self.kind, AgentAction::Create)
+                && self.error.is_empty()
+                && !self.task.trim().is_empty()
+            {
+                rows.extend(render_rows(
+                    vec![Line::styled("Instructions", emphasis(MUTED))],
+                    width,
+                    1,
+                    body_inset,
                 ));
-                rows.extend(render_rows(vec![line], width, 1, body_inset));
+                let preview = render_literal(
+                    cap(self.task, MAX_ACTIVITY_BYTES),
+                    Style::new().fg(SURFACE_TEXT),
+                );
+                rows.extend(
+                    render_rows(preview, width, INSTRUCTION_PREVIEW_ROWS, body_inset)
+                        .take(INSTRUCTION_PREVIEW_ROWS),
+                );
+            } else {
+                let (label, text) = if !self.error.is_empty() {
+                    ("Error", self.error)
+                } else if !preview.is_empty() {
+                    let label = if facts.is_some_and(|facts| facts.status == Activity::Failed) {
+                        "Error"
+                    } else {
+                        "Reply"
+                    };
+                    (label, preview)
+                } else {
+                    ("Task", self.task)
+                };
+                if let Some(excerpt) = first_content_line(text) {
+                    let mut line = Line::from(Span::styled(format!("{label}  "), emphasis(MUTED)));
+                    let remaining = width.saturating_sub(usize::from(body_inset) + line.width());
+                    line.push_span(Span::styled(
+                        shorten(&single_line(excerpt), remaining.min(ACTIVITY_EXCERPT_CELLS)),
+                        Style::new().fg(SURFACE_TEXT),
+                    ));
+                    rows.extend(render_rows(vec![line], width, 1, body_inset));
+                }
             }
         }
         let summary_rows = rows.len();
         if expanded {
-            render_section(&mut rows, self.task_label, self.task, width, body_inset);
+            let task_rows = if matches!(self.kind, AgentAction::Create) {
+                MAX_VISUAL_ROWS
+            } else {
+                MAX_SECTION_ROWS
+            };
+            render_section(
+                &mut rows,
+                self.task_label,
+                self.task,
+                width,
+                body_inset,
+                task_rows,
+            );
             let label = match facts.map(|facts| facts.status) {
                 Some(Activity::Streaming) => "Live Agent reply",
                 Some(Activity::Failed) => "Latest Agent error",
                 _ => "Latest Agent reply",
             };
-            render_section(&mut rows, label, preview, width, body_inset);
+            render_section(
+                &mut rows,
+                label,
+                preview,
+                width,
+                body_inset,
+                MAX_SECTION_ROWS,
+            );
             if !self.error.is_empty() {
                 rows.extend(render_rows(
                     render_literal(self.error, Style::new().fg(ERROR)),
@@ -395,11 +448,13 @@ impl AgentCard<'_> {
             }
         }
         if !in_timeline {
-            let mut framed = vec![Row::plain(
-                frame.title(&format!("Agent {}", single_line(self.address)), MODEL),
-            )];
+            let mut framed = vec![Row::plain(frame.agent_title(
+                &format!("Agent {}", single_line(self.address)),
+                self.receipt_cursor.is_some(),
+            ))];
             let details = rows.split_off(summary_rows);
             framed.extend(rows.into_iter().map(|row| Row::plain(frame.line(row.line))));
+            Row::pad_framed_body(&mut framed, &frame);
             let label = if expanded {
                 "▾ Details"
             } else {
@@ -414,6 +469,7 @@ impl AgentCard<'_> {
                         .into_iter()
                         .map(|row| Row::plain(frame.line(row.line))),
                 );
+                framed.extend(Row::frame_padding(&frame));
                 if frame.bordered() {
                     framed.push(Row::plain(frame.border('╰', '╯')));
                 }
@@ -478,7 +534,14 @@ fn activity_style(activity: Activity) -> Style {
     emphasis(color)
 }
 
-fn render_section(rows: &mut Vec<Row>, label: &'static str, text: &str, width: usize, inset: u16) {
+fn render_section(
+    rows: &mut Vec<Row>,
+    label: &'static str,
+    text: &str,
+    width: usize,
+    inset: u16,
+    limit: usize,
+) {
     if text.trim().is_empty() {
         return;
     }
@@ -486,9 +549,9 @@ fn render_section(rows: &mut Vec<Row>, label: &'static str, text: &str, width: u
     source.extend(render_markdown(
         text,
         width.saturating_sub(usize::from(inset)),
-        MAX_SECTION_ROWS,
+        limit,
     ));
-    rows.extend(render_rows(source, width, MAX_SECTION_ROWS, inset));
+    rows.extend(render_rows(source, width, limit, inset));
 }
 
 #[cfg(test)]
@@ -692,6 +755,83 @@ mod tests {
     }
 
     #[test]
+    fn only_the_visible_confirmed_agent_header_has_a_navigation_target() {
+        let mut transcript = Transcript::default();
+        apply(
+            &mut transcript,
+            1,
+            json!({
+                "type":"tool_call","tool":"create_agent","tool_call_id":"child",
+                "args":{"address":"reviewer","instructions":"Check the report"}
+            }),
+        );
+        assert!(!lines(&transcript.project(40, 15))
+            .join("\n")
+            .contains("Open →"));
+        apply(
+            &mut transcript,
+            2,
+            json!({
+                "type":"tool_result","tool_call_id":"child","status":"ok",
+                "structured":{"agent":"reviewer","command_id":"tool:main:7:child","event_id":1}
+            }),
+        );
+        for (width, label) in [(38, "Open →"), (110, "Open agent →")] {
+            let view = lines(&transcript.project(width, 15));
+            let heading = view.iter().position(|line| line.contains(label)).unwrap();
+            let (_, columns) = crate::theme::CardFrame::agent_action(width).unwrap();
+            assert_eq!(
+                transcript.agent_link_at(heading, columns.start, width),
+                Some("reviewer")
+            );
+            assert!(transcript
+                .agent_link_at(heading, columns.start - 1, width)
+                .is_none());
+            assert!(transcript
+                .agent_link_at(heading + 1, columns.start, width)
+                .is_none());
+            let clipped = transcript.project(width, 3);
+            assert!(clipped
+                .lines
+                .iter()
+                .all(|line| !line.to_string().contains(label)));
+            assert!(transcript.agent_link_at(0, columns.start, width).is_none());
+        }
+    }
+
+    #[test]
+    fn instructions_wrap_in_the_card_and_the_reader_reaches_the_end_of_a_long_request() {
+        let mut transcript = Transcript::default();
+        let tail = "请直接回复，不要写文件。";
+        let instructions = format!(
+            "第一段工作说明。\n{tail}\n{}\n最终限制",
+            "执行前检查输入。\n".repeat(220)
+        );
+        apply(
+            &mut transcript,
+            1,
+            json!({
+                "type": "tool_call", "tool": "create_agent", "tool_call_id": "create",
+                "args": {"address": "writer", "instructions": instructions}
+            }),
+        );
+        let narrow = transcript.project(32, 20);
+        let rows = lines(&narrow);
+        let label = rows
+            .iter()
+            .position(|row| row.trim_matches('│').trim() == "Instructions")
+            .unwrap();
+        assert!(rows[label + 1].contains("第一段工作说明。"));
+        assert!(rows[label + 2].contains(tail));
+        assert!(!rows.iter().any(|row| row.contains("最终限制")));
+        let detail = transcript.detail_at(label).unwrap().clone();
+        assert!(transcript.toggle_detail(&detail));
+        assert!(lines(&transcript.project(32, 20))
+            .iter()
+            .any(|row| row.contains("最终限制")));
+    }
+
+    #[test]
     fn picker_choice_uses_the_same_record_after_viewport_rows_change() {
         let mut transcript = settled_agent_calls();
         transcript.project(82, 25);
@@ -725,8 +865,8 @@ mod tests {
             .iter()
             .position(|line| line.contains("╭─ Agent reviewer"))
             .unwrap();
-        assert!(view[header + 1].contains("Streaming reply"));
-        assert!(toggle_row(&mut transcript, header + 1));
+        assert!(view[header + 2].contains("Streaming reply"));
+        assert!(toggle_row(&mut transcript, header + 2));
         let expanded = transcript.project(82, 27);
         let rendered = lines(&expanded).join("\n");
         assert!(

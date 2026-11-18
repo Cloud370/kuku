@@ -253,6 +253,19 @@ impl Tool {
     }
 
     pub(super) fn render(&self, width: usize, details: ToolDetails) -> Vec<Row> {
+        let has_frame = self.name == "run_command"
+            || self.file_change().is_some()
+            || self
+                .state
+                .outcome()
+                .is_some_and(|outcome| outcome.command_preview.is_some());
+        if has_frame || details == ToolDetails::GroupMember {
+            return self.render_content(width, details);
+        }
+        super::message::padded_panel(width, panel(), |inner| self.render_content(inner, details))
+    }
+
+    fn render_content(&self, width: usize, details: ToolDetails) -> Vec<Row> {
         let inspecting = details == ToolDetails::Inspection;
         let expanded = inspecting || details == ToolDetails::Expanded;
         let heading_inset = body_inset(width);
@@ -451,50 +464,6 @@ impl Tool {
             MAX_ARGUMENT_ROWS,
             inset,
         ));
-    }
-
-    fn render_change(
-        &self,
-        change: &FileChange,
-        width: usize,
-        inset: u16,
-        details: ToolDetails,
-    ) -> Vec<Row> {
-        let frame = crate::theme::CardFrame::new(width);
-        let path = self.invocation();
-        let title = join_details([
-            self.title().as_ref(),
-            self.state.label().0,
-            single_line(path).as_str(),
-        ]);
-        let mut rows = vec![Row::plain(frame.title(&title, ACCENT))];
-        let mut clipped = false;
-        if details != ToolDetails::Collapsed {
-            let limit = if details == ToolDetails::Inspection {
-                MAX_INSPECTION_ROWS
-            } else {
-                MAX_CHANGE_ROWS
-            };
-            let lines = change.lines(path, frame.content_width(), limit);
-            clipped = lines.len() > limit;
-            rows.extend(
-                lines
-                    .into_iter()
-                    .take(limit)
-                    .map(|line| Row::plain(frame.line(line))),
-            );
-        }
-        let footer = if clipped {
-            format!("{} · …", change.stats)
-        } else {
-            change.stats.clone()
-        };
-        rows.push(Row::plain(frame.foot(&footer)));
-        if details == ToolDetails::Inspection {
-            self.render_arguments(&mut rows, width, inset);
-        }
-        rows.push(Row::plain(Line::default()));
-        rows
     }
 
     fn file_change(&self) -> Option<&FileChange> {

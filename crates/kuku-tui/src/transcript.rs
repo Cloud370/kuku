@@ -412,7 +412,7 @@ impl Transcript {
             if skip == 0 && block.height() == 0 {
                 if let Some(detail @ DetailRecord::Reasoning(_)) = block.detail {
                     let row = lines.len();
-                    visible.push(VisibleDetail::record(row..row, block.key, detail));
+                    visible.push(VisibleDetail::record(row..row, block.key, detail, false));
                 }
                 continue;
             }
@@ -429,6 +429,7 @@ impl Transcript {
             }
             if let Some(group) = block.group {
                 let first = lines.len();
+                let title_visible = skip == 0;
                 for row in group.rows.iter().skip(skip).take(limit - first) {
                     lines.push(row.line.clone());
                     row_insets.push(row.inset);
@@ -437,7 +438,12 @@ impl Transcript {
                 let end = lines.len()
                     - usize::from(lines.last().is_some_and(|line| line.spans.is_empty()));
                 if first < end {
-                    visible.push(VisibleDetail::group(first..end, block.key, group));
+                    visible.push(VisibleDetail::group(
+                        first..end,
+                        block.key,
+                        group,
+                        title_visible,
+                    ));
                 }
             }
             let first = lines.len();
@@ -464,7 +470,12 @@ impl Transcript {
                         && block.rows.is_empty()
                         && first < height)
                 {
-                    visible.push(VisibleDetail::record(first..last, block.key, detail));
+                    visible.push(VisibleDetail::record(
+                        first..last,
+                        block.key,
+                        detail,
+                        skip == 0 && !block.grouped,
+                    ));
                 }
             }
             skip = 0;
@@ -901,13 +912,36 @@ fn interruption_execution(entry: &HistoryEntry) -> Option<u64> {
     None
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Row {
     line: Line<'static>,
     inset: u16,
 }
 
 impl Row {
+    fn padding(line: Line<'static>, width: usize) -> Self {
+        Self {
+            line,
+            inset: width as u16,
+        }
+    }
+
+    fn frame_padding(frame: &crate::theme::CardFrame) -> Option<Self> {
+        frame.padding_line().map(|line| {
+            let width = line.width();
+            Self::padding(line, width)
+        })
+    }
+
+    fn pad_framed_body(rows: &mut Vec<Self>, frame: &crate::theme::CardFrame) {
+        if rows.len() > 1 {
+            if let Some(padding) = Self::frame_padding(frame) {
+                rows.insert(1, padding.clone());
+                rows.push(padding);
+            }
+        }
+    }
+
     fn plain(line: Line<'static>) -> Self {
         Self { line, inset: 0 }
     }

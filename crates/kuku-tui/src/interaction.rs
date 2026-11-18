@@ -121,8 +121,8 @@ impl App {
             None => {
                 if !self
                     .text_selection
-                    .transcript_row(mouse)
-                    .is_some_and(|row| self.pane().transcript.notes_at_row(row))
+                    .transcript_cell(mouse)
+                    .is_some_and(|(row, _)| self.pane().transcript.notes_at_row(row))
                 {
                     self.pane_mut().transcript.close_notes();
                 }

@@ -94,6 +94,7 @@ pub(super) fn finish(
         row.line = frame.line(std::mem::take(&mut row.line));
         row.inset = frame.content_inset() as u16;
     }
+    Row::pad_framed_body(&mut rows, &frame);
     rows.push(Row::plain(frame.status_foot(&status, color)));
     rows.push(Row::plain(Line::default()));
     rows

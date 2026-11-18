@@ -100,6 +100,7 @@ impl Details {
 
 #[derive(Debug)]
 pub(super) struct VisibleDetail {
+    agent_link: Option<String>,
     rows: Range<usize>,
     key: DetailKey,
     label: String,
@@ -108,19 +109,38 @@ pub(super) struct VisibleDetail {
 }
 
 impl VisibleDetail {
-    pub(super) fn group(rows: Range<usize>, key: &Key, group: GroupHeading) -> Self {
-        let GroupHeading { summary, open, .. } = group;
-        Self::new(
+    pub(super) fn group(
+        rows: Range<usize>,
+        key: &Key,
+        group: GroupHeading,
+        title_visible: bool,
+    ) -> Self {
+        let GroupHeading {
+            summary,
+            open,
+            agent_link,
+            ..
+        } = group;
+        let mut item = Self::new(
             rows,
             key,
             DetailKind::Group,
             summary.title,
             summary.composition,
             open,
-        )
+        );
+        if title_visible {
+            item.agent_link = agent_link;
+        }
+        item
     }
 
-    pub(super) fn record(rows: Range<usize>, key: &Key, item: DetailRecord<'_>) -> Self {
+    pub(super) fn record(
+        rows: Range<usize>,
+        key: &Key,
+        item: DetailRecord<'_>,
+        title_visible: bool,
+    ) -> Self {
         match item {
             DetailRecord::Reasoning(excerpt) => Self::new(
                 rows,
@@ -133,14 +153,21 @@ impl VisibleDetail {
                 ),
                 false,
             ),
-            DetailRecord::Agent(agent) => Self::new(
-                rows,
-                key,
-                DetailKind::Agent,
-                format!("Agent {}", agent.address),
-                agent.choice_summary(),
-                false,
-            ),
+            DetailRecord::Agent(agent) => {
+                let mut item = Self::new(
+                    rows,
+                    key,
+                    DetailKind::Agent,
+                    format!("Agent {}", agent.address),
+                    agent.choice_summary(),
+                    false,
+                );
+                if title_visible && agent.receipt_cursor.is_some() {
+                    item.agent_link = Some(agent.address.to_owned());
+                }
+                item
+            }
+
             DetailRecord::Tool(tool) => {
                 let (label, summary) = tool.detail_choice();
                 Self::new(rows, key, DetailKind::Tool, label, summary, false)
@@ -157,6 +184,7 @@ impl VisibleDetail {
         open: bool,
     ) -> Self {
         Self {
+            agent_link: None,
             rows,
             key: DetailKey {
                 kind,
@@ -176,6 +204,27 @@ pub(super) enum DetailRecord<'a> {
 }
 
 impl Transcript {
+    pub(crate) fn agent_link_at(&self, row: usize, column: usize, width: usize) -> Option<&str> {
+        let (_, action) = crate::theme::CardFrame::agent_action(width)?;
+        if !action.contains(&column) {
+            return None;
+        }
+        let row = if let Some(notes) = &self.notes {
+            if notes.hit(row) {
+                return None;
+            }
+            notes.source_row(row)
+        } else {
+            row
+        };
+        self.detail_items
+            .visible
+            .iter()
+            .find(|item| item.rows.start == row && item.agent_link.is_some())?
+            .agent_link
+            .as_deref()
+    }
+
     pub(crate) fn detail_at(&self, row: usize) -> Option<&DetailKey> {
         let row = if let Some(notes) = &self.notes {
             if notes.hit(row) {
@@ -401,6 +450,7 @@ enum GroupKind {
 }
 
 pub(super) struct GroupHeading {
+    agent_link: Option<String>,
     summary: GroupSummary,
     pub(super) open: bool,
     pub(super) rows: Vec<Row>,
@@ -421,6 +471,7 @@ impl GroupHeading {
                 let (_, facts) = agents.display(&latest.key, latest.position, card.address);
                 let rows = card.delegation_header(width, open, facts, checks);
                 return Self {
+                    agent_link: Some(card.address.to_owned()),
                     summary,
                     open,
                     rows,
@@ -431,45 +482,54 @@ impl GroupHeading {
     }
 
     pub(super) fn new(summary: GroupSummary, open: bool, width: usize) -> Self {
-        let inset = body_inset(width);
-        let columns = width.saturating_sub(usize::from(inset));
-        let mut spans = Vec::new();
-        if inset > 0 {
-            spans.push(Span::styled(
-                if open { "▾ " } else { "▸ " },
-                Style::new().fg(MUTED),
-            ));
-        }
-        let status = " · ok";
-        let title = if columns > status.width() {
-            shorten(&summary.title, columns - status.width())
+        let style = if summary.kind == GroupKind::Listings {
+            Style::new().bg(crate::theme::AGENT_SURFACE)
         } else {
-            shorten(&summary.title, columns)
+            crate::theme::panel()
         };
-        spans.push(Span::styled(title, emphasis(ACCENT)));
-        if columns > status.width() {
-            spans.push(Span::styled(status, Style::new().fg(SUCCESS)));
-        }
-        let mut rows = vec![Row {
-            line: Line::from(spans),
-            inset,
-        }];
-        for detail in [&summary.composition, &summary.listing] {
-            if !detail.is_empty() {
-                rows.extend(render_rows(
-                    render_literal(detail, Style::default()),
-                    width,
-                    GROUP_DETAIL_ROWS,
-                    inset,
+        let rows = super::message::padded_panel(width, style, |width| {
+            let inset = body_inset(width);
+            let columns = width.saturating_sub(usize::from(inset));
+            let mut spans = Vec::new();
+            if inset > 0 {
+                spans.push(Span::styled(
+                    if open { "▾ " } else { "▸ " },
+                    Style::new().fg(MUTED),
                 ));
             }
-        }
-        if summary.kind == GroupKind::Listings {
-            super::paint_card(&mut rows, width, crate::theme::AGENT_SURFACE);
-        } else {
-            style_card(&mut rows);
-        }
+            let status = " · ok";
+            let title = if columns > status.width() {
+                shorten(&summary.title, columns - status.width())
+            } else {
+                shorten(&summary.title, columns)
+            };
+            spans.push(Span::styled(title, emphasis(ACCENT)));
+            if columns > status.width() {
+                spans.push(Span::styled(status, Style::new().fg(SUCCESS)));
+            }
+            let mut rows = vec![Row {
+                line: Line::from(spans),
+                inset,
+            }];
+            for detail in [&summary.composition, &summary.listing] {
+                if !detail.is_empty() {
+                    rows.extend(render_rows(
+                        render_literal(detail, Style::default()),
+                        width,
+                        GROUP_DETAIL_ROWS,
+                        inset,
+                    ));
+                }
+            }
+            if summary.kind == GroupKind::Listings {
+                super::paint_card(&mut rows, width, crate::theme::AGENT_SURFACE);
+            } else {
+                style_card(&mut rows);
+            }
+            rows
+        });
         Self {
+            agent_link: None,
             summary,
             open,
             rows,

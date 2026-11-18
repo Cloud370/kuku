@@ -30,7 +30,7 @@ pub(crate) fn selection() -> Style {
 
 pub(crate) const TRANSCRIPT_INDENT: u16 = 2;
 pub(crate) const MIN_TRANSCRIPT_INDENT_WIDTH: usize = 12;
-pub(crate) const USER_LEFT_EDGE: &str = "│ ";
+
 pub(crate) const MAX_DRAFT_ROWS: usize = 4;
 pub(crate) const PICKER_WIDTH: u16 = 88;
 pub(crate) const PICKER_HEIGHT: u16 = 25;
@@ -59,6 +59,17 @@ pub(crate) fn horizontal_gutter(width: u16) -> u16 {
         72..=109 => 2,
         _ => 3,
     }
+}
+
+pub(crate) fn card_padding(width: usize) -> Padding {
+    let sides = match width {
+        0..=11 => 0,
+        12..=31 => 1,
+        32..=79 => 2,
+        _ => 3,
+    };
+    let vertical = u16::from(width >= 24);
+    Padding::new(sides, sides, vertical, vertical)
 }
 
 pub(crate) fn composer_padding(area: Rect) -> Padding {

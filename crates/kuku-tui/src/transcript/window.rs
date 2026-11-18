@@ -302,7 +302,7 @@ pub(super) struct Block<'a> {
     pub(super) group: Option<GroupHeading>,
     pub(super) rows: &'a [Row],
     pub(super) detail: Option<DetailRecord<'a>>,
-    grouped: bool,
+    pub(super) grouped: bool,
     collapsed: bool,
 }
 

@@ -572,6 +572,7 @@ def open_reviewer(terminal):
 
 
 def check_agent_reading_position(client, terminal):
+    terminal.press("\x1b[1;5F")
     prompt = "Print numbered checkpoints for review"
     terminal.submit(prompt)
     markers = [f"Checkpoint {number:03}" for number in range(70)]
@@ -827,8 +828,6 @@ def dense_transcript(client, reference=False):
         assert all(f"samples/read-{index:02d}.txt" in opened for index in range(1, 13)), opened
         assert "Find files · read-0*.txt in samples" in opened and "Search text · sample-marker in samples" in opened, opened
         screens.append(("Expanded read-only activity with file, find, and search targets", opened))
-        terminal.request("resize", rows=32, cols=140)
-
         terminal.press("\x10")
         terminal.expect("Actions and Skills")
         terminal.press("details\r")
@@ -860,13 +859,14 @@ def dense_transcript(client, reference=False):
             terminal.expect("Running tools")
             terminal.type(scenario.draft)
             measurements = measure_tools(terminal)
-            terminal.request("resize", rows=32, cols=140)
-            wide = read_while(terminal, lambda value: running_view(value, 32)
+            terminal.request("resize", rows=36, cols=140)
+            wide = read_while(terminal, lambda value: running_view(value, 36)
                               and scenario.missing in value and scenario.draft in value,
                               "the wide tool turn")
             screens.append(("Dense tool turn with a running command and local draft", wide))
             if not reference:
                 assert all(text in wide for text in (scenario.activity_group, scenario.activity_composition, *scenario.file_cards)), wide
+                terminal.request("resize", rows=32, cols=140)
                 inspect_tools(terminal)
             terminal.request("resize", rows=26, cols=74)
             narrow = read_while(terminal, lambda value: running_view(value, 26) and scenario.missing in value

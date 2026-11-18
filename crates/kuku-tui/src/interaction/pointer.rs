@@ -21,6 +21,7 @@ impl App {
                     }
                 }
             }
+            Some(MouseAction::Click(ClickTarget::Agent(target))) => self.select_agent(target),
             Some(MouseAction::Click(ClickTarget::Queued)) => self.open_queued(),
             Some(MouseAction::Click(ClickTarget::Transcript)) => self.scroll(0),
             Some(MouseAction::Click(ClickTarget::Composer)) => {
@@ -59,13 +60,26 @@ impl App {
                 {
                     Some(ClickTarget::Queued)
                 } else {
-                    self.text_selection.transcript_row(mouse).map(|row| {
-                        self.pane()
-                            .transcript
-                            .detail_at(row)
-                            .cloned()
-                            .map_or(ClickTarget::Transcript, ClickTarget::Detail)
-                    })
+                    self.text_selection
+                        .transcript_cell(mouse)
+                        .map(|(row, column)| {
+                            if let Some(agent) = self.pane().transcript.agent_link_at(
+                                row,
+                                column,
+                                self.transcript_area.0,
+                            ) {
+                                return ClickTarget::Agent(kuku_client::Target {
+                                    workspace: self.workspace.clone(),
+                                    session_id: self.active.session.clone(),
+                                    agent: agent.to_owned(),
+                                });
+                            }
+                            self.pane()
+                                .transcript
+                                .detail_at(row)
+                                .cloned()
+                                .map_or(ClickTarget::Transcript, ClickTarget::Detail)
+                        })
                 }
             }
         }

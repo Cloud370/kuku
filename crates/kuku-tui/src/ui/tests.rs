@@ -254,7 +254,12 @@ fn identical_pending_inputs_render_immediately_and_admission_wins_over_a_late_re
         Ok(queued_receipt(&second, 54)),
     ));
     let accepted = screen(&mut app, 92, 25);
-    assert!(accepted.contains("Turn 1") && accepted.contains("│ You"));
+    assert!(
+        accepted.contains("Turn 1")
+            && accepted
+                .lines()
+                .any(|line| line.contains("│") && line.contains("You"))
+    );
     assert!(!accepted.contains("Pending inputs"));
     assert_eq!(2, accepted.matches(text).count());
 }

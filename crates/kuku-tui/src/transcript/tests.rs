@@ -170,12 +170,16 @@ fn roles_and_file_details_are_readable_without_styles_at_narrow_widths() {
             if width == 17 {
                 "│ You / Turn 1"
             } else {
-                "│ You   /   Turn 1"
+                "│  You   /   Turn 1"
             },
             plain[0]
         );
-        assert_eq!("│ 看一下 e\u{301} 👩‍💻", plain[1]);
-        assert_eq!(2, view.row_insets[1]);
+        let (body, inset) = if width == 17 { (1, 2) } else { (2, 3) };
+        assert_eq!(
+            "看一下 e\u{301} 👩‍💻",
+            plain[body].trim_start_matches('│').trim_start()
+        );
+        assert_eq!(inset, view.row_insets[body]);
         assert!(plain
             .windows(2)
             .any(|pair| pair == ["Assistant", "我来检查"]));
@@ -350,13 +354,13 @@ fn history_page_join_only_marks_genuine_turn_boundaries_and_preserves_the_anchor
     assert_eq!(
         vec!["1", "2"],
         all.iter()
-            .filter_map(|row| row.strip_prefix("│ You   /   Turn ").or_else(|| row
+            .filter_map(|row| row.strip_prefix("│  You   /   Turn ").or_else(|| row
                 .strip_prefix("Turn ")
                 .and_then(|tail| tail.split_once("  ─"))
                 .map(|(number, _)| number)))
             .collect::<Vec<_>>()
     );
-    assert_eq!("│ Inspect the file", all[1]);
+    assert_eq!("│  Inspect the file", all[2]);
 }
 
 #[test]

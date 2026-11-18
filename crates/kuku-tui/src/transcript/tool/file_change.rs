@@ -3,11 +3,60 @@ use ratatui::text::{Line, Span};
 use serde_json::Value;
 
 use crate::markup::{file_source, render_diff, render_markdown, wrap_bounded};
-use crate::text::cap;
-use crate::theme::MUTED;
+use crate::text::{cap, single_line};
+use crate::theme::{ACCENT, MUTED};
 use std::path::Path;
 
-use super::MAX_PREVIEW_BYTES;
+use super::{
+    join_details, Row, Tool, ToolDetails, MAX_CHANGE_ROWS, MAX_INSPECTION_ROWS, MAX_PREVIEW_BYTES,
+};
+
+impl Tool {
+    pub(super) fn render_change(
+        &self,
+        change: &FileChange,
+        width: usize,
+        inset: u16,
+        details: ToolDetails,
+    ) -> Vec<Row> {
+        let frame = crate::theme::CardFrame::new(width);
+        let path = self.invocation();
+        let title = join_details([
+            self.title().as_ref(),
+            self.state.label().0,
+            single_line(path).as_str(),
+        ]);
+        let mut rows = vec![Row::plain(frame.title(&title, ACCENT))];
+        let mut clipped = false;
+        if details != ToolDetails::Collapsed {
+            let limit = if details == ToolDetails::Inspection {
+                MAX_INSPECTION_ROWS
+            } else {
+                MAX_CHANGE_ROWS
+            };
+            let lines = change.lines(path, frame.content_width(), limit);
+            clipped = lines.len() > limit;
+            rows.extend(
+                lines
+                    .into_iter()
+                    .take(limit)
+                    .map(|line| Row::plain(frame.line(line))),
+            );
+        }
+        let footer = if clipped {
+            format!("{} · …", change.stats)
+        } else {
+            change.stats.clone()
+        };
+        Row::pad_framed_body(&mut rows, &frame);
+        rows.push(Row::plain(frame.foot(&footer)));
+        if details == ToolDetails::Inspection {
+            self.render_arguments(&mut rows, width, inset);
+        }
+        rows.push(Row::plain(Line::default()));
+        rows
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(super) struct FileChange {
