@@ -18,16 +18,16 @@ const SEPARATOR: &str = " · ";
 const COMPACT_DETAILS_WIDTH: usize = 12;
 const COMPACT_MODEL_WIDTH: usize = 28;
 const COMPACT_STATUS_WIDTH: usize = 96;
-const DEFAULT_FIELDS: [Field; 7] = [
+const DEFAULT_FIELDS: [Field; 6] = [
     Field::Model,
     Field::Connection,
-    Field::Execution,
     Field::Agent,
     Field::Workspace,
     Field::Context,
     Field::Throughput,
 ];
-const OPTIONAL_FIELDS: [Field; 4] = [
+const OPTIONAL_FIELDS: [Field; 5] = [
+    Field::Execution,
     Field::InputTokens,
     Field::OutputTokens,
     Field::Cache,
@@ -101,22 +101,7 @@ impl StatusLine {
         self.fields.as_deref().unwrap_or(&DEFAULT_FIELDS)
     }
 
-    pub(crate) fn render_composer_heading(&self, app: &App, width: usize) -> Line<'static> {
-        let recipient = format!("To {}", single_line(&app.active.agent));
-        let badge_width = width.saturating_sub(recipient.width().min(width / 2) + 1);
-        let badge = self.composer_status(app, badge_width);
-        let recipient_width = width - badge.as_ref().map_or(0, |badge| badge.width() + 1);
-        let recipient = shorten(&recipient, recipient_width);
-        let mut spans = vec![Span::styled(recipient, Style::default().fg(MUTED))];
-        if let Some(badge) = badge {
-            let gap = width - spans[0].width() - badge.width();
-            spans.push(Span::raw(" ".repeat(gap)));
-            spans.push(badge);
-        }
-        Line::from(spans)
-    }
-
-    fn composer_status(&self, app: &App, width: usize) -> Option<Span<'static>> {
+    pub(crate) fn composer_feedback(&self, app: &App, width: usize) -> Option<Span<'static>> {
         if width == 0 {
             return None;
         }
@@ -467,6 +452,8 @@ fn execution(app: &App) -> Option<Segment> {
         Activity::Opening
         | Activity::Running
         | Activity::WaitingForModel
+        | Activity::RetryingModel
+        | Activity::Thinking
         | Activity::Streaming
         | Activity::RunningTools
         | Activity::Stopped => (EXECUTION, Priority::Active),

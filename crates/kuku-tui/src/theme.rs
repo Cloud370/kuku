@@ -10,6 +10,7 @@ pub(crate) const SURFACE_TEXT: Color = Color::Rgb(229, 236, 240);
 pub(crate) const SUCCESS: Color = Color::Rgb(152, 202, 162);
 pub(crate) const WARNING: Color = Color::Rgb(232, 191, 122);
 pub(crate) const ERROR: Color = Color::Rgb(243, 145, 145);
+pub(crate) const KUKU_MARK: [&str; 2] = ["▚", "▜▸"];
 
 pub(crate) fn emphasis(color: Color) -> Style {
     Style::default().fg(color).add_modifier(Modifier::BOLD)

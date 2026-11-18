@@ -13,7 +13,7 @@ use ratatui::style::Modifier;
 use ratatui::Terminal;
 use serde_json::json;
 
-use super::render;
+use super::{animation_active, render, render_at};
 use crate::app::{Address, App, Modal};
 use crate::jobs::{Job, Update};
 use crate::menu::{Choice, ChoiceKind, PickerKind, PromptKind};
@@ -21,9 +21,16 @@ use crate::output::OutputViewer;
 use crate::transcript::ToolView;
 
 fn screen(app: &mut App, width: u16, height: u16) -> String {
+    activity_screen(app, width, height, None).0
+}
+
+fn activity_screen(app: &mut App, width: u16, height: u16, step: Option<usize>) -> (String, bool) {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-    terminal.draw(|frame| render(frame, app)).unwrap();
+    let mut visible = false;
     terminal
+        .draw(|frame| visible = render_at(frame, app, step))
+        .unwrap();
+    let text = terminal
         .backend()
         .buffer()
         .content
@@ -33,7 +40,8 @@ fn screen(app: &mut App, width: u16, height: u16) -> String {
         .chunks(usize::from(width))
         .map(|row| row.concat())
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+    (text, visible)
 }
 
 fn app() -> App {
@@ -129,6 +137,77 @@ fn snapshot(
 }
 
 #[test]
+fn blank_welcome_scales_down_and_active_session_uses_one_branded_row() {
+    let mut app = app();
+    let wide = screen(&mut app, 118, 28);
+    let rows: Vec<_> = wide.lines().collect();
+    assert_eq!("", rows[0].trim());
+    assert_eq!("▚▜▸  kuku", rows[1].trim());
+    assert!(rows[2].contains("New session"));
+    assert!(rows[4].contains("Enter sends your first prompt"));
+    assert!(rows[4].contains("/resume opens a saved session"));
+
+    let short = screen(&mut app, 29, 6);
+    assert!(short.lines().next().unwrap().contains("kuku · New session"));
+    assert!(short.contains("Enter to send · /resume"));
+    assert!(short.contains("Type a prompt"));
+
+    app.select(app.active.clone(), true, "修复使用中文标题的会话".into());
+    let active = screen(&mut app, 31, 8);
+    let heading = active.lines().next().unwrap();
+    assert!(heading.starts_with(" kuku · "));
+    assert!(heading.contains("修") && heading.contains("复"));
+    assert!(active.contains("Opening"));
+    assert!(!active.contains("New session"));
+}
+
+#[test]
+fn composer_animates_only_observed_work_and_keeps_feedback_in_place() {
+    let mut app = app();
+    app.select(app.active.clone(), true, "Motion".into());
+    let selection = app.selection();
+    app.update(Update::Loaded(
+        selection.clone(),
+        snapshot(&app, "running", json!(null), json!(null)),
+        HistoryPage {
+            entries: Vec::new(),
+            next_before: None,
+        },
+    ));
+    app.update(Update::WatchConnected(selection));
+    app.pane_mut().draft.insert("local draft");
+    let first = activity_screen(&mut app, 92, 24, Some(0));
+    let next = activity_screen(&mut app, 92, 24, Some(3));
+    let first_heading = first.0.lines().nth(21).unwrap();
+    let next_heading = next.0.lines().nth(21).unwrap();
+    assert!(first.1 && next.1 && animation_active(&app));
+    assert_ne!(first_heading, next_heading);
+    assert_eq!(first_heading.find("To main"), next_heading.find("To main"));
+    assert_eq!(first_heading.find("Running"), next_heading.find("Running"));
+    assert_eq!(first_heading.find("Draft"), next_heading.find("Draft"));
+    assert_eq!(first.0.lines().last(), next.0.lines().last());
+    assert!(!first.0.lines().last().unwrap().contains("Running"));
+
+    key(&mut app, KeyCode::F(1), KeyModifiers::NONE);
+    let hidden = activity_screen(&mut app, 92, 24, Some(5));
+    assert!(!hidden.1);
+    key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    app.update(Update::ConnectFailed(Error::Options(
+        "fixture offline".into(),
+    )));
+    assert!(!animation_active(&app));
+    assert_eq!(
+        activity_screen(&mut app, 92, 24, Some(1)).0,
+        activity_screen(&mut app, 92, 24, Some(6)).0,
+    );
+    assert!(screen(&mut app, 92, 24)
+        .lines()
+        .nth(21)
+        .unwrap()
+        .contains("Offline"));
+}
+
+#[test]
 fn blank_configuration_screen_keeps_pasted_draft_on_wide_and_narrow_terminals() {
     let mut app = App::new(PathBuf::from("/workspace"), None);
     app.update(Update::ConnectFailed(Error::Options(
@@ -146,7 +225,6 @@ fn blank_configuration_screen_keeps_pasted_draft_on_wide_and_narrow_terminals() 
     key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!("中文\nfirst\nlast e\u{301}\nx", app.pane().draft.text());
     let view = screen(&mut app, 29, 13);
-    assert!(view.contains("To main"));
     assert!(view.contains("last e\u{301}"));
     assert!(view.contains("Offline"));
 }
@@ -203,8 +281,12 @@ fn switching_agent_keeps_drafts_and_read_position_and_ignores_old_observer() {
         before.lines().skip(1).take(11).collect::<Vec<_>>(),
         after.lines().skip(1).take(11).collect::<Vec<_>>()
     );
-    assert!(before.contains("Alt+↓ Agents"));
-    assert!(after.contains("Alt+↑ Back"));
+    assert!(before
+        .lines()
+        .next()
+        .unwrap()
+        .contains("Reading · Ctrl+End"));
+    assert!(after.lines().next().unwrap().contains("/agents"));
     assert!(after.contains("main-draft"));
     app.select(review, true, "Example".into());
     key(&mut app, KeyCode::Enter, KeyModifiers::ALT);

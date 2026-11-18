@@ -17,7 +17,7 @@ use ratatui::{CompletedFrame, Terminal};
 use crate::app::{Address, App};
 use crate::config::load_statusline;
 use crate::jobs::{Job, Jobs, Update};
-use crate::ui;
+use crate::ui::{self, ActivityClock};
 
 #[cfg(windows)]
 mod windows;
@@ -77,7 +77,9 @@ pub(crate) async fn run(options: ConnectionOptions) -> io::Result<()> {
     let mut clipboard = Clipboard::default();
     let mut frames = tokio::time::interval(FRAME_INTERVAL);
     frames.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut screen = terminal.draw(&mut app)?;
+    let (mut screen, mut activity_visible) = terminal.draw(&mut app, None)?;
+    let mut activity = ActivityClock::default();
+    let mut painted_step = None;
     dispatch(&mut app, &mut jobs, &mut clipboard);
     let mut paint = PaintSchedule {
         dirty: false,
@@ -108,8 +110,13 @@ pub(crate) async fn run(options: ConnectionOptions) -> io::Result<()> {
                     paint.request(true);
                 }
                 let start = Instant::now();
+                let step = activity.frame_at(start, activity_visible && ui::animation_active(&app));
+                if step.is_some() && step != painted_step {
+                    paint.request(false);
+                }
                 if paint.ready(start) {
-                    screen = terminal.draw(&mut app)?;
+                    (screen, activity_visible) = terminal.draw(&mut app, step)?;
+                    painted_step = step;
                     paint.painted(start, Instant::now());
                 }
             },
@@ -152,21 +159,30 @@ impl Screen {
         })
     }
 
-    fn draw(&mut self, app: &mut App) -> io::Result<CompletedFrame<'_>> {
-        if self.painted_target != app.active {
+    fn draw(
+        &mut self,
+        app: &mut App,
+        activity_step: Option<usize>,
+    ) -> io::Result<(CompletedFrame<'_>, bool)> {
+        let target_changed = self.painted_target != app.active;
+        if target_changed {
             self.painted_target.clone_from(&app.active);
-            return io::stdout().sync_update(|_| {
+        }
+        let mut activity_visible = false;
+        let render = |frame: &mut ratatui::Frame<'_>| {
+            activity_visible = ui::render_at(frame, app, activity_step);
+        };
+        let frame = if target_changed {
+            io::stdout().sync_update(|_| {
                 // NOTE: Reset the fullscreen viewport so a previous code surface cannot bleed through CJK cells.
                 let area = self.terminal.current_buffer_mut().area;
                 self.terminal.resize(area).map_err(io::Error::other)?;
-                self.terminal
-                    .draw(|frame| ui::render(frame, app))
-                    .map_err(io::Error::other)
-            })?;
-        }
-        self.terminal
-            .draw(|frame| ui::render(frame, app))
-            .map_err(io::Error::other)
+                self.terminal.draw(render).map_err(io::Error::other)
+            })??
+        } else {
+            self.terminal.draw(render).map_err(io::Error::other)?
+        };
+        Ok((frame, activity_visible))
     }
 }
 

@@ -189,7 +189,8 @@ fn question_stays_visible_when_execution_is_hidden_or_the_service_is_offline() {
         "fixture offline".into(),
     )));
     let rows = screen(&mut app, &StatusLine::default(), 29, 10);
-    assert_eq!("Offline · Last seen Waiting", rows.last().unwrap().trim());
+    assert!(rows.last().unwrap().contains("Offline"));
+    assert!(rows[..9].iter().any(|row| row.contains("Offline")));
     assert!(rows.iter().any(|row| row.contains("Which test target?")));
 }
 
@@ -274,7 +275,7 @@ fn composer_follows_wrapped_draft_rows_and_caps_the_visible_paste() {
     assert!(rows[18].contains("line 7"));
     let rows = screen(&mut app, &statusline, 29, 6);
     assert!(rows[2].contains("To main"));
-    assert!(rows[4].contains("line 7") && rows[5].contains("Ready"));
+    assert!(rows[2].contains("Ready") && rows[4].contains("line 7"));
 }
 
 #[test]
@@ -299,7 +300,6 @@ fn default_status_line_shows_context_tps_and_workspace_in_one_row() {
     let footer = rows[23].trim();
     for label in [
         "Connected",
-        "Running",
         "Agent main",
         "work-right",
         "Context 89% used",
@@ -307,18 +307,19 @@ fn default_status_line_shows_context_tps_and_workspace_in_one_row() {
     ] {
         assert!(footer.contains(label), "missing {label:?} in {footer}");
     }
-    assert!(footer.starts_with("Model pending · Connected · Running"));
-    for detail in ["http://", "129M in", "210K out", "Cache hit"] {
+    assert!(footer.starts_with("Model pending · Connected · Agent main"));
+    for detail in ["Running", "http://", "129M in", "210K out", "Cache hit"] {
         assert!(!footer.contains(detail), "{footer}");
     }
     assert!(!footer.contains(workspace.to_string_lossy().as_ref()));
     assert!(rows[21].contains("To main") && rows[21].contains("2 queued, Draft"));
+    assert!(rows[21].contains("Running"));
     assert!(rows[22].contains("Local draft"));
     let rows = screen(&mut app, &statusline, 80, 24);
     assert!(rows[23].contains("Ctx 89%"));
     assert!(rows[23].contains("work-right") && rows[22].contains("Local draft"));
     let rows = screen(&mut app, &statusline, 29, 24);
-    assert!(rows[23].contains("Running") && rows[21].contains("2 queued"));
+    assert!(rows[21].contains("Running") && rows[21].contains("2 queued"));
     let rows = screen(&mut app, &StatusLine::parse("none").unwrap(), 80, 24);
     assert!(
         rows[23].contains("Local draft"),

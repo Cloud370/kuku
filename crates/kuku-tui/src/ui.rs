@@ -6,7 +6,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, Modal, ServiceStatus};
+use crate::app::{App, Modal};
 use crate::editor::{Editor, EditorView};
 use crate::keys::Shortcut;
 use crate::markup::{render_literal, wrap};
@@ -19,14 +19,29 @@ use crate::theme::{
     SHORT_PROMPT_HEIGHT, STATUS_EDITOR_HEIGHT, WARNING,
 };
 
+mod activity;
+mod header;
+
+pub(crate) use activity::{animation_active, ActivityClock};
+
 const MAX_BANNER_ROWS: u16 = 5;
 const MIN_TRANSCRIPT_ROWS: u16 = 2;
+const MIN_ACTIVITY_WIDTH: u16 = 8;
 
+#[cfg(test)]
 pub(crate) fn render(frame: &mut Frame<'_>, app: &mut App) {
+    render_at(frame, app, None);
+}
+
+pub(crate) fn render_at(
+    frame: &mut Frame<'_>,
+    app: &mut App,
+    activity_step: Option<usize>,
+) -> bool {
     let outer = frame.area();
     if outer.is_empty() {
         app.text_selection.clear();
-        return;
+        return false;
     }
     let area = outer.inner(Margin::new(horizontal_gutter(outer.width), 0));
     let width = usize::from(area.width);
@@ -76,10 +91,10 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &mut App) {
         .areas(composer.inner(editor));
     frame.render_widget(composer, editor);
     app.editor_width = content_width.max(1);
+    let activity_visible = focused && heading.width >= MIN_ACTIVITY_WIDTH && !heading.is_empty();
     if !heading.is_empty() {
-        let line = app
-            .displayed_statusline()
-            .render_composer_heading(app, usize::from(heading.width));
+        let step = activity_step.filter(|_| activity_visible);
+        let line = activity::render_heading(app, usize::from(heading.width), step);
         frame.render_widget(Paragraph::new(line), heading);
     }
     if let Some(draft) = draft {
@@ -103,6 +118,7 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &mut App) {
             .map_or(&main_areas[..], std::slice::from_ref),
         modal_area.is_none().then_some((transcript, row_insets)),
     );
+    activity_visible
 }
 
 fn render_transcript(
@@ -131,55 +147,21 @@ fn render_transcript(
             .map(|agent| (agent.address, agent.status, agent.preview)),
     );
     let mut view = transcript.project(width, height);
+    if view.lines.is_empty() && !app.pane().exists {
+        header::render_welcome(frame, area, app, show_service_problem);
+        return Vec::new();
+    }
     if view.lines.is_empty() && height > 0 {
-        view.lines = welcome(app, width, height, show_service_problem);
+        view.lines = header::empty_notice(app, width, show_service_problem);
     }
-    let session_label = if app.pane().exists {
-        let id: String = single_line(&app.active.session).chars().take(8).collect();
-        format!("Session {id}")
-    } else {
-        "New session".into()
-    };
-    let mut hint = if view.following {
-        view.tool_hint.unwrap_or_default()
-    } else {
-        format!("Reading · {} latest", Shortcut::LATEST.label)
-    };
-    if app.pane().exists {
-        let mut navigation = format!("{} Agents", Shortcut::AGENTS.label);
-        if app.previous_agent().is_some() {
-            let back = format!(" · {} Back", Shortcut::PREVIOUS_AGENT.label);
-            if navigation.width() + back.width() + 12 < width {
-                navigation.push_str(&back);
-            }
-        }
-        hint = if !hint.is_empty() && hint.width() + navigation.width() + 23 <= width {
-            format!("{hint} · {navigation}")
-        } else {
-            navigation
-        };
-    }
-    let hint_width = if hint.width() + 12 < width {
-        hint.width()
-    } else {
-        0
-    };
-    let available = width.saturating_sub(hint_width + usize::from(hint_width > 0));
-    let label = shorten(&session_label, available);
-    let mut spans = vec![Span::styled(label.clone(), emphasis(ACCENT))];
-    let title = single_line(&app.pane().title);
-    if !title.is_empty() && available > label.width() + 3 {
-        let title = shorten(&title, available - label.width() - 3);
-        spans.push(Span::styled(" · ", Style::default().fg(MUTED)));
-        spans.push(Span::styled(title, emphasis(ratatui::style::Color::Reset)));
-    }
-    let mut line = Line::from(spans);
-    if hint_width > 0 {
-        line.push_span(" ".repeat(width - line.width() - hint_width));
-        line.push_span(Span::styled(hint, Style::default().fg(MUTED)));
-    }
-    frame.render_widget(Paragraph::new(line), header);
-    for (row, line) in view.lines.iter().enumerate() {
+    header::render_session(
+        frame,
+        header,
+        app,
+        view.following,
+        view.tool_hint.as_deref(),
+    );
+    for (row, line) in view.lines.iter().take(height).enumerate() {
         if line.style.bg.is_some() {
             let area = Rect::new(body.x, body.y + row as u16, body.width, 1);
             frame.buffer_mut().set_style(area, line.style);
@@ -188,45 +170,6 @@ fn render_transcript(
     frame.render_widget(Paragraph::new(view.lines), body);
     view.row_insets.insert(0, 0);
     view.row_insets
-}
-
-fn welcome(
-    app: &App,
-    width: usize,
-    height: usize,
-    show_service_problem: bool,
-) -> Vec<Line<'static>> {
-    let pane = app.pane();
-    let help;
-    let status = app.service_status();
-    let (text, color) = if let Some(error) = app.service_problem() {
-        if !show_service_problem {
-            return Vec::new();
-        }
-        (error, WARNING)
-    } else if pane.opening {
-        ("Opening the conversation…", MUTED)
-    } else if status == ServiceStatus::Connecting {
-        ("Connecting to the Session service…", MUTED)
-    } else if status == ServiceStatus::Reconnecting {
-        ("Reconnecting to the Session service…", MUTED)
-    } else if status == ServiceStatus::Restarting {
-        ("Restarting the Session service…", MUTED)
-    } else if pane.exists {
-        ("Send a message to this Agent.", MUTED)
-    } else {
-        help = format!(
-            "{} sends the first prompt. {} or {} adds a line.\n/resume opens a saved conversation.",
-            Shortcut::ENTER.label,
-            Shortcut::NEW_LINE.label,
-            Shortcut::CONTROL_NEW_LINE.label,
-        );
-        (help.as_str(), MUTED)
-    };
-    wrap(render_literal(text, Style::default().fg(color)), width)
-        .into_iter()
-        .take(height)
-        .collect()
 }
 
 fn banner(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {

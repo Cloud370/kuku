@@ -54,6 +54,8 @@ pub(crate) enum Activity {
     Configuration,
     Running,
     WaitingForModel,
+    RetryingModel,
+    Thinking,
     Streaming,
     RunningTools,
     Waiting,
@@ -72,6 +74,8 @@ impl Activity {
             Self::Configuration => "Configuration",
             Self::Running => "Running",
             Self::WaitingForModel => "Waiting for model",
+            Self::RetryingModel => "Retrying model",
+            Self::Thinking => "Thinking",
             Self::Streaming => "Streaming reply",
             Self::RunningTools => "Running tools",
             Self::Waiting => "Waiting",
@@ -86,20 +90,36 @@ impl Activity {
 
 #[derive(Debug, Default)]
 pub(super) struct ExecutionProgress {
-    waiting_for_model: bool,
-    streaming: bool,
+    request: ModelRequest,
+    output: ModelOutput,
     tools: HashSet<String>,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+enum ModelRequest {
+    #[default]
+    None,
+    Waiting,
+    Retrying,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+enum ModelOutput {
+    #[default]
+    None,
+    Thinking,
+    Streaming,
 }
 
 impl ExecutionProgress {
     pub(super) fn from_snapshot(progress: Option<&AgentProgress>) -> Self {
         match progress {
             Some(AgentProgress::WaitingForModel) => Self {
-                waiting_for_model: true,
+                request: ModelRequest::Waiting,
                 ..Self::default()
             },
             Some(AgentProgress::Streaming { .. }) => Self {
-                streaming: true,
+                output: ModelOutput::Streaming,
                 ..Self::default()
             },
             Some(AgentProgress::RunningTools { tool_call_ids }) => Self {
@@ -111,7 +131,7 @@ impl ExecutionProgress {
     }
 
     pub(super) fn clear_stream(&mut self) {
-        self.streaming = false;
+        self.output = ModelOutput::None;
     }
 
     pub(super) fn committed(
@@ -121,15 +141,21 @@ impl ExecutionProgress {
         tool_call_id: Option<String>,
     ) {
         match kind {
-            "runtime.step_prepared" | "runtime.model_retry" => {
+            "runtime.step_prepared" => {
                 *self = Self {
-                    waiting_for_model: true,
+                    request: ModelRequest::Waiting,
+                    ..Self::default()
+                };
+            }
+            "runtime.model_retry" | "model.recovery" => {
+                *self = Self {
+                    request: ModelRequest::Retrying,
                     ..Self::default()
                 };
             }
             "model.response" | "model.error" => {
-                self.waiting_for_model = false;
-                self.streaming = false;
+                self.request = ModelRequest::None;
+                self.clear_stream();
             }
             "runtime.tool_dispatched" => {
                 if let Some(id) = tool_call_id {
@@ -150,31 +176,47 @@ impl ExecutionProgress {
 
     pub(super) fn live(&mut self, event: &Value) {
         match event["type"].as_str() {
-            Some("model_request" | "model_recovery") => {
-                self.waiting_for_model = true;
-                self.streaming = false;
+            Some("model_request") => {
+                if self.request != ModelRequest::Retrying {
+                    self.request = ModelRequest::Waiting;
+                }
+                self.clear_stream();
             }
-            Some("text" | "thinking")
+            Some("model_recovery") => {
+                self.request = ModelRequest::Retrying;
+                self.clear_stream();
+            }
+            Some("thinking")
+                if event
+                    .get("content")
+                    .is_none_or(|value| value.as_str().is_some_and(|text| !text.is_empty())) =>
+            {
+                self.output = ModelOutput::Thinking;
+            }
+            Some("reply_preview") if event["thinking"].as_bool() == Some(true) => {
+                self.output = ModelOutput::Thinking;
+            }
+            Some("text" | "reply_preview")
                 if event["content"]
                     .as_str()
                     .is_some_and(|text| !text.is_empty()) =>
             {
-                self.streaming = true;
+                self.output = ModelOutput::Streaming;
             }
-            Some("reply_preview") => self.streaming = true,
             _ => {}
         }
     }
 
     pub(super) fn activity(&self) -> Activity {
         if !self.tools.is_empty() {
-            Activity::RunningTools
-        } else if self.streaming {
-            Activity::Streaming
-        } else if self.waiting_for_model {
-            Activity::WaitingForModel
-        } else {
-            Activity::Running
+            return Activity::RunningTools;
+        }
+        match (&self.output, &self.request) {
+            (ModelOutput::Streaming, _) => Activity::Streaming,
+            (ModelOutput::Thinking, _) => Activity::Thinking,
+            (ModelOutput::None, ModelRequest::Waiting) => Activity::WaitingForModel,
+            (ModelOutput::None, ModelRequest::Retrying) => Activity::RetryingModel,
+            (ModelOutput::None, ModelRequest::None) => Activity::Running,
         }
     }
 }
@@ -336,7 +378,11 @@ impl Pane {
         }
         if matches!(
             kind,
-            "runtime.step_prepared" | "runtime.model_retry" | "model.response" | "model.error"
+            "runtime.step_prepared"
+                | "runtime.model_retry"
+                | "model.recovery"
+                | "model.response"
+                | "model.error"
         ) {
             self.live_floor = id;
             if id <= self.latest_reply_cursor {
@@ -361,7 +407,9 @@ impl Pane {
 
     pub(super) fn apply_reply_preview(&mut self, reply: ReplyPreview) {
         self.latest_reply_cursor = self.live_floor;
-        self.progress.streaming = true;
+        if !reply.text.is_empty() {
+            self.progress.output = ModelOutput::Streaming;
+        }
         self.transcript.replace_reply_preview(
             reply.execution_id,
             Some(reply.turn),
@@ -515,6 +563,54 @@ mod tests {
                 "event":{"type":"text","content":"First tokens"},
             }),
         );
+    }
+
+    #[test]
+    fn only_observed_reasoning_sets_thinking_and_visible_text_sets_streaming() {
+        let mut app = connected();
+        app.select(app.active.clone(), true, String::new());
+        let attached = snapshot(
+            &app,
+            6,
+            "running",
+            Some(5),
+            0,
+            json!({"phase":"waiting_for_model"}),
+            None,
+        );
+        loaded(&mut app, attached, Vec::new());
+        let think = |app: &mut App, cursor, event| {
+            observe(
+                app,
+                json!({
+                    "type":"live", "agent":"main", "execution_id":5, "cursor":cursor,
+                    "event":event,
+                }),
+            );
+        };
+        think(&mut app, 7, json!({"type":"thinking", "content":""}));
+        assert_eq!(Activity::WaitingForModel, app.pane().activity());
+        think(&mut app, 7, json!({"type":"thinking"}));
+        assert_eq!(Activity::Thinking, app.pane().activity());
+        streaming(&mut app, 8);
+        assert_eq!(Activity::Streaming, app.pane().activity());
+        think(
+            &mut app,
+            9,
+            json!({"type":"thinking", "content":"legacy reasoning marker"}),
+        );
+        assert_eq!(Activity::Thinking, app.pane().activity());
+        let screen = app.pane_mut().transcript.project(80, 12);
+        assert!(screen
+            .lines
+            .iter()
+            .any(|line| line.to_string().contains("First tokens")));
+        assert!(!screen
+            .lines
+            .iter()
+            .any(|line| line.to_string().contains("legacy reasoning marker")));
+        committed(&mut app, 10, "runtime.model_retry", json!({}));
+        assert_eq!(Activity::RetryingModel, app.pane().activity());
     }
 
     #[test]

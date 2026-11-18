@@ -277,9 +277,9 @@ impl TrackedAgent {
         }
         let before = self.activity();
         match kind {
-            "runtime.step_prepared" | "runtime.model_retry" => {
+            "runtime.step_prepared" | "runtime.model_retry" | "model.recovery" => {
                 self.phase_cursor = cursor;
-                self.progress.committed("runtime.step_prepared", None, None);
+                self.progress.committed(kind, None, None);
                 return self.clear_preview() || before != self.activity();
             }
             "model.response" | "model.error" | "runtime.tool_dispatched" | "tool.result" => {
@@ -460,6 +460,17 @@ mod tests {
         assert_eq!(Activity::WaitingForModel, reviewer(&app).unwrap().status);
         observe(&mut app, live_frame(7, 9, "stale root"));
         assert_eq!(Activity::WaitingForModel, reviewer(&app).unwrap().status);
+
+        observe(
+            &mut app,
+            json!({
+                "type":"live", "agent":"reviewer", "execution_id":8, "cursor":9,
+                "event":{"type":"thinking"},
+            }),
+        );
+        let thinking = reviewer(&app).unwrap();
+        assert_eq!(Activity::Thinking, thinking.status);
+        assert_eq!(None, thinking.preview);
 
         observe(&mut app, live_frame(8, 9, &"界".repeat(PREVIEW_BYTES)));
         let streaming = reviewer(&app).unwrap();
