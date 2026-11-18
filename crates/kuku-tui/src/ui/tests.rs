@@ -4,7 +4,9 @@ use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use kuku_client::{
-    Action, Error, HistoryEntry, HistoryKind, HistoryPage, Observation, Snapshot, Target, Timing,
+    Acknowledgement, Action, Command, Error, HistoryEntry, HistoryKind, HistoryPage, Input,
+    InputSource, InputStatus, InputTiming, Observation, QueuedInput, Receipt, Snapshot, Target,
+    Timing,
 };
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -134,6 +136,154 @@ fn snapshot(
         }))
         .unwrap(),
     )
+}
+
+fn saved_input(app: &App) -> Command {
+    app.effects
+        .iter()
+        .rev()
+        .find_map(|job| match job {
+            Job::Save(command) => Some(command.clone()),
+            _ => None,
+        })
+        .expect("queued command is saved before network delivery")
+}
+
+fn queued_receipt(command: &Command, event_id: u64) -> Acknowledgement {
+    Acknowledgement {
+        receipt: Receipt {
+            command_id: command.command_id.clone(),
+            event_id,
+            agent: command.target.agent.clone(),
+        },
+        replayed: false,
+        status: Some(InputStatus::Queued),
+    }
+}
+
+#[test]
+fn identical_pending_inputs_render_immediately_and_admission_wins_over_a_late_receipt() {
+    let mut app = app();
+    app.pane_mut().exists = true;
+    app.pane_mut().title = "Concurrent inputs".into();
+    let load = snapshot(&app, "running", json!(null), json!(null));
+    app.update(Update::Loaded(
+        app.selection(),
+        load,
+        HistoryPage {
+            entries: vec![],
+            next_before: None,
+        },
+    ));
+    let text = "same pending text";
+
+    app.pane_mut().draft.insert(text);
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    let first = saved_input(&app);
+    let sending = screen(&mut app, 92, 25);
+    assert!(sending.contains("You · Sending"));
+    assert!(sending.find(text).unwrap() < sending.find("Type a prompt").unwrap());
+    app.update(Update::Saved(first.clone(), Ok(())));
+    app.update(Update::Sent(
+        first.command_id.clone(),
+        Ok(queued_receipt(&first, 53)),
+    ));
+    assert!(screen(&mut app, 92, 25).contains("Queued · steer"));
+
+    app.pane_mut().draft.insert(text);
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    let second = saved_input(&app);
+    assert_ne!(first.command_id, second.command_id);
+    assert_eq!(2, screen(&mut app, 92, 25).matches(text).count());
+    app.update(Update::Saved(second.clone(), Ok(())));
+
+    let active = app.selection();
+    let committed =
+        |value| Update::Observation(active.clone(), serde_json::from_value(value).unwrap());
+    app.update(committed(json!({
+        "type":"committed", "id":55, "agent":"main", "kind":"runtime.operation",
+        "operation":"inputs_accepted", "delivery":{"status":"accepted","input_ids":[first.command_id, second.command_id]},
+    })));
+    app.update(committed(json!({
+        "type":"committed", "id":56, "agent":"main", "kind":"message.user",
+        "entry":{"id":56, "agent":"main", "type":"user", "turn":1, "turn_number":1, "text":format!("{text}\n\n{text}")},
+    })));
+    app.update(Update::Sent(
+        second.command_id.clone(),
+        Ok(queued_receipt(&second, 54)),
+    ));
+    let accepted = screen(&mut app, 92, 25);
+    assert!(accepted.contains("Turn 1") && accepted.contains("You (sent)"));
+    assert!(!accepted.contains("Pending inputs"));
+    assert_eq!(2, accepted.matches(text).count());
+}
+
+#[test]
+fn clicking_the_queue_opens_an_isolated_editor_and_saves_the_exact_replacement() {
+    let mut app = app();
+    let mut state = snapshot(&app, "running", json!(null), json!(null));
+    let mut input = Input::new("original", "main", "old queued text\n次の行");
+    input.source = InputSource::Host("http".into());
+    input.timing = InputTiming::NextTurn;
+    state.pending.push(QueuedInput {
+        input,
+        receipt: Receipt {
+            command_id: "original".into(),
+            event_id: 51,
+            agent: "main".into(),
+        },
+    });
+    app.update(Update::Loaded(
+        app.selection(),
+        state,
+        HistoryPage {
+            entries: vec![],
+            next_before: None,
+        },
+    ));
+    app.pane_mut().draft.insert("independent draft");
+    let rendered = screen(&mut app, 92, 26);
+    assert!(rendered.contains("Queued · next Turn") && rendered.contains("old queued text"));
+    let mut terminal = Terminal::new(TestBackend::new(92, 26)).unwrap();
+    let buffer = terminal
+        .draw(|frame| render(frame, &mut app))
+        .unwrap()
+        .buffer;
+    let point = (app.delivery_area.x, app.delivery_area.y);
+    click(&mut app, buffer, point);
+    assert!(
+        matches!(&app.modal, Some(Modal::Picker(picker)) if matches!(picker.kind, PickerKind::Queued))
+    );
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(
+        matches!(&app.modal, Some(Modal::Prompt(prompt)) if prompt.editor.text() == "old queued text\n次の行")
+    );
+    key(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
+    event(&mut app, Event::Paste("edit\r\n第三行".into()));
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    let replacement = saved_input(&app);
+    assert!(
+        matches!(&replacement.action, Action::ReplaceQueued { input_command_id, text }
+        if input_command_id == "original" && text == "edit\n第三行")
+    );
+    assert_eq!("independent draft", app.pane().draft.text());
+    assert!(app
+        .pane()
+        .deliveries
+        .rows()
+        .iter()
+        .any(|row| row.id == "original"));
+
+    app.update(Update::Saved(replacement.clone(), Ok(())));
+    app.update(Update::Sent(
+        replacement.command_id.clone(),
+        Ok(queued_receipt(&replacement, 53)),
+    ));
+    let rows = app.pane().deliveries.rows();
+    assert_eq!(1, rows.len());
+    assert_eq!(&replacement.command_id, &rows[0].id);
+    assert_eq!(Timing::NextTurn, rows[0].timing);
+    assert_eq!("edit\n第三行", rows[0].text);
 }
 
 #[test]

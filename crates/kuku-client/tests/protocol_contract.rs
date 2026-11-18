@@ -144,6 +144,40 @@ async fn missing_acknowledgement_reopens_exact_command_and_checks_receipt_before
 }
 
 #[tokio::test]
+async fn rejected_queued_replacement_remains_recoverable_after_reopening_the_store() {
+    let router = Router::new().route(
+        "/sessions/{id}/commands",
+        post(|| async {
+            (
+                StatusCode::CONFLICT,
+                Json(json!({"ok":false,"code":"input_not_queued","message":"Input already admitted"})),
+            )
+        }),
+    );
+    let (client, _server) = start(router).await;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("pending");
+    let store = PendingStore::open(&path).unwrap();
+    let command = Command {
+        target: target(),
+        command_id: "edit-example".into(),
+        action: Action::ReplaceQueued {
+            input_command_id: "original-example".into(),
+            text: "Keep this edited text\nincluding the second line".into(),
+        },
+    };
+    let error = store.submit(&client, &command).await.unwrap_err();
+    assert_eq!(Some("input_not_queued"), error.code());
+    assert!(error.definitively_rejected());
+    drop(store);
+
+    let restored = PendingStore::open(&path).unwrap();
+    assert_eq!(vec![command.clone()], restored.list().unwrap());
+    restored.remove(&command).unwrap();
+    assert!(restored.list().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn observation_reconnects_with_last_committed_id_and_deduplicates_scanned_frames() {
     let subscriptions = Arc::new(AtomicUsize::new(0));
     let router = Router::new()

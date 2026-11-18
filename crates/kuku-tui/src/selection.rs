@@ -10,6 +10,7 @@ use crate::transcript::DetailKey;
 pub(crate) enum ClickTarget {
     Detail(DetailKey),
     Picker(PickerHit),
+    Queued,
 }
 
 pub(crate) enum MouseAction {

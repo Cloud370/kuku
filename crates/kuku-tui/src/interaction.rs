@@ -47,6 +47,7 @@ impl App {
                             }
                         }
                     }
+                    Some(MouseAction::Click(ClickTarget::Queued)) => self.open_queued(),
                     None => {}
                 }
             }
@@ -68,12 +69,21 @@ impl App {
                 .hit(Position::new(mouse.column, mouse.row))
                 .map(ClickTarget::Picker),
             Some(Modal::Prompt(_) | Modal::Output(_) | Modal::StatusLineEditor(_)) => None,
-            None => self
-                .text_selection
-                .transcript_row(mouse)
-                .and_then(|row| self.pane().transcript.detail_at(row))
-                .cloned()
-                .map(ClickTarget::Detail),
+            None => {
+                if self
+                    .delivery_area
+                    .contains(Position::new(mouse.column, mouse.row))
+                    && self.queued_for_edit().next().is_some()
+                {
+                    Some(ClickTarget::Queued)
+                } else {
+                    self.text_selection
+                        .transcript_row(mouse)
+                        .and_then(|row| self.pane().transcript.detail_at(row))
+                        .cloned()
+                        .map(ClickTarget::Detail)
+                }
+            }
         }
     }
 
@@ -123,7 +133,7 @@ impl App {
                 self.search(false);
             }
         } else if let Some(Modal::Prompt(prompt)) = &mut self.modal {
-            if matches!(prompt.kind, PromptKind::Question { .. }) {
+            if prompt.kind.multiline() {
                 prompt.editor.insert(text);
             } else {
                 prompt.editor.insert(&text.replace(['\r', '\n'], " "));
@@ -170,6 +180,12 @@ impl App {
             key if Shortcut::ESCAPE.matches(key) => self.interrupt(),
             key if Shortcut::NEXT_TURN.matches(key) => self.send(Timing::NextTurn),
             key if Shortcut::ENTER.matches(key) => self.send(Timing::Steer),
+            key if Shortcut::UP.matches(key)
+                && self.pane().draft.text().is_empty()
+                && self.queued_for_edit().next().is_some() =>
+            {
+                self.open_queued()
+            }
             key if Shortcut::PAGE_UP.matches(key) => self.scroll(-page),
             key if Shortcut::PAGE_DOWN.matches(key) => self.scroll(page),
             key if Shortcut::LATEST.matches(key) => self.pane_mut().transcript.show_latest(),
@@ -284,6 +300,14 @@ impl App {
             if prompt.editor.text().trim().is_empty() {
                 return;
             }
+            if let PromptKind::QueuedInput { input_command_id } = &prompt.kind {
+                let id = input_command_id.clone();
+                let text = prompt.editor.text().to_owned();
+                if self.replace_queued(id, text) {
+                    self.modal = None;
+                }
+                return;
+            }
             let Some(Modal::Prompt(prompt)) = self.modal.take() else {
                 return;
             };
@@ -308,9 +332,10 @@ impl App {
                         text: content.to_owned(),
                     },
                 ),
+                PromptKind::QueuedInput { .. } => unreachable!("queued input edited above"),
             }
         } else {
-            let multiline = matches!(prompt.kind, PromptKind::Question { .. });
+            let multiline = prompt.kind.multiline();
             edit(&mut prompt.editor, key, self.modal_editor_width, multiline);
         }
     }
@@ -381,7 +406,7 @@ impl App {
         }
     }
 
-    fn prompt(
+    pub(crate) fn prompt(
         &mut self,
         kind: PromptKind,
         title: impl Into<String>,
@@ -450,6 +475,7 @@ impl App {
                 config.reasoning_effort = effort;
                 self.configure(config);
             }
+            ChoiceKind::EditQueued(id) => self.edit_queued(id),
             ChoiceKind::Withdraw(input_command_id) => {
                 self.issue(self.active.clone(), Action::Withdraw { input_command_id })
             }
@@ -483,6 +509,7 @@ impl App {
             CommandMenu::Agents => self.open_agents(),
             CommandMenu::Back => self.back_to_agent(),
             CommandMenu::Queue => self.send(Timing::NextTurn),
+            CommandMenu::Queued => self.open_queued(),
             CommandMenu::Withdraw => self.open_queue(),
             CommandMenu::Advance => {
                 if self.pane().exists {
@@ -792,6 +819,13 @@ impl App {
         let mut choices = Vec::new();
         match &item.stage {
             PendingStage::Missing => {
+                if matches!(item.command.action, Action::ReplaceQueued { .. }) {
+                    choices.push(Choice::new(
+                        "Copy saved edit to draft",
+                        "Keep your draft and the saved replacement",
+                        ChoiceKind::RestoreRejected(id.clone()),
+                    ));
+                }
                 choices.push(Choice::new(
                     "Retry exact command",
                     "Reuse its saved intent and command ID",
@@ -809,7 +843,10 @@ impl App {
                 ChoiceKind::PendingCheck(id),
             )),
             PendingStage::Rejected(_) => {
-                if matches!(item.command.action, Action::Send { .. }) {
+                if matches!(
+                    item.command.action,
+                    Action::Send { .. } | Action::ReplaceQueued { .. }
+                ) {
                     choices.push(Choice::new(
                         "Append rejected input to draft",
                         "Keep any text already in the draft",
@@ -873,6 +910,9 @@ fn pending_label(item: &PendingItem) -> String {
                 "Input"
             };
             format!("{action} · {}", shorten(&single_line(text), 110))
+        }
+        Action::ReplaceQueued { text, .. } => {
+            format!("Queued edit · {}", shorten(&single_line(text), 110))
         }
         Action::CreateAgent { .. } => "Create Agent".to_owned(),
         Action::Configure { .. } => "Change settings".to_owned(),

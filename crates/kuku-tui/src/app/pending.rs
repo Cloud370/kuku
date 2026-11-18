@@ -17,7 +17,10 @@ pub(crate) struct PendingItem {
 mod tests {
     use std::path::PathBuf;
 
-    use kuku_client::{Action, AgentConfig, Error, Timing};
+    use kuku_client::{
+        Acknowledgement, Action, AgentConfig, Error, HistoryPage, InputStatus, Receipt, Timing,
+    };
+    use serde_json::json;
 
     use crate::app::App;
     use crate::jobs::{Job, Update};
@@ -55,6 +58,140 @@ mod tests {
         reopened.update(Update::Checked(command.command_id.clone(), Ok(None)));
         reopened.pending_retry(&command.command_id);
         assert!(matches!(reopened.effects.as_slice(), [Job::Send(exact)] if exact == &command));
+    }
+
+    #[test]
+    fn reopening_a_delivered_input_does_not_duplicate_committed_history() {
+        let text = "same text as another submission";
+        let mut first = connected();
+        first.pane_mut().draft.insert(text);
+        first.send(Timing::Steer);
+        let Some(Job::Save(command)) = first.effects.pop() else {
+            panic!("saved command")
+        };
+
+        let mut reopened = connected();
+        reopened.update(Update::Pending(Ok(vec![command.clone()])));
+        reopened.pending_open(command.target.clone(), true);
+        assert!(reopened.pane().deliveries.rows().is_empty());
+        let state = serde_json::from_value(json!({
+            "session_id":command.target.session_id,"workspace":command.target.workspace,
+            "cursor":14,"agents":[],"pending":[],
+            "agent":{"address":"main","status":"running","config":{},"pending_inputs":0,"turn":13},
+        }))
+        .unwrap();
+        let histories = serde_json::from_value(json!([
+            {"id":4,"agent":"main","type":"user","turn":1,"text":text},
+            {"id":14,"agent":"main","type":"user","turn":13,"text":text},
+        ]))
+        .unwrap();
+        reopened.update(Update::Loaded(
+            reopened.selection(),
+            Box::new(state),
+            HistoryPage {
+                entries: histories,
+                next_before: None,
+            },
+        ));
+        assert!(reopened.pane().deliveries.rows().is_empty());
+        reopened.update(Update::Checked(
+            command.command_id.clone(),
+            Ok(Some(Acknowledgement {
+                receipt: Receipt {
+                    command_id: command.command_id.clone(),
+                    event_id: 9,
+                    agent: "main".into(),
+                },
+                replayed: true,
+                status: Some(InputStatus::Accepted),
+            })),
+        ));
+        assert!(reopened.pane().deliveries.rows().is_empty());
+        let history = reopened.pane_mut().transcript.project(70, 17);
+        assert_eq!(
+            2,
+            history
+                .lines
+                .iter()
+                .filter(|line| line.to_string().contains(text))
+                .count()
+        );
+    }
+
+    #[test]
+    fn rejected_replacement_keeps_a_recoverable_edit_and_the_current_draft() {
+        let mut app = connected();
+        app.pane_mut().exists = true;
+        app.pane_mut().draft.insert("independent draft");
+        app.issue(
+            app.active.clone(),
+            Action::ReplaceQueued {
+                input_command_id: "admitted".into(),
+                text: "edited text\nwith a newline".into(),
+            },
+        );
+        let Some(Job::Save(command)) = app.effects.pop() else {
+            panic!("saved command")
+        };
+        app.update(Update::Saved(command.clone(), Ok(())));
+        app.update(Update::Sent(
+            command.command_id.clone(),
+            Err(Error::Service {
+                status: 409,
+                code: "input_not_queued".into(),
+                error_message: "Input has already been accepted".into(),
+            }),
+        ));
+        assert_eq!("independent draft", app.pane().draft.text());
+        app.restore_rejected(&command.command_id);
+        assert_eq!(
+            "independent draft\n\nedited text\nwith a newline",
+            app.pane().draft.text()
+        );
+        assert!(app.pending.contains_key(&command.command_id));
+    }
+
+    #[test]
+    fn a_late_queue_receipt_updates_only_its_original_recipient() {
+        let mut app = connected();
+        app.pane_mut().exists = true;
+        let main = app.active.clone();
+        app.pane_mut().draft.insert("same text");
+        app.send(Timing::NextTurn);
+        let Some(Job::Save(first)) = app.effects.pop() else {
+            panic!("saved command")
+        };
+        let reviewer = super::Address::new(main.session.clone(), "reviewer".into());
+        app.select(reviewer, true, String::new());
+        app.pane_mut().draft.insert("same text");
+        app.send(Timing::Steer);
+        let Some(Job::Save(second)) = app.effects.pop() else {
+            panic!("saved command")
+        };
+
+        app.update(Update::Sent(
+            first.command_id.clone(),
+            Ok(Acknowledgement {
+                receipt: Receipt {
+                    command_id: first.command_id.clone(),
+                    event_id: 13,
+                    agent: "main".into(),
+                },
+                replayed: false,
+                status: Some(InputStatus::Queued),
+            }),
+        ));
+        let visible = app.pane().deliveries.rows();
+        assert_eq!(1, visible.len());
+        assert_eq!(&second.command_id, &visible[0].id);
+        assert_eq!(super::SubmissionStatus::Saving, visible[0].status);
+
+        app.select(main, true, String::new());
+        let original = app.pane().deliveries.rows();
+        assert_eq!(1, original.len());
+        assert_eq!(&first.command_id, &original[0].id);
+        assert_eq!(super::SubmissionStatus::Queued, original[0].status);
+        assert_eq!(Timing::NextTurn, original[0].timing);
     }
 
     #[test]
@@ -133,6 +270,7 @@ impl App {
             {
                 item.stage = PendingStage::Checking;
                 self.checking.push_back(id.to_owned());
+                self.update_pending_delivery(id);
                 self.check_pending();
             }
         }
@@ -147,26 +285,37 @@ impl App {
             {
                 item.stage = PendingStage::Sending;
                 self.effects.push(Job::Send(item.command.clone()));
+                self.update_pending_delivery(id);
             }
         }
     }
 
     pub(crate) fn pending_discard(&mut self, id: &str) {
-        if self
-            .pending
-            .get(id)
-            .is_some_and(|item| matches!(item.stage, PendingStage::Rejected(_)))
-        {
-            self.pending.remove(id);
+        if self.pending.get(id).is_some_and(|item| {
+            matches!(item.stage, PendingStage::Rejected(_))
+                && !matches!(item.command.action, Action::ReplaceQueued { .. })
+        }) {
+            if let Some(item) = self.pending.remove(id) {
+                if let Some(pane) = self
+                    .panes
+                    .get_mut(&Address::from_target(&item.command.target))
+                {
+                    pane.deliveries.remove(id);
+                    if let Action::Withdraw { input_command_id } = &item.command.action {
+                        pane.deliveries.withdrawal(input_command_id, None);
+                    }
+                }
+            }
             self.message("Dismissed rejected command");
         } else if self.require_service() {
-            if let Some(item) = self
-                .pending
-                .get_mut(id)
-                .filter(|item| matches!(item.stage, PendingStage::Missing))
-            {
+            if let Some(item) = self.pending.get_mut(id).filter(|item| {
+                matches!(item.stage, PendingStage::Missing)
+                    || matches!(item.stage, PendingStage::Rejected(_))
+                        && matches!(item.command.action, Action::ReplaceQueued { .. })
+            }) {
                 item.stage = PendingStage::Discarding;
                 self.effects.push(Job::Discard(item.command.clone()));
+                self.update_pending_delivery(id);
             }
         }
     }
@@ -177,6 +326,16 @@ impl App {
     }
 
     pub(crate) fn restore_rejected(&mut self, id: &str) {
+        if let Some(item) = self.pending.get(id) {
+            if let Action::ReplaceQueued { text, .. } = &item.command.action {
+                let address = Address::from_target(&item.command.target);
+                let text = text.clone();
+                self.select(address, true, String::new());
+                self.append_to_draft(&text);
+                self.message("Copied replacement to draft · /pending keeps the saved edit");
+                return;
+            }
+        }
         let Some(item) = self.pending.remove(id) else {
             return;
         };
@@ -188,14 +347,19 @@ impl App {
             if create.is_some() {
                 pane.creation_rejected = true;
             }
-            let mut draft = pane.draft.take_text();
-            if !draft.is_empty() {
-                draft.push_str("\n\n");
-            }
-            draft.push_str(&text);
-            pane.draft.set_text(draft);
+            self.append_to_draft(&text);
             self.message("Restored rejected text to draft");
         }
+    }
+
+    fn append_to_draft(&mut self, text: &str) {
+        let editor = &mut self.pane_mut().draft;
+        let mut draft = editor.take_text();
+        if !draft.is_empty() {
+            draft.push_str("\n\n");
+        }
+        draft.push_str(text);
+        editor.set_text(draft);
     }
 
     pub(super) fn saved(&mut self, command: Command, result: Result<(), Error>) {
@@ -209,6 +373,7 @@ impl App {
                         PendingStage::Sending
                     };
                 }
+                self.update_pending_delivery(&id);
                 if self.available() {
                     self.effects.push(Job::Send(command));
                 }
@@ -231,6 +396,10 @@ impl App {
                         .panes
                         .get_mut(&Address::from_target(&item.command.target))
                     {
+                        pane.deliveries.remove(id);
+                        if let Action::Withdraw { input_command_id } = &item.command.action {
+                            pane.deliveries.withdrawal(input_command_id, None);
+                        }
                         if matches!(item.command.action, Action::Send { .. }) {
                             pane.sending = false;
                         }
@@ -269,7 +438,8 @@ impl App {
         for id in ids {
             if let Some(item) = self.pending.get_mut(&id) {
                 item.stage = PendingStage::Checking;
-                self.checking.push_back(id);
+                self.checking.push_back(id.clone());
+                self.update_pending_delivery(&id);
             }
         }
         self.check_pending();
@@ -307,6 +477,7 @@ impl App {
                 self.problem(format!("Check receipt · {error} · /pending"));
             }
         }
+        self.update_pending_delivery(id);
         self.check_pending();
     }
 
@@ -344,6 +515,7 @@ impl App {
         } else {
             PendingStage::Unknown(problem.clone())
         };
+        self.update_pending_delivery(id);
         if restored {
             self.pending.remove(id);
         }
@@ -372,7 +544,7 @@ impl App {
         let address = Address::from_target(&item.command.target);
         let active = address == self.active;
         match item.command.action {
-            Action::Send { text, .. } => {
+            Action::Send { text, timing, .. } => {
                 let pane = self.panes.entry(address).or_default();
                 let initial = !pane.exists;
                 pane.exists = true;
@@ -381,6 +553,7 @@ impl App {
                     ack.receipt.event_id,
                     SubmissionStatus::from_receipt(ack.status),
                 );
+                pane.deliveries.receipt(&ack, &text, timing, false);
                 pane.draft.remember(&text);
                 if pane.title.is_empty() {
                     pane.title = crate::text::shorten(&crate::text::single_line(&text), 68);
@@ -414,7 +587,7 @@ impl App {
             Action::ReplyPermission { .. } | Action::ReplyQuestion { .. } => {
                 self.confirmation("Reply received")
             }
-            Action::Withdraw { .. } => {
+            Action::Withdraw { input_command_id } => {
                 if ack.status.is_some() {
                     if let Some(pane) = self.panes.get_mut(&address) {
                         pane.record_submission(
@@ -423,6 +596,10 @@ impl App {
                         );
                     }
                 }
+                if let Some(pane) = self.panes.get_mut(&address) {
+                    pane.deliveries
+                        .acknowledge_withdrawal(&input_command_id, ack.status);
+                }
                 let message = match ack.status {
                     Some(InputStatus::Accepted) => "Input has already been accepted",
                     Some(InputStatus::Queued) => "Input is still queued",
@@ -430,6 +607,29 @@ impl App {
                     None => "Withdrawal receipt confirmed",
                 };
                 self.message(message);
+            }
+            Action::ReplaceQueued {
+                input_command_id,
+                text,
+            } => {
+                let pane = self.panes.entry(address).or_default();
+                let timing = pane
+                    .deliveries
+                    .rows()
+                    .iter()
+                    .find(|row| row.id == ack.receipt.command_id || row.id == input_command_id)
+                    .map_or(kuku_client::Timing::Steer, |row| row.timing);
+                pane.deliveries.replace(
+                    &input_command_id,
+                    &ack.receipt.command_id,
+                    ack.receipt.event_id,
+                );
+                pane.deliveries.receipt(&ack, &text, timing, true);
+                self.confirmation(match ack.status {
+                    Some(InputStatus::Accepted) => "Replacement accepted",
+                    Some(InputStatus::Withdrawn) => "Replacement withdrawn",
+                    Some(InputStatus::Queued) | None => "Queued input replaced",
+                });
             }
             Action::Advance => self.message("Continue request received"),
             Action::Cancel { .. } => {

@@ -20,6 +20,7 @@ use crate::theme::{
 };
 
 mod activity;
+mod delivery;
 mod header;
 
 pub(crate) use activity::{animation_active, ActivityClock};
@@ -41,6 +42,7 @@ pub(crate) fn render_at(
     let outer = frame.area();
     if outer.is_empty() {
         app.text_selection.clear();
+        app.delivery_area = Rect::ZERO;
         return false;
     }
     let area = outer.inner(Margin::new(horizontal_gutter(outer.width), 0));
@@ -55,9 +57,14 @@ pub(crate) fn render_at(
     let padding = composer_padding(area);
     let padding_rows = padding.top + padding.bottom;
     let composer_gap = u16::from(area.height >= 16);
-    let editor_limit = area
+    let delivery_limit = area
         .height
-        .saturating_sub(status_height + chrome_rows + padding_rows + composer_gap);
+        .saturating_sub(status_height + chrome_rows + padding_rows + composer_gap + 2);
+    let deliveries = delivery::lines(app, width, delivery_limit);
+    let delivery_height = deliveries.len() as u16;
+    let editor_limit = area.height.saturating_sub(
+        status_height + chrome_rows + padding_rows + composer_gap + delivery_height,
+    );
     let focused = app.modal.is_none();
     let mut composer = Block::new().style(surface());
     if area.width >= 4 {
@@ -74,19 +81,24 @@ pub(crate) fn render_at(
         padding_rows + heading_rows + draft.as_ref().map_or(0, |view| view.lines.len() as u16);
     let banner_rows = area
         .height
-        .saturating_sub(editor_height + composer_gap + status_height + MIN_TRANSCRIPT_ROWS)
+        .saturating_sub(
+            editor_height + composer_gap + delivery_height + status_height + MIN_TRANSCRIPT_ROWS,
+        )
         .min(MAX_BANNER_ROWS);
     let banner = banner(app, width, usize::from(banner_rows));
-    let [transcript, banner_area, _gap, editor, status] = Layout::vertical([
+    let [transcript, banner_area, _gap, delivery_area, editor, status] = Layout::vertical([
         Constraint::Min(0),
         Constraint::Length(banner.len() as u16),
         Constraint::Length(composer_gap),
+        Constraint::Length(delivery_height),
         Constraint::Length(editor_height),
         Constraint::Length(status_height),
     ])
     .areas(area);
     let row_insets = render_transcript(frame, transcript, app, banner_area.height == 0);
     frame.render_widget(Paragraph::new(banner), banner_area);
+    frame.render_widget(Paragraph::new(deliveries), delivery_area);
+    app.delivery_area = delivery_area;
     let [heading, inner] = Layout::vertical([Constraint::Length(heading_rows), Constraint::Min(0)])
         .areas(composer.inner(editor));
     frame.render_widget(composer, editor);
@@ -109,7 +121,7 @@ pub(crate) fn render_at(
     if let Some(line) = footer {
         frame.render_widget(Paragraph::new(line), status);
     }
-    let main_areas = [transcript, banner_area, inner, status];
+    let main_areas = [transcript, banner_area, delivery_area, inner, status];
     let modal_area = render_modal(frame, outer, app);
     app.text_selection.render(
         frame.buffer_mut(),
@@ -288,7 +300,7 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Rect
         Modal::Prompt(prompt) => {
             let height = match prompt.kind {
                 PromptKind::Agent | PromptKind::Model { .. } => SHORT_PROMPT_HEIGHT,
-                PromptKind::Question { .. } => PICKER_HEIGHT,
+                PromptKind::Question { .. } | PromptKind::QueuedInput { .. } => PICKER_HEIGHT,
             };
             let area = popup(area, PICKER_WIDTH, height);
             let inner = render_popup(frame, area, &prompt.title);

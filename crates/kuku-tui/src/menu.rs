@@ -14,6 +14,7 @@ pub(crate) enum CommandMenu {
     Agents,
     Back,
     Queue,
+    Queued,
     Withdraw,
     Advance,
     Interrupt,
@@ -40,6 +41,7 @@ impl CommandMenu {
         Self::Agents,
         Self::Back,
         Self::Queue,
+        Self::Queued,
         Self::Withdraw,
         Self::Advance,
         Self::Interrupt,
@@ -66,6 +68,7 @@ impl CommandMenu {
             Self::Agents => "agents",
             Self::Back => "back",
             Self::Queue => "queue",
+            Self::Queued => "queued",
             Self::Withdraw => "withdraw",
             Self::Advance => "continue",
             Self::Interrupt => "interrupt",
@@ -93,6 +96,7 @@ impl CommandMenu {
             Self::Agents => ("Choose or create an Agent in this Session", None),
             Self::Back => ("Return to the previous Agent in this Session", None),
             Self::Queue => ("Send on the next Turn", Some(Shortcut::NEXT_TURN)),
+            Self::Queued => ("Edit input still waiting in the queue", Some(Shortcut::UP)),
             Self::Withdraw => ("Withdraw input still in the queue", None),
             Self::Advance => ("Continue queued work", None),
             Self::Interrupt => ("Interrupt this execution", Some(Shortcut::ESCAPE)),
@@ -146,6 +150,7 @@ pub(crate) enum ChoiceKind {
     Tier(String),
     Connection(String),
     Thinking(Option<String>),
+    EditQueued(String),
     Withdraw(String),
     Pending(String),
     PendingRetry(String),
@@ -173,6 +178,7 @@ impl ChoiceKind {
                 CommandMenu::Resume
                     | CommandMenu::Agents
                     | CommandMenu::Back
+                    | CommandMenu::Queued
                     | CommandMenu::Withdraw
                     | CommandMenu::Reply
                     | CommandMenu::Pending
@@ -187,6 +193,7 @@ impl ChoiceKind {
                 | Self::Agent { .. }
                 | Self::CreateAgent
                 | Self::Connection(_)
+                | Self::EditQueued(_)
                 | Self::Pending(_)
                 | Self::PendingOpen { .. }
                 | Self::Detail(_)
@@ -248,6 +255,7 @@ pub(crate) enum PickerKind {
     Agents,
     Models,
     Thinking,
+    Queued,
     Queue,
     Pending,
     PendingItem,
@@ -266,6 +274,7 @@ impl PickerKind {
             Self::Agents => "Switch Agent",
             Self::Models => "Model route",
             Self::Thinking => "Thinking",
+            Self::Queued => "Edit queued input",
             Self::Queue => "Withdraw queued input",
             Self::Pending => "Unconfirmed commands",
             Self::PendingItem => "Recover command",
@@ -284,6 +293,7 @@ impl PickerKind {
                 | Self::Sessions
                 | Self::Agents
                 | Self::Models
+                | Self::Queued
                 | Self::Details
                 | Self::Tools
         )
@@ -467,6 +477,13 @@ pub(crate) enum PromptKind {
     Agent,
     Model { connection: String },
     Question { request_id: String },
+    QueuedInput { input_command_id: String },
+}
+
+impl PromptKind {
+    pub(crate) fn multiline(&self) -> bool {
+        matches!(self, Self::Question { .. } | Self::QueuedInput { .. })
+    }
 }
 
 #[derive(Debug)]

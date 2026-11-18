@@ -6,6 +6,7 @@ use kuku_client::{
     new_id, Action, AgentConfig, AgentStatus, Command, Error, HistoryKind, HistoryPage,
     ModelSelection, Observation, Snapshot, Target, Timing, UsageTotals,
 };
+use ratatui::layout::Rect;
 
 use crate::config::StatusLineSettings;
 use crate::editor::Editor;
@@ -18,12 +19,15 @@ use crate::transcript::{HistoryRequest, Transcript};
 
 mod activity;
 pub(crate) mod agents;
+mod delivery;
 mod navigation;
 mod pending;
 
 pub(crate) use activity::{Activity, ServiceStatus, SubmissionStatus};
 use activity::{ExecutionProgress, Watch};
 use agents::AgentActivities;
+use delivery::Deliveries;
+pub(crate) use delivery::DeliveryRow;
 use navigation::AgentNavigation;
 pub(crate) use pending::{PendingItem, PendingStage};
 
@@ -83,6 +87,7 @@ pub(crate) struct Pane {
     pub(crate) title: String,
     pub(crate) draft: Editor,
     pub(crate) transcript: Transcript,
+    pub(crate) deliveries: Deliveries,
     pub(crate) snapshot: Option<Box<Snapshot>>,
     pub(crate) pending_reply_copy: Option<u64>,
     pub(crate) initial_config: AgentConfig,
@@ -229,6 +234,7 @@ impl Pane {
         self.cleanup_at = snapshot
             .cleaning_up
             .then(|| Instant::now() + CLEANUP_REFRESH);
+        self.deliveries.snapshot(&snapshot);
         self.snapshot = Some(snapshot);
     }
 }
@@ -276,6 +282,7 @@ pub(crate) struct App {
     pub(crate) pending: HashMap<String, PendingItem>,
     pub(crate) editor_width: usize,
     pub(crate) transcript_area: (usize, usize),
+    pub(crate) delivery_area: Rect,
     pub(crate) modal_editor_width: usize,
     pub(crate) modal_page: usize,
     pub(crate) modal_info_rows: usize,
@@ -314,6 +321,7 @@ impl App {
             pending: HashMap::new(),
             editor_width: 80,
             transcript_area: (80, 16),
+            delivery_area: Rect::ZERO,
             modal_editor_width: 60,
             modal_page: 6,
             modal_info_rows: 4,
@@ -472,6 +480,7 @@ impl App {
                 origin: Some(self.generation),
             },
         );
+        self.update_pending_delivery(&command.command_id);
         self.effects.push(Job::Save(command));
     }
 
@@ -848,6 +857,7 @@ impl App {
                 state_changed,
                 kind,
                 operation,
+                delivery,
                 tool_call_id,
                 ..
             } => {
@@ -866,6 +876,9 @@ impl App {
                     pane.request_usage_floor = id;
                 }
                 if same_agent {
+                    if let Some(delivery) = delivery {
+                        pane.deliveries.committed(id, delivery);
+                    }
                     pane.observe_execution(
                         id,
                         &kind,

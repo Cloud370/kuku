@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-use crate::{Acknowledgement, Client, Command, Error, Target};
+use crate::{Acknowledgement, Action, Client, Command, Error, Target};
 
 /// Filesystem-backed pending commands that survive closing the client.
 #[derive(Debug, Clone)]
@@ -90,7 +90,7 @@ impl PendingStore {
         self.submit_saved(client, command).await
     }
 
-    /// Submit an already saved intent and clear it when the exchange has a definitive outcome.
+    /// Submit a saved intent, retaining rejected queue edits for explicit recovery.
     pub async fn submit_saved(
         &self,
         client: &Client,
@@ -99,7 +99,12 @@ impl PendingStore {
         let result = client.submit(command).await;
         match &result {
             Ok(_) => self.remove(command)?,
-            Err(error) if error.definitively_rejected() => self.remove(command)?,
+            Err(error)
+                if error.definitively_rejected()
+                    && !matches!(command.action, Action::ReplaceQueued { .. }) =>
+            {
+                self.remove(command)?
+            }
             Err(_) => {}
         }
         result

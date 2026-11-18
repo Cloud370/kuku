@@ -262,7 +262,7 @@ impl SubmissionStatus {
         }
     }
 
-    fn from_pending(stage: &PendingStage) -> Self {
+    pub(super) fn from_pending(stage: &PendingStage) -> Self {
         match stage {
             PendingStage::Saving => Self::Saving,
             PendingStage::Sending => Self::AwaitingReceipt,
