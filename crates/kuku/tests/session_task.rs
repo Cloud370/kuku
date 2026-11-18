@@ -112,7 +112,7 @@ async fn temporary_rate_limit_retries_once_and_terminal_limits_return_control() 
         ("0", r#"{"error":{"code":"insufficient_quota"}}"#, 1),
         ("120", r#"{"error":{"code":"rate_limit_exceeded"}}"#, 1),
     ] {
-        let mut provider = server
+        let provider = server
             .mock_async(move |when, then| {
                 when.method(POST).path("/chat/completions");
                 then.status(429).header("retry-after", header).body(body);

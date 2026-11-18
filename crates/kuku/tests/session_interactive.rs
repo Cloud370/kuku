@@ -29,7 +29,7 @@ struct Call {
 enum Reply {
     Tools(Vec<String>),
     Text(&'static str),
-    TemporaryFailure,
+    TemporaryFailure(ProviderFailureKind),
 }
 
 impl ModelAdapter for Model {
@@ -69,9 +69,9 @@ impl ModelAdapter for Model {
                         },
                     ]);
                 }
-                Reply::TemporaryFailure => {
+                Reply::TemporaryFailure(kind) => {
                     return Err(Error::Provider {
-                        kind: ProviderFailureKind::ProviderUnavailable,
+                        kind,
                         message: "temporary fixture outage".into(),
                         provider: None,
                         model: None,
@@ -447,7 +447,12 @@ async fn an_edited_input_preserves_its_order_and_admitted_text_when_retried() {
     let body = attempt.request.body.to_string();
     assert!(body.contains("edited first input"));
     assert!(!body.contains("subsequent input"));
-    attempt.response.send(Reply::TemporaryFailure).unwrap();
+    attempt
+        .response
+        .send(Reply::TemporaryFailure(
+            ProviderFailureKind::ProviderUnavailable,
+        ))
+        .unwrap();
     ready(&session, AgentStatus::Interrupted).await;
     session.close().await.unwrap();
 
@@ -715,7 +720,10 @@ async fn retry_uses_the_prepared_body_and_leaves_new_input_and_selection_for_the
             "wait for the next prepared request",
         ))
         .unwrap();
-    first.response.send(Reply::TemporaryFailure).unwrap();
+    first
+        .response
+        .send(Reply::TemporaryFailure(ProviderFailureKind::RateLimited))
+        .unwrap();
 
     let retry = next_call(&mut calls).await;
     assert_eq!(first.request.request_id, retry.request.request_id);
