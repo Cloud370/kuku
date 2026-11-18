@@ -654,7 +654,7 @@ def delegated_agent_cards(client):
         reopened.expect("Actions and Skills")
         reopened.press("\x1b")
         reopened.press("/details\r")
-        reopened.expect("Agent details")
+        reopened.expect("Transcript details")
         reopened.press("reviewer")
 
         def details_menu():
