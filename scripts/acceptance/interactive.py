@@ -221,7 +221,7 @@ def fast_markdown_stream(client):
         terminal.expect("New session", state="Ready")
         terminal.submit(prompt)
         with client.provider.next(prompt).streaming_text(first, last, chunk_size=2):
-            terminal.expect("Row 0159", state="Streaming")
+            terminal.expect("0159:", state="Streaming")
             terminal.type(draft)
         terminal.expect("Final marker", state="Finished")
         assert draft in terminal.request("screen")["screen"]
