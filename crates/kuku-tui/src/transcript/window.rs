@@ -240,7 +240,11 @@ impl Window {
                 (&record.key, &[][..], None)
             } else {
                 let trim = records.peek().is_some_and(|(_, next)| {
-                    record.turn == next.turn && record.tool().is_some() && next.tool().is_some()
+                    record.turn == next.turn
+                        && record
+                            .tool()
+                            .is_some_and(|tool| tool.agent_card().is_none())
+                        && next.tool().is_some_and(|tool| tool.agent_card().is_none())
                 });
                 let mode = if grouped {
                     ToolDetails::GroupMember

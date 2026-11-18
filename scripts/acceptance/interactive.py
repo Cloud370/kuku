@@ -211,13 +211,13 @@ def two_workspaces_and_disconnect(client):
         compact = reopened.expect("TPS")["screen"].splitlines()[-1]
         assert "main" in compact and "Context" in compact and "Cache hit" not in compact, compact
         assert not re.search(r"\d(?:[.\d]*[KMB])? (?:in|out)\b", compact), compact
-        details = reopened.expect("--gated-tool")["screen"]
-        assert "--gated-tool" in details
+        details = reopened.expect(TOOL_BRIEF)["screen"]
+        assert "--gated-tool" not in details and TOOL_OUTPUT in details
         reopened.press("\x0f")
         collapsed = reopened.expect("Ctrl+O show")["screen"]
         assert "Saved output" not in collapsed and "--gated-tool" not in collapsed
         reopened.press("\x0f")
-        reopened.expect("--gated-tool")
+        reopened.expect(TOOL_BRIEF)
         reopened.exit_cleanly()
     client.assert_current_service(original)
     client.provider.assert_idle(duration=0.2)

@@ -229,9 +229,6 @@ impl Transcript {
         if !self.toggle_detail(key) {
             return false;
         }
-        if self.reading.is_some() {
-            return true;
-        }
         let anchor = super::Anchor {
             key: key.record.clone(),
             line: if key.kind == DetailKind::Group {
@@ -247,6 +244,29 @@ impl Transcript {
             agents: &self.agent_cards,
             items: &self.detail_items,
         };
+        if let Some(reading) = &mut self.reading {
+            let opening = match key.kind {
+                DetailKind::Agent => self.agent_cards.is_open(&key.record),
+                DetailKind::Group => self.detail_items.groups.contains(&key.record),
+                _ => false,
+            };
+            let reveal = self
+                .detail_items
+                .rows_for(key)
+                .filter(|_| opening)
+                .map_or(0, |rows| (rows.end + 3).saturating_sub(height));
+            if reveal > 0 {
+                let start = reading.window.position_of(&reading.anchor, layout);
+                let heading = reading.window.position_of(&anchor, layout);
+                let next = (start + reveal).min(heading);
+                if next > start {
+                    if let Some(anchor) = reading.window.anchor_at(next, layout) {
+                        reading.anchor = anchor;
+                    }
+                }
+            }
+            return true;
+        }
         let top = self.recent.row_count(layout).saturating_sub(height);
         if self.recent.position_of(&anchor, layout) < top {
             self.reading = Some(super::Reading {

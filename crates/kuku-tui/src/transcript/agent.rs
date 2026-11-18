@@ -268,17 +268,14 @@ impl AgentCard<'_> {
         facts: Option<&AgentFacts>,
         checks: usize,
     ) -> Vec<Row> {
-        let frame = CardFrame::new(width);
+        let frame = CardFrame::agent(width);
         let title = format!("Agent {}", single_line(self.address));
         let mut rows = vec![Row::plain(frame.title(&title, MODEL))];
         let (label, color) = facts.map_or(("Delivered", Style::new().fg(MUTED)), |facts| {
             (facts.status.label(), activity_style(facts.status))
         });
         let space = frame.content_width();
-        let mut body = Line::from(Span::styled(
-            shorten(label, space),
-            crate::theme::code_surface().patch(color),
-        ));
+        let mut body = Line::from(Span::styled(shorten(label, space), color));
         let reply = facts.and_then(|facts| first_content_line(&facts.preview));
         let (caption, excerpt) = match reply {
             Some(text) if facts.is_some_and(|facts| facts.status == Activity::Failed) => {
@@ -290,7 +287,7 @@ impl AgentCard<'_> {
         if !excerpt.is_empty() && space >= body.width() + caption.len() + 7 {
             body.push_span(Span::styled(
                 format!("   {caption}  "),
-                crate::theme::code_surface().fg(MUTED),
+                Style::new().fg(MUTED),
             ));
             let excerpt = excerpt
                 .trim_start_matches('#')
@@ -301,7 +298,7 @@ impl AgentCard<'_> {
                     &single_line(excerpt),
                     (space - body.width()).min(ACTIVITY_EXCERPT_CELLS),
                 ),
-                crate::theme::code_surface(),
+                Style::default(),
             ));
         }
         rows.push(Row::plain(frame.line(body)));
@@ -335,27 +332,7 @@ impl AgentCard<'_> {
         facts: Option<&AgentFacts>,
         in_timeline: bool,
     ) -> Vec<Row> {
-        if self.created()
-            && !in_timeline
-            && details != ToolDetails::Expanded
-            && facts.is_none_or(|facts| facts.status == Activity::Ready && facts.preview.is_empty())
-        {
-            let inset = body_inset(width);
-            let label = shorten(
-                &format!("Agent {} · Created", single_line(self.address)),
-                width.saturating_sub(usize::from(inset)),
-            );
-            let mut rows: Vec<_> = render_rows(
-                vec![Line::styled(label, Style::new().fg(MUTED))],
-                width,
-                1,
-                inset,
-            )
-            .collect();
-            rows.push(Row::plain(Line::default()));
-            return rows;
-        }
-        let frame = CardFrame::new(width);
+        let frame = CardFrame::agent(width);
         let width = if in_timeline {
             width
         } else {
@@ -371,23 +348,7 @@ impl AgentCard<'_> {
             row.line.spans[0] = Span::styled(marker, emphasis(MODEL));
         }
         let preview = facts.map_or("", |facts| facts.preview.as_str());
-        if expanded {
-            render_section(&mut rows, self.task_label, self.task, width, body_inset);
-            let label = match facts.map(|facts| facts.status) {
-                Some(Activity::Streaming) => "Live Agent reply",
-                Some(Activity::Failed) => "Latest Agent error",
-                _ => "Latest Agent reply",
-            };
-            render_section(&mut rows, label, preview, width, body_inset);
-            if !self.error.is_empty() {
-                rows.extend(render_rows(
-                    render_literal(self.error, Style::new().fg(ERROR)),
-                    width,
-                    MAX_SECTION_ROWS,
-                    body_inset,
-                ));
-            }
-        } else {
+        if !in_timeline || !expanded {
             let (label, text) = if !self.error.is_empty() {
                 ("Error", self.error)
             } else if !preview.is_empty() {
@@ -412,16 +373,48 @@ impl AgentCard<'_> {
                 rows.extend(render_rows(vec![line], width, 1, body_inset));
             }
         }
+        let summary_rows = rows.len();
+        if expanded {
+            render_section(&mut rows, self.task_label, self.task, width, body_inset);
+            let label = match facts.map(|facts| facts.status) {
+                Some(Activity::Streaming) => "Live Agent reply",
+                Some(Activity::Failed) => "Latest Agent error",
+                _ => "Latest Agent reply",
+            };
+            render_section(&mut rows, label, preview, width, body_inset);
+            if !self.error.is_empty() {
+                rows.extend(render_rows(
+                    render_literal(self.error, Style::new().fg(ERROR)),
+                    width,
+                    MAX_SECTION_ROWS,
+                    body_inset,
+                ));
+            }
+        }
         if !in_timeline {
             let mut framed = vec![Row::plain(
                 frame.title(&format!("Agent {}", single_line(self.address)), MODEL),
             )];
+            let details = rows.split_off(summary_rows);
             framed.extend(rows.into_iter().map(|row| Row::plain(frame.line(row.line))));
-            framed.push(Row::plain(frame.foot(if expanded {
+            let label = if expanded {
                 "▾ Details"
             } else {
                 "▸ Details"
-            })));
+            };
+            if details.is_empty() {
+                framed.push(Row::plain(frame.foot(label)));
+            } else {
+                framed.push(Row::plain(frame.divider(label)));
+                framed.extend(
+                    details
+                        .into_iter()
+                        .map(|row| Row::plain(frame.line(row.line))),
+                );
+                if frame.bordered() {
+                    framed.push(Row::plain(frame.border('╰', '╯')));
+                }
+            }
             rows = framed;
         }
         rows.push(Row::plain(Line::default()));
@@ -585,7 +578,7 @@ mod tests {
             &mut transcript,
             5,
             json!({
-                "type":"tool_call", "tool":"run_command", "tool_call_id":"command", "args":{"command":"verify-fixtures"}
+                "type":"tool_call", "tool":"run_command", "tool_call_id":"command", "args":{"command":"verify-fixtures","brief":"Verify fixtures"}
             }),
         );
         let view = transcript.project(90, 24);
@@ -594,7 +587,7 @@ mod tests {
             plain.contains("╭─ Agent reviewer") && plain.matches("Agent reviewer").count() == 1
         );
         assert!(plain.contains("Verify the new CLI") && !plain.contains("List failing cases"));
-        assert!(plain.contains("verify-fixtures"));
+        assert!(plain.contains("Verify fixtures") && !plain.contains("verify-fixtures"));
         assert!(
             !plain.contains("session operation committed")
                 && !plain.contains("proposed")
@@ -611,7 +604,7 @@ mod tests {
         let body = lines(&expanded).join("\n");
         assert!(body.contains("Requested task") && body.contains("List failing cases"));
         assert!(body.contains("Requested instructions") && body.contains("Use precise citations"));
-        assert!(body.contains("verify-fixtures"));
+        assert!(body.contains("Verify fixtures"));
         assert_eq!(
             Some("Ctrl+O hide · /details"),
             expanded.tool_hint.as_deref()
@@ -624,10 +617,75 @@ mod tests {
             collapsed.tool_hint.as_deref()
         );
         let body = lines(&collapsed).join("\n");
-        assert!(!body.contains("Requested task") && !body.contains("verify-fixtures"));
+        assert!(
+            body.contains("Verify fixtures")
+                && !body.contains("Requested task")
+                && !body.contains("verify-fixtures")
+        );
         assert!(transcript.toggle_details());
         let body = lines(&transcript.project(90, 24)).join("\n");
-        assert!(body.contains("Requested task") && body.contains("verify-fixtures"));
+        assert!(body.contains("Requested task") && body.contains("Verify fixtures"));
+    }
+
+    #[test]
+    fn a_command_and_a_delegation_keep_separate_frames_and_a_visible_details_control() {
+        let mut transcript = Transcript::default();
+        let command = |id: &str| {
+            json!({
+                "type": "tool_call", "tool": "run_command", "tool_call_id": id,
+                "args": {"command": "example", "brief": id}
+            })
+        };
+        apply(
+            &mut transcript,
+            1,
+            json!({"type":"assistant","text":"before paragraph\n\nbefore paragraph\n\nbefore paragraph\n\nbefore paragraph"}),
+        );
+        apply(&mut transcript, 2, command("First check"));
+        apply(
+            &mut transcript,
+            3,
+            json!({
+                "type":"tool_call","tool":"send_message","tool_call_id":"assign",
+                "args":{"to":"reviewer","message":"Review the code\nCheck for missing tests"}
+            }),
+        );
+        apply(&mut transcript, 4, command("Second check"));
+        apply(
+            &mut transcript,
+            5,
+            json!({"type":"assistant","text":"after paragraph\n\nafter paragraph\n\nafter paragraph\n\nafter paragraph"}),
+        );
+        let all = lines(&transcript.project(90, 100));
+        let header = all
+            .iter()
+            .position(|line| line.contains("╭─ Agent reviewer"))
+            .unwrap();
+        let footer = all
+            .iter()
+            .position(|line| line.contains("▸ Details"))
+            .unwrap();
+        assert!(all[header - 1].trim().is_empty());
+        assert!(all[footer + 1].trim().is_empty());
+        assert!(all[footer + 2].contains("Second check"));
+
+        let height = 8;
+        transcript.scroll(-((all.len() - footer - 1) as isize), 90, height);
+        let folded = lines(&transcript.project(90, height));
+        assert!(folded[height - 1].contains("▸ Details"));
+        let key = transcript.detail_at(height - 1).unwrap().clone();
+        assert!(transcript.toggle_in_view(&key, 90, height));
+        let open = lines(&transcript.project(90, height));
+        let control = open
+            .iter()
+            .position(|line| line.contains("▾ Details"))
+            .unwrap();
+        assert!(open[control + 1].contains("Requested task"));
+        assert!(open[control + 2].contains("Review the code"));
+        assert_eq!(transcript.detail_at(control), Some(&key));
+        assert!(transcript.toggle_in_view(&key, 90, height));
+        let folded = lines(&transcript.project(90, height));
+        assert!(folded[control].contains("▸ Details"));
     }
 
     #[test]

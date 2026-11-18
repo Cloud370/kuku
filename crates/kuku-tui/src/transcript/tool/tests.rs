@@ -41,6 +41,7 @@ fn command_preview_keeps_stdout_and_warnings_without_the_model_output_reference(
         .map(|line| line.to_string().trim_matches('│').trim().to_owned())
         .collect::<Vec<_>>()
         .join("\n");
+    assert!(rendered.contains("╭─ Run command · error") && !rendered.contains("╭─ check"));
     assert!(rendered.contains("command timed out; output truncated"));
     assert!(rendered.contains("stdout:\nOutput: from the process"));
     assert!(rendered.contains(&format!(
@@ -245,6 +246,10 @@ fn file_cards_preview_saved_content_and_diff_without_using_requested_text_as_evi
 #[test]
 fn short_command_results_show_stdout_without_capture_metadata_or_a_trailing_carriage_return() {
     let mut transcript = Transcript::default();
+    transcript.apply(serde_json::from_value(json!({
+        "id":0,"agent":"main","turn":1,"type":"tool_call","tool":"run_command","tool_call_id":"cmd",
+        "args":{"command":"check-file","brief":"Verify file removal"}
+    })).unwrap(),None);
     let raw = "stdout:\nGONE\r\n\n\nOutput: saved (6 captured bytes; read by merged byte offset).";
     transcript.apply(serde_json::from_value(json!({
         "id":1,"agent":"main","turn":1,"type":"tool_result","tool":"run_command","tool_call_id":"cmd",
@@ -261,11 +266,18 @@ fn short_command_results_show_stdout_without_capture_metadata_or_a_trailing_carr
     let lines: Vec<_> = screen.lines().collect();
     let heading = lines
         .iter()
-        .position(|line| line.starts_with("╭─ check-file"))
+        .position(|line| line.starts_with("╭─ Verify file removal"))
         .unwrap();
     assert!(lines[heading].contains("Run command · ok · exit 0") && lines[heading].ends_with('╮'));
     assert_eq!(lines[heading + 1].trim_matches('│').trim(), "GONE");
-    assert_eq!(screen.matches("check-file").count(), 1);
+    assert!(!screen.contains("check-file"));
+    let key = transcript.detail_at(heading).unwrap().clone();
+    assert!(transcript.toggle_detail(&key));
+    let inspected = transcript.project(80, 24);
+    assert!(inspected
+        .lines
+        .iter()
+        .any(|line| line.to_string().contains("check-file")));
     assert!(
         !screen.contains("stdout") && !screen.contains("Saved output") && !screen.contains('␍')
     );

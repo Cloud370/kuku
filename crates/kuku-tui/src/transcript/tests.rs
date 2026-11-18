@@ -207,7 +207,7 @@ fn toggling_tool_previews_preserves_the_reading_anchor_through_settlement() {
     transcript.apply(
         serde_json::from_value(json!({
             "id": 2, "agent": "main", "turn": 1, "type": "tool_call",
-            "tool": "run_command", "tool_call_id": "cmd", "args": {"command": "check-workspace"}
+            "tool": "run_command", "tool_call_id": "cmd", "args": {"command": "check-workspace", "brief":"Check workspace"}
         }))
         .unwrap(),
         None,
@@ -217,7 +217,7 @@ fn toggling_tool_previews_preserves_the_reading_anchor_through_settlement() {
         .any(|row| row.contains("requested")));
     assert!(rows(&mut transcript)
         .iter()
-        .any(|row| row.contains("check-workspace")));
+        .any(|row| row.contains("Check workspace")));
 
     transcript.live(
         9,

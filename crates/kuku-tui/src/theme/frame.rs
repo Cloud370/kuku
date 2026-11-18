@@ -1,5 +1,5 @@
 use super::{code_surface, emphasis, CODE_BACKGROUND, MUTED};
-use crate::text::{shorten, shorten_middle};
+use crate::text::shorten;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
@@ -10,15 +10,28 @@ pub(crate) struct CardFrame {
     width: usize,
     bordered: bool,
     padding: usize,
+    surface: Style,
 }
 
 impl CardFrame {
     pub(crate) fn new(width: usize) -> Self {
         Self {
             width,
+            surface: code_surface(),
             bordered: width >= MIN_FRAME_WIDTH,
             padding: usize::from(width >= PADDED_FRAME_WIDTH),
         }
+    }
+
+    pub(crate) fn agent(width: usize) -> Self {
+        Self {
+            surface: code_surface().bg(super::AGENT_SURFACE),
+            ..Self::new(width)
+        }
+    }
+
+    fn edge(&self) -> Style {
+        self.surface.fg(MUTED)
     }
 
     pub(crate) fn bordered(&self) -> bool {
@@ -34,10 +47,18 @@ impl CardFrame {
     }
 
     pub(crate) fn title(&self, label: &str, color: Color) -> Line<'static> {
-        self.caption(label, '╭', '╮', emphasis(color).bg(CODE_BACKGROUND))
+        self.caption(label, '╭', '╮', self.surface.patch(emphasis(color)))
     }
 
-    pub(crate) fn command_title(&self, command: &str, status: &str, color: Color) -> Line<'static> {
+    pub(crate) fn command_title(
+        &self,
+        description: &str,
+        status: &str,
+        color: Color,
+    ) -> Line<'static> {
+        if description.trim().is_empty() {
+            return self.title(&format!("Run command · {status}"), color);
+        }
         let (prefix, suffix) = match (self.bordered, self.padding) {
             (false, _) => ("", ""),
             (true, 0) => ("╭", "╮"),
@@ -46,7 +67,7 @@ impl CardFrame {
         let content = self.width.saturating_sub(prefix.width() + suffix.width());
         let full = format!("Run command · {status}");
         let status = shorten(
-            if full.width() + 7 <= content || command.is_empty() {
+            if full.width() + 7 <= content {
                 &full
             } else {
                 status
@@ -54,25 +75,36 @@ impl CardFrame {
             content,
         );
         let room = content.saturating_sub(status.width());
-        let gap = if command.width() + 1 == room { 1 } else { 2 };
-        let command = shorten_middle(command, room.saturating_sub(gap));
-        let gap = content.saturating_sub(command.width() + status.width());
+        let gap = if description.width() + 1 == room {
+            1
+        } else {
+            2
+        };
+        let description = shorten(description, room.saturating_sub(gap));
+        let gap = content.saturating_sub(description.width() + status.width());
         let rule = if gap >= 2 {
             format!(" {} ", "─".repeat(gap - 2))
         } else {
             " ".repeat(gap)
         };
         Line::from(vec![
-            Span::styled(prefix, edge()),
-            Span::styled(command, code_surface()),
-            Span::styled(rule, edge()),
+            Span::styled(prefix, self.edge()),
+            Span::styled(
+                description,
+                emphasis(super::SURFACE_TEXT).bg(CODE_BACKGROUND),
+            ),
+            Span::styled(rule, self.edge()),
             Span::styled(status, emphasis(color).bg(CODE_BACKGROUND)),
-            Span::styled(suffix, edge()),
+            Span::styled(suffix, self.edge()),
         ])
     }
 
     pub(crate) fn foot(&self, label: &str) -> Line<'static> {
-        self.caption(label, '╰', '╯', code_surface().fg(MUTED))
+        self.caption(label, '╰', '╯', self.surface.fg(MUTED))
+    }
+
+    pub(crate) fn divider(&self, label: &str) -> Line<'static> {
+        self.caption(label, '├', '┤', self.surface.fg(MUTED))
     }
 
     fn caption(&self, label: &str, left: char, right: char, style: Style) -> Line<'static> {
@@ -88,9 +120,9 @@ impl CardFrame {
         let label = shorten(label, room);
         let fill = "─".repeat(room - label.width());
         Line::from(vec![
-            Span::styled(prefix, edge()),
+            Span::styled(prefix, self.edge()),
             Span::styled(label, style),
-            Span::styled(format!("{tail}{fill}{right}"), edge()),
+            Span::styled(format!("{tail}{fill}{right}"), self.edge()),
         ])
     }
 
@@ -98,24 +130,21 @@ impl CardFrame {
         let room = self.content_width().saturating_sub(line.width());
         let mut spans = Vec::with_capacity(line.spans.len() + 4);
         if self.bordered {
-            spans.push(Span::styled("│", edge()));
+            spans.push(Span::styled("│", self.edge()));
         }
         if self.padding != 0 {
-            spans.push(Span::styled(" ", code_surface()));
+            spans.push(Span::styled(" ", self.surface));
         }
-        let base = code_surface().patch(line.style);
+        let base = self.surface.patch(line.style);
         spans.extend(line.spans.into_iter().map(|mut span| {
             span.style = base.patch(span.style);
             span
         }));
         if room + self.padding != 0 {
-            spans.push(Span::styled(
-                " ".repeat(room + self.padding),
-                code_surface(),
-            ));
+            spans.push(Span::styled(" ".repeat(room + self.padding), self.surface));
         }
         if self.bordered {
-            spans.push(Span::styled("│", edge()));
+            spans.push(Span::styled("│", self.edge()));
         }
         Line::from(spans)
     }
@@ -123,11 +152,7 @@ impl CardFrame {
     pub(crate) fn border(&self, left: char, right: char) -> Line<'static> {
         Line::styled(
             format!("{left}{}{right}", "─".repeat(self.width - 2)),
-            edge(),
+            self.edge(),
         )
     }
-}
-
-fn edge() -> Style {
-    code_surface().fg(MUTED)
 }

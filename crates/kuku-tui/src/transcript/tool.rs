@@ -64,10 +64,16 @@ impl Tool {
         let invocation = invocation(&name, args);
         let arguments = arguments_json(args);
         let agent_request = AgentRequest::from_call(&name, args);
+        let start_summary = if name == "run_command" {
+            capped(args["brief"].as_str().map(str::trim), MAX_LABEL_BYTES)
+        } else {
+            String::new()
+        };
         Self {
             name,
             invocation,
             arguments,
+            start_summary,
             agent_request,
             ..Self::default()
         }
@@ -79,6 +85,9 @@ impl Tool {
         }
         if !incoming.invocation.is_empty() {
             self.invocation = incoming.invocation;
+        }
+        if !incoming.start_summary.is_empty() {
+            self.start_summary = incoming.start_summary;
         }
         if !incoming.arguments.is_empty() {
             self.arguments = incoming.arguments;
@@ -101,12 +110,15 @@ impl Tool {
                 if let Some(name) = event["tool"].as_str() {
                     self.name = capped(Some(name), MAX_LABEL_BYTES);
                 }
-                self.start_summary = capped(
-                    event["summary"]
-                        .as_str()
-                        .filter(|summary| *summary != self.name),
-                    MAX_DETAIL_BYTES,
-                );
+                if self.start_summary.is_empty() {
+                    self.start_summary = capped(
+                        event["summary"]
+                            .as_str()
+                            .map(str::trim)
+                            .filter(|summary| *summary != self.name),
+                        MAX_DETAIL_BYTES,
+                    );
+                }
                 self.state = State::Running;
             }
             Some("tool_output") => {
@@ -308,24 +320,17 @@ impl Tool {
         }
         let outcome = self.state.outcome();
         let command = outcome.and_then(|outcome| outcome.command_preview.as_ref());
-        let frame = (expanded && (self.name == "run_command" || command.is_some()))
+        let frame = (self.name == "run_command" || command.is_some())
             .then(|| crate::theme::CardFrame::new(width));
         let width = frame
             .as_ref()
             .map_or(width, crate::theme::CardFrame::content_width);
         let inset = if frame.is_some() { 0 } else { inset };
-        let concise = !inspecting
-            && command.is_some_and(|preview| preview.complete && preview.notes.is_empty())
-            && outcome.is_some_and(|outcome| {
-                outcome.status == "ok"
-                    && outcome
-                        .exit_code
-                        .is_some_and(|code| code != 0 || !outcome.attention)
-            });
+        let concise = !inspecting && outcome.is_some_and(Outcome::concise_command);
         let mut rows = if let Some(frame) = &frame {
             let (status, color) = self.status_label();
             vec![Row::plain(frame.command_title(
-                &single_line(self.invocation()),
+                &single_line(&self.start_summary),
                 &status,
                 color,
             ))]
@@ -357,7 +362,11 @@ impl Tool {
                 inset,
             ));
         }
-        if !concise && caption.is_none() && (!expanded || summary != invocation) {
+        if !concise
+            && caption.is_none()
+            && (!expanded || summary != invocation)
+            && (frame.is_none() || summary != self.start_summary)
+        {
             let limit = if expanded { MAX_SUMMARY_ROWS } else { 1 };
             rows.extend(render_preview(summary, SURFACE_TEXT, width, limit, inset));
         }

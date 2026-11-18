@@ -4,11 +4,11 @@ use serde_json::Value;
 use crate::text::cap;
 use crate::theme::CardFrame;
 
-use super::{capped, Row, MAX_DETAIL_BYTES};
+use super::{capped, Outcome, Row, MAX_DETAIL_BYTES};
 
 #[derive(Debug, Clone)]
 pub(super) struct CommandPreview {
-    pub(super) complete: bool,
+    complete: bool,
     body_end: usize,
     pub(super) notes: String,
 }
@@ -52,12 +52,24 @@ impl CommandPreview {
     }
 }
 
+impl Outcome {
+    pub(super) fn concise_command(&self) -> bool {
+        self.command_preview
+            .as_ref()
+            .is_some_and(|preview| preview.complete && preview.notes.is_empty())
+            && self.status == "ok"
+            && self
+                .exit_code
+                .is_some_and(|code| code != 0 || !self.attention)
+    }
+}
+
 pub(super) fn finish(frame: CardFrame, mut rows: Vec<Row>) -> Vec<Row> {
     for row in rows.iter_mut().skip(1) {
         row.line = frame.line(std::mem::take(&mut row.line));
         row.inset = frame.content_inset() as u16;
     }
-    if frame.bordered() {
+    if frame.bordered() && rows.len() > 1 {
         rows.push(Row::plain(frame.border('╰', '╯')));
     }
     rows.push(Row::plain(Line::default()));

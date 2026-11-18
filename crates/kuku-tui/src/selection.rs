@@ -43,6 +43,9 @@ impl TextSelection {
             self.drag = None;
             return;
         }
+        if drag.anchor == drag.end && drag.click.is_some() {
+            return;
+        }
         let (text, highlights) =
             drag.project(buffer, insets_for(&self.transcript_insets, drag.area));
         if text != drag.text {
@@ -290,6 +293,46 @@ mod tests {
             matches!(app.effects.as_slice(), [Job::Copy(text)] if text == "中\n  de\u{301}tail\n👩‍💻! after\n\nAssistant\n✓")
         );
         assert_eq!("Draft stays here", app.pane().draft.text());
+    }
+
+    #[test]
+    fn held_click_survives_a_live_cell_update_only_over_the_same_target() {
+        use super::{ClickTarget, MouseAction, TextSelection};
+        use ratatui::layout::Rect;
+
+        let area = Rect::new(0, 0, 12, 2);
+        let mut buffer = Buffer::empty(area);
+        let mut selection = TextSelection::default();
+        selection.render(&mut buffer, &[area], None);
+        let press = |kind| MouseEvent {
+            kind,
+            column: 1,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+        for same_target in [true, false] {
+            selection.mouse(
+                press(MouseEventKind::Down(MouseButton::Left)),
+                &buffer,
+                Some(ClickTarget::Queued),
+            );
+            buffer[(1, 0)].set_symbol(if same_target { "x" } else { "y" });
+            selection.render(&mut buffer, &[area], None);
+            let target = if same_target {
+                ClickTarget::Queued
+            } else {
+                ClickTarget::Transcript
+            };
+            let released = selection.mouse(
+                press(MouseEventKind::Up(MouseButton::Left)),
+                &buffer,
+                Some(target),
+            );
+            assert_eq!(
+                same_target,
+                matches!(released, Some(MouseAction::Click(ClickTarget::Queued)))
+            );
+        }
     }
 
     fn cell(buffer: &Buffer, symbol: &str) -> (u16, u16) {

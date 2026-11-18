@@ -117,15 +117,17 @@ def windows_diagnostic(client):
         terminal.submit(prompt)
         request = client.provider.next(prompt)
         assert "Windows cmd.exe /S /C" in json.dumps(request.request)
-        request.tool("run_command", "missing-example", command=command, timeout=5)
+        request.tool("run_command", "missing-example", command=command, timeout=5, brief="Check for missing example")
         result = client.provider.next("missing-example")
         assert diagnostic in json.dumps(result.request, ensure_ascii=False)
         result.text("Check complete.")
         screen = terminal.expect(diagnostic, also=("Check complete.", "exit 1"))["screen"]
         assert "␍" not in screen and "�" not in screen and "command exited" not in screen and "Saved output" not in screen
         rows = screen.splitlines()
-        header = next(i for i, line in enumerate(rows) if "╭─ dir /b" in line and "exit 1" in line)
-        assert diagnostic in rows[header + 1], screen
+        header = next(i for i, line in enumerate(rows) if "╭─ Check for missing example" in line and "exit 1" in line)
+        assert diagnostic in rows[header + 1] and command not in screen, screen
+        terminal.click_text(screen, "Check for missing example")
+        terminal.expect(command, state=diagnostic)
         terminal.exit_cleanly()
 
 
