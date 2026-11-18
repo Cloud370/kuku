@@ -109,7 +109,7 @@ impl Observed {
         while let Some(observation) = observer.try_next()? {
             match observation {
                 Observation::Committed(_) => self.committed += 1,
-                Observation::Live { .. } => self.transient += 1,
+                Observation::Live { .. } | Observation::ReplyPreview { .. } => self.transient += 1,
                 Observation::Lagged { skipped } => self.lagged += skipped,
             }
         }

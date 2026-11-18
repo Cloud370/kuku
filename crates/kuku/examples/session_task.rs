@@ -62,7 +62,7 @@ impl StreamMetrics {
             },
             Observation::Committed(_) => self.committed_events += 1,
             Observation::Lagged { skipped } => self.lagged_updates += skipped,
-            Observation::Live { .. } => {}
+            Observation::Live { .. } | Observation::ReplyPreview { .. } => {}
         }
     }
 }
