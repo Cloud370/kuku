@@ -40,3 +40,17 @@ The four scored attempts used DeepSeek-V4.1-Flash-1017 through OpenRouter, pinne
 The 22-request limit stopped three kuku sessions. Async cancellation had written the target by request two and spent its final requests cleaning up scratch tests. The regex session wrote its target on request nineteen. The large-file session worked on a scratch Vim script and reached the limit before writing the requested script. These outcomes separate delivery and turn completion from the correctness of the files actually produced.
 
 The JSON round labels identify distinct observations. `first`, `output32k` and `guidance` are direct-provider diagnostics. `round-1` was a local request-validation failure with zero upstream calls. `round-2` was an OpenRouter routing failure; an independent diagnostic confirmed that the account policy excluded the official DeepSeek endpoint. `round-3` was the Baseten log canary. Its three completed streams reported $0.00596856; the initial meter provisionally accounted $1.4155776 before reconciling those charges. `round-4` is the four-task comparison above. Historical meter upper bounds are preserved as recorded.
+
+## Request-limit check
+
+The second local cohort repeated only async cancellation and large-file editing. Both received up to 48 requests, using the same valid task inputs, model, output allowance, endpoint pin, SDK build and per-case dollar cap. Route diagnostics were updated in the host meter. The async solution passed 6/6 checks. Its 47th request encountered a connection error before the provider returned HTTP headers. The example had disabled the normal SDK transient retry. The Vim script passed 5/5 checks, but the SDK reached its 48-request limit. These two trials cost $0.27792 combined. Both outcomes appear under `round-5`; they do not replace the four-task result.
+
+## Turn completion in peer implementations
+
+The source checkouts below illustrate design choices. Their revisions can differ from the versions used by the published leaderboard.
+
+- Pi continues for tool results or queued follow-up, then returns control. [Source at d5b3de22](https://github.com/earendil-works/pi/blob/d5b3de22d0e24a3e9c38a9410d3329b099717283/packages/agent/src/agent-loop.ts#L295)
+- Oh My Pi records steps in its turn telemetry. Its ordinary completion path follows remaining tool calls and pending messages. [Source at e1ae2cc9](https://github.com/can1357/oh-my-pi/blob/e1ae2cc998efd1ca151b46ebefc0e0dab6c23c63/packages/agent/src/agent-loop.ts#L772)
+- Codex evaluates both the model’s follow-up signal and pending user input before ending the turn. [Source at 6ee9bc1b](https://github.com/openai/codex/blob/6ee9bc1ba7b6375faf040042728add58f796e79c/codex-rs/core/src/session/turn.rs#L718)
+- DeepSeek Harness completes its ordinary loop when there are no tool calls. [Source at 39163dd3](https://github.com/deepseek-ai/deepseek-harness/blob/39163dd30f703a79079e2d2446545cff3c453738/packages/core/agent-loop/src/agent.ts#L593)
+- OpenCode applies its last-step behavior when an agent has an explicitly configured step limit. [Source at 63bfe62c](https://github.com/anomalyco/opencode/blob/63bfe62c91fb069c97fcdd7a721aa8f7291cbf49/packages/core/src/session/runner/llm.ts#L263)
