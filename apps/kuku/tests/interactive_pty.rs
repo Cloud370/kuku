@@ -19,6 +19,7 @@ const TOOL_TIMEOUT: Duration = Duration::from_secs(90);
 #[serde(tag = "op", rename_all = "snake_case")]
 enum Request {
     Screen,
+    Resize { rows: NonZeroU16, cols: NonZeroU16 },
     Write { text: String },
 }
 
@@ -141,6 +142,15 @@ fn host_terminal(
                         "console_restored": console_restored,
                         "exit_code": exit_code,
                     })
+                }
+                Request::Resize { rows, cols } => {
+                    viewport.lock().unwrap().set_size(rows, cols);
+                    pair.master.resize(PtySize {
+                        rows: rows.get(),
+                        cols: cols.get(),
+                        ..size
+                    })?;
+                    json!({"rows": rows, "cols": cols})
                 }
                 Request::Write { text } => {
                     input.write(text.as_bytes())?;

@@ -130,16 +130,33 @@ def two_workspaces_and_disconnect(client):
                 "write_file", "write-right-marker", path="right-marker.txt",
                 content="right workspace\n", brief="Write right workspace marker",
             )
-            client.provider.next("write-right-marker").text("right workspace verified", usage={
+            reply = "right workspace verified\n\n| 检查项 | 结果 |\n| --- | --- |\n| 基础测试 | 通过 |\n| 引号字段 | 失败 |"
+            with client.provider.next("write-right-marker").streaming_text(reply, "\n\nSummary saved.", usage={
                 "input_tokens": 44_500, "cache_read_input_tokens": 133_500,
                 "cache_creation_input_tokens": 0, "output_tokens": 205,
-            })
-            right.expect("right workspace verified")
+            }):
+                partial = right.expect("基础测试", state="Streaming")["screen"]
+                assert "Summary saved." not in partial and "| ---" not in partial, partial
+                assert any("基础测试" in row and "通过" in row for row in partial.splitlines()), partial
+            right.expect("Summary saved.")
             footer = right.expect("Context 89% used")["screen"]
             assert "178K in" in footer and "210 out" in footer and "Cache hit 75%" in footer, footer
             assert "Agent main" in footer and "work-right" in footer, footer
             assert re.search(r"\b[0-9]+(?:\.[0-9]+)?[KMB]? TPS\b", footer), footer
-            print(next(line.strip() for line in footer.splitlines() if "Context 89% used" in line))
+            status = footer.splitlines()[-1]
+            assert "Agent main" in status and "TPS" in status and "work-right" in status, status
+            assert any("基础测试" in row and "通过" in row and "引号字段" not in row for row in footer.splitlines())
+            right.type("draft stability")
+            assert right.expect("draft stability")["screen"].splitlines()[-1] == status
+            right.press("\x03")
+            right.request("resize", rows=24, cols=80)
+            eventually("a single compact footer on resize", lambda: (
+                len(screen := right.request("screen")["screen"].splitlines()) == 24
+                and "main" in screen[-1] and any("引号字段" in row for row in screen)
+            ))
+            right.request("resize", rows=32, cols=140)
+            right.expect("Context 89% used")
+            print(status.strip())
             assert (other / "right-marker.txt").read_text(encoding="utf-8") == "right workspace\n"
             assert not (workspace / "right-marker.txt").exists(), "Work crossed the terminal workspace boundary"
             right.exit_cleanly()

@@ -40,6 +40,7 @@ class Response:
     status: int
     body: bytes
     content_type: str = "application/json"
+    pause_at: tuple[int, threading.Event] | None = None
 
     def as_json(self, status=200):
         assert self.status == status, f"Expected HTTP {status}, got {self.status}"
@@ -77,7 +78,14 @@ def http_fixture(dispatch):
                 self.send_header("Content-Type", response.content_type)
                 self.send_header("Content-Length", str(len(response.body)))
                 self.end_headers()
-                self.wfile.write(response.body)
+                if response.pause_at is None:
+                    self.wfile.write(response.body)
+                else:
+                    offset, release = response.pause_at
+                    self.wfile.write(response.body[:offset])
+                    self.wfile.flush()
+                    if release.wait(TIMEOUT):
+                        self.wfile.write(response.body[offset:])
 
         do_GET = do_POST = handle_request
 
@@ -113,7 +121,7 @@ class ProviderCall:
         )
         return self
 
-    def reply(self, content, usage=None):
+    def reply(self, content, usage=None, release=None):
         has_tool = any(block["type"] == "tool_use" for block in content)
         message = {
             "id": self.id, "type": "message", "role": "assistant", "content": content,
@@ -126,7 +134,21 @@ class ProviderCall:
         result = subprocess.run([self.bridge, "--anthropic-response"],
                                 input=json.dumps(message).encode("utf-8"),
                                 capture_output=True, timeout=TIMEOUT, check=True)
-        self.response.put_nowait(Response(200, result.stdout, "text/event-stream"))
+        pause_at = None
+        if release is not None:
+            marker = b"event: content_block_start"
+            offset = result.stdout.index(marker, result.stdout.index(marker) + len(marker))
+            pause_at = (offset, release)
+        self.response.put_nowait(Response(200, result.stdout, "text/event-stream", pause_at))
+
+    @contextlib.contextmanager
+    def streaming_text(self, first, last, *, usage=None):
+        release = threading.Event()
+        self.reply([{"type": "text", "text": first}, {"type": "text", "text": last}], usage, release)
+        try:
+            yield
+        finally:
+            release.set()
 
     def text(self, text, *, usage=None):
         self.reply([{"type": "text", "text": text}], usage)
@@ -138,6 +160,15 @@ class ProviderCall:
         self.response.put_nowait(json_response({
             "type": "error", "error": {"type": "invalid_request_error", "message": "fixture provider failure"},
         }, 400))
+
+
+def csv_review(client, workspace, call):
+    (workspace / "example.csv").write_text('group,value\n"core, io",4\n', encoding="utf-8")
+    call.tool("read_file", "read-marker", path="example.csv", brief="读取 CSV 样例")
+    call = client.provider.next("read-marker")
+    reply = "读取结果\n\n| 测试 | 结果 |\n| --- | --- |\n| 基础记录 | 通过 |\n| 引号字段 | 失败 |"
+    call.text(reply)
+    return reply
 
 
 class Provider:

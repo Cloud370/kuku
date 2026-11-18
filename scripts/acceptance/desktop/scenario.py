@@ -15,7 +15,7 @@ import tempfile
 import termios
 import time
 
-from interactive_fixture import InstalledClient, eventually
+from interactive_fixture import InstalledClient, csv_review, eventually
 
 
 TEST = Path("/test")
@@ -206,6 +206,15 @@ def exercise(client, desktop, checks):
         checks["copy"] = {"command": "/copy", "clipboard_utf8_sha256": hashlib.sha256(REPLY.encode()).hexdigest(),
                           "clipboard_text": REPLY, "screenshot": desktop.screen("07-reply-copied")}
         client.provider.assert_idle(duration=0.25)
+
+        desktop.type(window, "Review the CSV checks")
+        desktop.key(window, "Return")
+        overview = csv_review(client, workspace, client.provider.next("Review the CSV checks"))
+        eventually("the review to commit", lambda: client.snapshot(workspace, session)["last_output"] == overview)
+        checks["layout"] = {"screenshot": desktop.screen("08-turns-tools-table")}
+        desktop.key(window, "ctrl+plus")
+        eventually("a narrow terminal grid for the review", lambda: larger_font(pid, original))
+        checks["layout"]["narrow"] = desktop.screen("09-narrow-table")
 
         desktop.type(window, "/quit")
         desktop.key(window, "Return")

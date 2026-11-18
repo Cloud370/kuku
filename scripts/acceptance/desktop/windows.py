@@ -18,7 +18,7 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from desktop.windows_setup import pinyin_configured, pinyin_registered, powershell, require_active_desktop
-from interactive_fixture import InstalledClient, eventually
+from interactive_fixture import InstalledClient, csv_review, eventually
 
 
 TITLE = "Kuku Windows Terminal Acceptance"
@@ -433,11 +433,13 @@ def exercise(client, desktop, workspace, state, checks):
     call = client.provider.next("最后")
     expect_input(call, PROMPT)
     checks["paste"]["submitted_draft"] = PROMPT
-    call.text("Windows Terminal paste verified")
+    overview = csv_review(client, workspace, call)
     eventually("the paste acknowledgement to persist",
-               lambda: client.snapshot(workspace, session)["last_output"] == "Windows Terminal paste verified",
+               lambda: client.snapshot(workspace, session)["last_output"] == overview,
                timeout=10)
     client.provider.assert_idle(duration=0.25)
+
+    checks["layout"] = {"screenshot": desktop.picture("04a-turns-tools-table")}
 
     if pinyin_registered() and pinyin_configured():
         checks["ime"] = {"language": desktop.language(LANG_CHINESE), "keys": "nihao<Space>"}
