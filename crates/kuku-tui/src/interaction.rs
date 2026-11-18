@@ -467,7 +467,7 @@ impl App {
                 Action::ReplyPermission { request_id, allow },
             ),
             ChoiceKind::Detail(key) => {
-                if !self.pane_mut().transcript.toggle_detail(&key) {
+                if !self.toggle_transcript_detail(&key) {
                     self.problem("These details are no longer available");
                 }
             }

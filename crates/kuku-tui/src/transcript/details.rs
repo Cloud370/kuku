@@ -202,6 +202,40 @@ impl Transcript {
         })
     }
 
+    pub(crate) fn toggle_in_view(&mut self, key: &DetailKey, width: usize, height: usize) -> bool {
+        if !self.toggle_detail(key) {
+            return false;
+        }
+        if self.reading.is_some() {
+            return true;
+        }
+        let anchor = super::Anchor {
+            key: key.record.clone(),
+            line: if key.kind == DetailKind::Group {
+                super::AnchorLine::Group(0)
+            } else {
+                super::AnchorLine::Body(0)
+            },
+        };
+        let layout = super::Layout {
+            width,
+            tools: self.details,
+            assistant: self.assistant_view,
+            agents: &self.agent_cards,
+            items: &self.detail_items,
+        };
+        let top = self.recent.row_count(layout).saturating_sub(height);
+        if self.recent.position_of(&anchor, layout) < top {
+            self.reading = Some(super::Reading {
+                window: self.recent.clone(),
+                anchor,
+                newer: VecDeque::new(),
+                unseen: false,
+            });
+        }
+        true
+    }
+
     pub(crate) fn toggle_detail(&mut self, key: &DetailKey) -> bool {
         let window = self
             .reading

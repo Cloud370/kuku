@@ -11,7 +11,7 @@ impl App {
         match self.text_selection.mouse(mouse, screen, click) {
             Some(MouseAction::Copy(text)) => self.copy_text(text),
             Some(MouseAction::Click(ClickTarget::Detail(key))) => {
-                self.pane_mut().transcript.toggle_detail(&key);
+                self.toggle_transcript_detail(&key);
             }
             Some(MouseAction::Click(ClickTarget::Picker(hit))) => {
                 if let Some(Modal::Picker(picker)) = &mut self.modal {

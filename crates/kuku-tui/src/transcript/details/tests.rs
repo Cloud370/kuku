@@ -469,3 +469,23 @@ fn repeated_global_toggles_follow_the_group_state_before_the_next_frame() {
     assert!(transcript.toggle_details());
     assert!(text(&transcript.project(80, 20)).contains("Read file · second.txt"));
 }
+
+#[test]
+fn expanding_a_preview_at_the_top_keeps_the_header_and_fold_target_visible() {
+    let mut journal = Journal::default();
+    journal.push(7, "main", json!({"type":"assistant","reasoning_preview":"long reasoning line ".repeat(100),"text":""}));
+    journal.push(7, "main", json!({"type":"assistant","text":"answer"}));
+    let mut transcript = journal.load();
+    let compact = transcript.project(55, 4);
+    let key = transcript
+        .detail_at(line(&compact, "Thinking preview"))
+        .unwrap()
+        .clone();
+    assert!(transcript.toggle_in_view(&key, 55, 4));
+    assert!(transcript.is_reading());
+    let expanded = transcript.project(55, 4);
+    assert!(expanded.lines[0].to_string().contains("▾ Thinking preview"));
+    assert_eq!(Some(&key), transcript.detail_at(3));
+    assert!(transcript.toggle_in_view(&key, 55, 4));
+    assert!(text(&transcript.project(55, 4)).contains("▸ Thinking preview"));
+}

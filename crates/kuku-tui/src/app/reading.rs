@@ -18,6 +18,16 @@ impl App {
         pane.keyboard_focus == KeyboardFocus::Composer || !pane.transcript.is_reading()
     }
 
+    pub(crate) fn toggle_transcript_detail(&mut self, key: &crate::transcript::DetailKey) -> bool {
+        let (width, height) = self.transcript_area;
+        let pane = self.pane_mut();
+        let changed = pane.transcript.toggle_in_view(key, width, height);
+        if changed && pane.transcript.is_reading() {
+            pane.keyboard_focus = KeyboardFocus::Transcript;
+        }
+        changed
+    }
+
     pub(crate) fn focus_composer(&mut self) {
         self.pane_mut().keyboard_focus = KeyboardFocus::Composer;
     }
