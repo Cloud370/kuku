@@ -18,7 +18,7 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from desktop.windows_setup import pinyin_configured, pinyin_registered, powershell, require_active_desktop
-from interactive_fixture import DenseTranscript, InstalledClient, csv_review, eventually
+from interactive_fixture import DenseTranscript, InstalledClient, csv_review, desktop_wheel, eventually
 
 
 TITLE = "Kuku Windows Terminal Acceptance"
@@ -239,6 +239,11 @@ class Desktop:
             yield
         finally:
             self.send(Input(0, InputEvent(mouse=MouseInput(0, 0, 0, MOUSE_LEFT_UP))))
+
+    def wheel_up(self):
+        image, origin = self.capture()
+        self.move_cursor((origin[0] + image.width // 2, origin[1] + image.height // 2))
+        self.send(Input(0, InputEvent(mouse=MouseInput(0, 0, 360, 0x0800))))
 
     def spell(self, letters):
         for letter in letters:
@@ -527,6 +532,9 @@ def exercise(client, desktop, workspace, state, checks):
 
     checks["layout"] = {"screenshot": desktop.picture("04a-turns-tools-table")}
     checks["dense_transcript"] = dense_layout(client, desktop, workspace, grid)
+    checks["wheel"] = desktop_wheel(client, workspace, desktop.spell, desktop.wheel_up,
+                                    lambda: desktop.press(VK_CONTROL, 0x23),
+                                    lambda: desktop.press(VK_RETURN), desktop.picture)
 
     if pinyin_registered() and pinyin_configured():
         checks["ime"] = {"language": desktop.language(LANG_CHINESE), "keys": "nihao<Space>"}

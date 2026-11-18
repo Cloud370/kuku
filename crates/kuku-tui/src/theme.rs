@@ -83,6 +83,7 @@ pub(crate) fn panel_padding(area: Rect) -> Padding {
 
 pub(crate) const MODEL: Color = Color::Rgb(175, 165, 223);
 pub(crate) const EXECUTION: Color = Color::Rgb(103, 184, 178);
+pub(crate) const TURN_CARD: Color = Color::Rgb(34, 45, 57);
 pub(crate) const USAGE: Color = Color::Rgb(153, 181, 214);
 
 pub(crate) const CODE_BACKGROUND: Color = Color::Rgb(29, 38, 46);

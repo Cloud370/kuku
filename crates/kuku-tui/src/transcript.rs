@@ -785,7 +785,12 @@ impl Record {
             let source = &mut self.rendered.source;
             if source.as_ref().is_none_or(|(cached, _)| *cached != width) {
                 let mut rows = render_assistant_source(text, width, interrupted);
-                append_turn_summary(&mut rows, self.turn_summary.as_ref(), width);
+                append_turn_summary(
+                    &mut rows,
+                    self.turn_summary.as_ref(),
+                    self.turn_number,
+                    width,
+                );
                 *source = Some((width, rows));
             }
             return (
@@ -855,7 +860,12 @@ impl Record {
                     |card| card.render(width, mode, facts),
                 ),
             };
-            append_turn_summary(&mut lines, self.turn_summary.as_ref(), width);
+            append_turn_summary(
+                &mut lines,
+                self.turn_summary.as_ref(),
+                self.turn_number,
+                width,
+            );
             self.rendered.preview = Some((cache_key, lines));
         }
         (

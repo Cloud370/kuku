@@ -353,8 +353,9 @@ def preserve_draft_after_interrupt(client):
 
 def editable_multiline_paste(client):
     workspace = client.workspace("work-paste")
-    paste = "原生终端草稿 e\u0301 👩‍💻\r\nsecond line\rthird line\nfourth lineX"
-    prompt = "原生终端草稿 e\u0301 👩‍💻\nsecond line\nthird line\nfourth line"
+    wrapped = "z" * 40 + " target 中文"
+    paste = "原生终端草稿 e\u0301 👩‍💻\r\nsecond line\rthird line\nfourth line " + wrapped + "X"
+    prompt = "原生终端草稿 e\u0301 👩‍💻\nsecond line\nthird line\nfourth line " + wrapped.replace("中文", "!中文")
     with client.terminal(workspace) as terminal:
         terminal.expect("New session", state="Ready")
         discarded = "draft to clear with Ctrl+C"
@@ -382,18 +383,24 @@ def editable_multiline_paste(client):
             terminal.press("\x1b")
             eventually("the action picker to close", lambda: "Search…" not in terminal.request("screen")["screen"])
             terminal.press(framed)
-        draft = terminal.expect("fourth lineX")["screen"]
+        draft = terminal.expect("target 中文X")["screen"]
         assert "Search…" not in draft, "Escape must have closed the action picker"
         assert client.sessions(workspace) == [], "Pasting a line break must leave the draft unsent"
         client.provider.assert_idle(duration=0.25)
 
-        terminal.press("\x7f\r")
+        terminal.press("\x7f")
+        terminal.request("resize", rows=24, cols=42)
+        phone = terminal.expect("target 中文", state="work-paste", rows=24)["screen"]
+        assert "Connected" in phone.splitlines()[-2] and "work-paste" in phone.splitlines()[-1], phone
+        terminal.click_text(phone, "target 中文", cell_offset=8)
+        terminal.press("!\r")
         call = client.provider.next("fourth line")
         message = call.request["messages"][-1]
         texts = [block["text"] for block in message["content"] if block["type"] == "text"]
         assert message["role"] == "user" and prompt in texts, f"The edited paste did not match: {texts!r}"
         call.text("multiline paste verified")
-        terminal.expect("multiline paste verified")
+        phone = terminal.expect("multiline paste verified", also=("▌ Turn 1", "Ctx", "TPS"))["screen"]
+        print(phone)
         assert client.session(workspace)
         client.provider.assert_idle(duration=0.25)
         terminal.exit_cleanly()
@@ -666,11 +673,6 @@ def delegated_agent_cards(client):
     card = "Agent reviewer · Input delivered"
     screens = []
 
-    def click_card(terminal, screen):
-        row, column = next((row, line.index(card) + 1)
-                           for row, line in enumerate(screen.splitlines(), 1) if card in line)
-        terminal.press(f"\x1b[<0;{column};{row}M\x1b[<0;{column};{row}m")
-
     with client.terminal(workspace) as terminal:
         terminal.expect("New session", state="Ready")
         terminal.request("resize", rows=32, cols=140)
@@ -721,11 +723,11 @@ def delegated_agent_cards(client):
                 screen = terminal.request("screen")["screen"]
                 return screen if card in screen and initial in screen and "Requested task" not in screen else None
 
-            click_card(terminal, expanded)
+            terminal.click_text(expanded, card)
             collapsed = eventually("mouse to collapse the Agent reply", collapsed_card)
             assert "Requested instructions" in collapsed and "Live Agent reply" not in collapsed, collapsed
             screens.append(("Collapsed streaming Agent card", collapsed))
-            click_card(terminal, collapsed)
+            terminal.click_text(collapsed, card)
             terminal.expect("Live Agent reply")
             terminal.press("\x0f")
             globally_collapsed = eventually("Ctrl+O to collapse Agent details", collapsed_card)
@@ -766,7 +768,7 @@ def delegated_agent_cards(client):
         focused = reopened.expect("Requested instructions")["screen"]
         assert "Agent reviewer · Created" in focused and "Requested task" not in focused, focused
         screens.append(("Earlier Agent card opened from the details menu", focused))
-        click_card(reopened, focused)
+        reopened.click_text(focused, card)
         restored = reopened.expect("Latest Agent reply")["screen"]
         assert conclusion in restored and "Live Agent reply" not in restored, restored
         screens.append(("Restored completed Agent card", restored))
@@ -789,11 +791,6 @@ def dense_transcript(client, reference=False):
 
     def row_of(screen, text):
         return next(row for row, line in enumerate(screen.splitlines(), 1) if text in line)
-
-    def click(terminal, screen, text):
-        row = row_of(screen, text)
-        column = screen.splitlines()[row - 1].index(text) + 1
-        terminal.press(f"\x1b[<0;{column};{row}M\x1b[<0;{column};{row}m")
 
     def read_while(terminal, predicate, description):
         screen = ""
@@ -833,7 +830,7 @@ def dense_transcript(client, reference=False):
                                "the original reading position before opening the group")
         assert scenario.read_target not in collapsed and scenario.draft in collapsed, collapsed
         anchor = row_of(collapsed, scenario.activity_group)
-        click(terminal, collapsed, scenario.activity_composition)
+        terminal.click_text(collapsed, scenario.activity_composition)
         opened = terminal.expect(scenario.read_target, state="Search text · sample-marker in samples", also=(scenario.draft,))["screen"]
         assert row_of(opened, scenario.activity_group) == anchor and "sample-marker 12" not in opened, opened
         assert all(f"samples/read-{index:02d}.txt" in opened for index in range(1, 13)), opened
@@ -848,19 +845,19 @@ def dense_transcript(client, reference=False):
         details = terminal.expect("sample-marker 12")["screen"]
         assert "Requested arguments" in details and scenario.read_target in details and scenario.draft in details, details
         screens.append(("One file's requested arguments and result from the keyboard menu", details))
-        click(terminal, details, "sample-marker 12")
+        terminal.click_text(details, "sample-marker 12")
         closed = read_while(terminal, lambda value: scenario.read_target in value and "sample-marker 12" not in value,
                             "the single file details to close")
-        click(terminal, closed, scenario.activity_group)
+        terminal.click_text(closed, scenario.activity_group)
         restored = read_while(terminal, lambda value: scenario.activity_group in value and scenario.read_target not in value,
                               "the group to return to the same reading position")
         assert row_of(restored, scenario.activity_group) == anchor and scenario.draft in restored, restored
 
-        click(terminal, restored, "Read file · error")
+        terminal.click_text(restored, "Read file · error")
         error = terminal.expect("Requested arguments")["screen"]
         assert f"path does not exist: {scenario.missing}" in error and "Running tools" in error and scenario.draft in error, error
         screens.append(("Independent failed call with its exact error", error))
-        click(terminal, error, "Read file · error")
+        terminal.click_text(error, "Read file · error")
         terminal.press("\x1b[1;5F")
 
     with client.terminal(workspace) as terminal:

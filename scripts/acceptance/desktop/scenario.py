@@ -15,7 +15,7 @@ import tempfile
 import termios
 import time
 
-from interactive_fixture import DenseTranscript, InstalledClient, MarkdownDocument, csv_review, delegate_reviewer, eventually
+from interactive_fixture import DenseTranscript, InstalledClient, MarkdownDocument, csv_review, desktop_wheel, delegate_reviewer, eventually
 
 
 TEST = Path("/test")
@@ -337,6 +337,11 @@ def exercise(client, desktop, checks):
         desktop.key(window, "ctrl+minus")
         eventually("the normal font for the dense transcript", lambda: original_font(pid, original))
         checks["dense_transcript"] = dense_layout(client, desktop, workspace, window, pid)
+        checks["wheel"] = desktop_wheel(client, workspace, lambda text: desktop.type(window, text),
+                                        lambda: command("xdotool", "mousemove", "--window", window, "250", "240",
+                                                        "click", "--repeat", "3", "4"),
+                                        lambda: desktop.key(window, "ctrl+End"),
+                                        lambda: desktop.key(window, "Return"), desktop.screen)
         checks["markdown_document"] = markdown_layout(client, desktop, workspace, window, pid, MarkdownDocument())
         checks["agent_navigation"] = agent_navigation(client, desktop, workspace, session, window)
 

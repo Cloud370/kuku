@@ -66,9 +66,9 @@ Put options before the prompt in `kuku run`, because it consumes the remaining w
 | `/source` | Switch between the rendered view and original Markdown for assistant replies in the current Agent's transcript. The source view keeps the fence markers. |
 | `/tools`, `/copy` | Open retained tool output or copy the complete source of the latest committed assistant reply. |
 | Left-button drag | Highlight visible text and copy the selected range to the clipboard on release. |
-| Page Up, Page Down | Scroll the transcript. |
+| Mouse wheel, Page Up, Page Down | Scroll the transcript. |
 | Ctrl+End or Alt+↑ while reading history | Return to the latest output and resume following. |
-| ↑, ↓ in the editor | Move within a multiline draft. At the first or last visual line, browse sent prompts and return to the draft. |
+| ↑, ↓ in the editor | Move within a multiline draft and scroll the transcript at its boundaries. Ctrl+↑ and Ctrl+↓ recall sent prompts and restore the draft. |
 | `/server`, `/reconnect`, `/restart` | Inspect the connected service, reconnect, or restart the managed local service. |
 | Arrow keys, Tab, Enter in a menu | Move the highlight, complete editable text, or activate the selected action, respectively. |
 | `/web`, `/quit` | Open the conversation in the browser or leave the terminal client. |
@@ -81,7 +81,7 @@ Each Turn contains user messages, tool activity and assistant text. Consecutive 
 
 While reading earlier output, click **Jump to latest** beside the composer to resume following.
 
-A settled Turn ends with a line such as `1m 05s · 12.5K in · 800 out · Cache 75.5% · 2 tools`. The line shows duration, input and output tokens, cache hit rate and tool call count when those fields are available and fit.
+A settled Turn ends with a numbered summary card. A desktop example is `▌ Turn 3  Stats   1m 05s · 12.5K in · 800 out · Cache 75.5% · 2 tools`. At phone widths the measurements move below the card title. The card shows duration, input and output tokens, cache hit rate and tool call count when those fields are available and fit.
 
 Write and edit cards show the file path, a bounded content or diff preview, and line counts when the tool reports them.
 
@@ -97,7 +97,7 @@ By default, a fence labeled `md` or `markdown` in an assistant reply previews th
 
 ### Status and usage
 
-An empty Session opens with the kuku title. Once work starts, the Session header contracts to one line. The default status bar leads with the effective model and shows connection state, the selected Agent and its workspace. Context usage and average TPS appear when space and measurements are available.
+An empty Session opens with the kuku title. Once work starts, the Session header contracts to one line. The default status bar leads with the effective model and shows connection state, the selected Agent and its workspace. At phone widths, the workspace and usage move to a second row. Very short terminals keep a single row to leave room for your draft. Click a character in a draft to move the caret there, including on wrapped lines. Elapsed time appears directly beside the current activity.
 
 Above the input, an activity mark and label show the selected Agent's state. The mark animates during active work and stays still when ready or finished. The display smooths brief phase changes and shows errors and requests for attention immediately. The current Turn's elapsed time updates each second when shown and keeps its start time across phases and Agent switches. Use `/statusline` to add the optional `execution` field to the footer. The composer shows its `To <agent>` recipient above the draft and grows as you type. `Draft` describes local text, while `Awaiting receipt`, `Input queued` and `Input accepted` describe submitted text.
 

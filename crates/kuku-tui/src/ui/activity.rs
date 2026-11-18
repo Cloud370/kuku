@@ -179,13 +179,12 @@ pub(super) fn render_heading(app: &App, width: usize, frame: ActivityFrame) -> L
         .min(FEEDBACK_LIMIT);
     let left_width = width - feedback_width - usize::from(feedback_width > 0);
     let status = shorten(label, left_width.saturating_sub(line.width()));
-    let status_width = status.width();
     line.push_span(Span::styled(
         status,
         Style::default().fg(frame.status.color()),
     ));
     if let Some(elapsed) = elapsed {
-        line.push_span(" ".repeat(2 + phase_space.saturating_sub(status_width)));
+        line.push_span(" ");
         line.push_span(Span::styled(shorten(&elapsed, TIME_SLOT), muted));
     }
     if let Some(feedback) = app

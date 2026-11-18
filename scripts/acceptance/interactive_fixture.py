@@ -188,6 +188,23 @@ class ProviderCall:
         }, 400))
 
 
+def desktop_wheel(client, workspace, type_text, wheel_up, latest, enter, capture):
+    prompt = "keep this wheel draft"
+    type_text(prompt)
+    before = capture("wheel-latest")
+    wheel_up()
+    reading = capture("wheel-reading")
+    latest()
+    enter()
+    call = client.provider.next(prompt)
+    assert any(block.get("text") == prompt for block in call.request["messages"][-1]["content"])
+    reply = "Wheel draft preserved"
+    call.text(reply)
+    session = client.session(workspace)
+    eventually("wheel test to settle", lambda: client.snapshot(workspace, session)["last_output"] == reply)
+    return {"submitted_draft": prompt, "screenshots": [before, reading]}
+
+
 def csv_review(client, workspace, call):
     (workspace / "example.csv").write_text('group,value\n"core, io",4\n', encoding="utf-8")
     call.tool("read_file", "read-marker", path="example.csv", brief="读取 CSV 样例")
@@ -493,6 +510,12 @@ class Terminal:
 
     def press(self, text):
         self.request("write", text=text)
+
+    def click_text(self, screen, text, cell_offset=0):
+        row, line = next((row, line) for row, line in enumerate(screen.splitlines(), 1) if text in line)
+        prefix = line[:line.index(text)]
+        column = len(prefix) + 1 + cell_offset
+        self.press(f"\x1b[<0;{column};{row}M\x1b[<0;{column};{row}m")
 
     def type(self, text):
         self.press(text)

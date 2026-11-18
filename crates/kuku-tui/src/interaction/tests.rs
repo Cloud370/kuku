@@ -47,7 +47,7 @@ fn control_p_f1_and_slash_open_actions() {
 }
 
 #[test]
-fn arrow_keys_move_inside_the_draft_and_recall_history_at_its_edges() {
+fn plain_arrows_preserve_the_draft_and_history_requires_an_explicit_shortcut() {
     let mut app = connected_app();
     app.pane_mut().draft.remember("Earlier prompt");
     app.paste("first\nsecond");
@@ -55,10 +55,12 @@ fn arrow_keys_move_inside_the_draft_and_recall_history_at_its_edges() {
     assert_eq!("first\nsecond", app.pane().draft.text());
     assert_eq!(5, app.pane().draft.cursor());
     press(&mut app, KeyCode::Up);
+    assert_eq!("first\nsecond", app.pane().draft.text());
+    app.key(KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL));
     assert_eq!("Earlier prompt", app.pane().draft.text());
     app.key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
     assert_eq!("Earlier prompt", app.pane().draft.text());
-    press(&mut app, KeyCode::Down);
+    app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL));
     assert_eq!("first\nsecond", app.pane().draft.text());
     assert_eq!(5, app.pane().draft.cursor());
     press(&mut app, KeyCode::Down);

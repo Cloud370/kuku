@@ -53,10 +53,13 @@ pub(crate) fn render_at(
     }
     let area = outer.inner(Margin::new(horizontal_gutter(outer.width), 0));
     let width = usize::from(area.width);
-    let footer =
-        app.displayed_statusline()
-            .render_line(app, width, activity_frame.agent_activity(app));
-    let status_height = u16::from(footer.is_some());
+    let footer = app.displayed_statusline().render_rows(
+        app,
+        width,
+        area.height,
+        activity_frame.agent_activity(app),
+    );
+    let status_height = footer.len() as u16;
     let status_gap = u16::from(status_height > 0 && area.height >= FOOTER_SPACE_HEIGHT);
     let below_editor = status_height + status_gap;
     let chrome_rows = if area.height > 3 {
@@ -156,9 +159,7 @@ pub(crate) fn render_at(
             .then(|| format!("Type a prompt · {} Actions", Shortcut::ACTIONS.label));
         render_editor_view(frame, inner, draft, focused, placeholder.as_deref());
     }
-    if let Some(line) = footer {
-        frame.render_widget(Paragraph::new(line), status);
-    }
+    frame.render_widget(Paragraph::new(footer), status);
     let main_areas = [
         transcript,
         banner_area,

@@ -21,6 +21,8 @@ const GROUP_GAP: &str = "    ";
 const COMPACT_DETAILS_WIDTH: usize = 12;
 const COMPACT_MODEL_WIDTH: usize = 28;
 const COMPACT_STATUS_WIDTH: usize = 96;
+const PHONE_WIDTH: usize = 60;
+const TWO_ROW_MIN_HEIGHT: u16 = 10;
 const DEFAULT_FIELDS: [Field; 6] = [
     Field::Model,
     Field::Connection,
@@ -80,12 +82,13 @@ impl StatusLine {
             .map(|fields| fields.iter().copied().map(Field::name).collect())
     }
 
-    pub(crate) fn render_line(
+    pub(crate) fn render_rows(
         &self,
         app: &App,
         width: usize,
+        height: u16,
         activity: Activity,
-    ) -> Option<Line<'static>> {
+    ) -> Vec<Line<'static>> {
         let usage = app
             .pane()
             .snapshot
@@ -93,7 +96,7 @@ impl StatusLine {
             .map(|snapshot| &snapshot.agent.usage);
         let custom = self.fields.is_some();
         let compact = !custom && width < COMPACT_STATUS_WIDTH;
-        let segments = self
+        let segments: Vec<_> = self
             .fields()
             .iter()
             .filter(|field| {
@@ -103,13 +106,33 @@ impl StatusLine {
                 field
                     .segment(app, usage, compact, custom, activity)
                     .map(|segment| (*field, segment))
-            });
+            })
+            .collect();
+        if width <= PHONE_WIDTH && height >= TWO_ROW_MIN_HEIGHT {
+            let split = if custom {
+                custom_row_break(&segments, width)
+            } else {
+                segments
+                    .iter()
+                    .position(|(field, _)| *field == Field::Workspace)
+            };
+            if let Some(split) = split {
+                let mut first: Vec<_> = segments.into_iter().map(|(_, segment)| segment).collect();
+                let second = first.split_off(split);
+                return [first, second]
+                    .into_iter()
+                    .filter_map(|row| render_segments(row, width, SEPARATOR))
+                    .collect();
+            }
+        }
         if custom || compact {
             return render_segments(
-                segments.map(|(_, segment)| segment).collect(),
+                segments.into_iter().map(|(_, segment)| segment).collect(),
                 width,
                 SEPARATOR,
-            );
+            )
+            .into_iter()
+            .collect();
         }
         let mut identity = Vec::new();
         let mut measurements = Vec::new();
@@ -120,6 +143,8 @@ impl StatusLine {
             }
         }
         render_groups(identity, measurements, width)
+            .into_iter()
+            .collect()
     }
 
     fn fields(&self) -> &[Field] {
@@ -147,6 +172,27 @@ impl StatusLine {
             )
         })
     }
+}
+
+fn custom_row_break(segments: &[(Field, Segment)], width: usize) -> Option<usize> {
+    let gap = SEPARATOR.width();
+    let total = segments
+        .iter()
+        .map(|(_, segment)| segment.compact_width(width) + gap)
+        .sum::<usize>()
+        .saturating_sub(gap);
+    if total <= width || segments.len() < 2 {
+        return None;
+    }
+    segments[..segments.len() - 1]
+        .iter()
+        .enumerate()
+        .scan(0, |prefix, (index, (_, segment))| {
+            *prefix += segment.compact_width(width) + gap;
+            Some((index + 1, (*prefix - gap).abs_diff(total - *prefix)))
+        })
+        .min_by_key(|(_, difference)| *difference)
+        .map(|(split, _)| split)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -366,10 +412,13 @@ impl Segment {
         }
     }
 
-    fn compact_width(&self) -> usize {
+    fn compact_width(&self, row_width: usize) -> usize {
         match &self.text {
             SegmentText::Labels(labels) => labels[0].width(),
-            SegmentText::Model { id, .. } => id.width().min(COMPACT_MODEL_WIDTH),
+            SegmentText::Model { id, .. } => id
+                .width()
+                .min(COMPACT_MODEL_WIDTH)
+                .min((row_width / 3).max(1)),
             SegmentText::Details(text) | SegmentText::Workspace(text) => {
                 text.width().min(COMPACT_DETAILS_WIDTH)
             }
@@ -433,7 +482,7 @@ fn render_segments(
     let mut remaining = width;
     for &index in &by_priority {
         let separator = if remaining == width { 0 } else { gap.width() };
-        let compact = segments[index].compact_width();
+        let compact = segments[index].compact_width(width);
         if compact + separator <= remaining || separator == 0 {
             reserved[index] = compact.min(remaining);
             remaining -= reserved[index] + separator;

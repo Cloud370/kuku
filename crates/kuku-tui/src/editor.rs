@@ -124,32 +124,28 @@ impl Editor {
         self.replace(self.word_start()..self.cursor, "");
     }
 
-    pub(crate) fn vertical(&mut self, width: usize, direction: isize) {
+    pub(crate) fn vertical(&mut self, width: usize, direction: isize) -> bool {
         let rows = visual_rows(&self.text, width.max(1));
         let current = row_index(&rows, self.cursor);
         let Some(destination) = current
             .checked_add_signed(direction)
             .filter(|row| *row < rows.len())
         else {
-            self.recall(direction);
-            return;
+            return false;
         };
         let row = &rows[current];
         let preferred = self
             .preferred_column
             .get_or_insert_with(|| columns(&self.text[row.start..self.cursor]));
-        let row = &rows[destination];
-        let mut offset = offset_at_column(&self.text, row, *preferred);
-        if rows
-            .get(destination + 1)
-            .is_some_and(|next| next.start == offset)
-        {
-            offset = self.text[row.clone()]
-                .grapheme_indices(true)
-                .next_back()
-                .map_or(row.start, |(index, _)| row.start + index);
-        }
-        self.cursor = offset;
+        self.cursor = offset_at_column(&self.text, &rows, destination, *preferred);
+        true
+    }
+
+    pub(crate) fn place_cursor(&mut self, width: usize, column: usize, visible_row: usize) {
+        let rows = visual_rows(&self.text, width.max(1));
+        let row = (self.top + visible_row).min(rows.len() - 1);
+        self.cursor = offset_at_column(&self.text, &rows, row, column);
+        self.preferred_column = None;
     }
 
     pub(crate) fn remember(&mut self, prompt: &str) {
@@ -296,15 +292,25 @@ fn row_index(rows: &[Range<usize>], offset: usize) -> usize {
     rows.partition_point(|range| range.start <= offset) - 1
 }
 
-fn offset_at_column(text: &str, range: &Range<usize>, column: usize) -> usize {
+fn offset_at_column(text: &str, rows: &[Range<usize>], row: usize, column: usize) -> usize {
+    let range = &rows[row];
     let mut used = 0;
+    let mut last = range.start;
     for (offset, grapheme) in text[range.clone()].grapheme_indices(true) {
+        last = range.start + offset;
         used += grapheme_columns(grapheme);
         if used > column {
-            return range.start + offset;
+            return last;
         }
     }
-    range.end
+    if rows
+        .get(row + 1)
+        .is_some_and(|next| next.start == range.end)
+    {
+        last
+    } else {
+        range.end
+    }
 }
 
 fn columns(text: &str) -> usize {

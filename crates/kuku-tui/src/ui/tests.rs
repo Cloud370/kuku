@@ -97,6 +97,39 @@ fn cell(buffer: &Buffer, symbol: &str) -> (u16, u16) {
     buffer.pos_of(index)
 }
 
+#[test]
+fn composer_click_places_the_caret_in_scrolled_and_wrapped_unicode_text() {
+    let mut app = app();
+    let mut terminal = Terminal::new(TestBackend::new(30, 20)).unwrap();
+    let prefix = "earlier\n".repeat(6) + &"x".repeat(24);
+    app.pane_mut()
+        .draft
+        .insert(&format!("{prefix}中文e\u{301}👨‍👩‍👧‍👦end"));
+    let buffer = terminal
+        .draw(|frame| render(frame, &mut app))
+        .unwrap()
+        .buffer;
+    let (x, y) = cell(buffer, "中");
+    assert!(y > app.composer_area.y);
+    click(&mut app, buffer, (x + 1, y));
+    key(&mut app, KeyCode::Char('!'), KeyModifiers::NONE);
+    assert_eq!(
+        app.pane().draft.text(),
+        format!("{prefix}!中文e\u{301}👨‍👩‍👧‍👦end")
+    );
+    let buffer = terminal
+        .draw(|frame| render(frame, &mut app))
+        .unwrap()
+        .buffer;
+    let point = cell(buffer, "👨‍👩‍👧‍👦");
+    click(&mut app, buffer, point);
+    key(&mut app, KeyCode::Char('?'), KeyModifiers::NONE);
+    assert_eq!(
+        app.pane().draft.text(),
+        format!("{prefix}!中文e\u{301}?👨‍👩‍👧‍👦end")
+    );
+}
+
 fn command(app: &mut App, name: &str) {
     key(app, KeyCode::F(1), KeyModifiers::NONE);
     for character in name.chars() {
@@ -932,7 +965,7 @@ fn spacious_composer_and_picker_use_responsive_insets() {
     let compact_frame = compact.draw(|frame| render(frame, &mut app)).unwrap();
     let (compact_x, compact_y) = cell(compact_frame.buffer, "甲");
     assert!(compact_x < wide_x);
-    assert_eq!(compact_y, 10);
+    assert_eq!(compact_y, 9);
 
     key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
     let frame = wide.draw(|frame| render(frame, &mut app)).unwrap();

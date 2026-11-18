@@ -147,6 +147,19 @@ impl App {
             {
                 self.open_queued()
             }
+            key if Shortcut::PREVIOUS_PROMPT.matches(key) || Shortcut::NEXT_PROMPT.matches(key) => {
+                self.focus_composer();
+                self.pane_mut()
+                    .draft
+                    .recall(if key.code == KeyCode::Up { -1 } else { 1 });
+            }
+            key if Shortcut::UP.matches(key) || Shortcut::DOWN.matches(key) => {
+                let direction = if key.code == KeyCode::Up { -1 } else { 1 };
+                let width = self.editor_width;
+                if !self.pane_mut().draft.vertical(width, direction) {
+                    self.scroll(direction);
+                }
+            }
             key if Shortcut::RECONNECT.matches(key) => self.reconnect(),
             key if Shortcut::MODEL.matches(key) => self.perform(CommandMenu::Model),
             key if Shortcut::DETAILS.matches(key) => {
@@ -952,8 +965,9 @@ fn move_cursor(editor: &mut Editor, key: KeyEvent, width: usize, multiline: bool
         KeyCode::End => editor.end(),
         KeyCode::Char('a') if control(key, 'a') => editor.home(),
         KeyCode::Char('e') if control(key, 'e') => editor.end(),
-        KeyCode::Up if multiline => editor.vertical(width, -1),
-        KeyCode::Down if multiline => editor.vertical(width, 1),
+        KeyCode::Up | KeyCode::Down if multiline => {
+            editor.vertical(width, if key.code == KeyCode::Up { -1 } else { 1 });
+        }
         _ => {}
     }
 }

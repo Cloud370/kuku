@@ -122,7 +122,7 @@ fn attached_activity_keeps_recipient_clock_and_draft_fixed_across_phases() {
         )
     };
     let original = draw(&mut app, &mut clock, 0, "Waiting for model");
-    assert!(original.0.contains("8s"));
+    assert!(original.0.contains("Waiting for model 8s"));
     let live = |app: &mut App, clock: &mut ActivityClock, ms, event| {
         app.update(Update::Observation(
             selection.clone(),
@@ -150,8 +150,8 @@ fn attached_activity_keeps_recipient_clock_and_draft_fixed_across_phases() {
     assert_eq!((original.1, original.2), (current.1, current.2));
     live(&mut app, &mut clock, 160, json!({"type":"tool_arguments"}));
     let tools = draw(&mut app, &mut clock, 2_100, "Writing tool arguments");
-    assert!(tools.0.contains("10s"));
-    assert_eq!(original.0.find("8s"), tools.0.find("10s"));
+    assert!(tools.0.contains("Writing tool arguments 10s"));
+    assert_eq!(original.0.find("Draft"), tools.0.find("Draft"));
     assert_eq!((original.1, original.2), (tools.1, tools.2));
     key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
     let stopped = draw(&mut app, &mut clock, 2_101, "Stopping");

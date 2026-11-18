@@ -2,35 +2,73 @@ use std::time::Duration;
 
 use kuku_client::TurnSummary;
 use ratatui::style::Style;
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
 use crate::text::{compact_token_count, format_elapsed};
-use crate::theme::MUTED;
+use crate::theme::{emphasis, MUTED, TURN_CARD, USAGE};
 
-use super::{body_inset, render_rows, Row};
+use super::Row;
 
 pub(super) fn append_turn_summary(
     rows: &mut Vec<Row>,
     summary: Option<&TurnSummary>,
+    turn_number: Option<u64>,
     width: usize,
 ) {
-    let Some(row) = summary.and_then(|summary| render_turn_summary(summary, width)) else {
+    let Some(summary) = summary else { return };
+    let title = turn_number.map_or_else(|| "Turn stats".into(), |number| format!("Turn {number}"));
+    let inner = width.saturating_sub(3);
+    if title.width() > inner {
         return;
-    };
+    }
     if rows.last().is_some_and(|row| row.line.spans.is_empty()) {
         rows.pop();
     }
-    rows.push(row);
+    let mut caption = Line::from(Span::styled(title, emphasis(USAGE)));
+    if turn_number.is_some() && inner >= 22 {
+        caption.push_span(Span::styled("  Stats", Style::new().fg(MUTED)));
+    }
+    let stacked = width < 60;
+    let budget = if stacked {
+        inner
+    } else {
+        inner.saturating_sub(caption.width() + 3)
+    };
+    let metrics = render_metrics(summary, budget, stacked);
+    if stacked && metrics.width() > 0 {
+        let card_width = caption.width().max(metrics.width());
+        rows.push(render_card_row(caption, card_width));
+        rows.push(render_card_row(metrics, card_width));
+    } else {
+        if metrics.width() > 0 {
+            caption.push_span("   ");
+            caption.extend(metrics.spans);
+        }
+        let card_width = caption.width();
+        rows.push(render_card_row(caption, card_width));
+    }
 }
 
-fn render_turn_summary(summary: &TurnSummary, width: usize) -> Option<Row> {
+fn render_card_row(mut content: Line<'static>, width: usize) -> Row {
+    let background = Style::new().bg(TURN_CARD);
+    let padding = width - content.width() + 1;
+    let mut line = Line::from(Span::styled("▌ ", background.fg(USAGE)));
+    for span in &mut content.spans {
+        span.style = background.patch(span.style);
+    }
+    line.extend(content.spans);
+    line.push_span(Span::styled(" ".repeat(padding), background));
+    Row::plain(line)
+}
+
+fn render_metrics(summary: &TurnSummary, width: usize, stacked: bool) -> Line<'static> {
     let tools = if summary.tool_calls == 1 {
         "tool"
     } else {
         "tools"
     };
-    let labels = [
+    let mut labels = [
         summary
             .elapsed_ms
             .map(|millis| format_elapsed(Duration::from_millis(millis))),
@@ -46,37 +84,19 @@ fn render_turn_summary(summary: &TurnSummary, width: usize) -> Option<Row> {
             .map(cache_hit),
         Some(format!("{} {tools}", summary.tool_calls)),
     ];
-    let inset = body_inset(width);
-    let columns = width.saturating_sub(usize::from(inset));
-    let mut text = String::new();
-    let separator = " · ";
-    let mut used = 0;
+    if stacked {
+        labels[1..].rotate_right(1);
+    }
+    let muted = Style::new().fg(MUTED);
+    let mut line = Line::default();
     for label in labels.into_iter().flatten() {
-        let separator_size = if text.is_empty() {
-            0
-        } else {
-            separator.width()
-        };
-        let needed = separator_size + label.width();
-        if used + needed > columns {
-            continue;
+        let separator = if line.spans.is_empty() { "" } else { " · " };
+        if line.width() + separator.width() + label.width() <= width {
+            line.push_span(Span::styled(separator, muted));
+            line.push_span(Span::styled(label, muted));
         }
-        if separator_size > 0 {
-            text.push_str(separator);
-        }
-        text.push_str(&label);
-        used += needed;
     }
-    if text.is_empty() {
-        return None;
-    }
-    render_rows(
-        vec![Line::styled(text, Style::new().fg(MUTED))],
-        width,
-        1,
-        inset,
-    )
-    .next()
+    line
 }
 
 fn cache_hit(rate: f64) -> String {
@@ -117,11 +137,15 @@ mod tests {
         transcript.apply(entry(5, 1, json!({"type":"turn_summary","turn_summary":{
             "elapsed_ms":65400,"input_tokens":12500,"output_tokens":800,"cache_hit_percent":75.5,"tool_calls":2
         }})), None);
-        let wide = rows(&mut transcript, 70);
+        let wide = rows(&mut transcript, 90);
         let text = "1m 05s · 12.5K in · 800 out · Cache 75.5% · 2 tools";
         let row = wide.iter().position(|row| row.contains(text)).unwrap();
         assert_eq!("The work is complete.", wide[row - 1]);
-        assert_eq!(1, wide.iter().filter(|row| row.contains("Turn 1")).count());
+        assert!(wide[row].starts_with("▌ Turn 1  Stats"));
+        assert_eq!(
+            1,
+            wide.iter().filter(|row| row.as_str() == "Turn 1").count()
+        );
         assert_eq!(None, transcript.detail_at(row));
         assert_eq!(Some(ReplySource::Local(source)), transcript.last_reply());
         let narrow = rows(&mut transcript, 18);
@@ -151,13 +175,16 @@ mod tests {
             .position(|line| line == "Partial result")
             .unwrap();
         assert!(header < body);
-        assert_eq!(Some("  1 tool"), rendered.get(body + 1).map(String::as_str));
+        assert_eq!(
+            Some("▌ Turn 2  Stats   1 tool"),
+            rendered.get(body + 1).map(|row| row.trim_end())
+        );
         assert_eq!(body + 2, rendered.len());
         assert_eq!(Some(ReplySource::Local(previous)), transcript.last_reply());
         assert!(transcript.toggle_source());
         let raw = rows(&mut transcript, 64);
         assert!(raw.iter().any(|line| line == "## Partial result"));
-        assert_eq!("1 tool", raw.last().unwrap().trim());
+        assert_eq!("▌ Turn 2  Stats   1 tool", raw.last().unwrap().trim());
     }
 
     #[test]
@@ -193,9 +220,12 @@ mod tests {
         transcript.scroll(-20, 60, 8);
         let joined = rows(&mut transcript, 60).join("\n");
         assert!(
-            joined.contains("First reply\n  0 tools\nTurn 2"),
+            joined.contains("First reply\n▌ Turn 1  Stats   0 tools \nTurn 2"),
             "{joined}"
         );
-        assert!(joined.contains("Second reply\n  8s · 3 tools"), "{joined}");
+        assert!(
+            joined.contains("Second reply\n▌ Turn 2  Stats   8s · 3 tools"),
+            "{joined}"
+        );
     }
 }

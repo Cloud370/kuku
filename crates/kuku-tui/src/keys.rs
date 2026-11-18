@@ -32,6 +32,9 @@ impl Shortcut {
     pub(crate) const TAB: Self = Self::plain(KeyCode::Tab, "Tab");
     pub(crate) const UP: Self = Self::plain(KeyCode::Up, "↑");
     pub(crate) const DOWN: Self = Self::plain(KeyCode::Down, "↓");
+    pub(crate) const PREVIOUS_PROMPT: Self =
+        Self::new(KeyCode::Up, KeyModifiers::CONTROL, "Ctrl+↑");
+    pub(crate) const NEXT_PROMPT: Self = Self::new(KeyCode::Down, KeyModifiers::CONTROL, "Ctrl+↓");
     pub(crate) const PAGE_UP: Self = Self::plain(KeyCode::PageUp, "PgUp");
     pub(crate) const PAGE_DOWN: Self = Self::plain(KeyCode::PageDown, "PgDn");
     pub(crate) const REFRESH_OUTPUT: Self = Self::plain(KeyCode::Char('r'), "R");

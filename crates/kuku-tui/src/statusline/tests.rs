@@ -193,8 +193,8 @@ fn question_stays_visible_when_execution_is_hidden_or_the_service_is_offline() {
         "fixture offline".into(),
     )));
     let rows = screen(&mut app, &StatusLine::default(), 29, 10);
-    assert!(rows.last().unwrap().contains("Offline"));
-    assert!(rows[..9].iter().any(|row| row.contains("Offline")));
+    assert!(rows[8].contains("Offline"));
+    assert!(rows[..8].iter().any(|row| row.contains("Offline")));
     assert!(rows.iter().any(|row| row.contains("Which test target?")));
 }
 
@@ -323,7 +323,17 @@ fn default_status_line_shows_context_tps_and_workspace_in_one_row() {
     assert!(rows[23].contains("Ctx 89%"));
     assert!(rows[23].contains("work-right") && rows[21].contains("Local draft"));
     let rows = screen(&mut app, &statusline, 29, 24);
-    assert!(rows[20].contains("Running") && rows[20].contains("To main"));
+    assert!(rows[19].contains("Running") && rows[19].contains("To main"));
+    let rows = screen(&mut app, &statusline, 42, 24);
+    assert!(rows[22].contains("Model pending · Connected · Agent main"));
+    assert!(
+        rows[23].contains("work-right · Ctx 89% · 18.4 TPS"),
+        "{}",
+        rows[23]
+    );
+    app.pane_mut().draft.insert(" typed");
+    let typed = screen(&mut app, &statusline, 42, 24);
+    assert_eq!(rows[22..], typed[22..]);
     let rows = screen(&mut app, &StatusLine::parse("none").unwrap(), 80, 24);
     assert!(
         rows[23].contains("Local draft"),
@@ -376,10 +386,10 @@ fn default_model_field_keeps_the_resolved_identifier_first_at_every_width() {
     let layout = StatusLine::default();
     for width in [60, 80, 140] {
         let rows = screen(&mut app, &layout, width, 20);
+        let identity = &rows[if width == 60 { 18 } else { 19 }];
         assert!(
-            rows[19].trim().starts_with("openai/gpt-6-luna "),
-            "{}",
-            rows[19]
+            identity.trim().starts_with("openai/gpt-6-luna "),
+            "{identity}"
         );
     }
     let configured = StatusLine::parse("model,connection").unwrap();
@@ -387,8 +397,8 @@ fn default_model_field_keeps_the_resolved_identifier_first_at_every_width() {
     assert!(rows[19]
         .trim()
         .starts_with("openai/gpt-6-luna (configured-model-gateway · high) ·"));
-    let line = layout.render_line(&app, 80, app.pane().activity()).unwrap();
-    assert_eq!(Some(MODEL), line.spans[0].style.fg);
+    let lines = layout.render_rows(&app, 80, 20, app.pane().activity());
+    assert_eq!(Some(MODEL), lines[0].spans[0].style.fg);
 }
 
 #[test]
@@ -417,11 +427,13 @@ fn selected_agent_metrics_change_with_the_address_and_custom_order() {
     let statusline =
         StatusLine::parse("agent,tps,context,tokens_out,cache,tokens_in,workspace").unwrap();
     let rows = screen(&mut app, &statusline, 54, 20);
-    assert_eq!(
-        "Agent main · 18.4 TPS · 210K out · /workspace",
-        rows[19].trim()
-    );
-    assert!(rows[17].contains("Type a prompt"));
+    let fields = rows[18..]
+        .iter()
+        .map(|row| row.trim())
+        .collect::<Vec<_>>()
+        .join(" · ");
+    assert_eq!("Agent main · 18.4 TPS · Context 89% used · 210K out · Cache hit 75% · 129M in · /workspace", fields);
+    assert!(rows[16].contains("Type a prompt"));
 
     app.select(
         Address::new(main.session.clone(), "reviewer".into()),

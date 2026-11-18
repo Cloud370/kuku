@@ -23,7 +23,15 @@ impl App {
             }
             Some(MouseAction::Click(ClickTarget::Queued)) => self.open_queued(),
             Some(MouseAction::Click(ClickTarget::Transcript)) => self.scroll(0),
-            Some(MouseAction::Click(ClickTarget::Composer)) => self.focus_composer(),
+            Some(MouseAction::Click(ClickTarget::Composer)) => {
+                let area = self.composer_area;
+                self.focus_composer();
+                self.pane_mut().draft.place_cursor(
+                    usize::from(area.width),
+                    usize::from(mouse.column - area.x),
+                    usize::from(mouse.row - area.y),
+                );
+            }
             Some(MouseAction::Click(ClickTarget::JumpLatest)) => self.jump_latest(),
             None => {}
         }
