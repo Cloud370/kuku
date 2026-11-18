@@ -33,6 +33,7 @@ async fn command_slot_preserves_timeout_truncation() {
         dir.path().to_path_buf(),
         event_tx,
         None,
+        crate::WorkspaceExecutionHost::default(),
     );
 
     loop {

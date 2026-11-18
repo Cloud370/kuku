@@ -871,6 +871,7 @@ impl Run {
         let summary = display_summary(&tool_call.name, &hook_result.args, None);
         pending.record_tool_call(&tool_call.name);
         let (slot, tool_kind) = super::slots::dispatch_tool_slot(super::slots::SlotDispatchArgs {
+            capacity: crate::WorkspaceExecutionHost::default(),
             output: None,
             tool_name: tool_call.name.clone(),
             tool_id: tool_call.id.clone(),

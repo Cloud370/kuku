@@ -337,3 +337,53 @@ for (let i=1;i<=40;i++) await workspace.write_file({path:`part-${i}`,content:Str
     assert!(!work.path().join("part-13").exists());
     session.close().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn derived_output_is_streamed_and_abandoned_drafts_release_their_storage() {
+    let work = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let mut options = options(
+        &work,
+        &data,
+        r#"
+const original = (await workspace.create_output({})).result.id;
+await workspace.append_output({id:original, text:"line 甲\nline 乙\n"});
+await workspace.finish_output({id:original});
+const output = (await workspace.create_output({})).result.id;
+for await (const {text} of workspace.output_lines({id:original})) {
+  await workspace.append_output({id:output, text:text.toUpperCase()+"\n"});
+}
+const saved = await workspace.finish_output({id:output});
+const draft = (await workspace.create_output({})).result.id;
+await workspace.append_output({id:draft, text:"x".repeat(32768)});
+return {original, saved:saved.result.output_ref.id, draft};
+"#,
+    );
+    options.limits.max_output_bytes = 96 * 1024;
+    options.limits.max_retained_output_bytes = 196 * 1024;
+    let session = start(options).await;
+    let facts = until(|| script_facts(&session)).await;
+    let content = |name: &str| {
+        let id = facts.value[name].as_str().unwrap();
+        session
+            .read_agent_output("main", id, &kuku::OutputRead::default())
+            .unwrap()
+            .segments
+            .into_iter()
+            .map(|segment| segment.text)
+            .collect::<String>()
+    };
+    assert_eq!("line 甲\nline 乙\n", content("original"));
+    assert_eq!("LINE 甲\nLINE 乙\n", content("saved"));
+    let draft = facts.value["draft"].as_str().unwrap();
+    assert!(session
+        .read_agent_output("main", draft, &kuku::OutputRead::default())
+        .is_err());
+    assert_eq!(
+        2,
+        std::fs::read_dir(session.events_path().parent().unwrap().join("outputs"))
+            .unwrap()
+            .count()
+    );
+    session.close().await.unwrap();
+}

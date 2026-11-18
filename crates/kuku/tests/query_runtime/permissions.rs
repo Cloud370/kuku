@@ -74,7 +74,7 @@ async fn run_emits_permission_requested_for_gated_tool() {
             assert_eq!(summary, "run tests");
             assert_eq!(
                 serde_json::json!({"cwd":".","invocation":{"mode":"program","program":"cargo","args":["test"]}}),
-                serde_json::from_str::<serde_json::Value>(&candidate).unwrap()
+                serde_json::from_str::<serde_json::Value>(candidate).unwrap()
             );
             assert_eq!(source, "default_ask");
         }

@@ -207,7 +207,7 @@ pub(super) async fn dispatch(
     {
         mark_dispatched(&pending, &queued)?;
         pending.record_tool_call(&queued.tool_call.name);
-        let result = execute_tool_call(&mut pending, &queued.tool_call).await?;
+        let result = Box::pin(execute_tool_call(&mut pending, &queued.tool_call)).await?;
         return finish_inline_event(pending, queued, result);
     }
     if let Some(registered) = pending
@@ -277,6 +277,7 @@ pub(super) async fn dispatch(
     };
     mark_dispatched(&pending, &queued)?;
     let (slot, kind) = super::slots::dispatch_tool_slot(super::slots::SlotDispatchArgs {
+        capacity: runtime_session(&pending)?.workspace_execution_host(),
         output,
         tool_name: queued.tool_call.name.clone(),
         tool_id: queued.tool_call.id.clone(),
@@ -472,7 +473,21 @@ pub(super) async fn execute(
         call.id
     );
     let value = match call.name.as_str() {
-        "read_output" => return output::execute(&session, agent, &call.args),
+        "read_output" => {
+            let permits = session.workspace_execution_host().operations();
+            let permit = permits
+                .acquire_owned()
+                .await
+                .map_err(|_| Error::InvalidArgument("workspace capacity closed".into()))?;
+            let agent = agent.to_owned();
+            let args = call.args.clone();
+            return tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                output::execute(&session, &agent, &args)
+            })
+            .await
+            .map_err(|err| Error::InvalidEventStream(err.to_string()))?;
+        }
         "save_value" => return values::save(&session, agent, &call.args).await,
         "list_values" => return values::list(&session, agent, &call.args),
         "create_agent" => {

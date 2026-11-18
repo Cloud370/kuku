@@ -79,30 +79,41 @@ impl WorkspaceActions {
                             "script stopped before file operation",
                         );
                     }
+                    let cancelled = || execution.is_cancelled();
                     match op {
-                        Op::FindFiles => builtin::find_files(&args, &workspace),
-                        Op::SearchText => builtin::search_text(&args, &workspace),
-                        Op::StatFile => builtin::stat_file(&args, &workspace),
+                        Op::FindFiles => builtin::find_files(&args, &workspace, &cancelled),
+                        Op::SearchText => builtin::search_text(&args, &workspace, &cancelled),
+                        Op::StatFile => builtin::stat_file(&args, &workspace, &cancelled),
                         Op::ReadFile => {
                             let (result, read) = builtin::read_file_for_executor(
                                 &args,
                                 &workspace,
                                 execution.limits.file_bytes,
+                                &cancelled,
                             );
                             if let Some(read) = read {
                                 execution.stage_read(&local_id, read);
                             }
                             result
                         }
-                        Op::EditFile => {
-                            builtin::edit_file_for_executor(&args, &workspace, &execution.reads())
-                        }
-                        Op::WriteFile => {
-                            builtin::write_file_for_executor(&args, &workspace, &execution.reads())
-                        }
-                        Op::RemoveFile => {
-                            builtin::remove_file_for_executor(&args, &workspace, &execution.reads())
-                        }
+                        Op::EditFile => builtin::edit_file_for_executor(
+                            &args,
+                            &workspace,
+                            &execution.reads(),
+                            &cancelled,
+                        ),
+                        Op::WriteFile => builtin::write_file_for_executor(
+                            &args,
+                            &workspace,
+                            &execution.reads(),
+                            &cancelled,
+                        ),
+                        Op::RemoveFile => builtin::remove_file_for_executor(
+                            &args,
+                            &workspace,
+                            &execution.reads(),
+                            &cancelled,
+                        ),
                         _ => unreachable!("only file operations reach the blocking executor"),
                     }
                 })

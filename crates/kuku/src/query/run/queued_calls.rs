@@ -184,6 +184,7 @@ impl Run {
                 pending.record_tool_call(&tool_call.name);
                 let (slot, tool_kind) = crate::query::slots::dispatch_tool_slot(
                     crate::query::slots::SlotDispatchArgs {
+                        capacity: crate::WorkspaceExecutionHost::default(),
                         output: None,
                         tool_name: tool_call.name.clone(),
                         tool_id: tool_call.id.clone(),

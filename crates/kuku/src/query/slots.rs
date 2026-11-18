@@ -40,6 +40,7 @@ pub(crate) fn spawn_simple_slot(
     config: std::sync::Arc<crate::config::Config>,
     catalog: crate::prompt::PromptCatalog,
     events_path: PathBuf,
+    capacity: crate::WorkspaceExecutionHost,
 ) -> ExecSlot {
     let cancel = Arc::new(Notify::new());
     let cancel_clone = cancel.clone();
@@ -51,22 +52,54 @@ pub(crate) fn spawn_simple_slot(
     let workspace_ordered = requires_workspace_ordering(&tool_name);
 
     tokio::spawn(async move {
-        let result = tokio::select! {
-            biased;
-            _ = cancel_clone.notified() => cancelled_slot("cancelled"),
-            r = crate::tool::dispatch::dispatch(
-                &tool_name,
-                &args,
-                &workspace,
-                &kuku_home,
-                &dispatch_conversation,
-                &prior_events,
-                0,
-                Some(&dispatch_tool_call_id),
-                &config,
-                &catalog,
-                &events_path,
-            ) => SlotEvent::Done(r),
+        let result = if crate::tool::dispatch::is_workspace_file(&tool_name) {
+            let operations = capacity.operations();
+            let permit = tokio::select! {
+                biased;
+                _ = cancel_clone.notified() => None,
+                permit = operations.acquire_owned() => permit.ok(),
+            };
+            if let Some(permit) = permit {
+                use std::sync::atomic::{AtomicBool, Ordering};
+                let stopped = Arc::new(AtomicBool::new(false));
+                let check = stopped.clone();
+                let mut work = tokio::task::spawn_blocking(move || {
+                    let _permit = permit;
+                    crate::tool::dispatch::dispatch_workspace_file(
+                        &tool_name,
+                        &args,
+                        &workspace,
+                        &dispatch_conversation,
+                        &prior_events,
+                        0,
+                        Some(&dispatch_tool_call_id),
+                        &|| check.load(Ordering::Acquire),
+                    )
+                    .expect("a known workspace file operation")
+                });
+                let outcome = tokio::select! {
+                    biased;
+                    _ = cancel_clone.notified() => {
+                        stopped.store(true,Ordering::Release);
+                        work.await
+                    }
+                    result = &mut work => result,
+                };
+                SlotEvent::Done(outcome.unwrap_or_else(|err| {
+                    ToolResultEnvelope::error("workspace file worker failed", err.to_string())
+                }))
+            } else {
+                cancelled_slot("workspace operation cancelled before dispatch")
+            }
+        } else {
+            tokio::select! {
+                biased;
+                _ = cancel_clone.notified() => cancelled_slot("cancelled"),
+                r = crate::tool::dispatch::dispatch(
+                    &tool_name,&args,&workspace,&kuku_home,&dispatch_conversation,&prior_events,
+                    0,Some(&dispatch_tool_call_id),&config,&catalog,&events_path,
+                ) => SlotEvent::Done(r),
+            }
         };
         let _ = event_tx.send((tc_id, result)).await;
     });
@@ -215,6 +248,7 @@ pub(crate) fn spawn_agent_slot(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_command_slot(
     tool_call_id: String,
     conversation: Option<crate::conversation::address::ConversationAddress>,
@@ -223,12 +257,22 @@ pub(crate) fn spawn_command_slot(
     workspace: PathBuf,
     event_tx: mpsc::Sender<(String, SlotEvent)>,
     output: Option<CommandOutputSpec>,
+    capacity: crate::WorkspaceExecutionHost,
 ) -> ExecSlot {
     let cancel = Arc::new(Notify::new());
     let cancel_cmd = cancel.clone();
     let tc_id = tool_call_id.clone();
 
     tokio::spawn(async move {
+        let operations = capacity.operations();
+        let _permit = tokio::select! {
+            biased;
+            _=cancel_cmd.notified()=> {
+                let _=event_tx.send((tc_id,cancelled_slot("command cancelled before dispatch"))).await;
+                return;
+            }
+            permit=operations.acquire_owned()=>permit.expect("host capacity remains open"),
+        };
         let (tool_tx, mut tool_rx) = mpsc::channel::<crate::tool::builtin::CommandEvent>(64);
 
         let fwd_tc_id = tc_id.clone();
@@ -290,6 +334,7 @@ pub(crate) fn spawn_command_slot(
 }
 
 pub(crate) struct SlotDispatchArgs {
+    pub(crate) capacity: crate::WorkspaceExecutionHost,
     pub(crate) output: Option<CommandOutputSpec>,
     pub(crate) tool_name: String,
     pub(crate) tool_id: String,
@@ -322,6 +367,7 @@ pub(crate) fn dispatch_tool_slot(args: SlotDispatchArgs) -> (ExecSlot, ToolKind)
             args.workspace,
             args.event_tx,
             args.output,
+            args.capacity,
         );
         (slot, ToolKind::Command { pid: None })
     } else {
@@ -338,6 +384,7 @@ pub(crate) fn dispatch_tool_slot(args: SlotDispatchArgs) -> (ExecSlot, ToolKind)
             args.config,
             args.catalog,
             args.events_path,
+            args.capacity,
         );
         (slot, ToolKind::Simple)
     }
@@ -520,6 +567,7 @@ mod tests {
             test_config(),
             crate::prompt::builtin_prompt_catalog(),
             dir.path().join("events.jsonl"),
+            crate::WorkspaceExecutionHost::default(),
         );
         let (_, denied) = event_rx.recv().await.unwrap();
         let SlotEvent::Done(result) = denied else {
@@ -540,6 +588,7 @@ mod tests {
             test_config(),
             crate::prompt::builtin_prompt_catalog(),
             dir.path().join("events.jsonl"),
+            crate::WorkspaceExecutionHost::default(),
         );
         let (_, allowed) = event_rx.recv().await.unwrap();
         let SlotEvent::Done(result) = allowed else {

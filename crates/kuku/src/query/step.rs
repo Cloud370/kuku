@@ -890,6 +890,7 @@ pub(super) async fn advance_pending(
                     }
 
                     let (slot, tool_kind) = dispatch_tool_slot(SlotDispatchArgs {
+                        capacity: crate::WorkspaceExecutionHost::default(),
                         output: None,
                         tool_name: queued.tool_call.name.clone(),
                         tool_id: id.clone(),
