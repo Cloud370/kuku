@@ -135,6 +135,10 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
     .unwrap();
 
     assert!(assembly.system_prompt.contains("<kuku_foundation>"));
+    assert!(assembly
+        .system_prompt
+        .contains("put the content in your reply"));
+    assert!(assembly.system_prompt.contains("To change the workspace"));
     assert!(assembly.system_prompt.contains("<kuku_hard_rules>"));
     assert!(assembly.system_prompt.contains("<kuku_shared_style>"));
     assert_eq!(assembly.prelude_messages.len(), 2);
@@ -164,9 +168,9 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
     match &assembly.prelude_messages[1].blocks[..] {
         [MessageBlock::Text(text)] => {
             assert!(text.contains("<kuku_tool_guidance>"));
-            assert!(
-                text.contains("Use tools to establish evidence before concluding or modifying.")
-            );
+            assert!(text.contains(
+                "Use tools when the task needs information or an action outside the conversation."
+            ));
         }
         other => panic!("expected tool-guidance text block, got {other:?}"),
     }
