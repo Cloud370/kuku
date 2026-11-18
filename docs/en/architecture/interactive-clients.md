@@ -49,6 +49,8 @@ The terminal uses a flat workspace with a persistent Session identity, visible T
 
 Keep the status line to one row with stable identity, usage and workspace positions while editing. Use the composer for input and receipt feedback. Fields are configurable. Measure throughput across completed, timed requests for the selected Agent. Compute cache hit rate from requests that report both input tokens and cache-read tokens, using the same paired samples for both totals. Retain known usage on reconnect and identify missing measurements. Show connection and execution failures separately. On Windows, background command tools run without opening a console window.
 
+End each settled Turn with one subdued transcript line for available duration, input and output tokens, cache hit rate and the count of actual tool calls. It takes no input focus. On narrow terminals, give priority to the transcript text. Beside the activity mark, update the active Turn's elapsed time once per second, for example `1h 05m 54s`. Use the same Turn start across reasoning, reply output and tools, and restore that timing when switching back to the Agent.
+
 Lead the default status line with the effective model and keep model, execution and usage visually distinct. Pair color with text for waiting, failure and actions that need attention. Preview status line changes in the editor and keep the saved order in terminal-local preferences. Share spacing, selection and focus styles across the composer and dialogs. Pointer input lets users browse and select in Agent, model and execution-detail dialogs. Operations with execution side effects require explicit confirmation with Enter. At narrow widths, give priority to readable transcript and editable input.
 
 | Task | Product behavior |
