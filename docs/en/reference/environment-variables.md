@@ -5,7 +5,7 @@
 | Variable | Meaning |
 |---|---|
 | `KUKU_HOME` | Override the default runtime home directory |
-| `KUKU_TUI_STATUSLINE` | The terminal reads this comma-separated field list on startup. Default order is `connection,execution,input,agent,workspace,model,context,tokens_in,tokens_out,cache,tps`. Specify just the fields you want, in display order, or `none` to hide the status line. [Field meanings](cli.md#terminal-interface) |
+| `KUKU_TUI_STATUSLINE` | The terminal reads this comma-separated field list on startup. Default order is `connection,execution,agent,workspace,model,context,tokens_in,tokens_out,cache,tps`. Input feedback appears in the editor by default. Add `input` to place it in the footer. Specify just the fields you want, in display order, or `none` to hide the status line. [Field meanings](cli.md#terminal-interface) |
 | `KUKU_TOKEN` | Authenticate a client using an explicitly selected server |
 | `KUKU_SERVER_PASSWORD` | Set the bearer token for a server started with `kuku server` |
 | `ANTHROPIC_API_KEY` | Common API key source for `provider.anthropic` |

@@ -65,7 +65,7 @@
 | 菜单中的方向键、Tab、Enter | 方向键移动高亮项，Tab 补全可编辑文本，Enter 执行选中的动作。 |
 | `/web`、`/quit` | 在浏览器中打开对话或退出终端客户端。 |
 
-状态栏分别显示客户端到服务的连接、所选 Agent 的活动和输入状态。`Draft` 表示本地草稿；发送后可区分等待回执、已排队和已接纳。`Waiting for model` 和 `Streaming reply` 对应模型请求的不同阶段，`Reconnecting` 表示客户端正在重新连接服务。可用 `KUKU_TUI_STATUSLINE` 选择字段和顺序。[环境变量](environment-variables.md)
+顶部显示当前会话，每轮分组展示用户消息、工具执行与助手正文。Markdown 边输出边排版。单行状态栏显示服务连接和 Agent 活动，输入区随折行和多行草稿增高，显示草稿与回执状态。`Draft` 表示本地草稿；发送后可区分等待回执、已排队和已接纳。`Waiting for model` 和 `Streaming reply` 对应模型请求的不同阶段，`Reconnecting` 表示客户端正在重新连接服务。可用 `KUKU_TUI_STATUSLINE` 选择字段和顺序。[环境变量](environment-variables.md)
 
 状态栏显示所选 Agent 在当前 Session 内的地址，以及服务确认的工作目录。取得 Agent 快照后，默认布局会在空间足够时显示其用量。
 
@@ -74,9 +74,9 @@
 | `Context …% used` | 最近一次已测请求的输入 token 数除以该次请求使用的上下文容量，反映最近一次实际发送的提示词占用。 |
 | `in`、`out` | 当前 Agent 历次请求的累计输入和输出 token。输入包含缓存部分。`≥` 表示仅部分请求有读数。 |
 | `Cache hit …%` | 当前 Agent 累计缓存读取 token 占总输入 token 的比例。读数完整且总输入大于零时显示百分比。 |
-| `TPS` | 最近一次已测模型请求的输出 token 数除以请求耗时，从发起请求到收到结束响应，包含等待首个 token 的时间。工具执行与请求之间的重试等待均不计入。 |
+| `TPS` | 当前 Agent 已完成且有输出与有效计时的请求，其总输出 token 数除以总请求耗时。耗时含首个 token 等待，工具执行与重试退避均不计入。 |
 
-`—` 表示当前没有可用读数。新请求准备好后，Context 和 TPS 等待该次请求上报用量，再显示新的数值。如只需身份、路径和用量，可在启动前设置 `KUKU_TUI_STATUSLINE=agent,workspace,context,tokens_in,tokens_out,cache,tps`。
+`—` 表示当前没有可用读数。新请求准备好后，Context 等待该次请求上报用量，TPS 继续显示已有平均值。如只需身份、路径和用量，可在启动前设置 `KUKU_TUI_STATUSLINE=agent,workspace,context,tokens_in,tokens_out,cache,tps`。
 
 ## `kuku run`
 

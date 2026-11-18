@@ -65,7 +65,7 @@ Put options before the prompt in `kuku run`, because it consumes the remaining w
 | Arrow keys, Tab, Enter in a menu | Move the highlight, complete editable text, or activate the selected action, respectively. |
 | `/web`, `/quit` | Open the conversation in the browser or leave the terminal client. |
 
-The status line shows the client’s connection to the service, the selected Agent’s activity and the state of your input. `Draft` is local text. An input can be awaiting a receipt, queued or accepted. `Waiting for model` and `Streaming reply` describe the current model request. `Reconnecting` concerns the client’s connection to the service. Use `KUKU_TUI_STATUSLINE` to choose the visible fields and their order. [Environment variables](environment-variables.md)
+The session header identifies the conversation. Each Turn groups the user’s message, tool activity and assistant text. Markdown renders as the reply streams. The single-line footer shows the connection and selected Agent’s activity. The editor grows for wrapped or multiline input and shows draft and receipt feedback. `Draft` is local text. An input can be awaiting a receipt, queued or accepted. `Waiting for model` and `Streaming reply` describe the current model request. `Reconnecting` concerns the client’s connection to the service. Use `KUKU_TUI_STATUSLINE` to choose the visible fields and their order. [Environment variables](environment-variables.md)
 
 The footer identifies the selected Agent by its Session-local address and shows the working directory reported by the service. Once the Agent has a snapshot, the default layout includes its usage measurements when space permits.
 
@@ -74,9 +74,9 @@ The footer identifies the selected Agent by its Session-local address and shows 
 | `Context …% used` | Input tokens reported for the latest measured request divided by the context window bound to that request. The value describes the last measured prompt. |
 | `in`, `out` | Cumulative input and output tokens for this Agent across its requests. Input includes cached tokens. A `≥` prefix marks a partial total. |
 | `Cache hit …%` | Total cache-read input tokens divided by total input tokens for this Agent. A percentage requires complete measurements and a positive denominator. |
-| `TPS` | Output tokens per second on the latest measured provider request. The interval includes waiting for the first token and ends at the provider's terminal response. Tool execution and time between retries are excluded. |
+| `TPS` | Average output tokens per second for the selected Agent across completed requests with measured output and a positive duration. Divide their total output by their total duration, including first-token wait and excluding tools and retry backoff. |
 
-A dash (`—`) means the measurement is unavailable. A newly prepared request clears the previous context percentage and TPS until its own usage arrives. To show only identity, directory and usage, set `KUKU_TUI_STATUSLINE=agent,workspace,context,tokens_in,tokens_out,cache,tps` before opening the terminal.
+A dash (`—`) means the measurement is unavailable. A newly prepared request clears the previous context percentage until its own usage arrives. Average TPS stays visible while the next request runs. To show only identity, directory and usage, set `KUKU_TUI_STATUSLINE=agent,workspace,context,tokens_in,tokens_out,cache,tps` before opening the terminal.
 
 ## `kuku run`
 

@@ -39,7 +39,9 @@ SDK 在每个边界按回执次序接纳符合条件的输入。即使先排了�
 
 在交互终端运行 `kuku` 后，按所选工作目录打开一个空白全屏窗口。用户首次明确发送时才创建 Session。本地数据目录尚未配置时，引导使用现有初始化流程。远程配置有误时，指出需要在服务端修正的设置。显示实际连接的 server、工作目录和模型或 Tier，修正配置期间保留草稿。环境变量凭据由加载它的 server 进程持有。更换环境后需要重启时，引导到服务状态和重启入口。在非交互终端提示可用于脚本的入口。脚本命令沿用已文档化的输出格式和退出行为。[配置指南](../start/configuration.md) · [CLI](../reference/cli.md)
 
-以 Pi 的日常操作为参考。用一列滚动对话、标明接收者的固定多行输入框和一条紧凑状态栏。状态栏用可配置的字段显示连接、执行、输入和工作区信息。状态栏还可显示当前 Agent 的名字或地址、当前工作路径、上下文窗口占用率、累计输入和输出 token、缓存命中率及每秒输出 token 数。用量跟随所选 Agent，重连后可恢复；上游未提供的测量要明确显示为未知。分别显示未发送草稿、等待回执、已排队输入，以及所选 Agent 正在回复或执行的工具。根据客户端实际观察显示连接中、已连接、重连或传输失败。Windows 后台命令工具执行时不弹出控制台窗口。[Pi 终端用法](https://github.com/earendil-works/pi/blob/e56d35ce5eceedfa16eaf13a5f01a1f7b7271253/packages/coding-agent/docs/usage.md) · [Pi 快捷键](https://github.com/earendil-works/pi/blob/e56d35ce5eceedfa16eaf13a5f01a1f7b7271253/packages/coding-agent/docs/keybindings.md)
+终端工作台采用平面布局。会话身份常驻顶部，轮次有分隔，用户消息有独立色面，输入区随文字增高。助手正文与工具结果分开呈现，Markdown 随输出逐步排版，表格随宽度调整，可见工具共用一处快捷键提示。关联 Agent 默认收起，支持键盘、鼠标展开。发送回执表示已送达，执行阶段、流式文字、待用户决定事项与结果均来自对应 Agent 的观察数据。共享样式由终端主题模块维护。[OpenCode 会话](https://github.com/anomalyco/opencode/blob/63bfe62c91fb069c97fcdd7a721aa8f7291cbf49/packages/tui/src/routes/session/index.tsx) · [omp 对话组件](https://github.com/can1357/oh-my-pi/tree/e1ae2cc998efd1ca151b46ebefc0e0dab6c23c63/packages/tui/src/chat) · [Pi 终端](https://github.com/earendil-works/pi/blob/e56d35ce5eceedfa16eaf13a5f01a1f7b7271253/packages/coding-agent/docs/usage.md)
+
+状态栏保持单行。打字时身份、用量与工作区的位置稳定，草稿、排队和回执在输入区反馈，显示字段可配置。TPS 按所选 Agent 已测请求的总输出与总耗时计算。重连时保留已知用量，缺测项明确标记。区分连接问题与执行失败。Windows 后台命令工具执行时不弹出控制台窗口。
 
 | 操作 | 成品行为 |
 |---|---|
