@@ -1,10 +1,11 @@
+use ratatui::style::Color;
 use ratatui::text::Line;
 use serde_json::Value;
 
-use crate::text::cap;
-use crate::theme::CardFrame;
+use crate::text::{cap, single_line};
+use crate::theme::{CardFrame, SURFACE_TEXT};
 
-use super::{capped, Outcome, Row, MAX_DETAIL_BYTES};
+use super::{capped, Outcome, Row, Tool, MAX_DETAIL_BYTES};
 
 #[derive(Debug, Clone)]
 pub(super) struct CommandPreview {
@@ -64,14 +65,36 @@ impl Outcome {
     }
 }
 
-pub(super) fn finish(frame: CardFrame, mut rows: Vec<Row>) -> Vec<Row> {
+impl Tool {
+    pub(super) fn command_heading(&self, frame: &CardFrame) -> Row {
+        let title = if self.start_summary.is_empty() {
+            "Run command"
+        } else {
+            &self.start_summary
+        };
+        Row::plain(frame.title(&single_line(title), SURFACE_TEXT))
+    }
+
+    pub(super) fn shell_command(&self) -> &str {
+        self.state
+            .outcome()
+            .filter(|outcome| !outcome.invocation.is_empty())
+            .map_or(self.invocation.as_str(), |outcome| {
+                outcome.invocation.as_str()
+            })
+    }
+}
+
+pub(super) fn finish(
+    frame: CardFrame,
+    mut rows: Vec<Row>,
+    (status, color): (String, Color),
+) -> Vec<Row> {
     for row in rows.iter_mut().skip(1) {
         row.line = frame.line(std::mem::take(&mut row.line));
         row.inset = frame.content_inset() as u16;
     }
-    if frame.bordered() && rows.len() > 1 {
-        rows.push(Row::plain(frame.border('╰', '╯')));
-    }
+    rows.push(Row::plain(frame.status_foot(&status, color)));
     rows.push(Row::plain(Line::default()));
     rows
 }

@@ -280,7 +280,7 @@ fn toggling_tool_previews_preserves_the_reading_anchor_through_settlement() {
         1,
         plain
             .iter()
-            .filter(|row| row.contains("Run command"))
+            .filter(|row| row.starts_with("╭─ Check workspace"))
             .count()
     );
     assert!(plain.iter().any(|row| row.contains("failed · exit 7")));

@@ -41,7 +41,11 @@ fn command_preview_keeps_stdout_and_warnings_without_the_model_output_reference(
         .map(|line| line.to_string().trim_matches('│').trim().to_owned())
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(rendered.contains("╭─ Run command · error") && !rendered.contains("╭─ check"));
+    assert!(
+        rendered.contains("╭─ Run command")
+            && rendered.contains("╰─ error")
+            && !rendered.contains("╭─ check")
+    );
     assert!(rendered.contains("command timed out; output truncated"));
     assert!(rendered.contains("stdout:\nOutput: from the process"));
     assert!(rendered.contains(&format!(
@@ -268,9 +272,10 @@ fn short_command_results_show_stdout_without_capture_metadata_or_a_trailing_carr
         .iter()
         .position(|line| line.starts_with("╭─ Verify file removal"))
         .unwrap();
-    assert!(lines[heading].contains("Run command · ok · exit 0") && lines[heading].ends_with('╮'));
-    assert_eq!(lines[heading + 1].trim_matches('│').trim(), "GONE");
-    assert!(!screen.contains("check-file"));
+    assert!(lines[heading].ends_with('╮') && !lines[heading].contains("exit"));
+    assert_eq!(lines[heading + 1].trim_matches('│').trim(), "check-file");
+    assert_eq!(lines[heading + 2].trim_matches('│').trim(), "GONE");
+    assert!(lines[heading + 3].starts_with("╰─ ok · exit 0"));
     let key = transcript.detail_at(heading).unwrap().clone();
     assert!(transcript.toggle_detail(&key));
     let inspected = transcript.project(80, 24);

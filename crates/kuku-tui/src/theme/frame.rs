@@ -1,4 +1,4 @@
-use super::{code_surface, emphasis, CODE_BACKGROUND, MUTED};
+use super::{code_surface, emphasis, MUTED};
 use crate::text::shorten;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
@@ -50,53 +50,8 @@ impl CardFrame {
         self.caption(label, '╭', '╮', self.surface.patch(emphasis(color)))
     }
 
-    pub(crate) fn command_title(
-        &self,
-        description: &str,
-        status: &str,
-        color: Color,
-    ) -> Line<'static> {
-        if description.trim().is_empty() {
-            return self.title(&format!("Run command · {status}"), color);
-        }
-        let (prefix, suffix) = match (self.bordered, self.padding) {
-            (false, _) => ("", ""),
-            (true, 0) => ("╭", "╮"),
-            (true, _) => ("╭─ ", " ╮"),
-        };
-        let content = self.width.saturating_sub(prefix.width() + suffix.width());
-        let full = format!("Run command · {status}");
-        let status = shorten(
-            if full.width() + 7 <= content {
-                &full
-            } else {
-                status
-            },
-            content,
-        );
-        let room = content.saturating_sub(status.width());
-        let gap = if description.width() + 1 == room {
-            1
-        } else {
-            2
-        };
-        let description = shorten(description, room.saturating_sub(gap));
-        let gap = content.saturating_sub(description.width() + status.width());
-        let rule = if gap >= 2 {
-            format!(" {} ", "─".repeat(gap - 2))
-        } else {
-            " ".repeat(gap)
-        };
-        Line::from(vec![
-            Span::styled(prefix, self.edge()),
-            Span::styled(
-                description,
-                emphasis(super::SURFACE_TEXT).bg(CODE_BACKGROUND),
-            ),
-            Span::styled(rule, self.edge()),
-            Span::styled(status, emphasis(color).bg(CODE_BACKGROUND)),
-            Span::styled(suffix, self.edge()),
-        ])
+    pub(crate) fn status_foot(&self, label: &str, color: Color) -> Line<'static> {
+        self.caption(label, '╰', '╯', self.surface.fg(color))
     }
 
     pub(crate) fn foot(&self, label: &str) -> Line<'static> {

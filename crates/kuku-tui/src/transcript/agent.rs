@@ -275,33 +275,35 @@ impl AgentCard<'_> {
             (facts.status.label(), activity_style(facts.status))
         });
         let space = frame.content_width();
-        let mut body = Line::from(Span::styled(shorten(label, space), color));
+        rows.push(Row::plain(
+            frame.line(Line::styled(shorten(label, space), color)),
+        ));
         let reply = facts.and_then(|facts| first_content_line(&facts.preview));
         let (caption, excerpt) = match reply {
             Some(text) if facts.is_some_and(|facts| facts.status == Activity::Failed) => {
-                ("Error", text)
+                ("Error  ", text)
             }
-            Some(text) => ("Reply", text),
-            None => ("Task", first_content_line(self.task).unwrap_or_default()),
+            Some(text) => ("Reply  ", text),
+            None => ("Task  ", first_content_line(self.task).unwrap_or_default()),
         };
-        if !excerpt.is_empty() && space >= body.width() + caption.len() + 7 {
-            body.push_span(Span::styled(
-                format!("   {caption}  "),
-                Style::new().fg(MUTED),
-            ));
+        if !excerpt.is_empty() {
+            let prefix = if space >= caption.len() + 4 {
+                caption
+            } else {
+                ""
+            };
             let excerpt = excerpt
                 .trim_start_matches('#')
                 .strip_prefix(' ')
                 .unwrap_or(excerpt);
-            body.push_span(Span::styled(
-                shorten(
+            rows.push(Row::plain(frame.line(Line::from(vec![
+                Span::styled(prefix, emphasis(MUTED)),
+                Span::raw(shorten(
                     &single_line(excerpt),
-                    (space - body.width()).min(ACTIVITY_EXCERPT_CELLS),
-                ),
-                Style::default(),
-            ));
+                    (space - prefix.len()).min(ACTIVITY_EXCERPT_CELLS),
+                )),
+            ]))));
         }
-        rows.push(Row::plain(frame.line(body)));
         let marker = if open { "▾" } else { "▸" };
         let timeline = if checks == 0 {
             format!("{marker} Timeline")
@@ -358,10 +360,11 @@ impl AgentCard<'_> {
                     "Reply"
                 };
                 (label, preview)
-            } else if matches!(self.kind, AgentAction::Send) {
-                ("Task", self.task)
             } else {
-                ("", "")
+                match self.kind {
+                    AgentAction::Create => ("Instructions", self.task),
+                    AgentAction::Send => ("Task", self.task),
+                }
             };
             if let Some(excerpt) = first_content_line(text) {
                 let mut line = Line::from(Span::styled(format!("{label}  "), emphasis(MUTED)));
@@ -587,7 +590,7 @@ mod tests {
             plain.contains("╭─ Agent reviewer") && plain.matches("Agent reviewer").count() == 1
         );
         assert!(plain.contains("Verify the new CLI") && !plain.contains("List failing cases"));
-        assert!(plain.contains("Verify fixtures") && !plain.contains("verify-fixtures"));
+        assert!(plain.contains("Verify fixtures") && plain.contains("verify-fixtures"));
         assert!(
             !plain.contains("session operation committed")
                 && !plain.contains("proposed")

@@ -328,12 +328,7 @@ impl Tool {
         let inset = if frame.is_some() { 0 } else { inset };
         let concise = !inspecting && outcome.is_some_and(Outcome::concise_command);
         let mut rows = if let Some(frame) = &frame {
-            let (status, color) = self.status_label();
-            vec![Row::plain(frame.command_title(
-                &single_line(&self.start_summary),
-                &status,
-                color,
-            ))]
+            vec![self.command_heading(frame)]
         } else {
             self.render_header(width, heading_inset, inset, caption.as_deref())
         };
@@ -347,13 +342,13 @@ impl Tool {
             ));
             return finish_card(rows);
         }
-        let invocation = self.invocation();
+        let invocation = if frame.is_some() {
+            self.shell_command()
+        } else {
+            self.invocation()
+        };
         let summary = self.summary();
-        if expanded
-            && caption.is_none()
-            && (frame.is_none() || inspecting)
-            && (!inspecting || invocation != self.arguments)
-        {
+        if expanded && caption.is_none() && (!inspecting || invocation != self.arguments) {
             rows.extend(render_preview(
                 invocation,
                 ACCENT,
@@ -390,7 +385,7 @@ impl Tool {
                     || self.result(),
                     |preview| preview.body(self.result(), concise),
                 );
-                if text.is_empty() || text == summary || text == invocation {
+                if text.is_empty() || text == summary || (frame.is_none() && text == invocation) {
                     Vec::new()
                 } else {
                     render_excerpt(text, |text| render_literal(text, Style::default()))
@@ -424,7 +419,7 @@ impl Tool {
             }
         }
         match frame {
-            Some(frame) => command::finish(frame, rows),
+            Some(frame) => command::finish(frame, rows, self.status_label()),
             None => finish_card(rows),
         }
     }

@@ -207,17 +207,17 @@ def two_workspaces_and_disconnect(client):
         reopened.resume(prompt)
         screen = reopened.expect(final)["screen"]
         assert screen.count(final) == 1, "Restored terminal must show one durable response"
-        assert screen.count("Run command · ok") == 1, "Restored terminal must show one tool result"
+        assert screen.count(TOOL_BRIEF) == 1 and "╰─ ok" in screen, "Restored terminal must show one tool result"
         compact = reopened.expect("TPS")["screen"].splitlines()[-1]
         assert "main" in compact and "Context" in compact and "Cache hit" not in compact, compact
         assert not re.search(r"\d(?:[.\d]*[KMB])? (?:in|out)\b", compact), compact
         details = reopened.expect(TOOL_BRIEF)["screen"]
-        assert "--gated-tool" not in details and TOOL_OUTPUT in details
+        assert "--gated-tool" in details and TOOL_OUTPUT in details
         reopened.press("\x0f")
         collapsed = reopened.expect("Ctrl+O show")["screen"]
         assert "Saved output" not in collapsed and "--gated-tool" not in collapsed
         reopened.press("\x0f")
-        reopened.expect(TOOL_BRIEF)
+        reopened.expect(TOOL_BRIEF, also=(TOOL_OUTPUT,))
         reopened.exit_cleanly()
     client.assert_current_service(original)
     client.provider.assert_idle(duration=0.2)
@@ -774,6 +774,7 @@ def dense_transcript(client, reference=False):
         r"(?:Read-only activity · \d+ calls|Read (?:file|\d+ files)|Find files|Search text|"
         r"Write file|Edit file|Run command|Tool [a-z_]+)"
         r"(?: ×\d+)? · (?:ok|error|running)\b"
+        rf"|╭─ (?:Run command|{re.escape(TOOL_BRIEF)})\b"
     )
 
     def row_of(screen, text):
@@ -871,7 +872,7 @@ def dense_transcript(client, reference=False):
             narrow = read_while(terminal, lambda value: running_view(value, 26) and scenario.missing in value
                                 and scenario.draft in value,
                                 "the narrow tool turn")
-            assert scenario.draft in narrow and re.search(r"(?:Run command|Tool run_command) · running", narrow), narrow
+            assert scenario.draft in narrow and ("╰─ running" in narrow or reference and "Run command · running" in narrow), narrow
             screens.append(("Narrow tool turn with the same draft", narrow))
             terminal.request("resize", rows=32, cols=140)
         with scenario.streaming_reply():

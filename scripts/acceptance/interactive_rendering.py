@@ -124,10 +124,11 @@ def windows_diagnostic(client):
         screen = terminal.expect(diagnostic, also=("Check complete.", "exit 1"))["screen"]
         assert "␍" not in screen and "�" not in screen and "command exited" not in screen and "Saved output" not in screen
         rows = screen.splitlines()
-        header = next(i for i, line in enumerate(rows) if "╭─ Check for missing example" in line and "exit 1" in line)
-        assert diagnostic in rows[header + 1] and command not in screen, screen
+        header = next(i for i, line in enumerate(rows) if "╭─ Check for missing example" in line)
+        assert "exit 1" not in rows[header] and command in rows[header + 1], screen
+        assert diagnostic in rows[header + 2] and "exit 1" in rows[header + 3], screen
         terminal.click_text(screen, "Check for missing example")
-        terminal.expect(command, state=diagnostic)
+        terminal.expect("Requested arguments", state=diagnostic)
         terminal.exit_cleanly()
 
 

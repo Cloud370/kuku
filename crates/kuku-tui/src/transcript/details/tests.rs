@@ -101,7 +101,7 @@ fn mixed_twenty_four_tools_compact_by_operation_and_remain_individually_inspecta
     let rendered = text(&compact);
     assert!(rendered.contains("Read-only activity · 15 calls · ok"));
     assert!(rendered.contains("12 file reads · 3 file searches"));
-    assert_eq!(3, rendered.matches("Run command · ok · exit 0").count());
+    assert_eq!(3, rendered.matches("╰─ ok · exit 0").count());
     assert!(rendered.contains("failed · exit 23"));
     for term in [
         "actual diagnostic",
@@ -219,7 +219,8 @@ fn delegation_groups_only_its_own_checks_and_keeps_the_result_separate_from_hist
     let summary = text(&compact);
     for label in [
         "╭─ Agent writer",
-        "Finished   Reply  Report ready",
+        "Finished",
+        "Reply  Report ready",
         "Timeline · 4 calls · 2 status checks",
         "other (Idle)",
         "writer (Waiting)",
