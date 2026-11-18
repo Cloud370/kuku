@@ -53,7 +53,7 @@ End each settled Turn with one subdued transcript line for available duration, i
 
 Keep the activity line visually stable. Combine related phases and suppress flicker from brief changes while showing errors and requests for attention immediately. When reading earlier output, keep the return-to-latest action beside the composer. Clicking it or pressing Ctrl+End resumes following the output.
 
-Lead the default status line with the effective model and keep model, execution and usage visually distinct. Pair color with text for waiting, failure and actions that need attention. Preview status line changes in the editor and keep the saved order in terminal-local preferences. Share spacing, selection and focus styles across the composer and dialogs. Pointer input lets users browse and select in Agent, model and execution-detail dialogs. Operations with execution side effects require explicit confirmation with Enter. At narrow widths, give priority to readable transcript and editable input.
+Lead the default status line with the effective model and keep model, execution and usage visually distinct. Pair color with text for waiting, failure and actions that need attention. Preview status line changes in the editor and keep the saved order in terminal-local preferences. Share spacing, selection and focus styles across the composer and dialogs. Separate the `To <agent>` recipient from the editable text with clear spacing and keep the Agent name readable on narrow terminals. Pointer input lets users browse and select in Agent, model and execution-detail dialogs. Operations with execution side effects require explicit confirmation with Enter. At narrow widths, give priority to readable transcript and editable input.
 
 | Task | Product behavior |
 |---|---|
