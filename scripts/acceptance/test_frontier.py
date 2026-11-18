@@ -3,8 +3,10 @@ from decimal import Decimal
 from email.message import Message
 from io import BytesIO
 import json
+import os
 from pathlib import Path
 import re
+import stat
 import tempfile
 import threading
 from types import SimpleNamespace
@@ -261,6 +263,37 @@ class FrontierTests(unittest.TestCase):
             self.assertIsNone(row["receipt_matches_route"])
             self.assertNotIn("reported_upstream", row)
         self.assertEqual(meter.accounting()["provider_cost_sources"]["stream_usage"], {"requests": 3, "usd": "0.00072"})
+
+    def test_openrouter_uses_explicit_generation_id_instead_of_response_id(self):
+        meter = self.meter(ROUTER)
+        response_id, generation_id = "resp_fixtureOnly", "opaque-generation-fixture"
+        response = {"id": response_id, "model": ROUTER.model, "usage": {
+            "input_tokens": 1000, "output_tokens": 120, "cost": 0.00024,
+        }}
+        connection = mock.Mock()
+        connection.getresponse.return_value = StreamReply(
+            {"type": "response.created", "response": {"id": response_id}},
+            {"type": "response.completed", "response": response, "openrouter_metadata": {
+                "generation_id": generation_id, "endpoints": {"available": [
+                    {"provider": "Elsewhere", "selected": False}, {"provider": "DeepSeek", "selected": True},
+                ]},
+            }},
+        )
+        with mock.patch("frontier.http.client.HTTPSConnection", return_value=connection), \
+                mock.patch("paid_model.upstream_json", return_value=(404, None)) as lookup, serve(meter.handler()) as endpoint:
+            self.assertEqual(request(endpoint, ROUTER, ROUTER_PAYLOAD).status, 200)
+        lookup.assert_called_once_with(ROUTER.host, f"/api/v1/generation?id={generation_id}", KEY)
+        self.assertEqual(meter.attempts[0]["receipt_id_source"], "metadata")
+        self.assertEqual(meter.attempts[0]["reported_upstream"], "DeepSeek")
+        self.assertTrue(meter.attempts[0]["provider_matches_pin"])
+        self.assertEqual(meter.attempts[0]["upstream_confirmation_source"], "stream_metadata")
+        self.assertIsNone(meter.attempts[0]["receipt_matches_route"])
+        public = meter.evidence.read_text()
+        self.assertNotIn(generation_id, public)
+        private = self.directory / ".frontier-receipts.jsonl"
+        self.assertEqual(json.loads(private.read_text()), {"request": 1, "id": generation_id, "source": "metadata"})
+        if os.name == "posix":
+            self.assertEqual(stat.S_IMODE(private.stat().st_mode), 0o600)
 
     def test_partial_openrouter_stream_and_conflicting_receipt_do_not_release_ceiling(self):
         response = {"id": "gen-fixtureConflict", "model": ROUTER.model, "usage": {

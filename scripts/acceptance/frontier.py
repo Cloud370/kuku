@@ -2,6 +2,7 @@
 
 import contextlib
 from decimal import Decimal, ROUND_CEILING
+import errno
 import hmac
 import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -52,6 +53,8 @@ UPSTREAM_ERRORS = (
     (r"invalid model(?: id)?|model not found", "invalid_model", "The provider did not recognize the model"),
     (r"max(?:imum)? context length|context length exceeded", "context_limit", "The provider rejected the context length"),
 )
+RECEIPT_SOURCES = {"response_id": 1, "response_generation_id": 2, "metadata": 3, "header": 4}
+OPAQUE_ID = re.compile(r"[A-Za-z0-9._-]{1,160}")
 
 
 def unique_object(pairs):
@@ -137,6 +140,25 @@ def reported_cost(value):
         return usd(value)
     except (ArithmeticError, ValueError):
         return None
+
+
+def observe_receipt_id(observation, value, source):
+    if not isinstance(value, str) or not OPAQUE_ID.fullmatch(value):
+        return
+    if source == "response_id" and value.startswith("gen-"):
+        source = "response_generation_id"
+    if RECEIPT_SOURCES[source] > RECEIPT_SOURCES.get(observation.get("receipt_id_source"), 0):
+        observation.update(generation_id=value, receipt_id_source=source)
+
+
+def selected_provider(metadata):
+    endpoints = metadata.get("endpoints")
+    available = endpoints.get("available") if isinstance(endpoints, dict) else None
+    if not isinstance(available, list):
+        return None
+    selected = [candidate.get("provider") for candidate in available
+                if isinstance(candidate, dict) and candidate.get("selected") is True]
+    return selected[0] if len(selected) == 1 and isinstance(selected[0], str) else None
 
 
 def timing_facts(observation, complete_output_tokens=None, receipt_output_tokens=None):
@@ -313,10 +335,13 @@ class CaseMeter(RequestBoundary):
             if self.route.router:
                 response = event.get("response")
                 if isinstance(response, dict):
-                    metadata = response.get("openrouter_metadata") or {}
-                    generation = metadata.get("generation_id") or response.get("id")
-                    if generation and not observation.get("generation_id"):
-                        observation["generation_id"] = generation
+                    for metadata in (event.get("openrouter_metadata"), response.get("openrouter_metadata")):
+                        if isinstance(metadata, dict):
+                            observe_receipt_id(observation, metadata.get("generation_id"), "metadata")
+                            if event.get("type") in ("response.completed", "response.incomplete"):
+                                if provider := selected_provider(metadata):
+                                    observation["stream_selected_provider"] = provider
+                    observe_receipt_id(observation, response.get("id"), "response_id")
                     if effort := (response.get("reasoning") or {}).get("effort"):
                         observation["reported_reasoning_effort"] = effort
                     if event.get("type") == "response.failed":
@@ -357,15 +382,30 @@ class CaseMeter(RequestBoundary):
                 with self.lock:
                     self.active_socket = None
                 observation["seconds"] = round(time.monotonic() - started, 4)
-        generation = observation.get("generation_id")
-        if route.router and not self.closed.is_set() and isinstance(generation, str) and re.fullmatch(
-            r"(?:gen-|resp[_-])[A-Za-z0-9_-]{1,152}", generation,
-        ):
-            try:
-                self.confirm_generation(observation, delays=(0,), require_matching_cost=False)
-            except (ArithmeticError, AttributeError, KeyError, TypeError, ValueError):
-                observation["receipt_lookup"] = "invalid_response"
+        if route.router and not self.closed.is_set():
+            self.lookup_receipt(observation)
         return observation
+
+    def lookup_receipt(self, observation):
+        source = observation.get("receipt_id_source")
+        if source is None:
+            observation["receipt_lookup"] = "missing_generation_id"
+            return
+        with self.lock:
+            if self.active is not None:
+                path = self.evidence.with_name(".frontier-receipts.jsonl")
+                with contextlib.suppress(OSError):
+                    fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
+                    with os.fdopen(fd, "a", encoding="utf-8") as handle:
+                        handle.write(json.dumps({"request": self.active["request"], "id": observation["generation_id"],
+                                                 "source": source}) + "\n")
+        if source == "response_id":
+            observation["receipt_lookup"] = "response_id_only"
+            return
+        try:
+            self.confirm_generation(observation, delays=(0,), require_matching_cost=False)
+        except (ArithmeticError, AttributeError, KeyError, TypeError, ValueError):
+            observation["receipt_lookup"] = "invalid_response"
 
     def relay(self, client, reply, observation, started):
         observation["http_status"] = reply.status
@@ -380,8 +420,8 @@ class CaseMeter(RequestBoundary):
             with contextlib.suppress(OSError):
                 client.send_error(502, "upstream response is not a stream")
             return
-        if self.route.router and (generation := reply.getheader("X-Generation-Id")):
-            observation["generation_id"] = generation
+        if self.route.router:
+            observe_receipt_id(observation, reply.getheader("X-Generation-Id"), "header")
         downstream_open = True
         try:
             client.send_response(200)
@@ -437,12 +477,17 @@ class CaseMeter(RequestBoundary):
         if router:
             row["receipt_matches_route"] = observation.get("receipt_matches_route")
             row["receipt_lookup"] = observation.get("receipt_lookup")
-            reported = observation.get("reported_upstream")
-            row["provider_matches_pin"] = reported == route.upstream_name if reported is not None else None
-            if reported == route.upstream_name:
-                row["reported_upstream"] = reported
-            route_mismatch |= (reported is not None and reported != route.upstream_name
-                               or row["receipt_matches_route"] is False)
+            row["receipt_id_source"] = observation.get("receipt_id_source")
+            stream_provider = observation.get("stream_selected_provider")
+            reported = observation.get("reported_upstream") or stream_provider
+            accepted_providers = {route.upstream_name.casefold(), route.upstream.casefold()}
+            row["provider_matches_pin"] = reported.casefold() in accepted_providers if isinstance(reported, str) else None
+            if row["provider_matches_pin"]:
+                row["reported_upstream"] = route.upstream_name
+                row["upstream_confirmation_source"] = ("generation_receipt" if row["receipt_matches_route"]
+                                                       else "stream_metadata" if stream_provider else "stream")
+            route_mismatch |= (row["provider_matches_pin"] is False or row["receipt_matches_route"] is False
+                               or (stream_provider is not None and stream_provider.casefold() not in accepted_providers))
         elif accepted_model:
             row["reported_upstream"] = route.upstream_name
         stream_usage = observation.get("usage", {})
@@ -587,8 +632,9 @@ def ledger_edit(operation, *arguments):
     while True:
         try:
             return operation(*arguments)
-        except BlockingIOError:
-            if time.monotonic() >= deadline:
+        except OSError as error:
+            contended = isinstance(error, BlockingIOError) or (os.name == "nt" and error.errno in (errno.EACCES, errno.EDEADLK))
+            if not contended or time.monotonic() >= deadline:
                 raise
             time.sleep(0.025)
 

@@ -137,6 +137,23 @@ def official_counts(rows):
     }
 
 
+def cohort_efficiency(rows):
+    counts = official_counts(rows)
+    scored = scored_rows(rows)
+    costs = [number(row['cost_usd']) for row in scored]
+    seconds = [number(row['run_seconds']) for row in scored]
+    complete_cost = bool(scored) and all(value is not None for value in costs)
+    return {
+        **counts,
+        'mean_inference_cost_usd': average(costs),
+        'inference_usd_per_pass': round(sum(costs) / counts['passes'], 8) if complete_cost and counts['passes'] else None,
+        'priced_attempts': sum(value is not None for value in costs),
+        'median_agent_verifier_seconds': middle(seconds),
+        'mean_agent_verifier_seconds': average(seconds),
+        'timed_attempts': sum(value is not None for value in seconds),
+    }
+
+
 def official_report(feed):
     try:
         return parse_official(feed)
@@ -182,16 +199,18 @@ def parse_official(feed):
         if any(set(group) != set(range(1, ATTEMPTS_PER_TASK + 1)) for group in groups):
             raise ValueError('missing selected attempts')
         pi_rows = list(groups[pi_index].values())
-        scored = scored_rows(pi_rows)
-        costs = [number(row['cost_usd']) for row in scored]
-        seconds = [number(row['run_seconds']) for row in scored]
         task_results[case] = {
-            'pi': {**official_counts(pi_rows), 'mean_inference_cost_usd': average(costs),
-                   'priced_attempts': sum(cost is not None for cost in costs),
-                   'median_agent_verifier_seconds': middle(seconds), 'mean_agent_verifier_seconds': average(seconds),
-                   'timed_attempts': sum(second is not None for second in seconds)},
+            'pi': cohort_efficiency(pi_rows),
             'all_22_including_pi': official_counts([row for group in groups for row in group.values()]),
         }
+    peers = []
+    for index, harness in enumerate(harnesses):
+        by_case = {case: list(selected[case, index].values()) for case in CASES}
+        peers.append({
+            'id': harness['id'], 'label': harness.get('label', harness['id']), 'version': harness.get('version'),
+            'sample': cohort_efficiency([row for rows in by_case.values() for row in rows]),
+            'by_case': {case: cohort_efficiency(rows) for case, rows in by_case.items()},
+        })
     return {
         'dataset': DATASET,
         'source': 'https://frontierharness.org/api/live',
@@ -203,6 +222,7 @@ def parse_official(feed):
         'attempts_per_task_and_harness': ATTEMPTS_PER_TASK,
         'inference_usd_per_million_tokens': {key: number(model['pricing'][key]) for key in ('input', 'cached_input', 'output')},
         'tasks': task_results,
+        'harness_comparison': peers,
     }
 
 
