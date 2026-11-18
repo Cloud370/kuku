@@ -1,6 +1,7 @@
 use std::cmp::Reverse;
 use std::env;
 
+use kuku_client::UsageTotals;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_segmentation::UnicodeSegmentation;
@@ -8,21 +9,33 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{Activity, App, ServiceStatus, SubmissionStatus};
 use crate::markup::{ACCENT, MUTED};
-use crate::text::{shorten, single_line};
+use crate::text::{shorten, single_line, single_line_path};
 
 const SETTING: &str = "KUKU_TUI_STATUSLINE";
 const SEPARATOR: &str = " · ";
-const COMPACT_CONTEXT_WIDTH: usize = 12;
-const DEFAULT_FIELDS: [Field; 5] = [
+const COMPACT_DETAILS_WIDTH: usize = 12;
+const MIN_METRICS_ROW_WIDTH: usize = 56;
+const PRIMARY_FIELDS: [Field; 6] = [
     Field::Connection,
     Field::Execution,
     Field::Input,
+    Field::Agent,
     Field::Workspace,
     Field::Model,
 ];
+const METRIC_FIELDS: [Field; 5] = [
+    Field::Context,
+    Field::InputTokens,
+    Field::OutputTokens,
+    Field::Cache,
+    Field::Throughput,
+];
+const TOKEN_UNITS: [(u64, &str); 3] = [(1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K")];
 
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct StatusLine(Vec<Field>);
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct StatusLine {
+    fields: Option<Vec<Field>>,
+}
 
 impl StatusLine {
     pub(crate) fn from_env() -> Result<Self, String> {
@@ -35,32 +48,64 @@ impl StatusLine {
         }
     }
 
-    pub(crate) fn render_line(&self, app: &App, width: usize) -> Option<Line<'static>> {
-        let segments = self
-            .0
-            .iter()
-            .filter_map(|field| field.segment(app))
-            .collect();
-        render_segments(segments, width)
+    pub(crate) fn render_lines(
+        &self,
+        app: &App,
+        width: usize,
+        allow_two_rows: bool,
+    ) -> Vec<Line<'static>> {
+        let usage = app
+            .pane()
+            .snapshot
+            .as_ref()
+            .map(|snapshot| &snapshot.agent.usage);
+        let segments = |fields: &[Field]| -> Vec<_> {
+            fields
+                .iter()
+                .filter_map(|field| field.segment(app, usage))
+                .collect()
+        };
+        let (first, second) = if let Some(fields) = &self.fields {
+            let mut first = segments(fields);
+            let second = if allow_two_rows {
+                let split = wrap_index(&first, width);
+                first.split_off(split)
+            } else {
+                Vec::new()
+            };
+            (first, second)
+        } else {
+            let metrics = if allow_two_rows && width >= MIN_METRICS_ROW_WIDTH && usage.is_some() {
+                segments(&METRIC_FIELDS)
+            } else {
+                Vec::new()
+            };
+            (segments(&PRIMARY_FIELDS), metrics)
+        };
+        [first, second]
+            .into_iter()
+            .filter_map(|segments| render_segments(segments, width))
+            .collect()
     }
 
     fn parse(value: &str) -> Result<Self, String> {
         match value.trim() {
             "" => Ok(Self::default()),
-            "none" => Ok(Self(Vec::new())),
+            "none" => Ok(Self {
+                fields: Some(Vec::new()),
+            }),
             value => {
                 let mut fields = Vec::new();
                 for name in value.split(',').map(str::trim) {
-                    let field = DEFAULT_FIELDS
-                        .into_iter()
+                    let field = Field::all()
                         .find(|field| field.name() == name)
                         .ok_or_else(|| {
-                        let name = shorten(&single_line(name), 24);
-                        let valid = DEFAULT_FIELDS.map(Field::name).join(",");
-                        format!(
-                            "{SETTING} has an unknown field {name:?}. Use {valid} or none. Using the default status line."
-                        )
-                    })?;
+                            let name = shorten(&single_line(name), 24);
+                            let valid = Field::all().map(Field::name).collect::<Vec<_>>().join(",");
+                            format!(
+                                "{SETTING} has an unknown field {name:?}. Using the default status line. Use {valid} or none."
+                            )
+                        })?;
                     if fields.contains(&field) {
                         return Err(format!(
                             "{SETTING} repeats {name}. Using the default status line."
@@ -68,15 +113,11 @@ impl StatusLine {
                     }
                     fields.push(field);
                 }
-                Ok(Self(fields))
+                Ok(Self {
+                    fields: Some(fields),
+                })
             }
         }
-    }
-}
-
-impl Default for StatusLine {
-    fn default() -> Self {
-        Self(DEFAULT_FIELDS.into())
     }
 }
 
@@ -85,31 +126,52 @@ enum Field {
     Connection,
     Execution,
     Input,
+    Agent,
     Workspace,
     Model,
+    Context,
+    InputTokens,
+    OutputTokens,
+    Cache,
+    Throughput,
 }
 
 impl Field {
+    fn all() -> impl Iterator<Item = Self> {
+        PRIMARY_FIELDS.into_iter().chain(METRIC_FIELDS)
+    }
+
     fn name(self) -> &'static str {
         match self {
             Self::Connection => "connection",
             Self::Execution => "execution",
             Self::Input => "input",
+            Self::Agent => "agent",
             Self::Workspace => "workspace",
             Self::Model => "model",
+            Self::Context => "context",
+            Self::InputTokens => "tokens_in",
+            Self::OutputTokens => "tokens_out",
+            Self::Cache => "cache",
+            Self::Throughput => "tps",
         }
     }
 
-    fn segment(self, app: &App) -> Option<Segment> {
-        match self {
-            Self::Connection => Some(connection(app)),
-            Self::Execution => execution(app),
-            Self::Input => input(app),
-            Self::Workspace => {
-                let path = single_line(&app.workspace.to_string_lossy());
-                (!path.is_empty()).then(|| Segment::context(path))
-            }
-            Self::Model => Some(Segment::context(
+    fn segment(self, app: &App, usage: Option<&UsageTotals>) -> Option<Segment> {
+        let segment = match self {
+            Self::Connection => connection(app),
+            Self::Execution => return execution(app),
+            Self::Input => return input(app),
+            Self::Agent => Segment::details(
+                format!("Agent {}", single_line(&app.active.agent)),
+                Priority::Agent,
+            ),
+            Self::Workspace => Segment::workspace(
+                app.resolved_workspace()
+                    .map(single_line_path)
+                    .unwrap_or_else(|| "Workspace —".into()),
+            ),
+            Self::Model => Segment::details(
                 app.pane()
                     .effective_model_label()
                     .map(|label| single_line(&label))
@@ -120,14 +182,49 @@ impl Field {
                             "Model pending".into()
                         }
                     }),
-            )),
-        }
+                Priority::Model,
+            ),
+            Self::Context => Segment::measurement(
+                app.pane()
+                    .current_request_usage()
+                    .and_then(UsageTotals::context_percent),
+                "Context —",
+                |percent| format!("Context {percent:.0}% used"),
+            ),
+            Self::InputTokens => tokens(
+                usage.and_then(|usage| usage.input_tokens),
+                usage.is_some_and(UsageTotals::input_tokens_complete),
+                "in",
+            ),
+            Self::OutputTokens => tokens(
+                usage.and_then(|usage| usage.output_tokens),
+                usage.is_some_and(UsageTotals::output_tokens_complete),
+                "out",
+            ),
+            Self::Cache => Segment::measurement(
+                usage.and_then(UsageTotals::cache_hit_percent),
+                "Cache hit —",
+                |percent| format!("Cache hit {percent:.0}%"),
+            ),
+            Self::Throughput => Segment::measurement(
+                app.pane()
+                    .current_request_usage()
+                    .and_then(UsageTotals::output_tokens_per_second),
+                "— TPS",
+                tokens_per_second,
+            ),
+        };
+        Some(segment)
     }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Priority {
-    Context,
+    MissingMetric,
+    Metric,
+    Model,
+    Workspace,
+    Agent,
     Connected,
     Ready,
     Input,
@@ -139,7 +236,8 @@ enum Priority {
 
 enum SegmentText {
     Labels(Vec<String>),
-    Context(String),
+    Details(String),
+    Workspace(String),
 }
 
 struct Segment {
@@ -157,18 +255,53 @@ impl Segment {
         }
     }
 
-    fn context(text: String) -> Self {
+    fn details(text: String, priority: Priority) -> Self {
         Self {
-            text: SegmentText::Context(text),
+            text: SegmentText::Details(text),
             style: Style::default(),
-            priority: Priority::Context,
+            priority,
+        }
+    }
+
+    fn workspace(text: String) -> Self {
+        Self {
+            text: SegmentText::Workspace(text),
+            style: Style::default(),
+            priority: Priority::Workspace,
+        }
+    }
+
+    fn measurement(
+        value: Option<f64>,
+        placeholder: &str,
+        format: impl FnOnce(f64) -> String,
+    ) -> Self {
+        Self::metric(
+            value
+                .filter(|value| value.is_finite() && *value >= 0.0)
+                .map(format),
+            placeholder,
+        )
+    }
+
+    fn metric(label: Option<String>, placeholder: &str) -> Self {
+        let (label, color, priority) = match label {
+            Some(label) => (label, Color::Reset, Priority::Metric),
+            None => (placeholder.to_owned(), MUTED, Priority::MissingMetric),
+        };
+        Self {
+            text: SegmentText::Labels(vec![label]),
+            style: Style::default().fg(color),
+            priority,
         }
     }
 
     fn compact_width(&self) -> usize {
         match &self.text {
             SegmentText::Labels(labels) => labels[0].width(),
-            SegmentText::Context(text) => text.width().min(COMPACT_CONTEXT_WIDTH),
+            SegmentText::Details(text) | SegmentText::Workspace(text) => {
+                text.width().min(COMPACT_DETAILS_WIDTH)
+            }
         }
     }
 
@@ -180,9 +313,29 @@ impl Segment {
                 .find(|label| label.width() <= width)
                 .cloned()
                 .unwrap_or_else(|| shorten(&labels[0], width)),
-            SegmentText::Context(text) => shorten_middle(text, width),
+            SegmentText::Details(text) => shorten_middle(text, width),
+            SegmentText::Workspace(text) => {
+                if text.width() <= width {
+                    text.clone()
+                } else {
+                    let (start, _) = tail_start(text, width.saturating_sub(1));
+                    format!("…{}", &text[start..])
+                }
+            }
         }
     }
+}
+
+fn wrap_index(segments: &[Segment], width: usize) -> usize {
+    let mut used = 0;
+    for (index, segment) in segments.iter().enumerate() {
+        let compact = segment.compact_width();
+        if index > 0 && used + SEPARATOR.width() + compact > width {
+            return index;
+        }
+        used += compact + if index == 0 { 0 } else { SEPARATOR.width() };
+    }
+    segments.len()
 }
 
 fn render_segments(segments: Vec<Segment>, width: usize) -> Option<Line<'static>> {
@@ -324,40 +477,86 @@ fn input(app: &App) -> Option<Segment> {
     Some(Segment::labels(labels, color, priority))
 }
 
+fn tokens(value: Option<u64>, complete: bool, direction: &str) -> Segment {
+    let label = value.map(|count| {
+        let bound = if complete { "" } else { "≥" };
+        format!("{bound}{} {direction}", compact_token_count(count))
+    });
+    Segment::metric(label, &format!("— {direction}"))
+}
+
+fn compact_token_count(count: u64) -> String {
+    let Some((unit, suffix)) = TOKEN_UNITS.into_iter().find(|(unit, _)| *unit <= count) else {
+        return count.to_string();
+    };
+    let whole = count / unit;
+    if whole >= 100 {
+        return format!("{whole}{suffix}");
+    }
+    let (precision, scale) = if whole < 10 { (2, 100) } else { (1, 10) };
+    let fractional = count % unit / (unit / scale);
+    if fractional == 0 {
+        return format!("{whole}{suffix}");
+    }
+    let decimals = format!("{fractional:0precision$}");
+    format!("{whole}.{}{suffix}", decimals.trim_end_matches('0'))
+}
+
+fn tokens_per_second(rate: f64) -> String {
+    if rate == 0.0 {
+        "0 TPS".into()
+    } else if rate < 0.1 {
+        "<0.1 TPS".into()
+    } else {
+        format!("{rate:.1} TPS")
+    }
+}
+
 fn shorten_middle(text: &str, width: usize) -> String {
     if text.width() <= width || width < 8 {
         return shorten(text, width);
     }
+    let (tail, used) = tail_start(text, width / 2);
+    format!("{}{}", shorten(&text[..tail], width - used), &text[tail..])
+}
+
+fn tail_start(text: &str, width: usize) -> (usize, usize) {
     let mut used = 0;
     let mut tail = text.len();
     for (offset, grapheme) in text.grapheme_indices(true).rev() {
         let cells = grapheme.width();
-        if used + cells > width / 2 {
+        if used + cells > width {
             break;
         }
         used += cells;
         tail = offset;
     }
-    format!("{}{}", shorten(&text[..tail], width - used), &text[tail..])
+    (tail, used)
 }
 
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 
-    use kuku_client::{Error, HistoryPage, Snapshot, Timing};
+    use kuku_client::{Error, HistoryPage, Snapshot, Timing, UsageTotals};
     use ratatui::backend::TestBackend;
     use ratatui::style::Color;
     use ratatui::Terminal;
     use serde_json::{json, Value};
 
-    use super::{render_segments, Field, Priority, Segment, StatusLine, SEPARATOR, SETTING};
-    use crate::app::App;
+    use super::{
+        compact_token_count, render_segments, Field, Priority, Segment, StatusLine, SEPARATOR,
+        SETTING,
+    };
+    use crate::app::{Address, App};
     use crate::jobs::{Job, Update};
     use crate::ui;
 
     fn connected_app() -> App {
-        let workspace = PathBuf::from("/workspace");
+        connected_workspace(PathBuf::from("/workspace"))
+    }
+
+    fn connected_workspace(workspace: PathBuf) -> App {
         let mut app = App::new(workspace.clone(), None);
         app.update(Update::Connected {
             workspace,
@@ -366,7 +565,7 @@ mod tests {
         app
     }
 
-    fn load_agent(app: &mut App, status: &str, queued: usize, question: Value) {
+    fn load_agent(app: &mut App, status: &str, queued: usize, question: Value, usage: UsageTotals) {
         app.select(app.active.clone(), true, "Example".into());
         let selection = app.selection();
         let snapshot: Snapshot = serde_json::from_value(json!({
@@ -378,7 +577,7 @@ mod tests {
             "agent": {
                 "address": app.active.agent, "config": {}, "status": status,
                 "pending_inputs": queued, "execution_id": 49, "question": question,
-                "usage": {"model_requests": 0, "unreported_requests": 0},
+                "usage": usage,
             },
         }))
         .unwrap();
@@ -391,6 +590,26 @@ mod tests {
             },
         ));
         app.update(Update::WatchConnected(selection));
+    }
+
+    fn measured_usage() -> UsageTotals {
+        serde_json::from_value(json!({
+            "input_tokens": 129_000_000,
+            "output_tokens": 210_000,
+            "cache_read_input_tokens": 96_750_000,
+            "model_requests": 3,
+            "unreported_requests": 0,
+            "input_reported_requests": 3,
+            "output_reported_requests": 3,
+            "cache_reported_requests": 3,
+            "latest_request": {
+                "input_tokens": 89_000,
+                "output_tokens": 460,
+                "context_window_tokens": 100_000,
+                "elapsed_us": 25_000_000,
+            },
+        }))
+        .unwrap()
     }
 
     fn screen(app: &mut App, statusline: &StatusLine, width: u16, height: u16) -> Vec<String> {
@@ -410,11 +629,18 @@ mod tests {
     #[test]
     fn status_line_setting_orders_omits_and_hides_fields() {
         assert_eq!(
-            StatusLine(vec![Field::Model, Field::Workspace, Field::Execution]),
+            StatusLine {
+                fields: Some(vec![Field::Model, Field::Workspace, Field::Execution]),
+            },
             StatusLine::parse(" model, workspace,execution ").unwrap()
         );
         assert_eq!(StatusLine::default(), StatusLine::parse("").unwrap());
-        assert_eq!(StatusLine(Vec::new()), StatusLine::parse("none").unwrap());
+        assert_eq!(
+            StatusLine {
+                fields: Some(Vec::new())
+            },
+            StatusLine::parse("none").unwrap()
+        );
     }
 
     #[test]
@@ -430,7 +656,7 @@ mod tests {
     fn short_status_line_fits_complete_graphemes_and_keeps_urgent_segments() {
         let line = render_segments(
             vec![
-                Segment::context("/dir/开发👩‍💻/最后".into()),
+                Segment::workspace("/dir/开发👩‍💻/最后".into()),
                 Segment::labels(vec!["Waiting".into()], Color::Yellow, Priority::Attention),
                 Segment::labels(
                     vec!["Offline".into()],
@@ -449,7 +675,7 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         let line = render_segments(
-            vec![Segment::context(
+            vec![Segment::workspace(
                 "/dir/e\u{0301}e\u{0301}e\u{0301}/👩‍💻末".into(),
             )],
             10,
@@ -488,6 +714,7 @@ mod tests {
                 "id": "q-1", "agent": "main", "turn": 1, "tool_call_id": "tool-1",
                 "text": "Which test target?",
             }),
+            UsageTotals::default(),
         );
         let custom = StatusLine::parse("workspace").unwrap();
         let rows = screen(&mut app, &custom, 66, 14);
@@ -507,7 +734,7 @@ mod tests {
     #[test]
     fn status_line_distinguishes_execution_unconfirmed_input_queue_and_draft() {
         let mut app = connected_app();
-        load_agent(&mut app, "running", 2, Value::Null);
+        load_agent(&mut app, "running", 2, Value::Null, UsageTotals::default());
         app.pane_mut().draft.insert("First input");
         app.send(Timing::NextTurn);
         let command = app
@@ -525,6 +752,148 @@ mod tests {
         assert_eq!(
             "Running · Awaiting receipt, 2 queued, Draft",
             rows.last().unwrap().trim()
+        );
+    }
+
+    #[test]
+    fn compact_token_counts_use_decimal_units_with_integer_arithmetic() {
+        assert_eq!("12.4K", compact_token_count(12_432));
+        assert_eq!("1.25M", compact_token_count(1_250_000));
+        assert_eq!("999K", compact_token_count(999_999));
+        assert_eq!("1B", compact_token_count(1_000_000_000));
+        assert_eq!("18446744073B", compact_token_count(u64::MAX));
+    }
+
+    #[test]
+    fn measured_usage_and_workspace_are_visible_at_eighty_and_one_twenty_columns() {
+        let workspace = PathBuf::from("/workspace")
+            .join("archived-projects".repeat(12))
+            .join("work-right");
+        let mut app = connected_workspace(workspace.clone());
+        load_agent(&mut app, "running", 2, Value::Null, measured_usage());
+        app.pane_mut().draft.insert("Local draft");
+        for width in [80, 120] {
+            let rows = screen(&mut app, &StatusLine::default(), width, 24);
+            let states = rows[22].trim();
+            assert!(states.contains("Connected"), "{states}");
+            assert!(states.contains("Running"), "{states}");
+            assert!(states.contains("2 queued"), "{states}");
+            assert!(states.contains("Agent main"), "{states}");
+            assert!(states.contains("work-right"), "{states}");
+            assert!(
+                !states.contains(workspace.to_string_lossy().as_ref()),
+                "{states}"
+            );
+            assert_eq!(
+                "Context 89% used · 129M in · 210K out · Cache hit 75% · 18.4 TPS",
+                rows[23].trim()
+            );
+        }
+        let rows = screen(&mut app, &StatusLine::default(), 29, 24);
+        assert!(rows[23].contains("Running") && rows[23].contains("2 queued"));
+        assert!(
+            rows[22].contains('╰'),
+            "a narrow window should have one status row"
+        );
+        let rows = screen(&mut app, &StatusLine::parse("none").unwrap(), 80, 24);
+        assert!(
+            rows[23].contains('╰'),
+            "both status rows should be reclaimed"
+        );
+    }
+
+    #[test]
+    fn selected_agent_metrics_change_with_the_address_and_custom_order() {
+        let mut app = connected_app();
+        load_agent(&mut app, "running", 0, Value::Null, measured_usage());
+        let main = app.active.clone();
+        let statusline =
+            StatusLine::parse("agent,tps,context,tokens_out,cache,tokens_in,workspace").unwrap();
+        let rows = screen(&mut app, &statusline, 54, 20);
+        assert_eq!(
+            "Agent main · 18.4 TPS · Context 89% used · 210K out",
+            rows[18].trim()
+        );
+        assert_eq!("Cache hit 75% · 129M in · /workspace", rows[19].trim());
+
+        app.select(
+            Address::new(main.session.clone(), "reviewer".into()),
+            true,
+            "Example".into(),
+        );
+        let rows = screen(&mut app, &statusline, 120, 20);
+        assert_eq!(
+            "Agent reviewer · — TPS · Context — · — out · Cache hit — · — in · /workspace",
+            rows[19].trim()
+        );
+        let reviewer: UsageTotals = serde_json::from_value(json!({
+            "model_requests": 2,
+            "unreported_requests": 1,
+            "input_tokens": 1_204,
+            "output_tokens": 0,
+            "input_reported_requests": 1,
+            "output_reported_requests": 2,
+        }))
+        .unwrap();
+        load_agent(&mut app, "idle", 0, Value::Null, reviewer);
+        let rows = screen(&mut app, &statusline, 120, 20);
+        assert_eq!(
+            "Agent reviewer · — TPS · Context — · 0 out · Cache hit — · ≥1.2K in · /workspace",
+            rows[19].trim()
+        );
+        app.select(main, true, "Example".into());
+        let rows = screen(&mut app, &statusline, 120, 20);
+        assert_eq!(
+            "Agent main · 18.4 TPS · Context 89% used · 210K out · Cache hit 75% · 129M in · /workspace",
+            rows[19].trim()
+        );
+    }
+
+    #[test]
+    fn next_step_hides_stale_context_and_throughput_but_keeps_cumulative_metrics() {
+        let mut app = connected_app();
+        load_agent(&mut app, "running", 0, Value::Null, measured_usage());
+        let statusline = StatusLine::parse("context,tokens_in,tokens_out,cache,tps").unwrap();
+        let step = serde_json::from_value(json!({
+            "type": "committed", "id": 51, "agent": "main", "kind": "runtime.step_prepared"
+        }))
+        .unwrap();
+        app.update(Update::Observation(app.selection(), step));
+        let rows = screen(&mut app, &statusline, 80, 20);
+        assert_eq!(
+            "Context — · 129M in · 210K out · Cache hit 75% · — TPS",
+            rows[19].trim()
+        );
+    }
+
+    #[test]
+    fn known_zero_measurements_have_distinct_labels_from_missing_metrics() {
+        let mut app = connected_app();
+        let statusline = StatusLine::parse("context,tokens_out,cache,tps").unwrap();
+        let rows = screen(&mut app, &statusline, 80, 20);
+        assert_eq!("Context — · — out · Cache hit — · — TPS", rows[19].trim());
+        let usage: UsageTotals = serde_json::from_value(json!({
+            "input_tokens": 100,
+            "output_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "model_requests": 2,
+            "unreported_requests": 0,
+            "input_reported_requests": 2,
+            "output_reported_requests": 2,
+            "cache_reported_requests": 2,
+            "latest_request": {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "context_window_tokens": 100_000,
+                "elapsed_us": 1_000_000,
+            },
+        }))
+        .unwrap();
+        load_agent(&mut app, "idle", 0, Value::Null, usage);
+        let rows = screen(&mut app, &statusline, 80, 20);
+        assert_eq!(
+            "Context 0% used · 0 out · Cache hit 0% · 0 TPS",
+            rows[19].trim()
         );
     }
 }

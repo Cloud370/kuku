@@ -17,6 +17,7 @@ use crate::text::{shorten, single_line};
 
 const COMPOSER_HEIGHT: u16 = 6;
 const NARROW_COMPOSER_HEIGHT: u16 = 4;
+const TWO_ROW_STATUS_MIN_HEIGHT: u16 = 12;
 const MAX_BANNER_ROWS: u16 = 5;
 const MIN_TRANSCRIPT_ROWS: u16 = 2;
 const PICKER_WIDTH: u16 = 88;
@@ -31,8 +32,8 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &mut App, statusline: &StatusLi
     }
     let area = outer.inner(Margin::new(u16::from(outer.width >= 24), 0));
     let width = usize::from(area.width);
-    let statusline = statusline.render_line(app, width);
-    let status_height = u16::from(statusline.is_some());
+    let statuslines = statusline.render_lines(app, width, area.height >= TWO_ROW_STATUS_MIN_HEIGHT);
+    let status_height = statuslines.len() as u16;
     let editor_height = match area.height {
         0..=3 => area.height.saturating_sub(status_height),
         4..=11 => NARROW_COMPOSER_HEIGHT.min(area.height - status_height - 1),
@@ -71,8 +72,8 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &mut App, statusline: &StatusLi
         composer_focused,
         &format!("Type a prompt · {} Actions", Shortcut::ACTIONS.label),
     );
-    if let Some(line) = statusline {
-        frame.render_widget(Paragraph::new(line), status);
+    if status_height > 0 {
+        frame.render_widget(Paragraph::new(statuslines), status);
     }
     let main_areas = [transcript, banner_area, inner, status];
     let modal_area = render_modal(frame, outer, app);

@@ -1,3 +1,9 @@
+#[cfg(windows)]
+use std::ffi::OsString;
+use std::path::Path;
+#[cfg(windows)]
+use std::path::{Component, PathBuf, Prefix};
+
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -21,6 +27,14 @@ pub(crate) fn terminal_text(text: &str) -> String {
 
 pub(crate) fn single_line(text: &str) -> String {
     terminal_text(text).replace(['\n', '\t'], " ")
+}
+
+pub(crate) fn single_line_path(path: &Path) -> String {
+    #[cfg(windows)]
+    let ordinary = ordinary_windows_path(path);
+    #[cfg(windows)]
+    let path = ordinary.as_deref().unwrap_or(path);
+    single_line(&path.to_string_lossy())
 }
 
 pub(crate) fn replace_tabs(text: &str) -> String {
@@ -49,4 +63,55 @@ pub(crate) fn shorten(text: &str, cells: usize) -> String {
     }
     shortened.push('…');
     shortened
+}
+
+#[cfg(windows)]
+fn ordinary_windows_path(path: &Path) -> Option<PathBuf> {
+    let mut components = path.components();
+    let Component::Prefix(prefix) = components.next()? else {
+        return None;
+    };
+    let mut ordinary = match prefix.kind() {
+        Prefix::VerbatimDisk(drive) => PathBuf::from(format!("{}:", char::from(drive))),
+        Prefix::VerbatimUNC(server, share) => {
+            let mut unc = OsString::from(r"\\");
+            unc.push(server);
+            unc.push(r"\");
+            unc.push(share);
+            PathBuf::from(unc)
+        }
+        Prefix::Disk(_) | Prefix::UNC(_, _) | Prefix::DeviceNS(_) | Prefix::Verbatim(_) => {
+            return None;
+        }
+    };
+    ordinary.extend(components);
+    Some(ordinary)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::single_line_path;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_path_display_simplifies_only_verbatim_disks_and_unc() {
+        let cases = [
+            (r"\\?\C:\my workspace", r"C:\my workspace"),
+            (r"\\?\UNC\server\share\project", r"\\server\share\project"),
+            (r"\\.\pipe\kuku", r"\\.\pipe\kuku"),
+            (r"\\?\Volume{volume}\project", r"\\?\Volume{volume}\project"),
+        ];
+        for (original, expected) in cases {
+            assert_eq!(expected, single_line_path(Path::new(original)));
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn unix_path_display_keeps_literal_backslashes() {
+        let path = r"/workspace/\\?\C:\real-name";
+        assert_eq!(path, single_line_path(Path::new(path)));
+    }
 }
