@@ -424,6 +424,7 @@ impl ToolAuthorizer for DeferCommands {
 
 #[tokio::test]
 async fn question_reply_waits_in_inbox_until_prior_authorization_is_settled() {
+    let task = "ask a question and run the command";
     let server = MockServer::start_async().await;
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
@@ -445,13 +446,7 @@ async fn question_reply_waits_in_inbox_until_prior_authorization_is_settled() {
     session
         .create_agent("create", "main", AgentConfig::default())
         .unwrap();
-    session
-        .send(Input::new(
-            "input",
-            "main",
-            "ask a question and run the command",
-        ))
-        .unwrap();
+    session.send(Input::new("input", "main", task)).unwrap();
     let waiting = settled(&session, "main").await;
     assert_eq!(
         AgentStatus::Waiting,
@@ -459,10 +454,7 @@ async fn question_reply_waits_in_inbox_until_prior_authorization_is_settled() {
         "{:?}",
         waiting.last_error
     );
-    assert_eq!(
-        Some("ask a question and run the command"),
-        waiting.admitted_task.as_deref()
-    );
+    assert_eq!(Some(task), waiting.admitted_task.as_deref());
     let question = waiting.question.unwrap();
     let permission = waiting.permission.unwrap();
     let receipt = session
@@ -492,10 +484,7 @@ async fn question_reply_waits_in_inbox_until_prior_authorization_is_settled() {
     session.close().await.unwrap();
     let session = Session::open(reopen).await.unwrap();
     let restored = session.agent("main").unwrap();
-    assert_eq!(
-        Some("ask a question and run the command"),
-        restored.admitted_task.as_deref()
-    );
+    assert_eq!(Some(task), restored.admitted_task.as_deref());
     assert_eq!(None, restored.queued_task);
     session
         .reply_permission("allow", "main", &permission.id, true)
@@ -503,10 +492,7 @@ async fn question_reply_waits_in_inbox_until_prior_authorization_is_settled() {
     let done = settled(&session, "main").await;
     assert_eq!(AgentStatus::Idle, done.status, "{:?}", done.last_error);
     assert_eq!(Some("answer accepted"), done.last_output.as_deref());
-    assert_eq!(
-        Some("ask a question and run the command"),
-        done.admitted_task.as_deref()
-    );
+    assert_eq!(Some(task), done.admitted_task.as_deref());
     assert!(session.events(0, 256).unwrap().iter().any(|event| matches!(&event.payload, EventPayload::MessageUser { text, .. } if text == "blue-answer")));
     assert!(session
         .reply_question("stale", "main", &question.id, "ignored")
