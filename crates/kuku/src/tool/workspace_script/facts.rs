@@ -23,6 +23,10 @@ pub enum WorkspaceScriptOperation {
     RunCommand,
     /// Read a bounded portion of a retained output.
     ReadOutput,
+    /// Bind a literal value or retained output to an Agent's exact name.
+    SaveValue,
+    /// List an Agent's named value metadata and immutable references.
+    ListValues,
     /// Start a retained output derived by a script.
     CreateOutput,
     /// Append data to a derived output.
@@ -44,13 +48,15 @@ impl WorkspaceScriptOperation {
             Self::RemoveFile => "remove_file",
             Self::RunCommand => "run_command",
             Self::ReadOutput => "read_output",
+            Self::SaveValue => "save_value",
+            Self::ListValues => "list_values",
             Self::CreateOutput => "create_output",
             Self::AppendOutput => "append_output",
             Self::FinishOutput => "finish_output",
         }
     }
 
-    pub(crate) const ALL: [Self; 12] = [
+    pub(crate) const ALL: [Self; 14] = [
         Self::FindFiles,
         Self::ReadFile,
         Self::SearchText,
@@ -60,6 +66,8 @@ impl WorkspaceScriptOperation {
         Self::RemoveFile,
         Self::RunCommand,
         Self::ReadOutput,
+        Self::SaveValue,
+        Self::ListValues,
         Self::CreateOutput,
         Self::AppendOutput,
         Self::FinishOutput,

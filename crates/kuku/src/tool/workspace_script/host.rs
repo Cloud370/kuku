@@ -283,6 +283,8 @@ fn selected_facts(structured: &Value) -> Value {
         "cleanup_incomplete",
         "output_id",
         "output_ref",
+        "name",
+        "reference",
         "change",
         "path",
         "content_hash",

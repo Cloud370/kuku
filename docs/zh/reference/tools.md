@@ -138,6 +138,8 @@ return { exitCode: facts.exit_code, warnings, complete, outputId: facts.output_r
 
 用 `list_values({prefix?, after?, limit?})` 查询名称、类型及引用。结果包含 `values` 和 `next_after`，每页按名称顺序返回最多 32 项。将 `next_after` 作为 `after` 传入可继续翻页。用 `read_output({name})` 按需取内容。名称绑定归当前 Agent 所有，关闭并重开 Session 后仍可使用。重复保存同一来源是幂等操作。用 `replace: true` 把现有名称绑定到新的来源。
 
+脚本可用这些工具时，通过 `await workspace.save_value({name, value})` 保存计算结果，或传入 `output_id` 绑定保留输出。用 `await workspace.list_values()` 查询当前 Agent 的名称。两种方法沿用对应直接工具的参数和授权。
+
 用 `send_message({to, message, values: ["build_log"]})` 在下达任务时向接收方分享固定的值引用。每条消息最多可分享八个准确名称或完整输出引用。以后替换 `build_log` 的绑定，已投递的引用仍然有效。接收方可以用共享的 ID 读取该引用。
 
 ## Tool Result Envelope

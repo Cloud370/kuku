@@ -122,7 +122,11 @@ pub(crate) fn definition() -> ToolDefinition {
             "return {count, status: report.status}; ",
             "Get an output id from run_command result.output_ref.id. For raw bytes, use ",
             "workspace.output_chunks({id}) and its segments. Use create_output, append_output and ",
-            "finish_output to retain large derived results. JavaScript runs in QuickJS without Node.js APIs."
+            "finish_output to retain large derived results. When available, save durable names with ",
+            "await workspace.save_value({name, value}) or await workspace.save_value({name, output_id}). ",
+            "Set replace to true to change an existing binding. Use workspace.list_values({prefix, after, limit}) ",
+            "to discover names and their references, and workspace.read_output({name}) to read a value. ",
+            "JavaScript runs in QuickJS without Node.js APIs."
         ).into(),
         input_schema: json!({
             "type":"object",

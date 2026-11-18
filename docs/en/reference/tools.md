@@ -138,6 +138,8 @@ Use `save_value({name, output_id})` to give an existing capture a durable name w
 
 Use `list_values({prefix?, after?, limit?})` to discover names, kinds, and references. The result contains `values` and `next_after`. It returns at most 32 entries in name order. Pass `next_after` as `after` to continue. Read contents on demand with `read_output({name})`. Bindings belong to the current Agent and survive closing and reopening the Session. Saving the same source again is idempotent. Supply `replace: true` to bind an existing name to a new source.
 
+When these tools are available to a script, call `await workspace.save_value({name, value})` to retain a computed value or pass `output_id` to bind a retained output. Use `await workspace.list_values()` to discover the current Agent's names. Both methods use the same arguments and authorization as their direct tools.
+
 Use `send_message({to, message, values: ["build_log"]})` to give the recipient a fixed reference to the value along with its task. You can share up to eight exact names or whole-output references in one message. A later replacement of `build_log` leaves the delivered reference intact. The recipient can read that reference by its shared ID.
 
 ## Tool Result Envelope

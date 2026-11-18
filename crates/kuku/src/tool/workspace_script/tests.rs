@@ -93,6 +93,63 @@ async fn script_exposes_only_the_named_methods_and_supports_standard_async_javas
 }
 
 #[tokio::test]
+async fn named_value_methods_forward_direct_tool_arguments() {
+    let result = run(
+        r#"
+        const literal = await workspace.save_value({name: "report", value: {passed: 7}, replace: true});
+        const output = await workspace.save_value({name: "log", output_id: "retained"});
+        const page = await workspace.list_values({prefix: "log", after: "log", limit: 2});
+        const defaultPage = await workspace.list_values();
+        return {
+            methods: workspace.methods.map(({name}) => name),
+            literal: literal.result,
+            output: output.result,
+            page: page.result,
+            defaultPage: defaultPage.result,
+            sendMessage: typeof workspace.send_message,
+            askUser: typeof workspace.ask_user,
+        };
+        "#,
+        TestHost {
+            operations: vec![ScriptOperation::SaveValue, ScriptOperation::ListValues],
+            callback: |call: ScriptCall, _| async move {
+                ToolResultEnvelope::ok(call.op.name(), "", call.args)
+            },
+        },
+        WorkspaceScriptLimits::default(),
+    )
+    .await;
+    assert_eq!("ok", result.status, "{}", result.model_content);
+    let facts = facts(&result);
+    assert_eq!(
+        json!({
+            "methods": ["save_value", "list_values"],
+            "literal": {"name": "report", "value": {"passed": 7}, "replace": true},
+            "output": {"name": "log", "output_id": "retained"},
+            "page": {"prefix": "log", "after": "log", "limit": 2},
+            "defaultPage": {},
+            "sendMessage": "undefined",
+            "askUser": "undefined",
+        }),
+        facts.value
+    );
+    assert_eq!(
+        [
+            ScriptOperation::SaveValue,
+            ScriptOperation::SaveValue,
+            ScriptOperation::ListValues,
+            ScriptOperation::ListValues,
+        ],
+        facts
+            .actions
+            .iter()
+            .map(|action| action.tool)
+            .collect::<Vec<_>>()
+            .as_slice()
+    );
+}
+
+#[tokio::test]
 async fn independent_host_promises_run_concurrently_and_keep_request_order() {
     let entered = Arc::new(Barrier::new(3));
     let barrier = entered.clone();
