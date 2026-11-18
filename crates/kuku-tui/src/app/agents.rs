@@ -37,6 +37,10 @@ impl AgentActivities {
         self.revision
     }
 
+    pub(super) fn status(&self, address: &str) -> Option<Activity> {
+        self.agents.get(address).map(TrackedAgent::activity)
+    }
+
     pub(super) fn invalidate(&mut self, cursor: u64) {
         self.agents.clear();
         self.minimum_cursor = cursor;

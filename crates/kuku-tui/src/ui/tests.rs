@@ -192,9 +192,11 @@ fn switching_agent_keeps_drafts_and_read_position_and_ignores_old_observer() {
     app.select(main, true, "Example".into());
     let after = screen(&mut app, 79, 22);
     assert_eq!(
-        before.lines().take(12).collect::<Vec<_>>(),
-        after.lines().take(12).collect::<Vec<_>>()
+        before.lines().skip(1).take(11).collect::<Vec<_>>(),
+        after.lines().skip(1).take(11).collect::<Vec<_>>()
     );
+    assert!(before.contains("Alt+↓ Agents"));
+    assert!(after.contains("Alt+↑ Back"));
     assert!(after.contains("main-draft"));
     app.select(review, true, "Example".into());
     key(&mut app, KeyCode::Enter, KeyModifiers::ALT);

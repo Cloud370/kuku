@@ -16,11 +16,13 @@ use crate::transcript::{HistoryRequest, Transcript};
 
 mod activity;
 pub(crate) mod agents;
+mod navigation;
 mod pending;
 
 pub(crate) use activity::{Activity, ServiceStatus, SubmissionStatus};
 use activity::{ExecutionProgress, Watch};
 use agents::AgentActivities;
+use navigation::AgentNavigation;
 pub(crate) use pending::{PendingItem, PendingStage};
 
 const DEFAULT_AGENT: &str = "main";
@@ -308,6 +310,7 @@ pub(crate) struct App {
     quit_after_save: bool,
     resolved_workspace: bool,
     cached: VecDeque<Address>,
+    navigation: AgentNavigation,
 }
 
 impl App {
@@ -343,6 +346,7 @@ impl App {
             outstanding_checks: 0,
             quit_after_save: false,
             resolved_workspace: false,
+            navigation: AgentNavigation::default(),
         }
     }
 
@@ -421,19 +425,6 @@ impl App {
             });
             false
         }
-    }
-
-    pub(crate) fn select(&mut self, address: Address, exists: bool, title: String) {
-        self.text_selection.clear();
-        let pane = self.panes.entry(address.clone()).or_default();
-        pane.exists |= exists;
-        if pane.title.is_empty() {
-            pane.title = title;
-        }
-        self.active = address;
-        self.cache_active_pane();
-        self.notice = None;
-        self.begin_observing();
     }
 
     pub(crate) fn new_draft(&mut self) {
@@ -704,6 +695,7 @@ impl App {
             | Update::Output(..) => {}
         }
         self.sync_pending_picker();
+        self.sync_agent_picker();
     }
 
     fn target(&self, address: &Address) -> Target {

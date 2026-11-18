@@ -148,6 +148,8 @@ impl App {
             key if Shortcut::LATEST.matches(key) => self.pane_mut().transcript.show_latest(),
             key if Shortcut::RECONNECT.matches(key) => self.reconnect(),
             key if Shortcut::MODEL.matches(key) => self.perform(CommandMenu::Model),
+            key if Shortcut::AGENTS.matches(key) => self.open_agents(),
+            key if Shortcut::PREVIOUS_AGENT.matches(key) => self.back_to_agent(),
             key if Shortcut::DETAILS.matches(key) => {
                 let expanded = self.pane_mut().transcript.toggle_details();
                 self.confirmation(if expanded {
@@ -318,7 +320,6 @@ impl App {
 
     fn search(&mut self, first: bool) {
         let available = self.available();
-        let session_id = self.active.session.clone();
         let Some(Modal::Picker(picker)) = &mut self.modal else {
             return;
         };
@@ -327,7 +328,6 @@ impl App {
             PickerKind::Commands if available => Search::Skills(query),
             PickerKind::Paths(_) if available => Search::Paths(query),
             PickerKind::Sessions if available => Search::Sessions(query),
-            PickerKind::Agents if first && available => Search::Agents(session_id),
             PickerKind::Models if first && available => Search::Models,
             PickerKind::Server if first => Search::Server,
             _ => {
@@ -335,10 +335,7 @@ impl App {
                 if !available
                     && matches!(
                         picker.kind,
-                        PickerKind::Sessions
-                            | PickerKind::Paths(_)
-                            | PickerKind::Models
-                            | PickerKind::Agents
+                        PickerKind::Sessions | PickerKind::Paths(_) | PickerKind::Models
                     )
                 {
                     picker.problem = Some("Service unavailable · /reconnect".into());
@@ -349,7 +346,7 @@ impl App {
         self.effects.push(Job::Find(picker.begin_search(), request));
     }
 
-    fn picker(&mut self, kind: PickerKind, local: Vec<Choice>) -> &mut Picker {
+    pub(crate) fn picker(&mut self, kind: PickerKind, local: Vec<Choice>) -> &mut Picker {
         let id = self.modal_id();
         self.modal = Some(Modal::Picker(Picker::new(kind, id, local)));
         if let Some(Modal::Picker(picker)) = &mut self.modal {
@@ -404,11 +401,7 @@ impl App {
             ChoiceKind::Session { id, title, exists } => {
                 self.select(Address::main(id), exists, title)
             }
-            ChoiceKind::Agent { address } => self.select(
-                Address::new(self.active.session.clone(), address),
-                true,
-                self.pane().title.clone(),
-            ),
+            ChoiceKind::Agent { target } => self.select_agent(target),
             ChoiceKind::CreateAgent => self.prompt(
                 PromptKind::Agent,
                 "New agent",
@@ -463,6 +456,7 @@ impl App {
                 self.search(true);
             }
             CommandMenu::Agents => self.open_agents(),
+            CommandMenu::Back => self.back_to_agent(),
             CommandMenu::Queue => self.send(Timing::NextTurn),
             CommandMenu::Withdraw => self.open_queue(),
             CommandMenu::Advance => {
@@ -499,20 +493,6 @@ impl App {
     fn open_paths(&mut self, range: Range<usize>, query: String) {
         let picker = self.picker(PickerKind::Paths(range), Vec::new());
         picker.query.set_text(query);
-        self.search(true);
-    }
-
-    fn open_agents(&mut self) {
-        if !self.pane().exists {
-            self.problem("Send the first prompt to establish a Session before creating an Agent");
-            return;
-        }
-        let create = Choice::new(
-            "Create agent",
-            "Start with independent context",
-            ChoiceKind::CreateAgent,
-        );
-        self.picker(PickerKind::Agents, vec![create]);
         self.search(true);
     }
 

@@ -11,6 +11,7 @@ pub(crate) enum CommandMenu {
     New,
     Resume,
     Agents,
+    Back,
     Queue,
     Withdraw,
     Advance,
@@ -30,10 +31,11 @@ pub(crate) enum CommandMenu {
 }
 
 impl CommandMenu {
-    pub(crate) const ALL: [Self; 19] = [
+    pub(crate) const ALL: &[Self] = &[
         Self::New,
         Self::Resume,
         Self::Agents,
+        Self::Back,
         Self::Queue,
         Self::Withdraw,
         Self::Advance,
@@ -57,6 +59,7 @@ impl CommandMenu {
             Self::New => "new",
             Self::Resume => "resume",
             Self::Agents => "agents",
+            Self::Back => "back",
             Self::Queue => "queue",
             Self::Withdraw => "withdraw",
             Self::Advance => "continue",
@@ -80,7 +83,14 @@ impl CommandMenu {
         let (description, shortcut) = match self {
             Self::New => ("Open a fresh draft", None),
             Self::Resume => ("Find a conversation in this workspace", None),
-            Self::Agents => ("Choose or create a recipient", None),
+            Self::Agents => (
+                "Choose or create an Agent in this Session",
+                Some(Shortcut::AGENTS),
+            ),
+            Self::Back => (
+                "Return to the previous Agent in this Session",
+                Some(Shortcut::PREVIOUS_AGENT),
+            ),
             Self::Queue => ("Send on the next Turn", Some(Shortcut::NEXT_TURN)),
             Self::Withdraw => ("Withdraw input still in the queue", None),
             Self::Advance => ("Continue queued work", None),
@@ -124,7 +134,7 @@ pub(crate) enum ChoiceKind {
         exists: bool,
     },
     Agent {
-        address: String,
+        target: Target,
     },
     CreateAgent,
     Tier(String),
@@ -217,7 +227,7 @@ impl PickerKind {
             Self::Commands => "Actions and Skills",
             Self::Paths(_) => "Workspace paths",
             Self::Sessions => "Resume session",
-            Self::Agents => "Select agent",
+            Self::Agents => "Switch Agent",
             Self::Models => "Model route",
             Self::Thinking => "Thinking",
             Self::Queue => "Withdraw queued input",
@@ -338,14 +348,15 @@ impl Picker {
             .iter()
             .filter(|choice| choice.matches(&query))
             .chain(self.remote.iter().filter(|choice| {
-                !matches!(self.kind, PickerKind::Agents | PickerKind::Models)
-                    || choice.matches(&query)
+                !matches!(self.kind, PickerKind::Models) || choice.matches(&query)
             }))
             .collect();
-        if matches!(self.kind, PickerKind::Commands) && !query.is_empty() {
+        if matches!(self.kind, PickerKind::Commands | PickerKind::Agents) && !query.is_empty() {
             choices.sort_by_key(|choice| match choice.kind {
                 ChoiceKind::Command(command) if command.name() == query => 0,
                 ChoiceKind::Command(command) if command.name().starts_with(&query) => 1,
+                ChoiceKind::Agent { ref target } if target.agent == query => 0,
+                ChoiceKind::Agent { ref target } if target.agent.starts_with(&query) => 1,
                 _ => 2,
             });
         }

@@ -4,9 +4,9 @@ use std::time::Duration;
 
 use kuku_client::local::{RestartOutcome, SESSION_PROTOCOL_VERSION};
 use kuku_client::{
-    Acknowledgement, AgentConfig, AgentStatus, Client, Command, Connection, ConnectionOptions,
-    Error, HistoryPage, ModelCatalog, ModelSelection, Observation, OutputChunk, SessionStatus,
-    Snapshot, SubscriptionUpdate, Target,
+    Acknowledgement, AgentConfig, Client, Command, Connection, ConnectionOptions, Error,
+    HistoryPage, ModelCatalog, ModelSelection, Observation, OutputChunk, SessionStatus, Snapshot,
+    SubscriptionUpdate, Target,
 };
 use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinSet};
@@ -30,7 +30,6 @@ pub(crate) enum Search {
     Skills(String),
     Paths(String),
     Sessions(String),
-    Agents(String),
     Models,
     Server,
 }
@@ -422,38 +421,6 @@ async fn find(
                 })
                 .collect()
         }
-        Search::Agents(session) => client
-            .agents(workspace, &session)
-            .await?
-            .into_iter()
-            .map(|agent| {
-                let pending = agent
-                    .question
-                    .as_ref()
-                    .map(|request| request.text.as_str())
-                    .or_else(|| {
-                        agent
-                            .permission
-                            .as_ref()
-                            .map(|request| request.summary.as_str())
-                    });
-                let mut detail = format!(
-                    "{} · {} queued",
-                    agent_status(agent.status),
-                    agent.pending_inputs
-                );
-                if let Some(pending) = pending {
-                    detail.push_str(&format!(" · {pending}"));
-                }
-                Choice::new(
-                    &agent.address,
-                    detail,
-                    ChoiceKind::Agent {
-                        address: agent.address.clone(),
-                    },
-                )
-            })
-            .collect(),
         Search::Models => return Ok(model_choices(client.models().await?)),
         Search::Server => unreachable!("handled above"),
     };
@@ -558,14 +525,4 @@ async fn web(connection: &Connection, target: Option<&Target>) -> Result<(), Err
 
 fn disk_result<T>(result: Result<Result<T, Error>, tokio::task::JoinError>) -> Result<T, Error> {
     result.map_err(|error| std::io::Error::other(format!("client storage task: {error}")))?
-}
-
-pub(crate) fn agent_status(status: AgentStatus) -> &'static str {
-    match status {
-        AgentStatus::Idle => "Ready",
-        AgentStatus::Running => "Running",
-        AgentStatus::Waiting => "Waiting",
-        AgentStatus::Stopped => "Stopped",
-        AgentStatus::Interrupted => "Interrupted",
-    }
 }

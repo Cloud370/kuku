@@ -138,12 +138,26 @@ fn render_transcript(
     } else {
         "New session".into()
     };
-    let hint = if view.following {
+    let mut hint = if view.following {
         view.tool_hint.unwrap_or_default()
     } else {
         format!("Reading · {} latest", Shortcut::LATEST.label)
     };
-    let hint_width = if hint.width() + 20 <= width {
+    if app.pane().exists {
+        let mut navigation = format!("{} Agents", Shortcut::AGENTS.label);
+        if app.previous_agent().is_some() {
+            let back = format!(" · {} Back", Shortcut::PREVIOUS_AGENT.label);
+            if navigation.width() + back.width() + 12 < width {
+                navigation.push_str(&back);
+            }
+        }
+        hint = if !hint.is_empty() && hint.width() + navigation.width() + 23 <= width {
+            format!("{hint} · {navigation}")
+        } else {
+            navigation
+        };
+    }
+    let hint_width = if hint.width() + 12 < width {
         hint.width()
     } else {
         0
