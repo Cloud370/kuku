@@ -818,11 +818,15 @@ def dense_transcript(client, reference=False):
         assert scenario.read_target not in collapsed and scenario.draft in collapsed, collapsed
         anchor = row_of(collapsed, scenario.activity_group)
         terminal.click_text(collapsed, scenario.activity_composition)
+        anchored = terminal.expect(scenario.read_target, state=scenario.draft)["screen"]
+        assert row_of(anchored, scenario.activity_group) == anchor
+        terminal.request("resize", rows=38, cols=140)
         opened = terminal.expect(scenario.read_target, state="Search text · sample-marker in samples", also=(scenario.draft,))["screen"]
         assert row_of(opened, scenario.activity_group) == anchor and "sample-marker 12" not in opened, opened
         assert all(f"samples/read-{index:02d}.txt" in opened for index in range(1, 13)), opened
         assert "Find files · read-0*.txt in samples" in opened and "Search text · sample-marker in samples" in opened, opened
         screens.append(("Expanded read-only activity with file, find, and search targets", opened))
+        terminal.request("resize", rows=32, cols=140)
 
         terminal.press("\x10")
         terminal.expect("Actions and Skills")
