@@ -149,7 +149,11 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
         assembly.memory_sources,
         vec![global_memory.clone(), project_memory.clone()]
     );
-    assert_eq!(assembly.prompt_asset_sources.len(), 4);
+    assert_eq!(assembly.prompt_asset_sources.len(), 3);
+    assert!(!assembly
+        .prompt_asset_sources
+        .iter()
+        .any(|asset| asset.path.ends_with("blocks/memory.md")));
 
     // [0] project_policy
     match &assembly.prelude_messages[0].blocks[..] {
@@ -269,13 +273,7 @@ fn assemble_context_keeps_stable_empty_placeholders() {
         other => panic!("expected project-policy text block, got {other:?}"),
     }
 
-    // [1] tool_guidance
-    match &assembly.prelude_messages[1].blocks[..] {
-        [MessageBlock::Text(text)] => {
-            assert!(text.contains("<kuku_tool_guidance>"));
-        }
-        other => panic!("expected tool-guidance text block, got {other:?}"),
-    }
+    assert_eq!(1, assembly.prelude_messages.len());
 }
 
 #[test]
@@ -291,7 +289,11 @@ fn drift_notice_can_be_inserted_between_project_context_and_tool_guidance() {
             global_memory: None,
             project_memory: None,
             history: Vec::new(),
-            tools: Vec::new(),
+            tools: vec![ToolSchema {
+                name: "read_file".into(),
+                description: "Read a file".into(),
+                input_schema: serde_json::json!({"type":"object"}),
+            }],
             model_tiers: Vec::new(),
             runtime_blocks: None,
             enable_memory: false,
