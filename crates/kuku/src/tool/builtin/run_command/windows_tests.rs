@@ -21,6 +21,7 @@ use crate::tool::ToolResultEnvelope;
 use super::super::test_helpers::workspace;
 use super::{
     read_output, run_command, run_command_with_output, CommandEvent, OutputLimits, OutputRead,
+    OutputStream,
 };
 
 const CHILD_START_TIMEOUT: Duration = Duration::from_secs(10);
@@ -350,7 +351,14 @@ async fn windows_shell_runs_quoted_powershell_in_the_workspace() {
     let dir = workspace();
     let path = dir.path().join("工作区 with spaces");
     std::fs::create_dir(&path).unwrap();
-    let command = r#"Set-Content -LiteralPath 'gate started.txt' -Value 'ready with spaces'; Write-Output '"quoted" | literal & payload'"#;
+    let command = r#"
+Set-Content -LiteralPath 'gate started.txt' -Value 'ready with spaces'
+$payload = [pscustomobject]@{ Text = '"quoted" | literal & payload' }
+$payload | ForEach-Object { $_.Text }
+[Console]::Error.WriteLine('fixture raw stderr')
+Write-Error -Message ('fixture PowerShell ' + 'error')
+exit 7
+"#;
     let output_dir = path.join("outputs");
     let result = run_command_with_output(
         &serde_json::json!({"shell":"powershell","command":command,"cwd":".","timeout":10,"brief":"write a marker with PowerShell"}),
@@ -363,7 +371,7 @@ async fn windows_shell_runs_quoted_powershell_in_the_workspace() {
     )
     .await;
     assert_eq!("ok", result.status, "{}", result.model_content);
-    assert_eq!(0, result.structured.unwrap()["exit_code"]);
+    assert_eq!(7, result.structured.unwrap()["exit_code"]);
     assert_eq!(
         "ready with spaces",
         std::fs::read_to_string(path.join("gate started.txt"))
@@ -374,15 +382,37 @@ async fn windows_shell_runs_quoted_powershell_in_the_workspace() {
             .trim_end()
     );
     let saved = read_output(&output_dir, "powershell", OutputRead::default()).unwrap();
-    assert_eq!(
-        "\"quoted\" | literal & payload",
+    let text = |stream| {
         saved
             .segments
-            .into_iter()
-            .map(|segment| segment.text)
+            .iter()
+            .filter(|segment| segment.stream == stream)
+            .map(|segment| segment.text.as_str())
             .collect::<String>()
-            .trim_end()
+    };
+    let stdout = text(OutputStream::Stdout);
+    let stderr = text(OutputStream::Stderr);
+    assert_eq!("\"quoted\" | literal & payload", stdout.trim_end());
+    assert!(
+        stderr.lines().any(|line| line == "fixture raw stderr"),
+        "{stderr}"
     );
+    assert!(stderr.contains("fixture PowerShell error"), "{stderr}");
+    assert!(!stderr.contains("#< CLIXML"), "{stderr}");
+}
+
+#[tokio::test]
+async fn windows_powershell_bare_dash_is_evaluated_as_script_text() {
+    let dir = workspace();
+    let result = run_command(
+        &serde_json::json!({"shell":"powershell","command":"-","cwd":".","timeout":5}),
+        dir.path(),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!("ok", result.status, "{result:?}");
+    assert_eq!(1, result.structured.unwrap()["exit_code"]);
 }
 
 #[tokio::test]

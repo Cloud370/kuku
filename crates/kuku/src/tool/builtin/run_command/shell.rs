@@ -44,15 +44,14 @@ pub(super) fn shell_command(shell: CommandShell, text: &str) -> Option<Command> 
             command.args(["-c", text]);
         }
         CommandShell::Powershell | CommandShell::Pwsh => {
-            let utf16: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
-            command
-                .args([
-                    "-NoLogo",
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-EncodedCommand",
-                ])
-                .arg(STANDARD.encode(utf16));
+            command.args(["-NoLogo", "-NoProfile", "-NonInteractive"]);
+            // NOTE: -Command keeps stderr in text form. A bare "-" selects stdin and NUL cannot travel in argv.
+            if text == "-" || text.contains('\0') {
+                let utf16: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
+                command.arg("-EncodedCommand").arg(STANDARD.encode(utf16));
+            } else {
+                command.args(["-Command", text]);
+            }
         }
         CommandShell::Cmd => apply_cmd_arguments(&mut command, text),
     }
