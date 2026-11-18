@@ -43,6 +43,8 @@ pub(crate) fn render_at(
     if outer.is_empty() {
         app.text_selection.clear();
         app.delivery_area = Rect::ZERO;
+        app.reading_area = Rect::ZERO;
+        app.composer_area = Rect::ZERO;
         return false;
     }
     let area = outer.inner(Margin::new(horizontal_gutter(outer.width), 0));
@@ -57,15 +59,21 @@ pub(crate) fn render_at(
     let padding = composer_padding(area);
     let padding_rows = padding.top + padding.bottom;
     let composer_gap = u16::from(area.height >= 16);
-    let delivery_limit = area
+    let space_above_editor = area
         .height
         .saturating_sub(status_height + chrome_rows + padding_rows + composer_gap + 2);
-    let deliveries = delivery::lines(app, width, delivery_limit);
+    let reading = (space_above_editor > 0)
+        .then(|| reading_line(app, width))
+        .flatten();
+    let reading_height = u16::from(reading.is_some());
+    let deliveries = delivery::lines(app, width, space_above_editor - reading_height);
     let delivery_height = deliveries.len() as u16;
-    let editor_limit = area.height.saturating_sub(
-        status_height + chrome_rows + padding_rows + composer_gap + delivery_height,
-    );
-    let focused = app.modal.is_none();
+    let above_editor = composer_gap + delivery_height + reading_height;
+    let editor_limit = area
+        .height
+        .saturating_sub(status_height + chrome_rows + padding_rows + above_editor);
+    let unobstructed = app.modal.is_none();
+    let focused = unobstructed && app.composer_focused();
     let mut composer = Block::new().style(surface());
     if area.width >= 4 {
         composer = composer
@@ -81,29 +89,35 @@ pub(crate) fn render_at(
         padding_rows + heading_rows + draft.as_ref().map_or(0, |view| view.lines.len() as u16);
     let banner_rows = area
         .height
-        .saturating_sub(
-            editor_height + composer_gap + delivery_height + status_height + MIN_TRANSCRIPT_ROWS,
-        )
+        .saturating_sub(editor_height + above_editor + status_height + MIN_TRANSCRIPT_ROWS)
         .min(MAX_BANNER_ROWS);
     let banner = banner(app, width, usize::from(banner_rows));
-    let [transcript, banner_area, _gap, delivery_area, editor, status] = Layout::vertical([
-        Constraint::Min(0),
-        Constraint::Length(banner.len() as u16),
-        Constraint::Length(composer_gap),
-        Constraint::Length(delivery_height),
-        Constraint::Length(editor_height),
-        Constraint::Length(status_height),
-    ])
-    .areas(area);
+    let [transcript, banner_area, _gap, delivery_area, reading_area, editor, status] =
+        Layout::vertical([
+            Constraint::Min(0),
+            Constraint::Length(banner.len() as u16),
+            Constraint::Length(composer_gap),
+            Constraint::Length(delivery_height),
+            Constraint::Length(reading_height),
+            Constraint::Length(editor_height),
+            Constraint::Length(status_height),
+        ])
+        .areas(area);
     let row_insets = render_transcript(frame, transcript, app, banner_area.height == 0);
     frame.render_widget(Paragraph::new(banner), banner_area);
     frame.render_widget(Paragraph::new(deliveries), delivery_area);
     app.delivery_area = delivery_area;
+    if let Some(line) = reading {
+        frame.render_widget(Paragraph::new(line), reading_area);
+    }
+    app.reading_area = reading_area;
     let [heading, inner] = Layout::vertical([Constraint::Length(heading_rows), Constraint::Min(0)])
         .areas(composer.inner(editor));
     frame.render_widget(composer, editor);
     app.editor_width = content_width.max(1);
-    let activity_visible = focused && heading.width >= MIN_ACTIVITY_WIDTH && !heading.is_empty();
+    app.composer_area = inner;
+    let activity_visible =
+        unobstructed && heading.width >= MIN_ACTIVITY_WIDTH && !heading.is_empty();
     if !heading.is_empty() {
         let step = activity_step.filter(|_| activity_visible);
         let line = activity::render_heading(app, usize::from(heading.width), step);
@@ -121,7 +135,14 @@ pub(crate) fn render_at(
     if let Some(line) = footer {
         frame.render_widget(Paragraph::new(line), status);
     }
-    let main_areas = [transcript, banner_area, delivery_area, inner, status];
+    let main_areas = [
+        transcript,
+        banner_area,
+        delivery_area,
+        reading_area,
+        inner,
+        status,
+    ];
     let modal_area = render_modal(frame, outer, app);
     app.text_selection.render(
         frame.buffer_mut(),
@@ -131,6 +152,39 @@ pub(crate) fn render_at(
         modal_area.is_none().then_some((transcript, row_insets)),
     );
     activity_visible
+}
+
+fn reading_line(app: &App, width: usize) -> Option<Line<'static>> {
+    let unseen = app.pane().transcript.reading_has_new_content()?;
+    let latest = Shortcut::LATEST.label;
+    let back = Shortcut::READING_BACK.label;
+    let focus = if app.composer_focused() {
+        "Editing"
+    } else {
+        "↑↓ scroll"
+    };
+    let content = if unseen { " · New content" } else { "" };
+    let full = format!("Reading history · {focus} · Jump to latest ({latest} / {back}){content}");
+    let focus = if app.composer_focused() {
+        "Edit"
+    } else {
+        "↑↓"
+    };
+    let compact = if unseen {
+        format!("New · {focus} · {latest}")
+    } else {
+        format!("History {focus} · {latest}")
+    };
+    let fallback = if unseen {
+        format!("New · {latest}")
+    } else {
+        format!("Reading · {latest}")
+    };
+    let text = [full, compact]
+        .into_iter()
+        .find(|line| line.width() <= width)
+        .unwrap_or(fallback);
+    Some(Line::styled(shorten(&text, width), emphasis(ACCENT)))
 }
 
 fn render_transcript(

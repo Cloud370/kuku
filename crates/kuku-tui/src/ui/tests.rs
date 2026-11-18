@@ -432,11 +432,7 @@ fn switching_agent_keeps_drafts_and_read_position_and_ignores_old_observer() {
         before.lines().skip(1).take(11).collect::<Vec<_>>(),
         after.lines().skip(1).take(11).collect::<Vec<_>>()
     );
-    assert!(before
-        .lines()
-        .next()
-        .unwrap()
-        .contains("Reading · Ctrl+End"));
+    assert!(before.contains("Reading history · ↑↓ scroll"));
     assert!(after.lines().next().unwrap().contains("/agents"));
     assert!(after.contains("main-draft"));
     app.select(review, true, "Example".into());
@@ -504,6 +500,105 @@ fn source_action_completes_on_tab_and_toggles_one_pane_without_changing_copy() {
     assert!(screen(&mut app, 100, 24).contains("````markdown"));
     command(&mut app, "source");
     assert!(!screen(&mut app, 100, 24).contains("````markdown"));
+}
+
+#[test]
+fn reading_arrows_and_clicks_keep_pending_input_drafts_and_live_content_scoped() {
+    let mut app = app();
+    let mut state = snapshot(&app, "running", json!(null), json!(null));
+    let mut input = Input::new("queue-1", "main", "queued text");
+    input.source = InputSource::Host("http".into());
+    state.pending.push(QueuedInput {
+        input,
+        receipt: Receipt {
+            command_id: "queue-1".into(),
+            event_id: 30,
+            agent: "main".into(),
+        },
+    });
+    let entries = (1..30)
+        .map(|id| {
+            entry(
+                id,
+                "main",
+                HistoryKind::Assistant,
+                &format!("Checkpoint {id:02}"),
+            )
+        })
+        .collect();
+    app.update(Update::Loaded(
+        app.selection(),
+        state,
+        HistoryPage {
+            entries,
+            next_before: None,
+        },
+    ));
+    app.pane_mut().draft.remember("prior prompt");
+    screen(&mut app, 105, 24);
+    key(&mut app, KeyCode::PageUp, KeyModifiers::NONE);
+    let painted = screen(&mut app, 105, 24);
+    assert!(painted.contains("Reading history · ↑↓ scroll") && painted.contains("Pending inputs"));
+    let (width, height) = app.transcript_area;
+    let before = app.pane_mut().transcript.project(width, height).lines;
+    key(&mut app, KeyCode::Up, KeyModifiers::NONE);
+    let earlier = app.pane_mut().transcript.project(width, height).lines;
+    assert_eq!(&before[..height - 1], &earlier[1..]);
+    assert!(app.modal.is_none() && app.pane().draft.text().is_empty());
+    key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    assert_eq!(
+        before,
+        app.pane_mut().transcript.project(width, height).lines
+    );
+
+    app.pane_mut().transcript.live(
+        49,
+        Some(1),
+        Some(1),
+        &json!({"type":"text","content":"fresh output"}),
+    );
+    assert!(screen(&mut app, 105, 24).contains("New content"));
+    assert_eq!(
+        before,
+        app.pane_mut().transcript.project(width, height).lines
+    );
+    assert!(screen(&mut app, 24, 12).contains("New · ↑↓ · Ctrl+End"));
+    key(&mut app, KeyCode::Char('d'), KeyModifiers::NONE);
+    event(&mut app, Event::Paste("raft".into()));
+    assert!(screen(&mut app, 105, 24).contains("Reading history · Editing"));
+    assert_eq!("draft", app.pane().draft.text());
+    assert_eq!(
+        before,
+        app.pane_mut().transcript.project(width, height).lines
+    );
+
+    let mut terminal = Terminal::new(TestBackend::new(105, 24)).unwrap();
+    let buffer = terminal
+        .draw(|frame| render(frame, &mut app))
+        .unwrap()
+        .buffer;
+    app.event(
+        mouse(MouseEventKind::ScrollUp, (4, 5), KeyModifiers::NONE),
+        buffer,
+    );
+    assert!(!app.composer_focused());
+    let buffer = terminal
+        .draw(|frame| render(frame, &mut app))
+        .unwrap()
+        .buffer;
+    let composer = (app.composer_area.x, app.composer_area.y);
+    click(&mut app, buffer, composer);
+    assert!(app.composer_focused() && app.pane().transcript.is_reading());
+    let buffer = terminal
+        .draw(|frame| render(frame, &mut app))
+        .unwrap()
+        .buffer;
+    let jump = (app.reading_area.x, app.reading_area.y);
+    click(&mut app, buffer, jump);
+    let latest = screen(&mut app, 105, 24);
+    assert!(latest.contains("fresh output") && !latest.contains("Reading history"));
+    assert!(latest.contains("queued text"));
+    assert_eq!("draft", app.pane().draft.text());
 }
 
 #[test]

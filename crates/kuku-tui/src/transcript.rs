@@ -104,6 +104,18 @@ pub(crate) struct Transcript {
 
 impl Transcript {
     pub(crate) fn replace_recent(&mut self, page: HistoryPage) {
+        if let Some(reading) = &mut self.reading {
+            let previous = self
+                .recent
+                .records
+                .iter()
+                .filter_map(|record| record.position)
+                .max();
+            reading.unseen |= page
+                .entries
+                .last()
+                .is_some_and(|entry| previous.is_some_and(|previous| entry.id > previous));
+        }
         self.latest_reply.observe_page(&page);
         self.recent = Window::from_page(page);
         self.current_execution = None;
@@ -142,6 +154,7 @@ impl Transcript {
         }
         let Some(record) = record else { return };
         if let Some(reading) = &mut self.reading {
+            reading.unseen = true;
             if matches!(record.key, Key::Tool { .. }) && reading.window.contains(&record.key) {
                 reading.window.insert(record.clone());
             }
@@ -172,6 +185,7 @@ impl Transcript {
                     if let Body::Assistant(body) = &mut record.body {
                         if append_bounded(body, text, MAX_BODY_BYTES) {
                             record.rendered = RenderCache::default();
+                            self.mark_unseen();
                         }
                     }
                 }
@@ -202,6 +216,7 @@ impl Transcript {
                         }
                     }
                     self.recent.tool_live(key, turn, turn_number, event);
+                    self.mark_unseen();
                 }
             }
             Some("done" | "cancelled" | "error") => self.clear_preview(),
@@ -236,8 +251,11 @@ impl Transcript {
         let record = self
             .recent
             .record_or_insert(key, turn, turn_number, || Body::Assistant(String::new()));
-        record.body = Body::Assistant(text);
-        record.rendered = RenderCache::default();
+        if !matches!(&record.body, Body::Assistant(previous) if previous == &text) {
+            record.body = Body::Assistant(text);
+            record.rendered = RenderCache::default();
+            self.mark_unseen();
+        }
     }
 
     pub(crate) fn clear_reply_preview(&mut self) {
@@ -277,6 +295,20 @@ impl Transcript {
     pub(crate) fn show_latest(&mut self) {
         self.reading = None;
         self.restore = None;
+    }
+
+    pub(crate) fn is_reading(&self) -> bool {
+        self.reading.is_some()
+    }
+
+    pub(crate) fn reading_has_new_content(&self) -> Option<bool> {
+        self.reading.as_ref().map(|reading| reading.unseen)
+    }
+
+    fn mark_unseen(&mut self) {
+        if let Some(reading) = &mut self.reading {
+            reading.unseen = true;
+        }
     }
 
     pub(crate) fn toggle_details(&mut self) -> bool {
@@ -339,7 +371,7 @@ impl Transcript {
             items: &self.detail_items,
         };
         if self.reading.is_none() {
-            if !amount.is_negative() || self.recent.records.is_empty() {
+            if amount > 0 || self.recent.records.is_empty() {
                 return None;
             }
             let mut window = self.recent.clone();
@@ -349,7 +381,11 @@ impl Transcript {
                 window,
                 anchor,
                 newer: VecDeque::new(),
+                unseen: false,
             });
+        }
+        if amount == 0 {
+            return None;
         }
         let reading = self.reading.as_mut().expect("read window");
         let rows = reading.window.row_count(layout);
@@ -385,6 +421,7 @@ impl Transcript {
                         window,
                         anchor,
                         newer: VecDeque::new(),
+                        unseen: false,
                     });
                 }
             }
@@ -534,6 +571,7 @@ struct Reading {
     window: Window,
     anchor: Anchor,
     newer: VecDeque<HistoryRequest>,
+    unseen: bool,
 }
 
 impl Reading {

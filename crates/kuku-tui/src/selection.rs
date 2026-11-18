@@ -11,6 +11,9 @@ pub(crate) enum ClickTarget {
     Detail(DetailKey),
     Picker(PickerHit),
     Queued,
+    Transcript,
+    Composer,
+    JumpLatest,
 }
 
 pub(crate) enum MouseAction {

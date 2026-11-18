@@ -43,6 +43,7 @@ impl Shortcut {
     pub(crate) const MODEL: Self = Self::control('l', "Ctrl+L");
     pub(crate) const DETAILS: Self = Self::control('o', "Ctrl+O");
     pub(crate) const LATEST: Self = Self::new(KeyCode::End, KeyModifiers::CONTROL, "Ctrl+End");
+    pub(crate) const READING_BACK: Self = Self::new(KeyCode::Up, KeyModifiers::ALT, "Alt+↑");
 
     pub(crate) fn matches(self, key: KeyEvent) -> bool {
         key.code == self.code && key.modifiers == self.modifiers

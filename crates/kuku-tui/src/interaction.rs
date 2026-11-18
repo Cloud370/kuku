@@ -1,11 +1,10 @@
 use std::ops::Range;
 
 use crossterm::event::{
-    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
 };
 use kuku_client::{Action, AgentConfig, Error, Timing};
 use ratatui::buffer::Buffer;
-use ratatui::layout::Position;
 
 use crate::app::{Address, App, Modal, PendingItem, PendingStage};
 use crate::editor::Editor;
@@ -13,9 +12,10 @@ use crate::jobs::{Job, Search, Selection};
 use crate::keys::{AgentDirection, Shortcut};
 use crate::menu::{Choice, ChoiceKind, CommandMenu, Picker, PickerKind, Prompt, PromptKind};
 use crate::output::OutputViewer;
-use crate::selection::{ClickTarget, MouseAction};
 use crate::text::{shorten, single_line, TAB};
 use crate::transcript::{ReplySource, ToolView};
+
+mod pointer;
 
 const MOUSE_SCROLL_LINES: isize = 3;
 
@@ -32,58 +32,9 @@ impl App {
                 kind: MouseEventKind::ScrollDown,
                 ..
             }) => self.wheel(MOUSE_SCROLL_LINES),
-            Event::Mouse(mouse) => {
-                let click = self.click_target(mouse);
-                match self.text_selection.mouse(mouse, screen, click) {
-                    Some(MouseAction::Copy(text)) => self.copy_text(text),
-                    Some(MouseAction::Click(ClickTarget::Detail(key))) => {
-                        self.pane_mut().transcript.toggle_detail(&key);
-                    }
-                    Some(MouseAction::Click(ClickTarget::Picker(hit))) => {
-                        if let Some(Modal::Picker(picker)) = &mut self.modal {
-                            if let Some(choice) = picker.click(hit) {
-                                let kind = picker.kind.clone();
-                                self.choose(kind, choice);
-                            }
-                        }
-                    }
-                    Some(MouseAction::Click(ClickTarget::Queued)) => self.open_queued(),
-                    None => {}
-                }
-            }
+            Event::Mouse(mouse) => self.pointer(mouse, screen),
             Event::FocusLost | Event::Resize(_, _) => self.text_selection.clear(),
             Event::FocusGained | Event::Key(_) => {}
-        }
-    }
-
-    fn click_target(&self, mouse: MouseEvent) -> Option<ClickTarget> {
-        if !matches!(
-            mouse.kind,
-            MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left)
-        ) || !mouse.modifiers.is_empty()
-        {
-            return None;
-        }
-        match &self.modal {
-            Some(Modal::Picker(picker)) => picker
-                .hit(Position::new(mouse.column, mouse.row))
-                .map(ClickTarget::Picker),
-            Some(Modal::Prompt(_) | Modal::Output(_) | Modal::StatusLineEditor(_)) => None,
-            None => {
-                if self
-                    .delivery_area
-                    .contains(Position::new(mouse.column, mouse.row))
-                    && self.queued_for_edit().next().is_some()
-                {
-                    Some(ClickTarget::Queued)
-                } else {
-                    self.text_selection
-                        .transcript_row(mouse)
-                        .and_then(|row| self.pane().transcript.detail_at(row))
-                        .cloned()
-                        .map(ClickTarget::Detail)
-                }
-            }
         }
     }
 
@@ -139,6 +90,7 @@ impl App {
                 prompt.editor.insert(&text.replace(['\r', '\n'], " "));
             }
         } else if self.modal.is_none() {
+            self.focus_composer();
             self.pane_mut().draft.insert(text);
         }
     }
@@ -171,24 +123,30 @@ impl App {
             self.cycle_agent(direction);
             return;
         }
-        let page = self.transcript_area.1.saturating_sub(1).max(1) as isize;
+        if self.reading_key(key) {
+            return;
+        }
+        if matches!(key.code, KeyCode::Char(_)) && is_text(key)
+            || Shortcut::NEW_LINE.matches(key)
+            || Shortcut::CONTROL_NEW_LINE.matches(key)
+        {
+            self.focus_composer();
+        }
+        let editing = self.composer_focused();
         match key {
             key if Shortcut::ACTIONS.matches(key) || Shortcut::ACTIONS_ALIAS.matches(key) => {
                 self.command_menu()
             }
             key if Shortcut::REPLY.matches(key) => self.open_reply(),
             key if Shortcut::ESCAPE.matches(key) => self.interrupt(),
-            key if Shortcut::NEXT_TURN.matches(key) => self.send(Timing::NextTurn),
-            key if Shortcut::ENTER.matches(key) => self.send(Timing::Steer),
+            key if editing && Shortcut::NEXT_TURN.matches(key) => self.send(Timing::NextTurn),
+            key if editing && Shortcut::ENTER.matches(key) => self.send(Timing::Steer),
             key if Shortcut::UP.matches(key)
                 && self.pane().draft.text().is_empty()
                 && self.queued_for_edit().next().is_some() =>
             {
                 self.open_queued()
             }
-            key if Shortcut::PAGE_UP.matches(key) => self.scroll(-page),
-            key if Shortcut::PAGE_DOWN.matches(key) => self.scroll(page),
-            key if Shortcut::LATEST.matches(key) => self.pane_mut().transcript.show_latest(),
             key if Shortcut::RECONNECT.matches(key) => self.reconnect(),
             key if Shortcut::MODEL.matches(key) => self.perform(CommandMenu::Model),
             key if Shortcut::DETAILS.matches(key) => {
@@ -212,7 +170,7 @@ impl App {
                 let offset = self.pane().draft.cursor();
                 self.open_paths(offset..offset, String::new());
             }
-            key if Shortcut::TAB.matches(key) => {
+            key if editing && Shortcut::TAB.matches(key) => {
                 let draft = &self.pane().draft;
                 let range = draft.completion_range();
                 let query = draft.text()[range.clone()]
@@ -220,10 +178,11 @@ impl App {
                     .to_owned();
                 self.open_paths(range, query);
             }
-            _ => {
+            _ if editing => {
                 let width = self.editor_width;
                 edit(&mut self.pane_mut().draft, key, width, true);
             }
+            _ => {}
         }
     }
 

@@ -37,12 +37,7 @@ pub(super) fn render_session(
     append(&mut line, &identity, width, Style::default().fg(MUTED));
     let title = single_line(&app.pane().title);
     let room = width.saturating_sub(line.width() + TITLE_RESERVE);
-    let reading = format!("Reading · {} latest", Shortcut::LATEST.label);
-    let primary_hint = if following {
-        tool_hint
-    } else {
-        Some(reading.as_str())
-    };
+    let primary_hint = following.then_some(tool_hint).flatten();
     let navigation = if app
         .pane()
         .snapshot

@@ -22,6 +22,7 @@ pub(crate) mod agents;
 mod delivery;
 mod navigation;
 mod pending;
+mod reading;
 
 pub(crate) use activity::{Activity, ServiceStatus, SubmissionStatus};
 use activity::{ExecutionProgress, Watch};
@@ -30,6 +31,7 @@ use delivery::Deliveries;
 pub(crate) use delivery::DeliveryRow;
 use navigation::AgentNavigation;
 pub(crate) use pending::{PendingItem, PendingStage};
+use reading::KeyboardFocus;
 
 const DEFAULT_AGENT: &str = "main";
 const CLEANUP_REFRESH: Duration = Duration::from_secs(1);
@@ -88,6 +90,7 @@ pub(crate) struct Pane {
     pub(crate) draft: Editor,
     pub(crate) transcript: Transcript,
     pub(crate) deliveries: Deliveries,
+    keyboard_focus: KeyboardFocus,
     pub(crate) snapshot: Option<Box<Snapshot>>,
     pub(crate) pending_reply_copy: Option<u64>,
     pub(crate) initial_config: AgentConfig,
@@ -293,6 +296,8 @@ pub(crate) struct App {
     pub(crate) editor_width: usize,
     pub(crate) transcript_area: (usize, usize),
     pub(crate) delivery_area: Rect,
+    pub(crate) reading_area: Rect,
+    pub(crate) composer_area: Rect,
     pub(crate) modal_editor_width: usize,
     pub(crate) modal_page: usize,
     pub(crate) modal_info_rows: usize,
@@ -332,6 +337,8 @@ impl App {
             editor_width: 80,
             transcript_area: (80, 16),
             delivery_area: Rect::ZERO,
+            reading_area: Rect::ZERO,
+            composer_area: Rect::ZERO,
             modal_editor_width: 60,
             modal_page: 6,
             modal_info_rows: 4,
@@ -552,16 +559,6 @@ impl App {
         self.related_agents.invalidate(self.pane().last_event);
         self.generation = self.generation.wrapping_add(1);
         self.effects.push(Job::Connect);
-    }
-
-    pub(crate) fn scroll(&mut self, amount: isize) {
-        let (width, height) = self.transcript_area;
-        if let Some(request) = self.pane_mut().transcript.scroll(amount, width, height) {
-            if self.pane().history_in_flight.is_none() && self.require_service() {
-                self.pane_mut().history_in_flight = Some(request);
-                self.effects.push(Job::History(self.selection(), request));
-            }
-        }
     }
 
     pub(crate) fn tick(&mut self) -> bool {
