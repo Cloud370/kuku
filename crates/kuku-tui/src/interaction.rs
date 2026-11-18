@@ -12,6 +12,7 @@ use crate::jobs::{Job, Search};
 use crate::keys::Shortcut;
 use crate::menu::{Choice, ChoiceKind, CommandMenu, Picker, PickerKind, Prompt, PromptKind};
 use crate::output::OutputViewer;
+use crate::selection::MouseAction;
 use crate::text::{shorten, single_line, TAB};
 use crate::transcript::ToolView;
 
@@ -31,8 +32,23 @@ impl App {
                 ..
             }) => self.wheel(MOUSE_SCROLL_LINES),
             Event::Mouse(mouse) => {
-                if let Some(text) = self.text_selection.mouse(mouse, screen) {
-                    self.effects.push(Job::Copy(text));
+                let agent = match mouse.kind {
+                    MouseEventKind::Down(_) | MouseEventKind::Up(_) => {
+                        self.text_selection.transcript_row(mouse).and_then(|row| {
+                            self.panes
+                                .get(&self.active)?
+                                .transcript
+                                .visible_agent_at(row)
+                        })
+                    }
+                    _ => None,
+                };
+                match self.text_selection.mouse(mouse, screen, agent) {
+                    Some(MouseAction::Copy(text)) => self.effects.push(Job::Copy(text)),
+                    Some(MouseAction::ToggleAgent(row)) => {
+                        self.pane_mut().transcript.toggle_agent_at(row);
+                    }
+                    None => {}
                 }
             }
             Event::FocusLost | Event::Resize(_, _) => self.text_selection.clear(),
@@ -50,7 +66,18 @@ impl App {
         }
     }
 
+    fn dismiss_confirmation(&mut self) {
+        if self
+            .notice
+            .as_ref()
+            .is_some_and(|notice| notice.transient())
+        {
+            self.notice = None;
+        }
+    }
+
     fn key(&mut self, key: KeyEvent) {
+        self.dismiss_confirmation();
         self.text_selection.clear();
         if Shortcut::ESCAPE.matches(key) && self.modal.take().is_some() {
             self.effects.push(Job::ClosePicker);
@@ -65,6 +92,7 @@ impl App {
     }
 
     fn paste(&mut self, text: &str) {
+        self.dismiss_confirmation();
         self.text_selection.clear();
         if let Some(Modal::Picker(picker)) = &mut self.modal {
             if picker.kind.searchable() {
@@ -118,6 +146,9 @@ impl App {
             key if Shortcut::LATEST.matches(key) => self.pane_mut().transcript.show_latest(),
             key if Shortcut::RECONNECT.matches(key) => self.reconnect(),
             key if Shortcut::MODEL.matches(key) => self.perform(CommandMenu::Model),
+            key if Shortcut::AGENT_DETAILS.matches(key) => {
+                self.pane_mut().transcript.toggle_visible_agent();
+            }
             key if Shortcut::TOOL_DETAILS.matches(key) => {
                 let expanded = self.pane_mut().transcript.toggle_details();
                 self.confirmation(if expanded {

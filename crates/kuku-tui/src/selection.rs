@@ -3,6 +3,11 @@ use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::buffer::{Buffer, CellWidth};
 use ratatui::layout::{Position, Rect};
 
+pub(crate) enum MouseAction {
+    Copy(String),
+    ToggleAgent(usize),
+}
+
 #[derive(Default)]
 pub(crate) struct TextSelection {
     areas: Vec<Rect>,
@@ -36,7 +41,21 @@ impl TextSelection {
         }
     }
 
-    pub(crate) fn mouse(&mut self, mouse: MouseEvent, buffer: &Buffer) -> Option<String> {
+    pub(crate) fn transcript_row(&self, mouse: MouseEvent) -> Option<usize> {
+        let (area, _) = self.transcript_insets.as_ref()?;
+        let point = Position::new(mouse.column, mouse.row);
+        if !area.contains(point) || mouse.row == area.y {
+            return None;
+        }
+        Some(usize::from(mouse.row - area.y - 1))
+    }
+
+    pub(crate) fn mouse(
+        &mut self,
+        mouse: MouseEvent,
+        buffer: &Buffer,
+        agent: Option<&str>,
+    ) -> Option<MouseAction> {
         if mouse.modifiers.contains(KeyModifiers::SHIFT) {
             self.drag = None;
             return None;
@@ -49,12 +68,16 @@ impl TextSelection {
                     .iter()
                     .find(|area| area.contains(point))
                     .map(|area| {
-                        Drag::new(
+                        let mut drag = Drag::new(
                             *area,
                             point,
                             buffer,
                             insets_for(&self.transcript_insets, *area),
-                        )
+                        );
+                        if mouse.modifiers.is_empty() {
+                            drag.agent = agent.map(str::to_owned);
+                        }
+                        drag
                     });
             }
             MouseEventKind::Drag(MouseButton::Left) => {
@@ -73,8 +96,14 @@ impl TextSelection {
                     buffer,
                     insets_for(&self.transcript_insets, drag.area),
                 );
+                if mouse.modifiers.is_empty()
+                    && drag.agent.is_some()
+                    && drag.agent.as_deref() == agent
+                {
+                    return self.transcript_row(mouse).map(MouseAction::ToggleAgent);
+                }
                 return (drag.anchor != drag.end && !drag.text.trim().is_empty())
-                    .then_some(drag.text);
+                    .then_some(MouseAction::Copy(drag.text));
             }
             MouseEventKind::Moved => self.drag = None,
             MouseEventKind::Down(MouseButton::Middle | MouseButton::Right)
@@ -105,6 +134,7 @@ fn insets_for(transcript: &Option<(Rect, Vec<u16>)>, area: Rect) -> &[u16] {
 struct Drag {
     area: Rect,
     anchor: Position,
+    agent: Option<String>,
     end: Position,
     text: String,
 }
@@ -114,6 +144,7 @@ impl Drag {
         let mut drag = Self {
             area,
             anchor,
+            agent: None,
             end: anchor,
             text: String::new(),
         };
@@ -127,6 +158,7 @@ impl Drag {
             point.y.clamp(self.area.top(), self.area.bottom() - 1),
         );
         if self.end != end {
+            self.agent = None;
             self.end = end;
             self.text = self.project(buffer, insets).0;
         }

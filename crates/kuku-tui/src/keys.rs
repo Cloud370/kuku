@@ -9,6 +9,7 @@ pub(crate) struct Shortcut {
 
 impl Shortcut {
     pub(crate) const ACTIONS: Self = Self::plain(KeyCode::F(1), "F1");
+    pub(crate) const AGENT_DETAILS: Self = Self::plain(KeyCode::F(3), "F3");
     pub(crate) const REPLY: Self = Self::plain(KeyCode::F(2), "F2");
     pub(crate) const ESCAPE: Self = Self::plain(KeyCode::Esc, "Esc");
     pub(crate) const ENTER: Self = Self::plain(KeyCode::Enter, "Enter");

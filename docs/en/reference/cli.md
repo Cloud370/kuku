@@ -58,6 +58,7 @@ Put options before the prompt in `kuku run`, because it consumes the remaining w
 | `/pending` | Check, retry or discard an unconfirmed submission. |
 | `/model`, `/thinking` | Select model or reasoning settings for the selected Agent. |
 | Ctrl+O, `/tools`, `/copy` | Tool details start expanded with a bounded preview. Toggle them with Ctrl+O, choose a saved result with `/tools`, or use `/copy` to copy the assistant’s reply. |
+| F3 or click an Agent card | Expand or collapse its task and reply preview. F3 acts on the last visible card. |
 | Left-button drag | Highlight visible text and copy the selected range to the clipboard on release. |
 | Page Up, Page Down, Ctrl+End | Scroll the transcript or return to the latest output. |
 | Ctrl+P, Ctrl+N | Recall the previous or next sent prompt into the editor. |
@@ -65,9 +66,9 @@ Put options before the prompt in `kuku run`, because it consumes the remaining w
 | Arrow keys, Tab, Enter in a menu | Move the highlight, complete editable text, or activate the selected action, respectively. |
 | `/web`, `/quit` | Open the conversation in the browser or leave the terminal client. |
 
-The session header identifies the conversation. Each Turn groups the user’s message, tool activity and assistant text. Markdown renders as the reply streams. The single-line footer shows the connection and selected Agent’s activity. The editor grows for wrapped or multiline input and shows draft and receipt feedback. `Draft` is local text. An input can be awaiting a receipt, queued or accepted. `Waiting for model` and `Streaming reply` describe the current model request. `Reconnecting` concerns the client’s connection to the service. Use `KUKU_TUI_STATUSLINE` to choose the visible fields and their order. [Environment variables](environment-variables.md)
+The session header identifies the conversation. Each Turn groups the user’s message, tool activity and assistant text. Markdown renders as the reply streams. Fast deltas share frames, with repaint intervals adjusted to the measured render time. The single-line footer shows the connection and selected Agent’s activity. The editor grows for wrapped or multiline input and shows draft and receipt feedback. `Draft` is local text. An input can be awaiting a receipt, queued or accepted. `Waiting for model` and `Streaming reply` describe the current model request. `Reconnecting` concerns the client’s connection to the service. Choose fields and their order in the terminal’s `tui.toml`. [TUI configuration](config.md)
 
-The footer identifies the selected Agent by its Session-local address and shows the working directory reported by the service. Once the Agent has a snapshot, the default layout includes its usage measurements when space permits.
+The footer identifies the selected Agent by its Session-local address and shows the working directory reported by the service. The compact default includes context usage and average TPS when space permits. The model, token totals and cache hit rate are available as additional fields.
 
 | Field | How to read it |
 |---|---|
