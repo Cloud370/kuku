@@ -127,6 +127,7 @@ def two_workspaces_and_disconnect(client):
             )
             client.provider.assert_idle()
 
+            right.request("resize", rows=32, cols=180)
             right.submit("right workspace check")
             client.provider.next("right workspace check").tool(
                 "write_file", "write-right-marker", path="right-marker.txt",
@@ -236,13 +237,20 @@ def configure_statusline(client):
     settings = client.home / "tui.toml"
     initial = '# Terminal preferences\n[statusline]\nfields = ["agent", "workspace"]\n'
     settings.write_text(initial, encoding="utf-8")
-    sdk_settings = (client.home / "config.toml").read_bytes()
 
     def footer(terminal, predicate):
+        last = ""
+
         def read():
-            line = terminal.request("screen")["screen"].splitlines()[-1].strip()
-            return line if predicate(line) else None
-        return eventually("expected status line preview", read)
+            nonlocal last
+            rows = terminal.request("screen")["screen"].splitlines()
+            last = rows[-1].strip() if rows else ""
+            return last if predicate(last) else None
+
+        try:
+            return eventually("expected status line preview", read)
+        except AssertionError as error:
+            raise AssertionError(f"{error}. Last footer {last!r}") from error
 
     def open_settings(terminal):
         terminal.press("/statusline\r")
@@ -251,6 +259,7 @@ def configure_statusline(client):
     try:
         with client.terminal(workspace) as terminal:
             original = footer(terminal, lambda line: line.startswith("Agent main") and "work-statusline" in line)
+            sdk_settings = (client.home / "config.toml").read_bytes()
             open_settings(terminal)
             terminal.press(" ")
             footer(terminal, lambda line: "Agent main" not in line and "work-statusline" in line)
