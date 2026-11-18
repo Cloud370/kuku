@@ -96,19 +96,6 @@ fn render_transcript(
         app.transcript_area = (usize::from(area.width).max(1), 1);
         return Vec::new();
     }
-    let title = if app.pane().title.is_empty() {
-        if app.pane().exists {
-            "Session"
-        } else {
-            "New session"
-        }
-    } else {
-        &app.pane().title
-    };
-    let title = shorten(
-        &format!("kuku · {}", single_line(title)),
-        usize::from(area.width),
-    );
     let [header, body] = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
     let (width, height) = (usize::from(body.width), usize::from(body.height));
     app.transcript_area = (width.max(1), height.max(1));
@@ -116,36 +103,33 @@ fn render_transcript(
     if view.lines.is_empty() && height > 0 {
         view.lines = welcome(app, width, height, show_service_problem);
     }
-    if !view.following {
-        let reading = format!("Reading · {} latest", Shortcut::LATEST.label);
-        let gap = 3;
-        let width = usize::from(header.width);
-        if width > reading.width() + gap {
-            let title = shorten(&title, width - reading.width() - gap);
-            let padding = " ".repeat(width - title.width() - reading.width());
-            frame.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled(title, emphasis(ACCENT)),
-                    Span::raw(padding),
-                    Span::styled(reading, Style::default().fg(MUTED)),
-                ])),
-                header,
-            );
-        } else {
-            frame.render_widget(
-                Paragraph::new(Line::styled(
-                    format!("Reading · {}", Shortcut::LATEST.label),
-                    emphasis(ACCENT),
-                )),
-                header,
-            );
-        }
+    let session_label = if app.pane().exists {
+        let id: String = single_line(&app.active.session).chars().take(8).collect();
+        format!("Session {id}")
     } else {
-        frame.render_widget(
-            Paragraph::new(Line::styled(title, emphasis(ACCENT))),
-            header,
-        );
+        "New session".into()
+    };
+    let hint = if view.following {
+        view.tool_hint.as_deref().unwrap_or_default().to_owned()
+    } else {
+        format!("Reading · {} latest", Shortcut::LATEST.label)
+    };
+    let hint_width = if hint.width() + 20 <= width { hint.width() } else { 0 };
+    let available = width.saturating_sub(hint_width + usize::from(hint_width > 0));
+    let label = shorten(&session_label, available);
+    let mut spans = vec![Span::styled(label.clone(), emphasis(ACCENT))];
+    let title = single_line(&app.pane().title);
+    if !title.is_empty() && available > label.width() + 3 {
+        let title = shorten(&title, available - label.width() - 3);
+        spans.push(Span::styled(" · ", Style::default().fg(MUTED)));
+        spans.push(Span::styled(title, Style::default().add_modifier(Modifier::BOLD)));
     }
+    let mut line = Line::from(spans);
+    if hint_width > 0 {
+        line.push_span(" ".repeat(width - line.width() - hint_width));
+        line.push_span(Span::styled(hint, Style::default().fg(MUTED)));
+    }
+    frame.render_widget(Paragraph::new(line), header);
     frame.render_widget(Paragraph::new(view.lines), body);
     view.row_insets.insert(0, 0);
     view.row_insets
