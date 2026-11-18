@@ -343,7 +343,8 @@ def read_all_captured_output(script, reference):
              and action["result"].get("output_id") == reference["id"]]
     offset = 0
     for page in sorted(pages, key=lambda item: item["offset"]):
-        if not page["complete"] or page["capture_truncated"] or page["offset"] > offset:
+        if (not page["complete"] or page["capture_truncated"] or page.get("cleanup_incomplete")
+                or page.get("filtered") or page["offset"] > offset):
             return False
         offset = max(offset, page["next_offset"])
     return offset == reference["bytes"]
@@ -384,21 +385,74 @@ def verify_analysis(turn, workspace, evidence):
     return checks
 
 
+def saved_report_reference(turn):
+    if "sdk_workspace" in turn:
+        binding = (turn["sdk_workspace"]["named_after"] or {}).get("binding", {})
+        return binding.get("reference") if binding.get("name") == VALUE_NAME else None
+    return next((binding["reference"] for binding in turn.get("named_values_after", [])
+                 if binding["name"] == VALUE_NAME), None)
+
+
+def saved_report_reads(tools, reference):
+    if reference is None:
+        return []
+    reads = []
+    for tool in tools:
+        if tool["status"] != "ok":
+            continue
+        result = tool["result"]
+        direct = (tool["name"] == "read_output" and tool["args"].get("name") == VALUE_NAME
+                  and result.get("output_id") == reference["id"] and report_from_chunk(result) == EXPECTED)
+        scripted = tool["name"] == "workspace_script" and read_all_captured_output(tool, reference)
+        if direct or scripted:
+            reads.append({"tool": tool["name"], "call_id": tool["call_id"], "reference": reference})
+    return reads
+
+
 def verify_reopen(turns, workspace, evidence):
     first, reopened = turns
     actions = list(tool_actions(reopened["tools"]))
+    reads = saved_report_reads(reopened["tools"], saved_report_reference(first))
+    reopened["saved_report_reads"] = reads
     reopened["checks"] = checks = {
         "same_session_after_close": reopened["session_id"] == first["session_id"] and reopened["number"] is not None
             and reopened["number"] > first["number"],
-        "used_saved_name": any(action.get("name", action.get("tool")) == "read_output" and action["status"] == "ok"
-                               and action.get("args", {}).get("name") == VALUE_NAME
-                               and report_from_chunk(action["result"]) == EXPECTED for action in actions),
+        "used_saved_name": bool(reads),
         "no_replay": not any(is_replay(action["result"]) for action in actions),
         "saved_report_restored": read_artifact(workspace, evidence, RESTORED) == EXPECTED,
         "original_report_unchanged": (workspace / REPORT).is_file()
             and (workspace / REPORT).read_bytes() == (evidence / REPORT).read_bytes(),
     }
     return checks
+
+
+def cleanup_path(path):
+    if os.name != "nt":
+        return path
+    absolute = str(path)
+    if absolute.startswith("\\\\?\\"):
+        return absolute
+    if absolute.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + absolute[2:]
+    return "\\\\?\\" + absolute
+
+
+@contextlib.contextmanager
+def workspace_scratch(base, report):
+    scratch = Path(tempfile.mkdtemp(prefix="kuku-workspace-", dir=base))
+    failed = False
+    try:
+        yield scratch
+    except BaseException:
+        failed = True
+        raise
+    finally:
+        try:
+            shutil.rmtree(cleanup_path(scratch))
+        except OSError as error:
+            report["scratch_cleanup_error"] = f"{error.__class__.__name__}: {error}"
+            if not failed:
+                raise
 
 
 def run_workspace(args, directory, record):
@@ -429,7 +483,7 @@ def run_workspace(args, directory, record):
     evidence.mkdir()
     try:
         with contextlib.ExitStack() as stack:
-            scratch = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="kuku-workspace-", dir=base)))
+            scratch = stack.enter_context(workspace_scratch(base, report))
             (scratch / "bin").mkdir()
             workspace = scratch / "workspace 中文"
             workspace.mkdir()

@@ -1,14 +1,14 @@
 import copy
 import hashlib
 import json
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import subprocess
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
-from evidence import inspect_sdk, SessionFacts
+from evidence import comparison_path, inspect_sdk, SessionFacts
 
 
 class Fixture:
@@ -157,6 +157,18 @@ class Fixture:
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_windows_extended_paths_preserve_drive_and_share_containment(self):
+        def within(path, root):
+            return comparison_path(PureWindowsPath(path)).is_relative_to(comparison_path(PureWindowsPath(root)))
+
+        self.assertTrue(within(r"\\?\W:\accept\sessions\events.jsonl", r"w:\accept"))
+        self.assertTrue(within(r"w:\accept\events.jsonl", r"\\?\W:\accept"))
+        self.assertFalse(within(r"\\?\W:\accept-other\events.jsonl", r"w:\accept"))
+        self.assertFalse(within(r"\\?\C:\accept\events.jsonl", r"w:\accept"))
+        self.assertTrue(within(r"\\?\UNC\host\share\data\events.jsonl", r"\\host\share\data"))
+        self.assertFalse(within(r"\\?\UNC\host\other\data\events.jsonl", r"\\host\share\data"))
+        self.assertFalse(within(r"\\?\UNC\other\share\data\events.jsonl", r"\\host\share\data"))
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.fixture = Fixture(Path(self.temporary.name))

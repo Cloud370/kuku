@@ -123,6 +123,33 @@ class AcceptanceTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 paid_budget(ledger, "openrouter")
 
+    def test_workspace_cleanup_keeps_the_execution_error(self):
+        from workspace import workspace_scratch
+
+        report = {}
+        with mock.patch("workspace.shutil.rmtree", side_effect=OSError("cleanup failed")):
+            with self.assertRaisesRegex(ValueError, "execution failed"):
+                with workspace_scratch(self.directory, report):
+                    raise ValueError("execution failed")
+        self.assertIn("cleanup failed", report["scratch_cleanup_error"])
+
+    def test_workspace_restore_verifies_successful_script_reads_against_saved_reference(self):
+        from workspace import saved_report_reads
+
+        reference = {"id": "saved-output", "offset": 0, "bytes": 8}
+        page = {"output_id": reference["id"], "offset": 0, "next_offset": 8,
+                "complete": True, "capture_truncated": False}
+        action = {"tool": "read_output", "status": "ok", "result": page}
+        tool = {"name": "workspace_script", "status": "ok", "call_id": "script-read",
+                "args": {"code": "return 1"}, "result": {"actions": [action]}}
+        self.assertEqual(saved_report_reads([tool], reference),
+                         [{"tool": "workspace_script", "call_id": "script-read", "reference": reference}])
+        page["next_offset"] = 7
+        self.assertEqual(saved_report_reads([tool], reference), [])
+        page["next_offset"] = 8
+        page["output_id"] = "another-output"
+        self.assertEqual(saved_report_reads([tool], reference), [])
+
     def test_credentials_are_loaded_without_shell_evaluation(self):
         path = self.directory / "credentials.env"
         path.write_text("KUKU_TEST_KEY='$(do-not-run)'\n")

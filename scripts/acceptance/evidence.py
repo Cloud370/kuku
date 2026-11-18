@@ -4,7 +4,7 @@ from collections import Counter
 import hashlib
 import json
 import math
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 
 
@@ -25,9 +25,21 @@ def fingerprint(value):
                                      ensure_ascii=False).encode()).hexdigest()
 
 
+def comparison_path(path):
+    if not isinstance(path, PureWindowsPath):
+        return path
+    root = path.anchor
+    if root.lower().startswith("\\\\?\\unc\\"):
+        return PureWindowsPath("\\\\" + root[8:], *path.parts[1:])
+    if root.startswith("\\\\?\\") and re.fullmatch(r"[A-Za-z]:\\", root[4:]):
+        return PureWindowsPath(root[4:], *path.parts[1:])
+    return path
+
+
 def under(directory, path):
-    resolved = path.resolve()
-    require(resolved.is_relative_to(directory.resolve()), "evidence path escapes the Session data directory")
+    resolved, base = path.resolve(), directory.resolve()
+    require(comparison_path(resolved).is_relative_to(comparison_path(base)),
+            "evidence path escapes the Session data directory")
     return resolved
 
 
