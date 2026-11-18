@@ -8,6 +8,7 @@ use wreq::header::HeaderValue;
 use wreq::{Method, RequestBuilder, Response};
 
 use crate::local::{LocalError, LocalService, SESSION_PROTOCOL_VERSION};
+use crate::subscription::SubscriptionScope;
 use crate::{
     Acknowledgement, AgentSummary, ApiError, Command, EventPage, HistoryPage, OutputChunk,
     SessionSummary, Snapshot, Subscription, Target,
@@ -368,12 +369,22 @@ impl Client {
 
     /// Create a reconnectable observation scoped to one Agent and committed cursor.
     pub fn subscribe(&self, target: &Target, after: u64) -> Subscription {
-        Subscription::new(self.clone(), target, Some(&target.agent), after)
+        Subscription::new(self.clone(), target, SubscriptionScope::Agent, after)
     }
 
     /// Create a reconnectable observation across all Agents in one Session.
     pub fn subscribe_session(&self, target: &Target, after: u64) -> Subscription {
-        Subscription::new(self.clone(), target, None, after)
+        Subscription::new(self.clone(), target, SubscriptionScope::Session, after)
+    }
+
+    /// Follow the selected Agent's full stream and bounded progress from other Agents in its Session.
+    pub fn subscribe_with_agent_activity(&self, target: &Target, after: u64) -> Subscription {
+        Subscription::new(
+            self.clone(),
+            target,
+            SubscriptionScope::AgentWithActivity,
+            after,
+        )
     }
 
     /// Read a bounded byte range of retained tool output.

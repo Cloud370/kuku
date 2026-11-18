@@ -20,7 +20,7 @@ use super::Params;
 use super::{manager, SessionTarget};
 use crate::error_mapping::{ApiError, Result};
 use crate::run_manager::RunManager;
-use crate::wire::{committed_frame, event_agent, history_entry, live_frame};
+use crate::wire::{agent_activity_frame, committed_frame, event_agent, history_entry, live_frame};
 use crate::AppState;
 
 const HISTORY_DEFAULT_LIMIT: usize = 40;
@@ -51,6 +51,8 @@ pub(super) struct ObserveQuery {
     workspace: PathBuf,
     agent: Option<String>,
     after: Option<u64>,
+    #[serde(default)]
+    include_agent_activity: bool,
 }
 
 #[derive(Deserialize)]
@@ -124,7 +126,16 @@ pub(super) async fn observe(
     let manager = manager(&state).await;
     let (send, read) = mpsc::channel(1);
     tokio::spawn(async move {
-        if let Err(error) = follow(&manager, &target, query.agent.as_deref(), after, &send).await {
+        if let Err(error) = follow(
+            &manager,
+            &target,
+            query.agent.as_deref(),
+            query.include_agent_activity,
+            after,
+            &send,
+        )
+        .await
+        {
             let mut value = error.value();
             value["type"] = json!("error");
             let _ = write_frame(&send, value).await;
@@ -227,6 +238,7 @@ async fn follow(
     manager: &RunManager,
     target: &SessionTarget,
     agent: Option<&str>,
+    include_agent_activity: bool,
     mut after: u64,
     send: &FrameWriter,
 ) -> Result<()> {
@@ -253,7 +265,7 @@ async fn follow(
                 let frame = match observation {
                     Observation::Committed(event) => {
                         after = event.id;
-                        Some(committed_frame(&event, agent))
+                        Some(committed_frame(&event, agent, include_agent_activity))
                     }
                     Observation::Live {
                         agent: source,
@@ -262,10 +274,13 @@ async fn follow(
                         after,
                         turn,
                     } => {
-                        if agent.is_some_and(|agent| agent != source) {
-                            continue;
+                        if agent.is_none_or(|agent| agent == source) {
+                            live_frame(&event, &source, execution_id, turn, after)
+                        } else if include_agent_activity {
+                            agent_activity_frame(&event, &source, execution_id, turn, after)
+                        } else {
+                            None
                         }
-                        live_frame(&event, &source, execution_id, turn, after)
                     }
                     Observation::Lagged { skipped } => {
                         Some(json!({"type":"lagged","skipped":skipped}))
@@ -284,7 +299,9 @@ async fn follow(
             if !events.is_empty() {
                 for event in events {
                     after = event.id;
-                    if !write_frame(send, committed_frame(&event, agent)).await {
+                    if !write_frame(send, committed_frame(&event, agent, include_agent_activity))
+                        .await
+                    {
                         return Ok(());
                     }
                 }

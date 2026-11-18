@@ -309,7 +309,7 @@ async fn observe(client: &Client, selection: &Selection, sender: &mpsc::Sender<M
         Ok(page) => page,
         Err(error) => return error,
     };
-    let mut subscription = client.subscribe(target, snapshot.cursor);
+    let mut subscription = client.subscribe_with_agent_activity(target, snapshot.cursor);
     if !push(
         sender,
         Update::Loaded(selection.clone(), Box::new(snapshot), page),

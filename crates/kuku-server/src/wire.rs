@@ -167,6 +167,8 @@ pub(crate) fn agent_summary(agent: &AgentSnapshot) -> Value {
         "turn": agent.turn,
         "permission": agent.permission,
         "question": agent.question,
+        "last_output_preview": agent.last_output.as_deref().map(agent_preview),
+        "last_error_preview": agent.last_error.as_deref().map(agent_preview),
     })
 }
 
@@ -245,7 +247,11 @@ pub(crate) fn history_entry(event: &StoredEvent) -> Option<Value> {
     Some(entry)
 }
 
-pub(crate) fn committed_frame(event: &StoredEvent, target: Option<&str>) -> Value {
+pub(crate) fn committed_frame(
+    event: &StoredEvent,
+    target: Option<&str>,
+    include_agent_activity: bool,
+) -> Value {
     let kind = event.payload.kind_name();
     let agent = event_agent(&event.payload);
     let mut value = json!({"type":"committed","id":event.id,"kind":kind});
@@ -277,16 +283,38 @@ pub(crate) fn committed_frame(event: &StoredEvent, target: Option<&str>) -> Valu
             _ => {}
         }
     }
+    if !matches && include_agent_activity {
+        match &event.payload {
+            EventPayload::ToolResult { tool_call_id, .. } => {
+                value["tool_call_id"] = json!(tool_call_id);
+            }
+            EventPayload::Unknown(payload) if kind == "runtime.tool_dispatched" => {
+                value["tool_call_id"] = payload["tool_call_id"].clone();
+            }
+            _ => {}
+        }
+    }
     if let EventPayload::Unknown(payload) = &event.payload {
         if kind == "runtime.operation" && payload["record"]["operation"] != "session_closed" {
             value["state_changed"] = json!(true);
             let record = &payload["record"];
             value["operation"] = record["operation"].clone();
+            if !matches && include_agent_activity && record["operation"] == "agent_stopped" {
+                value["cleanup_pending"] = record["cleanup_pending"].clone();
+            }
             if record["operation"] == "turn_settled" {
-                value["settlement"] = json!({
-                    "status":record["status"],"turn":record["turn"],"output":record["output"],
-                    "error":record["error"],"usage":record["usage"],
-                });
+                value["settlement"] = if !matches && include_agent_activity {
+                    json!({
+                        "status":record["status"],"turn":record["turn"],
+                        "output":record["output"].as_str().map(agent_preview),
+                        "error":record["error"].as_str().map(agent_preview),
+                    })
+                } else {
+                    json!({
+                        "status":record["status"],"turn":record["turn"],"output":record["output"],
+                        "error":record["error"],"usage":record["usage"],
+                    })
+                };
             }
         }
     }
@@ -300,14 +328,45 @@ pub(crate) fn live_frame(
     turn: u64,
     cursor: u64,
 ) -> Option<Value> {
-    Some(json!({
+    Some(live_payload(
+        event_value(event)?,
+        agent,
+        execution_id,
+        turn,
+        cursor,
+    ))
+}
+
+pub(crate) fn agent_activity_frame(
+    event: &UiEvent,
+    agent: &str,
+    execution_id: u64,
+    turn: u64,
+    cursor: u64,
+) -> Option<Value> {
+    let event = match event {
+        UiEvent::TextDelta { text } => json!({"type":"text","content":agent_preview(text)}),
+        UiEvent::ThinkingDelta { text } => json!({"type":"thinking","content":agent_preview(text)}),
+        UiEvent::ModelRequest { .. } | UiEvent::ModelRecovery { .. } => event_value(event)?,
+        _ => return None,
+    };
+    Some(live_payload(event, agent, execution_id, turn, cursor))
+}
+
+fn live_payload(event: Value, agent: &str, execution_id: u64, turn: u64, cursor: u64) -> Value {
+    json!({
         "type":"live",
         "agent":agent,
         "execution_id":execution_id,
         "turn":turn,
         "cursor":cursor,
-        "event":event_value(event)?,
-    }))
+        "event":event,
+    })
+}
+
+fn agent_preview(text: &str) -> &str {
+    const MAX_PREVIEW_BYTES: usize = 512;
+    &text[..text.floor_char_boundary(text.len().min(MAX_PREVIEW_BYTES))]
 }
 
 fn output_id(structured: &Value) -> Option<&str> {

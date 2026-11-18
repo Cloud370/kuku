@@ -20,9 +20,9 @@ pub use kuku::{
 pub use pending::PendingStore;
 pub use subscription::{Observation, Subscription, SubscriptionUpdate};
 pub use types::{
-    Acknowledgement, Action, AgentProgress, AgentSummary, ApiError, Command, EventPage,
-    HistoryEntry, HistoryKind, HistoryPage, SessionStatus, SessionSummary, Snapshot, Target,
-    Timing,
+    Acknowledgement, Action, AgentProgress, AgentSettlement, AgentSummary, ApiError, Command,
+    EventPage, HistoryEntry, HistoryKind, HistoryPage, SessionStatus, SessionSummary, Snapshot,
+    Target, Timing,
 };
 pub use workspace::{ConnectionSummary, ModelCatalog, SkillSummary, TierSummary};
 

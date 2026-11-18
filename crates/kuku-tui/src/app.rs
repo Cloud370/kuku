@@ -15,10 +15,12 @@ use crate::selection::TextSelection;
 use crate::transcript::{HistoryRequest, Transcript};
 
 mod activity;
+pub(crate) mod agents;
 mod pending;
 
 pub(crate) use activity::{Activity, ServiceStatus, SubmissionStatus};
 use activity::{ExecutionProgress, Watch};
+use agents::AgentActivities;
 pub(crate) use pending::{PendingItem, PendingStage};
 
 const DEFAULT_AGENT: &str = "main";
@@ -278,6 +280,7 @@ impl Notice {
 pub(crate) struct App {
     pub(crate) active: Address,
     pub(crate) panes: HashMap<Address, Pane>,
+    pub(crate) related_agents: AgentActivities,
     pub(crate) workspace: PathBuf,
     pub(crate) endpoint: Option<String>,
     pub(crate) remote: bool,
@@ -311,6 +314,7 @@ impl App {
         let remote = endpoint.is_some();
         Self {
             panes: HashMap::from([(active.clone(), Pane::default())]),
+            related_agents: AgentActivities::default(),
             cached: VecDeque::from([active.clone()]),
             active,
             workspace,
@@ -553,6 +557,7 @@ impl App {
         self.connecting = true;
         self.connection_problem = None;
         self.notice = None;
+        self.related_agents.invalidate(self.pane().last_event);
         self.generation = self.generation.wrapping_add(1);
         self.effects.push(Job::Connect);
     }
@@ -747,6 +752,7 @@ impl App {
     fn begin_observing(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         self.model_version = self.model_version.wrapping_add(1);
+        self.related_agents.invalidate(0);
         let pane = self.pane_mut();
         pane.opening = false;
         pane.watch = Watch::Detached;
@@ -799,6 +805,8 @@ impl App {
             self.problem("Service returned state for another recipient");
             return;
         }
+        self.related_agents.invalidate(snapshot.cursor);
+        self.related_agents.snapshot(&snapshot, &active.agent);
         let pane = self.pane_mut();
         pane.exists = true;
         pane.opening = false;
@@ -836,6 +844,7 @@ impl App {
     }
 
     fn drop_watch(&mut self, state: Watch) {
+        self.related_agents.invalidate(self.pane().last_event);
         let pane = self.pane_mut();
         pane.opening = false;
         pane.watch = state;
@@ -845,6 +854,7 @@ impl App {
 
     fn observe(&mut self, event: Observation) {
         let active_agent = self.active.agent.clone();
+        self.related_agents.observe(&event, &active_agent);
         let pane = self.pane_mut();
         match event {
             Observation::Committed {
@@ -916,12 +926,14 @@ impl App {
                         pane.progress = ExecutionProgress::default();
                     }
                     pane.progress.live(&event);
-                    pane.transcript.live(execution_id, turn, &event);
+                    pane.transcript.live(execution_id, turn, None, &event);
                 }
             }
             Observation::Lagged { .. } => {
                 pane.progress.clear_stream();
                 pane.transcript.clear_preview();
+                let cursor = pane.last_event;
+                self.related_agents.invalidate(cursor);
                 self.refresh();
             }
             Observation::Heartbeat => {}
@@ -949,6 +961,11 @@ impl App {
     }
 
     fn refreshed(&mut self, result: Result<Box<Snapshot>, Error>) {
+        if matches!(self.pane().watch, Watch::Connected | Watch::Connecting) {
+            if let Ok(snapshot) = &result {
+                self.related_agents.snapshot(snapshot, &self.active.agent);
+            }
+        }
         let pane = self.pane_mut();
         pane.refresh_in_flight = false;
         let refresh_due = pane.refresh_due.take();

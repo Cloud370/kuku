@@ -133,7 +133,10 @@ impl ExecutionProgress {
                 }
             }
             "tool.result" => {
-                if let Some(id) = entry.and_then(|entry| entry.details["tool_call_id"].as_str()) {
+                if let Some(id) = entry
+                    .and_then(|entry| entry.details["tool_call_id"].as_str())
+                    .or(tool_call_id.as_deref())
+                {
                     self.tools.remove(id);
                 }
             }
@@ -158,7 +161,7 @@ impl ExecutionProgress {
         }
     }
 
-    fn activity(&self) -> Activity {
+    pub(super) fn activity(&self) -> Activity {
         if !self.tools.is_empty() {
             Activity::RunningTools
         } else if self.streaming {

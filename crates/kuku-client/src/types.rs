@@ -144,6 +144,23 @@ pub struct AgentSummary {
     pub question: Option<QuestionRequest>,
     /// Matching authorization if the Agent is awaiting a decision.
     pub permission: Option<PermissionRequest>,
+    /// Short excerpt of the most recent durable reply, when available.
+    pub last_output_preview: Option<String>,
+    /// Short excerpt of the most recent durable failure, when available.
+    pub last_error_preview: Option<String>,
+}
+
+/// State and output recorded when one Agent's turn settles.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct AgentSettlement {
+    /// Status after the turn ends or reaches a durable wait.
+    pub status: AgentStatus,
+    /// The settled Turn, when the event carries its identity.
+    pub turn: Option<u64>,
+    /// Result text or a bounded excerpt, according to observation scope.
+    pub output: Option<String>,
+    /// Failure text or a bounded excerpt, according to observation scope.
+    pub error: Option<String>,
 }
 
 /// Latest identifiable execution phase inferred from the selected Agent's committed history.

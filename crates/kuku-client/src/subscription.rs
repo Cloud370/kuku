@@ -11,7 +11,7 @@ use tokio_stream::StreamExt;
 use wreq::Method;
 
 use crate::http::checked;
-use crate::{Client, Error, HistoryEntry, Target};
+use crate::{AgentSettlement, Client, Error, HistoryEntry, Target};
 
 const READ_TIMEOUT: Duration = Duration::from_secs(45);
 const RETRY_DELAYS_MS: [u64; 4] = [100, 250, 500, 1000];
@@ -42,6 +42,10 @@ pub enum Observation {
         tool_call_id: Option<String>,
         /// Operation code for a runtime-state fact.
         operation: Option<String>,
+        /// Durable status and output returned for a settled turn.
+        settlement: Option<Box<AgentSettlement>>,
+        /// Whether a committed stop still had owned work to clean up.
+        cleanup_pending: Option<bool>,
     },
     /// Transient text, tool progress or another runtime signal.
     Live {
@@ -81,12 +85,19 @@ pub enum SubscriptionUpdate {
 pub struct Subscription {
     client: Client,
     target: Target,
-    agent: Option<String>,
+    scope: SubscriptionScope,
     cursor: u64,
     reader: Option<Reader>,
     reconnect: bool,
     failures: usize,
     retry_at: Option<Instant>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SubscriptionScope {
+    Agent,
+    Session,
+    AgentWithActivity,
 }
 
 impl Subscription {
@@ -147,7 +158,7 @@ impl Subscription {
                 }
                 Ok(Observation::Committed { id, .. }) if id <= self.cursor => {}
                 Ok(Observation::Live { ref agent, .. })
-                    if self.agent.as_ref().is_some_and(|target| target != agent) => {}
+                    if self.scope == SubscriptionScope::Agent && self.target.agent != *agent => {}
                 Ok(frame) => {
                     self.failures = 0;
                     if let Observation::Committed { id, .. } = &frame {
@@ -166,11 +177,16 @@ impl Subscription {
         }
     }
 
-    pub(crate) fn new(client: Client, target: &Target, agent: Option<&str>, after: u64) -> Self {
+    pub(crate) fn new(
+        client: Client,
+        target: &Target,
+        scope: SubscriptionScope,
+        after: u64,
+    ) -> Self {
         Self {
             client,
             target: target.clone(),
-            agent: agent.map(str::to_owned),
+            scope,
             cursor: after,
             reader: None,
             reconnect: false,
@@ -197,6 +213,7 @@ impl Subscription {
             workspace: &'a Path,
             agent: Option<&'a str>,
             after: u64,
+            include_agent_activity: Option<bool>,
         }
         let response = self
             .client
@@ -206,8 +223,11 @@ impl Subscription {
             )
             .query(&Query {
                 workspace: &self.target.workspace,
-                agent: self.agent.as_deref(),
+                agent: (self.scope != SubscriptionScope::Session)
+                    .then_some(self.target.agent.as_str()),
                 after: self.cursor,
+                include_agent_activity: (self.scope == SubscriptionScope::AgentWithActivity)
+                    .then_some(true),
             })
             .read_timeout(READ_TIMEOUT)
             .send()
