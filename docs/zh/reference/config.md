@@ -16,6 +16,8 @@ $KUKU_HOME/config.toml
 
 HTTP 服务默认读取所选数据目录下的 `config.toml`，也可通过 `--config` 指定路径。运行 `kuku server status` 可查看正在运行的受管服务的生效配置。[配置指南](../start/configuration.md)
 
+本地终端的状态栏通过 `KUKU_TUI_STATUSLINE` 配置。[环境变量](environment-variables.md)
+
 ## 顶层键
 
 | Key | Type | Meaning |

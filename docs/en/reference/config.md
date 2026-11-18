@@ -16,6 +16,8 @@ $KUKU_HOME/config.toml
 
 The HTTP server defaults to `config.toml` in its data directory and accepts an explicit `--config` path. An already running managed server reports its effective configuration with `kuku server status`. [Configuration](../start/configuration.md)
 
+Configure the local terminal footer with `KUKU_TUI_STATUSLINE`. [Environment variables](environment-variables.md)
+
 ## Top-Level Keys
 
 | Key | Type | Meaning |

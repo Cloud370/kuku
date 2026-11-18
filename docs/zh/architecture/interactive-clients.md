@@ -39,7 +39,7 @@ SDK 在每个边界按回执次序接纳符合条件的输入。即使先排了�
 
 在交互终端运行 `kuku` 后，按所选工作目录打开一个空白全屏窗口。用户首次明确发送时才创建 Session。本地数据目录尚未配置时，引导使用现有初始化流程。远程配置有误时，指出需要在服务端修正的设置。显示实际连接的 server、工作目录和模型或 Tier，修正配置期间保留草稿。环境变量凭据由加载它的 server 进程持有。更换环境后需要重启时，引导到服务状态和重启入口。在非交互终端提示可用于脚本的入口。脚本命令沿用已文档化的输出格式和退出行为。[配置指南](../start/configuration.md) · [CLI](../reference/cli.md)
 
-以 Pi 的日常操作为参考。用一列滚动对话、标明接收者的固定多行输入框和一条紧凑状态栏。状态栏用可配置的字段显示连接、执行、输入和工作区信息。分别显示未发送草稿、等待回执、已排队输入，以及所选 Agent 正在回复或执行的工具。根据客户端实际观察显示连接中、已连接、重连或传输失败。Windows 后台命令工具执行时不弹出控制台窗口。[Pi 终端用法](https://github.com/earendil-works/pi/blob/e56d35ce5eceedfa16eaf13a5f01a1f7b7271253/packages/coding-agent/docs/usage.md) · [Pi 快捷键](https://github.com/earendil-works/pi/blob/e56d35ce5eceedfa16eaf13a5f01a1f7b7271253/packages/coding-agent/docs/keybindings.md)
+以 Pi 的日常操作为参考。用一列滚动对话、标明接收者的固定多行输入框和一条紧凑状态栏。状态栏用可配置的字段显示连接、执行、输入和工作区信息。状态栏还可显示当前 Agent 的名字或地址、当前工作路径、上下文窗口占用率、累计输入和输出 token、缓存命中率及每秒输出 token 数。用量跟随所选 Agent，重连后可恢复；上游未提供的测量要明确显示为未知。分别显示未发送草稿、等待回执、已排队输入，以及所选 Agent 正在回复或执行的工具。根据客户端实际观察显示连接中、已连接、重连或传输失败。Windows 后台命令工具执行时不弹出控制台窗口。[Pi 终端用法](https://github.com/earendil-works/pi/blob/e56d35ce5eceedfa16eaf13a5f01a1f7b7271253/packages/coding-agent/docs/usage.md) · [Pi 快捷键](https://github.com/earendil-works/pi/blob/e56d35ce5eceedfa16eaf13a5f01a1f7b7271253/packages/coding-agent/docs/keybindings.md)
 
 | 操作 | 成品行为 |
 |---|---|
