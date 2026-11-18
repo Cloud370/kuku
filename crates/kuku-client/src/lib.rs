@@ -16,7 +16,7 @@ pub use kuku::query::ModelPhase;
 pub use kuku::{
     AgentConfig, AgentSelection, AgentSnapshot, AgentStatus, Input, InputSource, InputStatus,
     InputTiming, OutputChunk, OutputSegment, OutputStream, PendingInput as QueuedInput,
-    PermissionRequest, QuestionRequest, Receipt, UsageTotals,
+    PermissionRequest, QuestionRequest, Receipt, TurnSummary, UsageTotals,
 };
 pub use pending::PendingStore;
 pub use subscription::{InputDelivery, Observation, Subscription, SubscriptionUpdate};

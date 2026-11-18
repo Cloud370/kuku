@@ -59,6 +59,8 @@ pub enum Observation {
         state_changed: bool,
         /// Turn of the committed fact, when applicable.
         turn: Option<u64>,
+        /// Wall-clock time of this Turn's initial admission, in milliseconds since the Unix epoch.
+        turn_started_at_ms: Option<u64>,
         /// Provider request associated with the fact, when applicable.
         request_id: Option<String>,
         /// Tool invocation associated with a durable dispatch, when available.

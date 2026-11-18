@@ -268,6 +268,9 @@ pub struct HistoryEntry {
     pub kind: HistoryKind,
     /// Displayable message when the entry has one.
     pub text: Option<String>,
+    /// Measured work attributed to this Turn at its settlement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_summary: Option<crate::TurnSummary>,
     /// Type-specific structured fields, including optional tool output references.
     #[serde(flatten)]
     pub details: serde_json::Map<String, Value>,
@@ -293,6 +296,8 @@ pub enum HistoryKind {
     QuestionReply,
     /// A matching host decision for a retained authorization.
     PermissionReply,
+    /// Aggregate work measured for a settled Turn.
+    TurnSummary,
     /// Durable cancellation or interruption status.
     Status,
     /// Persisted execution failure.
