@@ -160,7 +160,7 @@ python3 scripts/acceptance/run.py --run-id smoke-regex benchmark \
   --suite frontier --case regex-log --mode preflight
 ```
 
-实跑时，将 `KUKU_TEST_OPENROUTER_API_KEY=...` 写入仓库外的私有文件。计量程序在宿主机持有上游密钥，并从共用美元账本中为每题预留额度。以下命令每题最多预留 $0.75，经 OpenRouter 固定到 DeepSeek 官方端点，模型为 `deepseek/deepseek-v4.1-flash-1017`，推理强度为 `max`。首次运行时设定总额，复测沿用同一账本，每次使用新的运行 ID。四道题采用同一输出上限。结算按实际用量或明确标记的保守估计计算。
+实跑时，将 `KUKU_TEST_OPENROUTER_API_KEY=...` 写入仓库外的私有文件。计量程序在宿主机持有上游密钥，并从共用美元账本中为每题预留额度。以下命令每题最多预留 $0.75，经 OpenRouter 固定到 DeepSeek 官方端点，模型为 `deepseek/deepseek-v4.1-flash-1017`，推理强度为 `max`。首次运行时设定总额，复测沿用同一账本，每次使用新的运行 ID。四道题采用同一输出上限。默认由单题美元额度和题目时限约束运行。复现历史限次对照组时可另加记录中的 `--max-requests`。结算按实际用量或明确标记的保守估计计算。
 
 ```sh
 ledger="$PWD/benchmarks/acceptance/frontier-budget.json"
@@ -170,11 +170,11 @@ python3 scripts/acceptance/run.py budget init --ledger "$ledger" \
 printf '%s\n' log-summary-date-ranges cancel-async-tasks regex-log large-scale-text-editing | \
   xargs -P 4 -I '{}' python3 scripts/acceptance/run.py --run-id 'sample-{}' benchmark \
     --suite frontier --case '{}' --mode live --provider openrouter --upstream deepseek \
-    --max-output-tokens 131072 --max-requests 22 --case-cap-usd 0.75 \
+    --max-output-tokens 131072 --case-cap-usd 0.75 \
     --sdk-binary target/debug/examples/session_task --ledger "$ledger" --secrets "$keys"
 ```
 
-如果账户的数据策略排除了所选上游，可以使用与策略兼容的固定端点（如 `--upstream baseten`）另起一轮，并记录路由变化。OpenRouter 流可能先于 generation 回执给出费用。
+如果账户的数据策略排除了所选上游，可以使用与策略兼容的固定端点（如 `--upstream baseten`）另起一轮，并记录路由变化。OpenRouter 可能在流结束时已返回费用，而 generation 回执稍后才可用。给下方报告命令加上 `--refresh-receipts "$keys"` 可查询这些试验已有的回执。之后可离线复用已核对的回执，每笔费用只统计一次。
 
 下载官方快照生成可分享的报告。每题按时间顺序传入历次运行，保留所有失败。结果分别给出上游评分、SDK 完成状态、模型成本和判分耗时。Pi 官方数据使用同一模型版本，每题四次，经过审计，使用 Runta 和 Baseten。对比缓存时同时查看实际服务商、输入 token 中已缓存的比例、用量覆盖情况和首个请求。报告只导出允许公开的字段，原始 Session 与私有凭据保存在本机。[官方结果](https://frontierharness.org/live/) · [OpenRouter 路由](https://openrouter.ai/docs/guides/routing/provider-selection)
 

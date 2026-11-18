@@ -45,6 +45,17 @@ The JSON round labels identify distinct observations. `first`, `output32k` and `
 
 The second local cohort repeated only async cancellation and large-file editing. Both received up to 48 requests, using the same valid task inputs, model, output allowance, endpoint pin, SDK build and per-case dollar cap. Route diagnostics were updated in the host meter. The async solution passed 6/6 checks. Its 47th request encountered a connection error before the provider returned HTTP headers. The example had disabled the normal SDK transient retry. The Vim script passed 5/5 checks, but the SDK reached its 48-request limit. These two trials cost $0.27792 combined. Both outcomes appear under `round-5`; they do not replace the four-task result.
 
+Subsequent OpenRouter generation receipts confirmed Baseten and matched the streamed price on all 94 completed requests. The proxy measured time to the first meaningful output, including reasoning or tool arguments. Generation TPS divides the total native completion tokens by the sum of the receipt generation durations. Provider-native TTFT was unavailable.
+
+| Task | Matched receipts | Inference USD | Cached input | Proxy first output p50 | Generation TPS | SDK + verifier seconds | Mean / peak SDK RSS |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Async cancellation | 46/46 | 0.15325 | 96.2% | 2.06 s | 155.5 | 730.4 + 26.2 | 36.4 / 41.2 MiB |
+| Large-file Vim edit | 48/48 | 0.12467 | 94.8% | 1.89 s | 150.0 | 947.3 + 30.7 | 35.9 / 37.9 MiB |
+
+The last sampled container block I/O was 0 B read and 32.6 MB written for async cancellation, and 0 B read and 1.39 GB written for Vim. Docker rounds these values and includes task tools. The SDK's own `getrusage` recorded zero input and output blocks in both runs. This host's WSL2 kernel did not expose `/proc/PID/io`, so logical read and write bytes for the SDK process are unknown.
+
+Both sessions also exposed redundant file reads. In the async session, `write_file` confirmed writing a scratch file on request 11 but refused to overwrite it on request 16. Reading it on request 17 returned the same hash. In the Vim session, the agent wrote its complete script on request 22, received the same refusal on request 37 and read back the unchanged hash on request 38. Pi's edit tool and Codex's patch implementation read current content within the edit operation. [Pi edit](https://github.com/earendil-works/pi/blob/d5b3de22d0e24a3e9c38a9410d3329b099717283/packages/coding-agent/src/core/tools/edit.ts#L178) · [Codex patch](https://github.com/openai/codex/blob/6ee9bc1ba7b6375faf040042728add58f796e79c/codex-rs/apply-patch/src/file_update.rs#L25)
+
 ## Turn completion in peer implementations
 
 The source checkouts below illustrate design choices. Their revisions can differ from the versions used by the published leaderboard.

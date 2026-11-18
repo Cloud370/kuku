@@ -160,7 +160,7 @@ python3 scripts/acceptance/run.py --run-id smoke-regex benchmark \
   --suite frontier --case regex-log --mode preflight
 ```
 
-For live runs, place `KUKU_TEST_OPENROUTER_API_KEY=...` in a private file outside the repository. A host-side meter holds the upstream key and caps each case against a shared USD ledger. The example reserves up to $0.75 per case and pins OpenRouter to DeepSeek's own endpoint for `deepseek/deepseek-v4.1-flash-1017` at `max` effort. Choose the total before the first run, reuse its ledger for repeats and use a fresh run ID for each attempt. The same output allowance applies to all four cases. Token ceilings bound generation and only actual usage or explicitly identified conservative estimates contribute to settled spend.
+For live runs, place `KUKU_TEST_OPENROUTER_API_KEY=...` in a private file outside the repository. A host-side meter holds the upstream key and caps each case against a shared USD ledger. The example reserves up to $0.75 per case and pins OpenRouter to DeepSeek's own endpoint for `deepseek/deepseek-v4.1-flash-1017` at `max` effort. Choose the total before the first run, reuse its ledger for repeats and use a fresh run ID for each attempt. The same output allowance applies to all four cases. The per-case dollar cap and task timeout bound the default run. To reproduce a historical request-limited cohort, add its recorded `--max-requests` value. Token ceilings bound generation and only actual usage or explicitly identified conservative estimates contribute to settled spend.
 
 ```sh
 ledger="$PWD/benchmarks/acceptance/frontier-budget.json"
@@ -170,11 +170,11 @@ python3 scripts/acceptance/run.py budget init --ledger "$ledger" \
 printf '%s\n' log-summary-date-ranges cancel-async-tasks regex-log large-scale-text-editing | \
   xargs -P 4 -I '{}' python3 scripts/acceptance/run.py --run-id 'sample-{}' benchmark \
     --suite frontier --case '{}' --mode live --provider openrouter --upstream deepseek \
-    --max-output-tokens 131072 --max-requests 22 --case-cap-usd 0.75 \
+    --max-output-tokens 131072 --case-cap-usd 0.75 \
     --sdk-binary target/debug/examples/session_task --ledger "$ledger" --secrets "$keys"
 ```
 
-If account data policy excludes the requested provider, use a separately named trial with a compatible pinned endpoint such as `--upstream baseten`. Record the route change alongside the result. The OpenRouter stream may report the cost before its generation receipt becomes available.
+If account data policy excludes the requested provider, use a separately named trial with a compatible pinned endpoint such as `--upstream baseten`. Record the route change alongside the result. OpenRouter may report cost in the completed stream before the generation receipt becomes available. Add `--refresh-receipts "$keys"` to the report command below to fetch available generation receipts for those attempts. The report reuses verified receipts offline and counts each charge once.
 
 Download the official snapshot and generate a shareable report. Supply each case's attempts in chronological order, including every failure. Each local result separates the upstream reward, SDK completion, model cost and verifier duration. Pi's official figures use the same model version and include four trials per task, audited scoring, Runta and Baseten. For cache comparisons use the recorded service provider and observed cached input divided by observed total input, with coverage and the initial request identified. Private session files, credentials and raw request payloads stay out of the public report. [Official results](https://frontierharness.org/live/) · [OpenRouter routing](https://openrouter.ai/docs/guides/routing/provider-selection)
 
