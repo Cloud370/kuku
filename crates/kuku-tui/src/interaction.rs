@@ -33,11 +33,6 @@ impl App {
                 ..
             }) => self.wheel(MOUSE_SCROLL_LINES),
             Event::Mouse(mouse) => self.pointer(mouse, screen),
-            Event::Resize(width, height)
-                if (width, height) != (screen.area.width, screen.area.height) =>
-            {
-                self.text_selection.clear();
-            }
             Event::FocusLost => self.text_selection.cancel_drag(),
             Event::Resize(_, _) | Event::FocusGained | Event::Key(_) => {}
         }
