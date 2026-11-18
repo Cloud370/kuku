@@ -78,7 +78,7 @@ python3 scripts/acceptance/run.py --run-id LIVE_RUN_ID interactive --archive PAT
 
 `live-result.json` 记录实际模型路线、请求和任务结果。场景核对实际项目修改及测试输出、Agent 切换、工具运行期间更换客户端，以及在终端、浏览器和脚本客户端之间接续工作。[真实调用场景](../../../scripts/acceptance/interactive_live.py)
 
-通过 `--intent deepseek` 或 `--intent openrouter` 在原生终端中检查真实模型执行的动作。用例验证终端显示的回复措辞、跨轮次的文件内容，以及通过默认路线进行的独立委派。委派用例核对 main 收到子 Agent 的结果后才向用户展示。可用 `--intent-case delivery` 或 `--intent-case delegation` 单独运行其中一组。
+通过 `--intent deepseek` 或 `--intent openrouter` 在原生终端中检查真实模型执行的动作。用例验证终端显示的回复措辞、跨轮次的文件内容，以及通过默认路线进行的独立委派。委派用例核对首次创建请求成功，以及 main 收到子 Agent 的结果后才向用户展示。可用 `--intent-case delivery` 或 `--intent-case delegation` 单独运行其中一组。
 
 ```bash
 python3 scripts/acceptance/run.py --run-id INTENT_RUN_ID interactive \

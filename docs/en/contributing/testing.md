@@ -78,7 +78,7 @@ python3 scripts/acceptance/run.py --run-id LIVE_RUN_ID interactive --archive PAT
 
 `live-result.json` records the actual route and requests alongside the task result. The scenario checks the real project edit and test output, switching Agents, client replacement during a running tool, and handoff among the terminal, browser and script client. [Live scenario](../../../scripts/acceptance/interactive_live.py)
 
-Use `--intent deepseek` or `--intent openrouter` to check real model actions through the native terminal. The cases verify visible reply wording, exact file contents across turns, and independent delegation on the default route. The delegation case checks that main receives the child's result before showing it. `--intent-case delivery` or `--intent-case delegation` runs one part of the suite.
+Use `--intent deepseek` or `--intent openrouter` to check real model actions through the native terminal. The cases verify visible reply wording, exact file contents across turns, and independent delegation on the default route. The delegation case checks that the first creation request succeeds and that main receives the child's result before showing it. `--intent-case delivery` or `--intent-case delegation` runs one part of the suite.
 
 ```bash
 python3 scripts/acceptance/run.py --run-id INTENT_RUN_ID interactive \

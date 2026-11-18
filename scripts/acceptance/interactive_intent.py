@@ -516,7 +516,9 @@ def delegation(client, boundary, folder, secret_values, route):
         main_history = history(client, workspace, session)
         main_tools = tool_facts(main_history)
         reviewer_tools = tool_facts(history(client, workspace, session, "reviewer")) if reviewer else []
-        created = [tool for tool in main_tools if tool["name"] == "create_agent" and tool["status"] == "ok"]
+        create_requests = [tool for tool in main_tools if tool["name"] == "create_agent"]
+        created = [tool for tool in create_requests if tool["status"] == "ok"]
+        first_create_status = create_requests[0]["status"] if create_requests else None
         selection = reviewer.get("selection") or {}
         received = next((row["id"] for row in main_history if row["type"] == "user"
                          and row.get("from") == "reviewer" and stamp in row.get("text", "")), None)
@@ -527,6 +529,7 @@ def delegation(client, boundary, folder, secret_values, route):
         screen = terminal.expect(stamp, state="Finished")["screen"] if spoken_stamp else terminal.request("screen")["screen"]
         checks = {
             "agents_settled": completed and observed["root"]["status"] == "idle" and reviewer.get("agent", {}).get("status") == "idle",
+            "first_create_request_succeeded": first_create_status == "ok",
             "first_created_agent_used_defaults": len(created) == 1 and created[0]["args"].get("address") == "reviewer"
                 and used_default_route(created[0]["args"]),
             "child_model_request_and_route": reviewer.get("agent", {}).get("usage", {}).get("model_requests", 0) > 0
@@ -547,7 +550,7 @@ def delegation(client, boundary, folder, secret_values, route):
         terminal.exit_cleanly()
     return {"name": "first-delegation", "passed": all(checks.values()), "checks": checks, "session_id": session,
             "child_selection": {key: selection.get(key) for key in ("model", "connection", "tier", "settings")},
-            "child_report_in_main_event_id": received,
+            "first_create_request_status": first_create_status, "child_report_in_main_event_id": received,
             "main_tools": main_tools, "child_tools": reviewer_tools, "screen": "first-delegation.txt"}
 
 
@@ -630,7 +633,10 @@ def main():
             (client.home / "config.toml").write_text(route.config(endpoint), encoding="utf-8")
             version, _ = client.cli(scratch, "--version")
             report.update(version=version.strip(), binary=config_record(executable))
-            assert version.strip().endswith(f"({args.revision[:7]})"), "Installed source revision does not match the selection"
+            installed_revision = re.search(r"\(([0-9a-f]{7,40})\)$", version.strip())
+            assert installed_revision and installed_revision[1].startswith(args.revision[:len(installed_revision[1])]), (
+                "Installed source revision does not match the selection"
+            )
             try:
                 with client.terminal(scratch) as terminal:
                     terminal.expect("New session", state="Ready")

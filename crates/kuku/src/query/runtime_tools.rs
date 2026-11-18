@@ -409,7 +409,10 @@ pub(crate) fn definitions() -> Vec<ToolDefinition> {
                     "bootstrap_skill": {"type": "string"},
                     "tools": {
                         "type": "array",
-                        "items": {"type": "string"},
+                        "items": {
+                            "type": "string",
+                            "description": "Use the exact registered tool name, such as the bare names read_file and send_message for built-in tools."
+                        },
                         "description": "Omit to keep the Agent's default or preset tools, including send_message when collaboration is enabled. An explicit list replaces all default tools. Include every tool the task needs when restricting the list."
                     },
                     "workspace": {"type": "string"}

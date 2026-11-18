@@ -289,6 +289,9 @@ async fn create_agent_uses_default_routing_and_rejects_invalid_tool_configuratio
                 && properties["tools"]["description"]
                     .as_str()
                     .is_some_and(|text| text.contains("explicit list replaces all default tools"))
+                && properties["tools"]["items"]["description"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("exact registered tool name"))
                 && context.contains("<kuku_models>")
                 && context.contains("balanced")
                 && context.contains("Omit routing fields to use the default model.")
