@@ -1,3 +1,6 @@
+#[path = "support/process_resources.rs"]
+mod process_resources;
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -87,9 +90,14 @@ impl StreamMetrics {
     }
 }
 
+#[cfg(not(test))]
 #[tokio::main]
 async fn main() {
-    match execute().await {
+    let result = match arguments(std::env::args().skip(1)) {
+        Ok(args) => execute(args).await,
+        Err(error) => Err(error),
+    };
+    match result {
         Ok(true) => {}
         Ok(false) => std::process::exit(1),
         Err(error) => {
@@ -99,10 +107,10 @@ async fn main() {
     }
 }
 
-async fn execute() -> Result<bool, AnyError> {
-    let args = arguments()?;
+pub(crate) async fn execute(args: BTreeMap<String, String>) -> Result<bool, AnyError> {
     if args.contains_key("help") {
-        println!("session_task --workspace DIR --prompt-file FILE --config FILE --data-dir DIR --output FILE [--session-id ID --agent main --connection NAME --model MODEL --tier TIER --reasoning-effort low --service-tier VALUE --max-steps 12 --max-requests 12 --max-agents 64 --max-output-tokens 32768 --max-context-tokens 131072 --timeout 300 --command-id KEY --inspect-named-value NAME --seed-named-json FILE]");
+        println!("session_task --workspace DIR --prompt-file FILE --config FILE --data-dir DIR --output FILE [--session-id ID --agent main --connection NAME --model MODEL --tier TIER --reasoning-effort low --service-tier VALUE --max-steps 12 --max-requests 12 --max-agents 64 --max-output-tokens 32768 --max-context-tokens 131072 --max-request-bytes BYTES --timeout 300 --command-id KEY --inspect-named-value NAME --seed-named-json FILE]");
+        println!("--max-request-bytes caps the serialized provider request. If omitted, its default is the numeric value of --max-context-tokens.");
         return Ok(true);
     }
     let workspace = PathBuf::from(required(&args, "workspace")?);
@@ -116,6 +124,14 @@ async fn execute() -> Result<bool, AnyError> {
     let max_agents = number(&args, "max-agents", 64_usize)?;
     let max_output_tokens = number(&args, "max-output-tokens", 32_768_u32)?;
     let max_context_tokens = number(&args, "max-context-tokens", 131_072_u32)?;
+    if max_context_tokens == 0 {
+        return Err("--max-context-tokens must be positive".into());
+    }
+    let max_request_bytes = number(
+        &args,
+        "max-request-bytes",
+        usize::try_from(max_context_tokens)?,
+    )?;
     let timeout = number(&args, "timeout", 300_u64)?;
     for tier in config.tiers.values_mut() {
         tier.context_window = tier.context_window.min(max_context_tokens);
@@ -128,7 +144,7 @@ async fn execute() -> Result<bool, AnyError> {
     options.limits.retry_transient_provider_errors = false;
     options.limits.max_output_tokens_per_request = Some(max_output_tokens);
     options.limits.max_agents = max_agents;
-    options.limits.max_request_bytes = usize::try_from(max_context_tokens)?;
+    options.limits.max_request_bytes = max_request_bytes;
     let limits = options.limits.clone();
     let inspected_name = args.get("inspect-named-value");
     let seed = args
@@ -227,6 +243,7 @@ async fn execute() -> Result<bool, AnyError> {
     if let Err(failure) = &close {
         error = Some(failure.to_string());
     }
+    let error = error.or_else(|| snapshot.as_ref().and_then(|state| state.last_error.clone()));
     let mut after = 0;
     let mut facts = BTreeMap::<&str, u64>::new();
     let mut settings = Vec::new();
@@ -292,6 +309,7 @@ async fn execute() -> Result<bool, AnyError> {
             snapshot.status == AgentStatus::Idle && snapshot.pending_inputs == 0
         });
     let mut result = json!({"session_id":session.id(),"agent":snapshot,"agents":session.agents(),"events_path":session.events_path(),"last_event_id":after,"facts":facts,"provider_settings":settings,"provider_reports":reports,"streaming":streaming,"limits":{"max_steps":limits.max_steps_per_turn,"max_requests":limits.max_requests_per_open,"max_agents":limits.max_agents,"max_output_tokens":limits.max_output_tokens_per_request,"max_request_bytes":limits.max_request_bytes,"max_context_tokens":max_context_tokens,"automatic_retries":0},"elapsed_ms":started.elapsed().as_millis(),"cleanup":{"closed":close.is_ok()},"runtime_completed":passed,"error":error});
+    result["process_resources"] = json!(process_resources::sample());
     if inspected_name.is_some() {
         result["workspace"] = json!({"named_before": named_before, "named_after": named_after, "outcomes": workspace_outcomes});
     }
@@ -341,8 +359,9 @@ fn inspect_named_value(session: &Session, agent: &str, name: &str) -> Value {
     result.unwrap_or_else(|error| json!({"error": error.to_string()}))
 }
 
-fn arguments() -> Result<BTreeMap<String, String>, AnyError> {
-    let mut values = std::env::args().skip(1);
+pub(crate) fn arguments(
+    mut values: impl Iterator<Item = String>,
+) -> Result<BTreeMap<String, String>, AnyError> {
     let mut args = BTreeMap::new();
     while let Some(flag) = values.next() {
         let name = flag
@@ -371,6 +390,7 @@ fn arguments() -> Result<BTreeMap<String, String>, AnyError> {
                 | "max-agents"
                 | "max-output-tokens"
                 | "max-context-tokens"
+                | "max-request-bytes"
                 | "timeout"
                 | "command-id"
                 | "prompts-dir"

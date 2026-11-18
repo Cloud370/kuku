@@ -379,6 +379,19 @@ async fn retry_interrupted_input(reopen: bool, status: u16) {
     assert_eq!(1, failed.usage.model_requests);
     assert_eq!(1, failed.usage.unreported_requests);
     assert_eq!(None, failed.usage.input_tokens);
+    assert_eq!(
+        1,
+        session
+            .events(0, 128)
+            .unwrap()
+            .iter()
+            .filter(|event| matches!(&event.payload,
+                EventPayload::TurnInterrupted { conversation, turn, .. }
+                    if conversation == "main" && Some(*turn) == failed.turn
+            ))
+            .count(),
+        "provider failure already records its own interruption"
+    );
     failure.assert_hits_async(1).await;
     let session = if reopen {
         let mut options = original;

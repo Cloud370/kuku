@@ -81,10 +81,12 @@ pub(super) async fn dispatch_provider_step(
             provider: Some(resolved_config.connection_name.clone()),
             model: Some(resolved_config.model.clone()),
         })?;
-    if serde_json::to_vec(&prepared.body)?.len() > pending.query.runtime_limits.max_request_bytes {
-        return Err(crate::Error::InvalidArgument(
-            "prepared model request exceeds the configured byte limit".into(),
-        ));
+    let request_bytes = serde_json::to_vec(&prepared.body)?.len();
+    let max_request_bytes = pending.query.runtime_limits.max_request_bytes;
+    if request_bytes > max_request_bytes {
+        return Err(crate::Error::InvalidArgument(format!(
+            "prepared model request exceeds the configured byte limit ({request_bytes} bytes, limit {max_request_bytes} bytes)"
+        )));
     }
     let request_prepare_us = prepare_started
         .elapsed()
