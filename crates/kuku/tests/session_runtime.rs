@@ -459,6 +459,10 @@ async fn question_reply_waits_in_inbox_until_prior_authorization_is_settled() {
         "{:?}",
         waiting.last_error
     );
+    assert_eq!(
+        Some("ask a question and run the command"),
+        waiting.admitted_task.as_deref()
+    );
     let question = waiting.question.unwrap();
     let permission = waiting.permission.unwrap();
     let receipt = session
@@ -479,18 +483,30 @@ async fn question_reply_waits_in_inbox_until_prior_authorization_is_settled() {
             .reply_question("answer", "main", &question.id, "blue-answer")
             .unwrap()
     );
-    assert_eq!(AgentStatus::Waiting, session.agent("main").unwrap().status);
-    assert_eq!(1, session.agent("main").unwrap().pending_inputs);
+    let queued_reply = session.agent("main").unwrap();
+    assert_eq!(AgentStatus::Waiting, queued_reply.status);
+    assert_eq!(1, queued_reply.pending_inputs);
+    assert_eq!(None, queued_reply.queued_task);
     let mut reopen = original;
     reopen.session_id = Some(session.id().into());
     session.close().await.unwrap();
     let session = Session::open(reopen).await.unwrap();
+    let restored = session.agent("main").unwrap();
+    assert_eq!(
+        Some("ask a question and run the command"),
+        restored.admitted_task.as_deref()
+    );
+    assert_eq!(None, restored.queued_task);
     session
         .reply_permission("allow", "main", &permission.id, true)
         .unwrap();
     let done = settled(&session, "main").await;
     assert_eq!(AgentStatus::Idle, done.status, "{:?}", done.last_error);
     assert_eq!(Some("answer accepted"), done.last_output.as_deref());
+    assert_eq!(
+        Some("ask a question and run the command"),
+        done.admitted_task.as_deref()
+    );
     assert!(session.events(0, 256).unwrap().iter().any(|event| matches!(&event.payload, EventPayload::MessageUser { text, .. } if text == "blue-answer")));
     assert!(session
         .reply_question("stale", "main", &question.id, "ignored")

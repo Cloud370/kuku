@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -145,6 +145,7 @@ pub(super) struct AgentState {
     pub(super) snapshot: AgentSnapshot,
     pub(super) inbox: VecDeque<PendingInput>,
     pub(super) accepted: Vec<PendingInput>,
+    question_replies: HashSet<String>,
     pub(super) permission_reply: Option<(String, bool)>,
     pub(super) active_epoch: Option<u64>,
     pub(super) stopped_at: Option<u64>,
@@ -175,6 +176,16 @@ impl AgentState {
             self.snapshot.usage.latest_request = None;
         }
         self.snapshot.active_config = config;
+    }
+
+    fn update_inbox(&mut self) {
+        self.snapshot.pending_inputs = self.inbox.len();
+        self.snapshot.queued_task = self
+            .inbox
+            .iter()
+            .rev()
+            .filter(|entry| !self.question_replies.contains(&entry.input.command_id))
+            .find_map(|entry| task_preview(&entry.input.text));
     }
 }
 
@@ -212,6 +223,8 @@ impl State {
                             active_config: None,
                             status: AgentStatus::Idle,
                             pending_inputs: 0,
+                            admitted_task: None,
+                            queued_task: None,
                             turn: None,
                             execution_id: None,
                             last_output: None,
@@ -222,6 +235,7 @@ impl State {
                         },
                         inbox: VecDeque::new(),
                         accepted: Vec::new(),
+                        question_replies: HashSet::new(),
                         permission_reply: None,
                         active_epoch: None,
                         stopped_at: None,
@@ -262,7 +276,8 @@ impl State {
                     agent
                         .inbox
                         .retain(|entry| entry.input.command_id != input_command_id);
-                    agent.snapshot.pending_inputs = agent.inbox.len();
+                    agent.question_replies.remove(&input_command_id);
+                    agent.update_inbox();
                 }
             }
             Record::ExecutionStarted { address } => {
@@ -297,11 +312,15 @@ impl State {
                                 "agent {address}: accepted input {id} was not pending"
                             ))
                         })?;
-                    agent
-                        .accepted
-                        .push(agent.inbox.remove(index).expect("input position exists"));
+                    let input = agent.inbox.remove(index).expect("input position exists");
+                    if !agent.question_replies.remove(&id) {
+                        if let Some(preview) = task_preview(&input.input.text) {
+                            agent.snapshot.admitted_task = Some(preview);
+                        }
+                    }
+                    agent.accepted.push(input);
                 }
-                agent.snapshot.pending_inputs = agent.inbox.len();
+                agent.update_inbox();
                 agent.snapshot.status = AgentStatus::Running;
                 agent.snapshot.turn = Some(turn.unwrap_or(event_id));
                 agent.snapshot.execution_id.get_or_insert(event_id);
@@ -420,6 +439,7 @@ impl State {
                 input,
             } => {
                 let agent = self.agent_mut(&input.target)?;
+                agent.question_replies.insert(input.command_id.clone());
                 agent.snapshot.question = None;
                 if agent.snapshot.permission.is_some() {
                     agent.snapshot.status = AgentStatus::Waiting;
@@ -517,7 +537,7 @@ impl State {
         let receipt = self.commands[&input.command_id].1.clone();
         let agent = self.agent_mut(&input.target)?;
         agent.inbox.push_back(PendingInput { receipt, input });
-        agent.snapshot.pending_inputs = agent.inbox.len();
+        agent.update_inbox();
         Ok(())
     }
 
@@ -538,6 +558,13 @@ impl State {
             ),
         );
     }
+}
+
+fn task_preview(text: &str) -> Option<String> {
+    const TASK_PREVIEW_BYTES: usize = 240;
+    let text = text.trim();
+    (!text.is_empty())
+        .then(|| text[..text.floor_char_boundary(text.len().min(TASK_PREVIEW_BYTES))].to_owned())
 }
 
 fn restore_on_resume() -> bool {

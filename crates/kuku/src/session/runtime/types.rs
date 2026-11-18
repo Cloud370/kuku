@@ -392,6 +392,12 @@ pub struct AgentSnapshot {
     pub status: AgentStatus,
     /// Number of delivered inputs awaiting acceptance.
     pub pending_inputs: usize,
+    /// Bounded excerpt of the most recent admitted task input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admitted_task: Option<String>,
+    /// Bounded excerpt of the most recent task input still queued.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queued_task: Option<String>,
     /// Latest turn number, when any work was accepted.
     pub turn: Option<u64>,
     /// Durable identity of the observed execution, including a pending wait or cleanup.

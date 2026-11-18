@@ -140,6 +140,10 @@ pub struct AgentSummary {
     pub execution_id: Option<u64>,
     /// Number of inputs awaiting acceptance.
     pub pending_inputs: usize,
+    /// Excerpt of the most recent task input admitted by the Agent.
+    pub admitted_task: Option<String>,
+    /// Excerpt of the most recent task input still in the queue.
+    pub queued_task: Option<String>,
     /// Matching durable question if the Agent is awaiting an answer.
     pub question: Option<QuestionRequest>,
     /// Matching authorization if the Agent is awaiting a decision.

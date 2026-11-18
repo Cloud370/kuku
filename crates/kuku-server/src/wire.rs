@@ -163,6 +163,8 @@ pub(crate) fn agent_summary(agent: &AgentSnapshot) -> Value {
         "address": agent.address,
         "status": agent.status,
         "pending_inputs": agent.pending_inputs,
+        "admitted_task": agent.admitted_task,
+        "queued_task": agent.queued_task,
         "execution_id": agent.execution_id,
         "turn": agent.turn,
         "permission": agent.permission,

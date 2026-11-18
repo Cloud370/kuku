@@ -372,6 +372,9 @@ async fn a_later_steer_reaches_the_current_turn_after_a_real_tool_boundary() {
     let waiting = server.snapshot(id, "main").await;
     assert_eq!(2, waiting["agent"]["pending_inputs"]);
     assert_eq!("running", waiting["agent"]["status"]);
+    let tasks = agent_summary(&waiting, "main");
+    assert_eq!("wait for test signal", tasks["admitted_task"]);
+    assert_eq!("steering-message", tasks["queued_task"]);
     let in_progress = usage(&waiting);
     assert_eq!(Some(100_000), in_progress.input_tokens);
     assert_eq!(Some(6), in_progress.output_tokens);
@@ -422,6 +425,9 @@ async fn a_later_steer_reaches_the_current_turn_after_a_real_tool_boundary() {
             snapshot["agent"]["last_output"] == "next turn ran"
         })
         .await;
+    let tasks = agent_summary(&completed, "main");
+    assert_eq!("next-turn-message", tasks["admitted_task"]);
+    assert!(tasks["queued_task"].is_null());
     let cumulative = usage(&completed);
     assert_eq!(Some(100_016), cumulative.input_tokens);
     assert_eq!(Some(14), cumulative.output_tokens);
