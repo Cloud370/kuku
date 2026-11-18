@@ -174,6 +174,7 @@ def dense_layout(client, desktop, workspace, window, pid):
 
     return DenseTranscript(client, workspace).desktop(
         lambda text: desktop.type(window, text), lambda: desktop.key(window, "Return"), capture_widths, copy_reply,
+        lambda: desktop.key(window, "ctrl+o"),
         gate_executable=TEST / "bridge")
 
 

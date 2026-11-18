@@ -711,7 +711,8 @@ def dense_transcript(client, reference=False):
     scenario = DenseTranscript(client, workspace)
     screens = []
     tool_heading = re.compile(
-        r"(?:Read (?:file|12 files)|Find files|Search text|Write file|Edit file|Run command|Tool [a-z_]+)"
+        r"(?:Read-only activity · \d+ calls|Read (?:file|\d+ files)|Find files|Search text|"
+        r"Write file|Edit file|Run command|Tool [a-z_]+)"
         r"(?: ×\d+)? · (?:ok|error|running)\b"
     )
 
@@ -736,34 +737,37 @@ def dense_transcript(client, reference=False):
         except AssertionError as error:
             raise AssertionError(f"{error}\nLast terminal screen:\n{screen}") from error
 
-    def running_footer(screen, height):
+    def running_view(screen, height):
         rows = screen.split("\n")
-        return len(rows) == height and "Running tools" in rows[-1]
+        return len(rows) == height and (
+            "Running tools" in rows[-1] or any("To main · Running tools" in row for row in rows[-8:])
+        )
 
     def measure_tools(terminal):
         height = 144
         terminal.request("resize", rows=height, cols=140)
-        screen = read_while(terminal, lambda value: running_footer(value, height) and scenario.draft in value,
+        screen = read_while(terminal, lambda value: running_view(value, height) and scenario.draft in value,
                             "the full tool transcript in a tall terminal")
         lines = screen.splitlines()
         headings = [index for index, line in enumerate(lines) if tool_heading.search(line)]
-        assert len(headings) == (21 if reference else 7), screen
+        assert len(headings) == (21 if reference else 5), screen
         last = next(index for index, line in enumerate(lines) if TOOL_BRIEF in line)
         assert last >= headings[-1], screen
         return {"summary_rows": len(headings), "tool_rows": last - headings[0] + 1}
 
     def inspect_tools(terminal):
         terminal.press("\x1b[5~")
-        collapsed = read_while(terminal, lambda value: running_footer(value, 32)
-                               and scenario.read_group in value and "Reading · Ctrl+End" in value,
+        collapsed = read_while(terminal, lambda value: running_view(value, 32)
+                               and scenario.activity_group in value and "Reading · Ctrl+End" in value,
                                "the original reading position before opening the group")
         assert scenario.read_target not in collapsed and scenario.draft in collapsed, collapsed
-        anchor = row_of(collapsed, scenario.read_group)
-        click(terminal, collapsed, scenario.read_group)
+        anchor = row_of(collapsed, scenario.activity_group)
+        click(terminal, collapsed, scenario.activity_composition)
         opened = terminal.expect(scenario.read_target)["screen"]
-        assert row_of(opened, scenario.read_group) == anchor and "sample-marker 12" not in opened, opened
+        assert row_of(opened, scenario.activity_group) == anchor and "sample-marker 12" not in opened, opened
         assert all(f"samples/read-{index:02d}.txt" in opened for index in range(1, 13)), opened
-        screens.append(("Expanded tool group with twelve distinct targets", opened))
+        assert "Find files · read-0*.txt in samples" in opened and "Search text · sample-marker in samples" in opened, opened
+        screens.append(("Expanded read-only activity with file, find, and search targets", opened))
 
         terminal.press("\x10")
         terminal.expect("Actions and Skills")
@@ -776,10 +780,10 @@ def dense_transcript(client, reference=False):
         click(terminal, details, "sample-marker 12")
         closed = read_while(terminal, lambda value: scenario.read_target in value and "sample-marker 12" not in value,
                             "the single file details to close")
-        click(terminal, closed, scenario.read_group)
-        restored = read_while(terminal, lambda value: scenario.read_group in value and scenario.read_target not in value,
+        click(terminal, closed, scenario.activity_group)
+        restored = read_while(terminal, lambda value: scenario.activity_group in value and scenario.read_target not in value,
                               "the group to return to the same reading position")
-        assert row_of(restored, scenario.read_group) == anchor and scenario.draft in restored, restored
+        assert row_of(restored, scenario.activity_group) == anchor and scenario.draft in restored, restored
 
         click(terminal, restored, "Read file · error")
         error = terminal.expect("Requested arguments")["screen"]
@@ -797,20 +801,19 @@ def dense_transcript(client, reference=False):
             terminal.type(scenario.draft)
             measurements = measure_tools(terminal)
             terminal.request("resize", rows=32, cols=140)
-            wide = read_while(terminal, lambda value: running_footer(value, 32)
+            wide = read_while(terminal, lambda value: running_view(value, 32)
                               and scenario.missing in value and scenario.draft in value,
                               "the wide tool turn")
             screens.append(("Dense tool turn with a running command and local draft", wide))
             if not reference:
-                assert scenario.read_group in wide, wide
+                assert all(text in wide for text in (scenario.activity_group, scenario.activity_composition, *scenario.file_cards)), wide
+                inspect_tools(terminal)
             terminal.request("resize", rows=26, cols=74)
-            narrow = read_while(terminal, lambda value: running_footer(value, 26) and scenario.missing in value,
+            narrow = read_while(terminal, lambda value: running_view(value, 26) and scenario.missing in value,
                                 "the narrow tool turn")
             assert scenario.draft in narrow and re.search(r"(?:Run command|Tool run_command) · running", narrow), narrow
             screens.append(("Narrow tool turn with the same draft", narrow))
             terminal.request("resize", rows=32, cols=140)
-            if not reference:
-                inspect_tools(terminal)
         with scenario.streaming_reply():
             wide = terminal.expect(scenario.source, state="Streaming")["screen"]
             assert scenario.heading in wide and scenario.draft in wide and scenario.end not in wide and "rust" in wide, wide

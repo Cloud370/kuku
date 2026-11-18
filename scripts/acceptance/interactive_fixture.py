@@ -225,9 +225,14 @@ class DenseTranscript:
     heading = "工作区核对结果"
     source = "fn verified_total"
     end = "原始报告校验完成"
-    read_group = "Read 12 files · ok"
+    activity_group = "Read-only activity · 17 calls · ok"
+    activity_composition = "12 file reads · 3 file searches · 2 text searches"
     missing = "samples/missing-proof.txt"
     read_target = "samples/read-12.txt"
+    file_cards = (
+        "Write file · ok · generated.txt", "dense review verified", "1 line written",
+        "Edit file · ok · samples/read-01.txt", "-sample-marker 01", "+sample-reviewed 01", "+1 −1",
+    )
     partial = (
         f"## {heading}\n\n"
         "这次检查把读取、搜索和修改分开记录。每个样例文件只提供一条标记，"
@@ -299,12 +304,15 @@ class DenseTranscript:
     def streaming_reply(self):
         return self.client.provider.next("dense-gate").streaming_text(self.partial, self.tail, chunk_size=8)
 
-    def desktop(self, type_text, enter, capture_widths, copy_reply, *, gate_executable=None):
+    def desktop(self, type_text, enter, capture_widths, copy_reply, toggle_details, *, gate_executable=None):
         type_text(self.prompt)
         enter()
         with self.running_tool(executable=gate_executable):
             type_text(self.draft)
             screens = {"running_tools": capture_widths("dense-running-tools")}
+            toggle_details()
+            screens["expanded_activity"] = capture_widths("dense-expanded-activity")
+            toggle_details()
         with self.streaming_reply():
             screens["open_code"] = capture_widths("dense-open-code")
         verification = self.verify()

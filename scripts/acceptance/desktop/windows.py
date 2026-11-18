@@ -444,7 +444,8 @@ def dense_layout(client, desktop, workspace, grid):
                    lambda: desktop.clipboard.read() == expected, timeout=12)
 
     return DenseTranscript(client, workspace).desktop(
-        desktop.spell, lambda: desktop.press(VK_RETURN), capture_widths, copy_reply)
+        desktop.spell, lambda: desktop.press(VK_RETURN), capture_widths, copy_reply,
+        lambda: desktop.press(VK_CONTROL, ord("O")))
 
 
 def exercise(client, desktop, workspace, state, checks):
