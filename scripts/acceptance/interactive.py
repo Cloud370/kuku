@@ -518,6 +518,36 @@ def lost_first_receipt(client):
     print("Relaunched client recovered its lost first receipt and ran the tool just once")
 
 
+def open_reviewer(terminal):
+    terminal.press("\x1b[1;3B")
+    terminal.expect("Switch Agent")
+    terminal.press("reviewer")
+    menu = terminal.expect("› reviewer", state="Switch Agent")["screen"]
+    terminal.press("\r")
+    terminal.expect("To reviewer")
+    return menu
+
+
+def check_agent_reading_position(client, terminal):
+    prompt = "Print numbered checkpoints for review"
+    terminal.submit(prompt)
+    markers = [f"Checkpoint {number:03}" for number in range(70)]
+    client.provider.next(prompt).text("\n\n".join(markers))
+    terminal.expect(markers[-1], state="Finished")
+    terminal.press("\x1b[5~")
+    screen = terminal.expect("Reading ·")["screen"]
+    visible = [line for line in markers if line in screen]
+    assert visible and markers[-1] not in visible, screen
+    terminal.type("draft at checkpoint")
+    open_reviewer(terminal)
+    terminal.press("\x1b[1;3A")
+    restored = terminal.expect("draft at checkpoint", state="Reading ·")["screen"]
+    assert [line for line in markers if line in restored] == visible, restored
+    terminal.press("\x03")
+    client.provider.assert_idle()
+    print(f"Returning to the Agent restored {visible[0]} through {visible[-1]} and its draft.")
+
+
 def delegated_agent_cards(client):
     workspace = client.workspace("work-agent-cards")
     prompt = "Ask the reviewer to check the sample totals"
@@ -565,10 +595,9 @@ def delegated_agent_cards(client):
             return client.request("GET", f"/sessions/{session}/snapshot?{params}").as_json()["agent"]
 
         terminal.type("parent draft to keep")
-        terminal.press("\x1b[1;3B")
-        terminal.expect("reviewer")
-        terminal.press("reviewer\r")
-        terminal.expect("To reviewer")
+        menu = open_reviewer(terminal)
+        assert task in menu, menu
+        screens.append(("Switching to the active reviewer with a parent draft", menu))
         terminal.type("reviewer draft to keep")
         terminal.press("\x1b[1;3A")
         original_draft = terminal.expect("parent draft to keep", state="To main")["screen"]
@@ -650,6 +679,7 @@ def delegated_agent_cards(client):
         restored = reopened.expect("Latest Agent reply")["screen"]
         assert conclusion in restored and "Live Agent reply" not in restored, restored
         screens.append(("Restored completed Agent card", restored))
+        check_agent_reading_position(client, reopened)
         reopened.exit_cleanly()
     client.provider.assert_idle()
     for caption, screen in screens:
