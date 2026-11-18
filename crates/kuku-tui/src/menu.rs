@@ -90,14 +90,8 @@ impl CommandMenu {
         let (description, shortcut) = match self {
             Self::New => ("Open a fresh draft", None),
             Self::Resume => ("Find a conversation in this workspace", None),
-            Self::Agents => (
-                "Choose or create an Agent in this Session",
-                Some(Shortcut::AGENTS),
-            ),
-            Self::Back => (
-                "Return to the previous Agent in this Session",
-                Some(Shortcut::PREVIOUS_AGENT),
-            ),
+            Self::Agents => ("Choose or create an Agent in this Session", None),
+            Self::Back => ("Return to the previous Agent in this Session", None),
             Self::Queue => ("Send on the next Turn", Some(Shortcut::NEXT_TURN)),
             Self::Withdraw => ("Withdraw input still in the queue", None),
             Self::Advance => ("Continue queued work", None),

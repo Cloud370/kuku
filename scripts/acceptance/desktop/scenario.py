@@ -214,10 +214,13 @@ def agent_navigation(client, desktop, workspace, session, window):
         eventually("the parent to finish", lambda: client.snapshot(workspace, session)["status"] == "idle")
         desktop.type(window, "parent draft to keep")
         screens = {"parent": desktop.screen("agent-parent-with-draft")}
-        desktop.key(window, "alt+Down")
+        desktop.key(window, "ctrl+p")
+        desktop.type(window, "/agents")
+        desktop.key(window, "Return")
         desktop.type(window, "reviewer")
         screens["picker"] = desktop.screen("agent-switch-picker")
-        desktop.key(window, "Return")
+        desktop.key(window, "Escape")
+        desktop.key(window, "alt+Down")
         screens["child"] = desktop.screen("agent-streaming-reviewer")
     eventually("the complete child reply to settle",
                lambda: client.snapshot(workspace, session, "reviewer")["last_output"] == initial + tail)

@@ -1,6 +1,22 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 #[derive(Debug, Clone, Copy)]
+pub(crate) enum AgentDirection {
+    Previous,
+    Next,
+}
+
+impl AgentDirection {
+    pub(crate) fn from_key(key: KeyEvent) -> Option<Self> {
+        match (key.modifiers, key.code) {
+            (KeyModifiers::ALT, KeyCode::Left | KeyCode::Up) => Some(Self::Previous),
+            (KeyModifiers::ALT, KeyCode::Right | KeyCode::Down) => Some(Self::Next),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct Shortcut {
     code: KeyCode,
     modifiers: KeyModifiers,
@@ -16,8 +32,6 @@ impl Shortcut {
     pub(crate) const TAB: Self = Self::plain(KeyCode::Tab, "Tab");
     pub(crate) const UP: Self = Self::plain(KeyCode::Up, "↑");
     pub(crate) const DOWN: Self = Self::plain(KeyCode::Down, "↓");
-    pub(crate) const AGENTS: Self = Self::new(KeyCode::Down, KeyModifiers::ALT, "Alt+↓");
-    pub(crate) const PREVIOUS_AGENT: Self = Self::new(KeyCode::Up, KeyModifiers::ALT, "Alt+↑");
     pub(crate) const PAGE_UP: Self = Self::plain(KeyCode::PageUp, "PgUp");
     pub(crate) const PAGE_DOWN: Self = Self::plain(KeyCode::PageDown, "PgDn");
     pub(crate) const REFRESH_OUTPUT: Self = Self::plain(KeyCode::Char('r'), "R");

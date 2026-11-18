@@ -1,5 +1,6 @@
 use kuku_client::{AgentStatus, AgentSummary, Target};
 
+use crate::keys::AgentDirection;
 use crate::menu::{Choice, ChoiceKind, PickerKind};
 use crate::text::single_line;
 
@@ -8,6 +9,7 @@ use super::{Activity, Address, App, ExecutionProgress, Modal, ServiceStatus};
 #[derive(Debug, Default)]
 pub(super) struct AgentNavigation {
     previous: Option<Address>,
+    roster: Vec<String>,
     picker: Option<PickerState>,
 }
 
@@ -23,7 +25,7 @@ struct PickerState {
 impl App {
     pub(crate) fn select(&mut self, address: Address, exists: bool, title: String) {
         if address.session != self.active.session {
-            self.navigation.previous = None;
+            self.navigation = AgentNavigation::default();
         } else if address != self.active && exists && self.pane().exists {
             self.navigation.previous = Some(self.active.clone());
         }
@@ -46,6 +48,39 @@ impl App {
                 && address.agent != self.active.agent
                 && self.panes.get(*address).is_some_and(|pane| pane.exists)
         })
+    }
+
+    pub(crate) fn cycle_agent(&mut self, direction: AgentDirection) {
+        let Some(pane) = self.panes.get(&self.active).filter(|pane| pane.exists) else {
+            return;
+        };
+        let roster = &mut self.navigation.roster;
+        roster.push(self.active.agent.clone());
+        if let Some(snapshot) = &pane.snapshot {
+            roster.extend(snapshot.agents.iter().map(|agent| agent.address.clone()));
+        }
+        roster.extend(
+            self.related_agents
+                .iter()
+                .map(|agent| agent.address.to_owned()),
+        );
+        roster.sort_unstable_by(|a, b| {
+            (a != super::DEFAULT_AGENT, a).cmp(&(b != super::DEFAULT_AGENT, b))
+        });
+        roster.dedup();
+        if roster.len() == 1 {
+            return;
+        }
+        let current = roster
+            .iter()
+            .position(|address| address == &self.active.agent)
+            .expect("the roster includes the active Agent");
+        let next = match direction {
+            AgentDirection::Next => (current + 1) % roster.len(),
+            AgentDirection::Previous => (current + roster.len() - 1) % roster.len(),
+        };
+        let address = Address::new(self.active.session.clone(), roster[next].clone());
+        self.select(address, true, pane.title.clone());
     }
 
     pub(crate) fn back_to_agent(&mut self) {
@@ -220,7 +255,7 @@ mod tests {
 
     use crate::jobs::{Job, Update};
 
-    use super::{Address, App, ChoiceKind, Modal, PickerKind};
+    use super::{Address, App, ChoiceKind, Modal};
 
     fn connected() -> App {
         let workspace = PathBuf::from("workspace");
@@ -303,33 +338,20 @@ mod tests {
         let reading = app.pane_mut().transcript.project(80, 16);
         assert!(!reading.following);
         key(&mut app, KeyCode::Down, KeyModifiers::ALT);
-        let Some(Modal::Picker(picker)) = &app.modal else {
-            panic!("expected Agent picker")
-        };
-        assert!(matches!(picker.kind, PickerKind::Agents));
-        assert!(
-            matches!(picker.selected_choice(), Some(ChoiceKind::Agent { target }) if target.agent == "main")
-        );
-        assert!(app.effects.is_empty());
-        type_in_picker(&mut app, "reviewer");
-        let Some(Modal::Picker(picker)) = &app.modal else {
-            panic!("expected Agent picker")
-        };
-        assert_eq!(2, picker.visible_choices().len());
-        assert!(
-            matches!(picker.selected_choice(), Some(ChoiceKind::Agent { target }) if target.agent == "reviewer")
-        );
-        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        assert_eq!("reviewer", &app.active.agent);
+        assert_eq!("review", app.active.agent);
+        assert!(app.modal.is_none());
+        app.effects.clear();
+        key(&mut app, KeyCode::Right, KeyModifiers::ALT);
+        assert_eq!("reviewer", app.active.agent);
         assert!(matches!(
             app.effects.as_slice(),
-            [Job::ClosePicker, Job::Observe(selection)] if selection == &app.selection()
+            [Job::Observe(selection)] if selection == &app.selection()
         ));
         let reviewer = snapshot(&app, 36, agents.clone());
         load(&mut app, reviewer, Vec::new());
         app.pane_mut().draft.set_text("Keep the child draft".into());
         app.effects.clear();
-        key(&mut app, KeyCode::Up, KeyModifiers::ALT);
+        key(&mut app, KeyCode::Down, KeyModifiers::ALT);
         assert_eq!("main", &app.active.agent);
         assert_eq!("Keep the parent draft", app.pane().draft.text());
         assert!(
@@ -346,6 +368,13 @@ mod tests {
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!("reviewer", &app.active.agent);
         assert_eq!("Keep the child draft", app.pane().draft.text());
+
+        key(&mut app, KeyCode::Left, KeyModifiers::ALT);
+        assert_eq!("review", app.active.agent);
+        key(&mut app, KeyCode::Up, KeyModifiers::ALT);
+        assert_eq!("main", app.active.agent);
+        key(&mut app, KeyCode::Left, KeyModifiers::ALT);
+        assert_eq!("reviewer", app.active.agent);
 
         let old_target = app.selection().target;
         app.select(
@@ -369,7 +398,7 @@ mod tests {
         ]);
         let initial = snapshot(&app, 1, agents);
         load(&mut app, initial, Vec::new());
-        key(&mut app, KeyCode::Down, KeyModifiers::ALT);
+        app.open_agents();
         type_in_picker(&mut app, "review");
         let Some(Modal::Picker(picker)) = &app.modal else {
             panic!("expected Agent picker")
@@ -402,7 +431,7 @@ mod tests {
             ]),
         );
         load(&mut app, initial, Vec::new());
-        key(&mut app, KeyCode::Down, KeyModifiers::ALT);
+        app.open_agents();
         type_in_picker(&mut app, "receipts retry");
         let choice = |app: &App| match &app.modal {
             Some(Modal::Picker(picker)) => {

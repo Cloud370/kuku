@@ -10,7 +10,7 @@ use ratatui::layout::Position;
 use crate::app::{Address, App, Modal, PendingItem, PendingStage};
 use crate::editor::Editor;
 use crate::jobs::{Job, Search, Selection};
-use crate::keys::Shortcut;
+use crate::keys::{AgentDirection, Shortcut};
 use crate::menu::{Choice, ChoiceKind, CommandMenu, Picker, PickerKind, Prompt, PromptKind};
 use crate::output::OutputViewer;
 use crate::selection::{ClickTarget, MouseAction};
@@ -157,6 +157,10 @@ impl App {
     }
 
     fn composer_key(&mut self, key: KeyEvent) {
+        if let Some(direction) = AgentDirection::from_key(key) {
+            self.cycle_agent(direction);
+            return;
+        }
         let page = self.transcript_area.1.saturating_sub(1).max(1) as isize;
         match key {
             key if Shortcut::ACTIONS.matches(key) || Shortcut::ACTIONS_ALIAS.matches(key) => {
@@ -171,8 +175,6 @@ impl App {
             key if Shortcut::LATEST.matches(key) => self.pane_mut().transcript.show_latest(),
             key if Shortcut::RECONNECT.matches(key) => self.reconnect(),
             key if Shortcut::MODEL.matches(key) => self.perform(CommandMenu::Model),
-            key if Shortcut::AGENTS.matches(key) => self.open_agents(),
-            key if Shortcut::PREVIOUS_AGENT.matches(key) => self.back_to_agent(),
             key if Shortcut::DETAILS.matches(key) => {
                 let expanded = self.pane_mut().transcript.toggle_details();
                 self.confirmation(if expanded {

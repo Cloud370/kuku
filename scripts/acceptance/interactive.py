@@ -528,7 +528,9 @@ def lost_first_receipt(client):
 
 
 def open_reviewer(terminal):
-    terminal.press("\x1b[1;3B")
+    terminal.press("\x10")
+    terminal.expect("Actions")
+    terminal.press("/agents\r")
     terminal.expect("Switch Agent")
     terminal.press("reviewer")
     menu = terminal.expect("› reviewer", state="Switch Agent")["screen"]
@@ -548,8 +550,9 @@ def check_agent_reading_position(client, terminal):
     visible = [line for line in markers if line in screen]
     assert visible and markers[-1] not in visible, screen
     terminal.type("draft at checkpoint")
-    open_reviewer(terminal)
-    terminal.press("\x1b[1;3A")
+    terminal.press("\x1b[1;3C")
+    assert "Switch Agent" not in terminal.expect("To reviewer")["screen"]
+    terminal.press("\x1b[1;3D")
     restored = terminal.expect("draft at checkpoint", state="Reading ·")["screen"]
     assert [line for line in markers if line in restored] == visible, restored
     terminal.press("\x03")
