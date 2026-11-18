@@ -607,7 +607,8 @@ def meter_summary(meter, rows, delayed):
 def session_summary(live, sdk):
     facts = object_value(sdk.get('facts'))
     tools = {**{key: count(facts.get(key)) for key in ('tool_calls', 'tool_results', 'tool_errors')},
-             'non_ok_results': count(facts.get('tool_non_ok_results'))}
+             'non_ok_results': count(facts.get('tool_non_ok_results')),
+             'workspace_script_calls': None, 'workspace_script_host_actions': None}
     terminal = 'turn.completed' if (count(facts.get('turns_completed')) or 0) > 0 else None
     result = {'terminal_event': terminal, 'interrupt_reason': None, 'durable_turn_settled': None,
               'settled_status': None, 'sdk_error_kind': None, 'sdk_error_detail': None}
@@ -619,6 +620,7 @@ def session_summary(live, sdk):
         return tools, result
     statuses = Counter()
     calls = 0
+    script_calls = script_receipts = script_actions = 0
     observed = {**result, 'durable_turn_settled': False}
     agent = sdk.get('agent') or 'main'
     provider_error_turn, provider_error_kind = None, None
@@ -628,8 +630,14 @@ def session_summary(live, sdk):
                 event = object_value(json.loads(line))
                 if event.get('kind') == 'tool.call':
                     calls += 1
+                    if event.get('tool') == 'workspace_script':
+                        script_calls += 1
                 if event.get('kind') == 'tool.result':
                     statuses[allowed(event.get('status'), TOOL_STATUSES) or 'unknown'] += 1
+                    receipt = object_value(event.get('structured'))
+                    if receipt.get('kind') == 'workspace_script_result' and isinstance(receipt.get('actions'), list):
+                        script_receipts += 1
+                        script_actions += len(receipt['actions'])
                 event_agent = event.get('conversation') or event.get('agent') or 'main'
                 if event_agent == agent:
                     kind = allowed(event.get('kind'), TURN_EVENTS)
@@ -660,7 +668,9 @@ def session_summary(live, sdk):
         return tools, result
     results = sum(statuses.values())
     tools = {'tool_calls': calls, 'tool_results': results, 'tool_errors': statuses['error'],
-             'non_ok_results': results - statuses['ok'] if not statuses['unknown'] else None}
+             'non_ok_results': results - statuses['ok'] if not statuses['unknown'] else None,
+             'workspace_script_calls': script_calls,
+             'workspace_script_host_actions': script_actions if script_receipts == script_calls else None}
     return tools, observed
 
 
@@ -854,7 +864,9 @@ def build_report(feed, attempts, official_live_sha256=None, *, receipt_key=None)
             'local_routing': ('The pin is request configuration. Reported providers and route matching come from response evidence. '
                               'Unknown observations do not confirm a route or rule out fallback.'),
             'local_result': 'Task pass is the local runner result. Reward is the raw verifier score independently observed by the runner.',
-            'local_tools': 'Tool errors count tool.result status error. Non-ok results include blocked and canceled calls.',
+            'local_tools': ('Tool errors count tool.result status error. Non-ok results include blocked and canceled calls. '
+                            'Workspace script calls count model invocations. Host actions count the dispatched actions in '
+                            'script result receipts and are unknown if receipts are incomplete.'),
             'local_resources': ('Harness memory is sampled RSS in KiB. End-of-run self usage is from getrusage(RUSAGE_SELF), '
                                 'with I/O in blocks. Process I/O is the last sample, including children already waited on. '
                                 'Its rchar and wchar count logical characters. The read_bytes and write_bytes fields count storage I/O bytes. '

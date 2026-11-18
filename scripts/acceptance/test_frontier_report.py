@@ -8,7 +8,8 @@ import unittest
 from unittest.mock import patch
 
 from frontier_report import (CASES, DATASET, DELAYED_RECEIPTS, MODEL_ID, PRIVATE_RECEIPTS,
-                             SDK_REQUEST_BYTES_ERROR, EvidenceError, build_report, main, official_report, resource_summary)
+                             SDK_REQUEST_BYTES_ERROR, EvidenceError, build_report, main, official_report, resource_summary,
+                             session_summary)
 
 
 SECRET = 'do-not-publish-local-identity'
@@ -109,6 +110,35 @@ def generation_receipt(identifier, **changes):
 
 
 class FrontierReportTests(unittest.TestCase):
+    def test_workspace_script_counts_distinguish_local_js_host_actions_and_missing_receipts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            live = Path(temporary)
+            path = live / 'session-data/p/app/sessions/sample/events.jsonl'
+            path.parent.mkdir(parents=True)
+
+            def counts():
+                tools, _ = session_summary(live, {})
+                return tools['workspace_script_calls'], tools['workspace_script_host_actions']
+
+            self.assertEqual((None, None), counts())
+            with path.open('w', encoding='utf-8') as journal:
+                def event(kind, **fields):
+                    journal.write(json.dumps({'kind': kind, **fields}) + '\n')
+                    journal.flush()
+
+                event('tool.call', tool='run_command')
+                self.assertEqual((0, 0), counts())
+                event('tool.call', tool='workspace_script', tool_call_id='a')
+                self.assertEqual((1, None), counts())
+                event('tool.result', tool_call_id='a', status='ok',
+                      structured={'kind': 'workspace_script_result', 'actions': []})
+                self.assertEqual((1, 0), counts())
+                event('tool.call', tool='workspace_script', tool_call_id='b')
+                event('tool.result', tool_call_id='b', status='error',
+                      structured={'kind': 'workspace_script_result',
+                                  'actions': [{'tool': 'run_command'}, {'tool': 'read_output'}]})
+                self.assertEqual((2, 2), counts())
+
     def test_audit_scoring_cost_and_time(self):
         report = official_report(official_feed())
         task = report['tasks'][CASES[0]]
