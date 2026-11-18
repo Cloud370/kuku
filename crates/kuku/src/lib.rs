@@ -25,11 +25,18 @@ pub(crate) mod tool;
 pub mod util;
 pub mod wire;
 
+pub use session::runtime::{WorkspaceExecutionHost, WorkspaceExecutionMetrics};
+pub use tool::workspace_script::{
+    WorkspaceScriptActionFacts, WorkspaceScriptActionStatus, WorkspaceScriptFacts,
+    WorkspaceScriptLimits, WorkspaceScriptOperation, WorkspaceScriptResultKind,
+};
+
 pub use adapter::{
     AdapterFuture, AgentSelection, ModelAdapter, ModelEvent, ModelRequest, ModelStream, ToolAccess,
     ToolAdapter, ToolCancellation, ToolOutput, ToolSpec, ToolStatus,
 };
 pub use error::{Error, Result};
+pub use execution::OutputReference;
 pub use provider::types::ProviderFailureKind;
 pub use provider::{
     Provider, ProviderCapabilities, ProviderReport, ProviderSettings, ProviderUsage,
@@ -41,9 +48,10 @@ pub use query::{
 pub use session::{delete_session, list_sessions, SessionStatus, SessionSummary};
 pub use session::{
     Activation, AgentConfig, AgentSnapshot, AgentStatus, AgentView, Input, InputSource,
-    InputStatus, InputTiming, ModelUsageSample, Observation, OutputChunk, OutputRead,
-    OutputSegment, OutputStream, PendingInput, QuestionRequest, Receipt, ReplyPreview,
-    RuntimeLimits, Session, SessionObserver, SessionOptions, TurnSummary, UsageTotals, Withdrawal,
+    InputStatus, InputTiming, ModelUsageSample, NamedValue, NamedValueKind, NamedValueSource,
+    Observation, OutputChunk, OutputRead, OutputSegment, OutputStream, PendingInput,
+    QuestionRequest, Receipt, ReplyPreview, RuntimeLimits, Session, SessionObserver,
+    SessionOptions, TurnSummary, UsageTotals, Withdrawal, MAX_INPUT_VALUES, MAX_VALUE_NAME_BYTES,
 };
 
 #[cfg(test)]

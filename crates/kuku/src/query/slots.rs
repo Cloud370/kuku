@@ -14,6 +14,9 @@ pub(crate) fn requires_workspace_ordering(tool_name: &str) -> bool {
     matches!(
         tool_name,
         "read_file"
+            | "workspace_script"
+            | "stat_file"
+            | "remove_file"
             | "edit_file"
             | "write_file"
             | "remember_memory"
@@ -241,8 +244,8 @@ pub(crate) fn spawn_command_slot(
         });
 
         let r = match output {
-            Some(output) => {
-                crate::tool::builtin::run_command::run_command_with_output(
+            Some(mut output) => {
+                let result = crate::tool::builtin::run_command::run_command_with_output(
                     &args,
                     &workspace,
                     Some(tool_tx),
@@ -251,7 +254,15 @@ pub(crate) fn spawn_command_slot(
                     &output.id,
                     output.limits,
                 )
-                .await
+                .await;
+                if result
+                    .structured
+                    .as_ref()
+                    .is_some_and(|facts| facts["output_ref"].is_object())
+                {
+                    output.retention.keep();
+                }
+                result
             }
             None => {
                 crate::tool::builtin::run_command(
@@ -298,6 +309,7 @@ pub(crate) struct CommandOutputSpec {
     pub(crate) dir: PathBuf,
     pub(crate) id: String,
     pub(crate) limits: crate::tool::builtin::run_command::output::OutputLimits,
+    pub(crate) retention: crate::session::runtime::OutputReservation,
 }
 
 pub(crate) fn dispatch_tool_slot(args: SlotDispatchArgs) -> (ExecSlot, ToolKind) {

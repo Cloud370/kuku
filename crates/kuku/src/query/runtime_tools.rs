@@ -1,4 +1,5 @@
-mod output;
+pub(crate) mod output;
+pub(crate) mod values;
 
 use crate::context::ToolSchema;
 use crate::event::{EventPayload, EventStore};
@@ -70,42 +71,44 @@ pub(super) async fn advance(
         &queued.tool_call.name,
         &queued.tool_call.args,
     );
-    let policy = crate::permission::load_project_policy(&pending.policy_path)?;
-    let guard = crate::permission::decide_tool_call(
-        &queued.tool_call.name,
-        &definition.risk,
-        &candidate,
-        &policy,
-        &[],
-    );
-    let decision = if guard.kind == GateDecisionKind::Deny {
-        AuthorizationDecision::Deny
+    let workspace = if queued.tool_call.name == "run_command" {
+        queued.tool_call.args["cwd"]
+            .as_str()
+            .map_or_else(|| pending.workspace.clone(), std::path::PathBuf::from)
     } else {
-        let authorizer = pending
+        pending.workspace.clone()
+    };
+    let action = crate::permission::ToolAuthorization {
+        session_id: pending.session_id.clone(),
+        agent: pending.conversation.as_str().into(),
+        source: pending.query.input_source.clone(),
+        tool_call_id: queued.tool_call.id.clone(),
+        tool: schema(&definition),
+        args: queued.tool_call.args.clone(),
+        workspace,
+    };
+    let policy = crate::permission::load_project_policy(&pending.policy_path)?;
+    let decision = match authorize(
+        &policy,
+        &definition,
+        &candidate,
+        pending
             .query
             .authorizer
-            .as_ref()
-            .expect("session query has host authority");
-        match authorizer.authorize(&crate::permission::ToolAuthorization {
-            session_id: pending.session_id.clone(),
-            agent: pending.conversation.as_str().into(),
-            source: pending.query.input_source.clone(),
-            tool_call_id: queued.tool_call.id.clone(),
-            tool: schema(&definition),
-            args: queued.tool_call.args.clone(),
-            workspace: pending.workspace.clone(),
-        }) {
-            Ok(decision) => decision,
-            Err(error) => {
-                return finish_inline(
-                    pending,
-                    queued,
-                    ToolResultEnvelope::error(
-                        "host authorization failed; action was not dispatched",
-                        error.to_string(),
-                    ),
-                )
-            }
+            .as_deref()
+            .expect("session query has host authority"),
+        &action,
+    ) {
+        Ok(decision) => decision,
+        Err(error) => {
+            return finish_inline(
+                pending,
+                queued,
+                ToolResultEnvelope::error(
+                    "host authorization failed; action was not dispatched",
+                    error.to_string(),
+                ),
+            )
         }
     };
     match decision {
@@ -185,6 +188,13 @@ pub(super) async fn dispatch(
     event_tx: tokio::sync::mpsc::Sender<(String, SlotEvent)>,
     active: usize,
 ) -> Result<PendingStep> {
+    if let Some(result) = super::workspace_script::changed_file_target(
+        &queued.tool_call.name,
+        &queued.tool_call.args,
+        &pending.workspace,
+    ) {
+        return finish_inline(pending, queued, result);
+    }
     if active >= pending.query.runtime_limits.max_tools_per_agent {
         return finish_inline(
             pending,
@@ -206,6 +216,10 @@ pub(super) async fn dispatch(
         .get(&queued.tool_call.name)
         .cloned()
     {
+        let output = match output_spec(&pending, &queued.tool_call.id) {
+            Ok(output) => output,
+            Err(error) => return output_admission_failed(pending, queued, error),
+        };
         mark_dispatched(&pending, &queued)?;
         let definition = find_tool_definition(&pending, &queued.tool_call.name)
             .expect("authorized tool definition exists");
@@ -218,12 +232,23 @@ pub(super) async fn dispatch(
             args: queued.tool_call.args.clone(),
             workspace: pending.workspace.clone(),
         };
-        let slot = super::adapters::spawn_tool(
-            registered,
-            action,
-            output_spec(&pending, &queued.tool_call.id),
-            event_tx,
-        );
+        let slot = super::adapters::spawn_tool(registered, action, output, event_tx);
+        pending.record_tool_call(&queued.tool_call.name);
+        let event = UiEvent::ToolStart {
+            id: queued.tool_call.id,
+            tool: queued.tool_call.name,
+            summary: queued.display_summary,
+            kind: ToolKind::Simple,
+        };
+        return Ok(PendingStep::Pending {
+            pending: Box::new(pending),
+            slot: Some(slot),
+            event: Some(event),
+        });
+    }
+    if queued.tool_call.name == "workspace_script" {
+        mark_dispatched(&pending, &queued)?;
+        let slot = super::workspace_script::spawn(&pending, &queued, event_tx)?;
         pending.record_tool_call(&queued.tool_call.name);
         let event = UiEvent::ToolStart {
             id: queued.tool_call.id,
@@ -242,9 +267,17 @@ pub(super) async fn dispatch(
         pending.conversation.as_str(),
         pending.query.runtime_limits.max_request_bytes,
     )?;
+    let output = if queued.tool_call.name == "run_command" {
+        match output_spec(&pending, &queued.tool_call.id) {
+            Ok(output) => Some(output),
+            Err(error) => return output_admission_failed(pending, queued, error),
+        }
+    } else {
+        None
+    };
     mark_dispatched(&pending, &queued)?;
     let (slot, kind) = super::slots::dispatch_tool_slot(super::slots::SlotDispatchArgs {
-        output: Some(output_spec(&pending, &queued.tool_call.id)),
+        output,
         tool_name: queued.tool_call.name.clone(),
         tool_id: queued.tool_call.id.clone(),
         conversation: Some(pending.conversation.clone()),
@@ -339,11 +372,22 @@ pub(super) fn requires_workspace_ordering(pending: &PendingRun, name: &str) -> b
 pub(super) fn is_inline(name: &str) -> bool {
     matches!(
         name,
-        "create_agent" | "send_message" | "list_agents" | "ask_user" | "read_output"
+        "create_agent"
+            | "send_message"
+            | "list_agents"
+            | "ask_user"
+            | "read_output"
+            | "save_value"
+            | "list_values"
     )
 }
 
 pub(super) fn reject(pending: PendingRun, queued: QueuedToolCall) -> Result<PendingStep> {
+    if queued.tool_call.name == "workspace_script" {
+        if let Some(result) = super::workspace_script::declined(&pending, &queued.tool_call.id)? {
+            return finish_inline(pending, queued, result);
+        }
+    }
     finish_inline(
         pending,
         queued,
@@ -351,15 +395,12 @@ pub(super) fn reject(pending: PendingRun, queued: QueuedToolCall) -> Result<Pend
     )
 }
 
-pub(super) fn output_spec(pending: &PendingRun, id: &str) -> super::slots::CommandOutputSpec {
-    use sha2::{Digest, Sha256};
-    let output_id = format!(
-        "{:x}",
-        Sha256::digest(
-            format!("{}:{}:{id}", pending.conversation.as_str(), pending.turn).as_bytes()
-        )
-    );
-    super::slots::CommandOutputSpec {
+fn output_spec(pending: &PendingRun, id: &str) -> Result<super::slots::CommandOutputSpec> {
+    let agent = pending.conversation.as_str();
+    let output_id = crate::session::runtime::command_output_id(agent, pending.turn, id);
+    let mut retention = runtime_session(pending)?.reserve_output(agent, &output_id)?;
+    retention.discard_on_drop();
+    Ok(super::slots::CommandOutputSpec {
         dir: pending
             .events_path
             .parent()
@@ -367,15 +408,34 @@ pub(super) fn output_spec(pending: &PendingRun, id: &str) -> super::slots::Comma
             .join("outputs"),
         id: output_id,
         limits: crate::tool::builtin::run_command::output::OutputLimits {
-            max_output_bytes: pending.query.runtime_limits.max_output_bytes,
+            max_output_bytes: retention.max_bytes(),
             max_preview_bytes: pending.query.runtime_limits.max_preview_bytes,
         },
-    }
+        retention,
+    })
+}
+
+fn output_admission_failed(
+    pending: PendingRun,
+    queued: QueuedToolCall,
+    error: Error,
+) -> Result<PendingStep> {
+    finish_inline(
+        pending,
+        queued,
+        ToolResultEnvelope::error(
+            "output reservation failed before dispatch",
+            error.to_string(),
+        ),
+    )
 }
 
 pub(crate) fn definitions() -> Vec<ToolDefinition> {
     vec![
+        crate::tool::workspace_script::definition(),
         output::definition(),
+        values::save_definition(),
+        values::list_definition(),
         definition("ask_user", "Persist a question and yield after the current tool batch. Wait for the host to reply to the returned request identity before continuing.", serde_json::json!({"type":"object","properties":{"question":{"type":"string"}},"required":["question"]})),
         definition(
             "create_agent",
@@ -394,7 +454,7 @@ pub(crate) fn definitions() -> Vec<ToolDefinition> {
                 "required": ["address"]
             }),
         ),
-        definition("send_message", "Deliver selected material to an existing agent without sharing conversation history. Returns a durable receipt; query or receive its later result separately.", serde_json::json!({"type":"object","properties":{"to":{"type":"string"},"message":{"type":"string"},"wake":{"type":"boolean","description":"Defaults true. False only enqueues: the recipient needs host advance or a later wake before it can act."}},"required":["to","message"]})),
+        definition("send_message", "Deliver a message and any selected value references to an existing agent. Returns a durable receipt; query or receive its later result separately.", serde_json::json!({"type":"object","properties":{"to":{"type":"string"},"message":{"type":"string"},"wake":{"type":"boolean","description":"Defaults true. False only enqueues the message."},"values":values::handoff_schema()},"required":["to","message"]})),
         definition("list_agents", "List compact Agent states. When you need a delegated result, pass wait_for with the recipient address once. Waits up to 30 seconds for its current execution and returns its settled reply or current state.", serde_json::json!({"type":"object","properties":{"wait_for":{"type":"string","minLength":1}}})),
     ]
 }
@@ -403,13 +463,8 @@ pub(super) async fn execute(
     pending: &mut PendingRun,
     call: &crate::provider::types::ProviderToolCall,
 ) -> Result<ToolResultEnvelope> {
-    let inner = pending
-        .query
-        .runtime
-        .as_ref()
-        .and_then(std::sync::Weak::upgrade)
-        .ok_or_else(|| Error::InvalidArgument("session runtime is no longer available".into()))?;
-    let session = crate::Session { inner };
+    let session = runtime_session(pending)?;
+    let agent = pending.conversation.as_str();
     let key = format!(
         "tool:{}:{}:{}",
         pending.conversation.as_str(),
@@ -417,7 +472,9 @@ pub(super) async fn execute(
         call.id
     );
     let value = match call.name.as_str() {
-        "read_output" => return output::execute(&session, &call.args),
+        "read_output" => return output::execute(&session, agent, &call.args),
+        "save_value" => return values::save(&session, agent, &call.args).await,
+        "list_values" => return values::list(&session, agent, &call.args),
         "create_agent" => {
             let (address, config) = create_agent_input(&call.args)?;
             serde_json::to_value(session.create_agent(&key, &address, config)?)?
@@ -437,7 +494,9 @@ pub(super) async fn execute(
                 timing: crate::InputTiming::NextStep,
                 bootstrap_skill: None,
             };
-            serde_json::to_value(session.send(input)?)?
+            serde_json::to_value(
+                session.send_with_values(input, &values::handoff_values(&call.args)?)?,
+            )?
         }
         "list_agents" => {
             if let Some(target) = call.args.get("wait_for") {
@@ -487,6 +546,14 @@ pub(super) async fn execute(
         serde_json::to_string(&value)?,
         value,
     ))
+}
+
+fn runtime_session(pending: &PendingRun) -> Result<crate::Session> {
+    let execution = pending
+        .query
+        .runtime_execution
+        .expect("session runtime owns this execution");
+    super::provider::runtime_session(pending, execution)
 }
 
 fn agent_listing(agent: crate::AgentSnapshot, include_reply: bool) -> serde_json::Value {
@@ -604,8 +671,44 @@ async fn prepare(
         return Ok(Some(block.reason));
     }
     queued.tool_call.args = result.args;
+    super::workspace_script::prepare_file_target(
+        &queued.tool_call.name,
+        &mut queued.tool_call.args,
+        &pending.workspace,
+    )
+    .map_err(|result| Error::InvalidArgument(result.model_content))?;
     if queued.tool_call.name == "create_agent" {
         normalize_create_agent_args(&mut queued.tool_call.args);
+    }
+    if queued.tool_call.name == "run_command" {
+        crate::tool::builtin::run_command::prepare_command_args(
+            &mut queued.tool_call.args,
+            &pending.workspace,
+        )
+        .map_err(|result| Error::InvalidArgument(result.model_content))?;
+    }
+    let agent = pending.conversation.as_str();
+    let turn = pending.turn;
+    match queued.tool_call.name.as_str() {
+        "read_output" => output::prepare(
+            &runtime_session(pending)?,
+            agent,
+            turn,
+            &mut queued.tool_call.args,
+        )?,
+        "save_value" => values::prepare_save(
+            &runtime_session(pending)?,
+            agent,
+            turn,
+            &queued.tool_call.args,
+        )?,
+        "send_message" => values::prepare_handoff(
+            &runtime_session(pending)?,
+            agent,
+            turn,
+            &mut queued.tool_call.args,
+        )?,
+        _ => {}
     }
     EventStore::open(&pending.events_path)?.append(EventPayload::Unknown(serde_json::json!({"kind":"runtime.tool_prepared","ts":now_timestamp()?,"agent":pending.conversation.as_str(),"turn":pending.turn,"tool_call_id":queued.tool_call.id,"args":queued.tool_call.args,"definition":schema_value(definition)})))?;
     Ok(None)
@@ -695,7 +798,27 @@ fn finish_inline_event(
     })
 }
 
-fn schema(definition: &ToolDefinition) -> ToolSchema {
+pub(super) fn authorize(
+    policy: &crate::permission::PermissionPolicy,
+    definition: &ToolDefinition,
+    candidate: &str,
+    authority: &dyn crate::permission::ToolAuthorizer,
+    action: &crate::permission::ToolAuthorization,
+) -> Result<AuthorizationDecision> {
+    let guard = crate::permission::decide_tool_call(
+        &definition.name,
+        &definition.risk,
+        candidate,
+        policy,
+        &[],
+    );
+    if guard.kind == GateDecisionKind::Deny {
+        return Ok(AuthorizationDecision::Deny);
+    }
+    authority.authorize(action)
+}
+
+pub(super) fn schema(definition: &ToolDefinition) -> ToolSchema {
     ToolSchema {
         name: definition.name.clone(),
         description: definition.description.clone(),

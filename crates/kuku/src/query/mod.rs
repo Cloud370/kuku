@@ -15,6 +15,7 @@ mod step;
 mod tool_exec;
 mod tool_response;
 mod types;
+mod workspace_script;
 
 pub(crate) use runtime_tools::definitions as runtime_tool_definitions;
 

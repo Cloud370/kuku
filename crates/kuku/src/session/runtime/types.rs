@@ -21,6 +21,8 @@ pub struct SessionOptions {
     pub prompts_dir: Option<PathBuf>,
     /// Session resource limits.
     pub limits: RuntimeLimits,
+    /// Capacity shared by disposable script workers on this host.
+    pub workspace_host: crate::WorkspaceExecutionHost,
     /// Host authority consulted before every tool dispatch.
     pub authorizer: Arc<dyn ToolAuthorizer>,
     /// Optional host model transport; preparation and dispatch limits remain owned by the SDK.
@@ -43,6 +45,7 @@ impl SessionOptions {
             config,
             prompts_dir: None,
             limits: RuntimeLimits::default(),
+            workspace_host: crate::WorkspaceExecutionHost::default(),
             authorizer: Arc::new(TrustedLocal),
             model_adapter: None,
             tools: Vec::new(),
@@ -53,6 +56,9 @@ impl SessionOptions {
 /// Hard bounds for input, model execution, tools, and observations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeLimits {
+    /// Limits applied to each embedded workspace script.
+    #[serde(default)]
+    pub workspace_script: crate::WorkspaceScriptLimits,
     /// Maximum agents retained by this session.
     pub max_agents: usize,
     /// Maximum delivered inputs waiting for one agent.
@@ -76,6 +82,15 @@ pub struct RuntimeLimits {
     pub max_tools_per_agent: usize,
     /// Maximum retained bytes for one command or host-tool output.
     pub max_output_bytes: u64,
+    /// Maximum total physical bytes retained in this session, including capture framing.
+    #[serde(default = "default_retained_output_bytes")]
+    pub max_retained_output_bytes: u64,
+    /// Minimum age, in seconds, before unreferenced ordinary output can be reclaimed.
+    #[serde(default = "default_output_retention_secs")]
+    pub output_retention_secs: u64,
+    /// Maximum number of active named bindings across the session's agents.
+    #[serde(default = "default_named_values")]
+    pub max_named_values: usize,
     /// Maximum bytes in the first model-visible retained-output preview.
     pub max_preview_bytes: usize,
     /// Maximum transient observations retained for slow subscribers.
@@ -85,6 +100,7 @@ pub struct RuntimeLimits {
 impl Default for RuntimeLimits {
     fn default() -> Self {
         Self {
+            workspace_script: crate::WorkspaceScriptLimits::default(),
             max_agents: 64,
             max_pending_inputs: 128,
             max_input_bytes: 65_536,
@@ -96,6 +112,9 @@ impl Default for RuntimeLimits {
             max_steps_per_turn: 20,
             max_tools_per_agent: 8,
             max_output_bytes: 8 * 1024 * 1024,
+            max_retained_output_bytes: default_retained_output_bytes(),
+            output_retention_secs: default_output_retention_secs(),
+            max_named_values: default_named_values(),
             max_preview_bytes: 16 * 1024,
             observation_capacity: 128,
         }
@@ -104,6 +123,18 @@ impl Default for RuntimeLimits {
 
 fn default_provider_retry() -> bool {
     true
+}
+
+fn default_retained_output_bytes() -> u64 {
+    128 * 1024 * 1024
+}
+
+fn default_output_retention_secs() -> u64 {
+    24 * 60 * 60
+}
+
+fn default_named_values() -> usize {
+    64
 }
 
 /// Agent-local behavior and explicit model selection.

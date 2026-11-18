@@ -16,7 +16,7 @@ use helpers::persist_blocked_tool_result;
 
 use super::helpers::{
     append_model_error, append_permission_decision, append_turn_cancelled, append_turn_interrupted,
-    display_summary, now_timestamp, permission_candidate, permission_rule,
+    display_summary, now_timestamp, permission_candidate,
 };
 use super::slots::requires_workspace_ordering;
 use super::tool_exec::{execute_tool_call, run_tool_pre_hooks};
@@ -139,6 +139,25 @@ impl Run {
                                 id: tool_call_id,
                                 event: te,
                             };
+                        }
+                        SlotEvent::WorkspacePermission(action) => {
+                            let action = *action;
+                            if let RunState::Pending(pending) = &mut self.state {
+                                super::helpers::append_permission_request(
+                                    &pending.events_path,
+                                    &pending.conversation,
+                                    pending.turn,
+                                    &action.request,
+                                )?;
+                                self.slots.remove(&tool_call_id);
+                                pending
+                                    .resumed_permission_requests
+                                    .push_front(action.request);
+                                pending.queued_tool_calls.push_front(action.queued);
+                                continue;
+                            }
+                            let event = self.finish_slot(&tool_call_id, action.partial)?;
+                            return Ok(Some(project(event, ToolFaults::default())));
                         }
                         SlotEvent::Done(result) => {
                             let faults = result.faults;
@@ -751,23 +770,25 @@ impl Run {
             super::provider::ensure_resolved(&mut pending)?;
             super::runtime_tools::validate_prepared(&pending, &tool_call)?;
         }
-        let rule = permission_rule(
-            &pending.kuku_home,
-            &pending.workspace,
-            &tool_call.name,
-            &tool_call.args,
-        );
-        if matches!(choice, PermissionChoice::Project) {
-            append_project_allow_rule(
-                &pending.policy_path,
-                &tool_call.name,
-                &permission_candidate(
+        let (granted_tool, candidate) = if waiting.request.source == "workspace_script" {
+            (
+                waiting.request.tool.clone(),
+                waiting.request.candidate.clone(),
+            )
+        } else {
+            (
+                tool_call.name.clone(),
+                permission_candidate(
                     &pending.kuku_home,
                     &pending.workspace,
                     &tool_call.name,
                     &tool_call.args,
                 ),
-            )?;
+            )
+        };
+        let rule = format!("{granted_tool}({candidate})");
+        if matches!(choice, PermissionChoice::Project) {
+            append_project_allow_rule(&pending.policy_path, &granted_tool, &candidate)?;
         }
         append_permission_decision(
             &pending.events_path,
