@@ -125,26 +125,27 @@ fn details_search_selects_one_visible_card_and_escape_leaves_previews_alone() {
     assert!(!collapsed.contains("Use precise citations"));
     assert!(!collapsed.contains("List failing cases"));
     open_details(&mut app);
-    app.paste("reviewer citations");
+    app.paste("reviewer CLI");
     let Some(Modal::Picker(picker)) = &app.modal else {
         panic!("details picker expected");
     };
     let choices = picker.visible_choices();
     assert_eq!(1, choices.len());
     assert_eq!("Agent reviewer", choices[0].label);
-    assert!(choices[0].detail.contains("Inspect documentation"));
+    assert!(choices[0].detail.contains("Review the CLI"));
     assert!(app.effects.is_empty(), "search only uses visible cards");
     press(&mut app, KeyCode::Esc);
     assert_eq!(collapsed, transcript_text(&mut app));
 
     open_details(&mut app);
     app.paste("reviewer");
-    press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Enter);
     assert!(app.modal.is_none());
     let expanded = transcript_text(&mut app);
-    assert!(expanded.contains("Use precise citations"), "{expanded}");
-    assert!(!expanded.contains("List failing cases"), "{expanded}");
+    assert!(
+        expanded.contains("Use precise citations") && expanded.contains("List failing cases"),
+        "{expanded}"
+    );
     assert!(app.pending.is_empty());
 }
 

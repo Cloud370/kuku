@@ -64,7 +64,7 @@ fn listing(agents: &[Value]) -> Option<Observation> {
                 AgentFact {
                     address: clip(address, 22),
                     state,
-                    reply: has_text(&entry["last_output"]),
+                    reply: (has_text(&entry["last_output"]) || entry["reply_available"] == true),
                     queued: entry["pending_inputs"].as_u64().unwrap_or_default(),
                 },
             );
@@ -110,10 +110,10 @@ enum AgentState {
 
 impl AgentState {
     fn at_check(value: &Value) -> Self {
-        if value["permission"].is_object() {
+        if value["permission"].is_object() || value["needs_approval"] == true {
             return Self::Approval;
         }
-        if value["question"].is_object() {
+        if value["question"].is_object() || value["needs_reply"] == true {
             return Self::Reply;
         }
         match value["status"].as_str() {

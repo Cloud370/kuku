@@ -3,7 +3,9 @@ use ratatui::text::{Line, Span};
 
 use crate::markup::{render_literal, render_markdown};
 use crate::text::{cap, shorten, single_line};
-use crate::theme::{emphasis, MODEL, MUTED};
+use crate::theme::{
+    emphasis, ACTIVITY_CARD_WIDTH, ACTIVITY_MINT, MUTED, THINKING_ROWS, THINKING_SURFACE,
+};
 
 use super::{
     append_bounded, render_record, render_rows, Body, Key, RenderCache, Row, Transcript,
@@ -102,31 +104,47 @@ pub(super) fn render_assistant(
     summary: &str,
     width: usize,
     expanded: bool,
-) -> Vec<Row> {
+) -> (Vec<Row>, usize) {
     let mut rows = Vec::new();
     if !summary.trim().is_empty() {
+        let width = width.min(ACTIVITY_CARD_WIDTH);
         let marker = if expanded { "▾" } else { "▸" };
         let mut title = Line::from(Span::styled(
             shorten(&format!("{marker} Thinking preview"), width),
-            emphasis(MODEL),
+            emphasis(ACTIVITY_MINT),
         ));
         if !expanded && width > title.width() + 4 {
             let excerpt = single_line(cap(summary, 512));
             title.push_span(Span::styled(
-                format!("  {}", shorten(&excerpt, width - title.width() - 2)),
+                format!(
+                    "  {}",
+                    shorten(&excerpt, (width - title.width() - 2).min(39))
+                ),
                 Style::new().fg(MUTED),
             ));
         }
         rows.push(Row::plain(title));
         if expanded {
+            let prefix = cap(summary, 4096);
+            let inset = super::body_inset(width);
             rows.extend(render_rows(
-                render_literal(summary, Style::new().fg(MUTED)),
+                render_literal(prefix, Style::new().fg(MUTED)),
                 width,
-                MAX_VISUAL_ROWS,
-                2,
+                THINKING_ROWS,
+                inset,
             ));
+            let more = rows.len() > THINKING_ROWS + 1 || prefix.len() < summary.len();
+            rows.truncate(THINKING_ROWS + 1);
+            if more {
+                rows.push(Row::plain(Line::styled(
+                    shorten("  …  Click to fold · /details to read all", width),
+                    Style::new().fg(ACTIVITY_MINT),
+                )));
+            }
         }
+        super::paint_card(&mut rows, width, THINKING_SURFACE);
     }
+    let reasoning_rows = rows.len();
     if !text.trim().is_empty() {
         rows.extend(render_record(
             if width >= 9 { "Assistant" } else { "AI" },
@@ -136,5 +154,5 @@ pub(super) fn render_assistant(
             0,
         ));
     }
-    rows
+    (rows, reasoning_rows)
 }

@@ -11,6 +11,8 @@ def event(name, **fields):
 
 
 def rendering_cases(binary, bridge, directory):
+    with InstalledClient(binary, bridge, directory / "delegation") as client:
+        targeted_delegation(client)
     with InstalledClient(binary, bridge, directory / "reasoning") as client:
         config = client.home / "config.toml"
         config.write_text(config.read_text().replace('profile = "compatible"', 'profile = "anthropic"')
@@ -18,6 +20,42 @@ def rendering_cases(binary, bridge, directory):
                           .replace('reasoning_efforts = ["none"]', 'reasoning_efforts = ["none", "low"]'))
         published_reasoning(client)
         scroll_mixed_table(client)
+
+
+def targeted_delegation(client):
+    workspace = client.workspace("work-reply-only")
+    prompt = "Delegate a reply-only Markdown sample"
+    task = "Generate a Markdown sample in your reply."
+    result = "# Proof of delivery"
+    with client.terminal(workspace) as terminal:
+        terminal.expect("New session", state="Ready")
+        terminal.submit(prompt)
+        create = client.provider.next(prompt)
+        schema = next(tool["input_schema"] for tool in create.request["tools"]
+                      if tool["name"] == "create_agent")
+        assert set(schema["properties"]) == {"address", "instructions", "tools", "tier", "preset", "workspace"}
+        create.tool("create_agent", "create-writer", address="writer", tools=[])
+        client.provider.next("create-writer").tool("send_message", "dispatch", to="writer", message=task)
+        first, second = client.provider.next(), client.provider.next()
+        parent, child = (first, second) if "dispatch" in json.dumps(first.request["messages"]) else (second, first)
+        child.expect(task)
+        assert not child.request.get("tools"), child.request.get("tools")
+        assert "<kuku_delegation>" not in json.dumps(child.request["messages"])
+        assert "<kuku_memory_guidance>" not in json.dumps(child.request["messages"])
+        parent.tool("list_agents", "collect", wait_for="writer")
+        terminal.expect("Agent writer · Delegated")
+        client.provider.assert_idle(0.35)
+        child.text(result)
+        collected = client.provider.next("collect")
+        tool = next(block for m in collected.request["messages"] for block in m["content"]
+                    if isinstance(block, dict) and block.get("tool_use_id") == "collect")
+        content = tool["content"]
+        reply, = json.loads(content if isinstance(content, str) else content[0]["text"])
+        assert reply == {"address": "writer", "status": "idle", "last_output": result}, reply
+        collected.text("Received the delegated document.")
+        terminal.expect("Received the delegated document.", state="3 tools")
+        terminal.exit_cleanly()
+    client.provider.assert_idle()
 
 
 def published_reasoning(client):

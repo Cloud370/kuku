@@ -672,7 +672,8 @@ def delegated_agent_cards(client):
     conclusion = "Reviewer confirmed the totals"
     reply = f"{initial}\n\n{conclusion}"
     parent_reply = "Parent finished and left the review running"
-    card = "Agent reviewer · Input delivered"
+    card = "Agent reviewer · Delegated"
+    delivery = "Agent reviewer · Input delivered"
     screens = []
 
     with client.terminal(workspace) as terminal:
@@ -708,13 +709,13 @@ def delegated_agent_cards(client):
                 and parent_state["last_output"] == parent_reply
                 and reviewer_snapshot()["status"] == "running"
             ))
-            terminal.expect(f"{card} · Streaming reply")
+            terminal.expect(f"{card} · Now Streaming reply")
             open_reviewer(terminal)
             attached = terminal.expect(initial, state="Streaming reply")["screen"]
             assert attached.count(initial) == 1 and "reviewer draft to keep" in attached, attached
             screens.append(("Attaching to a reviewer mid-reply", attached))
             terminal.press("\x1b[1;3D")
-            terminal.expect(f"{card} · Streaming reply", state="To main")
+            terminal.expect(f"{card} · Now Streaming reply", state="To main")
             terminal.press("\x0f")
             expanded = terminal.expect("Live Agent reply")["screen"]
             assert "Requested instructions" in expanded and "Requested task" in expanded and task in expanded, expanded
@@ -723,13 +724,13 @@ def delegated_agent_cards(client):
 
             def collapsed_card():
                 screen = terminal.request("screen")["screen"]
-                return screen if card in screen and initial in screen and "Requested task" not in screen else None
+                return screen if (card in screen or delivery in screen) and initial in screen and "Requested task" not in screen else None
 
-            terminal.click_text(expanded, card)
+            terminal.click_text(expanded, delivery)
             collapsed = eventually("mouse to collapse the Agent reply", collapsed_card)
             assert "Requested instructions" in collapsed and "Live Agent reply" not in collapsed, collapsed
             screens.append(("Collapsed streaming Agent card", collapsed))
-            terminal.click_text(collapsed, card)
+            terminal.click_text(collapsed, delivery)
             terminal.expect("Live Agent reply")
             terminal.press("\x0f")
             globally_collapsed = eventually("Ctrl+O to collapse Agent details", collapsed_card)
@@ -738,13 +739,13 @@ def delegated_agent_cards(client):
         eventually("reviewer to settle independently", lambda: (
             (reviewer := reviewer_snapshot())["status"] == "idle" and reviewer["last_output"] == reply
         ))
-        terminal.expect(f"{card} · Finished")
+        terminal.expect(f"{card} · Now Finished")
         terminal.exit_cleanly()
 
     with client.terminal(workspace) as reopened:
         reopened.request("resize", rows=32, cols=140)
         reopened.resume(prompt)
-        reopened.expect(f"{card} · Finished")
+        reopened.expect(f"{card} · Now Finished")
         reopened.press("\x10")
         reopened.expect("Actions and Skills")
         reopened.press("\x1b")
@@ -752,26 +753,10 @@ def delegated_agent_cards(client):
         reopened.expect("Transcript details")
         reopened.press("reviewer")
 
-        def details_menu():
-            screen = reopened.request("screen")["screen"]
-            rows = screen.splitlines()
-            selected = next((i for i, row in enumerate(rows) if "› Agent reviewer" in row), None)
-            if selected is None:
-                return None
-            menu = "\n".join(rows[selected:selected + 4])
-            if menu.count("reviewer") >= 2 and task in menu and instructions in menu:
-                return screen, menu
-            return None
-
-        choices, menu = eventually("search to show both reviewer cards", details_menu)
-        assert menu.index(task) < menu.index(instructions), menu
-        screens.append(("Searching the two reviewer cards", choices))
-        reopened.press("\x1b[B\r")
-        focused = reopened.expect("Requested instructions")["screen"]
-        assert "Agent reviewer · Created" in focused and "Requested task" not in focused, focused
-        screens.append(("Earlier Agent card opened from the details menu", focused))
-        reopened.click_text(focused, card)
-        restored = reopened.expect("Latest Agent reply")["screen"]
+        choices = reopened.expect("› Agent reviewer", state=task)["screen"]
+        screens.append(("Searching the delegation card", choices))
+        reopened.press("\r")
+        restored = reopened.expect("Latest Agent reply", state="Requested instructions")["screen"]
         assert conclusion in restored and "Live Agent reply" not in restored, restored
         screens.append(("Restored completed Agent card", restored))
         check_agent_reading_position(client, reopened)

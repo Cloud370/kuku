@@ -24,11 +24,10 @@ mod window;
 use self::agent::AgentCards;
 pub(crate) use self::details::DetailKey;
 use self::details::{DetailRecord, Details, VisibleDetail};
-use self::message::{render_assistant_source, render_record, render_user};
+use self::message::{paint_card, render_assistant_source, render_record, render_user};
 use self::reply::LatestReply;
 pub(crate) use self::reply::ReplySource;
 use self::tool::Tool;
-use self::turn_summary::append_turn_summary;
 use self::window::{Layout, TurnHeading, Window};
 
 pub(crate) const HISTORY_PAGE: usize = 48;
@@ -505,12 +504,8 @@ impl Transcript {
                         lines.len() > first
                             && lines.last().is_some_and(|line| line.spans.is_empty()),
                     );
-                let last = if matches!(detail, DetailRecord::Reasoning(_)) {
-                    if skip == 0 {
-                        last.min(first + 1)
-                    } else {
-                        first
-                    }
+                let last = if let DetailRecord::Reasoning { rows, .. } = detail {
+                    last.min(first + rows.saturating_sub(skip))
                 } else {
                     last
                 };
@@ -662,6 +657,7 @@ impl Clone for Record {
 
 #[derive(Debug, Default)]
 struct RenderCache {
+    reasoning_rows: usize,
     preview: Option<((usize, ToolDetails, u64), Vec<Row>)>,
     source: Option<(usize, Vec<Row>)>,
 }
@@ -794,13 +790,7 @@ impl Record {
         if let Some((text, interrupted)) = source_body {
             let source = &mut self.rendered.source;
             if source.as_ref().is_none_or(|(cached, _)| *cached != width) {
-                let mut rows = render_assistant_source(text, width, interrupted);
-                append_turn_summary(
-                    &mut rows,
-                    self.turn_summary.as_ref(),
-                    self.turn_number,
-                    width,
-                );
+                let rows = render_assistant_source(text, width, interrupted);
                 *source = Some((width, rows));
             }
             return (
@@ -836,7 +826,7 @@ impl Record {
             .as_ref()
             .is_none_or(|(stored, _)| *stored != cache_key)
         {
-            let mut lines = match &self.body {
+            let lines = match &self.body {
                 Body::User { sender, text } => {
                     let title = match sender {
                         Some(sender) => shorten(
@@ -848,12 +838,16 @@ impl Record {
                     };
                     render_user(&title, text, width)
                 }
-                Body::Assistant(text) => preview::render_assistant(
-                    text,
-                    &self.reasoning_preview,
-                    width,
-                    mode == ToolDetails::Inspection,
-                ),
+                Body::Assistant(text) => {
+                    let (rows, reasoning_rows) = preview::render_assistant(
+                        text,
+                        &self.reasoning_preview,
+                        width,
+                        mode == ToolDetails::Inspection,
+                    );
+                    self.rendered.reasoning_rows = reasoning_rows;
+                    rows
+                }
                 Body::Interrupted(text) => render_record(
                     "Interrupted",
                     WARNING,
@@ -874,12 +868,6 @@ impl Record {
                     |card| card.render(width, mode, facts),
                 ),
             };
-            append_turn_summary(
-                &mut lines,
-                self.turn_summary.as_ref(),
-                self.turn_number,
-                width,
-            );
             self.rendered.preview = Some((cache_key, lines));
         }
         (
@@ -888,8 +876,10 @@ impl Record {
             card.map(DetailRecord::Agent)
                 .or_else(|| self.tool().map(DetailRecord::Tool))
                 .or_else(|| {
-                    (!self.reasoning_preview.is_empty())
-                        .then_some(DetailRecord::Reasoning(mode == ToolDetails::Inspection))
+                    (!self.reasoning_preview.is_empty()).then_some(DetailRecord::Reasoning {
+                        open: mode == ToolDetails::Inspection,
+                        rows: self.rendered.reasoning_rows,
+                    })
                 }),
         )
     }
@@ -960,7 +950,11 @@ fn render_turn(turn: TurnHeading, width: usize) -> Line<'static> {
         TurnHeading::Numbered(number) => format!("Turn {number}"),
         TurnHeading::Unnumbered => "Turn".to_owned(),
     };
-    let mut line = Line::styled(shorten(&label, width), emphasis(crate::theme::USAGE));
+    let mut line = Line::from(Span::styled(
+        shorten(&label, width),
+        emphasis(crate::theme::SURFACE_TEXT).bg(crate::theme::TURN_RULE),
+    ));
+    line.style = Style::new().bg(crate::theme::TURN_CARD);
     if width >= line.width() + 6 {
         let length = width - line.width() - 2;
         line.push_span(Span::styled(

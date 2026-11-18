@@ -77,9 +77,17 @@ pub(crate) fn render_at(
         .then(|| reading_line(app, width))
         .flatten();
     let reading_height = u16::from(reading.is_some());
-    let deliveries = delivery::lines(app, width, space_above_editor - reading_height);
+    let dock = (space_above_editor > reading_height)
+        .then(|| app.pane().transcript.turn_dock(width))
+        .flatten();
+    let dock_height = u16::from(dock.is_some());
+    let deliveries = delivery::lines(
+        app,
+        width,
+        space_above_editor - reading_height - dock_height,
+    );
     let delivery_height = deliveries.len() as u16;
-    let above_editor = composer_gap + delivery_height + reading_height;
+    let above_editor = composer_gap + delivery_height + reading_height + dock_height;
     let editor_limit = area
         .height
         .saturating_sub(below_editor + chrome_rows + padding_rows + above_editor);
@@ -110,11 +118,12 @@ pub(crate) fn render_at(
         .saturating_sub(editor_height + above_editor + below_editor + MIN_TRANSCRIPT_ROWS)
         .min(MAX_BANNER_ROWS);
     let banner = banner(app, width, usize::from(banner_rows));
-    let [transcript, banner_area, _gap, delivery_area, reading_area, editor, _status_gap, status] =
+    let [transcript, banner_area, _gap, dock_area, delivery_area, reading_area, editor, _status_gap, status] =
         Layout::vertical([
             Constraint::Min(0),
             Constraint::Length(banner.len() as u16),
             Constraint::Length(composer_gap),
+            Constraint::Length(dock_height),
             Constraint::Length(delivery_height),
             Constraint::Length(reading_height),
             Constraint::Length(editor_height),
@@ -124,6 +133,12 @@ pub(crate) fn render_at(
         .areas(area);
     let row_insets = render_transcript(frame, transcript, app, banner_area.height == 0);
     frame.render_widget(Paragraph::new(banner), banner_area);
+    if let Some(line) = dock {
+        frame.render_widget(
+            Paragraph::new(line).style(Style::new().bg(crate::theme::TURN_CARD)),
+            dock_area,
+        );
+    }
     frame.render_widget(Paragraph::new(deliveries), delivery_area);
     app.delivery_area = delivery_area;
     if let Some(line) = reading {

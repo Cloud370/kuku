@@ -81,7 +81,7 @@ Each Turn contains user messages, tool activity and assistant text. Consecutive 
 
 While reading earlier output, click **Jump to latest** beside the composer to resume following.
 
-A settled Turn ends with a numbered summary card. A desktop example is `▌ Turn 3  Stats   1m 05s · 12.5K in · 800 out · Cache 75.5% · 2 tools`. At phone widths the measurements move below the card title. The card shows duration, input and output tokens, cache hit rate and tool call count when those fields are available and fit.
+The strip above the composer shows the latest Turn, or the Turn at the top of the viewport while reading history. A settled Turn displays measured duration, tokens, cache hit rate and actual tool count. Fields are omitted as space narrows.
 
 Write and edit cards show the file path, a bounded content or diff preview, and line counts when the tool reports them.
 
@@ -95,9 +95,9 @@ If you interrupt a streaming reply, its bounded preview stays under that Turn an
 
 By default, a fence labeled `md` or `markdown` in an assistant reply previews the enclosed document, including its headings, lists, tables and code blocks. The label is case-insensitive. Inner code uses its declared language. Ordinary code fences display their contents literally, with syntax highlighting for supported languages.
 
-A collapsed creation card names the Agent. A delivery card previews the task or the first content line of its reply. Expand it to read the details.
+A delegation card groups creation and delivery to the same Agent. Expand it to inspect the individual actions. Repeated Agent listings share a counted card.
 
-Provider-published reasoning text or a summary appears above the reply. Click its header or press Ctrl+O to expand it. For activity-only reasoning, the composer shows the Thinking phase and timer. Copy and Markdown source operate on the reply itself.
+Provider-published reasoning text or a summary appears above the reply. Click the card or press Ctrl+O for a bounded inline preview. Open the full published text in the scrollable reader under /details. For activity-only reasoning, the composer shows the Thinking phase and timer. Copy and Markdown source operate on the reply itself.
 
 ### Status and usage
 

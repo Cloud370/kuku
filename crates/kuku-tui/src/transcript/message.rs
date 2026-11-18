@@ -68,3 +68,17 @@ pub(super) fn render_record(
     rows.extend(render_rows(lines, width, MAX_VISUAL_ROWS, inset));
     rows
 }
+
+pub(super) fn paint_card(rows: &mut [Row], width: usize, color: Color) {
+    let background = Style::new().bg(color);
+    for row in rows {
+        let padding = width.saturating_sub(row.line.width());
+        for span in &mut row.line.spans {
+            span.style = background.patch(span.style);
+        }
+        if padding > 0 {
+            row.line
+                .push_span(Span::styled(" ".repeat(padding), background));
+        }
+    }
+}

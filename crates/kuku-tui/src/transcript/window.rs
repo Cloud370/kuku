@@ -189,7 +189,10 @@ impl Window {
             .into_iter()
             .map(|span| {
                 let open = layout.items.group_open(&self.records[span.range.clone()]);
-                (span.range, Some(span.summary), open)
+                let range = span.range.clone();
+                let heading =
+                    GroupHeading::from_span(span, &self.records, open, layout.width, layout.agents);
+                (range, Some(heading), open)
             })
             .collect::<Vec<_>>()
             .into_iter();
@@ -227,11 +230,7 @@ impl Window {
                 .filter(|(range, _, _)| range.contains(&index));
             let grouped = member.is_some();
             let collapsed = member.as_ref().is_some_and(|(_, _, open)| !open);
-            let group = member.and_then(|(_, title, open)| {
-                title
-                    .take()
-                    .map(|summary| GroupHeading::new(summary, *open, layout.width))
-            });
+            let group = member.and_then(|(_, heading, _)| heading.take());
             let (key, rows, detail) = if collapsed {
                 (&record.key, &[][..], None)
             } else {

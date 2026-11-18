@@ -714,13 +714,19 @@ impl App {
     }
 
     fn open_details(&mut self) {
-        let choices = self
-            .pane()
-            .transcript
-            .visible_detail_choices()
-            .into_iter()
-            .map(|(key, label, summary)| Choice::new(label, summary, ChoiceKind::Detail(key)))
-            .collect();
+        let transcript = &self.pane().transcript;
+        let mut choices = Vec::new();
+        for (key, label, summary) in transcript.visible_detail_choices() {
+            let full = transcript.thinking_text(&key);
+            choices.push(Choice::new(label, summary.clone(), ChoiceKind::Detail(key)));
+            if let Some(text) = full {
+                choices.push(Choice::new(
+                    "Read full thinking preview",
+                    summary,
+                    ChoiceKind::Tool(text),
+                ));
+            }
+        }
         self.picker(PickerKind::Details, choices);
     }
 

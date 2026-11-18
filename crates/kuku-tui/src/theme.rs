@@ -84,7 +84,9 @@ pub(crate) fn panel_padding(area: Rect) -> Padding {
 pub(crate) const MODEL: Color = Color::Rgb(175, 165, 223);
 pub(crate) const EXECUTION: Color = Color::Rgb(103, 184, 178);
 pub(crate) const AGENT_SURFACE: Color = Color::Rgb(37, 39, 53);
-pub(crate) const AGENT_CARD_WIDTH: usize = 88;
+pub(crate) const ACTIVITY_CARD_WIDTH: usize = 66;
+pub(crate) const THINKING_ROWS: usize = 4;
+pub(crate) const THINKING_SURFACE: Color = Color::Rgb(34, 45, 48);
 pub(crate) const TURN_RULE: Color = Color::Rgb(70, 85, 100);
 pub(crate) const TURN_CARD: Color = Color::Rgb(34, 45, 57);
 pub(crate) const USAGE: Color = Color::Rgb(153, 181, 214);

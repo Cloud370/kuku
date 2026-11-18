@@ -9,7 +9,7 @@ use crate::app::Activity;
 use crate::markup::{render_literal, render_markdown};
 use crate::text::{cap, shorten, single_line};
 use crate::theme::{
-    emphasis, ACCENT, AGENT_CARD_WIDTH, AGENT_SURFACE, ERROR, MODEL, MUTED, SUCCESS, WARNING,
+    emphasis, ACCENT, ACTIVITY_CARD_WIDTH, AGENT_SURFACE, ERROR, MODEL, MUTED, SUCCESS, WARNING,
 };
 
 use super::{
@@ -17,7 +17,7 @@ use super::{
 };
 
 const MAX_ACTIVITY_BYTES: usize = 4 * 1024;
-const MAX_SECTION_ROWS: usize = 8;
+const MAX_SECTION_ROWS: usize = 4;
 const MAX_CHOICE_CELLS: usize = 120;
 
 impl Transcript {
@@ -253,6 +253,36 @@ pub(super) struct AgentCard<'a> {
 }
 
 impl AgentCard<'_> {
+    pub(super) fn created(&self) -> bool {
+        matches!(self.kind, AgentAction::Create) && self.receipt_cursor.is_some()
+    }
+
+    pub(super) fn delivered(&self) -> bool {
+        matches!(self.kind, AgentAction::Send) && self.receipt_cursor.is_some()
+    }
+
+    pub(super) fn delegation_header(
+        mut self,
+        width: usize,
+        open: bool,
+        facts: Option<&AgentFacts>,
+    ) -> Vec<Row> {
+        self.action = if open { "Timeline" } else { "Delegated" };
+        let mut rows = self.render(width, ToolDetails::Collapsed, facts);
+        rows.pop();
+        if open {
+            rows.truncate(1);
+            if let Some(marker) = rows
+                .first_mut()
+                .filter(|row| row.inset > 0)
+                .and_then(|row| row.line.spans.first_mut())
+            {
+                marker.content = "▾ ".into();
+            }
+        }
+        rows
+    }
+
     pub(super) fn choice_summary(&self) -> String {
         let task = self.task.trim();
         let text = if task.is_empty() { self.action } else { task };
@@ -265,7 +295,7 @@ impl AgentCard<'_> {
         details: ToolDetails,
         facts: Option<&AgentFacts>,
     ) -> Vec<Row> {
-        let width = width.min(AGENT_CARD_WIDTH);
+        let width = width.min(ACTIVITY_CARD_WIDTH);
         let inset = body_inset(width);
         let body_inset = inset + body_inset(width.saturating_sub(usize::from(inset)));
         let expanded = details == ToolDetails::Expanded;
@@ -317,24 +347,7 @@ impl AgentCard<'_> {
                 rows.extend(render_rows(vec![line], width, 1, body_inset));
             }
         }
-        let background = Style::new().bg(AGENT_SURFACE);
-        let card_width = (rows
-            .iter()
-            .map(|row| row.line.width())
-            .max()
-            .unwrap_or_default()
-            + 2)
-        .min(width);
-        for row in &mut rows {
-            let padding = card_width.saturating_sub(row.line.width());
-            for span in &mut row.line.spans {
-                span.style = background.patch(span.style);
-            }
-            if padding > 0 {
-                row.line
-                    .push_span(Span::styled(" ".repeat(padding), background));
-            }
-        }
+        super::paint_card(&mut rows, width, AGENT_SURFACE);
         rows.push(Row::plain(Line::default()));
         rows
     }
@@ -347,7 +360,7 @@ impl AgentCard<'_> {
         inline.push_span(Span::styled(format!(" · {action}"), style));
         if let Some(facts) = facts {
             inline.push_span(Span::styled(
-                format!(" · {}", facts.status.label()),
+                format!(" · Now {}", facts.status.label()),
                 activity_style(facts.status),
             ));
         }
@@ -493,8 +506,8 @@ mod tests {
         let view = transcript.project(90, 24);
         let plain = lines(&view).join("\n");
         assert!(
-            plain.contains("Agent reviewer · Created")
-                && plain.contains("Agent reviewer · Input delivered")
+            plain.contains("Agent reviewer · Delegated")
+                && plain.matches("Agent reviewer").count() == 1
         );
         assert!(plain.contains("Verify the new CLI") && !plain.contains("List failing cases"));
         assert!(plain.contains("verify-fixtures"));
@@ -506,10 +519,8 @@ mod tests {
         assert_eq!(Some("Ctrl+O show · /details"), view.tool_hint.as_deref());
         assert_eq!(None, transcript.detail_at(0));
         let choices = agent_choices(&transcript);
-        assert_eq!(2, choices.len());
+        assert_eq!(1, choices.len());
         assert_eq!("Verify the new CLI List failing cases", choices[0].2);
-        assert_eq!("Inspect documentation Use precise citations", choices[1].2);
-        assert_ne!(choices[0].0, choices[1].0);
 
         assert!(transcript.toggle_details());
         let expanded = transcript.project(90, 24);
@@ -540,13 +551,13 @@ mod tests {
         let mut transcript = settled_agent_calls();
         transcript.project(82, 25);
         let choices = agent_choices(&transcript);
-        let earlier = &choices[1].0;
+        let earlier = &choices[0].0;
         transcript.project(82, 3);
         assert_eq!(1, agent_choices(&transcript).len());
         assert!(transcript.toggle_detail(earlier));
         let rendered = lines(&transcript.project(82, 25)).join("\n");
         assert!(rendered.contains("Requested instructions"));
-        assert!(!rendered.contains("Requested task"));
+        assert!(rendered.contains("Requested task"));
     }
 
     #[test]
@@ -565,33 +576,30 @@ mod tests {
             std::iter::once_with(|| panic!("unchanged source must stay lazy")),
         );
         let view = lines(&transcript.project(82, 27));
-        let first = view
+        let header = view
             .iter()
-            .position(|line| line.contains("Created"))
+            .position(|line| line.contains("Delegated"))
             .unwrap();
-        let second = view
-            .iter()
-            .position(|line| line.contains("Input delivered"))
-            .unwrap();
-        assert!(view[second].contains("Streaming reply"));
-        assert!(transcript.detail_at(first).is_some());
-        assert!(transcript.detail_at(second).is_some());
-        assert!(toggle_row(&mut transcript, first));
-
+        assert!(view[header].contains("Now Streaming reply"));
+        assert!(toggle_row(&mut transcript, header + 1));
         let expanded = transcript.project(82, 27);
         let rendered = lines(&expanded).join("\n");
-        assert!(rendered.contains("Requested instructions"));
-        assert!(!rendered.contains("Live Agent reply") && !rendered.contains("通过"));
-        assert!(!rendered.contains("List failing cases"));
+        assert!(
+            rendered.contains("Requested instructions") && rendered.contains("Live Agent reply")
+        );
         let second = lines(&expanded)
             .iter()
             .position(|line| line.contains("Input delivered"))
             .unwrap();
         assert!(toggle_row(&mut transcript, second));
+        assert!(!lines(&transcript.project(82, 27))
+            .join("\n")
+            .contains("Live Agent reply"));
+        assert!(toggle_row(&mut transcript, second));
         let expanded = transcript.project(60, 25);
         let rendered = lines(&expanded).join("\n");
         assert!(
-            rendered.contains("Live Agent reply") && rendered.contains("通过"),
+            rendered.contains("Live Agent reply") && rendered.contains("检查"),
             "{rendered}"
         );
         assert!(expanded.lines.iter().all(|line| line.width() <= 60));
@@ -601,7 +609,7 @@ mod tests {
         );
         let settled = lines(&transcript.project(60, 25)).join("\n");
         assert!(
-            settled.contains("Input delivered · Finished")
+            settled.contains("Input delivered · Now Finished")
                 && settled.contains("Latest Agent reply")
                 && settled.contains("Completed checks")
         );

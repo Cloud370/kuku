@@ -8,67 +8,67 @@ use unicode_width::UnicodeWidthStr;
 use crate::text::{compact_token_count, format_elapsed};
 use crate::theme::{emphasis, MUTED, TURN_CARD, USAGE};
 
-use super::Row;
+use super::Transcript;
+use crate::text::shorten;
 
-pub(super) fn append_turn_summary(
-    rows: &mut Vec<Row>,
-    summary: Option<&TurnSummary>,
-    turn_number: Option<u64>,
-    width: usize,
-) {
-    let Some(summary) = summary else { return };
-    let title = turn_number.map_or_else(|| "Turn stats".into(), |number| format!("Turn {number}"));
-    let inner = width.saturating_sub(3);
-    if title.width() > inner {
-        return;
-    }
-    if rows.last().is_some_and(|row| row.line.spans.is_empty()) {
-        rows.pop();
-    }
-    let mut caption = Line::from(Span::styled(title, emphasis(USAGE)));
-    if turn_number.is_some() && inner >= 22 {
-        caption.push_span(Span::styled("  Stats", Style::new().fg(MUTED)));
-    }
-    let stacked = width < 60;
-    let budget = if stacked {
-        inner
-    } else {
-        inner.saturating_sub(caption.width() + 3)
-    };
-    let metrics = render_metrics(summary, budget, stacked);
-    if stacked && metrics.width() > 0 {
-        let card_width = caption.width().max(metrics.width());
-        rows.push(render_card_row(caption, card_width));
-        rows.push(render_card_row(metrics, card_width));
-    } else {
-        if metrics.width() > 0 {
-            caption.push_span("   ");
-            caption.extend(metrics.spans);
+impl Transcript {
+    pub(crate) fn turn_dock(&self, width: usize) -> Option<Line<'static>> {
+        let (window, record) = if let Some(reading) = &self.reading {
+            (
+                &reading.window,
+                reading
+                    .window
+                    .records
+                    .iter()
+                    .find(|record| record.key == reading.anchor.key)?,
+            )
+        } else {
+            (
+                &self.recent,
+                self.recent
+                    .records
+                    .iter()
+                    .rev()
+                    .find(|record| record.turn.is_some())?,
+            )
+        };
+        let turn = record.turn?;
+        let records = window
+            .records
+            .iter()
+            .rev()
+            .chain(self.recent.records.iter().rev())
+            .filter(|record| record.turn == Some(turn));
+        let number = record
+            .turn_number
+            .or_else(|| records.clone().find_map(|record| record.turn_number));
+        let title = number.map_or_else(|| "Turn".into(), |n| format!("Turn {n}"));
+        let mut line = Line::from(Span::styled(
+            shorten(&format!("▌ {title}"), width),
+            emphasis(USAGE),
+        ));
+        line.style = Style::new().bg(TURN_CARD);
+        if let Some(summary) = records
+            .filter_map(|record| record.turn_summary.as_ref())
+            .next()
+        {
+            let metrics = render_metrics(summary, width.saturating_sub(line.width() + 3));
+            if metrics.width() > 0 {
+                line.push_span("   ");
+                line.extend(metrics.spans);
+            }
         }
-        let card_width = caption.width();
-        rows.push(render_card_row(caption, card_width));
+        Some(line)
     }
 }
 
-fn render_card_row(mut content: Line<'static>, width: usize) -> Row {
-    let background = Style::new().bg(TURN_CARD);
-    let padding = width - content.width() + 1;
-    let mut line = Line::from(Span::styled("▌ ", background.fg(USAGE)));
-    for span in &mut content.spans {
-        span.style = background.patch(span.style);
-    }
-    line.extend(content.spans);
-    line.push_span(Span::styled(" ".repeat(padding), background));
-    Row::plain(line)
-}
-
-fn render_metrics(summary: &TurnSummary, width: usize, stacked: bool) -> Line<'static> {
+fn render_metrics(summary: &TurnSummary, width: usize) -> Line<'static> {
     let tools = if summary.tool_calls == 1 {
         "tool"
     } else {
         "tools"
     };
-    let mut labels = [
+    let labels = [
         summary
             .elapsed_ms
             .map(|millis| format_elapsed(Duration::from_millis(millis))),
@@ -84,9 +84,6 @@ fn render_metrics(summary: &TurnSummary, width: usize, stacked: bool) -> Line<'s
             .map(cache_hit),
         Some(format!("{} {tools}", summary.tool_calls)),
     ];
-    if stacked {
-        labels[1..].rotate_right(1);
-    }
     let muted = Style::new().fg(MUTED);
     let mut line = Line::default();
     for label in labels.into_iter().flatten() {
@@ -129,33 +126,22 @@ mod tests {
     }
 
     #[test]
-    fn measured_turn_usage_is_one_row_after_the_reply_and_stays_out_of_copy() {
+    fn measured_turn_usage_is_docked_and_stays_out_of_copy() {
         let source = "## Final reply\n\nThe work is complete.";
         let mut transcript = Transcript::default();
         transcript.apply(entry(4, 1, json!({"type":"assistant","text":source})), None);
-        assert!(!rows(&mut transcript, 65).join("\n").contains("tools"));
+        assert_eq!("▌ Turn 1", transcript.turn_dock(65).unwrap().to_string());
         transcript.apply(entry(5, 1, json!({"type":"turn_summary","turn_summary":{
             "elapsed_ms":65400,"input_tokens":12500,"output_tokens":800,"cache_hit_percent":75.5,"tool_calls":2
         }})), None);
-        let wide = rows(&mut transcript, 90);
-        let text = "1m 05s · 12.5K in · 800 out · Cache 75.5% · 2 tools";
-        let row = wide.iter().position(|row| row.contains(text)).unwrap();
-        assert_eq!("The work is complete.", wide[row - 1]);
-        assert!(wide[row].starts_with("▌ Turn 1  Stats"));
+        assert!(!rows(&mut transcript, 90).join("\n").contains("2 tools"));
         assert_eq!(
-            1,
-            wide.iter()
-                .filter(|row| row.starts_with("Turn 1  ─"))
-                .count()
+            "▌ Turn 1   1m 05s · 12.5K in · 800 out · Cache 75.5% · 2 tools",
+            transcript.turn_dock(90).unwrap().to_string()
         );
-        assert_eq!(None, transcript.detail_at(row));
         assert_eq!(Some(ReplySource::Local(source)), transcript.last_reply());
-        let narrow = rows(&mut transcript, 18);
-        assert!(narrow.last().unwrap().contains("1m 05s"));
-        assert!(narrow
-            .iter()
-            .all(|row| unicode_width::UnicodeWidthStr::width(row.as_str()) <= 18));
-        assert!(!narrow.join("\n").contains("Cache"));
+        let narrow = transcript.turn_dock(18).unwrap();
+        assert!(narrow.width() <= 18 && narrow.to_string().contains("1m 05s"));
     }
 
     #[test]
@@ -178,15 +164,17 @@ mod tests {
             .unwrap();
         assert!(header < body);
         assert_eq!(
-            Some("▌ Turn 2  Stats   1 tool"),
-            rendered.get(body + 1).map(|row| row.trim_end())
+            "▌ Turn 2   1 tool",
+            transcript.turn_dock(64).unwrap().to_string()
         );
-        assert_eq!(body + 2, rendered.len());
         assert_eq!(Some(ReplySource::Local(previous)), transcript.last_reply());
         assert!(transcript.toggle_source());
         let raw = rows(&mut transcript, 64);
         assert!(raw.iter().any(|line| line == "## Partial result"));
-        assert_eq!("▌ Turn 2  Stats   1 tool", raw.last().unwrap().trim());
+        assert_eq!(
+            "▌ Turn 2   1 tool",
+            transcript.turn_dock(64).unwrap().to_string()
+        );
     }
 
     #[test]
@@ -220,14 +208,14 @@ mod tests {
         );
         assert_eq!(before, rows(&mut transcript, 60));
         transcript.scroll(-20, 60, 8);
-        let joined = rows(&mut transcript, 60).join("\n");
-        assert!(
-            joined.contains("First reply\n▌ Turn 1  Stats   0 tools \nTurn 2"),
-            "{joined}"
+        assert_eq!(
+            "▌ Turn 1   0 tools",
+            transcript.turn_dock(60).unwrap().to_string()
         );
-        assert!(
-            joined.contains("Second reply\n▌ Turn 2  Stats   8s · 3 tools"),
-            "{joined}"
+        transcript.show_latest();
+        assert_eq!(
+            "▌ Turn 2   8s · 3 tools",
+            transcript.turn_dock(60).unwrap().to_string()
         );
     }
 }
