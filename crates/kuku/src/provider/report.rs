@@ -71,17 +71,29 @@ impl ReportAccumulator {
 
 fn normalize_usage(protocol: ProviderFormat, usage: &Value) -> ProviderUsage {
     let (input, output, read, write) = match protocol {
-        ProviderFormat::OpenAiChat => (
-            usage.get("prompt_tokens").and_then(Value::as_u64),
-            usage.get("completion_tokens").and_then(Value::as_u64),
-            usage
-                .pointer("/prompt_tokens_details/cached_tokens")
-                .and_then(Value::as_u64)
-                .or_else(|| usage.get("prompt_cache_hit_tokens").and_then(Value::as_u64)),
-            usage
-                .pointer("/prompt_tokens_details/cache_write_tokens")
-                .and_then(Value::as_u64),
-        ),
+        ProviderFormat::OpenAiChat => {
+            let cache_hit = usage.get("prompt_cache_hit_tokens").and_then(Value::as_u64);
+            let prompt = usage.get("prompt_tokens").and_then(Value::as_u64);
+            let deepseek_total =
+                || cache_hit?.checked_add(usage.get("prompt_cache_miss_tokens")?.as_u64()?);
+            let derived = prompt.is_none().then(deepseek_total).flatten();
+            let read = if derived.is_some() {
+                cache_hit
+            } else {
+                usage
+                    .pointer("/prompt_tokens_details/cached_tokens")
+                    .and_then(Value::as_u64)
+                    .or(cache_hit)
+            };
+            (
+                prompt.or(derived),
+                usage.get("completion_tokens").and_then(Value::as_u64),
+                read,
+                usage
+                    .pointer("/prompt_tokens_details/cache_write_tokens")
+                    .and_then(Value::as_u64),
+            )
+        }
         ProviderFormat::OpenAiResponses => (
             usage.get("input_tokens").and_then(Value::as_u64),
             usage.get("output_tokens").and_then(Value::as_u64),
@@ -136,19 +148,20 @@ fn merge_usage(target: &mut Value, update: &Value) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde_json::json;
+
+    use super::{normalize_usage, ProviderFormat, ReportAccumulator};
 
     #[test]
     fn total_input_has_the_same_meaning_in_all_protocols() {
         for (protocol, value) in [
             (
                 ProviderFormat::OpenAiChat,
-                json!({"prompt_tokens":100,"prompt_tokens_details":{"cached_tokens":60}}),
+                json!({"prompt_tokens":100,"prompt_tokens_details":{"cached_tokens":60,"cache_write_tokens":10}}),
             ),
             (
                 ProviderFormat::OpenAiResponses,
-                json!({"input_tokens":100,"input_tokens_details":{"cached_tokens":60}}),
+                json!({"input_tokens":100,"input_tokens_details":{"cached_tokens":60,"cache_write_tokens":10}}),
             ),
             (
                 ProviderFormat::Anthropic,
@@ -158,14 +171,35 @@ mod tests {
             let usage = normalize_usage(protocol, &value);
             assert_eq!(Some(100), usage.input_tokens);
             assert_eq!(Some(60), usage.cache_read_input_tokens);
+            assert_eq!(Some(10), usage.cache_creation_input_tokens);
+            assert_eq!(Some((60, 100)), usage.cache_input_counts());
             assert_eq!(None, usage.output_tokens);
         }
+    }
+
+    #[test]
+    fn deepseek_chat_can_reconstruct_the_total_from_explicit_hit_and_miss_counts() {
+        let protocol = ProviderFormat::OpenAiChat;
+        let both = normalize_usage(
+            protocol,
+            &json!({"prompt_cache_hit_tokens":60,"prompt_cache_miss_tokens":40}),
+        );
+        assert_eq!(Some((60, 100)), both.cache_input_counts());
+        let hit_only = normalize_usage(protocol, &json!({"prompt_cache_hit_tokens":60}));
+        assert_eq!(Some(60), hit_only.cache_read_input_tokens);
+        assert_eq!(None, hit_only.cache_input_counts());
+        let empty_cache = normalize_usage(
+            protocol,
+            &json!({"prompt_tokens":100,"prompt_tokens_details":{"cached_tokens":0}}),
+        );
+        assert_eq!(Some((0, 100)), empty_cache.cache_input_counts());
     }
 
     #[test]
     fn messages_initial_and_terminal_usage_merge_without_losing_unknowns() {
         let mut reports = ReportAccumulator::default();
         reports.observe(&json!({"model":"deepseek-flash","usage":{"input_tokens":30,"cache_read_input_tokens":60,"output_tokens":0}})).unwrap();
+        let initial = reports.usage(ProviderFormat::Anthropic, false).unwrap();
         let final_report = reports.observe(&json!({"usage":{"output_tokens":12,"cost":0.0001,"output_tokens_details":{"thinking_tokens":2}}})).unwrap().unwrap();
         assert_eq!(Some(0.0001), final_report.cost_usd);
         assert_eq!(None, final_report.provider);
@@ -175,6 +209,25 @@ mod tests {
             2,
             final_report.raw_usage.as_ref().unwrap()["output_tokens_details"]["thinking_tokens"]
         );
+        let terminal = reports.usage(ProviderFormat::Anthropic, true).unwrap();
+        assert!(matches!(
+            initial,
+            super::ProviderChunk::StreamUsage {
+                input_tokens: Some(90),
+                output_tokens: None,
+                cache_read_input_tokens: Some(60),
+                ..
+            }
+        ));
+        assert!(matches!(
+            terminal,
+            super::ProviderChunk::StreamUsage {
+                input_tokens: Some(90),
+                output_tokens: Some(12),
+                cache_read_input_tokens: Some(60),
+                ..
+            }
+        ));
         assert!(reports.observe(&json!({"usage":null})).unwrap().is_none());
     }
 }

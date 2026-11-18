@@ -126,6 +126,8 @@ impl AgentUsage {
             (Some(output), Some(elapsed)) if elapsed > 0 => (output, elapsed),
             _ => (0, 0),
         };
+        let (cache_measured_read_tokens, cache_measured_input_tokens) =
+            report.cache_input_counts().unwrap_or_default();
         let delta = UsageTotals {
             input_tokens: report.input_tokens,
             output_tokens: report.output_tokens,
@@ -133,7 +135,8 @@ impl AgentUsage {
             cache_creation_input_tokens: report.cache_creation_input_tokens,
             input_reported_requests: u64::from(report.input_tokens.is_some()),
             output_reported_requests: u64::from(report.output_tokens.is_some()),
-            cache_reported_requests: u64::from(report.cache_input_counts().is_some()),
+            cache_measured_input_tokens,
+            cache_measured_read_tokens,
             measured_output_tokens,
             measured_elapsed_us,
             ..UsageTotals::default()
@@ -271,8 +274,12 @@ fn add_totals(total: &mut UsageTotals, delta: &UsageTotals) -> Result<()> {
             delta.output_reported_requests,
         ),
         (
-            &mut total.cache_reported_requests,
-            delta.cache_reported_requests,
+            &mut total.cache_measured_input_tokens,
+            delta.cache_measured_input_tokens,
+        ),
+        (
+            &mut total.cache_measured_read_tokens,
+            delta.cache_measured_read_tokens,
         ),
         (
             &mut total.measured_output_tokens,
@@ -393,7 +400,7 @@ mod tests {
         assert_eq!(Some(8.0), before.context_percent());
         assert_eq!(None, before.output_tokens_per_second());
         assert_eq!(None, before.average_output_tokens_per_second());
-        assert_eq!(None, before.cache_hit_percent());
+        assert_eq!(Some(37.5), before.cache_hit_percent());
         settle_turn(
             &mut store,
             "main",
@@ -405,6 +412,56 @@ mod tests {
             before,
             Session::read_view(&path, "main").unwrap().snapshot.usage
         );
+    }
+
+    #[test]
+    fn cache_hits_weight_only_paired_reports_and_survive_unreported_attempts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        let mut store = EventStore::open(&path).unwrap();
+        create_agent(&mut store, "main");
+        let turn = begin_turn(&mut store, "main");
+        let reports = [
+            json!({"input_tokens":10,"cache_read_input_tokens":0}),
+            json!({"input_tokens":90,"cache_read_input_tokens":90}),
+            json!({"input_tokens":500}),
+            json!({"cache_read_input_tokens":30}),
+            json!({"input_tokens":8,"cache_read_input_tokens":6,"cache_creation_input_tokens":4}),
+            json!({"input_tokens":0,"cache_read_input_tokens":0}),
+        ];
+        for (index, usage) in reports.into_iter().enumerate() {
+            model_fact(
+                &mut store,
+                "main",
+                turn,
+                &format!("request-{index}"),
+                json!({"kind":"runtime.model_usage","usage":usage}),
+            );
+        }
+        let previous = Session::read_view(&path, "main").unwrap().snapshot.usage;
+        assert_eq!(Some(608), previous.input_tokens);
+        assert_eq!(Some(126), previous.cache_read_input_tokens);
+        assert_eq!(100, previous.cache_measured_input_tokens);
+        assert_eq!(90, previous.cache_measured_read_tokens);
+        assert_eq!(Some(90.0), previous.cache_hit_percent());
+        settle_turn(&mut store, "main", turn, json!(previous));
+
+        let next = begin_turn(&mut store, "main");
+        for kind in ["runtime.step_prepared", "runtime.model_retry"] {
+            model_fact(&mut store, "main", next, "unreported", json!({"kind":kind}));
+        }
+        let reopened = Session::read_view(&path, "main").unwrap().snapshot.usage;
+        assert_eq!(8, reopened.model_requests);
+        assert_eq!(Some(90.0), reopened.cache_hit_percent());
+        assert_eq!(100, reopened.cache_measured_input_tokens);
+        assert_eq!(90, reopened.cache_measured_read_tokens);
+
+        create_agent(&mut store, "reviewer");
+        let review = Session::read_view(&path, "reviewer")
+            .unwrap()
+            .snapshot
+            .usage;
+        assert_eq!(None, review.cache_hit_percent());
     }
 
     #[test]
@@ -478,7 +535,6 @@ mod tests {
             input_tokens: Some(0),
             cache_read_input_tokens: Some(0),
             model_requests: 1,
-            cache_reported_requests: 1,
             latest_request: Some(ModelUsageSample {
                 input_tokens: Some(0),
                 output_tokens: Some(0),

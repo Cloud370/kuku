@@ -268,7 +268,9 @@ async fn provider_measurements_are_request_bound_and_replay_per_agent() {
     assert_eq!(Some(20.0), main.context_percent());
     assert_eq!(None, main.output_tokens_per_second());
     assert_eq!(rate, main.average_output_tokens_per_second());
-    assert_eq!(None, main.cache_hit_percent());
+    assert_eq!(Some(0.0), main.cache_hit_percent());
+    assert_eq!(10_000, main.cache_measured_input_tokens);
+    assert_eq!(0, main.cache_measured_read_tokens);
     assert_eq!(reviewer, session.agent("reviewer").unwrap().usage);
 
     original.session_id = Some(session.id().into());

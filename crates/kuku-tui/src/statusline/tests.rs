@@ -65,7 +65,8 @@ fn measured_usage() -> UsageTotals {
         "unreported_requests": 0,
         "input_reported_requests": 3,
         "output_reported_requests": 3,
-        "cache_reported_requests": 3,
+        "cache_measured_input_tokens": 129_000_000,
+        "cache_measured_read_tokens": 96_750_000,
         "measured_output_tokens": 920,
         "measured_elapsed_us": 50_000_000,
         "latest_request": {
@@ -463,7 +464,8 @@ fn known_zero_measurements_have_distinct_labels_from_missing_metrics() {
         "unreported_requests": 0,
         "input_reported_requests": 2,
         "output_reported_requests": 2,
-        "cache_reported_requests": 2,
+        "cache_measured_input_tokens": 100,
+        "cache_measured_read_tokens": 0,
         "measured_output_tokens": 0,
         "measured_elapsed_us": 1_000_000,
         "latest_request": {
@@ -480,4 +482,22 @@ fn known_zero_measurements_have_distinct_labels_from_missing_metrics() {
         "Context 0% used · 0 out · Cache hit 0% · 0 TPS",
         rows[19].trim()
     );
+}
+
+#[test]
+fn cache_hit_stays_visible_after_an_attempt_without_provider_usage() {
+    let mut app = connected_app();
+    let usage = UsageTotals {
+        input_tokens: Some(1_098_058),
+        cache_read_input_tokens: Some(1_065_472),
+        cache_measured_input_tokens: 1_098_058,
+        cache_measured_read_tokens: 1_065_472,
+        model_requests: 44,
+        unreported_requests: 1,
+        ..UsageTotals::default()
+    };
+    load_agent(&mut app, "running", 0, Value::Null, usage);
+    let statusline = StatusLine::parse("cache").unwrap();
+    let rows = screen(&mut app, &statusline, 58, 20);
+    assert_eq!("Cache hit 97%", rows[19].trim());
 }

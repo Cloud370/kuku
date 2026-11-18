@@ -308,9 +308,12 @@ pub struct UsageTotals {
     /// Requests that reported their total output tokens.
     #[serde(default)]
     pub output_reported_requests: u64,
-    /// Requests that reported both total input and cache reads.
+    /// Total input tokens from requests reporting both input and cache reads.
     #[serde(default)]
-    pub cache_reported_requests: u64,
+    pub cache_measured_input_tokens: u64,
+    /// Cache-read input tokens from those same requests.
+    #[serde(default)]
+    pub cache_measured_read_tokens: u64,
     /// Output tokens summed from requests with a known output count and positive duration.
     #[serde(default)]
     pub measured_output_tokens: u64,
@@ -340,16 +343,11 @@ impl UsageTotals {
         Some(latest.input_tokens? as f64 / f64::from(window) * 100.0)
     }
 
-    /// Return the cumulative cache-read percentage when all counted requests reported it.
+    /// Return the token-weighted cache-read percentage over requests with paired counts.
     pub fn cache_hit_percent(&self) -> Option<f64> {
-        if self.model_requests == 0 || self.cache_reported_requests != self.model_requests {
-            return None;
-        }
-        let input = self.input_tokens.filter(|input| *input > 0)?;
-        let cached = self
-            .cache_read_input_tokens
-            .filter(|cached| *cached <= input)?;
-        Some(cached as f64 / input as f64 * 100.0)
+        let input = self.cache_measured_input_tokens;
+        let read = self.cache_measured_read_tokens;
+        (input > 0 && read <= input).then(|| read as f64 / input as f64 * 100.0)
     }
 
     /// Return the latest provider output tokens per second from dispatch to stream completion.
