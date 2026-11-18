@@ -85,6 +85,8 @@ The selected Agent’s `agent.usage` contains cumulative token counts and the nu
 
 A snapshot requested with `progress=true` may include `reply_preview` for the selected Agent. It carries `execution_id`, `turn`, optional `turn_number`, `text` and `truncated`. The text is a UTF-8 prefix of the active request's reply capped at 64 KiB. `truncated` means the reply has already exceeded the retained prefix.
 
+At the same snapshot cursor, another streaming Agent's entry in `agents` can have `progress.phase` set to `streaming`. Its `progress.preview` contains up to 512 UTF-8 bytes from the start of that Agent's active reply. The string is empty if the request has emitted only reasoning so far.
+
 On an Agent-scoped attachment with `include_agent_activity=true`, the stream can also send a `live` line with `event.type` set to `reply_preview`, the prefix in `event.content` and the limit flag in `event.truncated`. Replace the matching in-memory preview with this prefix, then apply later deltas. The stream captures the prefix and begins following new deltas at the same attachment boundary. Only committed records advance the resume cursor.
 
 History entries carry a durable `id`, Agent address, optional Turn identity, its per-Agent display ordinal (`turn_number`) when known, and a `type` such as `user`, `assistant`, `tool_call`, `tool_result`, `question`, `permission`, `question_reply`, `permission_reply`, `status` or `error`. A tool result can include a summary, structured details and a retained `output_id`. A committed frame can also carry the runtime `operation` or a `settlement` with the Turn result.

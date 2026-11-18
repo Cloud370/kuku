@@ -85,6 +85,8 @@
 
 带 `progress=true` 的快照可以包含所选 Agent 的 `reply_preview`，其中有 `execution_id`、`turn`、可选的 `turn_number`、`text` 和 `truncated`。文本是活动请求回复的 UTF-8 前缀，最多 64 KiB。`truncated` 表示回复已经超过保留前缀的上限。
 
+在同一快照游标处，`agents` 中其他正在生成回复的 Agent 条目可将 `progress.phase` 标为 `streaming`。其 `progress.preview` 包含该 Agent 当前回复开头的 UTF-8 文本，最多 512 字节。请求至今仅流出思考内容时，该字符串为空。
+
 指定 Agent 且设置 `include_agent_activity=true` 时，观察流也可以发送 `event.type` 为 `reply_preview` 的 `live` 行。前缀放在 `event.content`，截断标志放在 `event.truncated`。用该前缀替换对应的内存预览，再应用后续增量。取得前缀与开始接收新增量共用同一接入边界。续读游标只随已提交记录推进。
 
 历史条目包含持久的 `id`、Agent 地址、可选的 Turn 标识、在该 Agent 内的显示序号（已知时提供 `turn_number`），以及 `user`、`assistant`、`tool_call`、`tool_result`、`question`、`permission`、`question_reply`、`permission_reply`、`status` 或 `error` 等 `type`。工具结果可以包含摘要、结构化详情以及保留的 `output_id`。已提交条目也可以带有运行时 `operation` 或记录该轮结果的 `settlement`。
