@@ -354,6 +354,10 @@ async fn bounds_heap_stack_results_and_exception_messages() {
             "out of memory",
         ),
         (
+            "const a = new Uint8Array(700 * 1024); const b = new Uint8Array(700 * 1024); return a.length + b.length;",
+            "out of memory",
+        ),
+        (
             "function recurse(){return 1 + recurse()}; return recurse()",
             "maximum call stack size exceeded",
         ),

@@ -1,3 +1,6 @@
+#[cfg(any(unix, windows))]
+mod allocation;
+
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
@@ -57,7 +60,11 @@ pub(super) fn run(
     requests: mpsc::Sender<Request>,
     replies: Receiver<Reply>,
 ) -> Result<Value, Failure> {
-    let runtime = Runtime::new().map_err(runtime_error)?;
+    #[cfg(any(unix, windows))]
+    let runtime = Runtime::new_with_alloc(allocation::ScriptAllocator);
+    #[cfg(not(any(unix, windows)))]
+    let runtime = Runtime::new();
+    let runtime = runtime.map_err(runtime_error)?;
     runtime.set_memory_limit(execution.limits.heap_bytes);
     runtime.set_max_stack_size(execution.limits.stack_bytes);
     let control = execution.clone();
