@@ -42,6 +42,16 @@ PROXY_TIMING = ("request_to_response_headers_seconds", "request_to_first_body_by
                 "request_to_first_output_delta_seconds", "request_to_first_text_delta_seconds",
                 "request_to_first_reasoning_delta_seconds", "request_to_first_tool_argument_delta_seconds",
                 "request_to_last_output_delta_seconds", "request_to_stream_end_seconds")
+UPSTREAM_ERRORS = (
+    (r"training violation \(account settings\)", "account_data_policy", "The account data policy excluded the requested endpoint"),
+    (r"no endpoints? found.*(?:data policy|data collection|data privacy)", "data_policy", "No endpoint matched the account data policy"),
+    (r"no endpoints? found.*(?:data region|region requirement)", "data_region", "No endpoint matched the requested data region"),
+    (r"no endpoints? found.*(?:requested parameters|support.*parameter)", "request_parameters", "No endpoint accepted the requested parameters"),
+    (r"no endpoints? found.*(?:maximum price|max_price|price limit)", "price_ceiling", "No endpoint met the price ceiling"),
+    (r"no endpoints? found", "no_eligible_endpoint", "No eligible endpoint was available"),
+    (r"invalid model(?: id)?|model not found", "invalid_model", "The provider did not recognize the model"),
+    (r"max(?:imum)? context length|context length exceeded", "context_limit", "The provider rejected the context length"),
+)
 
 
 def unique_object(pairs):
@@ -50,6 +60,28 @@ def unique_object(pairs):
         if key in result:
             raise ValueError("Duplicate JSON field")
         result[key] = value
+    return result
+
+
+def upstream_error(reply):
+    result = {"code": reply.status, "kind": "http_error", "message": "The upstream HTTP request failed"}
+    if reply.headers.get_content_type() != "application/json":
+        return result
+    try:
+        body = reply.read(8193)
+        if len(body) > 8192:
+            return result
+        error = json.loads(body).get("error", {})
+        message = error.get("message")
+    except (AttributeError, OSError, TypeError, ValueError, RecursionError, http.client.HTTPException):
+        return result
+    if type(error.get("code")) is int and 400 <= error["code"] <= 599:
+        result["code"] = error["code"]
+    if isinstance(message, str):
+        for pattern, kind, wording in UPSTREAM_ERRORS:
+            if re.search(pattern, message, re.IGNORECASE):
+                result.update(kind=kind, message=wording)
+                break
     return result
 
 
@@ -330,8 +362,9 @@ class CaseMeter(RequestBoundary):
         observation["http_status"] = reply.status
         if reply.status != 200:
             observation["status"] = "http_error"
+            observation["upstream_error"] = upstream_error(reply)
             with contextlib.suppress(OSError):
-                client.send_error(reply.status, "upstream provider request failed")
+                client.send_error(reply.status, observation["upstream_error"]["message"])
             return
         if reply.headers.get_content_type() != "text/event-stream":
             observation["status"] = "unexpected_content_type"
@@ -375,7 +408,7 @@ class CaseMeter(RequestBoundary):
     def account(self, row, observation):
         route = self.route
         router = route.router
-        row.update({field: observation[field] for field in ("http_status", "response_ended", "seconds", "status")
+        row.update({field: observation[field] for field in ("http_status", "response_ended", "seconds", "status", "upstream_error")
                     if field in observation})
         if observation.get("response_status") in RESPONSE_STATUS:
             row["response_status"] = observation["response_status"]

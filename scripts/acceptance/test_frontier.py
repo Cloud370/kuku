@@ -215,6 +215,28 @@ class FrontierTests(unittest.TestCase):
         self.assertEqual(timing["openrouter_receipt_completion_tokens_per_second"], round(789 / 0.403, 3))
         self.assertEqual(timing["stream_completion_tokens"], 789)
 
+    def test_upstream_http_error_keeps_ceiling_and_excludes_raw_error(self):
+        meter = self.meter(ROUTER)
+        private_message = "fixture message and " + KEY
+        reply = BytesIO(json.dumps({"error": {"code": 404, "message": (
+            "0 endpoints out of 1 requested are available matching your guardrail restrictions and data policy. "
+            "Paid model training violation (account settings): 1 endpoint excluded " + private_message
+        )}}).encode())
+        reply.status = 404
+        reply.headers = Message()
+        reply.headers["Content-Type"] = "application/json"
+        connection = mock.Mock()
+        connection.getresponse.return_value = reply
+        with mock.patch("frontier.http.client.HTTPSConnection", return_value=connection), serve(meter.handler()) as endpoint:
+            response = request(endpoint, ROUTER, ROUTER_PAYLOAD)
+        self.assertEqual(response.status, 404)
+        self.assertNotIn(private_message.encode(), response.body)
+        self.assertNotIn(private_message, meter.evidence.read_text())
+        row = meter.attempts[0]
+        self.assertEqual(row["upstream_error"]["kind"], "account_data_policy")
+        self.assertEqual(row["upstream_error"]["code"], 404)
+        self.assertEqual(row["basis"], "request_upper_bound")
+
     def test_live_runner_reserves_shared_ledger_before_launch_and_uses_fresh_tokens(self):
         ledger = Budget(self.directory / "shared.json")
         ledger.initialize("concurrent local fixture", 1.5, 0)
