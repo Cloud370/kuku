@@ -111,7 +111,7 @@ fn open_details(app: &mut App) {
     app.paste("/details");
     press(app, KeyCode::Enter);
     assert!(matches!(&app.modal, Some(Modal::Picker(picker))
-        if matches!(picker.kind, PickerKind::AgentDetails)));
+        if matches!(picker.kind, PickerKind::Details)));
     app.effects.clear();
 }
 

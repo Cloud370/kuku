@@ -32,21 +32,21 @@ impl App {
                 ..
             }) => self.wheel(MOUSE_SCROLL_LINES),
             Event::Mouse(mouse) => {
-                let agent = match mouse.kind {
+                let detail = match mouse.kind {
                     MouseEventKind::Down(_) | MouseEventKind::Up(_) => {
                         self.text_selection.transcript_row(mouse).and_then(|row| {
                             self.panes
                                 .get(&self.active)?
                                 .transcript
-                                .visible_agent_at(row)
+                                .detail_at(row)
                         })
                     }
                     _ => None,
                 };
-                match self.text_selection.mouse(mouse, screen, agent) {
+                match self.text_selection.mouse(mouse, screen, detail) {
                     Some(MouseAction::Copy(text)) => self.copy_text(text),
-                    Some(MouseAction::ToggleAgent(row)) => {
-                        self.pane_mut().transcript.toggle_agent_at(row);
+                    Some(MouseAction::ToggleDetail(key)) => {
+                        self.pane_mut().transcript.toggle_detail(&key);
                     }
                     None => {}
                 }
@@ -440,9 +440,9 @@ impl App {
                 self.active.clone(),
                 Action::ReplyPermission { request_id, allow },
             ),
-            ChoiceKind::AgentCard(key) => {
-                if !self.pane_mut().transcript.toggle_agent_card(&key) {
-                    self.problem("This Agent card is no longer available");
+            ChoiceKind::Detail(key) => {
+                if !self.pane_mut().transcript.toggle_detail(&key) {
+                    self.problem("These details are no longer available");
                 }
             }
             ChoiceKind::Tool(tool) => self.show_output(tool),
@@ -478,7 +478,7 @@ impl App {
             CommandMenu::Thinking => self.open_thinking(),
             CommandMenu::StatusLine => self.open_statusline(),
             CommandMenu::Copy => self.copy_reply(),
-            CommandMenu::Details => self.open_agent_details(),
+            CommandMenu::Details => self.open_details(),
             CommandMenu::Tools => self.open_tools(),
             CommandMenu::Server => self.open_server(),
             CommandMenu::Reconnect => self.reconnect(),
@@ -667,17 +667,15 @@ impl App {
         self.picker(PickerKind::Tools, tools);
     }
 
-    fn open_agent_details(&mut self) {
-        let cards = self
+    fn open_details(&mut self) {
+        let choices = self
             .pane()
             .transcript
-            .visible_agent_choices()
+            .visible_detail_choices()
             .into_iter()
-            .map(|(key, address, task)| {
-                Choice::new(format!("Agent {address}"), task, ChoiceKind::AgentCard(key))
-            })
+            .map(|(key, label, summary)| Choice::new(label, summary, ChoiceKind::Detail(key)))
             .collect();
-        self.picker(PickerKind::AgentDetails, cards);
+        self.picker(PickerKind::Details, choices);
     }
 
     fn show_output(&mut self, tool: ToolView) {

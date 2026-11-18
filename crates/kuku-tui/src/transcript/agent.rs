@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::ops::Range;
 
 use kuku_client::Receipt;
 use ratatui::style::Style;
@@ -28,45 +27,16 @@ impl Transcript {
         self.agent_cards.sync(revision, agents);
     }
 
-    pub(crate) fn visible_agent_at(&self, row: usize) -> Option<&str> {
-        self.agent_cards
-            .visible_at(row)
-            .map(|card| card.address.as_str())
-    }
-
-    pub(crate) fn toggle_agent_at(&mut self, row: usize) -> bool {
-        let key = self
-            .agent_cards
-            .visible_at(row)
-            .map(|card| AgentCardKey(card.key.clone()));
-        key.is_some_and(|key| self.toggle_agent_card(&key))
-    }
-
-    pub(crate) fn visible_agent_choices(&self) -> Vec<(AgentCardKey, String, String)> {
-        self.agent_cards
-            .visible
-            .iter()
-            .rev()
-            .map(|card| {
-                (
-                    AgentCardKey(card.key.clone()),
-                    card.address.clone(),
-                    card.summary.clone(),
-                )
-            })
-            .collect()
-    }
-
-    pub(crate) fn toggle_agent_card(&mut self, key: &AgentCardKey) -> bool {
-        if !self.recent.contains(&key.0)
+    pub(super) fn toggle_agent_record(&mut self, key: &Key) -> bool {
+        if !self.recent.contains(key)
             && !self
                 .reading
                 .as_ref()
-                .is_some_and(|reading| reading.window.contains(&key.0))
+                .is_some_and(|reading| reading.window.contains(key))
         {
             return false;
         }
-        self.agent_cards.toggle(&key.0);
+        self.agent_cards.toggle(key);
         true
     }
 
@@ -98,7 +68,6 @@ impl Transcript {
 
 #[derive(Debug, Default)]
 pub(super) struct AgentCards {
-    pub(super) visible: Vec<VisibleAgent>,
     expanded: VecDeque<Key>,
     latest: HashSet<u64>,
     activities: HashMap<String, AgentFacts>,
@@ -107,20 +76,18 @@ pub(super) struct AgentCards {
 }
 
 impl AgentCards {
-    pub(super) fn has_collapsed_visible(&self) -> bool {
-        self.visible
-            .iter()
-            .any(|card| !self.expanded.contains(&card.key))
+    pub(super) fn is_open(&self, key: &Key) -> bool {
+        self.expanded.contains(key)
     }
 
-    pub(super) fn set_details(&mut self, open: bool) {
+    pub(super) fn set_details<'a>(&mut self, open: bool, keys: impl Iterator<Item = &'a Key>) {
         if !open {
             self.expanded.clear();
             return;
         }
-        for card in &self.visible {
-            if !self.expanded.contains(&card.key) {
-                remember_expanded(&mut self.expanded, &card.key);
+        for key in keys {
+            if !self.is_open(key) {
+                remember_expanded(&mut self.expanded, key);
             }
         }
     }
@@ -180,10 +147,6 @@ impl AgentCards {
             .retain(|_, agent| agent.source_revision == revision);
     }
 
-    fn visible_at(&self, row: usize) -> Option<&VisibleAgent> {
-        self.visible.iter().find(|card| card.rows.contains(&row))
-    }
-
     fn toggle(&mut self, key: &Key) {
         if let Some(index) = self.expanded.iter().position(|item| item == key) {
             self.expanded.remove(index);
@@ -198,17 +161,6 @@ fn remember_expanded(expanded: &mut VecDeque<Key>, key: &Key) {
         expanded.pop_front();
     }
     expanded.push_back(key.clone());
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct AgentCardKey(Key);
-
-#[derive(Debug)]
-pub(super) struct VisibleAgent {
-    pub(super) rows: Range<usize>,
-    pub(super) key: Key,
-    pub(super) address: String,
-    pub(super) summary: String,
 }
 
 #[derive(Debug)]
@@ -402,7 +354,7 @@ mod tests {
 
     use crate::app::Activity;
 
-    use super::super::{Transcript, TranscriptView};
+    use super::super::{DetailKey, Transcript, TranscriptView};
 
     fn apply(transcript: &mut Transcript, id: u64, mut record: Value) {
         record["id"] = json!(id);
@@ -451,6 +403,21 @@ mod tests {
         transcript
     }
 
+    fn agent_choices(transcript: &Transcript) -> Vec<(DetailKey, String, String)> {
+        transcript
+            .visible_detail_choices()
+            .into_iter()
+            .filter(|(_, label, _)| label.starts_with("Agent "))
+            .collect()
+    }
+
+    fn toggle_row(transcript: &mut Transcript, row: usize) -> bool {
+        transcript
+            .detail_at(row)
+            .cloned()
+            .is_some_and(|key| transcript.toggle_detail(&key))
+    }
+
     fn lines(view: &TranscriptView) -> Vec<String> {
         view.lines.iter().map(ToString::to_string).collect()
     }
@@ -479,8 +446,8 @@ mod tests {
                 && !plain.contains("Finished")
         );
         assert_eq!(Some("Ctrl+O show · /details"), view.tool_hint.as_deref());
-        assert_eq!(None, transcript.visible_agent_at(0));
-        let choices = transcript.visible_agent_choices();
+        assert_eq!(None, transcript.detail_at(0));
+        let choices = agent_choices(&transcript);
         assert_eq!(2, choices.len());
         assert_eq!("Verify the new CLI List failing cases", choices[0].2);
         assert_eq!("Inspect documentation Use precise citations", choices[1].2);
@@ -514,11 +481,11 @@ mod tests {
     fn picker_choice_uses_the_same_record_after_viewport_rows_change() {
         let mut transcript = settled_agent_calls();
         transcript.project(82, 25);
-        let choices = transcript.visible_agent_choices();
+        let choices = agent_choices(&transcript);
         let earlier = &choices[1].0;
         transcript.project(82, 3);
-        assert_eq!(1, transcript.visible_agent_choices().len());
-        assert!(transcript.toggle_agent_card(earlier));
+        assert_eq!(1, agent_choices(&transcript).len());
+        assert!(transcript.toggle_detail(earlier));
         let rendered = lines(&transcript.project(82, 25)).join("\n");
         assert!(rendered.contains("Requested instructions"));
         assert!(!rendered.contains("Requested task"));
@@ -549,9 +516,9 @@ mod tests {
             .position(|line| line.contains("Input delivered"))
             .unwrap();
         assert!(view[second].contains("Streaming reply"));
-        assert_eq!(Some("reviewer"), transcript.visible_agent_at(first));
-        assert_eq!(Some("reviewer"), transcript.visible_agent_at(second));
-        assert!(transcript.toggle_agent_at(first));
+        assert!(transcript.detail_at(first).is_some());
+        assert!(transcript.detail_at(second).is_some());
+        assert!(toggle_row(&mut transcript, first));
 
         let expanded = transcript.project(82, 27);
         let rendered = lines(&expanded).join("\n");
@@ -562,7 +529,7 @@ mod tests {
             .iter()
             .position(|line| line.contains("Input delivered"))
             .unwrap();
-        assert!(transcript.toggle_agent_at(second));
+        assert!(toggle_row(&mut transcript, second));
         let expanded = transcript.project(60, 25);
         let rendered = lines(&expanded).join("\n");
         assert!(
@@ -584,7 +551,7 @@ mod tests {
         transcript.sync_agent_activity(7, []);
         let cleared = lines(&transcript.project(60, 25)).join("\n");
         assert!(!cleared.contains("Completed checks") && !cleared.contains("Finished"));
-        assert!(!transcript.toggle_agent_at(99));
+        assert!(!toggle_row(&mut transcript, 99));
     }
 
     #[test]

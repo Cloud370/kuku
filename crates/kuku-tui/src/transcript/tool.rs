@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use kuku_client::{HistoryEntry, HistoryKind, Receipt};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
@@ -19,11 +21,14 @@ const MAX_SUMMARY_ROWS: usize = 2;
 const MAX_RESULT_ROWS: usize = 6;
 const MAX_FILE_ROWS: usize = 3;
 const MAX_WARNING_ROWS: usize = 3;
+const MAX_INSPECTION_ROWS: usize = 12;
+const MAX_ARGUMENT_ROWS: usize = 5;
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct Tool {
     name: String,
     invocation: String,
+    arguments: String,
     start_summary: String,
     requested_change: String,
     progress: String,
@@ -48,6 +53,7 @@ impl Tool {
 
         let args = entry.details.get("args").unwrap_or(&Value::Null);
         let invocation = invocation(&name, args);
+        let arguments = arguments_json(args);
         let agent_request = AgentRequest::from_call(&name, args);
         let requested_change = if name == "edit_file" {
             edit_preview(args).unwrap_or_default()
@@ -57,6 +63,7 @@ impl Tool {
         Self {
             name,
             invocation,
+            arguments,
             requested_change,
             agent_request,
             ..Self::default()
@@ -69,6 +76,9 @@ impl Tool {
         }
         if !incoming.invocation.is_empty() {
             self.invocation = incoming.invocation;
+        }
+        if !incoming.arguments.is_empty() {
+            self.arguments = incoming.arguments;
         }
         if !incoming.requested_change.is_empty() {
             self.requested_change = incoming.requested_change;
@@ -170,15 +180,88 @@ impl Tool {
         Some(request.card(receipt, status, error))
     }
 
+    pub(super) fn group_name(&self) -> Option<&str> {
+        let State::Recorded(outcome) = &self.state else {
+            return None;
+        };
+        (!self.name.is_empty()
+            && !matches!(
+                self.name.as_str(),
+                "create_agent" | "send_message" | "list_agents" | "ask_user"
+            )
+            && outcome.status == "ok"
+            && outcome.exit_code.is_none_or(|code| code == 0)
+            && !outcome.attention)
+            .then_some(self.name.as_str())
+    }
+
+    pub(super) fn read_path(&self) -> Option<&str> {
+        self.state
+            .outcome()
+            .filter(|outcome| outcome.file_read.is_some())
+            .map(|outcome| outcome.invocation.as_str())
+            .filter(|path| !path.is_empty())
+    }
+
+    pub(super) fn detail_choice(&self) -> (String, String) {
+        let title = self.title();
+        let status = self.state.label().0;
+        let subject = if self.invocation().is_empty() {
+            self.summary()
+        } else {
+            self.invocation()
+        };
+        let summary = if subject.is_empty() {
+            status.to_owned()
+        } else {
+            format!(
+                "{} · {status}",
+                shorten(&single_line(cap(subject, MAX_LABEL_BYTES)), 110)
+            )
+        };
+        (title.into_owned(), summary)
+    }
+
     pub(super) fn render(&self, width: usize, details: ToolDetails) -> Vec<Row> {
-        let expanded = details == ToolDetails::Expanded;
+        let inspecting = details == ToolDetails::Inspection;
+        let expanded = inspecting || details == ToolDetails::Expanded;
         let heading_inset = body_inset(width);
         let inset = heading_inset + body_inset(width.saturating_sub(usize::from(heading_inset)));
         let caption = self.file_caption();
+        if details == ToolDetails::GroupMember {
+            let target =
+                caption.unwrap_or_else(|| single_line(cap(self.invocation(), MAX_LABEL_BYTES)));
+            let columns = width.saturating_sub(usize::from(heading_inset));
+            let mut label = self.title().into_owned();
+            if !target.is_empty() {
+                label.push_str(&format!(" · {target}"));
+            }
+            let caption = shorten(&label, columns);
+            let mut rows: Vec<_> = render_rows(
+                vec![Line::styled(caption, emphasis(ACCENT))],
+                width,
+                1,
+                heading_inset,
+            )
+            .collect();
+            rows.push(Row::plain(Line::default()));
+            return rows;
+        }
         let mut rows = self.render_header(width, heading_inset, inset, caption.as_deref());
+        if !inspecting && self.is_missing_read() {
+            rows.extend(render_preview(
+                self.result(),
+                ERROR,
+                width,
+                MAX_SUMMARY_ROWS,
+                inset,
+            ));
+            rows.push(Row::plain(Line::default()));
+            return rows;
+        }
         let invocation = self.invocation();
         let summary = self.summary();
-        if expanded && caption.is_none() {
+        if expanded && caption.is_none() && (!inspecting || invocation != self.arguments) {
             rows.extend(render_preview(
                 invocation,
                 ACCENT,
@@ -190,6 +273,34 @@ impl Tool {
         if caption.is_none() && (!expanded || summary != invocation) {
             let limit = if expanded { MAX_SUMMARY_ROWS } else { 1 };
             rows.extend(render_preview(summary, Color::Reset, width, limit, inset));
+        }
+        if inspecting {
+            let name = single_line(&self.name);
+            if self.arguments.is_empty() {
+                if !name.is_empty() {
+                    rows.extend(render_preview(
+                        &format!("Tool ID · {name}"),
+                        MUTED,
+                        width,
+                        2,
+                        inset,
+                    ));
+                }
+            } else {
+                let label = if name.is_empty() {
+                    "Requested arguments".to_owned()
+                } else {
+                    format!("Requested arguments · {name}")
+                };
+                rows.extend(render_preview(&label, MUTED, width, 2, inset));
+                rows.extend(render_preview(
+                    &self.arguments,
+                    Color::Reset,
+                    width,
+                    MAX_ARGUMENT_ROWS,
+                    inset,
+                ));
+            }
         }
         if expanded {
             let outcome = self.state.outcome();
@@ -207,7 +318,9 @@ impl Tool {
                     render_excerpt(text, |text| render_literal(text, Style::default()))
                 }
             };
-            let limit = if caption.is_some() {
+            let limit = if inspecting {
+                MAX_INSPECTION_ROWS
+            } else if caption.is_some() {
                 MAX_FILE_ROWS
             } else {
                 MAX_RESULT_ROWS
@@ -236,6 +349,26 @@ impl Tool {
         rows
     }
 
+    fn title(&self) -> Cow<'_, str> {
+        if self.name.is_empty() && self.read_path().is_some() {
+            tool_title("read_file")
+        } else {
+            tool_title(&self.name)
+        }
+    }
+
+    fn is_missing_read(&self) -> bool {
+        let path = self.invocation.as_str();
+        self.name == "read_file"
+            && self
+                .state
+                .outcome()
+                .is_some_and(|outcome| outcome.status == "error")
+            && !path.is_empty()
+            && self.summary().strip_prefix("failed: path not found: ") == Some(path)
+            && self.result().strip_prefix("path does not exist: ") == Some(path)
+    }
+
     fn render_header(
         &self,
         width: usize,
@@ -252,12 +385,7 @@ impl Tool {
             .and_then(|outcome| outcome.exit_code)
             .map_or_else(String::new, |exit| format!(" · exit {exit}"));
         let status = format!("{status}{exit}");
-        let title = match self.name.as_str() {
-            "" if caption.is_some() => "Read file".to_owned(),
-            "" => "Tool".to_owned(),
-            "read_file" => "Read file".to_owned(),
-            name => format!("Tool {}", single_line(name)),
-        };
+        let title = self.title();
         let style = emphasis(ACCENT);
         let status_style = Style::default().fg(color);
         let mut title = Line::styled(shorten(&title, columns), style);
@@ -319,10 +447,12 @@ impl Tool {
                 return &outcome.invocation;
             }
         }
-        if self.invocation.is_empty() {
-            &self.start_summary
-        } else {
+        if !self.invocation.is_empty() {
             &self.invocation
+        } else if !self.arguments.is_empty() {
+            &self.arguments
+        } else {
+            &self.start_summary
         }
     }
 
@@ -354,6 +484,33 @@ impl Tool {
     }
 }
 
+pub(super) fn tool_title(name: &str) -> Cow<'_, str> {
+    Cow::Borrowed(match name {
+        "" => "Tool",
+        "read_file" => "Read file",
+        "find_files" => "Find files",
+        "search_text" => "Search text",
+        "write_file" => "Write file",
+        "edit_file" => "Edit file",
+        "run_command" => "Run command",
+        "read_output" => "Read saved output",
+        "fetch_url" => "Download URL",
+        "fetch_web" => "Fetch web page",
+        "query_session" => "Query Session",
+        "remember_memory" => "Save memory",
+        "forget_memory" => "Remove memory",
+        "use_skill" => "Use skill",
+        "list_skills" => "List skills",
+        "search_skills" => "Search skills",
+        "agent" => "Run Agent",
+        "create_agent" => "Create Agent",
+        "list_agents" => "List Agents",
+        "send_message" => "Send message",
+        "ask_user" => "Ask user",
+        name => return Cow::Owned(single_line(name)),
+    })
+}
+
 #[derive(Debug, Clone, Default)]
 enum State {
     #[default]
@@ -377,6 +534,7 @@ impl State {
             Self::Running => ("running", ACCENT),
             Self::Reported(outcome) | Self::Recorded(outcome) => match outcome.status.as_str() {
                 "ok" if outcome.exit_code.is_some_and(|code| code != 0) => ("failed", ERROR),
+                "ok" if outcome.attention => ("ok with warnings", WARNING),
                 "ok" => ("ok", SUCCESS),
                 "error" => ("error", ERROR),
                 "blocked" | "cancelled" => (&outcome.status, WARNING),
@@ -399,6 +557,7 @@ struct Outcome {
     command_preview: Option<CommandPreview>,
     file_read: Option<FileRead>,
     receipt: Option<Receipt>,
+    attention: bool,
 }
 
 impl Outcome {
@@ -416,6 +575,19 @@ impl Outcome {
             .get("truncated")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        let attention = [
+            "cleanup_incomplete",
+            "quota_truncated",
+            "output_persistence_failed",
+            "timed_out",
+            "cancelled",
+        ]
+        .into_iter()
+        .any(|key| structured[key].as_bool() == Some(true))
+            || structured["capture_complete"].as_bool() == Some(false)
+            || structured["stderr_lines"]
+                .as_u64()
+                .is_some_and(|lines| lines > 0);
         Self {
             status: capped(get("status"), MAX_LABEL_BYTES),
             summary: capped(get("summary").or(fallback_summary), MAX_DETAIL_BYTES),
@@ -437,6 +609,7 @@ impl Outcome {
             receipt: (get("status") == Some("ok"))
                 .then(|| agent_receipt(structured))
                 .flatten(),
+            attention,
         }
     }
 }
@@ -549,19 +722,16 @@ fn invocation(tool: &str, args: &Value) -> String {
                 cap(path, MAX_DETAIL_BYTES / 2)
             ),
             (Some(value), None) | (None, Some(value)) => capped(Some(value), MAX_DETAIL_BYTES),
-            (None, None) => arguments_json(args),
+            (None, None) => String::new(),
         };
     }
     let key = match tool {
         "run_command" => Some("command"),
         "edit_file" | "read_file" | "write_file" => Some("path"),
-        "fetch_url" => Some("url"),
+        "fetch_url" | "fetch_web" => Some("url"),
         _ => None,
     };
-    key.and_then(get).map_or_else(
-        || arguments_json(args),
-        |value| capped(Some(value), MAX_DETAIL_BYTES),
-    )
+    capped(key.and_then(get), MAX_DETAIL_BYTES)
 }
 
 fn arguments_json(args: &Value) -> String {
@@ -719,10 +889,13 @@ mod tests {
     }
 
     #[test]
-    fn adjacent_reads_share_one_hint_and_show_each_path_with_its_actual_line_range() {
+    fn reads_separated_by_a_turn_boundary_show_each_path_with_its_actual_line_range() {
         let mut transcript = Transcript::default();
         let raw = "17\talpha\n18\tbeta\n19\tgamma\n20\tdelta\n21\tepsilon";
-        for (first, name, path) in [(1, "read-a", "src/lib.rs"), (4, "read-b", "src/main.rs")] {
+        for (first, name, path, turn, number) in [
+            (1, "read-a", "src/lib.rs", 7, 3),
+            (4, "read-b", "src/main.rs", 8, 4),
+        ] {
             for (id, entry) in (first..).zip([
                 json!({"type": "assistant", "text": "", "thinking": "Read this file"}),
                 json!({"type": "tool_call", "tool": "read_file", "tool_call_id": name, "args": {"path": format!("./{path}")}}),
@@ -732,8 +905,8 @@ mod tests {
                 entry.extend([
                     ("id".into(), json!(id)),
                     ("agent".into(), json!("main")),
-                    ("turn".into(), json!(7)),
-                    ("turn_number".into(), json!(3)),
+                    ("turn".into(), json!(turn)),
+                    ("turn_number".into(), json!(number)),
                 ]);
                 transcript.apply(serde_json::from_value(entry.into()).unwrap(), None);
             }
@@ -747,19 +920,23 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert_eq!(1, rendered.matches("Turn 3").count());
+        assert_eq!(1, rendered.matches("Turn 4").count());
         assert_eq!(1, rendered.matches("src/lib.rs").count());
         assert_eq!(1, rendered.matches("src/main.rs").count());
         assert!(rendered
             .contains("Read file · ok · src/lib.rs · lines 17–21 of 30 · cached · truncated"));
-        assert!(rendered.contains("…\n  Read file") && !rendered.contains("Assistant"));
+        assert!(rendered.contains("…") && !rendered.contains("Assistant"));
         assert!(rendered.contains("19    gamma") && !rendered.contains("epsilon"));
-        assert_eq!(Some("Ctrl+O hide"), view.tool_hint.as_deref());
+        assert_eq!(Some("Ctrl+O hide · /details"), view.tool_hint.as_deref());
         assert!(!rendered.contains("Ctrl+O"));
         assert_eq!(raw, transcript.tools()[0].details);
 
         transcript.toggle_details();
         let collapsed = transcript.project(84, 24);
-        assert_eq!(Some("Ctrl+O show"), collapsed.tool_hint.as_deref());
+        assert_eq!(
+            Some("Ctrl+O show · /details"),
+            collapsed.tool_hint.as_deref()
+        );
         assert!(!collapsed
             .lines
             .iter()

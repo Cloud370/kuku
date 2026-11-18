@@ -13,16 +13,20 @@ use crate::theme::{
 };
 
 mod agent;
+mod details;
 mod message;
 mod reply;
 mod tool;
+mod window;
 
-pub(crate) use self::agent::AgentCardKey;
-use self::agent::{AgentCard, AgentCards, VisibleAgent};
+use self::agent::AgentCards;
+pub(crate) use self::details::DetailKey;
+use self::details::{DetailRecord, Details, VisibleDetail};
 use self::message::{render_record, render_user};
 use self::reply::LatestReply;
 pub(crate) use self::reply::ReplySource;
 use self::tool::Tool;
+use self::window::{Layout, TurnHeading, Window};
 
 pub(crate) const HISTORY_PAGE: usize = 48;
 const MAX_RECORDS: usize = HISTORY_PAGE * 3;
@@ -48,6 +52,7 @@ struct Anchor {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AnchorLine {
     Turn,
+    Group,
     Body(usize),
 }
 
@@ -71,6 +76,8 @@ enum ToolDetails {
     #[default]
     Expanded,
     Collapsed,
+    GroupMember,
+    Inspection,
 }
 
 #[derive(Debug, Default)]
@@ -82,6 +89,7 @@ pub(crate) struct Transcript {
     details: ToolDetails,
     current_execution: Option<u64>,
     agent_cards: AgentCards,
+    detail_items: Details,
 }
 
 impl Transcript {
@@ -89,7 +97,7 @@ impl Transcript {
         self.latest_reply.observe_page(&page);
         self.recent = Window::from_page(page);
         self.current_execution = None;
-        self.agent_cards.visible.clear();
+        self.detail_items.visible.clear();
     }
 
     pub(crate) fn suspend(&mut self) {
@@ -98,7 +106,7 @@ impl Transcript {
         }
         self.recent = Window::default();
         self.current_execution = None;
-        self.agent_cards.visible.clear();
+        self.detail_items.visible.clear();
     }
 
     pub(crate) fn restore_request(&self) -> Option<HistoryRequest> {
@@ -220,7 +228,9 @@ impl Transcript {
         } else {
             ToolDetails::Collapsed
         };
-        self.agent_cards.set_details(expanded);
+        self.agent_cards
+            .set_details(expanded, self.detail_items.agent_keys());
+        self.toggle_group_details(expanded);
         expanded
     }
 
@@ -251,18 +261,19 @@ impl Transcript {
         height: usize,
     ) -> Option<HistoryRequest> {
         self.link_recent_agent_cards();
+        let layout = Layout {
+            width,
+            tools: self.details,
+            agents: &self.agent_cards,
+            items: &self.detail_items,
+        };
         if self.reading.is_none() {
             if !amount.is_negative() || self.recent.records.is_empty() {
                 return None;
             }
             let mut window = self.recent.clone();
-            let rows = window.row_count(width, self.details, &self.agent_cards);
-            let anchor = window.anchor_at(
-                rows.saturating_sub(height),
-                width,
-                self.details,
-                &self.agent_cards,
-            )?;
+            let rows = window.row_count(layout);
+            let anchor = window.anchor_at(rows.saturating_sub(height), layout)?;
             self.reading = Some(Reading {
                 window,
                 anchor,
@@ -270,19 +281,11 @@ impl Transcript {
             });
         }
         let reading = self.reading.as_mut().expect("read window");
-        let rows = reading
-            .window
-            .row_count(width, self.details, &self.agent_cards);
-        let start =
-            reading
-                .window
-                .position_of(&reading.anchor, width, self.details, &self.agent_cards);
+        let rows = reading.window.row_count(layout);
+        let start = reading.window.position_of(&reading.anchor, layout);
         let bottom = rows.saturating_sub(height);
         let next = start.saturating_add_signed(amount).min(bottom);
-        if let Some(anchor) = reading
-            .window
-            .anchor_at(next, width, self.details, &self.agent_cards)
-        {
+        if let Some(anchor) = reading.window.anchor_at(next, layout) {
             reading.anchor = anchor;
         }
         if amount.is_negative() && next == 0 {
@@ -350,24 +353,24 @@ impl Transcript {
 
     pub(crate) fn project(&mut self, width: usize, height: usize) -> TranscriptView {
         self.link_recent_agent_cards();
+        let layout = Layout {
+            width,
+            tools: self.details,
+            agents: &self.agent_cards,
+            items: &self.detail_items,
+        };
         let (window, start, following) = if let Some(reading) = &mut self.reading {
-            let start =
-                reading
-                    .window
-                    .position_of(&reading.anchor, width, self.details, &self.agent_cards);
+            let start = reading.window.position_of(&reading.anchor, layout);
             (&mut reading.window, start, false)
         } else {
-            let rows = self
-                .recent
-                .row_count(width, self.details, &self.agent_cards);
+            let rows = self.recent.row_count(layout);
             (&mut self.recent, rows.saturating_sub(height), true)
         };
         let mut lines = Vec::with_capacity(height);
         let mut row_insets = Vec::with_capacity(height);
-        let mut tool_visible = false;
-        let mut visible_agents = Vec::new();
+        let mut visible = Vec::new();
         let mut skip = start;
-        for block in window.blocks(width, self.details, &self.agent_cards) {
+        for block in window.blocks(layout) {
             if lines.len() == height {
                 break;
             }
@@ -382,39 +385,40 @@ impl Transcript {
                 }
                 skip = skip.saturating_sub(1);
             }
+            if let Some(group) = block.group {
+                if skip == 0 && lines.len() < height {
+                    let row = group.render(width);
+                    visible.push(VisibleDetail::group(lines.len(), block.key, group));
+                    lines.push(row.line);
+                    row_insets.push(row.inset);
+                }
+                skip = skip.saturating_sub(1);
+            }
             let first = lines.len();
             for row in block.rows.iter().skip(skip).take(height - lines.len()) {
                 lines.push(row.line.clone());
                 row_insets.push(row.inset);
-                tool_visible |= block.tool && !row.line.spans.is_empty();
             }
-            if let Some(agent) = block.agent {
+            if let Some(detail) = block.detail {
                 let last = lines.len()
                     - usize::from(
                         lines.len() > first
                             && lines.last().is_some_and(|line| line.spans.is_empty()),
                     );
                 if last > first {
-                    visible_agents.push(VisibleAgent {
-                        rows: first..last,
-                        key: block.key.clone(),
-                        address: agent.address.to_owned(),
-                        summary: agent.choice_summary(),
-                    });
+                    visible.push(VisibleDetail::record(first..last, block.key, detail));
                 }
             }
             skip = 0;
         }
-        self.agent_cards.visible = visible_agents;
-        let agent_visible = !self.agent_cards.visible.is_empty();
-        let tool_hint = (tool_visible || agent_visible).then(|| {
+        self.detail_items.visible = visible;
+        let tool_hint = (!self.detail_items.visible.is_empty()).then(|| {
             let action = if self.details_can_expand() {
                 "show"
             } else {
                 "hide"
             };
-            let menu = if agent_visible { " · /details" } else { "" };
-            format!("{} {action}{menu}", Shortcut::DETAILS.label)
+            format!("{} {action} · /details", Shortcut::DETAILS.label)
         });
         TranscriptView {
             lines,
@@ -425,7 +429,12 @@ impl Transcript {
     }
 
     fn details_can_expand(&self) -> bool {
-        self.details == ToolDetails::Collapsed || self.agent_cards.has_collapsed_visible()
+        self.details == ToolDetails::Collapsed
+            || self.detail_items.has_closed_group()
+            || self
+                .detail_items
+                .agent_keys()
+                .any(|key| !self.agent_cards.is_open(key))
     }
 }
 
@@ -512,243 +521,12 @@ impl Reading {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-struct Window {
-    records: Vec<Record>,
-    older: Option<u64>,
-}
-
-impl Window {
-    fn from_page(page: HistoryPage) -> Self {
-        let mut window = Self {
-            older: page.next_before,
-            ..Self::default()
-        };
-        for record in page.entries.into_iter().filter_map(Record::from_entry) {
-            window.insert(record);
-        }
-        window
-    }
-
-    fn contains(&self, key: &Key) -> bool {
-        self.records.iter().any(|record| &record.key == key)
-    }
-
-    fn remove(&mut self, key: &Key) {
-        self.records.retain(|record| &record.key != key);
-    }
-
-    fn insert(&mut self, record: Record) {
-        if let Some(previous) = self.records.iter_mut().find(|old| old.key == record.key) {
-            previous.merge(record);
-        } else {
-            self.records.push(record);
-        }
-        self.records
-            .sort_by_key(|record| record.position.unwrap_or(u64::MAX));
-    }
-
-    fn clear_preview(&mut self) {
-        self.records.retain(|record| record.position.is_some());
-        for record in &mut self.records {
-            if let Body::Tool(tool) = &mut record.body {
-                if tool.clear_live() {
-                    record.rendered = None;
-                }
-            }
-        }
-    }
-
-    fn trim_front(&mut self) {
-        if self.records.len() > MAX_RECORDS {
-            self.records.drain(..self.records.len() - MAX_RECORDS);
-            self.older = self.records.iter().find_map(|record| record.position);
-        }
-    }
-
-    fn trim_back(&mut self) -> Option<HistoryRequest> {
-        if self.records.len() <= MAX_RECORDS {
-            return None;
-        }
-        let truncated = &self.records[MAX_RECORDS..];
-        let first = truncated.iter().find_map(|record| record.position);
-        let last = truncated.iter().rev().find_map(|record| record.position);
-        self.records.truncate(MAX_RECORDS);
-        Some(HistoryRequest::Newer {
-            first: first?,
-            before: last?.saturating_add(1),
-        })
-    }
-
-    fn limit_live(&mut self) {
-        let mut count = 0;
-        self.records.retain(|record| {
-            if record.position.is_some() {
-                return true;
-            }
-            count += 1;
-            count <= MAX_LIVE_RECORDS
-        });
-    }
-
-    fn record_or_insert(
-        &mut self,
-        key: Key,
-        turn: Option<u64>,
-        turn_number: Option<u64>,
-        body: impl FnOnce() -> Body,
-    ) -> &mut Record {
-        if let Some(index) = self.records.iter().position(|record| record.key == key) {
-            let record = &mut self.records[index];
-            record.turn = record.turn.or(turn);
-            record.turn_number = record.turn_number.or(turn_number);
-            return record;
-        }
-        self.records.push(Record {
-            key,
-            turn,
-            turn_number,
-            position: None,
-            body: body(),
-            rendered: None,
-        });
-        self.records.last_mut().expect("inserted record")
-    }
-
-    fn tool_live(&mut self, key: Key, turn: Option<u64>, turn_number: Option<u64>, event: &Value) {
-        let record = self.record_or_insert(key, turn, turn_number, || Body::Tool(Box::default()));
-        if let Body::Tool(tool) = &mut record.body {
-            if tool.apply_live(event) {
-                record.rendered = None;
-            }
-        }
-    }
-
-    fn row_count(&mut self, width: usize, details: ToolDetails, agents: &AgentCards) -> usize {
-        self.blocks(width, details, agents)
-            .map(|block| block.height())
-            .sum()
-    }
-
-    fn position_of(
-        &mut self,
-        anchor: &Anchor,
-        width: usize,
-        details: ToolDetails,
-        agents: &AgentCards,
-    ) -> usize {
-        let mut start = 0;
-        for block in self.blocks(width, details, agents) {
-            if block.key == &anchor.key {
-                return start + block.offset(anchor.line);
-            }
-            start += block.height();
-        }
-        0
-    }
-
-    fn anchor_at(
-        &mut self,
-        mut row: usize,
-        width: usize,
-        details: ToolDetails,
-        agents: &AgentCards,
-    ) -> Option<Anchor> {
-        for block in self.blocks(width, details, agents) {
-            if row < block.height() {
-                return Some(Anchor {
-                    key: block.key.clone(),
-                    line: match (block.heading, row) {
-                        (Some(_), 0) => AnchorLine::Turn,
-                        (Some(_), row) => AnchorLine::Body(row - 1),
-                        (None, row) => AnchorLine::Body(row),
-                    },
-                });
-            }
-            row -= block.height();
-        }
-        None
-    }
-
-    fn blocks<'a>(
-        &'a mut self,
-        width: usize,
-        details: ToolDetails,
-        agents: &'a AgentCards,
-    ) -> impl Iterator<Item = Block<'a>> {
-        let mut records = self
-            .records
-            .iter_mut()
-            .filter(|record| record.visible())
-            .peekable();
-        let from_start = self.older.is_none();
-        let mut previous_turn = None;
-        std::iter::from_fn(move || {
-            let record = records.next()?;
-            let known_number = record.turn_number.filter(|&number| number > 0);
-            let heading = record
-                .turn
-                .filter(|&turn| {
-                    Some(turn) != previous_turn && (previous_turn.is_some() || from_start)
-                })
-                .map(|_| known_number.map_or(TurnHeading::Unnumbered, TurnHeading::Numbered));
-            previous_turn = record.turn.or(previous_turn);
-            let tool = matches!(record.body, Body::Tool(_));
-            let adjacent_tool = tool
-                && records.peek().is_some_and(|next| {
-                    next.turn == record.turn && matches!(next.body, Body::Tool(_))
-                });
-            let (key, rows, agent) = record.render(width, details, agents);
-            let rows = if adjacent_tool {
-                &rows[..rows.len() - 1]
-            } else {
-                rows
-            };
-            Some(Block {
-                key,
-                heading,
-                rows,
-                tool: tool && agent.is_none(),
-                agent,
-            })
-        })
-    }
-}
-
-struct Block<'a> {
-    key: &'a Key,
-    heading: Option<TurnHeading>,
-    rows: &'a [Row],
-    tool: bool,
-    agent: Option<AgentCard<'a>>,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum TurnHeading {
-    Numbered(u64),
-    Unnumbered,
-}
-
-impl Block<'_> {
-    fn height(&self) -> usize {
-        self.rows.len() + usize::from(self.heading.is_some())
-    }
-
-    fn offset(&self, line: AnchorLine) -> usize {
-        match line {
-            AnchorLine::Turn => 0,
-            AnchorLine::Body(line) => {
-                line.min(self.rows.len().saturating_sub(1)) + usize::from(self.heading.is_some())
-            }
-        }
-    }
-}
-
 #[derive(Debug)]
 struct Record {
     key: Key,
     turn: Option<u64>,
     turn_number: Option<u64>,
+    owner: Option<String>,
     position: Option<u64>,
     body: Body,
     rendered: Option<((usize, ToolDetails, u64), Vec<Row>)>,
@@ -760,6 +538,7 @@ impl Clone for Record {
             key: self.key.clone(),
             turn: self.turn,
             turn_number: self.turn_number,
+            owner: self.owner.clone(),
             position: self.position,
             body: self.body.clone(),
             rendered: None,
@@ -816,6 +595,7 @@ impl Record {
             key,
             turn: entry.turn,
             turn_number: entry.details.get("turn_number").and_then(Value::as_u64),
+            owner: (!entry.agent.is_empty()).then_some(entry.agent),
             position: Some(entry.id),
             body,
             rendered: None,
@@ -824,6 +604,9 @@ impl Record {
 
     fn merge(&mut self, record: Self) {
         self.turn_number = self.turn_number.or(record.turn_number);
+        if self.owner.is_none() {
+            self.owner = record.owner;
+        }
         if let (Body::Tool(tool), Body::Tool(incoming)) = (&mut self.body, record.body) {
             tool.merge(*incoming);
             self.position = match (self.position, record.position) {
@@ -839,18 +622,27 @@ impl Record {
         !matches!(&self.body, Body::Assistant(text) if text.trim().is_empty())
     }
 
+    fn tool(&self) -> Option<&Tool> {
+        match &self.body {
+            Body::Tool(tool) => Some(tool),
+            Body::User { .. } | Body::Assistant(_) | Body::Notice(..) => None,
+        }
+    }
+
     fn render(
         &mut self,
         width: usize,
         details: ToolDetails,
         agents: &AgentCards,
-    ) -> (&Key, &[Row], Option<AgentCard<'_>>) {
+        items: &Details,
+    ) -> (&Key, &[Row], Option<DetailRecord<'_>>) {
         let (card, mode, facts) = match &self.body {
             Body::Tool(tool) => {
                 let card = tool.agent_card();
-                let (mode, facts) = card.as_ref().map_or((details, None), |card| {
-                    agents.display(&self.key, self.position, card.address)
-                });
+                let (mode, facts) = card.as_ref().map_or_else(
+                    || (items.tool_mode(&self.key, details), None),
+                    |card| agents.display(&self.key, self.position, card.address),
+                );
                 (card, mode, facts)
             }
             Body::User { .. } | Body::Assistant(_) | Body::Notice(..) => {
@@ -899,7 +691,8 @@ impl Record {
         (
             &self.key,
             &self.rendered.as_ref().expect("rendered record").1,
-            card,
+            card.map(DetailRecord::Agent)
+                .or_else(|| self.tool().map(DetailRecord::Tool)),
         )
     }
 }

@@ -4,7 +4,7 @@ use kuku_client::Target;
 
 use crate::editor::Editor;
 use crate::keys::Shortcut;
-use crate::transcript::{AgentCardKey, ToolView};
+use crate::transcript::{DetailKey, ToolView};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CommandMenu {
@@ -106,7 +106,7 @@ impl CommandMenu {
             Self::StatusLine => ("Choose and reorder status line fields", None),
             Self::Details => {
                 return format!(
-                    "Choose a visible Agent card · {} toggles previews",
+                    "Inspect visible tools and Agent cards · {} toggles previews",
                     Shortcut::DETAILS.label
                 );
             }
@@ -158,7 +158,7 @@ pub(crate) enum ChoiceKind {
         request_id: String,
         allow: bool,
     },
-    AgentCard(AgentCardKey),
+    Detail(DetailKey),
     Tool(ToolView),
     Restart,
 }
@@ -220,7 +220,7 @@ pub(crate) enum PickerKind {
     Pending,
     PendingItem,
     Permission,
-    AgentDetails,
+    Details,
     Tools,
     Server,
 }
@@ -238,7 +238,7 @@ impl PickerKind {
             Self::Pending => "Unconfirmed commands",
             Self::PendingItem => "Recover command",
             Self::Permission => "Authorization required",
-            Self::AgentDetails => "Agent details",
+            Self::Details => "Transcript details",
             Self::Tools => "Tool details and saved output",
             Self::Server => "Service status",
         }
@@ -252,7 +252,7 @@ impl PickerKind {
                 | Self::Sessions
                 | Self::Agents
                 | Self::Models
-                | Self::AgentDetails
+                | Self::Details
                 | Self::Tools
         )
     }

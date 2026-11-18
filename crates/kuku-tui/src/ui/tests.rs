@@ -290,7 +290,7 @@ fn generic_tool_details_render_control_bytes_visibly_and_copy_original_reply() {
         page,
     ));
     let view = screen(&mut app, 72, 25);
-    assert!(view.contains("Tool example_custom · ok · exit 0"));
+    assert!(view.contains("example_custom · ok · exit 0"));
     assert!(view.contains("before␛[2Jafter"));
     assert!(view.contains("let number = 4;"));
     assert!(!view.contains('\u{001b}'));

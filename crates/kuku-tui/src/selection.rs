@@ -1,11 +1,13 @@
-use crate::theme;
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::buffer::{Buffer, CellWidth};
 use ratatui::layout::{Position, Rect};
 
+use crate::theme;
+use crate::transcript::DetailKey;
+
 pub(crate) enum MouseAction {
     Copy(String),
-    ToggleAgent(usize),
+    ToggleDetail(DetailKey),
 }
 
 #[derive(Default)]
@@ -54,7 +56,7 @@ impl TextSelection {
         &mut self,
         mouse: MouseEvent,
         buffer: &Buffer,
-        agent: Option<&str>,
+        detail: Option<&DetailKey>,
     ) -> Option<MouseAction> {
         if mouse.modifiers.contains(KeyModifiers::SHIFT) {
             self.drag = None;
@@ -75,7 +77,7 @@ impl TextSelection {
                             insets_for(&self.transcript_insets, *area),
                         );
                         if mouse.modifiers.is_empty() {
-                            drag.agent = agent.map(str::to_owned);
+                            drag.detail = detail.cloned();
                         }
                         drag
                     });
@@ -97,10 +99,10 @@ impl TextSelection {
                     insets_for(&self.transcript_insets, drag.area),
                 );
                 if mouse.modifiers.is_empty()
-                    && drag.agent.is_some()
-                    && drag.agent.as_deref() == agent
+                    && drag.detail.is_some()
+                    && drag.detail.as_ref() == detail
                 {
-                    return self.transcript_row(mouse).map(MouseAction::ToggleAgent);
+                    return drag.detail.map(MouseAction::ToggleDetail);
                 }
                 return (drag.anchor != drag.end && !drag.text.trim().is_empty())
                     .then_some(MouseAction::Copy(drag.text));
@@ -134,7 +136,7 @@ fn insets_for(transcript: &Option<(Rect, Vec<u16>)>, area: Rect) -> &[u16] {
 struct Drag {
     area: Rect,
     anchor: Position,
-    agent: Option<String>,
+    detail: Option<DetailKey>,
     end: Position,
     text: String,
 }
@@ -144,7 +146,7 @@ impl Drag {
         let mut drag = Self {
             area,
             anchor,
-            agent: None,
+            detail: None,
             end: anchor,
             text: String::new(),
         };
@@ -158,7 +160,7 @@ impl Drag {
             point.y.clamp(self.area.top(), self.area.bottom() - 1),
         );
         if self.end != end {
-            self.agent = None;
+            self.detail = None;
             self.end = end;
             self.text = self.project(buffer, insets).0;
         }
