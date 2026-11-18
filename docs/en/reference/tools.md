@@ -110,6 +110,8 @@ return { exitCode: facts.exit_code, warnings, complete, outputId: facts.output_r
 
 For a large derived result, take `result.id` from `await workspace.create_output({})`, then `await workspace.append_output({id, text})` for each batch of UTF-8 text. Check each action's status. Call `await workspace.finish_output({id})` and check `result.capture_complete` before relying on the new `result.output_ref`. The original capture remains available independently.
 
+An output draft belongs to the current script invocation. Creating, appending to, and finishing a draft require an immediate authorization decision. A deferred decision yields a `blocked` result for that action.
+
 ## Retained Tool Output
 
 `read_output` reads a retained output by ID or the current Agent's named value by exact name. It accepts Session references and uses the SDK's bounded reader. Every call passes host authorization. The limits below apply to the direct tool. For the script reader's schema, see `workspace.methods`.

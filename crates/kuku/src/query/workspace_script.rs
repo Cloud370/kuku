@@ -272,6 +272,27 @@ impl WorkspaceHost {
                     format!("{name} was not dispatched"),
                 ));
             }
+            AuthorizationDecision::Defer
+                if matches!(
+                    call.op,
+                    ScriptOperation::CreateOutput
+                        | ScriptOperation::AppendOutput
+                        | ScriptOperation::FinishOutput
+                ) =>
+            {
+                let reason = "Output drafts expire with their script invocation. Use an immediate authorization decision for draft actions.";
+                self.record(
+                    &id,
+                    name,
+                    args.get("id").unwrap_or(&Value::Null),
+                    "blocked",
+                    json!({"reason":reason}),
+                )?;
+                return Ok(ToolResultEnvelope::blocked(
+                    "output draft action needs immediate authorization",
+                    reason,
+                ));
+            }
             AuthorizationDecision::Defer => {
                 let mut waiting = self.deferred.lock().unwrap();
                 if waiting.is_some() {

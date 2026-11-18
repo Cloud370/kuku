@@ -1,5 +1,6 @@
 mod common;
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -393,5 +394,94 @@ return {original, saved:saved.result.output_ref.id, draft};
             .unwrap()
             .count()
     );
+    session.close().await.unwrap();
+}
+
+#[derive(Debug, Default)]
+struct DraftGate {
+    creations: AtomicUsize,
+    finishes: AtomicUsize,
+}
+
+impl ToolAuthorizer for DraftGate {
+    fn authorize(&self, action: &ToolAuthorization) -> kuku::Result<AuthorizationDecision> {
+        let decision = match action.tool.name.as_str() {
+            "create_output" if self.creations.fetch_add(1, Ordering::Relaxed) == 1 => {
+                AuthorizationDecision::Defer
+            }
+            "finish_output" if self.finishes.fetch_add(1, Ordering::Relaxed) == 1 => {
+                AuthorizationDecision::Defer
+            }
+            "append_output" if action.args["text"] == "deferred" => AuthorizationDecision::Defer,
+            "append_output" if action.args["text"] == "denied" => AuthorizationDecision::Deny,
+            _ => AuthorizationDecision::Allow,
+        };
+        Ok(decision)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deferred_draft_actions_are_blocked_before_dispatch_without_pending_approval() {
+    let work = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let mut options = options(
+        &work,
+        &data,
+        r#"
+const base = (await workspace.create_output({})).result.id;
+await workspace.append_output({id:base,text:"previously published"});
+await workspace.finish_output({id:base});
+const create = await workspace.create_output({});
+const id = (await workspace.create_output({})).result.id;
+const append = await workspace.append_output({id,text:"deferred"});
+const deny = await workspace.append_output({id,text:"denied"});
+const allowed = await workspace.append_output({id,text:"allowed"});
+const finish = await workspace.finish_output({id});
+const published = await workspace.finish_output({id});
+return {base, id, statuses:[create.status,append.status,deny.status,allowed.status,finish.status,published.status]};
+"#,
+    );
+    options.authorizer = Arc::new(DraftGate::default());
+    let session = start(options).await;
+    let facts = until(|| {
+        assert!(
+            session.agent("main").unwrap().permission.is_none(),
+            "a draft must not enter pending authorization"
+        );
+        script_facts(&session)
+    })
+    .await;
+    assert_eq!(
+        json!(["blocked", "blocked", "blocked", "ok", "blocked", "ok"]),
+        facts.value["statuses"]
+    );
+    for (field, expected) in [("base", "previously published"), ("id", "allowed")] {
+        let id = facts.value[field].as_str().unwrap();
+        let text = session
+            .read_agent_output("main", id, &kuku::OutputRead::default())
+            .unwrap()
+            .segments
+            .into_iter()
+            .map(|segment| segment.text)
+            .collect::<String>();
+        assert_eq!(expected, text);
+    }
+    let events = session.events(0, 256).unwrap();
+    assert!(!events.iter().any(|event| matches!(&event.payload, EventPayload::Unknown(fact) if fact["kind"] == "workspace.deferred")));
+    let actions = events
+        .iter()
+        .filter_map(|event| WorkspaceActionReceipt::from_event(event).unwrap())
+        .collect::<Vec<_>>();
+    let blocked = actions
+        .iter()
+        .filter(|action| action.status == WorkspaceActionState::Blocked)
+        .collect::<Vec<_>>();
+    assert_eq!(4, blocked.len());
+    for action in blocked {
+        assert!(!actions
+            .iter()
+            .any(|candidate| candidate.action_id == action.action_id
+                && candidate.status == WorkspaceActionState::Dispatched));
+    }
     session.close().await.unwrap();
 }

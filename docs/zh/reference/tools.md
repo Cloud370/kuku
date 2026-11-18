@@ -110,6 +110,8 @@ return { exitCode: facts.exit_code, warnings, complete, outputId: facts.output_r
 
 保存大型派生结果时，先从 `await workspace.create_output({})` 取得 `result.id`，再用 `await workspace.append_output({id, text})` 分批追加 UTF-8 文本。检查各操作的状态。调用 `await workspace.finish_output({id})` 后，检查 `result.capture_complete` 再使用新的 `result.output_ref`。原始捕获仍可单独读取。
 
+输出草稿只在当前脚本调用内有效。创建、追加和完成草稿都需要即时授权决定。宿主选择延后时，该动作返回 `blocked`。
+
 ## 保留的工具输出
 
 `read_output` 按输出 ID 或当前 Agent 的准确值名读取 Session 保留数据，使用 SDK 的同一有界读取器。每次调用都须经过宿主授权。下表是直接工具的限额，脚本读取器的参数定义见 `workspace.methods`。
