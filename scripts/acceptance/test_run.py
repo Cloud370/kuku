@@ -364,12 +364,12 @@ class AcceptanceTests(unittest.TestCase):
         parsed, case, source, built, directory, secrets = fake.call_args.args
         self.assertEqual(parsed.run_id, directory.name)
         self.assertEqual((parsed.provider, parsed.upstream), ("openrouter", None))
-        self.assertEqual((parsed.case_cap_usd, parsed.max_output_tokens, parsed.max_requests), (0.75, 131072, None))
+        self.assertEqual((parsed.case_cap_usd, parsed.max_output_tokens, parsed.max_requests), (0.75, None, None))
         self.assertEqual(parsed.agent_timeout_sec, 1200)
         self.assertEqual(source, self.directory / "source" / "tasks" / case["id"])
         self.assertEqual((built, secrets), (image, creds))
 
-    def test_legacy_paid_benchmark_keeps_finite_transport_count_and_disables_retries(self):
+    def test_legacy_paid_benchmark_keeps_finite_request_and_output_limits_and_disables_retries(self):
         config = self.directory / "config.toml"
         config.write_text("# local fixture\n")
         base = ["run.py", "--output", str(self.directory), "benchmark", "--mode", "live", "--case", "regex-log",
@@ -379,14 +379,16 @@ class AcceptanceTests(unittest.TestCase):
         def benchmark(_args, _directory, record, _secrets):
             record["passed"] = True
 
-        for supplied, expected in (([], "12"), (["--", "--max-requests", "22"], "22")):
-            with mock.patch.object(sys, "argv", [*base, *supplied]), \
+        for requests, output, override in (("12", "32768", False), ("22", "16384", True)):
+            limits = ["--max-requests", requests, "--max-output-tokens", output]
+            tail = ["--", *limits] if override else []
+            with mock.patch.object(sys, "argv", [*base, *tail]), \
                     mock.patch.object(ACCEPTANCE, "load_secrets", return_value={"KUKU_TEST_KEY": "fixture"}), \
                     mock.patch.object(ACCEPTANCE, "tree_state", return_value={}), \
                     mock.patch.object(ACCEPTANCE, "Budget"), \
                     mock.patch.object(ACCEPTANCE, "run_benchmark", side_effect=benchmark) as run, mock.patch("builtins.print"):
                 self.assertEqual(ACCEPTANCE.main(), 0)
-            self.assertEqual(run.call_args.args[0].sdk_args, ["--max-requests", expected, "--no-provider-retry"])
+            self.assertEqual(run.call_args.args[0].sdk_args, [*limits, "--no-provider-retry"])
 
     def test_grader_cannot_reuse_a_report_left_by_the_agent(self):
         logs = self.directory / "logs"

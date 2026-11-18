@@ -59,6 +59,7 @@ async fn example_separates_request_bytes_from_context_tokens_and_reports_settlem
     let request_byte_limit = kuku::RuntimeLimits::default().max_request_bytes;
     assert_eq!(CONTEXT_TOKENS, completed["limits"]["max_context_tokens"]);
     assert_eq!(request_byte_limit, completed["limits"]["max_request_bytes"]);
+    assert_eq!(Value::Null, completed["limits"]["max_output_tokens"]);
     assert_eq!("idle", completed["agent"]["status"]);
     assert_eq!("done", completed["agent"]["last_output"]);
     assert_eq!(Value::Null, completed["error"]);
@@ -66,6 +67,7 @@ async fn example_separates_request_bytes_from_context_tokens_and_reports_settlem
     let settings = &completed["provider_settings"][0];
     assert_eq!(CONTEXT_TOKENS, settings["context_window_tokens"]);
     assert_eq!(request_byte_limit, settings["max_request_bytes"]);
+    assert_eq!(1024, settings["max_output_tokens"]);
     assert!(settings["request_bytes"].as_u64().unwrap() > u64::from(CONTEXT_TOKENS));
     assert_terminal(&completed, "turn.completed");
     provider.assert_hits_async(1).await;
@@ -90,9 +92,17 @@ async fn example_inherits_retry_policy_and_bounds_attempts_only_when_requested()
     assert_eq!(2, default["agent"]["usage"]["model_requests"]);
     provider.assert_hits_async(2).await;
 
-    let capped = run_example(root, "capped.json", &["--max-requests", "1"], false).await;
+    let capped = run_example(
+        root,
+        "capped.json",
+        &["--max-requests", "1", "--max-output-tokens", "512"],
+        false,
+    )
+    .await;
     assert_eq!(1, capped["limits"]["max_requests"]);
     assert_eq!(1, capped["limits"]["automatic_retries"]);
+    assert_eq!(512, capped["limits"]["max_output_tokens"]);
+    assert_eq!(512, capped["provider_settings"][0]["max_output_tokens"]);
     assert_eq!(1, capped["agent"]["usage"]["model_requests"]);
     provider.assert_hits_async(3).await;
 
@@ -182,8 +192,6 @@ async fn run_example(root: &Path, output: &str, extra_args: &[&str], passed: boo
     args.extend([
         "--max-context-tokens".into(),
         CONTEXT_TOKENS.to_string(),
-        "--max-output-tokens".into(),
-        "1024".into(),
         "--timeout".into(),
         "10".into(),
         "--no-agents".into(),

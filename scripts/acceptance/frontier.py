@@ -707,7 +707,10 @@ def run_live(args, case, source, image, directory, secrets):
     router = provider == "openrouter"
     route = route_for(provider, model=ROUTER_MODEL if router else "deepseek-flash", effort="max",
                       upstream=(upstream or "deepseek"), key=key, verify_catalog=router)
-    limits = RunLimits(args.max_requests, WIRE_BYTES, args.max_output_tokens, byte_ceiling=WIRE_BYTES,
+    output_tokens = route.completion_limit if args.max_output_tokens is None else args.max_output_tokens
+    if output_tokens is None:
+        raise ValueError("The selected provider route did not declare an output token limit. Set --max-output-tokens.")
+    limits = RunLimits(args.max_requests, WIRE_BYTES, output_tokens, byte_ceiling=WIRE_BYTES,
                        output_ceiling=route.completion_limit)
     timeout = args.agent_timeout_sec if args.agent_timeout_sec is not None else case["timeout_sec"]
     if timeout <= 0 or not args.sdk_binary.is_file():
@@ -715,10 +718,11 @@ def run_live(args, case, source, image, directory, secrets):
     cap = Decimal(str(money(args.case_cap_usd)))
     token = random_secrets.token_urlsafe(32)
     meter = CaseMeter(route, limits, key, token, cap, case["id"], timeout, directory / "meter.json")
-    if route.request_ceiling(limits.output_tokens) > cap:
+    request_ceiling = route.request_ceiling(limits.output_tokens)
+    if request_ceiling > cap:
         meter.outcome = "cap_below_request_ceiling"
         meter.save()
-        raise ValueError("Case USD cap cannot reserve one request at the selected provider limits")
+        raise ValueError(f"Case USD cap cannot reserve one request at the selected provider limits ({request_ceiling} USD required)")
     budget = Budget(args.ledger.resolve(strict=True))
     run_id = getattr(args, "run_id", None) or directory.name
     result = None

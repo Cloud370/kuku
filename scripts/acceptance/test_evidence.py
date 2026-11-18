@@ -174,6 +174,16 @@ class EvidenceTests(unittest.TestCase):
         limits["automatic_retries"] = 0
         self.assertTrue(self.fixture.inspect(require_fixed_limits=True)["passed"])
 
+    def test_ordinary_inspection_allows_no_host_output_ceiling(self):
+        self.fixture.report["limits"].update(max_requests=12, max_output_tokens=None)
+        evidence = self.fixture.inspect()
+        self.assertTrue(evidence["passed"], evidence.get("error"))
+        self.assertIsNone(evidence["limits"]["max_output_tokens"])
+        for options in ({"require_fixed_limits": True}, {"require_output_limit": True}):
+            evidence = self.fixture.inspect(**options)
+            self.assertFalse(evidence["passed"])
+            self.assertIn("requires a finite output token limit", evidence["error"])
+
     def test_windows_extended_paths_preserve_drive_and_share_containment(self):
         def within(path, root):
             return comparison_path(PureWindowsPath(path)).is_relative_to(comparison_path(PureWindowsPath(root)))

@@ -109,8 +109,9 @@ async fn main() {
 
 pub(crate) async fn execute(args: BTreeMap<String, String>) -> Result<bool, AnyError> {
     if args.contains_key("help") {
-        println!("session_task --workspace DIR --prompt-file FILE --config FILE --data-dir DIR --output FILE [--session-id ID --agent main --connection NAME --model MODEL --tier TIER --reasoning-effort low --service-tier VALUE --max-requests N --no-provider-retry --max-agents 64 --max-output-tokens 32768 --max-context-tokens 131072 --max-request-bytes BYTES --timeout 300 --command-id KEY --inspect-named-value NAME --seed-named-json FILE]");
+        println!("session_task --workspace DIR --prompt-file FILE --config FILE --data-dir DIR --output FILE [--session-id ID --agent main --connection NAME --model MODEL --tier TIER --reasoning-effort low --service-tier VALUE --max-requests N --no-provider-retry --max-agents 64 --max-output-tokens N --max-context-tokens 131072 --max-request-bytes BYTES --timeout 300 --command-id KEY --inspect-named-value NAME --seed-named-json FILE]");
         println!("--max-requests optionally caps provider attempts across this open session. --no-provider-retry disables the default pre-stream retry.");
+        println!("--max-output-tokens optionally caps each model request. By default the SDK resolves the model's output allowance.");
         println!("--max-request-bytes caps the serialized provider request. It defaults to the SDK's request byte limit.");
         return Ok(true);
     }
@@ -122,7 +123,7 @@ pub(crate) async fn execute(args: BTreeMap<String, String>) -> Result<bool, AnyE
         kuku::config::load_config(&PathBuf::from(required(&args, "config")?))?.resolve()?;
     let max_requests = optional_number(&args, "max-requests")?;
     let max_agents = number(&args, "max-agents", 64_usize)?;
-    let max_output_tokens = number(&args, "max-output-tokens", 32_768_u32)?;
+    let max_output_tokens = optional_number(&args, "max-output-tokens")?;
     let max_context_tokens = number(&args, "max-context-tokens", 131_072_u32)?;
     if max_context_tokens == 0 {
         return Err("--max-context-tokens must be positive".into());
@@ -140,7 +141,7 @@ pub(crate) async fn execute(args: BTreeMap<String, String>) -> Result<bool, AnyE
     if args.contains_key("no-provider-retry") {
         options.limits.retry_transient_provider_errors = false;
     }
-    options.limits.max_output_tokens_per_request = Some(max_output_tokens);
+    options.limits.max_output_tokens_per_request = max_output_tokens;
     options.limits.max_agents = max_agents;
     options.limits.max_request_bytes =
         number(&args, "max-request-bytes", options.limits.max_request_bytes)?;
@@ -163,7 +164,7 @@ pub(crate) async fn execute(args: BTreeMap<String, String>) -> Result<bool, AnyE
         model: args.get("model").cloned(),
         reasoning_effort: args.get("reasoning-effort").cloned(),
         service_tier: args.get("service-tier").cloned(),
-        max_output_tokens: Some(max_output_tokens),
+        max_output_tokens,
         no_agents: args.contains_key("no-agents"),
         no_skills: args.contains_key("no-skills"),
         ..Default::default()

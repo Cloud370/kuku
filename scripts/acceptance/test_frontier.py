@@ -409,7 +409,7 @@ class FrontierTests(unittest.TestCase):
 
     def test_live_runner_reserves_shared_ledger_before_launch_and_uses_fresh_tokens(self):
         ledger = Budget(self.directory / "shared.json")
-        ledger.initialize("concurrent local fixture", 1.5, 0)
+        ledger.initialize("concurrent local fixture", 3, 0)
         binary = self.directory / "sdk-fixture"
         binary.write_bytes(b"fixture binary identity comes from runtime copy")
         case = {"id": "fixture-case", "timeout_sec": 900}
@@ -425,28 +425,29 @@ class FrontierTests(unittest.TestCase):
             self.assertNotIn(token, config)
             self.assertIn('api_key = "$' + TOKEN_VARIABLE + '"', config)
             self.assertIn(f"context_window = {ROUTER.context}", config)
+            self.assertIn(f"max_output_tokens = {directory.name}", config)
             flags = dict(zip(caller.sdk_args[::2], caller.sdk_args[1::2]))
             self.assertEqual(flags["--max-request-bytes"], str(WIRE_BYTES))
             self.assertEqual(flags["--max-context-tokens"], str(ROUTER.context))
             self.assertEqual(flags["--max-output-tokens"], directory.name)
-            self.assertEqual(flags.get("--max-requests"), None if directory.name == "131072" else "48")
+            self.assertEqual(flags.get("--max-requests"), "48" if directory.name == "131072" else None)
             self.assertNotIn("--no-provider-retry", caller.sdk_args)
             self.assertEqual(sdk_timeout_sec, 945)
             endpoint = re.search(r'base_url = "(http://[^\"]+)"', config)[1]
             exposures.append((token, endpoint))
             barrier.wait(2)
-            self.assertEqual(ledger.committed(json.loads(ledger.path.read_text())), 1.5)
+            self.assertEqual(ledger.committed(json.loads(ledger.path.read_text())), 3)
             barrier.wait(2)
             on_sdk_finished()
             self.assertEqual(request(endpoint, ROUTER, ROUTER_PAYLOAD, token).status, 403)
             return {"passed": True, "cleanup_passed": True, "runtime_files": {"session_task": "b" * 64}}
 
         def run(output):
-            directory = self.directory / str(output)
+            directory = self.directory / str(ROUTER.completion_limit if output is None else output)
             directory.mkdir()
             args = SimpleNamespace(provider="openrouter", upstream=None, sdk_binary=binary, ledger=ledger.path,
-                                   max_requests=None if output == 131072 else 48, max_output_tokens=output,
-                                   case_cap_usd=0.75, agent_timeout_sec=None,
+                                   max_requests=None if output is None else 48, max_output_tokens=output,
+                                   case_cap_usd=1.5, agent_timeout_sec=None,
                                    require_streaming=True, run_id=None)
             result = run_live(args, case, directory, "fake-image", directory, {ROUTER.credential: KEY, DIRECT.credential: "unused"})
             return result, json.loads((directory / "meter.json").read_text())
@@ -454,7 +455,7 @@ class FrontierTests(unittest.TestCase):
         with mock.patch("frontier.route_for", return_value=ROUTER), mock.patch("frontier.bridge_gateway", return_value="127.0.0.1"), \
                 mock.patch("frontier.benchmark_attempt", side_effect=fake_attempt):
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                outputs = list(executor.map(run, (131072, 262144)))
+                outputs = list(executor.map(run, (131072, None)))
         self.assertEqual(len({token for token, _ in exposures}), 2)
         for token, endpoint in exposures:
             self.assertNotIn(token, {TOKEN, KEY})
@@ -466,14 +467,15 @@ class FrontierTests(unittest.TestCase):
         for result, meter in outputs:
             self.assertEqual(result["meter"], "meter.json")
             self.assertEqual(meter["sdk_binary_sha256"], "b" * 64)
-        self.assertEqual([meter["limits"]["max_requests"] for _, meter in outputs], [None, 48])
+        self.assertEqual([meter["limits"]["max_requests"] for _, meter in outputs], [48, None])
+        self.assertEqual([meter["limits"]["max_output_tokens"] for _, meter in outputs], [131072, ROUTER.completion_limit])
 
     def test_cap_below_one_provider_ceiling_fails_before_docker_or_reservation(self):
         ledger = Budget(self.directory / "shared.json")
         ledger.initialize("fixture", 5, 0)
         binary = self.directory / "sdk-fixture"
         binary.write_bytes(b"sdk")
-        args = SimpleNamespace(sdk_binary=binary, ledger=ledger.path, max_output_tokens=262144, max_requests=22,
+        args = SimpleNamespace(sdk_binary=binary, ledger=ledger.path, max_output_tokens=None, max_requests=22,
                                case_cap_usd=0.50, agent_timeout_sec=60, require_streaming=True)
         with mock.patch("frontier.route_for", return_value=ROUTER), mock.patch("frontier.bridge_gateway") as gateway, \
                 mock.patch("frontier.benchmark_attempt") as benchmark:
@@ -485,7 +487,53 @@ class FrontierTests(unittest.TestCase):
         self.assertEqual(json.loads(ledger.path.read_text())["entries"], [])
         evidence = json.loads((self.directory / "meter.json").read_text())
         self.assertEqual(evidence["outcome"], "cap_below_request_ceiling")
+        self.assertEqual(evidence["limits"]["max_output_tokens"], ROUTER.completion_limit)
         self.assertEqual(evidence["accounting"]["upstream_requests"], 0)
+
+    def test_unknown_provider_limit_requires_an_explicit_ceiling_before_reservation(self):
+        ledger = Budget(self.directory / "shared.json")
+        ledger.initialize("fixture", 1.5, 0)
+        binary = self.directory / "sdk-fixture"
+        binary.write_bytes(b"sdk")
+        case = {"id": "fixture-case", "timeout_sec": 900}
+        models = [{"id": DIRECT.model, "context_window": DIRECT.context, "effort": {"supported_levels": ["max"]}}]
+        args = SimpleNamespace(provider="deepseek", sdk_binary=binary, ledger=ledger.path, max_output_tokens=None,
+                               max_requests=None, case_cap_usd=0.75, agent_timeout_sec=None, require_streaming=True)
+
+        def transfer(client, _body):
+            reply_to_client(client, 200)
+            return {"status": "completed", "response_ended": True, "http_status": 200}
+
+        def fake_attempt(caller, _case, _source, _image, _directory, _mode, env, **_options):
+            self.assertEqual(ledger.committed(json.loads(ledger.path.read_text())), 0.75)
+            config = caller.config.read_text()
+            self.assertIn("max_output_tokens = 131072", config)
+            flags = dict(zip(caller.sdk_args[::2], caller.sdk_args[1::2]))
+            self.assertEqual(flags["--max-output-tokens"], "131072")
+            endpoint = re.search(r'base_url = "(http://[^\"]+)"', config)[1]
+            token = env[TOKEN_VARIABLE]
+            self.assertEqual(request(endpoint, DIRECT, {**DIRECT_PAYLOAD, "max_tokens": 131073}, token).status, 400)
+            self.assertEqual(request(endpoint, DIRECT, DIRECT_PAYLOAD, token).status, 200)
+            return {"passed": True, "cleanup_passed": True}
+
+        with mock.patch("paid_model.upstream_json", return_value=(200, models)), \
+                mock.patch("frontier.bridge_gateway", return_value="127.0.0.1") as gateway, \
+                mock.patch("frontier.benchmark_attempt", side_effect=fake_attempt) as benchmark, \
+                mock.patch.object(CaseMeter, "transfer", side_effect=transfer) as forward:
+            with self.assertRaisesRegex(ValueError, "Set --max-output-tokens"):
+                run_live(args, case, self.directory, "fixture-image", self.directory, {DIRECT.credential: KEY})
+            gateway.assert_not_called()
+            benchmark.assert_not_called()
+            self.assertEqual(json.loads(ledger.path.read_text())["entries"], [])
+
+            args.max_output_tokens = 131072
+            self.assertTrue(run_live(args, case, self.directory, "fixture-image", self.directory,
+                                     {DIRECT.credential: KEY})["passed"])
+        forward.assert_called_once()
+        evidence = json.loads((self.directory / "meter.json").read_text())
+        self.assertIsNone(evidence["limits"]["provider_max_output_tokens"])
+        self.assertEqual(evidence["limits"]["max_output_tokens"], 131072)
+        self.assertEqual(Decimal(evidence["attempts"][0]["reserved_usd"]), DIRECT.request_ceiling(131072))
 
     def test_route_verifies_exact_max_and_peak_prices_during_off_peak(self):
         endpoint = {"tag": "baseten", "name": "BaseTen | " + ROUTER.upstream_model, "provider_name": "BaseTen",
@@ -503,6 +551,11 @@ class FrontierTests(unittest.TestCase):
         self.assertEqual(route.request_ceiling(262144), Decimal("0.6291456"))
         with self.assertRaises(ValueError):
             route.request_ceiling(262145)
+        endpoint.pop("max_completion_tokens")
+        with mock.patch("paid_model.upstream_json", side_effect=[(200, endpoints), (200, selected)]):
+            route = route_for("openrouter", model=ROUTER_MODEL, effort="max", upstream="baseten", verify_catalog=True)
+        self.assertIsNone(route.completion_limit)
+        self.assertEqual(route.request_ceiling(131072), Decimal("0.4718592"))
         selected["reasoning"]["supported_efforts"] = ["high", "xhigh"]
         with mock.patch("paid_model.upstream_json", side_effect=[(200, endpoints), (200, selected)]):
             with self.assertRaisesRegex(ValueError, "does not confirm"):

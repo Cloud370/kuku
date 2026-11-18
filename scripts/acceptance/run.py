@@ -465,7 +465,7 @@ def benchmark_attempt(args, case, source, image, directory, mode, secrets, *, sd
             include_final_process_usage(record["resources"], Path(record["sdk_result"]))
             record["sdk_evidence"] = inspect_sdk(Path(record["sdk_result"]), data_dir, args.connection,
                                                   "/kuku/data", record["session_id"], args.require_streaming,
-                                                  require_fixed_limits=args.suite == "legacy")
+                                                  require_fixed_limits=args.suite == "legacy", require_output_limit=True)
         else:
             record["execution"] = {"exit_code": 0, "scope": "untouched environment; no Agent or oracle"}
         if record["execution"].get("timed_out"):
@@ -882,6 +882,8 @@ def main():
                 args.sdk_args = args.sdk_args[1:] if args.sdk_args[:1] == ["--"] else args.sdk_args
                 if "--max-requests" not in args.sdk_args:
                     args.sdk_args.extend(["--max-requests", "12"])
+                if "--max-output-tokens" not in args.sdk_args:
+                    args.sdk_args.extend(["--max-output-tokens", "32768"])
                 if "--no-provider-retry" not in args.sdk_args:
                     args.sdk_args.append("--no-provider-retry")
             record["config"] = config_record(args.config)

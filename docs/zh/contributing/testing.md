@@ -160,7 +160,7 @@ python3 scripts/acceptance/run.py --run-id smoke-regex benchmark \
   --suite frontier --case regex-log --mode preflight
 ```
 
-实跑时，将 `KUKU_TEST_OPENROUTER_API_KEY=...` 写入仓库外的私有文件。计量程序在宿主机持有上游密钥，并从共用美元账本中为每题预留额度。以下命令每题最多预留 $0.75，经 OpenRouter 固定到 DeepSeek 官方端点，模型为 `deepseek/deepseek-v4.1-flash-1017`，推理强度为 `max`。首次运行时设定总额，复测沿用同一账本，每次使用新的运行 ID。四道题采用同一输出上限。默认由单题美元额度和题目时限约束运行。复现历史限次对照组时可另加记录中的 `--max-requests`。结算按实际用量或明确标记的保守估计计算。
+实跑时，将 `KUKU_TEST_OPENROUTER_API_KEY=...` 写入仓库外的私有文件。计量程序在宿主机持有上游密钥，并从共用美元账本中为每题预留额度。以下命令每题最多预留 $0.75，经 OpenRouter 固定到 DeepSeek 官方端点，模型为 `deepseek/deepseek-v4.1-flash-1017`，推理强度为 `max`。首次运行时设定总额，复测沿用同一账本，每次使用新的运行 ID。示例显式设置 131,072 tokens，用于复现历史对照。省略 `--max-output-tokens` 时采用固定路由公布的生成容量。路由未公布容量时须显式指定。计量程序会在预留费用前确认单次请求按最高用量计算仍能落在美元预算内。默认由单题美元额度和题目时限约束运行。复现历史限次对照组时可另加记录中的 `--max-requests`。结算按实际用量或明确标记的保守估计计算。
 
 ```sh
 ledger="$PWD/benchmarks/acceptance/frontier-budget.json"

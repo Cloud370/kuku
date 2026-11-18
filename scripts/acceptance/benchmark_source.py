@@ -19,7 +19,7 @@ def add_benchmark_arguments(parser):
                         help="Frontier live API service (default: openrouter)")
     parser.add_argument("--upstream", help="exact OpenRouter endpoint tag for Frontier live")
     parser.add_argument("--case-cap-usd", type=money, default=0.75)
-    parser.add_argument("--max-output-tokens", type=int, default=131072)
+    parser.add_argument("--max-output-tokens", type=int, help="Frontier live output ceiling (default: the selected route's limit)")
     parser.add_argument("--max-requests", type=int, help="optional total upstream attempt limit for Frontier live")
     parser.add_argument("--agent-timeout-sec", type=int)
     parser.add_argument("sdk_args", nargs=argparse.REMAINDER, help="additional bounded session_task args after --")

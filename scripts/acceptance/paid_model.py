@@ -54,12 +54,13 @@ class RunLimits:
     request_bytes: int
     output_tokens: int
     byte_ceiling: InitVar[int] = 262144
-    output_ceiling: InitVar[int] = 32768
+    output_ceiling: InitVar[int | None] = 32768
 
     def __post_init__(self, byte_ceiling, output_ceiling):
         request_limit_valid = self.requests is None or 1 <= self.requests <= 48
-        if not (request_limit_valid and 1 <= self.request_bytes <= byte_ceiling
-                and 1 <= self.output_tokens <= output_ceiling):
+        output_limit_valid = (1 <= self.output_tokens <= 2**32 - 1
+                              and (output_ceiling is None or self.output_tokens <= output_ceiling))
+        if not (request_limit_valid and 1 <= self.request_bytes <= byte_ceiling and output_limit_valid):
             raise ValueError("Invalid request, byte, or output token limit")
 
 
@@ -75,13 +76,18 @@ class Route:
     upstream_name: str
     upstream_model: str
     context: int
-    completion_limit: int
+    completion_limit: int | None
     prompt_rate: Decimal
     cache_read_rate: Decimal
     cache_write_rate: Decimal
     output_rate: Decimal
     price_source: str
     excluded_upstreams: tuple[str, ...] = ()
+
+    def __post_init__(self):
+        limit = self.completion_limit
+        if limit is not None and (type(limit) is not int or limit <= 0):
+            raise ValueError("Invalid output token limit in provider metadata")
 
     @property
     def credential(self):
@@ -100,7 +106,7 @@ class Route:
         return max(self.prompt_rate, self.cache_read_rate, self.cache_write_rate)
 
     def request_ceiling(self, output_tokens):
-        if not 0 < output_tokens <= self.completion_limit:
+        if output_tokens <= 0 or (self.completion_limit is not None and output_tokens > self.completion_limit):
             raise ValueError("Output token limit exceeds the selected upstream's model limit")
         return self.context * self.input_ceiling + output_tokens * self.output_rate
 
@@ -178,7 +184,7 @@ def route_for(name, *, model=None, effort="low", upstream=None, key=None, verify
         if effort not in levels:
             raise ValueError(f"Direct DeepSeek did not list {effort!r} for {model!r}")
         return Route(name, host, "deepseek-chat", "openai-chat", model, effort, "deepseek", "DeepSeek",
-                     version, selected["context_window"], selected.get("max_output_tokens") or 384000,
+                     version, selected["context_window"], selected.get("max_output_tokens"),
                      usd(miss) / MILLION, usd(hit) / MILLION, Decimal(0), usd(output) / MILLION, DEEPSEEK_PRICING)
     if name != "openrouter":
         raise ValueError("Unknown paid acceptance service")
@@ -216,7 +222,7 @@ def route_for(name, *, model=None, effort="low", upstream=None, key=None, verify
         raise ValueError("This acceptance boundary requires a per-token endpoint without a fixed request fee")
     return Route(name, host, "openrouter-" + upstream.replace("/", "-"), "openai-responses", model, effort,
                  upstream, endpoint["provider_name"], endpoint["name"].split(" | ")[-1],
-                 endpoint["context_length"], endpoint["max_completion_tokens"],
+                 endpoint["context_length"], endpoint.get("max_completion_tokens"),
                  maximum("prompt"), maximum("input_cache_read"), maximum("input_cache_write"),
                  maximum("completion"), "https://" + host + path, excluded)
 
