@@ -295,7 +295,7 @@ async fn create_agent_uses_default_routing_and_rejects_invalid_tool_configuratio
                 && context.contains("<kuku_models>")
                 && context.contains("balanced")
                 && context.contains("Omit routing fields to use the default model.")
-                && context.contains("Use list_agents when the current status affects your next action.")
+                && context.contains("Collect a restricted Agent’s reply from list_agents")
         },
         response(
             json!({"tool_calls":[
