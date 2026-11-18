@@ -237,6 +237,49 @@ class FrontierTests(unittest.TestCase):
         self.assertEqual(row["upstream_error"]["code"], 404)
         self.assertEqual(row["basis"], "request_upper_bound")
 
+    def test_complete_openrouter_stream_settles_cost_when_receipt_is_not_visible(self):
+        meter = self.meter(ROUTER)
+        generation = "gen-fixturePendingReceipt"
+        validated = {"id": generation, "model": ROUTER.model, "reasoning": {"effort": "max"}, "usage": {
+            "input_tokens": 1000, "output_tokens": 120, "cost": 0.00024,
+            "input_tokens_details": {"cached_tokens": 640},
+        }}
+        connection = mock.Mock()
+        connection.getresponse.side_effect = [StreamReply(
+            {"type": "response.created", "response": {"id": generation}},
+            {"type": "response.completed", "response": validated},
+        ) for _ in range(3)]
+        with mock.patch("frontier.http.client.HTTPSConnection", return_value=connection), \
+                mock.patch("paid_model.upstream_json", return_value=(404, None)) as lookup, serve(meter.handler()) as endpoint:
+            self.assertEqual([request(endpoint, ROUTER, ROUTER_PAYLOAD).status for _ in range(3)], [200, 200, 200])
+        self.assertEqual(lookup.call_count, 3)
+        self.assertEqual(meter.spent, Decimal("0.00072"))
+        for row in meter.attempts:
+            self.assertEqual(row["provider_cost_source"], "stream_usage")
+            self.assertEqual(row["receipt_lookup"], 404)
+            self.assertIsNone(row["provider_matches_pin"])
+            self.assertIsNone(row["receipt_matches_route"])
+            self.assertNotIn("reported_upstream", row)
+        self.assertEqual(meter.accounting()["provider_cost_sources"]["stream_usage"], {"requests": 3, "usd": "0.00072"})
+
+    def test_partial_openrouter_stream_and_conflicting_receipt_do_not_release_ceiling(self):
+        response = {"id": "gen-fixtureConflict", "model": ROUTER.model, "usage": {
+            "input_tokens": 1000, "output_tokens": 120, "cost": 0.0002,
+        }}
+        receipt = {"id": response["id"], "model": ROUTER.upstream_model, "provider_name": "DeepSeek", "total_cost": 0.0003}
+        for ended, lookup_result in ((False, (404, None)), (True, (200, receipt))):
+            with self.subTest(ended=ended):
+                meter = self.meter(ROUTER)
+                connection = mock.Mock()
+                connection.getresponse.return_value = StreamReply({"type": "response.completed" if ended else "response.created",
+                                                                    "response": response})
+                with mock.patch("frontier.http.client.HTTPSConnection", return_value=connection), \
+                        mock.patch("paid_model.upstream_json", return_value=lookup_result), serve(meter.handler()) as endpoint:
+                    self.assertEqual(request(endpoint, ROUTER, ROUTER_PAYLOAD).status, 200)
+                self.assertEqual(meter.spent, ROUTER.request_ceiling(131072))
+                self.assertEqual(meter.reconciled, not ended)
+                self.assertEqual(meter.attempts[0]["basis"], "request_upper_bound")
+
     def test_live_runner_reserves_shared_ledger_before_launch_and_uses_fresh_tokens(self):
         ledger = Budget(self.directory / "shared.json")
         ledger.initialize("concurrent local fixture", 1.5, 0)
