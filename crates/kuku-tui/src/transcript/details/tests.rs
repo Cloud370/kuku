@@ -574,7 +574,12 @@ fn reasoning_reader_keeps_the_same_transcript_rows_and_preserves_the_draft_view(
     assert_eq!(transcript.notes_at(&key).unwrap().0, published);
     assert!(transcript.open_notes(&key, 55, 4));
     let read = transcript.project(55, 4);
-    assert!(text(&read).contains("Esc back") && !text(&read).contains("answer"));
+    assert!(text(&read).contains("Esc back") && text(&read).contains("answer"));
+    let answer_row = line(&read, "answer");
+    assert!(transcript.scroll_notes(1));
+    let next = transcript.project(55, 4);
+    assert_eq!(line(&next, "answer"), answer_row);
+    assert!(transcript.detail_at(answer_row).is_none());
     assert!(transcript.close_notes());
     assert!(!transcript.toggle_in_view(&key, 55, 4));
     assert!(!transcript.is_reading());
@@ -631,5 +636,39 @@ fn thinking_before_a_tool_is_available_in_details_without_an_extra_transcript_ro
         Some(&choice.0)
     );
     assert!(transcript.open_notes(&choice.0, 64, 10));
-    assert!(text(&transcript.project(64, 10)).contains("Check the greeting"));
+    let read = transcript.project(64, 10);
+    assert!(text(&read).contains("Check the greeting"));
+    assert!(transcript.detail_at(line(&read, "Read file")).is_some());
+}
+
+#[test]
+fn browsing_long_thinking_keeps_the_reply_and_reaches_the_last_published_line() {
+    let mut journal = Journal::default();
+    let published = (1..=40)
+        .map(|n| format!("Note {n:02}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    journal.push(
+        7,
+        "main",
+        json!({"type":"assistant","text":"Answer begins here","reasoning_preview":published}),
+    );
+    let mut transcript = journal.load();
+    let closed = transcript.project(90, 24);
+    let header = line(&closed, "View thinking");
+    let key = transcript.detail_at(header).unwrap().clone();
+    assert!(transcript.open_notes(&key, 90, 24));
+    let open = transcript.project(90, 24);
+    let answer = line(&open, "Answer begins here");
+    assert_eq!(line(&open, "Esc back"), header);
+    assert!(text(&open).contains("1–5/40") && !text(&open).contains("Note 06"));
+    assert!(transcript.scroll_notes(100));
+    let last = transcript.project(90, 24);
+    assert_eq!(line(&last, "Answer begins here"), answer);
+    assert!(text(&last).contains("36–40/40") && text(&last).contains("Note 40"));
+    let narrow = transcript.project(27, 8);
+    assert!(text(&narrow).contains("Answer begins here"));
+    assert!(narrow.lines.iter().all(|row| row.width() <= 27));
+    assert!(transcript.close_notes());
+    assert_eq!(text(&transcript.project(90, 24)), text(&closed));
 }

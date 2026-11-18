@@ -28,6 +28,14 @@ pub(crate) struct DetailKey {
     record: Key,
 }
 
+impl DetailKey {
+    pub(super) fn settle(&mut self, preview: &Key, settled: &Key) {
+        if self.record == *preview {
+            self.record = settled.clone();
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DetailKind {
     Agent,
@@ -44,6 +52,13 @@ pub(super) struct Details {
 }
 
 impl Details {
+    pub(super) fn rows_for(&self, key: &DetailKey) -> Option<Range<usize>> {
+        self.visible
+            .iter()
+            .find(|item| &item.key == key)
+            .map(|item| item.rows.clone())
+    }
+
     pub(super) fn agent_keys(&self) -> impl Iterator<Item = &Key> {
         self.visible
             .iter()
@@ -162,9 +177,14 @@ pub(super) enum DetailRecord<'a> {
 
 impl Transcript {
     pub(crate) fn detail_at(&self, row: usize) -> Option<&DetailKey> {
-        if let Some(notes) = &self.notes {
-            return (row == notes.header).then_some(&notes.key);
-        }
+        let row = if let Some(notes) = &self.notes {
+            if notes.hit(row) {
+                return notes.is_heading(row).then_some(&notes.key);
+            }
+            notes.source_row(row)
+        } else {
+            row
+        };
         self.detail_items
             .visible
             .iter()
@@ -190,7 +210,7 @@ impl Transcript {
             .map(|item| item.key.clone())
     }
 
-    pub(super) fn notes_at(&self, key: &DetailKey) -> Option<(&str, usize)> {
+    pub(super) fn notes_at(&self, key: &DetailKey) -> Option<(&str, Range<usize>)> {
         if key.kind != DetailKind::Reasoning {
             return None;
         }
@@ -202,14 +222,7 @@ impl Transcript {
             .records
             .iter()
             .find(|record| record.key == key.record)?;
-        let row = self
-            .detail_items
-            .visible
-            .iter()
-            .find(|item| item.key == *key)?
-            .rows
-            .start;
-        Some((&record.reasoning_preview, row))
+        Some((&record.reasoning_preview, self.detail_items.rows_for(key)?))
     }
 
     pub(crate) fn toggle_in_view(&mut self, key: &DetailKey, width: usize, height: usize) -> bool {

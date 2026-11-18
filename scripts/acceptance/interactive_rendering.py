@@ -129,7 +129,7 @@ def windows_diagnostic(client):
 def published_reasoning(client):
     workspace = client.workspace("work-reasoning")
     prompt = "Review the public summary"
-    summary = "Checking the totals.\nComparing the published results."
+    summary = "\n".join(["Checking the totals.", "Comparing the published results.", *(f"Note {n}" for n in range(3, 21))])
     answer = "The totals agree."
     hidden = "opaque-fixture-signature"
     with client.terminal(workspace) as terminal:
@@ -190,10 +190,21 @@ def published_reasoning(client):
         quiet = reopened.expect(answer, state="View thinking")["screen"]
         assert "Comparing the published results." not in quiet
         reopened.press("/notes\r")
-        notes = reopened.expect("Comparing the published results.", state="Esc back")["screen"]
+        notes = reopened.expect("Comparing the published results.", state="Esc back", also=(answer,))["screen"]
         assert hidden not in settled and hidden not in notes
+        answer_row = next(i for i, row in enumerate(notes.splitlines()) if answer in row)
+        note_row = next(i for i, row in enumerate(notes.splitlines(), 1) if "Checking the totals." in row)
+        reopened.press(f"\x1b[<65;5;{note_row}M")
+        scrolled = reopened.expect("Note 6", state="Esc back")["screen"]
+        assert "Checking the totals." not in scrolled and answer in scrolled.splitlines()[answer_row]
+        reopened.press("\x1b[B")
+        down = reopened.expect("Note 7", state="Esc back")["screen"]
+        assert answer in down.splitlines()[answer_row]
         reopened.press("\x1b")
-        reopened.expect(answer, state="Assistant   View thinking")
+        restored = reopened.expect(answer, state="Assistant   View thinking")["screen"]
+        assert "Esc back" not in restored and "Note 7" not in restored
+        assert next(i for i, row in enumerate(restored.splitlines()) if answer in row) == next(i for i, row in enumerate(settled.splitlines()) if answer in row)
+
         reopened.exit_cleanly()
 
 

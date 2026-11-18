@@ -20,9 +20,10 @@ impl App {
 
     pub(crate) fn toggle_transcript_detail(&mut self, key: &crate::transcript::DetailKey) -> bool {
         let (width, height) = self.transcript_area;
-        if self.pane_mut().transcript.close_notes() {
-            return true;
+        if self.pane().transcript.note_is_open(key) {
+            return self.pane_mut().transcript.close_notes();
         }
+        self.pane_mut().transcript.close_notes();
         if self.pane_mut().transcript.open_notes(key, width, height) {
             self.pane_mut().keyboard_focus = KeyboardFocus::Transcript;
             return true;

@@ -152,6 +152,9 @@ impl Transcript {
         if let Some(execution) = previous_preview {
             let key = Key::Preview(execution);
             self.settle_reply_position(&key, record.as_ref());
+            if let (Some(notes), Some(record)) = (&mut self.notes, &record) {
+                notes.key.settle(&key, &record.key);
+            }
             self.recent.remove(&key);
             if let Some(reading) = &mut self.reading {
                 reading.settle_preview(&key, record.as_ref());
@@ -396,13 +399,14 @@ impl Transcript {
             let rows = self.recent.row_count(layout);
             (&mut self.recent, rows.saturating_sub(height), true)
         };
-        let mut lines = Vec::with_capacity(height);
+        let limit = height.saturating_add(usize::from(self.notes.is_some()));
+        let mut lines = Vec::with_capacity(limit);
         let mut row_insets = Vec::with_capacity(height);
         let mut visible = Vec::new();
         let mut thinking_row = None;
         let mut skip = start;
         for block in window.blocks(layout) {
-            if lines.len() == height {
+            if lines.len() == limit {
                 break;
             }
             if skip == 0 && block.height() == 0 {
@@ -425,7 +429,7 @@ impl Transcript {
             }
             if let Some(group) = block.group {
                 let first = lines.len();
-                for row in group.rows.iter().skip(skip).take(height - first) {
+                for row in group.rows.iter().skip(skip).take(limit - first) {
                     lines.push(row.line.clone());
                     row_insets.push(row.inset);
                 }
@@ -437,7 +441,7 @@ impl Transcript {
                 }
             }
             let first = lines.len();
-            for row in block.rows.iter().skip(skip).take(height - lines.len()) {
+            for row in block.rows.iter().skip(skip).take(limit - lines.len()) {
                 lines.push(row.line.clone());
                 row_insets.push(row.inset);
             }
@@ -495,7 +499,8 @@ impl Transcript {
             tool_hint,
         };
         if let Some(notes) = &mut self.notes {
-            notes.paint(&mut view, width, height);
+            let origin = self.detail_items.rows_for(&notes.key);
+            notes.paint(&mut view, origin, width, height);
         }
         view
     }

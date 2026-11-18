@@ -97,7 +97,7 @@ By default, a fence labeled `md` or `markdown` in an assistant reply previews th
 
 Agent cards and code blocks fill the available width at their level of indentation. Agent reply and task excerpts stay on one line. A delegation card groups creation and delivery to the same Agent. Expand it to inspect the individual actions. Status checks involving only the sender and recipient join that card’s timeline. Checks involving other Agents keep their own counted group. A completed reply keeps its thinking reader beside the Assistant heading.
 
-Thinking appears at the start of the assistant’s answer. The transcript types a muted, single-line excerpt when the provider publishes reasoning. The first line of the reply takes its place. Select **View thinking** or use `/notes` to read the received text at its position in the conversation. Scroll with the wheel or arrow keys and press Esc to return. Copy and Markdown source use the reply text. Thinking from intermediate tool steps remains available through `/details`.
+Thinking appears at the start of the assistant’s answer. The transcript types a muted, single-line excerpt when the provider publishes reasoning. The first line of the reply takes its place. Select **View thinking** or use `/notes` to read the received text at its position in the conversation. The reader shows up to five wrapped lines beside the reply. Use the arrow keys or the wheel over those lines to read more. Esc or a second click on the heading closes it. Copy and Markdown source use the reply text. Thinking from intermediate tool steps remains available through `/details`.
 
 ### Status and usage
 
