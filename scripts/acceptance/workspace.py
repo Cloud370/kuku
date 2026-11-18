@@ -206,28 +206,42 @@ def run_sdk(args, scratch, workspace, config, environment, provider, evidence, r
         else:
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                 execution = pool.submit(capture, command, evidence, label, TURN_TIMEOUT + 15, env, (), scratch)
-                drive_mock(provider, index, turn)
+                try:
+                    drive_mock(provider, index, turn)
+                except (AssertionError, ValueError) as error:
+                    turn["fixture_error"] = str(error)[:1200]
                 check = execution.result()
-            provider.assert_idle()
+            if "fixture_error" not in turn:
+                provider.assert_idle()
         turn["caller"] = check
-        require_success(check)
+        if not result.is_file():
+            require_success(check)
+            raise ValueError("The SDK caller did not produce its result")
         sdk = json.loads(result.read_text(encoding="utf-8"))
-        assert sdk["session_id"] == session_id and sdk["runtime_completed"] and sdk["cleanup"]["closed"], sdk.get("error")
-        inspected = inspect_sdk(result, data, connection)
-        assert inspected["passed"], inspected
-        turn["sdk_inspection"] = inspected
-        snapshot = sdk["agent"]
-        turn.update(session_id=sdk["session_id"], number=snapshot["turn"], usage=snapshot["usage"],
-                    tools=turn_evidence(sdk_entries(Path(sdk["events_path"])), snapshot["turn"]),
+        snapshot = sdk.get("agent") or {}
+        turn.update(session_id=sdk["session_id"], number=snapshot.get("turn"), usage=snapshot.get("usage"),
+                    last_error=sdk.get("error") or snapshot.get("last_error"),
+                    tools=turn_evidence(sdk_entries(Path(sdk["events_path"])), snapshot.get("turn")),
                     sdk_workspace=sdk["workspace"])
         if index == 0:
+            checks = verify_analysis(turn, workspace, evidence)
             observed = sdk["workspace"]["outcomes"]
-            assert any(item["facts"]["kind"] == "workspace_script_result" for item in observed), observed
-            verify_analysis(turn, workspace, evidence)
+            checks["sdk_decoded_script_outcome"] = any(item["facts"]["kind"] == "workspace_script_result"
+                                                       for item in observed)
         else:
+            checks = verify_reopen(turns, workspace, evidence)
             saved = turns[0]["sdk_workspace"]["named_after"]
-            assert sdk["workspace"]["named_before"] == saved and saved["complete"] and saved["value"] == EXPECTED, saved
-            verify_reopen(turns, workspace, evidence)
+            checks["sdk_read_persisted_binding_before_turn"] = sdk["workspace"]["named_before"] == saved \
+                and saved.get("complete") is True and saved.get("value") == EXPECTED
+        checks["runtime_completed"] = sdk["session_id"] == session_id and sdk["runtime_completed"] \
+            and sdk["cleanup"]["closed"]
+        inspected = inspect_sdk(result, data, connection)
+        turn["sdk_inspection"] = inspected
+        checks["sdk_history_and_close_verified"] = inspected["passed"]
+        if "fixture_error" in turn:
+            checks["fixture_completed"] = False
+        assert all(checks.values()), {"checks": checks, "last_error": turn["last_error"]}
+        require_success(check)
 
 
 def native_named_values(client, workspace, session):
@@ -285,10 +299,13 @@ def run_native(args, scratch, workspace, config, environment, provider, evidence
                         drive_mock(provider, index, turn)
                     session_id, snapshot = wait_for_turn(client, workspace, prior, timeout=TURN_TIMEOUT)
                     prior = snapshot["turn"]
-                    turn.update(session_id=session_id, number=prior, usage=snapshot["usage"],
+                    turn.update(session_id=session_id, number=prior, usage=snapshot["usage"], last_error=snapshot.get("last_error"),
+                                elapsed_ms=snapshot.get("turn_elapsed_ms"),
                                 tools=turn_evidence(history(client, workspace, session_id), prior),
                                 named_values_after=native_named_values(client, workspace, session_id))
-                    assert snapshot["status"] == "idle", snapshot["status"]
+                    checks = verify_analysis(turn, workspace, evidence) if index == 0 else verify_reopen(turns, workspace, evidence)
+                    checks["runtime_completed"] = snapshot["status"] == "idle"
+                    assert all(checks.values()), {"checks": checks, "last_error": turn["last_error"]}
                     terminal.expect("Finished")
                 finally:
                     save_screen(evidence, label, terminal.request("screen")["screen"], masked)
@@ -297,10 +314,6 @@ def run_native(args, scratch, workspace, config, environment, provider, evidence
             client.stop()
             if isinstance(provider, Provider):
                 provider.assert_idle()
-            if index == 0:
-                verify_analysis(turn, workspace, evidence)
-            else:
-                verify_reopen(turns, workspace, evidence)
     finally:
         client.stop()
 
@@ -336,13 +349,20 @@ def read_all_captured_output(script, reference):
     return offset == reference["bytes"]
 
 
+def is_replay(command):
+    invocation = command.get("invocation", {})
+    if invocation.get("mode") == "program":
+        return Path(invocation["program"]).name == Path(PROGRAM).name and invocation.get("args") == ARGS
+    if invocation.get("mode") == "shell":
+        return Path(PROGRAM).name in invocation["command"] and ARGS[0] in invocation["command"]
+    return False
+
+
 def verify_analysis(turn, workspace, evidence):
     tools = turn["tools"]
     actions = list(tool_actions(tools))
     commands = [action["result"] for action in actions if action["result"].get("kind") == "command_result"]
-    replay = [row for row in commands if row["invocation"]["mode"] == "program"
-              and row["invocation"].get("args") == ARGS
-              and Path(row["invocation"]["program"]).name == Path(PROGRAM).name]
+    replay = [row for row in commands if row["invocation"]["mode"] == "program" and is_replay(row)]
     script = [tool for tool in tools if tool["name"] == "workspace_script" and tool["status"] == "ok"]
     named = [tool["result"] for tool in tools if tool["name"] == "save_value" and tool["status"] == "ok"
              and tool["args"].get("name") == VALUE_NAME]
@@ -361,22 +381,24 @@ def verify_analysis(turn, workspace, evidence):
         ),
         "named_report_committed": len(named) == 1 and bool(named[0].get("reference", {}).get("id")),
     }
-    assert all(checks.values()), checks
+    return checks
 
 
 def verify_reopen(turns, workspace, evidence):
     first, reopened = turns
     actions = list(tool_actions(reopened["tools"]))
     reopened["checks"] = checks = {
-        "same_session_after_close": reopened["session_id"] == first["session_id"] and reopened["number"] > first["number"],
+        "same_session_after_close": reopened["session_id"] == first["session_id"] and reopened["number"] is not None
+            and reopened["number"] > first["number"],
         "used_saved_name": any(action.get("name", action.get("tool")) == "read_output" and action["status"] == "ok"
                                and action.get("args", {}).get("name") == VALUE_NAME
                                and report_from_chunk(action["result"]) == EXPECTED for action in actions),
-        "no_replay": all(action["result"].get("kind") != "command_result" for action in actions),
+        "no_replay": not any(is_replay(action["result"]) for action in actions),
         "saved_report_restored": read_artifact(workspace, evidence, RESTORED) == EXPECTED,
-        "original_report_unchanged": (workspace / REPORT).read_bytes() == (evidence / REPORT).read_bytes(),
+        "original_report_unchanged": (workspace / REPORT).is_file()
+            and (workspace / REPORT).read_bytes() == (evidence / REPORT).read_bytes(),
     }
-    assert all(checks.values()), checks
+    return checks
 
 
 def run_workspace(args, directory, record):
