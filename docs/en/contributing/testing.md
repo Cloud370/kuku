@@ -91,6 +91,20 @@ The selection accepts `--archive` in place of `--binary` and checks the installe
 
 Record deterministic checks, platform execution and hands-on experience separately. For hands-on release evidence, install the candidate outside the checkout, use a configured provider to read a file, make an edit and run a check, then verify the changed files, diff and tool results. Resume the same Session in the browser and another terminal. Record Linux and Windows Terminal IME, paste, copy and resize checks along with any macOS coverage. Follow the live-call requirements below for provider evidence and mark any unavailable coverage as unverified.
 
+## Workspace execution acceptance
+
+Use `workspace` to exercise the same large-log task through the public SDK example or an installed terminal client. It runs a native log fixture, checks the exact generated report and observed command facts, then reopens the Session and verifies that a named value can reproduce the report without rerunning the fixture. The product runs with an isolated `PATH`. Python drives acceptance from outside the product process. [Workspace scenario](../../../scripts/acceptance/workspace.py)
+
+```bash
+cargo build --locked -p kuku --example session_task
+python3 scripts/acceptance/run.py workspace --sdk target/debug/examples/session_task
+python3 scripts/acceptance/run.py workspace --binary PATH_TO_BINARY
+```
+
+Use a `.exe` path for the Windows build. `--archive` tests a local release archive in place of `--binary`. The selector builds the native fixture unless `--bridge` supplies an existing build. Add `--scratch-base` to select a scratch directory outside the source tree.
+
+The default uses a local deterministic provider. For a live comparison, add `--provider deepseek` or `--provider openrouter`, an explicit `--model` and `--effort`, and the corresponding `--secrets` and `--ledger`. `--upstream` selects an explicit route where supported. Record the provider, model, requested effort, and any confirmed upstream separately. Read the task checks and accounting in `workspace/result.json` beneath the run's evidence folder. [Credentials and run artifacts](#credentials-and-run-artifacts)
+
 ## Test ownership and evidence
 
 Unit tests remain in `#[cfg(test)] mod tests`; integration tests stay under `tests/` by domain, with shared helpers in `tests/common/mod.rs`. Reuse existing callers and fixtures. The rewrite should provide one maintained entrypoint or small case manifest for selecting contract, replay, live, and benchmark checks, without building an evaluation platform.
@@ -129,13 +143,18 @@ While the SDK runs, the selector samples SDK RSS/high-water RSS, CPU time and th
 ```bash
 python3 scripts/acceptance/run.py metrics
 python3 scripts/acceptance/run.py metrics --profile release
+python3 scripts/acceptance/run.py metrics --profile release --cpu-count 1 --address-space-mib 512
 ```
 
 This local selection builds [`resource_probe.rs`](../../../crates/kuku/examples/resource_probe.rs) in the checkout's isolated target and runs its public `Session` calls against the existing fixed SSE/configuration helpers. It never loads paid credentials or the spend ledger. Defaults are 32 idle Agents, 64 real queued-input appends, five close/reopen cycles, a 4 MiB command output with a 1 MiB retention quota, and two independently advancing Agents. The child emitting output reuses the caller binary; it does not introduce another SDK executor.
 
 `caller.json` records workload sizes, sample arrays and units, nearest-rank append/reopen percentiles, initial Session-open time, output bytes/quota/read bounds, concurrency and durable paths. It reports SDK `context_prepare_us` and `request_prepare_us` only when those actual preparation facts exist; input-to-completion latency is a separate measurement and cannot substitute for them. Initial open and reopen do not flush the operating-system filesystem cache.
 
-Linux `/proc` sampling separates the SDK caller process from its tool descendants. The in-process fixed provider is included in the caller footprint, with its baseline recorded separately. CPU is in seconds and RSS in KiB; missing I/O counters or unsampled phases stay unknown. Logical retained-output and event-file bytes are recorded independently. The run includes build profile, target directory, binary/source hashes, process limits and cleanup result. `measurements_complete` and `missing_measurements` distinguish a successful local task from missing measurements; keep conditions fixed before comparing runs. The Rust caller remains portable, while this process sampler currently requires Linux.
+The workspace workload compares the same native log processed in bounded pages by the public SDK reader and the embedded script. It records first and repeated script latency, worker counts and the process samples at peak load and after the task. Two Sessions share one `WorkspaceExecutionHost` while starting more scripts than the worker budget. The retention checks track disk growth, reclaim ordinary captures and verify that a named baseline survives reopen and attempts to exceed quota. Defaults are six repeated tasks, two script workers, and four concurrent script host operations. Set `--repeated-tasks`, `--script-workers`, or `--script-host-operations` to vary the workload.
+
+Linux `/proc` and Windows process APIs sample the SDK caller and its tool descendants separately. The in-process fixed provider is included in the caller footprint, with its baseline recorded separately. CPU is in seconds and RSS in KiB. Unsampled phases and unavailable counters stay unknown. Logical retained-output and event-file bytes are recorded independently. The run includes build profile, target directory, binary/source hashes, process limits and cleanup result. `measurements_complete` and `missing_measurements` distinguish local task success from missing measurements.
+
+On Linux, `--cpu-count` applies CPU affinity to the caller and descendants. `--address-space-mib` limits each process's virtual address space. The Rust caller is portable. Process sampling in this selector is currently available on Linux and Windows.
 
 ## Live protocol acceptance
 

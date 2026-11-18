@@ -27,6 +27,8 @@
 | `GET` | `/sessions/{id}/observe` | 观察游标之后的已提交条目和临时进度 |
 | `GET` | `/sessions/{id}/events` | 分页读取原始已提交事实 |
 | `GET` | `/sessions/{id}/outputs/{output_id}` | 有界读取保留的工具输出 |
+| `GET` | `/sessions/{id}/values` | 列出所选 Agent 的命名值 |
+| `PUT` | `/sessions/{id}/values/{name}` | 绑定命名值或显式替换来源 |
 | `GET` | `/models` | 已配置的模型目录 |
 | `GET` | `/models/resolve` | 解析候选 Agent 配置的生效设置 |
 | `GET` | `/workspaces` | 列出工作区 |
@@ -54,7 +56,7 @@
 
 | 命令 `type` | 其他字段 | 行为 |
 |---|---|---|
-| `send` | `text`、可选 `timing`、可选 `create` | 持久投递。默认的 `steer` 可在下一个安全的模型请求边界接纳，`next_turn` 等待下一轮。 |
+| `send` | `text`，可选 `timing`、`create` 和 `values` | 持久投递。默认的 `steer` 可在下一个安全的模型请求边界接纳，`next_turn` 等待下一轮。 |
 | `create_agent` | `config` | 按地址创建拥有独立上下文的 Agent。 |
 | `configure` | `config` | 在安全边界修改模型或默认值。 |
 | `reply_question` | `request_id`、`text` | 回答精确的待决问题。 |
@@ -112,7 +114,15 @@ Agent 快照和摘要可以包含 `admitted_task` 和 `queued_task`。这两个�
 
 `/events?workspace=...&after=0&limit=100` 返回 `events` 和 `next_after`，供核查原始事实。每条记录含 `id` 和 `payload`。可用 `agent` 过滤扫描页，即使没有匹配条目，`next_after` 也会前移。日志结构见 [Session 事件](events.md)。
 
-通过 `/outputs/{output_id}` 读取已知工具输出，传入工作区及可选 `offset`、`max_bytes`。可用 `search` 在读取范围内作字面搜索。响应将数据块放在 `output` 中。当 `output.has_more` 为 true 时，传入 `output.next_offset` 续读。[保留输出](tools.md)
+通过 `/outputs/{output_id}` 读取已知工具输出，传入 `workspace` 及可选的 `agent`（默认 `main`）、`offset` 和 `max_bytes`。Agent 必须持有或收到过该输出。可用 `search` 在读取范围内作字面搜索。响应将数据块放在 `output` 中。当 `output.has_more` 为 true 时，传入 `output.next_offset` 续读。[保留输出](tools.md)
+
+## 命名值
+
+`GET /sessions/{id}/values?workspace=...&agent=...` 返回 `{ "values": [...] }`。每项含 `name`、`kind` 和 `reference`（`id`、`offset`、`bytes`）。使用同一 Agent 的输出端点可读取正文。
+
+`PUT /sessions/{id}/values/{name}` 接受包含 `workspace`、`agent`、`source` 和可选 `replace`（默认 `false`）的 JSON 对象。`source` 包含 `kind` 和 `value`。`kind` 可取 `text` 表示 UTF-8 字符串、`json` 表示 JSON 值、`bytes` 表示字节数值数组，或 `output` 表示已有输出 ID。对于新 Session，可以用 `create` 传入初始 `main` Agent 的配置，在首次输入前保存。响应返回保存的值元信息。
+
+对已有 Agent 使用 `send` 时，可在 `values` 中传入所选的 `reference` 对象。命令将这些精确引用绑定到提交的输入。见[命名会话值](tools.md#命名会话值)。
 
 ## 查找模型和工作区
 

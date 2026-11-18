@@ -61,7 +61,7 @@ $KUKU_HOME/p/<workspace>/
 └── outputs/<output-id>.output
 ```
 
-`events.jsonl` 是权威事实。操作系统锁保护唯一 writer，锁文件可在关闭后保留。`outputs/` 在 Session 生命周期内保留有界帧 stdout/stderr。公开 SDK 在日志中使用扁平 Agent 地址，不设每 Agent 目录或隐藏别名。旧 Session 的历史回滚备份可继续保留；新 Session API 不原地改写已接纳上下文。
+`events.jsonl` 是权威事实。操作系统锁保护唯一 writer，锁文件可在关闭后保留。`outputs/` 按有界帧保存命令捕获、派生输出和命名值的内容。日志单独记录命名和分享。公开 SDK 在日志中使用扁平 Agent 地址，不设每 Agent 目录或隐藏别名。旧 Session 的历史回滚备份可继续保留。Session API 保留已接纳的上下文。
 
 所有权见 [Sessions](../how-it-works/sessions.md)，有界读取与保留边界见 [SDK](sdk.md)。
 

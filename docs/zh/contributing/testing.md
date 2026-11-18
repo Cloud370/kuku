@@ -91,6 +91,20 @@ python3 scripts/acceptance/run.py --run-id INTENT_RUN_ID interactive \
 
 分别记录确定性检查、平台执行和人工体验。人工验收时，在源码树外安装候选版本，用已配置的模型读取文件、完成修改并运行检查，再核对实际文件、diff 和工具结果。从浏览器和另一个终端恢复同一 Session。分别记录 Linux、Windows Terminal 的输入法、粘贴、复制与缩放检查，以及实际 macOS 覆盖。模型调用证据遵循下方规则，无法执行的场景标为待验证。
 
+## 工作区执行验收
+
+用 `workspace` 通过公开 SDK 示例或已安装的终端客户端执行同一项大日志任务。验收运行本机日志夹具，核对生成报告的准确内容和观察到的命令事实，随后重开 Session，验证用命名值复现报告时无需再次运行夹具。产品使用隔离的 `PATH`。Python 在产品进程之外驱动验收。见[工作区场景](../../../scripts/acceptance/workspace.py)。
+
+```bash
+cargo build --locked -p kuku --example session_task
+python3 scripts/acceptance/run.py workspace --sdk target/debug/examples/session_task
+python3 scripts/acceptance/run.py workspace --binary PATH_TO_BINARY
+```
+
+Windows 构建使用带 `.exe` 后缀的路径。可以用 `--archive` 代替 `--binary` 验收本地发行包。选择器默认构建本机夹具，也可以用 `--bridge` 复用已有构建。用 `--scratch-base` 可指定源码树之外的临时目录。
+
+默认使用本地确定性 provider。做真实模型对比时，加上 `--provider deepseek` 或 `--provider openrouter`、显式 `--model` 和 `--effort`，以及对应的 `--secrets` 和 `--ledger`。支持时可用 `--upstream` 指定路由。分别记录 provider、模型、请求档位和已确认的上游。运行证据目录中的 `workspace/result.json` 保存任务检查和费用数据。见[凭据与运行产物](#凭据与运行产物)。
+
 ## 测试归属与证据
 
 单元测试保留在 `#[cfg(test)] mod tests`；集成测试按领域位于 `tests/` 下，共用 helper 位于 `tests/common/mod.rs`。复用已有调用程序与固定输入。重构应提供一个持续维护的入口或小型 case 清单，选择契约、重放、真实调用及 benchmark 检查，不另建评测平台。
@@ -129,13 +143,18 @@ SDK 运行时，入口分别采样 SDK RSS／RSS 高水位、CPU 时间和线程
 ```bash
 python3 scripts/acceptance/run.py metrics
 python3 scripts/acceptance/run.py metrics --profile release
+python3 scripts/acceptance/run.py metrics --profile release --cpu-count 1 --address-space-mib 512
 ```
 
 此本地选择在当前 checkout 的独立 target 中构建 [`resource_probe.rs`](../../../crates/kuku/examples/resource_probe.rs)，使用既有固定 SSE／配置 helper，通过公开 `Session` 执行。它不加载付费凭据或费用台账。默认规模为 32 个空闲 Agent、64 次真实队列输入追加、5 次关闭／重开、4 MiB 命令输出与 1 MiB 保留配额，以及两个独立推进的 Agent。输出子进程复用调用程序二进制，不增加另一套 SDK 执行器。
 
 `caller.json` 记录工作规模、样本数组及单位、nearest-rank 追加／重开百分位数、首次 Session 打开时间、输出字节／配额／读取边界、并发与持久路径。仅在实际准备事实存在时报告 SDK 的 `context_prepare_us` 和 `request_prepare_us`；输入到完成的延迟另行测量，不能替代这两项。首次打开和重开不清空操作系统文件缓存。
 
-Linux `/proc` 采样分别记录 SDK 调用进程和工具后代。固定 provider 位于调用进程内，其开销包含在进程占用中，并单独记录基线。CPU 使用秒、RSS 使用 KiB；缺失 I/O 计数或未采样阶段保持未知。保留输出和事件文件的逻辑字节数单独记录。运行包含构建 profile、target 目录、二进制／源码 hash、进程限制和清理结果。`measurements_complete` 与 `missing_measurements` 区分本地任务成功及缺失测量；对比运行前固定条件。Rust 调用程序保持可跨平台，当前进程采样器需要 Linux。
+工作区负载通过公开 SDK 读取器和嵌入式脚本分别分页处理同一份本机程序日志。它记录首次和重复调用的延迟、worker 数量，以及峰值与任务结束后的进程采样。两个 Session 共享同一个 `WorkspaceExecutionHost`，提交的脚本数超过 worker 并发额度。保留检查跟踪磁盘增长，回收普通捕获，并验证命名基线在重开和尝试超配额后仍可读取。默认重复六次任务，使用两个脚本 worker，允许四个脚本宿主操作并发。用 `--repeated-tasks`、`--script-workers` 或 `--script-host-operations` 可改变负载。
+
+Linux `/proc` 和 Windows 进程 API 分别采样 SDK 调用进程和工具后代。固定 provider 位于调用进程内，计入进程占用，并单独记录基线。CPU 使用秒，RSS 使用 KiB。未采样阶段和不可用计数保持未知。保留输出和事件文件的逻辑字节数单独记录。运行包含构建 profile、target 目录、二进制及源码哈希、进程限制和清理结果。`measurements_complete` 与 `missing_measurements` 区分本地任务成功和测量缺失。
+
+在 Linux 上，`--cpu-count` 限定调用进程及其后代可用的 CPU。`--address-space-mib` 限定各个进程的虚拟地址空间。Rust 调用程序可以跨平台运行。此选择器当前在 Linux 和 Windows 提供进程采样。
 
 ## 真实协议验收
 

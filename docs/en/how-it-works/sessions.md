@@ -36,6 +36,8 @@ Behavioral Prompt assets remain external or embedded versioned resources, separa
 
 Command stdout/stderr stream from the first byte through bounded frames to a session-owned file. The first model view is a bounded preview or recognized build/test summary with a retained reference and explicit filtering/incompleteness flags. `read_output` supports bounded ranges, literal search, and incremental offsets. Exceeding quota keeps draining pipes and marks capture incomplete.
 
+An Agent can give the capture a [named value](../reference/tools.md#named-session-values). Ordinary captures can age out. Naming an output or attaching it to a delivered input retains the referenced bytes for reuse on reopen. A replaced name leaves delivered references intact. Write long-lived deliverables to the workspace as ordinary files.
+
 `cancel` stops new dispatch and awaits owned work cleanup. Unix process groups and Windows Job objects provide process-tree cleanup; deliberate escape is outside the trusted local process boundary. Inherited pipes have a cleanup deadline. Known incomplete cleanup is persisted and makes cancellation or close report failure.
 
 `close().await` awaits cleanup and durable writes before releasing the writer. Pending inputs and recoverable waits remain. Opening does not automatically activate agents. Interrupted side effects require reconciliation and are not automatically executed again. Provider traces remain optional diagnostic logs, separately from session facts.

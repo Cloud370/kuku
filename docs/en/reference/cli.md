@@ -65,6 +65,9 @@ Put options before the prompt in `kuku run`, because it consumes the remaining w
 | `/details` or click a transcript item | Open a tool group to see its calls. Open an individual call for the target, arguments and available output or error. In **Transcript details**, search visible items and press Enter to toggle the selected item. |
 | `/source` | Switch between the rendered view and original Markdown for assistant replies in the current Agent's transcript. The source view keeps the fence markers. |
 | `/tools`, `/copy` | Open retained tool output or copy the complete source of the latest committed assistant reply. |
+| `/save` | Name pasted text or the current draft before sending it. Open the action from Ctrl+P while editing a draft. |
+| `/values` | Browse the selected Agent's saved values. Select a value and choose **Read saved value** or **Attach to draft**. |
+| S in the tool output viewer | Name the selected retained output. Enter `NAME --replace` at the naming prompt to update an existing name. |
 | Left-button drag | Highlight visible text and copy the selected range to the clipboard on release. |
 | Mouse wheel, Page Up, Page Down | Scroll the transcript. |
 | Ctrl+End or Alt+↑ while reading history | Return to the latest output and resume following. |
@@ -83,7 +86,9 @@ While reading earlier output, click **Jump to latest** beside the composer to re
 
 Completed Turn statistics appear once beneath the reply and scroll with it. When reading history, a floating Turn strip shares the composer’s left edge and text inset. It offers a return control without moving the input. It shows elapsed time, tokens, cache hits and tools as space permits.
 
-The title of a command card is the short task description, or **Run command** if none was supplied. The card body previews the shell command and its output in execution order. The bottom border shows the status and exit code when available. Open the card for recorded arguments and capture details. Completed writes and edits share the code block frame. A write previews recorded file content with syntax highlighting or rendered Markdown. An edit shows the recorded diff. The footer shows the written or changed line counts.
+The title of a command card is the short task description, or **Run command** if none was supplied. The card previews the executable and arguments or the selected shell and command text. The bottom border shows the observed status and exit code when available. Recognized test reports show program-reported counts. Open the card for recorded arguments, capture details, and available evidence. Completed writes and edits share the code block frame. A write previews recorded file content with syntax highlighting or rendered Markdown. An edit shows the recorded diff. The footer shows the written or changed line counts.
+
+A workspace script card shows completed host actions and observed file changes. Expand it for action outcomes, including partial or unknown work. `/tools` opens retained captures from individual script actions.
 
 Sent text appears immediately in **Pending inputs**, above the composer. The same input shows its send, receipt, queue or failure state until it is admitted to the transcript. Unconfirmed sends and queued inputs can be recovered on reopen. Edit a queued input with `/queued` or withdraw it with `/withdraw`. If the Agent admits the input first, its admitted text stays in the transcript.
 

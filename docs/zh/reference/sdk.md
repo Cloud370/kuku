@@ -49,6 +49,22 @@
 
 工具正文复用命令输出格式和公开 `read_output` 回退；首次模型视图包含完整引用与截断标志，同时受 `ToolSpec.max_result_bytes` 和运行时预览限额约束。过大的结构化数据保存在输出中，不写进日志。宿主适配器负责返回缓冲区的分配，SDK 的保留输出与模型视图分别有界。
 
+## 工作区执行
+
+模型通过 Session 选定的工具调用 [`run_command` 或 `workspace_script`](tools.md#运行本机程序)。嵌入宿主通过 `Session::events` 或 `Session::observe` 读取 `kuku::event::EventPayload::ToolResult` 的 `structured` 字段，可以用 `kuku::execution::CommandExecutionFacts::from_structured` 解码命令结果。`invocation` 保留程序名及参数边界，或解释器及命令文本。`termination`、`exit_code`、`capture_complete`、`cleanup_incomplete` 和 `output_ref` 分别提供进程结果、保留证据与清理情况。将 `output_ref.id` 交给 `Session::read_output` 可检查原始捕获的一页有界结果。`reported_tests` 包含从程序输出获得的统计。任意外部程序造成的文件变更可能仍然未知。
+
+`workspace_script` 的结果类型为 `kind: "workspace_script_result"`，可以用 `kuku::WorkspaceScriptFacts::from_structured` 解码。结果包含脚本返回的 `value` 及已观察到的宿主 `actions`。每个动作记录 ID、工具、状态、摘要、截断情况及有界结果。动作状态 `unknown` 表示宿主未能确认最终结果。即使脚本失败，也可以结合整次调用的 `timed_out`、`cleanup_incomplete` 和 `not_dispatched` 核对部分完成的工作。见[脚本方法](tools.md#工作区脚本)。
+
+`kuku::execution::FileMutationFacts` 描述写入、精确编辑或移除操作，提供路径、可用的变更前后哈希、字节计数和 `commit_state`。`published_unconfirmed` 表示文件变更已经发生，最终持久化尚未得到确认。重试前应检查文件。
+
+`RuntimeLimits.workspace_script` 限制单次调用的内存、耗时、宿主请求、操作队列和结果大小。在 `SessionOptions.workspace_host` 中传入同一个 `WorkspaceExecutionHost` 的克隆，可让多个 Session 共享 worker 和宿主操作容量。默认容量在进程内共享。`WorkspaceExecutionHost::metrics` 可查询当前、峰值和累计启动的 worker 数，无需启动 worker。
+
+## 命名值
+
+调用 `Session::save_named_value(agent, name, source, replace).await` 时，`kuku::session::NamedValueSource` 可选 `Text`、`Json`、`Bytes` 或 `Output`。`Output` 按 ID 绑定已有捕获，无需复制。`Session::named_value` 解析单个名称，`Session::named_values` 列出 Agent 的绑定，无需读取正文。对于已关闭的 Session，`Session::read_named_values(events_path, agent)` 无需打开 writer 即可返回同样的元信息。
+
+用 `Session::read_agent_output(agent, output_id, &OutputRead)` 在 Agent 的权限内读取输出，或用 `Session::read_saved_agent_output` 读取已关闭 Session 的输出。通过 `Session::send_with_values` 或 `Session::send_configured_with_values` 提交已解析的 `OutputReference` 值，将这些引用绑定到输入。见[命名与分享语义](tools.md#命名会话值)。
+
 ## 调用程序
 
 ```bash
@@ -68,7 +84,7 @@ cargo run -p kuku --example session_task -- \
 
 `RuntimeLimits.retry_transient_provider_errors` 默认为 true。如果流尚未打开，且遇到可重试的传输故障或模型服务不可用，SDK 可以重试一次。重试沿用已准备请求，并计入同一请求预算。有界 `session_task` 调用程序将此选项设为 false，关闭该重试。
 
-日志每记录最多 1 MiB。分页最多 256 条，达到 1 MiB 目标停止，单条超出时整页小于 2 MiB。输出读取最多 80,000 字节。保留输出配额含帧／元信息，超过后标记不完整并继续排空。这些是每份输出的边界，宿主选择 Session 保留与总磁盘容量。
+日志每记录最多 1 MiB。分页最多 256 条，达到 1 MiB 目标停止，单条超出时整页小于 2 MiB。输出读取最多 80,000 字节。保留输出配额含捕获帧及元信息。达到配额时运行时继续排空管道，并将保留结果标记为不完整。Session 默认保留总计 128 MiB 的数据与 64 个命名绑定。没有引用的普通输出保留 24 小时后可被回收。可通过 `RuntimeLimits` 中的 `max_retained_output_bytes`、`max_named_values` 和 `output_retention_secs` 调整这些限额。
 
 `UsageTotals` 将缺失计数保留为 `None`；`unreported_requests` 标识输入／输出报告不完整。输入总量包含缓存，缓存计数是其子集。原始可选 provider 报告分别持久保存。已知清理不完整使 `cancel` 或 `close` 失败。
 

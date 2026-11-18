@@ -49,6 +49,22 @@ A `ToolAdapter` supplies an immutable `ToolSpec` at open and executes the final 
 
 Tool content uses the command output format and public `read_output` fallback. The first model view includes a complete reference and truncation flags and is bounded by `ToolSpec.max_result_bytes` and the runtime preview limit. Oversized structured data is retained in that output instead of the journal. Returned buffers are allocated by the host adapter; the SDK's retained capture and model view have separate limits.
 
+## Workspace execution
+
+Models call [`run_command` or `workspace_script`](tools.md#run-a-native-program) using the Session's selected tools. An embedding host reads the `structured` field of `kuku::event::EventPayload::ToolResult` via `Session::events` or `Session::observe`. Decode a command outcome with `kuku::execution::CommandExecutionFacts::from_structured`. `invocation` preserves the program and argument boundaries or the selected interpreter and its command text. `termination`, `exit_code`, `capture_complete`, `cleanup_incomplete` and `output_ref` distinguish the process outcome, retained evidence, and cleanup. Use `Session::read_output` with `output_ref.id` to inspect a bounded page of the raw capture. `reported_tests` contains counts observed in program output. Arbitrary external file effects may remain unknown.
+
+A `workspace_script` result has `kind: "workspace_script_result"`. Decode it with `kuku::WorkspaceScriptFacts::from_structured`. The result contains the script's return `value` and its observed host `actions`. Each action records its ID, tool, status, summary, truncation, and bounded result. An `unknown` action status means the host could not confirm its final outcome. At the script level, `timed_out`, `cleanup_incomplete`, and `not_dispatched` help reconcile partial work, including after a script fails. See [script methods](tools.md#workspace-scripts).
+
+`kuku::execution::FileMutationFacts` describes a write, exact edit, or removal. The facts include the path, observed before and after hashes where available, byte counts, and `commit_state`. A `published_unconfirmed` state means the file change occurred and final persistence could not be confirmed. Inspect the file before retrying.
+
+`RuntimeLimits.workspace_script` bounds each invocation's memory, duration, host requests, operation queue, and result size. Configure `SessionOptions.workspace_host` with a cloned `WorkspaceExecutionHost` to share worker and host-operation capacity across Sessions. The default capacity is shared within the process. `WorkspaceExecutionHost::metrics` gives active, peak, and started worker counts without starting a worker.
+
+## Named values
+
+Call `Session::save_named_value(agent, name, source, replace).await` with a `kuku::session::NamedValueSource` of `Text`, `Json`, `Bytes`, or `Output`. `Output` binds an existing capture by ID without copying it. `Session::named_value` resolves one name. `Session::named_values` lists its Agent's bindings without reading payloads. For a closed Session, `Session::read_named_values(events_path, agent)` returns the same metadata without opening a writer.
+
+Use `Session::read_agent_output(agent, output_id, &OutputRead)` to enforce the Agent's output access, and `Session::read_saved_agent_output` for the equivalent read from a closed Session. Submit resolved `OutputReference` values with `Session::send_with_values` or `Session::send_configured_with_values` to bind them to the input. [Naming and sharing semantics](tools.md#named-session-values)
+
 ## Calling program
 
 ```bash
@@ -68,7 +84,7 @@ Defaults: 64 agents, 128 pending inputs per agent, 65,536 input bytes, 512 KiB p
 
 `RuntimeLimits.retry_transient_provider_errors` defaults to true. The SDK can retry once after a retryable transport or provider-unavailable error before the stream opens. It reuses the prepared request and charges the retry to the same request budget. Set the option to false to disable this retry, as the bounded `session_task` caller does.
 
-Journal records are capped at 1 MiB. Pages contain at most 256 records and stop at a 1 MiB target, with one-record overrun below 2 MiB. Output reads return at most 80,000 bytes. The retained-output quota includes framing/metadata and marks incomplete capture while continuing to drain. These are per-output bounds; hosts choose session retention and total disk capacity.
+Journal records are capped at 1 MiB. Pages contain at most 256 records and stop at a 1 MiB target, with one-record overrun below 2 MiB. Output reads return at most 80,000 bytes. The retained-output quota includes capture framing and metadata. When capture hits its quota, the runtime continues draining the pipes and marks the retained result incomplete. The default Session budget is 128 MiB of retained data and 64 named bindings. Unreferenced ordinary outputs become eligible for reclamation after 24 hours. Set `max_retained_output_bytes`, `max_named_values`, and `output_retention_secs` in `RuntimeLimits` to change these bounds.
 
 `UsageTotals` retains absent counters as `None`; `unreported_requests` identifies incomplete input/output reporting. Input totals include cached input, so cache counters are subsets. Raw optional provider reports remain separate facts. Known incomplete cleanup makes `cancel` or `close` fail.
 
