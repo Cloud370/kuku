@@ -591,9 +591,9 @@ def check_agent_reading_position(client, terminal):
         terminal.press("\x1bOPqueue\r")
         terminal.expect(original, state="Queued · next Turn")
         terminal.press("\x1b[A")
-        terminal.expect("Edit queued input")
+        terminal.expect(f"› {original}", state="Edit queued input")
         terminal.press("\r")
-        terminal.expect(original)
+        terminal.expect(original, state="Enter replaces the queued text")
         terminal.press("\x03")
         terminal.type(queued)
         terminal.press("\r")
@@ -966,6 +966,9 @@ def main():
     parser.add_argument("--upgrade", nargs=2, type=Path, metavar=("OLD_ARCHIVE", "NEW_ARCHIVE"))
     parser.add_argument("--named-output", action="store_true", help="exercise keyboard naming and reopening")
     options = parser.parse_args()
+    options.binary = options.binary.resolve()
+    options.bridge = options.bridge.resolve()
+    options.directory = options.directory.resolve()
     with InstalledClient(options.binary, options.bridge, options.directory) as client:
         if options.named_output:
             named_output_cards(client)
