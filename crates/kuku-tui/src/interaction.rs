@@ -33,8 +33,13 @@ impl App {
                 ..
             }) => self.wheel(MOUSE_SCROLL_LINES),
             Event::Mouse(mouse) => self.pointer(mouse, screen),
-            Event::FocusLost | Event::Resize(_, _) => self.text_selection.clear(),
-            Event::FocusGained | Event::Key(_) => {}
+            Event::Resize(width, height)
+                if (width, height) != (screen.area.width, screen.area.height) =>
+            {
+                self.text_selection.clear();
+            }
+            Event::FocusLost => self.text_selection.cancel_drag(),
+            Event::Resize(_, _) | Event::FocusGained | Event::Key(_) => {}
         }
     }
 
@@ -60,7 +65,7 @@ impl App {
 
     fn key(&mut self, key: KeyEvent) {
         self.dismiss_confirmation();
-        self.text_selection.clear();
+        self.text_selection.cancel_drag();
         if Shortcut::ESCAPE.matches(key) && self.modal.take().is_some() {
             self.effects.push(Job::ClosePicker);
             return;
@@ -76,7 +81,7 @@ impl App {
 
     fn paste(&mut self, text: &str) {
         self.dismiss_confirmation();
-        self.text_selection.clear();
+        self.text_selection.cancel_drag();
         if let Some(Modal::Picker(picker)) = &mut self.modal {
             if picker.kind.searchable() {
                 picker.query.insert(&text.replace(['\r', '\n'], " "));
@@ -96,7 +101,7 @@ impl App {
     }
 
     fn wheel(&mut self, amount: isize) {
-        self.text_selection.clear();
+        self.text_selection.cancel_drag();
         match &mut self.modal {
             Some(Modal::Output(viewer)) => {
                 if let Some(offset) = viewer.scroll(amount) {

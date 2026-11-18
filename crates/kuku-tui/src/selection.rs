@@ -127,10 +127,14 @@ impl TextSelection {
         None
     }
 
+    pub(crate) fn cancel_drag(&mut self) {
+        self.drag = None;
+    }
+
     pub(crate) fn clear(&mut self) {
         self.areas.clear();
         self.transcript_insets = None;
-        self.drag = None;
+        self.cancel_drag();
     }
 }
 

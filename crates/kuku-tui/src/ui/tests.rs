@@ -111,6 +111,7 @@ fn composer_click_places_the_caret_in_scrolled_and_wrapped_unicode_text() {
         .buffer;
     let (x, y) = cell(buffer, "中");
     assert!(y > app.composer_area.y);
+    app.event(Event::Resize(buffer.area.width, buffer.area.height), buffer);
     click(&mut app, buffer, (x + 1, y));
     key(&mut app, KeyCode::Char('!'), KeyModifiers::NONE);
     assert_eq!(
