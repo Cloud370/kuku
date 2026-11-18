@@ -48,7 +48,9 @@ mod common;
 
 use std::collections::BTreeMap;
 
-use config::{ApiKey, Config, ProviderConfig, ThinkLevel, TierConfig};
+use config::{ApiKey, Config, ProviderConfig, ProviderFormat, ThinkLevel, TierConfig};
+use kuku::adapter::inspect_model;
+use kuku::session::AgentConfig;
 use kuku::Error;
 use provider::config::{resolve_config, ResolveConfigInput};
 use provider::types::{Provider, ProviderKind};
@@ -135,6 +137,105 @@ fn tier_resolution_uses_config_defaults() {
     assert_eq!(resolved.model, "claude-sonnet-4-6");
     assert_eq!(resolved.base_url, "https://api.anthropic.com");
     assert_eq!(resolved.api_key.resolve().unwrap(), "sk-ant-config");
+}
+
+#[test]
+fn generated_tiers_keep_known_anthropic_settings() {
+    let config = toml::from_str::<kuku::config::ConfigFile>(kuku::config::generate_default())
+        .unwrap()
+        .resolve()
+        .unwrap();
+    for (tier, model, requested, effective) in [
+        ("strong", "claude-sonnet-4-6", "high", "high"),
+        ("balanced", "claude-sonnet-4-6", "medium", "medium"),
+        ("light", "claude-haiku-4-5-20251001", "off", "none"),
+    ] {
+        let resolved = inspect_model(
+            &config,
+            &AgentConfig {
+                tier: Some(tier.into()),
+                ..AgentConfig::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(model, resolved.model);
+        assert_eq!(
+            Some(requested),
+            resolved.settings.requested_reasoning_effort.as_deref()
+        );
+        assert_eq!(
+            Some(effective),
+            resolved.settings.reasoning_effort.as_deref()
+        );
+    }
+}
+
+#[test]
+fn unsupported_portable_thinking_preserves_the_request_without_a_native_value() {
+    let mut cfg = default_config();
+    for (format, url, model, think, native) in [
+        (
+            ProviderFormat::Anthropic,
+            "https://gateway.example",
+            "claude-haiku-4-5-20251001",
+            ThinkLevel::Off,
+            "none",
+        ),
+        (
+            ProviderFormat::Anthropic,
+            "https://gateway.example",
+            "claude-sonnet-4-6",
+            ThinkLevel::High,
+            "high",
+        ),
+        (
+            ProviderFormat::OpenAiChat,
+            "https://api.openai.com/v1",
+            "gpt-5",
+            ThinkLevel::Off,
+            "none",
+        ),
+        (
+            ProviderFormat::OpenAiResponses,
+            "https://api.openai.com/v1",
+            "gpt-5",
+            ThinkLevel::Off,
+            "none",
+        ),
+    ] {
+        let connection = cfg.providers.get_mut("anthropic").unwrap();
+        connection.format = format;
+        connection.base_url = url.into();
+        connection.options = Default::default();
+        let tier = cfg.tiers.get_mut("balanced").unwrap();
+        tier.model = model.into();
+        tier.think = think;
+
+        let resolved = inspect_model(&cfg, &AgentConfig::default()).unwrap();
+        assert_eq!(model, resolved.model);
+        assert_eq!(
+            Some(think.as_str()),
+            resolved.settings.requested_reasoning_effort.as_deref()
+        );
+        assert_eq!(None, resolved.settings.reasoning_effort);
+        assert!(!resolved
+            .capabilities
+            .reasoning_efforts
+            .iter()
+            .any(|effort| effort == native));
+
+        let error = inspect_model(
+            &cfg,
+            &AgentConfig {
+                reasoning_effort: Some(native.into()),
+                ..AgentConfig::default()
+            },
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, Error::MissingProviderConfig(message) if message.contains(&format!("unsupported reasoning_effort '{native}'")))
+        );
+    }
 }
 
 #[test]
@@ -387,6 +488,10 @@ fn deepseek_tier_mapping_is_separate_from_explicit_native_settings() {
     );
     assert_eq!(Some("high"), resolved.settings.reasoning_effort.as_deref());
     for input in [
+        ResolveConfigInput {
+            reasoning_effort: Some("medium".into()),
+            ..Default::default()
+        },
         ResolveConfigInput {
             reasoning_effort: Some("ultra".into()),
             ..Default::default()

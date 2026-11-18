@@ -1,4 +1,7 @@
+use kuku::adapter::inspect_model;
 use kuku::config::{load_config, set_value, show_redacted};
+use kuku::session::AgentConfig;
+use kuku::Error;
 
 use crate::cli_args::{ConfigArgs, ConfigSubcommand, ConnectionArgs, PolicySubcommand};
 
@@ -26,8 +29,15 @@ pub async fn run(
                 eprintln!("hint: run `kuku init` to initialize");
                 std::process::exit(1);
             }
-            let file = load_config(&path)?;
-            file.resolve()?;
+            let config = load_config(&path)?.resolve()?;
+            for tier in config.tiers.keys() {
+                let selection = AgentConfig {
+                    tier: Some(tier.clone()),
+                    ..AgentConfig::default()
+                };
+                inspect_model(&config, &selection)
+                    .map_err(|error| Error::ConfigLoad(format!("tier '{tier}': {error}")))?;
+            }
             println!("Config is valid.");
             Ok(())
         }

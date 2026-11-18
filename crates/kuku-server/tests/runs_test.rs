@@ -118,6 +118,77 @@ async fn invalid_first_model_leaves_no_journal_and_can_be_corrected_on_the_same_
 }
 
 #[tokio::test]
+async fn compatible_model_preview_and_first_send_leave_undeclared_reasoning_unset() {
+    let mock = mock_provider::start_mock_provider().await;
+    let provider = mock.mock(|when, then| {
+        when.method(Method::POST)
+            .path("/v1/messages")
+            .header("x-api-key", "test-key")
+            .json_body_partial(r#"{"model":"claude-haiku-4-5-20251001","stream":true}"#)
+            .matches(|request| {
+                serde_json::from_slice::<Value>(request.body.as_deref().unwrap_or_default())
+                    .is_ok_and(|body| {
+                        ["thinking", "output_config", "reasoning", "reasoning_effort"]
+                            .iter()
+                            .all(|key| body.get(key).is_none())
+                    })
+            });
+        then.status(200)
+            .body(text_response("compatible model result"));
+    });
+    let mut config = mock_provider::make_test_config(mock.port());
+    config.providers.get_mut("anthropic").unwrap().options = Default::default();
+    let mut light = config.tiers["balanced"].clone();
+    light.model = "claude-haiku-4-5-20251001".into();
+    config.tiers.insert("light".into(), light.clone());
+    let mut invalid = light;
+    invalid.reasoning_effort = Some("none".into());
+    config.tiers.insert("invalid".into(), invalid);
+    config.default_tier = "light".into();
+    let server = TestServer::start(config).await;
+
+    let response = server
+        .request(wreq::Method::GET, "/models/resolve")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(200, response.status());
+    let selection = response.json::<Value>().await.unwrap()["selection"].clone();
+    assert_eq!("claude-haiku-4-5-20251001", selection["model"]);
+    assert_eq!("compatible", selection["capabilities"]["profile"]);
+    assert_eq!(json!([]), selection["capabilities"]["reasoning_efforts"]);
+    assert_eq!("off", selection["settings"]["requested_reasoning_effort"]);
+    assert_eq!(Value::Null, selection["settings"]["reasoning_effort"]);
+
+    let invalid = server
+        .request(wreq::Method::GET, "/models/resolve")
+        .query(&[("tier", "invalid")])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(400, invalid.status());
+    assert_eq!(
+        "model_configuration",
+        invalid.json::<Value>().await.unwrap()["code"]
+    );
+    provider.assert_hits(0);
+
+    let id = "compatible-haiku";
+    server
+        .submit(
+            id,
+            json!({"type":"send","command_id":"compatible-first","text":"Use the default model","create":{}}),
+        )
+        .await;
+    server
+        .wait_for_snapshot(id, "main", |snapshot| {
+            snapshot["agent"]["last_output"] == "compatible model result"
+        })
+        .await;
+    provider.assert_hits(1);
+}
+
+#[tokio::test]
 async fn first_send_completes_a_creation_claim_left_by_a_failed_process() {
     let mock = mock_provider::start_mock_provider().await;
     mock_provider::mock_text_response(&mock, "recovered");

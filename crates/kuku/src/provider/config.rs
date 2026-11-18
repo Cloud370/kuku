@@ -72,30 +72,22 @@ pub(crate) fn resolve_config(input: ResolveConfigInput) -> Result<ResolvedProvid
         .unwrap_or_default();
     let capabilities = resolve_capabilities(&base_url, &model, kind, &options);
     let settings_tier = tier.filter(|tier| input.tier.is_some() || tier.provider == name);
+    let think = settings_tier.map(|tier| tier.think);
     let native_reasoning = input
         .reasoning_effort
         .clone()
         .or_else(|| settings_tier.and_then(|tier| tier.reasoning_effort.clone()));
-    let requested_reasoning = native_reasoning
-        .clone()
-        .or_else(|| settings_tier.map(|tier| tier.think.as_str().to_string()));
-    let effective_reasoning = native_reasoning.or_else(|| {
-        settings_tier.map(|tier| {
-            match (tier.think, capabilities.profile) {
-                (ThinkLevel::Off, _) => "none",
-                (ThinkLevel::Medium, crate::config::ProviderProfile::DeepSeek) => "high",
-                (level, _) => level.as_str(),
-            }
-            .to_string()
-        })
-    });
     let requested_service = input
         .service_tier
         .clone()
         .or_else(|| settings_tier.and_then(|tier| tier.service_tier.clone()));
-    let mut settings =
-        resolve_settings(&name, &capabilities, effective_reasoning, requested_service)?;
-    settings.requested_reasoning_effort = requested_reasoning;
+    let settings = resolve_settings(
+        &name,
+        &capabilities,
+        native_reasoning,
+        think,
+        requested_service,
+    )?;
     if options.routing.is_some()
         && capabilities.profile != crate::config::ProviderProfile::OpenRouter
     {
@@ -114,9 +106,7 @@ pub(crate) fn resolve_config(input: ResolveConfigInput) -> Result<ResolvedProvid
             .max_output_tokens
             .or_else(|| tier.map(|tier| tier.max_output_tokens))
             .unwrap_or(48_000),
-        think_level: settings_tier
-            .map(|tier| tier.think)
-            .unwrap_or(ThinkLevel::Off),
+        think_level: think.unwrap_or(ThinkLevel::Off),
         thinking: Default::default(),
         options,
         settings,

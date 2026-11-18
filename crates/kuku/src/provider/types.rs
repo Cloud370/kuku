@@ -105,12 +105,12 @@ impl Default for ResolvedProvider {
     }
 }
 
-/// Requested and effective native settings for one resolved model connection.
+/// Requested and effective settings for one resolved model connection.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ProviderSettings {
-    /// Reasoning requested by the caller or configured tier.
+    /// Native reasoning or portable thinking requested by the caller or tier.
     pub requested_reasoning_effort: Option<String>,
-    /// Reasoning value actually encoded into the request.
+    /// Effective native reasoning value, absent when the wire request omits it.
     pub reasoning_effort: Option<String>,
     /// Service tier requested independently of reasoning.
     pub requested_service_tier: Option<String>,
