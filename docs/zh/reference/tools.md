@@ -8,7 +8,7 @@
 |---|---|---|---|
 | `find_files` | none | `path`, `pattern`, `max_depth` | `read` |
 | `read_file` | `path` | `offset`, `limit` | `read` |
-| `stat_file` | `path` | 无 | `read` |
+| `stat_file` | `path` | `version` | `read` |
 | `read_output` | `id` 或 `name` | `offset`, `limit`, `search` | `read` |
 | `search_text` | `pattern` | `path`, `include`, `view`, `offset`, `limit`, `context` | `read` |
 | `fetch_url` | `url` | none | `read` |
@@ -66,13 +66,13 @@
 
 ## 运行本机程序
 
-传入程序名，每个参数对应一个字面字符串。程序无需参数时传 `args: []`。参数可以是空字符串，也可以包含空格、引号或 shell 元字符。`cwd` 可以是相对工作区的目录或绝对目录，`"."` 表示工作区根目录。`timeout` 为 1 到 600 秒的整数。程序从标准输入立即读到 EOF。
+传入程序名，每个参数对应一个字面字符串。各个平台都用 `./` 指定相对 `cwd` 的可执行文件路径。程序无需参数时传 `args: []`。参数可以是空字符串，也可以包含空格、引号或 shell 元字符。`cwd` 可以是相对工作区的目录或绝对目录，`"."` 表示工作区根目录。`timeout` 为 1 到 600 秒的整数。程序从标准输入立即读到 EOF。
 
 ```json
 {"program":"cargo","args":["test","-p","kuku"],"cwd":".","timeout":120}
 ```
 
-使用管道、重定向、shell 内建命令或 Windows 批处理文件时，显式选择已安装的解释器。`shell` 可选 `sh`、`bash`、`zsh`、`cmd`、`powershell`（Windows PowerShell）和 `pwsh`（PowerShell Core）。
+使用管道、重定向或 shell 内建命令时，显式选择解释器。工具定义从 `sh`、`bash`、`zsh`、`cmd`、`powershell`（Windows PowerShell）和 `pwsh`（PowerShell Core）中列出执行宿主上可用的解释器。在 Windows 上，批处理文件和依赖 `cmd.exe` 的命令使用 `shell: "cmd"`。
 
 ```json
 {"shell":"cmd","command":"type \"build log.txt\"","cwd":".","timeout":10}
@@ -106,7 +106,7 @@ for await (const line of workspace.output_lines({ id: facts.output_ref.id, strea
 return { exitCode: facts.exit_code, warnings, complete, outputId: facts.output_ref.id };
 ```
 
-`output_chunks({id, offset?, limit?, search?})` 逐页读取有界输出页，其中包含原始流片段和字节。默认扫描窗口为 65,536 字节，每次请求最多 80,000 字节。`output_lines({id, stream?})` 逐行读取去掉末尾换行符的解码文本。每行携带流标识、字节偏移和完整性标记。脚本宿主方法会如实报告拒绝、失败和取消。脚本返回 JSON 后，这些动作结果仍然有效。
+`output_chunks({id, offset?, limit?, search?})` 逐页读取有界输出页，其中包含原始流片段和字节。默认扫描窗口为 65,536 字节，每次请求最多 80,000 字节。`output_lines({id, stream?, offset?, limit?})` 从未过滤的输出页逐行读取去掉末尾换行符的解码文本。两个迭代器都可用 `name` 代替 `id`，解析名称后继续使用同一输出 ID。每行携带流标识、字节偏移和完整性标记。脚本宿主方法独立于脚本返回值报告拒绝、失败和取消。
 
 保存大型派生结果时，先从 `await workspace.create_output({})` 取得 `result.id`，再用 `await workspace.append_output({id, text})` 分批追加 UTF-8 文本。检查各操作的状态。调用 `await workspace.finish_output({id})` 后，检查 `result.capture_complete` 再使用新的 `result.output_ref`。原始捕获仍可单独读取。
 
@@ -162,14 +162,14 @@ return { exitCode: facts.exit_code, warnings, complete, outputId: facts.output_r
 
 - `find_files` 在有界的 `entries` 中返回相对路径。列表中的目录以 `/` 结尾。扫描会跳过常见构建目录。
 - `read_file` 返回带行号内容，并支持分页。
-- `stat_file` 返回路径类型（`file`、`directory`、`other` 或 `missing`）、是否存在及可用的文件大小，无需读取文件内容。
+- `stat_file` 返回路径类型（`file`、`directory`、`other` 或 `missing`）、是否存在及可用的文件大小。设置 `version: true` 时会流式读取普通文件的字节并计算 SHA-256 `content_hash`，结果只提供哈希，不包含文件正文。
 - `search_text` 基于正则，支持 `files`、`lines` 和 `count` 视图。结构化 `matches` 提供路径和行号，`lines` 还提供有界文本。通过 `next_offset` 续读。编辑前应读取文件本身。
 - `fetch_url` 下载到临时目录，拒绝非 HTTP(S) URL 和内嵌凭证，并限制 50 MB。
 - `query_session` 会过滤 Session 账本，默认排除 rolled-back 事件，并截断单条事件内容。
 - `edit_file` 要求 `old_text` 唯一匹配一个仍在当前 conversation 有效历史中可见的 read snapshot。局部或截断读取只能授权实际展示的原始文件文本，而 `replace_all=true` 需要整文件 snapshot。只有在匹配 CRLF 文件确有需要时，LF 输入才会映射为 CRLF，并保持替换文本的换行风格。写入时文件 hash 仍须一致。
 - `write_file` 只有在当前 conversation 的有效历史中仍可见先前的整文件 read snapshot 时，才允许覆盖已有文件。
-- `remove_file` 在完成同一版本的整文件读取后移除普通文件，拒绝以符号链接为末级路径的请求。
-- `edit_file`、`write_file` 和 `remove_file` 可传入 `expected_version`，值为先前读取的 `content_hash`。该哈希是动作快照要求之外的附加检查。
+- `remove_file` 在 `expected_version` 与当前哈希一致时移除普通文件。省略该参数时，需要同一版本的整文件读取。移除二进制文件可用 `stat_file({path, version: true})` 获取哈希，再作为 `expected_version` 传入。末级路径为符号链接时会拒绝该请求。
+- `edit_file` 和 `write_file` 可传入先前读取的 `content_hash` 作为 `expected_version`，进行附加版本检查。两种操作仍需满足各自的快照要求。
 - `remember_memory` 和 `forget_memory` 通过专用 API 写入 memory 文件。
 
 ## Memory Tool Enums

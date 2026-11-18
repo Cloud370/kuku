@@ -156,6 +156,8 @@ Linux `/proc` and Windows process APIs sample the SDK caller and its tool descen
 
 On Linux, `--cpu-count` applies CPU affinity to the caller and descendants. `--address-space-mib` limits each process's virtual address space. The Rust caller is portable. Process sampling in this selector is currently available on Linux and Windows.
 
+Use `--pressure-rounds 3` to compare several peak and idle phases in one caller. On Linux, the selector also records the anonymous and file-backed memory reported by `/proc/<pid>/smaps_rollup` when available.
+
 ## Live protocol acceptance
 
 The user selected direct DeepSeek `deepseek-flash` for benchmarks and the three wire-protocol checks. The second model family uses OpenRouter's [`openai/gpt-6-luna`](https://openrouter.ai/openai/gpt-6-luna), pinned to the standard OpenAI provider through the OpenAI Responses API. This OpenRouter route is for protocol compatibility with a small fixed task. The services document the general routes below; the table is not a requirement to run every model/service/protocol combination. These are test connection inputs, not newly frozen SDK configuration names.

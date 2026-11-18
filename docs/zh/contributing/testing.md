@@ -156,6 +156,8 @@ Linux `/proc` 和 Windows 进程 API 分别采样 SDK 调用进程和工具后�
 
 在 Linux 上，`--cpu-count` 限定调用进程及其后代可用的 CPU。`--address-space-mib` 限定各个进程的虚拟地址空间。Rust 调用程序可以跨平台运行。此选择器当前在 Linux 和 Windows 提供进程采样。
 
+用 `--pressure-rounds 3` 可以在同一个调用进程里对比多轮峰值和空闲阶段。在 Linux 上，如果能读取 `/proc/<pid>/smaps_rollup`，选择器也会记录匿名内存与文件映射内存。
+
 ## 真实协议验收
 
 用户选定直连 DeepSeek 的 `deepseek-flash` 用于 benchmark 和三种线路协议检查。第二模型家族使用 OpenRouter 的 [`openai/gpt-6-luna`](https://openrouter.ai/openai/gpt-6-luna)，固定标准 OpenAI 提供商，通过 OpenAI Responses API 调用。这条 OpenRouter 路线用固定小任务检查协议兼容。下表保留两家服务公开的通用路线，不要求穷举每个模型／服务／协议组合。这些是测试连接输入，不是新冻结的 SDK 配置名称。

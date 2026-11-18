@@ -12,4 +12,4 @@
 
 对 `run_command`，项目策略匹配包含规范化 `cwd` 和 `invocation` 的 JSON 字符串。`invocation` 带有 `mode`，并提供字面的 `program` 和 `args`，或所选的 `shell` 和 `command` 文本。这样授权匹配时仍能区分各个参数。
 
-宿主分别授权 `workspace_script` 及每个脚本宿主动作。延后外层工具调用的授权时，运行时在启动 worker 前进入等待。延后脚本内动作的授权时，worker 停止并释放 JavaScript 状态。Session 保存已准备的动作及已观察到的事实。批准后只重新核对并派发对应动作，模型随后根据返回的事实继续。见[工作区脚本](../reference/tools.md#工作区脚本)。
+宿主分别授权 `workspace_script` 及每个脚本宿主动作。延后外层工具调用的授权时，运行时在启动 worker 前进入等待。延后脚本内可持久准备的动作时，worker 停止并释放 JavaScript 状态。Session 保存已准备的动作及已观察到的事实。批准后只重新核对并派发对应动作，模型随后根据返回的事实继续。派生输出草稿归单次调用所有。`create_output`、`append_output` 或 `finish_output` 收到 `Defer` 时会在派发前返回 `blocked`。见[工作区脚本](../reference/tools.md#工作区脚本)。

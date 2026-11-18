@@ -8,7 +8,7 @@ This page describes the default public Session tool surface used by CLI and serv
 |---|---|---|---|
 | `find_files` | none | `path`, `pattern`, `max_depth` | `read` |
 | `read_file` | `path` | `offset`, `limit` | `read` |
-| `stat_file` | `path` | none | `read` |
+| `stat_file` | `path` | `version` | `read` |
 | `read_output` | `id` or `name` | `offset`, `limit`, `search` | `read` |
 | `search_text` | `pattern` | `path`, `include`, `view`, `offset`, `limit`, `context` | `read` |
 | `fetch_url` | `url` | none | `read` |
@@ -66,13 +66,13 @@ Important filters:
 
 ## Run a native program
 
-Use the program name and one literal string per argument. Pass `args: []` for a program with no arguments. Empty strings, spaces, quotes, and shell metacharacters can be parts of arguments. `cwd` can be a workspace-relative or absolute directory. Use `"."` for the workspace root. `timeout` is an integer between 1 and 600 seconds. The program receives EOF on standard input.
+Use the program name and one literal string per argument. Prefix an executable path relative to `cwd` with `./` on any platform. Pass `args: []` for a program with no arguments. Empty strings, spaces, quotes, and shell metacharacters can be parts of arguments. `cwd` can be a workspace-relative or absolute directory. Use `"."` for the workspace root. `timeout` is an integer between 1 and 600 seconds. The program receives EOF on standard input.
 
 ```json
 {"program":"cargo","args":["test","-p","kuku"],"cwd":".","timeout":120}
 ```
 
-For pipes, redirection, shell built-ins, or Windows batch files, choose the installed interpreter explicitly. The supported `shell` values are `sh`, `bash`, `zsh`, `cmd`, `powershell` (Windows PowerShell), and `pwsh` (PowerShell Core).
+For pipes, redirection, or shell built-ins, choose an interpreter explicitly. The tool schema advertises the interpreters found on the execution host from `sh`, `bash`, `zsh`, `cmd`, `powershell` (Windows PowerShell), and `pwsh` (PowerShell Core). On Windows, use `shell: "cmd"` for batch files or commands that use `cmd.exe`.
 
 ```json
 {"shell":"cmd","command":"type \"build log.txt\"","cwd":".","timeout":10}
@@ -106,7 +106,7 @@ for await (const line of workspace.output_lines({ id: facts.output_ref.id, strea
 return { exitCode: facts.exit_code, warnings, complete, outputId: facts.output_ref.id };
 ```
 
-`output_chunks({id, offset?, limit?, search?})` iterates the bounded output pages with original stream segments and raw bytes. The default scan window is 65,536 bytes, with at most 80,000 bytes per request. `output_lines({id, stream?})` iterates decoded lines without their trailing newline. Each line carries its stream, byte offsets and completeness flags. Script host methods still report denied, failed and cancelled actions. Returning JSON does not change those outcomes.
+`output_chunks({id, offset?, limit?, search?})` iterates the bounded output pages with original stream segments and raw bytes. The default scan window is 65,536 bytes, with at most 80,000 bytes per request. `output_lines({id, stream?, offset?, limit?})` iterates decoded lines without their trailing newline and takes unfiltered pages. Both accept `name` in place of `id` and keep reading the original output ID once the iterator resolves the name. Each line carries its stream, byte offsets and completeness flags. Script host methods report denied, failed and cancelled actions independently of the script's return value.
 
 For a large derived result, take `result.id` from `await workspace.create_output({})`, then `await workspace.append_output({id, text})` for each batch of UTF-8 text. Check each action's status. Call `await workspace.finish_output({id})` and check `result.capture_complete` before relying on the new `result.output_ref`. The original capture remains available independently.
 
@@ -162,14 +162,14 @@ Within one advancing Agent, kuku serializes the `read_file`, `stat_file`, `edit_
 
 - `find_files` returns a bounded `entries` list of relative paths. Directories in the list end in `/`. The scan skips common build directories.
 - `read_file` returns line-numbered content and supports pagination.
-- `stat_file` returns the path type (`file`, `directory`, `other`, or `missing`), existence and available size without reading the file's contents.
+- `stat_file` returns the path type (`file`, `directory`, `other`, or `missing`), existence and available size. With `version: true`, it streams the bytes of a regular file to compute its SHA-256 `content_hash` and returns the hash without the file contents.
 - `search_text` is regex-based and supports `files`, `lines`, and `count` views. Structured `matches` give paths and line numbers. `lines` also gives bounded text. Use `next_offset` to continue. Read the file itself before editing.
 - `fetch_url` downloads to a temp directory, rejects non-HTTP(S) URLs and embedded credentials, and enforces a 50 MB limit.
 - `query_session` filters the session ledger, defaults to excluding rolled-back events, and truncates individual event content.
 - `edit_file` requires a unique `old_text` match inside a prior read snapshot that is still visible in the active conversation's effective history. A partial or truncated read authorizes only the raw file text actually shown, while `replace_all=true` requires a full-file snapshot. LF input is mapped to CRLF only when needed to match a CRLF file, and the replacement preserves that line-ending style. The file hash must still match at write time.
 - `write_file` overwrites only after a prior full-file read snapshot that is still visible in the active conversation's effective history.
-- `remove_file` removes a regular file after a whole-file read of the same version. A final symlink is rejected.
-- `edit_file`, `write_file`, and `remove_file` accept `expected_version` with the `content_hash` of an earlier read. The expected hash adds a check to the action's snapshot requirements.
+- `remove_file` removes a regular file when `expected_version` matches the current hash or, if omitted, after a whole-file read of the same version. For a binary file, obtain the hash with `stat_file({path, version: true})` and pass it as `expected_version`. A final symlink is rejected.
+- `edit_file` and `write_file` accept `expected_version` with the `content_hash` of an earlier read as an additional version check. Their snapshot requirements still apply.
 - `remember_memory` and `forget_memory` write memory files through dedicated APIs.
 
 ## Memory Tool Enums
