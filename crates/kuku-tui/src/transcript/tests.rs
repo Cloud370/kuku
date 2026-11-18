@@ -10,6 +10,7 @@ fn response(id: u64, body: String) -> HistoryEntry {
         turn: Some(1),
         kind: HistoryKind::Assistant,
         text: Some(body),
+        turn_summary: None,
         details: [("turn_number".into(), json!(1))].into_iter().collect(),
     }
 }

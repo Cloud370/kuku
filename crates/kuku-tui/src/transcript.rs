@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use kuku_client::{HistoryEntry, HistoryKind, HistoryPage};
+use kuku_client::{HistoryEntry, HistoryKind, HistoryPage, TurnSummary};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
@@ -17,6 +17,7 @@ mod details;
 mod message;
 mod reply;
 mod tool;
+mod turn_summary;
 mod window;
 
 use self::agent::AgentCards;
@@ -26,6 +27,7 @@ use self::message::{render_assistant_source, render_record, render_user};
 use self::reply::LatestReply;
 pub(crate) use self::reply::ReplySource;
 use self::tool::Tool;
+use self::turn_summary::append_turn_summary;
 use self::window::{Layout, TurnHeading, Window};
 
 pub(crate) const HISTORY_PAGE: usize = 48;
@@ -316,7 +318,8 @@ impl Transcript {
                 Body::User { .. }
                 | Body::Assistant(_)
                 | Body::Interrupted(_)
-                | Body::Notice(..) => None,
+                | Body::Notice(..)
+                | Body::TurnSummary => None,
             })
             .collect()
     }
@@ -600,6 +603,7 @@ struct Record {
     owner: Option<String>,
     position: Option<u64>,
     body: Body,
+    turn_summary: Option<TurnSummary>,
     rendered: RenderCache,
 }
 
@@ -612,6 +616,7 @@ impl Clone for Record {
             owner: self.owner.clone(),
             position: self.position,
             body: self.body.clone(),
+            turn_summary: self.turn_summary.clone(),
             rendered: RenderCache::default(),
         }
     }
@@ -674,6 +679,8 @@ impl Record {
                 }
             }
             HistoryKind::Error => Body::Notice("Provider error", text, ERROR),
+            HistoryKind::TurnSummary if entry.turn_summary.is_some() => Body::TurnSummary,
+            HistoryKind::TurnSummary => return None,
             HistoryKind::Other => return None,
         };
         Some(Self {
@@ -683,6 +690,7 @@ impl Record {
             owner: (!entry.agent.is_empty()).then_some(entry.agent),
             position: Some(entry.id),
             body,
+            turn_summary: entry.turn_summary,
             rendered: RenderCache::default(),
         })
     }
@@ -691,6 +699,10 @@ impl Record {
         self.turn_number = self.turn_number.or(record.turn_number);
         if self.owner.is_none() {
             self.owner = record.owner;
+        }
+        if self.turn_summary.is_none() && record.turn_summary.is_some() {
+            self.turn_summary = record.turn_summary;
+            self.rendered = RenderCache::default();
         }
         if let (Body::Tool(tool), Body::Tool(incoming)) = (&mut self.body, record.body) {
             tool.merge(*incoming);
@@ -710,9 +722,11 @@ impl Record {
     fn tool(&self) -> Option<&Tool> {
         match &self.body {
             Body::Tool(tool) => Some(tool),
-            Body::User { .. } | Body::Assistant(_) | Body::Interrupted(_) | Body::Notice(..) => {
-                None
-            }
+            Body::User { .. }
+            | Body::Assistant(_)
+            | Body::Interrupted(_)
+            | Body::Notice(..)
+            | Body::TurnSummary => None,
         }
     }
 
@@ -732,7 +746,9 @@ impl Record {
         if let Some((text, interrupted)) = source_body {
             let source = &mut self.rendered.source;
             if source.as_ref().is_none_or(|(cached, _)| *cached != width) {
-                *source = Some((width, render_assistant_source(text, width, interrupted)));
+                let mut rows = render_assistant_source(text, width, interrupted);
+                append_turn_summary(&mut rows, self.turn_summary.as_ref(), width);
+                *source = Some((width, rows));
             }
             return (
                 &self.key,
@@ -749,9 +765,11 @@ impl Record {
                 );
                 (card, mode, facts)
             }
-            Body::User { .. } | Body::Assistant(_) | Body::Interrupted(_) | Body::Notice(..) => {
-                (None, ToolDetails::Expanded, None)
-            }
+            Body::User { .. }
+            | Body::Assistant(_)
+            | Body::Interrupted(_)
+            | Body::Notice(..)
+            | Body::TurnSummary => (None, ToolDetails::Expanded, None),
         };
         let cache_key = (width, mode, facts.map_or(0, |facts| facts.paint_revision));
         if self
@@ -760,7 +778,7 @@ impl Record {
             .as_ref()
             .is_none_or(|(stored, _)| *stored != cache_key)
         {
-            let lines = match &self.body {
+            let mut lines = match &self.body {
                 Body::User { sender, text } => {
                     let title = match sender {
                         Some(sender) => shorten(
@@ -793,11 +811,13 @@ impl Record {
                     width,
                     0,
                 ),
+                Body::TurnSummary => Vec::new(),
                 Body::Tool(tool) => card.as_ref().map_or_else(
                     || tool.render(width, mode),
                     |card| card.render(width, mode, facts),
                 ),
             };
+            append_turn_summary(&mut lines, self.turn_summary.as_ref(), width);
             self.rendered.preview = Some((cache_key, lines));
         }
         (
@@ -818,6 +838,7 @@ enum Body {
     Assistant(String),
     Interrupted(String),
     Notice(&'static str, String, Color),
+    TurnSummary,
     Tool(Box<Tool>),
 }
 

@@ -287,6 +287,7 @@ fn copy_fetches_the_complete_committed_reply_and_ignores_older_requests() {
         turn: Some(2),
         kind: HistoryKind::Assistant,
         text: Some(text.into()),
+        turn_summary: None,
         details: Default::default(),
     };
     let original = format!(

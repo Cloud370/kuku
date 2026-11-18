@@ -7,7 +7,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{Activity, App, ServiceStatus, SubmissionStatus};
-use crate::text::{shorten, single_line, single_line_path};
+use crate::text::{compact_token_count, shorten, single_line, single_line_path};
 use crate::theme::{emphasis, ERROR, EXECUTION, MODEL, MUTED, USAGE, WARNING};
 
 mod editor;
@@ -33,7 +33,6 @@ const OPTIONAL_FIELDS: [Field; 5] = [
     Field::Cache,
     Field::Input,
 ];
-const TOKEN_UNITS: [(u64, &str); 3] = [(1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K")];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct StatusLine {
@@ -528,23 +527,6 @@ fn tokens(value: Option<u64>, complete: bool, direction: &str) -> Segment {
         format!("{bound}{} {direction}", compact_token_count(count))
     });
     Segment::metric(label, &format!("— {direction}"))
-}
-
-fn compact_token_count(count: u64) -> String {
-    let Some((unit, suffix)) = TOKEN_UNITS.into_iter().find(|(unit, _)| *unit <= count) else {
-        return count.to_string();
-    };
-    let whole = count / unit;
-    if whole >= 100 {
-        return format!("{whole}{suffix}");
-    }
-    let (precision, scale) = if whole < 10 { (2, 100) } else { (1, 10) };
-    let fractional = count % unit / (unit / scale);
-    if fractional == 0 {
-        return format!("{whole}{suffix}");
-    }
-    let decimals = format!("{fractional:0precision$}");
-    format!("{whole}.{}{suffix}", decimals.trim_end_matches('0'))
 }
 
 fn tokens_per_second(rate: f64) -> String {

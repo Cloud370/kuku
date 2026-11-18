@@ -252,6 +252,7 @@ mod tests {
                     turn: Some(1),
                     kind,
                     text: Some(text.into()),
+                    turn_summary: None,
                     details: Default::default(),
                 },
                 None,

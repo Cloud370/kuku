@@ -110,6 +110,7 @@ fn entry(id: u64, agent: &str, kind: HistoryKind, text: &str) -> HistoryEntry {
         turn: Some(1),
         kind,
         text: Some(text.into()),
+        turn_summary: None,
         details: Default::default(),
     }
 }

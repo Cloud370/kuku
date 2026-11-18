@@ -3,11 +3,13 @@ use std::ffi::OsString;
 use std::path::Path;
 #[cfg(windows)]
 use std::path::{Component, PathBuf, Prefix};
+use std::time::Duration;
 
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 pub(crate) const TAB: &str = "    ";
+const TOKEN_UNITS: [(u64, &str); 3] = [(1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K")];
 
 pub(crate) fn terminal_text(text: &str) -> String {
     let mut safe = String::with_capacity(text.len());
@@ -43,6 +45,35 @@ pub(crate) fn replace_tabs(text: &str) -> String {
 
 pub(crate) fn cap(text: &str, bytes: usize) -> &str {
     &text[..text.floor_char_boundary(bytes.min(text.len()))]
+}
+
+pub(crate) fn format_elapsed(elapsed: Duration) -> String {
+    let seconds = elapsed.as_secs();
+    let minutes = seconds / 60;
+    let hours = minutes / 60;
+    let seconds = seconds % 60;
+    match (hours, minutes) {
+        (0, 0) => format!("{seconds}s"),
+        (0, _) => format!("{minutes}m {seconds:02}s"),
+        _ => format!("{hours}h {:02}m {seconds:02}s", minutes % 60),
+    }
+}
+
+pub(crate) fn compact_token_count(count: u64) -> String {
+    let Some((unit, suffix)) = TOKEN_UNITS.into_iter().find(|(unit, _)| *unit <= count) else {
+        return count.to_string();
+    };
+    let whole = count / unit;
+    if whole >= 100 {
+        return format!("{whole}{suffix}");
+    }
+    let (precision, scale) = if whole < 10 { (2, 100) } else { (1, 10) };
+    let fractional = count % unit / (unit / scale);
+    if fractional == 0 {
+        return format!("{whole}{suffix}");
+    }
+    let decimals = format!("{fractional:0precision$}");
+    format!("{whole}.{}{suffix}", decimals.trim_end_matches('0'))
 }
 
 pub(crate) fn shorten(text: &str, cells: usize) -> String {
@@ -91,8 +122,21 @@ fn ordinary_windows_path(path: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use std::time::Duration;
 
-    use super::single_line_path;
+    use super::{format_elapsed, single_line_path};
+
+    #[test]
+    fn elapsed_keeps_whole_seconds_and_pads_groups() {
+        for (ms, expected) in [
+            (999, "0s"),
+            (8_999, "8s"),
+            (65_000, "1m 05s"),
+            (3_954_999, "1h 05m 54s"),
+        ] {
+            assert_eq!(expected, format_elapsed(Duration::from_millis(ms)));
+        }
+    }
 
     #[cfg(windows)]
     #[test]

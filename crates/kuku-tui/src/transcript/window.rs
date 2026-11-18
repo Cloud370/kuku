@@ -107,6 +107,7 @@ impl Window {
             owner: None,
             position: None,
             body: body(),
+            turn_summary: None,
             rendered: RenderCache::default(),
         });
         self.records.last_mut().expect("inserted record")
@@ -233,10 +234,11 @@ impl Window {
             let (key, rows, detail) = if collapsed {
                 (&record.key, &[][..], None)
             } else {
-                let trim = record.tool().is_some()
-                    && records
-                        .peek()
-                        .is_some_and(|(_, next)| record.turn == next.turn && next.tool().is_some());
+                let trim = records.peek().is_some_and(|(_, next)| {
+                    record.turn == next.turn
+                        && (matches!(next.body, Body::TurnSummary)
+                            || record.tool().is_some() && next.tool().is_some())
+                });
                 let mode = if grouped {
                     ToolDetails::GroupMember
                 } else {
@@ -248,7 +250,11 @@ impl Window {
                 });
                 (
                     key,
-                    if trim { &rows[..rows.len() - 1] } else { rows },
+                    if trim && rows.last().is_some_and(|row| row.line.spans.is_empty()) {
+                        &rows[..rows.len() - 1]
+                    } else {
+                        rows
+                    },
                     detail,
                 )
             };
