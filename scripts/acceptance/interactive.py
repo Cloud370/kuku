@@ -142,6 +142,19 @@ def two_workspaces_and_disconnect(client):
                 assert "Summary saved." not in partial and "| ---" not in partial, partial
                 assert any("基础测试" in row and "通过" in row for row in partial.splitlines()), partial
             right.expect("Summary saved.")
+            def settled_summary():
+                query = urlencode({"workspace": other, "agent": "main"})
+                entries = client.request("GET", f"/sessions/{client.session(other)}/history?{query}").as_json()["entries"]
+                summaries = [entry for entry in entries if entry["type"] == "turn_summary"]
+                if summaries:
+                    assert len(summaries) == 1 and summaries[0]["turn_number"] == 1
+                    return summaries[0]["turn_summary"]
+
+            measured = eventually("the complete Turn measurement", settled_summary)
+            assert measured["tool_calls"] == 1 and measured["elapsed_ms"] > 0, measured
+            assert (measured["input_tokens"], measured["output_tokens"]) == (178_008, 210), measured
+            assert abs(measured["cache_hit_percent"] - 133_500 / 178_008 * 100) < 1e-6, measured
+            right.expect("1 tool", state="Finished")
             footer = right.expect("Context 89% used")["screen"]
             assert "178K in" in footer and "210 out" in footer and "Cache hit 75%" in footer, footer
             assert "Agent main" in footer and "work-right" in footer, footer
@@ -302,19 +315,29 @@ def preserve_draft_after_interrupt(client):
         original = client.snapshot(workspace, session)
         assert original["status"] == "running"
 
-        terminal.type(draft)
-        terminal.press("\x1b")
-        terminal.expect(draft, state="Stopped")
-        stopped = client.snapshot(workspace, session)
-        assert stopped["status"] == "stopped"
-        assert stopped["pending_inputs"] == 0, "Esc or draft editing must leave the draft unsent"
-        assert original["turn"] == stopped["turn"]
-        client.provider.assert_idle(duration=0.2)
+        prefix = "This part reached the screen."
+        tail = "Late cancelled text"
+        with cancelled.streaming_text(prefix, tail):
+            terminal.expect(prefix, state="Streaming")
+            terminal.type(draft)
+            terminal.press("\x1b")
+            stopped_screen = terminal.expect(draft, state="Stopped")["screen"]
+            assert prefix in stopped_screen and tail not in stopped_screen, stopped_screen
+            stopped = client.snapshot(workspace, session)
+            assert stopped["status"] == "stopped" and stopped["last_output"] is None
+            assert stopped["pending_inputs"] == 0, "Esc must leave the draft unsent"
+            assert original["turn"] == stopped["turn"]
+            client.provider.assert_idle(duration=0.2)
 
-        cancelled.text("Late cancelled text")
+        with client.terminal(workspace) as reader:
+            reader.resume(initial)
+            reopened = reader.expect(prefix, state="Interrupted")["screen"]
+            assert tail not in reopened, reopened
+            reader.exit_cleanly()
         terminal.press("\r")
         sent = client.provider.next(draft)
-        assert json.dumps(sent.request["messages"], ensure_ascii=False).count(draft) == 1
+        model_context = json.dumps(sent.request["messages"], ensure_ascii=False)
+        assert model_context.count(draft) == 1 and prefix not in model_context and tail not in model_context
         sent.text("Recovered from Esc")
         screen = terminal.expect("Recovered from Esc")["screen"]
         assert "Late cancelled text" not in screen
@@ -325,7 +348,7 @@ def preserve_draft_after_interrupt(client):
 
         eventually("post-interrupt result to commit", committed)
         terminal.exit_cleanly()
-    print("Esc interrupted the observed work. Enter sent the preserved draft and exit restored the terminal.")
+    print("Esc kept only the visible reply and the unsent draft. Reopening restored the partial reply without adding it to model context.")
 
 
 def editable_multiline_paste(client):
