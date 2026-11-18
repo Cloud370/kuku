@@ -13,7 +13,7 @@ use crate::theme::{
     CODE_TEXT, ERROR, MUTED,
 };
 
-use super::{append, wrap_bounded};
+use super::{append, document, wrap_bounded};
 
 const MAX_SYNTAX_BYTES: usize = 8 * 1024;
 const MAX_SYNTAX_LINES: usize = 128;
@@ -57,6 +57,10 @@ impl CodeBlock {
 
     pub(super) fn push(&mut self, text: &str) {
         self.text.push_str(text);
+    }
+
+    pub(super) fn markdown(&self) -> Option<&str> {
+        document::is_markdown(self.language.as_deref()?).then_some(self.text.as_str())
     }
 
     pub(super) fn render(

@@ -6,14 +6,17 @@ use ratatui::text::{Line, Span};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use crate::text::{replace_tabs, terminal_text};
+use crate::text::{replace_tabs, shorten, terminal_text};
 use crate::theme::{ACCENT, ERROR, MUTED, SUCCESS};
 
 mod code;
+mod document;
 mod table;
 
 use code::{CodeBlock, SyntaxBudget};
 use table::Table;
+
+const OPTIONS: Options = Options::ENABLE_STRIKETHROUGH.union(Options::ENABLE_TABLES);
 
 pub(crate) fn render_markdown(text: &str, width: usize, limit: usize) -> Vec<Line<'static>> {
     let source = if text.contains("\r\n") {
@@ -25,13 +28,10 @@ pub(crate) fn render_markdown(text: &str, width: usize, limit: usize) -> Vec<Lin
     let mut output = Markdown {
         width: width.max(1),
         limit,
+        preview_documents: true,
         ..Markdown::default()
     };
-    let options = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES;
-    for event in Parser::new_ext(&clean, options) {
-        output.event(event);
-    }
-    output.finish();
+    output.parse(&document::repair_fences(&clean));
     output.lines
 }
 
@@ -109,6 +109,7 @@ fn truncated(mut lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
 struct Markdown {
     width: usize,
     limit: usize,
+    preview_documents: bool,
     lines: Vec<Line<'static>>,
     current: Vec<Span<'static>>,
     table: Option<Table>,
@@ -122,6 +123,17 @@ struct Markdown {
 }
 
 impl Markdown {
+    fn parse(&mut self, source: &str) {
+        for event in Parser::new_ext(source, OPTIONS) {
+            if self.lines.len() > self.limit {
+                break;
+            }
+            self.event(event);
+        }
+        self.finish();
+        self.lines.truncate(self.limit.saturating_add(1));
+    }
+
     fn event(&mut self, event: Event<'_>) {
         match event {
             Event::Start(tag) => self.start(tag),
@@ -304,8 +316,36 @@ impl Markdown {
     fn finish_code(&mut self) {
         let code = self.code.take().expect("code block end");
         let (width, limit, inset) = self.block_area();
-        let rows = code.render(width, limit, &mut self.syntax_budget);
+        let rows = match code.markdown() {
+            Some(source) if self.preview_documents => self.render_document(source, width, limit),
+            Some(_) | None => code.render(width, limit, &mut self.syntax_budget),
+        };
         self.append_block(rows, &inset);
+    }
+
+    fn render_document(&mut self, source: &str, width: usize, limit: usize) -> Vec<Line<'static>> {
+        let full_label = "Markdown preview · /source";
+        let compact_label = "Markdown · /source";
+        let label = if width >= full_label.width() {
+            full_label
+        } else if width >= compact_label.width() {
+            compact_label
+        } else {
+            "Markdown"
+        };
+        let mut rows = vec![Line::styled(shorten(label, width), Style::new().fg(MUTED))];
+        if limit > 0 {
+            let mut document = Markdown {
+                width,
+                limit: limit - 1,
+                syntax_budget: std::mem::take(&mut self.syntax_budget),
+                ..Markdown::default()
+            };
+            document.parse(source);
+            self.syntax_budget = document.syntax_budget;
+            rows.extend(document.lines);
+        }
+        rows
     }
 
     fn block_area(&self) -> (usize, usize, String) {
@@ -361,6 +401,16 @@ mod tests {
                               | 中文 | `a\\|b` | 7 |\n\
                               | 一 | x\\|y | 100 |";
     const LIMIT: usize = 50;
+    const BEFORE_DOCUMENT: &str = "Before **example**\n";
+    const AFTER_DOCUMENT: &str = "After **example**";
+    const DOCUMENT: &str = concat!(
+        "## 中文示例\n\n",
+        "- 检查结果\n\n",
+        "| 阶段 | 结果 |\n| --- | --- |\n| 隔离 | 通过 |\n\n",
+        "```python\nreturn \"通过\"\n```\n\n",
+        "```javascript\nconst total = 1;\n```\n\n",
+        "### 附录\n",
+    );
 
     fn rows(lines: &[Line<'_>]) -> Vec<String> {
         lines
@@ -623,5 +673,147 @@ mod tests {
             .add_modifier
             .contains(Modifier::ITALIC));
         assert!(lines[4].spans[0].style.add_modifier.is_empty());
+    }
+
+    fn document(fence: &str, language: &str) -> String {
+        format!("{BEFORE_DOCUMENT}{fence}{language}\n{DOCUMENT}{fence}\n{AFTER_DOCUMENT}")
+    }
+
+    #[test]
+    fn labeled_markdown_fences_preview_headings_tables_lists_and_language_code() {
+        for (fence, language) in [("````", "markdown title=sample"), ("~~~", "MD")] {
+            let source = document(fence, language);
+            let lines = render_markdown(&source, 40, LIMIT);
+            let plain = rows(&lines);
+            assert_eq!("Before example", plain.first().unwrap());
+            assert!(plain.iter().any(|line| line == "After example"));
+            assert!(plain
+                .iter()
+                .any(|line| line == "Markdown preview · /source"));
+            assert!(plain.iter().any(|line| line.starts_with('┌')));
+            assert!(plain.iter().any(|line| line.contains("隔离 │ 通过")));
+            assert!(plain.iter().any(|line| line == "• 检查结果"));
+            assert!(plain.iter().any(|line| line == "附录"));
+            assert!(plain.iter().any(|line| line.starts_with("╭─ python ")));
+            assert!(plain.iter().any(|line| line.starts_with("╭─ javascript ")));
+            assert!(plain.iter().all(|line| !line.contains("```")));
+            assert!(lines.iter().flat_map(|line| &line.spans).any(|span| {
+                span.content == "中文示例" && span.style.add_modifier.contains(Modifier::BOLD)
+            }));
+            for keyword in ["return", "const"] {
+                assert!(
+                    lines.iter().flat_map(|line| &line.spans).any(|span| {
+                        span.content == keyword && span.style.fg == Some(CODE_KEYWORD)
+                    }),
+                    "missing the language-specific style for {keyword}"
+                );
+            }
+
+            let width = 12;
+            let narrow = wrap_bounded(render_markdown(&source, width, LIMIT), width, LIMIT);
+            let narrow_rows = rows(&narrow);
+            assert!(narrow.iter().all(|line| line.width() <= width));
+            assert!(narrow_rows.iter().any(|line| line == "阶段: 隔离"));
+            assert!(narrow_rows.iter().any(|line| line == "结果: 通过"));
+        }
+    }
+
+    #[test]
+    fn same_length_labeled_fences_reflow_a_streamed_document_at_its_actual_end() {
+        let source = document("```", "markdown");
+        for prefix in [
+            source.split("return").next().unwrap(),
+            source.split("const").next().unwrap(),
+            source.split("### 附录").next().unwrap(),
+        ] {
+            let plain = rows(&render_markdown(prefix, 44, LIMIT));
+            assert_eq!(
+                1,
+                plain
+                    .iter()
+                    .filter(|line| line.as_str() == "中文示例")
+                    .count()
+            );
+            assert_eq!(
+                1,
+                plain
+                    .iter()
+                    .filter(|line| line.starts_with("╭─ python "))
+                    .count()
+            );
+            assert!(plain.iter().any(|line| line.contains("隔离 │ 通过")));
+        }
+
+        let expected = document("````", "markdown");
+        assert_eq!(
+            render_markdown(&expected, 44, LIMIT),
+            render_markdown(&source, 44, LIMIT),
+        );
+        let adjacent = format!("{source}\n\n{source}");
+        let expected = format!("{expected}\n\n{expected}");
+        assert_eq!(
+            render_markdown(&expected, 44, 2 * LIMIT),
+            render_markdown(&adjacent, 44, 2 * LIMIT),
+        );
+    }
+
+    #[test]
+    fn incomplete_standard_document_keeps_its_nested_code_inside_the_quote_width() {
+        let open = "> ````markdown\n> # 中文\n>\n> ```rust\n> let 值 = 7;";
+        let width = 26;
+        let streaming = render_markdown(open, width, LIMIT);
+        let plain = rows(&streaming);
+        assert!(plain.iter().any(|line| line == "│ 中文"));
+        assert!(plain.iter().any(|line| line.starts_with("│ ╭─ rust ")));
+        assert!(plain.iter().any(|line| line.starts_with("│ │ let 值 = 7;")));
+        assert!(streaming.iter().all(|line| line.width() <= width));
+
+        let complete = format!("{open}\n> ```\n> ````");
+        assert_eq!(streaming, render_markdown(&complete, width, LIMIT));
+    }
+
+    #[test]
+    fn ordinary_code_and_a_second_document_layer_keep_their_literal_content() {
+        let source = concat!(
+            "````text\n```markdown\n# Source, not a heading\n```\n````\n\n",
+            "~~~~markdown\n# Rendered heading\n\n",
+            "````md\n# Inner source\n````\n~~~~",
+        );
+        let plain = rows(&render_markdown(source, 50, LIMIT));
+        assert_eq!(
+            1,
+            plain
+                .iter()
+                .filter(|line| line.contains("Markdown preview"))
+                .count()
+        );
+        assert!(plain.iter().any(|line| line.contains("│ ```markdown ")));
+        assert!(plain
+            .iter()
+            .any(|line| line.contains("│ # Source, not a heading ")));
+        assert!(plain.iter().any(|line| line == "Rendered heading"));
+        assert!(plain.iter().any(|line| line.contains("│ # Inner source ")));
+    }
+
+    #[test]
+    fn nested_document_uses_the_reply_highlighting_and_row_budgets() {
+        let source = format!(
+            "```rust\n{}```\n\n````markdown\n```rust\nlet inside = 7;\n```\n````",
+            "let before = 1;\n".repeat(128)
+        );
+        let lines = render_markdown(&source, 40, 160);
+        assert!(lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .any(|span| { span.content == "let" && span.style.fg == Some(CODE_KEYWORD) }));
+        assert!(lines.iter().flat_map(|line| &line.spans).any(|span| {
+            span.content.contains("let inside = 7;") && span.style.fg == Some(CODE_TEXT)
+        }));
+
+        let source = format!("~~~~md\n{}~~~~", "## 长文\n\n".repeat(300));
+        let limit = 5;
+        let lines = render_markdown(&source, 40, limit);
+        assert_eq!(limit + 1, lines.len());
+        assert_eq!("…", rows(&wrap_bounded(lines, 40, limit)).last().unwrap());
     }
 }
