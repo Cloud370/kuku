@@ -15,6 +15,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::Terminal;
 use serde_json::json;
+use unicode_width::UnicodeWidthStr;
 
 use super::{render, render_at, ActivityFrame};
 use crate::app::{Address, App, Modal};
@@ -335,13 +336,20 @@ fn clicking_the_queue_opens_an_isolated_editor_and_saves_the_exact_replacement()
 #[test]
 fn blank_welcome_scales_down_and_active_session_uses_one_branded_row() {
     let mut app = app();
-    let wide = screen(&mut app, 118, 28);
-    let rows: Vec<_> = wide.lines().collect();
-    assert_eq!("", rows[0].trim());
-    assert_eq!("⢎⡱  kuku", rows[1].trim());
-    assert!(rows[2].contains("New session"));
-    assert!(rows[4].contains("Enter sends your first prompt"));
-    assert!(rows[4].contains("/resume opens a saved session"));
+    for width in [64, 118] {
+        let welcome = screen(&mut app, width, 28);
+        let rows: Vec<_> = welcome.lines().collect();
+        assert_eq!("", rows[0].trim());
+        assert_eq!("⢎⡱  kuku", rows[1].trim());
+        let indent = " ".repeat(rows[1].split_once("kuku").unwrap().0.width());
+        assert_eq!(format!("{indent}New session"), rows[2].trim_end());
+        assert!(rows[4].starts_with(&format!("{indent}Enter sends your first prompt")));
+        if width == 64 {
+            assert!(rows[5].starts_with(&format!("{indent}/resume opens a saved session")));
+        } else {
+            assert!(rows[4].contains("/resume opens a saved session"));
+        }
+    }
 
     let short = screen(&mut app, 29, 6);
     assert!(short.lines().next().unwrap().contains("kuku · New session"));

@@ -15,7 +15,6 @@ const BRAND: &str = "kuku";
 const SEPARATOR: &str = " · ";
 const WELCOME_WIDTH: u16 = 56;
 const WELCOME_HEIGHT: u16 = 7;
-const WELCOME_INDENT: &str = "    ";
 const SESSION_PREFIX_WIDTH: usize = 39;
 const TITLE_RESERVE: usize = 9;
 
@@ -71,29 +70,41 @@ pub(super) fn render_session(
 
 pub(super) fn render_welcome(frame: &mut Frame<'_>, area: Rect, app: &App, show_problem: bool) {
     let spacious = area.width >= WELCOME_WIDTH && area.height >= WELCOME_HEIGHT;
-    let width = usize::from(area.width);
-    let mut lines = if spacious {
-        vec![
-            Line::default(),
-            wordmark(true),
-            Line::from(vec![
-                Span::styled("▝▛   ", Style::default().fg(ACCENT)),
-                Span::styled("New session", emphasis(Color::Reset)),
-            ]),
-            Line::default(),
-        ]
+    let (body, mut lines) = if spacious {
+        let brand = wordmark(true);
+        let text_column = (brand.width() - BRAND.width()) as u16;
+        let heading = Rect::new(area.x, area.y + 1, area.width, 1);
+        frame.render_widget(Paragraph::new(brand), heading);
+        let body = Rect::new(
+            area.x + text_column,
+            area.y + 2,
+            area.width - text_column,
+            area.height - 2,
+        );
+        (
+            body,
+            vec![
+                Line::styled("New session", emphasis(Color::Reset)),
+                Line::default(),
+            ],
+        )
     } else {
         let mut identity = wordmark(area.width >= 25);
-        append(&mut identity, "New session", width, emphasis(Color::Reset));
-        vec![identity]
+        append(
+            &mut identity,
+            "New session",
+            usize::from(area.width),
+            emphasis(Color::Reset),
+        );
+        (area, vec![identity])
     };
-    let indent = if spacious { WELCOME_INDENT } else { "" };
+    let width = usize::from(body.width);
     if let Some(line) = empty_notice(app, width, show_problem).into_iter().next() {
         lines.push(line);
     }
-    let remaining = usize::from(area.height).saturating_sub(lines.len());
-    lines.extend(welcome_actions(width, indent, remaining));
-    frame.render_widget(Paragraph::new(lines), area);
+    let remaining = usize::from(body.height).saturating_sub(lines.len());
+    lines.extend(welcome_actions(width, remaining));
+    frame.render_widget(Paragraph::new(lines), body);
 }
 
 pub(super) fn empty_notice(app: &App, width: usize, show_problem: bool) -> Vec<Line<'static>> {
@@ -127,22 +138,20 @@ fn wordmark(mark: bool) -> Line<'static> {
     line
 }
 
-fn welcome_actions(width: usize, indent: &'static str, rows: usize) -> Vec<Line<'static>> {
+fn welcome_actions(width: usize, rows: usize) -> Vec<Line<'static>> {
     let muted = Style::default().fg(MUTED);
     let action = Style::default().fg(Color::Reset);
-    let available = width.saturating_sub(indent.width());
-    let send = if available >= 31 {
+    let send = if width >= 31 {
         " sends your first prompt"
     } else {
         " to send"
     };
-    let resume = if available >= 31 {
+    let resume = if width >= 31 {
         " opens a saved session"
     } else {
         ""
     };
     let mut input = Line::from(vec![
-        Span::raw(indent),
         Span::styled(Shortcut::ENTER.label, action),
         Span::styled(send, muted),
     ]);
@@ -160,7 +169,7 @@ fn welcome_actions(width: usize, indent: &'static str, rows: usize) -> Vec<Line<
             muted,
         )];
     }
-    vec![input, Line::from(vec![Span::raw(indent), command, caption])]
+    vec![input, Line::from(vec![command, caption])]
 }
 
 fn append(line: &mut Line<'static>, label: &str, width: usize, style: Style) {
