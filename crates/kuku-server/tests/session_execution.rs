@@ -117,16 +117,16 @@ async fn one_observer_gets_selected_text_and_bounded_activity_from_a_streaming_p
     )
     .await
     .bytes_stream();
+    let mut late_parent_buffer = Vec::new();
     let recovered = seek_frame(
         &mut late_parent,
-        &mut Vec::new(),
+        &mut late_parent_buffer,
         "reviewer prefix on late parent attachment",
         |frame| frame["agent"] == "reviewer" && frame["event"]["type"] == "reply_preview",
     )
     .await;
     assert_eq!(preview, recovered["event"]["content"]);
     assert_eq!("", recovered["event"]["reasoning_preview"]);
-    drop(late_parent);
     let after = snapshot["cursor"].as_u64().unwrap();
     additional.send(()).unwrap();
     let middle = seek_frame(
@@ -137,6 +137,15 @@ async fn one_observer_gets_selected_text_and_bounded_activity_from_a_streaming_p
     )
     .await;
     assert_eq!(between, middle["event"]["content"]);
+    let late_middle = seek_frame(
+        &mut late_parent,
+        &mut late_parent_buffer,
+        "first new delta after the peer prefix",
+        text_frame,
+    )
+    .await;
+    assert_eq!(between, late_middle["event"]["content"]);
+    drop(late_parent);
     drop(reviewer);
 
     let mut reattached = observe_agent_activity(&server, id, "reviewer", after)

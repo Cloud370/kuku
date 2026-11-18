@@ -314,16 +314,10 @@ async fn follow(
     loop {
         if let Some(session) = manager.open_session(&target.path) {
             let turns = TurnLookup::Live(session.clone());
-            let activity_agent = agent.filter(|_| include_agent_activity);
-            let mut observer = match activity_agent {
-                Some(address) => session.observe_agent(after, address),
+            let mut observer = match agent.filter(|_| include_agent_activity) {
+                Some(address) => session.observe_agent_with_activity(after, address),
                 None => session.observe(after),
             };
-            if let Some(address) = activity_agent {
-                if !write_peer_previews(send, &session, address).await {
-                    return Ok(());
-                }
-            }
             loop {
                 let observation = tokio::select! {
                     _ = send.closed() => return Ok(()),
@@ -415,20 +409,6 @@ async fn follow(
             }
         }
     }
-}
-
-async fn write_peer_previews(send: &FrameWriter, session: &Session, address: &str) -> bool {
-    let Ok((view, previews)) = session.agent_view_with_replies(address) else {
-        return true;
-    };
-    for (peer, reply) in previews.peers {
-        let number = session.turn_number(&peer, reply.turn);
-        let frame = reply_preview_frame(&peer, view.cursor, &reply, number);
-        if !write_frame(send, frame).await {
-            return false;
-        }
-    }
-    true
 }
 
 async fn write_frame(send: &FrameWriter, frame: Value) -> bool {
