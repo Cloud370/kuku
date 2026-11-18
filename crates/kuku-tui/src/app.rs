@@ -919,6 +919,7 @@ impl App {
                 snapshot.reply_preview = None;
                 pane.set_snapshot(snapshot);
                 self.sync_withdraw_picker();
+                self.sync_queued_picker();
             }
             Err(error) => self.problem(format!("Agent state · {error} · /reconnect")),
         }

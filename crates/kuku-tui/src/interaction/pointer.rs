@@ -55,9 +55,7 @@ impl App {
                     Some(ClickTarget::JumpLatest)
                 } else if self.composer_area.contains(position) {
                     Some(ClickTarget::Composer)
-                } else if self.delivery_area.contains(position)
-                    && self.queued_for_edit().next().is_some()
-                {
+                } else if self.delivery_area.contains(position) && self.has_queued_input() {
                     Some(ClickTarget::Queued)
                 } else {
                     self.text_selection

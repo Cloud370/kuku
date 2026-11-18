@@ -164,7 +164,7 @@ impl App {
             key if editing && Shortcut::ENTER.matches(key) => self.send(Timing::Steer),
             key if Shortcut::UP.matches(key)
                 && self.pane().draft.text().is_empty()
-                && self.queued_for_edit().next().is_some() =>
+                && self.has_queued_input() =>
             {
                 self.open_queued()
             }

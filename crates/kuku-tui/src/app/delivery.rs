@@ -256,6 +256,44 @@ pub(super) fn ordinary_input(entry: &QueuedInput) -> bool {
 }
 
 impl App {
+    pub(crate) fn has_queued_input(&self) -> bool {
+        self.pane()
+            .deliveries
+            .rows()
+            .iter()
+            .any(|row| row.status == SubmissionStatus::Queued)
+    }
+
+    pub(crate) fn open_queued(&mut self) {
+        self.picker(PickerKind::Queued, Vec::new());
+        self.sync_queued_picker();
+        if matches!(&self.modal, Some(Modal::Picker(picker)) if picker.loading) {
+            self.refresh();
+        }
+    }
+
+    pub(crate) fn sync_queued_picker(&mut self) {
+        if !matches!(&self.modal, Some(Modal::Picker(picker)) if matches!(picker.kind, PickerKind::Queued))
+        {
+            return;
+        }
+        let choices: Vec<_> = self
+            .queued_for_edit()
+            .map(|entry| {
+                Choice::new(
+                    shorten(&single_line(&entry.input.text), 120),
+                    "Enter opens editor · /withdraw removes an input",
+                    ChoiceKind::EditQueued(entry.receipt.command_id.clone()),
+                )
+            })
+            .collect();
+        let loading = choices.is_empty() && self.has_queued_input();
+        if let Some(Modal::Picker(picker)) = &mut self.modal {
+            picker.set_local(choices);
+            picker.loading = loading;
+        }
+    }
+
     pub(crate) fn queued_for_edit(&self) -> impl Iterator<Item = &QueuedInput> {
         let pane = self.pane();
         pane.snapshot
@@ -267,20 +305,6 @@ impl App {
                         row.id == entry.receipt.command_id && row.status == SubmissionStatus::Queued
                     })
             })
-    }
-
-    pub(crate) fn open_queued(&mut self) {
-        let choices = self
-            .queued_for_edit()
-            .map(|entry| {
-                Choice::new(
-                    shorten(&single_line(&entry.input.text), 120),
-                    "Enter opens editor · /withdraw removes an input",
-                    ChoiceKind::EditQueued(entry.receipt.command_id.clone()),
-                )
-            })
-            .collect();
-        self.picker(PickerKind::Queued, choices);
     }
 
     pub(crate) fn edit_queued(&mut self, input_command_id: String) {

@@ -26,7 +26,7 @@ pub(super) fn lines(app: &App, width: usize, limit: u16) -> Vec<Line<'static>> {
     if rows.len() > visible {
         title.push_str(&format!(" · {} more", rows.len() - visible));
     }
-    if app.queued_for_edit().next().is_some() {
+    if app.has_queued_input() {
         title.push_str(&format!(
             " · {} /queued Edit · /withdraw",
             Shortcut::UP.label

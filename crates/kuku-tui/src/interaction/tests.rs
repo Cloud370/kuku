@@ -1,7 +1,10 @@
 use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use kuku_client::{Action, NamedValue, NamedValueKind, NamedValueSource, OutputReference};
+use kuku_client::{
+    Acknowledgement, Action, Input, InputSource, InputStatus, InputTiming, NamedValue,
+    NamedValueKind, NamedValueSource, OutputReference, Receipt, Timing,
+};
 use serde_json::json;
 
 use crate::app::{App, Modal};
@@ -73,6 +76,51 @@ fn naming_a_paste_before_any_prompt_saves_text_and_attaches_the_exact_reference(
     assert!(matches!(app.effects.last(), Some(Job::Save(command))
         if matches!(&command.action, Action::Send { text, create: None, values, .. }
             if text == "Review the attached facts" && *values == [reference])));
+}
+
+#[test]
+fn up_waits_for_editable_bytes_when_the_queue_receipt_precedes_the_snapshot() {
+    let mut app = connected_app();
+    app.pane_mut().exists = true;
+    app.paste("queued text");
+    app.send(Timing::NextTurn);
+    let Some(Job::Save(command)) = app.effects.pop() else {
+        panic!("queued input should be locally pending");
+    };
+    let receipt = Receipt {
+        agent: command.target.agent,
+        command_id: command.command_id.clone(),
+        event_id: 7,
+    };
+    app.update(Update::Sent(
+        command.command_id.clone(),
+        Ok(Acknowledgement {
+            receipt: receipt.clone(),
+            status: Some(InputStatus::Queued),
+            replayed: false,
+        }),
+    ));
+    press(&mut app, KeyCode::Up);
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+        if matches!(picker.kind, PickerKind::Queued) && picker.loading));
+    let Some(Job::Refresh(selection)) = app.effects.pop() else {
+        panic!("queue editor should refresh the original text");
+    };
+    let mut input = Input::new(command.command_id, "main", "queued text");
+    input.source = InputSource::Host("http".into());
+    input.timing = InputTiming::NextTurn;
+    let snapshot = serde_json::from_value(json!({
+        "session_id":app.active.session,"workspace":app.workspace,"cursor":7,
+        "agent":{"address":"main","status":"running","config":{},"pending_inputs":1,
+                 "usage":{"model_requests":0,"unreported_requests":0}},
+        "agents":[],
+        "pending":[{"receipt":receipt,"input":input}]
+    }))
+    .unwrap();
+    app.update(Update::Refreshed(selection, Ok(Box::new(snapshot))));
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
+        if matches!(prompt.kind, PromptKind::QueuedInput { .. }) && prompt.editor.text() == "queued text"));
 }
 
 #[test]
