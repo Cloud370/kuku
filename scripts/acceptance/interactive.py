@@ -231,6 +231,56 @@ def fast_markdown_stream(client):
     print(f"Fast stream retained {len(first + last)} characters and the editable draft.")
 
 
+def configure_statusline(client):
+    workspace = client.workspace("work-statusline")
+    settings = client.home / "tui.toml"
+    initial = '# Terminal preferences\n[statusline]\nfields = ["agent", "workspace"]\n'
+    settings.write_text(initial, encoding="utf-8")
+    sdk_settings = (client.home / "config.toml").read_bytes()
+
+    def footer(terminal, predicate):
+        def read():
+            line = terminal.request("screen")["screen"].splitlines()[-1].strip()
+            return line if predicate(line) else None
+        return eventually("expected status line preview", read)
+
+    def open_settings(terminal):
+        terminal.press("/statusline\r")
+        terminal.expect("Status line settings")
+
+    try:
+        with client.terminal(workspace) as terminal:
+            original = footer(terminal, lambda line: line.startswith("Agent main") and "work-statusline" in line)
+            open_settings(terminal)
+            terminal.press(" ")
+            footer(terminal, lambda line: "Agent main" not in line and "work-statusline" in line)
+            terminal.press("\x1b")
+            footer(terminal, lambda line: line == original)
+            assert settings.read_text(encoding="utf-8") == initial
+            open_settings(terminal)
+            terminal.press("\x1b[C")
+            reordered = footer(terminal, lambda line: "work-statusline" in line and line.endswith("Agent main"))
+            terminal.press("\r")
+            terminal.expect("Status line saved")
+            assert settings.read_text(encoding="utf-8") != initial
+            terminal.exit_cleanly()
+
+        with client.terminal(workspace) as restored:
+            footer(restored, lambda line: line == reordered)
+            open_settings(restored)
+            restored.press("r")
+            footer(restored, lambda line: "Connected" in line)
+            restored.press("\r")
+            restored.expect("Status line saved")
+            assert "fields" not in settings.read_text(encoding="utf-8")
+            restored.exit_cleanly()
+        assert (client.home / "config.toml").read_bytes() == sdk_settings
+        client.provider.assert_idle()
+    finally:
+        settings.unlink(missing_ok=True)
+    print("Status line preview, cancel, reorder, save, reopen and restore preserved SDK settings.")
+
+
 def preserve_draft_after_interrupt(client):
     workspace = client.workspace("work-interrupt")
     initial = "hold this response before Esc"
@@ -661,6 +711,7 @@ def main():
             installed_upgrade(client, *options.upgrade)
         workspace, session, title = two_workspaces_and_disconnect(client)
         fast_markdown_stream(client)
+        configure_statusline(client)
         preserve_draft_after_interrupt(client)
         editable_multiline_paste(client)
         wait_restart_and_recover_crash(client, workspace, session, title)
