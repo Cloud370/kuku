@@ -6,42 +6,51 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, Modal, Pane};
+use crate::app::{App, Modal, ServiceStatus};
 use crate::editor::Editor;
-use crate::jobs::agent_status;
 use crate::keys::Shortcut;
 use crate::markup::{render_literal, wrap, ACCENT, MUTED};
 use crate::menu::{Picker, PickerKind, Prompt};
 use crate::output::OutputViewer;
+use crate::statusline::StatusLine;
 use crate::text::{shorten, single_line};
 
 const COMPOSER_HEIGHT: u16 = 6;
 const NARROW_COMPOSER_HEIGHT: u16 = 4;
+const MAX_BANNER_ROWS: u16 = 5;
+const MIN_TRANSCRIPT_ROWS: u16 = 2;
 const PICKER_WIDTH: u16 = 88;
 const PICKER_HEIGHT: u16 = 25;
 const OUTPUT_WIDTH: u16 = 112;
 
-pub(crate) fn render(frame: &mut Frame<'_>, app: &mut App) {
+pub(crate) fn render(frame: &mut Frame<'_>, app: &mut App, statusline: &StatusLine) {
     let outer = frame.area();
     if outer.is_empty() {
         app.text_selection.clear();
         return;
     }
     let area = outer.inner(Margin::new(u16::from(outer.width >= 24), 0));
-    let banner = banner(app, usize::from(area.width), usize::from(area.height));
+    let width = usize::from(area.width);
+    let statusline = statusline.render_line(app, width);
+    let status_height = u16::from(statusline.is_some());
     let editor_height = match area.height {
-        0..=3 => area.height.saturating_sub(1),
-        4..=11 => NARROW_COMPOSER_HEIGHT.min(area.height - 2),
+        0..=3 => area.height.saturating_sub(status_height),
+        4..=11 => NARROW_COMPOSER_HEIGHT.min(area.height - status_height - 1),
         _ => COMPOSER_HEIGHT,
     };
+    let banner_rows = area
+        .height
+        .saturating_sub(editor_height + status_height + MIN_TRANSCRIPT_ROWS)
+        .min(MAX_BANNER_ROWS);
+    let banner = banner(app, width, usize::from(banner_rows));
     let [transcript, banner_area, editor, status] = Layout::vertical([
         Constraint::Min(0),
         Constraint::Length(banner.len() as u16),
         Constraint::Length(editor_height),
-        Constraint::Length(1),
+        Constraint::Length(status_height),
     ])
     .areas(area);
-    render_transcript(frame, transcript, app);
+    render_transcript(frame, transcript, app, banner_area.height == 0);
     frame.render_widget(Paragraph::new(banner), banner_area);
     let composer_title = format!("You · draft to {}", app.active.agent);
     let composer_title = if composer_title.width() + 4 <= usize::from(editor.width) {
@@ -62,7 +71,9 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &mut App) {
         composer_focused,
         &format!("Type a prompt · {} Actions", Shortcut::ACTIONS.label),
     );
-    render_status(frame, status, app);
+    if let Some(line) = statusline {
+        frame.render_widget(Paragraph::new(line), status);
+    }
     let main_areas = [transcript, banner_area, inner, status];
     let modal_area = render_modal(frame, outer, app);
     app.text_selection.render(
@@ -73,7 +84,7 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &mut App) {
     );
 }
 
-fn render_transcript(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
+fn render_transcript(frame: &mut Frame<'_>, area: Rect, app: &mut App, show_service_problem: bool) {
     if area.is_empty() {
         app.transcript_area = (usize::from(area.width).max(1), 1);
         return;
@@ -96,7 +107,7 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     app.transcript_area = (width.max(1), height.max(1));
     let mut view = app.pane_mut().transcript.project(width, height);
     if view.lines.is_empty() && height > 0 {
-        view.lines = welcome(app, width, height);
+        view.lines = welcome(app, width, height, show_service_problem);
     }
     if !view.following {
         let reading = format!("Reading · {} latest", Shortcut::LATEST.label);
@@ -131,17 +142,28 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     frame.render_widget(Paragraph::new(view.lines), body);
 }
 
-fn welcome(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
+fn welcome(
+    app: &App,
+    width: usize,
+    height: usize,
+    show_service_problem: bool,
+) -> Vec<Line<'static>> {
     let pane = app.pane();
     let help;
-    let (text, color) = if let Some(error) = &app.connection_problem {
-        (error.as_str(), Color::Yellow)
-    } else if app.connecting {
-        ("Connecting to the Session service…", MUTED)
+    let status = app.service_status();
+    let (text, color) = if let Some(error) = app.service_problem() {
+        if !show_service_problem {
+            return Vec::new();
+        }
+        (error, Color::Yellow)
     } else if pane.opening {
         ("Opening the conversation…", MUTED)
-    } else if let Some(error) = pane.observation_problem() {
-        (error, Color::Yellow)
+    } else if status == ServiceStatus::Connecting {
+        ("Connecting to the Session service…", MUTED)
+    } else if status == ServiceStatus::Reconnecting {
+        ("Reconnecting to the Session service…", MUTED)
+    } else if status == ServiceStatus::Restarting {
+        ("Restarting the Session service…", MUTED)
     } else if pane.exists {
         ("Send a message to this Agent.", MUTED)
     } else {
@@ -160,16 +182,16 @@ fn welcome(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
 }
 
 fn banner(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
-    if height < COMPOSER_HEIGHT as usize + 3 {
+    if height == 0 {
         return Vec::new();
     }
     let pane = app.pane();
-    let mut lines = Vec::new();
-    if let Some(wait) = waiting(pane, &app.active.agent) {
+    let mut lines = waiting(app, width);
+    if let Some(problem) = app.service_problem() {
         lines.extend(
-            wrap(render_literal(&wait, emphasis(Color::Yellow)), width)
-                .into_iter()
-                .take(2),
+            problem.lines().take(2).map(|line| {
+                Line::styled(shorten(&single_line(line), width), emphasis(Color::Yellow))
+            }),
         );
     }
     if let Some(problem) = pane.model_problem.as_ref() {
@@ -189,22 +211,8 @@ fn banner(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
             Style::default().fg(ACCENT),
         ));
     }
-    if pane.exists {
-        if let Some(problem) = app
-            .connection_problem
-            .as_deref()
-            .or_else(|| pane.observation_problem())
-        {
-            lines.push(Line::styled(
-                shorten(&single_line(problem), width),
-                emphasis(Color::Yellow),
-            ));
-        } else if let Some(snapshot) = pane
-            .snapshot
-            .as_ref()
-            .filter(|snapshot| snapshot.agent.last_error.is_some())
-        {
-            let error = snapshot.agent.last_error.as_deref().unwrap_or_default();
+    if let Some(snapshot) = &pane.snapshot {
+        if let Some(error) = &snapshot.agent.last_error {
             let recovery = if snapshot.agent.status == AgentStatus::Interrupted {
                 format!(
                     "Interrupted · /continue after reviewing tool effects · {}",
@@ -226,129 +234,45 @@ fn banner(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
             Style::default().fg(color),
         ));
     }
-    lines.truncate(height.saturating_sub(10).clamp(1, 5));
+    lines.truncate(height);
     lines
 }
 
-fn waiting(pane: &Pane, agent: &str) -> Option<String> {
-    let snapshot = pane.snapshot.as_ref()?;
-    if let Some(question) = &snapshot.agent.question {
-        Some(format!(
-            "Waiting · {} · {} Reply\n{}",
-            single_line(agent),
-            Shortcut::REPLY.label,
-            question.text
-        ))
-    } else {
-        snapshot.agent.permission.as_ref().map(|permission| {
-            format!(
-                "Waiting · {} · {} Review authorization\n{}",
-                single_line(agent),
-                Shortcut::REPLY.label,
-                permission.summary
-            )
-        })
-    }
-}
-
-fn render_status(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let pane = app.pane();
-    let queued = pane
-        .snapshot
-        .as_ref()
-        .map_or(0, |snapshot| snapshot.agent.pending_inputs);
-    let state = activity(app);
-    let color = match state {
-        "Offline" | "Failed" | "Interrupted" => Color::Red,
-        "Waiting" | "Stopping" => Color::Yellow,
-        "Running" | "Sending" => Color::Green,
-        _ => ACCENT,
+fn waiting(app: &App, width: usize) -> Vec<Line<'static>> {
+    let Some(snapshot) = &app.pane().snapshot else {
+        return Vec::new();
     };
-    let state = if queued > 0 {
-        format!("{state} · {queued} queued")
+    let (action, request) = if let Some(question) = &snapshot.agent.question {
+        ("Reply", &question.text)
+    } else if let Some(permission) = &snapshot.agent.permission {
+        ("Review authorization", &permission.summary)
     } else {
-        state.to_owned()
+        return Vec::new();
     };
-    let server = match &app.endpoint {
-        Some(endpoint) => format!(
-            "{} {}",
-            if app.remote { "Remote" } else { "Local" },
-            single_line(endpoint)
-        ),
-        None => "Local server".to_owned(),
-    };
-    let workspace = single_line(&app.workspace.to_string_lossy());
-    let route = pane
-        .effective_model_label()
-        .map(|route| single_line(&route))
-        .unwrap_or_else(|| "Model pending".into());
-    let mut rest = [server, workspace, route];
-    let mut width = usize::from(area.width).saturating_sub(state.width());
-    if width < 12 {
-        frame.render_widget(
-            Paragraph::new(Line::styled(
-                shorten(&state, usize::from(area.width)),
-                emphasis(color),
-            )),
-            area,
-        );
-        return;
-    }
-    let separator = " · ";
-    let mut spans = vec![Span::styled(state, emphasis(color))];
-    width = width.saturating_sub(separator.width() * rest.len());
-    let fixed_width = rest.iter().map(|part| part.width()).sum::<usize>();
-    if fixed_width > width {
-        let mut missing = rest.len();
-        for part in &mut rest {
-            *part = shorten_middle(part, width / missing);
-            width = width.saturating_sub(part.width());
-            missing -= 1;
-        }
-    }
-    for part in rest {
-        spans.push(Span::styled(separator, Style::default().fg(MUTED)));
-        spans.push(Span::raw(part));
-    }
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
-}
-
-fn activity(app: &App) -> &'static str {
-    let pane = app.pane();
-    if app.connecting {
-        return "Connecting";
-    }
-    if app.restarting {
-        return "Restarting";
-    }
-    if app.connection_problem.is_some() || pane.observation_problem().is_some() {
-        return "Offline";
-    }
-    if pane.opening {
-        return "Opening";
-    }
-    if pane.stopping
-        || pane
-            .snapshot
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.cleaning_up)
-    {
-        return "Stopping";
-    }
-    if pane.sending {
-        return "Sending";
-    }
-    if let Some(snapshot) = &pane.snapshot {
-        if snapshot.agent.last_error.is_some() && snapshot.agent.status == AgentStatus::Idle {
-            return "Failed";
-        }
-        return agent_status(snapshot.agent.status);
-    }
-    if pane.model_problem.is_some() {
-        "Configuration"
+    let agent = single_line(&app.active.agent);
+    let compact = if app.available() {
+        format!("{} {action}", Shortcut::REPLY.label)
     } else {
-        "Ready"
-    }
+        "Last seen waiting".into()
+    };
+    let title = if app.available() {
+        format!("Waiting · {agent} · {compact}")
+    } else {
+        format!("{compact} · {agent}")
+    };
+    let title = if title.width() <= width {
+        &title
+    } else {
+        &compact
+    };
+    let style = emphasis(Color::Yellow);
+    let mut lines = vec![Line::styled(shorten(title, width), style)];
+    lines.extend(
+        wrap(render_literal(request, style), width)
+            .into_iter()
+            .take(1),
+    );
+    lines
 }
 
 fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Rect> {
@@ -612,28 +536,6 @@ fn emphasis(color: Color) -> Style {
     Style::default().fg(color).add_modifier(Modifier::BOLD)
 }
 
-fn shorten_middle(text: &str, width: usize) -> String {
-    if text.width() <= width || width < 8 {
-        return shorten(text, width);
-    }
-    let tail_width = width / 2;
-    let mut cells = 0;
-    let mut tail = text.len();
-    for (offset, character) in text.char_indices().rev() {
-        let columns = unicode_width::UnicodeWidthChar::width(character).unwrap_or(0);
-        if cells + columns > tail_width {
-            break;
-        }
-        tail = offset;
-        cells += columns;
-    }
-    format!(
-        "{}{}",
-        shorten(&text[..tail], width.saturating_sub(cells)),
-        &text[tail..]
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -648,14 +550,19 @@ mod tests {
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use ratatui::style::Modifier;
-    use ratatui::Terminal;
+    use ratatui::{Frame, Terminal};
     use serde_json::json;
 
-    use super::render;
+    use super::render as render_with_statusline;
     use crate::app::{Address, App, Modal};
     use crate::jobs::{Job, Update};
     use crate::output::OutputViewer;
+    use crate::statusline::StatusLine;
     use crate::transcript::ToolView;
+
+    fn render(frame: &mut Frame<'_>, app: &mut App) {
+        render_with_statusline(frame, app, &StatusLine::default());
+    }
 
     fn screen(app: &mut App, width: u16, height: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();

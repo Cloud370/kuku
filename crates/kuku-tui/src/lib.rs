@@ -13,6 +13,7 @@ mod markup;
 mod menu;
 mod output;
 mod selection;
+mod statusline;
 mod terminal;
 mod text;
 mod transcript;
