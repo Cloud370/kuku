@@ -6,6 +6,7 @@ from http.server import BaseHTTPRequestHandler
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import threading
@@ -214,9 +215,21 @@ def handoff(client, workspace, browser, args, result):
     result.update(passed=True, changed_files=files, check_exit=0, upgrade_during_tool=True)
 
 
+def saved_output_rows(screen):
+    rows = screen.splitlines()
+    for index, line in enumerate(rows):
+        footer = re.search(r"\d+–\d+ / \d+ bytes · PgUp/PgDn", line)
+        if footer:
+            column = footer.start()
+            title = next(i for i, row in enumerate(rows[:index]) if row.startswith("run_command", column))
+            return [row[column:] for row in rows[title + 1:index]]
+    raise AssertionError("Missing saved command output footer")
+
+
 def review_saved_commands(terminal, count, evidence):
     wanted = {"diff --git a/report.py": "terminal-diff.txt",
               "CSV regression checks passed": "terminal-check.txt"}
+    terminal.request("resize", rows=35, cols=90)
     for index in range(count):
         terminal.press("/tools\r")
         terminal.expect("Tool details and saved output")
@@ -225,16 +238,23 @@ def review_saved_commands(terminal, count, evidence):
         terminal.press("\x1b[B" * index + "\r")
         screen = terminal.expect("bytes · PgUp/PgDn")["screen"]
         for page in range(4):
-            contents = "\n".join(line.partition("│")[2].rpartition("│")[0] for line in screen.splitlines())
+            output = saved_output_rows(screen)
             for marker in list(wanted):
-                if marker in contents:
+                if any(line.startswith(marker) for line in output):
                     (evidence / wanted.pop(marker)).write_text(screen, encoding="utf-8")
             if not wanted:
                 terminal.press("\x1b")
                 return
             if page < 3:
                 terminal.press("\x1b[6~")
-                screen = terminal.request("screen")["screen"]
+                def next_page():
+                    current = terminal.request("screen")["screen"]
+                    return current if current != screen else None
+
+                try:
+                    screen = eventually("a different saved output page", next_page, timeout=1)
+                except AssertionError:
+                    break
         terminal.press("\x1b")
         terminal.expect("CSV totals verified")
     raise AssertionError(f"Saved tool output in the resumed terminal lacked {list(wanted)}")
