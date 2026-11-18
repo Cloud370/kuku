@@ -104,9 +104,9 @@ def windows_diagnostic(client):
     import ctypes
 
     workspace = client.workspace("work-command-diagnostic")
-    command = "dir kuku-absent-38c207b6.txt"
+    command = "dir /b kuku-absent-38c207b6.txt"
     reference = subprocess.run(["cmd.exe", "/d", "/c", command], cwd=workspace, capture_output=True)
-    assert reference.returncode == 1 and reference.stderr
+    assert reference.returncode == 1 and reference.stderr and not reference.stdout
     try:
         diagnostic = reference.stderr.decode("utf-8").strip()
     except UnicodeDecodeError:
