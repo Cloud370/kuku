@@ -21,6 +21,7 @@ pub(crate) enum CommandMenu {
     Model,
     Thinking,
     Copy,
+    StatusLine,
     Details,
     Tools,
     Server,
@@ -45,6 +46,7 @@ impl CommandMenu {
         Self::Model,
         Self::Thinking,
         Self::Copy,
+        Self::StatusLine,
         Self::Details,
         Self::Tools,
         Self::Server,
@@ -69,6 +71,7 @@ impl CommandMenu {
             Self::Model => "model",
             Self::Thinking => "thinking",
             Self::Copy => "copy",
+            Self::StatusLine => "statusline",
             Self::Details => "details",
             Self::Tools => "tools",
             Self::Server => "server",
@@ -100,6 +103,7 @@ impl CommandMenu {
             Self::Model => ("Choose a configured model route", Some(Shortcut::MODEL)),
             Self::Thinking => ("Choose the model's reasoning setting", None),
             Self::Copy => ("Copy the latest reply", None),
+            Self::StatusLine => ("Choose and reorder status line fields", None),
             Self::Details => {
                 return format!(
                     "Choose a visible Agent card · {} toggles previews",

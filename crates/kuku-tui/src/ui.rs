@@ -12,7 +12,6 @@ use crate::keys::Shortcut;
 use crate::markup::{render_literal, wrap};
 use crate::menu::{Picker, PickerKind, Prompt, PromptKind};
 use crate::output::OutputViewer;
-use crate::statusline::StatusLine;
 use crate::text::{shorten, single_line};
 use crate::theme::{
     composer_padding, emphasis, focused_row, horizontal_gutter, panel, panel_padding, surface,
@@ -22,7 +21,7 @@ use crate::theme::{
 const MAX_BANNER_ROWS: u16 = 5;
 const MIN_TRANSCRIPT_ROWS: u16 = 2;
 
-pub(crate) fn render(frame: &mut Frame<'_>, app: &mut App, statusline: &StatusLine) {
+pub(crate) fn render(frame: &mut Frame<'_>, app: &mut App) {
     let outer = frame.area();
     if outer.is_empty() {
         app.text_selection.clear();
@@ -30,7 +29,7 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &mut App, statusline: &StatusLi
     }
     let area = outer.inner(Margin::new(horizontal_gutter(outer.width), 0));
     let width = usize::from(area.width);
-    let footer = statusline.render_line(app, width);
+    let footer = app.displayed_statusline().render_line(app, width);
     let status_height = u16::from(footer.is_some());
     let chrome_rows = if area.height > 3 {
         MIN_TRANSCRIPT_ROWS
@@ -77,7 +76,9 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &mut App, statusline: &StatusLi
     frame.render_widget(composer, editor);
     app.editor_width = content_width.max(1);
     if !heading.is_empty() {
-        let line = statusline.render_composer_heading(app, usize::from(heading.width));
+        let line = app
+            .displayed_statusline()
+            .render_composer_heading(app, usize::from(heading.width));
         frame.render_widget(Paragraph::new(line), heading);
     }
     if let Some(draft) = draft {
@@ -354,6 +355,16 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Rect
         }
         Modal::Output(viewer) => {
             render_output(frame, popup(area, OUTPUT_WIDTH, area.height), viewer)
+        }
+        Modal::StatusLineEditor(editor) => {
+            let available = Rect {
+                height: area.height.saturating_sub(1),
+                ..area
+            };
+            let area = popup(available, PICKER_WIDTH, PICKER_HEIGHT);
+            let inner = render_popup(frame, area, "Status line settings");
+            editor.render(frame, inner);
+            inner
         }
     })
 }

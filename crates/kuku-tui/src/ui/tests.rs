@@ -10,19 +10,14 @@ use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
-use ratatui::{Frame, Terminal};
+use ratatui::Terminal;
 use serde_json::json;
 
-use super::render as render_with_statusline;
+use super::render;
 use crate::app::{Address, App, Modal};
 use crate::jobs::{Job, Update};
 use crate::output::OutputViewer;
-use crate::statusline::StatusLine;
 use crate::transcript::ToolView;
-
-fn render(frame: &mut Frame<'_>, app: &mut App) {
-    render_with_statusline(frame, app, &StatusLine::default());
-}
 
 fn screen(app: &mut App, width: u16, height: u16) -> String {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();

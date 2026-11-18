@@ -20,13 +20,12 @@ ratatui = { version = "0.30", default-features = false, features = ["crossterm"]
 serde = { workspace = true }
 serde_json = { workspace = true }
 syntect = { version = "5.3", default-features = false, features = ["default-syntaxes", "regex-fancy"] }
+tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 toml = "0.8"
+toml_edit = "0.22"
 unicode-segmentation = "1.12"
 unicode-width = "0.2"
-
-[dev-dependencies]
-tempfile = "3"
 
 [target.'cfg(windows)'.dependencies]
 termina = "0.4"

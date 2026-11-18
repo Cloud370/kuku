@@ -87,6 +87,7 @@ impl App {
             Some(Modal::Picker(_)) => self.picker_key(key),
             Some(Modal::Prompt(_)) => self.prompt_key(key),
             Some(Modal::Output(_)) => self.output_key(key),
+            Some(Modal::StatusLineEditor(_)) => self.statusline_key(key),
             None => self.composer_key(key),
         }
     }
@@ -129,6 +130,7 @@ impl App {
             Some(Modal::Prompt(prompt)) => {
                 prompt.instructions_top = prompt.instructions_top.saturating_add_signed(amount)
             }
+            Some(Modal::StatusLineEditor(editor)) => editor.move_selection(amount),
             None => self.scroll(amount),
         }
     }
@@ -474,6 +476,7 @@ impl App {
                 self.search(true);
             }
             CommandMenu::Thinking => self.open_thinking(),
+            CommandMenu::StatusLine => self.open_statusline(),
             CommandMenu::Copy => self.copy_reply(),
             CommandMenu::Details => self.open_agent_details(),
             CommandMenu::Tools => self.open_tools(),

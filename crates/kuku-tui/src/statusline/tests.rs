@@ -11,8 +11,9 @@ use super::{
     compact_token_count, render_segments, Field, Priority, Segment, StatusLine, SEPARATOR,
 };
 use crate::app::{Address, App};
+use crate::config::StatusLineSettings;
 use crate::jobs::{Job, Update};
-use crate::theme::{ERROR, WARNING};
+use crate::theme::{ERROR, MODEL, WARNING};
 use crate::ui;
 
 fn connected_app() -> App {
@@ -95,9 +96,12 @@ fn submit_draft(app: &mut App) -> String {
 
 fn screen(app: &mut App, statusline: &StatusLine, width: u16, height: u16) -> Vec<String> {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-    terminal
-        .draw(|frame| ui::render(frame, app, statusline))
-        .unwrap();
+    let settings = std::mem::replace(
+        &mut app.statusline_settings,
+        StatusLineSettings::in_memory(statusline.clone()),
+    );
+    terminal.draw(|frame| ui::render(frame, app)).unwrap();
+    app.statusline_settings = settings;
     terminal
         .backend()
         .buffer()
@@ -303,21 +307,15 @@ fn default_status_line_shows_context_tps_and_workspace_in_one_row() {
     ] {
         assert!(footer.contains(label), "missing {label:?} in {footer}");
     }
-    assert!(footer.starts_with("Connected · Running"));
-    for detail in [
-        "http://",
-        "Model pending",
-        "129M in",
-        "210K out",
-        "Cache hit",
-    ] {
+    assert!(footer.starts_with("Model pending · Connected · Running"));
+    for detail in ["http://", "129M in", "210K out", "Cache hit"] {
         assert!(!footer.contains(detail), "{footer}");
     }
     assert!(!footer.contains(workspace.to_string_lossy().as_ref()));
     assert!(rows[21].contains("To main") && rows[21].contains("2 queued, Draft"));
     assert!(rows[22].contains("Local draft"));
     let rows = screen(&mut app, &statusline, 80, 24);
-    assert!(rows[23].contains("Ctx 89%") && rows[23].contains("18.4 TPS"));
+    assert!(rows[23].contains("Ctx 89%"));
     assert!(rows[23].contains("work-right") && rows[22].contains("Local draft"));
     let rows = screen(&mut app, &statusline, 29, 24);
     assert!(rows[23].contains("Running") && rows[21].contains("2 queued"));
@@ -326,6 +324,46 @@ fn default_status_line_shows_context_tps_and_workspace_in_one_row() {
         rows[23].contains("Local draft"),
         "the status row should be reclaimed"
     );
+}
+
+#[test]
+fn default_model_field_keeps_the_resolved_identifier_first_at_every_width() {
+    let mut app = connected_app();
+    let version = app
+        .effects
+        .iter()
+        .find_map(|effect| match effect {
+            Job::Model(_, version) => Some(*version),
+            _ => None,
+        })
+        .expect("initial model request");
+    let model = serde_json::from_value(json!({
+        "connection": "configured-model-gateway",
+        "protocol": "openai-responses",
+        "model": "openai/gpt-6-luna",
+        "context_window_tokens": 100_000,
+        "max_output_tokens": 4_000,
+        "settings": {"reasoning_effort": "high"},
+        "capabilities": {"profile": "openai", "reasoning_efforts": ["high"], "service_tiers": []},
+    }))
+    .unwrap();
+    app.update(Update::DefaultModel(version, Ok(model)));
+    let layout = StatusLine::default();
+    for width in [60, 80, 140] {
+        let rows = screen(&mut app, &layout, width, 20);
+        assert!(
+            rows[19].trim().starts_with("openai/gpt-6-luna ·"),
+            "{}",
+            rows[19]
+        );
+    }
+    let configured = StatusLine::parse("model,connection").unwrap();
+    let rows = screen(&mut app, &configured, 140, 20);
+    assert!(rows[19]
+        .trim()
+        .starts_with("openai/gpt-6-luna (configured-model-gateway · high) ·"));
+    let line = layout.render_line(&app, 80).unwrap();
+    assert_eq!(Some(MODEL), line.spans[0].style.fg);
 }
 
 #[test]

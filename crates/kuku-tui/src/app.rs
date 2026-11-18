@@ -7,11 +7,13 @@ use kuku_client::{
     ModelSelection, Observation, Snapshot, Target, Timing, UsageTotals,
 };
 
+use crate::config::StatusLineSettings;
 use crate::editor::Editor;
 use crate::jobs::{Job, Restarted, Selection, Update};
 use crate::menu::{Picker, Prompt};
 use crate::output::OutputViewer;
 use crate::selection::TextSelection;
+use crate::statusline::StatusLineEditor;
 use crate::transcript::{HistoryRequest, Transcript};
 
 mod activity;
@@ -151,26 +153,36 @@ impl Pane {
         self.config_receipt.is_some()
     }
 
-    pub(crate) fn effective_model_label(&self) -> Option<String> {
+    pub(crate) fn effective_model_identity(&self) -> Option<(&str, &str, Option<&str>)> {
         if let Some(snapshot) = &self.snapshot {
             snapshot.selection.as_ref().map(|model| {
-                model_label(
-                    &model.connection,
-                    &model.model,
+                (
+                    model.model.as_str(),
+                    model.connection.as_str(),
                     model.settings.reasoning_effort.as_deref(),
                 )
             })
-        } else if let Some(model) = &self.initial_model {
-            Some(model_label(
-                &model.connection,
-                &model.model,
-                model.settings.reasoning_effort.as_deref(),
-            ))
         } else {
+            self.initial_model.as_ref().map(|model| {
+                (
+                    model.model.as_str(),
+                    model.connection.as_str(),
+                    model.settings.reasoning_effort.as_deref(),
+                )
+            })
+        }
+    }
+
+    pub(crate) fn effective_model_label(&self) -> Option<String> {
+        if let Some((model, connection, effort)) = self.effective_model_identity() {
+            Some(model_label(connection, model, effort))
+        } else if self.snapshot.is_none() {
             self.config()
                 .tier
                 .as_ref()
                 .map(|tier| format!("Tier {tier}"))
+        } else {
+            None
         }
     }
 
@@ -267,6 +279,7 @@ pub(crate) enum Modal {
     Picker(Picker),
     Prompt(Prompt),
     Output(Box<OutputViewer>),
+    StatusLineEditor(StatusLineEditor),
 }
 
 #[derive(Debug)]
@@ -294,6 +307,7 @@ pub(crate) struct App {
     pub(crate) restarting: bool,
     pub(crate) notice: Option<Notice>,
     pub(crate) modal: Option<Modal>,
+    pub(crate) statusline_settings: StatusLineSettings,
     pub(crate) text_selection: TextSelection,
     pub(crate) pending: HashMap<String, PendingItem>,
     pub(crate) editor_width: usize,
@@ -331,6 +345,7 @@ impl App {
             restarting: false,
             notice: None,
             modal: None,
+            statusline_settings: StatusLineSettings::default(),
             text_selection: TextSelection::default(),
             pending: HashMap::new(),
             editor_width: 80,

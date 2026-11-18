@@ -17,7 +17,6 @@ use ratatui::{CompletedFrame, Terminal};
 use crate::app::App;
 use crate::config::load_statusline;
 use crate::jobs::{Job, Jobs, Update};
-use crate::statusline::StatusLine;
 use crate::ui;
 
 #[cfg(windows)]
@@ -64,12 +63,13 @@ pub(crate) async fn run(options: ConnectionOptions) -> io::Result<()> {
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_default();
     let mut app = App::new(workspace, options.remote.clone());
-    let statusline = load_statusline(&options).unwrap_or_else(|problem| {
+    let (settings, problem) = load_statusline(&options);
+    app.statusline_settings = settings;
+    if let Some(problem) = problem {
         app.problem(format!("Using the default status line · {problem}"));
-        StatusLine::default()
-    });
+    }
     let mut jobs = Jobs::new(options);
-    let mut terminal = Screen::new(statusline)?;
+    let mut terminal = Screen::new()?;
     #[cfg(not(windows))]
     let mut events = EventStream::new();
     #[cfg(windows)]
@@ -134,12 +134,11 @@ fn dispatch(app: &mut App, jobs: &mut Jobs, clipboard: &mut Clipboard) {
 
 struct Screen {
     terminal: Terminal<CrosstermBackend<Stdout>>,
-    statusline: StatusLine,
     _restore: Restore,
 }
 
 impl Screen {
-    fn new(statusline: StatusLine) -> io::Result<Self> {
+    fn new() -> io::Result<Self> {
         let mut restore = Restore::new()?;
         let mut stdout = io::stdout();
         execute!(stdout, EnterAlternateScreen, EnableBracketedPaste, Hide)?;
@@ -147,14 +146,13 @@ impl Screen {
         let terminal = Terminal::new(CrosstermBackend::new(stdout)).map_err(io::Error::other)?;
         Ok(Self {
             terminal,
-            statusline,
             _restore: restore,
         })
     }
 
     fn draw(&mut self, app: &mut App) -> io::Result<CompletedFrame<'_>> {
         self.terminal
-            .draw(|frame| ui::render(frame, app, &self.statusline))
+            .draw(|frame| ui::render(frame, app))
             .map_err(io::Error::other)
     }
 }

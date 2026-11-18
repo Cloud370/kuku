@@ -1900,6 +1900,7 @@ dependencies = [
  "termina",
  "tokio",
  "toml",
+ "toml_edit 0.22.27",
  "unicode-segmentation",
  "unicode-width",
  "windows-sys 0.61.2",

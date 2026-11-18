@@ -227,7 +227,6 @@ mod tests {
 
     use crate::app::App;
     use crate::jobs::Job;
-    use crate::statusline::StatusLine;
     use crate::ui::render;
 
     #[test]
@@ -252,10 +251,9 @@ mod tests {
             );
         }
         app.pane_mut().draft.insert("Draft stays here");
-        let statusline = StatusLine::default();
         let mut terminal = Terminal::new(TestBackend::new(40, 24)).unwrap();
         let buffer = terminal
-            .draw(|frame| render(frame, &mut app, &statusline))
+            .draw(|frame| render(frame, &mut app))
             .unwrap()
             .buffer;
         let (x, y) = cell(buffer, "中");
@@ -265,7 +263,7 @@ mod tests {
         app.event(mouse(MouseEventKind::Down(left), (x + 1, y)), buffer);
         app.event(mouse(MouseEventKind::Drag(left), end), buffer);
         let buffer = terminal
-            .draw(|frame| render(frame, &mut app, &statusline))
+            .draw(|frame| render(frame, &mut app))
             .unwrap()
             .buffer;
         assert!(buffer[emoji].modifier.contains(Modifier::REVERSED));

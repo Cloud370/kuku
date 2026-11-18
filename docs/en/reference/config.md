@@ -143,18 +143,20 @@ The starter config file lives in `crates/kuku/assets/default-config.toml`.
 
 The terminal reads `tui.toml` at startup from the local client data directory for both managed and explicit remote connections. The directory comes from `--data-dir`, then `KUKU_HOME`, then `~/.kuku`. SDK and service execution settings use `config.toml`.
 
-Missing `tui.toml` or `fields` selects the built-in order `connection,execution,agent,workspace,context,tps`. The default connection field displays the service state. Explicitly selecting `connection` also allows the endpoint to appear when it fits.
+Missing `tui.toml` or `fields` selects the built-in order `model,connection,execution,agent,workspace,context,tps`. The default model and connection fields show the resolved model ID and service state. Explicitly selecting `model` or `connection` allows route details or the endpoint to appear when it fits.
+
+Open `/statusline` from the action menu to edit the layout in the terminal. Use ↑ and ↓ to select a field, Space to toggle it, and ← and → to move enabled fields. The footer previews your changes. Press R to preview the built-in layout, Enter to save the layout to `tui.toml`, or Esc to discard the edits. Saving the built-in layout removes `statusline.fields`.
 
 To choose all available fields, add this to `tui.toml`.
 
 ```toml
 [statusline]
 fields = [
-  "connection", "execution", "input", "agent", "workspace", "model",
+  "model", "connection", "execution", "input", "agent", "workspace",
   "context", "tokens_in", "tokens_out", "cache", "tps",
 ]
 ```
 
 List just the fields you want in display order. Use `fields = []` to hide the status line. Selecting `input` places input feedback in the status line. The default placement is in the editor. [Field meanings](cli.md#terminal-interface)
 
-Set `KUKU_TUI_STATUSLINE` to a comma-separated list to override the file for that launch. Use `none` to hide the line or a blank value to use the built-in fields. The terminal reports an invalid active setting and falls back to the built-in fields. [Environment variables](environment-variables.md)
+Set `KUKU_TUI_STATUSLINE` to a comma-separated list to override the file for that launch. Use `none` to hide the line or a blank value to use the built-in fields. With an override in use, `/statusline` still edits and saves the layout in `tui.toml`. The override resumes when you close the editor. The terminal reports an invalid active setting and falls back to the built-in fields. [Environment variables](environment-variables.md)

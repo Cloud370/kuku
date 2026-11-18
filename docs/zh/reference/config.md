@@ -143,18 +143,20 @@ custom = "https://example.com/latest.json"
 
 终端启动时从本机客户端数据目录读取 `tui.toml`，对受管服务和显式远程连接都生效。目录按 `--data-dir`、`KUKU_HOME`、`~/.kuku` 的顺序选取。SDK 和服务的执行设置使用 `config.toml`。
 
-`tui.toml` 或 `fields` 缺省时，使用内置顺序 `connection,execution,agent,workspace,context,tps`。默认连接字段显示服务状态。显式选择 `connection` 时，空间足够也可显示端点。
+`tui.toml` 或 `fields` 缺省时，使用内置顺序 `model,connection,execution,agent,workspace,context,tps`。默认模型和连接字段显示已解析的模型 ID 和服务状态。显式选择 `model` 或 `connection` 时，空间足够也可显示路由详情或端点。
+
+从动作菜单打开 `/statusline` 即可在终端内编辑。用 ↑ 和 ↓ 选择字段，Space 勾选或取消，← 和 → 移动已勾选的字段。底栏会实时预览。R 预览内置布局，Enter 保存到 `tui.toml`，Esc 放弃修改。保存内置布局会移除 `statusline.fields`。
 
 在 `tui.toml` 中添加以下内容可选择全部字段。
 
 ```toml
 [statusline]
 fields = [
-  "connection", "execution", "input", "agent", "workspace", "model",
+  "model", "connection", "execution", "input", "agent", "workspace",
   "context", "tokens_in", "tokens_out", "cache", "tps",
 ]
 ```
 
 按想要的顺序填写所需字段。用 `fields = []` 可隐藏状态栏。选择 `input` 会把输入反馈放在状态栏，默认位置为编辑区。[字段含义](cli.md#终端界面)
 
-将 `KUKU_TUI_STATUSLINE` 设为逗号分隔的字段列表，可在本次启动时覆盖文件设置。`none` 隐藏状态栏，空白值选择内置字段。当前设置无效时，终端会显示错误并回退到内置字段。[环境变量](environment-variables.md)
+将 `KUKU_TUI_STATUSLINE` 设为逗号分隔的字段列表，可在本次启动时覆盖文件设置。`none` 隐藏状态栏，空白值选择内置字段。环境覆盖时，`/statusline` 仍可编辑并保存 `tui.toml` 的布局。关闭编辑面板后，环境变量继续生效。当前设置无效时，终端会显示错误并回退到内置字段。[环境变量](environment-variables.md)

@@ -8,20 +8,26 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{Activity, App, ServiceStatus, SubmissionStatus};
 use crate::text::{shorten, single_line, single_line_path};
-use crate::theme::{emphasis, ERROR, MUTED, WARNING};
+use crate::theme::{emphasis, ERROR, EXECUTION, MODEL, MUTED, USAGE, WARNING};
+
+mod editor;
+
+pub(crate) use editor::StatusLineEditor;
 
 const SEPARATOR: &str = " · ";
 const COMPACT_DETAILS_WIDTH: usize = 12;
+const COMPACT_MODEL_WIDTH: usize = 28;
 const COMPACT_STATUS_WIDTH: usize = 96;
-const PRIMARY_FIELDS: [Field; 4] = [
+const DEFAULT_FIELDS: [Field; 7] = [
+    Field::Model,
     Field::Connection,
     Field::Execution,
     Field::Agent,
     Field::Workspace,
+    Field::Context,
+    Field::Throughput,
 ];
-const METRIC_FIELDS: [Field; 2] = [Field::Context, Field::Throughput];
-const OPTIONAL_FIELDS: [Field; 5] = [
-    Field::Model,
+const OPTIONAL_FIELDS: [Field; 4] = [
     Field::InputTokens,
     Field::OutputTokens,
     Field::Cache,
@@ -29,7 +35,7 @@ const OPTIONAL_FIELDS: [Field; 5] = [
 ];
 const TOKEN_UNITS: [(u64, &str); 3] = [(1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K")];
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct StatusLine {
     fields: Option<Vec<Field>>,
 }
@@ -66,6 +72,12 @@ impl StatusLine {
         })
     }
 
+    pub(crate) fn configured_names(&self) -> Option<Vec<&'static str>> {
+        self.fields
+            .as_ref()
+            .map(|fields| fields.iter().copied().map(Field::name).collect())
+    }
+
     pub(crate) fn render_line(&self, app: &App, width: usize) -> Option<Line<'static>> {
         let usage = app
             .pane()
@@ -74,19 +86,19 @@ impl StatusLine {
             .map(|snapshot| &snapshot.agent.usage);
         let custom = self.fields.is_some();
         let compact = !custom && width < COMPACT_STATUS_WIDTH;
-        let (fields, metrics) = self.fields.as_deref().map_or_else(
-            || {
-                let metrics = usage.map_or(&[][..], |_| METRIC_FIELDS.as_slice());
-                (PRIMARY_FIELDS.as_slice(), metrics)
-            },
-            |fields| (fields, &[][..]),
-        );
-        let segments = fields
+        let segments = self
+            .fields()
             .iter()
-            .chain(metrics)
+            .filter(|field| {
+                custom || usage.is_some() || !matches!(field, Field::Context | Field::Throughput)
+            })
             .filter_map(|field| field.segment(app, usage, compact, custom))
             .collect();
         render_segments(segments, width)
+    }
+
+    fn fields(&self) -> &[Field] {
+        self.fields.as_deref().unwrap_or(&DEFAULT_FIELDS)
     }
 
     pub(crate) fn render_composer_heading(&self, app: &App, width: usize) -> Line<'static> {
@@ -144,10 +156,7 @@ enum Field {
 
 impl Field {
     fn all() -> impl Iterator<Item = Self> {
-        PRIMARY_FIELDS
-            .into_iter()
-            .chain(METRIC_FIELDS)
-            .chain(OPTIONAL_FIELDS)
+        DEFAULT_FIELDS.into_iter().chain(OPTIONAL_FIELDS)
     }
 
     fn name(self) -> &'static str {
@@ -186,19 +195,35 @@ impl Field {
                     .map(single_line_path)
                     .unwrap_or_else(|| "Workspace —".into()),
             ),
-            Self::Model => Segment::details(
-                app.pane()
-                    .effective_model_label()
-                    .map(|label| single_line(&label))
-                    .unwrap_or_else(|| {
-                        if app.pane().model_problem.is_some() {
-                            "Model unavailable".into()
-                        } else {
-                            "Model pending".into()
-                        }
-                    }),
-                Priority::Model,
-            ),
+            Self::Model => {
+                let pane = app.pane();
+                let (id, route) = match pane.effective_model_identity() {
+                    Some((id, connection, effort)) => {
+                        let id = single_line(id);
+                        let route = custom.then(|| {
+                            let connection = single_line(connection);
+                            match effort {
+                                Some(effort) => {
+                                    format!("{id} ({connection} · {})", single_line(effort))
+                                }
+                                None => format!("{id} ({connection})"),
+                            }
+                        });
+                        (id, route)
+                    }
+                    None => {
+                        let label = pane.effective_model_label().unwrap_or_else(|| {
+                            if pane.model_problem.is_some() {
+                                "Model unavailable".into()
+                            } else {
+                                "Model pending".into()
+                            }
+                        });
+                        (single_line(&label), None)
+                    }
+                };
+                Segment::model(id, route)
+            }
             Self::Context => Segment::measurement(
                 app.pane()
                     .current_request_usage()
@@ -240,12 +265,12 @@ impl Field {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Priority {
     MissingMetric,
-    Model,
     Metric,
     Workspace,
     Agent,
     Connected,
     Ready,
+    Model,
     Input,
     Active,
     Submission,
@@ -257,6 +282,7 @@ enum SegmentText {
     Labels(Vec<String>),
     Details(String),
     Workspace(String),
+    Model { id: String, route: Option<String> },
 }
 
 struct Segment {
@@ -266,6 +292,13 @@ struct Segment {
 }
 
 impl Segment {
+    fn model(id: String, route: Option<String>) -> Self {
+        Self {
+            text: SegmentText::Model { id, route },
+            style: Style::default().fg(MODEL),
+            priority: Priority::Model,
+        }
+    }
     fn labels(labels: Vec<String>, color: Color, priority: Priority) -> Self {
         let style = if color == Color::Reset {
             Style::default()
@@ -312,7 +345,7 @@ impl Segment {
 
     fn metric(label: Option<String>, placeholder: &str) -> Self {
         let (label, color, priority) = match label {
-            Some(label) => (label, Color::Reset, Priority::Metric),
+            Some(label) => (label, USAGE, Priority::Metric),
             None => (placeholder.to_owned(), MUTED, Priority::MissingMetric),
         };
         Self {
@@ -325,6 +358,7 @@ impl Segment {
     fn compact_width(&self) -> usize {
         match &self.text {
             SegmentText::Labels(labels) => labels[0].width(),
+            SegmentText::Model { id, .. } => id.width().min(COMPACT_MODEL_WIDTH),
             SegmentText::Details(text) | SegmentText::Workspace(text) => {
                 text.width().min(COMPACT_DETAILS_WIDTH)
             }
@@ -340,6 +374,11 @@ impl Segment {
                 .cloned()
                 .unwrap_or_else(|| shorten(&labels[0], width)),
             SegmentText::Details(text) => shorten_middle(text, width),
+            SegmentText::Model { id, route } => route
+                .as_ref()
+                .filter(|route| route.width() <= width)
+                .cloned()
+                .unwrap_or_else(|| shorten_middle(id, width)),
             SegmentText::Workspace(text) => {
                 if text.width() <= width {
                     text.clone()
@@ -424,13 +463,13 @@ fn execution(app: &App) -> Option<Segment> {
         return None;
     }
     let (color, priority) = match activity {
-        Activity::Ready | Activity::Finished => (Color::Reset, Priority::Ready),
+        Activity::Ready | Activity::Finished => (EXECUTION, Priority::Ready),
         Activity::Opening
         | Activity::Running
         | Activity::WaitingForModel
         | Activity::Streaming
         | Activity::RunningTools
-        | Activity::Stopped => (Color::Reset, Priority::Active),
+        | Activity::Stopped => (EXECUTION, Priority::Active),
         Activity::Waiting | Activity::Stopping | Activity::Configuration => {
             (WARNING, Priority::Attention)
         }

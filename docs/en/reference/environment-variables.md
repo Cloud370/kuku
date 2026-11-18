@@ -5,7 +5,7 @@
 | Variable | Meaning |
 |---|---|
 | `KUKU_HOME` | Override the default runtime home directory |
-| `KUKU_TUI_STATUSLINE` | Override `tui.toml` with a comma-separated status line field list for this terminal launch. [Terminal preferences](config.md#terminal-preferences) |
+| `KUKU_TUI_STATUSLINE` | Override the saved status line for this terminal launch with a comma-separated field list. [Terminal preferences](config.md#terminal-preferences) |
 | `KUKU_TOKEN` | Authenticate a client using an explicitly selected server |
 | `KUKU_SERVER_PASSWORD` | Set the bearer token for a server started with `kuku server` |
 | `ANTHROPIC_API_KEY` | Common API key source for `provider.anthropic` |

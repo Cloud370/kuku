@@ -5,7 +5,7 @@
 | Variable | Meaning |
 |---|---|
 | `KUKU_HOME` | 覆盖默认运行时 home 目录 |
-| `KUKU_TUI_STATUSLINE` | 用逗号分隔的状态栏字段列表覆盖本次终端启动的 `tui.toml` 设置。[终端偏好](config.md#终端偏好) |
+| `KUKU_TUI_STATUSLINE` | 用逗号分隔的字段列表覆盖本次终端的已保存状态栏布局。[终端偏好](config.md#终端偏好) |
 | `KUKU_TOKEN` | 用于显式连接服务的客户端令牌 |
 | `KUKU_SERVER_PASSWORD` | 通过 `kuku server` 显式启动服务时使用的令牌 |
 | `ANTHROPIC_API_KEY` | `provider.anthropic` 常用的 API key 来源 |
