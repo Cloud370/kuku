@@ -82,7 +82,7 @@
 
 ## 工作区脚本
 
-`workspace_script({code})` 在一次性的嵌入式 QuickJS worker 中运行 JavaScript 异步函数体，支持顶层 `await`。worker 由 kuku 提供并按需启动。可以使用标准 JavaScript，包括 `JSON`、正则表达式及用于独立操作的 `Promise.all`。通过 `workspace` 对象执行工作区动作。可用方法取决于 Agent 所选的工具，参数对象与相应直接工具一致。`workspace.methods` 列出可用方法定义。
+`workspace_script({code})` 在一次性的嵌入式 QuickJS worker 中运行 JavaScript 异步函数体，支持顶层 `await`。worker 由 kuku 提供并按需启动。可以使用标准 JavaScript，包括 `JSON`、正则表达式及用于独立操作的 `Promise.all`。后一动作的参数能由前一结果直接计算时，使用 `await` 在脚本内连续执行。下一步需要模型判断时，返回简短的观察结果。通过 `workspace` 对象执行工作区动作。可用方法取决于 Agent 所选的工具，参数对象与相应直接工具一致。`workspace.methods` 列出可用方法定义。
 
 每次宿主调用返回 `{status, summary, truncated, result, model_content}`，其中 `result` 包含结构化数据。例如，`workspace.read_file({path})` 提供原始 `result.raw_text`、SHA-256 `content_hash`，以及从 `start_byte` 到 `end_byte` 的左闭右开字节范围。脚本可用已观察的范围继续编辑，无需把文件内容返回给模型。同一文件版本的读取覆盖全文后，还可以覆盖或移除该文件。在同一次调用中，脚本也可以编辑或覆盖由自身写入完整内容且已确认成功的确切版本。动作仍需经过宿主授权与版本检查。
 
