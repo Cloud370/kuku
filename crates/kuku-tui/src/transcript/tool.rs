@@ -11,7 +11,7 @@ use crate::text::{cap, shorten, single_line};
 use crate::theme::{emphasis, panel, ACCENT, ERROR, MODEL, MUTED, SURFACE_TEXT, WARNING};
 
 use super::agent::{AgentCard, AgentRequest};
-use super::{append_bounded, body_inset, capped, render_rows, Row, ToolDetails, ToolView};
+use super::{append_bounded, body_inset, capped, render_rows, Row, ToolDetails};
 
 mod command;
 mod file_change;
@@ -35,6 +35,17 @@ const MAX_INSPECTION_ROWS: usize = 12;
 const MAX_ARGUMENT_ROWS: usize = 5;
 const MAX_CHANGE_ROWS: usize = 4;
 const MAX_OBSERVATION_ROWS: usize = 2;
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ToolView {
+    pub(crate) name: String,
+    pub(crate) summary: String,
+    pub(crate) invocation: String,
+    pub(crate) details: String,
+    pub(crate) diff: String,
+    pub(crate) output_id: Option<String>,
+    pub(crate) evidence: String,
+}
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct Tool {

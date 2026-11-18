@@ -10,7 +10,7 @@ import re
 import sys
 from urllib.parse import urlencode, urlsplit
 
-from interactive_rendering import rendering_cases
+from interactive_rendering import named_output_cards, rendering_cases
 from interactive_fixture import (
     DenseTranscript, InstalledClient, MarkdownDocument, TOOL_BRIEF, TOOL_OUTPUT, eventually, http_fixture, install,
     delegate_reviewer, json_response, local_request,
@@ -964,8 +964,12 @@ def main():
     parser.add_argument("--directory", required=True, type=Path)
     parser.add_argument("--browser", action="store_true")
     parser.add_argument("--upgrade", nargs=2, type=Path, metavar=("OLD_ARCHIVE", "NEW_ARCHIVE"))
+    parser.add_argument("--named-output", action="store_true", help="exercise keyboard naming and reopening")
     options = parser.parse_args()
     with InstalledClient(options.binary, options.bridge, options.directory) as client:
+        if options.named_output:
+            named_output_cards(client)
+            return
         if options.upgrade:
             installed_upgrade(client, *options.upgrade)
         workspace, session, title = two_workspaces_and_disconnect(client)

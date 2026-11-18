@@ -27,6 +27,7 @@ use self::message::{paint_card, render_assistant_source, render_record, render_u
 use self::reply::LatestReply;
 pub(crate) use self::reply::ReplySource;
 use self::tool::Tool;
+pub(crate) use self::tool::ToolView;
 use self::window::{Layout, TurnHeading, Window};
 
 pub(crate) const HISTORY_PAGE: usize = 48;
@@ -533,17 +534,6 @@ pub(crate) struct TranscriptView {
     pub(crate) row_insets: Vec<u16>,
     pub(crate) following: bool,
     pub(crate) tool_hint: Option<String>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub(crate) struct ToolView {
-    pub(crate) name: String,
-    pub(crate) summary: String,
-    pub(crate) invocation: String,
-    pub(crate) details: String,
-    pub(crate) diff: String,
-    pub(crate) output_id: Option<String>,
-    pub(crate) evidence: String,
 }
 
 #[derive(Debug)]
