@@ -203,6 +203,14 @@ impl WorkspaceHost {
                 &mut args,
             )?;
         }
+        if call.op == ScriptOperation::SaveValue {
+            super::runtime_tools::values::prepare_save(
+                &self.actions.session,
+                &self.actions.agent,
+                self.turn,
+                &args,
+            )?;
+        }
         let workspace = if call.op == ScriptOperation::RunCommand {
             match crate::tool::builtin::run_command::prepare_command_args(
                 &mut args,
@@ -247,7 +255,11 @@ impl WorkspaceHost {
         match decision {
             AuthorizationDecision::Allow => {}
             AuthorizationDecision::Deny => {
-                let target = args.get("path").or(args.get("id")).unwrap_or(&Value::Null);
+                let target = args
+                    .get("path")
+                    .or(args.get("id"))
+                    .or(args.get("name"))
+                    .unwrap_or(&Value::Null);
                 self.record(
                     &id,
                     name,
@@ -308,6 +320,7 @@ impl WorkspaceHost {
         let target = args
             .get("path")
             .or(args.get("id"))
+            .or(args.get("name"))
             .cloned()
             .unwrap_or(Value::Null);
         if execution.is_cancelled() {
@@ -328,19 +341,35 @@ impl WorkspaceHost {
                 json!({"args_sha256":hash}),
             )?;
         }
-        let result = if operation == ScriptOperation::ReadOutput {
-            let session = self.actions.session.clone();
-            let agent = self.actions.agent.clone();
-            let limit = self.host_result_limit;
-            tokio::task::spawn_blocking(move || {
-                super::runtime_tools::output::execute_local(&session, &agent, &args, limit)
-            })
-            .await
-            .map_err(|error| Error::InvalidEventStream(error.to_string()))?
-        } else {
-            self.actions
-                .execute(operation, local_id, args, &output_id, execution)
+        let result = match operation {
+            ScriptOperation::ReadOutput => {
+                let session = self.actions.session.clone();
+                let agent = self.actions.agent.clone();
+                let limit = self.host_result_limit;
+                tokio::task::spawn_blocking(move || {
+                    super::runtime_tools::output::execute_local(&session, &agent, &args, limit)
+                })
                 .await
+                .map_err(|err| Error::InvalidEventStream(err.to_string()))?
+            }
+            ScriptOperation::SaveValue => {
+                Box::pin(super::runtime_tools::values::save(
+                    &self.actions.session,
+                    &self.actions.agent,
+                    &args,
+                ))
+                .await
+            }
+            ScriptOperation::ListValues => super::runtime_tools::values::list(
+                &self.actions.session,
+                &self.actions.agent,
+                &args,
+            ),
+            _ => {
+                self.actions
+                    .execute(operation, local_id, args, &output_id, execution)
+                    .await
+            }
         };
         let result = result.unwrap_or_else(|e| {
             ToolResultEnvelope::error("workspace action failed", e.to_string())
@@ -348,6 +377,11 @@ impl WorkspaceHost {
         if mutating {
             let mut receipt = json!({"truncated":result.truncated,"cleanup_incomplete":result.faults.cleanup_incomplete});
             if let Some(detail) = &result.structured {
+                if operation == ScriptOperation::SaveValue {
+                    if let Some(reference) = detail.get("reference") {
+                        receipt["output_ref"] = reference.clone();
+                    }
+                }
                 if detail.get("commit_state").is_some() {
                     receipt["mutation"] = detail["kind"].clone();
                 }

@@ -69,7 +69,9 @@ impl WorkspaceActions {
                     value,
                 ))
             }
-            Op::ReadOutput => unreachable!("the Session bounded reader handles read_output"),
+            Op::ReadOutput | Op::ListValues | Op::SaveValue => {
+                unreachable!("the Session handles output reads and named values")
+            }
             _ => {
                 let workspace = self.workspace.clone();
                 let local_id = local_id.to_owned();

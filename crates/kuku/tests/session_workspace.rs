@@ -354,6 +354,10 @@ for await (const {text} of workspace.output_lines({id:original})) {
   await workspace.append_output({id:output, text:text.toUpperCase()+"\n"});
 }
 const saved = await workspace.finish_output({id:output});
+const bound = await workspace.save_value({name:"upper",output_id:saved.result.output_ref.id});
+if (bound.status!=="ok") throw new Error(bound.summary);
+const names = await workspace.list_values({});
+if (names.status!=="ok") throw new Error(names.summary);
 const draft = (await workspace.create_output({})).result.id;
 await workspace.append_output({id:draft, text:"x".repeat(32768)});
 return {original, saved:saved.result.output_ref.id, draft};
@@ -375,6 +379,10 @@ return {original, saved:saved.result.output_ref.id, draft};
     };
     assert_eq!("line 甲\nline 乙\n", content("original"));
     assert_eq!("LINE 甲\nLINE 乙\n", content("saved"));
+    assert_eq!(
+        session.named_value("main", "upper").unwrap().reference.id,
+        facts.value["saved"].as_str().unwrap()
+    );
     let draft = facts.value["draft"].as_str().unwrap();
     assert!(session
         .read_agent_output("main", draft, &kuku::OutputRead::default())
