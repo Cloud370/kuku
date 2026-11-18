@@ -15,7 +15,8 @@ use crate::output::OutputViewer;
 use crate::text::{shorten, single_line};
 use crate::theme::{
     composer_padding, emphasis, focused_row, horizontal_gutter, panel, panel_padding, surface,
-    ACCENT, ERROR, MAX_DRAFT_ROWS, MUTED, OUTPUT_WIDTH, PICKER_HEIGHT, PICKER_WIDTH, SHORT_PROMPT_HEIGHT, WARNING,
+    ACCENT, ERROR, MAX_DRAFT_ROWS, MUTED, OUTPUT_WIDTH, PICKER_HEIGHT, PICKER_WIDTH,
+    SHORT_PROMPT_HEIGHT, WARNING,
 };
 
 const MAX_BANNER_ROWS: u16 = 5;
