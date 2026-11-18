@@ -9,7 +9,7 @@ use crate::tool::ToolResultEnvelope;
 
 use super::common::{
     file_read_error, find_covering_read, optional_positive_usize, requested_line_count,
-    required_path, resolve_path, ExecutorRead,
+    required_path, resolve_path, ExecutorRead, FileCancellation,
 };
 
 mod scan;
@@ -37,6 +37,7 @@ pub(crate) fn read_file(
     conversation: &ConversationAddress,
     prior_events: &[StoredEvent],
     read_event_id: u64,
+    cancelled: &FileCancellation<'_>,
 ) -> ToolResultEnvelope {
     read_file_impl(
         args,
@@ -44,6 +45,7 @@ pub(crate) fn read_file(
         ReadBy::Model,
         READ_FILE_MAX_CHARS,
         Some((prior_events, conversation, read_event_id)),
+        cancelled,
     )
     .0
 }
@@ -52,8 +54,16 @@ pub(crate) fn read_file_for_executor(
     args: &Value,
     workspace: &Path,
     max_bytes: usize,
+    cancelled: &FileCancellation<'_>,
 ) -> (ToolResultEnvelope, Option<ExecutorRead>) {
-    read_file_impl(args, workspace, ReadBy::Executor, max_bytes, None)
+    read_file_impl(
+        args,
+        workspace,
+        ReadBy::Executor,
+        max_bytes,
+        None,
+        cancelled,
+    )
 }
 
 fn read_file_impl(
@@ -62,6 +72,7 @@ fn read_file_impl(
     read_by: ReadBy,
     max_bytes: usize,
     model_history: Option<(&[StoredEvent], &ConversationAddress, u64)>,
+    cancelled: &FileCancellation<'_>,
 ) -> (ToolResultEnvelope, Option<ExecutorRead>) {
     let request = match read_request(args) {
         Ok(request) => request,
@@ -71,7 +82,7 @@ fn read_file_impl(
         Ok(resolved) => resolved,
         Err(result) => return (result, None),
     };
-    let mut view = match scan::scan(&resolved.path, &request, read_by, max_bytes) {
+    let mut view = match scan::scan(&resolved.path, &request, read_by, max_bytes, cancelled) {
         Ok(view) => view,
         Err(error) => {
             return (file_read_error(Path::new(&resolved.relative), error), None);
@@ -209,6 +220,7 @@ mod tests {
             &crate::conversation::address::ConversationAddress::MAIN,
             prior_events,
             read_event_id,
+            &|| false,
         )
     }
 
@@ -450,6 +462,7 @@ mod tests {
             &serde_json::json!({"path":"README.md","offset":2}),
             dir.path(),
             "第二行\r\n第三行\n".len(),
+            &|| false,
         );
 
         assert!(result.truncated);
@@ -476,6 +489,7 @@ mod tests {
             &serde_json::json!({"path":"README.md","limit":1}),
             dir.path(),
             80,
+            &|| false,
         );
 
         assert_eq!("error", result.status);
@@ -509,6 +523,7 @@ mod tests {
             &crate::conversation::address::ConversationAddress::MAIN,
             std::slice::from_ref(&review_read),
             18,
+            &|| false,
         );
         let review_result = super::read_file(
             &serde_json::json!({"path": "README.md"}),
@@ -516,6 +531,7 @@ mod tests {
             &crate::conversation::address::ConversationAddress::parse("review").unwrap(),
             &[review_read],
             19,
+            &|| false,
         );
 
         assert_eq!(main_result.structured.unwrap()["cached"], false);

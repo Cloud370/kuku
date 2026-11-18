@@ -7,7 +7,10 @@ use serde_json::Value;
 
 use crate::tool::ToolResultEnvelope;
 
-use super::common::{file_read_error, file_version, required_path, resolve_stat_path};
+use super::common::{
+    ensure_active, file_read_error, file_version, required_path, resolve_stat_path,
+    FileCancellation,
+};
 
 #[derive(Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -18,11 +21,18 @@ enum EntryKind {
     Missing,
 }
 
-pub(crate) fn stat_file(args: &Value, workspace: &Path) -> ToolResultEnvelope {
+pub(crate) fn stat_file(
+    args: &Value,
+    workspace: &Path,
+    cancelled: &FileCancellation<'_>,
+) -> ToolResultEnvelope {
     let path = match required_path("stat_file", args) {
         Ok(path) => path,
         Err(result) => return result,
     };
+    if let Err(error) = ensure_active(cancelled) {
+        return file_read_error(Path::new(path), error);
+    }
     let resolved = match resolve_stat_path(workspace, path) {
         Ok(resolved) => resolved,
         Err(result) => return result,
@@ -43,11 +53,12 @@ pub(crate) fn stat_file(args: &Value, workspace: &Path) -> ToolResultEnvelope {
         &resolved.relative
     };
     let (kind, size, hash) = match fs::symlink_metadata(&resolved.path) {
-        Ok(metadata) if metadata.is_file() && include_version => match file_version(&resolved.path)
-        {
-            Ok((hash, metadata)) => (EntryKind::File, Some(metadata.len()), Some(hash)),
-            Err(error) => return file_read_error(Path::new(relative), error),
-        },
+        Ok(metadata) if metadata.is_file() && include_version => {
+            match file_version(&resolved.path, cancelled) {
+                Ok((hash, metadata)) => (EntryKind::File, Some(metadata.len()), Some(hash)),
+                Err(error) => return file_read_error(Path::new(relative), error),
+            }
+        }
         Ok(metadata) if metadata.is_file() => (EntryKind::File, Some(metadata.len()), None),
         Ok(metadata) if metadata.is_dir() => (EntryKind::Directory, None, None),
         Ok(_) => (EntryKind::Other, None, None),

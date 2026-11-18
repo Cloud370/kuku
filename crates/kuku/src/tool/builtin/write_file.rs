@@ -11,7 +11,7 @@ use crate::tool::ToolResultEnvelope;
 use super::common::{
     content_hash, expected_version, file_read_error, file_version, mutation_preview, plural,
     publish_file, require_version, resolve_write_path, snapshot_stale_error, ExecutorRead,
-    WriteEvidence, WriteSnapshotLookup,
+    FileCancellation, WriteEvidence, WriteSnapshotLookup,
 };
 
 struct WriteRequest<'a> {
@@ -24,6 +24,7 @@ pub(crate) fn write_file(
     workspace: &Path,
     conversation: &crate::conversation::address::ConversationAddress,
     prior_events: &[StoredEvent],
+    cancelled: &FileCancellation<'_>,
 ) -> ToolResultEnvelope {
     write_file_with_evidence(
         args,
@@ -32,6 +33,7 @@ pub(crate) fn write_file(
             conversation,
             events: prior_events,
         },
+        cancelled,
     )
 }
 
@@ -39,14 +41,16 @@ pub(crate) fn write_file_for_executor(
     args: &Value,
     workspace: &Path,
     reads: &[ExecutorRead],
+    cancelled: &FileCancellation<'_>,
 ) -> ToolResultEnvelope {
-    write_file_with_evidence(args, workspace, WriteEvidence::Executor(reads))
+    write_file_with_evidence(args, workspace, WriteEvidence::Executor(reads), cancelled)
 }
 
 fn write_file_with_evidence(
     args: &Value,
     workspace: &Path,
     evidence: WriteEvidence<'_>,
+    cancelled: &FileCancellation<'_>,
 ) -> ToolResultEnvelope {
     let request = match write_request(args) {
         Ok(request) => request,
@@ -61,7 +65,7 @@ fn write_file_with_evidence(
         Err(result) => return result,
     };
 
-    let before = match current_version(&resolved.path) {
+    let before = match current_version(&resolved.path, cancelled) {
         Ok(before) => before,
         Err(error) => return file_read_error(Path::new(&resolved.relative), error),
     };
@@ -91,7 +95,7 @@ fn write_file_with_evidence(
     }
 
     let bytes = request.content.as_bytes();
-    let publication = match publish_file(&resolved.path, before.as_deref(), bytes) {
+    let publication = match publish_file(&resolved.path, before.as_deref(), bytes, cancelled) {
         Ok(publication) => publication,
         Err(error) => return error.result(&resolved.relative),
     };
@@ -126,9 +130,12 @@ fn write_file_with_evidence(
     )
 }
 
-fn current_version(path: &Path) -> std::io::Result<Option<String>> {
+fn current_version(
+    path: &Path,
+    cancelled: &FileCancellation<'_>,
+) -> std::io::Result<Option<String>> {
     match fs::symlink_metadata(path) {
-        Ok(_) => file_version(path).map(|(hash, _)| Some(hash)),
+        Ok(_) => file_version(path, cancelled).map(|(hash, _)| Some(hash)),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
@@ -165,6 +172,7 @@ mod tests {
             workspace,
             &crate::conversation::address::ConversationAddress::MAIN,
             prior_events,
+            &|| false,
         )
     }
 
@@ -321,6 +329,7 @@ mod tests {
                 &serde_json::json!({"path":"README.md","offset":offset,"limit":limit}),
                 dir.path(),
                 80,
+                &|| false,
             )
             .1
             .unwrap()
@@ -330,14 +339,14 @@ mod tests {
         let mut reads = vec![first, last];
         let args = serde_json::json!({"path":"README.md","content":"replacement\n"});
 
-        let partial = write_file_for_executor(&args, dir.path(), &reads);
+        let partial = write_file_for_executor(&args, dir.path(), &reads, &|| false);
         assert_eq!(
             "full_snapshot_required",
             partial.structured.unwrap()["reason_code"]
         );
         reads.push(read(2, 1));
 
-        let committed = write_file_for_executor(&args, dir.path(), &reads);
+        let committed = write_file_for_executor(&args, dir.path(), &reads, &|| false);
         assert_eq!("ok", committed.status, "{:?}", committed.structured);
         assert_eq!("replacement\n", std::fs::read_to_string(path).unwrap());
     }
@@ -351,6 +360,7 @@ mod tests {
                 &serde_json::json!({"path":"README.md"}),
                 dir.path(),
                 80,
+                &|| false,
             )
             .1
             .unwrap()
@@ -362,7 +372,7 @@ mod tests {
         std::fs::write(&path, "new version\n").unwrap();
         let newer = read();
 
-        let stale = write_file_for_executor(&args, dir.path(), &[first, newer]);
+        let stale = write_file_for_executor(&args, dir.path(), &[first, newer], &|| false);
 
         assert_eq!("snapshot_stale", stale.structured.unwrap()["reason_code"]);
         assert_eq!("new version\n", std::fs::read_to_string(path).unwrap());

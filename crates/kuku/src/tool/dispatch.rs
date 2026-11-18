@@ -10,6 +10,58 @@ use crate::event::EventPayload;
 use crate::event::StoredEvent;
 use crate::tool::{builtin, ToolResultEnvelope};
 
+pub(crate) fn is_workspace_file(name: &str) -> bool {
+    matches!(
+        name,
+        "find_files"
+            | "read_file"
+            | "search_text"
+            | "stat_file"
+            | "write_file"
+            | "edit_file"
+            | "remove_file"
+    )
+}
+
+// NOTE: Direct dispatch and cancellable slots use the same action and event identity.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn dispatch_workspace_file(
+    name: &str,
+    args: &Value,
+    workspace: &Path,
+    conversation: &crate::conversation::address::ConversationAddress,
+    prior_events: &[StoredEvent],
+    result_event_id: u64,
+    tool_call_id: Option<&str>,
+    cancelled: &builtin::common::FileCancellation<'_>,
+) -> Option<ToolResultEnvelope> {
+    if matches!(name, "edit_file" | "write_file" | "remove_file")
+        && has_denied_permission(prior_events, tool_call_id)
+    {
+        return Some(permission_denied(name));
+    }
+    let result = match name {
+        "find_files" => builtin::find_files(args, workspace, cancelled),
+        "read_file" => builtin::read_file(
+            args,
+            workspace,
+            conversation,
+            prior_events,
+            result_event_id,
+            cancelled,
+        ),
+        "search_text" => builtin::search_text(args, workspace, cancelled),
+        "stat_file" => builtin::stat_file(args, workspace, cancelled),
+        "edit_file" => builtin::edit_file(args, workspace, conversation, prior_events, cancelled),
+        "write_file" => builtin::write_file(args, workspace, conversation, prior_events, cancelled),
+        "remove_file" => {
+            builtin::remove_file(args, workspace, conversation, prior_events, cancelled)
+        }
+        _ => return None,
+    };
+    Some(result)
+}
+
 // Dispatch is the single entry point bridging tool registry, config, and event path;
 // splitting would add indirection without reducing cross-cutting complexity.
 #[allow(clippy::too_many_arguments)]
@@ -26,33 +78,30 @@ pub(crate) async fn dispatch(
     catalog: &crate::prompt::PromptCatalog,
     events_path: &Path,
 ) -> ToolResultEnvelope {
+    if let Some(result) = dispatch_workspace_file(
+        name,
+        args,
+        workspace,
+        conversation,
+        prior_events,
+        result_event_id,
+        tool_call_id,
+        &|| false,
+    ) {
+        return result;
+    }
     match name {
         "agent" => ToolResultEnvelope::error(
             "agent tool must be executed via agent runtime".to_string(),
             "the agent tool can only be invoked through the normal agent loop".to_string(),
         ),
-        "find_files" => builtin::find_files(args, workspace),
-        "read_file" => {
-            builtin::read_file(args, workspace, conversation, prior_events, result_event_id)
-        }
-        "search_text" => builtin::search_text(args, workspace),
-        "stat_file" => builtin::stat_file(args, workspace),
         "fetch_url" => builtin::fetch_url(args, workspace).await,
         "fetch_web" => builtin::fetch_web(args, workspace, config, catalog).await,
-        "edit_file" | "write_file" | "remove_file" | "remember_memory" | "forget_memory"
-        | "run_command"
+        "remember_memory" | "forget_memory" | "run_command"
             if has_denied_permission(prior_events, tool_call_id) =>
         {
-            ToolResultEnvelope::blocked(
-                format!("blocked by permission: {name} requires a permission gate"),
-                format!(
-                    "{name} was not executed because the permission gate denied this tool call"
-                ),
-            )
+            permission_denied(name)
         }
-        "edit_file" => builtin::edit_file(args, workspace, conversation, prior_events),
-        "write_file" => builtin::write_file(args, workspace, conversation, prior_events),
-        "remove_file" => builtin::remove_file(args, workspace, conversation, prior_events),
         "remember_memory" => builtin::remember_memory_with_home(args, workspace, kuku_home),
         "forget_memory" => builtin::forget_memory_with_home(args, workspace, kuku_home),
         "run_command" => builtin::run_command(args, workspace, None, None).await,
@@ -62,6 +111,13 @@ pub(crate) async fn dispatch(
             format!("unknown tool: {name}"),
         ),
     }
+}
+
+fn permission_denied(name: &str) -> ToolResultEnvelope {
+    ToolResultEnvelope::blocked(
+        format!("blocked by permission: {name} requires a permission gate"),
+        format!("{name} was not executed because the permission gate denied this tool call"),
+    )
 }
 
 fn has_denied_permission(events: &[StoredEvent], tool_call_id: Option<&str>) -> bool {

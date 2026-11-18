@@ -4,7 +4,7 @@ use std::path::Path;
 use sha2::{Digest, Sha256};
 
 use super::{ReadBy, ReadRequest};
-use crate::tool::builtin::common::{format_content_hash, StableFile};
+use crate::tool::builtin::common::{format_content_hash, FileCancellation, StableFile};
 
 const READ_BUFFER_BYTES: usize = 64 * 1024;
 
@@ -24,8 +24,9 @@ pub(super) fn scan(
     request: &ReadRequest<'_>,
     read_by: ReadBy,
     max_bytes: usize,
+    cancelled: &FileCancellation<'_>,
 ) -> io::Result<ReadView> {
-    let mut file = StableFile::open(path)?;
+    let mut file = StableFile::open(path, cancelled)?;
     let mut buffer = [0; READ_BUFFER_BYTES];
     let mut carry = 0;
     let mut hash = Sha256::new();

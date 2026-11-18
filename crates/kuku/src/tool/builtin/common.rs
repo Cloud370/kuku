@@ -12,8 +12,9 @@ mod file_io;
 mod snapshot;
 
 pub(crate) use file_io::{
-    content_hash, file_read_error, file_version, format_content_hash, mutation_preview,
-    publish_file, read_file_as_utf8, remove_observed_file, write_atomically, StableFile,
+    content_hash, ensure_active, file_read_error, file_version, format_content_hash,
+    mutation_preview, publish_file, read_file_as_utf8, remove_observed_file, write_atomically,
+    FileCancellation, StableFile,
 };
 #[cfg(test)]
 use snapshot::find_write_snapshot;
@@ -192,6 +193,16 @@ pub(super) fn workspace_path_blocked(relative: &str) -> bool {
     #[cfg(windows)]
     let relative = &relative.to_ascii_lowercase();
     is_blocked_relative_path(relative)
+}
+
+pub(super) fn verify_directory(path: &Path) -> io::Result<()> {
+    if path.canonicalize()? != path {
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "directory target changed while it was being scanned",
+        ));
+    }
+    Ok(())
 }
 
 fn outside_workspace(path: &str) -> ToolResultEnvelope {

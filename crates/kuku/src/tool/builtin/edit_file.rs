@@ -9,7 +9,7 @@ use crate::tool::{ToolErrorReason, ToolResultEnvelope};
 use super::common::{
     content_hash, expected_version, mutation_preview, plural, publish_file, read_file_as_utf8,
     require_version, resolve_path, snapshot_stale_error, text_match_offsets, ExecutorRead,
-    WriteEvidence, WriteSnapshotLookup,
+    FileCancellation, WriteEvidence, WriteSnapshotLookup,
 };
 
 mod change;
@@ -36,6 +36,7 @@ pub(crate) fn edit_file(
     workspace: &Path,
     conversation: &crate::conversation::address::ConversationAddress,
     prior_events: &[StoredEvent],
+    cancelled: &FileCancellation<'_>,
 ) -> ToolResultEnvelope {
     edit_file_with_evidence(
         args,
@@ -44,6 +45,7 @@ pub(crate) fn edit_file(
             conversation,
             events: prior_events,
         },
+        cancelled,
     )
 }
 
@@ -51,14 +53,16 @@ pub(crate) fn edit_file_for_executor(
     args: &Value,
     workspace: &Path,
     reads: &[ExecutorRead],
+    cancelled: &FileCancellation<'_>,
 ) -> ToolResultEnvelope {
-    edit_file_with_evidence(args, workspace, WriteEvidence::Executor(reads))
+    edit_file_with_evidence(args, workspace, WriteEvidence::Executor(reads), cancelled)
 }
 
 fn edit_file_with_evidence(
     args: &Value,
     workspace: &Path,
     evidence: WriteEvidence<'_>,
+    cancelled: &FileCancellation<'_>,
 ) -> ToolResultEnvelope {
     let request = match edit_file_request(args) {
         Ok(request) => request,
@@ -72,7 +76,7 @@ fn edit_file_with_evidence(
         Ok(resolved) => resolved,
         Err(result) => return result,
     };
-    let content = match read_file_as_utf8(&resolved.path) {
+    let content = match read_file_as_utf8(&resolved.path, cancelled) {
         Ok(content) => content,
         Err(err) => return err,
     };
@@ -148,7 +152,12 @@ fn edit_file_with_evidence(
     let (edited, replacement_count) =
         replace_authorized_candidates(&content, &text_candidates, &authorized_candidates);
     let change = change::summarize(&content, &edited);
-    let publication = match publish_file(&resolved.path, Some(&current_hash), edited.as_bytes()) {
+    let publication = match publish_file(
+        &resolved.path,
+        Some(&current_hash),
+        edited.as_bytes(),
+        cancelled,
+    ) {
         Ok(publication) => publication,
         Err(error) => return error.result(&resolved.relative),
     };
@@ -316,6 +325,7 @@ mod tests {
             workspace,
             &crate::conversation::address::ConversationAddress::MAIN,
             prior_events,
+            &|| false,
         )
     }
 
@@ -900,6 +910,7 @@ mod tests {
             &serde_json::json!({"path":"README.md","offset":3,"limit":1}),
             dir.path(),
             80,
+            &|| false,
         );
         let read = read.unwrap();
 
@@ -910,6 +921,7 @@ mod tests {
             }),
             dir.path(),
             std::slice::from_ref(&read),
+            &|| false,
         );
 
         assert_eq!("ok", result.status);
@@ -940,11 +952,13 @@ mod tests {
             &serde_json::json!({"path":"README.md","limit":1}),
             dir.path(),
             80,
+            &|| false,
         );
         let result = edit_file_for_executor(
             &serde_json::json!({"path":"README.md","old_text":"private","new_text":"changed"}),
             dir.path(),
             &[read.unwrap()],
+            &|| false,
         );
         assert_eq!("error", result.status);
         assert_eq!(
@@ -966,11 +980,13 @@ mod tests {
             &serde_json::json!({"path":"README.md"}),
             dir.path(),
             80,
+            &|| false,
         );
         let result = edit_file_for_executor(
             &serde_json::json!({"path":"README.md","old_text":"x\nx","new_text":"changed","replace_all":true}),
             dir.path(),
             &[read.unwrap()],
+            &|| false,
         );
         assert_eq!("ok", result.status);
         assert_eq!(1, result.structured.unwrap()["replacement_count"]);

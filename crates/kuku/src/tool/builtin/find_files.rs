@@ -1,3 +1,4 @@
+use std::collections::BinaryHeap;
 use std::fs;
 use std::path::Path;
 
@@ -6,13 +7,41 @@ use serde_json::Value;
 use crate::tool::ToolResultEnvelope;
 
 use super::common::{
-    bounded_lines, glob_match, is_default_excluded_dir, join_bounded_strings, relative_path,
-    resolve_path, workspace_path_blocked,
+    bounded_lines, ensure_active, file_read_error, glob_match, is_default_excluded_dir,
+    join_bounded_strings, relative_path, resolve_path, verify_directory, workspace_path_blocked,
+    FileCancellation,
 };
 
 const FIND_FILES_MAX_CHARS: usize = 8_000;
 
-pub(crate) fn find_files(args: &Value, workspace: &Path) -> ToolResultEnvelope {
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum EntryKind {
+    Directory,
+    File,
+}
+
+#[derive(Default)]
+struct Listing {
+    count: usize,
+    first: BinaryHeap<(EntryKind, usize, String)>,
+}
+
+impl Listing {
+    fn push(&mut self, path: String, kind: EntryKind) {
+        let depth = path.bytes().filter(|byte| *byte == b'/').count();
+        self.count += 1;
+        self.first.push((kind, depth, path));
+        if self.first.len() > FIND_FILES_MAX_CHARS {
+            self.first.pop();
+        }
+    }
+}
+
+pub(crate) fn find_files(
+    args: &Value,
+    workspace: &Path,
+    cancelled: &FileCancellation<'_>,
+) -> ToolResultEnvelope {
     let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
     let pattern = args.get("pattern").and_then(Value::as_str);
     let max_depth = args
@@ -25,32 +54,25 @@ pub(crate) fn find_files(args: &Value, workspace: &Path) -> ToolResultEnvelope {
         Err(result) => return result,
     };
 
-    let mut files = Vec::new();
-    let mut dirs = Vec::new();
+    let mut listing = Listing::default();
     if let Err(error) = collect_entries(
         &root.path,
         &root.workspace,
         pattern,
         max_depth,
         0,
-        &mut files,
-        &mut dirs,
+        &mut listing,
+        cancelled,
     ) {
-        return ToolResultEnvelope::error(
-            format!("failed: {error}"),
-            format!("error reading directory: {path}"),
-        );
+        return file_read_error(Path::new(path), error);
     }
-    files.sort();
-    dirs.sort();
-    dirs.sort_by_key(|d| d.matches('/').count());
-    files.sort_by_key(|f| f.matches('/').count());
-
-    let mut entries: Vec<String> = Vec::with_capacity(dirs.len() + files.len());
-    entries.append(&mut dirs);
-    entries.append(&mut files);
-
-    let entry_count = entries.len();
+    let entry_count = listing.count;
+    let entries: Vec<_> = listing
+        .first
+        .into_sorted_vec()
+        .into_iter()
+        .map(|(_, _, path)| path)
+        .collect();
     let (model_content, truncated) = join_bounded_strings(
         &entries,
         FIND_FILES_MAX_CHARS,
@@ -82,17 +104,20 @@ fn collect_entries(
     pattern: Option<&str>,
     max_depth: u32,
     depth: u32,
-    files: &mut Vec<String>,
-    dirs: &mut Vec<String>,
+    listing: &mut Listing,
+    cancelled: &FileCancellation<'_>,
 ) -> std::io::Result<()> {
+    ensure_active(cancelled)?;
     if root.is_file() {
-        push_entry(root, workspace, pattern, files);
+        push_entry(root, workspace, pattern, listing);
         return Ok(());
     }
     if depth > max_depth {
         return Ok(());
     }
+    verify_directory(root)?;
     for entry in fs::read_dir(root)? {
+        ensure_active(cancelled)?;
         let entry = entry?;
         let file_type = entry.file_type()?;
         let file_name = entry.file_name();
@@ -122,13 +147,21 @@ fn collect_entries(
                 }
             };
             if add_dir {
-                dirs.push(format!("{relative}/"));
+                listing.push(format!("{relative}/"), EntryKind::Directory);
             }
             if recurse {
-                collect_entries(&path, workspace, pattern, max_depth, depth + 1, files, dirs)?;
+                collect_entries(
+                    &path,
+                    workspace,
+                    pattern,
+                    max_depth,
+                    depth + 1,
+                    listing,
+                    cancelled,
+                )?;
             }
         } else if file_type.is_file() {
-            push_entry(&path, workspace, pattern, files);
+            push_entry(&path, workspace, pattern, listing);
         }
     }
     Ok(())
@@ -150,7 +183,7 @@ fn dir_should_traverse(pattern: &str, dir: &str) -> bool {
     wildcard_prefix.starts_with(&dir)
 }
 
-fn push_entry(path: &Path, workspace: &Path, pattern: Option<&str>, files: &mut Vec<String>) {
+fn push_entry(path: &Path, workspace: &Path, pattern: Option<&str>, listing: &mut Listing) {
     let Ok(relative) = path.strip_prefix(workspace) else {
         return;
     };
@@ -160,13 +193,30 @@ fn push_entry(path: &Path, workspace: &Path, pattern: Option<&str>, files: &mut 
         return;
     }
 
-    files.push(relative);
+    listing.push(relative, EntryKind::File);
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::super::test_helpers::workspace;
     use super::*;
+
+    fn find_files(args: &Value, workspace: &Path) -> ToolResultEnvelope {
+        super::find_files(args, workspace, &|| false)
+    }
+
+    #[test]
+    fn directory_listing_can_stop_while_traversing_entries() {
+        let dir = workspace();
+        let checks = AtomicUsize::new(0);
+        let stop = || checks.fetch_add(1, Ordering::Relaxed) >= 2;
+        let result = super::find_files(&serde_json::json!({}), dir.path(), &stop);
+
+        assert_eq!("cancelled", result.status);
+        assert_eq!(3, checks.load(Ordering::Relaxed));
+    }
 
     #[test]
     fn find_files_returns_depth_sorted_entries_with_dirs_first() {

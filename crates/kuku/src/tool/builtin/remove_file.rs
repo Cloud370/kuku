@@ -9,8 +9,8 @@ use crate::tool::ToolResultEnvelope;
 
 use super::common::{
     expected_version, file_read_error, file_version, remove_observed_file, require_version,
-    required_path, resolve_remove_path, snapshot_stale_error, ExecutorRead, WriteEvidence,
-    WriteSnapshotLookup,
+    required_path, resolve_remove_path, snapshot_stale_error, ExecutorRead, FileCancellation,
+    WriteEvidence, WriteSnapshotLookup,
 };
 
 pub(crate) fn remove_file(
@@ -18,6 +18,7 @@ pub(crate) fn remove_file(
     workspace: &Path,
     conversation: &ConversationAddress,
     prior_events: &[StoredEvent],
+    cancelled: &FileCancellation<'_>,
 ) -> ToolResultEnvelope {
     remove_file_with_evidence(
         args,
@@ -26,6 +27,7 @@ pub(crate) fn remove_file(
             conversation,
             events: prior_events,
         },
+        cancelled,
     )
 }
 
@@ -33,14 +35,16 @@ pub(crate) fn remove_file_for_executor(
     args: &Value,
     workspace: &Path,
     reads: &[ExecutorRead],
+    cancelled: &FileCancellation<'_>,
 ) -> ToolResultEnvelope {
-    remove_file_with_evidence(args, workspace, WriteEvidence::Executor(reads))
+    remove_file_with_evidence(args, workspace, WriteEvidence::Executor(reads), cancelled)
 }
 
 fn remove_file_with_evidence(
     args: &Value,
     workspace: &Path,
     evidence: WriteEvidence<'_>,
+    cancelled: &FileCancellation<'_>,
 ) -> ToolResultEnvelope {
     let path = match required_path("remove_file", args) {
         Ok(path) => path,
@@ -54,7 +58,7 @@ fn remove_file_with_evidence(
         Ok(resolved) => resolved,
         Err(result) => return result,
     };
-    let (before, metadata) = match file_version(&resolved.path) {
+    let (before, metadata) = match file_version(&resolved.path, cancelled) {
         Ok(version) => version,
         Err(error) => return file_read_error(Path::new(&resolved.relative), error),
     };
@@ -68,7 +72,7 @@ fn remove_file_with_evidence(
             return result;
         }
     }
-    let publication = match remove_observed_file(&resolved.path, &before) {
+    let publication = match remove_observed_file(&resolved.path, &before, cancelled) {
         Ok(publication) => publication,
         Err(error) => return error.result(&resolved.relative),
     };
@@ -120,11 +124,13 @@ mod tests {
         std::fs::write(&path, original).unwrap();
         let args = serde_json::json!({"path": "二进制 & file.out"});
 
-        let cheap = stat_file(&args, workspace.path()).structured.unwrap();
+        let cheap = stat_file(&args, workspace.path(), &|| false)
+            .structured
+            .unwrap();
         assert_eq!("file", cheap["entry_kind"]);
         assert_eq!(3, cheap["size_bytes"]);
         assert!(cheap.get("content_hash").is_none());
-        let no_observation = remove_file_for_executor(&args, workspace.path(), &[]);
+        let no_observation = remove_file_for_executor(&args, workspace.path(), &[], &|| false);
         assert_eq!(
             "snapshot_required",
             no_observation.structured.unwrap()["reason_code"]
@@ -133,6 +139,7 @@ mod tests {
         let versioned = stat_file(
             &serde_json::json!({"path":"二进制 & file.out","version":true}),
             workspace.path(),
+            &|| false,
         )
         .structured
         .unwrap();
@@ -141,12 +148,12 @@ mod tests {
         let pinned = serde_json::json!({"path":"二进制 & file.out","expected_version":hash});
 
         std::fs::write(&path, b"\xff\x00").unwrap();
-        let stale = remove_file_for_executor(&pinned, workspace.path(), &[]);
+        let stale = remove_file_for_executor(&pinned, workspace.path(), &[], &|| false);
         assert_eq!("snapshot_stale", stale.structured.unwrap()["reason_code"]);
         assert_eq!(b"\xff\x00", std::fs::read(&path).unwrap().as_slice());
         std::fs::write(&path, original).unwrap();
 
-        let removed = remove_file_for_executor(&pinned, workspace.path(), &[]);
+        let removed = remove_file_for_executor(&pinned, workspace.path(), &[], &|| false);
         assert_eq!("ok", removed.status);
         let facts =
             FileMutationFacts::from_structured(removed.structured.as_ref().unwrap()).unwrap();
@@ -155,7 +162,9 @@ mod tests {
         assert_eq!(Some(3), facts.bytes_removed);
         assert_eq!(Some(hash), facts.content_hash_before.as_deref());
         assert!(!path.exists());
-        let absent = stat_file(&args, workspace.path()).structured.unwrap();
+        let absent = stat_file(&args, workspace.path(), &|| false)
+            .structured
+            .unwrap();
         assert_eq!("missing", absent["entry_kind"]);
         assert_eq!(false, absent["exists"]);
     }

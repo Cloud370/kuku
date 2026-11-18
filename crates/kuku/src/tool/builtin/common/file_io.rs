@@ -3,7 +3,8 @@ use std::fs::{self, File, Metadata};
 use std::hash::{Hash, Hasher};
 use std::io::{self, Read, Write};
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard, TryLockError};
+use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
@@ -14,16 +15,32 @@ use crate::util::fs_sync;
 const HASH_BUFFER_BYTES: usize = 64 * 1024;
 const MUTATION_LOCKS: usize = 64;
 const MUTATION_PREVIEW_BYTES: usize = 80_000;
+const MUTATION_LOCK_RETRY: Duration = Duration::from_millis(10);
 
 static MUTATIONS: [Mutex<()>; MUTATION_LOCKS] = [const { Mutex::new(()) }; MUTATION_LOCKS];
 
-pub(crate) struct StableFile {
-    file: File,
-    opened: Metadata,
+pub(crate) type FileCancellation<'a> = dyn Fn() -> bool + Sync + 'a;
+
+#[derive(Debug)]
+struct Cancelled;
+
+impl std::fmt::Display for Cancelled {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("file operation cancelled")
+    }
 }
 
-impl StableFile {
-    pub(crate) fn open(path: &Path) -> io::Result<Self> {
+impl std::error::Error for Cancelled {}
+
+pub(crate) struct StableFile<'a> {
+    file: File,
+    opened: Metadata,
+    cancelled: &'a FileCancellation<'a>,
+}
+
+impl<'a> StableFile<'a> {
+    pub(crate) fn open(path: &Path, cancelled: &'a FileCancellation<'a>) -> io::Result<Self> {
+        ensure_active(cancelled)?;
         verify_canonical_parent(path)?;
         let metadata = fs::symlink_metadata(path)?;
         if !metadata.is_file() {
@@ -37,10 +54,15 @@ impl StableFile {
         if !same_version_marker(&metadata, &opened) {
             return Err(changed_during_read());
         }
-        Ok(Self { file, opened })
+        Ok(Self {
+            file,
+            opened,
+            cancelled,
+        })
     }
 
     pub(crate) fn verify(&self, path: &Path) -> io::Result<()> {
+        ensure_active(self.cancelled)?;
         verify_canonical_parent(path)?;
         let current = fs::symlink_metadata(path).map_err(|error| {
             if error.kind() == io::ErrorKind::NotFound {
@@ -58,8 +80,9 @@ impl StableFile {
     }
 }
 
-impl Read for StableFile {
+impl Read for StableFile<'_> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        ensure_active(self.cancelled)?;
         self.file.read(buffer)
     }
 }
@@ -74,10 +97,13 @@ pub(crate) fn format_content_hash(hash: Sha256) -> String {
     format!("sha256:{:x}", hash.finalize())
 }
 
-pub(crate) fn read_file_as_utf8(path: &Path) -> Result<String, ToolResultEnvelope> {
+pub(crate) fn read_file_as_utf8(
+    path: &Path,
+    cancelled: &FileCancellation<'_>,
+) -> Result<String, ToolResultEnvelope> {
     let mut content = String::new();
     let read = (|| -> io::Result<()> {
-        let mut file = StableFile::open(path)?;
+        let mut file = StableFile::open(path, cancelled)?;
         file.read_to_string(&mut content)?;
         file.verify(path)
     })();
@@ -85,8 +111,11 @@ pub(crate) fn read_file_as_utf8(path: &Path) -> Result<String, ToolResultEnvelop
     Ok(content)
 }
 
-pub(crate) fn file_version(path: &Path) -> io::Result<(String, Metadata)> {
-    let mut file = StableFile::open(path)?;
+pub(crate) fn file_version(
+    path: &Path,
+    cancelled: &FileCancellation<'_>,
+) -> io::Result<(String, Metadata)> {
+    let mut file = StableFile::open(path, cancelled)?;
     let mut hash = Sha256::new();
     let mut buffer = [0; HASH_BUFFER_BYTES];
     loop {
@@ -104,6 +133,12 @@ pub(crate) fn file_version(path: &Path) -> io::Result<(String, Metadata)> {
 }
 
 pub(crate) fn file_read_error(path: &Path, error: io::Error) -> ToolResultEnvelope {
+    if is_cancellation(&error) {
+        return ToolResultEnvelope::cancelled(format!(
+            "file operation cancelled: {}",
+            path.display()
+        ));
+    }
     let summary = format!("failed: {error}");
     let detail = format!("{}: {error}", path.display());
     if error.kind() == io::ErrorKind::WouldBlock {
@@ -113,8 +148,15 @@ pub(crate) fn file_read_error(path: &Path, error: io::Error) -> ToolResultEnvelo
     }
 }
 
+pub(crate) fn ensure_active(cancelled: &FileCancellation<'_>) -> io::Result<()> {
+    if cancelled() {
+        return Err(io::Error::other(Cancelled));
+    }
+    Ok(())
+}
+
 pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let mut staged = stage_file(path, bytes)?;
+    let mut staged = stage_file(path, bytes, &|| false)?;
     staged.flush()?;
     fs_sync::sync_file(staged.as_file())?;
     let staged = staged.into_temp_path();
@@ -134,6 +176,9 @@ impl WorkspaceCommitError {
                 format!("file changed; read {relative} again before modifying"),
                 ToolErrorReason::SnapshotStale,
             ),
+            Self::WriteFailed(error) if is_cancellation(&error) => {
+                ToolResultEnvelope::cancelled(format!("file operation cancelled: {relative}"))
+            }
             Self::WriteFailed(error) => ToolResultEnvelope::error(
                 format!("failed: {error}"),
                 format!("error modifying file: {relative}"),
@@ -189,13 +234,11 @@ pub(crate) fn publish_file(
     path: &Path,
     expected: Option<&str>,
     bytes: &[u8],
+    cancelled: &FileCancellation<'_>,
 ) -> Result<Publication, WorkspaceCommitError> {
-    let lock = lock_for_path(path);
-    let _commit = lock
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _commit = path_lock(path, cancelled)?;
     verify_canonical_parent(path).map_err(version_error)?;
-    let mut staged = stage_file(path, bytes)?;
+    let mut staged = stage_file(path, bytes, cancelled)?;
     staged.flush()?;
     if expected.is_some() {
         let metadata = fs::symlink_metadata(path).map_err(version_error)?;
@@ -205,9 +248,11 @@ pub(crate) fn publish_file(
     let staged = staged.into_temp_path();
     verify_canonical_parent(path).map_err(version_error)?;
     if let Some(expected) = expected {
-        verify_file_version(path, expected)?;
+        verify_file_version(path, expected, cancelled)?;
+        ensure_active(cancelled)?;
         return replace_existing(&staged, path);
     }
+    ensure_active(cancelled)?;
     staged.persist_noclobber(path).map_err(|error| {
         if error.error.kind() == io::ErrorKind::AlreadyExists {
             WorkspaceCommitError::Conflict
@@ -221,13 +266,12 @@ pub(crate) fn publish_file(
 pub(crate) fn remove_observed_file(
     path: &Path,
     expected: &str,
+    cancelled: &FileCancellation<'_>,
 ) -> Result<Publication, WorkspaceCommitError> {
-    let lock = lock_for_path(path);
-    let _commit = lock
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _commit = path_lock(path, cancelled)?;
     verify_canonical_parent(path).map_err(version_error)?;
-    verify_file_version(path, expected)?;
+    verify_file_version(path, expected, cancelled)?;
+    ensure_active(cancelled)?;
     fs::remove_file(path).map_err(version_error)?;
     #[cfg(unix)]
     return Ok(confirm_publication(fs_sync::sync_parent(path)));
@@ -268,6 +312,10 @@ fn changed_during_read() -> io::Error {
     )
 }
 
+fn is_cancellation(error: &io::Error) -> bool {
+    error.get_ref().is_some_and(|cause| cause.is::<Cancelled>())
+}
+
 fn open_regular_file(path: &Path) -> io::Result<File> {
     let mut options = fs::OpenOptions::new();
     options.read(true);
@@ -279,21 +327,36 @@ fn open_regular_file(path: &Path) -> io::Result<File> {
     options.open(path)
 }
 
-fn stage_file(path: &Path, bytes: &[u8]) -> io::Result<tempfile::NamedTempFile> {
+fn stage_file(
+    path: &Path,
+    bytes: &[u8],
+    cancelled: &FileCancellation<'_>,
+) -> io::Result<tempfile::NamedTempFile> {
     let parent = path.parent().ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "path has no parent directory")
     })?;
     let mut staged = tempfile::Builder::new()
         .prefix(".kuku-")
         .tempfile_in(parent)?;
-    staged.write_all(bytes)?;
+    for chunk in bytes.chunks(HASH_BUFFER_BYTES) {
+        ensure_active(cancelled)?;
+        staged.write_all(chunk)?;
+    }
     Ok(staged)
 }
 
-fn lock_for_path(path: &Path) -> &'static Mutex<()> {
+fn path_lock(path: &Path, cancelled: &FileCancellation<'_>) -> io::Result<MutexGuard<'static, ()>> {
     let mut hash = DefaultHasher::new();
     path.hash(&mut hash);
-    &MUTATIONS[(hash.finish() % MUTATION_LOCKS as u64) as usize]
+    let lock = &MUTATIONS[(hash.finish() % MUTATION_LOCKS as u64) as usize];
+    loop {
+        ensure_active(cancelled)?;
+        match lock.try_lock() {
+            Ok(held) => return Ok(held),
+            Err(TryLockError::Poisoned(error)) => return Ok(error.into_inner()),
+            Err(TryLockError::WouldBlock) => std::thread::sleep(MUTATION_LOCK_RETRY),
+        }
+    }
 }
 
 fn verify_canonical_parent(path: &Path) -> io::Result<()> {
@@ -306,8 +369,12 @@ fn verify_canonical_parent(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn verify_file_version(path: &Path, expected: &str) -> Result<(), WorkspaceCommitError> {
-    let (current, _) = file_version(path).map_err(version_error)?;
+fn verify_file_version(
+    path: &Path,
+    expected: &str,
+    cancelled: &FileCancellation<'_>,
+) -> Result<(), WorkspaceCommitError> {
+    let (current, _) = file_version(path, cancelled).map_err(version_error)?;
     if current != expected {
         return Err(WorkspaceCommitError::Conflict);
     }
@@ -346,6 +413,7 @@ fn replace_existing(staged: &Path, path: &Path) -> Result<Publication, Workspace
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Barrier};
 
     use super::*;
@@ -364,7 +432,7 @@ mod tests {
                 let version = &version;
                 scope.spawn(move || {
                     barrier.wait();
-                    publish_file(path, Some(version), bytes)
+                    publish_file(path, Some(version), bytes, &|| false)
                 })
             };
             let alpha = attempt(b"alpha");
@@ -386,13 +454,56 @@ mod tests {
         let path = temporary.path().canonicalize().unwrap().join("file.txt");
         fs::write(&path, b"current").unwrap();
         assert!(matches!(
-            publish_file(&path, None, b"replacement"),
+            publish_file(&path, None, b"replacement", &|| false),
             Err(WorkspaceCommitError::Conflict)
         ));
         assert!(matches!(
-            remove_observed_file(&path, &content_hash(b"old")),
+            remove_observed_file(&path, &content_hash(b"old"), &|| false),
             Err(WorkspaceCommitError::Conflict)
         ));
         assert_eq!(b"current", fs::read(path).unwrap().as_slice());
+    }
+
+    #[test]
+    fn cancellation_after_staging_prevents_publication_and_cleans_up() {
+        let temporary = tempfile::tempdir().unwrap();
+        let dir = temporary.path().canonicalize().unwrap();
+        let path = dir.join("new.txt");
+        let cancelled = || fs::read_dir(&dir).unwrap().next().is_some();
+
+        let error = publish_file(&path, None, b"", &cancelled)
+            .err()
+            .expect("cancelled before the staged file can be published");
+
+        assert_eq!("cancelled", error.result("new.txt").status);
+        assert!(fs::read_dir(dir).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn version_is_revalidated_after_staging_and_before_replacement() {
+        let temporary = tempfile::tempdir().unwrap();
+        let dir = temporary.path().canonicalize().unwrap();
+        let path = dir.join("file.txt");
+        fs::write(&path, b"original").unwrap();
+        let external_write = AtomicBool::new(false);
+        let changed_after_staging = || {
+            if fs::read_dir(&dir).unwrap().count() > 1
+                && !external_write.swap(true, Ordering::Relaxed)
+            {
+                fs::write(&path, b"external").unwrap();
+            }
+            false
+        };
+
+        let result = publish_file(
+            &path,
+            Some(&content_hash(b"original")),
+            b"replacement",
+            &changed_after_staging,
+        );
+
+        assert!(matches!(result, Err(WorkspaceCommitError::Conflict)));
+        assert_eq!(b"external", fs::read(&path).unwrap().as_slice());
+        assert_eq!(1, fs::read_dir(dir).unwrap().count());
     }
 }

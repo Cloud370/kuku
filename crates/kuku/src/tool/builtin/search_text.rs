@@ -1,6 +1,7 @@
 use std::cmp::Reverse;
 use std::collections::HashSet;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use regex::Regex;
@@ -10,8 +11,9 @@ use serde_json::Value;
 use crate::tool::ToolResultEnvelope;
 
 use super::common::{
-    glob_match, is_default_excluded_dir, join_bounded_strings, read_file_as_utf8, relative_path,
-    resolve_path, workspace_path_blocked,
+    ensure_active, file_read_error, glob_match, is_default_excluded_dir, join_bounded_strings,
+    read_file_as_utf8, relative_path, resolve_path, verify_directory, workspace_path_blocked,
+    FileCancellation,
 };
 
 const SEARCH_TEXT_MAX_CHARS: usize = 80_000;
@@ -50,9 +52,17 @@ impl SearchPage {
         }
     }
 
-    fn scan(&mut self, path: &str, content: &str, regex: &Regex, include_line: bool) {
+    fn scan(
+        &mut self,
+        path: &str,
+        content: &str,
+        regex: &Regex,
+        include_line: bool,
+        cancelled: &FileCancellation<'_>,
+    ) -> io::Result<()> {
         let mut full = self.bytes >= SEARCH_TEXT_MAX_CHARS;
         for (index, source) in content.lines().enumerate() {
+            ensure_active(cancelled)?;
             if !regex.is_match(source) {
                 continue;
             }
@@ -76,10 +86,15 @@ impl SearchPage {
             });
             self.bytes += row_bytes;
         }
+        Ok(())
     }
 }
 
-pub(crate) fn search_text(args: &Value, workspace: &Path) -> ToolResultEnvelope {
+pub(crate) fn search_text(
+    args: &Value,
+    workspace: &Path,
+    cancelled: &FileCancellation<'_>,
+) -> ToolResultEnvelope {
     let Some(pattern) = args.get("pattern").and_then(Value::as_str) else {
         return ToolResultEnvelope::error(
             "failed: missing pattern",
@@ -120,15 +135,17 @@ pub(crate) fn search_text(args: &Value, workspace: &Path) -> ToolResultEnvelope 
         include,
         &mut files,
         &mut blocked_file_count,
+        cancelled,
     ) {
-        return ToolResultEnvelope::error(
-            format!("failed: {error}"),
-            format!("error reading search path: {path}"),
-        );
+        return file_read_error(Path::new(path), error);
     }
     if view == "lines" {
         files.sort_by_cached_key(|file| {
-            let modified = fs::metadata(&file.absolute).and_then(|m| m.modified()).ok();
+            let modified = if cancelled() {
+                None
+            } else {
+                fs::metadata(&file.absolute).and_then(|m| m.modified()).ok()
+            };
             (Reverse(modified), file.relative.clone())
         });
     } else {
@@ -140,8 +157,9 @@ pub(crate) fn search_text(args: &Value, workspace: &Path) -> ToolResultEnvelope 
     let mut skipped_file_count = 0_usize;
     let mut searched_file_count = 0_usize;
     for file in &files {
-        let content = match read_file_as_utf8(&file.absolute) {
+        let content = match read_file_as_utf8(&file.absolute, cancelled) {
             Ok(content) => content,
+            Err(result) if result.status == "cancelled" => return result,
             Err(_) => {
                 skipped_file_count += 1;
                 continue;
@@ -149,14 +167,20 @@ pub(crate) fn search_text(args: &Value, workspace: &Path) -> ToolResultEnvelope 
         };
         searched_file_count += 1;
         let previous_count = page.matches.len();
-        page.scan(&file.relative, &content, &regex, view == "lines");
+        if let Err(error) = page.scan(&file.relative, &content, &regex, view == "lines", cancelled)
+        {
+            return file_read_error(Path::new(path), error);
+        }
         if context > 0 && view == "lines" {
-            preview.extend(
+            if let Err(error) = preview.extend(
                 &file.relative,
                 &content,
                 &page.matches[previous_count..],
                 context,
-            );
+                cancelled,
+            ) {
+                return file_read_error(Path::new(path), error);
+            }
         }
     }
 
@@ -246,7 +270,9 @@ fn collect_search_files(
     include: Option<&str>,
     files: &mut Vec<CollectedFile>,
     blocked_file_count: &mut usize,
-) -> std::io::Result<()> {
+    cancelled: &FileCancellation<'_>,
+) -> io::Result<()> {
+    ensure_active(cancelled)?;
     let relative = relative_path(root, workspace);
     if workspace_path_blocked(&relative) {
         *blocked_file_count += 1;
@@ -257,7 +283,9 @@ fn collect_search_files(
         return Ok(());
     }
 
+    verify_directory(root)?;
     for entry in fs::read_dir(root)? {
+        ensure_active(cancelled)?;
         let entry = entry?;
         let file_type = entry.file_type()?;
         let path = entry.path();
@@ -272,7 +300,14 @@ fn collect_search_files(
             if is_default_excluded_dir(&file_name.to_string_lossy()) {
                 continue;
             }
-            collect_search_files(&path, workspace, include, files, blocked_file_count)?;
+            collect_search_files(
+                &path,
+                workspace,
+                include,
+                files,
+                blocked_file_count,
+                cancelled,
+            )?;
         } else if file_type.is_file() {
             push_search_file(&path, workspace, include, files, blocked_file_count);
         }
@@ -349,9 +384,16 @@ struct ContextPreview {
 }
 
 impl ContextPreview {
-    fn extend(&mut self, path: &str, content: &str, matches: &[SearchMatch], context: usize) {
+    fn extend(
+        &mut self,
+        path: &str,
+        content: &str,
+        matches: &[SearchMatch],
+        context: usize,
+        cancelled: &FileCancellation<'_>,
+    ) -> io::Result<()> {
         if matches.is_empty() || self.truncated {
-            return;
+            return Ok(());
         }
         let start = matches[0].line_number.saturating_sub(context).max(1);
         let end = matches[matches.len() - 1]
@@ -360,8 +402,12 @@ impl ContextPreview {
         let mut upcoming = matches.iter().map(|hit| hit.line_number).peekable();
         let mut preceding = None;
         let mut last_rendered = 0;
-        for (index, line) in content.lines().enumerate().take(end).skip(start - 1) {
+        for (index, line) in content.lines().enumerate().take(end) {
+            ensure_active(cancelled)?;
             let number = index + 1;
+            if number < start {
+                continue;
+            }
             let matching = upcoming.peek() == Some(&number);
             if matching {
                 preceding = upcoming.next();
@@ -384,6 +430,7 @@ impl ContextPreview {
             }
             last_rendered = number;
         }
+        Ok(())
     }
 
     fn push(&mut self, row: String) {
@@ -418,8 +465,31 @@ fn unique_match_file_count(matches: &[SearchMatch]) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::super::test_helpers::workspace;
     use super::*;
+
+    fn search_text(args: &Value, workspace: &Path) -> ToolResultEnvelope {
+        super::search_text(args, workspace, &|| false)
+    }
+
+    #[test]
+    fn search_stops_during_input_scan_without_returning_a_complete_page() {
+        let dir = workspace();
+        let path = dir.path().join("large.txt");
+        std::fs::write(path, "a long fixture line with no matches\n".repeat(10_000)).unwrap();
+        let checks = AtomicUsize::new(0);
+        let stop = || checks.fetch_add(1, Ordering::Relaxed) >= 4;
+        let result = super::search_text(
+            &serde_json::json!({"path":"large.txt","pattern":"missing pattern"}),
+            dir.path(),
+            &stop,
+        );
+
+        assert_eq!("cancelled", result.status);
+        assert_eq!(5, checks.load(Ordering::Relaxed));
+    }
 
     #[test]
     fn search_text_supports_files_lines_and_count_views() {
