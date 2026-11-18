@@ -9,8 +9,8 @@ pub(crate) enum AgentDirection {
 impl AgentDirection {
     pub(crate) fn from_key(key: KeyEvent) -> Option<Self> {
         match (key.modifiers, key.code) {
-            (KeyModifiers::ALT, KeyCode::Left | KeyCode::Up) => Some(Self::Previous),
-            (KeyModifiers::ALT, KeyCode::Right | KeyCode::Down) => Some(Self::Next),
+            (KeyModifiers::ALT, KeyCode::Left) => Some(Self::Previous),
+            (KeyModifiers::ALT, KeyCode::Right) => Some(Self::Next),
             _ => None,
         }
     }

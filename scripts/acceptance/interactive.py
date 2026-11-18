@@ -593,12 +593,12 @@ def delegated_agent_cards(client):
         assert task in menu, menu
         screens.append(("Switching to the active reviewer with a parent draft", menu))
         terminal.type("reviewer draft to keep")
-        terminal.press("\x1b[1;3A")
+        terminal.press("\x1b[1;3D")
         original_draft = terminal.expect("parent draft to keep", state="To main")["screen"]
         assert "reviewer draft to keep" not in original_draft
-        terminal.press("\x1b[1;3A")
+        terminal.press("\x1b[1;3D")
         terminal.expect("reviewer draft to keep", state="To reviewer")
-        terminal.press("\x1b[1;3A")
+        terminal.press("\x1b[1;3D")
         terminal.expect("parent draft to keep", state="To main")
         terminal.press("\x03")
         client.provider.assert_idle()
@@ -615,7 +615,7 @@ def delegated_agent_cards(client):
             attached = terminal.expect(initial, state="Streaming reply")["screen"]
             assert attached.count(initial) == 1 and "reviewer draft to keep" in attached, attached
             screens.append(("Attaching to a reviewer mid-reply", attached))
-            terminal.press("\x1b[1;3A")
+            terminal.press("\x1b[1;3D")
             terminal.expect(f"{card} · Agent now Streaming reply", state="To main")
             terminal.press("\x0f")
             expanded = terminal.expect("Live Agent reply")["screen"]

@@ -338,6 +338,8 @@ mod tests {
         let reading = app.pane_mut().transcript.project(80, 16);
         assert!(!reading.following);
         key(&mut app, KeyCode::Down, KeyModifiers::ALT);
+        assert_eq!("main", app.active.agent);
+        key(&mut app, KeyCode::Right, KeyModifiers::ALT);
         assert_eq!("review", app.active.agent);
         assert!(app.modal.is_none());
         app.effects.clear();
@@ -351,7 +353,7 @@ mod tests {
         load(&mut app, reviewer, Vec::new());
         app.pane_mut().draft.set_text("Keep the child draft".into());
         app.effects.clear();
-        key(&mut app, KeyCode::Down, KeyModifiers::ALT);
+        key(&mut app, KeyCode::Right, KeyModifiers::ALT);
         assert_eq!("main", &app.active.agent);
         assert_eq!("Keep the parent draft", app.pane().draft.text());
         assert!(
@@ -371,7 +373,7 @@ mod tests {
 
         key(&mut app, KeyCode::Left, KeyModifiers::ALT);
         assert_eq!("review", app.active.agent);
-        key(&mut app, KeyCode::Up, KeyModifiers::ALT);
+        key(&mut app, KeyCode::Left, KeyModifiers::ALT);
         assert_eq!("main", app.active.agent);
         key(&mut app, KeyCode::Left, KeyModifiers::ALT);
         assert_eq!("reviewer", app.active.agent);
@@ -382,7 +384,7 @@ mod tests {
             true,
             "Another conversation".into(),
         );
-        key(&mut app, KeyCode::Up, KeyModifiers::ALT);
+        key(&mut app, KeyCode::Left, KeyModifiers::ALT);
         app.select_agent(old_target);
         assert_eq!(Address::main("another-session".into()), app.active);
         assert!(app.previous_agent().is_none());
