@@ -75,7 +75,7 @@
 
 ## 快照、历史与观察
 
-1. 请求 `/snapshot?workspace=...&agent=...`。JSON 响应包含 `session_id`、`workspace`、已提交 `cursor`、所选 `agent` 快照、`agents` 摘要、`pending` 输入和模型 `selection`。模型设置解析失败时返回 `selection_error`。Agent 状态包含相应的执行标识以及待决问题或授权。每个待接纳条目都含有 `receipt` 和 `input`。Agent 不存在时返回 `404` 和 `agent_not_found`。`/agents?workspace=...` 可直接取得所有 Agent 摘要及游标。
+1. 请求 `/snapshot?workspace=...&agent=...`。JSON 响应包含 `session_id`、`workspace`、已提交 `cursor`、所选 `agent` 快照、`agents` 摘要、`pending` 输入和模型 `selection`。模型设置解析失败时返回 `selection_error`。Agent 状态包含相应的执行标识以及待决问题或授权。每个待接纳条目都含有 `receipt` 和 `input`。Agent 不存在时返回 `404` 和 `agent_not_found`。`/agents?workspace=...` 可直接取得所有 Agent 摘要及游标。 连接正在执行的 Agent 时可以加上 `progress=true`。如果最近的持久事件足以确定阶段，`progress.phase` 为 `waiting_for_model` 或 `running_tools`；后者还包含 `tool_call_ids`。这些信息对应同一快照游标。
 2. 请求 `/history?workspace=...&agent=...&before=CURSOR_PLUS_ONE&limit=...`，取得截至该快照、按升序排列的最新一页。用返回的 `next_before` 读取上一页。`before` 为排他游标。
 3. 连接 `/observe?workspace=...&agent=...&after=CURSOR`，接收快照之后的 NDJSON。省略 `agent` 可以观察整个 Session。从已提交的条目更新续读游标。断开或落后时，从最后的已提交游标重连。
 

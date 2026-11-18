@@ -5,6 +5,7 @@
 | Variable | Meaning |
 |---|---|
 | `KUKU_HOME` | 覆盖默认运行时 home 目录 |
+| `KUKU_TUI_STATUSLINE` | TUI 启动时读取，用逗号排列 `connection`、`execution`、`input`、`workspace`、`model`（默认顺序）。省略字段即可隐藏，设为 `none` 可隐藏整行。 |
 | `KUKU_TOKEN` | 用于显式连接服务的客户端令牌 |
 | `KUKU_SERVER_PASSWORD` | 通过 `kuku server` 显式启动服务时使用的令牌 |
 | `ANTHROPIC_API_KEY` | `provider.anthropic` 常用的 API key 来源 |

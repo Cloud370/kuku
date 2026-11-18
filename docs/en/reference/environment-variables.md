@@ -5,6 +5,7 @@
 | Variable | Meaning |
 |---|---|
 | `KUKU_HOME` | Override the default runtime home directory |
+| `KUKU_TUI_STATUSLINE` | Ordered, comma-separated TUI fields: `connection`, `execution`, `input`, `workspace`, `model` (the default order). Omit a field to hide it, or use `none` to hide the line. The terminal client reads the setting on startup. |
 | `KUKU_TOKEN` | Authenticate a client using an explicitly selected server |
 | `KUKU_SERVER_PASSWORD` | Set the bearer token for a server started with `kuku server` |
 | `ANTHROPIC_API_KEY` | Common API key source for `provider.anthropic` |

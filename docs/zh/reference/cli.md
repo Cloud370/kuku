@@ -44,6 +44,7 @@
 
 | 按键或操作 | 行为 |
 |---|---|
+| Ctrl+C | 清空当前输入框。输入为空时窗口仍保持打开。 |
 | Enter | 发送草稿。Agent 忙时在下一个安全的模型请求边界接纳，如果当前轮先结束则在下一轮接纳。 |
 | Alt+Enter | 把草稿排到下一轮。 |
 | Shift+Enter 或 Ctrl+J | 在草稿中换行。 |
@@ -56,12 +57,15 @@
 | F2 或 `/reply` | 回复所选 Agent 的待决问题或授权。 |
 | `/pending` | 检查、重试或丢弃未确认的提交。 |
 | `/model`、`/thinking` | 为所选 Agent 选择模型或思考设置。 |
-| Ctrl+O、`/tools`、`/copy` | 展开或收起内联工具详情、读取保留输出，或复制回复正文。 |
+| Ctrl+O、`/tools`、`/copy` | 工具详情默认展开，先显示一段预览。Ctrl+O 收起或展开，`/tools` 选择要查看的保留结果，`/copy` 复制 AI 回复正文。 |
 | 鼠标左键拖动 | 高亮选区，松开时将所选文字复制到剪贴板。 |
 | Page Up、Page Down、Ctrl+End | 滚动对话或回到最新输出。 |
 | Ctrl+P、Ctrl+N | 在编辑区调出上一条或下一条已发送的提示词。 |
 | `/server`、`/reconnect`、`/restart` | 检查所连服务、重新连接，或重启受管本地服务。 |
-| `/web`、`/quit` | 在浏览器中打开对话或退出终端客户端。Ctrl+C 也可以退出终端客户端。 |
+| 菜单中的方向键、Tab、Enter | 方向键移动高亮项，Tab 补全可编辑文本，Enter 执行选中的动作。 |
+| `/web`、`/quit` | 在浏览器中打开对话或退出终端客户端。 |
+
+状态栏分别显示客户端到服务的连接、所选 Agent 的活动和输入状态。`Draft` 表示本地草稿；发送后可区分等待回执、已排队和已接纳。`Waiting for model` 和 `Streaming reply` 对应模型请求的不同阶段，`Reconnecting` 表示客户端正在重新连接服务。可用 `KUKU_TUI_STATUSLINE` 选择字段和顺序。[环境变量](environment-variables.md)
 
 ## `kuku run`
 

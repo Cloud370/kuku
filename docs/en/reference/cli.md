@@ -44,6 +44,7 @@ Put options before the prompt in `kuku run`, because it consumes the remaining w
 
 | Key or action | Behavior |
 |---|---|
+| Ctrl+C | Clear the focused input. An empty editor stays open. |
 | Enter | Send the draft. A busy Agent accepts it at the next safe model-request boundary, or in the next Turn if the current Turn settles first. |
 | Alt+Enter | Queue the draft for the next Turn. |
 | Shift+Enter or Ctrl+J | Insert a newline in the draft. |
@@ -56,12 +57,15 @@ Put options before the prompt in `kuku run`, because it consumes the remaining w
 | F2 or `/reply` | Answer the selected Agent's pending question or authorization. |
 | `/pending` | Check, retry or discard an unconfirmed submission. |
 | `/model`, `/thinking` | Select model or reasoning settings for the selected Agent. |
-| Ctrl+O, `/tools`, `/copy` | Toggle inline tool details, read saved tool output, or copy response text. |
+| Ctrl+O, `/tools`, `/copy` | Tool details start expanded with a bounded preview. Toggle them with Ctrl+O, choose a saved result with `/tools`, or use `/copy` to copy the assistant’s reply. |
 | Left-button drag | Highlight visible text and copy the selected range to the clipboard on release. |
 | Page Up, Page Down, Ctrl+End | Scroll the transcript or return to the latest output. |
 | Ctrl+P, Ctrl+N | Recall the previous or next sent prompt into the editor. |
 | `/server`, `/reconnect`, `/restart` | Inspect the connected service, reconnect, or restart the managed local service. |
-| `/web`, `/quit` | Open the conversation in the browser or leave the terminal client. Ctrl+C also exits the terminal client. |
+| Arrow keys, Tab, Enter in a menu | Move the highlight, complete editable text, or activate the selected action, respectively. |
+| `/web`, `/quit` | Open the conversation in the browser or leave the terminal client. |
+
+The status line shows the client’s connection to the service, the selected Agent’s activity and the state of your input. `Draft` is local text. An input can be awaiting a receipt, queued or accepted. `Waiting for model` and `Streaming reply` describe the current model request. `Reconnecting` concerns the client’s connection to the service. Use `KUKU_TUI_STATUSLINE` to choose the visible fields and their order. [Environment variables](environment-variables.md)
 
 ## `kuku run`
 

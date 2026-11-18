@@ -101,7 +101,7 @@ Within one advancing Agent, Kuku serializes `read_file`, `edit_file`, `write_fil
 - `query_session` filters the session ledger, defaults to excluding rolled-back events, and truncates individual event content.
 - `edit_file` requires a unique `old_text` match inside a prior read snapshot that is still visible in the active conversation's effective history. A partial or truncated read authorizes only the raw file text actually shown, while `replace_all=true` requires a full-file snapshot. LF input is mapped to CRLF only when needed to match a CRLF file, and the replacement preserves that line-ending style. The file hash must still match at write time.
 - `write_file` overwrites only after a prior full-file read snapshot that is still visible in the active conversation's effective history.
-- `run_command` requires `timeout` in seconds.
+- `run_command` requires `timeout` in seconds. On Windows its background shell runs without opening a console window. Standard output and error remain available in the tool result.
 - `remember_memory` and `forget_memory` write memory files through dedicated APIs.
 
 ## Memory Tool Enums
