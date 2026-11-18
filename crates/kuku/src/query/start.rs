@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use crate::conversation::address::ConversationAddress;
@@ -414,6 +414,8 @@ impl Query {
             }
         }
         let agent_binding_id = self.agent_binding_id.clone();
+        let (admitted_tool_call_ids, tool_rounds) =
+            resumed_tools(&existing_events, turn, &conversation);
 
         let cleanup_context = Some((events_path.clone(), turn));
         let pending = PendingRun {
@@ -429,6 +431,7 @@ impl Query {
             request_num: resumed_request_num(&existing_events, turn, &conversation),
             cumulative: super::types::CumulativeUsage::default(),
             resolved: None,
+            admitted_tool_call_ids,
             queued_tool_calls: resumed_state.queued_tool_calls,
             resumed_permission_requests: resumed_state.resumed_permission_requests,
             pending_events: std::collections::VecDeque::new(),
@@ -451,7 +454,7 @@ impl Query {
             hook_context: Vec::new(),
             force_continue_count: 0,
             model_request_count: resumed_model_request_count(&existing_events, turn, &conversation),
-            tool_rounds: resumed_tool_rounds(&existing_events, turn, &conversation),
+            tool_rounds,
             tool_calls: 0,
             tool_names: Vec::new(),
             tool_denied: 0,
@@ -674,29 +677,31 @@ fn resumed_model_request_count(
     request_ids.len() as u64
 }
 
-fn resumed_tool_rounds(
+fn resumed_tools(
     events: &[crate::event::StoredEvent],
     turn: u64,
     conversation: &crate::conversation::address::ConversationAddress,
-) -> u64 {
-    let mut request_ids = Vec::<&str>::new();
+) -> (HashSet<String>, u64) {
+    let mut tool_call_ids = HashSet::new();
+    let mut request_ids = HashSet::new();
     for event in events {
         if let EventPayload::ToolCall {
             turn: event_turn,
             conversation: event_conversation,
             request_id,
+            tool_call_id,
             ..
         } = &event.payload
         {
             if *event_turn == turn
                 && event_matches_conversation(event_conversation.as_deref(), conversation)
-                && !request_ids.iter().any(|id| *id == request_id)
             {
-                request_ids.push(request_id);
+                tool_call_ids.insert(tool_call_id.clone());
+                request_ids.insert(request_id.as_str());
             }
         }
     }
-    request_ids.len() as u64
+    (tool_call_ids, request_ids.len() as u64)
 }
 
 fn resumed_request_num(

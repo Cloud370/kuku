@@ -520,6 +520,7 @@ mod tests {
             request_num: 1,
             cumulative: CumulativeUsage::default(),
             resolved: Some(test_resolved_runtime(vec![tool])),
+            admitted_tool_call_ids: Default::default(),
             queued_tool_calls: std::collections::VecDeque::new(),
             resumed_permission_requests: std::collections::VecDeque::new(),
             config: Arc::new(test_config()),

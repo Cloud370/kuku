@@ -8,36 +8,39 @@ use kuku::event::{EventPayload, ModelStopReason};
 use kuku::execution::{WorkspaceActionReceipt, WorkspaceActionState};
 use kuku::permission::{AuthorizationDecision, ToolAuthorization, ToolAuthorizer};
 use kuku::{
-    AdapterFuture, AgentConfig, Input, ModelAdapter, ModelEvent, ModelRequest, ModelStream,
-    Session, SessionOptions, WorkspaceExecutionHost, WorkspaceScriptActionStatus,
+    AdapterFuture, AgentConfig, AgentStatus, Input, ModelAdapter, ModelEvent, ModelRequest,
+    ModelStream, Session, SessionOptions, WorkspaceExecutionHost, WorkspaceScriptActionStatus,
     WorkspaceScriptFacts, WorkspaceScriptOperation,
 };
 use serde_json::json;
 
 #[derive(Debug)]
-struct ScriptModel(&'static str);
+struct ScriptModel {
+    code: &'static str,
+    repeated_id_code: Option<&'static str>,
+}
 
 impl ModelAdapter for ScriptModel {
     fn stream(&self, request: ModelRequest) -> AdapterFuture<'_, ModelStream> {
         Box::pin(async move {
+            assert_eq!(kuku::config::ProviderFormat::Anthropic, request.protocol);
             let completed = request.body["messages"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|message| message["role"] == "tool");
+                .filter(|message| message["role"] == "user")
+                .filter_map(|message| message["content"].as_array())
+                .flatten()
+                .any(|block| block["type"] == "tool_result" && block["tool_use_id"] == "script");
+            let code = if completed {
+                self.repeated_id_code
+            } else {
+                Some(self.code)
+            };
             let mut events = vec![ModelEvent::StreamStart {
                 request_id: "workspace-test".into(),
             }];
-            if completed {
-                events.extend([
-                    ModelEvent::TextDelta {
-                        text: "done".into(),
-                    },
-                    ModelEvent::StopReason {
-                        reason: ModelStopReason::EndTurn,
-                    },
-                ]);
-            } else {
+            if let Some(code) = code {
                 events.extend([
                     ModelEvent::ToolCallStart {
                         index: 0,
@@ -46,11 +49,20 @@ impl ModelAdapter for ScriptModel {
                     },
                     ModelEvent::ToolCallArgDelta {
                         index: 0,
-                        fragment: json!({"code":self.0}).to_string(),
+                        fragment: json!({"code":code}).to_string(),
                     },
                     ModelEvent::ToolCallStop { index: 0 },
                     ModelEvent::StopReason {
                         reason: ModelStopReason::ToolUse,
+                    },
+                ]);
+            } else {
+                events.extend([
+                    ModelEvent::TextDelta {
+                        text: "done".into(),
+                    },
+                    ModelEvent::StopReason {
+                        reason: ModelStopReason::EndTurn,
                     },
                 ]);
             }
@@ -83,7 +95,10 @@ fn options(
     code: &'static str,
 ) -> SessionOptions {
     let mut options = SessionOptions::new(work.path(), data.path(), common::test_config());
-    options.model_adapter = Some(Arc::new(ScriptModel(code)));
+    options.model_adapter = Some(Arc::new(ScriptModel {
+        code,
+        repeated_id_code: None,
+    }));
     options.authorizer = Arc::new(Gate);
     options.workspace_host = WorkspaceExecutionHost::new(1, 2).unwrap();
     options
@@ -528,5 +543,68 @@ return {base, id, statuses:[create.status,append.status,deny.status,allowed.stat
             .any(|candidate| candidate.action_id == action.action_id
                 && candidate.status == WorkspaceActionState::Dispatched));
     }
+    session.close().await.unwrap();
+    let events = session.events(0, 256).unwrap();
+    assert_eq!(
+        1,
+        events
+            .iter()
+            .filter(|event| matches!(&event.payload,
+                EventPayload::ToolCall { tool_call_id, .. } if tool_call_id == "script"
+            ))
+            .count()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reusing_a_tool_call_id_in_the_next_model_step_cannot_redispatch_the_old_action() {
+    const CODE: &str = r#"return await workspace.write_file({path:"original",content:"once"});"#;
+    let work = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let mut options = options(&work, &data, CODE);
+    options.model_adapter = Some(Arc::new(ScriptModel {
+        code: CODE,
+        repeated_id_code: Some(
+            r#"return await workspace.write_file({path:"replacement",content:"invalid call"});"#,
+        ),
+    }));
+    let host = options.workspace_host.clone();
+    let session = start(options).await;
+    let agent = until(|| {
+        let agent = session.agent("main").unwrap();
+        (agent.status != AgentStatus::Running).then_some(agent)
+    })
+    .await;
+    assert_eq!(AgentStatus::Interrupted, agent.status);
+    assert!(agent.last_error.unwrap().contains("invalid_response"));
+    assert_eq!(1, host.metrics().started_workers);
+    assert_eq!(
+        "once",
+        std::fs::read_to_string(work.path().join("original")).unwrap()
+    );
+    assert!(!work.path().join("replacement").exists());
+
+    let events = session.events(0, 256).unwrap();
+    let calls = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ToolCall {
+                tool_call_id,
+                request_id,
+                ..
+            } if tool_call_id == "script" => Some(request_id.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(vec!["req_1"], calls);
+    let mutations = events
+        .iter()
+        .filter_map(|event| WorkspaceActionReceipt::from_event(event).unwrap())
+        .filter(|event| {
+            event.tool == WorkspaceScriptOperation::WriteFile
+                && event.status == WorkspaceActionState::Dispatched
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(1, mutations.len());
     session.close().await.unwrap();
 }

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -371,6 +371,7 @@ pub(super) struct PendingRun {
     pub(super) request_num: u64,
     pub(super) cumulative: CumulativeUsage,
     pub(super) resolved: Option<ResolvedRuntime>,
+    pub(super) admitted_tool_call_ids: HashSet<String>,
     pub(super) queued_tool_calls: VecDeque<QueuedToolCall>,
     pub(super) resumed_permission_requests: VecDeque<PermissionRequest>,
     pub(super) config: Arc<Config>,

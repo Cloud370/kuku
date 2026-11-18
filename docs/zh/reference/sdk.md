@@ -45,6 +45,8 @@
 
 `ModelAdapter` 接收冻结的 `ModelRequest`，包含选定连接、协议、端点、模型、原生设置、关联和精确请求正文，不包含认证请求头；返回由 `ModelEvent` 组成的 `ModelStream`。配置选择和 `agent_selection` 不读取环境凭据，内置 HTTP 传输只在发送前解析凭据；自定义传输自行负责认证。SDK 继续负责准备屏障、请求额度、模型并发、响应校验、用量与持久日志。丢弃适配器尚未完成的 future 或返回的流时，适配器必须释放其传输资源。
 
+同一个 Agent Turn 内，所有模型 Step 的工具调用 ID 都必须唯一，恢复后也一样。不同 Agent 或 Turn 可以复用 ID。
+
 `ToolAdapter` 在打开时提供不可变的 `ToolSpec`，并接收最终的 `ToolAuthorization` 和 `ToolCancellation` 信号。内置名称不可覆盖。Preset 和 `AgentConfig.tools` 从合并后的可用定义中选择工具。每次调用仍通过宿主授权和持久准备／派发边界。声明的写入与外部动作加入同一 Agent 的工作目录有序动作组；声明的读取不加入该组，可与其他工具重叠执行。工具必须在返回前清理所属工作，取消后也一样；SDK 会等待返回。已知清理不完整通过 `ToolOutput.cleanup_incomplete` 返回，使 `cancel` 或 `close` 失败。
 
 工具正文复用命令输出格式和公开 `read_output` 回退；首次模型视图包含完整引用与截断标志，同时受 `ToolSpec.max_result_bytes` 和运行时预览限额约束。过大的结构化数据保存在输出中，不写进日志。宿主适配器负责返回缓冲区的分配，SDK 的保留输出与模型视图分别有界。

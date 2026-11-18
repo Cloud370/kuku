@@ -1,4 +1,4 @@
-use super::{resumed_model_request_count, resumed_request_num, resumed_tool_rounds};
+use super::{resumed_model_request_count, resumed_request_num, resumed_tools};
 use crate::conversation::address::ConversationAddress;
 use crate::event::{EventPayload, ModelStopReason, StoredEvent};
 
@@ -72,9 +72,16 @@ fn resumed_request_identity_is_scoped_to_conversation() {
 
     assert_eq!(1, resumed_model_request_count(&events, 4, &main));
     assert_eq!(9, resumed_request_num(&events, 4, &main));
-    assert_eq!(1, resumed_tool_rounds(&events, 4, &main));
+    assert_eq!(
+        (["tool_4".into()].into_iter().collect(), 1),
+        resumed_tools(&events, 4, &main)
+    );
 
     assert_eq!(2, resumed_model_request_count(&events, 4, &review));
     assert_eq!(2, resumed_request_num(&events, 4, &review));
-    assert_eq!(1, resumed_tool_rounds(&events, 4, &review));
+    assert_eq!(
+        (["tool_5".into()].into_iter().collect(), 1),
+        resumed_tools(&events, 4, &review)
+    );
+    assert_eq!((Default::default(), 0), resumed_tools(&events, 5, &main));
 }

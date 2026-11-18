@@ -63,6 +63,7 @@ pub(super) fn make_test_pending(
         request_num: 1,
         cumulative: CumulativeUsage::default(),
         resolved: None,
+        admitted_tool_call_ids: Default::default(),
         queued_tool_calls: std::collections::VecDeque::new(),
         resumed_permission_requests: std::collections::VecDeque::new(),
         config: std::sync::Arc::new(test_config()),
