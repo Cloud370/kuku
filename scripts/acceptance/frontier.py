@@ -130,6 +130,15 @@ def throughput(tokens, seconds):
     return round(tokens / seconds, 3) if tokens is not None and seconds and seconds > 0 else None
 
 
+def reported_cost(value):
+    if type(value) not in (int, float, str):
+        return None
+    try:
+        return usd(value)
+    except (ArithmeticError, ValueError):
+        return None
+
+
 def timing_facts(observation, complete_output_tokens=None, receipt_output_tokens=None):
     facts = {key: observation.get("timing", {}).get(key) for key in PROXY_TIMING}
     start = facts["request_to_first_output_delta_seconds"]
@@ -353,7 +362,7 @@ class CaseMeter(RequestBoundary):
             r"(?:gen-|resp[_-])[A-Za-z0-9_-]{1,152}", generation,
         ):
             try:
-                self.confirm_generation(observation, delays=(0, 0.25, 0.75), require_matching_cost=False)
+                self.confirm_generation(observation, delays=(0,), require_matching_cost=False)
             except (ArithmeticError, AttributeError, KeyError, TypeError, ValueError):
                 observation["receipt_lookup"] = "invalid_response"
         return observation
@@ -436,7 +445,8 @@ class CaseMeter(RequestBoundary):
                                or row["receipt_matches_route"] is False)
         elif accepted_model:
             row["reported_upstream"] = route.upstream_name
-        usage = observation.get("usage", {})
+        stream_usage = observation.get("usage", {})
+        usage = stream_usage
         fields = ROUTER_COUNTS if router else DEEPSEEK_COUNTS
         if row.get("receipt_matches_route"):
             usage = {field: receipt.get(field) if valid_counts(receipt, field) else usage.get(field)
@@ -444,16 +454,25 @@ class CaseMeter(RequestBoundary):
         counts = {field: usage[field] for field in fields if valid_counts(usage, field)}
         if counts:
             row["usage"] = counts
+        cost_mismatch = False
         if row["status"] == "connection_failed":
             charge, basis = Decimal(0), "no_upstream_charge"
-        elif router and row.get("receipt_matches_route") and receipt.get("total_cost") is not None:
-            try:
-                charge = usd(receipt["total_cost"])
-            except (ArithmeticError, ValueError):
-                pass
-            else:
+        elif router:
+            stream_complete = (row.get("http_status") == 200 and row.get("response_ended")
+                               and row.get("response_status") in ("response.completed", "response.incomplete")
+                               and observation.get("model_received") in (route.model, route.upstream_model)
+                               and valid_counts(stream_usage, "input_tokens", "output_tokens")
+                               and stream_usage["input_tokens"] > 0)
+            stream_cost = reported_cost(stream_usage.get("cost")) if stream_complete else None
+            receipt_cost = reported_cost(receipt.get("total_cost")) if row.get("receipt_matches_route") else None
+            if receipt_cost is not None and stream_cost is not None:
+                cost_mismatch = receipt_cost != stream_cost
+                row["stream_cost_matches_receipt"] = not cost_mismatch
+            if receipt_cost is not None or stream_cost is not None:
+                charge = receipt_cost if receipt_cost is not None else stream_cost
                 basis = "provider_reported"
                 row["provider_reported_usd"] = str(charge)
+                row["provider_cost_source"] = "generation_receipt" if receipt_cost is not None else "stream_usage"
                 if type(receipt.get("cancelled")) is bool:
                     row["provider_cancelled"] = receipt["cancelled"]
         elif (not router and accepted_model and observation.get("stream_done") and row.get("response_ended")
@@ -465,7 +484,7 @@ class CaseMeter(RequestBoundary):
         prompt_field, output_field = fields[:2]
         exceeded = (charge > ceiling or counts.get(prompt_field, 0) > route.context
                     or counts.get(output_field, 0) > row["max_output_tokens"])
-        if route_mismatch or exceeded:
+        if route_mismatch or exceeded or cost_mismatch:
             self.reconciled = False
             basis, charge = "request_upper_bound", ceiling
             row["route_mismatch"] = route_mismatch
@@ -482,12 +501,17 @@ class CaseMeter(RequestBoundary):
         totals = {name: sum((Decimal(row["accounted_usd"]) for row in rows), Decimal(0))
                   for name, rows in by_basis.items()}
         observed, estimated, unknown, no_charge = by_basis.values()
+        by_source = {source: [row for row in observed if row["provider_cost_source"] == source]
+                     for source in ("generation_receipt", "stream_usage")}
         fields = ROUTER_COUNTS if self.route.router else DEEPSEEK_COUNTS
         counts = [row["usage"] for row in self.attempts if row.get("usage") and not row.get("route_mismatch")]
         measured = {field: [usage[field] for usage in counts if field in usage] for field in fields}
         complete = self.reconciled and not unknown
         return {"complete": complete, "reconciled": self.reconciled, "upstream_requests": len(self.attempts) - len(no_charge),
                 "provider_reported_requests": len(observed), "estimated_requests": len(estimated),
+                "provider_cost_sources": {source: {"requests": len(rows), "usd": str(sum(
+                    (Decimal(row["accounted_usd"]) for row in rows), Decimal(0),
+                ))} for source, rows in by_source.items()},
                 "unknown_requests": len(unknown), "no_upstream_charge_requests": len(no_charge),
                 "provider_reported_usd": str(totals["provider_reported"]),
                 "provider_billed_usd": str(totals["provider_reported"]) if self.route.router and complete and observed else None,
@@ -633,6 +657,9 @@ def run_live(args, case, source, image, directory, secrets):
             basis = "no_upstream_requests"
         elif accounting["unknown_requests"]:
             basis = "metered_request_upper_bound"
+        elif route.router and accounting["provider_cost_sources"]["stream_usage"]["requests"]:
+            basis = ("provider_reported_stream_and_receipt" if accounting["provider_cost_sources"]["generation_receipt"]["requests"]
+                     else "provider_reported_stream")
         else:
             basis = "provider_reported" if route.router else "token_estimate"
         charge = meter.spent.quantize(Decimal("0.000000001"), rounding=ROUND_CEILING)
