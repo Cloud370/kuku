@@ -78,6 +78,17 @@ python3 scripts/acceptance/run.py --run-id LIVE_RUN_ID interactive --archive PAT
 
 `live-result.json` records the actual route and requests alongside the task result. The scenario checks the real project edit and test output, switching Agents, client replacement during a running tool, and handoff among the terminal, browser and script client. [Live scenario](../../../scripts/acceptance/interactive_live.py)
 
+Use `--intent deepseek` or `--intent openrouter` to check real model actions through the native terminal. The cases verify visible reply wording, exact file contents across turns, and independent delegation on the default route. The delegation case checks that main receives the child's result before showing it. `--intent-case delivery` or `--intent-case delegation` runs one part of the suite.
+
+```bash
+python3 scripts/acceptance/run.py --run-id INTENT_RUN_ID interactive \
+  --intent openrouter --intent-case delegation --binary PATH_TO_BINARY \
+  --revision EXPECTED_GIT_COMMIT --scratch-base PATH_OUTSIDE_CHECKOUT \
+  --secrets PATH_TO_CREDENTIAL_FILE --ledger PATH_TO_AUTHORIZED_LEDGER
+```
+
+The selection accepts `--archive` in place of `--binary` and checks the installed binary's revision before reserving budget. It uses direct DeepSeek Flash or OpenRouter pinned to the OpenAI standard upstream for `openai/gpt-6-luna`. The runner enforces the recorded request and output limits, including retries. `intent/result.json` records the case checks, terminal captures, and usage. It verifies OpenRouter's reported upstream route and cost against generation receipts. Settle the reservation using the [budget ledger](#credentials-and-run-artifacts) after reviewing the result. [Intent scenarios](../../../scripts/acceptance/interactive_intent.py)
+
 Record deterministic checks, platform execution and hands-on experience separately. For hands-on release evidence, install the candidate outside the checkout, use a configured provider to read a file, make an edit and run a check, then verify the changed files, diff and tool results. Resume the same Session in the browser and another terminal. Record Linux and Windows Terminal IME, paste, copy and resize checks along with any macOS coverage. Follow the live-call requirements below for provider evidence and mark any unavailable coverage as unverified.
 
 ## Test ownership and evidence

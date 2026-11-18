@@ -754,7 +754,9 @@ def run_interactive(args, directory, record):
         raise ValueError("Desktop interactive acceptance requires Linux and Docker")
     if args.live and (not args.archive or not args.secrets):
         raise ValueError("Live interactive acceptance requires --archive and --secrets")
-    if args.upgrade_from and (not args.archive or args.live):
+    if args.intent and (not args.secrets or not args.revision or not (args.archive or args.binary) or args.browser):
+        raise ValueError("--intent requires --archive or --binary, --secrets and --revision, without --browser")
+    if args.upgrade_from and (not args.archive or args.live or args.intent):
         raise ValueError("--upgrade-from requires a controlled run with --archive")
     scratch = (args.scratch_base or Path(tempfile.gettempdir())).resolve()
     if scratch.is_relative_to(ROOT):
@@ -776,21 +778,11 @@ def run_interactive(args, directory, record):
 
     with tempfile.TemporaryDirectory(prefix="kuku-interactive-", dir=scratch) as temporary:
         scratch_dir = Path(temporary)
-        if args.live:
-            bridge = build_bridge()
-            record["input"] = {"type": "release_archive", **config_record(args.archive)}
-            command = [sys.executable, str(Path(__file__).with_name("interactive_live.py")),
-                       "--archive", str(args.archive.resolve()), "--bridge", str(bridge),
-                       "--directory", str(scratch_dir / "test"), "--evidence", str(directory),
-                       "--run-id", record["run_id"], "--ledger", str(args.ledger.resolve()),
-                       "--secrets", str(args.secrets.resolve())]
-            try:
-                checked(command, "installed-live", timeout=900, cwd=scratch_dir)
-            finally:
-                live_result = directory / "live-result.json"
-                if live_result.is_file():
-                    record["live_result"] = str(live_result)
-            record["passed"] = True
+        if args.live or args.intent:
+            from interactive_intent import run_selected_live
+
+            bridge = args.intent_bridge.resolve() if args.intent and args.intent_bridge else build_bridge()
+            run_selected_live(args, directory, record, scratch_dir, bridge, checked)
             return
         prefix = scratch_dir / "install"
         binary = prefix / "bin" / f"kuku{EXE}"
@@ -848,8 +840,12 @@ def parser():
     scenario = interactive.add_mutually_exclusive_group()
     scenario.add_argument("--desktop", action="store_true", help="also exercise an isolated Linux or Windows graphical terminal")
     scenario.add_argument("--live", action="store_true", help="run the budgeted release-archive and real-model handoff")
+    scenario.add_argument("--intent", choices=("deepseek", "openrouter"), help="run budgeted native reply, edit, and first-delegation checks")
+    interactive.add_argument("--intent-case", choices=("all", "delivery", "delegation"), default="all")
+    interactive.add_argument("--intent-bridge", type=Path, help="reuse a built native PTY helper with --intent")
+    interactive.add_argument("--revision", help="expected installed source revision for --intent")
     interactive.add_argument("--windows-terminal", type=Path, help="existing WindowsTerminal.exe in a dedicated test desktop")
-    interactive.add_argument("--secrets", type=Path, help="explicit credentials file for --live")
+    interactive.add_argument("--secrets", type=Path, help="explicit credentials file for budgeted interactive checks")
     interactive.add_argument("--ledger", type=Path, default=OUTPUT / "budget.json", help="existing live-call budget ledger")
     metrics = sub.add_parser("metrics", help="build an isolated public SDK caller and measure local fixed-provider workloads")
     metrics.add_argument("--profile", choices=("debug", "release"), default="debug")
@@ -930,7 +926,7 @@ def main():
     directory = args.output.resolve() / run_id
     directory.mkdir(parents=True, exist_ok=False)
     record = {"schema_version": 1, "run_id": run_id, "group": args.group, "started_at": now(),
-              "tree": tree_state(), "paid": paid or (args.group == "interactive" and args.live), "passed": False,
+              "tree": tree_state(), "paid": paid or (args.group == "interactive" and bool(args.live or args.intent)), "passed": False,
               "selector_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
               "manifest_sha256": hashlib.sha256(MANIFEST.read_bytes()).hexdigest()}
     reserved = False
@@ -976,7 +972,7 @@ def main():
                 record["passed"] = record["passed"] and record["sdk_evidence"]["passed"]
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, tarfile.TarError, zipfile.BadZipFile) as error:
         record["error"] = redact(str(error), secrets.values())
-        record["failure_kind"] = "infrastructure"
+        record.setdefault("failure_kind", "infrastructure")
     finally:
         if reserved:
             try:

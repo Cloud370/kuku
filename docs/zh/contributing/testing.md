@@ -78,6 +78,17 @@ python3 scripts/acceptance/run.py --run-id LIVE_RUN_ID interactive --archive PAT
 
 `live-result.json` 记录实际模型路线、请求和任务结果。场景核对实际项目修改及测试输出、Agent 切换、工具运行期间更换客户端，以及在终端、浏览器和脚本客户端之间接续工作。[真实调用场景](../../../scripts/acceptance/interactive_live.py)
 
+通过 `--intent deepseek` 或 `--intent openrouter` 在原生终端中检查真实模型执行的动作。用例验证终端显示的回复措辞、跨轮次的文件内容，以及通过默认路线进行的独立委派。委派用例核对 main 收到子 Agent 的结果后才向用户展示。可用 `--intent-case delivery` 或 `--intent-case delegation` 单独运行其中一组。
+
+```bash
+python3 scripts/acceptance/run.py --run-id INTENT_RUN_ID interactive \
+  --intent openrouter --intent-case delegation --binary PATH_TO_BINARY \
+  --revision EXPECTED_GIT_COMMIT --scratch-base PATH_OUTSIDE_CHECKOUT \
+  --secrets PATH_TO_CREDENTIAL_FILE --ledger PATH_TO_AUTHORIZED_LEDGER
+```
+
+可用 `--archive` 代替 `--binary`。验收在预留预算前核对安装后二进制的提交版本。模型路线为直连 DeepSeek Flash，或通过 OpenRouter 将 `openai/gpt-6-luna` 固定到 OpenAI 标准上游。验收限制请求数和输出，包括重试。`intent/result.json` 记录用例检查、终端画面路径和用量，并根据生成回执核对 OpenRouter 的上游路线与费用。检查结果后在[预算账本](#凭据与运行产物)结算预留额度。[意图验收场景](../../../scripts/acceptance/interactive_intent.py)
+
 分别记录确定性检查、平台执行和人工体验。人工验收时，在源码树外安装候选版本，用已配置的模型读取文件、完成修改并运行检查，再核对实际文件、diff 和工具结果。从浏览器和另一个终端恢复同一 Session。分别记录 Linux、Windows Terminal 的输入法、粘贴、复制与缩放检查，以及实际 macOS 覆盖。模型调用证据遵循下方规则，无法执行的场景标为待验证。
 
 ## 测试归属与证据
