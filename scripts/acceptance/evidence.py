@@ -88,6 +88,8 @@ def output_reference(events_path, structured):
 
 
 def usage_summary(requests, usages, reports, session_scope=False):
+    retries = sum(step.get("retry_count", 0) for step in requests.values())
+    attempts = len(requests) + retries
     partial = {}
     complete = {}
     for field in TOKEN_FIELDS:
@@ -97,12 +99,14 @@ def usage_summary(requests, usages, reports, session_scope=False):
         known = [value for value in values if value is not None]
         partial[field] = sum(known) if known else None
         complete[field] = sum(known) if requests and len(known) == len(requests) else None
-    missing = sum(any((usages.get(request) or {}).get(field) is None
+    missing = retries + sum(any((usages.get(request) or {}).get(field) is None
                       for field in ("input_tokens", "output_tokens")) for request in requests)
     zero_input = sum((usages.get(request) or {}).get("input_tokens") == 0 for request in requests)
     if all(complete[field] is not None for field in TOKEN_FIELDS if field != "output_tokens"):
         require(complete["cache_read_input_tokens"] + complete["cache_creation_input_tokens"] <= complete["input_tokens"],
                 "reported cached input exceeds total input tokens")
+    if retries:
+        complete = dict.fromkeys(TOKEN_FIELDS)
     costs = {}
     providers = set()
     for event in reports:
@@ -118,7 +122,7 @@ def usage_summary(requests, usages, reports, session_scope=False):
                 key = (event.get("agent", "main"), *key)
             costs[key] = cost
     complete_cost = missing == 0 and zero_input == 0 and bool(requests) and all(request in costs for request in requests)
-    return {"requests": len(requests), "unreported_requests": missing,
+    return {"requests": attempts, "unreported_requests": missing,
             "zero_input_requests": zero_input, "complete": bool(requests) and missing == 0 and zero_input == 0, **complete,
             "reported_partial": partial,
             "uncached_input_tokens": (complete["input_tokens"] - complete["cache_read_input_tokens"]
@@ -202,6 +206,15 @@ class SessionFacts:
             require(all(isinstance(metadata[field], str) and len(metadata[field]) <= 512 for field in ("connection", "model")),
                     "prepared request routing metadata is invalid or oversized")
             self.session_steps[session_request] = metadata
+        elif kind == "runtime.model_retry":
+            require(session_request in self.session_steps and session_request not in self.session_usages,
+                    "retry has no active prepared request")
+            attempt = event.get("attempt", 2)
+            require(type(attempt) is int and attempt >= 2, "retry attempt must be an integer of at least two")
+            step = self.session_steps[session_request]
+            if attempt > step.get("last_attempt", 1):
+                step["last_attempt"] = attempt
+                step["retry_count"] = step.get("retry_count", 0) + 1
         elif kind in ("runtime.model_usage", "runtime.provider_report"):
             require(session_request in self.session_steps, "Session usage or report has no prepared request")
             if kind == "runtime.model_usage":
@@ -432,7 +445,7 @@ class SessionFacts:
                     "durable model requests exceeded the declared per-turn limit")
         usage = usage_summary(self.steps, self.usages, self.reports)
         normalized = snapshot.get("usage", {})
-        require(normalized.get("model_requests") == len(self.usages)
+        require(normalized.get("model_requests") == usage["requests"]
                 and normalized.get("unreported_requests") == usage["unreported_requests"],
                 "SDK usage request counters differ from durable usage")
         require(all(normalized.get(field) == usage["reported_partial"][field] for field in TOKEN_FIELDS),

@@ -452,6 +452,24 @@ class EvidenceTests(unittest.TestCase):
         self.assertIsNone(result["usage"]["provider_reported_cost_usd"])
         self.assertEqual(result["usage"]["cost_ledger_basis"], "conservative_upper_bound")
 
+    def test_pre_stream_retry_counts_an_attempt_without_a_second_prepared_step(self):
+        fixture = self.fixture
+        index = next(i for i, event in enumerate(fixture.records) if event["kind"] == "runtime.model_usage")
+        retry = {"kind": "runtime.model_retry", "agent": "main", "turn": fixture.turn,
+                 "request_id": "request-1", "attempt": 2}
+        fixture.records[index:index] = [retry, dict(retry)]
+        fixture.renumber()
+        fixture.report["limits"]["automatic_retries"] = 1
+        fixture.totals.update(model_requests=3, unreported_requests=1)
+        result = fixture.inspect()
+        self.assertTrue(result["passed"], result)
+        self.assertEqual(2, result["facts"]["prepared_steps"])
+        for usage in (result["usage"], result["session_usage"]):
+            self.assertEqual(3, usage["requests"])
+            self.assertEqual(1, usage["unreported_requests"])
+            self.assertIsNone(usage["input_tokens"])
+            self.assertEqual(200, usage["reported_partial"]["input_tokens"])
+
     def test_zero_usage_for_nonempty_requests_does_not_establish_free_work(self):
         for event in self.fixture.records:
             if event["kind"] == "runtime.model_usage":
