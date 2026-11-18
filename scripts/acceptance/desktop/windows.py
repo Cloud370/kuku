@@ -18,7 +18,7 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from desktop.windows_setup import pinyin_configured, pinyin_registered, powershell, require_active_desktop
-from interactive_fixture import InstalledClient, csv_review, eventually
+from interactive_fixture import DenseTranscript, InstalledClient, csv_review, eventually
 
 
 TITLE = "Kuku Windows Terminal Acceptance"
@@ -365,6 +365,37 @@ def check_mouse_selection(desktop, checks):
     eventually("the exact dragged text in the Windows clipboard after release", copied_text, timeout=8)
 
 
+def dense_layout(client, desktop, workspace, grid):
+    original = grid()
+
+    def capture_widths(name):
+        wide = desktop.picture(name + "-wide")
+        for _ in range(5):
+            desktop.press(VK_CONTROL, VK_NUMPAD_PLUS)
+        narrow = eventually("a narrow terminal for the dense transcript", narrow_grid)
+        narrow_screen = desktop.picture(name + "-narrow")
+        desktop.press(VK_CONTROL, ord("0"))
+        eventually("the original terminal width", lambda: grid() == original)
+        return {"wide": {"grid": original, "screenshot": wide},
+                "narrow": {"grid": narrow, "screenshot": narrow_screen}}
+
+    def narrow_grid():
+        size = grid()
+        if size and size["columns"] <= original["columns"] * 3 / 4:
+            return size
+
+    def copy_reply(expected):
+        desktop.press(VK_CONTROL, ord("C"))
+        desktop.press(VK_OEM_SLASH)
+        desktop.spell("copy")
+        desktop.press(VK_RETURN)
+        eventually("the complete Chinese report in the Windows clipboard",
+                   lambda: desktop.clipboard.read() == expected, timeout=12)
+
+    return DenseTranscript(client, workspace).desktop(
+        desktop.spell, lambda: desktop.press(VK_RETURN), capture_widths, copy_reply)
+
+
 def exercise(client, desktop, workspace, state, checks):
     def grid():
         return read_state(state).get("grid")
@@ -440,6 +471,7 @@ def exercise(client, desktop, workspace, state, checks):
     client.provider.assert_idle(duration=0.25)
 
     checks["layout"] = {"screenshot": desktop.picture("04a-turns-tools-table")}
+    checks["dense_transcript"] = dense_layout(client, desktop, workspace, grid)
 
     if pinyin_registered() and pinyin_configured():
         checks["ime"] = {"language": desktop.language(LANG_CHINESE), "keys": "nihao<Space>"}

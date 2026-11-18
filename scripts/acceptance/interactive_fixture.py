@@ -10,17 +10,19 @@ import json
 import os
 from pathlib import Path
 import queue
+import shlex
 import shutil
 import signal
 import subprocess
 import sys
 import threading
 import time
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import quote, urlencode, urlsplit
 
 
 CONFIG = Path(__file__).resolve().with_name("fixtures") / "config.toml"
 TIMEOUT = 30
+TOOL_BRIEF = "Run installed acceptance fixture"
 TOOL_OUTPUT = "fixture-tool-output-42"
 EXE = ".exe" if os.name == "nt" else ""
 
@@ -183,6 +185,137 @@ def csv_review(client, workspace, call):
     reply = "读取结果\n\n| 测试 | 结果 |\n| --- | --- |\n| 基础记录 | 通过 |\n| 引号字段 | 失败 |"
     call.text(reply)
     return reply
+
+
+class DenseTranscript:
+    prompt = "review sample workspace"
+    draft = "draft survives the review"
+    heading = "工作区核对结果"
+    source = "fn verified_total"
+    end = "原始报告校验完成"
+    read_group = "Read 12 files · ok"
+    missing = "samples/missing-proof.txt"
+    read_target = "samples/read-12.txt"
+    partial = (
+        f"## {heading}\n\n"
+        "这次检查把读取、搜索和修改分开记录。每个样例文件只提供一条标记，"
+        "所以即使多个调用同时完成，也能根据文件名和正文核对结果。"
+        "预期缺失的文件单独报告，后续步骤继续使用已验证的样例。\n\n"
+        "写入生成文件后，再更新第一份样例的标记。检查命令等待读者确认，"
+        "释放后把完整输出留在会话中。下次打开终端时也可以查看当时的输出。\n\n"
+        "```rust\n"
+        "fn verified_total(values: &[u32]) -> u32 {\n"
+        "    let retained_sample_values = values.iter().copied().filter(|value| *value > 0);\n"
+        "    retained_sample_values.sum()\n"
+        "}\n"
+    )
+    tail = (
+        "```\n\n"
+        "### 检查结论\n\n"
+        "1. 已读取十二份样例，保留各文件的独立结果。\n"
+        "2. 缺失文件有明确错误，生成文件与检查命令结果均可复查。\n\n"
+        "| 验证项目 | 结果 |\n"
+        "| --- | --- |\n"
+        "| 样例读取 | 十二项通过 |\n"
+        "| 缺失路径 | 已记录错误 |\n"
+        "| 命令检查 | 完整输出已保存 |\n\n"
+        "```fixture-log\n"
+        "dense-literal verification saved\n"
+        "```\n\n"
+        f"{end}"
+    )
+    reply = partial + tail
+
+    def __init__(self, client, workspace):
+        self.client = client
+        self.workspace = workspace
+        samples = workspace / "samples"
+        samples.mkdir()
+        self.reads = []
+        for index in range(1, 13):
+            filename = f"read-{index:02d}.txt"
+            (samples / filename).write_text(f"sample-marker {index:02d}\n", encoding="utf-8")
+            self.reads.append(("read_file", f"dense-read-{index:02d}", {"path": f"samples/{filename}", "limit": 1}))
+        self.other_tools = [
+            ("find_files", "dense-find-first", {"path": "samples", "pattern": "read-0*.txt"}),
+            ("find_files", "dense-find-last", {"path": "samples", "pattern": "read-1*.txt"}),
+            ("find_files", "dense-find-all", {"path": "samples", "pattern": "*.txt"}),
+            ("search_text", "dense-search-markers", {"path": "samples", "pattern": "sample-marker", "view": "count"}),
+            ("search_text", "dense-search-first", {"path": "samples", "pattern": "sample-marker 01", "view": "lines"}),
+            ("write_file", "dense-write", {"path": "generated.txt", "content": "dense review verified\n", "brief": "Write audit result"}),
+            ("edit_file", "dense-edit", {"path": "samples/read-01.txt", "old_text": "sample-marker 01",
+                                          "new_text": "sample-reviewed 01", "brief": "Update reviewed sample"}),
+            ("read_file", "dense-missing", {"path": self.missing}),
+        ]
+        self.session = None
+
+    @contextlib.contextmanager
+    def running_tool(self, *, executable=None):
+        provider = self.client.provider
+        call = provider.next(self.prompt)
+        for batch in (self.reads, self.other_tools):
+            call.reply([{"type": "tool_use", "id": identity, "name": tool, "input": args}
+                        for tool, identity, args in batch])
+            call = provider.next(batch[-1][1])
+        self.client.gated_tool(self.workspace, call, "dense-gate", executable=executable)
+        self.session = self.client.session(self.workspace)
+        try:
+            yield
+        finally:
+            self.client.release_tool(self.workspace)
+
+    def streaming_reply(self):
+        return self.client.provider.next("dense-gate").streaming_text(self.partial, self.tail, chunk_size=8)
+
+    def desktop(self, type_text, enter, capture_widths, copy_reply, *, gate_executable=None):
+        type_text(self.prompt)
+        enter()
+        with self.running_tool(executable=gate_executable):
+            type_text(self.draft)
+            screens = {"running_tools": capture_widths("dense-running-tools")}
+        with self.streaming_reply():
+            screens["open_code"] = capture_widths("dense-open-code")
+        verification = self.verify()
+        screens["complete_report"] = capture_widths("dense-complete-report")
+        copy_reply(self.reply)
+        self.client.provider.assert_idle()
+        return {**verification, "clipboard_matches_reply": True, "screens": screens}
+
+    def verify(self):
+        client, workspace, session = self.client, self.workspace, self.session
+        snapshot = eventually("the complete Chinese report to persist",
+                              lambda: self.settled_snapshot())
+        assert snapshot["pending_inputs"] == 0, "The draft should remain local"
+        client.verify_tool(workspace)
+        assert (workspace / "generated.txt").read_text(encoding="utf-8") == "dense review verified\n"
+        assert (workspace / "samples" / "read-01.txt").read_text(encoding="utf-8") == "sample-reviewed 01\n"
+        assert not (workspace / self.missing).exists()
+        query = urlencode({"workspace": workspace, "agent": "main", "limit": 64})
+        entries = client.request("GET", f"/sessions/{session}/history?{query}").as_json()["entries"]
+        calls = {entry["tool_call_id"]: entry for entry in entries if entry["type"] == "tool_call"}
+        results = {entry["tool_call_id"]: entry for entry in entries if entry["type"] == "tool_result"}
+        expected = {identity: (tool, args) for tool, identity, args in self.reads + self.other_tools}
+        assert len(expected) + 1 >= 20
+        for identity, (tool, args) in expected.items():
+            assert calls[identity]["tool"] == tool and calls[identity]["args"] == args
+            expected_status = "error" if identity == "dense-missing" else "ok"
+            assert results[identity]["status"] == expected_status, (identity, results[identity]["summary"])
+        assert self.missing in results["dense-missing"]["model_content"]
+        assert "sample-marker 12" in results["dense-read-12"]["model_content"]
+        gate = results["dense-gate"]
+        assert calls["dense-gate"]["tool"] == "run_command" and gate["status"] == "ok"
+        output_id = quote(gate["output_id"], safe="")
+        query = urlencode({"workspace": workspace, "offset": 0, "max_bytes": 4096})
+        saved = client.request("GET", f"/sessions/{session}/outputs/{output_id}?{query}").as_json()["output"]
+        assert saved["complete"] and not saved["capture_truncated"] and not saved["has_more"]
+        assert "".join(segment["text"] for segment in saved["segments"]).splitlines() == [TOOL_OUTPUT]
+        client.provider.assert_idle()
+        return {"tool_calls": len(expected) + 1, "failed_calls": 1, "reply_bytes": len(self.reply.encode()),
+                "reply_sha256": hashlib.sha256(self.reply.encode()).hexdigest(), "complete_saved_output": True}
+
+    def settled_snapshot(self):
+        snapshot = self.client.snapshot(self.workspace, self.session)
+        return snapshot if snapshot["status"] == "idle" and snapshot["last_output"] == self.reply else None
 
 
 class Provider:
@@ -433,13 +566,16 @@ class InstalledClient:
         assert current["pid"] == connection["pid"], "Managed service PID changed"
         assert current["instance_id"] == connection["instance_id"], "Managed service identity changed"
 
-    def gated_tool(self, workspace, call, call_id):
-        fixture = workspace / f"fixture-command{EXE}"
-        shutil.copy2(self.bridge, fixture)
+    def gated_tool(self, workspace, call, call_id, *, executable=None):
+        if executable is None:
+            fixture = workspace / f"fixture-command{EXE}"
+            shutil.copy2(self.bridge, fixture)
+            command = fixture.name if os.name == "nt" else f"./{fixture.name}"
+        else:
+            assert os.name != "nt", "Use the workspace-local fixture executable on Windows"
+            command = shlex.quote(str(executable))
         self.tool_workspaces.append(workspace)
-        command = fixture.name if os.name == "nt" else f"./{fixture.name}"
-        call.tool("run_command", call_id, command=f"{command} --gated-tool", timeout=95,
-                  brief="Run installed acceptance fixture")
+        call.tool("run_command", call_id, command=f"{command} --gated-tool", timeout=95, brief=TOOL_BRIEF)
         eventually("gated tool dispatch", lambda: (workspace / "tool-attempts.txt").exists())
 
     @staticmethod

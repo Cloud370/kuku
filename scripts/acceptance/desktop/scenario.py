@@ -15,7 +15,7 @@ import tempfile
 import termios
 import time
 
-from interactive_fixture import InstalledClient, csv_review, eventually
+from interactive_fixture import DenseTranscript, InstalledClient, csv_review, eventually
 
 
 TEST = Path("/test")
@@ -146,6 +146,37 @@ def capture_workspace_menus(desktop, window):
     return screens
 
 
+def dense_layout(client, desktop, workspace, window, pid):
+    original = terminal_grid(pid)
+    zoom = 4
+
+    def capture_widths(name):
+        wide = desktop.screen(name + "-wide")
+        desktop.key(window, *(["ctrl+plus"] * zoom))
+        narrow = eventually("a narrow terminal for the dense transcript", narrow_grid)
+        narrow_screen = desktop.screen(name + "-narrow")
+        desktop.key(window, *(["ctrl+minus"] * zoom))
+        eventually("the original terminal width", lambda: original_font(pid, original))
+        return {"wide": {"grid": original, "screenshot": wide},
+                "narrow": {"grid": narrow, "screenshot": narrow_screen}}
+
+    def narrow_grid():
+        grid = larger_font(pid, original)
+        if grid and grid["columns"] <= original["columns"] * 3 / 4:
+            return grid
+
+    def copy_reply(expected):
+        desktop.key(window, "ctrl+c")
+        desktop.type(window, "/copy")
+        desktop.key(window, "Return")
+        eventually("the complete Chinese report in the X11 clipboard",
+                   lambda: desktop.clipboard() == expected.encode())
+
+    return DenseTranscript(client, workspace).desktop(
+        lambda text: desktop.type(window, text), lambda: desktop.key(window, "Return"), capture_widths, copy_reply,
+        gate_executable=TEST / "bridge")
+
+
 def exercise(client, desktop, checks):
     workspace = client.workspace("work-desktop")
     state = client.directory / "terminal.json"
@@ -228,6 +259,9 @@ def exercise(client, desktop, checks):
         desktop.key(window, "ctrl+plus")
         eventually("a narrow terminal grid for the review", lambda: larger_font(pid, original))
         checks["layout"]["narrow"] = desktop.screen("09-narrow-table")
+        desktop.key(window, "ctrl+minus")
+        eventually("the normal font for the dense transcript", lambda: original_font(pid, original))
+        checks["dense_transcript"] = dense_layout(client, desktop, workspace, window, pid)
 
         desktop.type(window, "/quit")
         desktop.key(window, "Return")
