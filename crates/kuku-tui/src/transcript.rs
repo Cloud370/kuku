@@ -153,7 +153,7 @@ impl Transcript {
                 &key,
                 record
                     .as_ref()
-                    .filter(|r| !r.reasoning_summary.is_empty())
+                    .filter(|r| !r.reasoning_preview.is_empty())
                     .map(|r| &r.key),
             );
             if let Some(reading) = &mut self.reading {
@@ -198,7 +198,7 @@ impl Transcript {
                     }
                 }
             }
-            Some("reasoning_summary") => {
+            Some("reasoning_preview") => {
                 if let Some(text) = event["content"].as_str() {
                     self.update_summary(execution, turn, turn_number, text);
                 }
@@ -213,13 +213,13 @@ impl Transcript {
                         event["truncated"].as_bool().unwrap_or_default(),
                     );
                 }
-                if let Some(text) = event["reasoning_summary"].as_str() {
+                if let Some(text) = event["reasoning_preview"].as_str() {
                     self.replace_summary(
                         execution,
                         turn,
                         turn_number,
                         text,
-                        event["reasoning_summary_truncated"] == true,
+                        event["reasoning_preview_truncated"] == true,
                     );
                 }
             }
@@ -639,7 +639,7 @@ struct Record {
     owner: Option<String>,
     position: Option<u64>,
     body: Body,
-    reasoning_summary: String,
+    reasoning_preview: String,
     turn_summary: Option<TurnSummary>,
     rendered: RenderCache,
 }
@@ -653,7 +653,7 @@ impl Clone for Record {
             owner: self.owner.clone(),
             position: self.position,
             body: self.body.clone(),
-            reasoning_summary: self.reasoning_summary.clone(),
+            reasoning_preview: self.reasoning_preview.clone(),
             turn_summary: self.turn_summary.clone(),
             rendered: RenderCache::default(),
         }
@@ -670,10 +670,10 @@ impl Record {
     fn from_entry(entry: HistoryEntry) -> Option<Self> {
         let mut key = Key::Event(entry.id);
         let mut text = capped(entry.text.as_deref(), MAX_BODY_BYTES);
-        let reasoning_summary = capped(
+        let reasoning_preview = capped(
             entry
                 .details
-                .get("reasoning_summary")
+                .get("reasoning_preview")
                 .and_then(Value::as_str),
             MAX_BODY_BYTES,
         );
@@ -686,7 +686,7 @@ impl Record {
                     .map(str::to_owned),
                 text,
             },
-            HistoryKind::Assistant if text.trim().is_empty() && reasoning_summary.is_empty() => {
+            HistoryKind::Assistant if text.trim().is_empty() && reasoning_preview.is_empty() => {
                 return None
             }
             HistoryKind::Assistant => Body::Assistant(text),
@@ -737,7 +737,7 @@ impl Record {
             owner: (!entry.agent.is_empty()).then_some(entry.agent),
             position: Some(entry.id),
             body,
-            reasoning_summary,
+            reasoning_preview,
             turn_summary: entry.turn_summary,
             rendered: RenderCache::default(),
         })
@@ -764,7 +764,7 @@ impl Record {
     }
 
     fn visible(&self) -> bool {
-        !matches!(&self.body, Body::Assistant(text) if text.trim().is_empty() && self.reasoning_summary.is_empty())
+        !matches!(&self.body, Body::Assistant(text) if text.trim().is_empty() && self.reasoning_preview.is_empty())
     }
 
     fn tool(&self) -> Option<&Tool> {
@@ -818,7 +818,7 @@ impl Record {
                 );
                 (card, mode, facts)
             }
-            Body::Assistant(_) if !self.reasoning_summary.is_empty() => (
+            Body::Assistant(_) if !self.reasoning_preview.is_empty() => (
                 None,
                 items.tool_mode(&self.key, ToolDetails::Collapsed),
                 None,
@@ -850,7 +850,7 @@ impl Record {
                 }
                 Body::Assistant(text) => preview::render_assistant(
                     text,
-                    &self.reasoning_summary,
+                    &self.reasoning_preview,
                     width,
                     mode == ToolDetails::Inspection,
                 ),
@@ -888,7 +888,7 @@ impl Record {
             card.map(DetailRecord::Agent)
                 .or_else(|| self.tool().map(DetailRecord::Tool))
                 .or_else(|| {
-                    (!self.reasoning_summary.is_empty())
+                    (!self.reasoning_preview.is_empty())
                         .then_some(DetailRecord::Reasoning(mode == ToolDetails::Inspection))
                 }),
         )

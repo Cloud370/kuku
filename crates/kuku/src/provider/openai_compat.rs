@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
 
-use crate::config::ProviderFormat;
+use crate::config::{ProviderFormat, ProviderProfile};
 use crate::context::{CanonicalMessage, MessageBlock, Role};
 use crate::event::ModelStopReason;
 
@@ -205,7 +205,9 @@ pub(crate) async fn stream_prepared(
     let TransportResponse { response, trace } =
         send_prepared(config, prepared, trace_metadata).await?;
     let url = prepared.url.clone();
-    let parser = Arc::new(Mutex::new(OpenAiCompatSseParser::new()));
+    let parser = Arc::new(Mutex::new(OpenAiCompatSseParser::new(
+        config.capabilities.profile == ProviderProfile::DeepSeek,
+    )));
     let frame_parser = Arc::clone(&parser);
     let eof_parser = Arc::clone(&parser);
     let frame_trace = trace.clone();
@@ -227,6 +229,7 @@ pub(crate) async fn stream_prepared(
 }
 
 struct OpenAiCompatSseParser {
+    public_reasoning_text: bool,
     chunks: Vec<ProviderChunk>,
     started: bool,
     tool_calls: BTreeMap<u64, (String, String)>,
@@ -240,8 +243,9 @@ struct OpenAiCompatSseParser {
 }
 
 impl OpenAiCompatSseParser {
-    fn new() -> Self {
+    fn new(public_reasoning_text: bool) -> Self {
         Self {
+            public_reasoning_text,
             chunks: Vec::new(),
             started: false,
             tool_calls: BTreeMap::new(),
@@ -431,6 +435,11 @@ impl OpenAiCompatSseParser {
         }
         if self.stop_reason.is_none() {
             if let Some(content) = content {
+                if self.public_reasoning_text && !content.is_empty() {
+                    self.chunks.push(ProviderChunk::ThinkingDelta {
+                        text: content.into(),
+                    });
+                }
                 self.replay_budget
                     .add(&Value::String(content.to_string()))?;
                 self.reasoning_content
@@ -564,7 +573,7 @@ mod tests {
 
     #[test]
     fn repeated_finish_reason_preserves_usage_without_repeating_replay_or_completion() {
-        let mut parser = OpenAiCompatSseParser::new();
+        let mut parser = OpenAiCompatSseParser::new(false);
         parser.feed(concat!(
             "data: ",
             r#"{"id":"chat_gateway","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_read","function":{"name":"read_file","arguments":"{}"}}],"reasoning_details":[{"index":0,"type":"reasoning.encrypted","data":"cipher"}]},"finish_reason":null}]}"#
@@ -618,7 +627,7 @@ mod tests {
 
     #[test]
     fn conflicting_finish_reason_remains_visible_to_the_runtime() {
-        let mut parser = OpenAiCompatSseParser::new();
+        let mut parser = OpenAiCompatSseParser::new(false);
         let mut chunks = parser
             .feed(r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#)
             .unwrap();
@@ -642,7 +651,7 @@ mod tests {
 
     #[test]
     fn repeated_finish_reason_does_not_hide_late_tool_arguments() {
-        let mut parser = OpenAiCompatSseParser::new();
+        let mut parser = OpenAiCompatSseParser::new(false);
         parser
             .feed(r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#)
             .unwrap();
@@ -659,7 +668,7 @@ mod tests {
             r#"{"index":0,"id":"right","function":{"arguments":"{}"}}"#,
             r#"{"index":2,"id":"right","function":{"name":"read_file","arguments":"{}"}}"#,
         ] {
-            let mut parser = OpenAiCompatSseParser::new();
+            let mut parser = OpenAiCompatSseParser::new(false);
             parser.feed(r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"left","function":{"name":"read_file","arguments":"{}"}},{"index":1,"id":"right","function":{"name":"read_file","arguments":"{}"}}]}}]}"#).unwrap();
             let choices = json!([{"delta":{"tool_calls":[serde_json::from_str::<Value>(conflicting).unwrap()]},"finish_reason":"tool_calls"}]);
             let chunks = parser
@@ -679,7 +688,7 @@ mod tests {
 
     #[test]
     fn only_explicit_summary_details_publish_text() {
-        let mut parser = OpenAiCompatSseParser::new();
+        let mut parser = OpenAiCompatSseParser::new(false);
         let delta = json!({"reasoning_content":"raw","reasoning_details":[
             {"type":"reasoning.encrypted","index":0,"data":"opaque"},
             {"type":"reasoning.summary","index":1,"summary":"Checking dates."}
@@ -699,7 +708,7 @@ mod tests {
 
     #[test]
     fn native_reasoning_keeps_explicit_order_and_signatures_through_fragmentation() {
-        let mut parser = OpenAiCompatSseParser::new();
+        let mut parser = OpenAiCompatSseParser::new(false);
         for details in [
             json!([
                 {"type":"reasoning.text","index":2,"id":"signed","text":"native","signature":null},
@@ -746,7 +755,7 @@ mod tests {
 
     #[test]
     fn feed_error_emits_server_error_chunk() {
-        let mut parser = OpenAiCompatSseParser::new();
+        let mut parser = OpenAiCompatSseParser::new(false);
         let frame =
             r#"data: {"error": {"type": "server_error", "message": "something went wrong"}}"#;
         let chunks = parser.feed(frame).unwrap();
@@ -762,7 +771,7 @@ mod tests {
 
     #[test]
     fn usage_on_completion_chunk_is_emitted() {
-        let mut parser = OpenAiCompatSseParser::new();
+        let mut parser = OpenAiCompatSseParser::new(false);
         let frame = r#"data: {"id":"chatcmpl_usage","choices":[{"index":0,"delta":{"content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":88,"completion_tokens":18,"total_tokens":106,"prompt_tokens_details":{"cached_tokens":34}}}"#;
 
         let chunks = parser.feed(frame).unwrap();
@@ -780,7 +789,7 @@ mod tests {
 
     #[test]
     fn deepseek_usage_reports_prompt_cache_hits() {
-        let mut parser = OpenAiCompatSseParser::new();
+        let mut parser = OpenAiCompatSseParser::new(false);
         let frame = r#"data: {"id":"chatcmpl_usage","choices":[],"usage":{"prompt_tokens":88,"completion_tokens":18,"prompt_cache_hit_tokens":34,"prompt_cache_miss_tokens":54}}"#;
 
         let chunks = parser.feed(frame).unwrap();
@@ -798,7 +807,7 @@ mod tests {
 
     #[test]
     fn tool_finish_reason_emits_typed_tool_completion() {
-        let mut parser = OpenAiCompatSseParser::new();
+        let mut parser = OpenAiCompatSseParser::new(false);
         parser
             .feed(
                 r#"data: {"id":"chatcmpl_tool","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read_file","arguments":"{}"}}]},"finish_reason":null}]}"#,
@@ -819,7 +828,7 @@ mod tests {
     #[test]
     fn missing_or_malformed_tool_index_is_invalid() {
         for index in ["null", "\"zero\""] {
-            let mut parser = OpenAiCompatSseParser::new();
+            let mut parser = OpenAiCompatSseParser::new(false);
             parser.feed(&format!(
                 r#"data: {{"id":"chatcmpl_tool","choices":[{{"index":0,"delta":{{"tool_calls":[{{"index":{index},"id":"call_1","function":{{"name":"read_file","arguments":"{{}}"}}}}]}},"finish_reason":null}}]}}"#,
             )).unwrap();
@@ -829,7 +838,7 @@ mod tests {
             assert!(chunks.iter().any(|chunk| matches!(chunk, ProviderChunk::StopReason { reason } if reason == &ModelStopReason::InvalidResponse)));
         }
 
-        let mut parser = OpenAiCompatSseParser::new();
+        let mut parser = OpenAiCompatSseParser::new(false);
         let chunks = parser.feed(
             r#"data: {"id":"chatcmpl_tool","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read_file","arguments":"{}"}}]},"finish_reason":null}]}"#,
         ).unwrap();
@@ -840,7 +849,7 @@ mod tests {
 
     #[test]
     fn truncated_stream_does_not_emit_stream_end() {
-        let mut parser = OpenAiCompatSseParser::new();
+        let mut parser = OpenAiCompatSseParser::new(false);
         let mut chunks = parser
             .feed(
             r#"data: {"id":"chatcmpl_truncated","choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}"#,

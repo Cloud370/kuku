@@ -203,7 +203,7 @@ pub(crate) fn history_entry(event: &StoredEvent, turns: &TurnLookup) -> Option<V
             let mut entry =
                 json!({"type":"assistant","turn":turn,"text":text,"request_id":request_id});
             if let Some(summary) = thinking.as_ref().filter(|text| !text.is_empty()) {
-                entry["reasoning_summary"] = json!(summary);
+                entry["reasoning_preview"] = json!(summary);
             }
             entry
         }
@@ -404,7 +404,7 @@ pub(crate) fn live_frame(
     let event = if agent_scoped {
         match event {
             UiEvent::ThinkingDelta { text } if !text.is_empty() => {
-                json!({"type":"reasoning_summary", "content":text})
+                json!({"type":"reasoning_preview", "content":text})
             }
             _ => event_value(event)?,
         }
@@ -449,8 +449,8 @@ pub(crate) fn reply_preview_frame(
         "phase": reply.phase,
         "content": reply.text,
         "truncated": reply.truncated,
-        "reasoning_summary": reply.reasoning_summary,
-        "reasoning_summary_truncated": reply.reasoning_summary_truncated,
+        "reasoning_preview": reply.reasoning_preview,
+        "reasoning_preview_truncated": reply.reasoning_preview_truncated,
     });
     let mut frame = live_payload(event, agent, reply.execution_id, reply.turn, cursor);
     if let Some(number) = turn_number {

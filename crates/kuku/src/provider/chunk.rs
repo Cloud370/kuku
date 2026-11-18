@@ -8,7 +8,7 @@ pub enum ProviderChunk {
     TextDelta { text: String },
     /// The provider reported reasoning activity without displayable text.
     Reasoning,
-    /// A provider-published reasoning summary fragment.
+    /// A provider-visible reasoning text or summary fragment.
     ThinkingDelta { text: String },
     Replay {
         protocol: crate::config::ProviderFormat,

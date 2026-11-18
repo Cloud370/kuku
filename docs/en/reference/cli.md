@@ -95,7 +95,9 @@ If you interrupt a streaming reply, its bounded preview stays under that Turn an
 
 By default, a fence labeled `md` or `markdown` in an assistant reply previews the enclosed document, including its headings, lists, tables and code blocks. The label is case-insensitive. Inner code uses its declared language. Ordinary code fences display their contents literally, with syntax highlighting for supported languages.
 
-A provider-published reasoning summary appears above the reply. Click its header or press Ctrl+O to expand it. For activity-only reasoning, the composer shows the Thinking phase and timer. Copy and Markdown source operate on the reply itself.
+A collapsed creation card names the Agent. A delivery card previews the task or the first content line of its reply. Expand it to read the details.
+
+Provider-published reasoning text or a summary appears above the reply. Click its header or press Ctrl+O to expand it. For activity-only reasoning, the composer shows the Thinking phase and timer. Copy and Markdown source operate on the reply itself.
 
 ### Status and usage
 
@@ -139,7 +141,7 @@ Flags:
 | `-c`, `--continue` | Continue the most recent session |
 | `--json` | Emit one final JSON line |
 | `--stream-json` | Emit realtime JSON lines |
-| `--show-thinking` | Show public reasoning summaries when provided by the model service |
+| `--show-thinking` | Show public reasoning text or summaries when provided by the model service |
 | `--raw` | Plain text output |
 | `--verbose` | Show the durable Agent snapshot, configuration, and usage |
 | `--prompts-dir <dir>` | Override embedded prompt assets when creating a Session. With `--remote`, use an authorized absolute directory on the server. |

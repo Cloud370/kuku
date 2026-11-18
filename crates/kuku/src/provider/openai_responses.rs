@@ -2,7 +2,7 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use crate::config::ProviderFormat;
+use crate::config::{ProviderFormat, ProviderProfile};
 use crate::context::{CanonicalMessage, MessageBlock, Role};
 use crate::event::ModelStopReason;
 
@@ -192,7 +192,9 @@ pub(crate) async fn stream_prepared(
     let TransportResponse { response, trace } =
         send_prepared(config, prepared, trace_metadata).await?;
     let url = prepared.url.clone();
-    let parser = Arc::new(Mutex::new(OpenAiResponsesSseParser::new()));
+    let parser = Arc::new(Mutex::new(OpenAiResponsesSseParser::new(
+        config.capabilities.profile == ProviderProfile::DeepSeek,
+    )));
     let frame_parser = Arc::clone(&parser);
     let eof_parser = Arc::clone(&parser);
     let frame_trace = trace.clone();
@@ -230,6 +232,7 @@ enum ResponseTerminalEvent {
 }
 
 struct OpenAiResponsesSseParser {
+    public_reasoning_text: bool,
     chunks: Vec<ProviderChunk>,
     started: bool,
     terminal_event: Option<ResponseTerminalEvent>,
@@ -244,8 +247,9 @@ struct OpenAiResponsesSseParser {
 }
 
 impl OpenAiResponsesSseParser {
-    fn new() -> Self {
+    fn new(public_reasoning_text: bool) -> Self {
         Self {
+            public_reasoning_text,
             chunks: Vec::new(),
             started: false,
             terminal_event: None,
@@ -552,12 +556,12 @@ impl OpenAiResponsesSseParser {
                 }
             }
             "response.reasoning_text.delta" => {
-                if data
-                    .get("delta")
-                    .and_then(Value::as_str)
-                    .is_some_and(|delta| !delta.is_empty())
-                {
-                    self.chunks.push(ProviderChunk::Reasoning);
+                if let Some(text) = data["delta"].as_str().filter(|text| !text.is_empty()) {
+                    self.chunks.push(if self.public_reasoning_text {
+                        ProviderChunk::ThinkingDelta { text: text.into() }
+                    } else {
+                        ProviderChunk::Reasoning
+                    });
                 }
             }
             "response.reasoning_summary_text.delta" | "response.reasoning_summary_text.done" => {
@@ -966,7 +970,7 @@ impl OpenAiResponsesSseParser {
 #[cfg(test)]
 #[allow(dead_code)] // included via include!() in integration tests
 pub(crate) fn parse_responses_sse(body: &str) -> Vec<ProviderChunk> {
-    let mut parser = OpenAiResponsesSseParser::new();
+    let mut parser = OpenAiResponsesSseParser::new(false);
     let mut chunks = Vec::new();
     for frame in body.split("\n\n") {
         chunks.extend(parser.feed(frame.trim()).unwrap());

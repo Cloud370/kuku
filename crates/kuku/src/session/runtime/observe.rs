@@ -28,11 +28,11 @@ pub struct ReplyPreview {
     pub phase: ModelPhase,
     /// UTF-8 prefix from the start of this request's reply.
     pub text: String,
-    /// Public summary prefix for the selected Agent.
+    /// Public reasoning prefix for the selected Agent.
     #[serde(skip_serializing_if = "String::is_empty")]
-    pub reasoning_summary: String,
+    pub reasoning_preview: String,
     /// Additional public summary text exists beyond the retained prefix.
-    pub reasoning_summary_truncated: bool,
+    pub reasoning_preview_truncated: bool,
     /// The reply already exceeded the preview's byte limit.
     pub truncated: bool,
 }
@@ -44,8 +44,8 @@ impl ReplyPreview {
             turn,
             phase,
             text: String::new(),
-            reasoning_summary: String::new(),
-            reasoning_summary_truncated: false,
+            reasoning_preview: String::new(),
+            reasoning_preview_truncated: false,
             truncated: false,
         }
     }
@@ -60,8 +60,8 @@ impl ReplyPreview {
             .floor_char_boundary(self.text.len().min(PEER_PREVIEW_BYTES));
         Self {
             text: self.text[..end].to_owned(),
-            reasoning_summary: String::new(),
-            reasoning_summary_truncated: false,
+            reasoning_preview: String::new(),
+            reasoning_preview_truncated: false,
             truncated: self.truncated || end < self.text.len(),
             ..*self
         }
@@ -319,8 +319,8 @@ impl Session {
                     preview.append(text);
                 } else if let UiEvent::ThinkingDelta { text } = &event {
                     append_prefix(
-                        &mut preview.reasoning_summary,
-                        &mut preview.reasoning_summary_truncated,
+                        &mut preview.reasoning_preview,
+                        &mut preview.reasoning_preview_truncated,
                         text,
                     );
                 }

@@ -8,9 +8,10 @@ use serde_json::Value;
 use crate::app::Activity;
 use crate::markup::{render_literal, render_markdown};
 use crate::text::{cap, shorten, single_line};
-use crate::theme::{emphasis, ACCENT, ERROR, MUTED};
+use crate::theme::{
+    emphasis, ACCENT, AGENT_CARD_WIDTH, AGENT_SURFACE, ERROR, MODEL, MUTED, SUCCESS, WARNING,
+};
 
-use super::tool::style_card;
 use super::{
     body_inset, capped, render_rows, Body, Key, Row, ToolDetails, Transcript, MAX_RECORDS,
 };
@@ -209,6 +210,7 @@ impl AgentRequest {
         };
         AgentCard {
             address,
+            kind: self.kind,
             action,
             task: &self.task,
             task_label: self.kind.task_label(),
@@ -243,6 +245,7 @@ impl AgentAction {
 pub(super) struct AgentCard<'a> {
     pub(super) address: &'a str,
     pub(super) receipt_cursor: Option<u64>,
+    kind: AgentAction,
     action: &'a str,
     task: &'a str,
     task_label: &'static str,
@@ -262,6 +265,7 @@ impl AgentCard<'_> {
         details: ToolDetails,
         facts: Option<&AgentFacts>,
     ) -> Vec<Row> {
+        let width = width.min(AGENT_CARD_WIDTH);
         let inset = body_inset(width);
         let body_inset = inset + body_inset(width.saturating_sub(usize::from(inset)));
         let expanded = details == ToolDetails::Expanded;
@@ -269,7 +273,7 @@ impl AgentCard<'_> {
         let mut rows: Vec<_> = render_rows(header, width, 3, inset).collect();
         if let Some(row) = rows.first_mut().filter(|_| inset != 0) {
             let marker = if expanded { "▾ " } else { "▸ " };
-            row.line.spans[0] = Span::styled(marker, Style::new().fg(ACCENT));
+            row.line.spans[0] = Span::styled(marker, emphasis(MODEL));
         }
         let preview = facts.map_or("", |facts| facts.preview.as_str());
         if expanded {
@@ -289,24 +293,48 @@ impl AgentCard<'_> {
                 ));
             }
         } else {
-            let text = [self.error, preview, self.task]
-                .into_iter()
-                .flat_map(str::lines)
-                .find(|line| !line.trim().is_empty());
-            if let Some(text) = text {
-                let text = shorten(
-                    &single_line(text.trim()),
-                    width.saturating_sub(usize::from(body_inset)),
-                );
-                rows.extend(render_rows(
-                    vec![Line::styled(text, Style::new().fg(MUTED))],
-                    width,
-                    1,
-                    body_inset,
+            let (label, text) = if !self.error.is_empty() {
+                ("Error", self.error)
+            } else if !preview.is_empty() {
+                let label = if facts.is_some_and(|facts| facts.status == Activity::Failed) {
+                    "Error"
+                } else {
+                    "Reply"
+                };
+                (label, preview)
+            } else if matches!(self.kind, AgentAction::Send) {
+                ("Task", self.task)
+            } else {
+                ("", "")
+            };
+            if let Some(excerpt) = first_content_line(text) {
+                let mut line = Line::from(Span::styled(format!("{label}  "), emphasis(MUTED)));
+                let remaining = width.saturating_sub(usize::from(body_inset) + line.width());
+                line.push_span(Span::styled(
+                    shorten(&single_line(excerpt), remaining),
+                    Style::new().fg(MUTED),
                 ));
+                rows.extend(render_rows(vec![line], width, 1, body_inset));
             }
         }
-        style_card(&mut rows);
+        let background = Style::new().bg(AGENT_SURFACE);
+        let card_width = (rows
+            .iter()
+            .map(|row| row.line.width())
+            .max()
+            .unwrap_or_default()
+            + 2)
+        .min(width);
+        for row in &mut rows {
+            let padding = card_width.saturating_sub(row.line.width());
+            for span in &mut row.line.spans {
+                span.style = background.patch(span.style);
+            }
+            if padding > 0 {
+                row.line
+                    .push_span(Span::styled(" ".repeat(padding), background));
+            }
+        }
         rows.push(Row::plain(Line::default()));
         rows
     }
@@ -315,26 +343,45 @@ impl AgentCard<'_> {
         let title = format!("Agent {}", single_line(self.address));
         let action = single_line(self.action);
         let style = Style::new().fg(MUTED);
-        let mut inline = Line::styled(title.clone(), emphasis(ACCENT));
+        let mut inline = Line::styled(title.clone(), emphasis(MODEL));
         inline.push_span(Span::styled(format!(" · {action}"), style));
         if let Some(facts) = facts {
             inline.push_span(Span::styled(
-                format!(" · Agent now {}", facts.status.label()),
-                style,
+                format!(" · {}", facts.status.label()),
+                activity_style(facts.status),
             ));
         }
         if inline.width() <= width {
             return vec![inline];
         }
         let mut lines = vec![
-            Line::styled(shorten(&title, width), emphasis(ACCENT)),
+            Line::styled(shorten(&title, width), emphasis(MODEL)),
             Line::styled(shorten(&action, width), style),
         ];
         if let Some(facts) = facts {
-            lines.push(Line::styled(shorten(facts.status.label(), width), style));
+            lines.push(Line::styled(
+                shorten(facts.status.label(), width),
+                activity_style(facts.status),
+            ));
         }
         lines
     }
+}
+
+fn first_content_line(text: &str) -> Option<&str> {
+    text.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with("```") && !line.starts_with("~~~"))
+}
+
+fn activity_style(activity: Activity) -> Style {
+    let color = match activity {
+        Activity::Finished => SUCCESS,
+        Activity::Failed | Activity::Interrupted => ERROR,
+        Activity::Waiting | Activity::Stopping => WARNING,
+        _ => ACCENT,
+    };
+    emphasis(color)
 }
 
 fn render_section(rows: &mut Vec<Row>, label: &'static str, text: &str, width: usize, inset: u16) {
@@ -422,6 +469,15 @@ mod tests {
 
     fn lines(view: &TranscriptView) -> Vec<String> {
         view.lines.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn collapsed_reply_skips_fences_and_keeps_the_first_content_line() {
+        assert_eq!(
+            super::first_content_line("\n```powershell\nCaption : Windows 11\n```"),
+            Some("Caption : Windows 11")
+        );
+        assert_eq!(super::first_content_line("~~~text\n~~~"), None);
     }
 
     #[test]
@@ -545,7 +601,7 @@ mod tests {
         );
         let settled = lines(&transcript.project(60, 25)).join("\n");
         assert!(
-            settled.contains("Input delivered · Agent now Finished")
+            settled.contains("Input delivered · Finished")
                 && settled.contains("Latest Agent reply")
                 && settled.contains("Completed checks")
         );
@@ -596,8 +652,8 @@ mod tests {
             .filter(|row| row.contains("Input delivered"))
             .collect();
         assert_eq!(2, sends.len());
-        assert!(sends[0].contains("Agent now Streaming reply"));
-        assert!(!sends[1].contains("Agent now"));
+        assert!(sends[0].contains("Streaming reply"));
+        assert!(!sends[1].contains("Streaming reply"));
         let rendered = view.join("\n");
         assert!(rendered.contains("Check the script"));
         assert_eq!(1, rendered.matches("Checking the CLI now").count());

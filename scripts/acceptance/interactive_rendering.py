@@ -49,32 +49,32 @@ def published_reasoning(client):
         try:
             assert waiting.arrived.wait(8)
             screen = terminal.expect("To main · Thinking")["screen"]
-            assert "Thinking summary" not in screen and hidden not in screen
+            assert "Thinking preview" not in screen and hidden not in screen
             waiting.release.set()
             assert published.arrived.wait(8)
-            compact = terminal.expect("▸ Thinking summary", state="Checking the totals.")["screen"]
-            terminal.click_text(compact, "Thinking summary")
-            expanded = terminal.expect("▾ Thinking summary", state="Comparing the published results.")["screen"]
+            compact = terminal.expect("▸ Thinking preview", state="Checking the totals.")["screen"]
+            terminal.click_text(compact, "Thinking preview")
+            expanded = terminal.expect("▾ Thinking preview", state="Comparing the published results.")["screen"]
             assert hidden not in expanded
             with client.terminal(workspace) as attached:
                 attached.resume(prompt)
-                restored = attached.expect("Checking the totals.", state="Thinking summary")["screen"]
+                restored = attached.expect("Checking the totals.", state="Thinking preview")["screen"]
                 assert hidden not in restored
                 attached.exit_cleanly()
         finally:
             waiting.release.set()
             published.release.set()
-        completed = terminal.expect(answer, state="Finished", also=("▌ Turn 1", "Thinking summary"))["screen"]
-        assert completed.count("Thinking summary") == 1 and hidden not in completed
+        completed = terminal.expect(answer, state="Finished", also=("▌ Turn 1", "Thinking preview"))["screen"]
+        assert completed.count("Thinking preview") == 1 and hidden not in completed
         terminal.press("/source\r")
         source = terminal.expect(answer, state="source")["screen"]
         assert "Checking the totals." not in source and hidden not in source
         terminal.exit_cleanly()
     with client.terminal(workspace) as reopened:
         reopened.resume(prompt)
-        settled = reopened.expect(answer, also=("▸ Thinking summary", "Checking the totals."))["screen"]
+        settled = reopened.expect(answer, also=("▸ Thinking preview", "Checking the totals."))["screen"]
         reopened.press("\x0f")
-        expanded = reopened.expect("▾ Thinking summary", state="Comparing the published results.")["screen"]
+        expanded = reopened.expect("▾ Thinking preview", state="Comparing the published results.")["screen"]
         assert hidden not in settled and hidden not in expanded
         print(expanded)
         reopened.exit_cleanly()

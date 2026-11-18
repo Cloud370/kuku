@@ -90,7 +90,7 @@
 
 已提交帧可通过 `delivery` 将队列变化关联到命令标识。`accepted` 带有 `input_ids`，`withdrawn` 带有 `input_id`，`replaced` 带有 `input_id` 和 `replacement_id`。
 
-带 `progress=true` 的快照可以包含所选 Agent 的 `reply_preview`，其中有 `execution_id`、`turn`、可选的 `turn_number`、`phase`、`text` 和 `truncated`。阶段为 `thinking`、`streaming` 或 `tool_arguments`。文本是活动请求的可见回复 UTF-8 前缀，最多 64 KiB。`truncated` 表示回复已经超过保留前缀的上限。 所选 Agent 的可选字段 `reasoning_summary` 保存服务方公开摘要的有界前缀，实时 `reasoning_summary` 事件追加该文本。已提交的助手条目也可包含此字段。
+带 `progress=true` 的快照可以包含所选 Agent 的 `reply_preview`，其中有 `execution_id`、`turn`、可选的 `turn_number`、`phase`、`text` 和 `truncated`。阶段为 `thinking`、`streaming` 或 `tool_arguments`。文本是活动请求的可见回复 UTF-8 前缀，最多 64 KiB。`truncated` 表示回复已经超过保留前缀的上限。 所选 Agent 的可选字段 `reasoning_preview` 保存服务方公开的思考文字或摘要的有界前缀，实时 `reasoning_preview` 事件追加该文本。已提交的助手条目也可包含此字段。
 
 在同一快照游标处，`agents` 中其他 Agent 的条目也可包含 `progress.phase`。`streaming` 条目的 `progress.preview` 包含该 Agent 当前回复开头的 UTF-8 文本，最多 512 字节。`thinking` 与 `tool_arguments` 仅报告活动。
 

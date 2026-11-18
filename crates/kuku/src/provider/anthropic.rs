@@ -173,8 +173,9 @@ pub(crate) async fn stream_prepared(
     let url = prepared.url.clone();
     let parser = Arc::new(Mutex::new(AnthropicSseParser::new(
         config.capabilities.profile == ProviderProfile::Anthropic,
-        prepared.body["thinking"]["display"] == "summarized"
-            && config.capabilities.profile == ProviderProfile::Anthropic,
+        config.capabilities.profile == ProviderProfile::DeepSeek
+            || (prepared.body["thinking"]["display"] == "summarized"
+                && config.capabilities.profile == ProviderProfile::Anthropic),
     )));
     let frame_parser = Arc::clone(&parser);
     let eof_parser = Arc::clone(&parser);
@@ -199,7 +200,8 @@ pub(crate) async fn stream_prepared(
 struct AnthropicSseParser {
     chunks: Vec<ProviderChunk>,
     require_thinking_signature: bool,
-    publish_summary: bool,
+    public_reasoning_text: bool,
+    last_public_block: Option<u64>,
     tool_blocks: BTreeSet<u64>,
     invalid_tool_stream: bool,
     saw_terminal: bool,
@@ -211,11 +213,12 @@ struct AnthropicSseParser {
 }
 
 impl AnthropicSseParser {
-    fn new(require_thinking_signature: bool, publish_summary: bool) -> Self {
+    fn new(require_thinking_signature: bool, public_reasoning_text: bool) -> Self {
         Self {
             chunks: Vec::new(),
             require_thinking_signature,
-            publish_summary,
+            public_reasoning_text,
+            last_public_block: None,
             tool_blocks: BTreeSet::new(),
             invalid_tool_stream: false,
             saw_terminal: false,
@@ -227,13 +230,21 @@ impl AnthropicSseParser {
         }
     }
 
-    fn observe_thinking(&mut self, text: &str) {
-        self.chunks
-            .push(if self.publish_summary && !text.is_empty() {
-                ProviderChunk::ThinkingDelta { text: text.into() }
-            } else {
-                ProviderChunk::Reasoning
-            });
+    fn observe_thinking(&mut self, index: u64, text: &str) {
+        if !self.public_reasoning_text || text.is_empty() {
+            self.chunks.push(ProviderChunk::Reasoning);
+            return;
+        }
+        let new_block = self
+            .last_public_block
+            .replace(index)
+            .is_some_and(|last| last != index);
+        let text = if new_block {
+            format!("\n\n{text}")
+        } else {
+            text.to_owned()
+        };
+        self.chunks.push(ProviderChunk::ThinkingDelta { text });
     }
 
     fn feed(&mut self, frame: &str) -> Result<Vec<ProviderChunk>, ProviderFailure> {
@@ -296,9 +307,10 @@ impl AnthropicSseParser {
                                     .push(ProviderChunk::TextDelta { text: text.into() });
                             }
                         }
-                        Some("thinking") => {
-                            self.observe_thinking(block["thinking"].as_str().unwrap_or_default())
-                        }
+                        Some("thinking") => self.observe_thinking(
+                            index,
+                            block["thinking"].as_str().unwrap_or_default(),
+                        ),
                         Some("redacted_thinking") => self.chunks.push(ProviderChunk::Reasoning),
                         Some("tool_use") => {
                             self.tool_blocks.insert(index);
@@ -359,7 +371,7 @@ impl AnthropicSseParser {
                             if self.append_native(index, "thinking", "thinking", text)?
                                 && !text.is_empty()
                             {
-                                self.observe_thinking(text);
+                                self.observe_thinking(index, text);
                             }
                         }
                         Some("signature_delta") => {

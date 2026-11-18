@@ -68,8 +68,8 @@ impl Transcript {
             .record_or_insert(Key::Preview(execution), turn, number, || {
                 Body::Assistant(String::new())
             });
-        if record.reasoning_summary != prefix {
-            record.reasoning_summary = prefix;
+        if record.reasoning_preview != prefix {
+            record.reasoning_preview = prefix;
             record.rendered = RenderCache::default();
             self.mark_unseen();
         }
@@ -90,7 +90,7 @@ impl Transcript {
             .record_or_insert(Key::Preview(execution), turn, number, || {
                 Body::Assistant(String::new())
             });
-        if append_bounded(&mut record.reasoning_summary, text, MAX_BODY_BYTES) {
+        if append_bounded(&mut record.reasoning_preview, text, MAX_BODY_BYTES) {
             record.rendered = RenderCache::default();
             self.mark_unseen();
         }
@@ -107,7 +107,7 @@ pub(super) fn render_assistant(
     if !summary.trim().is_empty() {
         let marker = if expanded { "▾" } else { "▸" };
         let mut title = Line::from(Span::styled(
-            shorten(&format!("{marker} Thinking summary"), width),
+            shorten(&format!("{marker} Thinking preview"), width),
             emphasis(MODEL),
         ));
         if !expanded && width > title.width() + 4 {

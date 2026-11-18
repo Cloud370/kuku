@@ -99,10 +99,22 @@ async fn three_protocols_preserve_tool_batches_native_replay_and_multiturn_prefi
         let first_mock = mock_request(&server, &first, &fixture(protocol, profile, 1, model));
         let (assistant, calls, reports) = collect_response(&config, &first).await;
         assert_eq!(2, calls.len());
-        assert!(assistant
+        let public: String = assistant
             .blocks
             .iter()
-            .all(|block| !matches!(block, MessageBlock::Thinking(_))));
+            .filter_map(|block| match block {
+                MessageBlock::Thinking(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        let expected = match (protocol, profile) {
+            (ProviderFormat::Anthropic, _) => "first native fixture\n\nsecond native fixture",
+            (ProviderFormat::OpenAiChat, ProviderProfile::DeepSeek) => {
+                "fixture reasoning, continued"
+            }
+            _ => "",
+        };
+        assert_eq!(expected, public);
         assert_eq!(Some(0.001), reports.last().unwrap().cost_usd);
         assert_eq!(
             Some(30),

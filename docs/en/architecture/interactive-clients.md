@@ -39,7 +39,7 @@ Attach using an Agent snapshot and its committed Session cursor. Show the latest
 
 Provide a bounded preview of the current request's streamed text when attaching to an active Agent, then continue with later updates for that execution. Treat the preview as transient. Preserve the trusted sending Agent address on inputs admitted at Turn start and at later Steps, so the recipient can display their origin.
 
-Reasoning, visible reply text, incremental tool arguments and tool execution can interleave or overlap. Derive each displayed activity from the event that confirms it. A tool runs only after dispatch. Show reasoning activity as a state while keeping private reasoning out of the transcript.
+Reasoning, visible reply text, incremental tool arguments and tool execution can interleave or overlap. Derive each displayed activity from the event that confirms it. A tool runs only after dispatch. Show the reasoning phase as it happens. Display a preview when the provider publishes reasoning text or a summary. Keep encrypted and redacted blocks out of the transcript.
 
 ## Terminal interaction
 

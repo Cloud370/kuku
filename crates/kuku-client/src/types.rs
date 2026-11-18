@@ -250,12 +250,12 @@ pub struct ReplyPreview {
     pub phase: ModelPhase,
     /// Observed text from the beginning of the current request.
     pub text: String,
-    /// Explicitly published reasoning summary, separate from reply text and provider replay.
+    /// Provider-visible reasoning text or summary, separate from reply text and provider replay.
     #[serde(default)]
-    pub reasoning_summary: String,
+    pub reasoning_preview: String,
     /// Additional summary text exists beyond this prefix.
     #[serde(default)]
-    pub reasoning_summary_truncated: bool,
+    pub reasoning_preview_truncated: bool,
     /// Further text already exists past the preview limit.
     pub truncated: bool,
 }

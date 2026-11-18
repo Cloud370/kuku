@@ -60,7 +60,7 @@ fn apply_update(
         return;
     }
     let delta = matches!(&update, Update::Observation(_, Observation::Live { event, .. })
-        if matches!(event["type"].as_str(), Some("text" | "thinking" | "tool_arguments" | "tool_output")));
+        if matches!(event["type"].as_str(), Some("text" | "thinking" | "reasoning_preview" | "tool_arguments" | "tool_output")));
     app.update(update);
     activity.observe(app, Instant::now());
     paint.request(!delta);

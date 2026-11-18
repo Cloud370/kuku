@@ -114,8 +114,8 @@ impl VisibleDetail {
                 rows,
                 key,
                 DetailKind::Reasoning,
-                "Thinking summary".into(),
-                "Provider summary".into(),
+                "Thinking preview".into(),
+                "Provider-visible reasoning".into(),
                 open,
             ),
             DetailRecord::Agent(agent) => Self::new(

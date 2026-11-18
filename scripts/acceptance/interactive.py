@@ -707,13 +707,13 @@ def delegated_agent_cards(client):
                 and parent_state["last_output"] == parent_reply
                 and reviewer_snapshot()["status"] == "running"
             ))
-            terminal.expect(f"{card} · Agent now Streaming reply")
+            terminal.expect(f"{card} · Streaming reply")
             open_reviewer(terminal)
             attached = terminal.expect(initial, state="Streaming reply")["screen"]
             assert attached.count(initial) == 1 and "reviewer draft to keep" in attached, attached
             screens.append(("Attaching to a reviewer mid-reply", attached))
             terminal.press("\x1b[1;3D")
-            terminal.expect(f"{card} · Agent now Streaming reply", state="To main")
+            terminal.expect(f"{card} · Streaming reply", state="To main")
             terminal.press("\x0f")
             expanded = terminal.expect("Live Agent reply")["screen"]
             assert "Requested instructions" in expanded and "Requested task" in expanded and task in expanded, expanded
@@ -737,13 +737,13 @@ def delegated_agent_cards(client):
         eventually("reviewer to settle independently", lambda: (
             (reviewer := reviewer_snapshot())["status"] == "idle" and reviewer["last_output"] == reply
         ))
-        terminal.expect(f"{card} · Agent now Finished")
+        terminal.expect(f"{card} · Finished")
         terminal.exit_cleanly()
 
     with client.terminal(workspace) as reopened:
         reopened.request("resize", rows=32, cols=140)
         reopened.resume(prompt)
-        reopened.expect(f"{card} · Agent now Finished")
+        reopened.expect(f"{card} · Finished")
         reopened.press("\x10")
         reopened.expect("Actions and Skills")
         reopened.press("\x1b")
