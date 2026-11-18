@@ -253,11 +253,12 @@ class Desktop:
             time.sleep(0.35)
         raise AssertionError(f"Windows Terminal did not switch to the keyboard language 0x{expected:04x}")
 
-    def capture(self, settle=0.2):
+    def capture(self, settle=0):
         from PIL import ImageGrab
 
         self.focus()
-        time.sleep(settle)
+        if settle:
+            time.sleep(settle)
         bounds = wintypes.RECT()
         dwm = ctypes.WinDLL("dwmapi")
         dwm.DwmGetWindowAttribute.argtypes = (wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD)
@@ -269,6 +270,9 @@ class Desktop:
 
     def picture(self, name, settle=0.2):
         image, _ = self.capture(settle)
+        return self.save_picture(name, image)
+
+    def save_picture(self, name, image):
         data = io.BytesIO()
         image.save(data, format="PNG")
         content = data.getvalue()
@@ -334,26 +338,73 @@ def selection_pixels(image):
             contiguous_rows = [y for _, y in band]
             if len(contiguous_rows) >= 3:
                 candidates.append((x, stride, contiguous_rows[len(contiguous_rows) // 2]))
-    assert len(candidates) == 1, f"Expected one visible mouse selection fixture, found {len(candidates)}"
+    if len(candidates) != 1:
+        return None
     left, stride, y = candidates[0]
     first = left + (marker_size + 1) * stride
     last = first + (len(SELECTION) - 1) * stride
     return first, last, y, stride
 
 
-def check_mouse_selection(desktop, checks):
+def wait_for_selection_frame(desktop, name, description, locate):
+    previous = None
+    image = None
+
+    def sample():
+        nonlocal previous, image
+        image, origin = desktop.capture()
+        selection = locate(image, origin)
+        if selection is None:
+            previous = None
+            return None
+        first, last, row, stride = selection
+        strip = image.crop((first - stride, row, last + stride + 1, row + 1))
+        current = (origin, image.size, selection, strip.tobytes())
+        if current == previous:
+            return image, origin, selection
+        previous = current
+
+    try:
+        return eventually(description, sample, timeout=8)
+    except AssertionError:
+        if image is not None:
+            desktop.save_picture(name + "-unready", image)
+        raise
+
+
+def selection_highlight(before, image, selection):
+    first, last, row, stride = selection
+    original, current = before.load(), image.load()
+    half_cell = stride // 2
+
+    def highlighted(center):
+        columns = range(center - half_cell, center + half_cell + 1)
+        return sum(original[x, row] != current[x, row] for x in columns) > half_cell
+
+    return all(highlighted(center) for center in range(first, last + 1, stride))
+
+
+def check_mouse_selection(desktop, checks, reply_frame):
     sentinel = f"previous clipboard value {secrets.token_hex(8)}"
     desktop.focus()
     desktop.clipboard.write(sentinel)
     assert desktop.clipboard.read() == sentinel, "Windows clipboard did not hold the mouse selection sentinel"
-    image, (left, top) = desktop.capture()
-    first, last, row, cell_width = selection_pixels(image)
+    before, origin, selection = reply_frame
+    left, top = origin
+    first, last, row, cell_width = selection
     start = (left + first, top + row)
     end = (left + last, top + row)
     result = checks["mouse_selection"] = {"button": "left", "modifiers": [], "start": start, "end": end,
                                           "expected_text": SELECTION, "cell_width_pixels": cell_width}
+
+    def highlighted(image, current_origin):
+        if current_origin == origin and image.size == before.size and selection_highlight(before, image, selection):
+            return selection
+
     with desktop.drag(start, end):
-        result["screenshot"] = desktop.picture("01a-mouse-selection")
+        name = "01a-mouse-selection"
+        image, _, _ = wait_for_selection_frame(desktop, name, "stable Windows Terminal selection highlight", highlighted)
+        result["screenshot"] = desktop.save_picture(name, image)
         assert desktop.clipboard.read() == sentinel, "Mouse selection changed the clipboard before the button was released"
         result["clipboard_unchanged_while_dragging"] = True
 
@@ -421,9 +472,12 @@ def exercise(client, desktop, workspace, state, checks):
     desktop.spell("copy")
     desktop.press(VK_RETURN)
     eventually("the exact response in the Windows clipboard", lambda: desktop.clipboard.read() == REPLY, timeout=12)
-    checks["copy"] = {"command": "/copy", "clipboard_utf8_sha256": hashlib.sha256(REPLY.encode()).hexdigest(),
-                      "screenshot": desktop.picture("01-reply-copied")}
-    check_mouse_selection(desktop, checks)
+    checks["copy"] = {"command": "/copy", "clipboard_utf8_sha256": hashlib.sha256(REPLY.encode()).hexdigest()}
+    name = "01-reply-copied"
+    reply_frame = wait_for_selection_frame(desktop, name, "stable Windows Terminal reply selection markers",
+                                           lambda image, _: selection_pixels(image))
+    checks["copy"]["screenshot"] = desktop.save_picture(name, reply_frame[0])
+    check_mouse_selection(desktop, checks, reply_frame)
     client.provider.assert_idle(duration=0.25)
 
     original = grid()
