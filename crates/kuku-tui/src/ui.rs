@@ -2,7 +2,7 @@ use kuku_client::AgentStatus;
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
@@ -15,8 +15,8 @@ use crate::output::OutputViewer;
 use crate::statusline::StatusLine;
 use crate::text::{shorten, single_line};
 use crate::theme::{
-    emphasis, surface, ACCENT, ERROR, HORIZONTAL_GUTTER, MAX_DRAFT_ROWS, MUTED, OUTPUT_WIDTH,
-    PICKER_HEIGHT, PICKER_WIDTH, WARNING,
+    composer_padding, emphasis, focused_row, horizontal_gutter, panel, panel_padding, surface,
+    ACCENT, ERROR, MAX_DRAFT_ROWS, MUTED, OUTPUT_WIDTH, PICKER_HEIGHT, PICKER_WIDTH, WARNING,
 };
 
 const MAX_BANNER_ROWS: u16 = 5;
@@ -28,10 +28,7 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &mut App, statusline: &StatusLi
         app.text_selection.clear();
         return;
     }
-    let area = outer.inner(Margin::new(
-        u16::from(outer.width >= 24) * HORIZONTAL_GUTTER,
-        0,
-    ));
+    let area = outer.inner(Margin::new(horizontal_gutter(outer.width), 0));
     let width = usize::from(area.width);
     let footer = statusline.render_line(app, width);
     let status_height = u16::from(footer.is_some());
@@ -40,28 +37,35 @@ pub(crate) fn render(frame: &mut Frame<'_>, app: &mut App, statusline: &StatusLi
     } else {
         0
     };
-    let editor_limit = area.height.saturating_sub(status_height + chrome_rows);
+    let padding = composer_padding(area);
+    let padding_rows = padding.top + padding.bottom;
+    let composer_gap = u16::from(area.height >= 16);
+    let editor_limit = area
+        .height
+        .saturating_sub(status_height + chrome_rows + padding_rows + composer_gap);
     let focused = app.modal.is_none();
     let mut composer = Block::new().style(surface());
     if area.width >= 4 {
         composer = composer
             .borders(Borders::LEFT)
             .border_style(Style::default().fg(if focused { ACCENT } else { MUTED }))
-            .padding(Padding::horizontal(1));
+            .padding(padding);
     }
     let content_width = usize::from(composer.inner(area).width);
     let heading_rows = u16::from(editor_limit >= 2);
     let draft_limit = usize::from(editor_limit - heading_rows).min(MAX_DRAFT_ROWS);
     let draft = (draft_limit > 0).then(|| app.pane_mut().draft.project(content_width, draft_limit));
-    let editor_height = heading_rows + draft.as_ref().map_or(0, |view| view.lines.len() as u16);
+    let editor_height =
+        padding_rows + heading_rows + draft.as_ref().map_or(0, |view| view.lines.len() as u16);
     let banner_rows = area
         .height
-        .saturating_sub(editor_height + status_height + MIN_TRANSCRIPT_ROWS)
+        .saturating_sub(editor_height + composer_gap + status_height + MIN_TRANSCRIPT_ROWS)
         .min(MAX_BANNER_ROWS);
     let banner = banner(app, width, usize::from(banner_rows));
-    let [transcript, banner_area, editor, status] = Layout::vertical([
+    let [transcript, banner_area, _gap, editor, status] = Layout::vertical([
         Constraint::Min(0),
         Constraint::Length(banner.len() as u16),
+        Constraint::Length(composer_gap),
         Constraint::Length(editor_height),
         Constraint::Length(status_height),
     ])
@@ -332,6 +336,7 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Rect
 fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (usize, usize, usize) {
     let width = usize::from(inner.width);
     let search_rows = u16::from(picker.kind.searchable() && inner.height >= 3);
+    let search_gap = u16::from(search_rows > 0 && inner.height >= 10);
     let header = if picker.header.is_empty() {
         Vec::new()
     } else {
@@ -345,9 +350,10 @@ fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (us
     picker.header_top = picker
         .header_top
         .min(header.len().saturating_sub(header_rows));
-    let [information, search, list, footer] = Layout::vertical([
+    let [information, search, _gap, list, footer] = Layout::vertical([
         Constraint::Length(header_rows as u16),
         Constraint::Length(search_rows),
+        Constraint::Length(search_gap),
         Constraint::Min(0),
         Constraint::Length(1),
     ])
@@ -363,7 +369,12 @@ fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (us
         information,
     );
     if search_rows > 0 {
-        render_editor(frame, search, &mut picker.query, true, "Search…");
+        let marker_width = u16::from(search.width >= 8) * 2;
+        let [marker, field] =
+            Layout::horizontal([Constraint::Length(marker_width), Constraint::Min(0)])
+                .areas(search);
+        frame.render_widget(Paragraph::new(Span::styled("/ ", emphasis(ACCENT))), marker);
+        render_editor(frame, field, &mut picker.query, true, "Search…");
     }
     let cell_height = if list.height >= 6 { 2 } else { 1 };
     let count = (usize::from(list.height) / cell_height).max(1);
@@ -375,7 +386,7 @@ fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (us
     let mut lines = Vec::new();
     for (index, choice) in options.iter().enumerate().skip(first).take(count) {
         let active = index == picker.selected;
-        let style = if active { surface() } else { Style::default() };
+        let style = if active { focused_row() } else { panel() };
         let prefix = if active { "› " } else { "  " };
         let label = single_line(&choice.label);
         let detail = single_line(&choice.detail);
@@ -415,6 +426,11 @@ fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (us
             shorten(&single_line(error), width),
             Style::default().fg(ERROR),
         )
+    } else if width < 32 {
+        Line::styled(
+            shorten("↑↓ Select · Enter · Esc", width),
+            Style::new().fg(MUTED),
+        )
     } else {
         let select = format!("{}{} Select", Shortcut::UP.label, Shortcut::DOWN.label);
         let confirm = format!(
@@ -436,7 +452,11 @@ fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (us
         Line::styled(shorten(&help, width), Style::default().fg(MUTED))
     };
     frame.render_widget(Paragraph::new(footer_text), footer);
-    (width.max(1), count, header_rows)
+    (
+        (width.saturating_sub(usize::from(search_rows > 0 && width >= 8) * 2)).max(1),
+        count,
+        header_rows,
+    )
 }
 
 fn picker_line(text: &str, width: usize, selected: bool, style: Style) -> Line<'static> {
@@ -549,21 +569,30 @@ fn render_editor_view(
 }
 
 fn render_popup(frame: &mut Frame<'_>, area: Rect, title: &str) -> Rect {
+    let screen = frame.area();
+    frame
+        .buffer_mut()
+        .set_style(screen, crate::theme::backdrop());
     frame.render_widget(Clear, area);
-    let mut block = Block::new();
-    if area.width >= 5 && area.height >= 3 {
-        let title = shorten(&single_line(title), usize::from(area.width - 4));
-        block = block
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(MUTED))
-            .title(Line::styled(
-                format!(" {title} "),
-                Style::default().fg(ACCENT),
-            ));
-    }
+    let block = Block::new().style(panel()).padding(panel_padding(area));
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    inner
+    if inner.height < 3 {
+        return inner;
+    }
+    let gap = u16::from(inner.height >= 9);
+    let [title_area, _gap, content] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(gap),
+        Constraint::Min(0),
+    ])
+    .areas(inner);
+    let title = shorten(&single_line(title), usize::from(title_area.width));
+    frame.render_widget(
+        Paragraph::new(Span::styled(title, emphasis(ACCENT))),
+        title_area,
+    );
+    content
 }
 
 fn popup(area: Rect, limit_width: u16, limit_height: u16) -> Rect {

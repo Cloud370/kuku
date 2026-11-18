@@ -1,5 +1,7 @@
 //! Shared visual styles for the terminal workspace.
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::widgets::Padding;
 
 pub(crate) const ACCENT: Color = Color::Rgb(70, 161, 163);
 pub(crate) const MUTED: Color = Color::Rgb(133, 146, 157);
@@ -28,4 +30,45 @@ pub(crate) const MAX_DRAFT_ROWS: usize = 4;
 pub(crate) const PICKER_WIDTH: u16 = 88;
 pub(crate) const PICKER_HEIGHT: u16 = 25;
 pub(crate) const OUTPUT_WIDTH: u16 = 112;
-pub(crate) const HORIZONTAL_GUTTER: u16 = 1;
+const PANEL: Color = Color::Rgb(28, 35, 44);
+const FOCUS: Color = Color::Rgb(53, 73, 85);
+
+pub(crate) fn panel() -> Style {
+    Style::new().fg(SURFACE_TEXT).bg(PANEL)
+}
+
+pub(crate) fn backdrop() -> Style {
+    Style::new().add_modifier(Modifier::DIM)
+}
+
+pub(crate) fn focused_row() -> Style {
+    panel().bg(FOCUS)
+}
+
+pub(crate) fn horizontal_gutter(width: u16) -> u16 {
+    match width {
+        0..=23 => 0,
+        24..=71 => 1,
+        72..=109 => 2,
+        _ => 3,
+    }
+}
+
+pub(crate) fn composer_padding(area: Rect) -> Padding {
+    Padding::new(
+        horizontal_gutter(area.width).max(1),
+        horizontal_gutter(area.width).max(1),
+        u16::from(area.height >= 26),
+        u16::from(area.height >= 26),
+    )
+}
+
+pub(crate) fn panel_padding(area: Rect) -> Padding {
+    let sides = if area.width >= 60 {
+        3
+    } else {
+        u16::from(area.width >= 22)
+    };
+    let vertical = u16::from(area.height >= 14);
+    Padding::new(sides, sides, vertical, vertical)
+}

@@ -213,7 +213,7 @@ fn draft_receipt_and_copy_feedback_keep_the_footer_in_place() {
     app.pane_mut().draft.insert("First input");
     let rows = screen(&mut app, &statusline, 140, 24);
     assert_eq!(footer, rows[23]);
-    assert!(rows[21].ends_with("Draft  "));
+    assert!(rows[21].trim_end().ends_with("Draft"));
     let id = submit_draft(&mut app);
     let rows = screen(&mut app, &statusline, 140, 24);
     assert_eq!(footer, rows[23]);
