@@ -49,6 +49,8 @@ Credential aliases are an optional convenience to reduce repeated pasting and ac
 
 ## Scheduling, interruption and resource ownership
 
+Keep tool previews and reader pages small enough for the model to inspect. Stream the body to Session storage under the host's per-capture and total disk budgets. Report an exhausted budget or a write failure at the operation that encountered it. Model generation limits are configured independently.
+
 Make host I/O genuinely asynchronous. Independent reads may use `Promise.all`. Dependent edits use `await` on their predecessor. Partial-success workflows may use `Promise.allSettled`. Batch large inputs so the JS heap does not retain every file. Cap heap, stack, elapsed time, host buffers, queued and active work, captured bytes and retained disk usage. Share execution budgets across Agents on the **execution host**. An attached phone affects client layout and rendering, not a desktop server's execution budget. Start with configurable limits and measure before adding adaptive scheduling or a warm worker pool.
 
 Check the actual Agent, action, final arguments and target when dispatching each side effect. Program execution is its own permission since a program can modify files outside file-tool controls. Reuse process-tree cleanup and output capture. On interruption, stop new dispatch, settle owned work and report completed actions. A new user instruction takes effect at a safe boundary. A TUI may show “Stopped · 12 of 40 files changed” when those counts are known.

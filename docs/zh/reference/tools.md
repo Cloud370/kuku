@@ -166,7 +166,7 @@ return { exitCode: facts.exit_code, warnings, complete, outputId: facts.output_r
 - `read_file` 返回带行号内容，并支持分页。
 - `stat_file` 返回路径类型（`file`、`directory`、`other` 或 `missing`）、是否存在及可用的文件大小。设置 `version: true` 时会流式读取普通文件的字节并计算 SHA-256 `content_hash`，结果只提供哈希，不包含文件正文。
 - `search_text` 基于正则，支持 `files`、`lines` 和 `count` 视图。结构化 `matches` 提供路径和行号，`lines` 还提供有界文本。通过 `next_offset` 续读。编辑前应读取文件本身。
-- `fetch_url` 下载最大 50 MiB 的 HTTP(S) 响应正文。即使服务器返回错误响应，结果也会包含 HTTP 状态码。在 Session 内，正文必须能存入可用的输出配额，发起请求的 Agent 可将 `output_ref.id` 传给 `read_output` 读取正文。独立查询返回临时文件路径。工具会拒绝带内嵌密码的 URL。
+- `fetch_url` 下载最大 50 MiB 的 HTTP(S) 响应正文。即使服务器返回错误响应，结果也会包含 HTTP 状态码。在 Session 内，完整正文必须能存入可用的输出配额。下载完成后，发起请求的 Agent 可将 `output_ref.id` 传给 `read_output` 读取正文。取消下载会丢弃已接收的部分。独立查询返回临时文件路径。工具会拒绝带内嵌密码的 URL。
 - `query_session` 会过滤 Session 账本，默认排除 rolled-back 事件，并截断单条事件内容。
 - `edit_file` 要求 `old_text` 在 Agent 的有效历史中见过的文本内唯一匹配。证据可以来自先前的读取，或 Agent 自身已确认成功的完整写入。局部或截断读取只覆盖实际展示的原文。`replace_all=true` 需要掌握该版本的整文件内容。只有在匹配 CRLF 文件确有需要时，LF 输入才会映射为 CRLF，并保持替换文本的换行风格。写入时文件哈希仍须一致。
 - `write_file` 可以覆盖 Agent 在有效历史中完整读取过的文件版本，或由它自身写入完整内容且已确认成功的版本。当前路径和哈希都必须与证据一致。局部编辑不足以确认变更后的整文件内容。

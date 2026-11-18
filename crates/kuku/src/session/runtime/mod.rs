@@ -147,7 +147,7 @@ impl Session {
         let mut writer = EventStore::open(&events_path)?;
         let output_dir = retention::output_dir(&events_path)?;
         let mut state = State {
-            outputs: retention::OutputStore::discover(&output_dir)?,
+            outputs: retention::OutputStore::recover(&output_dir)?,
             ..State::default()
         };
         writer.visit(|event| reduce_event(&mut state, event))?;

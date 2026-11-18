@@ -6,7 +6,9 @@ use std::sync::Weak;
 use std::time::SystemTime;
 
 use crate::event::EventPayload;
-use crate::tool::builtin::run_command::output::{framed_bytes, output_path};
+use crate::tool::builtin::run_command::output::{
+    framed_bytes, output_path, validate_output_id, OUTPUT_DRAFT_SUFFIX,
+};
 use crate::{Error, Result};
 
 use super::record::Record;
@@ -129,7 +131,7 @@ impl OutputStore {
         }
     }
 
-    pub(super) fn discover(dir: &Path) -> Result<Self> {
+    pub(super) fn recover(dir: &Path) -> Result<Self> {
         let entries = match fs::read_dir(dir) {
             Ok(entries) => entries,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
@@ -139,11 +141,29 @@ impl OutputStore {
         for entry in entries {
             let entry = entry?;
             let filename = entry.file_name();
-            if let Some(id) = filename
-                .to_str()
-                .and_then(|name| name.strip_suffix(".output"))
-            {
-                if output_path(dir, id).is_ok() && entry.file_type()?.is_file() {
+            let Some(filename) = filename.to_str() else {
+                continue;
+            };
+            if let Some(id) = filename.strip_suffix(OUTPUT_DRAFT_SUFFIX) {
+                if validate_output_id(id).is_ok() && entry.file_type()?.is_file() {
+                    let path = entry.path();
+                    match fs::remove_file(&path) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                        Err(error) => {
+                            return Err(io::Error::new(
+                                error.kind(),
+                                format!(
+                                    "cannot remove interrupted output draft {}: {error}",
+                                    path.display()
+                                ),
+                            )
+                            .into());
+                        }
+                    }
+                }
+            } else if let Some(id) = filename.strip_suffix(".output") {
+                if validate_output_id(id).is_ok() && entry.file_type()?.is_file() {
                     let metadata = entry.metadata()?;
                     store.charged_bytes = store.charged_bytes.saturating_add(metadata.len());
                     store.entries.insert(id.into(), file_entry(metadata, None));
@@ -412,7 +432,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = output_path(dir.path(), "capture").unwrap();
         std::fs::write(&path, b"captured bytes").unwrap();
-        let mut store = OutputStore::discover(dir.path()).unwrap();
+        let mut store = OutputStore::recover(dir.path()).unwrap();
         store.claim("main", "capture");
         store.entries.get_mut("capture").unwrap().retained_since =
             SystemTime::now() + Duration::from_secs(60);

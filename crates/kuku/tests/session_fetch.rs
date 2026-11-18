@@ -379,6 +379,7 @@ async fn fragmented_download_fits_the_exact_framed_quota() {
     assert_eq!(payload.len(), facts["output_ref"]["bytes"]);
     assert_eq!(format!("{:x}", Sha256::digest(&payload)), facts["sha256"]);
     let id = facts["output_ref"]["id"].as_str().unwrap();
+    assert_eq!(1, fs::read_dir(outputs(&session)).unwrap().count());
     assert_eq!(
         quota,
         fs::metadata(outputs(&session).join(format!("{id}.output")))
@@ -484,13 +485,14 @@ async fn declared_body_above_the_hard_limit_is_rejected_before_capture() {
 }
 
 #[tokio::test]
-async fn cancelling_a_download_discards_the_open_capture() {
+async fn active_download_is_unreadable_and_cancelled_draft_stays_unavailable_after_reopen() {
     let payload = vec![b'x'; 2 * 8192];
     let (url, server) = chunked_response(&payload, 8192, ChunkedEnding::Stall).await;
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
-    let (options, mut calls) = options(workspace.path(), data.path());
-    let session = open(options).await;
+    let (mut options, mut calls) = options(workspace.path(), data.path());
+    let session = open(options.clone()).await;
+    options.session_id = Some(session.id().into());
     next_call(&mut calls)
         .await
         .tools(&[("fetch", "fetch_url", json!({"url":url}))]);
@@ -509,6 +511,15 @@ async fn cancelling_a_download_discards_the_open_capture() {
     })
     .await
     .unwrap();
+    let id = claimed_output_id(&session);
+    let draft = outputs(&session).join(format!("{id}.output-draft"));
+    assert_output_unavailable(&session, &id);
+    assert!(matches!(
+        Session::open(options.clone()).await,
+        Err(Error::SessionLocked { .. })
+    ));
+    assert!(fs::metadata(&draft).unwrap().len() > 4096);
+
     session.cancel("main").await.unwrap();
     let (status, _, facts) = tool_result(&session, "fetch");
     assert_eq!("cancelled", status);
@@ -516,6 +527,41 @@ async fn cancelling_a_download_discards_the_open_capture() {
     assert_eq!(0, fs::read_dir(outputs(&session)).unwrap().count());
     session.close().await.unwrap();
     tokio::time::timeout(WAIT, server).await.unwrap().unwrap();
+
+    fs::write(&draft, b"unpublished bytes left by an interrupted writer").unwrap();
+    let unrelated = outputs(&session).join("outside-staging-namespace.txt");
+    fs::write(&unrelated, b"unrelated data").unwrap();
+    let reopened = Session::open(options).await.unwrap();
+    assert_output_unavailable(&reopened, &id);
+    assert!(!draft.exists());
+    assert!(unrelated.is_file());
+    reopened.close().await.unwrap();
+}
+
+fn claimed_output_id(session: &Session) -> String {
+    session
+        .events(0, 256)
+        .unwrap()
+        .into_iter()
+        .find_map(|event| {
+            let EventPayload::Unknown(value) = event.payload else {
+                return None;
+            };
+            let record = &value["record"];
+            (value["kind"] == "runtime.operation" && record["operation"] == "output_owned")
+                .then(|| record["id"].as_str().unwrap().to_owned())
+        })
+        .expect("the Session reserved an output for the running fetch")
+}
+
+fn assert_output_unavailable(session: &Session, id: &str) {
+    let request = OutputRead::default();
+    assert!(
+        matches!(session.read_agent_output("main", id, &request), Err(Error::OutputUnavailable(output)) if output == id)
+    );
+    assert!(
+        matches!(session.read_output(id, &request), Err(Error::OutputUnavailable(output)) if output == id)
+    );
 }
 
 enum ChunkedEnding {

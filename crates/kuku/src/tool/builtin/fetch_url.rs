@@ -1,4 +1,4 @@
-use std::future::Future;
+use std::future::{ready, Future};
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
@@ -10,7 +10,9 @@ use tokio_stream::StreamExt;
 use crate::tool::ToolResultEnvelope;
 use crate::{OutputReference, OutputStream};
 
-use super::run_command::output::{framed_bytes, OutputLimits, OutputWriter, MAX_FRAME_BYTES};
+use super::run_command::output::{
+    framed_bytes, OutputDraft, OutputLimits, OutputWriter, MAX_FRAME_BYTES,
+};
 
 const MAX_DOWNLOAD_BYTES: u64 = 50 * 1024 * 1024;
 const MAX_URL_BYTES: usize = 8192;
@@ -87,6 +89,7 @@ struct DownloadDigest {
 enum DownloadOutput<'a> {
     Retained {
         writer: Box<OutputWriter>,
+        draft: OutputDraft,
         id: &'a str,
         pending: Vec<u8>,
     },
@@ -108,11 +111,13 @@ impl<'a> DownloadOutput<'a> {
         retained: Option<FetchRetention<'a>>,
     ) -> Result<Self, ToolResultEnvelope> {
         if let Some(retained) = retained {
-            let writer = OutputWriter::create(retained.dir, retained.id, retained.limits)
-                .await
-                .map_err(retained_write_error)?;
+            let (writer, draft) =
+                OutputWriter::create_staged(retained.dir, retained.id, retained.limits)
+                    .await
+                    .map_err(retained_write_error)?;
             return Ok(Self::Retained {
                 writer: Box::new(writer),
+                draft,
                 id: retained.id,
                 pending: Vec::with_capacity(MAX_FRAME_BYTES),
             });
@@ -156,18 +161,31 @@ impl<'a> DownloadOutput<'a> {
         }
     }
 
-    async fn finish(self) -> Result<DownloadLocation, ToolResultEnvelope> {
+    async fn finish(self, cancel: &Notify) -> Result<DownloadLocation, ToolResultEnvelope> {
         match self {
             Self::Retained {
                 mut writer,
+                draft,
                 id,
                 pending,
             } => {
-                if let Err(error) = write_frame(&mut writer, &pending).await {
-                    writer.close().await;
-                    return Err(error);
+                let finalized = async {
+                    if let Err(error) = write_frame(&mut writer, &pending).await {
+                        writer.close().await;
+                        return Err(error);
+                    }
+                    let metadata = writer.finish(false).await.map_err(retained_write_error)?;
+                    until_cancelled(cancel, ready(metadata)).await
                 }
-                let metadata = writer.finish(false).await.map_err(retained_write_error)?;
+                .await;
+                let metadata = match finalized {
+                    Ok(metadata) => metadata,
+                    Err(error) => {
+                        draft.discard().map_err(retained_cleanup_error)?;
+                        return Err(error);
+                    }
+                };
+                draft.publish().map_err(retained_write_error)?;
                 Ok(DownloadLocation::Retained(OutputReference {
                     id: id.into(),
                     offset: 0,
@@ -187,14 +205,18 @@ impl<'a> DownloadOutput<'a> {
         }
     }
 
-    async fn close(self) {
+    async fn close(self) -> Result<(), ToolResultEnvelope> {
         match self {
-            Self::Retained { writer, .. } => writer.close().await,
+            Self::Retained { writer, draft, .. } => {
+                writer.close().await;
+                draft.discard().map_err(retained_cleanup_error)
+            }
             Self::Temporary {
                 file, directory, ..
             } => {
                 drop(file.into_std().await);
                 drop(directory);
+                Ok(())
             }
         }
     }
@@ -236,11 +258,11 @@ async fn download(
     let digest = match transfer(response, &mut output, quota, cancel).await {
         Ok(digest) => digest,
         Err(error) => {
-            output.close().await;
+            output.close().await?;
             return Err(error);
         }
     };
-    let location = output.finish().await?;
+    let location = output.finish(cancel).await?;
     Ok(render_download(url, headers, digest, location))
 }
 
@@ -363,6 +385,15 @@ fn retained_write_error(error: std::io::Error) -> ToolResultEnvelope {
         error.to_string(),
         "fetch_url",
         false,
+    )
+}
+
+fn retained_cleanup_error(error: std::io::Error) -> ToolResultEnvelope {
+    ToolResultEnvelope::output_failure(
+        "download output cleanup failed",
+        error.to_string(),
+        "fetch_url",
+        true,
     )
 }
 

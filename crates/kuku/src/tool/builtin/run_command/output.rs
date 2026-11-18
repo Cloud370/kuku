@@ -24,6 +24,7 @@ pub(crate) const MAX_OUTPUT_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_SUMMARY_LINES: usize = 6;
 const MAX_SUMMARY_LINE_BYTES: usize = 192;
 const MAX_PENDING_LINE_BYTES: usize = 1024;
+pub(crate) const OUTPUT_DRAFT_SUFFIX: &str = ".output-draft";
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct OutputLimits {
@@ -170,34 +171,31 @@ impl OutputWriter {
         output_id: &str,
         limits: OutputLimits,
     ) -> io::Result<Self> {
-        if !(HEADER_BYTES as u64..=MAX_OUTPUT_BYTES).contains(&limits.max_output_bytes) {
-            return Err(invalid_output(
-                "output quota must be between 4096 bytes and 1 GiB",
-            ));
-        }
-        if limits.max_preview_bytes > MAX_READ_BYTES {
-            return Err(invalid_output("output preview must be at most 80000 bytes"));
-        }
-        let path = output_path(output_dir, output_id)?;
-        crate::util::fs_sync::create_dir_all(output_dir)?;
-        let mut file = tokio::fs::File::from_std(
-            crate::util::fs_sync::write_options()
-                .create_new(true)
-                .open(&path)?,
-        );
-        let metadata = CaptureMetadata::default();
-        file.write_all(&encode_header(&metadata)?).await?;
-        file.flush().await?;
-        Ok(Self {
-            file,
-            path,
-            file_bytes: HEADER_BYTES as u64,
-            quota: limits.max_output_bytes,
-            metadata,
-            stdout: StreamSummary::default(),
-            stderr: StreamSummary::default(),
-            reports: None,
-        })
+        let path = Self::prepare(output_dir, output_id, limits)?;
+        let file = crate::util::fs_sync::write_options()
+            .create_new(true)
+            .open(&path)?;
+        Self::initialize(file, path, limits).await
+    }
+
+    pub(crate) async fn create_staged(
+        output_dir: &Path,
+        output_id: &str,
+        limits: OutputLimits,
+    ) -> io::Result<(Self, OutputDraft)> {
+        let destination = Self::prepare(output_dir, output_id, limits)?;
+        let (file, path) = tempfile::Builder::new()
+            .prefix(output_id)
+            .rand_bytes(0)
+            .suffix(OUTPUT_DRAFT_SUFFIX)
+            .make_in(output_dir, |path| {
+                crate::util::fs_sync::write_options()
+                    .create_new(true)
+                    .open(path)
+            })?
+            .into_parts();
+        let writer = Self::initialize(file, path.to_path_buf(), limits).await?;
+        Ok((writer, OutputDraft { path, destination }))
     }
 
     pub(super) async fn create_command(
@@ -276,6 +274,52 @@ impl OutputWriter {
             .map(ReportCollector::finish)
             .unwrap_or_default();
         Ok((self.metadata, reports))
+    }
+
+    fn prepare(output_dir: &Path, output_id: &str, limits: OutputLimits) -> io::Result<PathBuf> {
+        if !(HEADER_BYTES as u64..=MAX_OUTPUT_BYTES).contains(&limits.max_output_bytes) {
+            return Err(invalid_output(
+                "output quota must be between 4096 bytes and 1 GiB",
+            ));
+        }
+        if limits.max_preview_bytes > MAX_READ_BYTES {
+            return Err(invalid_output("output preview must be at most 80000 bytes"));
+        }
+        let path = output_path(output_dir, output_id)?;
+        crate::util::fs_sync::create_dir_all(output_dir)?;
+        Ok(path)
+    }
+
+    async fn initialize(file: fs::File, path: PathBuf, limits: OutputLimits) -> io::Result<Self> {
+        let mut file = tokio::fs::File::from_std(file);
+        let metadata = CaptureMetadata::default();
+        file.write_all(&encode_header(&metadata)?).await?;
+        file.flush().await?;
+        Ok(Self {
+            file,
+            path,
+            file_bytes: HEADER_BYTES as u64,
+            quota: limits.max_output_bytes,
+            metadata,
+            stdout: StreamSummary::default(),
+            stderr: StreamSummary::default(),
+            reports: None,
+        })
+    }
+}
+
+pub(crate) struct OutputDraft {
+    path: tempfile::TempPath,
+    destination: PathBuf,
+}
+
+impl OutputDraft {
+    pub(crate) fn publish(self) -> io::Result<()> {
+        crate::util::fs_sync::rename(&self.path, &self.destination)
+    }
+
+    pub(crate) fn discard(self) -> io::Result<()> {
+        self.path.close()
     }
 }
 
