@@ -78,16 +78,17 @@ python3 scripts/acceptance/run.py --run-id LIVE_RUN_ID interactive --archive PAT
 
 `live-result.json` records the actual route and requests alongside the task result. The scenario checks the real project edit and test output, switching Agents, client replacement during a running tool, and handoff among the terminal, browser and script client. [Live scenario](../../../scripts/acceptance/interactive_live.py)
 
-Use `--intent deepseek` or `--intent openrouter` to check real model actions through the native terminal. The cases verify visible reply wording, exact file contents across turns, and independent delegation on the default route. The delegation case checks that the first creation request succeeds and that main receives the child's result before showing it. `--intent-case delivery` or `--intent-case delegation` runs one part of the suite.
+Use `--intent deepseek` or `--intent openrouter` to check real model actions through the native terminal. The cases verify visible reply wording, exact file contents across turns, and independent delegation. The delegation case checks that the first creation request succeeds and that main receives the child's result before showing it. `--intent-case delivery` or `--intent-case delegation` runs one part of the suite.
 
 ```bash
 python3 scripts/acceptance/run.py --run-id INTENT_RUN_ID interactive \
   --intent openrouter --intent-case delegation --binary PATH_TO_BINARY \
+  --intent-model openai/gpt-6.1-terra --intent-effort high --intent-upstream openai \
   --revision EXPECTED_GIT_COMMIT --scratch-base PATH_OUTSIDE_CHECKOUT \
   --secrets PATH_TO_CREDENTIAL_FILE --ledger PATH_TO_AUTHORIZED_LEDGER
 ```
 
-The selection accepts `--archive` in place of `--binary` and checks the installed binary's revision before reserving budget. It uses direct DeepSeek Flash or OpenRouter pinned to the OpenAI standard upstream for `openai/gpt-6-luna`. The runner enforces the recorded request and output limits, including retries. `intent/result.json` records the case checks, terminal captures, and usage. It verifies OpenRouter's reported upstream route and cost against generation receipts. Settle the reservation using the [budget ledger](#credentials-and-run-artifacts) after reviewing the result. [Intent scenarios](../../../scripts/acceptance/interactive_intent.py)
+The selection accepts `--archive` in place of `--binary` and checks the installed binary's revision before reserving budget. Its defaults are `deepseek-flash` for direct DeepSeek, `openai/gpt-6-luna` through the `openai` endpoint for OpenRouter, and `low` reasoning effort. Use `--intent-model` and `--intent-effort` to override the model and requested effort, and `--intent-upstream` to choose the exact OpenRouter endpoint tag. The runner enforces request and output limits, including retries. `intent/result.json` records case checks, terminal captures, and usage. The intent suite requires confirmation of the route. With OpenRouter it checks the reported model, upstream provider, and available cost against generation receipts. Settle the reservation using the selected ledger after reviewing the result. [Intent scenarios](../../../scripts/acceptance/interactive_intent.py) · [Credentials and run artifacts](#credentials-and-run-artifacts)
 
 Record deterministic checks, platform execution and hands-on experience separately. For hands-on release evidence, install the candidate outside the checkout, use a configured provider to read a file, make an edit and run a check, then verify the changed files, diff and tool results. Resume the same Session in the browser and another terminal. Record Linux and Windows Terminal IME, paste, copy and resize checks along with any macOS coverage. Follow the live-call requirements below for provider evidence and mark any unavailable coverage as unverified.
 
@@ -101,9 +102,20 @@ python3 scripts/acceptance/run.py workspace --sdk target/debug/examples/session_
 python3 scripts/acceptance/run.py workspace --binary PATH_TO_BINARY
 ```
 
-Use a `.exe` path for the Windows build. `--archive` tests a local release archive in place of `--binary`. The selector builds the native fixture unless `--bridge` supplies an existing build. Add `--scratch-base` to select a scratch directory outside the source tree.
+Use a `.exe` path for the Windows build. `--archive` tests a local release archive in place of `--binary`. The selector builds the native fixture unless `--bridge` supplies an existing build. Add `--scratch-base` to select a scratch directory outside the source tree. With `--sdk`, add `--handoff-only` to seed a named report and verify that an independent reviewer reads the shared reference and reports its findings.
 
-The default uses a local deterministic provider. For a live comparison, add `--provider deepseek` or `--provider openrouter`, an explicit `--model` and `--effort`, and the corresponding `--secrets` and `--ledger`. `--upstream` selects an explicit route where supported. Record the provider, model, requested effort, and any confirmed upstream separately. Read the task checks and accounting in `workspace/result.json` beneath the run's evidence folder. [Credentials and run artifacts](#credentials-and-run-artifacts)
+The default uses a local deterministic provider. For live workspace acceptance, run direct DeepSeek `deepseek-flash` at `high` and cross-check OpenRouter `openai/gpt-6.1-terra` at `high` through `openai`. These are the defaults when selecting the corresponding `--provider`. Pass the matching `--secrets` and `--ledger` for each service. The following commands record each selection explicitly through the public SDK caller.
+
+```bash
+python3 scripts/acceptance/run.py --run-id WORKSPACE_DEEPSEEK_RUN workspace \
+  --sdk target/debug/examples/session_task --provider deepseek --model deepseek-flash \
+  --effort high --secrets PATH_TO_CREDENTIAL_FILE --ledger PATH_TO_DEEPSEEK_LEDGER
+python3 scripts/acceptance/run.py --run-id WORKSPACE_OPENROUTER_RUN workspace \
+  --sdk target/debug/examples/session_task --provider openrouter --model openai/gpt-6.1-terra \
+  --effort high --upstream openai --secrets PATH_TO_CREDENTIAL_FILE --ledger PATH_TO_OPENROUTER_LEDGER
+```
+
+`workspace/result.json` records task checks, accounting, the model and reasoning effort sent, and route evidence. The `workspace` selector allows `upstream_confirmed: null` when confirmation is unavailable. If OpenRouter returns no generation receipt, report the requested endpoint pin and keep the actual upstream unknown. Report the reasoning effort as requested unless the provider reports it. A confirmed route mismatch fails the run. [Credentials and run artifacts](#credentials-and-run-artifacts)
 
 ## Test ownership and evidence
 
@@ -213,11 +225,12 @@ The caller explicitly loads the file without echoing it or enabling shell tracin
 
 Record the user-authorized request/spend scope, model/settings, output limits, timeout, and retry policy before paid tests. Enforce the applicable limits, including retries. Configuration limits are not fresh authorization to repeat a completed test allowance. Do not infer credentials from the coding Agent's model or silently increase reasoning/budget after a failure.
 
-`benchmarks/acceptance/budget.json` is the single local cost ledger for this rewrite. Initialize it once against the user's task authorization; do not recreate it to reset spending:
+Use the ledger authorized for the selected API service. When DeepSeek and OpenRouter have separate authorizations, use separate ledgers. `benchmarks/acceptance/budget.json` is the default for generic budget commands. Select the applicable file explicitly when working with separate ledgers. Initialize a ledger once against the authorized scope and preserve its spending history.
 
 ```bash
-python3 scripts/acceptance/run.py budget init --authorization TASK_AUTHORIZATION --limit-usd 5 --opening-spent-usd 0
-python3 scripts/acceptance/run.py budget show
+python3 scripts/acceptance/run.py budget init --ledger PATH_TO_LEDGER \
+  --authorization TASK_AUTHORIZATION --limit-usd 5 --opening-spent-usd 0
+python3 scripts/acceptance/run.py budget show --ledger PATH_TO_LEDGER
 ```
 
 Both `live` and `benchmark --mode live` require `--reserve-usd` and `--reservation-reason`. Before launching a paid process the selector hashes `--config` without copying its potentially inline credentials, then locks the ledger and reserves a conservative upper bound covering maximum requests, input/output tokens, provider prices, and all retries. Its `live` command requires `--sdk-result` and `--session-data` and runs the supplied public SDK/CLI caller after `--`, with credentials loaded explicitly from `--secrets`; it is not an HTTP connectivity probe. The caller must enforce the request/token/retry bounds used in the reservation. A price cap or ledger reservation alone does not bound a model loop; output limits remain an explicit caller choice rather than being reduced to fit a reservation.

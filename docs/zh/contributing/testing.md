@@ -78,16 +78,17 @@ python3 scripts/acceptance/run.py --run-id LIVE_RUN_ID interactive --archive PAT
 
 `live-result.json` 记录实际模型路线、请求和任务结果。场景核对实际项目修改及测试输出、Agent 切换、工具运行期间更换客户端，以及在终端、浏览器和脚本客户端之间接续工作。[真实调用场景](../../../scripts/acceptance/interactive_live.py)
 
-通过 `--intent deepseek` 或 `--intent openrouter` 在原生终端中检查真实模型执行的动作。用例验证终端显示的回复措辞、跨轮次的文件内容，以及通过默认路线进行的独立委派。委派用例核对首次创建请求成功，以及 main 收到子 Agent 的结果后才向用户展示。可用 `--intent-case delivery` 或 `--intent-case delegation` 单独运行其中一组。
+通过 `--intent deepseek` 或 `--intent openrouter` 在原生终端中检查真实模型执行的动作。用例验证终端显示的回复措辞、跨轮次的文件内容，以及独立委派。委派用例核对首次创建请求成功，以及 main 收到子 Agent 的结果后才向用户展示。可用 `--intent-case delivery` 或 `--intent-case delegation` 单独运行其中一组。
 
 ```bash
 python3 scripts/acceptance/run.py --run-id INTENT_RUN_ID interactive \
   --intent openrouter --intent-case delegation --binary PATH_TO_BINARY \
+  --intent-model openai/gpt-6.1-terra --intent-effort high --intent-upstream openai \
   --revision EXPECTED_GIT_COMMIT --scratch-base PATH_OUTSIDE_CHECKOUT \
   --secrets PATH_TO_CREDENTIAL_FILE --ledger PATH_TO_AUTHORIZED_LEDGER
 ```
 
-可用 `--archive` 代替 `--binary`。验收在预留预算前核对安装后二进制的提交版本。模型路线为直连 DeepSeek Flash，或通过 OpenRouter 将 `openai/gpt-6-luna` 固定到 OpenAI 标准上游。验收限制请求数和输出，包括重试。`intent/result.json` 记录用例检查、终端画面路径和用量，并根据生成回执核对 OpenRouter 的上游路线与费用。检查结果后在[预算账本](#凭据与运行产物)结算预留额度。[意图验收场景](../../../scripts/acceptance/interactive_intent.py)
+可用 `--archive` 代替 `--binary`。验收在预留预算前核对安装后二进制的提交版本。直连 DeepSeek 时默认使用 `deepseek-flash`，通过 OpenRouter 时默认使用 `openai/gpt-6-luna` 和 `openai` 端点，默认思考档为 `low`。用 `--intent-model` 和 `--intent-effort` 覆盖模型和请求档位，用 `--intent-upstream` 指定准确的 OpenRouter 端点标签。验收限制请求数和输出，包括重试。`intent/result.json` 记录用例检查、终端画面路径和用量。意图验收要求确认路由，使用 OpenRouter 时会根据生成回执核对模型、上游 provider 和可用的费用。检查结果后在所选账本结算预留额度。见[意图验收场景](../../../scripts/acceptance/interactive_intent.py)和[凭据与运行产物](#凭据与运行产物)。
 
 分别记录确定性检查、平台执行和人工体验。人工验收时，在源码树外安装候选版本，用已配置的模型读取文件、完成修改并运行检查，再核对实际文件、diff 和工具结果。从浏览器和另一个终端恢复同一 Session。分别记录 Linux、Windows Terminal 的输入法、粘贴、复制与缩放检查，以及实际 macOS 覆盖。模型调用证据遵循下方规则，无法执行的场景标为待验证。
 
@@ -101,9 +102,20 @@ python3 scripts/acceptance/run.py workspace --sdk target/debug/examples/session_
 python3 scripts/acceptance/run.py workspace --binary PATH_TO_BINARY
 ```
 
-Windows 构建使用带 `.exe` 后缀的路径。可以用 `--archive` 代替 `--binary` 验收本地发行包。选择器默认构建本机夹具，也可以用 `--bridge` 复用已有构建。用 `--scratch-base` 可指定源码树之外的临时目录。
+Windows 构建使用带 `.exe` 后缀的路径。可以用 `--archive` 代替 `--binary` 验收本地发行包。选择器默认构建本机夹具，也可以用 `--bridge` 复用已有构建。用 `--scratch-base` 可指定源码树之外的临时目录。使用 `--sdk` 时可以加上 `--handoff-only`，预存一份命名报告，验证独立审查 Agent 能读取共享引用并报告发现。
 
-默认使用本地确定性 provider。做真实模型对比时，加上 `--provider deepseek` 或 `--provider openrouter`、显式 `--model` 和 `--effort`，以及对应的 `--secrets` 和 `--ledger`。支持时可用 `--upstream` 指定路由。分别记录 provider、模型、请求档位和已确认的上游。运行证据目录中的 `workspace/result.json` 保存任务检查和费用数据。见[凭据与运行产物](#凭据与运行产物)。
+默认使用本地确定性 provider。工作区的正式真实模型验收先跑直连 DeepSeek 的 `deepseek-flash`、`high`，再用 OpenRouter 的 `openai/gpt-6.1-terra`、`high` 和 `openai` 端点交叉验证。选择对应的 `--provider` 时会应用这些默认值。为每家服务传入对应的 `--secrets` 和 `--ledger`。下面通过公开 SDK 调用程序显式记录每条路线。
+
+```bash
+python3 scripts/acceptance/run.py --run-id WORKSPACE_DEEPSEEK_RUN workspace \
+  --sdk target/debug/examples/session_task --provider deepseek --model deepseek-flash \
+  --effort high --secrets PATH_TO_CREDENTIAL_FILE --ledger PATH_TO_DEEPSEEK_LEDGER
+python3 scripts/acceptance/run.py --run-id WORKSPACE_OPENROUTER_RUN workspace \
+  --sdk target/debug/examples/session_task --provider openrouter --model openai/gpt-6.1-terra \
+  --effort high --upstream openai --secrets PATH_TO_CREDENTIAL_FILE --ledger PATH_TO_OPENROUTER_LEDGER
+```
+
+`workspace/result.json` 记录任务检查、费用、发送的模型和思考档，以及路由证据。无法核实时，`workspace` 选择器允许 `upstream_confirmed: null`。OpenRouter 未返回生成回执时，只能报告请求已固定到哪个端点，实际上游仍未知。思考档同样按请求值报告，除非 provider 回报实际值。确认路由不一致会使本次验收失败。见[凭据与运行产物](#凭据与运行产物)。
 
 ## 测试归属与证据
 
@@ -213,11 +225,12 @@ DeepSeek Responses 无状态，不支持 `previous_response_id`；其 Messages �
 
 付费测试前记录用户授权的请求／费用范围、模型／设置、输出限制、超时和重试策略。执行包括重试在内的适用限额。配置中的上限不构成再次使用已完成测试额度的新授权。不要从编码 Agent 的模型推断凭据，也不要失败后静默增加思考档或预算。
 
-`benchmarks/acceptance/budget.json` 是本次重构唯一的本地费用台账。按用户的任务授权初始化一次，不通过重建台账清零费用：
+使用所选 API 服务获授权的费用账本。DeepSeek 与 OpenRouter 分别授权时，各用独立账本。通用预算命令默认使用 `benchmarks/acceptance/budget.json`。使用独立账本时应显式指定相应文件。按授权范围初始化一次并保留费用历史。
 
 ```bash
-python3 scripts/acceptance/run.py budget init --authorization TASK_AUTHORIZATION --limit-usd 5 --opening-spent-usd 0
-python3 scripts/acceptance/run.py budget show
+python3 scripts/acceptance/run.py budget init --ledger PATH_TO_LEDGER \
+  --authorization TASK_AUTHORIZATION --limit-usd 5 --opening-spent-usd 0
+python3 scripts/acceptance/run.py budget show --ledger PATH_TO_LEDGER
 ```
 
 `live` 和 `benchmark --mode live` 都要求 `--reserve-usd` 与 `--reservation-reason`。启动付费进程前，入口先计算 `--config` 的 hash，不复制其中可能存在的内联凭据，再锁定台账并预留保守上界，覆盖最大请求数、输入／输出 token、provider 单价和全部重试。`live` 要求 `--sdk-result` 和 `--session-data`，执行 `--` 后给出的公开 SDK／CLI 调用程序，显式从 `--secrets` 加载凭据；它不是 HTTP 连通性探测。调用程序必须实际执行预留估算所用的请求／token／重试上限。单价上限或账本预留本身不能约束模型循环；输出上限由调用者显式选择，不为适应预留额度而降低。
