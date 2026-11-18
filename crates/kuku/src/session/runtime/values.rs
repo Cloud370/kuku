@@ -100,8 +100,7 @@ impl Session {
             NamedValueSource::Json(json) => (NamedValueKind::Json, serde_json::to_vec(&json)?),
             NamedValueSource::Bytes(bytes) => (NamedValueKind::Bytes, bytes),
         };
-        self.save_value_bytes(agent, name, kind, &bytes, replace)
-            .await
+        Box::pin(self.save_value_bytes(agent, name, kind, &bytes, replace)).await
     }
 
     /// Resolve the selected agent's current exact binding without loading its payload.
