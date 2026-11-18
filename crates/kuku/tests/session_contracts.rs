@@ -257,6 +257,112 @@ async fn one_tool_batch_retains_success_denial_and_real_failure() {
     continuation.assert_hits_async(1).await;
 }
 
+#[tokio::test]
+async fn delegation_guides_default_routing_and_rejects_tiers_as_connections() {
+    let server = MockServer::start_async().await;
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let first = fixture(
+        &server,
+        |request| {
+            let body = request_body(request);
+            let create = body["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tool| tool["function"]["name"] == "create_agent")
+                .expect("create_agent tool definition");
+            let schema = &create["function"]["parameters"];
+            let properties = &schema["properties"];
+            let context = body["messages"].to_string();
+            tool_count(request) == 0
+                && schema["required"] == json!(["address"])
+                && properties["tier"]["description"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("<kuku_models>"))
+                && properties["connection"]["description"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("[provider.NAME]"))
+                && context.contains("<kuku_models>")
+                && context.contains("balanced")
+                && context.contains("Review the diff and send findings to main.")
+                && context.contains("Use `list_agents` when current status affects the next action")
+        },
+        response(
+            json!({"tool_calls":[
+                tool("default", "create_agent", json!({"address":"reviewer","instructions":"Review code for defects."})),
+                tool("wrong-route", "create_agent", json!({"address":"second-reviewer","connection":"balanced"}))
+            ]}),
+            "tool_calls",
+        ),
+    )
+    .await;
+    let corrected = fixture(
+        &server,
+        |request| {
+            tool_count(request) == 2
+                && request_body(request)["messages"].as_array().unwrap().iter().any(|message| {
+                    message["role"] == "tool"
+                        && message["tool_call_id"] == "wrong-route"
+                        && message["content"].as_str().is_some_and(|text| {
+                            text.contains("Set tier=\"balanced\" and omit connection")
+                        })
+                })
+        },
+        response(
+            json!({"tool_calls":[tool("correct-route", "create_agent", json!({"address":"second-reviewer","tier":"balanced"}))]}),
+            "tool_calls",
+        ),
+    )
+    .await;
+    let last = fixture(
+        &server,
+        |request| tool_count(request) == 3,
+        response(json!({"content":"Reviewers configured."}), "stop"),
+    )
+    .await;
+    let mut options = options(&server, workspace.path(), data.path());
+    let parent_provider = options.config.providers["openai"].clone();
+    options
+        .config
+        .providers
+        .insert("parent-route".into(), parent_provider);
+    let session = Session::open(options).await.unwrap();
+    session
+        .create_agent(
+            "create",
+            "main",
+            AgentConfig {
+                connection: Some("parent-route".into()),
+                model: Some("parent-override".into()),
+                ..AgentConfig::default()
+            },
+        )
+        .unwrap();
+    session
+        .send(Input::new("input", "main", "Configure two reviewers"))
+        .unwrap();
+    let state = idle(&session).await;
+    assert_eq!(
+        Some("Reviewers configured."),
+        state.last_output.as_deref(),
+        "{:?}",
+        state.last_error
+    );
+    let parent = session.agent_selection("main").unwrap();
+    assert_eq!("parent-override", parent.model);
+    assert_eq!("parent-route", parent.connection);
+    for address in ["reviewer", "second-reviewer"] {
+        let selected = session.agent_selection(address).unwrap();
+        assert_eq!("session-contract", selected.model);
+        assert_eq!("openai", selected.connection);
+    }
+    session.close().await.unwrap();
+    first.assert_hits_async(1).await;
+    corrected.assert_hits_async(1).await;
+    last.assert_hits_async(1).await;
+}
+
 fn streaming_response() -> (String, String) {
     let mut stream = String::new();
     let mut text = String::new();

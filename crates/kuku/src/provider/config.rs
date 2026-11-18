@@ -130,7 +130,14 @@ fn select_connection<'a>(
 ) -> Result<(String, Option<&'a CfgProvider>)> {
     if let Some(name) = &input.connection {
         let connection = cfg.and_then(|cfg| cfg.provider(name)).ok_or_else(|| {
-            Error::MissingProviderConfig(format!("connection '{name}' not found in config"))
+            let message = if cfg.is_some_and(|cfg| cfg.tier(name).is_some()) {
+                format!(
+                    "connection '{name}' not found in config. '{name}' is a configured model tier. Set tier={name:?} and omit connection to use that tier's provider."
+                )
+            } else {
+                format!("connection '{name}' not found in config")
+            };
+            Error::MissingProviderConfig(message)
         })?;
         return Ok((name.clone(), Some(connection)));
     }

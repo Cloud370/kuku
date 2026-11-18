@@ -37,6 +37,8 @@ When the default skill tool surface is enabled, the runtime exposes `list_skills
 
 `create_agent` creates a stable, flat Session-local address with independent context; an optional `preset` supplies the contact card. Supply the instructions and task material the recipient needs. `send_message` addresses an existing Agent and returns a durable delivery receipt, not its final work result. Its `wake` defaults to true; false queues the input for explicit advancement. `list_agents` reads retained states and latest durable outputs without consuming observations.
 
+Omit model routing fields to use the Session's default tier or the selected preset's tier. Set `tier` to a configured `[model.NAME]` name to select its route and default settings. Set `connection` only to the exact name of a configured `[provider.NAME]` entry.
+
 `ask_user` persists a question and yields at the current tool-batch boundary. The host replies to its exact request identity through the SDK, CLI `reply`, or server response endpoint. Question and authorization waiting semantics are defined in [Sessions](../how-it-works/sessions.md#waiting-and-replies).
 
 `--no-agents` (or `AgentConfig.no_agents`) removes `create_agent`, `send_message`, and `list_agents` while retaining `ask_user`. See [CLI](cli.md#kuku-run) for host flags.

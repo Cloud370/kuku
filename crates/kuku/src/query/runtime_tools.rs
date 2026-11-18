@@ -377,9 +377,41 @@ pub(crate) fn definitions() -> Vec<ToolDefinition> {
     vec![
         output::definition(),
         definition("ask_user", "Persist a question and yield after the current tool batch. Wait for the host to reply to the returned request identity before continuing.", serde_json::json!({"type":"object","properties":{"question":{"type":"string"}},"required":["question"]})),
-        definition("create_agent", "Create a stable agent with independent context. Select an explicit connection or tier and supply the complete instructions it needs.", serde_json::json!({"type":"object","properties":{"address":{"type":"string"},"connection":{"type":"string"},"tier":{"type":"string"},"model":{"type":"string"},"preset":{"type":"string"},"instructions":{"type":"string"},"reasoning_effort":{"type":"string"},"service_tier":{"type":"string"},"max_output_tokens":{"type":"integer","minimum":1},"no_agents":{"type":"boolean"},"no_skills":{"type":"boolean"},"bootstrap_skill":{"type":"string"},"tools":{"type":"array","items":{"type":"string"}},"workspace":{"type":"string"}},"required":["address"]})),
+        definition(
+            "create_agent",
+            "Create a stable Agent with independent context. Omit model routing fields to use the Session's default tier or the chosen preset's tier.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "address": {"type": "string"},
+                    "connection": {
+                        "type": "string",
+                        "description": "Exact connection name from [provider.NAME] in host config. Set only to a known provider key."
+                    },
+                    "tier": {
+                        "type": "string",
+                        "description": "Configured model tier name from <kuku_models>. Supplies connection, model and settings defaults."
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": "Exact model identifier on the selected connection. Defaults to the chosen tier's model."
+                    },
+                    "preset": {"type": "string"},
+                    "instructions": {"type": "string"},
+                    "reasoning_effort": {"type": "string"},
+                    "service_tier": {"type": "string"},
+                    "max_output_tokens": {"type": "integer", "minimum": 1},
+                    "no_agents": {"type": "boolean"},
+                    "no_skills": {"type": "boolean"},
+                    "bootstrap_skill": {"type": "string"},
+                    "tools": {"type": "array", "items": {"type": "string"}},
+                    "workspace": {"type": "string"}
+                },
+                "required": ["address"]
+            }),
+        ),
         definition("send_message", "Deliver selected material to an existing agent without sharing conversation history. Returns a durable receipt; query or receive its later result separately.", serde_json::json!({"type":"object","properties":{"to":{"type":"string"},"message":{"type":"string"},"wake":{"type":"boolean","description":"Defaults true. False only enqueues: the recipient needs host advance or a later wake before it can act."}},"required":["to","message"]})),
-        definition("list_agents", "Inspect retained agent addresses, state and latest durable outputs without consuming them.", serde_json::json!({"type":"object","properties":{}})),
+        definition("list_agents", "Read Agent addresses, current states and latest durable outputs. Use when current state affects your next action.", serde_json::json!({"type":"object","properties":{}})),
     ]
 }
 

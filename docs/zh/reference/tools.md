@@ -37,6 +37,8 @@
 
 `create_agent` 创建稳定、扁平的 Session 内地址及独立上下文，可选的 `preset` 提供联系卡。应传入接收方所需的完整指令和任务材料。`send_message` 向已有 Agent 投递，返回持久投递回执，不代表最终工作结果。`wake` 默认为 true；false 仅入箱，等待显式推进。`list_agents` 读取保留状态和最后持久输出，不消费观察流。
 
+省略模型路由字段时，使用 Session 的默认 tier 或所选 preset 的 tier。将 `tier` 设为已配置的 `[model.NAME]` 名称，可选用对应的路由和默认设置。只有知道确切的 `[provider.NAME]` 条目名称时才填写 `connection`。
+
 `ask_user` 持久化问题，并在当前工具批次边界让出执行。宿主通过 SDK、CLI `reply` 或 server 回复端点，使用精确请求标识作答。问题和授权的等待语义见 [Session](../how-it-works/sessions.md#等待与回复)。
 
 `--no-agents`（或 `AgentConfig.no_agents`）移除 `create_agent`、`send_message` 和 `list_agents`，保留 `ask_user`。宿主参数见 [CLI](cli.md#kuku-run)。

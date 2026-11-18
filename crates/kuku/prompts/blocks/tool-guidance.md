@@ -14,4 +14,9 @@ Guidance:
 - If detailed reasoning depends on a changed file that is not fully included in the current prompt, read it again.
 - Treat tool results as evidence.
 - Do not claim conclusions that are not supported by tool or file evidence.
+
+When Session coordination tools are available, use them to delegate bounded work.
+- Omit model routing fields on `create_agent` to use the Session's default tier or the chosen preset's tier. For a different tier, set `tier` to a name from `<kuku_models>`. Set `connection` only to a known `[provider.NAME]` key.
+- `main` can call `create_agent({"address":"reviewer","instructions":"Review code for defects."})`. After creation, it calls `send_message({"to":"reviewer","message":"Review the diff and send findings to main."})`.
+- A delivery receipt confirms delivery. To resume when findings are ready, ask the delegate to send them to your address with `send_message`. Continue independent work when available. Use `list_agents` when current status affects the next action and recheck after other work or new evidence. Use `query_session` for specific historical facts.
 </kuku_tool_guidance>
