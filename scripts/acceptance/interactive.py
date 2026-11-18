@@ -12,7 +12,7 @@ from urllib.parse import urlencode, urlsplit
 
 from interactive_fixture import (
     DenseTranscript, InstalledClient, TOOL_BRIEF, TOOL_OUTPUT, eventually, http_fixture, install,
-    json_response, local_request,
+    delegate_reviewer, json_response, local_request,
 )
 
 
@@ -579,32 +579,15 @@ def delegated_agent_cards(client):
         terminal.expect("New session", state="Ready")
         terminal.request("resize", rows=32, cols=140)
         terminal.submit(prompt)
-        client.provider.next(prompt).tool(
-            "create_agent", "create-reviewer", address="reviewer", tier="balanced",
-            instructions=instructions,
-        )
-        client.provider.next("create-reviewer").tool(
-            "send_message", "send-reviewer", to="reviewer", message=task,
-        )
-        first, second = client.provider.next(), client.provider.next()
-        if "send-reviewer" in json.dumps(first.request["messages"]):
-            parent, child = first, second
-        else:
-            parent, child = second, first
-        parent.expect("send-reviewer")
-        child.expect(task)
-        child_input = json.dumps(child.request["messages"])
-        assert prompt not in child_input and "send-reviewer" not in child_input, (
-            "The reviewer must receive the delegated input in its own context"
-        )
+        parent, child = delegate_reviewer(client.provider, prompt, instructions, task)
         session = client.session(workspace)
 
         def reviewer_snapshot():
-            params = urlencode({"workspace": workspace, "agent": "reviewer"})
-            return client.request("GET", f"/sessions/{session}/snapshot?{params}").as_json()["agent"]
+            return client.snapshot(workspace, session, "reviewer")
 
         terminal.type("parent draft to keep")
         menu = open_reviewer(terminal)
+        terminal.expect("From main", state=task)
         assert task in menu, menu
         screens.append(("Switching to the active reviewer with a parent draft", menu))
         terminal.type("reviewer draft to keep")

@@ -187,6 +187,28 @@ def csv_review(client, workspace, call):
     return reply
 
 
+def delegate_reviewer(provider, prompt, instructions, task):
+    provider.next(prompt).tool(
+        "create_agent", "create-reviewer", address="reviewer", tier="balanced",
+        instructions=instructions,
+    )
+    provider.next("create-reviewer").tool(
+        "send_message", "send-reviewer", to="reviewer", message=task,
+    )
+    first, second = provider.next(), provider.next()
+    if "send-reviewer" in json.dumps(first.request["messages"]):
+        parent, child = first, second
+    else:
+        parent, child = second, first
+    parent.expect("send-reviewer")
+    child.expect(task)
+    child_input = json.dumps(child.request["messages"])
+    assert prompt not in child_input and "send-reviewer" not in child_input, (
+        "The reviewer must receive the delegated input in its own context"
+    )
+    return parent, child
+
+
 class DenseTranscript:
     prompt = "review sample workspace"
     draft = "draft survives the review"
@@ -557,8 +579,8 @@ class InstalledClient:
         assert len(sessions) == 1, "Expected exactly one Session in the workspace"
         return sessions[0]["session_id"]
 
-    def snapshot(self, workspace, session):
-        query = urlencode({"workspace": workspace, "agent": "main"})
+    def snapshot(self, workspace, session, agent="main"):
+        query = urlencode({"workspace": workspace, "agent": agent})
         return self.request("GET", f"/sessions/{session}/snapshot?{query}").as_json()["agent"]
 
     def assert_current_service(self, connection):

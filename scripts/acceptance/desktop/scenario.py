@@ -15,7 +15,7 @@ import tempfile
 import termios
 import time
 
-from interactive_fixture import DenseTranscript, InstalledClient, csv_review, eventually
+from interactive_fixture import DenseTranscript, InstalledClient, csv_review, delegate_reviewer, eventually
 
 
 TEST = Path("/test")
@@ -177,6 +177,37 @@ def dense_layout(client, desktop, workspace, window, pid):
         gate_executable=TEST / "bridge")
 
 
+def agent_navigation(client, desktop, workspace, session, window):
+    prompt = "Ask the reviewer to check the report"
+    desktop.type(window, prompt)
+    desktop.key(window, "Return")
+    parent, child = delegate_reviewer(client.provider, prompt, "独立核对报告。", "检查样例和异常行。")
+    initial = "正在核对样例。"
+    tail = "\n\n```text\n" + "".join(f"{i:04d} 保留原始日志、空格和换行。\n" for i in range(1800)) + "```\n完整报告结束。"
+    raw = (initial + tail).encode()
+    assert len(raw) > 64 * 1024
+    with child.streaming_text(initial, tail):
+        parent.text("已委派工作，等待 reviewer 完成。")
+        eventually("the parent to finish", lambda: client.snapshot(workspace, session)["status"] == "idle")
+        desktop.type(window, "parent draft to keep")
+        screens = {"parent": desktop.screen("agent-parent-with-draft")}
+        desktop.key(window, "alt+Down")
+        desktop.type(window, "reviewer")
+        screens["picker"] = desktop.screen("agent-switch-picker")
+        desktop.key(window, "Return")
+        screens["child"] = desktop.screen("agent-streaming-reviewer")
+    eventually("the complete child reply to settle",
+               lambda: client.snapshot(workspace, session, "reviewer")["last_output"] == initial + tail)
+    desktop.type(window, "/copy")
+    desktop.key(window, "Return")
+    eventually("a reply larger than the transcript preview in the clipboard", lambda: desktop.clipboard() == raw)
+    desktop.key(window, "alt+Up")
+    screens["restored"] = desktop.screen("agent-parent-restored")
+    desktop.key(window, "ctrl+c")
+    client.provider.assert_idle()
+    return {"screens": screens, "clipboard_bytes": len(raw), "clipboard_sha256": hashlib.sha256(raw).hexdigest()}
+
+
 def exercise(client, desktop, checks):
     workspace = client.workspace("work-desktop")
     state = client.directory / "terminal.json"
@@ -262,6 +293,7 @@ def exercise(client, desktop, checks):
         desktop.key(window, "ctrl+minus")
         eventually("the normal font for the dense transcript", lambda: original_font(pid, original))
         checks["dense_transcript"] = dense_layout(client, desktop, workspace, window, pid)
+        checks["agent_navigation"] = agent_navigation(client, desktop, workspace, session, window)
 
         desktop.type(window, "/quit")
         desktop.key(window, "Return")
