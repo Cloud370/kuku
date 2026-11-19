@@ -184,7 +184,9 @@ async fn review_keyboard_choices_dispatch_each_action() {
             SetupMode::FirstRun,
         );
         match action {
-            ReviewAction::SaveAndContinue => assert_eq!(Some(Finish::SaveAndContinue), state.finish),
+            ReviewAction::SaveAndContinue => {
+                assert_eq!(Some(Finish::SaveAndContinue), state.finish)
+            }
             ReviewAction::SaveAndExit => assert_eq!(Some(Finish::SaveAndExit), state.finish),
             ReviewAction::Back => assert_eq!(SetupStep::Credential, state.step),
             ReviewAction::Cancel => assert_eq!(Some(Finish::Cancel), state.finish),

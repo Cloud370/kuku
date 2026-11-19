@@ -84,7 +84,10 @@ async fn saving_uses_sdk_environment_expansion_and_preserves_references() {
             "default_model = \"balanced\"",
             &format!("default_model = \"${TIER}\""),
         )
-        .replace("provider = \"anthropic\"", &format!("provider = \"${PROVIDER}\""))
+        .replace(
+            "provider = \"anthropic\"",
+            &format!("provider = \"${PROVIDER}\""),
+        )
         .replace(
             "model = \"claude-sonnet-4-6\"",
             &format!("model = \"${MODEL}\""),
@@ -170,8 +173,14 @@ async fn settings_edit_inline_model_and_provider_tables() {
         "https://existing-openai.invalid/v1",
         parsed.provider["openai"].base_url
     );
-    assert_eq!(Some("low"), parsed.model["balanced"].reasoning_effort.as_deref());
-    assert_eq!(Some("flex"), parsed.model["balanced"].service_tier.as_deref());
+    assert_eq!(
+        Some("low"),
+        parsed.model["balanced"].reasoning_effort.as_deref()
+    );
+    assert_eq!(
+        Some("flex"),
+        parsed.model["balanced"].service_tier.as_deref()
+    );
 }
 
 #[tokio::test]
@@ -197,7 +206,10 @@ async fn preset_save_adds_an_inline_provider_without_overwriting_existing() {
     assert!(output.contains("provider = {"));
     assert!(output.contains("openai_setup = {"));
     let parsed = load_config(&config).unwrap();
-    assert_eq!("https://existing-openai.invalid/v1", parsed.provider["openai"].base_url);
+    assert_eq!(
+        "https://existing-openai.invalid/v1",
+        parsed.provider["openai"].base_url
+    );
     assert_eq!("$OPENAI_SETUP_KEY", parsed.provider["openai_setup"].api_key);
     assert_eq!("openai_setup", parsed.model["balanced"].provider);
 }
@@ -475,28 +487,30 @@ async fn simultaneous_settings_saves_allow_only_one_writer() {
 
     assert!(first.is_ok() != second.is_ok());
     let saved = load_config(&config).unwrap();
-    assert!(saved.model["balanced"].model == "writer-one-model"
-        || saved.model["balanced"].model == "writer-two-model");
+    assert!(
+        saved.model["balanced"].model == "writer-one-model"
+            || saved.model["balanced"].model == "writer-two-model"
+    );
 }
 
 #[tokio::test]
 async fn staged_key_is_removed_when_directory_sync_fails() {
     let directory = tempfile::tempdir().unwrap();
-    let settings = Settings::load(options(directory.path(), None)).await.unwrap();
+    let settings = Settings::load(options(directory.path(), None))
+        .await
+        .unwrap();
 
-    let error = stage_key_with_sync(
-        &settings,
-        "fixture-only-not-a-real-key",
-        |path, created| {
-            assert_eq!(path, settings.credentials_dir);
-            assert!(created);
-            Err(io::Error::new(io::ErrorKind::Other, "fixture sync failure"))
-        },
-    )
+    let error = stage_key_with_sync(&settings, "fixture-only-not-a-real-key", |path, created| {
+        assert_eq!(path, settings.credentials_dir);
+        assert!(created);
+        Err(io::Error::new(io::ErrorKind::Other, "fixture sync failure"))
+    })
     .err()
     .unwrap();
 
-    assert!(error.to_string().contains("cannot sync private credential storage"));
+    assert!(error
+        .to_string()
+        .contains("cannot sync private credential storage"));
     assert_eq!(0, fs::read_dir(&settings.credentials_dir).unwrap().count());
 }
 

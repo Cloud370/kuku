@@ -11,16 +11,16 @@ use windows_sys::Win32::Foundation::{
     LocalFree, ERROR_ALREADY_EXISTS, ERROR_INSUFFICIENT_BUFFER, HANDLE,
 };
 use windows_sys::Win32::Security::Authorization::{
-    ConvertSidToStringSidA, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-    GetSecurityInfo, SetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
+    ConvertSidToStringSidA, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
+    SetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
 };
 use windows_sys::Win32::Security::{
-    EqualSid, GetAce, GetSecurityDescriptorControl, GetSecurityDescriptorDacl,
-    GetSecurityDescriptorOwner, GetTokenInformation, GetLengthSid, IsValidSid, TokenUser,
-    ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION,
-    INHERITED_ACE, INHERIT_ONLY_ACE, OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION,
-    PROTECTED_DACL_SECURITY_INFORMATION, PSID, SECURITY_ATTRIBUTES, SE_DACL_PROTECTED,
-    TOKEN_QUERY, TOKEN_USER,
+    EqualSid, GetAce, GetLengthSid, GetSecurityDescriptorControl, GetSecurityDescriptorDacl,
+    GetSecurityDescriptorOwner, GetTokenInformation, IsValidSid, TokenUser, ACCESS_ALLOWED_ACE,
+    ACE_HEADER, ACL, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, INHERITED_ACE,
+    INHERIT_ONLY_ACE, OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION,
+    PROTECTED_DACL_SECURITY_INFORMATION, PSID, SECURITY_ATTRIBUTES, SE_DACL_PROTECTED, TOKEN_QUERY,
+    TOKEN_USER,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateDirectoryW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_ALL_ACCESS,
@@ -215,9 +215,8 @@ pub(super) fn set_config_temp_security(
         let mut owner = ptr::null_mut();
         let mut owner_defaulted = 0;
         // NOTE: The descriptor allocation remains live, the owner slot is writable, and no safe API exposes this SID.
-        if unsafe {
-            GetSecurityDescriptorOwner(descriptor.0, &mut owner, &mut owner_defaulted)
-        } == 0
+        if unsafe { GetSecurityDescriptorOwner(descriptor.0, &mut owner, &mut owner_defaulted) }
+            == 0
         {
             return Err(io::Error::last_os_error());
         }
@@ -258,8 +257,7 @@ pub(super) fn set_config_temp_security(
     if opened_info.dwVolumeSerialNumber != original_info.dwVolumeSerialNumber
         || opened_info.nFileIndexHigh != original_info.nFileIndexHigh
         || opened_info.nFileIndexLow != original_info.nFileIndexLow
-        || opened_info.dwFileAttributes
-            & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)
+        || opened_info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)
             != 0
         || opened_info.nNumberOfLinks != 1
     {
@@ -298,8 +296,7 @@ fn open_config_file(path: &Path) -> io::Result<File> {
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)?;
     let information = file_information(&file)?;
-    if information.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)
-        != 0
+    if information.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT) != 0
     {
         return Err(unsafe_file());
     }
@@ -379,7 +376,13 @@ fn is_private_file(handle: HANDLE, account: &AccountSid) -> io::Result<bool> {
         return Ok(false);
     };
     let allowed_flags = OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE | INHERITED_ACE;
-    Ok(allowed_ace_matches(dacl, ace, allowed_flags, false, account))
+    Ok(allowed_ace_matches(
+        dacl,
+        ace,
+        allowed_flags,
+        false,
+        account,
+    ))
 }
 
 fn unsafe_file() -> io::Error {
@@ -495,12 +498,7 @@ mod config_temp_tests {
         set_config_temp_security(None, source.path(), source.as_file()).unwrap();
 
         let copied = tempfile::NamedTempFile::new_in(directory.path()).unwrap();
-        set_config_temp_security(
-            Some(source.path()),
-            copied.path(),
-            copied.as_file(),
-        )
-        .unwrap();
+        set_config_temp_security(Some(source.path()), copied.path(), copied.as_file()).unwrap();
 
         let account = AccountSid::current().unwrap();
         assert!(is_private_file(source.as_file().as_raw_handle(), &account).unwrap());

@@ -485,9 +485,7 @@ fn provider_name(settings: &Settings, choice: &ConnectionChoice) -> String {
 }
 
 fn providers_is_inline(document: &DocumentMut) -> bool {
-    document
-        .get("provider")
-        .is_some_and(Item::is_inline_table)
+    document.get("provider").is_some_and(Item::is_inline_table)
 }
 
 fn provider_entry(preset: ProviderPreset, api_key: &str, inline: bool) -> Item {
@@ -496,7 +494,9 @@ fn provider_entry(preset: ProviderPreset, api_key: &str, inline: bool) -> Item {
     } else {
         Item::Table(Table::new())
     };
-    let fields = entry.as_table_like_mut().expect("provider entry is a table");
+    let fields = entry
+        .as_table_like_mut()
+        .expect("provider entry is a table");
     fields.insert("format", value(preset.format()));
     fields.insert("base_url", value(preset.base_url()));
     fields.insert("api_key", value(api_key));
@@ -544,7 +544,11 @@ fn stage_key_with_sync(
     let directory_created = match fs::symlink_metadata(&settings.credentials_dir) {
         Ok(_) => false,
         Err(error) if error.kind() == io::ErrorKind::NotFound => true,
-        Err(_) => return Err(invalid_config("cannot create a private credential directory")),
+        Err(_) => {
+            return Err(invalid_config(
+                "cannot create a private credential directory",
+            ))
+        }
     };
     settings.check_storage(true).map_err(|_| {
         invalid_config("stored keys are unavailable; use Environment or a different --data-dir")
@@ -639,9 +643,7 @@ fn write_config(
 #[cfg(windows)]
 fn secure_config_temp(settings: &Settings, temporary: &NamedTempFile) -> io::Result<()> {
     kuku::util::set_config_temp_security(
-        settings
-            .existing
-            .then_some(settings.config_path.as_path()),
+        settings.existing.then_some(settings.config_path.as_path()),
         temporary.path(),
         temporary.as_file(),
     )
