@@ -393,6 +393,11 @@ class FrontierReportTests(unittest.TestCase):
                 self.assertIsNone(summary['container']['block_io'])
 
     def test_resource_sampler_zero_errors_and_unknown_io_remain_distinct(self):
+        historic = resource_summary({'harness_memory': {'peak_rss_kib': 35504, 'mean_rss_kib': 35866.97},
+                                     'harness_self_usage': {'peak_rss_kib': 35504},
+                                     'sdk_peak_rss_kib': 36436, 'sdk_peak_rss_high_water_kib': 36436})
+        self.assertEqual(historic['harness']['memory']['peak_rss_kib'], 36436)
+        self.assertEqual(historic['harness']['self_usage']['peak_rss_kib'], 35504)
         split = {'container_scope': 'sdk_and_tools', 'process_io_scope': SECRET,
                  'harness_self_usage': {'input_blocks': 0, 'output_blocks': 0}}
         complete = resource_summary({**split, 'capture_incomplete': False})

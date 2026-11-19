@@ -15,6 +15,7 @@ from statistics import median
 import sys
 from urllib.parse import urlencode
 
+from benchmark_resources import peak_rss_kib
 from paid_model import upstream_json, usd
 from run import load_secrets, locked, write_json
 
@@ -731,6 +732,10 @@ def latest_container_block_io(snapshots):
 
 def resource_summary(source):
     resources = object_value(source)
+    memory = object_value(resources.get('harness_memory')).copy()
+    memory['peak_rss_kib'] = peak_rss_kib(memory.get('peak_rss_kib'), resources.get('sdk_peak_rss_kib'),
+                                          resources.get('sdk_peak_rss_high_water_kib'),
+                                          object_value(resources.get('harness_self_usage')).get('peak_rss_kib'))
     snapshots = resources.get('container_snapshots')
     capture_incomplete = boolean(resources.get('capture_incomplete'))
     completed_split_sampler = (resources.get('container_scope') == 'sdk_and_tools'
@@ -738,7 +743,7 @@ def resource_summary(source):
     default_errors = 0 if completed_split_sampler else None
     return {
         'harness': {
-            'memory': measured_fields(resources.get('harness_memory'), MEMORY_FIELDS),
+            'memory': measured_fields(memory, MEMORY_FIELDS),
             'cpu_seconds': number(resources.get('harness_cpu_seconds')),
             'self_usage': measured_fields(resources.get('harness_self_usage'), SELF_USAGE_FIELDS),
         },
@@ -881,7 +886,9 @@ def build_report(feed, attempts, official_live_sha256=None, *, receipt_key=None)
             'local_tools': ('Tool errors count tool.result status error. Non-ok results include blocked and canceled calls. '
                             'Workspace script calls count model invocations. Host actions count the dispatched actions in '
                             'script result receipts and are unknown if receipts are incomplete.'),
-            'local_resources': ('Harness memory is sampled RSS in KiB. End-of-run self usage is from getrusage(RUSAGE_SELF), '
+            'local_resources': ('Harness memory is in KiB. The mean is time-weighted over RSS samples. '
+                                'The peak is the largest available process RSS or high-water observation. '
+                                'End-of-run self usage is from getrusage(RUSAGE_SELF), '
                                 'with I/O in blocks. Process I/O is the last sample, including children already waited on. '
                                 'Its rchar and wchar count logical characters. The read_bytes and write_bytes fields count storage I/O bytes. '
                                 'Block I/O covers the entire container, including tools. Its byte values come from the latest valid '

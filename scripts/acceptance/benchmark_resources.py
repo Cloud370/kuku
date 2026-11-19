@@ -1,6 +1,7 @@
 """Observe the benchmark SDK process separately from tools and the task container."""
 
 import json
+import math
 import os
 import subprocess
 import threading
@@ -13,6 +14,11 @@ d=/proc/$p
 cat "$d/stat" "$d/status" 2>/dev/null || exit 1
 cat "$d/io" 2>/dev/null || :
 '''
+
+def peak_rss_kib(*observations):
+    return max((value for value in observations
+                if type(value) in (int, float) and value >= 0 and math.isfinite(value)), default=None)
+
 
 class ResourceSampler:
     def __init__(self, container):
@@ -94,7 +100,7 @@ class ResourceSampler:
             worker.join(timeout=7)
         self.data['capture_incomplete'] = any(worker.is_alive() for worker in self.threads)
         self.data['harness_memory'] = {
-            'peak_rss_kib': self.data['sdk_peak_rss_high_water_kib'],
+            'peak_rss_kib': peak_rss_kib(self.data['sdk_peak_rss_high_water_kib'], self.data['sdk_peak_rss_kib']),
             'mean_rss_kib': round(self.rss_seconds / self.observed, 2) if self.observed else None,
             'observed_seconds': round(self.observed, 4), 'window_seconds':round(window,4),
             'coverage_ratio':round(self.observed/window,6) if window > 0 else None,
@@ -111,7 +117,8 @@ def include_final_process_usage(resources, result_path):
         keys = ('user_cpu_seconds','system_cpu_seconds','peak_rss_kib','input_blocks','output_blocks')
         if not isinstance(stats,dict) or not all(type(stats.get(k)) in (int,float) and stats[k]>=0 for k in keys):
             return
-        resources['harness_memory']['peak_rss_kib'] = stats['peak_rss_kib']
+        memory = resources['harness_memory']
+        memory['peak_rss_kib'] = peak_rss_kib(memory.get('peak_rss_kib'), stats['peak_rss_kib'])
         resources['harness_cpu_seconds'] = stats['user_cpu_seconds'] + stats['system_cpu_seconds']
         resources['harness_self_usage'] = {k:stats[k] for k in keys}
     except (OSError, ValueError, KeyError):

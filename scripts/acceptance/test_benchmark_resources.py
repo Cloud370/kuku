@@ -40,3 +40,7 @@ class ResourceEvidenceTest(unittest.TestCase):
             self.assertEqual(resources['harness_memory']['peak_rss_kib'], 321)
             self.assertEqual(resources['harness_cpu_seconds'], 0.75)
             self.assertEqual(resources['harness_self_usage'], stats)
+            resources['harness_memory']['peak_rss_kib'] = 512
+            include_final_process_usage(resources, path)
+            self.assertEqual(resources['harness_memory']['peak_rss_kib'], 512)
+            self.assertEqual(resources['harness_self_usage']['peak_rss_kib'], 321)
