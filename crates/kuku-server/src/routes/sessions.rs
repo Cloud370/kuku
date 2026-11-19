@@ -255,9 +255,9 @@ fn execution_progress<'a>(
         .iter()
         .filter_map(|agent| {
             let preserve_stopped_retry = agent.last_error.is_some()
-                && !matches!(
+                && matches!(
                     agent.status,
-                    AgentStatus::Interrupted | AgentStatus::Stopped
+                    AgentStatus::Idle | AgentStatus::Running | AgentStatus::Interrupted
                 );
             if agent.status != AgentStatus::Running && !preserve_stopped_retry {
                 return None;
@@ -329,6 +329,13 @@ impl ProgressScan {
             EventPayload::Unknown(record)
                 if record["kind"] == "runtime.operation"
                     && record["record"]["operation"] == "execution_started" =>
+            {
+                self.complete = true;
+            }
+            EventPayload::TurnCancelled { .. } => self.complete = true,
+            EventPayload::Unknown(record)
+                if record["kind"] == "runtime.operation"
+                    && record["record"]["operation"] == "agent_stopped" =>
             {
                 self.complete = true;
             }
@@ -442,10 +449,12 @@ fn title(admitted: &str, path: &FsPath, agents: &[AgentSnapshot]) -> Result<Stri
 
 #[cfg(test)]
 mod retry_progress_tests {
-    use kuku::event::EventPayload;
+    use kuku::event::{EventPayload, EventStore};
+    use kuku::session::{AgentConfig, AgentSnapshot, AgentStatus, UsageTotals};
     use serde_json::{json, Value};
+    use tempfile::tempdir;
 
-    use super::ProgressScan;
+    use super::{execution_progress, ProgressScan};
 
     fn retry(phase: &str, fields: Value) -> EventPayload {
         let mut event = json!({
@@ -483,8 +492,69 @@ mod retry_progress_tests {
         }
     }
 
+    fn interrupted_agent() -> AgentSnapshot {
+        AgentSnapshot {
+            address: "main".into(),
+            config: AgentConfig::default(),
+            active_config: None,
+            status: AgentStatus::Interrupted,
+            pending_inputs: 0,
+            admitted_task: None,
+            queued_task: None,
+            turn: Some(3),
+            turn_started_at_ms: None,
+            turn_elapsed_ms: None,
+            execution_id: None,
+            last_output: None,
+            last_error: Some("connection failed".into()),
+            permission: None,
+            question: None,
+            usage: UsageTotals::default(),
+        }
+    }
+
+    fn persisted_failure(path: &std::path::Path, explicit_stop: bool) -> u64 {
+        let mut store = EventStore::open(path).unwrap();
+        store
+            .append(retry(
+                "stopped",
+                json!({"attempt":2,"will_retry":false,"stop_reason":"attempt_limit"}),
+            ))
+            .unwrap();
+        if explicit_stop {
+            store
+                .append(EventPayload::Unknown(json!({
+                    "kind":"runtime.operation","record":{
+                        "operation":"agent_stopped","address":"main",
+                        "interruption":{"turn":3}
+                    }
+                })))
+                .unwrap();
+        } else {
+            store.append(error()).unwrap();
+            store
+                .append(EventPayload::TurnInterrupted {
+                    ts: "2025-01-01T00:00:00Z".into(),
+                    conversation: "main".into(),
+                    turn: 3,
+                    reason: "transport".into(),
+                })
+                .unwrap();
+        }
+        let settled = store
+            .append(EventPayload::Unknown(json!({
+                "kind":"runtime.operation","record":{
+                    "operation":"turn_settled","address":"main",
+                    "status":"interrupted","turn":3,"error":"connection failed"
+                }
+            })))
+            .unwrap();
+        drop(store);
+        settled.id
+    }
+
     #[test]
-    fn snapshot_projects_live_retry_but_newer_output_is_a_boundary() {
+    fn snapshot_projection_stops_at_newer_output_or_execution() {
         let mut scan = ProgressScan {
             execution: 10,
             ..ProgressScan::default()
@@ -507,6 +577,26 @@ mod retry_progress_tests {
         boundary.observe(12, &response());
         boundary.observe(11, &retry("waiting", json!({"attempt":2})));
         assert_eq!(None, boundary.projection());
+
+        let mut newer_execution = ProgressScan {
+            execution: 10,
+            preserve_stopped_retry: true,
+            ..ProgressScan::default()
+        };
+        newer_execution.observe(
+            12,
+            &EventPayload::Unknown(json!({
+                "kind":"runtime.operation","record":{"operation":"execution_started"}
+            })),
+        );
+        newer_execution.observe(
+            11,
+            &retry(
+                "stopped",
+                json!({"attempt":2,"will_retry":false,"stop_reason":"attempt_limit"}),
+            ),
+        );
+        assert_eq!(None, newer_execution.projection());
     }
 
     #[test]
@@ -540,5 +630,30 @@ mod retry_progress_tests {
         let progress = scan.projection().unwrap();
         assert_eq!("retry_decision_unknown", progress["phase"]);
         assert_eq!(2, progress["retry"]["attempt"]);
+    }
+
+    #[test]
+    fn snapshot_route_preserves_failed_retry_for_interrupted_agent() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("events.jsonl");
+        let cursor = persisted_failure(&path, false);
+        let agents = [interrupted_agent()];
+
+        let progress = execution_progress(&path, &agents, cursor).unwrap();
+
+        assert_eq!("retry_stopped", progress["main"]["phase"]);
+        assert_eq!("attempt_limit", progress["main"]["retry"]["stop_reason"]);
+    }
+
+    #[test]
+    fn snapshot_route_does_not_restore_retry_across_explicit_stop() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("events.jsonl");
+        let cursor = persisted_failure(&path, true);
+        let agents = [interrupted_agent()];
+
+        let progress = execution_progress(&path, &agents, cursor).unwrap();
+
+        assert!(!progress.contains_key("main"));
     }
 }
