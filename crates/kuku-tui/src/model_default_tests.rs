@@ -268,6 +268,117 @@ fn active_config_path_local_gate_and_service_change_are_checked() {
     assert!(ensure_same_service(&expected, &expected).is_ok());
 }
 
+#[tokio::test]
+async fn prepare_uses_normalized_managed_endpoint_and_rejects_other_origin_or_path() {
+    use std::time::Duration;
+
+    use kuku_client::Client;
+    use kuku_server::server_args::ServerArgs;
+
+    const CONFIG: &str = r#"
+default_model = "balanced"
+
+[provider.openai]
+format = "openai-responses"
+base_url = "https://api.openai.com/v1"
+api_key = "test-key"
+profile = "openai"
+
+[model.strong]
+provider = "openai"
+model = "strong-model"
+think = "off"
+
+[model.balanced]
+provider = "openai"
+model = "balanced-model"
+think = "off"
+
+[model.light]
+provider = "openai"
+model = "light-model"
+think = "off"
+"#;
+
+    let home = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let config_path = home.path().join("custom.toml");
+    fs::write(&config_path, CONFIG).unwrap();
+    let args = ServerArgs {
+        listen: "127.0.0.1:0".into(),
+        config: Some(config_path.clone()),
+        data_dir: Some(home.path().to_path_buf()),
+        password: None,
+        max_concurrent_runs: 1,
+        managed: true,
+    };
+    let server = tokio::spawn(async move {
+        kuku_server::service::serve(args, None)
+            .await
+            .map_err(|error| error.to_string())
+    });
+    let discovery = home.path().join("service").join("connection.json");
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if discovery.exists() {
+                break;
+            }
+            assert!(
+                !server.is_finished(),
+                "managed service exited before discovery"
+            );
+            tokio::time::sleep(Duration::from_millis(15)).await;
+        }
+    })
+    .await
+    .expect("managed service did not publish discovery");
+
+    let options = ConnectionOptions {
+        workspace: Some(workspace.path().to_path_buf()),
+        data_dir: Some(home.path().to_path_buf()),
+        config: Some(config_path.clone()),
+        ..ConnectionOptions::default()
+    };
+    let connection = options.connect().await.unwrap();
+    let active = options
+        .local_service()
+        .unwrap()
+        .status()
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(connection.client.endpoint(), active.endpoint());
+    assert!(same_service_endpoint(
+        connection.client.endpoint(),
+        active.endpoint()
+    ));
+
+    let mut different_origin = url::Url::parse(active.endpoint()).unwrap();
+    different_origin.set_host(Some("localhost")).unwrap();
+    let different_origin = Client::remote(different_origin.as_str(), active.token()).unwrap();
+    assert!(!same_service_endpoint(
+        different_origin.endpoint(),
+        active.endpoint()
+    ));
+
+    let mut different_path = url::Url::parse(active.endpoint()).unwrap();
+    different_path.set_path("/other");
+    let different_path = Client::remote(different_path.as_str(), active.token()).unwrap();
+    assert!(!same_service_endpoint(
+        different_path.endpoint(),
+        active.endpoint()
+    ));
+
+    let config_before_prepare = fs::read(&config_path).unwrap();
+    let prepared = prepare(&options, Some(&connection), route("balanced-model"))
+        .await
+        .unwrap();
+    assert_eq!("balanced", prepared.tier);
+    assert_eq!(config_before_prepare, fs::read(&config_path).unwrap());
+    server.abort();
+    let _ = server.await;
+}
+
 #[test]
 fn confirmation_shows_route_path_tier_and_scope_sentence() {
     let plan = test_plan(route("balanced-model"));

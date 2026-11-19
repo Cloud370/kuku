@@ -32,6 +32,9 @@ unicode-segmentation = "1.12"
 unicode-width = "0.2"
 url = "2"
 
+[dev-dependencies]
+kuku-server = { path = "../kuku-server" }
+
 [target.'cfg(windows)'.dependencies]
 termina = "0.4"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Console", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse"] }
