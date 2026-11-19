@@ -254,6 +254,8 @@ fn execution_progress<'a>(
     let mut scans: HashMap<_, _> = agents
         .iter()
         .filter_map(|agent| {
+            let stopped_retry_only = agent.last_error.is_some()
+                && matches!(agent.status, AgentStatus::Idle | AgentStatus::Interrupted);
             let preserve_stopped_retry = agent.last_error.is_some()
                 && matches!(
                     agent.status,
@@ -264,12 +266,13 @@ fn execution_progress<'a>(
             }
             let execution = agent
                 .execution_id
-                .or_else(|| preserve_stopped_retry.then_some(0))?;
+                .or_else(|| stopped_retry_only.then_some(0))?;
             Some((
                 agent.address.as_str(),
                 ProgressScan {
                     execution,
                     preserve_stopped_retry,
+                    stopped_retry_only,
                     ..ProgressScan::default()
                 },
             ))
@@ -300,6 +303,7 @@ struct ProgressScan {
     running: Vec<String>,
     retry: Option<Value>,
     preserve_stopped_retry: bool,
+    stopped_retry_only: bool,
     terminal_error: bool,
 }
 
@@ -372,6 +376,12 @@ impl ProgressScan {
     }
 
     fn projection(self) -> Option<Value> {
+        if self.stopped_retry_only {
+            return self
+                .retry
+                .filter(|retry| retry["will_retry"] == false)
+                .map(|retry| json!({"phase":"retry_stopped","retry":retry}));
+        }
         if let Some(retry) = self.retry {
             if retry["will_retry"] == false {
                 Some(json!({"phase":"retry_stopped","retry":retry}))
@@ -643,6 +653,46 @@ mod retry_progress_tests {
 
         assert_eq!("retry_stopped", progress["main"]["phase"]);
         assert_eq!("attempt_limit", progress["main"]["retry"]["stop_reason"]);
+    }
+
+    #[test]
+    fn snapshot_route_does_not_restore_unsettled_retry_for_interrupted_agent() {
+        let directory = tempdir().unwrap();
+        let agents = [interrupted_agent()];
+        for (phase, fields) in [
+            ("waiting", json!({"attempt":2,"will_retry":true})),
+            ("started", json!({"attempt":2,"will_retry":true})),
+            ("future_phase", json!({"attempt":2})),
+        ] {
+            let path = directory.path().join(format!("{phase}.jsonl"));
+            let cursor = EventStore::open(&path)
+                .unwrap()
+                .append(retry(phase, fields))
+                .unwrap()
+                .id;
+
+            let progress = execution_progress(&path, &agents, cursor).unwrap();
+
+            assert!(!progress.contains_key("main"), "{phase}: {progress:?}");
+        }
+    }
+
+    #[test]
+    fn snapshot_route_does_not_restore_old_tool_progress_for_interrupted_agent() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("events.jsonl");
+        let cursor = EventStore::open(&path)
+            .unwrap()
+            .append(EventPayload::Unknown(json!({
+                "kind":"runtime.tool_dispatched","agent":"main","tool_call_id":"old-tool"
+            })))
+            .unwrap()
+            .id;
+        let agents = [interrupted_agent()];
+
+        let progress = execution_progress(&path, &agents, cursor).unwrap();
+
+        assert!(!progress.contains_key("main"));
     }
 
     #[test]
