@@ -68,14 +68,14 @@ impl App {
                     execution_id,
                 });
         }
-        if snapshot.cleaning_up
-            || !matches!(
-                snapshot.agent.status,
-                AgentStatus::Stopped | AgentStatus::Interrupted
-            )
-            || snapshot.agent.pending_inputs == 0
-            || snapshot.pending.is_empty()
-        {
+        let can_continue = match snapshot.agent.status {
+            AgentStatus::Interrupted => true,
+            AgentStatus::Stopped => {
+                snapshot.agent.pending_inputs > 0 && !snapshot.pending.is_empty()
+            }
+            _ => false,
+        };
+        if snapshot.cleaning_up || !can_continue {
             return None;
         }
         Some(ContextControl::Continue {
