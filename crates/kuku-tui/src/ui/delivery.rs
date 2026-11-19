@@ -43,7 +43,7 @@ pub(super) fn lines(app: &App, width: usize, limit: u16) -> DeliveryView {
     if rows.is_empty() {
         let stale = selected_id.is_some_and(|id| {
             !app.queued_for_edit()
-                .any(|entry| &entry.receipt.command_id == id)
+                .any(|entry| entry.receipt.command_id == id)
         });
         return DeliveryView {
             lines: stale
@@ -55,8 +55,8 @@ pub(super) fn lines(app: &App, width: usize, limit: u16) -> DeliveryView {
     }
     let stale_without_row = selected_id.is_some_and(|id| {
         !app.queued_for_edit()
-            .any(|entry| &entry.receipt.command_id == id)
-            && !rows.iter().any(|row| &row.id == id)
+            .any(|entry| entry.receipt.command_id == id)
+            && !rows.iter().any(|row| row.id == id)
     });
     if limit == 1 {
         if stale_without_row {
