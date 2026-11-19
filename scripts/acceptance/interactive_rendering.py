@@ -20,6 +20,61 @@ def has_standalone_assistant_rail(frame):
     return any(line.strip() in {"│", "┃"} for line in frame[start:])
 
 
+def queued_input_click_position(screen, text):
+    lines = screen.splitlines()
+    start = next(
+        (index for index, line in enumerate(lines) if "Pending inputs" in line),
+        None,
+    )
+    if start is None:
+        return None
+    end = next(
+        (index for index, line in enumerate(lines[start + 1 :], start + 1)
+         if "To main" in line or "To reviewer" in line),
+        len(lines),
+    )
+    for index in range(start + 1, end):
+        line = lines[index]
+        if "Queued ·" not in line:
+            continue
+        stop = next(
+            (next_index for next_index in range(index + 1, len(lines))
+             if "You ·" in lines[next_index]),
+            len(lines),
+        )
+        if text in "\n".join(lines[index:stop]):
+            heading = line.find("You ·")
+            return (index + 1, heading + 1) if heading >= 0 else None
+    return None
+
+
+def click_queued_input(terminal, screen, text):
+    position = queued_input_click_position(screen, text)
+    if position is None:
+        raise AssertionError("Queued input is not visible in the pending-input panel")
+    row, column = position
+    terminal.press(f"\x1b[<0;{column};{row}M\x1b[<0;{column};{row}m")
+
+
+def has_selected_queued_input(screen, text):
+    position = queued_input_click_position(screen, text)
+    if position is None:
+        return False
+    row, _ = position
+    return "› You ·" in screen.splitlines()[row - 1]
+
+
+def pending_inputs_excerpt(screen):
+    lines = screen.splitlines()
+    start = next(
+        (index for index, line in enumerate(lines) if "Pending inputs" in line),
+        max(0, len(lines) - 8),
+    )
+    context = [line for line in lines if "Input withdrawn" in line]
+    context.extend(lines[start:])
+    return "\n".join(context)[:2048]
+
+
 def event(name, **fields):
     body = json.dumps({"type": name, **fields})
     return f"event: {name}\ndata: {body}\n\n".encode()
@@ -377,6 +432,21 @@ def check_agent_reading_position(client, terminal):
                 return True
         return False
 
+    def eventually_screen(description, predicate):
+        last_screen = ""
+
+        def find_screen():
+            nonlocal last_screen
+            last_screen = terminal.request("screen")["screen"]
+            return last_screen if predicate(last_screen) else None
+
+        try:
+            return eventually(description, find_screen)
+        except AssertionError as error:
+            raise AssertionError(
+                f"{error}\nLast pending-input screen:\n{pending_inputs_excerpt(last_screen)}"
+            ) from error
+
     terminal.submit(follow_up)
     with client.provider.next(follow_up).streaming_text(beginning, f"\n\n{new_content}", "\n\nCheckpoint stream finished") as pauses:
         terminal.expect(beginning, state="Streaming")
@@ -393,18 +463,20 @@ def check_agent_reading_position(client, terminal):
         terminal.type(discarded)
         terminal.press("\x1b\r")
         terminal.expect(discarded, state="Queued · next Turn")
-        terminal.press("\x1b[A")
-        screen = eventually(
-            "discarded input to remain queued in its delivery row",
-            lambda: result
-            if queued_row_contains((result := terminal.request("screen"))["screen"], discarded)
-            else None,
-        )["screen"]
-        terminal.click_text(screen, discarded)
+        screen = terminal.request("screen")["screen"]
+        if not queued_row_contains(screen, discarded):
+            screen = eventually_screen(
+                "discarded input to remain queued in its delivery row",
+                lambda frame: queued_row_contains(frame, discarded),
+            )
+        click_queued_input(terminal, screen, discarded)
+        eventually_screen(
+            "mouse to focus the discarded queued input",
+            lambda frame: has_selected_queued_input(frame, discarded),
+        )
         terminal.press("\x1b[3~")
 
-        def withdrawn_from_pending():
-            screen = terminal.request("screen")["screen"]
+        def withdrawn_from_pending(screen):
             composer = composer_lines(screen)
             if (
                 "Input withdrawn" in screen
@@ -416,7 +488,10 @@ def check_agent_reading_position(client, terminal):
             ):
                 return screen
 
-        eventually("withdrawn input to leave the queued rows and restore its draft", withdrawn_from_pending)
+        eventually_screen(
+            "withdrawn input to leave the queued rows and restore its draft",
+            withdrawn_from_pending,
+        )
         terminal.press("\x03")
 
         def withdrawal_draft_cleared():
