@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use kuku_client::{
     Action, AgentProgress, AgentStatus, HistoryEntry, HistoryKind, InputStatus, ModelPhase,
-    Observation, ReplyPreview,
+    Observation, ReplyPreview, RetryMetadata, RetryStopReason,
 };
 use serde_json::Value;
 
@@ -98,6 +98,7 @@ pub(super) struct ExecutionProgress {
     request: ModelRequest,
     output: Option<ModelPhase>,
     tools: HashSet<String>,
+    terminal_error: bool,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -105,7 +106,19 @@ enum ModelRequest {
     #[default]
     None,
     Waiting,
-    Retrying,
+    Retrying(RetryMetadata),
+    RetryStopped(RetryMetadata),
+    RetryUnknown(RetryMetadata),
+}
+
+impl ModelRequest {
+    fn from_retry(retry: RetryMetadata) -> Self {
+        match crate::retry_notice::decision(&retry) {
+            Some(true) => Self::Retrying(retry),
+            Some(false) => Self::RetryStopped(retry),
+            None => Self::RetryUnknown(retry),
+        }
+    }
 }
 
 impl ExecutionProgress {
@@ -113,6 +126,14 @@ impl ExecutionProgress {
         match progress {
             Some(AgentProgress::WaitingForModel) => Self {
                 request: ModelRequest::Waiting,
+                ..Self::default()
+            },
+            Some(
+                AgentProgress::RetryingModel { retry }
+                | AgentProgress::RetryStopped { retry }
+                | AgentProgress::RetryDecisionUnknown { retry },
+            ) => Self {
+                request: ModelRequest::from_retry(retry.clone()),
                 ..Self::default()
             },
             Some(AgentProgress::Thinking) => Self {
@@ -153,15 +174,37 @@ impl ExecutionProgress {
                 };
             }
             "runtime.model_retry" | "model.recovery" => {
-                *self = Self {
-                    request: ModelRequest::Retrying,
-                    ..Self::default()
-                };
+                let retry = crate::retry_notice::history_metadata(entry, kind);
+                let request = ModelRequest::from_retry(retry);
+                if self.output.is_some() {
+                    if matches!(request, ModelRequest::RetryStopped(_)) {
+                        self.request = request;
+                        self.terminal_error = true;
+                    } else {
+                        self.request = ModelRequest::None;
+                    }
+                } else {
+                    let terminal_error = matches!(request, ModelRequest::RetryStopped(_));
+                    *self = Self {
+                        request,
+                        terminal_error,
+                        ..Self::default()
+                    };
+                }
             }
-            "model.response" | "model.error" => {
+            "model.response" => {
                 self.request = ModelRequest::None;
+                self.terminal_error = false;
                 self.clear_stream();
             }
+            "model.error" => {
+                self.terminal_error = matches!(&self.request, ModelRequest::RetryStopped(_));
+                if !self.terminal_error {
+                    self.request = ModelRequest::None;
+                    self.clear_stream();
+                }
+            }
+            "turn.cancelled" | "turn.interrupted" => *self = Self::default(),
             "runtime.tool_dispatched" => {
                 if let Some(id) = tool_call_id {
                     self.tools.insert(id);
@@ -182,25 +225,38 @@ impl ExecutionProgress {
     pub(super) fn live(&mut self, event: &Value) {
         match event["type"].as_str() {
             Some("model_request") => {
-                if self.request != ModelRequest::Retrying {
+                if !matches!(&self.request, ModelRequest::Retrying(_)) {
                     self.request = ModelRequest::Waiting;
                 }
                 self.clear_stream();
             }
             Some("model_recovery") => {
-                self.request = ModelRequest::Retrying;
-                self.clear_stream();
+                if self.output.is_none() {
+                    self.request =
+                        ModelRequest::Retrying(crate::retry_notice::live_recovery(event));
+                }
             }
             Some("thinking" | "reasoning_preview")
                 if event
                     .get("content")
                     .is_none_or(|value| value.as_str().is_some_and(|text| !text.is_empty())) =>
             {
+                if !self.is_stopped_retry() {
+                    self.request = ModelRequest::None;
+                }
                 self.output = Some(ModelPhase::Thinking);
             }
-            Some("tool_arguments") => self.output = Some(ModelPhase::ToolArguments),
+            Some("tool_arguments") => {
+                if !self.is_stopped_retry() {
+                    self.request = ModelRequest::None;
+                }
+                self.output = Some(ModelPhase::ToolArguments);
+            }
             Some("reply_preview") => {
                 if let Ok(phase) = serde_json::from_value(event["phase"].clone()) {
+                    if !self.is_stopped_retry() {
+                        self.request = ModelRequest::None;
+                    }
                     self.output = Some(phase);
                 }
             }
@@ -209,6 +265,9 @@ impl ExecutionProgress {
                     .as_str()
                     .is_some_and(|text| !text.is_empty()) =>
             {
+                if !self.is_stopped_retry() {
+                    self.request = ModelRequest::None;
+                }
                 self.output = Some(ModelPhase::Streaming);
             }
             _ => {}
@@ -224,8 +283,45 @@ impl ExecutionProgress {
             (Some(ModelPhase::Thinking), _) => Activity::Thinking,
             (Some(ModelPhase::ToolArguments), _) => Activity::ToolArguments,
             (None, ModelRequest::Waiting) => Activity::WaitingForModel,
-            (None, ModelRequest::Retrying) => Activity::RetryingModel,
+            (None, ModelRequest::Retrying(_)) => Activity::RetryingModel,
+            (None, ModelRequest::RetryStopped(_) | ModelRequest::RetryUnknown(_)) => {
+                Activity::Running
+            }
             (None, ModelRequest::None) => Activity::Running,
+        }
+    }
+
+    pub(super) fn retry(&self) -> Option<&RetryMetadata> {
+        match &self.request {
+            ModelRequest::RetryStopped(retry) => Some(retry),
+            ModelRequest::Retrying(retry) | ModelRequest::RetryUnknown(retry)
+                if self.output.is_none() =>
+            {
+                Some(retry)
+            }
+            ModelRequest::None | ModelRequest::Waiting => None,
+            ModelRequest::Retrying(_) | ModelRequest::RetryUnknown(_) => None,
+        }
+    }
+
+    fn preserve_reply_preview_on_settle(&self) -> bool {
+        matches!(
+            &self.request,
+            ModelRequest::RetryStopped(retry)
+                if retry.stop_reason == Some(RetryStopReason::StreamStarted)
+        )
+    }
+
+    fn is_stopped_retry(&self) -> bool {
+        matches!(&self.request, ModelRequest::RetryStopped(_))
+    }
+
+    fn retain_terminal_notice(&mut self) {
+        if !self.terminal_error {
+            *self = Self::default();
+        } else {
+            self.output = None;
+            self.tools.clear();
         }
     }
 }
@@ -463,9 +559,13 @@ impl Pane {
         entry: Option<&HistoryEntry>,
         tool_call_id: Option<String>,
     ) {
-        if id <= self.retired_execution_floor || self.execution.is_some_and(|active| id < active) {
+        if id <= self.live_floor
+            || id <= self.retired_execution_floor
+            || self.execution.is_some_and(|active| id < active)
+        {
             return;
         }
+        self.live_floor = id;
         match operation {
             Some("execution_started") => {
                 if self.execution != Some(id) {
@@ -476,8 +576,10 @@ impl Pane {
             }
             Some("turn_settled") => {
                 self.execution = None;
-                self.progress = ExecutionProgress::default();
-                self.transcript.clear_preview();
+                if !self.progress.preserve_reply_preview_on_settle() {
+                    self.transcript.clear_preview();
+                }
+                self.progress.retain_terminal_notice();
                 self.live_floor = id;
                 self.retired_execution_floor = id;
             }
@@ -500,11 +602,17 @@ impl Pane {
             if id <= self.latest_reply_cursor {
                 return;
             }
-            if kind != "model.response" {
+            let preserve_preview = matches!(kind, "runtime.model_retry" | "model.recovery")
+                || (kind == "model.error" && self.progress.is_stopped_retry());
+            if kind != "model.response" && !preserve_preview {
                 self.transcript.clear_reply_preview();
             }
         }
         self.progress.committed(kind, entry, tool_call_id);
+    }
+
+    pub(crate) fn retry_metadata(&self) -> Option<&RetryMetadata> {
+        self.progress.retry()
     }
 
     pub(super) fn note_live_reply(&mut self, cursor: u64, event: &Value) {

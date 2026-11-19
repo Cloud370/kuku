@@ -161,11 +161,19 @@ pub(super) async fn snapshot(
     } else {
         HashMap::new()
     };
-    let selected_progress = replies
-        .selected
+    let projected_progress = progress.remove(address);
+    let selected_progress = if projected_progress
         .as_ref()
-        .map(|reply| provider_progress(reply.phase, ""))
-        .or(progress.remove(address));
+        .is_some_and(|progress| progress["retry"]["will_retry"] == false)
+    {
+        projected_progress
+    } else {
+        replies
+            .selected
+            .as_ref()
+            .map(|reply| provider_progress(reply.phase, ""))
+            .or(projected_progress)
+    };
     let agents: Vec<_> = view
         .agents
         .iter()
@@ -246,13 +254,22 @@ fn execution_progress<'a>(
     let mut scans: HashMap<_, _> = agents
         .iter()
         .filter_map(|agent| {
+            let preserve_stopped_retry = agent.last_error.is_some()
+                && !matches!(
+                    agent.status,
+                    AgentStatus::Interrupted | AgentStatus::Stopped
+                );
+            if agent.status != AgentStatus::Running && !preserve_stopped_retry {
+                return None;
+            }
             let execution = agent
                 .execution_id
-                .filter(|_| agent.status == AgentStatus::Running)?;
+                .or_else(|| preserve_stopped_retry.then_some(0))?;
             Some((
                 agent.address.as_str(),
                 ProgressScan {
                     execution,
+                    preserve_stopped_retry,
                     ..ProgressScan::default()
                 },
             ))
@@ -265,7 +282,7 @@ fn execution_progress<'a>(
     let events = EventStore::read_page_before(path, Some(cursor.saturating_add(1)), count)?;
     for event in events.into_iter().rev() {
         if let Some(scan) = event_agent(&event.payload).and_then(|address| scans.get_mut(address)) {
-            scan.observe(event.id, event.payload);
+            scan.observe(event.id, &event.payload);
         }
     }
     Ok(scans
@@ -281,16 +298,19 @@ struct ProgressScan {
     prepared: bool,
     settled: HashSet<String>,
     running: Vec<String>,
+    retry: Option<Value>,
+    preserve_stopped_retry: bool,
+    terminal_error: bool,
 }
 
 impl ProgressScan {
-    fn observe(&mut self, cursor: u64, payload: EventPayload) {
+    fn observe(&mut self, cursor: u64, payload: &EventPayload) {
         if self.complete || cursor <= self.execution {
             return;
         }
         match payload {
             EventPayload::ToolResult { tool_call_id, .. } => {
-                self.settled.insert(tool_call_id);
+                self.settled.insert(tool_call_id.clone());
             }
             EventPayload::Unknown(record) if record["kind"] == "runtime.tool_dispatched" => {
                 if let Some(id) = record["tool_call_id"].as_str() {
@@ -300,10 +320,44 @@ impl ProgressScan {
                 }
             }
             EventPayload::Unknown(record) if record["kind"] == "runtime.step_prepared" => {
-                self.prepared = true;
+                if !self.terminal_error {
+                    self.prepared = true;
+                }
                 self.complete = true;
             }
-            EventPayload::ModelResponse { .. } | EventPayload::ModelError { .. } => {
+            EventPayload::TurnStarted { .. } => self.complete = true,
+            EventPayload::Unknown(record)
+                if record["kind"] == "runtime.operation"
+                    && record["record"]["operation"] == "execution_started" =>
+            {
+                self.complete = true;
+            }
+            EventPayload::ModelResponse { .. } => self.complete = true,
+            EventPayload::ModelError { .. }
+                if self.preserve_stopped_retry && !self.terminal_error =>
+            {
+                self.terminal_error = true;
+            }
+            EventPayload::ModelError { .. } => self.complete = true,
+            EventPayload::Unknown(record) if record["kind"] == "runtime.model_retry" => {
+                let retry = crate::wire::retry_metadata(payload);
+                if !self.terminal_error
+                    || retry
+                        .as_ref()
+                        .is_some_and(|retry| retry["will_retry"] == false)
+                {
+                    self.retry = retry;
+                }
+                self.running.clear();
+                self.prepared = false;
+                self.complete = true;
+            }
+            EventPayload::ModelRecovery { .. } => {
+                if !self.terminal_error {
+                    self.retry = crate::wire::retry_metadata(payload);
+                }
+                self.running.clear();
+                self.prepared = false;
                 self.complete = true;
             }
             _ => {}
@@ -311,7 +365,15 @@ impl ProgressScan {
     }
 
     fn projection(self) -> Option<Value> {
-        if !self.running.is_empty() {
+        if let Some(retry) = self.retry {
+            if retry["will_retry"] == false {
+                Some(json!({"phase":"retry_stopped","retry":retry}))
+            } else if retry["will_retry"] == true || retry["phase"] == "started" {
+                Some(json!({"phase":"retrying_model","retry":retry}))
+            } else {
+                Some(json!({"phase":"retry_decision_unknown","retry":retry}))
+            }
+        } else if !self.running.is_empty() {
             Some(json!({"phase":"running_tools","tool_call_ids":self.running}))
         } else if self.prepared {
             Some(json!({"phase":"waiting_for_model"}))
@@ -376,4 +438,107 @@ fn title(admitted: &str, path: &FsPath, agents: &[AgentSnapshot]) -> Result<Stri
         }
     }
     Ok(String::new())
+}
+
+#[cfg(test)]
+mod retry_progress_tests {
+    use kuku::event::EventPayload;
+    use serde_json::{json, Value};
+
+    use super::ProgressScan;
+
+    fn retry(phase: &str, fields: Value) -> EventPayload {
+        let mut event = json!({
+            "kind":"runtime.model_retry","agent":"main","turn":3,"phase":phase
+        });
+        event
+            .as_object_mut()
+            .unwrap()
+            .extend(fields.as_object().unwrap().clone());
+        EventPayload::Unknown(event)
+    }
+
+    fn response() -> EventPayload {
+        EventPayload::ModelResponse {
+            conversation: Some("main".into()),
+            turn: 3,
+            ts: "2025-01-01T00:00:00Z".into(),
+            request_id: "request-3".into(),
+            text: "done".into(),
+            thinking: None,
+            stop_reason: None,
+            input_tokens_total: None,
+            output_tokens_total: None,
+        }
+    }
+
+    fn error() -> EventPayload {
+        EventPayload::ModelError {
+            conversation: Some("main".into()),
+            turn: 3,
+            ts: "2025-01-01T00:00:00Z".into(),
+            request_id: "request-3".into(),
+            kind: "transport".into(),
+            message: "connection failed".into(),
+        }
+    }
+
+    #[test]
+    fn snapshot_projects_live_retry_but_newer_output_is_a_boundary() {
+        let mut scan = ProgressScan {
+            execution: 10,
+            ..ProgressScan::default()
+        };
+        scan.observe(
+            11,
+            &retry(
+                "waiting",
+                json!({"attempt":2,"max_attempts":4,"will_retry":true}),
+            ),
+        );
+        let progress = scan.projection().unwrap();
+        assert_eq!("retrying_model", progress["phase"]);
+        assert_eq!(2, progress["retry"]["attempt"]);
+
+        let mut boundary = ProgressScan {
+            execution: 10,
+            ..ProgressScan::default()
+        };
+        boundary.observe(12, &response());
+        boundary.observe(11, &retry("waiting", json!({"attempt":2})));
+        assert_eq!(None, boundary.projection());
+    }
+
+    #[test]
+    fn stopped_retry_survives_the_final_model_error_snapshot() {
+        let mut scan = ProgressScan {
+            execution: 10,
+            preserve_stopped_retry: true,
+            ..ProgressScan::default()
+        };
+        scan.observe(12, &error());
+        scan.observe(
+            11,
+            &retry(
+                "stopped",
+                json!({"attempt":2,"will_retry":false,"stop_reason":"attempt_limit"}),
+            ),
+        );
+        let progress = scan.projection().unwrap();
+        assert_eq!("retry_stopped", progress["phase"]);
+        assert_eq!(false, progress["retry"]["will_retry"]);
+        assert_eq!("attempt_limit", progress["retry"]["stop_reason"]);
+    }
+
+    #[test]
+    fn unknown_phase_without_will_retry_is_not_projected_as_active_or_stopped() {
+        let mut scan = ProgressScan {
+            execution: 10,
+            ..ProgressScan::default()
+        };
+        scan.observe(11, &retry("future_phase", json!({"attempt":2})));
+        let progress = scan.projection().unwrap();
+        assert_eq!("retry_decision_unknown", progress["phase"]);
+        assert_eq!(2, progress["retry"]["attempt"]);
+    }
 }

@@ -78,8 +78,8 @@
 
 ## 快照、历史与观察
 
-1. 请求 `/snapshot?workspace=...&agent=...`。JSON 响应包含 `session_id`、`workspace`、已提交 `cursor`、所选 `agent` 快照、`agents` 摘要、`pending` 输入和模型 `selection`。模型设置解析失败时返回 `selection_error`。Agent 状态包含相应的执行标识以及待决问题或授权。每个待接纳条目都含有 `receipt` 和 `input`。Agent 不存在时返回 `404` 和 `agent_not_found`。`/agents?workspace=...` 可直接取得所有 Agent 摘要及游标。加上 `progress=true` 可请求快照游标处已观察到的执行阶段。`progress.phase` 可以是 `waiting_for_model`、`thinking`、`streaming`、`tool_arguments` 或 `running_tools`。`running_tools` 会带有 `tool_call_ids`。
-2. 请求 `/history?workspace=...&agent=...&before=CURSOR_PLUS_ONE&limit=...`，取得截至该快照、按升序排列的最新一页。用返回的 `next_before` 读取上一页。`before` 为排他游标。
+1. 请求 `/snapshot?workspace=...&agent=...`。JSON 响应包含 `session_id`、`workspace`、已提交 `cursor`、所选 `agent` 快照、`agents` 摘要、`pending` 输入和模型 `selection`。模型设置解析失败时返回 `selection_error`。Agent 状态包含相应的执行标识以及待决问题或授权。每个待接纳条目都含有 `receipt` 和 `input`。Agent 不存在时返回 `404` 和 `agent_not_found`。`/agents?workspace=...` 可直接取得所有 Agent 摘要及游标。加上 `progress=true` 可请求快照游标处已观察到的执行阶段。`progress.phase` 可以是 `waiting_for_model`、`thinking`、`streaming`、`tool_arguments`、`running_tools`、`retrying_model`、`retry_stopped` 或 `retry_decision_unknown`。重试阶段会带有 `retry` 对象，包含持久化的尝试编号、失败类型或恢复原因、请求标识和可用策略元数据。停止重试时 `will_retry` 为 `false`。
+2. 请求 `/history?workspace=...&agent=...&before=CURSOR_PLUS_ONE&limit=...`，取得截至该快照、按升序排列的最新一页。用返回的 `next_before` 读取上一页。`before` 为排他游标。重试决定和模型恢复会以 `type:"retry"` 条目及结构化 `retry` 对象呈现；历史记录不代表重试仍在进行。
 3. 连接 `/observe?workspace=...&agent=...&after=CURSOR`，接收包含快照之后提交记录的 NDJSON。省略 `agent` 可以观察整个 Session。从已提交的条目更新续读游标。断开或落后时，从最后的已提交游标重连。对所选 Agent 设置 `include_agent_activity=true`，同一订阅即可收到其他 Agent 的活动。其增量文本及结算预览有长度上限，工具输出仅在切换到对应 Agent 后提供。重连后，Agent 摘要提供最近的输出或错误预览。
 
 所选 Agent 的 `agent.usage` 包含累计 token 数，以及报告输入或输出量的请求数。`cache_measured_input_tokens` 和 `cache_measured_read_tokens` 分别汇总同一批提供有效成对计数的请求中的输入与缓存读取量。有测量时，`latest_request` 提供同一次请求的 `input_tokens`、`output_tokens`、`context_window_tokens` 和 `elapsed_us`。旧记录可能缺少可选测量字段。[终端用量字段](cli.md#终端界面)
@@ -91,6 +91,8 @@
 已提交帧可通过 `delivery` 将队列变化关联到命令标识。`accepted` 带有 `input_ids`，`withdrawn` 带有 `input_id`，`replaced` 带有 `input_id` 和 `replacement_id`。
 
 带 `progress=true` 的快照可以包含所选 Agent 的 `reply_preview`，其中有 `execution_id`、`turn`、可选的 `turn_number`、`phase`、`text` 和 `truncated`。阶段为 `thinking`、`streaming` 或 `tool_arguments`。文本是活动请求的可见回复 UTF-8 前缀，最多 64 KiB。`truncated` 表示回复已经超过保留前缀的上限。 所选 Agent 的可选字段 `reasoning_preview` 保存服务方公开的思考文字或摘要的有界前缀，实时 `reasoning_preview` 事件追加该文本。已提交的助手条目也可包含此字段。
+
+重试进度投影自持久化的 `runtime.model_retry` 和 `model.recovery` 记录。旧记录缺少 `phase` 时按 `started` 处理；旧记录缺少 `will_retry` 时沿用 started 事件语义。新重试决定仅以 `will_retry` 表示是否会发送下一请求。`delay_ms` 仅在 `phase:"waiting"` 时表示策略等待时长；客户端可结合该事件的 `ts` 推导剩余时间，不得从供应商响应头推断等待时间。
 
 在同一快照游标处，`agents` 中其他 Agent 的条目也可包含 `progress.phase`。`streaming` 条目的 `progress.preview` 包含该 Agent 当前回复开头的 UTF-8 文本，最多 512 字节。`thinking` 与 `tool_arguments` 仅报告活动。
 

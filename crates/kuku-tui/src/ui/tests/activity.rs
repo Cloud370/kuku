@@ -183,3 +183,37 @@ fn narrow_composer_preserves_the_distinguishing_end_of_the_agent_address() {
         .trim_matches([' ', '│'])
         .is_empty());
 }
+
+#[test]
+fn retry_warning_keeps_stop_action_visible_with_narrow_unicode_text() {
+    let mut app = app();
+    app.select(app.active.clone(), true, "Retry notices".into());
+    let selection = app.selection();
+    let mut current = snapshot(&app, "running", json!(null), json!(null));
+    current.progress = Some(
+        serde_json::from_value(json!({
+            "phase":"retrying_model",
+            "retry":{
+                "source":"runtime.model_retry","phase":"started","attempt":2,
+                "max_attempts":4,"failed_kind":"provider_unavailable",
+                "message":"服务暂时不可用，请稍后重试","will_retry":true
+            }
+        }))
+        .unwrap(),
+    );
+    app.update(Update::Loaded(
+        selection.clone(),
+        current,
+        HistoryPage {
+            entries: Vec::new(),
+            next_before: None,
+        },
+    ));
+    app.update(Update::WatchConnected(selection));
+
+    let narrow = activity_screen(&mut app, 52, 32, Some(0)).0;
+    assert!(narrow.contains("Provider unavailable"), "{narrow}");
+    assert!(narrow.contains("attempt 2/4"), "{narrow}");
+    assert!(narrow.contains("Esc stop"), "{narrow}");
+    assert!(narrow.contains("服务"), "{narrow}");
+}

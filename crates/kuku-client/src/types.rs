@@ -196,6 +196,137 @@ pub enum AgentProgress {
         /// Identities of the unfinished calls found within the history window.
         tool_call_ids: Vec<String>,
     },
+    /// A provider retry is scheduled or has started.
+    RetryingModel {
+        /// The durable retry decision and request identity.
+        retry: RetryMetadata,
+    },
+    /// The provider request will not be retried automatically.
+    RetryStopped {
+        /// The durable retry decision and request identity.
+        retry: RetryMetadata,
+    },
+    /// A retry record whose future phase does not establish its current state.
+    RetryDecisionUnknown {
+        /// The durable retry decision and request identity.
+        retry: RetryMetadata,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetryPhase {
+    /// The policy-selected wait has not elapsed yet.
+    Waiting,
+    /// A retry request has started, including legacy records without a phase.
+    #[default]
+    Started,
+    /// No further automatic request will be sent.
+    Stopped,
+    /// A phase introduced by a newer runtime.
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetrySource {
+    /// A provider request retry decision.
+    #[serde(rename = "runtime.model_retry")]
+    Provider,
+    /// A model-output recovery.
+    #[serde(rename = "model.recovery")]
+    Recovery,
+    /// An event source introduced by a newer runtime.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetryFailureKind {
+    /// Provider credentials were rejected.
+    Authentication,
+    /// The provider denied the request.
+    PermissionDenied,
+    /// The provider quota is exhausted.
+    QuotaExhausted,
+    /// The request context exceeds the model limit.
+    ContextTooLarge,
+    /// The provider rejected the request format or parameters.
+    InvalidRequest,
+    /// The provider response was invalid.
+    InvalidResponse,
+    /// The provider rate limit was reached.
+    RateLimited,
+    /// The request timed out.
+    Timeout,
+    /// The provider is unavailable.
+    ProviderUnavailable,
+    /// The transport failed.
+    Transport,
+    /// An internal request failure occurred.
+    Internal,
+    /// A failure kind introduced by a newer runtime.
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetryStopReason {
+    /// The failure was not eligible for retry.
+    NonRetryable,
+    /// The configured attempt limit was reached.
+    AttemptLimit,
+    /// The request budget was exhausted.
+    RequestBudget,
+    /// Automatic retries were disabled.
+    Disabled,
+    /// A reply had already started, so automatic retry stopped.
+    StreamStarted,
+    /// A stop reason introduced by a newer runtime.
+    #[serde(other)]
+    Unknown,
+}
+
+/// Structured metadata from a durable model retry or recovery event.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RetryMetadata {
+    /// The source event kind, when known.
+    pub source: RetrySource,
+    /// The retry phase; absent on legacy retry records.
+    pub phase: RetryPhase,
+    /// One-based next attempt, or the failed attempt when retries stop.
+    pub attempt: Option<u64>,
+    /// Failed attempt number when separately reported.
+    pub failed_attempt: Option<u64>,
+    /// Maximum attempts when the runtime reports one.
+    pub max_attempts: Option<u64>,
+    /// Authoritative provider failure kind.
+    pub failed_kind: Option<RetryFailureKind>,
+    /// Recovery reason, when this is a model recovery event.
+    pub reason: Option<String>,
+    /// Request associated with a provider retry.
+    pub request_id: Option<String>,
+    /// Request that triggered a model recovery.
+    pub from_request_id: Option<String>,
+    /// Request created by a model recovery.
+    pub to_request_id: Option<String>,
+    /// Policy-selected wait duration in milliseconds.
+    pub delay_ms: Option<u64>,
+    /// Durable decision timestamp.
+    pub ts: Option<String>,
+    /// Whether another request will be attempted automatically.
+    pub will_retry: Option<bool>,
+    /// User-safe actionable explanation, when supplied by the runtime.
+    pub message: Option<String>,
+    /// HTTP status reported by the provider, when available.
+    pub status: Option<u64>,
+    /// Why an otherwise retryable request was stopped.
+    pub stop_reason: Option<RetryStopReason>,
 }
 
 /// State at one committed Session cursor, suitable for race-free subscription.
@@ -308,6 +439,8 @@ pub enum HistoryKind {
     Status,
     /// Persisted execution failure.
     Error,
+    /// A durable provider retry or model recovery decision.
+    Retry,
     /// A display role introduced by a later service build.
     #[serde(other)]
     Other,

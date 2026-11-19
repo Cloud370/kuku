@@ -14,6 +14,7 @@ mod keys;
 mod markup;
 mod menu;
 mod output;
+mod retry_notice;
 mod selection;
 mod statusline;
 mod terminal;
