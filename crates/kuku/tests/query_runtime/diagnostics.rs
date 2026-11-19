@@ -1,4 +1,67 @@
 #[tokio::test(flavor = "current_thread")]
+async fn standalone_run_cancellation_interrupts_initial_stream_preflight() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::Duration;
+
+    let _env = TestEnv::new();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base_url = format!("http://{}", listener.local_addr().unwrap());
+    let (headers_tx, headers_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let mut request = Vec::new();
+        loop {
+            let mut byte = [0];
+            if socket.read_exact(&mut byte).is_err() {
+                return;
+            }
+            request.push(byte[0]);
+            if request.ends_with(b"\r\n\r\n") {
+                break;
+            }
+        }
+        socket
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n",
+            )
+            .unwrap();
+        let _ = headers_tx.send(());
+        let _ = release_rx.recv_timeout(Duration::from_secs(3));
+        let _ = socket.write_all(b"0\r\n\r\n");
+    });
+
+    let mut run = query("cancel stalled stream")
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(base_url)
+        .api_key("test-key")
+        .config(test_config())
+        .start()
+        .await
+        .unwrap();
+    let cancel_token = run.cancel_token();
+    let next = tokio::spawn(async move { run.next().await });
+
+    tokio::time::timeout(Duration::from_secs(2), headers_rx)
+        .await
+        .expect("provider response headers")
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    cancel_token.notify_waiters();
+
+    let event = tokio::time::timeout(Duration::from_secs(2), next)
+        .await
+        .expect("cancellation should interrupt preflight")
+        .unwrap()
+        .unwrap();
+    assert!(matches!(event, Some(UiEvent::Done { .. })));
+    let _ = release_tx.send(());
+    server.join().unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn runtime_logs_are_fanned_out_without_events_payloads_or_immediate_info_flush() {
     let env = TestEnv::new();
     let server = MockServer::start();

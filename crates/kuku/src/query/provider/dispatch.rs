@@ -9,8 +9,8 @@ use crate::query::tool_exec::record_plugin_hooks;
 use crate::query::types::{PendingRun, PendingStep, RequestTiming, StreamingChunkState, UiEvent};
 
 use super::retry::{
-    preflight_stream, record_retry_event, retry_stop_reason, scheduled_retry_delay, RetryPhase,
-    RetryStopReason,
+    preflight_stream, record_retry_event, retry_stop_reason, scheduled_retry_delay, PreflightError,
+    RetryEvent, RetryPhase, RetryStopReason,
 };
 use super::{emit_runtime_log, pending_failure_step};
 
@@ -18,6 +18,12 @@ struct ProviderAttempt {
     stream: crate::provider::ProviderChunkStream,
     started: Instant,
     provider_attempt: u8,
+}
+
+enum DispatchOutcome {
+    Attempt(ProviderAttempt),
+    Failure(ProviderFailure),
+    Cancelled,
 }
 
 pub(super) async fn dispatch_provider_step(
@@ -120,7 +126,7 @@ pub(super) async fn dispatch_provider_step(
     )
     .await?
     {
-        Ok(ProviderAttempt {
+        DispatchOutcome::Attempt(ProviderAttempt {
             stream,
             started,
             provider_attempt,
@@ -161,7 +167,8 @@ pub(super) async fn dispatch_provider_step(
                 model_permit: capacity,
             })))
         }
-        Err(failure)
+        DispatchOutcome::Cancelled => super::super::step::cancellation_step(pending),
+        DispatchOutcome::Failure(failure)
             if matches!(
                 failure.kind,
                 crate::provider::types::ProviderFailureKind::ContextTooLarge
@@ -211,7 +218,7 @@ pub(super) async fn dispatch_provider_step(
                 },
             ))
         }
-        Err(failure) => {
+        DispatchOutcome::Failure(failure) => {
             append_model_error(
                 &pending.events_path,
                 &pending.conversation,
@@ -246,7 +253,7 @@ async fn dispatch_prepared(
     prepared: &PreparedProviderRequest,
     request_id: &str,
     trace: Option<crate::provider::trace::ProviderTraceMetadata>,
-) -> Result<std::result::Result<ProviderAttempt, ProviderFailure>> {
+) -> Result<DispatchOutcome> {
     super::require_runtime_execution(pending)?;
     let mut failed_attempt = 1;
     let mut started = Instant::now();
@@ -254,20 +261,21 @@ async fn dispatch_prepared(
         crate::query::adapters::model_stream(pending, resolved, prepared, trace.clone()).await;
     loop {
         let failure = match result {
-            Ok(stream) => match preflight_stream(stream).await {
+            Ok(stream) => match preflight_stream(stream, &pending.cancel_token).await {
                 Ok(stream) => {
-                    return Ok(Ok(ProviderAttempt {
+                    return Ok(DispatchOutcome::Attempt(ProviderAttempt {
                         stream,
                         started,
                         provider_attempt: failed_attempt,
                     }));
                 }
-                Err(failure) => failure,
+                Err(PreflightError::Failure(failure)) => failure,
+                Err(PreflightError::Cancelled) => return Ok(DispatchOutcome::Cancelled),
             },
             Err(failure) => failure,
         };
         if pending.query.runtime.is_none() {
-            return Ok(Err(failure));
+            return Ok(DispatchOutcome::Failure(failure));
         }
         let stop_reason = retry_stop_reason(
             pending.query.runtime_limits.retry_transient_provider_errors,
@@ -278,53 +286,61 @@ async fn dispatch_prepared(
         if let Some(stop_reason) = stop_reason {
             record_retry_event(
                 pending,
-                request_id,
-                &failure,
-                RetryPhase::Stopped,
-                failed_attempt,
-                failed_attempt,
-                Duration::ZERO,
-                Some(stop_reason),
+                RetryEvent {
+                    request_id,
+                    failure: &failure,
+                    phase: RetryPhase::Stopped,
+                    attempt: failed_attempt,
+                    failed_attempt,
+                    delay: Duration::ZERO,
+                    stop_reason: Some(stop_reason),
+                },
             )?;
-            return Ok(Err(failure));
+            return Ok(DispatchOutcome::Failure(failure));
         }
 
         let delay = scheduled_retry_delay(failed_attempt, failure.retry_after);
         record_retry_event(
             pending,
-            request_id,
-            &failure,
-            RetryPhase::Waiting,
-            failed_attempt + 1,
-            failed_attempt,
-            delay,
-            None,
+            RetryEvent {
+                request_id,
+                failure: &failure,
+                phase: RetryPhase::Waiting,
+                attempt: failed_attempt + 1,
+                failed_attempt,
+                delay,
+                stop_reason: None,
+            },
         )?;
         tokio::time::sleep(delay).await;
         super::require_runtime_execution(pending)?;
         if crate::query::budget::reserve(&pending.query).is_err() {
             record_retry_event(
                 pending,
-                request_id,
-                &failure,
-                RetryPhase::Stopped,
-                failed_attempt,
-                failed_attempt,
-                Duration::ZERO,
-                Some(RetryStopReason::RequestBudget),
+                RetryEvent {
+                    request_id,
+                    failure: &failure,
+                    phase: RetryPhase::Stopped,
+                    attempt: failed_attempt,
+                    failed_attempt,
+                    delay: Duration::ZERO,
+                    stop_reason: Some(RetryStopReason::RequestBudget),
+                },
             )?;
-            return Ok(Err(failure));
+            return Ok(DispatchOutcome::Failure(failure));
         }
         let next_attempt = failed_attempt + 1;
         record_retry_event(
             pending,
-            request_id,
-            &failure,
-            RetryPhase::Started,
-            next_attempt,
-            failed_attempt,
-            Duration::ZERO,
-            None,
+            RetryEvent {
+                request_id,
+                failure: &failure,
+                phase: RetryPhase::Started,
+                attempt: next_attempt,
+                failed_attempt,
+                delay: Duration::ZERO,
+                stop_reason: None,
+            },
         )?;
         failed_attempt = next_attempt;
         started = Instant::now();

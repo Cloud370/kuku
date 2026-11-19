@@ -3,7 +3,7 @@ use crate::event::EventPayload;
 use crate::provider::types::ProviderFailure;
 
 use super::super::helpers::{append_model_error, append_turn_interrupted, now_timestamp};
-use super::super::provider::{record_retry_event, RetryPhase, RetryStopReason};
+use super::super::provider::{record_retry_event, RetryEvent, RetryPhase, RetryStopReason};
 use super::super::types::StreamingChunkState;
 
 pub(super) fn record_streaming_provider_error_facts(
@@ -32,13 +32,15 @@ pub(super) fn record_streaming_provider_error_facts(
     };
     record_retry_event(
         &streaming.pending,
-        &streaming.request_id,
-        failure,
-        RetryPhase::Stopped,
-        streaming.provider_attempt,
-        streaming.provider_attempt,
-        std::time::Duration::ZERO,
-        Some(stop_reason),
+        RetryEvent {
+            request_id: &streaming.request_id,
+            failure,
+            phase: RetryPhase::Stopped,
+            attempt: streaming.provider_attempt,
+            failed_attempt: streaming.provider_attempt,
+            delay: std::time::Duration::ZERO,
+            stop_reason: Some(stop_reason),
+        },
     )?;
 
     let kind_name = kind.as_event_kind();

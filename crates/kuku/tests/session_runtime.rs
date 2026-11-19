@@ -338,15 +338,20 @@ async fn receipts_are_durable_idempotent_and_enqueue_requires_explicit_advance()
 
 #[tokio::test]
 async fn settled_provider_failure_allows_close_and_explicit_advance_after_reopen() {
-    retry_interrupted_input(true, 400, 1).await;
+    retry_interrupted_input(true, 400, 1, true).await;
 }
 
 #[tokio::test]
 async fn successful_explicit_retry_after_rate_limiting_can_close_the_same_session() {
-    retry_interrupted_input(false, 429, 2).await;
+    retry_interrupted_input(false, 429, 1, false).await;
 }
 
-async fn retry_interrupted_input(reopen: bool, status: u16, failed_attempts: usize) {
+async fn retry_interrupted_input(
+    reopen: bool,
+    status: u16,
+    failed_attempts: usize,
+    automatic_retries: bool,
+) {
     let server = MockServer::start_async().await;
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
@@ -356,7 +361,8 @@ async fn retry_interrupted_input(reopen: bool, status: u16, failed_attempts: usi
             then.status(status).body("provider fixture failure");
         })
         .await;
-    let original = options(&server, workspace.path(), data.path());
+    let mut original = options(&server, workspace.path(), data.path());
+    original.limits.retry_transient_provider_errors = automatic_retries;
     let session = Session::open(original.clone()).await.unwrap();
     session
         .create_agent("create", "main", AgentConfig::default())

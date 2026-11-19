@@ -13,8 +13,11 @@ use kuku::{
     ProviderFailureKind, Session, SessionOptions,
 };
 
+type AttemptRecord = (String, Vec<u8>);
+type RecordedAttempts = Arc<Mutex<Vec<AttemptRecord>>>;
+
 #[derive(Debug)]
-struct AlwaysTransientModel(Arc<Mutex<Vec<(String, Vec<u8>)>>>);
+struct AlwaysTransientModel(RecordedAttempts);
 
 impl ModelAdapter for AlwaysTransientModel {
     fn stream(&self, request: ModelRequest) -> AdapterFuture<'_, ModelStream> {
@@ -140,7 +143,7 @@ async fn wait_for_retry_phase_count(session: &Session, phase: &str, count: usize
     panic!("expected retry phase was not persisted");
 }
 
-async fn wait_for_model_attempts(attempts: &Arc<Mutex<Vec<(String, Vec<u8>)>>>, count: usize) {
+async fn wait_for_model_attempts(attempts: &RecordedAttempts, count: usize) {
     for _ in 0..100 {
         if attempts.lock().unwrap().len() >= count {
             return;
@@ -155,7 +158,7 @@ async fn wait_for_model_attempts(attempts: &Arc<Mutex<Vec<(String, Vec<u8>)>>>, 
 async fn actual_provider_retries_stop_after_six_total_attempts() {
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
-    let attempts = Arc::new(Mutex::new(Vec::<(String, Vec<u8>)>::new()));
+    let attempts = Arc::new(Mutex::new(Vec::<AttemptRecord>::new()));
     let mut options = SessionOptions::new(workspace.path(), data.path(), common::test_config());
     options.model_adapter = Some(Arc::new(AlwaysTransientModel(attempts.clone())));
     options.limits.max_requests_per_open = Some(7);
@@ -186,17 +189,18 @@ async fn actual_provider_retries_stop_after_six_total_attempts() {
     wait_for_retry_phase_count(&session, "stopped", 1).await;
     let final_snapshot = settle(&session).await;
     assert_eq!(AgentStatus::Interrupted, final_snapshot.status);
-    let recorded = attempts.lock().unwrap();
-    assert_eq!(6, recorded.len());
-    assert!(recorded
-        .iter()
-        .all(|(request_id, body)| { request_id == &recorded[0].0 && body == &recorded[0].1 }));
-    drop(recorded);
+    {
+        let recorded = attempts.lock().unwrap();
+        assert_eq!(6, recorded.len());
+        assert!(recorded
+            .iter()
+            .all(|(request_id, body)| { request_id == &recorded[0].0 && body == &recorded[0].1 }));
+    }
 
     assert_eq!(6, session.agent("main").unwrap().usage.model_requests);
     let events = retry_events(&session);
     assert_eq!(11, events.len());
-    for (attempt_index, pair) in events[..10].chunks_exact(2).enumerate() {
+    for (attempt_index, pair) in events[..10].as_chunks::<2>().0.iter().enumerate() {
         let upcoming_attempt = attempt_index + 2;
         assert_eq!("waiting", pair[0]["phase"]);
         assert_eq!("started", pair[1]["phase"]);
@@ -355,9 +359,7 @@ async fn chat_code_only_quota_error_is_not_retried() {
             when.method(POST).path("/chat/completions");
             then.status(200)
                 .header("content-type", "text/event-stream")
-                .body(concat!(
-                    "data: {\"error\":{\"code\":\"insufficient_quota\",\"message\":\"quota unavailable\"}}\n\n"
-                ));
+                .body("data: {\"error\":{\"code\":\"insufficient_quota\",\"message\":\"quota unavailable\"}}\n\n");
         })
         .await;
     let session = open_session(openai_options(

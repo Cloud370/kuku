@@ -5,7 +5,9 @@ mod retry;
 use dispatch::dispatch_provider_step;
 
 pub(super) use resolve::ensure_resolved;
-pub(super) use retry::{record_retry_event, record_terminal_stop, RetryPhase, RetryStopReason};
+pub(super) use retry::{
+    record_retry_event, record_terminal_stop, RetryEvent, RetryPhase, RetryStopReason,
+};
 
 use crate::context::{
     assemble_context, rebuild_history_for_provider, restore_prompt_snapshot,

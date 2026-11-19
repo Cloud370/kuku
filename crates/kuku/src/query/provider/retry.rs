@@ -41,6 +41,16 @@ pub(crate) enum RetryStopReason {
     StreamStarted,
 }
 
+pub(crate) struct RetryEvent<'a> {
+    pub(crate) request_id: &'a str,
+    pub(crate) failure: &'a ProviderFailure,
+    pub(crate) phase: RetryPhase,
+    pub(crate) attempt: u8,
+    pub(crate) failed_attempt: u8,
+    pub(crate) delay: Duration,
+    pub(crate) stop_reason: Option<RetryStopReason>,
+}
+
 impl RetryStopReason {
     fn as_str(self) -> &'static str {
         match self {
@@ -98,16 +108,7 @@ pub(super) fn scheduled_retry_delay(failed_attempt: u8, retry_after: Option<Dura
     retry_delay(failed_attempt, retry_after, jitter_units)
 }
 
-pub(crate) fn record_retry_event(
-    pending: &PendingRun,
-    request_id: &str,
-    failure: &ProviderFailure,
-    phase: RetryPhase,
-    attempt: u8,
-    failed_attempt: u8,
-    delay: Duration,
-    stop_reason: Option<RetryStopReason>,
-) -> Result<()> {
+pub(crate) fn record_retry_event(pending: &PendingRun, event: RetryEvent<'_>) -> Result<()> {
     let Some(execution) = pending.query.runtime_execution else {
         return Ok(());
     };
@@ -117,21 +118,21 @@ pub(crate) fn record_retry_event(
         "ts": crate::query::helpers::now_timestamp()?,
         "agent": pending.conversation.as_str(),
         "turn": pending.turn,
-        "request_id": request_id,
-        "failed_kind": failure.kind.as_event_kind(),
-        "phase": phase.as_str(),
-        "failed_attempt": failed_attempt,
+        "request_id": event.request_id,
+        "failed_kind": event.failure.kind.as_event_kind(),
+        "phase": event.phase.as_str(),
+        "failed_attempt": event.failed_attempt,
         "max_attempts": MAX_PROVIDER_ATTEMPTS,
-        "attempt": attempt,
-        "delay_ms": if phase == RetryPhase::Waiting {
-            delay.as_millis() as u64
+        "attempt": event.attempt,
+        "delay_ms": if event.phase == RetryPhase::Waiting {
+            event.delay.as_millis() as u64
         } else {
             0
         },
-        "will_retry": phase != RetryPhase::Stopped,
-        "message": failure.kind.safe_retry_message(),
-        "status": failure.status,
-        "stop_reason": stop_reason.map(RetryStopReason::as_str),
+        "will_retry": event.phase != RetryPhase::Stopped,
+        "message": event.failure.kind.safe_retry_message(),
+        "status": event.failure.status,
+        "stop_reason": event.stop_reason.map(RetryStopReason::as_str),
     }));
     session.commit_model_facts(pending.conversation.as_str(), execution, [payload])
 }
@@ -185,34 +186,56 @@ pub(crate) fn record_nonretryable_stream_stop(
     };
     record_retry_event(
         pending,
-        request_id,
-        &failure,
-        RetryPhase::Stopped,
-        attempt,
-        attempt,
-        Duration::ZERO,
-        Some(RetryStopReason::NonRetryable),
+        RetryEvent {
+            request_id,
+            failure: &failure,
+            phase: RetryPhase::Stopped,
+            attempt,
+            failed_attempt: attempt,
+            delay: Duration::ZERO,
+            stop_reason: Some(RetryStopReason::NonRetryable),
+        },
     )
+}
+
+pub(super) enum PreflightError {
+    Failure(ProviderFailure),
+    Cancelled,
 }
 
 pub(super) async fn preflight_stream(
     mut stream: ProviderChunkStream,
-) -> std::result::Result<ProviderChunkStream, ProviderFailure> {
+    cancel_token: &tokio::sync::Notify,
+) -> std::result::Result<ProviderChunkStream, PreflightError> {
     use tokio_stream::StreamExt;
 
+    let notified = cancel_token.notified();
+    tokio::pin!(notified);
+    if notified.as_mut().enable() {
+        return Err(PreflightError::Cancelled);
+    }
     let mut prefix = Vec::new();
     let mut saw_stream_start = false;
-    while let Some(item) = stream.next().await {
+    loop {
+        let item = tokio::select! {
+            _ = &mut notified => return Err(PreflightError::Cancelled),
+            item = stream.next() => item,
+        };
+        let Some(item) = item else { break };
         match item {
-            Err(failure) => return Err(failure),
+            Err(failure) => return Err(PreflightError::Failure(failure)),
             Ok(ProviderChunk::ServerError { code, message }) => {
-                return Err(classify_stream_error(&code, &message));
+                return Err(PreflightError::Failure(classify_stream_error(
+                    &code, &message,
+                )));
             }
             Ok(chunk) => {
                 let is_stream_start = matches!(&chunk, ProviderChunk::StreamStart { .. });
                 if is_stream_start && saw_stream_start {
-                    return Err(crate::provider::prepare::invalid_response(
-                        "provider emitted duplicate stream-start metadata",
+                    return Err(PreflightError::Failure(
+                        crate::provider::prepare::invalid_response(
+                            "provider emitted duplicate stream-start metadata",
+                        ),
                     ));
                 }
                 prefix.push(Ok(chunk));
@@ -250,7 +273,7 @@ mod tests {
             let attempt = index as u8 + 1;
             assert_eq!(Duration::from_secs(seconds), retry_delay(attempt, None, 0));
             assert_eq!(
-                Duration::from_millis(u64::from(seconds) * 1_250),
+                Duration::from_millis(seconds * 1_250),
                 retry_delay(attempt, None, MAX_JITTER_UNITS)
             );
         }

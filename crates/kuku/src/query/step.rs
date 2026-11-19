@@ -574,36 +574,7 @@ pub(super) async fn advance_pending(
         notified.enable()
     };
     if is_cancelled {
-        append_turn_cancelled(
-            &pending.events_path,
-            &pending.conversation,
-            pending.turn,
-            "user_cancelled",
-        )?;
-        pending.flush_runtime_logs();
-        return Ok(PendingStep::Done(
-            super::types::RunOutput {
-                session_id: pending.session_id.clone(),
-                conversation: pending.conversation.clone(),
-                text: String::new(),
-                usage: None,
-                turn: pending.turn,
-                model_request_count: pending.model_request_count,
-                thinking_duration_ms: pending.thinking_duration_ms,
-                tool_summary: super::types::ToolSummary {
-                    total_calls: pending.tool_calls,
-                    names: pending.tool_names.clone(),
-                    denied: pending.tool_denied,
-                    errors: pending.tool_errors,
-                    rounds: pending.tool_rounds,
-                },
-                plugin_registry: pending.plugin_registry.clone(),
-                session_dir: pending.events_path.parent().unwrap().to_path_buf(),
-                workspace: pending.workspace.clone(),
-            },
-            None,
-            pending.turn,
-        ));
+        return cancellation_step(pending);
     }
 
     // Drain pending_events from previous inline executions (deny/blocked/skill)
@@ -946,6 +917,39 @@ pub(super) async fn advance_pending(
         return super::runtime_tools::yield_step(pending);
     }
     super::provider::call_provider_step(pending).await
+}
+
+pub(super) fn cancellation_step(mut pending: PendingRun) -> Result<PendingStep> {
+    append_turn_cancelled(
+        &pending.events_path,
+        &pending.conversation,
+        pending.turn,
+        "user_cancelled",
+    )?;
+    pending.flush_runtime_logs();
+    Ok(PendingStep::Done(
+        super::types::RunOutput {
+            session_id: pending.session_id.clone(),
+            conversation: pending.conversation.clone(),
+            text: String::new(),
+            usage: None,
+            turn: pending.turn,
+            model_request_count: pending.model_request_count,
+            thinking_duration_ms: pending.thinking_duration_ms,
+            tool_summary: super::types::ToolSummary {
+                total_calls: pending.tool_calls,
+                names: pending.tool_names.clone(),
+                denied: pending.tool_denied,
+                errors: pending.tool_errors,
+                rounds: pending.tool_rounds,
+            },
+            plugin_registry: pending.plugin_registry.clone(),
+            session_dir: pending.events_path.parent().unwrap().to_path_buf(),
+            workspace: pending.workspace.clone(),
+        },
+        None,
+        pending.turn,
+    ))
 }
 
 fn truncate_summary(s: &str, max: usize) -> String {
