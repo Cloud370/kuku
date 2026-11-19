@@ -37,16 +37,33 @@ fn route(model: &str) -> ResolvedModel {
     }
 }
 
+fn edit_with_server_plan(
+    raw: &str,
+    route: &ResolvedModel,
+    tier: &str,
+    overwrite_user_default: bool,
+) -> Result<(String, Vec<u8>), String> {
+    let plan = ModelDefaultPlan {
+        tier: tier.into(),
+        overwrite_user_default,
+        config_sha256: format!("{:x}", sha2::Sha256::digest(raw.as_bytes())),
+    };
+    edited_config(raw.as_bytes(), route, &plan)
+}
+
 #[test]
 fn matching_tier_is_preferred_and_repeated_route_saves_are_idempotent() {
-    let (tier, output) = edited_config(CONFIG, &route("light-model")).unwrap();
+    let (tier, output) =
+        edit_with_server_plan(CONFIG, &route("light-model"), "light", false).unwrap();
     assert_eq!(tier, "light");
     assert_eq!(output, CONFIG.as_bytes());
-    let (tier, repeated) = edited_config(CONFIG, &route("light-model")).unwrap();
+    let (tier, repeated) =
+        edit_with_server_plan(CONFIG, &route("light-model"), "light", false).unwrap();
     assert_eq!(tier, "light");
     assert_eq!(repeated, output);
 
-    let (tier, output) = edited_config(CONFIG, &route("balanced-model")).unwrap();
+    let (tier, output) =
+        edit_with_server_plan(CONFIG, &route("balanced-model"), "balanced", false).unwrap();
     let output = String::from_utf8(output).unwrap();
     assert_eq!(tier, "balanced");
     assert!(output.contains("default_model = \"balanced\""));
@@ -57,7 +74,7 @@ fn matching_tier_is_preferred_and_repeated_route_saves_are_idempotent() {
 #[test]
 fn fallback_creates_or_overwrites_only_user_default() {
     let selected = route("custom-model");
-    let (tier, output) = edited_config(CONFIG, &selected).unwrap();
+    let (tier, output) = edit_with_server_plan(CONFIG, &selected, "user-default", true).unwrap();
     let output = String::from_utf8(output).unwrap();
     assert_eq!(tier, "user-default");
     assert!(output.contains("default_model = \"user-default\""));
@@ -65,7 +82,8 @@ fn fallback_creates_or_overwrites_only_user_default() {
     assert!(output.contains("model = \"strong-model\""));
     assert!(output.contains("model = \"light-model\""));
 
-    let (tier, repeated) = edited_config(&output, &selected).unwrap();
+    let (tier, repeated) =
+        edit_with_server_plan(&output, &selected, "user-default", false).unwrap();
     let repeated = String::from_utf8(repeated).unwrap();
     assert_eq!(tier, "user-default");
     assert_eq!(repeated.matches("[model.user-default]").count(), 1);
@@ -75,7 +93,7 @@ fn fallback_creates_or_overwrites_only_user_default() {
         "{}\n[model.user-default]\nprovider = \"openai\"\nmodel = \"old-user-model\"\nreasoning_effort = \"high\"\nservice_tier = \"priority\"\nmax_output_tokens = 4096\n",
         CONFIG.replace("default_model = \"light\"", "default_model = \"user-default\"")
     );
-    let (_, overwritten) = edited_config(&old, &selected).unwrap();
+    let (_, overwritten) = edit_with_server_plan(&old, &selected, "user-default", true).unwrap();
     let overwritten = String::from_utf8(overwritten).unwrap();
     assert!(overwritten.contains("model = \"custom-model\""));
     assert!(overwritten.contains("model = \"strong-model\""));
@@ -134,7 +152,8 @@ fn matched_tier_retains_its_existing_route_settings() {
         "model = \"balanced-model\"",
         "model = \"balanced-model\"\nmax_output_tokens = 888",
     );
-    let (tier, output) = edited_config(&input, &route("balanced-model")).unwrap();
+    let (tier, output) =
+        edit_with_server_plan(&input, &route("balanced-model"), "balanced", false).unwrap();
     assert_eq!("balanced", tier);
     assert!(String::from_utf8(output)
         .unwrap()
@@ -154,7 +173,8 @@ default_model = "$KUKU_ISSUE100_DEFAULT_TIER"
 provider = { openai = { format = "$KUKU_ISSUE100_PROVIDER_FORMAT", base_url = "https://api.openai.com/v1", api_key = "$OPENAI_API_KEY", options = { profile = "openai", reasoning_efforts = ["low", "medium"] } } }
 model = { strong = { provider = "openai", model = "strong-model" }, balanced = { provider = " openai ", model = "balanced-model" }, light = { provider = "openai", model = "light-model" } }
 "#;
-    let (tier, output) = edited_config(input, &route("balanced-model")).unwrap();
+    let (tier, output) =
+        edit_with_server_plan(input, &route("balanced-model"), "balanced", false).unwrap();
     if let Some(value) = old_tier {
         std::env::set_var(TIER, value);
     } else {
@@ -168,11 +188,38 @@ model = { strong = { provider = "openai", model = "strong-model" }, balanced = {
     let output = String::from_utf8(output).unwrap();
     assert_eq!(tier, "balanced");
     assert!(output.contains("# keep this note"));
-    assert!(output.contains("$KUKU_ISSUE100_DEFAULT_TIER"));
     assert!(output.contains("$KUKU_ISSUE100_PROVIDER_FORMAT"));
     assert!(output.contains("reasoning_efforts = [\"low\", \"medium\"]"));
     assert!(output.contains("provider = \" openai \""));
+    assert!(output.contains("default_model = \"balanced\""));
     assert!(!output.contains("user-default"));
+}
+
+#[test]
+fn client_environment_does_not_override_the_service_validated_tier_or_expand_raw_refs() {
+    const TIER: &str = "KUKU_ISSUE100_CLIENT_DEFAULT_TIER";
+    const PROVIDER: &str = "KUKU_ISSUE100_CLIENT_PROVIDER";
+    const MODEL: &str = "KUKU_ISSUE100_CLIENT_MODEL";
+    let old = [TIER, PROVIDER, MODEL].map(std::env::var_os);
+    std::env::set_var(TIER, "client-tier");
+    std::env::set_var(PROVIDER, "client-provider");
+    std::env::set_var(MODEL, "client-model");
+    let input = format!(
+        "# preserve refs\ndefault_model = \"${TIER}\"\n[model.balanced]\nprovider = \"${PROVIDER}\"\nmodel = \"${MODEL}\"\n"
+    );
+    let edited = edit_with_server_plan(&input, &route("service-model"), "balanced", false);
+    for (name, value) in [TIER, PROVIDER, MODEL].into_iter().zip(old) {
+        if let Some(value) = value {
+            std::env::set_var(name, value);
+        } else {
+            std::env::remove_var(name);
+        }
+    }
+    let output = String::from_utf8(edited.unwrap().1).unwrap();
+    assert!(output.contains("default_model = \"balanced\""));
+    assert!(output.contains("provider = \"$KUKU_ISSUE100_CLIENT_PROVIDER\""));
+    assert!(output.contains("model = \"$KUKU_ISSUE100_CLIENT_MODEL\""));
+    assert!(output.contains("# preserve refs"));
 }
 
 #[test]

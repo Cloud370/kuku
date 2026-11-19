@@ -1,8 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use kuku::config::{parse_config_text, Config};
-use kuku_client::{Connection, ConnectionOptions};
+use kuku_client::{Connection, ConnectionOptions, ModelDefaultPlan};
+use sha2::{Digest, Sha256};
 use toml_edit::{value, DocumentMut, InlineTable, Item, Table, Value};
 
 const LOCAL_SERVICE_REQUIRED: &str = "Set current model as default requires the active local service; reopen /model on a local connection.";
@@ -10,6 +10,7 @@ const LOCAL_SERVICE_CHANGED: &str =
     "The local service or config changed; reopen /model before saving.";
 const CONFIG_UNAVAILABLE: &str = "Cannot read the active config; reopen /model and try again.";
 const CONFIG_INVALID: &str = "The active config is invalid; no changes were made.";
+const ROUTE_UNUSABLE: &str = "The active service cannot use this model route as a default.";
 const CONFIG_CHANGED: &str =
     "The config changed or could not be saved; reopen /model and try again.";
 pub(crate) const SAVE_SCOPE: &str = "Applies to new sessions and sessions without a separately chosen model; the current session is unchanged.";
@@ -61,31 +62,49 @@ pub(crate) async fn prepare(
     route: ResolvedModel,
 ) -> Result<PreparedDefaultSave, String> {
     let service = active_service(options, connection).await?;
-    tokio::task::spawn_blocking(move || prepare_file(service, route))
+    let connection = connection.ok_or_else(|| LOCAL_SERVICE_REQUIRED.to_owned())?;
+    let path = service.config_path.clone();
+    let (original_bytes, original_permissions) =
+        tokio::task::spawn_blocking(move || read_active_config(&path))
+            .await
+            .map_err(|_| CONFIG_UNAVAILABLE.to_owned())??;
+    let config_sha256 = format!("{:x}", Sha256::digest(&original_bytes));
+    let server_plan = connection
+        .client
+        .model_default_plan(&route.connection, &route.model, &config_sha256)
         .await
-        .map_err(|_| CONFIG_UNAVAILABLE.to_owned())?
-}
-
-fn prepare_file(
-    service: ServiceIdentity,
-    route: ResolvedModel,
-) -> Result<PreparedDefaultSave, String> {
-    let metadata = fs::symlink_metadata(&service.config_path).map_err(|_| CONFIG_UNAVAILABLE)?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(CONFIG_UNAVAILABLE.into());
+        .map_err(|error| match error.code() {
+            Some("config_changed") => CONFIG_CHANGED.to_owned(),
+            Some("model_default_unusable") => ROUTE_UNUSABLE.to_owned(),
+            _ => CONFIG_INVALID.to_owned(),
+        })?;
+    if server_plan.config_sha256 != config_sha256 {
+        return Err(CONFIG_CHANGED.into());
     }
-    let original_bytes = fs::read(&service.config_path).map_err(|_| CONFIG_UNAVAILABLE)?;
-    let original_text = std::str::from_utf8(&original_bytes).map_err(|_| CONFIG_INVALID)?;
-    let (tier, updated_bytes) = edited_config(original_text, &route)?;
+    let bytes = original_bytes.clone();
+    let route_for_edit = route.clone();
+    let (tier, updated_bytes) =
+        tokio::task::spawn_blocking(move || edited_config(&bytes, &route_for_edit, &server_plan))
+            .await
+            .map_err(|_| CONFIG_INVALID.to_owned())??;
     Ok(PreparedDefaultSave {
         route,
         tier,
         config_path: service.config_path.clone(),
         original_bytes,
-        original_permissions: metadata.permissions(),
+        original_permissions,
         updated_bytes,
         service,
     })
+}
+
+fn read_active_config(path: &Path) -> Result<(Vec<u8>, fs::Permissions), String> {
+    let metadata = fs::symlink_metadata(path).map_err(|_| CONFIG_UNAVAILABLE)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(CONFIG_UNAVAILABLE.into());
+    }
+    let original_bytes = fs::read(path).map_err(|_| CONFIG_UNAVAILABLE)?;
+    Ok((original_bytes, metadata.permissions()))
 }
 
 pub(crate) async fn save(
@@ -109,42 +128,34 @@ pub(crate) async fn save(
     .map_err(|_| CONFIG_CHANGED.to_owned())
 }
 
-fn edited_config(raw: &str, route: &ResolvedModel) -> Result<(String, Vec<u8>), String> {
-    let config_file = parse_config_text(raw).map_err(|_| CONFIG_INVALID)?;
-    let config = config_file.resolve().map_err(|_| CONFIG_INVALID)?;
-    let matching_tier = matching_tier(&config, route);
-    let has_matching_tier = matching_tier.is_some();
-    let tier = matching_tier.unwrap_or_else(|| "user-default".to_owned());
+fn edited_config(
+    original_bytes: &[u8],
+    route: &ResolvedModel,
+    plan: &ModelDefaultPlan,
+) -> Result<(String, Vec<u8>), String> {
+    let config_sha256 = format!("{:x}", Sha256::digest(original_bytes));
+    if plan.config_sha256 != config_sha256 {
+        return Err(CONFIG_CHANGED.into());
+    }
+    let raw = std::str::from_utf8(original_bytes).map_err(|_| CONFIG_INVALID)?;
     let mut document = raw.parse::<DocumentMut>().map_err(|_| CONFIG_INVALID)?;
 
-    if !has_matching_tier {
+    if plan.overwrite_user_default {
+        if plan.tier != "user-default" {
+            return Err(CONFIG_INVALID.into());
+        }
         update_user_default(&mut document, route)?;
-    }
-    if config.default_tier != tier {
-        document["default_model"] = value(tier.as_str());
-    }
-
-    let output = document.to_string();
-    let validated = parse_config_text(&output).map_err(|_| CONFIG_INVALID)?;
-    validated.resolve().map_err(|_| CONFIG_INVALID)?;
-    Ok((tier, output.into_bytes()))
-}
-
-fn matching_tier(config: &Config, route: &ResolvedModel) -> Option<String> {
-    let matches_route = |tier: &kuku::config::TierConfig| {
-        tier.provider == route.connection && tier.model == route.model
-    };
-    if config
-        .tiers
-        .get(&config.default_tier)
-        .is_some_and(matches_route)
+    } else if !document
+        .get("model")
+        .and_then(Item::as_table_like)
+        .and_then(|models| models.get(&plan.tier))
+        .is_some()
     {
-        return Some(config.default_tier.clone());
+        return Err(CONFIG_INVALID.into());
     }
-    config
-        .tiers
-        .iter()
-        .find_map(|(name, tier)| matches_route(tier).then(|| name.clone()))
+    document["default_model"] = value(plan.tier.as_str());
+    let output = document.to_string();
+    Ok((plan.tier.clone(), output.into_bytes()))
 }
 
 fn update_user_default(document: &mut DocumentMut, route: &ResolvedModel) -> Result<(), String> {
