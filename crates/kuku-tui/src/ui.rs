@@ -20,6 +20,7 @@ use crate::theme::{
 };
 
 mod activity;
+mod contextual;
 mod delivery;
 mod header;
 
@@ -44,6 +45,7 @@ pub(crate) fn render_at(
     activity_frame: ActivityFrame,
 ) -> bool {
     let outer = frame.area();
+    app.contextual_hits.clear();
     if outer.is_empty() {
         app.text_selection.clear();
         app.delivery_area = Rect::ZERO;
@@ -51,6 +53,7 @@ pub(crate) fn render_at(
         app.request_area = Rect::ZERO;
         app.request_hit = None;
         app.permission_choice_areas = [Rect::ZERO; 2];
+        app.contextual_hits.clear();
         app.reading_area = Rect::ZERO;
         app.composer_area = Rect::ZERO;
         return false;
@@ -201,6 +204,25 @@ pub(crate) fn render_at(
     }
     frame.render_widget(Paragraph::new(request.lines), request_area);
     frame.render_widget(Paragraph::new(deliveries.lines), delivery_area);
+    if let (Some(range), Some(control)) = (
+        deliveries.recovery_range,
+        app.contextual_controls().into_iter().find(|control| {
+            matches!(
+                control,
+                crate::contextual::ContextControl::PendingRecovery { .. }
+            )
+        }),
+    ) {
+        app.contextual_hits.push(crate::contextual::ContextHit {
+            area: Rect::new(
+                delivery_area.x.saturating_add(range.start),
+                delivery_area.y,
+                range.end.saturating_sub(range.start),
+                1,
+            ),
+            control,
+        });
+    }
     app.request_area = request_area;
     let request_id = app.pane().snapshot.as_ref().and_then(|snapshot| {
         snapshot
@@ -250,8 +272,35 @@ pub(crate) fn render_at(
         } else {
             activity_frame.still()
         };
-        let line = activity::render_heading(app, usize::from(heading.width), state);
-        frame.render_widget(Paragraph::new(line), heading);
+        let run_control = app.contextual_controls().into_iter().find(|control| {
+            matches!(
+                control,
+                crate::contextual::ContextControl::Continue { .. }
+                    | crate::contextual::ContextControl::Interrupt { .. }
+            )
+        });
+        if let Some(control) = run_control {
+            let chip_width = u16::try_from(contextual::label(&control).width())
+                .unwrap_or(u16::MAX)
+                .min(heading.width);
+            let gap = u16::from(chip_width < heading.width);
+            let left = Rect {
+                width: heading.width.saturating_sub(chip_width + gap),
+                ..heading
+            };
+            let chip = Rect::new(
+                heading.x + left.width + gap,
+                heading.y,
+                chip_width,
+                heading.height,
+            );
+            let line = activity::render_heading(app, usize::from(left.width), state);
+            frame.render_widget(Paragraph::new(line), left);
+            contextual::render_chip(frame, app, &control, chip);
+        } else {
+            let line = activity::render_heading(app, usize::from(heading.width), state);
+            frame.render_widget(Paragraph::new(line), heading);
+        }
     }
     if let Some(draft) = draft {
         let placeholder = app.pane().draft.text().is_empty().then(|| {
@@ -412,12 +461,9 @@ fn banner(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
     if let Some(snapshot) = &pane.snapshot {
         if let Some(error) = &snapshot.agent.last_error {
             let recovery = if snapshot.agent.status == AgentStatus::Interrupted {
-                format!(
-                    "Interrupted · /continue after reviewing tool effects · {}",
-                    single_line(error)
-                )
+                format!("Interrupted · review tool effects · {}", single_line(error))
             } else {
-                format!("Execution · /model or /continue · {}", single_line(error))
+                format!("Execution · /model · {}", single_line(error))
             };
             lines.push(Line::styled(
                 shorten(&recovery, width),

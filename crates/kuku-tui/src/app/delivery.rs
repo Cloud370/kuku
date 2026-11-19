@@ -315,7 +315,7 @@ impl App {
                     if pending == &input_command_id)
                 && !matches!(item.stage, PendingStage::Rejected(_))
         }) {
-            self.problem("Check the pending change in /pending before submitting another edit");
+            self.problem("Check the pending change with delivery recovery before submitting another edit");
             return false;
         }
         self.issue(

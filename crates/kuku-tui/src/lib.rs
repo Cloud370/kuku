@@ -7,6 +7,7 @@ use kuku_client::ConnectionOptions;
 mod app;
 mod browser;
 mod config;
+mod contextual;
 mod editor;
 mod interaction;
 mod jobs;

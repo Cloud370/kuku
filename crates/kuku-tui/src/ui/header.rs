@@ -6,6 +6,7 @@ use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, ServiceStatus};
+use crate::contextual::ContextControl;
 use crate::keys::Shortcut;
 use crate::markup::{render_literal, wrap};
 use crate::text::{shorten, single_line};
@@ -21,11 +22,38 @@ const TITLE_RESERVE: usize = 9;
 pub(super) fn render_session(
     frame: &mut Frame<'_>,
     area: Rect,
-    app: &App,
+    app: &mut App,
     following: bool,
     tool_hint: Option<&str>,
 ) {
-    let width = usize::from(area.width);
+    let mut controls = app
+        .contextual_controls()
+        .into_iter()
+        .find(|control| matches!(control, ContextControl::PreviousAgent { .. }));
+    let mut chips = controls.into_iter().collect::<Vec<_>>();
+    chips.extend(super::contextual::service_controls(app));
+    let mut right = area.x.saturating_add(area.width);
+    for control in chips.iter().rev() {
+        let width = u16::try_from(super::contextual::label(control).width())
+            .unwrap_or(u16::MAX)
+            .min(right.saturating_sub(area.x));
+        if width == 0 {
+            continue;
+        }
+        right = right.saturating_sub(width);
+        super::contextual::render_chip(
+            frame,
+            app,
+            control,
+            Rect::new(right, area.y, width, area.height),
+        );
+        right = right.saturating_sub(1);
+    }
+    let title_area = Rect {
+        width: right.saturating_sub(area.x),
+        ..area
+    };
+    let width = usize::from(title_area.width);
     let mut line = wordmark(width >= SESSION_PREFIX_WIDTH);
     let id: String = single_line(&app.active.session).chars().take(8).collect();
     let identity = if width >= SESSION_PREFIX_WIDTH {
@@ -65,7 +93,7 @@ pub(super) fn render_session(
         line.push_span(" ".repeat(width - line.width() - hint.width()));
         line.push_span(Span::styled(hint, Style::default().fg(MUTED)));
     }
-    frame.render_widget(Paragraph::new(line), area);
+    frame.render_widget(Paragraph::new(line), title_area);
 }
 
 pub(super) fn render_welcome(frame: &mut Frame<'_>, area: Rect, app: &App, show_problem: bool) {

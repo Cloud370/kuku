@@ -6,10 +6,11 @@ use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, DeliveryRow, KeyboardFocus, SubmissionStatus};
+use crate::contextual::ContextControl;
 use crate::keys::Shortcut;
 use crate::markup::{render_literal, wrap_bounded};
 use crate::text::{shorten, single_line};
-use crate::theme::{emphasis, focused_row, ERROR, MUTED};
+use crate::theme::{emphasis, focused_row, ACCENT, ERROR, MUTED};
 
 const MAX_DELIVERY_ROWS: usize = 6;
 const MAX_MESSAGE_ROWS: usize = 3;
@@ -17,6 +18,7 @@ const MAX_MESSAGE_ROWS: usize = 3;
 pub(super) struct DeliveryView {
     pub(super) lines: Vec<Line<'static>>,
     pub(super) hits: Vec<(Range<u16>, String)>,
+    pub(super) recovery_range: Option<Range<u16>>,
 }
 
 pub(super) struct RequestView {
@@ -38,19 +40,34 @@ pub(super) fn lines(app: &App, width: usize, limit: u16) -> DeliveryView {
         return DeliveryView {
             lines: Vec::new(),
             hits: Vec::new(),
+            recovery_range: None,
         };
     }
+    let recovery = app
+        .contextual_controls()
+        .into_iter()
+        .find(|control| matches!(control, ContextControl::PendingRecovery { .. }));
     if rows.is_empty() {
         let stale = selected_id.is_some_and(|id| {
             !app.queued_for_edit()
                 .any(|entry| &entry.receipt.command_id == id)
         });
+        let (line, recovery_range) = if let Some(control) = recovery.as_ref() {
+            recovery_title("Unconfirmed send", width, app, control)
+        } else {
+            (
+                Line::styled("Selected input is no longer queued", emphasis(ERROR)),
+                None,
+            )
+        };
         return DeliveryView {
-            lines: stale
-                .then(|| Line::styled("Selected input is no longer queued", emphasis(ERROR)))
-                .into_iter()
-                .collect(),
+            lines: if recovery.is_some() || stale {
+                vec![line]
+            } else {
+                Vec::new()
+            },
             hits: Vec::new(),
+            recovery_range,
         };
     }
     let stale_without_row = selected_id.is_some_and(|id| {
@@ -66,6 +83,7 @@ pub(super) fn lines(app: &App, width: usize, limit: u16) -> DeliveryView {
                     emphasis(ERROR),
                 )],
                 hits: Vec::new(),
+                recovery_range: None,
             };
         }
         let index = selected_id
@@ -87,6 +105,7 @@ pub(super) fn lines(app: &App, width: usize, limit: u16) -> DeliveryView {
         return DeliveryView {
             lines: message(&rows[index], width, 1, selected, stale),
             hits,
+            recovery_range: None,
         };
     }
     let visible = rows.len().min(limit - 1);
@@ -113,10 +132,12 @@ pub(super) fn lines(app: &App, width: usize, limit: u16) -> DeliveryView {
             " · {} select · Enter edit · Del withdraw",
             Shortcut::UP.label
         ));
-    } else {
-        title.push_str(" · /pending");
     }
-    let mut lines = vec![Line::styled(shorten(&title, width), emphasis(MUTED))];
+    let (title, recovery_range) = recovery.as_ref().map_or_else(
+        || (Line::styled(shorten(&title, width), emphasis(MUTED)), None),
+        |control| recovery_title(&title, width, app, control),
+    );
+    let mut lines = vec![title];
     let mut hits = Vec::new();
     let per_message = ((limit - 1) / visible).min(MAX_MESSAGE_ROWS);
     for row in shown {
@@ -134,7 +155,41 @@ pub(super) fn lines(app: &App, width: usize, limit: u16) -> DeliveryView {
             hits.push((first as u16..lines.len() as u16, row.id.clone()));
         }
     }
-    DeliveryView { lines, hits }
+    DeliveryView {
+        lines,
+        hits,
+        recovery_range,
+    }
+}
+
+fn recovery_title(
+    title: &str,
+    width: usize,
+    app: &App,
+    control: &ContextControl,
+) -> (Line<'static>, Option<Range<u16>>) {
+    let action = super::contextual::label(control);
+    let action = shorten(&action, width);
+    let action_width = action.width().min(width);
+    let separator = if action_width < width { " · " } else { "" };
+    let prefix_width = width.saturating_sub(action_width + separator.width());
+    let prefix = shorten(title, prefix_width);
+    let start = prefix.width() + separator.width();
+    let focused = app.pane().contextual_focus.active
+        && app.pane().contextual_focus.cursor.as_ref() == Some(control);
+    let style = if focused {
+        focused_row()
+    } else {
+        emphasis(ACCENT)
+    };
+    let mut line = Line::styled(prefix, emphasis(MUTED));
+    line.push_span(separator);
+    line.push_span(Span::styled(action, style));
+    let range = (action_width > 0).then(|| {
+        let start = u16::try_from(start).unwrap_or(u16::MAX);
+        start..start.saturating_add(u16::try_from(action_width).unwrap_or(u16::MAX))
+    });
+    (line, range)
 }
 
 fn message(

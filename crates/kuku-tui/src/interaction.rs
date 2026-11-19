@@ -15,6 +15,7 @@ use crate::output::OutputViewer;
 use crate::text::{shorten, single_line, TAB};
 use crate::transcript::{ReplySource, ToolView};
 
+mod contextual;
 mod inline;
 mod pointer;
 
@@ -116,6 +117,7 @@ impl App {
                 prompt.editor.insert(&text.replace(['\r', '\n'], " "));
             }
         } else if self.modal.is_none() {
+            self.deactivate_context_focus();
             self.focus_composer();
             self.pane_mut().draft.insert(text);
         }
@@ -155,6 +157,9 @@ impl App {
     }
 
     fn composer_key(&mut self, key: KeyEvent) {
+        if self.contextual_key(key) {
+            return;
+        }
         if self.inline_key(key) {
             return;
         }
@@ -421,7 +426,7 @@ impl App {
                         PickerKind::Sessions | PickerKind::Paths(_) | PickerKind::Models
                     )
                 {
-                    picker.problem = Some("Service unavailable · /reconnect".into());
+                    picker.problem = Some("Service unavailable · Ctrl+R to reconnect".into());
                 }
                 return;
             }
@@ -514,6 +519,7 @@ impl App {
             ChoiceKind::PendingDiscard(id) => self.pending_discard(&id),
             ChoiceKind::PendingOpen { target, exists } => self.pending_open(target, exists),
             ChoiceKind::RestoreRejected(id) => self.restore_rejected(&id),
+            ChoiceKind::Reconnect => self.reconnect(),
             ChoiceKind::Detail(key) => {
                 if !self.toggle_transcript_detail(&key) {
                     self.problem("These details are no longer available");
@@ -532,16 +538,6 @@ impl App {
                 self.search(true);
             }
             CommandMenu::Agents => self.open_agents(),
-            CommandMenu::Back => self.back_to_agent(),
-            CommandMenu::Advance => {
-                if self.pane().exists {
-                    self.issue(self.active.clone(), Action::Advance);
-                }
-            }
-            CommandMenu::Interrupt => self.interrupt(),
-            CommandMenu::Pending => {
-                self.picker(PickerKind::Pending, self.pending_choices());
-            }
             CommandMenu::Model => {
                 self.picker(PickerKind::Models, Vec::new());
                 self.search(true);
@@ -561,8 +557,6 @@ impl App {
             CommandMenu::Details => self.open_details(),
             CommandMenu::Tools => self.open_tools(),
             CommandMenu::Server => self.open_server(),
-            CommandMenu::Reconnect => self.reconnect(),
-            CommandMenu::Restart => self.restart(),
             CommandMenu::Web if self.require_service() => {
                 self.effects.push(Job::Web(
                     self.pane().exists.then(|| self.selection().target),
@@ -735,7 +729,7 @@ impl App {
         let mut actions = vec![Choice::new(
             "Reconnect",
             "Check the connection again",
-            ChoiceKind::Command(CommandMenu::Reconnect),
+            ChoiceKind::Reconnect,
         )];
         if !self.remote {
             actions.push(Choice::new(

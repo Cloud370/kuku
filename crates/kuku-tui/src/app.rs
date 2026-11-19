@@ -10,6 +10,7 @@ use kuku_client::{
 use ratatui::layout::Rect;
 
 use crate::config::StatusLineSettings;
+use crate::contextual::{ContextFocus, ContextHit};
 use crate::editor::Editor;
 use crate::jobs::{Job, Restarted, Selection, Update};
 use crate::menu::{Picker, Prompt};
@@ -20,6 +21,7 @@ use crate::transcript::{HistoryRequest, Transcript};
 
 mod activity;
 pub(crate) mod agents;
+mod contextual;
 mod delivery;
 mod navigation;
 mod pending;
@@ -94,6 +96,7 @@ pub(crate) struct Pane {
     pub(crate) transcript: Transcript,
     pub(crate) deliveries: Deliveries,
     pub(crate) keyboard_focus: KeyboardFocus,
+    pub(crate) contextual_focus: ContextFocus,
     pub(crate) selected_queue_input: Option<String>,
     pub(crate) focused_request: Option<String>,
     pub(crate) permission_choice: Option<bool>,
@@ -310,6 +313,7 @@ pub(crate) struct App {
     pub(crate) request_area: Rect,
     pub(crate) request_hit: Option<(Target, String)>,
     pub(crate) permission_choice_areas: [Rect; 2],
+    pub(crate) contextual_hits: Vec<ContextHit>,
     pub(crate) reading_area: Rect,
     pub(crate) composer_area: Rect,
     pub(crate) modal_editor_width: usize,
@@ -355,6 +359,7 @@ impl App {
             request_area: Rect::ZERO,
             request_hit: None,
             permission_choice_areas: [Rect::ZERO; 2],
+            contextual_hits: Vec::new(),
             reading_area: Rect::ZERO,
             composer_area: Rect::ZERO,
             modal_editor_width: 60,
@@ -444,7 +449,7 @@ impl App {
             self.problem(if self.connecting {
                 "Connecting to the service…"
             } else {
-                "Service unavailable · /reconnect or /server"
+                "Service unavailable · Ctrl+R or /server"
             });
             false
         }
@@ -459,7 +464,7 @@ impl App {
             return;
         }
         if self.pane().sending {
-            self.problem("Wait for the current submission's receipt · /pending");
+            self.problem("Wait for the current submission's receipt before retrying it");
             return;
         }
         let target = self.target(&self.active);
@@ -468,7 +473,7 @@ impl App {
                 && matches!(item.command.action, Action::Send { .. })
                 && !matches!(item.stage, PendingStage::Rejected(_))
         }) {
-            self.problem("Check the previous send in /pending · draft kept");
+            self.problem("Check the previous send with delivery recovery · draft kept");
             return;
         }
         if self.pane().creation_rejected && !self.pane().exists {
@@ -527,7 +532,7 @@ impl App {
                     && matches!(item.command.action, Action::Configure { .. })
                     && !matches!(item.stage, PendingStage::Rejected(_))
             }) {
-                self.problem("Check the previous settings change in /pending");
+                self.problem("Wait for the previous settings change to be resolved");
                 return;
             }
             self.issue(
@@ -628,7 +633,7 @@ impl App {
             }
             Update::WatchFailed(selection, error) if selection == self.selection() => {
                 self.drop_watch(Watch::Failed(format!(
-                    "Agent updates · {error} · /reconnect"
+                    "Agent updates · {error} · Ctrl+R to reconnect"
                 )));
             }
             Update::Observation(selection, event) if selection == self.selection() => {
@@ -666,9 +671,7 @@ impl App {
             Update::Discarded(id, result) => self.discarded(&id, result),
             Update::Pending(result) => match result {
                 Ok(commands) => self.recover_pending(commands),
-                Err(error) => {
-                    self.problem(format!("Client storage · {error} · /reconnect to recheck"))
-                }
+                Err(error) => self.problem(format!("Client storage · {error} · Ctrl+R to recheck")),
             },
             Update::DefaultModel(version, result)
                 if version == self.model_version && !self.pane().exists =>
@@ -760,9 +763,9 @@ impl App {
     fn connect_failed(&mut self, error: Error) {
         self.connecting = false;
         let recovery = if self.remote {
-            "Check the server host configuration or remote credentials, then /reconnect"
+            "Check the server host configuration or remote credentials, then press Ctrl+R"
         } else {
-            "Use /server for status and restart, or /reconnect to retry"
+            "Use /server for status and restart, or press Ctrl+R to retry"
         };
         self.connection_problem = Some(format!("Connection · {error}\n{recovery}"));
     }
@@ -919,7 +922,7 @@ impl App {
                 snapshot.reply_preview = None;
                 pane.set_snapshot(snapshot);
             }
-            Err(error) => self.problem(format!("Agent state · {error} · /reconnect")),
+            Err(error) => self.problem(format!("Agent state · {error} · Ctrl+R to reconnect")),
         }
         if let Some(refresh) = refresh_due {
             self.request_refresh(refresh);

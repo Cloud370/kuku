@@ -176,7 +176,7 @@ impl App {
         picker.problem = match (service, has_snapshot) {
             (ServiceStatus::Connected, _) => None,
             (_, true) => Some(format!("{} · last observed state", service.label())),
-            (_, false) if !picker.loading => Some(format!("{} · /reconnect", service.label())),
+            (_, false) if !picker.loading => Some(format!("{} · Ctrl+R", service.label())),
             _ => None,
         };
         picker.set_local(choices);
@@ -365,14 +365,14 @@ mod tests {
         assert!(!restored.following);
         assert_eq!(reading.lines, restored.lines);
 
-        app.picker(
-            crate::menu::PickerKind::Commands,
-            crate::menu::Choice::commands(),
-        );
-        type_in_picker(&mut app, "/back");
+        let previous = app.previous_agent().cloned().unwrap();
+        let previous_draft = app.panes.get(&previous).unwrap().draft.text().to_owned();
+        assert!(app.focus_context_control(crate::contextual::ContextControl::PreviousAgent {
+            target: previous.clone(),
+        }));
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        assert_eq!("reviewer", &app.active.agent);
-        assert_eq!("Keep the child draft", app.pane().draft.text());
+        assert_eq!(previous.agent, app.active.agent);
+        assert_eq!(previous_draft, app.pane().draft.text());
 
         key(&mut app, KeyCode::Left, KeyModifiers::ALT);
         assert_eq!("review", app.active.agent);

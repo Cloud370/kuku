@@ -211,7 +211,11 @@ fn request_card_is_visible_without_focus_and_question_answer_is_scoped_and_stale
     assert_eq!(KeyboardFocus::Composer, app.pane().keyboard_focus);
     assert!(app.effects.is_empty());
 
-    key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
+    let buffer = terminal
+        .draw(|frame| render(frame, &mut app))
+        .unwrap()
+        .buffer;
+    click(&mut app, buffer, point);
     key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
         if matches!(&prompt.kind, PromptKind::Question { request_id, .. } if request_id == "q-1")));
@@ -219,7 +223,11 @@ fn request_card_is_visible_without_focus_and_question_answer_is_scoped_and_stale
     assert_eq!(KeyboardFocus::Composer, app.pane().keyboard_focus);
     assert_eq!("my independent draft", app.pane().draft.text());
     app.effects.clear();
-    key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
+    let buffer = terminal
+        .draw(|frame| render(frame, &mut app))
+        .unwrap()
+        .buffer;
+    click(&mut app, buffer, point);
     key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     if let Some(Modal::Prompt(prompt)) = &mut app.modal {
         prompt.editor.set_text("workspace tests".into());
