@@ -7,7 +7,7 @@
 
 The terminal, script and browser clients submit work to the server. The local clients reuse the managed service for the selected data directory. [Run the server](../guides/run-the-server.md)
 
-On its first local launch without a config file, the interactive TUI offers setup before opening a session. It skips existing config files and remote connections. The setup saves only a credential variable name and makes no model request. See [First-run TUI setup](../start/configuration.md#first-run-tui-setup).
+First-run interactive setup and `kuku init` use the same local provider-settings flow. `kuku init` requires a TTY, can edit an existing valid config, and never starts a service to configure it. Remote settings are not supported. See [Configuration](../start/configuration.md).
 
 ## Connection and workspace flags
 
@@ -33,7 +33,7 @@ Put options before the prompt in `kuku run`, because it consumes the remaining w
 | `kuku pending ...` | Reconcile submissions whose receipt was lost |
 | `kuku delete <session-id>` | Delete a session |
 | `kuku config ...` | Show, validate, or change config |
-| `kuku init` | Initialize config and runtime directories |
+| `kuku init` | Open shared local provider and credential settings |
 | `kuku prompts ...` | Show or export prompt assets |
 | `kuku agents ...` | List or inspect agents |
 | `kuku skills ...` | List or inspect skills |

@@ -17,3 +17,7 @@ pub use types::{
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "file_key_tests.rs"]
+mod file_key_tests;

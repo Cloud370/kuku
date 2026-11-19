@@ -7,7 +7,7 @@
 
 终端、脚本和浏览器客户端都向服务提交任务。本地客户端复用所选数据目录的受管服务。[运行服务](../guides/run-the-server.md)
 
-本地首次交互启动且配置文件不存在时，TUI 会在打开 Session 前提供设置流程。已有配置文件或远程连接会跳过此流程。设置只保存凭据变量名，不会发起模型请求。参见[首次运行设置](../start/configuration.md#tui-首次运行设置)。
+首次运行交互设置与 `kuku init` 共用本地 provider 设置流程。`kuku init` 需要 TTY，可编辑有效的已有配置，并且不会为了配置而启动服务。不支持远程配置。参见[配置指南](../start/configuration.md)。
 
 ## 连接与工作区选项
 
@@ -33,7 +33,7 @@
 | `kuku pending ...` | 核对丢失回执的提交 |
 | `kuku delete <session-id>` | 删除 Session |
 | `kuku config ...` | 查看、验证或修改配置 |
-| `kuku init` | 初始化配置和运行目录 |
+| `kuku init` | 打开共享的本地 provider 和凭据设置 |
 | `kuku prompts ...` | 查看或导出 Prompt 资产 |
 | `kuku agents ...` | 列出或查看 Agent 联系卡 |
 | `kuku skills ...` | 列出或查看 Skill |

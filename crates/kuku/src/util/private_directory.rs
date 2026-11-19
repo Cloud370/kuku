@@ -25,6 +25,11 @@ pub fn private_directory(path: &Path) -> io::Result<()> {
     ))
 }
 
+#[cfg(windows)]
+pub(super) fn open_private_key(path: &Path) -> io::Result<std::fs::File> {
+    windows::open_private_key(path)
+}
+
 #[cfg(unix)]
 fn unix_directory(path: &Path) -> io::Result<()> {
     use std::fs;

@@ -1827,6 +1827,7 @@ dependencies = [
  "kuku",
  "kuku-client",
  "kuku-server",
+ "kuku-tui",
  "serde",
  "serde_json",
  "tempfile",

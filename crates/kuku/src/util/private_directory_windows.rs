@@ -1,25 +1,28 @@
 use std::ffi::{c_void, CStr};
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::os::windows::ffi::OsStrExt;
-use std::os::windows::fs::MetadataExt;
+use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::Path;
 use std::ptr::{self, addr_of};
 
-use windows_sys::Win32::Foundation::{LocalFree, ERROR_ALREADY_EXISTS, ERROR_INSUFFICIENT_BUFFER};
+use windows_sys::Win32::Foundation::{
+    LocalFree, ERROR_ALREADY_EXISTS, ERROR_INSUFFICIENT_BUFFER, HANDLE,
+};
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidA, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-    GetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
+    GetNamedSecurityInfoW, GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
 };
 use windows_sys::Win32::Security::{
     EqualSid, GetAce, GetSecurityDescriptorControl, GetTokenInformation, TokenUser,
-    ACCESS_ALLOWED_ACE, ACL, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, OBJECT_INHERIT_ACE,
-    OWNER_SECURITY_INFORMATION, PSID, SECURITY_ATTRIBUTES, SE_DACL_PROTECTED, TOKEN_QUERY,
-    TOKEN_USER,
+    ACCESS_ALLOWED_ACE, ACL, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, INHERITED_ACE,
+    INHERIT_ONLY_ACE, OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION, PSID, SECURITY_ATTRIBUTES,
+    SE_DACL_PROTECTED, TOKEN_QUERY, TOKEN_USER,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateDirectoryW, FILE_ALL_ACCESS, FILE_ATTRIBUTE_REPARSE_POINT,
+    CreateDirectoryW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_ALL_ACCESS,
+    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
 };
 use windows_sys::Win32::System::SystemServices::ACCESS_ALLOWED_ACE_TYPE;
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
@@ -146,6 +149,33 @@ pub(super) fn private_directory(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+pub(super) fn open_private_key(path: &Path) -> io::Result<File> {
+    let mut name: Vec<u16> = path.as_os_str().encode_wide().collect();
+    if name.contains(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "credential file path contains NUL",
+        ));
+    }
+    name.push(0);
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+        .map_err(|_| unsafe_file())?;
+    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) } == 0 {
+        return Err(unsafe_file());
+    }
+    if information.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT) != 0
+        || information.nNumberOfLinks != 1
+        || !is_private_file(file.as_raw_handle(), &AccountSid::current()?)?
+    {
+        return Err(unsafe_file());
+    }
+    Ok(file)
+}
+
 fn is_private(name: &[u16], account: &AccountSid) -> io::Result<bool> {
     let mut owner = ptr::null_mut();
     let mut dacl = ptr::null_mut();
@@ -177,6 +207,59 @@ fn is_private(name: &[u16], account: &AccountSid) -> io::Result<bool> {
         && !owner.is_null()
         && unsafe { EqualSid(owner, account.sid()) } != 0
         && only_user_access(dacl, account))
+}
+
+fn is_private_file(handle: HANDLE, account: &AccountSid) -> io::Result<bool> {
+    let mut owner = ptr::null_mut();
+    let mut dacl = ptr::null_mut();
+    let mut descriptor = ptr::null_mut();
+    // NOTE: Security is queried from the opened handle, so path replacement cannot change the object checked.
+    let error = unsafe {
+        GetSecurityInfo(
+            handle,
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            &mut owner,
+            ptr::null_mut(),
+            &mut dacl,
+            ptr::null_mut(),
+            &mut descriptor,
+        )
+    };
+    if error != 0 {
+        return Err(io::Error::from_raw_os_error(error as i32));
+    }
+    let _descriptor = LocalAllocation(descriptor);
+    let mut ace = ptr::null_mut();
+    if owner.is_null()
+        || unsafe { EqualSid(owner, account.sid()) == 0 }
+        || dacl.is_null()
+        || unsafe { (*dacl).AceCount != 1 || GetAce(dacl, 0, &mut ace) == 0 }
+    {
+        return Ok(false);
+    }
+    // NOTE: GetAce returned an aligned ACE header in the live security descriptor.
+    Ok(unsafe {
+        let ace = ace.cast::<ACCESS_ALLOWED_ACE>();
+        let header = ace
+            .cast::<windows_sys::Win32::Security::ACE_HEADER>()
+            .read();
+        let flags = u32::from(header.AceFlags);
+        let allowed_flags = OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE | INHERITED_ACE;
+        u32::from(header.AceType) == ACCESS_ALLOWED_ACE_TYPE
+            && usize::from(header.AceSize) >= size_of::<ACCESS_ALLOWED_ACE>()
+            && flags & !allowed_flags == 0
+            && flags & INHERIT_ONLY_ACE == 0
+            && (*ace).Mask == FILE_ALL_ACCESS
+            && EqualSid(addr_of!((*ace).SidStart).cast_mut().cast(), account.sid()) != 0
+    })
+}
+
+fn unsafe_file() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        "stored credential file is not a private regular file",
+    )
 }
 
 fn only_user_access(dacl: *const ACL, account: &AccountSid) -> bool {

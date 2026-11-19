@@ -122,7 +122,15 @@ impl ConfigFile {
         let mut providers = BTreeMap::new();
         for (name, entry) in &self.provider {
             let api_key_raw = entry.api_key.trim();
-            let api_key = if let Some(env_name) = api_key_raw.strip_prefix('$') {
+            let api_key = if let Some(file_path) = api_key_raw.strip_prefix("file:") {
+                let path = std::path::PathBuf::from(file_path);
+                if !path.is_absolute() {
+                    return Err(Error::ConfigLoad(format!(
+                        "provider '{name}': file api_key must use an absolute path"
+                    )));
+                }
+                ApiKey::File(path)
+            } else if let Some(env_name) = api_key_raw.strip_prefix('$') {
                 ApiKey::Env(env_name.to_string())
             } else {
                 ApiKey::Plaintext(api_key_raw.to_string())
@@ -261,6 +269,13 @@ impl ConfigFile {
                     )));
                 }
             }
+            if let Some(file_path) = api_key.strip_prefix("file:") {
+                if !Path::new(file_path).is_absolute() {
+                    return Err(Error::ConfigLoad(format!(
+                        "provider '{name}': file api_key must use an absolute path"
+                    )));
+                }
+            }
         }
         Ok(())
     }
@@ -292,6 +307,9 @@ impl ApiKey {
         match self {
             ApiKey::Env(name) => std::env::var(name).map_err(|_| {
                 Error::ConfigLoad(format!("env var '{name}' referenced by api_key is not set"))
+            }),
+            ApiKey::File(path) => crate::util::read_private_key(path).map_err(|_| {
+                Error::ConfigLoad("stored credential file is unavailable or unsafe".into())
             }),
             ApiKey::Plaintext(key) => Ok(key.clone()),
         }
