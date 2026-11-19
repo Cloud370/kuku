@@ -16,6 +16,10 @@ use super::types::{PreparedProviderRequest, ProviderFailure, ProviderRequest, Re
 
 const TRUNCATED_STREAM_MESSAGE: &str = "provider stream ended before message_stop";
 
+#[cfg(test)]
+#[path = "anthropic_thinking_tests.rs"]
+mod thinking_tests;
+
 pub(crate) fn messages_url(base_url: &str) -> String {
     let base = base_url.trim_end_matches('/');
     if base.ends_with("/v1") {
@@ -199,7 +203,7 @@ pub(crate) async fn stream_prepared(
 
 struct AnthropicSseParser {
     chunks: Vec<ProviderChunk>,
-    require_thinking_signature: bool,
+    thinking_signature_required_for_replay: bool,
     public_reasoning_text: bool,
     last_public_block: Option<u64>,
     tool_blocks: BTreeSet<u64>,
@@ -213,10 +217,10 @@ struct AnthropicSseParser {
 }
 
 impl AnthropicSseParser {
-    fn new(require_thinking_signature: bool, public_reasoning_text: bool) -> Self {
+    fn new(thinking_signature_required_for_replay: bool, public_reasoning_text: bool) -> Self {
         Self {
             chunks: Vec::new(),
-            require_thinking_signature,
+            thinking_signature_required_for_replay,
             public_reasoning_text,
             last_public_block: None,
             tool_blocks: BTreeSet::new(),
@@ -478,7 +482,19 @@ impl AnthropicSseParser {
                     self.invalidate_tool_stream();
                 }
                 if !self.invalid_tool_stream && !self.content_blocks.is_empty() {
-                    let value = json!({"role": "assistant", "content": self.content_blocks.values().cloned().collect::<Vec<_>>()});
+                    let content = self
+                        .content_blocks
+                        .values()
+                        .filter(|block| {
+                            !self.thinking_signature_required_for_replay
+                                || block["type"] != "thinking"
+                                || block["signature"]
+                                    .as_str()
+                                    .is_some_and(|signature| !signature.is_empty())
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    let value = json!({"role": "assistant", "content": content});
                     validate_replay_size(&value)?;
                     self.chunks.push(ProviderChunk::Replay {
                         protocol: ProviderFormat::Anthropic,
@@ -512,13 +528,6 @@ impl AnthropicSseParser {
 
     fn complete_content(&self) -> bool {
         self.content_blocks.len() == self.completed_blocks.len()
-            && (!self.require_thinking_signature
-                || self.content_blocks.values().all(|block| {
-                    block["type"] != "thinking"
-                        || block["signature"]
-                            .as_str()
-                            .is_some_and(|signature| !signature.is_empty())
-                }))
     }
 
     fn invalidate_tool_stream(&mut self) {
@@ -768,37 +777,147 @@ mod tests {
     }
 
     #[test]
-    fn a_completed_tool_cannot_dispatch_with_incomplete_or_unsigned_thinking() {
-        for close_thinking in [false, true] {
-            let mut parser = AnthropicSseParser::new(true, false);
-            let initial = parser.feed(r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"private fixture"}}"#).unwrap();
-            assert!(matches!(initial.as_slice(), [ProviderChunk::Reasoning]));
-            if close_thinking {
-                parser
-                    .feed(r#"data: {"type":"content_block_stop","index":0}"#)
-                    .unwrap();
-            } else {
-                parser.feed(r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"fixture-signature"}}"#).unwrap();
-            }
-            parser.feed(r#"data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"call","name":"read_file","input":{}}}"#).unwrap();
+    fn a_completed_tool_cannot_dispatch_with_incomplete_thinking() {
+        let mut parser = AnthropicSseParser::new(true, false);
+        let initial = parser.feed(r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"fixture"}}"#).unwrap();
+        assert!(matches!(initial.as_slice(), [ProviderChunk::Reasoning]));
+        parser.feed(r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"fixture-signature"}}"#).unwrap();
+        parser.feed(r#"data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"call","name":"read_file","input":{}}}"#).unwrap();
+        parser
+            .feed(r#"data: {"type":"content_block_stop","index":1}"#)
+            .unwrap();
+        let terminal = parser
+            .feed(r#"data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}"#)
+            .unwrap();
+        assert!(matches!(
+            terminal.as_slice(),
+            [
+                ProviderChunk::InvalidToolStream,
+                ProviderChunk::StopReason {
+                    reason: ModelStopReason::InvalidResponse
+                }
+            ]
+        ));
+        let ended = parser.feed(r#"data: {"type":"message_stop"}"#).unwrap();
+        assert!(matches!(ended.as_slice(), [ProviderChunk::StreamEnd]));
+    }
+
+    #[test]
+    fn unsigned_thinking_is_valid_but_omitted_from_native_replay() {
+        let mut parser = AnthropicSseParser::new(true, true);
+        let mut chunks = parser
+            .feed(r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}"#)
+            .unwrap();
+        chunks.extend(parser.feed(r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"fixture reasoning"}}"#).unwrap());
+        chunks.extend(
+            parser
+                .feed(r#"data: {"type":"content_block_stop","index":0}"#)
+                .unwrap(),
+        );
+        chunks.extend(parser.feed(r#"data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}"#).unwrap());
+        chunks.extend(parser.feed(r#"data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"answer"}}"#).unwrap());
+        chunks.extend(
             parser
                 .feed(r#"data: {"type":"content_block_stop","index":1}"#)
-                .unwrap();
-            let terminal = parser
-                .feed(r#"data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}"#)
-                .unwrap();
-            assert!(matches!(
-                terminal.as_slice(),
-                [
-                    ProviderChunk::InvalidToolStream,
-                    ProviderChunk::StopReason {
-                        reason: ModelStopReason::InvalidResponse
-                    }
-                ]
-            ));
-            let ended = parser.feed(r#"data: {"type":"message_stop"}"#).unwrap();
-            assert!(matches!(ended.as_slice(), [ProviderChunk::StreamEnd]));
-        }
+                .unwrap(),
+        );
+
+        let terminal = parser
+            .feed(r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#)
+            .unwrap();
+        assert!(matches!(
+            terminal.as_slice(),
+            [ProviderChunk::StopReason {
+                reason: ModelStopReason::EndTurn
+            }]
+        ));
+        chunks.extend(terminal);
+        let ended = parser.feed(r#"data: {"type":"message_stop"}"#).unwrap();
+        let replay = ended.iter().find_map(|chunk| match chunk {
+            ProviderChunk::Replay { value, .. } => Some(value),
+            _ => None,
+        });
+        assert_eq!(
+            Some(&json!([{"type":"text","text":"answer"}])),
+            replay.and_then(|value| value.get("content"))
+        );
+        assert!(ended
+            .iter()
+            .any(|chunk| matches!(chunk, ProviderChunk::StreamEnd)));
+        assert!(chunks.iter().any(|chunk| matches!(
+            chunk,
+            ProviderChunk::ThinkingDelta { text } if text == "fixture reasoning"
+        )));
+        assert!(chunks.iter().any(|chunk| matches!(
+            chunk,
+            ProviderChunk::TextDelta { text } if text == "answer"
+        )));
+        assert!(!chunks
+            .iter()
+            .any(|chunk| matches!(chunk, ProviderChunk::InvalidToolStream)));
+    }
+
+    #[test]
+    fn signed_thinking_remains_in_native_replay() {
+        let mut parser = AnthropicSseParser::new(true, false);
+        parser
+            .feed(r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"fixture reasoning"}}"#)
+            .unwrap();
+        parser.feed(r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"fixture-signature"}}"#).unwrap();
+        parser
+            .feed(r#"data: {"type":"content_block_stop","index":0}"#)
+            .unwrap();
+        let terminal = parser
+            .feed(r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#)
+            .unwrap();
+        assert!(matches!(
+            terminal.as_slice(),
+            [ProviderChunk::StopReason {
+                reason: ModelStopReason::EndTurn
+            }]
+        ));
+
+        let ended = parser.feed(r#"data: {"type":"message_stop"}"#).unwrap();
+        let replay = ended.iter().find_map(|chunk| match chunk {
+            ProviderChunk::Replay { value, .. } => Some(value),
+            _ => None,
+        });
+        assert_eq!(
+            Some(
+                &json!([{"type":"thinking","thinking":"fixture reasoning","signature":"fixture-signature"}])
+            ),
+            replay.and_then(|value| value.get("content"))
+        );
+    }
+
+    #[test]
+    fn compatible_connection_preserves_unsigned_thinking_replay() {
+        let mut parser = AnthropicSseParser::new(false, false);
+        parser
+            .feed(r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"fixture reasoning"}}"#)
+            .unwrap();
+        parser
+            .feed(r#"data: {"type":"content_block_stop","index":0}"#)
+            .unwrap();
+        let terminal = parser
+            .feed(r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#)
+            .unwrap();
+        assert!(matches!(
+            terminal.as_slice(),
+            [ProviderChunk::StopReason {
+                reason: ModelStopReason::EndTurn
+            }]
+        ));
+
+        let ended = parser.feed(r#"data: {"type":"message_stop"}"#).unwrap();
+        let replay = ended.iter().find_map(|chunk| match chunk {
+            ProviderChunk::Replay { value, .. } => Some(value),
+            _ => None,
+        });
+        assert_eq!(
+            Some(&json!([{"type":"thinking","thinking":"fixture reasoning"}])),
+            replay.and_then(|value| value.get("content"))
+        );
     }
 
     #[test]

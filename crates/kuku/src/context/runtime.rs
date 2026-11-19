@@ -5,6 +5,7 @@ use crate::context::{CanonicalMessage, MessageBlock, Role, ToolSchema};
 use crate::conversation::address::ConversationAddress;
 use crate::event::{EventPayload, EventStore, StoredEvent};
 use crate::prompt::PromptCatalog;
+use crate::provider::types::ProviderCapabilities;
 use crate::{Error, Result};
 
 const PAGE_RECORDS: usize = 256;
@@ -31,6 +32,10 @@ pub(crate) struct FrozenSegment {
     #[serde(default)]
     pub(crate) endpoint: String,
     #[serde(default)]
+    pub(crate) capabilities: Option<ProviderCapabilities>,
+    #[serde(default)]
+    pub(crate) route_selectors: Option<RouteSelectors>,
+    #[serde(default)]
     pub(crate) behavior: String,
     #[serde(default = "identity_slot")]
     pub(crate) identity_slot: usize,
@@ -38,6 +43,25 @@ pub(crate) struct FrozenSegment {
     pub(crate) handoff_prelude: Option<usize>,
     #[serde(default)]
     pub(crate) workspace: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct RouteSelectors {
+    pub(crate) query_connection: Option<String>,
+    pub(crate) query_model: Option<String>,
+    pub(crate) query_tier: Option<String>,
+}
+
+fn route_selectors_changed(segment: Option<&FrozenSegment>, config: &serde_json::Value) -> bool {
+    let Some(recorded) = segment.and_then(|segment| segment.route_selectors.as_ref()) else {
+        return false;
+    };
+    let selectors = RouteSelectors {
+        query_connection: config["connection"].as_str().map(str::to_owned),
+        query_model: config["model"].as_str().map(str::to_owned),
+        query_tier: config["tier"].as_str().map(str::to_owned),
+    };
+    recorded != &selectors
 }
 
 fn identity_slot() -> usize {
@@ -83,6 +107,8 @@ pub(crate) struct ContextCursor {
     pub(crate) segment: Option<FrozenSegment>,
     pub(crate) admitted: Vec<AdmittedMessage>,
     pub(crate) configuration: u64,
+    pub(crate) configured: u64,
+    configurations: BTreeMap<u64, RouteSelectors>,
     pub(crate) handoff: Option<StoredEvent>,
     pub(crate) input_tokens: Option<u32>,
     pub(crate) events_read: u64,
@@ -95,6 +121,38 @@ pub(crate) struct ContextCursor {
 }
 
 impl ContextCursor {
+    fn observe_configuration(&mut self, event_id: u64, config: &serde_json::Value) {
+        self.configuration = event_id;
+        self.configurations.insert(
+            event_id,
+            RouteSelectors {
+                query_connection: config["connection"].as_str().map(str::to_owned),
+                query_model: config["model"].as_str().map(str::to_owned),
+                query_tier: config["tier"].as_str().map(str::to_owned),
+            },
+        );
+    }
+
+    pub(crate) fn select_configuration(&mut self, selectors: &RouteSelectors) {
+        let matching = self
+            .configurations
+            .iter()
+            .rev()
+            .find(|(_, recorded)| *recorded == selectors)
+            .map(|(event_id, _)| *event_id);
+        if let Some(event_id) = matching {
+            self.configuration = event_id;
+            if self.segment.as_ref().is_some_and(|segment| {
+                segment
+                    .route_selectors
+                    .as_ref()
+                    .is_some_and(|recorded| recorded != selectors)
+            }) {
+                self.configured = self.configured.max(event_id);
+            }
+        }
+    }
+
     fn read_assets(&mut self, path: &Path, agent: &str) -> Result<()> {
         let mut candidate = None;
         self.after = scan(path, self.after, |event| {
@@ -138,14 +196,23 @@ impl ContextCursor {
                     }
                 }
                 if let EventPayload::Unknown(value) = &event.payload {
-                    if value["kind"] == "runtime.operation"
-                        && value["record"]["address"] == agent
-                        && matches!(
-                            value["record"]["operation"].as_str(),
-                            Some("agent_created" | "agent_configured")
-                        )
-                    {
-                        self.configuration = event.id;
+                    if value["kind"] == "runtime.operation" {
+                        let record = &value["record"];
+                        match record["operation"].as_str() {
+                            Some("agent_created") if record["address"] == agent => {
+                                self.observe_configuration(event.id, &record["config"]);
+                            }
+                            Some("agent_configured") if record["address"] == agent => {
+                                self.observe_configuration(event.id, &record["config"]);
+                            }
+                            Some("input_delivered")
+                                if record["input"]["target"] == agent
+                                    && record["config"].is_object() =>
+                            {
+                                self.observe_configuration(event.id, &record["config"]);
+                            }
+                            _ => {}
+                        }
                     }
                     if value["agent"] == agent {
                         if value["kind"] == "runtime.context_segment" {
@@ -196,14 +263,28 @@ impl ContextCursor {
             }
         }
         if let EventPayload::Unknown(value) = &event.payload {
-            if value["kind"] == "runtime.operation"
-                && value["record"]["address"] == agent
-                && matches!(
-                    value["record"]["operation"].as_str(),
-                    Some("agent_created" | "agent_configured")
-                )
-            {
-                self.configuration = event.id;
+            if value["kind"] == "runtime.operation" {
+                let record = &value["record"];
+                match record["operation"].as_str() {
+                    Some("agent_created") if record["address"] == agent => {
+                        self.observe_configuration(event.id, &record["config"]);
+                    }
+                    Some("agent_configured") if record["address"] == agent => {
+                        self.observe_configuration(event.id, &record["config"]);
+                        if route_selectors_changed(self.segment.as_ref(), &record["config"]) {
+                            self.configured = event.id;
+                        }
+                    }
+                    Some("input_delivered")
+                        if record["input"]["target"] == agent && record["config"].is_object() =>
+                    {
+                        self.observe_configuration(event.id, &record["config"]);
+                        if route_selectors_changed(self.segment.as_ref(), &record["config"]) {
+                            self.configured = event.id;
+                        }
+                    }
+                    _ => {}
+                }
             }
             if value["agent"] == agent {
                 match value["kind"].as_str() {
