@@ -771,9 +771,9 @@ mod tests {
     }
 
     #[test]
-    fn usage_on_completion_chunk_is_emitted() {
+    fn usage_on_completion_chunk_emits_cache_read_and_write_counts() {
         let mut parser = OpenAiCompatSseParser::new(false);
-        let frame = r#"data: {"id":"chatcmpl_usage","choices":[{"index":0,"delta":{"content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":88,"completion_tokens":18,"total_tokens":106,"prompt_tokens_details":{"cached_tokens":34}}}"#;
+        let frame = r#"data: {"id":"chatcmpl_usage","choices":[{"index":0,"delta":{"content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":88,"completion_tokens":18,"total_tokens":106,"prompt_tokens_details":{"cached_tokens":34,"cache_write_tokens":12}}}"#;
 
         let chunks = parser.feed(frame).unwrap();
 
@@ -783,7 +783,7 @@ mod tests {
                 input_tokens: Some(88),
                 output_tokens: Some(18),
                 cache_read_input_tokens: Some(34),
-                cache_creation_input_tokens: None
+                cache_creation_input_tokens: Some(12)
             }
         )));
     }

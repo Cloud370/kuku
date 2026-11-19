@@ -41,6 +41,12 @@ pub(crate) fn prepare_provider_request(
     };
     body["stream"] = json!(true);
     apply_settings(config, &mut body);
+    if config.kind == ProviderKind::OpenAiCompatible
+        && config.capabilities.profile == ProviderProfile::OpenRouter
+        && config.model.starts_with("anthropic/claude-")
+    {
+        body["cache_control"] = json!({"type": "ephemeral"});
+    }
     let correlation_id = correlation.map(correlation_id);
     if let Some(cache_key) = prompt_cache_key(config, correlation, &url) {
         body["prompt_cache_key"] = json!(cache_key);
@@ -317,6 +323,138 @@ mod tests {
             memory_sources: Vec::new(),
             runtime_context: None,
             handoff_summary: None,
+        }
+    }
+
+    fn provider_config(
+        kind: ProviderKind,
+        profile: ProviderProfile,
+        model: &str,
+    ) -> ResolvedProvider {
+        let mut config = ResolvedProvider {
+            connection_name: "router".into(),
+            kind,
+            model: model.into(),
+            base_url: "https://openrouter.ai/api/v1".into(),
+            ..Default::default()
+        };
+        config.capabilities.profile = profile;
+        config
+    }
+
+    fn prepared_request(
+        config: &ResolvedProvider,
+        correlation: Option<&ProviderCorrelation>,
+    ) -> PreparedProviderRequest {
+        let catalog = crate::prompt::builtin_prompt_catalog();
+        let request = ProviderRequest {
+            assembly: assembly(),
+            catalog: &catalog,
+            current_input: CanonicalPromptInput { parts: Vec::new() },
+            model: config.model.clone(),
+            max_output_tokens: Some(64),
+            temperature: None,
+            stream: true,
+            think_level: crate::config::ThinkLevel::Off,
+            thinking: Default::default(),
+        };
+        prepare_provider_request(config, &request, correlation).unwrap()
+    }
+
+    #[test]
+    fn openrouter_claude_chat_requests_automatic_prompt_caching() {
+        let workspace = tempfile::tempdir().unwrap();
+        let correlation = ProviderCorrelation {
+            session_id: "session".into(),
+            agent_address: "main".into(),
+            connection_name: "router".into(),
+            workspace: workspace.path().into(),
+        };
+
+        for model in ["anthropic/claude-sonnet-5.5", "anthropic/claude-sonnet-4.5"] {
+            let config = provider_config(
+                ProviderKind::OpenAiCompatible,
+                ProviderProfile::OpenRouter,
+                model,
+            );
+            let prepared = prepared_request(&config, Some(&correlation));
+
+            assert_eq!(json!({"type": "ephemeral"}), prepared.body["cache_control"]);
+            assert_eq!(
+                prepared.correlation_id.as_deref(),
+                prepared.body["session_id"].as_str()
+            );
+            assert!(prepared.body.get("prompt_cache_key").is_none());
+        }
+    }
+
+    #[test]
+    fn automatic_chat_cache_control_is_scoped_to_openrouter_claude_models() {
+        let cases = [
+            (
+                ProviderKind::OpenAiCompatible,
+                ProviderProfile::OpenRouter,
+                "openai/gpt-5.4-mini",
+            ),
+            (
+                ProviderKind::OpenAiCompatible,
+                ProviderProfile::OpenRouter,
+                "claude-sonnet-5.5",
+            ),
+            (
+                ProviderKind::OpenAiCompatible,
+                ProviderProfile::Compatible,
+                "anthropic/claude-sonnet-5.5",
+            ),
+            (
+                ProviderKind::OpenAiCompatible,
+                ProviderProfile::OpenAi,
+                "anthropic/claude-sonnet-5.5",
+            ),
+            (
+                ProviderKind::OpenAiCompatible,
+                ProviderProfile::DeepSeek,
+                "anthropic/claude-sonnet-5.5",
+            ),
+            (
+                ProviderKind::OpenAiCompatible,
+                ProviderProfile::DeepSeek,
+                "deepseek-chat",
+            ),
+            (
+                ProviderKind::OpenAiResponses,
+                ProviderProfile::OpenRouter,
+                "anthropic/claude-sonnet-5.5",
+            ),
+        ];
+
+        for (kind, profile, model) in cases {
+            let config = provider_config(kind, profile, model);
+            let prepared = prepared_request(&config, None);
+            assert!(
+                prepared.body.get("cache_control").is_none(),
+                "unexpected cache_control for {kind:?}, {profile:?}, {model}"
+            );
+        }
+    }
+
+    #[test]
+    fn anthropic_messages_cache_control_is_retained_and_deepseek_omits_it() {
+        let openrouter = provider_config(
+            ProviderKind::Anthropic,
+            ProviderProfile::OpenRouter,
+            "anthropic/claude-sonnet-5.5",
+        );
+        let prepared = prepared_request(&openrouter, None);
+        assert_eq!(json!({"type": "ephemeral"}), prepared.body["cache_control"]);
+
+        for (kind, model) in [
+            (ProviderKind::OpenAiCompatible, "deepseek-chat"),
+            (ProviderKind::Anthropic, "deepseek-chat"),
+        ] {
+            let deepseek = provider_config(kind, ProviderProfile::DeepSeek, model);
+            let prepared = prepared_request(&deepseek, None);
+            assert!(prepared.body.get("cache_control").is_none());
         }
     }
 
