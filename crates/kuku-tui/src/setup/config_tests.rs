@@ -11,6 +11,13 @@ use super::{save, save_with_hook, stage_key_with_sync, Settings};
 use crate::setup::state::SetupState;
 use crate::setup::CredentialSource;
 
+const INLINE_CONFIG: &str = r#"
+default_model = "balanced"
+unrelated_root = "keep"
+model = { strong = { provider = "anthropic", model = "strong-model", think = "high" }, balanced = { provider = "anthropic", model = "balanced-model", think = "medium", reasoning_effort = "low", service_tier = "flex" }, light = { provider = "anthropic", model = "light-model", think = "off" } }
+provider = { anthropic = { format = "anthropic", base_url = "https://api.anthropic.com", api_key = "$ANTHROPIC_API_KEY" }, openai = { format = "openai-responses", base_url = "https://existing-openai.invalid/v1", api_key = "$OPENAI_API_KEY" } }
+"#;
+
 fn options(root: &std::path::Path, config: Option<std::path::PathBuf>) -> ConnectionOptions {
     let workspace = root.join("workspace");
     fs::create_dir_all(&workspace).unwrap();
@@ -139,6 +146,60 @@ async fn prefill_uses_normalized_custom_default_route_and_preserves_options() {
     assert_eq!("route-model", preferred.model);
     assert_eq!(Some("high"), preferred.reasoning_effort.as_deref());
     assert_eq!(Some("priority"), preferred.service_tier.as_deref());
+}
+
+#[tokio::test]
+async fn settings_edit_inline_model_and_provider_tables() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("inline.toml");
+    fs::write(&config, INLINE_CONFIG).unwrap();
+    let settings = Settings::load(options(directory.path(), Some(config.clone())))
+        .await
+        .unwrap();
+    let mut state = SetupState::new(&settings);
+    state.environment.set_text("MIGRATED_API_KEY".into());
+    save(&settings, &state).unwrap();
+
+    let output = fs::read_to_string(&config).unwrap();
+    assert!(output.contains("model = {"));
+    assert!(output.contains("provider = {"));
+    assert!(output.contains("unrelated_root = \"keep\""));
+    let parsed = load_config(&config).unwrap();
+    assert_eq!("$MIGRATED_API_KEY", parsed.provider["anthropic"].api_key);
+    assert_eq!(
+        "https://existing-openai.invalid/v1",
+        parsed.provider["openai"].base_url
+    );
+    assert_eq!(Some("low"), parsed.model["balanced"].reasoning_effort.as_deref());
+    assert_eq!(Some("flex"), parsed.model["balanced"].service_tier.as_deref());
+}
+
+#[tokio::test]
+async fn preset_save_adds_an_inline_provider_without_overwriting_existing() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("inline.toml");
+    fs::write(&config, INLINE_CONFIG).unwrap();
+    let settings = Settings::load(options(directory.path(), Some(config.clone())))
+        .await
+        .unwrap();
+    let mut state = SetupState::new(&settings);
+    let preset = crate::setup::ProviderPreset::OpenAi;
+    state.selected = state
+        .choices
+        .iter()
+        .position(|choice| *choice == crate::setup::ConnectionChoice::Preset(preset))
+        .unwrap();
+    state.model.set_text(preset.default_model().into());
+    state.environment.set_text("OPENAI_SETUP_KEY".into());
+    save(&settings, &state).unwrap();
+
+    let output = fs::read_to_string(&config).unwrap();
+    assert!(output.contains("provider = {"));
+    assert!(output.contains("openai_setup = {"));
+    let parsed = load_config(&config).unwrap();
+    assert_eq!("https://existing-openai.invalid/v1", parsed.provider["openai"].base_url);
+    assert_eq!("$OPENAI_SETUP_KEY", parsed.provider["openai_setup"].api_key);
+    assert_eq!("openai_setup", parsed.model["balanced"].provider);
 }
 
 #[tokio::test]

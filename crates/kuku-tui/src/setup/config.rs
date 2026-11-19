@@ -6,7 +6,7 @@ use kuku::config::{generate_default, load_config, parse_config_text, ApiKey, Con
 use kuku::util::{is_valid_private_key, private_directory, sync_private_directory};
 use kuku_client::ConnectionOptions;
 use tempfile::{Builder, NamedTempFile};
-use toml_edit::{value, DocumentMut, Item, Table};
+use toml_edit::{value, DocumentMut, InlineTable, Item, Table, TableLike, Value};
 
 use super::state::{valid_env_name, valid_stored_key, SetupState};
 use super::{ConnectionChoice, CredentialSource, ProviderPreset};
@@ -376,26 +376,29 @@ fn save_with_hook(
 
     let mut document = settings.document.clone();
     if !settings.existing {
-        if let Some(providers) = document.get_mut("provider").and_then(Item::as_table_mut) {
+        if let Some(providers) = document
+            .get_mut("provider")
+            .and_then(Item::as_table_like_mut)
+        {
             providers.clear();
         }
         for tier in ["strong", "balanced", "light"] {
             if let Some(model_entry) = document
                 .get_mut("model")
-                .and_then(Item::as_table_mut)
+                .and_then(Item::as_table_like_mut)
                 .and_then(|table| table.get_mut(tier))
-                .and_then(Item::as_table_mut)
+                .and_then(Item::as_table_like_mut)
             {
-                model_entry["provider"] = value(provider_name.as_str());
-                model_entry["model"] = value(model.as_str());
+                model_entry.insert("provider", value(provider_name.as_str()));
+                model_entry.insert("model", value(model.as_str()));
             }
         }
         document["default_model"] = value("balanced");
     } else if let Some(model_entry) = document
         .get_mut("model")
-        .and_then(Item::as_table_mut)
+        .and_then(Item::as_table_like_mut)
         .and_then(|table| table.get_mut(&settings.default_tier))
-        .and_then(Item::as_table_mut)
+        .and_then(Item::as_table_like_mut)
     {
         let route_changed = settings
             .resolved
@@ -415,24 +418,32 @@ fn save_with_hook(
     match choice {
         ConnectionChoice::Existing(name) => {
             let api_key = document
-                .get_mut("provider")
-                .and_then(Item::as_table_mut)
-                .and_then(|table| table.get_mut(name))
-                .and_then(Item::as_table_mut)
+                .get("provider")
+                .and_then(Item::as_table_like)
+                .and_then(|table| table.get(name))
+                .and_then(Item::as_table_like)
                 .and_then(|table| table.get("api_key"))
                 .and_then(Item::as_str)
-                .unwrap_or_default();
+                .unwrap_or_default()
+                .to_owned();
             if api_key != key_reference {
-                document["provider"][name]["api_key"] = value(key_reference.as_str());
+                let provider = document
+                    .get_mut("provider")
+                    .and_then(Item::as_table_like_mut)
+                    .and_then(|table| table.get_mut(name))
+                    .and_then(Item::as_table_like_mut)
+                    .ok_or_else(|| invalid_config("the selected provider cannot be edited"))?;
+                provider.insert("api_key", value(key_reference.as_str()));
             }
         }
         ConnectionChoice::Preset(preset) => {
-            let mut table = Table::new();
-            table["format"] = value(preset.format());
-            table["base_url"] = value(preset.base_url());
-            table["api_key"] = value(key_reference.as_str());
-            table["profile"] = value(preset.profile());
-            document["provider"][provider_name.as_str()] = Item::Table(table);
+            let inline = providers_is_inline(&document);
+            let entry = provider_entry(preset, key_reference.as_str(), inline);
+            let providers = document
+                .get_mut("provider")
+                .and_then(Item::as_table_like_mut)
+                .ok_or_else(|| invalid_config("the provider table cannot be edited"))?;
+            providers.insert(&provider_name, entry);
         }
     }
 
@@ -456,7 +467,10 @@ fn provider_name(settings: &Settings, choice: &ConnectionChoice) -> String {
         ConnectionChoice::Existing(name) => name.clone(),
         ConnectionChoice::Preset(preset) if !settings.existing => preset.connection().into(),
         ConnectionChoice::Preset(preset) => {
-            let providers = settings.document.get("provider").and_then(Item::as_table);
+            let providers = settings
+                .document
+                .get("provider")
+                .and_then(Item::as_table_like);
             let base = format!("{}_setup", preset.connection());
             if providers.is_none_or(|table| !table.contains_key(&base)) {
                 base
@@ -468,6 +482,26 @@ fn provider_name(settings: &Settings, choice: &ConnectionChoice) -> String {
             }
         }
     }
+}
+
+fn providers_is_inline(document: &DocumentMut) -> bool {
+    document
+        .get("provider")
+        .is_some_and(Item::is_inline_table)
+}
+
+fn provider_entry(preset: ProviderPreset, api_key: &str, inline: bool) -> Item {
+    let mut entry = if inline {
+        Item::Value(Value::InlineTable(InlineTable::new()))
+    } else {
+        Item::Table(Table::new())
+    };
+    let fields = entry.as_table_like_mut().expect("provider entry is a table");
+    fields.insert("format", value(preset.format()));
+    fields.insert("base_url", value(preset.base_url()));
+    fields.insert("api_key", value(api_key));
+    fields.insert("profile", value(preset.profile()));
+    entry
 }
 
 struct StagedKey {
