@@ -213,6 +213,7 @@ pub enum AgentProgress {
     },
 }
 
+/// Lifecycle phase of a model retry decision.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RetryPhase {
@@ -228,6 +229,7 @@ pub enum RetryPhase {
     Unknown,
 }
 
+/// Durable event source represented by retry metadata.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RetrySource {
@@ -243,6 +245,7 @@ pub enum RetrySource {
     Unknown,
 }
 
+/// Authoritative model-request failure category from the runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RetryFailureKind {
@@ -273,6 +276,7 @@ pub enum RetryFailureKind {
     Unknown,
 }
 
+/// Policy reason automatic model retrying stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RetryStopReason {
