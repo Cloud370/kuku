@@ -1,5 +1,6 @@
 use kuku_client::{HistoryEntry, HistoryKind, RewindGroup, RewindGroupPage};
 use ratatui::style::Style;
+use ratatui::text::Span;
 
 use crate::markup::{render_literal, wrap_bounded};
 use crate::text::shorten;
@@ -177,15 +178,21 @@ impl RewindGroupState {
         }
         if self.truncated {
             if let Some(row) = self.rows.last_mut() {
-                row.line = wrap_bounded(
+                let inset = 2.min(width) as u16;
+                let mut line = wrap_bounded(
                     render_literal("… Display limit reached", Style::default().fg(MUTED)),
-                    width,
+                    width.saturating_sub(usize::from(inset)),
                     1,
                 )
                 .into_iter()
                 .next()
                 .unwrap_or_default();
-                row.inset = 2;
+                if inset > 0 && !line.spans.is_empty() {
+                    line.spans
+                        .insert(0, Span::raw(" ".repeat(usize::from(inset))));
+                }
+                row.line = line;
+                row.inset = inset;
                 row.links.clear();
                 if let Some(entry) = self.row_entries.last_mut() {
                     *entry = None;
@@ -367,15 +374,26 @@ impl RewindGroupState {
         }
         let first = self.rows.len();
         let remaining = MAX_GROUP_ROWS.saturating_sub(first);
-        let mut lines = wrap_bounded(render_literal(text, style), width, remaining);
+        let inset = usize::from(inset).min(width);
+        let mut lines = wrap_bounded(
+            render_literal(text, style),
+            width.saturating_sub(inset),
+            remaining,
+        );
         if lines.len() > remaining {
             self.truncated = true;
             lines.truncate(remaining);
         }
-        self.rows.extend(lines.into_iter().map(|line| Row {
-            line,
-            inset,
-            links: Vec::new(),
+        self.rows.extend(lines.into_iter().map(|mut line| {
+            if inset > 0 && !line.spans.is_empty() {
+                line.spans
+                    .insert(0, Span::raw(" ".repeat(inset)));
+            }
+            Row {
+                line,
+                inset: inset as u16,
+                links: Vec::new(),
+            }
         }));
         self.row_entries.extend(
             (first..self.rows.len()).map(|line| event_id.map(|event_id| (event_id, line - first))),

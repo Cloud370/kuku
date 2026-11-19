@@ -962,3 +962,5 @@ fn move_cursor(editor: &mut Editor, key: KeyEvent, width: usize, multiline: bool
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod rewound_copy_tests;
