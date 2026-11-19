@@ -550,6 +550,6 @@ mod tests {
         for retained in ["/new", "/resume", "/continue", "/pending", "/quit"] {
             assert!(labels.contains(&retained));
         }
-        assert_eq!(20, choices.len());
+        assert_eq!(23, choices.len());
     }
 }

@@ -1,6 +1,6 @@
 use super::{next_call, ready, Model, Reply};
 use kuku::event::{EventPayload, EventStore};
-use kuku::{AgentConfig, AgentStatus, Input, Session, SessionOptions};
+use kuku::{AgentConfig, AgentStatus, Input, ProviderFailureKind, Session, SessionOptions};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -34,10 +34,17 @@ async fn interrupted_rewind_survives_resume_and_accepts_new_input() {
         .contains("do not resend this prompt"));
     first_attempt
         .response
-        .send(Reply::TemporaryFailure)
+        .send(Reply::TemporaryFailure(
+            ProviderFailureKind::ProviderUnavailable,
+        ))
         .unwrap();
     let retry = next_call(&mut calls).await;
-    retry.response.send(Reply::TemporaryFailure).unwrap();
+    retry
+        .response
+        .send(Reply::TemporaryFailure(
+            ProviderFailureKind::ProviderUnavailable,
+        ))
+        .unwrap();
     ready(&session, AgentStatus::Interrupted).await;
     session.close().await.unwrap();
 

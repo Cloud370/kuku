@@ -168,6 +168,7 @@ fn queued_input_is_selected_inline_after_its_receipt_appears_in_snapshot() {
             receipt: receipt.clone(),
             status: Some(InputStatus::Queued),
             replayed: false,
+            warnings: Vec::new(),
         }),
     ));
     press(&mut app, KeyCode::Up);
@@ -193,6 +194,9 @@ fn queued_input_is_selected_inline_after_its_receipt_appears_in_snapshot() {
         Some(input_id.as_str()),
         app.pane().selected_queue_input.as_deref()
     );
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
+        if matches!(prompt.kind, PromptKind::QueuedInput { .. }) && prompt.editor.text() == "queued text"));
 }
 
 #[test]

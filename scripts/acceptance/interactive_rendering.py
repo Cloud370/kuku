@@ -244,7 +244,7 @@ await workspace.run_command({{program: "kuku-deliberately-missing-fixture"}});""
         restored = terminal.expect(log, state="baseline", also=(page_range,))["screen"]
         terminal.press("\x1b")
         eventually("closing the saved output viewer", lambda: (
-            "Type a prompt" in (screen := terminal.request("screen")["screen"])
+            "Enter steer" in (screen := terminal.request("screen")["screen"])
             and page_range not in screen and "S Name" not in screen
         ))
         terminal.press("/values\r")

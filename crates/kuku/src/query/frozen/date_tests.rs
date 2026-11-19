@@ -13,11 +13,13 @@ fn midnight_date_change_does_not_reorder_admitted_tool_turn_input() {
             turn: 3,
             origin: MessageOrigin::Runtime,
             message: old_date,
+            admitted_at: 1,
         },
         AdmittedMessage {
             turn: 3,
             origin: MessageOrigin::Input,
             message: user_input,
+            admitted_at: 2,
         },
     ];
     let frozen_prefix: Vec<_> = messages
@@ -26,7 +28,7 @@ fn midnight_date_change_does_not_reorder_admitted_tool_turn_input() {
         .collect();
     let next_date = CanonicalMessage::user_text("Current date: 2026-05-19");
 
-    insert_runtime_date(&mut messages, 3, &next_date, frozen_prefix.len());
+    insert_runtime_date(&mut messages, 3, &next_date, frozen_prefix.len(), 2);
 
     assert_eq!(
         frozen_prefix,
@@ -38,6 +40,7 @@ fn midnight_date_change_does_not_reorder_admitted_tool_turn_input() {
     );
     assert_eq!(next_date, messages.last().unwrap().message);
     assert_eq!(MessageOrigin::Runtime, messages.last().unwrap().origin);
+    assert_eq!(2, messages.last().unwrap().admitted_at);
 }
 
 #[test]

@@ -782,6 +782,7 @@ mod rewind_guard_tests {
                 agent: "main".into(),
             },
             input: crate::session::runtime::Input::new(id, "main", text),
+            values: Vec::new(),
         };
         state.agents.get_mut("main").unwrap().accepted = vec![
             make_delivery("rewound", "rewound prompt"),
@@ -886,6 +887,7 @@ mod rewind_guard_tests {
                 agent: "main".into(),
             },
             input: crate::session::runtime::Input::new(id, "main", "same prompt"),
+            values: Vec::new(),
         };
         let mut agent = idle_agent();
         agent.accepted.push(make_delivery("rewound"));
