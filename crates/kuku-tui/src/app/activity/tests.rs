@@ -1,6 +1,9 @@
 use std::path::{Path, PathBuf};
 
-use kuku_client::{Acknowledgement, Error, HistoryPage, Observation, Receipt, Snapshot, Timing};
+use kuku_client::{
+    Acknowledgement, Error, HistoryPage, Observation, Receipt, RetryFailureKind, RetryPhase,
+    RetrySource, RetryStopReason, Snapshot, Timing,
+};
 use serde_json::{json, Value};
 
 use super::{Activity, App, HistoryEntry, InputStatus, ServiceStatus, SubmissionStatus};
@@ -130,6 +133,377 @@ fn only_observed_reasoning_sets_thinking_and_visible_text_sets_streaming() {
         .any(|line| line.to_string().contains("legacy reasoning marker")));
     committed(&mut app, 10, "runtime.model_retry", json!({}));
     assert_eq!(Activity::RetryingModel, app.pane().activity());
+}
+
+#[test]
+fn model_recovery_transitions_after_output_and_retires_the_old_preview() {
+    let mut app = connected();
+    app.select(app.active.clone(), true, String::new());
+    let attached = snapshot(
+        &app,
+        6,
+        "running",
+        Some(5),
+        0,
+        json!({"phase":"waiting_for_model"}),
+        None,
+    );
+    loaded(&mut app, attached, Vec::new());
+    streaming(&mut app, 7);
+
+    observe(
+        &mut app,
+        json!({
+            "type":"live","agent":"main","execution_id":5,"cursor":8,
+            "event":{"type":"model_recovery","attempt":2,"max_attempts":4,
+                "reason":"length","from_request_id":"failed","to_request_id":"recovered"}
+        }),
+    );
+
+    assert_eq!(Activity::RetryingModel, app.pane().activity());
+    assert_eq!(
+        Some(RetrySource::Recovery),
+        app.pane().retry_metadata().map(|retry| retry.source)
+    );
+    let transcript = app
+        .pane_mut()
+        .transcript
+        .project(80, 12)
+        .lines
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!transcript.contains("First tokens"));
+}
+
+#[test]
+fn retry_snapshot_and_replay_keep_typed_progress_until_output_or_terminal_failure() {
+    let mut app = connected();
+    app.select(app.active.clone(), true, String::new());
+    let retry = json!({
+        "source":"runtime.model_retry","phase":"waiting","attempt":2,
+        "failed_attempt":1,"max_attempts":4,"failed_kind":"rate_limited",
+        "request_id":"request-2","delay_ms":5000,"ts":"2025-01-01T00:00:00Z",
+        "will_retry":true
+    });
+    let attached = snapshot(
+        &app,
+        6,
+        "running",
+        Some(5),
+        0,
+        json!({"phase":"retrying_model","retry":retry}),
+        None,
+    );
+    loaded(&mut app, attached, Vec::new());
+    assert_eq!(Activity::RetryingModel, app.pane().activity());
+    assert_eq!(
+        Some(RetryPhase::Waiting),
+        app.pane().retry_metadata().map(|item| item.phase)
+    );
+
+    let retry_entry = json!({
+        "id":7,"agent":"main","turn":5,"type":"retry","text":null,
+        "retry":{
+            "source":"runtime.model_retry","phase":"started","attempt":2,
+            "failed_kind":"rate_limited","request_id":"request-2","will_retry":true
+        }
+    });
+    committed(
+        &mut app,
+        7,
+        "runtime.model_retry",
+        json!({"entry":retry_entry}),
+    );
+    committed(
+        &mut app,
+        7,
+        "runtime.model_retry",
+        json!({"entry":retry_entry}),
+    );
+    assert_eq!(
+        Some(2),
+        app.pane().retry_metadata().and_then(|item| item.attempt)
+    );
+    assert_eq!(
+        Some(RetryFailureKind::RateLimited),
+        app.pane()
+            .retry_metadata()
+            .and_then(|item| item.failed_kind)
+    );
+
+    streaming(&mut app, 8);
+    assert_eq!(Activity::Streaming, app.pane().activity());
+    assert!(app.pane().retry_metadata().is_none());
+
+    committed(
+        &mut app,
+        9,
+        "runtime.model_retry",
+        json!({"entry":{
+            "id":9,"agent":"main","turn":5,"type":"retry","text":null,
+            "retry":{
+                "source":"runtime.model_retry","phase":"stopped","attempt":2,
+                "failed_kind":"transport","will_retry":false,
+                "stop_reason":"stream_started"
+            }
+        }}),
+    );
+    streaming(&mut app, 10);
+    assert_eq!(
+        Some(RetryStopReason::StreamStarted),
+        app.pane()
+            .retry_metadata()
+            .and_then(|item| item.stop_reason)
+    );
+    committed(
+        &mut app,
+        11,
+        "model.error",
+        json!({"entry":{
+            "id":11,"agent":"main","turn":5,"type":"error","code":"transport",
+            "text":"connection failed"
+        }}),
+    );
+    assert_ne!(Activity::RetryingModel, app.pane().activity());
+    assert_eq!(
+        Some(RetryStopReason::StreamStarted),
+        app.pane()
+            .retry_metadata()
+            .and_then(|item| item.stop_reason)
+    );
+    assert!(app
+        .pane_mut()
+        .transcript
+        .project(80, 10)
+        .lines
+        .iter()
+        .any(|line| line.to_string().contains("First tokens")));
+    committed(
+        &mut app,
+        12,
+        "turn.interrupted",
+        json!({"entry":{
+            "id":12,"agent":"main","turn":5,"type":"status",
+            "status":"interrupted","text":"transport"
+        }}),
+    );
+    assert_eq!(
+        Some(RetryStopReason::StreamStarted),
+        app.pane()
+            .retry_metadata()
+            .and_then(|item| item.stop_reason)
+    );
+    assert!(app
+        .pane_mut()
+        .transcript
+        .project(80, 10)
+        .lines
+        .iter()
+        .any(|line| line.to_string().contains("First tokens")));
+    committed(
+        &mut app,
+        13,
+        "runtime.operation",
+        json!({"state_changed":true,"operation":"turn_settled"}),
+    );
+    assert_eq!(
+        Some(RetryStopReason::StreamStarted),
+        app.pane()
+            .retry_metadata()
+            .and_then(|item| item.stop_reason)
+    );
+    assert!(app
+        .pane_mut()
+        .transcript
+        .project(80, 10)
+        .lines
+        .iter()
+        .any(|line| line.to_string().contains("First tokens")));
+
+    let stopped_retry = json!({
+        "source":"runtime.model_retry","phase":"stopped","attempt":2,
+        "failed_kind":"transport","will_retry":false,
+        "stop_reason":"stream_started"
+    });
+    let selection = app.selection();
+    let settled = snapshot(
+        &app,
+        13,
+        "interrupted",
+        None,
+        0,
+        json!({"phase":"retry_stopped","retry":stopped_retry}),
+        Some("connection failed"),
+    );
+    app.update(Update::Refreshed(selection, Ok(settled)));
+    assert_eq!(
+        Some(RetryStopReason::StreamStarted),
+        app.pane()
+            .retry_metadata()
+            .and_then(|item| item.stop_reason)
+    );
+    assert!(app
+        .pane_mut()
+        .transcript
+        .project(80, 10)
+        .lines
+        .iter()
+        .any(|line| line.to_string().contains("First tokens")));
+
+    let mut reattached = connected();
+    reattached.select(reattached.active.clone(), true, String::new());
+    let attached_snapshot = snapshot(
+        &reattached,
+        13,
+        "interrupted",
+        None,
+        0,
+        json!({"phase":"retry_stopped","retry":stopped_retry}),
+        Some("connection failed"),
+    );
+    loaded(
+        &mut reattached,
+        attached_snapshot,
+        vec![
+            serde_json::from_value(json!({
+                "id":9,"agent":"main","turn":5,"type":"retry",
+                "retry":stopped_retry
+            }))
+            .unwrap(),
+            serde_json::from_value(json!({
+                "id":11,"agent":"main","turn":5,"type":"error",
+                "code":"transport","text":"connection failed"
+            }))
+            .unwrap(),
+            serde_json::from_value(json!({
+                "id":12,"agent":"main","turn":5,"type":"status",
+                "status":"interrupted","text":"transport"
+            }))
+            .unwrap(),
+        ],
+    );
+    assert_eq!(
+        Some(RetryStopReason::StreamStarted),
+        reattached
+            .pane()
+            .retry_metadata()
+            .and_then(|item| item.stop_reason)
+    );
+    let history = reattached
+        .pane_mut()
+        .transcript
+        .project(80, 10)
+        .lines
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!history.contains("First tokens"));
+}
+
+#[test]
+fn explicit_agent_stop_clears_active_retry_progress_and_new_execution_resets_it() {
+    let mut app = connected();
+    app.select(app.active.clone(), true, String::new());
+    let retry = json!({
+        "source":"runtime.model_retry","phase":"waiting","attempt":2,
+        "failed_kind":"rate_limited","will_retry":true
+    });
+    let attached = snapshot(
+        &app,
+        6,
+        "running",
+        Some(5),
+        0,
+        json!({"phase":"retrying_model","retry":retry}),
+        None,
+    );
+    loaded(&mut app, attached, Vec::new());
+    assert_eq!(
+        Some(true),
+        app.pane().retry_metadata().and_then(|item| item.will_retry)
+    );
+
+    committed(
+        &mut app,
+        7,
+        "runtime.operation",
+        json!({
+            "state_changed":true,"operation":"agent_stopped",
+            "entry":{
+                "id":7,"agent":"main","turn":5,"type":"status",
+                "status":"interrupted","execution_id":5,
+                "text":"Interrupted partial reply","truncated":false
+            }
+        }),
+    );
+    assert!(app.pane().retry_metadata().is_none());
+    let stopped = app
+        .pane_mut()
+        .transcript
+        .project(80, 10)
+        .lines
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(1, stopped.matches("Interrupted partial reply").count());
+
+    let mut next = connected();
+    next.select(next.active.clone(), true, String::new());
+    let attached = snapshot(
+        &next,
+        6,
+        "running",
+        Some(5),
+        0,
+        json!({"phase":"retrying_model","retry":retry}),
+        None,
+    );
+    loaded(&mut next, attached, Vec::new());
+    committed(
+        &mut next,
+        7,
+        "runtime.operation",
+        json!({"state_changed":true,"operation":"execution_started"}),
+    );
+    assert!(next.pane().retry_metadata().is_none());
+}
+
+#[test]
+fn newer_output_and_cancellation_reject_stale_retry_frames() {
+    let mut app = connected();
+    app.select(app.active.clone(), true, String::new());
+    let attached = snapshot(
+        &app,
+        6,
+        "running",
+        Some(5),
+        0,
+        json!({"phase":"waiting_for_model"}),
+        None,
+    );
+    loaded(&mut app, attached, Vec::new());
+    committed(
+        &mut app,
+        7,
+        "model.response",
+        json!({"entry":{"id":7,"agent":"main","turn":5,"type":"assistant","text":"done"}}),
+    );
+    committed(
+        &mut app,
+        7,
+        "runtime.model_retry",
+        json!({"entry":{
+            "id":7,"agent":"main","turn":5,"type":"retry","text":null,
+            "retry":{"source":"runtime.model_retry","attempt":2,"will_retry":true}
+        }}),
+    );
+    assert!(app.pane().retry_metadata().is_none());
+    committed(&mut app, 8, "turn.cancelled", json!({}));
+    assert!(app.pane().retry_metadata().is_none());
 }
 
 #[test]

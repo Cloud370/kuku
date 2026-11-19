@@ -881,7 +881,11 @@ impl App {
         let pane = self.pane_mut();
         pane.opening = false;
         pane.watch = state;
-        pane.progress.clear_stream();
+        pane.progress = ExecutionProgress::from_snapshot(
+            pane.snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.progress.as_ref()),
+        );
         pane.transcript.clear_preview();
     }
 

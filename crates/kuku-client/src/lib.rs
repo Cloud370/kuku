@@ -22,7 +22,8 @@ pub use pending::PendingStore;
 pub use subscription::{InputDelivery, Observation, Subscription, SubscriptionUpdate};
 pub use types::{
     Acknowledgement, Action, AgentProgress, AgentSettlement, AgentSummary, ApiError, Command,
-    EventPage, HistoryEntry, HistoryKind, HistoryPage, ReplyPreview, SessionStatus, SessionSummary,
+    EventPage, HistoryEntry, HistoryKind, HistoryPage, ReplyPreview, RetryFailureKind,
+    RetryMetadata, RetryPhase, RetrySource, RetryStopReason, SessionStatus, SessionSummary,
     Snapshot, Target, Timing,
 };
 pub use workspace::{ConnectionSummary, ModelCatalog, SkillSummary, TierSummary};

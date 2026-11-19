@@ -7,6 +7,8 @@
 
 The terminal, script and browser clients submit work to the server. The local clients reuse the managed service for the selected data directory. [Run the server](../guides/run-the-server.md)
 
+On its first local launch without a config file, the interactive TUI offers setup before opening a session. It skips existing config files and remote connections. The setup saves only a credential variable name and makes no model request. See [First-run TUI setup](../start/configuration.md#first-run-tui-setup).
+
 ## Connection and workspace flags
 
 | Flag | Meaning |

@@ -216,6 +216,11 @@ pub(crate) fn history_entry(event: &StoredEvent, turns: &TurnLookup) -> Option<V
         } => {
             json!({"type":"error","turn":turn,"code":kind,"text":message,"request_id":request_id})
         }
+        EventPayload::ModelRecovery { turn, .. } => json!({
+            "type":"retry",
+            "turn":turn,
+            "retry":retry_metadata(&event.payload)?,
+        }),
         EventPayload::ToolCall {
             turn,
             tool_call_id,
@@ -272,6 +277,11 @@ pub(crate) fn history_entry(event: &StoredEvent, turns: &TurnLookup) -> Option<V
                 _ => interaction_entry(record)?,
             }
         }
+        EventPayload::Unknown(value) if value["kind"] == "runtime.model_retry" => json!({
+            "type":"retry",
+            "turn":value["turn"],
+            "retry":retry_metadata(&event.payload)?,
+        }),
         _ => return None,
     };
     entry["id"] = json!(event.id);
@@ -287,6 +297,48 @@ pub(crate) fn history_entry(event: &StoredEvent, turns: &TurnLookup) -> Option<V
         entry["turn_number"] = json!(number);
     }
     Some(entry)
+}
+
+pub(crate) fn retry_metadata(payload: &EventPayload) -> Option<Value> {
+    match payload {
+        EventPayload::Unknown(record) if record["kind"] == "runtime.model_retry" => Some(json!({
+            "source":"runtime.model_retry",
+            "phase":record.get("phase").and_then(Value::as_str).unwrap_or("started"),
+            "attempt":record["attempt"],
+            "failed_attempt":record["failed_attempt"],
+            "max_attempts":record["max_attempts"],
+            "failed_kind":record["failed_kind"],
+            "reason":record["reason"],
+            "request_id":record["request_id"],
+            "from_request_id":record["from_request_id"],
+            "to_request_id":record["to_request_id"],
+            "delay_ms":record["delay_ms"],
+            "ts":record["ts"],
+            "will_retry":record["will_retry"],
+            "message":record["message"],
+            "status":record["status"],
+            "stop_reason":record["stop_reason"],
+        })),
+        EventPayload::ModelRecovery {
+            ts,
+            from_request_id,
+            to_request_id,
+            reason,
+            attempt,
+            max_attempts,
+            ..
+        } => Some(json!({
+            "source":"model.recovery",
+            "phase":"started",
+            "attempt":attempt,
+            "max_attempts":max_attempts,
+            "reason":reason,
+            "from_request_id":from_request_id,
+            "to_request_id":to_request_id,
+            "ts":ts,
+        })),
+        _ => None,
+    }
 }
 
 pub(crate) fn committed_frame(
@@ -547,4 +599,74 @@ fn event_value(event: &UiEvent) -> Option<Value> {
         _ => {}
     }
     Some(value)
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use kuku::event::EventPayload;
+    use serde_json::json;
+
+    use super::retry_metadata;
+
+    #[test]
+    fn legacy_retry_projection_defaults_to_started_and_preserves_metadata() {
+        let payload = EventPayload::Unknown(json!({
+            "kind":"runtime.model_retry","agent":"main","turn":7,
+            "request_id":"request-2","failed_kind":"transport","attempt":2,
+            "delay_ms":5000,"ts":"2025-01-01T00:00:00Z"
+        }));
+        let retry = retry_metadata(&payload).unwrap();
+        assert_eq!("runtime.model_retry", retry["source"]);
+        assert_eq!("started", retry["phase"]);
+        assert_eq!(2, retry["attempt"]);
+        assert_eq!("transport", retry["failed_kind"]);
+        assert_eq!("request-2", retry["request_id"]);
+        assert_eq!(5000, retry["delay_ms"]);
+        assert_eq!("2025-01-01T00:00:00Z", retry["ts"]);
+    }
+
+    #[test]
+    fn retry_projection_retains_future_phase_and_authoritative_stop_decision() {
+        let payload = EventPayload::Unknown(json!({
+            "kind":"runtime.model_retry","agent":"main","turn":7,
+            "phase":"future_phase","attempt":2,"failed_attempt":1,
+            "max_attempts":4,"failed_kind":"future_kind","will_retry":false,
+            "stop_reason":"future_policy","message":"Service unavailable","status":503
+        }));
+        let retry = retry_metadata(&payload).unwrap();
+        assert_eq!("future_phase", retry["phase"]);
+        assert_eq!("future_kind", retry["failed_kind"]);
+        assert_eq!(false, retry["will_retry"]);
+        assert_eq!("future_policy", retry["stop_reason"]);
+        assert_eq!(503, retry["status"]);
+    }
+
+    #[test]
+    fn recovery_projection_preserves_its_own_attempt_and_request_ids() {
+        let payload = EventPayload::ModelRecovery {
+            conversation: "main".into(),
+            turn: 7,
+            ts: "2025-01-01T00:00:00Z".into(),
+            from_request_id: "failed-request".into(),
+            to_request_id: "recovery-request".into(),
+            reason: kuku::event::ModelStopReason::Length,
+            attempt: 2,
+            max_attempts: 4,
+            failed_max_output_tokens: 4096,
+            retry_max_output_tokens: 2048,
+            output_tokens_total: Some(4096),
+            discarded_tool_calls: 0,
+            notice: "recovered".into(),
+            prompt_path: "prompt.md".into(),
+            prompt_hash: "hash".into(),
+        };
+        let retry = retry_metadata(&payload).unwrap();
+        assert_eq!("model.recovery", retry["source"]);
+        assert_eq!("started", retry["phase"]);
+        assert_eq!(2, retry["attempt"]);
+        assert_eq!(4, retry["max_attempts"]);
+        assert_eq!("length", retry["reason"]);
+        assert_eq!("failed-request", retry["from_request_id"]);
+        assert_eq!("recovery-request", retry["to_request_id"]);
+    }
 }

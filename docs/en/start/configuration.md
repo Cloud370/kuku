@@ -16,6 +16,14 @@ $KUKU_HOME/config.toml
 
 The local service uses the selected data directory's `config.toml` by default. Choose another file with `--config`. Check the active path with `kuku server status`. To change the configuration path for an already running managed service, use `kuku server restart --config PATH` when the service is idle. [File layout](../reference/file-layout.md) · [Run the server](../guides/run-the-server.md)
 
+## First-run TUI setup
+
+When you start interactive `kuku` without a local config file, the TUI offers a short setup before opening the session. It uses the same resolved path as the local service, honoring `--data-dir`, `KUKU_HOME`, and `--config`, and shows both that path and the workspace. Setup is skipped when the selected config path already exists (including a malformed file) and for remote connections.
+
+Choose a provider, a literal model ID, and a credential environment-variable **name**. Model IDs cannot start with `$`, which the config loader interprets as an environment-variable reference. The setup never displays or stores key values and makes no model request. It only checks whether the named variable has a non-empty value; it does not validate the credential or the model ID. If the variable is missing or empty, you can save and exit, set it in the shell that launches `kuku`, and restart. Canceling does not create a config.
+
+The generated config uses `balanced` as its default tier and initializes `strong`, `balanced`, and `light` with the selected provider and model. Edit `config.toml` or use `kuku config set` to change persistent defaults and individual tiers. In the TUI, `/model` changes the selected Agent's session configuration only; it does not change the saved config default.
+
 ## Provider Setup
 
 The default config defines two providers:

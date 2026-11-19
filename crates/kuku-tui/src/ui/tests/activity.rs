@@ -183,3 +183,42 @@ fn narrow_composer_preserves_the_distinguishing_end_of_the_agent_address() {
         .trim_matches([' ', '│'])
         .is_empty());
 }
+
+#[test]
+fn retry_warning_keeps_stop_action_visible_with_narrow_unicode_text() {
+    let mut app = app();
+    app.select(app.active.clone(), true, "Retry notices".into());
+    let selection = app.selection();
+    let message = "服务暂时不可用，请检查网络连接并等待重试。".repeat(30);
+    let mut current = snapshot(&app, "running", json!(null), json!(null));
+    current.progress = Some(
+        serde_json::from_value(json!({
+            "phase":"retrying_model",
+            "retry":{
+                "source":"runtime.model_retry","phase":"waiting","attempt":2,
+                "max_attempts":4,"failed_kind":"provider_unavailable",
+                "delay_ms":5000,"ts":"9999-12-31T23:59:59Z",
+                "message":message,"will_retry":true
+            }
+        }))
+        .unwrap(),
+    );
+    app.update(Update::Loaded(
+        selection.clone(),
+        current,
+        HistoryPage {
+            entries: Vec::new(),
+            next_before: None,
+        },
+    ));
+    app.update(Update::WatchConnected(selection));
+
+    for width in [52, 80] {
+        let screen = activity_screen(&mut app, width, 60, Some(0)).0;
+        let compact = screen.replace(' ', "");
+        assert!(screen.contains("Retry in 5s"), "{screen}");
+        assert!(screen.contains("attempt 2/4"), "{screen}");
+        assert!(screen.contains("Esc stop"), "{screen}");
+        assert!(compact.contains("服务暂时不可用"), "{screen}");
+    }
+}
