@@ -4,11 +4,11 @@ use serde_json::Value;
 
 use crate::markup::render_markdown;
 use crate::text::shorten;
-use crate::theme::{emphasis, MUTED, SURFACE_TEXT};
+use crate::theme::{card_padding, emphasis, MUTED, SURFACE_TEXT};
 
 use super::{
-    append_bounded, render_record, Body, Key, RenderCache, Row, Transcript, DISPLAY_LIMIT_NOTICE,
-    MAX_BODY_BYTES, MAX_VISUAL_ROWS,
+    append_bounded, body_inset, render_record, Body, Key, RenderCache, Row, Transcript,
+    DISPLAY_LIMIT_NOTICE, MAX_BODY_BYTES, MAX_VISUAL_ROWS,
 };
 
 #[derive(Debug)]
@@ -303,13 +303,16 @@ pub(super) fn render_assistant(
         rows.push(Row::plain(Line::default()));
     }
     if has_reply {
+        let body_inset = body_inset(width);
+        let body_width =
+            width.saturating_sub(usize::from(body_inset) + usize::from(card_padding(width).right));
         rows.extend(
             render_record(
                 role,
                 SURFACE_TEXT,
-                render_markdown(text, width, MAX_VISUAL_ROWS),
+                render_markdown(text, body_width, MAX_VISUAL_ROWS),
                 width,
-                0,
+                body_inset,
             )
             .into_iter()
             .skip(usize::from(joined)),

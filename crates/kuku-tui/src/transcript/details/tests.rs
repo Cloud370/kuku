@@ -615,7 +615,7 @@ fn a_reply_burst_preserves_the_first_answer_line_after_thinking() {
         &json!({"type":"text","content":reply}),
     );
     let view = transcript.project(58, 9);
-    assert_eq!(view.lines[row].to_string(), "Paragraph 1");
+    assert_eq!(view.lines[row].to_string().trim_start(), "Paragraph 1");
     assert!(transcript.is_reading());
     assert_eq!(transcript.history_hint(), None);
     transcript.scroll(1, 58, 9);

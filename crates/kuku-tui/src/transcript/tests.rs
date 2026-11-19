@@ -205,9 +205,11 @@ fn roles_and_file_details_are_readable_without_styles_at_narrow_widths() {
             plain[body].trim_start_matches('│').trim_start()
         );
         assert_eq!(inset, view.row_insets[body]);
-        assert!(plain
-            .windows(2)
-            .any(|pair| pair == ["Assistant", "我来检查"]));
+        assert!(plain.windows(2).any(|pair| {
+            pair[0] == "Assistant"
+                && pair[1].trim_start() == "我来检查"
+                && pair[1].starts_with("  ")
+        }));
         assert!(plain
             .iter()
             .any(|row| row.trim_start().starts_with("Read file")));
@@ -413,6 +415,11 @@ fn live_and_committed_turns_use_display_numbers_and_unknown_remains_generic() {
             .filter(|row| row.starts_with("Turn 2  ─"))
             .count()
     );
+    let turn_two = live
+        .iter()
+        .position(|row| row.starts_with("Turn 2  ─"))
+        .expect("second turn heading");
+    assert!(turn_two > 0 && live[turn_two - 1].is_empty());
 
     let mut settled = response(29, "Second reply".into());
     settled.turn = Some(23);
@@ -486,15 +493,24 @@ fn assistant_markdown_keeps_the_model_sections_as_prose_and_raw_copy() {
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(rendered.contains("Checks\n\nTests failed."));
+    let rendered_lines: Vec<_> = rendered.lines().map(str::trim_start).collect();
+    assert!(rendered_lines.windows(2).any(|pair| pair == ["Checks", ""]));
+    assert!(rendered_lines.iter().any(|line| *line == "Tests failed."));
     let narrow = transcript.project(24, 24);
     assert!(narrow.lines.iter().all(|line| line.width() <= 24));
     assert!(narrow
         .lines
         .iter()
         .any(|line| line.to_string().contains("失败")));
-    assert!(rendered.contains("Suggestions\n\n1. Inspect the log."));
-    assert!(rendered.contains("Should I proceed?"));
+    assert!(rendered_lines
+        .windows(2)
+        .any(|pair| pair == ["Suggestions", ""]));
+    assert!(rendered_lines
+        .iter()
+        .any(|line| *line == "1. Inspect the log."));
+    assert!(rendered_lines
+        .iter()
+        .any(|line| *line == "Should I proceed?"));
     assert!(!rendered.contains("Permission") && !rendered.contains("F2"));
     assert_eq!(Some(ReplySource::Local(reply)), transcript.last_reply());
 }
@@ -515,7 +531,12 @@ fn source_keeps_nested_fences_and_both_renderings_are_cached_until_the_reply_cha
 
     assert!(transcript.toggle_source());
     let raw = rows(&mut transcript).join("\n");
-    assert!(raw.contains("````markdown\n# Document\n\n```text\nsafe␛[31m\n```"));
+    let raw_lines = raw
+        .lines()
+        .map(str::trim_start)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(raw_lines.contains("````markdown\n# Document\n\n```text\nsafe␛[31m\n```"));
     assert!(!raw.contains('\u{001b}'));
     let cache = &transcript.recent.records[0].rendered;
     let cached_source = cache.source.as_ref().unwrap().1.as_ptr();
@@ -535,11 +556,15 @@ fn source_keeps_nested_fences_and_both_renderings_are_cached_until_the_reply_cha
         &json!({"type":"text","content":"````\n"}),
     );
     assert!(transcript.recent.records[0].rendered.preview.is_none());
-    assert!(rows(&mut transcript).iter().any(|row| row == "````"));
+    assert!(rows(&mut transcript)
+        .iter()
+        .any(|row| row.trim_start() == "````"));
 
     let committed = format!("{chunk}````\n");
     transcript.apply(response(9, committed.clone()), Some(7));
-    assert!(rows(&mut transcript).iter().any(|row| row == "````"));
+    assert!(rows(&mut transcript)
+        .iter()
+        .any(|row| row.trim_start() == "````"));
     assert_eq!(
         Some(ReplySource::Local(&committed)),
         transcript.last_reply()
@@ -567,7 +592,7 @@ fn toggling_markdown_source_keeps_the_reading_anchor_and_round_trips_the_view() 
     assert!(source
         .lines
         .iter()
-        .any(|row| row.to_string().starts_with("## Section")));
+        .any(|row| row.to_string().trim_start().starts_with("## Section")));
     assert_eq!(&anchor, &transcript.reading.as_ref().unwrap().anchor);
 
     assert!(!transcript.toggle_source());
@@ -601,7 +626,11 @@ fn streaming_tables_code_and_unicode_use_the_committed_markdown_layout() {
         .map(ToString::to_string)
         .collect();
     assert!(live.iter().any(|row| row.contains("完成")));
-    assert!(live.iter().any(|row| row.contains("e\u{301} 👩‍💻")));
+    assert!(live
+        .iter()
+        .map(|row| row.trim_start())
+        .any(|row| row.contains("e\u{301}")));
+    assert!(live.iter().any(|row| row.contains("👩‍💻")));
     let source = chunks.concat();
     transcript.apply(response(8, source.clone()), Some(4));
     let committed: Vec<_> = transcript
