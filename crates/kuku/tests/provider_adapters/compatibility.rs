@@ -19,6 +19,9 @@ mod common;
 #[path = "gateway.rs"]
 mod gateway;
 
+#[path = "retry.rs"]
+mod retry;
+
 #[path = "session_context_snapshot.rs"]
 mod session_context_snapshot;
 

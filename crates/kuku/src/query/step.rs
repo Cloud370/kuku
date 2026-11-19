@@ -1,10 +1,3 @@
-use crate::error::Result;
-use crate::event::{EventPayload, EventStore, ModelStopReason};
-use crate::log::{LogLevel, LogRecord, LogScope};
-use crate::permission::{
-    decide_tool_call, load_project_policy, recover_session_grants, GateDecisionKind, GateSource,
-};
-
 use super::helpers::{
     append_permission_decision, append_permission_request, append_turn_cancelled,
     append_turn_completed, append_turn_interrupted, display_summary, gate_choice, gate_source_name,
@@ -18,6 +11,12 @@ use super::tool_response::validate_tool_calls;
 use super::types::{
     PendingPermission, PendingRun, PendingStep, PermissionChoice, PermissionRequest,
     QueuedToolCall, StreamingChunkState, UiEvent,
+};
+use crate::error::Result;
+use crate::event::{EventPayload, EventStore, ModelStopReason};
+use crate::log::{LogLevel, LogRecord, LogScope};
+use crate::permission::{
+    decide_tool_call, load_project_policy, recover_session_grants, GateDecisionKind, GateSource,
 };
 
 /// Maximum times a model.post_response hook can force-continue (exit code 2)
@@ -211,6 +210,7 @@ pub(super) async fn finish_streaming(mut state: StreamingChunkState) -> Result<P
         request_timing,
         handoff_detector,
         thinking_duration_ms,
+        provider_attempt,
         ..
     } = state;
 
@@ -327,47 +327,26 @@ pub(super) async fn finish_streaming(mut state: StreamingChunkState) -> Result<P
     }
 
     if !is_success {
-        append_turn_interrupted(
-            &pending.events_path,
-            &conversation,
-            pending.turn,
-            final_stop_reason.wire_value(),
+        let failure = super::provider::record_terminal_stop(
+            &mut pending,
+            &request_id,
+            provider_attempt,
+            &final_stop_reason,
         )?;
-        pending.flush_runtime_logs();
-        return Ok(PendingStep::Failed(crate::error::Error::Provider {
-            kind: match final_stop_reason {
-                ModelStopReason::ContextWindowExceeded => {
-                    crate::provider::types::ProviderFailureKind::ContextTooLarge
-                }
-                _ => crate::provider::types::ProviderFailureKind::InvalidRequest,
-            },
-            message: format!(
-                "model response ended with terminal state {}",
-                final_stop_reason.wire_value()
-            ),
-            provider: None,
-            model: None,
-        }));
+        return Ok(PendingStep::Failed(failure));
     }
 
     let tool_calls = if matches!(final_stop_reason, ModelStopReason::ToolUse) {
         match validated_tool_calls {
             Some(Ok(tool_calls)) => tool_calls,
             Some(Err(_)) | None => {
-                append_turn_interrupted(
-                    &pending.events_path,
-                    &conversation,
-                    pending.turn,
-                    ModelStopReason::InvalidResponse.wire_value(),
+                let failure = super::provider::record_terminal_stop(
+                    &mut pending,
+                    &request_id,
+                    provider_attempt,
+                    &ModelStopReason::InvalidResponse,
                 )?;
-                pending.flush_runtime_logs();
-                return Ok(PendingStep::Failed(crate::error::Error::Provider {
-                    kind: crate::provider::types::ProviderFailureKind::InvalidRequest,
-                    message: "model response ended with terminal state invalid_response"
-                        .to_string(),
-                    provider: None,
-                    model: None,
-                }));
+                return Ok(PendingStep::Failed(failure));
             }
         }
     } else {

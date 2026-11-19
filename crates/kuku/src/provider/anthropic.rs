@@ -263,7 +263,7 @@ impl AnthropicSseParser {
             return Ok(self.take_chunks());
         }
         let data: Value = serde_json::from_str(&frame.data).map_err(|_| {
-            super::prepare::invalid_request("provider emitted malformed JSON event")
+            super::prepare::invalid_response("provider emitted malformed JSON event")
         })?;
 
         let event_type = frame
@@ -505,14 +505,18 @@ impl AnthropicSseParser {
                 self.chunks.push(ProviderChunk::StreamEnd);
             }
             "error" => {
-                let code = data
-                    .get("error")
-                    .and_then(|e| e.get("type"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown")
-                    .to_string();
-                let message = data
-                    .get("error")
+                let error = data.get("error");
+                let code = super::error::select_provider_error_code(
+                    error
+                        .and_then(|value| value.get("code"))
+                        .and_then(Value::as_str),
+                    error
+                        .and_then(|value| value.get("type"))
+                        .and_then(Value::as_str),
+                )
+                .unwrap_or("unknown")
+                .to_string();
+                let message = error
                     .and_then(|e| e.get("message"))
                     .and_then(Value::as_str)
                     .unwrap_or("server error")
@@ -584,12 +588,12 @@ impl AnthropicSseParser {
         }
 
         Err(ProviderFailure {
-            kind: crate::provider::types::ProviderFailureKind::Transport,
+            kind: crate::provider::types::ProviderFailureKind::InvalidResponse,
             message: TRUNCATED_STREAM_MESSAGE.to_string(),
             status: None,
             provider_request_id: None,
             retry_after: None,
-            retryable: true,
+            retryable: false,
         })
     }
 
@@ -735,6 +739,27 @@ mod tests {
         assert!(!chunks
             .iter()
             .any(|chunk| matches!(chunk, ProviderChunk::StreamEnd)));
+        let failure = parser.finish().unwrap_err();
+        assert_eq!(
+            crate::provider::types::ProviderFailureKind::InvalidResponse,
+            failure.kind
+        );
+        assert!(!failure.retryable);
+    }
+
+    #[test]
+    fn error_event_prefers_a_permanent_code_over_a_transient_type() {
+        let mut parser = AnthropicSseParser::new(true, false);
+        let chunks = parser
+            .feed(concat!(
+                "event: error\n",
+                r#"data: {"error":{"code":"insufficient_quota","type":"overloaded_error","message":"quota exhausted"}}"#
+            ))
+            .unwrap();
+        assert!(matches!(
+            chunks.as_slice(),
+            [ProviderChunk::ServerError { code, .. }] if code == "insufficient_quota"
+        ));
     }
 
     #[test]

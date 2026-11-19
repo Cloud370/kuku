@@ -3,21 +3,21 @@ use std::time::{Duration, Instant};
 use crate::error::Result;
 use crate::event::{EventPayload, EventStore};
 use crate::log::LogLevel;
-use crate::provider::types::{
-    PreparedProviderRequest, ProviderFailure, ProviderFailureKind, ResolvedProvider,
-};
+use crate::provider::types::{PreparedProviderRequest, ProviderFailure, ResolvedProvider};
 use crate::query::helpers::{append_model_error, append_turn_interrupted, now_timestamp};
 use crate::query::tool_exec::record_plugin_hooks;
 use crate::query::types::{PendingRun, PendingStep, RequestTiming, StreamingChunkState, UiEvent};
 
+use super::retry::{
+    preflight_stream, record_retry_event, retry_stop_reason, scheduled_retry_delay, RetryPhase,
+    RetryStopReason,
+};
 use super::{emit_runtime_log, pending_failure_step};
-
-const PROVIDER_RETRY_DELAY: Duration = Duration::from_millis(150);
-const MAX_AUTOMATIC_RETRY_DELAY: Duration = Duration::from_secs(60);
 
 struct ProviderAttempt {
     stream: crate::provider::ProviderChunkStream,
     started: Instant,
+    provider_attempt: u8,
 }
 
 pub(super) async fn dispatch_provider_step(
@@ -120,13 +120,19 @@ pub(super) async fn dispatch_provider_step(
     )
     .await?
     {
-        Ok(ProviderAttempt { stream, started }) => {
+        Ok(ProviderAttempt {
+            stream,
+            started,
+            provider_attempt,
+        }) => {
             let conversation = pending.conversation.clone();
             Ok(PendingStep::Streaming(Box::new(StreamingChunkState {
                 pending,
                 conversation,
                 request_id,
                 stream,
+                provider_attempt,
+                stream_failure: None,
                 accumulated_text: String::new(),
                 accumulated_thinking: String::new(),
                 model_phase: None,
@@ -242,52 +248,89 @@ async fn dispatch_prepared(
     trace: Option<crate::provider::trace::ProviderTraceMetadata>,
 ) -> Result<std::result::Result<ProviderAttempt, ProviderFailure>> {
     super::require_runtime_execution(pending)?;
-    let started = Instant::now();
-    let initial =
+    let mut failed_attempt = 1;
+    let mut started = Instant::now();
+    let mut result =
         crate::query::adapters::model_stream(pending, resolved, prepared, trace.clone()).await;
-    let Err(failure) = &initial else {
-        return Ok(initial.map(|stream| ProviderAttempt { stream, started }));
-    };
-    if pending.query.runtime.is_none()
-        || !pending.query.runtime_limits.retry_transient_provider_errors
-        || !failure.retryable
-        || crate::query::budget::exhausted(&pending.query)
-        || failure
-            .retry_after
-            .is_some_and(|delay| delay > MAX_AUTOMATIC_RETRY_DELAY)
-    {
-        return Ok(initial.map(|stream| ProviderAttempt { stream, started }));
+    loop {
+        let failure = match result {
+            Ok(stream) => match preflight_stream(stream).await {
+                Ok(stream) => {
+                    return Ok(Ok(ProviderAttempt {
+                        stream,
+                        started,
+                        provider_attempt: failed_attempt,
+                    }));
+                }
+                Err(failure) => failure,
+            },
+            Err(failure) => failure,
+        };
+        if pending.query.runtime.is_none() {
+            return Ok(Err(failure));
+        }
+        let stop_reason = retry_stop_reason(
+            pending.query.runtime_limits.retry_transient_provider_errors,
+            &failure,
+            failed_attempt,
+            crate::query::budget::exhausted(&pending.query),
+        );
+        if let Some(stop_reason) = stop_reason {
+            record_retry_event(
+                pending,
+                request_id,
+                &failure,
+                RetryPhase::Stopped,
+                failed_attempt,
+                failed_attempt,
+                Duration::ZERO,
+                Some(stop_reason),
+            )?;
+            return Ok(Err(failure));
+        }
+
+        let delay = scheduled_retry_delay(failed_attempt, failure.retry_after);
+        record_retry_event(
+            pending,
+            request_id,
+            &failure,
+            RetryPhase::Waiting,
+            failed_attempt + 1,
+            failed_attempt,
+            delay,
+            None,
+        )?;
+        tokio::time::sleep(delay).await;
+        super::require_runtime_execution(pending)?;
+        if crate::query::budget::reserve(&pending.query).is_err() {
+            record_retry_event(
+                pending,
+                request_id,
+                &failure,
+                RetryPhase::Stopped,
+                failed_attempt,
+                failed_attempt,
+                Duration::ZERO,
+                Some(RetryStopReason::RequestBudget),
+            )?;
+            return Ok(Err(failure));
+        }
+        let next_attempt = failed_attempt + 1;
+        record_retry_event(
+            pending,
+            request_id,
+            &failure,
+            RetryPhase::Started,
+            next_attempt,
+            failed_attempt,
+            Duration::ZERO,
+            None,
+        )?;
+        failed_attempt = next_attempt;
+        started = Instant::now();
+        result =
+            crate::query::adapters::model_stream(pending, resolved, prepared, trace.clone()).await;
     }
-    let delay =
-        failure
-            .retry_after
-            .unwrap_or(if failure.kind == ProviderFailureKind::RateLimited {
-                Duration::from_secs(1)
-            } else {
-                PROVIDER_RETRY_DELAY
-            });
-    tokio::time::sleep(delay).await;
-    super::require_runtime_execution(pending)?;
-    if crate::query::budget::reserve(&pending.query).is_err() {
-        return Ok(initial.map(|stream| ProviderAttempt { stream, started }));
-    }
-    let execution = pending
-        .query
-        .runtime_execution
-        .expect("transport retries belong to a session execution");
-    let session = super::runtime_session(pending, execution)?;
-    let retry = EventPayload::Unknown(serde_json::json!({
-        "kind": "runtime.model_retry", "ts": now_timestamp()?,
-        "agent": pending.conversation.as_str(), "turn": pending.turn, "request_id": request_id,
-        "failed_kind": failure.kind.as_event_kind(), "attempt": 2, "delay_ms": delay.as_millis() as u64,
-    }));
-    session.commit_model_facts(pending.conversation.as_str(), execution, [retry])?;
-    let started = Instant::now();
-    Ok(
-        crate::query::adapters::model_stream(pending, resolved, prepared, trace)
-            .await
-            .map(|stream| ProviderAttempt { stream, started }),
-    )
 }
 
 async fn run_model_pre_request_hooks(pending: &mut PendingRun) -> Result<()> {
@@ -322,23 +365,4 @@ async fn run_model_pre_request_hooks(pending: &mut PendingRun) -> Result<()> {
     }
 
     Ok(())
-}
-
-trait ProviderFailureKindEventName {
-    fn as_event_kind(&self) -> &'static str;
-}
-
-impl ProviderFailureKindEventName for crate::provider::types::ProviderFailureKind {
-    fn as_event_kind(&self) -> &'static str {
-        match self {
-            Self::Authentication => "authentication",
-            Self::RateLimited => "rate_limited",
-            Self::ContextTooLarge => "context_too_large",
-            Self::InvalidRequest => "invalid_request",
-            Self::ProviderUnavailable => "provider_unavailable",
-            Self::Transport => "transport",
-            Self::Internal => "internal",
-            Self::Unknown => "unknown",
-        }
-    }
 }

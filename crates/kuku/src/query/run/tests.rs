@@ -109,6 +109,8 @@ fn tool_stream_state(
         conversation: crate::conversation::address::ConversationAddress::MAIN,
         request_id: "req_tool_stream".to_string(),
         stream: Box::pin(tokio_stream::iter(chunks.into_iter().map(Ok))),
+        provider_attempt: 1,
+        stream_failure: None,
         accumulated_text: String::new(),
         accumulated_thinking: String::new(),
         model_phase: None,

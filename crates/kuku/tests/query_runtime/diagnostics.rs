@@ -284,7 +284,7 @@ async fn truncated_provider_stream_is_recorded_as_failed_turn() {
                 assert!(matches!(
                     error,
                     Error::Provider {
-                        kind: kuku::ProviderFailureKind::Transport,
+                        kind: kuku::ProviderFailureKind::InvalidResponse,
                         ..
                     }
                 ));

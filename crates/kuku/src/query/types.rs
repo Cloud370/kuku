@@ -514,6 +514,8 @@ pub(super) struct StreamingChunkState {
     pub(super) request_id: String,
     pub(super) stream:
         Pin<Box<dyn Stream<Item = std::result::Result<ProviderChunk, ProviderFailure>> + Send>>,
+    pub(super) provider_attempt: u8,
+    pub(super) stream_failure: Option<ProviderFailure>,
     pub(super) accumulated_text: String,
     pub(super) accumulated_thinking: String,
     pub(super) model_phase: Option<ModelPhase>,
@@ -575,6 +577,7 @@ impl std::fmt::Debug for StreamingChunkState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StreamingChunkState")
             .field("request_id", &self.request_id)
+            .field("provider_attempt", &self.provider_attempt)
             .field("accumulated_text", &self.accumulated_text)
             .field("stop_reason", &self.stop_reason)
             .field("tool_calls", &self.tool_calls)

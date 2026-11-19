@@ -20,6 +20,7 @@ use std::pin::Pin;
 
 use futures_core::Stream;
 
+pub(crate) use error::classify_stream_error;
 pub(crate) use prepare::prepare_provider_request;
 use trace::ProviderTraceMetadata;
 use types::{
