@@ -365,7 +365,10 @@ mod tests {
         assert!(!restored.following);
         assert_eq!(reading.lines, restored.lines);
 
-        key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
+        app.picker(
+            crate::menu::PickerKind::Commands,
+            crate::menu::Choice::commands(),
+        );
         type_in_picker(&mut app, "/back");
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!("reviewer", &app.active.agent);

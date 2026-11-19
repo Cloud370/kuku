@@ -47,6 +47,10 @@ pub(crate) fn render_at(
     if outer.is_empty() {
         app.text_selection.clear();
         app.delivery_area = Rect::ZERO;
+        app.delivery_hits.clear();
+        app.request_area = Rect::ZERO;
+        app.request_hit = None;
+        app.permission_choice_areas = [Rect::ZERO; 2];
         app.reading_area = Rect::ZERO;
         app.composer_area = Rect::ZERO;
         return false;
@@ -95,9 +99,23 @@ pub(crate) fn render_at(
     let dock = reading
         .as_ref()
         .and_then(|_| app.pane().transcript.turn_dock(stats_width));
-    let deliveries = delivery::lines(app, width, space_above_editor);
-    let delivery_height = deliveries.len() as u16;
-    let above_editor = composer_gap + delivery_height;
+    let expanded_request = app.pane().keyboard_focus == crate::app::KeyboardFocus::Request
+        && app.pane().snapshot.as_ref().is_some_and(|snapshot| {
+            snapshot.agent.question.is_none() && snapshot.agent.permission.is_some()
+        });
+    let request = delivery::request_lines(
+        app,
+        width,
+        space_above_editor.min(if expanded_request { 12 } else { 3 }),
+    );
+    let request_height = request.lines.len() as u16;
+    let deliveries = delivery::lines(
+        app,
+        width,
+        space_above_editor.saturating_sub(request_height),
+    );
+    let delivery_height = deliveries.lines.len() as u16;
+    let above_editor = composer_gap + request_height + delivery_height;
     let editor_limit = area
         .height
         .saturating_sub(below_editor + chrome_rows + padding_rows + above_editor);
@@ -118,11 +136,12 @@ pub(crate) fn render_at(
         .saturating_sub(editor_height + above_editor + below_editor + MIN_TRANSCRIPT_ROWS)
         .min(MAX_BANNER_ROWS);
     let banner = banner(app, width, usize::from(banner_rows));
-    let [transcript, banner_area, gap, delivery_area, editor, _status_gap, status] =
+    let [transcript, banner_area, gap, request_area, delivery_area, editor, _status_gap, status] =
         Layout::vertical([
             Constraint::Min(0),
             Constraint::Length(banner.len() as u16),
             Constraint::Length(composer_gap),
+            Constraint::Length(request_height),
             Constraint::Length(delivery_height),
             Constraint::Length(editor_height),
             Constraint::Length(status_gap),
@@ -179,8 +198,39 @@ pub(crate) fn render_at(
             reading_area,
         );
     }
-    frame.render_widget(Paragraph::new(deliveries), delivery_area);
+    frame.render_widget(Paragraph::new(request.lines), request_area);
+    frame.render_widget(Paragraph::new(deliveries.lines), delivery_area);
+    app.request_area = request_area;
+    let request_id = app.pane().snapshot.as_ref().and_then(|snapshot| {
+        snapshot
+            .agent
+            .question
+            .as_ref()
+            .map(|request| request.id.clone())
+            .or_else(|| {
+                snapshot
+                    .agent
+                    .permission
+                    .as_ref()
+                    .map(|request| request.id.clone())
+            })
+    });
+    app.request_hit = if request_area.is_empty() {
+        None
+    } else {
+        request_id.map(|request_id| (app.selection().target, request_id))
+    };
     app.delivery_area = delivery_area;
+    app.delivery_hits = deliveries.hits;
+    app.permission_choice_areas =
+        request
+            .permission_choices
+            .map_or([Rect::ZERO; 2], |(row, deny, allow)| {
+                [
+                    delivery::choice_area(request_area, row, deny),
+                    delivery::choice_area(request_area, row, allow),
+                ]
+            });
     app.reading_area = reading_area;
     let [heading, _heading_gap, inner] = Layout::vertical([
         Constraint::Length(heading_rows),
@@ -203,18 +253,23 @@ pub(crate) fn render_at(
         frame.render_widget(Paragraph::new(line), heading);
     }
     if let Some(draft) = draft {
-        let placeholder = app
-            .pane()
-            .draft
-            .text()
-            .is_empty()
-            .then(|| format!("Type a prompt · {} Actions", Shortcut::ACTIONS.label));
+        let placeholder = app.pane().draft.text().is_empty().then(|| {
+            shorten(
+                &format!(
+                    "Enter steer · {} next Turn · / actions · {} help",
+                    Shortcut::NEXT_TURN.label,
+                    Shortcut::ACTIONS.label
+                ),
+                content_width,
+            )
+        });
         render_editor_view(frame, inner, draft, focused, placeholder.as_deref());
     }
     frame.render_widget(Paragraph::new(footer), status);
     let main_areas = [
         transcript,
         banner_area,
+        request_area,
         delivery_area,
         reading_area,
         inner,
@@ -419,6 +474,26 @@ fn waiting(app: &App, width: usize) -> Vec<Line<'static>> {
 
 fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Rect> {
     Some(match app.modal.as_mut()? {
+        Modal::Help => {
+            let area = popup(area, 52, 14);
+            let inner = render_popup(frame, area, "Keyboard shortcuts");
+            let lines = [
+                "Enter       Send or steer",
+                "Alt+Enter   Send on the next turn",
+                "Esc         Close or interrupt",
+                "↑ / ↓       Edit draft; select queued input",
+                "Delete      Withdraw selected queued input",
+                "F2          Focus a pending request",
+                "Ctrl+P/F1   Show this help",
+                "/ (empty draft) Search actions and Skills",
+                "Esc         Close help",
+            ];
+            frame.render_widget(
+                Paragraph::new(lines.join("\n")).style(Style::new().fg(MUTED)),
+                inner,
+            );
+            inner
+        }
         Modal::Picker(picker) => {
             let height = match picker.kind {
                 PickerKind::Models | PickerKind::Thinking | PickerKind::Agents => {
@@ -571,7 +646,7 @@ fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (us
         );
         let help = if picker.kind.completes_text() {
             format!("{select} · {} Complete · {confirm}", Shortcut::TAB.label)
-        } else if matches!(picker.kind, PickerKind::Server | PickerKind::Permission) {
+        } else if matches!(picker.kind, PickerKind::Server) {
             format!(
                 "{}/{} Details · {select} · {confirm}",
                 Shortcut::PAGE_UP.label,

@@ -13,12 +13,8 @@ pub(crate) enum CommandMenu {
     Resume,
     Agents,
     Back,
-    Queue,
-    Queued,
-    Withdraw,
     Advance,
     Interrupt,
-    Reply,
     Pending,
     Model,
     Thinking,
@@ -41,12 +37,8 @@ impl CommandMenu {
         Self::Resume,
         Self::Agents,
         Self::Back,
-        Self::Queue,
-        Self::Queued,
-        Self::Withdraw,
         Self::Advance,
         Self::Interrupt,
-        Self::Reply,
         Self::Pending,
         Self::Model,
         Self::Thinking,
@@ -69,12 +61,8 @@ impl CommandMenu {
             Self::Resume => "resume",
             Self::Agents => "agents",
             Self::Back => "back",
-            Self::Queue => "queue",
-            Self::Queued => "queued",
-            Self::Withdraw => "withdraw",
             Self::Advance => "continue",
             Self::Interrupt => "interrupt",
-            Self::Reply => "reply",
             Self::Pending => "pending",
             Self::Model => "model",
             Self::Thinking => "thinking",
@@ -98,12 +86,8 @@ impl CommandMenu {
             Self::Resume => ("Find a conversation in this workspace", None),
             Self::Agents => ("Choose or create an Agent in this Session", None),
             Self::Back => ("Return to the previous Agent in this Session", None),
-            Self::Queue => ("Send on the next Turn", Some(Shortcut::NEXT_TURN)),
-            Self::Queued => ("Edit input still waiting in the queue", Some(Shortcut::UP)),
-            Self::Withdraw => ("Withdraw input still in the queue", None),
             Self::Advance => ("Continue queued work", None),
             Self::Interrupt => ("Interrupt this execution", Some(Shortcut::ESCAPE)),
-            Self::Reply => ("Answer or decide a pending request", Some(Shortcut::REPLY)),
             Self::Pending => ("Check, retry or discard unconfirmed commands", None),
             Self::Model => ("Choose a configured model route", Some(Shortcut::MODEL)),
             Self::Thinking => ("Choose the model's reasoning setting", None),
@@ -154,8 +138,6 @@ pub(crate) enum ChoiceKind {
     Tier(String),
     Connection(String),
     Thinking(Option<String>),
-    EditQueued(String),
-    Withdraw(String),
     Pending(String),
     PendingRetry(String),
     PendingCheck(String),
@@ -165,10 +147,6 @@ pub(crate) enum ChoiceKind {
         exists: bool,
     },
     RestoreRejected(String),
-    Permission {
-        request_id: String,
-        allow: bool,
-    },
     Detail(DetailKey),
     Tool(ToolView),
     Restart,
@@ -182,9 +160,6 @@ impl ChoiceKind {
                 CommandMenu::Resume
                     | CommandMenu::Agents
                     | CommandMenu::Back
-                    | CommandMenu::Queued
-                    | CommandMenu::Withdraw
-                    | CommandMenu::Reply
                     | CommandMenu::Pending
                     | CommandMenu::Model
                     | CommandMenu::Thinking
@@ -198,7 +173,6 @@ impl ChoiceKind {
                 | Self::Agent { .. }
                 | Self::CreateAgent
                 | Self::Connection(_)
-                | Self::EditQueued(_)
                 | Self::Pending(_)
                 | Self::PendingOpen { .. }
                 | Self::Detail(_)
@@ -260,11 +234,8 @@ pub(crate) enum PickerKind {
     Agents,
     Models,
     Thinking,
-    Queued,
-    Queue,
     Pending,
     PendingItem,
-    Permission,
     Details,
     Tools,
     Server,
@@ -279,11 +250,8 @@ impl PickerKind {
             Self::Agents => "Switch Agent",
             Self::Models => "Model route",
             Self::Thinking => "Thinking",
-            Self::Queued => "Edit queued input",
-            Self::Queue => "Withdraw queued input",
             Self::Pending => "Unconfirmed commands",
             Self::PendingItem => "Recover command",
-            Self::Permission => "Authorization required",
             Self::Details => "Transcript details",
             Self::Tools => "Tool details and saved output",
             Self::Server => "Service status",
@@ -298,8 +266,6 @@ impl PickerKind {
                 | Self::Sessions
                 | Self::Agents
                 | Self::Models
-                | Self::Queued
-                | Self::Queue
                 | Self::Details
                 | Self::Tools
         )
@@ -482,7 +448,7 @@ impl Picker {
 pub(crate) enum PromptKind {
     Agent,
     Model { connection: String },
-    Question { request_id: String },
+    Question { request_id: String, target: Target },
     QueuedInput { input_command_id: String },
 }
 
@@ -516,12 +482,22 @@ mod tests {
                 picker.selected_choice(),
                 Some(ChoiceKind::Command(CommandMenu::Pending))
             ));
-            picker.move_by(1);
-            assert_eq!("/reply", picker.visible_choices()[1].label);
-            assert!(matches!(
-                picker.selected_choice(),
-                Some(ChoiceKind::Command(CommandMenu::Reply))
-            ));
         }
+    }
+
+    #[test]
+    fn action_picker_omits_inline_queue_and_reply_controls_only() {
+        let choices = Choice::commands();
+        let labels = choices
+            .iter()
+            .map(|choice| choice.label.as_str())
+            .collect::<Vec<_>>();
+        for omitted in ["/queue", "/queued", "/withdraw", "/reply"] {
+            assert!(!labels.contains(&omitted));
+        }
+        for retained in ["/new", "/resume", "/continue", "/pending", "/quit"] {
+            assert!(labels.contains(&retained));
+        }
+        assert_eq!(20, choices.len());
     }
 }

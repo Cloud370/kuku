@@ -44,20 +44,21 @@ Put options before the prompt in `kuku run`, because it consumes the remaining w
 
 | Key or action | Behavior |
 |---|---|
-| Ctrl+C | Clear the draft. With an empty draft, exit the TUI. Running work continues on the server. Inside a dialog, clear the focused input. |
+| Ctrl+C | Clear the draft. With an empty draft, exit the TUI. Running work continues on the server. Inside an editor dialog, clear the focused input. |
 | Enter | Send the draft. A busy Agent accepts it at the next safe model-request boundary, or in the next Turn if the current Turn settles first. |
 | Alt+Enter | Queue the draft for the next Turn. |
 | Shift+Enter or Ctrl+J | Insert a newline in the draft. |
-| Esc | Close the focused menu, or interrupt the selected execution and keep the draft. |
-| Ctrl+P, F1, or `/` in an empty composer | Search available actions and Skills. Choosing a Skill inserts an editable `/skill:NAME` prefix for the next send. |
+| Esc | Close a modal or leave inline queue/request focus. With the composer focused, interrupt the selected execution and keep the draft. |
+| Ctrl+P or F1 | Show read-only shortcut help. The draft is preserved; Enter and clicks do not run actions from help. |
+| `/` in an empty composer | Search available actions and Skills. Choosing a Skill inserts an editable `/skill:NAME` prefix for the next send. |
 | `@` or Tab | Complete workspace-relative paths as draft text. |
 | `/new`, `/resume` | Open a blank draft or find a retained Session. |
 | Alt+← or Alt+→ | Switch directly to the previous or next Agent. The order wraps and starts with `main`, followed by the other addresses in sorted order. |
 | `/agents` | Search the Session's Agents, switch recipients, or create an Agent. The selector shows activity, pending requests and queue counts, with `Admitted` and `Queued` task excerpts when available. |
 | `/back` | Return to the last Agent you viewed in this Session. Repeat to switch between the last two. Agent switching keeps each draft and reading position. |
-| `/queue`, `/withdraw`, `/continue` | Queue for the next Turn, withdraw a queued input, or explicitly resume work. |
-| `/queued` | Edit a queued message before admission. With an empty draft, ↑ also opens this picker when an input can be edited. |
-| F2 or `/reply` | Answer the selected Agent's pending question or authorization. |
+| `/continue` | Explicitly resume work for the selected Agent. |
+| Empty draft + ↑, or click an editable Pending inputs row | Select that exact queued input inline. Up/Down changes selection; Enter edits it; Delete withdraws it; Esc returns to the composer. |
+| F2 or click a pending request card | Focus the selected Agent's question or permission request. Enter opens the question editor. For permission, choose **Deny** or **Allow once** with Left/Right or a click, then press Enter. Esc leaves the card without answering or interrupting. |
 | `/pending` | Check, retry or discard an unconfirmed submission. |
 | `/model`, `/thinking` | Select model or reasoning settings for the selected Agent. |
 | `/statusline` | Open **Status line settings** to preview, select, reorder and save footer fields. |
@@ -68,7 +69,7 @@ Put options before the prompt in `kuku run`, because it consumes the remaining w
 | Left-button drag | Highlight visible text and copy the selected range to the clipboard on release. |
 | Mouse wheel, Page Up, Page Down | Scroll the transcript. |
 | Ctrl+End or Alt+↑ while reading history | Return to the latest output and resume following. |
-| ↑, ↓ in the editor | Move within a multiline draft and scroll the transcript at its boundaries. Ctrl+↑ and Ctrl+↓ recall sent prompts and restore the draft. |
+| ↑, ↓ in the editor | Move within a multiline draft and scroll the transcript at its boundaries. Ctrl+↑ and Ctrl+↓ recall sent prompts and restore the draft. In queue focus, Up/Down moves between editable queued inputs. |
 | `/server`, `/reconnect`, `/restart` | Inspect the connected service, reconnect, or restart the managed local service. |
 | Arrow keys, Tab, Enter in a menu | Move the highlight, complete editable text, or activate the selected action, respectively. |
 | `/web`, `/quit` | Open the conversation in the browser or leave the terminal client. |
@@ -85,7 +86,7 @@ Completed Turn statistics appear once beneath the reply and scroll with it. When
 
 The title of a command card is the short task description, or **Run command** if none was supplied. The card body previews the shell command and its output in execution order. The bottom border shows the status and exit code when available. Open the card for recorded arguments and capture details. Completed writes and edits share the code block frame. A write previews recorded file content with syntax highlighting or rendered Markdown. An edit shows the recorded diff. The footer shows the written or changed line counts.
 
-Sent text appears immediately in **Pending inputs**, above the composer. The same input shows its send, receipt, queue or failure state until it is admitted to the transcript. Unconfirmed sends and queued inputs can be recovered on reopen. Edit a queued input with `/queued` or withdraw it with `/withdraw`. If the Agent admits the input first, its admitted text stays in the transcript.
+Sent text appears immediately in **Pending inputs**, above the composer. The same input shows its send, receipt, queue or failure state until it is admitted to the transcript. Unconfirmed sends and queued inputs can be recovered on reopen. The action picker does not list `/queue`, `/queued`, `/withdraw`, or `/reply`. Select an ordinary queued input with Up from an empty draft or by clicking its row; the selection stays tied to that input as the list changes. Enter opens an isolated editor, Delete withdraws the selected input, and Esc returns to the composer. If the input has already left the queue, the TUI reports the stale selection and does not act on another row. A pending question or permission is also shown in a card above the composer without taking focus. F2 or a click focuses it; answering a question uses its request ID, and permissions require an explicit Deny or Allow once choice before Enter. If the Agent admits an input first, its admitted text stays in the transcript.
 
 Messages delivered by another Agent show the sender's address, for example `From main`, including when they open a Turn.
 

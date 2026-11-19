@@ -1,4 +1,5 @@
 use std::collections::{HashMap, VecDeque};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -32,7 +33,7 @@ use delivery::Deliveries;
 pub(crate) use delivery::DeliveryRow;
 use navigation::AgentNavigation;
 pub(crate) use pending::{PendingItem, PendingStage};
-use reading::KeyboardFocus;
+pub(crate) use reading::KeyboardFocus;
 pub(crate) use timing::TurnTiming;
 
 const DEFAULT_AGENT: &str = "main";
@@ -92,7 +93,11 @@ pub(crate) struct Pane {
     pub(crate) draft: Editor,
     pub(crate) transcript: Transcript,
     pub(crate) deliveries: Deliveries,
-    keyboard_focus: KeyboardFocus,
+    pub(crate) keyboard_focus: KeyboardFocus,
+    pub(crate) selected_queue_input: Option<String>,
+    pub(crate) focused_request: Option<String>,
+    pub(crate) permission_choice: Option<bool>,
+    pub(crate) request_scroll: usize,
     pub(crate) snapshot: Option<Box<Snapshot>>,
     observed_timing: Option<(u64, TurnTiming)>,
     pub(crate) pending_reply_copy: Option<u64>,
@@ -262,6 +267,7 @@ fn model_label(connection: &str, model: &str, effort: Option<&str>) -> String {
 
 #[derive(Debug)]
 pub(crate) enum Modal {
+    Help,
     Picker(Picker),
     Prompt(Prompt),
     Output(Box<OutputViewer>),
@@ -299,6 +305,10 @@ pub(crate) struct App {
     pub(crate) editor_width: usize,
     pub(crate) transcript_area: (usize, usize),
     pub(crate) delivery_area: Rect,
+    pub(crate) delivery_hits: Vec<(Range<u16>, String)>,
+    pub(crate) request_area: Rect,
+    pub(crate) request_hit: Option<(Target, String)>,
+    pub(crate) permission_choice_areas: [Rect; 2],
     pub(crate) reading_area: Rect,
     pub(crate) composer_area: Rect,
     pub(crate) modal_editor_width: usize,
@@ -340,6 +350,10 @@ impl App {
             editor_width: 80,
             transcript_area: (80, 16),
             delivery_area: Rect::ZERO,
+            delivery_hits: Vec::new(),
+            request_area: Rect::ZERO,
+            request_hit: None,
+            permission_choice_areas: [Rect::ZERO; 2],
             reading_area: Rect::ZERO,
             composer_area: Rect::ZERO,
             modal_editor_width: 60,
@@ -903,7 +917,6 @@ impl App {
             Ok(mut snapshot) => {
                 snapshot.reply_preview = None;
                 pane.set_snapshot(snapshot);
-                self.sync_withdraw_picker();
             }
             Err(error) => self.problem(format!("Agent state · {error} · /reconnect")),
         }

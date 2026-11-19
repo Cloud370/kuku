@@ -5,8 +5,8 @@ use kuku_client::{
     Snapshot, Timing,
 };
 
-use crate::menu::{Choice, ChoiceKind, PickerKind, PromptKind};
-use crate::text::{cap, shorten, single_line};
+use crate::menu::PromptKind;
+use crate::text::cap;
 
 use super::{Address, App, Modal, PendingStage, SubmissionStatus};
 
@@ -269,21 +269,11 @@ impl App {
             })
     }
 
-    pub(crate) fn open_queued(&mut self) {
-        let choices = self
-            .queued_for_edit()
-            .map(|entry| {
-                Choice::new(
-                    shorten(&single_line(&entry.input.text), 120),
-                    "Enter opens editor · /withdraw removes an input",
-                    ChoiceKind::EditQueued(entry.receipt.command_id.clone()),
-                )
-            })
-            .collect();
-        self.picker(PickerKind::Queued, choices);
-    }
-
     pub(crate) fn edit_queued(&mut self, input_command_id: String) {
+        if self.queue_mutation_pending(&input_command_id) {
+            self.problem("A change to this queued input is already pending");
+            return;
+        }
         let text = self
             .queued_for_edit()
             .find(|entry| entry.receipt.command_id == input_command_id)
@@ -303,6 +293,17 @@ impl App {
     }
 
     pub(crate) fn replace_queued(&mut self, input_command_id: String, text: String) -> bool {
+        if !self
+            .queued_for_edit()
+            .any(|entry| entry.receipt.command_id == input_command_id)
+        {
+            self.problem("Selected input is no longer queued");
+            return false;
+        }
+        if self.queue_mutation_pending(&input_command_id) {
+            self.problem("A change to this queued input is already pending");
+            return false;
+        }
         if !self.require_service() {
             return false;
         }
@@ -324,6 +325,9 @@ impl App {
                 text,
             },
         );
+        let pane = self.pane_mut();
+        pane.keyboard_focus = super::KeyboardFocus::Composer;
+        pane.selected_queue_input = None;
         true
     }
 
