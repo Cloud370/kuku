@@ -109,6 +109,14 @@ class Desktop:
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=5)
 
 
+def copy_selected_message(desktop, window, contextual_controls_before_messages=1):
+    desktop.key(window, "F2")
+    for _ in range(contextual_controls_before_messages):
+        desktop.key(window, "Tab")
+    for _ in range(3):
+        desktop.key(window, "Return")
+
+
 def select_engine(name):
     requested = command("ibus", "engine", name, check=False)
     selected = command("ibus", "engine").stdout.decode().strip()
@@ -167,8 +175,7 @@ def dense_layout(client, desktop, workspace, window, pid):
 
     def copy_reply(expected):
         desktop.key(window, "ctrl+c")
-        desktop.type(window, "/copy")
-        desktop.key(window, "Return")
+        copy_selected_message(desktop, window)
         eventually("the complete Chinese report in the X11 clipboard",
                    lambda: desktop.clipboard() == expected.encode())
 
@@ -190,9 +197,7 @@ def markdown_layout(client, desktop, workspace, window, pid, document):
         screens = {"streaming": desktop.screen("markdown-document-streaming")}
 
     verified = document.verify(client, workspace)
-    desktop.key(window, "ctrl+p")
-    desktop.type(window, "copy")
-    desktop.key(window, "Return")
+    copy_selected_message(desktop, window)
     eventually("the exact Markdown document with its outer fence in the X11 clipboard",
                lambda: desktop.clipboard() == document.source.encode())
     screens["complete"] = desktop.screen("markdown-document-complete")
@@ -225,8 +230,7 @@ def agent_navigation(client, desktop, workspace, session, window):
         screens["child"] = desktop.screen("agent-streaming-reviewer")
     eventually("the complete child reply to settle",
                lambda: client.snapshot(workspace, session, "reviewer")["last_output"] == initial + tail)
-    desktop.type(window, "/copy")
-    desktop.key(window, "Return")
+    copy_selected_message(desktop, window, contextual_controls_before_messages=2)
     eventually("a reply larger than the transcript preview in the clipboard", lambda: desktop.clipboard() == raw)
     desktop.key(window, "alt+Left")
     screens["restored"] = desktop.screen("agent-parent-restored")
@@ -341,10 +345,9 @@ def exercise(client, desktop, checks):
         eventually("the fixture reply to persist", lambda: client.snapshot(workspace, session)["last_output"] == REPLY,
                    timeout=10)
         desktop.set_clipboard(b"previous isolated clipboard value")
-        desktop.type(window, "/copy")
-        desktop.key(window, "Return")
+        copy_selected_message(desktop, window)
         eventually("the exact reply in the X11 clipboard", lambda: desktop.clipboard() == REPLY.encode(), timeout=10)
-        checks["copy"] = {"command": "/copy", "clipboard_utf8_sha256": hashlib.sha256(REPLY.encode()).hexdigest(),
+        checks["copy"] = {"command": "F2 Messages → Copy", "clipboard_utf8_sha256": hashlib.sha256(REPLY.encode()).hexdigest(),
                           "clipboard_text": REPLY, "screenshot": desktop.screen("07-reply-copied")}
         client.provider.assert_idle(duration=0.25)
 

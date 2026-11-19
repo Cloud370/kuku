@@ -3,16 +3,18 @@ use std::path::PathBuf;
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-use kuku_client::{Acknowledgement, Action, HistoryPage, Receipt, RewindGroup, RewindGroupPage};
+use kuku_client::{Acknowledgement, Action, HistoryEntry, HistoryKind, Receipt};
 use ratatui::backend::TestBackend;
+use ratatui::buffer::Buffer;
 use ratatui::Terminal;
 use serde_json::json;
 
 use crate::app::{App, Modal};
 use crate::jobs::{Job, Search, Update};
-use crate::menu::{Choice, ChoiceKind, CommandMenu, PickerKind, PromptKind};
+use crate::menu::{Choice, ChoiceKind, MessageAction, PickerKind, PromptKind};
+use crate::transcript::MessageId;
 
-fn connected_app() -> App {
+pub(super) fn connected_app() -> App {
     let workspace = PathBuf::from("/workspace");
     let mut app = App::new(workspace.clone(), None);
     app.update(Update::Connected {
@@ -23,173 +25,107 @@ fn connected_app() -> App {
     app
 }
 
-fn press(app: &mut App, code: KeyCode) {
+pub(super) fn press(app: &mut App, code: KeyCode) {
     app.key(KeyEvent::new(code, KeyModifiers::NONE));
 }
 
-#[test]
-fn details_picker_routes_retry_and_load_earlier_actions_without_changing_draft() {
-    let mut app = connected_app();
-    app.pane_mut().transcript.replace_recent(HistoryPage {
-        entries: Vec::new(),
-        rewind_groups: vec![RewindGroup {
-            rewind_event_id: 50,
-            target_event_id: 2,
-            agent: "main".into(),
-            turn_number: Some(1),
-            entry_count: 2,
-        }],
-        next_before: None,
-    });
-    app.paste("unsent draft");
-
-    app.perform(CommandMenu::Details);
-    press(&mut app, KeyCode::Enter);
-    let request = app
-        .effects
-        .iter()
-        .find_map(|job| match job {
-            Job::RewindGroupHistory(_, request) => Some(request.clone()),
-            _ => None,
-        })
-        .unwrap();
-    assert_eq!(None, request.before);
-    app.effects.clear();
-    assert!(app
-        .pane_mut()
-        .transcript
-        .apply_rewind_group_page(&request, Err("offline".into())));
-    assert!(app
-        .pane()
-        .transcript
-        .rewind_group_choices()
-        .iter()
-        .any(|choice| choice.can_retry));
-
-    app.perform(CommandMenu::Details);
-    press(&mut app, KeyCode::Down);
-    press(&mut app, KeyCode::Enter);
-    let retry = app
-        .effects
-        .iter()
-        .find_map(|job| match job {
-            Job::RewindGroupHistory(_, request) => Some(request.clone()),
-            _ => None,
-        })
-        .unwrap();
-    assert_eq!(None, retry.before);
-    app.effects.clear();
-    assert!(app.pane_mut().transcript.apply_rewind_group_page(
-        &retry,
-        Ok(RewindGroupPage {
-            entries: Vec::new(),
-            next_before: Some(1),
-        }),
-    ));
-    assert!(app
-        .pane()
-        .transcript
-        .rewind_group_choices()
-        .iter()
-        .any(|choice| choice.can_load_more));
-
-    app.perform(CommandMenu::Details);
-    press(&mut app, KeyCode::Down);
-    press(&mut app, KeyCode::Enter);
-    let more = app
-        .effects
-        .iter()
-        .find_map(|job| match job {
-            Job::RewindGroupHistory(_, request) => Some(request.clone()),
-            _ => None,
-        })
-        .unwrap();
-    assert_eq!(Some(1), more.before);
-    assert_eq!("unsent draft", app.pane().draft.text());
+pub(super) fn insert_message(
+    app: &mut App,
+    id: u64,
+    kind: HistoryKind,
+    text: &str,
+    details: serde_json::Map<String, serde_json::Value>,
+) {
+    let agent = app.active.agent.clone();
+    app.pane_mut().transcript.apply(
+        HistoryEntry {
+            id,
+            agent,
+            turn: Some(3),
+            kind,
+            text: Some(text.to_owned()),
+            turn_summary: None,
+            details,
+        },
+        None,
+    );
 }
 
-#[test]
-fn dragging_group_heading_selects_text_without_activating_group() {
-    let mut app = connected_app();
-    app.pane_mut().transcript.replace_recent(HistoryPage {
-        entries: Vec::new(),
-        rewind_groups: vec![RewindGroup {
-            rewind_event_id: 50,
-            target_event_id: 2,
-            agent: "main".into(),
-            turn_number: None,
-            entry_count: 1,
-        }],
-        next_before: None,
-    });
-    let request = app.pane_mut().transcript.toggle_rewind_group(50).unwrap();
-    app.pane_mut().transcript.apply_rewind_group_page(
-        &request,
-        Ok(RewindGroupPage {
-            entries: Vec::new(),
-            next_before: None,
-        }),
-    );
-    app.effects.clear();
+pub(super) fn open_message_actions(app: &mut App, id: MessageId) {
+    app.open_messages_picker();
+    let Some(Modal::Picker(picker)) = &mut app.modal else {
+        panic!("message picker expected")
+    };
+    let selected = picker
+        .visible_choices()
+        .iter()
+        .position(
+            |choice| matches!(&choice.kind, ChoiceKind::MessageEntry(message) if message.id == id),
+        )
+        .expect("message entry is available");
+    picker.selected = selected;
+    press(app, KeyCode::Enter);
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+        if matches!(picker.kind, PickerKind::MessageActions)));
+}
 
-    let mut terminal = Terminal::new(TestBackend::new(100, 28)).unwrap();
-    let buffer = terminal
-        .draw(|frame| crate::ui::render(frame, &mut app))
-        .unwrap()
-        .buffer;
-    let width = usize::from(buffer.area.width);
-    let (row, column) = buffer
-        .content
-        .chunks(width)
-        .enumerate()
-        .find_map(|(row, cells)| {
-            let line = cells
-                .iter()
-                .map(|cell| cell.symbol())
-                .collect::<Vec<_>>()
-                .join("");
-            line.find("Rewound content")
-                .map(|byte| (row as u16, line[..byte].chars().count() as u16))
+pub(super) fn choose_message_action(app: &mut App, action: MessageAction) {
+    let Some(Modal::Picker(picker)) = &mut app.modal else {
+        panic!("message action picker expected")
+    };
+    let selected = picker
+        .visible_choices()
+        .iter()
+        .position(|choice| {
+            (action == MessageAction::Expand
+                && matches!(
+                    &choice.kind,
+                    ChoiceKind::Detail { message: Some(_), .. }
+                ))
+                || matches!(&choice.kind, ChoiceKind::MessageAction { action: found, .. } if *found == action)
         })
+        .expect("message action is available");
+    picker.selected = selected;
+    press(app, KeyCode::Enter);
+}
+
+pub(super) fn draw(app: &mut App, terminal: &mut Terminal<TestBackend>) -> Buffer {
+    terminal
+        .draw(|frame| crate::ui::render(frame, app))
         .unwrap();
-    let send = |app: &mut App, kind, column| {
+    terminal.backend().buffer().clone()
+}
+
+pub(super) fn screen_position(buffer: &Buffer, text: &str) -> (u16, u16) {
+    let width = usize::from(buffer.area.width);
+    for row in 0..usize::from(buffer.area.height) {
+        let start = row * width;
+        let line = buffer.content[start..start + width]
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        if let Some(column) = line.find(text) {
+            return (column as u16, row as u16);
+        }
+    }
+    panic!("screen text not found: {text}");
+}
+
+pub(super) fn click_screen(app: &mut App, buffer: &Buffer, point: (u16, u16)) {
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
         app.event(
             Event::Mouse(MouseEvent {
                 kind,
-                column,
-                row,
+                column: point.0,
+                row: point.1,
                 modifiers: KeyModifiers::NONE,
             }),
             buffer,
         );
-    };
-    send(&mut app, MouseEventKind::Down(MouseButton::Left), column);
-    send(
-        &mut app,
-        MouseEventKind::Drag(MouseButton::Left),
-        column + 6,
-    );
-    send(&mut app, MouseEventKind::Up(MouseButton::Left), column + 6);
-    assert!(app.effects.iter().any(|job| matches!(job, Job::Copy(_))));
-    assert!(!app
-        .effects
-        .iter()
-        .any(|job| matches!(job, Job::RewindGroupHistory(..))));
-    assert!(app
-        .pane()
-        .transcript
-        .rewind_group_choices()
-        .iter()
-        .any(|group| group.expanded));
-    app.effects.clear();
-    send(&mut app, MouseEventKind::Down(MouseButton::Left), column);
-    send(&mut app, MouseEventKind::Up(MouseButton::Left), column);
-    assert!(app
-        .pane()
-        .transcript
-        .rewind_group_choices()
-        .iter()
-        .all(|group| !group.expanded));
+    }
 }
 
 #[test]
@@ -295,7 +231,7 @@ fn agent_cards(app: &mut App) {
     }
 }
 
-fn transcript_text(app: &mut App) -> String {
+pub(super) fn transcript_text(app: &mut App) -> String {
     app.pane_mut()
         .transcript
         .project(96, 32)
@@ -304,47 +240,6 @@ fn transcript_text(app: &mut App) -> String {
         .map(|line| line.to_string())
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-fn open_details(app: &mut App) {
-    app.key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
-    app.paste("/details");
-    press(app, KeyCode::Enter);
-    assert!(matches!(&app.modal, Some(Modal::Picker(picker))
-        if matches!(picker.kind, PickerKind::Details)));
-    app.effects.clear();
-}
-
-#[test]
-fn details_search_selects_one_visible_card_and_escape_leaves_previews_alone() {
-    let mut app = connected_app();
-    agent_cards(&mut app);
-    let collapsed = transcript_text(&mut app);
-    assert!(!collapsed.contains("Use precise citations"));
-    assert!(!collapsed.contains("List failing cases"));
-    open_details(&mut app);
-    app.paste("reviewer CLI");
-    let Some(Modal::Picker(picker)) = &app.modal else {
-        panic!("details picker expected");
-    };
-    let choices = picker.visible_choices();
-    assert_eq!(1, choices.len());
-    assert_eq!("Agent reviewer", choices[0].label);
-    assert!(choices[0].detail.contains("Review the CLI"));
-    assert!(app.effects.is_empty(), "search only uses visible cards");
-    press(&mut app, KeyCode::Esc);
-    assert_eq!(collapsed, transcript_text(&mut app));
-
-    open_details(&mut app);
-    app.paste("reviewer");
-    press(&mut app, KeyCode::Enter);
-    assert!(app.modal.is_none());
-    let expanded = transcript_text(&mut app);
-    assert!(
-        expanded.contains("Use precise citations") && expanded.contains("List failing cases"),
-        "{expanded}"
-    );
-    assert!(app.pending.is_empty());
 }
 
 #[test]
@@ -609,85 +504,7 @@ fn tab_inserts_paths_and_skills_in_the_draft() {
 }
 
 #[test]
-fn copy_fetches_the_complete_committed_reply_and_ignores_older_requests() {
-    use kuku_client::{HistoryEntry, HistoryKind, HistoryPage};
-
-    let mut app = connected_app();
-    let snapshot = serde_json::from_value(json!({
-        "session_id": app.active.session,
-        "workspace": app.workspace,
-        "cursor": 4,
-        "pending": [],
-        "agents": [],
-        "agent": {
-            "address": app.active.agent, "config": {}, "status": "running", "pending_inputs": 0,
-            "last_output": "The previous Turn",
-            "usage": {"model_requests": 0, "unreported_requests": 0},
-        }
-    }))
-    .unwrap();
-    let reply = |id, text: &str| HistoryEntry {
-        id,
-        agent: "main".into(),
-        turn: Some(2),
-        kind: HistoryKind::Assistant,
-        text: Some(text.into()),
-        turn_summary: None,
-        details: Default::default(),
-    };
-    let original = format!(
-        "```rust\r\n{}```\r\n\r\n结束  \r\n",
-        "    let 值 = 42;\r\n".repeat(4000)
-    );
-    let selection = app.selection();
-    app.update(Update::Loaded(
-        selection.clone(),
-        Box::new(snapshot),
-        HistoryPage {
-            entries: vec![reply(4, &original)],
-            rewind_groups: Vec::new(),
-            next_before: None,
-        },
-    ));
-    app.effects.clear();
-    app.copy_reply();
-    assert!(
-        matches!(app.effects.as_slice(), [Job::ReplySource(target, 4)] if target == &selection)
-    );
-    app.effects.clear();
-
-    let mut old_selection = selection.clone();
-    old_selection.generation += 1;
-    app.update(Update::ReplySource(
-        old_selection,
-        4,
-        Ok("Wrong target".into()),
-    ));
-    app.update(Update::ReplySource(
-        selection.clone(),
-        3,
-        Ok("Wrong reply".into()),
-    ));
-    assert!(app.effects.is_empty());
-    app.update(Update::ReplySource(
-        selection.clone(),
-        4,
-        Ok(original.clone()),
-    ));
-    assert!(matches!(app.effects.as_slice(), [Job::Copy(text)] if text == &original));
-
-    app.effects.clear();
-    app.copy_reply();
-    app.effects.clear();
-    let newest = "`Raw` **Markdown**\r\n尾字  \r\n";
-    app.pane_mut().transcript.apply(reply(7, newest), None);
-    app.copy_reply();
-    app.update(Update::ReplySource(selection, 4, Ok(original)));
-    assert!(matches!(app.effects.as_slice(), [Job::Copy(text)] if text == newest));
-}
-
-#[test]
-fn copy_reply_does_not_use_snapshot_fallback_when_history_has_no_reply() {
+fn obsolete_message_commands_are_absent_from_picker() {
     use kuku_client::HistoryPage;
 
     let mut app = connected_app();
@@ -716,142 +533,8 @@ fn copy_reply_does_not_use_snapshot_fallback_when_history_has_no_reply() {
     ));
     app.effects.clear();
 
-    app.copy_reply();
-
-    assert!(!app
-        .effects
-        .iter()
-        .any(|effect| matches!(effect, Job::Copy(_))));
-}
-
-#[test]
-fn readonly_rewind_group_picker_preserves_draft_and_only_reads_hidden_history() {
-    use kuku_client::{HistoryEntry, HistoryKind, HistoryPage, RewindGroup, RewindGroupPage};
-
-    let mut app = connected_app();
-    app.paste("unsent draft");
-    let selection = app.selection();
-    let snapshot = serde_json::from_value(json!({
-        "session_id": app.active.session,
-        "workspace": app.workspace,
-        "cursor": 12,
-        "pending": [],
-        "agents": [],
-        "agent": {
-            "address": app.active.agent, "config": {}, "status": "idle", "pending_inputs": 0,
-            "last_output": null,
-            "usage": { "model_requests": 0, "unreported_requests": 0 },
-        }
-    }))
-    .unwrap();
-    let group = RewindGroup {
-        rewind_event_id: 90,
-        target_event_id: 3,
-        agent: "main".into(),
-        turn_number: Some(2),
-        entry_count: 1,
-    };
-    app.update(Update::Loaded(
-        selection.clone(),
-        Box::new(snapshot),
-        HistoryPage {
-            entries: Vec::new(),
-            rewind_groups: vec![group],
-            next_before: None,
-        },
-    ));
-    app.effects.clear();
-
-    let (key, label, _) = app
-        .pane()
-        .transcript
-        .visible_detail_choices()
-        .into_iter()
-        .next()
-        .unwrap();
-    assert!(label.starts_with("Expand · Rewound content"));
-    assert_eq!(
-        Some((90, crate::transcript::RewindGroupAction::Toggle)),
-        key.rewind_group_action()
-    );
-    app.open_details();
-    assert!(matches!(
-        &app.modal,
-        Some(Modal::Picker(picker)) if matches!(picker.kind, PickerKind::Details)
-    ));
-    press(&mut app, KeyCode::Esc);
-    assert!(app.modal.is_none());
-    assert_eq!("unsent draft", app.pane().draft.text());
-    app.effects.clear();
-
-    assert!(app.toggle_transcript_detail(&key));
-    assert_eq!("unsent draft", app.pane().draft.text());
-    let request = match app.effects.as_slice() {
-        [Job::RewindGroupHistory(target, request)] if target == &selection => request.clone(),
-        effects => panic!(
-            "expected one read-only group request, got {}",
-            effects.len()
-        ),
-    };
-    assert_eq!(90, request.rewind_event_id);
-    app.effects.clear();
-
-    let mut stale_selection = selection.clone();
-    stale_selection.generation += 1;
-    app.update(Update::RewindGroupHistory(
-        stale_selection,
-        request.clone(),
-        Ok(RewindGroupPage {
-            entries: vec![HistoryEntry {
-                id: 4,
-                agent: "main".into(),
-                turn: Some(2),
-                kind: HistoryKind::Assistant,
-                text: Some("hidden answer".into()),
-                turn_summary: None,
-                details: Default::default(),
-            }],
-            next_before: None,
-        }),
-    ));
-    assert!(app.effects.is_empty());
-    assert_eq!("unsent draft", app.pane().draft.text());
-
-    app.update(Update::RewindGroupHistory(
-        selection,
-        request,
-        Ok(RewindGroupPage {
-            entries: vec![HistoryEntry {
-                id: 4,
-                agent: "main".into(),
-                turn: Some(2),
-                kind: HistoryKind::Assistant,
-                text: Some("hidden answer".into()),
-                turn_summary: None,
-                details: Default::default(),
-            }],
-            next_before: None,
-        }),
-    ));
-    assert!(app.effects.is_empty());
-    assert!(app.pane().transcript.last_reply().is_none());
-    assert!(app.pane().transcript.rewind_messages("main").is_empty());
-    app.copy_reply();
-    assert!(!app
-        .effects
-        .iter()
-        .any(|effect| matches!(effect, Job::Copy(_))));
-    assert_eq!("unsent draft", app.pane().draft.text());
-
-    let collapsed_choice = app
-        .pane()
-        .transcript
-        .visible_detail_choices()
-        .into_iter()
-        .next()
-        .unwrap();
-    assert!(collapsed_choice.1.starts_with("Collapse · Rewound content"));
-    assert!(app.toggle_transcript_detail(&collapsed_choice.0));
-    assert!(app.effects.is_empty());
-    assert_eq!("unsent draft", app.pane().draft.text());
+    let commands = Choice::commands();
+    for name in ["/copy", "/source", "/notes", "/details", "/tools"] {
+        assert!(commands.iter().all(|choice| choice.label != name), "{name}");
+    }
 }

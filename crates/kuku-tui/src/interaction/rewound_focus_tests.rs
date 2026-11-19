@@ -7,7 +7,6 @@ use ratatui::Terminal;
 
 use crate::app::App;
 use crate::jobs::{Job, Update};
-use crate::menu::CommandMenu;
 
 fn connected_app() -> App {
     let workspace = PathBuf::from("/workspace");
@@ -54,7 +53,7 @@ fn expanding_rewind_group_focuses_history_and_escape_restores_multiline_draft() 
     let draft = app.pane().draft.text().to_owned();
     let cursor = app.pane().draft.cursor();
 
-    app.perform(CommandMenu::Details);
+    assert!(app.toggle_readonly_rewind_group(50));
     press(&mut app, KeyCode::Enter);
     let request = app
         .effects
@@ -97,7 +96,7 @@ fn expanding_rewind_group_focuses_history_and_escape_restores_multiline_draft() 
     assert_eq!(cursor, app.pane().draft.cursor());
     assert!(app.effects.is_empty());
 
-    app.perform(CommandMenu::Details);
+    assert!(app.toggle_readonly_rewind_group(50));
     press(&mut app, KeyCode::Enter);
     assert!(
         app.composer_focused(),

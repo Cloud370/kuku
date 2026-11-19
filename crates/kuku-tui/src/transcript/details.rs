@@ -45,6 +45,13 @@ impl DetailKey {
         Some((*id, action))
     }
 
+    fn message_action(kind: DetailKind, record: &Key) -> Self {
+        Self {
+            kind,
+            record: record.clone(),
+        }
+    }
+
     pub(super) fn settle(&mut self, preview: &Key, settled: &Key) {
         if self.record == *preview {
             self.record = settled.clone();
@@ -223,6 +230,32 @@ pub(super) enum DetailRecord<'a> {
 }
 
 impl Transcript {
+    pub(super) fn message_action_keys(
+        &self,
+        record: &Record,
+    ) -> (Option<DetailKey>, Option<DetailKey>) {
+        let thinking = (!record.reasoning_preview.is_empty())
+            .then(|| DetailKey::message_action(DetailKind::Reasoning, &record.key));
+        let expandable = self
+            .detail_items
+            .visible
+            .iter()
+            .find(|item| item.key.record == record.key && item.key.kind != DetailKind::Reasoning)
+            .map(|item| item.key.clone())
+            .or_else(|| match &record.body {
+                super::Body::Tool(tool) => Some(DetailKey::message_action(
+                    if tool.agent_card().is_some() {
+                        DetailKind::Agent
+                    } else {
+                        DetailKind::Tool
+                    },
+                    &record.key,
+                )),
+                _ => None,
+            });
+        (thinking, expandable)
+    }
+
     pub(crate) fn markdown_link_at(&self, row: usize, column: usize) -> Option<&str> {
         let row = match &self.notes {
             Some(notes) if notes.hit(row) => return None,
@@ -310,6 +343,7 @@ impl Transcript {
         choices
     }
 
+    #[cfg(test)]
     pub(crate) fn latest_notes(&self) -> Option<DetailKey> {
         self.detail_items
             .visible
@@ -397,15 +431,37 @@ impl Transcript {
         match key.kind {
             DetailKind::Agent => self.toggle_agent_record(&key.record),
             DetailKind::Tool if window.contains(&key.record) => {
-                if let Some(index) = self
-                    .detail_items
-                    .inspections
-                    .iter()
-                    .position(|opened| opened == &key.record)
-                {
-                    self.detail_items.inspections.remove(index);
+                let group_to_open = groups(&window.records)
+                    .into_iter()
+                    .find(|span| {
+                        window.records[span.range.clone()]
+                            .iter()
+                            .any(|record| record.key == key.record)
+                    })
+                    .and_then(|span| {
+                        let records = &window.records[span.range];
+                        (!self.detail_items.group_open(records))
+                            .then(|| DetailKey::message_action(DetailKind::Group, &records[0].key))
+                    });
+                let group_was_collapsed = group_to_open.is_some();
+                if let Some(group_key) = group_to_open {
+                    self.toggle_detail(&group_key);
+                }
+                if group_was_collapsed {
+                    if !self.detail_items.inspections.contains(&key.record) {
+                        remember(&mut self.detail_items.inspections, &key.record);
+                    }
                 } else {
-                    remember(&mut self.detail_items.inspections, &key.record);
+                    if let Some(index) = self
+                        .detail_items
+                        .inspections
+                        .iter()
+                        .position(|opened| opened == &key.record)
+                    {
+                        self.detail_items.inspections.remove(index);
+                    } else {
+                        remember(&mut self.detail_items.inspections, &key.record);
+                    }
                 }
                 true
             }

@@ -135,14 +135,14 @@ impl Transcript {
         self.detail_items.visible = visible;
         let tool_hint = (!self.detail_items.visible.is_empty()).then(|| {
             if self.detail_items.only_reasoning() {
-                return "/details".to_owned();
+                return Shortcut::DETAILS.label.to_owned();
             }
             let action = if self.details_can_expand() {
                 "show"
             } else {
                 "hide"
             };
-            format!("{} {action} · /details", Shortcut::DETAILS.label)
+            format!("{} {action}", Shortcut::DETAILS.label)
         });
         let mut view = TranscriptView {
             thinking_row,

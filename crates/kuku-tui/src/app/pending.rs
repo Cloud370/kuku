@@ -387,7 +387,9 @@ impl App {
                 let text = text.clone();
                 self.select(address, true, String::new());
                 self.append_to_draft(&text);
-                self.message("Copied replacement to draft · /pending keeps the saved edit");
+                self.message(
+                    "Copied replacement to draft · delivery recovery keeps the saved edit",
+                );
                 return;
             }
         }
@@ -526,14 +528,14 @@ impl App {
             Ok(None) => {
                 if let Some(item) = self.pending.get_mut(id) {
                     item.stage = PendingStage::Missing;
-                    self.message("No receipt found · /pending to retry or discard");
+                    self.message("No receipt found · use delivery recovery to retry or discard");
                 }
             }
             Err(error) => {
                 if let Some(item) = self.pending.get_mut(id) {
                     item.stage = PendingStage::Unknown(error.to_string());
                 }
-                self.problem(format!("Check receipt · {error} · /pending"));
+                self.problem(format!("Check receipt · {error} · delivery recovery"));
             }
         }
         self.update_pending_delivery(id);
@@ -554,7 +556,9 @@ impl App {
             && matches!(error, Error::Transport(_))
             && self.panes.get(&address).is_some_and(|pane| !pane.exists)
         {
-            self.connection_problem = Some(format!("Service connection · {problem} · /reconnect"));
+            self.connection_problem = Some(format!(
+                "Service connection · {problem} · Ctrl+R to reconnect"
+            ));
         }
         let mut restored = false;
         if let Some(pane) = self.panes.get_mut(&address) {
@@ -584,7 +588,7 @@ impl App {
         } else if rewind {
             "Selected text retained in pending action"
         } else {
-            "See /pending"
+            "Use delivery recovery"
         };
         self.problem(format!(
             "{recovery} · {} · {problem}",

@@ -1,5 +1,7 @@
-use super::{App, Job, Modal, PromptKind, Shortcut};
 use crossterm::event::KeyEvent;
+
+use super::{App, Job, Modal, PromptKind, Shortcut};
+use crate::menu::{ChoiceKind, PickerKind};
 
 impl App {
     pub(super) fn key(&mut self, key: KeyEvent) {
@@ -9,19 +11,46 @@ impl App {
             self.escape_armed_at = None;
         }
         if Shortcut::ESCAPE.matches(key) {
-            if let Some(modal) = self.modal.take() {
-                if let Modal::Prompt(prompt) = &modal {
-                    if let PromptKind::Question { target, .. } = &prompt.kind {
-                        self.restore_question_composer(target);
+            let selected_message = match &self.modal {
+                Some(Modal::Picker(picker))
+                    if matches!(picker.kind, PickerKind::MessageActions) =>
+                {
+                    match picker.selected_choice() {
+                        Some(ChoiceKind::MessageAction { message, .. }) => Some(message),
+                        Some(ChoiceKind::Detail {
+                            message: Some(message),
+                            ..
+                        }) => Some(message),
+                        _ => None,
                     }
+                }
+                _ => None,
+            };
+            if let Some(message) = selected_message {
+                self.back_to_messages(message);
+                self.escape_armed_at = None;
+                return;
+            }
+            if let Some(modal) = self.modal.take() {
+                let close_picker = !matches!(&modal, Modal::Help);
+                if let Modal::Prompt(prompt) = modal {
+                    if let PromptKind::Question { target, request_id } = prompt.kind {
+                        self.save_question_draft(&target, &request_id, prompt.editor);
+                    }
+                }
+                if close_picker {
+                    self.effects.push(Job::ClosePicker);
                 }
                 self.rewind_restore_files = false;
                 self.escape_armed_at = None;
-                if !matches!(modal, Modal::Help) {
-                    self.effects.push(Job::ClosePicker);
-                }
                 return;
             }
+            if self.pane_mut().transcript.close_notes() {
+                self.escape_armed_at = None;
+                return;
+            }
+            self.rewind_escape();
+            return;
         }
         let address = self.active.clone();
         let draft = self.pane().draft.text().to_owned();
@@ -62,6 +91,7 @@ impl App {
                 prompt.editor.insert(&text.replace(['\r', '\n'], " "));
             }
         } else if self.modal.is_none() {
+            self.deactivate_context_focus();
             self.focus_composer();
             self.pane_mut().draft.insert(text);
         }

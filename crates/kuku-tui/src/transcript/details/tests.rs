@@ -120,7 +120,7 @@ fn mixed_twenty_four_tools_compact_by_operation_and_remain_individually_inspecta
     assert!(transcript.recent.records[..12]
         .iter()
         .all(|record| record.rendered.preview.is_none() && record.rendered.source.is_none()));
-    assert_eq!(Some("Ctrl+O show · /details"), compact.tool_hint.as_deref());
+    assert_eq!(Some("Ctrl+O show"), compact.tool_hint.as_deref());
     let group = transcript
         .detail_at(line(&compact, "12 file reads · 3 file searches"))
         .unwrap()
@@ -366,9 +366,7 @@ fn listing_polls_show_their_recorded_snapshot_and_preserve_the_original_result()
         .clone();
     assert!(transcript.toggle_detail(&member));
     let detail = text(&transcript.project(108, 28));
-    assert!(
-        detail.contains("Raw result · /tools") && detail.contains("Original large reply heading")
-    );
+    assert!(detail.contains("Raw result") && detail.contains("Original large reply heading"));
     assert_eq!(source, transcript.tools()[1].details);
 }
 

@@ -14,6 +14,7 @@ from urllib.parse import quote, urlencode
 
 from interactive_browser import open_session
 from interactive_fixture import InstalledClient, eventually, install, serve
+from interactive_rendering import select_message_action
 from playwright.sync_api import sync_playwright
 
 from run import Budget, ROOT, load_secrets, write_json
@@ -230,13 +231,29 @@ def review_saved_commands(terminal, count, evidence):
     wanted = {"diff --git a/report.py": "terminal-diff.txt",
               "CSV regression checks passed": "terminal-check.txt"}
     terminal.request("resize", rows=35, cols=90)
-    for index in range(count):
-        terminal.press("/tools\r")
-        terminal.expect("Tool details and saved output")
-        terminal.type("run_command Saved output")
-        terminal.expect("› run_command")
-        terminal.press("\x1b[B" * index + "\r")
+    screen = terminal.expect("run_command")["screen"]
+    terminal.click_text(screen, "Messages" if "Messages" in screen else "Msg")
+    screen = terminal.expect("Tool · run_command")["screen"]
+    rows = [line.strip() for line in screen.splitlines() if "Tool · run_command" in line]
+    if len(rows) < count:
+        raise AssertionError(f"Message picker showed {len(rows)} run_command entries; expected {count}")
+
+    reviewed = 0
+    for row in rows:
+        if not wanted:
+            return
+        terminal.click_text(screen, row)
+        actions = terminal.request("screen")["screen"]
+        if "Selected · Tool · run_command" not in actions:
+            terminal.press("\r")
+            actions = terminal.expect("Selected · Tool · run_command")["screen"]
+        if "Full output" not in actions:
+            terminal.press("\x1b")
+            screen = terminal.expect("Tool · run_command")["screen"]
+            continue
+        select_message_action(terminal, actions, "Full output")
         screen = terminal.expect("bytes · PgUp/PgDn")["screen"]
+        reviewed += 1
         for page in range(4):
             output = saved_output_rows(screen)
             for marker in list(wanted):
@@ -257,6 +274,11 @@ def review_saved_commands(terminal, count, evidence):
                     break
         terminal.press("\x1b")
         terminal.expect("CSV totals verified")
+        screen = terminal.request("screen")["screen"]
+        terminal.click_text(screen, "Messages" if "Messages" in screen else "Msg")
+        screen = terminal.expect("Tool · run_command")["screen"]
+    if reviewed < count:
+        raise AssertionError(f"Message picker exposed {reviewed} Full output actions; expected {count}")
     raise AssertionError(f"Saved tool output in the resumed terminal lacked {list(wanted)}")
 
 

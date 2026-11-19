@@ -11,11 +11,12 @@ use crate::theme::{ACCENT, ERROR, MIN_TRANSCRIPT_INDENT_WIDTH, MUTED, TRANSCRIPT
 
 mod agent;
 mod details;
+mod history;
 mod message;
+mod messages;
 mod notes;
 mod preview;
 mod render;
-mod reply;
 mod rewind;
 mod row;
 use row::Row;
@@ -28,8 +29,7 @@ use self::agent::AgentCards;
 pub(crate) use self::details::DetailKey;
 use self::details::{DetailRecord, Details};
 use self::message::{paint_card, render_assistant_source, render_record, render_user};
-use self::reply::LatestReply;
-pub(crate) use self::reply::ReplySource;
+pub(crate) use self::messages::{MessageId, MessageInfo, MessageKind, SelectedMessage};
 use self::rewound::RewindGroupState;
 pub(crate) use self::rewound::{RewindGroupAction, RewindGroupChoice, RewindGroupRequest};
 use self::tool::Tool;
@@ -100,13 +100,14 @@ enum ToolDetails {
 enum AssistantView {
     #[default]
     Preview,
+    #[cfg(test)]
     Source,
+    MessageSource(u64),
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct Transcript {
     recent: Window,
-    latest_reply: LatestReply,
     reading: Option<Reading>,
     restore: Option<(u64, Anchor)>,
     details: ToolDetails,
@@ -122,18 +123,6 @@ pub(crate) struct Transcript {
 }
 
 impl Transcript {
-    pub(crate) fn invalidate_after_rewind(&mut self) {
-        self.readonly_epoch = self.readonly_epoch.wrapping_add(1);
-        self.reply_position = None;
-        self.reading = None;
-        self.restore = None;
-        self.latest_reply = LatestReply::default();
-        self.recent = Window::default();
-        self.current_execution = None;
-        self.detail_items.visible.clear();
-        self.visible_rewind_actions.clear();
-    }
-
     pub(crate) fn replace_recent(&mut self, page: HistoryPage) {
         self.readonly_epoch = self.readonly_epoch.wrapping_add(1);
         self.reset_pending_rewind_group_pages();
@@ -150,7 +139,6 @@ impl Transcript {
                 .last()
                 .is_some_and(|entry| previous.is_some_and(|previous| entry.id > previous));
         }
-        self.latest_reply.observe_page(&page);
         self.recent = Window::from_page(page);
         self.current_execution = None;
         self.detail_items.visible.clear();
@@ -177,7 +165,6 @@ impl Transcript {
     }
 
     pub(crate) fn apply(&mut self, entry: HistoryEntry, execution: Option<u64>) {
-        self.latest_reply.observe(&entry);
         let previous_preview = if entry.kind == HistoryKind::Assistant {
             execution.or(self.current_execution)
         } else {
@@ -279,38 +266,6 @@ impl Transcript {
         expanded
     }
 
-    pub(crate) fn toggle_source(&mut self) -> bool {
-        self.assistant_view = match self.assistant_view {
-            AssistantView::Preview => AssistantView::Source,
-            AssistantView::Source => AssistantView::Preview,
-        };
-        self.assistant_view == AssistantView::Source
-    }
-
-    pub(crate) fn last_reply(&self) -> Option<ReplySource<'_>> {
-        self.latest_reply.source(&self.recent.records)
-    }
-
-    pub(crate) fn tools(&self) -> Vec<ToolView> {
-        let window = self
-            .reading
-            .as_ref()
-            .map_or(&self.recent, |reading| &reading.window);
-        window
-            .records
-            .iter()
-            .rev()
-            .filter_map(|record| match &record.body {
-                Body::Tool(tool) => Some(tool.view()),
-                Body::User { .. }
-                | Body::Assistant(_)
-                | Body::Interrupted(_)
-                | Body::Notice(..)
-                | Body::TurnSummary => None,
-            })
-            .collect()
-    }
-
     pub(crate) fn scroll(
         &mut self,
         amount: isize,
@@ -366,69 +321,6 @@ impl Transcript {
         None
     }
 
-    pub(crate) fn apply_page(&mut self, request: HistoryRequest, page: HistoryPage) {
-        if request == HistoryRequest::Recent {
-            self.replace_recent(page);
-            return;
-        }
-        if let HistoryRequest::Restore(before) = request {
-            if self
-                .restore
-                .as_ref()
-                .is_some_and(|(expected, _)| *expected == before)
-            {
-                let (_, anchor) = self.restore.take().expect("restoration requested");
-                let window = Window::from_page(page);
-                if window.contains(&anchor.key) {
-                    self.reading = Some(Reading {
-                        window,
-                        anchor,
-                        newer: VecDeque::new(),
-                        unseen: false,
-                        manual: true,
-                    });
-                }
-            }
-            return;
-        }
-        let Some(reading) = &mut self.reading else {
-            return;
-        };
-        match request {
-            HistoryRequest::Older(before) if reading.window.older == Some(before) => {
-                reading.window.older = page.next_before;
-                for record in page.entries.into_iter().filter_map(Record::from_entry) {
-                    reading.window.insert(record);
-                }
-                reading.window.add_rewind_groups(page.rewind_groups);
-                if let Some(request) = reading.window.trim_back() {
-                    reading.newer.push_front(request);
-                    reading.newer.truncate(MAX_BACKTRACK_PAGES);
-                }
-            }
-            HistoryRequest::Newer { first, .. } if reading.newer.front() == Some(&request) => {
-                reading.newer.pop_front();
-                for record in page
-                    .entries
-                    .into_iter()
-                    .filter(|entry| entry.id >= first)
-                    .filter_map(Record::from_entry)
-                {
-                    reading.window.insert(record);
-                }
-                reading.window.add_rewind_groups(
-                    page.rewind_groups
-                        .into_iter()
-                        .filter(|group| group.target_event_id >= first),
-                );
-                reading.window.trim_front();
-            }
-            HistoryRequest::Older(_)
-            | HistoryRequest::Newer { .. }
-            | HistoryRequest::Restore(_)
-            | HistoryRequest::Recent => {}
-        }
-    }
 }
 
 pub(crate) struct TranscriptView {
@@ -447,6 +339,7 @@ pub(crate) struct ToolView {
     pub(crate) details: String,
     pub(crate) diff: String,
     pub(crate) output_id: Option<String>,
+    pub(crate) inline_output_complete: bool,
 }
 
 #[derive(Debug)]
@@ -696,9 +589,15 @@ impl Record {
             agents,
             items,
         } = layout;
-        let source_body = match (assistant, &self.body) {
-            (AssistantView::Source, Body::Assistant(text)) => Some((text, false)),
-            (AssistantView::Source, Body::Interrupted(text)) => Some((text, true)),
+        let source_selected = match assistant {
+            #[cfg(test)]
+            AssistantView::Source => true,
+            AssistantView::MessageSource(id) => self.key == Key::Event(id),
+            AssistantView::Preview => false,
+        };
+        let source_body = match (source_selected, &self.body) {
+            (true, Body::Assistant(text)) => Some((text, false)),
+            (true, Body::Interrupted(text)) => Some((text, true)),
             _ => None,
         };
         if let Some((text, interrupted)) = source_body {

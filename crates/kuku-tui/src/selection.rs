@@ -2,6 +2,7 @@ use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::buffer::{Buffer, CellWidth};
 use ratatui::layout::{Position, Rect};
 
+use crate::contextual::ContextControl;
 use crate::menu::PickerHit;
 use crate::theme;
 use crate::transcript::{DetailKey, RewindGroupAction};
@@ -17,6 +18,7 @@ pub(crate) enum ClickTarget {
     Link(String),
     Picker(PickerHit),
     QueueInput(String),
+    Contextual(ContextControl),
     Request {
         target: kuku_client::Target,
         request_id: String,
@@ -29,6 +31,7 @@ pub(crate) enum ClickTarget {
     Transcript,
     Composer,
     JumpLatest,
+    Messages,
 }
 
 pub(crate) enum MouseAction {
@@ -40,6 +43,7 @@ pub(crate) enum MouseAction {
 pub(crate) struct TextSelection {
     areas: Vec<Rect>,
     transcript_insets: Option<(Rect, Vec<u16>)>,
+    messages_area: Option<Rect>,
     drag: Option<Drag>,
 }
 
@@ -152,9 +156,18 @@ impl TextSelection {
         self.drag = None;
     }
 
+    pub(crate) fn set_messages_area(&mut self, area: Option<Rect>) {
+        self.messages_area = area;
+    }
+
+    pub(crate) fn messages_area(&self) -> Option<Rect> {
+        self.messages_area
+    }
+
     pub(crate) fn clear(&mut self) {
         self.areas.clear();
         self.transcript_insets = None;
+        self.messages_area = None;
         self.cancel_drag();
     }
 }

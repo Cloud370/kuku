@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 mod activity;
+mod contextual;
 mod layout;
+mod reading;
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
@@ -20,9 +22,9 @@ use unicode_width::UnicodeWidthStr;
 use super::{render, render_at, ActivityFrame};
 use crate::app::{Address, App, KeyboardFocus, Modal};
 use crate::jobs::{Job, Update};
-use crate::menu::{Choice, ChoiceKind, PickerKind, PromptKind};
+use crate::menu::{Choice, ChoiceKind, MessageAction, PickerKind, PromptKind};
 use crate::output::OutputViewer;
-use crate::transcript::ToolView;
+use crate::transcript::{MessageId, SelectedMessage, ToolView};
 
 fn screen(app: &mut App, width: u16, height: u16) -> String {
     activity_screen(app, width, height, None).0
@@ -136,14 +138,34 @@ fn composer_click_places_the_caret_in_scrolled_and_wrapped_unicode_text() {
     );
 }
 
-fn command(app: &mut App, name: &str) {
-    let draft = app.pane_mut().draft.take_text();
-    key(app, KeyCode::Char('/'), KeyModifiers::NONE);
-    for character in name.chars() {
-        key(app, KeyCode::Char(character), KeyModifiers::NONE);
-    }
+fn message_action(app: &mut App, id: u64, action: MessageAction) {
+    app.open_messages_picker();
+    let Some(Modal::Picker(picker)) = &mut app.modal else {
+        panic!("message picker expected");
+    };
+    picker.selected = picker
+        .visible_choices()
+        .iter()
+        .position(|choice| matches!(
+            &choice.kind,
+            ChoiceKind::MessageEntry(SelectedMessage { id: MessageId::Event(event), .. }) if *event == id
+        ))
+        .expect("message entry is available");
     key(app, KeyCode::Enter, KeyModifiers::NONE);
-    app.pane_mut().draft.set_text(draft);
+    let Some(Modal::Picker(picker)) = &mut app.modal else {
+        panic!("message action picker expected");
+    };
+    picker.selected = picker
+        .visible_choices()
+        .iter()
+        .position(|choice| {
+            matches!(
+                &choice.kind,
+                ChoiceKind::MessageAction { action: candidate, .. } if *candidate == action
+            )
+        })
+        .expect("message action is available");
+    key(app, KeyCode::Enter, KeyModifiers::NONE);
 }
 
 fn entry(id: u64, agent: &str, kind: HistoryKind, text: &str) -> HistoryEntry {
@@ -506,23 +528,13 @@ fn source_action_completes_on_tab_and_toggles_one_pane_without_changing_copy() {
     app.pane_mut().draft.insert("reviewer draft");
     app.select(main.clone(), true, "Example".into());
 
-    let main_draft = app.pane_mut().draft.take_text();
-    key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
-    for character in "sou".chars() {
-        key(&mut app, KeyCode::Char(character), KeyModifiers::NONE);
-    }
-    key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
-    assert!(matches!(&app.modal, Some(Modal::Picker(picker)) if picker.query.text() == "/source"));
-    app.effects.clear();
-    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-    app.pane_mut().draft.set_text(main_draft);
-    assert!(matches!(app.effects.as_slice(), [Job::ClosePicker]));
+    message_action(&mut app, 1, MessageAction::Source);
     let source = screen(&mut app, 100, 24);
     assert!(source.contains("Assistant · source"));
     assert!(source.contains("````markdown") && source.contains("```rust"));
     assert!(source.contains("main draft"));
 
-    command(&mut app, "copy");
+    message_action(&mut app, 1, MessageAction::Copy);
     assert!(app
         .effects
         .iter()
@@ -533,7 +545,7 @@ fn source_action_completes_on_tab_and_toggles_one_pane_without_changing_copy() {
     assert!(!other.contains("**Reviewer reply**"));
     app.select(main, true, "Example".into());
     assert!(screen(&mut app, 100, 24).contains("````markdown"));
-    command(&mut app, "source");
+    message_action(&mut app, 1, MessageAction::Source);
     assert!(!screen(&mut app, 100, 24).contains("````markdown"));
 }
 
@@ -731,7 +743,7 @@ fn generic_tool_details_render_control_bytes_visibly_and_copy_original_reply() {
     assert!(!view.contains("before␛[2Jafter"));
     key(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
     assert!(screen(&mut app, 72, 25).contains("before␛[2Jafter"));
-    command(&mut app, "copy");
+    message_action(&mut app, 2, MessageAction::Copy);
     assert!(app
         .effects
         .iter()
@@ -820,6 +832,7 @@ fn mouse_drag_copies_sanitized_text_from_tool_output_popup() {
             details: "before\u{001b}[2J\nExit".into(),
             diff: String::new(),
             output_id: None,
+            inline_output_complete: false,
         },
     ))));
     let mut terminal = Terminal::new(TestBackend::new(58, 18)).unwrap();
