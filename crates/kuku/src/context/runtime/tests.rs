@@ -1,11 +1,41 @@
 use super::{
-    project_source, read_agent_events, read_frozen_catalog, ContextCursor, MAX_CACHED_READS,
-    MAX_SELECTION_BYTES_FACTOR,
+    project_source, read_agent_events, read_frozen_catalog, ContextCursor, FrozenSegment,
+    MAX_CACHED_READS, MAX_SELECTION_BYTES_FACTOR,
 };
 use crate::context::{CanonicalMessage, MessageBlock};
 use crate::conversation::address::ConversationAddress;
 use crate::event::{EventPayload, EventStore, StoredEvent};
 use serde_json::json;
+
+fn rendered_provider_body(
+    history: Vec<CanonicalMessage>,
+    prelude_messages: Vec<CanonicalMessage>,
+    handoff_summary: Option<String>,
+) -> serde_json::Value {
+    let catalog = crate::prompt::builtin_prompt_catalog();
+    let request = crate::provider::types::ProviderRequest {
+        assembly: crate::context::ContextAssembly {
+            system_prompt: String::new(),
+            prelude_messages,
+            history,
+            tools: Vec::new(),
+            prompt_asset_sources: Vec::new(),
+            project_instruction_sources: Vec::new(),
+            memory_sources: Vec::new(),
+            runtime_context: None,
+            handoff_summary,
+        },
+        catalog: &catalog,
+        current_input: crate::provider::types::CanonicalPromptInput { parts: Vec::new() },
+        model: "fixture".into(),
+        max_output_tokens: Some(128),
+        temperature: None,
+        stream: true,
+        think_level: crate::config::ThinkLevel::Off,
+        thinking: Default::default(),
+    };
+    crate::provider::openai_compat::render_body(&request)
+}
 
 #[test]
 fn tool_result_projection_keeps_the_wire_view_in_every_protocol() {
@@ -108,6 +138,224 @@ fn tool_result_projection_keeps_the_wire_view_in_every_protocol() {
             );
         }
     }
+}
+
+#[test]
+fn rewind_keeps_prior_tool_message_and_drops_same_turn_steering_and_frozen_handoff() {
+    let events = vec![
+        StoredEvent {
+            id: 1,
+            payload: EventPayload::ModelResponse {
+                conversation: Some("main".into()),
+                turn: 1,
+                ts: "t".into(),
+                request_id: "first".into(),
+                text: "earlier assistant".into(),
+                thinking: None,
+                stop_reason: None,
+                input_tokens_total: None,
+                output_tokens_total: None,
+            },
+        },
+        StoredEvent {
+            id: 2,
+            payload: EventPayload::ToolCall {
+                conversation: Some("main".into()),
+                turn: 1,
+                ts: "t".into(),
+                tool_call_id: "tool-1".into(),
+                request_id: "first".into(),
+                index: 0,
+                tool: "file_read".into(),
+                args: json!({}),
+            },
+        },
+        StoredEvent {
+            id: 3,
+            payload: EventPayload::ToolResult {
+                conversation: Some("main".into()),
+                turn: 1,
+                ts: "t".into(),
+                tool_call_id: "tool-1".into(),
+                status: "ok".into(),
+                summary: "earlier tool result".into(),
+                model_content: "earlier tool result".into(),
+                truncated: false,
+                files_read: Vec::new(),
+                files_changed: Vec::new(),
+                commands_run: Vec::new(),
+                memory_changed: None,
+                structured: None,
+            },
+        },
+        StoredEvent {
+            id: 4,
+            payload: EventPayload::MessageUser {
+                conversation: "main".into(),
+                turn: 1,
+                ts: "t".into(),
+                text: "steering input".into(),
+                from: None,
+                via_tool_call_id: None,
+            },
+        },
+        StoredEvent {
+            id: 5,
+            payload: EventPayload::ModelResponse {
+                conversation: Some("main".into()),
+                turn: 1,
+                ts: "t".into(),
+                request_id: "second".into(),
+                text: "later answer".into(),
+                thinking: None,
+                stop_reason: None,
+                input_tokens_total: None,
+                output_tokens_total: None,
+            },
+        },
+        StoredEvent {
+            id: 6,
+            payload: EventPayload::TurnCompleted {
+                turn: 1,
+                ts: "t".into(),
+                conversation: "main".into(),
+            },
+        },
+    ];
+    let catalog = crate::prompt::builtin_prompt_catalog();
+    let segment: FrozenSegment = serde_json::from_value(json!({
+        "signature":"old", "configuration":1, "handoff":2, "system_prompt":"old segment",
+        "prelude":[], "tools":[], "catalog":catalog
+    }))
+    .unwrap();
+    let mut cursor = ContextCursor {
+        latest_turn: Some(1),
+        tail: events,
+        segment: Some(segment),
+        handoff: Some(StoredEvent {
+            id: 2,
+            payload: EventPayload::Handoff {
+                turn: 1,
+                ts: "t".into(),
+                request_id: "handoff".into(),
+                summary: "removed handoff summary".into(),
+                keep_turns: 1,
+            },
+        }),
+        ..ContextCursor::default()
+    };
+    cursor
+        .observe(
+            StoredEvent {
+                id: 8,
+                payload: EventPayload::Unknown(json!({
+                    "kind":"runtime.operation",
+                    "record":{"operation":"message_rewind","address":"main","target_event_id":4}
+                })),
+            },
+            "main",
+            1024 * 1024,
+        )
+        .unwrap();
+
+    let history = cursor.history(&ConversationAddress::MAIN);
+    let body = serde_json::to_string(&rendered_provider_body(
+        history
+            .iter()
+            .map(|admitted| admitted.message.clone())
+            .collect(),
+        cursor
+            .segment
+            .as_ref()
+            .map(|segment| segment.prelude.clone())
+            .unwrap_or_default(),
+        None,
+    ))
+    .unwrap();
+    assert_eq!(2, history.len());
+    assert!(history.iter().all(|message| message.admitted_at < 4));
+    assert!(body.contains("earlier assistant"));
+    assert!(body.contains("earlier tool result"));
+    assert!(!body.contains("steering input"));
+    assert!(!body.contains("later answer"));
+    assert!(cursor.segment.is_none());
+    assert!(cursor.handoff.is_none());
+}
+
+#[test]
+fn reopened_cursor_drops_rewound_handoff_summary_and_frozen_prelude() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("events.jsonl");
+    let mut writer = EventStore::open(&path).unwrap();
+    writer
+        .append(EventPayload::TurnStarted {
+            turn: 1,
+            ts: "t".into(),
+            conversation: "main".into(),
+        })
+        .unwrap();
+    let catalog = crate::prompt::builtin_prompt_catalog();
+    let prelude =
+        CanonicalMessage::assistant(vec![MessageBlock::Text("removed handoff prelude".into())]);
+    let segment = writer
+        .append(EventPayload::Unknown(json!({
+            "kind":"runtime.context_segment", "agent":"main", "signature":"old",
+            "configuration":1, "handoff":2, "system_prompt":"system", "prelude":[prelude],
+            "tools":[], "catalog":catalog, "connection":"", "protocol":"", "model":"",
+            "endpoint":"", "behavior":"", "identity_slot":1, "workspace":""
+        })))
+        .unwrap()
+        .id;
+    writer
+        .append(EventPayload::Unknown(json!({
+            "kind":"runtime.step_prepared", "agent":"main", "segment":segment,
+            "context_head":0, "source_head":0
+        })))
+        .unwrap();
+    writer
+        .append(EventPayload::Handoff {
+            turn: 1,
+            ts: "t".into(),
+            request_id: "handoff".into(),
+            summary: "removed handoff summary".into(),
+            keep_turns: 1,
+        })
+        .unwrap();
+    writer
+        .append(EventPayload::Unknown(json!({
+            "kind":"runtime.operation",
+            "record":{"operation":"message_rewind","address":"main","target_event_id":1}
+        })))
+        .unwrap();
+
+    let mut reopened = ContextCursor::default();
+    reopened.refresh(&path, "main", 1024 * 1024).unwrap();
+    let events = EventStore::replay(&path).unwrap();
+    let (handoff, history) =
+        super::super::replay::rebuild_history_for_provider(&events, &ConversationAddress::MAIN);
+
+    assert!(reopened.segment.is_none());
+    assert!(reopened.handoff.is_none());
+    let handoff = handoff.or_else(|| {
+        reopened
+            .handoff
+            .as_ref()
+            .and_then(|event| match &event.payload {
+                EventPayload::Handoff { summary, .. } => Some(summary.clone()),
+                _ => None,
+            })
+    });
+    let body = serde_json::to_string(&rendered_provider_body(
+        history,
+        reopened
+            .segment
+            .as_ref()
+            .map(|segment| segment.prelude.clone())
+            .unwrap_or_default(),
+        handoff,
+    ))
+    .unwrap();
+    assert!(!body.contains("removed handoff"));
 }
 
 #[test]

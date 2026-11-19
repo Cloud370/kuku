@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 use crate::context::{CanonicalMessage, MessageBlock, Role, ToolSchema};
@@ -204,6 +204,8 @@ impl ContextCursor {
                     .retain(|admission| admission.id < target_event_id || admission.id >= event.id);
                 self.tail
                     .retain(|source| source.id < target_event_id || source.id >= event.id);
+                self.handoff = None;
+                self.segment = None;
                 if self.pending_admissions.is_empty() {
                     self.pending_source_head = None;
                 }
@@ -329,7 +331,8 @@ impl ContextCursor {
             }
         }
         for (turn, mut events) in turns {
-            let admitted_at = events
+            let source_ids = message_source_event_ids(&events);
+            let fallback_source_id = events
                 .iter()
                 .map(|event| event.id)
                 .max()
@@ -346,11 +349,13 @@ impl ContextCursor {
                 },
             );
             let (_, messages) = super::replay::rebuild_history_for_provider(&events, conversation);
-            result.extend(messages.into_iter().map(|message| AdmittedMessage {
-                turn,
-                origin: MessageOrigin::of(&message),
-                message,
-                admitted_at,
+            result.extend(messages.into_iter().enumerate().map(|(index, message)| {
+                AdmittedMessage {
+                    turn,
+                    origin: MessageOrigin::of(&message),
+                    message,
+                    admitted_at: source_ids.get(index).copied().unwrap_or(fallback_source_id),
+                }
             }));
         }
         result
@@ -458,6 +463,99 @@ impl ContextCursor {
         }
         Ok(())
     }
+}
+
+fn message_source_event_ids(events: &[StoredEvent]) -> Vec<u64> {
+    let mut ids = Vec::new();
+    let mut group: Option<(String, u64)> = None;
+    let response_messages: HashSet<_> = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ModelResponse {
+                turn,
+                request_id,
+                text,
+                ..
+            } => Some((*turn, request_id.as_str(), text.as_str())),
+            _ => None,
+        })
+        .collect();
+    for event in events {
+        match &event.payload {
+            EventPayload::ModelResponse {
+                request_id,
+                stop_reason,
+                ..
+            } if stop_reason.as_ref().is_none_or(|reason| {
+                matches!(
+                    reason,
+                    crate::event::ModelStopReason::EndTurn | crate::event::ModelStopReason::ToolUse
+                )
+            }) =>
+            {
+                set_message_group(&mut ids, &mut group, request_id, event.id);
+            }
+            EventPayload::ToolCall { request_id, .. } => {
+                set_message_group(&mut ids, &mut group, request_id, event.id);
+            }
+            EventPayload::Unknown(value) if value["kind"] == "runtime.provider_replay" => {
+                if let Some(request_id) = value["request_id"].as_str() {
+                    set_message_group(&mut ids, &mut group, request_id, event.id);
+                }
+            }
+            EventPayload::ToolResult { .. } => {
+                if let Some((_, source_id)) = &mut group {
+                    *source_id = event.id;
+                }
+            }
+            EventPayload::MessageUser { .. } => {
+                if let Some((_, source_id)) = group.take() {
+                    ids.push(source_id);
+                }
+                ids.push(event.id);
+            }
+            EventPayload::MessageAssistant {
+                turn,
+                message_id,
+                text,
+                ..
+            } => {
+                if !response_messages.contains(&(*turn, message_id.as_str(), text.as_str())) {
+                    if let Some((_, source_id)) = group.take() {
+                        ids.push(source_id);
+                    }
+                    ids.push(event.id);
+                }
+            }
+            EventPayload::TurnCompleted { .. } => {
+                if let Some((_, source_id)) = group.take() {
+                    ids.push(source_id);
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some((_, source_id)) = group {
+        ids.push(source_id);
+    }
+    ids
+}
+
+fn set_message_group(
+    ids: &mut Vec<u64>,
+    group: &mut Option<(String, u64)>,
+    request_id: &str,
+    event_id: u64,
+) {
+    if group
+        .as_ref()
+        .is_some_and(|(active, _)| active != request_id)
+    {
+        if let Some((_, source_id)) = group.take() {
+            ids.push(source_id);
+        }
+    }
+    *group = Some((request_id.into(), event_id));
 }
 
 fn scan(
