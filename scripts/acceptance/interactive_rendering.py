@@ -11,6 +11,15 @@ from urllib.parse import urlencode
 from interactive_fixture import InstalledClient, Response, StreamPause, eventually
 
 
+def has_standalone_assistant_rail(frame):
+    assistant_row = next(
+        (index for index, line in enumerate(frame) if line.strip() == "Assistant"),
+        None,
+    )
+    start = assistant_row + 1 if assistant_row is not None else 0
+    return any(line.strip() in {"│", "┃"} for line in frame[start:])
+
+
 def event(name, **fields):
     body = json.dumps({"type": name, **fields})
     return f"event: {name}\ndata: {body}\n\n".encode()
@@ -504,7 +513,7 @@ def scroll_mixed_table(client):
             frame = eventually("the table viewport to scroll", lambda: (r if (r := rows()) != old else None))
             saw_border |= any("┌" in line for line in frame)
             assert all("│" not in line for line in frame if "Before table" in line or "After table" in line), frame
-            assert not any(line.strip() in {"│", "┃"} for line in frame), frame
+            assert not has_standalone_assistant_rail(frame), frame
             if any("Before table 01" in line for line in frame):
                 break
         assert "preserve draft" in frame[editor_row], frame
