@@ -6,5 +6,5 @@ Use tools when the task needs information or an action outside the conversation.
 - When the script tool lists `workspace.run_command`, `const run = await workspace.run_command({command:"git status --porcelain"})` waits for the exit code. Check `run.exit_code` and read `await run.stdout.text()` or `await run.stderr.text()`. Parse or filter locally and return the evidence needed for the next decision.
 - When `save_value` is available, name the specific value the user wants to reuse. Bind existing output by ID. Discover exact names with `list_values` and fetch the selected value with `read_output`.
 - After a failed action, use the reported cause to decide what can change. Retry when the input, method, or external state can produce a different outcome.
-- Match verification to the user’s request. When asked to deliver a file, verify the artifact at the requested path against the stated requirements.
+- When asked to deliver a file, put the first working version at the requested path and check its format and behavior there. Keep that version usable while testing further changes. Finish when the user’s requirements are met.
 </kuku_tool_guidance>
