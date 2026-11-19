@@ -9,6 +9,9 @@ import time
 
 
 IO_FIELDS = ('rchar', 'wchar', 'syscr', 'syscw', 'read_bytes', 'write_bytes', 'cancelled_write_bytes')
+PROCESS_IO_SCOPE = 'SDK process and waited-for children. rchar and wchar count logical bytes.'
+EXTERNAL_PROCESS_IO = 'proc_pid_io'
+FINAL_PROCESS_IO = 'proc_self_io'
 PROC = '''p=$(cat /logs/agent/sdk.pid 2>/dev/null) || exit 1
 d=/proc/$p
 cat "$d/stat" "$d/status" 2>/dev/null || exit 1
@@ -20,6 +23,12 @@ def peak_rss_kib(*observations):
                 if type(value) in (int, float) and value >= 0 and math.isfinite(value)), default=None)
 
 
+def complete_process_io(fields):
+    if isinstance(fields, dict) and all(type(fields.get(key)) is int and fields[key] >= 0 for key in IO_FIELDS):
+        return {key: fields[key] for key in IO_FIELDS}
+    return None
+
+
 class ResourceSampler:
     def __init__(self, container):
         self.container = container
@@ -28,7 +37,8 @@ class ResourceSampler:
         self.data = {'container_scope': 'sdk_and_tools', 'container_samples': 0, 'container_snapshots': [],
                      'process_sampling_errors': 0, 'container_sampling_errors': 0,
                      'sdk_process_samples': 0, 'sdk_peak_rss_kib': None, 'sdk_peak_rss_high_water_kib': None,
-                     'sdk_cpu_seconds': None, 'sdk_threads_max': None, 'process_io': None}
+                     'sdk_cpu_seconds': None, 'sdk_threads_max': None, 'process_io': None,
+                     'process_io_source': None, 'process_io_scope': PROCESS_IO_SCOPE}
         self.previous = None
         self.observed = 0.0
         self.rss_seconds = 0.0
@@ -65,8 +75,8 @@ class ResourceSampler:
         for source, target in [('VmRSS','sdk_peak_rss_kib'),('VmHWM','sdk_peak_rss_high_water_kib'),('Threads','sdk_threads_max')]:
             if source in fields:
                 self.data[target] = max(self.data[target] or 0, fields[source])
-        if all(key in fields for key in IO_FIELDS):
-            self.data['process_io'] = {key: fields[key] for key in IO_FIELDS}
+        if (io := complete_process_io(fields)) is not None:
+            self.data.update(process_io=io, process_io_source=EXTERNAL_PROCESS_IO)
 
     def sample_process(self):
         while not self.stopped.is_set():
@@ -105,7 +115,6 @@ class ResourceSampler:
             'observed_seconds': round(self.observed, 4), 'window_seconds':round(window,4),
             'coverage_ratio':round(self.observed/window,6) if window > 0 else None,
             'samples':self.data['sdk_process_samples']}
-        self.data['process_io_scope'] = 'last proc pid/io sample, includes waited-for children; rchar/wchar are logical bytes'
         return self.data
 
 
@@ -113,9 +122,14 @@ def include_final_process_usage(resources, result_path):
     try:
         if result_path.stat().st_size > 4 * 1024 * 1024:
             return
-        stats = json.loads(result_path.read_text())['process_resources']
+        result = json.loads(result_path.read_text())
+        stats = result.get('process_resources') if isinstance(result, dict) else None
+        if not isinstance(stats, dict):
+            return
+        if (io := complete_process_io(stats.get('process_io'))) is not None:
+            resources.update(process_io=io, process_io_source=FINAL_PROCESS_IO, process_io_scope=PROCESS_IO_SCOPE)
         keys = ('user_cpu_seconds','system_cpu_seconds','peak_rss_kib','input_blocks','output_blocks')
-        if not isinstance(stats,dict) or not all(type(stats.get(k)) in (int,float) and stats[k]>=0 for k in keys):
+        if not all(type(stats.get(k)) in (int,float) and stats[k]>=0 for k in keys):
             return
         memory = resources['harness_memory']
         memory['peak_rss_kib'] = peak_rss_kib(memory.get('peak_rss_kib'), stats['peak_rss_kib'])

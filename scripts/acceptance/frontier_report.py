@@ -15,7 +15,7 @@ from statistics import median
 import sys
 from urllib.parse import urlencode
 
-from benchmark_resources import peak_rss_kib
+from benchmark_resources import EXTERNAL_PROCESS_IO, FINAL_PROCESS_IO, complete_process_io, peak_rss_kib
 from paid_model import upstream_json, usd
 from run import load_secrets, locked, write_json
 
@@ -741,16 +741,19 @@ def resource_summary(source):
     completed_split_sampler = (resources.get('container_scope') == 'sdk_and_tools'
                                and 'process_io_scope' in resources and capture_incomplete is False)
     default_errors = 0 if completed_split_sampler else None
+    process_io = resources.get('process_io')
+    process = {'io': measured_fields(process_io, IO_FIELDS),
+               'sampling_errors': count(resources.get('process_sampling_errors', default_errors))}
+    io_source = allowed(resources.get('process_io_source'), (EXTERNAL_PROCESS_IO, FINAL_PROCESS_IO))
+    if io_source is not None and complete_process_io(process_io) is not None:
+        process['io_source'] = io_source
     return {
         'harness': {
             'memory': measured_fields(memory, MEMORY_FIELDS),
             'cpu_seconds': number(resources.get('harness_cpu_seconds')),
             'self_usage': measured_fields(resources.get('harness_self_usage'), SELF_USAGE_FIELDS),
         },
-        'process_including_waited_children': {
-            'io': measured_fields(resources.get('process_io'), IO_FIELDS),
-            'sampling_errors': count(resources.get('process_sampling_errors', default_errors)),
-        },
+        'process_including_waited_children': process,
         'container': {
             'samples': count(resources.get('container_samples')),
             'retained_snapshot_count': len(snapshots) if isinstance(snapshots, list) else None,
@@ -889,7 +892,9 @@ def build_report(feed, attempts, official_live_sha256=None, *, receipt_key=None)
             'local_resources': ('Harness memory is in KiB. The mean is time-weighted over RSS samples. '
                                 'The peak is the largest available process RSS or high-water observation. '
                                 'End-of-run self usage is from getrusage(RUSAGE_SELF), '
-                                'with I/O in blocks. Process I/O is the last sample, including children already waited on. '
+                                'with I/O in blocks. Process I/O uses the final in-process /proc/self/io snapshot when complete '
+                                '(io_source proc_self_io), or the last complete external /proc/PID/io sample (io_source proc_pid_io). '
+                                'Both include children already waited on. Older observations may lack source metadata. '
                                 'Its rchar and wchar count logical characters. The read_bytes and write_bytes fields count storage I/O bytes. '
                                 'Block I/O covers the entire container, including tools. Its byte values come from the latest valid '
                                 'retained Docker stats display and may be rounded or precede final writes. '
