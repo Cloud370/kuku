@@ -45,6 +45,7 @@ fn open_private_key(path: &Path) -> io::Result<File> {
         .open(path)
         .map_err(|_| unsafe_file())?;
     let metadata = file.metadata()?;
+    // NOTE: geteuid reads the caller identity without pointers; std exposes no safe effective-UID query.
     let owner = unsafe { libc::geteuid() };
     if !metadata.is_file()
         || metadata.uid() != owner
