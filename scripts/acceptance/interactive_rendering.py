@@ -37,11 +37,12 @@ def queued_input_click_position(screen, text):
         line = lines[index]
         if "Queued ·" not in line:
             continue
-        stop = next(
+        next_input = next(
             (next_index for next_index in range(index + 1, len(lines))
              if "You ·" in lines[next_index]),
-            len(lines),
+            end,
         )
+        stop = min(next_input, end)
         if text in "\n".join(lines[index:stop]):
             heading = line.find("You ·")
             return (index + 1, heading + 1) if heading >= 0 else None
