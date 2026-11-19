@@ -268,6 +268,35 @@ fn remediation_expand_opens_a_nonfirst_tool_in_a_collapsed_group() {
 }
 
 #[test]
+fn remediation_copy_is_not_offered_for_thinking_only_or_empty_tool_entries() {
+    let mut app = connected_app();
+    let details = serde_json::from_value(json!({"reasoning_preview":"private thought"})).unwrap();
+    insert_message(&mut app, 68, HistoryKind::Assistant, "", details);
+    app.pane_mut().transcript.apply(
+        serde_json::from_value(json!({
+            "id":69,"agent":"main","turn":7,"type":"tool_result",
+            "tool":"custom_tool","tool_call_id":"empty-result","status":"error"
+        }))
+        .unwrap(),
+        None,
+    );
+
+    open_message_actions(&mut app, MessageId::Event(68));
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+        if !picker.visible_choices().iter().any(|choice| choice.label == "Copy")));
+
+    open_message_actions(
+        &mut app,
+        MessageId::Tool {
+            turn: Some(7),
+            call_id: "empty-result".into(),
+        },
+    );
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+        if !picker.visible_choices().iter().any(|choice| choice.label == "Copy")));
+}
+
+#[test]
 fn escape_from_expand_action_returns_to_the_selected_message() {
     let mut app = connected_app();
     for event in [

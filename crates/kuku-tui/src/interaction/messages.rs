@@ -67,14 +67,17 @@ impl App {
                 || "Selected message".to_owned(),
                 |entry| format!("Selected · {} · {}", entry.label, entry.detail),
             );
-        let mut choices = vec![Choice::new(
-            MessageAction::Copy.label(),
-            "Copy this entry",
-            ChoiceKind::MessageAction {
-                message: message.clone(),
-                action: MessageAction::Copy,
-            },
-        )];
+        let mut choices = Vec::new();
+        if !info.copy_text.is_empty() {
+            choices.push(Choice::new(
+                MessageAction::Copy.label(),
+                "Copy this entry",
+                ChoiceKind::MessageAction {
+                    message: message.clone(),
+                    action: MessageAction::Copy,
+                },
+            ));
+        }
         if info.kind == MessageKind::Assistant {
             choices.push(Choice::new(
                 MessageAction::Source.label(),
@@ -132,7 +135,10 @@ impl App {
             return;
         };
         match action {
-            MessageAction::Copy => self.copy_selected_message(message, info),
+            MessageAction::Copy if !info.copy_text.is_empty() => {
+                self.copy_selected_message(message, info)
+            }
+            MessageAction::Copy => self.problem("Selected entry has no copyable text"),
             MessageAction::Source if info.kind == MessageKind::Assistant => {
                 if self.reveal_selected_message(&message) {
                     self.pane_mut().transcript.close_notes();
