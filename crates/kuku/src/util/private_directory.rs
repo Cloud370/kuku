@@ -25,6 +25,11 @@ pub fn private_directory(path: &Path) -> io::Result<()> {
     ))
 }
 
+/// Flush directory entries after creating or publishing private files.
+pub fn sync_private_directory(path: &Path) -> io::Result<()> {
+    crate::util::fs_sync::sync_directory(path)
+}
+
 #[cfg(windows)]
 pub(super) fn open_private_key(path: &Path) -> io::Result<std::fs::File> {
     windows::open_private_key(path)

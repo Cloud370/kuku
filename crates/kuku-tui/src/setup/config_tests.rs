@@ -7,7 +7,7 @@ use kuku::util::private_directory;
 use kuku_client::ConnectionOptions;
 use toml_edit::{value, DocumentMut};
 
-use super::{save, save_with_hook, Settings};
+use super::{save, save_with_hook, stage_key_with_sync, Settings};
 use crate::setup::state::SetupState;
 use crate::setup::CredentialSource;
 
@@ -334,6 +334,27 @@ async fn simultaneous_settings_saves_allow_only_one_writer() {
     let saved = load_config(&config).unwrap();
     assert!(saved.model["balanced"].model == "writer-one-model"
         || saved.model["balanced"].model == "writer-two-model");
+}
+
+#[tokio::test]
+async fn staged_key_is_removed_when_directory_sync_fails() {
+    let directory = tempfile::tempdir().unwrap();
+    let settings = Settings::load(options(directory.path(), None)).await.unwrap();
+
+    let error = stage_key_with_sync(
+        &settings,
+        "fixture-only-not-a-real-key",
+        |path, created| {
+            assert_eq!(path, settings.credentials_dir);
+            assert!(created);
+            Err(io::Error::new(io::ErrorKind::Other, "fixture sync failure"))
+        },
+    )
+    .err()
+    .unwrap();
+
+    assert!(error.to_string().contains("cannot sync private credential storage"));
+    assert_eq!(0, fs::read_dir(&settings.credentials_dir).unwrap().count());
 }
 
 #[tokio::test]

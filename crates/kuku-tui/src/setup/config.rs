@@ -3,7 +3,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use kuku::config::{generate_default, load_config, ApiKey, Config, ConfigFile};
-use kuku::util::{is_valid_private_key, private_directory};
+use kuku::util::{is_valid_private_key, private_directory, sync_private_directory};
 use kuku_client::ConnectionOptions;
 use tempfile::{Builder, NamedTempFile};
 use toml_edit::{value, DocumentMut, Item, Table};
@@ -490,6 +490,28 @@ impl Drop for StagedKey {
 }
 
 fn stage_key(settings: &Settings, key: &str) -> io::Result<StagedKey> {
+    stage_key_with_sync(settings, key, |directory, created| {
+        sync_private_directory(directory)?;
+        if created {
+            let parent = directory
+                .parent()
+                .ok_or_else(|| invalid_config("credential directory has no parent"))?;
+            sync_private_directory(parent)?;
+        }
+        Ok(())
+    })
+}
+
+fn stage_key_with_sync(
+    settings: &Settings,
+    key: &str,
+    sync_directory: impl FnOnce(&Path, bool) -> io::Result<()>,
+) -> io::Result<StagedKey> {
+    let directory_created = match fs::symlink_metadata(&settings.credentials_dir) {
+        Ok(_) => false,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => true,
+        Err(_) => return Err(invalid_config("cannot create a private credential directory")),
+    };
     settings.check_storage(true).map_err(|_| {
         invalid_config("stored keys are unavailable; use Environment or a different --data-dir")
     })?;
@@ -504,7 +526,10 @@ fn stage_key(settings: &Settings, key: &str) -> io::Result<StagedKey> {
     let (_, path) = file
         .keep()
         .map_err(|_| invalid_config("cannot save the private credential file"))?;
-    Ok(StagedKey { path, keep: false })
+    let staged = StagedKey { path, keep: false };
+    sync_directory(&settings.credentials_dir, directory_created)
+        .map_err(|_| invalid_config("cannot sync private credential storage"))?;
+    Ok(staged)
 }
 
 fn write_config(
