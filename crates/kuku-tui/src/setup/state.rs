@@ -20,6 +20,25 @@ pub(super) enum SetupStep {
     Review,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ReviewAction {
+    SaveAndContinue,
+    SaveAndExit,
+    Back,
+    Cancel,
+}
+
+impl ReviewAction {
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::SaveAndContinue => "Save and continue",
+            Self::SaveAndExit => "Save and exit",
+            Self::Back => "Back",
+            Self::Cancel => "Cancel",
+        }
+    }
+}
+
 pub(super) struct SetupState {
     pub(super) choices: Vec<ConnectionChoice>,
     pub(super) selected: usize,
@@ -358,26 +377,31 @@ impl SetupState {
             (self.review_selection as isize + direction).rem_euclid(count) as usize;
     }
 
-    pub(super) fn review_choices(&self, mode: SetupMode) -> Vec<&'static str> {
+    pub(super) fn review_choices(&self, mode: SetupMode) -> Vec<ReviewAction> {
         let mut choices = Vec::new();
         if mode == SetupMode::FirstRun && self.credential_ready() {
-            choices.push("Save and continue");
+            choices.push(ReviewAction::SaveAndContinue);
         }
-        choices.extend(["Save and exit", "Back", "Cancel"]);
+        choices.extend([
+            ReviewAction::SaveAndExit,
+            ReviewAction::Back,
+            ReviewAction::Cancel,
+        ]);
         choices
     }
 
     fn choose_review(&mut self, mode: SetupMode) {
         let choices = self.review_choices(mode);
-        match choices.get(self.review_selection).copied() {
-            Some("Save and continue") => self.finish = Some(Finish::SaveAndContinue),
-            Some("Save and exit") => self.finish = Some(Finish::SaveAndExit),
-            Some("Back") => self.previous(),
-            Some("Cancel") => self.finish = Some(Finish::Cancel),
-            _ => {
-                self.review_selection = 0;
-                self.problem = Some("Choose a setup action.".into());
-            }
+        let Some(action) = choices.get(self.review_selection).copied() else {
+            self.review_selection = 0;
+            self.problem = Some("Choose a setup action.".into());
+            return;
+        };
+        match action {
+            ReviewAction::SaveAndContinue => self.finish = Some(Finish::SaveAndContinue),
+            ReviewAction::SaveAndExit => self.finish = Some(Finish::SaveAndExit),
+            ReviewAction::Back => self.previous(),
+            ReviewAction::Cancel => self.finish = Some(Finish::Cancel),
         }
     }
 }

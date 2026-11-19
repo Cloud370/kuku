@@ -6,7 +6,7 @@ use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 
 use super::config::Settings;
-use super::state::{SetupState, SetupStep};
+use super::state::{ReviewAction, SetupState, SetupStep};
 use super::{CredentialSource, Finish, SetupMode};
 
 fn options(root: &std::path::Path) -> ConnectionOptions {
@@ -153,4 +153,65 @@ async fn minimum_size_shows_review_actions_in_both_modes() {
     assert!(first_run.contains("Save and exit"));
     assert!(first_run.contains("Back"));
     assert!(first_run.contains("Cancel"));
+}
+
+#[tokio::test]
+async fn review_keyboard_choices_dispatch_each_action() {
+    let directory = tempfile::tempdir().unwrap();
+    let settings = Settings::load(options(directory.path())).await.unwrap();
+    let mut state = SetupState::new(&settings);
+    state.step = SetupStep::Review;
+    state.credential_source = CredentialSource::StoredKey;
+    state
+        .stored_key
+        .set_text("fixture-only-not-a-real-key".into());
+
+    for (index, action) in [
+        ReviewAction::SaveAndContinue,
+        ReviewAction::SaveAndExit,
+        ReviewAction::Back,
+        ReviewAction::Cancel,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        state.step = SetupStep::Review;
+        state.review_selection = index;
+        state.finish = None;
+        state.handle(
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            &settings,
+            SetupMode::FirstRun,
+        );
+        match action {
+            ReviewAction::SaveAndContinue => assert_eq!(Some(Finish::SaveAndContinue), state.finish),
+            ReviewAction::SaveAndExit => assert_eq!(Some(Finish::SaveAndExit), state.finish),
+            ReviewAction::Back => assert_eq!(SetupStep::Credential, state.step),
+            ReviewAction::Cancel => assert_eq!(Some(Finish::Cancel), state.finish),
+        }
+    }
+
+    for (index, action) in [
+        ReviewAction::SaveAndExit,
+        ReviewAction::Back,
+        ReviewAction::Cancel,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        state.step = SetupStep::Review;
+        state.review_selection = index;
+        state.finish = None;
+        state.handle(
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            &settings,
+            SetupMode::Init,
+        );
+        match action {
+            ReviewAction::SaveAndExit => assert_eq!(Some(Finish::SaveAndExit), state.finish),
+            ReviewAction::Back => assert_eq!(SetupStep::Credential, state.step),
+            ReviewAction::Cancel => assert_eq!(Some(Finish::Cancel), state.finish),
+            ReviewAction::SaveAndContinue => unreachable!(),
+        }
+    }
 }

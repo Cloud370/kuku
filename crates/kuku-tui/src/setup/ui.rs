@@ -360,7 +360,7 @@ fn render_step(
                 "Setup makes no model request.",
                 MUTED,
             );
-            for (index, label) in state.review_choices(mode).iter().enumerate() {
+            for (index, action) in state.review_choices(mode).iter().enumerate() {
                 let marker = if index == state.review_selection {
                     "› "
                 } else {
@@ -375,7 +375,7 @@ fn render_step(
                     frame,
                     area,
                     &mut row,
-                    Line::styled(format!("{marker}{label}"), style),
+                    Line::styled(format!("{marker}{}", action.label()), style),
                 );
             }
         }
