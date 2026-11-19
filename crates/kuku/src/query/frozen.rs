@@ -4,11 +4,10 @@ use std::time::Instant;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
-use crate::context::assembly::render_project_policy;
+use crate::context::assembly::assemble_segment_context;
 use crate::context::runtime::{AdmittedMessage, FrozenSegment, MessageOrigin};
 use crate::context::{
-    assemble_context, CanonicalMessage, ContextAssembly, ContextInput, EnvironmentSource,
-    MessageBlock,
+    CanonicalMessage, ContextAssembly, ContextInput, EnvironmentSource, MessageBlock,
 };
 use crate::event::{EventPayload, EventStore};
 use crate::prompt::PromptCatalog;
@@ -352,8 +351,7 @@ fn initial_segment(
         agent_instructions: behavior.into(),
         response_contract: pending.query.response_contract.clone(),
     };
-    let slot = usize::from(!render_project_policy(&input, catalog)?.is_empty());
-    let mut assembly = assemble_context(input, catalog)?;
+    let (mut assembly, slot) = assemble_segment_context(input, catalog)?;
     if let Some(text) = pending
         .agent_registry
         .as_ref()
@@ -612,16 +610,15 @@ fn insert_runtime_date(
 }
 
 fn legacy_project_policy_has_date(segment: &FrozenSegment, current_date: &str) -> bool {
-    segment.identity_slot > 0
-        && segment
-            .catalog
-            .blocks
-            .get("project-policy")
-            .is_some_and(|template| template.text.contains("{{current_date}}"))
+    segment
+        .catalog
+        .blocks
+        .get("project-policy")
+        .is_some_and(|template| template.text.contains("{{current_date}}"))
         && segment
             .prelude
-            .first()
-            .is_some_and(|message| message_contains_text(message, current_date))
+            .iter()
+            .any(|message| message_contains_text(message, current_date))
 }
 
 fn message_contains_text(message: &CanonicalMessage, expected: &str) -> bool {

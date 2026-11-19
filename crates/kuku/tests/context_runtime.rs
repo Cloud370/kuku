@@ -1,5 +1,8 @@
 mod common;
 
+#[path = "context_runtime_order/mod.rs"]
+mod prelude_order;
+
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -405,12 +408,12 @@ async fn rendered_policy_boundary_survives_behavior_reconfiguration() {
         session.close().await.unwrap();
         model.assert_hits_async(2).await;
         let bodies = common::take_http_requests(&path);
-        let slot = usize::from(!policy.is_empty());
+        let segments = facts(&events, "runtime.context_segment", "main");
+        let slot = 2;
         assert_eq!("NEW_BEHAVIOR", bodies[1]["messages"][slot + 1]["content"]);
         if !policy.is_empty() {
-            assert_eq!(policy, bodies[1]["messages"][1]["content"]);
+            assert_eq!(policy, bodies[1]["messages"][slot + 2]["content"]);
         }
-        let segments = facts(&events, "runtime.context_segment", "main");
         assert_eq!(2, segments.len());
         assert_eq!(json!(slot), segments[0]["identity_slot"]);
         assert_eq!(json!(slot), segments[1]["identity_slot"]);
