@@ -541,20 +541,7 @@ fn append_dynamic(
         }
     }
     if let Some(date_message) = date_message {
-        let current_input = messages
-            .iter()
-            .position(|admitted| {
-                admitted.turn == pending.turn && admitted.origin == MessageOrigin::Input
-            })
-            .unwrap_or(messages.len());
-        messages.insert(
-            current_input,
-            AdmittedMessage {
-                turn: pending.turn,
-                origin: MessageOrigin::Runtime,
-                message: date_message.clone(),
-            },
-        );
+        insert_runtime_date(messages, pending.turn, date_message, frozen_head);
     }
     if !pending.hook_context.is_empty() {
         let template = catalog
@@ -599,6 +586,31 @@ fn append_dynamic(
     Ok(())
 }
 
+fn insert_runtime_date(
+    messages: &mut Vec<AdmittedMessage>,
+    turn: u64,
+    date_message: &CanonicalMessage,
+    frozen_head: usize,
+) {
+    let current_input = messages
+        .iter()
+        .position(|admitted| admitted.turn == turn && admitted.origin == MessageOrigin::Input)
+        .unwrap_or(messages.len());
+    let insertion_index = if current_input < frozen_head {
+        messages.len()
+    } else {
+        current_input
+    };
+    messages.insert(
+        insertion_index,
+        AdmittedMessage {
+            turn,
+            origin: MessageOrigin::Runtime,
+            message: date_message.clone(),
+        },
+    );
+}
+
 fn legacy_project_policy_has_date(segment: &FrozenSegment, current_date: &str) -> bool {
     segment.identity_slot > 0
         && segment
@@ -633,8 +645,45 @@ fn micros(started: Instant) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{segment_prefix_hash, FrozenSegment};
+    use super::{insert_runtime_date, segment_prefix_hash, FrozenSegment};
+    use crate::context::runtime::{AdmittedMessage, MessageOrigin};
     use crate::context::CanonicalMessage;
+
+    #[test]
+    fn midnight_date_change_does_not_reorder_admitted_tool_turn_input() {
+        let old_date = CanonicalMessage::user_text("Current date: 2026-05-18");
+        let user_input = CanonicalMessage::user_text("continue after tool result");
+        let mut messages = vec![
+            AdmittedMessage {
+                turn: 3,
+                origin: MessageOrigin::Runtime,
+                message: old_date,
+            },
+            AdmittedMessage {
+                turn: 3,
+                origin: MessageOrigin::Input,
+                message: user_input,
+            },
+        ];
+        let frozen_prefix: Vec<_> = messages
+            .iter()
+            .map(|admitted| admitted.message.clone())
+            .collect();
+        let next_date = CanonicalMessage::user_text("Current date: 2026-05-19");
+
+        insert_runtime_date(&mut messages, 3, &next_date, frozen_prefix.len());
+
+        assert_eq!(
+            frozen_prefix,
+            messages
+                .iter()
+                .take(frozen_prefix.len())
+                .map(|admitted| admitted.message.clone())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(next_date, messages.last().unwrap().message);
+        assert_eq!(MessageOrigin::Runtime, messages.last().unwrap().origin);
+    }
 
     #[test]
     fn old_catalog_date_fallback_does_not_change_the_frozen_prefix() {
