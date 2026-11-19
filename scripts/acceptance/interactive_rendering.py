@@ -357,4 +357,12 @@ def scroll_mixed_table(client):
         assert saw_border and any("preserve draft" in line for line in frame)
         terminal.press("\x1b[1;5F")
         terminal.expect("After table 15", state="preserve draft")
+        terminal.press("\x03")
+        eventually(
+            "Ctrl+C clears the table-view draft",
+            lambda: result
+            if (result := terminal.request("screen"))["exit_code"] is None
+            and "preserve draft" not in result["screen"]
+            else None,
+        )
         terminal.exit_cleanly()

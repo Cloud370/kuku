@@ -599,9 +599,8 @@ def check_agent_reading_position(client, terminal):
         terminal.press("\x1b\r")
         terminal.expect(original, state="Queued · next Turn")
         terminal.press("\x1b[A")
-        terminal.expect("Edit queued input")
         terminal.press("\r")
-        terminal.expect(original)
+        terminal.expect("Edit queued input", also=(original,))
         terminal.press("\x03")
         terminal.type(queued)
         terminal.press("\r")
@@ -611,9 +610,25 @@ def check_agent_reading_position(client, terminal):
         terminal.expect(discarded, state="Queued · next Turn")
         terminal.press("\x1b[A")
         terminal.press("\x1b[3~")
-        eventually("withdrawn request to leave the pending area",
-                   lambda: "Input withdrawn" in (screen := terminal.request("screen")["screen"])
-                   and discarded not in screen and queued in screen)
+        def withdrawn_from_pending():
+            screen = terminal.request("screen")["screen"]
+            start = screen.find("Pending inputs")
+            end = screen.find("To main", start)
+            if start < 0 or end < 0:
+                return None
+            pending = screen[start:end]
+            if "Input withdrawn" in screen and queued in pending and discarded not in pending and discarded in screen:
+                return screen
+
+        eventually("withdrawn input to leave the pending area and restore its draft", withdrawn_from_pending)
+        terminal.press("\x03")
+        eventually(
+            "restored withdrawal draft to clear",
+            lambda: result
+            if (result := terminal.request("screen"))["exit_code"] is None
+            and "discarded" not in result["screen"]
+            else None,
+        )
         check_reading_focus(terminal, markers, pauses[0], new_content, queued)
     delivered = client.provider.next(queued)
     messages = json.dumps(delivered.request["messages"], ensure_ascii=False)
