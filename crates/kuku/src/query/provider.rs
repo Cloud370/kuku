@@ -626,7 +626,7 @@ fn build_runtime_blocks(
         }
         let skill_change_line = skill_changes
             .as_ref()
-            .and_then(|changes| crate::skill::catalog::render_skill_change_notice(changes));
+            .and_then(crate::skill::catalog::render_skill_change_notice);
         if let Some(change_line) = skill_change_line {
             let template = catalog
                 .blocks
