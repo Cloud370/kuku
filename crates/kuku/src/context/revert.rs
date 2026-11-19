@@ -414,7 +414,7 @@ pub fn compute_message_rewind_plan(
             continue;
         }
         if let Some(path) = revertable_path(event) {
-            let resolved = message_rewind_path(&canonical_workspace, &path)?;
+            let resolved = message_rewind_comparison_path(&path)?;
             if modified.contains_key(&resolved) {
                 return Err(crate::Error::InvalidArgument(format!(
                     "cannot restore {} because another Agent recorded a later change",
@@ -507,6 +507,16 @@ fn message_rewind_path(workspace: &Path, path: &str) -> crate::Result<PathBuf> {
     })
 }
 
+fn message_rewind_comparison_path(path: &str) -> crate::Result<PathBuf> {
+    let candidate = Path::new(path);
+    if !candidate.is_absolute() {
+        return Err(crate::Error::InvalidArgument(format!(
+            "cannot safely compare ambiguous relative file path without its Agent workspace: {path}"
+        )));
+    }
+    canonicalize_event_path(candidate).map_err(crate::Error::Io)
+}
+
 fn reject_symlink_components(workspace: &Path, path: &Path) -> crate::Result<()> {
     let relative = path.strip_prefix(workspace).map_err(|_| {
         crate::Error::InvalidArgument(format!(
@@ -568,6 +578,18 @@ fn resolve_revert_path(workspace: &Path, event_path: &str) -> Option<PathBuf> {
 }
 
 fn canonicalize_revert_target(workspace: &Path, path: &Path) -> Result<PathBuf, std::io::Error> {
+    let resolved = canonicalize_event_path(path)?;
+    if resolved.starts_with(workspace) {
+        Ok(resolved)
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("path outside workspace: {}", resolved.display()),
+        ))
+    }
+}
+
+fn canonicalize_event_path(path: &Path) -> Result<PathBuf, std::io::Error> {
     let normalized =
         crate::tool::builtin::common::normalize_existing_components(path.to_path_buf());
     let mut existing = normalized.as_path();
@@ -594,14 +616,7 @@ fn canonicalize_revert_target(workspace: &Path, path: &Path) -> Result<PathBuf, 
         resolved.push(component);
     }
 
-    if resolved.starts_with(workspace) {
-        Ok(resolved)
-    } else {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            format!("path outside workspace: {}", resolved.display()),
-        ))
-    }
+    Ok(resolved)
 }
 
 fn find_turn_end_pos(events: &[StoredEvent], target_turn: u64) -> usize {

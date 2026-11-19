@@ -117,6 +117,51 @@ fn message_rewind_prefers_canonical_path_for_agent_subdirectory() {
 }
 
 #[test]
+fn message_rewind_ignores_disjoint_external_agent_workspace_changes() {
+    let workspace = tempfile::tempdir().unwrap();
+    let external_workspace = tempfile::tempdir().unwrap();
+    let session_dir = tempfile::tempdir().unwrap();
+    let selected = workspace.path().join("selected.txt");
+    let unrelated = external_workspace.path().join("unrelated.txt");
+    std::fs::write(&selected, "selected after").unwrap();
+    std::fs::write(&unrelated, "other Agent after").unwrap();
+    let events = vec![
+        ui(1, 1, "rewind target"),
+        message_rewind_file_read(2, 1, "selected.txt", &selected, "selected before"),
+        message_rewind_file_write(
+            3,
+            1,
+            "main",
+            "selected.txt",
+            &selected,
+            "selected after",
+            false,
+        ),
+        message_rewind_file_write(
+            4,
+            2,
+            "reviewer",
+            "unrelated.txt",
+            &unrelated,
+            "other Agent after",
+            false,
+        ),
+    ];
+
+    let plan = compute_message_rewind_plan(&events, "main", 1, workspace.path()).unwrap();
+    apply_file_revert(&plan, workspace.path(), session_dir.path(), 5).unwrap();
+
+    assert_eq!(
+        "selected before",
+        std::fs::read_to_string(selected).unwrap()
+    );
+    assert_eq!(
+        "other Agent after",
+        std::fs::read_to_string(unrelated).unwrap()
+    );
+}
+
+#[test]
 fn message_rewind_rolls_back_partial_file_apply_failure() {
     let workspace = tempfile::tempdir().unwrap();
     let session_dir = tempfile::tempdir().unwrap();
