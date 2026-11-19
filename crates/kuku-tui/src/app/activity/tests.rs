@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use kuku_client::{
     Acknowledgement, Error, HistoryPage, Observation, Receipt, RetryFailureKind, RetryPhase,
-    RetryStopReason, Snapshot, Timing,
+    RetrySource, RetryStopReason, Snapshot, Timing,
 };
 use serde_json::{json, Value};
 
@@ -133,6 +133,48 @@ fn only_observed_reasoning_sets_thinking_and_visible_text_sets_streaming() {
         .any(|line| line.to_string().contains("legacy reasoning marker")));
     committed(&mut app, 10, "runtime.model_retry", json!({}));
     assert_eq!(Activity::RetryingModel, app.pane().activity());
+}
+
+#[test]
+fn model_recovery_transitions_after_output_and_retires_the_old_preview() {
+    let mut app = connected();
+    app.select(app.active.clone(), true, String::new());
+    let attached = snapshot(
+        &app,
+        6,
+        "running",
+        Some(5),
+        0,
+        json!({"phase":"waiting_for_model"}),
+        None,
+    );
+    loaded(&mut app, attached, Vec::new());
+    streaming(&mut app, 7);
+
+    observe(
+        &mut app,
+        json!({
+            "type":"live","agent":"main","execution_id":5,"cursor":8,
+            "event":{"type":"model_recovery","attempt":2,"max_attempts":4,
+                "reason":"length","from_request_id":"failed","to_request_id":"recovered"}
+        }),
+    );
+
+    assert_eq!(Activity::RetryingModel, app.pane().activity());
+    assert_eq!(
+        Some(RetrySource::Recovery),
+        app.pane().retry_metadata().map(|retry| retry.source)
+    );
+    let transcript = app
+        .pane_mut()
+        .transcript
+        .project(80, 12)
+        .lines
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!transcript.contains("First tokens"));
 }
 
 #[test]

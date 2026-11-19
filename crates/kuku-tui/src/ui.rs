@@ -340,6 +340,17 @@ fn banner(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
             ),
             emphasis(color),
         ));
+        let detail_rows = height.saturating_sub(lines.len()).min(2);
+        if detail_rows > 0 {
+            lines.extend(crate::markup::wrap_bounded(
+                vec![Line::styled(
+                    crate::retry_notice::detail(retry),
+                    emphasis(color),
+                )],
+                width,
+                detail_rows,
+            ));
+        }
     }
     lines.extend(waiting(app, width));
     if let Some(problem) = app.service_problem() {

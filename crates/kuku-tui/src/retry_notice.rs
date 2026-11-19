@@ -35,82 +35,55 @@ pub(crate) fn live_recovery(event: &Value) -> RetryMetadata {
 }
 
 pub(crate) fn banner(retry: &RetryMetadata, now: OffsetDateTime) -> String {
-    match decision(retry) {
-        Some(false) => {
-            return format!(
-                "{} · {}{}",
-                stopped_reason(retry),
-                explanation(retry),
-                status_detail(retry)
-            );
+    let mut parts = vec![match decision(retry) {
+        Some(false) => stopped_reason(retry),
+        None => "Retry decision recorded".to_owned(),
+        Some(true) if retry.source == RetrySource::Recovery => "Model recovery".to_owned(),
+        Some(true) if retry.phase == RetryPhase::Waiting => {
+            wait_label(retry, now).unwrap_or_else(|| "Retry scheduled".to_owned())
         }
-        None => {
-            let mut parts = vec!["Retry decision recorded".to_owned(), reason(retry)];
-            if let Some(attempt) = attempt_label(retry) {
-                parts.push(attempt);
-            }
-            let mut result = parts.join(" · ");
-            result.push_str(&status_detail(retry));
-            return result;
-        }
-        Some(true) => {}
-    }
-
-    let mut parts = vec![reason(retry), explanation(retry)];
-    if let Some(status) = retry.status {
-        parts.push(format!("HTTP {status}"));
-    }
-    if retry.phase == RetryPhase::Waiting {
-        if let Some(wait) = wait_label(retry, now) {
-            parts.push(wait);
-        }
-    }
+        Some(true) if retry.phase == RetryPhase::Started => "Retry request started".to_owned(),
+        Some(true) => "Automatic retry".to_owned(),
+    }];
     if let Some(attempt) = attempt_label(retry) {
         parts.push(attempt);
     }
-    parts.push("Esc stop".to_owned());
+    if decision(retry) == Some(true) {
+        parts.push("Esc stop".to_owned());
+    }
+    parts.join(" · ")
+}
+
+pub(crate) fn detail(retry: &RetryMetadata) -> String {
+    let explanation = retry
+        .message
+        .as_deref()
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+        .map(safe)
+        .unwrap_or_else(|| reason(retry));
+    let mut parts = vec![explanation];
+    if let Some(status) = retry.status {
+        parts.push(format!("HTTP {status}"));
+    }
     parts.join(" · ")
 }
 
 pub(crate) fn history_text(retry: &RetryMetadata) -> String {
-    match decision(retry) {
-        Some(false) => {
-            return format!(
-                "{} · {}{}",
-                stopped_reason(retry),
-                explanation(retry),
-                status_detail(retry)
-            );
-        }
-        None => {
-            let mut parts = vec!["Retry decision recorded".to_owned(), reason(retry)];
-            if let Some(attempt) = attempt_label(retry) {
-                parts.push(attempt);
-            }
-            let mut result = parts.join(" · ");
-            result.push_str(&status_detail(retry));
-            return result;
-        }
-        Some(true) => {}
-    }
-    let state = match (retry.source, retry.phase) {
-        (RetrySource::Recovery, _) => "Model recovery",
-        (_, RetryPhase::Waiting) => "Retry scheduled",
-        (_, RetryPhase::Started) => "Retry request started",
-        (_, RetryPhase::Stopped | RetryPhase::Unknown) => "Automatic retry decision",
+    let state = match decision(retry) {
+        Some(false) => stopped_reason(retry),
+        None => "Retry decision recorded".to_owned(),
+        Some(true) if retry.source == RetrySource::Recovery => "Model recovery".to_owned(),
+        Some(true) if retry.phase == RetryPhase::Waiting => "Retry scheduled".to_owned(),
+        Some(true) if retry.phase == RetryPhase::Started => "Retry request started".to_owned(),
+        Some(true) => "Automatic retry decision".to_owned(),
     };
-    let mut parts = vec![state.to_owned()];
+    let mut parts = vec![state];
     if let Some(attempt) = attempt_label(retry) {
         parts.push(attempt);
     }
-    parts.push(reason(retry));
-    parts.push(explanation(retry));
-    let mut result = parts.join(" · ");
-    let status = status_detail(retry);
-    if !status.is_empty() {
-        result.push_str(&status);
-    }
-    result
+    parts.push(detail(retry));
+    parts.join(" · ")
 }
 
 pub(crate) fn model_error_title(code: Option<&str>) -> &'static str {
@@ -143,18 +116,18 @@ pub(crate) fn model_error_hint(code: Option<&str>) -> &'static str {
     }
 }
 
+pub(crate) fn decision(retry: &RetryMetadata) -> Option<bool> {
+    retry
+        .will_retry
+        .or_else(|| (retry.phase == RetryPhase::Started).then_some(true))
+}
+
 fn source_for_kind(kind: &str) -> RetrySource {
     match kind {
         "runtime.model_retry" => RetrySource::Provider,
         "model.recovery" => RetrySource::Recovery,
         _ => RetrySource::Unknown,
     }
-}
-
-pub(crate) fn decision(retry: &RetryMetadata) -> Option<bool> {
-    retry
-        .will_retry
-        .or_else(|| (retry.phase == RetryPhase::Started).then_some(true))
 }
 
 fn reason(retry: &RetryMetadata) -> String {
@@ -182,40 +155,6 @@ fn reason(retry: &RetryMetadata) -> String {
             }
         },
         RetrySource::Unknown => "Automatic retry".to_owned(),
-    }
-}
-
-fn explanation(retry: &RetryMetadata) -> String {
-    if let Some(message) = retry
-        .message
-        .as_deref()
-        .map(str::trim)
-        .filter(|message| !message.is_empty())
-    {
-        return safe(message);
-    }
-    match retry.source {
-        RetrySource::Recovery => "Model recovery adjusted the request".to_owned(),
-        RetrySource::Provider => match retry.failed_kind {
-            Some(RetryFailureKind::Authentication) => "Check credentials via /model".to_owned(),
-            Some(RetryFailureKind::PermissionDenied) => {
-                "Check provider permissions via /model".to_owned()
-            }
-            Some(RetryFailureKind::QuotaExhausted) => {
-                "Check provider quota or choose another model".to_owned()
-            }
-            Some(RetryFailureKind::ContextTooLarge) => "Reduce context or change model".to_owned(),
-            Some(
-                RetryFailureKind::RateLimited
-                | RetryFailureKind::Timeout
-                | RetryFailureKind::ProviderUnavailable
-                | RetryFailureKind::Transport,
-            ) => "Wait/check service/network; then Continue".to_owned(),
-            Some(RetryFailureKind::InvalidRequest | RetryFailureKind::InvalidResponse)
-            | Some(RetryFailureKind::Internal | RetryFailureKind::Unknown)
-            | None => "Fix the cause, then Continue".to_owned(),
-        },
-        RetrySource::Unknown => "Fix the cause, then Continue".to_owned(),
     }
 }
 
@@ -258,6 +197,9 @@ fn wait_label(retry: &RetryMetadata, now: OffsetDateTime) -> Option<String> {
                 / 1_000_000;
             let elapsed_ms = u64::try_from(elapsed_ms).unwrap_or(u64::MAX);
             let remaining_ms = delay_ms.saturating_sub(elapsed_ms);
+            if remaining_ms == 0 {
+                return Some("Retry due".to_owned());
+            }
             ("Retry in", remaining_ms.saturating_add(999) / 1_000)
         }
         None => ("Scheduled wait", scheduled_ms),
@@ -267,13 +209,6 @@ fn wait_label(retry: &RetryMetadata, now: OffsetDateTime) -> Option<String> {
 
 fn parse_timestamp(timestamp: &str) -> Option<OffsetDateTime> {
     OffsetDateTime::parse(timestamp, &Rfc3339).ok()
-}
-
-fn status_detail(retry: &RetryMetadata) -> String {
-    retry
-        .status
-        .map(|status| format!(" · HTTP {status}"))
-        .unwrap_or_default()
 }
 
 fn safe(text: &str) -> String {
@@ -286,7 +221,7 @@ mod tests {
     use kuku_client::{RetryFailureKind, RetryPhase, RetrySource};
     use time::OffsetDateTime;
 
-    use super::{banner, history_text, live_recovery, model_error_hint};
+    use super::{banner, detail, history_text, live_recovery, model_error_hint};
     use kuku_client::{RetryMetadata, RetryStopReason};
 
     fn timestamp(text: &str) -> OffsetDateTime {
@@ -316,7 +251,42 @@ mod tests {
             banner(&missing_timestamp, timestamp("2025-01-01T00:00:00Z"))
                 .contains("Scheduled wait 5s")
         );
-        assert!(banner(&retry, timestamp("2025-01-01T00:00:08Z")).contains("Retry in 0s"));
+        let due = banner(&retry, timestamp("2025-01-01T00:00:08Z"));
+        assert!(due.contains("Retry due"));
+        assert!(!due.contains("Retry in 0s"));
+    }
+
+    #[test]
+    fn compact_waiting_banner_keeps_progress_ahead_of_long_unicode_message() {
+        let message = "服务暂时不可用，请检查网络连接并等待重试。".repeat(30);
+        let retry = RetryMetadata {
+            source: RetrySource::Provider,
+            phase: RetryPhase::Waiting,
+            attempt: Some(2),
+            max_attempts: Some(4),
+            failed_kind: Some(RetryFailureKind::ProviderUnavailable),
+            delay_ms: Some(5_000),
+            ts: Some("2025-01-01T00:00:00Z".into()),
+            will_retry: Some(true),
+            status: Some(429),
+            message: Some(message),
+            ..RetryMetadata::default()
+        };
+
+        let summary = banner(&retry, timestamp("2025-01-01T00:00:03Z"));
+        assert_eq!("Retry in 2s · attempt 2/4 · Esc stop", summary);
+        assert!(!summary.contains("服务"));
+        let diagnostic = detail(&retry);
+        assert!(diagnostic.contains("服务暂时不可用"));
+        assert!(diagnostic.contains("HTTP 429"));
+        assert!(!diagnostic.contains("Provider unavailable"));
+        assert!(!diagnostic.contains("then Continue"));
+        let fallback = RetryMetadata {
+            message: None,
+            status: None,
+            ..retry.clone()
+        };
+        assert_eq!("Provider unavailable", detail(&fallback));
     }
 
     #[test]

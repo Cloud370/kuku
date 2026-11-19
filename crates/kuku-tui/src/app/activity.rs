@@ -176,18 +176,19 @@ impl ExecutionProgress {
             "runtime.model_retry" | "model.recovery" => {
                 let retry = crate::retry_notice::history_metadata(entry, kind);
                 let request = ModelRequest::from_retry(retry);
-                if self.output.is_some() {
-                    if matches!(request, ModelRequest::RetryStopped(_)) {
+                let stopped = matches!(request, ModelRequest::RetryStopped(_));
+                if kind == "runtime.model_retry" && self.output == Some(ModelPhase::Streaming) {
+                    if stopped {
                         self.request = request;
                         self.terminal_error = true;
                     } else {
                         self.request = ModelRequest::None;
+                        self.terminal_error = false;
                     }
                 } else {
-                    let terminal_error = matches!(request, ModelRequest::RetryStopped(_));
                     *self = Self {
                         request,
-                        terminal_error,
+                        terminal_error: stopped,
                         ..Self::default()
                     };
                 }
@@ -231,10 +232,9 @@ impl ExecutionProgress {
                 self.clear_stream();
             }
             Some("model_recovery") => {
-                if self.output.is_none() {
-                    self.request =
-                        ModelRequest::Retrying(crate::retry_notice::live_recovery(event));
-                }
+                self.request = ModelRequest::Retrying(crate::retry_notice::live_recovery(event));
+                self.terminal_error = false;
+                self.clear_stream();
             }
             Some("thinking" | "reasoning_preview")
                 if event

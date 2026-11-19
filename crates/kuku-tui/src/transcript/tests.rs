@@ -33,6 +33,10 @@ fn rows(transcript: &mut Transcript) -> Vec<String> {
         .collect()
 }
 
+fn compact(text: &str) -> String {
+    text.split_whitespace().collect()
+}
+
 #[test]
 fn frozen_history_survives_older_page_arrival_and_many_recent_commits() {
     let mut transcript = Transcript::default();
@@ -115,11 +119,15 @@ fn retry_stop_and_explicit_error_code_remain_readable_in_history() {
     let mut transcript = Transcript::default();
     transcript.apply(stopped, None);
     transcript.apply(error, None);
-    let rendered = rows(&mut transcript).join("\n");
+    let rendered = rows(&mut transcript).join(" ");
+    let compacted = compact(&rendered);
     assert!(rendered.contains("No automatic retry"));
     assert!(rendered.contains("attempt limit reached"));
     assert!(rendered.contains("connection reset"));
-    assert!(rendered.contains("Wait/check service/network; then Continue"));
+    assert!(
+        compacted.contains(&compact("Wait/check service/network; then Continue")),
+        "{rendered}"
+    );
     assert!(!rendered.contains("Esc stop"));
 }
 
@@ -136,9 +144,13 @@ fn unknown_error_text_is_not_reclassified_by_message_content() {
     };
     let mut transcript = Transcript::default();
     transcript.apply(error, None);
-    let rendered = rows(&mut transcript).join("\n");
+    let rendered = rows(&mut transcript).join(" ");
+    let compacted = compact(&rendered);
     assert!(rendered.contains("Execution error"));
-    assert!(rendered.contains("authentication failed while contacting a service"));
+    assert!(
+        compacted.contains(&compact("authentication failed while contacting a service")),
+        "{rendered}"
+    );
     assert!(rendered.contains("Fix the cause, then Continue"));
     assert!(!rendered.contains("Check credentials"));
     assert!(!rendered.contains("Provider error"));
