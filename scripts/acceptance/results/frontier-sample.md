@@ -2,11 +2,29 @@
 
 This study compares Kuku with Pi 1.4.0 and Codex CLI 0.164.0 on four tasks from FrontierHarness Eval v1.1.0 using DeepSeek-V4.1-Flash-1017. Three short tasks exercise async cancellation, regular expressions and log aggregation. The fourth requires transforming a million CSV rows with Vim macros. Across the 22 published harness configurations using this model, 45 of 88 attempts passed the Vim task after audit. [Dataset](https://hub.harborframework.com/datasets/frontier-harness-eval/frontier-harness-eval) · [Published trials](https://frontierharness.org/live/)
 
+## Verification and completion guidance
+
+Two revisions tested how quickly a usable result reached the user. Each attempt used the original task, image, grader and Baseten route. The SDK received the original task text with the same host-enforced timeout as before. The five trials cost $0.236186620 in total. The full records include route, cache, stream timing, process memory and I/O. [Attempt data](frontier-v1.1-sample.json)
+
+| Task | Guidance revision | Checks | SDK seconds | Requests | Inference USD |
+|---|---|---:|---:|---:|---:|
+| Log date ranges | Working file, `4dbdc37` | 2/2 | 26.7 | 7 | 0.006711 |
+| Large-file Vim edit, first attempt | Working file | 4/5 | 196.3 | 26 | 0.023373 |
+| Large-file Vim edit, second attempt | Working file | 0/5 | 1,200.2 | 13 | 0.051352 |
+| Large-file Vim edit | Representative input, `c8b5dc1` | 5/5 | 488.1 | 34 | 0.051262 |
+| Log regex | Representative input | 1/1 | 333.0 | 24 | 0.103489 |
+
+Log date ranges first wrote the accepted file at 16.5 seconds, compared with 16.7 seconds in round 14. The first round-15 Vim attempt saved its final script at 125.7 seconds. It produced the exact CSV and failed the script format check. The second attempt reached the timeout running an unproven script on the full input and left the requested file absent. In a separate clean container, the same scratch script produced incorrect output on 100 rows and exceeded eight seconds on 5,000.
+
+In round 16 the Vim Session acknowledged writing the target script at 101.4 seconds. A copy taken during the run passed all five original checks in a fresh container. The Session made 22 more requests, including experiments with repeated execution, and its final script also passed. Log regex passed in both rounds 13 and 16, with SDK time increasing from 205.7 to 333.0 seconds and the charge increasing from $0.047033 to $0.103489. These samples distinguish early availability, correctness and total cost.
+
+The subsequent general guidance at `12336eb` removed the file-placement rule. A separate ordinary SDK check compared that revision with the SDK binary from round 14 using the same model and settings. The three requests asked for a short explanation of queue latency, a read-only diagnosis of mismatched ports, and a targeted correction to the existing configuration in the same diagnostic Session. Both builds gave the expected answers and preserved the expected workspace contents. The baseline took 1, 3 and 3 model requests. The revised prompt took 3, 3 and 3, including unnecessary workspace reads on the self-contained question. This comparison covers task correctness across those intents and establishes no overall efficiency gain.
+
 ## Latest four-task comparison
 
 | Harness | Original grader passes / attempts | Mean inference USD per attempt | Total inference USD / passes | Mean agent + verifier time |
 |---|---:|---:|---:|---:|
-| Kuku, latest attempt per task | 3/4 | 0.05635 | 0.07514 | 499 s |
+| Kuku, rounds 13–14 | 3/4 | 0.05635 | 0.07514 | 499 s |
 | Pi 1.4.0 | 13/16 | 0.04340 | 0.05342 | 872 s |
 | Codex CLI 0.164.0 | 15/16 | 0.03041 | 0.03243 | 834 s |
 
