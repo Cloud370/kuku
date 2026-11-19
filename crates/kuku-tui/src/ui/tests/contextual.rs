@@ -248,7 +248,7 @@ fn focused_control_hints_render_with_default_and_custom_statuslines() {
 }
 
 #[test]
-fn continue_requires_stopped_work_but_not_pending_inputs() {
+fn continue_requires_pending_inputs_for_stopped_but_not_interrupted_work() {
     let mut stopped = app();
     load_snapshot(&mut stopped, "stopped", true);
     assert!(stopped
@@ -258,7 +258,21 @@ fn continue_requires_stopped_work_but_not_pending_inputs() {
 
     let mut no_input = app();
     load_snapshot(&mut no_input, "stopped", false);
-    assert!(no_input
+    assert!(!no_input
+        .contextual_controls()
+        .iter()
+        .any(|control| matches!(control, ContextControl::Continue { .. })));
+
+    let mut interrupted = app();
+    load_snapshot(&mut interrupted, "interrupted", false);
+    interrupted
+        .pane_mut()
+        .snapshot
+        .as_mut()
+        .unwrap()
+        .agent
+        .last_error = Some("provider returned HTTP 400".into());
+    assert!(interrupted
         .contextual_controls()
         .iter()
         .any(|control| matches!(control, ContextControl::Continue { .. })));
@@ -276,11 +290,41 @@ fn continue_requires_stopped_work_but_not_pending_inputs() {
 
     let mut cleaning = app();
     load_snapshot(&mut cleaning, "interrupted", true);
+    cleaning
+        .pane_mut()
+        .snapshot
+        .as_mut()
+        .unwrap()
+        .agent
+        .last_error = Some("provider returned HTTP 400".into());
     cleaning.pane_mut().snapshot.as_mut().unwrap().cleaning_up = true;
     assert!(!cleaning
         .contextual_controls()
         .iter()
         .any(|control| matches!(control, ContextControl::Continue { .. })));
+}
+
+#[test]
+fn interrupted_continue_with_empty_queue_advances() {
+    let mut interrupted = app();
+    load_snapshot(&mut interrupted, "interrupted", false);
+    interrupted
+        .pane_mut()
+        .snapshot
+        .as_mut()
+        .unwrap()
+        .agent
+        .last_error = Some("provider returned HTTP 400".into());
+
+    key(&mut interrupted, KeyCode::F(2), KeyModifiers::NONE);
+    assert!(matches!(
+        interrupted.pane().contextual_focus.cursor.as_ref(),
+        Some(ContextControl::Continue { inputs, .. }) if inputs.is_empty()
+    ));
+    key(&mut interrupted, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(interrupted.effects.iter().any(|job| matches!(job,
+        Job::Save(command) if matches!(command.action, Action::Advance)
+    )));
 }
 
 #[test]
