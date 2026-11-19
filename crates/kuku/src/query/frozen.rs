@@ -610,22 +610,13 @@ fn insert_runtime_date(
 }
 
 fn legacy_project_policy_has_date(segment: &FrozenSegment, current_date: &str) -> bool {
-    segment
-        .catalog
-        .blocks
-        .get("project-policy")
-        .is_some_and(|template| template.text.contains("{{current_date}}"))
-        && segment
-            .prelude
-            .iter()
-            .any(|message| message_contains_text(message, current_date))
-}
-
-fn message_contains_text(message: &CanonicalMessage, expected: &str) -> bool {
-    message
-        .blocks
-        .iter()
-        .any(|block| matches!(block, MessageBlock::Text(text) if text.contains(expected)))
+    segment.catalog.blocks.get("project-policy").is_some_and(|template| {
+        segment.prelude.iter().any(|message| {
+            message.blocks.iter().any(|block| {
+                matches!(block, MessageBlock::Text(text) if crate::prompt::render::project_policy_has_date(text, &template.text, current_date))
+            })
+        })
+    })
 }
 
 fn content_hash(value: &impl serde::Serialize) -> Result<String> {
@@ -642,7 +633,9 @@ fn micros(started: Instant) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{insert_runtime_date, segment_prefix_hash, FrozenSegment};
+    use super::{
+        insert_runtime_date, legacy_project_policy_has_date, segment_prefix_hash, FrozenSegment,
+    };
     use crate::context::runtime::{AdmittedMessage, MessageOrigin};
     use crate::context::CanonicalMessage;
 
@@ -711,5 +704,53 @@ mod tests {
         assert!(runtime_date.contains("Current date: 2026-05-18"));
         assert!(!segment.catalog.runtime.contains_key("current-date"));
         assert_eq!(prefix_hash, segment_prefix_hash(&segment).unwrap());
+    }
+
+    #[test]
+    fn legacy_policy_date_ignores_incidental_memory_dates_in_both_prelude_orders() {
+        let mut catalog = crate::prompt::builtin_prompt_catalog();
+        catalog.blocks.get_mut("project-policy").unwrap().text =
+            "Policy\n- Date: {{current_date}}\n{{project_instructions_rendered}}".into();
+        let policy = CanonicalMessage::user_text(
+            "Policy\n- Date: 2026-05-18\nproject notes dated 2026-05-19",
+        );
+        let memory = CanonicalMessage::user_text("memory recorded on 2026-05-19");
+        let incidental = CanonicalMessage::user_text("- Date: 2026-05-19");
+        let guidance = CanonicalMessage::user_text("common guidance");
+        let behavior = CanonicalMessage::user_text("shared behavior");
+        for (prelude, slot) in [
+            (
+                vec![
+                    policy.clone(),
+                    behavior.clone(),
+                    guidance.clone(),
+                    memory.clone(),
+                    incidental.clone(),
+                ],
+                1,
+            ),
+            (vec![guidance, behavior, policy, memory, incidental], 1),
+        ] {
+            let segment = FrozenSegment {
+                id: 1,
+                signature: String::new(),
+                configuration: 0,
+                handoff: 0,
+                system_prompt: String::new(),
+                prelude,
+                tools: Vec::new(),
+                catalog: catalog.clone(),
+                connection: String::new(),
+                protocol: String::new(),
+                model: String::new(),
+                endpoint: String::new(),
+                behavior: "shared behavior".into(),
+                identity_slot: slot,
+                handoff_prelude: None,
+                workspace: String::new(),
+            };
+            assert!(!legacy_project_policy_has_date(&segment, "2026-05-19"));
+            assert!(legacy_project_policy_has_date(&segment, "2026-05-18"));
+        }
     }
 }

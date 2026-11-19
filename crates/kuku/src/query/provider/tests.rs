@@ -16,6 +16,39 @@ fn handoff_trigger_requires_known_token_headroom() {
 }
 
 #[test]
+fn legacy_policy_date_ignores_incidental_dates_in_project_notes_and_memory() {
+    let mut catalog = crate::prompt::builtin_prompt_catalog();
+    catalog.blocks.get_mut("project-policy").unwrap().text =
+        "Policy\n- Date: {{current_date}}\n{{project_instructions_rendered}}".into();
+    let mut assembly = assembly_with_messages(
+        vec![
+            CanonicalMessage::user_text(
+                "Policy\n- Date: 2026-05-18\nproject notes dated 2026-05-19",
+            ),
+            CanonicalMessage::user_text("memory recorded on 2026-05-19"),
+            CanonicalMessage::user_text("- Date: 2026-05-19"),
+        ],
+        Vec::new(),
+    );
+    assert!(!legacy_project_policy_has_date(
+        &assembly,
+        &catalog,
+        "2026-05-19"
+    ));
+    assert!(legacy_project_policy_has_date(
+        &assembly,
+        &catalog,
+        "2026-05-18"
+    ));
+    assembly.prelude_messages[0] = CanonicalMessage::user_text("Policy\n- Date: 2026-05-19\nnotes");
+    assert!(legacy_project_policy_has_date(
+        &assembly,
+        &catalog,
+        "2026-05-19"
+    ));
+}
+
+#[test]
 fn handoff_trigger_uses_known_token_headroom() {
     let headroom = compute_context_headroom(200_000, Some(64_000), Some(150_000));
 
@@ -94,7 +127,7 @@ fn legacy_policy_date_detection_requires_the_recorded_template_placeholder() {
     let current_date = "2026-05-18";
     let assembly = assembly_with_messages(
         vec![CanonicalMessage::user_text(format!(
-            "Policy date: {current_date}"
+            "project policy\n- Current date: {current_date}"
         ))],
         Vec::new(),
     );
@@ -103,11 +136,17 @@ fn legacy_policy_date_detection_requires_the_recorded_template_placeholder() {
         .blocks
         .get_mut("project-policy")
         .unwrap()
-        .text
-        .push_str(" {{current_date}}");
+        .text =
+        "project policy\n- Current date: {{current_date}}\n{{project_instructions_rendered}}"
+            .into();
 
     assert!(legacy_project_policy_has_date(
-        &assembly,
+        &assembly_with_messages(
+            vec![CanonicalMessage::user_text(
+                "project policy\n- Current date: 2026-05-18\nproject notes"
+            )],
+            Vec::new(),
+        ),
         &legacy_catalog,
         current_date
     ));

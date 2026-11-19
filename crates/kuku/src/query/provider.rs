@@ -700,15 +700,13 @@ fn legacy_project_policy_has_date(
     catalog: &crate::prompt::PromptCatalog,
     current_date: &str,
 ) -> bool {
-    catalog
-        .blocks
-        .get("project-policy")
-        .is_some_and(|template| template.text.contains("{{current_date}}"))
-        && assembly.prelude_messages.first().is_some_and(|message| {
-            message.blocks.iter().any(
-                |block| matches!(block, MessageBlock::Text(text) if text.contains(current_date)),
-            )
+    catalog.blocks.get("project-policy").is_some_and(|template| {
+        assembly.prelude_messages.iter().any(|message| {
+            message.blocks.iter().any(|block| {
+                matches!(block, MessageBlock::Text(text) if crate::prompt::render::project_policy_has_date(text, &template.text, current_date))
+            })
         })
+    })
 }
 
 pub(super) fn append_handoff_instruction(
