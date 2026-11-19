@@ -23,6 +23,13 @@ pub(crate) fn read_private_key(path: &Path) -> io::Result<String> {
     Ok(key)
 }
 
+/// Apply the platform's durable publication sync policy to a private file path.
+///
+/// Unix syncs the containing directory. Windows reopens the file with write-through and syncs it.
+pub fn sync_private_file(path: &Path) -> io::Result<()> {
+    crate::util::fs_sync::sync_parent(path)
+}
+
 #[doc(hidden)]
 pub fn is_valid_private_key(path: &Path) -> bool {
     read_private_key(path).is_ok()

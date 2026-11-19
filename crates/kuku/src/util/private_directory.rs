@@ -25,11 +25,6 @@ pub fn private_directory(path: &Path) -> io::Result<()> {
     ))
 }
 
-/// Flush directory entries after creating or publishing private files.
-pub fn sync_private_directory(path: &Path) -> io::Result<()> {
-    crate::util::fs_sync::sync_directory(path)
-}
-
 #[cfg(windows)]
 pub fn set_config_temp_security(
     source: Option<&Path>,

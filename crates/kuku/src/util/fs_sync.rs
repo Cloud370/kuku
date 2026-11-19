@@ -115,26 +115,6 @@ pub(crate) fn sync_directory(path: &Path) -> io::Result<()> {
     })
 }
 
-#[cfg(windows)]
-pub(crate) fn sync_directory(path: &Path) -> io::Result<()> {
-    use std::os::windows::fs::OpenOptionsExt;
-
-    const FILE_FLAG_WRITE_THROUGH: u32 = 0x8000_0000;
-    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
-    let directory = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .custom_flags(FILE_FLAG_WRITE_THROUGH | FILE_FLAG_BACKUP_SEMANTICS)
-        .open(path)?;
-    if !directory.metadata()?.is_dir() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotADirectory,
-            "cannot sync path that is not a directory",
-        ));
-    }
-    directory.sync_all()
-}
-
 #[cfg(not(any(unix, windows)))]
 pub(crate) fn sync_directory(_path: &Path) -> io::Result<()> {
     Err(io::Error::new(

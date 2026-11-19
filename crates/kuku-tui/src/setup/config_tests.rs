@@ -494,17 +494,22 @@ async fn simultaneous_settings_saves_allow_only_one_writer() {
 }
 
 #[tokio::test]
-async fn staged_key_is_removed_when_directory_sync_fails() {
+async fn staged_key_is_removed_when_publication_sync_fails() {
     let directory = tempfile::tempdir().unwrap();
     let settings = Settings::load(options(directory.path(), None))
         .await
         .unwrap();
 
-    let error = stage_key_with_sync(&settings, "fixture-only-not-a-real-key", |path, created| {
-        assert_eq!(path, settings.credentials_dir);
-        assert!(created);
-        Err(io::Error::other("fixture sync failure"))
-    })
+    let error = stage_key_with_sync(
+        &settings,
+        "fixture-only-not-a-real-key",
+        |path, directory_created| {
+            assert_eq!(path.parent(), Some(settings.credentials_dir.as_path()));
+            assert!(path.is_file());
+            assert!(directory_created);
+            Err(io::Error::other("fixture sync failure"))
+        },
+    )
     .err()
     .unwrap();
 

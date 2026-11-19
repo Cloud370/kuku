@@ -3,7 +3,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use kuku::config::{generate_default, load_config, parse_config_text, ApiKey, Config, ConfigFile};
-use kuku::util::{is_valid_private_key, private_directory, sync_private_directory};
+use kuku::util::{is_valid_private_key, private_directory, sync_private_file};
 use kuku_client::ConnectionOptions;
 use tempfile::{Builder, NamedTempFile};
 use toml_edit::{value, DocumentMut, InlineTable, Item, Table, Value};
@@ -524,14 +524,17 @@ impl Drop for StagedKey {
 }
 
 fn stage_key(settings: &Settings, key: &str) -> io::Result<StagedKey> {
-    stage_key_with_sync(settings, key, |directory, created| {
-        sync_private_directory(directory)?;
-        if created {
-            let parent = directory
+    stage_key_with_sync(settings, key, |file_path, directory_created| {
+        sync_private_file(file_path)?;
+        #[cfg(unix)]
+        if directory_created {
+            let directory = file_path
                 .parent()
-                .ok_or_else(|| invalid_config("credential directory has no parent"))?;
-            sync_private_directory(parent)?;
+                .ok_or_else(|| invalid_config("credential file has no parent directory"))?;
+            sync_private_file(directory)?;
         }
+        #[cfg(not(unix))]
+        let _ = directory_created;
         Ok(())
     })
 }
@@ -539,7 +542,7 @@ fn stage_key(settings: &Settings, key: &str) -> io::Result<StagedKey> {
 fn stage_key_with_sync(
     settings: &Settings,
     key: &str,
-    sync_directory: impl FnOnce(&Path, bool) -> io::Result<()>,
+    sync_publication: impl FnOnce(&Path, bool) -> io::Result<()>,
 ) -> io::Result<StagedKey> {
     let directory_created = match fs::symlink_metadata(&settings.credentials_dir) {
         Ok(_) => false,
@@ -565,7 +568,7 @@ fn stage_key_with_sync(
         .keep()
         .map_err(|_| invalid_config("cannot save the private credential file"))?;
     let staged = StagedKey { path, keep: false };
-    sync_directory(&settings.credentials_dir, directory_created)
+    sync_publication(&staged.path, directory_created)
         .map_err(|_| invalid_config("cannot sync private credential storage"))?;
     Ok(staged)
 }
