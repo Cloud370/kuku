@@ -578,6 +578,7 @@ fn help_overlay_is_inert_on_mouse_and_fits_narrow_terminals() {
     key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
     let regular = screen(&mut app, 90, 24);
     assert!(regular.contains("Keyboard shortcuts") && regular.contains("Alt+Enter"));
+    assert!(regular.contains("Close/back; stop active work"));
     assert!(!regular.contains("/queue"));
     let mut terminal = Terminal::new(TestBackend::new(90, 24)).unwrap();
     let buffer = terminal

@@ -230,6 +230,13 @@ fn focused_control_hints_render_with_default_and_custom_statuslines() {
     assert!(default_view.contains("Enter act"));
     assert!(default_view.contains("Esc back"));
 
+    let mut running = app();
+    load_snapshot(&mut running, "running", false);
+    key(&mut running, KeyCode::F(2), KeyModifiers::NONE);
+    let running_view = screen(&mut running, 82, 20);
+    assert!(running_view.contains("Esc stop"));
+    assert!(!running_view.contains("Esc back"));
+
     let mut custom = app();
     custom.pane_mut().exists = true;
     custom.statusline_settings = StatusLineSettings::in_memory(StatusLine::parse("input").unwrap());

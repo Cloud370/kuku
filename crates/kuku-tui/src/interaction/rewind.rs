@@ -13,18 +13,19 @@ pub(super) fn rewind_instructions(text: &str, restore_files: bool) -> String {
 }
 
 impl App {
+    pub(crate) fn escape_interrupts_running(&self) -> bool {
+        self.pane().snapshot.as_ref().is_some_and(|snapshot| {
+            snapshot.cleaning_up || snapshot.agent.status == kuku_client::AgentStatus::Running
+        })
+    }
+
     pub(super) fn rewind_escape(&mut self) {
         let status = self
             .pane()
             .snapshot
             .as_ref()
             .map(|snapshot| snapshot.agent.status);
-        let cleanup = self
-            .pane()
-            .snapshot
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.cleaning_up);
-        if cleanup || status == Some(kuku_client::AgentStatus::Running) {
+        if self.escape_interrupts_running() {
             self.escape_armed_at = None;
             self.interrupt();
             self.deactivate_context_focus();

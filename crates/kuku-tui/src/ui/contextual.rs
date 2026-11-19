@@ -60,12 +60,14 @@ pub(super) fn focused_hint(app: &App, width: usize) -> Option<Vec<Line<'static>>
         .cursor
         .as_ref()
         .map_or("Context action", action_label);
+    let escape = if app.escape_interrupts_running() {
+        "Enter act · Esc stop"
+    } else {
+        "Enter act · Esc back"
+    };
     Some(vec![
         Line::styled(shorten(&format!("▶ {action}"), width), focused_row()),
-        Line::styled(
-            shorten("Enter act · Esc back", width),
-            Style::new().fg(MUTED),
-        ),
+        Line::styled(shorten(escape, width), Style::new().fg(MUTED)),
     ])
 }
 

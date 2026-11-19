@@ -574,7 +574,7 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Rect
             let lines = [
                 "Enter       Send or steer",
                 "Alt+Enter   Send on the next turn",
-                "Esc         Close or interrupt",
+                "Esc         Close/back; stop active work",
                 "↑ / ↓       Edit draft; select queued input",
                 "Delete      Withdraw selected queued input",
                 "F2          Focus a pending request",
