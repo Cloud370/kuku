@@ -29,6 +29,8 @@ pub(crate) use activity::{ActivityClock, ActivityFrame};
 const MAX_BANNER_ROWS: u16 = 5;
 const MIN_TRANSCRIPT_ROWS: u16 = 2;
 const MIN_ACTIVITY_WIDTH: u16 = 8;
+const MODEL_DEFAULT_CONFIRMATION_MIN_WIDTH: u16 = 60;
+const MODEL_DEFAULT_CONFIRMATION_MIN_HEIGHT: u16 = 20;
 const FOOTER_SPACE_HEIGHT: u16 = 16;
 const COMPOSER_SPACE_HEIGHT: u16 = 20;
 const COMPOSER_SPACE_WIDTH: usize = 42;
@@ -709,8 +711,8 @@ fn render_model_default_confirmation(
     let scope = model_default_confirmation::wrap_scope(width);
     let available_rows = usize::from(inner.height);
     let terminal_area = frame.area();
-    let can_confirm = terminal_area.width >= 60
-        && terminal_area.height >= 20
+    let can_confirm = terminal_area.width >= MODEL_DEFAULT_CONFIRMATION_MIN_WIDTH
+        && terminal_area.height >= MODEL_DEFAULT_CONFIRMATION_MIN_HEIGHT
         && width >= 32
         && scope
             .as_ref()
