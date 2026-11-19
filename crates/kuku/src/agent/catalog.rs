@@ -19,6 +19,11 @@ pub fn render_agent_directory(
     render_agent_directory_inner(registry, Some(open_conversations))
 }
 
+pub fn render_agent_definition_block(def: &AgentDefinition) -> String {
+    let source = def.source_path.as_deref().unwrap_or(def.source.as_str());
+    format!("<!-- agent-source: {source} -->\n\n{}", def.instructions)
+}
+
 fn render_agent_directory_inner(
     registry: &AgentRegistry,
     open_conversations: Option<usize>,
@@ -45,11 +50,6 @@ fn render_agent_directory_inner(
     }
 
     Some(lines.join("\n"))
-}
-
-pub fn render_agent_definition_block(def: &AgentDefinition) -> String {
-    let source = def.source_path.as_deref().unwrap_or(def.source.as_str());
-    format!("<!-- agent-source: {source} -->\n\n{}", def.instructions)
 }
 
 fn display_source(def: &AgentDefinition) -> &str {
