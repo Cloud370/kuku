@@ -104,6 +104,7 @@ async fn three_protocols_preserve_tool_batches_native_replay_and_multiturn_prefi
             session_id: "fixed-session".into(),
             agent_address: "main".into(),
             connection_name: "fixture".into(),
+            workspace: std::path::PathBuf::from("."),
         };
         let first =
             super::provider::prepare_provider_request(&config, &request, Some(&correlation))

@@ -621,9 +621,33 @@ completion = 1.2
         kuku::config::ProviderProfile::OpenRouter,
         connection.options.profile
     );
+    assert_eq!(
+        kuku::config::PromptCacheScope::Workspace,
+        connection.options.prompt_cache_scope
+    );
     let routing = connection.options.routing.unwrap();
     assert_eq!(vec!["wafer/us"], routing.order);
     assert_eq!(Some(false), routing.allow_fallbacks);
     assert!(routing.require_parameters);
     assert!(kuku::config::OpenRouterRouting::default().require_parameters);
+}
+
+#[test]
+fn prompt_cache_scope_config_parses_all_values_and_defaults_to_workspace() {
+    for (value, expected) in [
+        ("workspace", kuku::config::PromptCacheScope::Workspace),
+        ("session", kuku::config::PromptCacheScope::Session),
+        ("off", kuku::config::PromptCacheScope::Off),
+    ] {
+        let provider: kuku::config::ProviderEntry = toml::from_str(&format!(
+            "format = \"openai-responses\"\nbase_url = \"https://api.openai.com/v1\"\napi_key = \"key\"\nprompt_cache_scope = \"{value}\""
+        ))
+        .unwrap();
+        assert_eq!(expected, provider.options.prompt_cache_scope);
+    }
+
+    assert_eq!(
+        kuku::config::PromptCacheScope::Workspace,
+        kuku::config::ProviderOptions::default().prompt_cache_scope
+    );
 }

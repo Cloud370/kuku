@@ -5,11 +5,10 @@ use std::time::Instant;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
-use crate::context::assembly::render_project_policy;
+use crate::context::assembly::assemble_segment_context;
 use crate::context::runtime::{AdmittedMessage, FrozenSegment, MessageOrigin, RouteSelectors};
 use crate::context::{
-    assemble_context, CanonicalMessage, ContextAssembly, ContextInput, EnvironmentSource,
-    MessageBlock, Role,
+    CanonicalMessage, ContextAssembly, ContextInput, EnvironmentSource, MessageBlock, Role,
 };
 use crate::event::{EventPayload, EventStore};
 use crate::prompt::PromptCatalog;
@@ -33,6 +32,7 @@ pub(super) struct ContextCommit {
     messages: Vec<AdmittedMessage>,
     source_head: u64,
     current_input: usize,
+    prefix_context_head: usize,
     new_segment: bool,
     reason: &'static str,
     context_prepare_us: u64,
@@ -72,6 +72,7 @@ pub(super) fn prepare(pending: &mut PendingRun) -> Result<PreparedContext> {
         .catalog
         .clone()
         .unwrap_or_else(|| pending.catalog.clone());
+    let current_date = current_date_string();
     let behavior = pending
         .query
         .agent_instructions
@@ -175,6 +176,11 @@ pub(super) fn prepare(pending: &mut PendingRun) -> Result<PreparedContext> {
         }
         messages.retain(|admitted| !admitted.message.blocks.is_empty());
     }
+    let date_message =
+        CanonicalMessage::user_text(crate::prompt::render_runtime_date(&catalog, &current_date)?);
+    let date_already_admitted = messages.iter().any(|admitted| {
+        admitted.origin == MessageOrigin::Runtime && admitted.message == date_message
+    }) || legacy_project_policy_has_date(&segment, &current_date);
     if new_segment {
         replace_behavior(&mut segment, &behavior)?;
         segment.signature = current_signature;
@@ -209,6 +215,7 @@ pub(super) fn prepare(pending: &mut PendingRun) -> Result<PreparedContext> {
         pending,
         &mut messages,
         &catalog,
+        (!date_already_admitted).then_some(&date_message),
         if handoff_changed || route_changed || workspace_changed {
             None
         } else {
@@ -261,6 +268,11 @@ pub(super) fn prepare(pending: &mut PendingRun) -> Result<PreparedContext> {
         messages,
         source_head: cursor.after,
         current_input,
+        prefix_context_head: if new_segment {
+            0
+        } else {
+            cursor.admitted.len()
+        },
         new_segment,
         reason: if previous.is_none() {
             "initial"
@@ -303,11 +315,17 @@ pub(super) fn record_prepared(
             "system_prompt":context.segment.system_prompt,"prelude":context.segment.prelude,"tools":context.segment.tools,"catalog":context.segment.catalog,
             "behavior":context.segment.behavior,"identity_slot":context.segment.identity_slot,"handoff_prelude":context.segment.handoff_prelude,"workspace":context.segment.workspace})))?.id;
     }
-    let frozen_head = if context.new_segment {
+    let frozen_head = context.prefix_context_head;
+    let expected_frozen_head = if context.new_segment {
         0
     } else {
         cursor.admitted.len()
     };
+    if frozen_head != expected_frozen_head {
+        return Err(Error::InvalidEventStream(
+            "prepared history boundary differs from the committed prefix".into(),
+        ));
+    }
     if context.messages.len() < frozen_head
         || context
             .messages
@@ -325,13 +343,22 @@ pub(super) fn record_prepared(
             "ordinal":ordinal,"turn":admitted.turn,"origin":admitted.origin,"source_head":context.source_head,"message":admitted.message})))?;
     }
     let body_hash = format!("{:x}", Sha256::digest(serde_json::to_vec(&prepared.body)?));
+    let prefix_hash = segment_prefix_hash(&context.segment)?;
+    let history_prefix = context
+        .messages
+        .iter()
+        .take(frozen_head)
+        .map(|admitted| &admitted.message)
+        .collect::<Vec<_>>();
+    let history_prefix_hash = content_hash(&history_prefix)?;
     let payload = EventPayload::Unknown(
         json!({"kind":"runtime.step_prepared","ts":now_timestamp()?,"agent":pending.conversation.as_str(),"turn":pending.turn,"request_id":request_id,
         "segment":context.segment.id,"context_head":context.messages.len(),"current_input":context.current_input,"source_head":context.source_head,
         "connection":prepared.connection_name,"protocol":context.segment.protocol,"model":prepared.model,"url":prepared.url,"settings":prepared.settings,"correlation_id":prepared.correlation_id,
         "max_output_tokens":prepared.body.get("max_output_tokens").or_else(|| prepared.body.get("max_tokens")).or_else(|| prepared.body.get("max_completion_tokens")),"temperature":prepared.body.get("temperature"),
         "context_window_tokens":pending.resolved.as_ref().map(|runtime| runtime.config.max_context_tokens),"max_request_bytes":pending.query.runtime_limits.max_request_bytes,"request_bytes":serde_json::to_vec(&prepared.body)?.len(),
-        "body_hash":body_hash,"context_prepare_us":context.context_prepare_us,"request_prepare_us":request_prepare_us,"context_events_read":context.events_read,
+        "body_hash":body_hash,"prefix_context_head":context.prefix_context_head,"prefix_hash":prefix_hash,"history_prefix_hash":history_prefix_hash,
+        "context_prepare_us":context.context_prepare_us,"request_prepare_us":request_prepare_us,"context_events_read":context.events_read,
         "input_skills":context.input_skills}),
     );
     session.commit_model_facts(pending.conversation.as_str(), execution, [payload])?;
@@ -365,8 +392,7 @@ fn initial_segment(
         agent_instructions: behavior.into(),
         response_contract: pending.query.response_contract.clone(),
     };
-    let slot = usize::from(!render_project_policy(&input, catalog)?.is_empty());
-    let mut assembly = assemble_context(input, catalog)?;
+    let (mut assembly, slot) = assemble_segment_context(input, catalog)?;
     if let Some(text) = pending
         .agent_registry
         .as_ref()
@@ -379,7 +405,7 @@ fn initial_segment(
     if let Some(text) = pending
         .skill_registry
         .as_ref()
-        .and_then(|registry| crate::skill::catalog::render_skill_catalog(registry, &[], None))
+        .and_then(crate::skill::catalog::render_static_skill_catalog)
     {
         assembly
             .prelude_messages
@@ -655,6 +681,7 @@ fn append_dynamic(
     pending: &mut PendingRun,
     messages: &mut Vec<AdmittedMessage>,
     catalog: &PromptCatalog,
+    date_message: Option<&CanonicalMessage>,
     input_tokens: Option<u32>,
     resolved: &ResolvedProvider,
     frozen_head: usize,
@@ -670,6 +697,9 @@ fn append_dynamic(
                 .blocks
                 .insert(0, MessageBlock::Text(prefix.clone()));
         }
+    }
+    if let Some(date_message) = date_message {
+        insert_runtime_date(messages, pending.turn, date_message, frozen_head);
     }
     if !pending.hook_context.is_empty() {
         let template = catalog
@@ -714,12 +744,57 @@ fn append_dynamic(
     Ok(())
 }
 
+fn insert_runtime_date(
+    messages: &mut Vec<AdmittedMessage>,
+    turn: u64,
+    date_message: &CanonicalMessage,
+    frozen_head: usize,
+) {
+    let current_input = messages
+        .iter()
+        .position(|admitted| admitted.turn == turn && admitted.origin == MessageOrigin::Input)
+        .unwrap_or(messages.len());
+    let insertion_index = if current_input < frozen_head {
+        messages.len()
+    } else {
+        current_input
+    };
+    messages.insert(
+        insertion_index,
+        AdmittedMessage {
+            turn,
+            origin: MessageOrigin::Runtime,
+            message: date_message.clone(),
+        },
+    );
+}
+
+fn legacy_project_policy_has_date(segment: &FrozenSegment, current_date: &str) -> bool {
+    segment.catalog.blocks.get("project-policy").is_some_and(|template| {
+        segment.prelude.iter().any(|message| {
+            message.blocks.iter().any(|block| {
+                matches!(block, MessageBlock::Text(text) if crate::prompt::render::project_policy_has_date(text, &template.text, current_date))
+            })
+        })
+    })
+}
+
+fn content_hash(value: &impl serde::Serialize) -> Result<String> {
+    Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(value)?)))
+}
+
+fn segment_prefix_hash(segment: &FrozenSegment) -> Result<String> {
+    content_hash(&(&segment.system_prompt, &segment.tools, &segment.prelude))
+}
+
 fn micros(started: Instant) -> u64 {
     started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64
 }
-
 #[cfg(test)]
-mod tests {
+#[path = "frozen/date_tests.rs"]
+mod date_tests;
+#[cfg(test)]
+mod snapshot_tests {
     use super::*;
     use crate::config::ProviderProfile;
     use crate::provider::types::ProviderKind;

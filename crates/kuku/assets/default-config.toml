@@ -59,6 +59,7 @@ api_key = "$ANTHROPIC_API_KEY"
 format = "openai-responses"
 base_url = "https://api.openai.com/v1"
 api_key = "$OPENAI_API_KEY"
+prompt_cache_scope = "workspace"
 
 # ── Auto-discovery ────────────────────────────────────────────────────────────
 # Auto-scan for skills/ and agents/ subdirectories in:

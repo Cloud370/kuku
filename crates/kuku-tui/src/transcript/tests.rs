@@ -495,7 +495,7 @@ fn assistant_markdown_keeps_the_model_sections_as_prose_and_raw_copy() {
         .join("\n");
     let rendered_lines: Vec<_> = rendered.lines().map(str::trim_start).collect();
     assert!(rendered_lines.windows(2).any(|pair| pair == ["Checks", ""]));
-    assert!(rendered_lines.iter().any(|line| *line == "Tests failed."));
+    assert!(rendered_lines.contains(&"Tests failed."));
     let narrow = transcript.project(24, 24);
     assert!(narrow.lines.iter().all(|line| line.width() <= 24));
     assert!(narrow
@@ -505,12 +505,8 @@ fn assistant_markdown_keeps_the_model_sections_as_prose_and_raw_copy() {
     assert!(rendered_lines
         .windows(2)
         .any(|pair| pair == ["Suggestions", ""]));
-    assert!(rendered_lines
-        .iter()
-        .any(|line| *line == "1. Inspect the log."));
-    assert!(rendered_lines
-        .iter()
-        .any(|line| *line == "Should I proceed?"));
+    assert!(rendered_lines.contains(&"1. Inspect the log."));
+    assert!(rendered_lines.contains(&"Should I proceed?"));
     assert!(!rendered.contains("Permission") && !rendered.contains("F2"));
     assert_eq!(Some(ReplySource::Local(reply)), transcript.last_reply());
 }

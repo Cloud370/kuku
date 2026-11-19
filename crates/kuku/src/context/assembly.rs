@@ -135,6 +135,14 @@ pub fn restore_prompt_snapshot(
     )
 }
 
+/// Assemble context using the legacy snapshot prelude order.
+pub fn assemble_context(
+    input: ContextInput,
+    catalog: &crate::prompt::PromptCatalog,
+) -> Result<ContextAssembly> {
+    assemble_context_inner(input, catalog, false).map(|(assembly, _)| assembly)
+}
+
 pub(crate) fn render_project_policy(
     input: &ContextInput,
     catalog: &crate::prompt::PromptCatalog,
@@ -177,23 +185,18 @@ pub(crate) fn render_project_policy(
     )
 }
 
-/// Build a complete context assembly with 6-layer snapshot.
-///
-/// Layers:
-///   1. system_prompt (catalog.system.text)
-///   2. project_policy (blocks["project-policy"] + render_project_context)
-///   3. agent identity (input.agent_instructions)
-///   4. tool_guidance (blocks["tool-guidance"])
-///   5. memory (optional): blocks["memory"] + memory["global"] + memory["project"]
-///   6. agent catalog + loaded skills (appended by caller after memory blocks)
-///
-/// Per-turn runtime_context is built from input.runtime_blocks (and
-/// optionally response_contract) by wrapping with the catalog's
-/// runtime/context template. The caller injects it into the current user turn.
-pub fn assemble_context(
+pub(crate) fn assemble_segment_context(
     input: ContextInput,
     catalog: &crate::prompt::PromptCatalog,
-) -> Result<ContextAssembly> {
+) -> Result<(ContextAssembly, usize)> {
+    assemble_context_inner(input, catalog, true)
+}
+
+fn assemble_context_inner(
+    input: ContextInput,
+    catalog: &crate::prompt::PromptCatalog,
+    common_first: bool,
+) -> Result<(ContextAssembly, usize)> {
     let project_policy_text = render_project_policy(&input, catalog)?;
 
     // ---- Layer 3: agent identity ----
@@ -276,12 +279,6 @@ pub fn assemble_context(
 
     // ---- Assemble prelude messages (snapshot layers 2-6) ----
     let mut prelude = Vec::new();
-    if !project_policy_text.is_empty() {
-        prelude.push(CanonicalMessage::user_text(project_policy_text));
-    }
-    if !identity_text.is_empty() {
-        prelude.push(CanonicalMessage::user_text(identity_text));
-    }
     for (key, _) in guidance.iter().filter(|(_, selected)| *selected) {
         if let Some(asset) = catalog
             .blocks
@@ -291,6 +288,28 @@ pub fn assemble_context(
             prelude.push(CanonicalMessage::user_text(asset.text.clone()));
         }
     }
+    let identity_slot = if common_first {
+        let slot = prelude.len();
+        if !identity_text.is_empty() {
+            prelude.push(CanonicalMessage::user_text(identity_text));
+        }
+        if !project_policy_text.is_empty() {
+            prelude.push(CanonicalMessage::user_text(project_policy_text));
+        }
+        slot
+    } else {
+        let mut leading = Vec::new();
+        if !project_policy_text.is_empty() {
+            leading.push(CanonicalMessage::user_text(project_policy_text));
+        }
+        let slot = leading.len();
+        if !identity_text.is_empty() {
+            leading.push(CanonicalMessage::user_text(identity_text));
+        }
+        leading.append(&mut prelude);
+        prelude = leading;
+        slot
+    };
     if !global_rendered.is_empty() {
         prelude.push(CanonicalMessage::user_text(global_rendered));
     }
@@ -327,17 +346,20 @@ pub fn assemble_context(
         memory_sources.push(pm);
     }
 
-    Ok(ContextAssembly {
-        system_prompt: catalog.system.text.clone(),
-        prelude_messages: prelude,
-        history: input.history,
-        tools: input.tools,
-        prompt_asset_sources,
-        project_instruction_sources: input.project_instructions,
-        memory_sources,
-        runtime_context, // per-turn runtime blocks (consumed by query provider)
-        handoff_summary: None,
-    })
+    Ok((
+        ContextAssembly {
+            system_prompt: catalog.system.text.clone(),
+            prelude_messages: prelude,
+            history: input.history,
+            tools: input.tools,
+            prompt_asset_sources,
+            project_instruction_sources: input.project_instructions,
+            memory_sources,
+            runtime_context, // per-turn runtime blocks (consumed by query provider)
+            handoff_summary: None,
+        },
+        identity_slot,
+    ))
 }
 
 #[cfg(test)]
@@ -412,6 +434,7 @@ mod tests {
         };
         assert!(msg0.contains("<kuku_project_context>"));
         assert!(msg0.contains("instr"));
+        assert!(!msg0.contains("Current date:"));
 
         // [1] tool_guidance
         let msg1 = match &assembly.prelude_messages[1].blocks[..] {
