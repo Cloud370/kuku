@@ -308,7 +308,8 @@ pub(crate) fn render_at(
         let placeholder = app.pane().draft.text().is_empty().then(|| {
             shorten(
                 &format!(
-                    "Enter steer · Alt+Enter next Turn · / actions · {} help · F2 controls · Esc Esc Rewind",
+                    "Enter steer · {} next Turn · / actions · {} help · F2 controls · Esc Esc Rewind",
+                    Shortcut::NEXT_TURN.label,
                     Shortcut::ACTIONS.label
                 ),
                 content_width,

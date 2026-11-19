@@ -324,6 +324,162 @@ def published_reasoning(client):
         reopened.exit_cleanly()
 
 
+def check_agent_reading_position(client, terminal):
+    terminal.press("\x1b[1;5F")
+    prompt = "Print numbered checkpoints for review"
+    terminal.submit(prompt)
+    markers = [f"Checkpoint {number:03}" for number in range(70)]
+    client.provider.next(prompt).text("\n\n".join(markers))
+    terminal.expect(markers[-1], state="Finished")
+    follow_up = "Record a checkpoint while the terminal is reading history"
+    queued = "Process this after the checkpoint report"
+    original = "First version of the checkpoint follow-up"
+    discarded = "Obsolete checkpoint follow-up"
+    beginning = "Streaming checkpoint update"
+    new_content = "Another checkpoint arrived while reading"
+
+    def composer_lines(screen):
+        start = screen.find("Pending inputs")
+        positions = [
+            position for label in ("To main", "To reviewer")
+            if (position := screen.find(label, start)) >= 0
+        ]
+        if start < 0 or not positions:
+            return []
+        return screen[min(positions):].splitlines()
+
+    def queued_row_contains(screen, text):
+        start = screen.find("Pending inputs")
+        positions = [
+            position for label in ("To main", "To reviewer")
+            if (position := screen.find(label, start)) >= 0
+        ]
+        if start < 0 or not positions:
+            return False
+        lines = screen[start:min(positions)].splitlines()
+        for index, line in enumerate(lines):
+            if "Queued ·" not in line:
+                continue
+            stop = next(
+                (next_index for next_index in range(index + 1, len(lines))
+                 if "You ·" in lines[next_index]),
+                len(lines),
+            )
+            if text in "\n".join(lines[index:stop]):
+                return True
+        return False
+
+    terminal.submit(follow_up)
+    with client.provider.next(follow_up).streaming_text(beginning, f"\n\n{new_content}", "\n\nCheckpoint stream finished") as pauses:
+        terminal.expect(beginning, state="Streaming")
+        terminal.type(original)
+        terminal.press("\x1b\r")
+        terminal.expect(original, state="Queued · next Turn")
+        terminal.press("\x1b[A")
+        terminal.press("\r")
+        terminal.expect("Edit queued input", also=(original,))
+        terminal.press("\x03")
+        terminal.type(queued)
+        terminal.press("\r")
+        terminal.expect(queued, state="Queued · next Turn")
+        terminal.type(discarded)
+        terminal.press("\x1b\r")
+        terminal.expect(discarded, state="Queued · next Turn")
+        terminal.press("\x1b[A")
+        screen = eventually(
+            "discarded input to remain queued in its delivery row",
+            lambda: result
+            if queued_row_contains((result := terminal.request("screen"))["screen"], discarded)
+            else None,
+        )["screen"]
+        terminal.click_text(screen, discarded)
+        terminal.press("\x1b[3~")
+
+        def withdrawn_from_pending():
+            screen = terminal.request("screen")["screen"]
+            composer = composer_lines(screen)
+            if (
+                "Input withdrawn" in screen
+                and queued_row_contains(screen, queued)
+                and not queued_row_contains(screen, discarded)
+                and composer
+                and "Draft" in composer[0]
+                and discarded in "\n".join(composer[1:])
+            ):
+                return screen
+
+        eventually("withdrawn input to leave the queued rows and restore its draft", withdrawn_from_pending)
+        terminal.press("\x03")
+
+        def withdrawal_draft_cleared():
+            result = terminal.request("screen")
+            if result["exit_code"] is not None or result["console_restored"]:
+                return None
+            composer = composer_lines(result["screen"])
+            if (
+                composer
+                and "Draft" not in composer[0]
+                and "Enter steer" in "\n".join(composer[1:])
+                and discarded not in "\n".join(composer[1:])
+            ):
+                return result
+
+        eventually("restored withdrawal draft to clear", withdrawal_draft_cleared)
+        check_reading_focus(terminal, markers, pauses[0], new_content, queued)
+    delivered = client.provider.next(queued)
+    messages = json.dumps(delivered.request["messages"], ensure_ascii=False)
+    assert original not in messages and discarded not in messages and messages.count(queued) == 1
+    delivered.text("Queued checkpoint processed")
+    terminal.expect("Queued checkpoint processed", state="Finished")
+    terminal.press("\x03")
+    client.provider.assert_idle()
+
+
+def check_reading_focus(terminal, markers, stream_pause, new_content, queued):
+    terminal.press("\x1b[5~")
+    screen = terminal.expect("Reading history · ↑↓ scroll")["screen"]
+    visible = [line for line in markers if line in screen]
+    assert len(visible) >= 2 and markers[-1] not in visible, screen
+    anchor = visible[1]
+    row = next(i for i, line in enumerate(screen.splitlines()) if anchor in line)
+
+    def checkpoint_at(expected):
+        reading = terminal.request("screen")["screen"]
+        lines = reading.splitlines()
+        return ("Reading history · ↑↓ scroll" in reading and "Enter steer" in reading
+                and len(lines) > expected and anchor in lines[expected])
+
+    terminal.press("\x1b[A")
+    eventually("Up scrolls one row and keeps the draft empty", lambda: checkpoint_at(row + 1))
+    terminal.press("\x1b[B")
+    eventually("Down scrolls one row toward the latest reply", lambda: checkpoint_at(row))
+    stream_pause.release.set()
+    updated = terminal.expect("New content", state=queued)["screen"]
+    assert anchor in updated.splitlines()[row] and new_content not in updated, updated
+    terminal.type("draft at checkpoint")
+    terminal.press("\x1b[1;3C")
+    assert "Switch Agent" not in terminal.expect("To reviewer")["screen"]
+    terminal.press("\x1b[1;3D")
+    restored = terminal.expect("draft at checkpoint", state="Reading history · Editing")["screen"]
+    restored_lines = restored.splitlines()
+    assert anchor in restored_lines[row], (visible, row, restored)
+    terminal.press("\x1b[1;3A")
+    terminal.expect(new_content, state=queued)
+    terminal.press("\x1b[<64;5;7M")
+    scrolled = terminal.expect("Jump to latest")["screen"]
+    jump = next(i for i, line in enumerate(scrolled.splitlines(), 1) if "Jump to latest" in line)
+    column = scrolled.splitlines()[jump - 1].index("Jump to latest") + 1
+    terminal.press(f"\x1b[<0;{column};{jump}M\x1b[<0;{column};{jump}m")
+
+    def followed_latest():
+        latest = terminal.request("screen")["screen"]
+        if all(text in latest for text in (new_content, queued, "draft at checkpoint")) and "Reading history" not in latest:
+            return latest
+
+    eventually("Clicking Jump to latest resumes following with the draft intact", followed_latest)
+    print(f"Returning to the Agent restored {visible[0]} through {visible[-1]} and its draft.")
+
+
 def scroll_mixed_table(client):
     workspace = client.workspace("work-table-scroll")
     prompt = "Show the disk report"
@@ -358,4 +514,12 @@ def scroll_mixed_table(client):
         assert saw_border and any("preserve draft" in line for line in frame)
         terminal.press("\x1b[1;5F")
         terminal.expect("After table 15", state="preserve draft")
+        terminal.press("\x03")
+        eventually(
+            "Ctrl+C clears the table-view draft",
+            lambda: result
+            if (result := terminal.request("screen"))["exit_code"] is None
+            and "preserve draft" not in result["screen"]
+            else None,
+        )
         terminal.exit_cleanly()

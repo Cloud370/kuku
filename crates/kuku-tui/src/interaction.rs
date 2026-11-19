@@ -74,7 +74,6 @@ impl App {
             pane.focused_request = None;
         }
     }
-
     fn save_question_draft(&mut self, target: &Target, request_id: &str, editor: Editor) {
         let address = Address::new(target.session_id.clone(), target.agent.clone());
         if let Some(pane) = self.panes.get_mut(&address) {
@@ -83,7 +82,6 @@ impl App {
             pane.focused_request = None;
         }
     }
-
     fn wheel(&mut self, mouse: MouseEvent, amount: isize) {
         self.text_selection.cancel_drag();
         match &mut self.modal {
