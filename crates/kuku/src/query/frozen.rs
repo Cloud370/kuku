@@ -67,6 +67,7 @@ pub(super) fn prepare(pending: &mut PendingRun) -> Result<PreparedContext> {
         query_model: pending.query.model.clone(),
         query_tier: pending.query.tier.clone(),
     };
+    cursor.select_configuration(&route_selectors);
     let catalog = cursor
         .catalog
         .clone()

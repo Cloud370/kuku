@@ -25,6 +25,9 @@ mod session_context_snapshot;
 #[path = "legacy_context_snapshot.rs"]
 mod legacy_context_snapshot;
 
+#[path = "concurrent_context_snapshot.rs"]
+mod concurrent_context_snapshot;
+
 #[tokio::test]
 async fn three_protocols_preserve_tool_batches_native_replay_and_multiturn_prefixes() {
     for (protocol, kind, profile, model) in [

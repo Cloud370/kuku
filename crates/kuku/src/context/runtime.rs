@@ -108,6 +108,7 @@ pub(crate) struct ContextCursor {
     pub(crate) admitted: Vec<AdmittedMessage>,
     pub(crate) configuration: u64,
     pub(crate) configured: u64,
+    configurations: BTreeMap<u64, RouteSelectors>,
     pub(crate) handoff: Option<StoredEvent>,
     pub(crate) input_tokens: Option<u32>,
     pub(crate) events_read: u64,
@@ -120,6 +121,38 @@ pub(crate) struct ContextCursor {
 }
 
 impl ContextCursor {
+    fn observe_configuration(&mut self, event_id: u64, config: &serde_json::Value) {
+        self.configuration = event_id;
+        self.configurations.insert(
+            event_id,
+            RouteSelectors {
+                query_connection: config["connection"].as_str().map(str::to_owned),
+                query_model: config["model"].as_str().map(str::to_owned),
+                query_tier: config["tier"].as_str().map(str::to_owned),
+            },
+        );
+    }
+
+    pub(crate) fn select_configuration(&mut self, selectors: &RouteSelectors) {
+        let matching = self
+            .configurations
+            .iter()
+            .rev()
+            .find(|(_, recorded)| *recorded == selectors)
+            .map(|(event_id, _)| *event_id);
+        if let Some(event_id) = matching {
+            self.configuration = event_id;
+            if self.segment.as_ref().is_some_and(|segment| {
+                segment
+                    .route_selectors
+                    .as_ref()
+                    .is_some_and(|recorded| recorded != selectors)
+            }) {
+                self.configured = self.configured.max(event_id);
+            }
+        }
+    }
+
     fn read_assets(&mut self, path: &Path, agent: &str) -> Result<()> {
         let mut candidate = None;
         self.after = scan(path, self.after, |event| {
@@ -167,16 +200,16 @@ impl ContextCursor {
                         let record = &value["record"];
                         match record["operation"].as_str() {
                             Some("agent_created") if record["address"] == agent => {
-                                self.configuration = event.id
+                                self.observe_configuration(event.id, &record["config"]);
                             }
                             Some("agent_configured") if record["address"] == agent => {
-                                self.configuration = event.id;
+                                self.observe_configuration(event.id, &record["config"]);
                             }
                             Some("input_delivered")
                                 if record["input"]["target"] == agent
                                     && record["config"].is_object() =>
                             {
-                                self.configuration = event.id;
+                                self.observe_configuration(event.id, &record["config"]);
                             }
                             _ => {}
                         }
@@ -234,10 +267,10 @@ impl ContextCursor {
                 let record = &value["record"];
                 match record["operation"].as_str() {
                     Some("agent_created") if record["address"] == agent => {
-                        self.configuration = event.id;
+                        self.observe_configuration(event.id, &record["config"]);
                     }
                     Some("agent_configured") if record["address"] == agent => {
-                        self.configuration = event.id;
+                        self.observe_configuration(event.id, &record["config"]);
                         if route_selectors_changed(self.segment.as_ref(), &record["config"]) {
                             self.configured = event.id;
                         }
@@ -245,7 +278,7 @@ impl ContextCursor {
                     Some("input_delivered")
                         if record["input"]["target"] == agent && record["config"].is_object() =>
                     {
-                        self.configuration = event.id;
+                        self.observe_configuration(event.id, &record["config"]);
                         if route_selectors_changed(self.segment.as_ref(), &record["config"]) {
                             self.configured = event.id;
                         }
