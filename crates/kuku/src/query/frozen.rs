@@ -97,7 +97,9 @@ pub(super) fn prepare(pending: &mut PendingRun) -> Result<PreparedContext> {
     });
     let handoff_changed = previous
         .as_ref()
-        .is_some_and(|segment| segment.handoff != handoff);
+        .map_or(cursor.handoff.is_some(), |segment| {
+            segment.handoff != handoff
+        });
     let workspace_changed = previous
         .as_ref()
         .is_some_and(|segment| segment.workspace != pending.workspace.to_string_lossy());
