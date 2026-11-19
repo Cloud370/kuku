@@ -119,4 +119,6 @@ Query fields:
 
 The response always contains `events`, `next_after`, and `active_stream`. `next_after` is the last scanned ledger cursor, even when filtering excludes every event. Use it for the next page. Stored events retain their `id` and `payload`; active recent progress is optional and never replaces durable records.
 
+Persisted pages may include `model.recovery` for an output-limit retry in a direct or child-Agent query. The event follows the `agent`/`conversation` filter; see [Session events](events.md) for its meaning.
+
 A separate process holding the Session writer may prevent a read; that resource conflict is returned visibly rather than starting another writer.

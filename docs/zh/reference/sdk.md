@@ -21,6 +21,8 @@
 | `cancel(address).await` / `close().await` | 等待所属清理与持久结算 |
 | `Session::read_agents(events_path)` | 不创建运行资源的离线恢复快照 |
 
+较低层的 `Query` `Run` 通过 non-exhaustive 的 `UiEvent` 和 `ToolEvent` 枚举提供宿主事件；两者匹配时都应保留兜底分支。两个枚举都包含 `ModelRequest` 和 `ModelRecovery` 变体；`ModelRequest` 携带请求 ID 和序号，`ModelRecovery` 携带失败／重试请求 ID 与有界重试信息。行为说明见 [Agent 执行循环](../how-it-works/agent-loop.md)。
+
 `SessionOptions::new(workspace, data_dir, config)` 接收具名 provider 配置；可增加 Prompt 资源、限额与宿主 `ToolAuthorizer`。`AgentConfig` 选择 Preset、Tier、具名连接、模型、思考、服务、输出 token、指令、目录和原生 Skill 默认值。连接选择独立于协议。显式 model 覆盖所选 Tier 的模型，保留其余默认值。`AgentConfig.tools` 覆盖 Preset 的最终工具选择；只读 Preset 不会自动增加协作工具。Preset 的指令、Tier 和工具默认值在创建或配置 Agent 时解析并保存；后续修改 Preset 文件不会改变这些已保留默认值。生命周期与回执语义见 [Sessions](../how-it-works/sessions.md)。
 
 `Session::read_agents` 从日志重建离线恢复状态，将没有终结事实的 `Running` 映射为 `Interrupted`，即使另一个运行时仍然活跃。查询当前活状态应使用已打开 Session 的 `agent` 或 `agents`。

@@ -16,7 +16,8 @@ CLI 在标准输出中逐行写出 JSON，在标准错误中给出下一游标�
 |---|---|
 | `session.created`、`conversation.opened` | Session 元数据，以及打开某个 Agent 的对话流。 |
 | `runtime.operation` | 状态变化由 `record.operation` 指定。例如 `agent_created`、`agent_configured`、`input_delivered`、`inputs_accepted`、`turn_settled` 和 `session_closed`。待决请求和关联回复也通过 Session 操作记录。 |
-| `turn.started`、`message.user`、`model.response`、`model.error` | Turn 的输入和模型服务结果。`turn.completed`、`turn.interrupted`、`turn.cancelled` 记录终止状态。 |
+| `turn.started`、`message.user`、`model.response`、`model.error` | Turn 的输入和模型服务结果；模型响应会保留归一化后的终止状态。`turn.completed`、`turn.interrupted`、`turn.cancelled` 记录终止状态。 |
+| `model.recovery` | 直接 `Query` 或子 Agent 查询遇到输出上限后的一次重试，记录失败和重试请求 ID 及恢复通知来源。 |
 | `runtime.context_segment`、`runtime.context_admitted`、`runtime.step_prepared` | 静态上下文、新接纳的消息，以及确认消息边界的 Step 准备记录。`body_hash` 标识编码后的请求。 |
 | `runtime.provider_report`、`runtime.model_usage`、`runtime.provider_replay` | 模型服务实际回报的元数据、token 用量或可用的协议原生续接数据。 |
 | `tool.call`、`runtime.tool_prepared`、`runtime.tool_dispatched`、`tool.result` | 调用请求、最终参数和工具定义、副作用前的派发记录、已落盘的结果。被拒绝的动作可以有工具结果而没有派发记录。 |

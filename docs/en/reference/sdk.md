@@ -21,6 +21,8 @@
 | `cancel(address).await` / `close().await` | Await owned cleanup and durable settlement |
 | `Session::read_agents(events_path)` | Offline recovery snapshots without runtime resources |
 
+The lower-level `Query` `Run` exposes host events through the non-exhaustive `UiEvent` and `ToolEvent` enums; keep a fallback match arm for each. Both enums include `ModelRequest` and `ModelRecovery` variants; `ModelRequest` carries the request ID and ordinal, while `ModelRecovery` carries request IDs and bounded retry information. See [Agent loop](../how-it-works/agent-loop.md) for their behavior.
+
 `SessionOptions::new(workspace, data_dir, config)` accepts named-provider configuration. Options add prompt assets, resource limits, and a host `ToolAuthorizer`. `AgentConfig` selects preset, tier, named connection, model, reasoning, service tier, output tokens, instructions, directory, and native skill defaults. Connection selection is independent of wire protocol. An explicit model overrides the selected tier’s model while retaining its other defaults. `AgentConfig.tools` overrides the preset’s final tool selection; collaboration tools are not added to a read-only preset. Preset instructions, tier and tool defaults are resolved and stored when creating or configuring the Agent. Later preset-file changes do not change those retained defaults. Lifecycle and receipt semantics live in [Sessions](../how-it-works/sessions.md).
 
 `Session::read_agents` reconstructs offline recovery state from the journal and maps an unterminated `Running` state to `Interrupted`, even while another runtime is active. Use an open Session's `agent` or `agents` methods for its current live state.

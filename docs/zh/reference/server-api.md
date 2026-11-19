@@ -119,4 +119,6 @@ Session 必须已存在，`agent` 默认 `main`。宿主重开该 Session，调�
 
 响应始终包含 `events`、`next_after` 和 `active_stream`。即使过滤排除了所有事件，`next_after` 仍为最后扫描到的账本游标，应将其用于下一页。持久事件保留 `id` 和 `payload`；近期活动进度可为空，不替代持久记录。
 
+持久事件页可能包含直接 `Query` 或子 Agent 查询因输出上限而重试时产生的 `model.recovery`。该事件遵循 `agent`／`conversation` 过滤；含义见 [Session 事件](events.md)。
+
 其他进程持有 Session writer 时可能阻止读取；服务会明确返回资源冲突，不启动第二个 writer。

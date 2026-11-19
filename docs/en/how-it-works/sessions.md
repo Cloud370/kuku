@@ -18,7 +18,7 @@ Execution continues independently of observations. `events(after, limit)` return
 
 The [session layout](../reference/file-layout.md#session-layout) contains one authoritative `events.jsonl` journal and retained outputs. One shared writer holds an operating-system lock and incrementally appends synchronized records. Opening repairs an incomplete tail and rejects damaged committed history.
 
-Agent creation/configuration, delivery/acceptance, prepared steps, authorization, dispatch, results, waits, replies, and settlements are separate facts. A completed turn or model claim does not prove business success; inspect actual files, command results, and the task judge.
+Agent creation/configuration, delivery/acceptance, prepared steps, authorization, dispatch, results, waits, replies, and settlements are separate facts. See [Agent loop](agent-loop.md) for model terminal states and bounded output-limit recovery. A completed turn or model claim does not prove business success; inspect actual files, command results, and the task judge.
 
 Provider-visible system text, prelude, tools, and admitted canonical messages are frozen in a context segment. Messages are admitted once per segment; each prepared step records the segment and message boundary, selected connection/settings, correlation, and request hash. It does not append another full wire request. Reopening keeps the committed prefix. Configuration, tool, protocol, or explicit handoff changes establish a committed successor segment.
 
