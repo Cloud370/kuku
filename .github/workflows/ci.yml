@@ -89,72 +89,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $preflight = Get-Content benchmarks/acceptance/windows-terminal-preflight.json -Raw | ConvertFrom-Json
           "terminal=$($preflight.terminal)" >> $env:GITHUB_OUTPUT
-      - name: Repeat Windows session runtime diagnostic
-        if: runner.os == 'Windows'
-        continue-on-error: true
-        env:
-          KUKU_SESSION_RUNTIME_DIAGNOSTICS: '1'
-          RUST_BACKTRACE: '1'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Continue'
-          $diagnosticDirectory = Join-Path $env:RUNNER_TEMP 'kuku-session-runtime-diagnostics'
-          New-Item -ItemType Directory -Force -Path $diagnosticDirectory | Out-Null
-          $summaryPath = Join-Path $diagnosticDirectory 'session-runtime-windows-diagnostic-summary.txt'
-          $failed = $false
-          for ($iteration = 1; $iteration -le 12; $iteration++) {
-            $iterationName = '{0:D2}' -f $iteration
-            $rawPath = Join-Path $diagnosticDirectory "iteration-$iterationName.raw.log"
-            $logPath = Join-Path $diagnosticDirectory "session-runtime-windows-diagnostic-iteration-$iterationName.log"
-            $startedAt = [DateTime]::UtcNow.ToString('o')
-            $watch = [Diagnostics.Stopwatch]::StartNew()
-            & cargo test -p kuku --features kuku/test_support --test session_runtime -- public_session_executes_real_tools_without_observers_and_reopens --exact --nocapture *> $rawPath
-            $exitCode = $LASTEXITCODE
-            $watch.Stop()
-
-            $rawBytes = [IO.File]::ReadAllBytes($rawPath)
-            $truncated = $rawBytes.Length -gt 131072
-            if ($truncated) {
-              $head = [Text.Encoding]::UTF8.GetString($rawBytes, 0, 32768)
-              $tailOffset = $rawBytes.Length - 98304
-              $tail = [Text.Encoding]::UTF8.GetString($rawBytes, $tailOffset, 98304)
-              $logText = "$head`r`n[diagnostic log truncated between first 32KiB and last 96KiB]`r`n$tail"
-            } else {
-              $logText = [Text.Encoding]::UTF8.GetString($rawBytes)
-            }
-            $metadata = "iteration=$iteration/12 started_at_utc=$startedAt elapsed_ms=$($watch.ElapsedMilliseconds) exit_code=$exitCode truncated=$truncated"
-            [IO.File]::WriteAllText($logPath, "$metadata`r`n$logText", [Text.Encoding]::UTF8)
-            Add-Content -Path $summaryPath -Value $metadata
-            Write-Host $metadata
-            Get-Content -Path $logPath
-            if ($exitCode -ne 0) { $failed = $true }
-          }
-          if ($failed) { Write-Error 'One or more focused Windows runtime diagnostic iterations failed'; exit 1 }
       - name: Contract tests, including feature-gated runtime suites
         id: contract
         run: python3 scripts/acceptance/run.py --run-id ci-contract contract
-      - name: Retain Windows runtime diagnostic evidence
-        if: always() && runner.os == 'Windows'
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          $source = Join-Path $env:RUNNER_TEMP 'kuku-session-runtime-diagnostics'
-          if (-not (Test-Path $source)) { Write-Host 'No Windows runtime diagnostic files to retain'; exit 0 }
-          $destination = 'benchmarks/acceptance/ci-contract'
-          New-Item -ItemType Directory -Force -Path $destination | Out-Null
-          $logs = @(Get-ChildItem -Path $source -Filter 'session-runtime-windows-diagnostic-iteration-*.log' -File)
-          if ($logs.Count -gt 0) { Copy-Item -Path $logs.FullName -Destination $destination -Force }
-          $summary = Join-Path $source 'session-runtime-windows-diagnostic-summary.txt'
-          if (Test-Path $summary) { Copy-Item -Path $summary -Destination $destination -Force }
-      - name: Upload Windows runtime diagnostic evidence
-        if: always() && runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
-        with:
-          name: session-runtime-diagnostics-${{ matrix.os }}
-          path: |
-            benchmarks/acceptance/ci-contract/session-runtime-windows-diagnostic-iteration-*.log
-            benchmarks/acceptance/ci-contract/session-runtime-windows-diagnostic-summary.txt
-          if-no-files-found: warn
       - name: Installed client on ${{ matrix.terminal }}
         if: ${{ !cancelled() && (steps.contract.outcome == 'success' || steps.contract.outcome == 'failure') }}
         env:
