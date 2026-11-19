@@ -67,7 +67,7 @@ def targeted_delegation(client):
         terminal.expect("Received the delegated document.", state="3 tools")
         for columns in (44, 100, 174):
             terminal.request("resize", cols=columns, rows=34)
-            def aligned():
+            def nested_borders():
                 screen = terminal.request("screen")["screen"]
                 rows = [next((r for r in screen.splitlines() if title in r and "╮" in r), "")
                         for title in ("╭─ Agent writer", "╭─ python")]
@@ -75,9 +75,15 @@ def targeted_delegation(client):
                     return False
                 agent, code = rows
                 gutter = 1 if columns < 72 else 2 if columns < 110 else 3
-                return all(row.index("╭") == gutter and row.index("╮") == columns - gutter - 1 for row in (agent, code))
+                transcript_width = columns - 2 * gutter
+                body_inset = 2
+                right_padding = 2 if transcript_width < 80 else 3
+                right_edge = columns - gutter - 1
+                return (agent.index("╭") == gutter and agent.index("╮") == right_edge
+                        and code.index("╭") == gutter + body_inset
+                        and code.index("╮") == right_edge - right_padding)
             try:
-                eventually(f"Agent and code borders align at {columns} columns", aligned)
+                eventually(f"Agent and nested code borders match layout at {columns} columns", nested_borders)
             except AssertionError as error:
                 raise AssertionError(terminal.request("screen")["screen"]) from error
             action = "Open →" if columns == 44 else "Open agent →"
