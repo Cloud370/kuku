@@ -515,7 +515,7 @@ impl Window {
                         agent == retry_agent
                             && turn == retry_turn
                             && request_id == retry_id
-                            && execution_id == retry_execution
+                            && execution_matches(*execution_id, *retry_execution)
                             && retry_position < error_position
                     },
                 );
@@ -524,7 +524,7 @@ impl Window {
                     .filter(|(error_agent, error_turn, error_execution)| {
                         agent == error_agent
                             && turn == error_turn
-                            && execution_id == error_execution
+                            && execution_matches(*execution_id, *error_execution)
                     })
                     .count()
                     == 1;
@@ -567,7 +567,7 @@ impl Window {
                                 owner.as_ref() == Some(agent)
                                     && turn == Some(*retry_turn)
                                     && retry_id == request_id
-                                    && record.execution_id == *retry_execution
+                                    && execution_matches(record.execution_id, *retry_execution)
                                     && record
                                         .position
                                         .is_some_and(|position| *retry_position < position)
@@ -593,7 +593,7 @@ impl Window {
                             owner.as_ref() == Some(agent)
                                 && turn == Some(*error_turn)
                                 && request_id == error_id
-                                && record.execution_id == *error_execution
+                                && execution_matches(record.execution_id, *error_execution)
                                 && record.position == Some(*error_position)
                                 && interruptions.iter().any(
                                     |(
@@ -604,7 +604,10 @@ impl Window {
                                     )| {
                                         agent == interruption_agent
                                             && error_turn == interruption_turn
-                                            && error_execution == interruption_execution
+                                            && execution_matches(
+                                                *error_execution,
+                                                *interruption_execution,
+                                            )
                                             && error_position < interruption_position
                                     },
                                 )
@@ -620,7 +623,7 @@ impl Window {
                         |(agent, error_turn, _, error_execution, error_position)| {
                             owner.as_ref() == Some(agent)
                                 && turn == Some(*error_turn)
-                                && record.execution_id == *error_execution
+                                && execution_matches(record.execution_id, *error_execution)
                                 && record
                                     .position
                                     .is_some_and(|position| *error_position < position)
@@ -642,7 +645,7 @@ impl Window {
                                     owner.as_ref() == Some(agent)
                                         && turn == Some(*error_turn)
                                         && error_id == request_id
-                                        && record.execution_id == *error_execution
+                                        && execution_matches(record.execution_id, *error_execution)
                                         && record
                                             .position
                                             .is_some_and(|position| position < *error_position)
@@ -700,4 +703,8 @@ impl Block<'_> {
         usize::from(self.heading.is_some())
             + self.group.as_ref().map_or(0, |group| group.rows.len())
     }
+}
+
+fn execution_matches(left: Option<u64>, right: Option<u64>) -> bool {
+    left.is_none() || right.is_none() || left == right
 }

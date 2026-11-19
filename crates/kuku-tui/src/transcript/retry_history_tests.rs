@@ -346,6 +346,51 @@ fn retry_detail_restores_when_paging_trims_correlated_error() {
 }
 
 #[test]
+fn paged_retry_with_missing_execution_matches_live_error_and_interruption() {
+    let retry_message = "Check the provider network, then Continue.";
+    let mut transcript = Transcript::default();
+    transcript.apply_page(
+        HistoryRequest::Recent,
+        HistoryPage {
+            entries: vec![
+                error_entry(9, 2, "req_1", "Fixture connection closed"),
+                interruption_entry(10, 2, None, "transport"),
+            ],
+            next_before: Some(8),
+        },
+    );
+    transcript.apply(
+        error_entry(9, 2, "req_1", "Fixture connection closed"),
+        Some(12),
+    );
+    transcript.apply(interruption_entry(10, 2, None, "transport"), Some(12));
+    let request = transcript
+        .scroll(-100, 120, 1)
+        .expect("page older retry history");
+    assert_eq!(HistoryRequest::Older(8), request);
+    transcript.apply_page(
+        request,
+        HistoryPage {
+            entries: vec![retry_entry(8, 2, "req_1", retry_message, "attempt_limit")],
+            next_before: None,
+        },
+    );
+
+    let text = rendered(&mut transcript);
+    assert!(
+        text.contains("Transport error · Reply interrupted"),
+        "{text}"
+    );
+    assert_eq!(1, text.matches(retry_message).count());
+    assert_eq!(1, text.matches("Fixture connection closed").count());
+    assert!(!text.contains("Execution interrupted"), "{text}");
+    assert!(
+        !text.lines().any(|line| line.trim() == "transport"),
+        "{text}"
+    );
+}
+
+#[test]
 fn partial_reply_precedes_correlated_error_and_durable_interruption() {
     let partial = "Partial reply survives failure.";
     for status_text in [partial, ""] {
