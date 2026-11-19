@@ -46,7 +46,23 @@ impl App {
             self.problem("No request is waiting for this Agent");
             return;
         };
-        self.focus_request_id(self.selection().target, id);
+        self.activate_request_id(self.selection().target, id);
+    }
+
+    pub(crate) fn activate_request_id(&mut self, target: Target, request_id: String) -> bool {
+        if !self.focus_request_id(target, request_id.clone()) {
+            return false;
+        }
+        if self.pane().snapshot.as_ref().is_some_and(|snapshot| {
+            snapshot
+                .agent
+                .question
+                .as_ref()
+                .is_some_and(|request| request.id == request_id)
+        }) {
+            self.answer_question();
+        }
+        true
     }
 
     pub(crate) fn focus_request_id(&mut self, target: Target, request_id: String) -> bool {
@@ -231,23 +247,34 @@ impl App {
     }
 
     pub(crate) fn withdraw_queued(&mut self, input_id: String) {
-        if !self
+        let text = self
             .queued_for_edit()
-            .any(|entry| entry.receipt.command_id == input_id)
-        {
+            .find(|entry| entry.receipt.command_id == input_id)
+            .map(|entry| entry.input.text.clone());
+        let Some(text) = text else {
             self.problem("Selected input is no longer queued");
             return;
-        }
+        };
         if self.queue_mutation_pending(&input_id) {
             self.problem("A change to this queued input is already pending");
             return;
         }
+        let restore_text = self.pane().draft.text().is_empty().then_some(text);
+        let target = self.selection().target;
+        let pending_before = self.pending.len();
         self.issue(
             self.active.clone(),
             Action::Withdraw {
-                input_command_id: input_id,
+                input_command_id: input_id.clone(),
             },
         );
+        if self.pending.len() > pending_before {
+            let key = (target, input_id);
+            self.withdrawal_drafts.remove(&key);
+            if let Some(text) = restore_text {
+                self.withdrawal_drafts.insert(key, text);
+            }
+        }
         let pane = self.pane_mut();
         pane.keyboard_focus = KeyboardFocus::Composer;
         pane.selected_queue_input = None;

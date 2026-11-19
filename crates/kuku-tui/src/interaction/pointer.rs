@@ -24,7 +24,7 @@ impl App {
             Some(MouseAction::Click(ClickTarget::Agent(target))) => self.select_agent(target),
             Some(MouseAction::Click(ClickTarget::QueueInput(id))) => self.focus_queue_input(id),
             Some(MouseAction::Click(ClickTarget::Request { target, request_id })) => {
-                self.focus_request_id(target, request_id);
+                self.activate_request_id(target, request_id);
             }
             Some(MouseAction::Click(ClickTarget::Permission {
                 target,

@@ -1,5 +1,8 @@
 use crossterm::event::{KeyCode, KeyModifiers};
-use kuku_client::{Action, HistoryPage, Input, InputSource, InputTiming, QueuedInput, Receipt};
+use kuku_client::{
+    Acknowledgement, Action, HistoryPage, Input, InputSource, InputStatus, InputTiming,
+    QueuedInput, Receipt,
+};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 use serde_json::json;
@@ -40,6 +43,34 @@ fn load(app: &mut App, state: Box<kuku_client::Snapshot>) {
             entries: vec![],
             next_before: None,
         },
+    ));
+}
+
+fn begin_withdrawal(app: &mut App) -> kuku_client::Command {
+    let state = queued_state(app, 1);
+    load(app, state);
+    app.effects.clear();
+    app.focus_queue_input("queue-0".into());
+    key(app, KeyCode::Delete, KeyModifiers::NONE);
+    saved_input(app)
+}
+
+fn acknowledge_withdrawal(
+    app: &mut App,
+    command: &kuku_client::Command,
+    status: Option<InputStatus>,
+) {
+    app.update(Update::Sent(
+        command.command_id.clone(),
+        Ok(Acknowledgement {
+            receipt: Receipt {
+                command_id: command.command_id.clone(),
+                event_id: 101,
+                agent: command.target.agent.clone(),
+            },
+            replayed: false,
+            status,
+        }),
     ));
 }
 
@@ -125,6 +156,53 @@ fn empty_composer_up_selects_and_delete_withdraws_the_exact_queue_entry() {
 }
 
 #[test]
+fn confirmed_withdrawal_restores_text_to_its_original_pane_after_snapshot_removal() {
+    let mut app = app();
+    let command = begin_withdrawal(&mut app);
+    let origin = app.active.clone();
+    let removed = snapshot(&app, "running", json!(null), json!(null));
+    load(&mut app, removed);
+
+    let other = crate::app::Address::new(format!("{}-other", origin.session), origin.agent.clone());
+    app.select(other, true, "Other session".into());
+    acknowledge_withdrawal(&mut app, &command, Some(InputStatus::Withdrawn));
+    assert!(app.pane().draft.text().is_empty());
+
+    app.select(origin, true, "Main".into());
+    assert_eq!("queued text 0", app.pane().draft.text());
+}
+
+#[test]
+fn withdrawal_never_overwrites_a_draft_or_restores_an_unwithdrawn_input() {
+    let mut typed = app();
+    let command = begin_withdrawal(&mut typed);
+    typed.pane_mut().draft.insert("typed while waiting");
+    acknowledge_withdrawal(&mut typed, &command, Some(InputStatus::Withdrawn));
+    assert_eq!("typed while waiting", typed.pane().draft.text());
+
+    for status in [InputStatus::Accepted, InputStatus::Queued] {
+        let mut app = app();
+        let command = begin_withdrawal(&mut app);
+        acknowledge_withdrawal(&mut app, &command, Some(status));
+        assert!(app.pane().draft.text().is_empty());
+    }
+
+    let mut errored = app();
+    let command = begin_withdrawal(&mut errored);
+    errored.update(Update::Sent(
+        command.command_id.clone(),
+        Err(kuku_client::Error::Protocol("test failure".into())),
+    ));
+    assert!(errored.pane().draft.text().is_empty());
+
+    let mut existing = app();
+    existing.pane_mut().draft.insert("preexisting draft");
+    let command = begin_withdrawal(&mut existing);
+    acknowledge_withdrawal(&mut existing, &command, Some(InputStatus::Withdrawn));
+    assert_eq!("preexisting draft", existing.pane().draft.text());
+}
+
+#[test]
 fn stale_queue_selection_never_redirects_withdrawal_to_another_input() {
     let mut app = app();
     let state = queued_state(&app, 3);
@@ -206,21 +284,16 @@ fn request_card_is_visible_without_focus_and_question_answer_is_scoped_and_stale
         .buffer;
     let point = (app.request_area.x, app.request_area.y);
     click(&mut app, buffer, point);
-    assert_eq!(KeyboardFocus::Request, app.pane().keyboard_focus);
-    key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-    assert_eq!(KeyboardFocus::Composer, app.pane().keyboard_focus);
-    assert!(app.effects.is_empty());
-
-    key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
-    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
         if matches!(&prompt.kind, PromptKind::Question { request_id, .. } if request_id == "q-1")));
     key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
     assert_eq!(KeyboardFocus::Composer, app.pane().keyboard_focus);
     assert_eq!("my independent draft", app.pane().draft.text());
     app.effects.clear();
+
     key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
-    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
+        if matches!(&prompt.kind, PromptKind::Question { request_id, .. } if request_id == "q-1")));
     if let Some(Modal::Prompt(prompt)) = &mut app.modal {
         prompt.editor.set_text("workspace tests".into());
     }
