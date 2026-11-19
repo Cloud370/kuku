@@ -14,6 +14,7 @@ from urllib.parse import quote, urlencode
 
 from interactive_browser import open_session
 from interactive_fixture import InstalledClient, eventually, install, serve
+from interactive_rendering import select_message_action
 from playwright.sync_api import sync_playwright
 
 from run import Budget, ROOT, load_secrets, write_json
@@ -250,8 +251,7 @@ def review_saved_commands(terminal, count, evidence):
             terminal.press("\x1b")
             screen = terminal.expect("Tool · run_command")["screen"]
             continue
-        terminal.click_text(actions, "Full output")
-        terminal.press("\r")
+        select_message_action(terminal, actions, "Full output")
         screen = terminal.expect("bytes · PgUp/PgDn")["screen"]
         reviewed += 1
         for page in range(4):

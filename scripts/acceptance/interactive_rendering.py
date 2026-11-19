@@ -11,6 +11,85 @@ from urllib.parse import urlencode
 from interactive_fixture import InstalledClient, Response, StreamPause, eventually
 
 
+def select_message_action(terminal, screen, action):
+    labels = {"Copy", "Source", "Thinking", "Expand", "Full output"}
+
+    def action_rows(value):
+        lines = value.splitlines()
+        start = next(
+            (index for index, line in enumerate(lines) if "Message actions" in line),
+            None,
+        )
+        if start is None:
+            return []
+        rows = lines[start + 1:]
+        first_choice = next(
+            (
+                index
+                for index, line in enumerate(rows)
+                if any(line.rstrip().endswith(f"› {label}") for label in labels)
+            ),
+            None,
+        )
+        if first_choice is None:
+            return []
+        end = next(
+            (index for index, line in enumerate(rows[first_choice:], first_choice)
+             if "Operate message" in line),
+            len(rows),
+        )
+        return rows[first_choice:end]
+
+    def visible_actions(value):
+        visible = []
+        for line in action_rows(value):
+            line = line.rstrip()
+            for label in labels:
+                if line.endswith(label) or line.endswith(f"› {label}"):
+                    visible.append(label)
+                    break
+        return visible
+
+    def selected_action(value):
+        for line in action_rows(value):
+            line = line.rstrip()
+            for label in labels:
+                if line.endswith(f"› {label}"):
+                    return label
+        return None
+
+    visible = visible_actions(screen)
+    assert action in visible, screen
+    for _ in visible:
+        selected = selected_action(screen)
+        if selected == action:
+            break
+        assert selected in visible, screen
+        next_action = visible[(visible.index(selected) + 1) % len(visible)]
+        terminal.press("\t")
+        screen = eventually(
+            f"selection of message action {next_action!r}",
+            lambda: (
+                value
+                if selected_action(value := terminal.request("screen")["screen"])
+                == next_action
+                else None
+            ),
+        )
+    else:
+        raise AssertionError(f"Could not select message action {action!r}:\n{screen}")
+
+    terminal.press("\r")
+    eventually(
+        "message action picker to close",
+        lambda: (
+            value
+            if "Message actions" not in (value := terminal.request("screen")["screen"])
+            else None
+        ),
+    )
+
+
 def event(name, **fields):
     body = json.dumps({"type": name, **fields})
     return f"event: {name}\ndata: {body}\n\n".encode()
@@ -34,8 +113,7 @@ def operate_on_assistant(terminal, screen, marker, action):
     actions = terminal.expect("Selected · Assistant")["screen"]
     assert marker in actions, actions
     assert action in actions, actions
-    terminal.click_text(actions, action)
-    terminal.press("\r")
+    select_message_action(terminal, actions, action)
 
 
 def rendering_cases(binary, bridge, directory):

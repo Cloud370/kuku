@@ -661,6 +661,15 @@ def delegated_agent_cards(client):
         reopened.press("/")
         reopened.expect("Actions and Skills")
         reopened.press("\x1b")
+        eventually(
+            "actions picker to close",
+            lambda: (
+                screen
+                if "Actions and Skills"
+                not in (screen := reopened.request("screen")["screen"])
+                else None
+            ),
+        )
         reopened.press("\x0f")
         restored = reopened.expect("Latest Agent reply", state="Requested instructions")["screen"]
         assert conclusion in restored and "Live Agent reply" not in restored, restored
