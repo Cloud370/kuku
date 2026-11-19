@@ -18,7 +18,7 @@ use serde_json::json;
 use unicode_width::UnicodeWidthStr;
 
 use super::{render, render_at, ActivityFrame};
-use crate::app::{Address, App, Modal};
+use crate::app::{Address, App, KeyboardFocus, Modal};
 use crate::jobs::{Job, Update};
 use crate::menu::{Choice, ChoiceKind, PickerKind, PromptKind};
 use crate::output::OutputViewer;
@@ -137,11 +137,13 @@ fn composer_click_places_the_caret_in_scrolled_and_wrapped_unicode_text() {
 }
 
 fn command(app: &mut App, name: &str) {
-    key(app, KeyCode::F(1), KeyModifiers::NONE);
+    let draft = app.pane_mut().draft.take_text();
+    key(app, KeyCode::Char('/'), KeyModifiers::NONE);
     for character in name.chars() {
         key(app, KeyCode::Char(character), KeyModifiers::NONE);
     }
     key(app, KeyCode::Enter, KeyModifiers::NONE);
+    app.pane_mut().draft.set_text(draft);
 }
 
 fn entry(id: u64, agent: &str, kind: HistoryKind, text: &str) -> HistoryEntry {
@@ -226,7 +228,7 @@ fn identical_pending_inputs_render_immediately_and_admission_wins_over_a_late_re
     let first = saved_input(&app);
     let sending = screen(&mut app, 92, 25);
     assert!(sending.contains("You · Sending"));
-    assert!(sending.find(text).unwrap() < sending.find("Type a prompt").unwrap());
+    assert!(sending.find(text).unwrap() < sending.find("Enter steer").unwrap());
     app.update(Update::Saved(first.clone(), Ok(())));
     app.update(Update::Sent(
         first.command_id.clone(),
@@ -268,7 +270,7 @@ fn identical_pending_inputs_render_immediately_and_admission_wins_over_a_late_re
 }
 
 #[test]
-fn clicking_the_queue_opens_an_isolated_editor_and_saves_the_exact_replacement() {
+fn clicking_the_queue_focuses_its_inline_editor_and_saves_the_exact_replacement() {
     let mut app = app();
     let mut state = snapshot(&app, "running", json!(null), json!(null));
     let mut input = Input::new("original", "main", "old queued text\n次の行");
@@ -299,11 +301,17 @@ fn clicking_the_queue_opens_an_isolated_editor_and_saves_the_exact_replacement()
         .draw(|frame| render(frame, &mut app))
         .unwrap()
         .buffer;
-    let point = (app.delivery_area.x, app.delivery_area.y);
+    let visible_row = app
+        .delivery_hits
+        .first()
+        .filter(|(_, id)| id == "original")
+        .map(|(range, _)| range.start)
+        .expect("visible queued input");
+    let point = (app.delivery_area.x, app.delivery_area.y + visible_row);
     click(&mut app, buffer, point);
-    assert!(
-        matches!(&app.modal, Some(Modal::Picker(picker)) if matches!(picker.kind, PickerKind::Queued))
-    );
+    assert!(app.modal.is_none());
+    assert_eq!(KeyboardFocus::Queue, app.pane().keyboard_focus);
+    assert_eq!(Some("original"), app.pane().selected_queue_input.as_deref());
     key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     assert!(
         matches!(&app.modal, Some(Modal::Prompt(prompt)) if prompt.editor.text() == "old queued text\n次の行")
@@ -359,7 +367,6 @@ fn blank_welcome_scales_down_and_active_session_uses_one_branded_row() {
     let short = screen(&mut app, 29, 6);
     assert!(short.lines().next().unwrap().contains("kuku · New session"));
     assert!(short.contains("Enter to send · /resume"));
-    assert!(short.contains("Type a prompt"));
 
     app.select(app.active.clone(), true, "修复使用中文标题的会话".into());
     let active = screen(&mut app, 31, 8);
@@ -499,7 +506,8 @@ fn source_action_completes_on_tab_and_toggles_one_pane_without_changing_copy() {
     app.pane_mut().draft.insert("reviewer draft");
     app.select(main.clone(), true, "Example".into());
 
-    key(&mut app, KeyCode::F(1), KeyModifiers::NONE);
+    let main_draft = app.pane_mut().draft.take_text();
+    key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
     for character in "sou".chars() {
         key(&mut app, KeyCode::Char(character), KeyModifiers::NONE);
     }
@@ -507,6 +515,7 @@ fn source_action_completes_on_tab_and_toggles_one_pane_without_changing_copy() {
     assert!(matches!(&app.modal, Some(Modal::Picker(picker)) if picker.query.text() == "/source"));
     app.effects.clear();
     key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    app.pane_mut().draft.set_text(main_draft);
     assert!(matches!(app.effects.as_slice(), [Job::ClosePicker]));
     let source = screen(&mut app, 100, 24);
     assert!(source.contains("Assistant · source"));
@@ -919,36 +928,8 @@ fn picker_click_cannot_switch_agents_when_the_visible_choice_was_replaced() {
     assert!(app.effects.iter().all(|job| !matches!(job, Job::Save(_))));
 }
 
-#[test]
-fn picker_click_focuses_permission_and_enter_confirms_it() {
-    let mut app = app();
-    let choice = |allow| ChoiceKind::Permission {
-        request_id: "request-1".into(),
-        allow,
-    };
-    app.picker(
-        PickerKind::Permission,
-        vec![
-            Choice::new("Deny", "", choice(false)),
-            Choice::new("允许", "", choice(true)),
-        ],
-    );
-    let mut terminal = Terminal::new(TestBackend::new(82, 21)).unwrap();
-    let buffer = terminal
-        .draw(|frame| render(frame, &mut app))
-        .unwrap()
-        .buffer;
-    click(&mut app, buffer, cell(buffer, "允"));
-    assert!(matches!(&app.modal, Some(Modal::Picker(picker)) if picker.selected == 1));
-    assert!(app.effects.is_empty());
-
-    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-    assert!(
-        matches!(app.effects.as_slice(), [Job::ClosePicker, Job::Save(command)]
-        if matches!(&command.action, Action::ReplyPermission { request_id, allow: true }
-            if request_id == "request-1"))
-    );
-}
+#[path = "tests/inline.rs"]
+mod inline;
 
 #[test]
 fn click_shift_drag_and_replaced_text_leave_the_clipboard_alone() {

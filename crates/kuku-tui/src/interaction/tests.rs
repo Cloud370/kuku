@@ -26,7 +26,7 @@ fn press(app: &mut App, code: KeyCode) {
 }
 
 #[test]
-fn control_p_f1_and_slash_open_actions() {
+fn help_shortcuts_are_read_only_and_slash_opens_actions() {
     let mut app = connected_app();
     app.paste("unsent draft");
     for key in [
@@ -34,18 +34,47 @@ fn control_p_f1_and_slash_open_actions() {
         KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE),
     ] {
         app.key(key);
-        assert!(matches!(&app.modal,
-            Some(Modal::Picker(picker)) if matches!(picker.kind, PickerKind::Commands)
-        ));
+        assert!(matches!(&app.modal, Some(Modal::Help)));
         assert_eq!("unsent draft", app.pane().draft.text());
+        app.paste("ignored paste");
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(&app.modal, Some(Modal::Help)));
+        assert_eq!("unsent draft", app.pane().draft.text());
+        assert!(app.effects.is_empty());
         press(&mut app, KeyCode::Esc);
+        assert!(app.effects.is_empty());
     }
+    press(&mut app, KeyCode::Char('/'));
+    assert_eq!("unsent draft/", app.pane().draft.text());
+    assert!(app.modal.is_none());
     app.pane_mut().draft.take_text();
     press(&mut app, KeyCode::Char('/'));
     assert!(matches!(&app.modal,
         Some(Modal::Picker(picker)) if matches!(picker.kind, PickerKind::Commands)
     ));
     assert!(app.pane().draft.text().is_empty());
+}
+
+#[test]
+fn skill_named_like_an_action_remains_a_distinct_editable_choice() {
+    let mut app = connected_app();
+    let mut choices = Choice::commands();
+    choices.push(Choice::new(
+        "/skill:new",
+        "Skill · new",
+        ChoiceKind::Skill("new".into()),
+    ));
+    assert!(choices
+        .iter()
+        .any(|choice| { choice.label == "/new" && matches!(choice.kind, ChoiceKind::Command(_)) }));
+    assert!(choices.iter().any(|choice| {
+        choice.label == "/skill:new" && matches!(choice.kind, ChoiceKind::Skill(_))
+    }));
+    app.picker(PickerKind::Commands, choices);
+    app.paste("/skill:new");
+    press(&mut app, KeyCode::Tab);
+    assert_eq!("/skill:new ", app.pane().draft.text());
+    assert!(app.modal.is_none());
 }
 
 #[test]
@@ -111,7 +140,7 @@ fn transcript_text(app: &mut App) -> String {
 }
 
 fn open_details(app: &mut App) {
-    app.key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
+    app.key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
     app.paste("/details");
     press(app, KeyCode::Enter);
     assert!(matches!(&app.modal, Some(Modal::Picker(picker))
@@ -170,7 +199,7 @@ fn control_c_clears_dialogs_and_exits_only_from_an_empty_composer() {
     let mut app = connected_app();
     let clear = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
     app.paste("draft to keep");
-    press(&mut app, KeyCode::F(1));
+    app.picker(PickerKind::Commands, Choice::commands());
     app.paste("resume");
     app.effects.clear();
     app.key(clear);
@@ -380,14 +409,13 @@ fn rewind_confirmation_render_shows_file_scope_without_an_editor() {
 }
 
 #[test]
-fn tab_completes_a_slash_action_and_enter_runs_it_with_the_draft_intact() {
+fn tab_completes_a_slash_action_and_enter_runs_it_from_an_empty_draft() {
     let mut app = connected_app();
-    app.paste("draft to keep");
-    press(&mut app, KeyCode::F(1));
+    press(&mut app, KeyCode::Char('/'));
     app.paste("qui");
     press(&mut app, KeyCode::Tab);
     assert!(matches!(&app.modal, Some(Modal::Picker(picker)) if picker.query.text() == "/quit"));
-    assert_eq!("draft to keep", app.pane().draft.text());
+    assert!(app.pane().draft.text().is_empty());
     assert!(!app.quit);
     press(&mut app, KeyCode::Enter);
     assert!(app.modal.is_none());
@@ -411,44 +439,6 @@ fn tab_inserts_paths_and_skills_in_the_draft() {
     assert_eq!("/skill:review inspect Cargo.toml ", app.pane().draft.text());
     assert!(app.modal.is_none());
     assert!(app.pending.is_empty());
-}
-
-#[test]
-fn tab_leaves_action_choices_open_and_enter_confirms_the_highlighted_choice() {
-    let mut app = connected_app();
-    let choose_permission = |allow| ChoiceKind::Permission {
-        request_id: "permit-1".into(),
-        allow,
-    };
-    for (kind, choice) in [
-        (PickerKind::Models, ChoiceKind::Tier("review".into())),
-        (PickerKind::Queue, ChoiceKind::Withdraw("queued-1".into())),
-        (PickerKind::Server, ChoiceKind::Restart),
-        (PickerKind::Permission, choose_permission(false)),
-    ] {
-        app.picker(kind, vec![Choice::new("Selected", "", choice)]);
-        press(&mut app, KeyCode::Tab);
-        assert!(matches!(app.modal, Some(Modal::Picker(_))));
-        assert!(app.effects.is_empty());
-    }
-
-    app.picker(
-        PickerKind::Permission,
-        vec![
-            Choice::new("Deny", "", choose_permission(false)),
-            Choice::new("Allow", "", choose_permission(true)),
-        ],
-    );
-    press(&mut app, KeyCode::Down);
-    press(&mut app, KeyCode::Tab);
-    press(&mut app, KeyCode::Enter);
-    assert!(matches!(
-        app.effects.as_slice(),
-        [Job::ClosePicker, Job::Save(command)] if matches!(
-            &command.action,
-            Action::ReplyPermission { request_id, allow: true } if request_id == "permit-1"
-        )
-    ));
 }
 
 #[test]

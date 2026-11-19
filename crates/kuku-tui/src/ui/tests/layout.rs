@@ -1,8 +1,9 @@
-use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::style::Modifier;
 use ratatui::{backend::TestBackend, Terminal};
 
-use super::{app, cell, key, render};
+use crate::menu::{Choice, PickerKind};
+
+use super::{app, cell, render};
 
 #[test]
 fn spacious_composer_and_picker_use_responsive_insets() {
@@ -22,7 +23,7 @@ fn spacious_composer_and_picker_use_responsive_insets() {
     assert!(compact_x < wide_x);
     assert_eq!(compact_y, 9);
 
-    key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
+    app.picker(PickerKind::Commands, Choice::commands());
     let frame = wide.draw(|frame| render(frame, &mut app)).unwrap();
     let (x, y) = cell(frame.buffer, "›");
     assert_ne!(frame.buffer[(x, y)].bg, frame.buffer[(x - 1, y)].bg);
