@@ -31,3 +31,6 @@ url = "2"
 [target.'cfg(windows)'.dependencies]
 termina = "0.4"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Console", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse"] }
+
+[dev-dependencies]
+kuku = { workspace = true }

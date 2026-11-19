@@ -13,6 +13,7 @@ mod jobs;
 mod keys;
 mod markup;
 mod menu;
+mod onboarding;
 mod output;
 mod selection;
 mod statusline;
@@ -29,6 +30,9 @@ pub async fn run(options: ConnectionOptions) -> io::Result<()> {
             io::ErrorKind::Unsupported,
             "Interactive kuku needs a terminal. Use `kuku run` for scripts.",
         ));
+    }
+    if !onboarding::run_if_needed(&options).await? {
+        return Ok(());
     }
     terminal::run(options).await
 }
