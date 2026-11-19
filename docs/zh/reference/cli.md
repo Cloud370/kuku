@@ -42,6 +42,15 @@
 
 ## 终端界面
 
+操作选择器使用易读的操作标签，每个详情以类别和保持不变的斜杠别名开头。这些别名属于 TUI 操作，不是 `kuku` 子命令；需要编写脚本或从 shell 使用时，请使用上方列出的顶层 `kuku` 子命令。Skill 会单独标记；选中后会在草稿中插入可编辑的 `/skill:NAME` 前缀，而不会立即运行操作或命令。仅当编辑区为空时，按 `/` 才会打开选择器。
+
+| 类别 | 界面标签与别名 |
+|---|---|
+| Session | New conversation（新建对话，`/new`）、Resume conversation（恢复对话，`/resume`）、Switch Agent（切换 Agent，`/agents`）、Previous Agent（上一个 Agent，`/back`） |
+| Execution | Send next turn（发送到下一轮，`/queue`）、Edit queued input（编辑排队输入，`/queued`）、Withdraw queued input（撤回排队输入，`/withdraw`）、Continue queued work（继续排队工作，`/continue`）、Interrupt execution（打断执行，`/interrupt`）、Answer pending request（回复待处理请求，`/reply`）、Recover unconfirmed commands（恢复未确认操作，`/pending`）、Choose model（选择模型，`/model`）、Choose thinking（选择思考设置，`/thinking`） |
+| Display | Configure status line（配置状态栏，`/statusline`）、Copy latest reply（复制最近回复，`/copy`）、Toggle Markdown source（切换 Markdown 源码，`/source`）、Read thinking（阅读思考，`/notes`）、Inspect transcript details（检查对话详情，`/details`）、Browse tool output（浏览工具输出，`/tools`） |
+| Service | Inspect service（检查服务，`/server`）、Reconnect service（重新连接服务，`/reconnect`）、Restart local service（重启本地服务，`/restart`）、Open in browser（在浏览器打开，`/web`）、Quit terminal（退出终端，`/quit`） |
+
 | 按键或操作 | 行为 |
 |---|---|
 | Ctrl+C | 有草稿时清空，草稿为空时退出 TUI。正在执行的工作在服务端继续。弹窗中只清空当前输入框。 |

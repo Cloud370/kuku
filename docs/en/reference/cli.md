@@ -42,6 +42,15 @@ Put options before the prompt in `kuku run`, because it consumes the remaining w
 
 ## Terminal interface
 
+The action picker presents human-readable labels. Each action's detail starts with its category and unchanged slash alias. These aliases are TUI actions, not `kuku` subcommands; use the top-level `kuku` subcommands above when scripting or working from the shell. Skills are marked separately, and choosing one inserts an editable `/skill:NAME` prefix into the draft instead of running an action or command. `/` opens the picker only when the composer is empty.
+
+| Category | Visible action label and alias |
+|---|---|
+| Session | New conversation (`/new`), Resume conversation (`/resume`), Switch Agent (`/agents`), Previous Agent (`/back`) |
+| Execution | Send next turn (`/queue`), Edit queued input (`/queued`), Withdraw queued input (`/withdraw`), Continue queued work (`/continue`), Interrupt execution (`/interrupt`), Answer pending request (`/reply`), Recover unconfirmed commands (`/pending`), Choose model (`/model`), Choose thinking (`/thinking`) |
+| Display | Configure status line (`/statusline`), Copy latest reply (`/copy`), Toggle Markdown source (`/source`), Read thinking (`/notes`), Inspect transcript details (`/details`), Browse tool output (`/tools`) |
+| Service | Inspect service (`/server`), Reconnect service (`/reconnect`), Restart local service (`/restart`), Open in browser (`/web`), Quit terminal (`/quit`) |
+
 | Key or action | Behavior |
 |---|---|
 | Ctrl+C | Clear the draft. With an empty draft, exit the TUI. Running work continues on the server. Inside a dialog, clear the focused input. |

@@ -8,7 +8,7 @@ use crate::keys::Shortcut;
 use crate::transcript::{DetailKey, ToolView};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CommandMenu {
+pub(crate) enum MenuAction {
     New,
     Resume,
     Agents,
@@ -35,7 +35,7 @@ pub(crate) enum CommandMenu {
     Quit,
 }
 
-impl CommandMenu {
+impl MenuAction {
     pub(crate) const ALL: &[Self] = &[
         Self::New,
         Self::Resume,
@@ -63,7 +63,7 @@ impl CommandMenu {
         Self::Quit,
     ];
 
-    pub(crate) fn name(self) -> &'static str {
+    pub(crate) fn alias(self) -> &'static str {
         match self {
             Self::New => "new",
             Self::Resume => "resume",
@@ -89,6 +89,59 @@ impl CommandMenu {
             Self::Restart => "restart",
             Self::Web => "web",
             Self::Quit => "quit",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::New => "New conversation",
+            Self::Resume => "Resume conversation",
+            Self::Agents => "Switch Agent",
+            Self::Back => "Previous Agent",
+            Self::Queue => "Send next turn",
+            Self::Queued => "Edit queued input",
+            Self::Withdraw => "Withdraw queued input",
+            Self::Advance => "Continue queued work",
+            Self::Interrupt => "Interrupt execution",
+            Self::Reply => "Answer pending request",
+            Self::Pending => "Recover unconfirmed commands",
+            Self::Model => "Choose model",
+            Self::Thinking => "Choose thinking",
+            Self::StatusLine => "Configure status line",
+            Self::Copy => "Copy latest reply",
+            Self::Source => "Toggle Markdown source",
+            Self::Notes => "Read thinking",
+            Self::Details => "Inspect transcript details",
+            Self::Tools => "Browse tool output",
+            Self::Server => "Inspect service",
+            Self::Reconnect => "Reconnect service",
+            Self::Restart => "Restart local service",
+            Self::Web => "Open in browser",
+            Self::Quit => "Quit terminal",
+        }
+    }
+
+    fn category(self) -> ActionCategory {
+        match self {
+            Self::New | Self::Resume | Self::Agents | Self::Back => ActionCategory::Session,
+            Self::Queue
+            | Self::Queued
+            | Self::Withdraw
+            | Self::Advance
+            | Self::Interrupt
+            | Self::Reply
+            | Self::Pending
+            | Self::Model
+            | Self::Thinking => ActionCategory::Execution,
+            Self::StatusLine
+            | Self::Copy
+            | Self::Source
+            | Self::Notes
+            | Self::Details
+            | Self::Tools => ActionCategory::Display,
+            Self::Server | Self::Reconnect | Self::Restart | Self::Web | Self::Quit => {
+                ActionCategory::Service
+            }
         }
     }
 
@@ -137,9 +190,28 @@ impl CommandMenu {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ActionCategory {
+    Session,
+    Execution,
+    Display,
+    Service,
+}
+
+impl ActionCategory {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Session => "Session",
+            Self::Execution => "Execution",
+            Self::Display => "Display",
+            Self::Service => "Service",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) enum ChoiceKind {
-    Command(CommandMenu),
+    Action(MenuAction),
     Skill(String),
     Path(String),
     Session {
@@ -178,22 +250,22 @@ impl ChoiceKind {
     fn opens_on_click(&self) -> bool {
         matches!(
             self,
-            Self::Command(
-                CommandMenu::Resume
-                    | CommandMenu::Agents
-                    | CommandMenu::Back
-                    | CommandMenu::Queued
-                    | CommandMenu::Withdraw
-                    | CommandMenu::Reply
-                    | CommandMenu::Pending
-                    | CommandMenu::Model
-                    | CommandMenu::Thinking
-                    | CommandMenu::StatusLine
-                    | CommandMenu::Notes
-                    | CommandMenu::Source
-                    | CommandMenu::Details
-                    | CommandMenu::Tools
-                    | CommandMenu::Server
+            Self::Action(
+                MenuAction::Resume
+                    | MenuAction::Agents
+                    | MenuAction::Back
+                    | MenuAction::Queued
+                    | MenuAction::Withdraw
+                    | MenuAction::Reply
+                    | MenuAction::Pending
+                    | MenuAction::Model
+                    | MenuAction::Thinking
+                    | MenuAction::StatusLine
+                    | MenuAction::Notes
+                    | MenuAction::Source
+                    | MenuAction::Details
+                    | MenuAction::Tools
+                    | MenuAction::Server
             ) | Self::Session { .. }
                 | Self::Agent { .. }
                 | Self::CreateAgent
@@ -232,14 +304,19 @@ impl Choice {
         }
     }
 
-    pub(crate) fn commands() -> Vec<Self> {
-        CommandMenu::ALL
+    pub(crate) fn actions() -> Vec<Self> {
+        MenuAction::ALL
             .iter()
-            .map(|command| {
+            .map(|action| {
                 Self::new(
-                    format!("/{}", command.name()),
-                    command.description(),
-                    ChoiceKind::Command(*command),
+                    action.label(),
+                    format!(
+                        "{} · /{} · {}",
+                        action.category().label(),
+                        action.alias(),
+                        action.description()
+                    ),
+                    ChoiceKind::Action(*action),
                 )
             })
             .collect()
@@ -254,7 +331,7 @@ impl Choice {
 
 #[derive(Debug, Clone)]
 pub(crate) enum PickerKind {
-    Commands,
+    Actions,
     Paths(Range<usize>),
     Sessions,
     Agents,
@@ -273,7 +350,7 @@ pub(crate) enum PickerKind {
 impl PickerKind {
     pub(crate) fn title(&self) -> &'static str {
         match self {
-            Self::Commands => "Actions and Skills",
+            Self::Actions => "Actions and Skills",
             Self::Paths(_) => "Workspace paths",
             Self::Sessions => "Resume session",
             Self::Agents => "Switch Agent",
@@ -293,7 +370,7 @@ impl PickerKind {
     pub(crate) fn searchable(&self) -> bool {
         matches!(
             self,
-            Self::Commands
+            Self::Actions
                 | Self::Paths(_)
                 | Self::Sessions
                 | Self::Agents
@@ -306,7 +383,7 @@ impl PickerKind {
     }
 
     pub(crate) fn completes_text(&self) -> bool {
-        matches!(self, Self::Commands | Self::Paths(_))
+        matches!(self, Self::Actions | Self::Paths(_))
     }
 }
 
@@ -411,7 +488,7 @@ impl Picker {
             .text()
             .trim()
             .trim_start_matches(match self.kind {
-                PickerKind::Commands => '/',
+                PickerKind::Actions => '/',
                 _ => '\0',
             })
             .to_lowercase();
@@ -423,10 +500,10 @@ impl Picker {
                 !matches!(self.kind, PickerKind::Models) || choice.matches(&query)
             }))
             .collect();
-        if matches!(self.kind, PickerKind::Commands | PickerKind::Agents) && !query.is_empty() {
+        if matches!(self.kind, PickerKind::Actions | PickerKind::Agents) && !query.is_empty() {
             choices.sort_by_key(|choice| match choice.kind {
-                ChoiceKind::Command(command) if command.name() == query => 0,
-                ChoiceKind::Command(command) if command.name().starts_with(&query) => 1,
+                ChoiceKind::Action(action) if action.alias() == query => 0,
+                ChoiceKind::Action(action) if action.alias().starts_with(&query) => 1,
                 ChoiceKind::Agent { ref target } if target.agent == query => 0,
                 ChoiceKind::Agent { ref target } if target.agent.starts_with(&query) => 1,
                 _ => 2,
@@ -503,24 +580,103 @@ pub(crate) struct Prompt {
 
 #[cfg(test)]
 mod tests {
-    use super::{Choice, ChoiceKind, CommandMenu, Picker, PickerKind};
+    use super::{Choice, ChoiceKind, MenuAction, Picker, PickerKind};
 
     #[test]
-    fn slash_command_names_rank_before_description_matches() {
-        let mut picker = Picker::new(PickerKind::Commands, 0, Choice::commands());
+    fn action_alias_catalog_is_preserved() {
+        let aliases: Vec<_> = Choice::actions()
+            .iter()
+            .map(|choice| match &choice.kind {
+                ChoiceKind::Action(action) => format!("/{}", action.alias()),
+                _ => unreachable!(),
+            })
+            .collect();
+
+        assert_eq!(
+            [
+                "/new",
+                "/resume",
+                "/agents",
+                "/back",
+                "/queue",
+                "/queued",
+                "/withdraw",
+                "/continue",
+                "/interrupt",
+                "/reply",
+                "/pending",
+                "/model",
+                "/thinking",
+                "/statusline",
+                "/copy",
+                "/source",
+                "/notes",
+                "/details",
+                "/tools",
+                "/server",
+                "/reconnect",
+                "/restart",
+                "/web",
+                "/quit",
+            ]
+            .map(String::from)
+            .to_vec(),
+            aliases
+        );
+    }
+
+    #[test]
+    fn labels_categories_and_aliases_are_searchable() {
+        let mut picker = Picker::new(PickerKind::Actions, 0, Choice::actions());
+
+        picker.query.set_text("previous agent".into());
+        assert_eq!("Previous Agent", picker.visible_choices()[0].label);
+        assert!(matches!(
+            picker.selected_choice(),
+            Some(ChoiceKind::Action(MenuAction::Back))
+        ));
+
+        for (category, count) in [
+            ("Session", 4),
+            ("Execution", 9),
+            ("Display", 6),
+            ("Service", 5),
+        ] {
+            picker.query.set_text(category.to_lowercase());
+            let actions = picker.visible_choices();
+            assert_eq!(count, actions.len());
+            assert!(actions
+                .iter()
+                .all(|choice| choice.detail.starts_with(&format!("{category} · /"))));
+        }
+
+        picker.query.set_text("/continue".into());
+        assert_eq!(1, picker.visible_choices().len());
+        assert_eq!("Continue queued work", picker.visible_choices()[0].label);
+        assert!(picker.visible_choices()[0]
+            .detail
+            .starts_with("Execution · /continue"));
+    }
+
+    #[test]
+    fn slash_action_names_rank_before_label_and_description_matches() {
+        let mut picker = Picker::new(PickerKind::Actions, 0, Choice::actions());
         for query in ["/pend", "/pending"] {
             picker.query.set_text(query.into());
             picker.selected = 0;
-            assert_eq!("/pending", picker.visible_choices()[0].label);
+            assert_eq!(
+                "Recover unconfirmed commands",
+                picker.visible_choices()[0].label
+            );
             assert!(matches!(
                 picker.selected_choice(),
-                Some(ChoiceKind::Command(CommandMenu::Pending))
+                Some(ChoiceKind::Action(MenuAction::Pending))
             ));
             picker.move_by(1);
-            assert_eq!("/reply", picker.visible_choices()[1].label);
+            assert_eq!("Answer pending request", picker.visible_choices()[1].label);
             assert!(matches!(
                 picker.selected_choice(),
-                Some(ChoiceKind::Command(CommandMenu::Reply))
+                Some(ChoiceKind::Action(MenuAction::Reply))
             ));
         }
     }

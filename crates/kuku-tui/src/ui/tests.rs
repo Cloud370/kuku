@@ -366,6 +366,17 @@ fn blank_welcome_scales_down_and_active_session_uses_one_branded_row() {
 }
 
 #[test]
+fn empty_composer_advertises_action_picker_shortcuts_only_when_empty() {
+    let mut app = app();
+    let empty = screen(&mut app, 82, 24);
+    assert!(empty.contains("Actions: Ctrl+P, F1 or /"));
+
+    app.pane_mut().draft.insert("unsent draft");
+    let draft = screen(&mut app, 82, 24);
+    assert!(!draft.contains("Actions: Ctrl+P, F1 or /"));
+}
+
+#[test]
 fn blank_configuration_screen_keeps_pasted_draft_on_wide_and_narrow_terminals() {
     let mut app = App::new(PathBuf::from("/workspace"), None);
     app.update(Update::ConnectFailed(Error::Options(
@@ -507,6 +518,28 @@ fn source_action_completes_on_tab_and_toggles_one_pane_without_changing_copy() {
     assert!(screen(&mut app, 100, 24).contains("````markdown"));
     command(&mut app, "source");
     assert!(!screen(&mut app, 100, 24).contains("````markdown"));
+}
+
+#[test]
+fn action_picker_keeps_category_alias_rows_and_mouse_selection_at_all_widths() {
+    for width in [82, 42] {
+        let mut app = app();
+        let picker = app.picker(PickerKind::Actions, Choice::actions());
+        picker.query.set_text("/resume".into());
+        let rendered = screen(&mut app, width, 24);
+        assert!(rendered.contains("Resume conversation"));
+        assert!(rendered.contains("Session · /resume"));
+
+        let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+        let buffer = terminal
+            .draw(|frame| render(frame, &mut app))
+            .unwrap()
+            .buffer;
+        click(&mut app, buffer, cell(buffer, "›"));
+        assert!(matches!(&app.modal,
+            Some(Modal::Picker(picker)) if matches!(picker.kind, PickerKind::Sessions)
+        ));
+    }
 }
 
 #[test]

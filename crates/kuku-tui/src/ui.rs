@@ -203,12 +203,12 @@ pub(crate) fn render_at(
         frame.render_widget(Paragraph::new(line), heading);
     }
     if let Some(draft) = draft {
-        let placeholder = app
-            .pane()
-            .draft
-            .text()
-            .is_empty()
-            .then(|| format!("Type a prompt · {} Actions", Shortcut::ACTIONS.label));
+        let placeholder = app.pane().draft.text().is_empty().then(|| {
+            format!(
+                "Type a prompt · Actions: {}, F1 or /",
+                Shortcut::ACTIONS.label
+            )
+        });
         render_editor_view(frame, inner, draft, focused, placeholder.as_deref());
     }
     frame.render_widget(Paragraph::new(footer), status);

@@ -10,7 +10,7 @@ use crate::app::{Address, App, Modal, PendingItem, PendingStage};
 use crate::editor::Editor;
 use crate::jobs::{Job, Search, Selection};
 use crate::keys::{AgentDirection, Shortcut};
-use crate::menu::{Choice, ChoiceKind, CommandMenu, Picker, PickerKind, Prompt, PromptKind};
+use crate::menu::{Choice, ChoiceKind, MenuAction, Picker, PickerKind, Prompt, PromptKind};
 use crate::output::OutputViewer;
 use crate::text::{shorten, single_line, TAB};
 use crate::transcript::{ReplySource, ToolView};
@@ -153,7 +153,7 @@ impl App {
                 }
             }
             key if Shortcut::ACTIONS.matches(key) || Shortcut::ACTIONS_ALIAS.matches(key) => {
-                self.command_menu()
+                self.action_menu()
             }
             key if Shortcut::REPLY.matches(key) => self.open_reply(),
             key if Shortcut::ESCAPE.matches(key) => self.interrupt(),
@@ -179,7 +179,7 @@ impl App {
                 }
             }
             key if Shortcut::RECONNECT.matches(key) => self.reconnect(),
-            key if Shortcut::MODEL.matches(key) => self.perform(CommandMenu::Model),
+            key if Shortcut::MODEL.matches(key) => self.perform(MenuAction::Model),
             key if Shortcut::DETAILS.matches(key) => {
                 let expanded = self.pane_mut().transcript.toggle_details();
                 self.confirmation(if expanded {
@@ -192,7 +192,7 @@ impl App {
                 && is_text(key)
                 && self.pane().draft.text().is_empty() =>
             {
-                self.command_menu()
+                self.action_menu()
             }
             key if key.code == KeyCode::Char('@')
                 && is_text(key)
@@ -232,15 +232,15 @@ impl App {
             }
             key if Shortcut::TAB.matches(key) && picker.kind.completes_text() => {
                 match (&picker.kind, picker.selected_choice()) {
-                    (PickerKind::Commands, Some(ChoiceKind::Command(command))) => {
-                        let completed = format!("/{}", command.name());
+                    (PickerKind::Actions, Some(ChoiceKind::Action(action))) => {
+                        let completed = format!("/{}", action.alias());
                         if picker.query.text() != completed {
                             picker.query.set_text(completed);
                             picker.selected = 0;
                             self.search(false);
                         }
                     }
-                    (PickerKind::Commands, Some(choice @ ChoiceKind::Skill(_)))
+                    (PickerKind::Actions, Some(choice @ ChoiceKind::Skill(_)))
                     | (PickerKind::Paths(_), Some(choice @ ChoiceKind::Path(_))) => {
                         let kind = picker.kind.clone();
                         self.choose(kind, choice);
@@ -348,8 +348,8 @@ impl App {
         }
     }
 
-    fn command_menu(&mut self) {
-        self.picker(PickerKind::Commands, Choice::commands()).header = format!(
+    fn action_menu(&mut self) {
+        self.picker(PickerKind::Actions, Choice::actions()).header = format!(
             "Editor · {} Clear or exit · {}/{} New line",
             Shortcut::CLEAR.label,
             Shortcut::NEW_LINE.label,
@@ -365,7 +365,7 @@ impl App {
         };
         let query = picker.query.text().trim().to_owned();
         let request = match &picker.kind {
-            PickerKind::Commands if available => Search::Skills(query),
+            PickerKind::Actions if available => Search::Skills(query),
             PickerKind::Paths(_) if available => Search::Paths(query),
             PickerKind::Sessions if available => Search::Sessions(query),
             PickerKind::Models if first && available => Search::Models,
@@ -415,7 +415,7 @@ impl App {
         self.modal = None;
         self.effects.push(Job::ClosePicker);
         match choice {
-            ChoiceKind::Command(command) => self.perform(command),
+            ChoiceKind::Action(action) => self.perform(action),
             ChoiceKind::Skill(skill) => {
                 let editor = &mut self.pane_mut().draft;
                 let insertion = format!("/skill:{skill} ");
@@ -489,36 +489,36 @@ impl App {
         }
     }
 
-    fn perform(&mut self, command: CommandMenu) {
-        match command {
-            CommandMenu::New => self.new_draft(),
-            CommandMenu::Resume => {
+    fn perform(&mut self, action: MenuAction) {
+        match action {
+            MenuAction::New => self.new_draft(),
+            MenuAction::Resume => {
                 self.picker(PickerKind::Sessions, self.unsent_drafts());
                 self.search(true);
             }
-            CommandMenu::Agents => self.open_agents(),
-            CommandMenu::Back => self.back_to_agent(),
-            CommandMenu::Queue => self.send(Timing::NextTurn),
-            CommandMenu::Queued => self.open_queued(),
-            CommandMenu::Withdraw => self.open_queue(),
-            CommandMenu::Advance => {
+            MenuAction::Agents => self.open_agents(),
+            MenuAction::Back => self.back_to_agent(),
+            MenuAction::Queue => self.send(Timing::NextTurn),
+            MenuAction::Queued => self.open_queued(),
+            MenuAction::Withdraw => self.open_queue(),
+            MenuAction::Advance => {
                 if self.pane().exists {
                     self.issue(self.active.clone(), Action::Advance);
                 }
             }
-            CommandMenu::Interrupt => self.interrupt(),
-            CommandMenu::Reply => self.open_reply(),
-            CommandMenu::Pending => {
+            MenuAction::Interrupt => self.interrupt(),
+            MenuAction::Reply => self.open_reply(),
+            MenuAction::Pending => {
                 self.picker(PickerKind::Pending, self.pending_choices());
             }
-            CommandMenu::Model => {
+            MenuAction::Model => {
                 self.picker(PickerKind::Models, Vec::new());
                 self.search(true);
             }
-            CommandMenu::Thinking => self.open_thinking(),
-            CommandMenu::StatusLine => self.open_statusline(),
-            CommandMenu::Copy => self.copy_reply(),
-            CommandMenu::Source => {
+            MenuAction::Thinking => self.open_thinking(),
+            MenuAction::StatusLine => self.open_statusline(),
+            MenuAction::Copy => self.copy_reply(),
+            MenuAction::Source => {
                 let showing_source = self.pane_mut().transcript.toggle_source();
                 self.confirmation(if showing_source {
                     "Markdown source · /source for preview"
@@ -526,19 +526,19 @@ impl App {
                     "Markdown preview"
                 });
             }
-            CommandMenu::Notes => self.read_latest_notes(),
-            CommandMenu::Details => self.open_details(),
-            CommandMenu::Tools => self.open_tools(),
-            CommandMenu::Server => self.open_server(),
-            CommandMenu::Reconnect => self.reconnect(),
-            CommandMenu::Restart => self.restart(),
-            CommandMenu::Web if self.require_service() => {
+            MenuAction::Notes => self.read_latest_notes(),
+            MenuAction::Details => self.open_details(),
+            MenuAction::Tools => self.open_tools(),
+            MenuAction::Server => self.open_server(),
+            MenuAction::Reconnect => self.reconnect(),
+            MenuAction::Restart => self.restart(),
+            MenuAction::Web if self.require_service() => {
                 self.effects.push(Job::Web(
                     self.pane().exists.then(|| self.selection().target),
                 ));
             }
-            CommandMenu::Web => {}
-            CommandMenu::Quit => self.exit(),
+            MenuAction::Web => {}
+            MenuAction::Quit => self.exit(),
         }
     }
 
@@ -757,7 +757,7 @@ impl App {
         let mut actions = vec![Choice::new(
             "Reconnect",
             "Check the connection again",
-            ChoiceKind::Command(CommandMenu::Reconnect),
+            ChoiceKind::Action(MenuAction::Reconnect),
         )];
         if !self.remote {
             actions.push(Choice::new(

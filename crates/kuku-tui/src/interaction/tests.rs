@@ -33,7 +33,7 @@ fn control_p_f1_and_slash_open_actions() {
     ] {
         app.key(key);
         assert!(matches!(&app.modal,
-            Some(Modal::Picker(picker)) if matches!(picker.kind, PickerKind::Commands)
+            Some(Modal::Picker(picker)) if matches!(picker.kind, PickerKind::Actions)
         ));
         assert_eq!("unsent draft", app.pane().draft.text());
         press(&mut app, KeyCode::Esc);
@@ -41,7 +41,7 @@ fn control_p_f1_and_slash_open_actions() {
     app.pane_mut().draft.take_text();
     press(&mut app, KeyCode::Char('/'));
     assert!(matches!(&app.modal,
-        Some(Modal::Picker(picker)) if matches!(picker.kind, PickerKind::Commands)
+        Some(Modal::Picker(picker)) if matches!(picker.kind, PickerKind::Actions)
     ));
     assert!(app.pane().draft.text().is_empty());
 }
@@ -231,11 +231,33 @@ fn tab_inserts_paths_and_skills_in_the_draft() {
     assert!(app.modal.is_none());
 
     let skill = Choice::new("/skill:review", "", ChoiceKind::Skill("review".into()));
-    app.picker(PickerKind::Commands, vec![skill]);
+    app.picker(PickerKind::Actions, vec![skill]);
     press(&mut app, KeyCode::Tab);
     assert_eq!("/skill:review inspect Cargo.toml ", app.pane().draft.text());
     assert!(app.modal.is_none());
     assert!(app.pending.is_empty());
+}
+
+#[test]
+fn a_skill_named_like_an_action_remains_a_distinct_draft_insertion() {
+    let mut app = connected_app();
+    app.paste("draft");
+    let skill = Choice::new(
+        "/skill:new",
+        "Skill · Start a review",
+        ChoiceKind::Skill("new".into()),
+    );
+    let picker = app.picker(PickerKind::Actions, Choice::actions());
+    picker.set_results(vec![skill], String::new());
+    picker.query.set_text("/skill:new".into());
+
+    assert_eq!(1, picker.visible_choices().len());
+    assert!(matches!(picker.selected_choice(), Some(ChoiceKind::Skill(name)) if name == "new"));
+    press(&mut app, KeyCode::Enter);
+
+    assert_eq!("/skill:new draft", app.pane().draft.text());
+    assert!(app.modal.is_none());
+    assert!(!app.quit);
 }
 
 #[test]
