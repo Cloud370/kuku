@@ -6,11 +6,11 @@ This study compares Kuku with Pi 1.4.0 and Codex CLI 0.164.0 on four tasks from 
 
 | Harness | Tasks passed / attempts | Mean inference USD per attempt | Total inference USD / passes | Mean agent + verifier time |
 |---|---:|---:|---:|---:|
-| Kuku, latest attempt per task | 3/4 | 0.04432 | 0.05909 | 209 s |
+| Kuku, latest attempt per task | 3/4 | 0.05797 | 0.07729 | 253 s |
 | Pi 1.4.0 | 13/16 | 0.04340 | 0.05342 | 872 s |
 | Codex CLI 0.164.0 | 15/16 | 0.03041 | 0.03243 | 834 s |
 
-Kuku's latest attempts span rounds 7 and 8 and three SDK revisions. All four turns completed. The only grader failure was a script format requirement on Vim, which Kuku had met in round 6. Async cancellation and log regex accounted for $0.13607 of the latest $0.17728 in inference charges. Each cost about twice the corresponding Codex mean or more. The published peers ran four attempts per task. The local and published runs used different hosts, and the peer results lack comparable first-token latency and generation throughput, so the observed wall times cannot isolate harness speed. [Attempt data and measurement definitions](frontier-v1.1-sample.json)
+The latest local attempts come from round 7 for Vim, round 9 for async cancellation and round 11 for both log tasks. All four turns completed. Vim lost its script format check after passing in round 6. Async cancellation accounted for $0.12508 of the latest $0.23187 in inference charges. Each published peer ran four attempts per task. Different execution hosts and missing peer first-token and throughput measurements prevent attributing the observed wall-time differences to a harness alone. [Attempt data and measurement definitions](frontier-v1.1-sample.json)
 
 ## Diagnostic runs
 
@@ -141,6 +141,26 @@ The meter saw nine local attempts. Attempt five failed to establish an HTTPS con
 The eight streams had 83.6% cached input, proxy first output of 1.32 seconds at p50 and 155.3 generation tokens per second. The SDK used 0.73 CPU seconds and averaged 34.9 MiB RSS with a 35.1 MiB peak. The latest container block I/O was 6.41 MB read and 700 kB written. The SDK's `getrusage` reported zero input and output blocks. Per-process byte I/O and provider-native TTFT were unavailable. The closed Session retained 212,568 file bytes.
 
 Replay the command above with `--case log-summary-date-ranges` at `1895e01` and omit `--max-output-tokens`. Append its result as `--attempt log-summary-date-ranges RESULT_DIR round-8` when regenerating the JSON. The four follow-up trials added **$0.177278256** in provider-reported charges. The pilot OpenRouter ledger accounted **$3.122238164**, including the earlier conservative holds.
+
+## Exact edits and QuickJS tool selection
+
+Five fresh attempts used the same pinned Baseten model, max reasoning and original graders. Async cancellation and log regex kept their 131,072-token output allowance. The three log aggregation trials used 262,144. Each had a $1.50 case cap. All 74 streams received matching provider receipts. The five attempts added **$0.223446552** in inference charges. [Attempt records](frontier-v1.1-sample.json)
+
+| Case / round | Checks | Model requests | QuickJS calls / host actions | Inference USD | SDK + verifier seconds | Cache hit | First output p50 | Generation TPS p50 | SDK mean / peak RSS |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Async / 9 | 6/6 | 30 | 0 / 0 | 0.12508 | 429.5 + 25.7 | 94.8% | 1.64 s | 208.2 | 36.0 / 37.9 MiB |
+| Log aggregation / 9, control | 2/2 | 7 | 0 / 0 | 0.00779 | 25.8 + 13.5 | 81.3% | 1.24 s | 156.2 | 34.7 / 35.1 MiB |
+| Log aggregation / 10, composition guidance | 2/2 | 11 | 1 / 1 | 0.01579 | 51.7 + 12.6 | 84.9% | 1.40 s | 147.5 | 36.0 / 36.4 MiB |
+| Log aggregation / 11, output field guidance | 2/2 | 8 | 5 / 5 | 0.01191 | 45.8 + 13.7 | 83.3% | 1.43 s | 142.4 | 35.7 / 36.3 MiB |
+| Log regex / 11 | 1/1 | 18 | 2 / 15 | 0.06287 | 274.5 + 20.8 | 90.9% | 1.55 s | 147.3 | 35.2 / 37.4 MiB |
+
+First output is measured at the proxy. TPS uses native completion tokens and generation duration from the provider receipt. Provider-native TTFT and per-process I/O bytes are unavailable on this host. Container block I/O, harness CPU time and memory sampling coverage are included in the JSON.
+
+- **Async edits.** The four previously rejected edits each targeted text that still occurred exactly once. A loopback model replayed the original arguments and relevant earlier file operations through both SDK binaries. The old binary rejected all four. The new binary committed all four, with output bytes matching independent single replacements. In the fresh paid run every `edit_file` succeeded and requests fell from 35 to 30. Cost rose from $0.07321 to $0.12508. Output tokens rose from 31,323 to 71,495, including 26,991 reasoning tokens on the new run's first request before any tool executed.
+- **Log aggregation.** The control used direct tools. Composition guidance produced one QuickJS call that invoked Python. The command produced 123 bytes, but the model's script returned fields that were undefined. The next model request received only `{"exit":0}` and repeated the command. Replaying the identical command with `result.output_preview` returned all 123 bytes in one execution. In the output-field trial, the model used the correct field but initially counted a clipped preview. The next request saw `capture_complete: true` plus the counts and received no preview truncation flag. On the same 737,299-byte stdout, an offline replay counted 260 entries from the preview and 94,547 from the retained output iterator. The latter count matched an independent scan. Both replays used the public SDK with a loopback model and add no scored attempts.
+- **Log regex.** The model used two QuickJS calls for 15 host actions, including grouped file inspections and cleanup. Both the round-7 direct-tool attempt and this one passed in 18 requests and cost approximately $0.06286. More script calls alone did not reduce the number of model requests in this comparison.
+
+Each row is a single stochastic attempt. The comparison distinguishes the script's returned value in the next model request from the host facts retained for inspection. Repeat using the earlier Frontier command with the recorded commit and output allowance, a new run ID, and your own budget ledger. The frozen official snapshot and original attempt order are preserved in the report.
 
 ## Turn completion in peer implementations
 
