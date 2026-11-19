@@ -19,6 +19,7 @@ $KUKU_HOME/
 ```text
 $KUKU_HOME/
 ├── config.toml
+├── credentials/
 ├── memory.md
 ├── packages/
 ├── agents/
@@ -28,6 +29,8 @@ $KUKU_HOME/
 ```
 
 `logs/` stores observability logs. Session facts remain in each session's `events.jsonl`.
+
+`credentials/` contains private, immutable plaintext key files created by interactive setup. Configs reference them with `api_key = "file:<absolute-path>"`; secrets are not copied into TOML or shown by `kuku config show`. The credentials directory must be outside the workspace. On Unix it uses mode `0700`, and each key file uses `0600` (owner access only). On Windows, setup requires a protected ACL that grants access only to the current user. Symlinks and insecure existing paths are rejected rather than repaired. Files are not encrypted and are not automatically deleted when a config changes.
 
 When provider tracing is enabled with `KUKU_PROVIDER_TRACE=1`, request and response diagnostics are written under:
 

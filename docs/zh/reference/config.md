@@ -16,7 +16,7 @@ $KUKU_HOME/config.toml
 
 HTTP 服务默认读取所选数据目录下的 `config.toml`，也可通过 `--config` 指定路径。运行 `kuku server status` 可查看正在运行的受管服务的生效配置。[配置指南](../start/configuration.md)
 
-交互式 TUI 仅在所选本地配置路径不存在时提供首次运行设置，不会更改已有文件，且只保存凭据环境变量引用，不保存密钥值。设置流程和默认值修改方法见[首次运行设置](../start/configuration.md#tui-首次运行设置)。
+交互式 TUI 与 `kuku init` 共用 provider 设置流程。首次运行仅在所选本地配置不存在时运行；`kuku init` 也可编辑有效的已有配置，同时保留无关 TOML。密钥存储和编辑行为见[配置指南](../start/configuration.md)。
 
 终端客户端使用独立的偏好文件。[终端偏好](#终端偏好)
 
@@ -58,13 +58,15 @@ Chat 和 Responses 省略 `max_output_tokens` 时使用上游默认值。Anthrop
 |---|---|---|
 | `format` | string | `anthropic`、`openai-chat` 或 `openai-responses` |
 | `base_url` | string | provider API 基础 URL，或 `$ENV_VAR_NAME` |
-| `api_key` | string | 直接填写的 key，或 `$ENV_VAR_NAME` |
+| `api_key` | string | `$ENV_VAR_NAME`、直接填写的 key，或 `file:<绝对路径>` |
 | `auth` | `bearer`\|`x-api-key` | 独立于 `format` 覆盖认证方式 |
 | `profile` | string | `auto`（默认）、`openai`、`anthropic`、`deepseek`、`openrouter` 或 `compatible` |
 | `reasoning_efforts` | string[] | 覆盖该连接模型已声明的原生思考值 |
 | `service_tiers` | string[] | 覆盖该连接模型已声明的原生服务值 |
 | `routing` | table | OpenRouter 上游路由选项 |
 | `prompt_cache_scope` | `workspace`\|`session`\|`off` | Responses 提示缓存键范围，默认为 `workspace` |
+
+`api_key = "$NAME"` 只选择该环境变量。`api_key = "file:/absolute/path"` 只选择该文件；不接受相对文件引用，在请求时校验并读取文件，且两个来源之间不会自动回退。`file:` 是路径引用，不是 URL。`kuku config show` 只显示引用，不读取密钥。设置流程保存的密钥以未加密明文形式保存在 `<data-dir>/credentials/` 下的私有文件中；该目录必须位于工作区外。Unix 权限和 Windows ACL 要求见[文件布局](file-layout.md)。已有密钥文件不会自动删除。
 
 内置 `openai` 连接的 `base_url` 是 `https://api.openai.com/v1`，Responses 适配器会在末尾加上 `/responses`。使用网关时，填写该网关提供的 API 基础地址。[OpenAI Responses API](https://developers.openai.com/api/reference/resources/responses/methods/create)
 

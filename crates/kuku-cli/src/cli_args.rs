@@ -94,7 +94,7 @@ pub enum Command {
     Pending(PendingArgs),
     /// Show or manage configuration
     Config(ConfigArgs),
-    /// Initialize config and directory structure
+    /// Open interactive provider settings
     Init,
     /// Show or export embedded prompt assets
     Prompts(PromptsArgs),
