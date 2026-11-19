@@ -41,9 +41,7 @@ async fn interrupted_rewind_survives_resume_and_accepts_new_input() {
     let retry = next_call(&mut calls).await;
     retry
         .response
-        .send(Reply::TemporaryFailure(
-            ProviderFailureKind::ProviderUnavailable,
-        ))
+        .send(Reply::TemporaryFailure(ProviderFailureKind::InvalidRequest))
         .unwrap();
     ready(&session, AgentStatus::Interrupted).await;
     session.close().await.unwrap();

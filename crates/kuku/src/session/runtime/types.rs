@@ -131,7 +131,7 @@ pub struct RuntimeLimits {
     pub max_model_requests: usize,
     /// Optional total model attempts shared by all agents and turns until this runtime closes.
     pub max_requests_per_open: Option<u64>,
-    /// Whether to retry a transient provider failure before a stream starts, at most once per step.
+    /// Whether to retry transient provider failures before the first stream output.
     #[serde(default = "default_provider_retry")]
     pub retry_transient_provider_errors: bool,
     /// Optional host output-token ceiling applied to every agent's resolved request.

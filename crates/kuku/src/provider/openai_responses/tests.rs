@@ -58,6 +58,29 @@ fn done_after_response_terminal_preserves_the_original_outcome() {
 }
 
 #[test]
+fn failed_response_emits_rate_limit_before_usage_metadata() {
+    let mut parser = OpenAiResponsesSseParser::new(false);
+    let chunks = parser
+        .feed(concat!(
+            "event: response.failed\n",
+            r#"data: {"type":"response.failed","response":{"id":"failed_with_usage","status":"failed","usage":{"input_tokens":12,"output_tokens":0},"error":{"code":"rate_limit_error","message":"retry later"}}}"#
+        ))
+        .unwrap();
+
+    assert!(matches!(
+        chunks.first(),
+        Some(ProviderChunk::ServerError { code, .. }) if code == "rate_limit_error"
+    ));
+    assert!(chunks.iter().any(|chunk| matches!(
+        chunk,
+        ProviderChunk::StreamUsage {
+            input_tokens: Some(12),
+            ..
+        }
+    )));
+}
+
+#[test]
 fn done_without_a_response_terminal_event_does_not_complete_the_stream() {
     for event in [
         concat!(
@@ -187,6 +210,23 @@ fn incomplete_response_without_reason_is_explicitly_incomplete() {
         chunk,
         ProviderChunk::StopReason { reason } if reason == &ModelStopReason::Incomplete
     )));
+}
+
+#[test]
+fn truncated_stream_failure_is_invalid_response_and_not_retryable() {
+    let mut parser = OpenAiResponsesSseParser::new(false);
+    parser
+        .feed(concat!(
+            "event: response.created\n",
+            r#"data: {"response":{"id":"pending","status":"in_progress"}}"#
+        ))
+        .unwrap();
+    let failure = parser.finish().unwrap_err();
+    assert_eq!(
+        crate::provider::types::ProviderFailureKind::InvalidResponse,
+        failure.kind
+    );
+    assert!(!failure.retryable);
 }
 
 #[test]

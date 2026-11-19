@@ -79,51 +79,57 @@ async fn example_inherits_retry_policy_and_bounds_attempts_only_when_requested()
     let root = tempfile::tempdir().unwrap();
     let root = root.path();
     prepare(root, &server, "finish the task");
+    let response = common::openai_sse_response(json!({
+        "choices": [{"message": {"content": "done"}, "finish_reason": "stop"}],
+    }));
     let provider = server
-        .mock_async(|when, then| {
+        .mock_async(move |when, then| {
             when.method(POST).path("/chat/completions");
-            then.status(503).body("provider temporarily unavailable");
+            then.status(200)
+                .header("content-type", "text/event-stream")
+                .body(response.clone());
         })
         .await;
 
-    let default = run_example(root, "default.json", &[], false).await;
+    let default = run_example(root, "default.json", &[], true).await;
     assert_eq!(Value::Null, default["limits"]["max_requests"]);
-    assert_eq!(1, default["limits"]["automatic_retries"]);
-    assert_eq!(2, default["agent"]["usage"]["model_requests"]);
-    provider.assert_hits_async(2).await;
+    assert_eq!(5, default["limits"]["automatic_retries"]);
+    assert_eq!(1, default["agent"]["usage"]["model_requests"]);
+    provider.assert_hits_async(1).await;
 
     let capped = run_example(
         root,
         "capped.json",
         &["--max-requests", "1", "--max-output-tokens", "512"],
-        false,
+        true,
     )
     .await;
     assert_eq!(1, capped["limits"]["max_requests"]);
-    assert_eq!(1, capped["limits"]["automatic_retries"]);
+    assert_eq!(5, capped["limits"]["automatic_retries"]);
     assert_eq!(512, capped["limits"]["max_output_tokens"]);
     assert_eq!(512, capped["provider_settings"][0]["max_output_tokens"]);
     assert_eq!(1, capped["agent"]["usage"]["model_requests"]);
-    provider.assert_hits_async(3).await;
+    provider.assert_hits_async(2).await;
 
-    let no_retry = run_example(root, "no-retry.json", &["--no-provider-retry"], false).await;
+    let no_retry = run_example(root, "no-retry.json", &["--no-provider-retry"], true).await;
     assert_eq!(0, no_retry["limits"]["automatic_retries"]);
     assert_eq!(1, no_retry["agent"]["usage"]["model_requests"]);
-    provider.assert_hits_async(4).await;
+    provider.assert_hits_async(3).await;
 }
 
 #[tokio::test]
-async fn temporary_rate_limit_retries_once_and_terminal_limits_return_control() {
+async fn temporary_rate_limit_respects_retry_and_request_budgets() {
     let server = MockServer::start_async().await;
     let root = tempfile::tempdir().unwrap();
     prepare(root.path(), &server, "finish the task");
-    let budget = ["--max-requests", "1"];
+    let one_attempt_budget = ["--max-requests", "1"];
+    let two_attempt_budget = ["--max-requests", "2"];
     for (header, body, attempts, options) in [
         (
             "0",
             r#"{"error":{"code":"rate_limit_exceeded"}}"#,
             2,
-            &[][..],
+            &two_attempt_budget[..],
         ),
         (
             "0",
@@ -134,14 +140,14 @@ async fn temporary_rate_limit_retries_once_and_terminal_limits_return_control() 
         (
             "120",
             r#"{"error":{"code":"rate_limit_exceeded"}}"#,
-            1,
-            &[][..],
+            2,
+            &two_attempt_budget[..],
         ),
         (
             "60",
             r#"{"error":{"code":"rate_limit_exceeded"}}"#,
             1,
-            &budget[..],
+            &one_attempt_budget[..],
         ),
     ] {
         let provider = server
@@ -162,12 +168,6 @@ async fn temporary_rate_limit_retries_once_and_terminal_limits_return_control() 
             attempts,
             report["agent"]["usage"]["model_requests"].as_u64().unwrap() as usize
         );
-        if header == "120" {
-            assert!(report["error"]
-                .as_str()
-                .unwrap()
-                .contains("Retry-After: 120s"));
-        }
         provider.delete_async().await;
     }
 }

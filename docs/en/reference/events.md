@@ -19,13 +19,34 @@ The CLI writes one JSON record per line to stdout and the next cursor to stderr.
 | `turn.started`, `message.user`, `model.response`, `model.error` | Input and provider outcomes for a Turn. `turn.completed`, `turn.interrupted` and `turn.cancelled` describe terminal outcomes. |
 | `runtime.context_segment`, `runtime.context_admitted`, `runtime.step_prepared` | Static context, newly admitted messages and the prepared Step confirming their bounds. `body_hash` identifies the encoded request. |
 | `runtime.provider_report`, `runtime.model_usage`, `runtime.provider_replay` | Provider-reported metadata, token counters or protocol-native continuation data when available. |
-| `runtime.model_retry` | The interactive-client projection accepts this extended retry-decision shape for a prepared request; the core producer update is not part of this branch, so current runtime events still use the legacy shape. Missing legacy `phase` means `started`. In the extended shape, `phase` is `waiting`, `started` or `stopped`; `attempt` is the next one-based attempt while waiting or starting, and the final failed attempt when stopped. `failed_attempt`, `max_attempts`, `failed_kind`, `request_id`, `delay_ms`, `ts`, `will_retry`, `message`, `status` and `stop_reason` are optional policy or diagnostic fields. Only `will_retry` states whether another request will be sent. `delay_ms` applies only to `waiting`; `stop_reason` can be `non_retryable`, `attempt_limit`, `request_budget`, `disabled` or `stream_started`. |
+| `runtime.model_retry` | The core records `waiting`, `started` and `stopped` phases for a prepared request. Missing legacy `phase` means `started`. `attempt` is the next one-based attempt while waiting or starting, and the final failed attempt when stopped; `failed_attempt`, `max_attempts`, `failed_kind`, `request_id`, `delay_ms`, `ts`, `will_retry`, `message`, `status` and `stop_reason` carry retry policy or diagnostic details. `waiting` is written before sleeping; `started` before redispatch. Usage counts `started` (including legacy events without a phase), not `waiting` or `stopped`. Only `will_retry` states whether another request will be sent; `delay_ms` applies only to `waiting`. `stop_reason` can be `non_retryable`, `attempt_limit`, `request_budget`, `disabled` or `stream_started`. |
 | `model.recovery` | A model-output recovery with its original `attempt`, `max_attempts`, `reason`, `from_request_id` and `to_request_id`, plus recovery-specific diagnostic details. |
 | `tool.call`, `runtime.tool_prepared`, `runtime.tool_dispatched`, `tool.result` | The request, its final arguments and definition, dispatch before the side effect, and the recorded outcome. A denied action can have a result without a dispatch. |
 | `permission.requested`, `permission.allow`, `permission.deny` | A deferred authorization or a decision about a particular tool call. `runtime.operation` carries the resumable Agent wait and correlated reply. |
 | `handoff` | A summary boundary used to prepare a successor context segment. |
 
 Execution events may use `conversation` for the Agent address. Prepared Steps and provider reports use `agent`. Session operations carry the target inside `record`. Use the SDK's Agent snapshot when the needed result is current state. [Session records](../../../crates/kuku/src/session/runtime/record.rs) · [Session SDK](sdk.md)
+
+## Retry event payload
+
+`runtime.model_retry` is an `EventPayload::Unknown` JSON object with this schema:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `kind` | string | Always `runtime.model_retry`. |
+| `agent`, `request_id` | string | Agent address and prepared request identity. |
+| `turn` | integer | Owning Turn. |
+| `failed_kind` | enum | `authentication`, `permission_denied`, `quota_exhausted`, `context_too_large`, `invalid_request`, `rate_limited`, `timeout`, `provider_unavailable`, `transport`, `internal`, `unknown`, or `invalid_response`. |
+| `phase` | enum, optional for legacy rows | `waiting`, `started`, or `stopped`; a missing phase is interpreted as legacy `started`. |
+| `failed_attempt`, `max_attempts`, `attempt` | integer | One-based attempt counters; `attempt` is the upcoming attempt in `waiting`/`started` and the failed attempt in `stopped`. `failed_attempt` is the prior failed call for retries and the current failed call when stopped. |
+| `delay_ms` | integer | Actual wait in `waiting`; zero in `started` and `stopped`. |
+| `will_retry` | boolean | True for `waiting`/`started`; false for `stopped`. |
+| `message` | string | Bounded, sanitized failure explanation without credentials or terminal controls. |
+| `status` | HTTP `u16` or null | HTTP status when known. |
+| `stop_reason` | enum or null | `non_retryable`, `attempt_limit`, `request_budget`, `disabled`, or `stream_started`; null before a stop. |
+| `ts` | timestamp string | Event timestamp. |
+
+Usage counts `started` rows and legacy rows without `phase`; `waiting` and `stopped` rows do not add model attempts.
 
 ## Live output
 

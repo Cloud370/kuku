@@ -915,7 +915,7 @@ async fn retry_uses_the_prepared_body_and_leaves_new_input_and_selection_for_the
         .unwrap();
     assert_eq!(first_body_hash, prepared_hash);
     assert_eq!(2, facts.iter().filter(|event| matches!(&event.payload, EventPayload::Unknown(value) if value["kind"] == "runtime.step_prepared")).count());
-    assert_eq!(1, facts.iter().filter(|event| matches!(&event.payload, EventPayload::Unknown(value) if value["kind"] == "runtime.model_retry" && value["attempt"] == 2)).count());
+    assert_eq!(1, facts.iter().filter(|event| matches!(&event.payload, EventPayload::Unknown(value) if value["kind"] == "runtime.model_retry" && value["phase"] == "started" && value["attempt"] == 2)).count());
     assert_eq!(3, session.agent("main").unwrap().usage.model_requests);
     let mut tagged = false;
     while let Some(observation) = observer.try_next().unwrap() {

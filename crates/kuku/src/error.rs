@@ -124,9 +124,13 @@ impl Error {
             | Error::InvalidWorkspacePath(_) => "internal",
             Error::Provider { kind, .. } => match kind {
                 ProviderFailureKind::Authentication => "provider_auth",
+                ProviderFailureKind::PermissionDenied => "provider_permission",
+                ProviderFailureKind::QuotaExhausted => "provider_quota",
                 ProviderFailureKind::RateLimited => "provider_rate_limit",
+                ProviderFailureKind::Timeout => "provider_timeout",
                 ProviderFailureKind::ContextTooLarge => "provider_overflow",
                 ProviderFailureKind::InvalidRequest => "invalid_request",
+                ProviderFailureKind::InvalidResponse => "provider_invalid_response",
                 ProviderFailureKind::ProviderUnavailable => "provider_network",
                 ProviderFailureKind::Transport => "provider_network",
                 ProviderFailureKind::Internal => "internal",
