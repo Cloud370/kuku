@@ -252,6 +252,7 @@ async fn message_rewind_targets_one_event_survives_reopen_and_keeps_new_inputs_i
         )
         .unwrap();
     assert!(warnings.is_empty());
+    assert_eq!(None, session.agent("main").unwrap().last_output.as_deref());
     let raw_after = EventStore::replay(session.events_path()).unwrap();
     assert_eq!(head_before + 1, raw_after.last().unwrap().id);
     assert!(
@@ -262,6 +263,7 @@ async fn message_rewind_targets_one_event_survives_reopen_and_keeps_new_inputs_i
 
     session.close().await.unwrap();
     let reopened = Session::open(options).await.unwrap();
+    assert_eq!(None, reopened.agent("main").unwrap().last_output.as_deref());
     let reopened_head = EventStore::replay(reopened.events_path())
         .unwrap()
         .last()
@@ -295,6 +297,10 @@ async fn message_rewind_targets_one_event_survives_reopen_and_keeps_new_inputs_i
     assert!(!body.contains("original message"), "{body}");
     next.response.send(Reply::Text("second response")).unwrap();
     ready(&reopened, AgentStatus::Idle).await;
+    assert_eq!(
+        Some("second response"),
+        reopened.agent("main").unwrap().last_output.as_deref()
+    );
     let after_new_input = EventStore::replay(reopened.events_path()).unwrap();
     let new_message = after_new_input.iter().find(|event| {
         matches!(&event.payload, EventPayload::MessageUser { text, .. } if text == "new input after rewind")

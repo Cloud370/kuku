@@ -369,6 +369,7 @@ impl State {
             } => {
                 let removed = {
                     let agent = self.agent_mut(&address)?;
+                    agent.snapshot.last_output = None;
                     let ids: HashSet<_> = removed_input_ids.into_iter().collect();
                     if ids.is_empty() {
                         Vec::new()

@@ -527,3 +527,40 @@ fn copy_fetches_the_complete_committed_reply_and_ignores_older_requests() {
     app.update(Update::ReplySource(selection, 4, Ok(original)));
     assert!(matches!(app.effects.as_slice(), [Job::Copy(text)] if text == newest));
 }
+
+#[test]
+fn copy_reply_does_not_use_snapshot_fallback_when_history_has_no_reply() {
+    use kuku_client::HistoryPage;
+
+    let mut app = connected_app();
+    let snapshot = serde_json::from_value(json!({
+        "session_id": app.active.session,
+        "workspace": app.workspace,
+        "cursor": 4,
+        "pending": [],
+        "agents": [],
+        "agent": {
+            "address": app.active.agent, "config": {}, "status": "idle", "pending_inputs": 0,
+            "last_output": null,
+            "usage": {"model_requests": 0, "unreported_requests": 0},
+        }
+    }))
+    .unwrap();
+    let selection = app.selection();
+    app.update(Update::Loaded(
+        selection,
+        Box::new(snapshot),
+        HistoryPage {
+            entries: Vec::new(),
+            next_before: None,
+        },
+    ));
+    app.effects.clear();
+
+    app.copy_reply();
+
+    assert!(!app
+        .effects
+        .iter()
+        .any(|effect| matches!(effect, Job::Copy(_))));
+}
