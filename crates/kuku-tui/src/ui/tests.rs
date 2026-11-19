@@ -182,6 +182,82 @@ fn model_default_loading_and_error_states_do_not_render_confirmation_actions() {
     assert!(!error_screen.contains("Save as default"));
 }
 
+#[test]
+fn model_default_pointer_actions_survive_redraw_between_press_and_release() {
+    for label in ["Save as default", "Cancel"] {
+        let mut app = model_default_confirmation("Connection/model: openai/gpt-4".into());
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        let buffer = terminal
+            .draw(|frame| render(frame, &mut app))
+            .unwrap()
+            .buffer;
+        let position = text_position(buffer, label);
+        let left = MouseButton::Left;
+        let modifiers = KeyModifiers::NONE;
+        app.event(
+            mouse(MouseEventKind::Down(left), position, modifiers),
+            buffer,
+        );
+
+        let buffer = terminal
+            .draw(|frame| render(frame, &mut app))
+            .unwrap()
+            .buffer;
+        app.event(mouse(MouseEventKind::Up(left), position, modifiers), buffer);
+
+        assert!(app.modal.is_none(), "{label} click should be applied");
+    }
+}
+
+#[test]
+fn model_default_resize_invalidates_stale_pointer_action_and_restores_cancel_selection() {
+    let mut app = model_default_confirmation("Connection/model: openai/gpt-4".into());
+    let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+    let buffer = terminal
+        .draw(|frame| render(frame, &mut app))
+        .unwrap()
+        .buffer;
+    let save_position = text_position(buffer, "Save as default");
+    app.event(
+        mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            save_position,
+            KeyModifiers::NONE,
+        ),
+        buffer,
+    );
+
+    let mut small_terminal = Terminal::new(TestBackend::new(30, 10)).unwrap();
+    let small_buffer = small_terminal
+        .draw(|frame| render(frame, &mut app))
+        .unwrap()
+        .buffer;
+    app.event(
+        mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            save_position,
+            KeyModifiers::NONE,
+        ),
+        small_buffer,
+    );
+    assert!(matches!(
+        &app.modal,
+        Some(Modal::Picker(picker)) if picker.choice_count() == 1
+    ));
+
+    let buffer = terminal
+        .draw(|frame| render(frame, &mut app))
+        .unwrap()
+        .buffer;
+    assert!(matches!(
+        &app.modal,
+        Some(Modal::Picker(picker))
+            if picker.choice_count() == 2
+                && matches!(picker.selected_choice(), Some(ChoiceKind::CancelModelDefault))
+    ));
+    assert!(buffer.area.width > 30);
+}
+
 fn key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
     event(app, Event::Key(KeyEvent::new(code, modifiers)));
 }
@@ -218,6 +294,20 @@ fn cell(buffer: &Buffer, symbol: &str) -> (u16, u16) {
         .position(|cell| cell.symbol() == symbol)
         .unwrap_or_else(|| panic!("missing screen symbol {symbol:?}"));
     buffer.pos_of(index)
+}
+
+fn text_position(buffer: &Buffer, text: &str) -> (u16, u16) {
+    let area = buffer.area;
+    for row in area.top()..area.bottom() {
+        let line = (area.left()..area.right())
+            .map(|column| buffer[(column, row)].symbol())
+            .collect::<String>();
+        if let Some(byte_index) = line.find(text) {
+            let column = UnicodeWidthStr::width(&line[..byte_index]);
+            return (area.left() + column as u16, row);
+        }
+    }
+    panic!("missing rendered text {text:?}");
 }
 
 #[test]

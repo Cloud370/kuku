@@ -722,13 +722,17 @@ fn render_model_default_confirmation(
         "No files are changed",
         ChoiceKind::CancelModelDefault,
     );
-    if can_confirm {
-        let had_only_cancel = picker.choice_count() == 1;
+    let has_only_cancel = picker.choice_count() == 1
+        && matches!(
+            picker.selected_choice(),
+            Some(ChoiceKind::CancelModelDefault)
+        );
+    if can_confirm && picker.choice_count() != 2 {
         picker.set_local(vec![save, cancel]);
-        if had_only_cancel {
+        if has_only_cancel {
             picker.selected = 1;
         }
-    } else {
+    } else if !can_confirm && !has_only_cancel {
         picker.set_local(vec![cancel]);
         picker.selected = 0;
     }
