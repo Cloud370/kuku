@@ -395,18 +395,25 @@ impl Transcript {
                         (!self.detail_items.group_open(records))
                             .then(|| DetailKey::message_action(DetailKind::Group, &records[0].key))
                     });
+                let group_was_collapsed = group_to_open.is_some();
                 if let Some(group_key) = group_to_open {
                     self.toggle_detail(&group_key);
                 }
-                if let Some(index) = self
-                    .detail_items
-                    .inspections
-                    .iter()
-                    .position(|opened| opened == &key.record)
-                {
-                    self.detail_items.inspections.remove(index);
+                if group_was_collapsed {
+                    if !self.detail_items.inspections.contains(&key.record) {
+                        remember(&mut self.detail_items.inspections, &key.record);
+                    }
                 } else {
-                    remember(&mut self.detail_items.inspections, &key.record);
+                    if let Some(index) = self
+                        .detail_items
+                        .inspections
+                        .iter()
+                        .position(|opened| opened == &key.record)
+                    {
+                        self.detail_items.inspections.remove(index);
+                    } else {
+                        remember(&mut self.detail_items.inspections, &key.record);
+                    }
                 }
                 true
             }

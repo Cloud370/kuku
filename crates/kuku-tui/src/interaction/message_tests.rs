@@ -312,6 +312,48 @@ fn remediation_expand_opens_a_nonfirst_tool_in_a_collapsed_group() {
 }
 
 #[test]
+fn remediation_expand_reopens_group_without_closing_prior_inspection() {
+    let mut app = connected_app();
+    for event in [
+        json!({"id":85,"agent":"main","turn":9,"type":"tool_call","tool":"read_file","tool_call_id":"first-read","args":{"path":"first.txt"}}),
+        json!({"id":86,"agent":"main","turn":9,"type":"tool_result","tool":"read_file","tool_call_id":"first-read","status":"ok","summary":"Read first.txt","model_content":"FIRST-CONTENT"}),
+        json!({"id":87,"agent":"main","turn":9,"type":"tool_call","tool":"read_file","tool_call_id":"second-read","args":{"path":"second.txt"}}),
+        json!({"id":88,"agent":"main","turn":9,"type":"tool_result","tool":"read_file","tool_call_id":"second-read","status":"ok","summary":"Read second.txt","model_content":"SECOND-INSPECTED-RESULT"}),
+    ] {
+        app.pane_mut()
+            .transcript
+            .apply(serde_json::from_value(event).unwrap(), None);
+    }
+
+    let message = MessageId::Tool {
+        turn: Some(9),
+        call_id: "second-read".into(),
+    };
+    open_message_actions(&mut app, message.clone());
+    choose_message_action(&mut app, MessageAction::Expand);
+    assert!(transcript_text(&mut app).contains("SECOND-INSPECTED-RESULT"));
+    app.pane_mut().transcript.show_latest();
+    assert!(transcript_text(&mut app).contains("SECOND-INSPECTED-RESULT"));
+
+    let choices = app.pane().transcript.visible_detail_choices();
+    let group = choices
+        .iter()
+        .find(|(_, label, _)| label == "Read file ×2")
+        .map(|(key, _, _)| key.clone())
+        .unwrap_or_else(|| panic!("visible detail choices: {choices:?}"));
+    assert!(app.pane_mut().transcript.toggle_detail(&group));
+    assert!(!transcript_text(&mut app).contains("SECOND-INSPECTED-RESULT"));
+
+    open_message_actions(&mut app, message.clone());
+    choose_message_action(&mut app, MessageAction::Expand);
+    assert!(transcript_text(&mut app).contains("SECOND-INSPECTED-RESULT"));
+
+    open_message_actions(&mut app, message);
+    choose_message_action(&mut app, MessageAction::Expand);
+    assert!(!transcript_text(&mut app).contains("SECOND-INSPECTED-RESULT"));
+}
+
+#[test]
 fn remediation_copy_is_not_offered_for_thinking_only_or_empty_tool_entries() {
     let mut app = connected_app();
     let details = serde_json::from_value(json!({"reasoning_preview":"private thought"})).unwrap();
