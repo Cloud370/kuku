@@ -38,6 +38,17 @@ fn ui(id: u64, turn: u64, text: &str) -> StoredEvent {
 }
 
 fn tool_result_read(id: u64, turn: u64, path: &str, content: &str, full: bool) -> StoredEvent {
+    tool_result_read_with_flags(id, turn, path, content, full, false)
+}
+
+fn tool_result_read_with_flags(
+    id: u64,
+    turn: u64,
+    path: &str,
+    content: &str,
+    full: bool,
+    cached: bool,
+) -> StoredEvent {
     StoredEvent {
         id,
         payload: EventPayload::ToolResult {
@@ -56,8 +67,8 @@ fn tool_result_read(id: u64, turn: u64, path: &str, content: &str, full: bool) -
             structured: Some(json!({
                 "kind": "file_content",
                 "canonical_path": path,
-                "raw_text_after": content,
-                "cached": false,
+                "raw_text": content,
+                "cached": cached,
                 "is_full_file_snapshot": full,
             })),
         },
@@ -114,7 +125,19 @@ fn message_rewind_file_read(
     canonical_path: &Path,
     content: &str,
 ) -> StoredEvent {
-    let mut event = tool_result_read(id, turn, path, content, true);
+    message_rewind_file_read_with_flags(id, turn, path, canonical_path, content, true, false)
+}
+
+fn message_rewind_file_read_with_flags(
+    id: u64,
+    turn: u64,
+    path: &str,
+    canonical_path: &Path,
+    content: &str,
+    full: bool,
+    cached: bool,
+) -> StoredEvent {
+    let mut event = tool_result_read_with_flags(id, turn, path, content, full, cached);
     if let EventPayload::ToolResult {
         structured: Some(value),
         ..
@@ -414,6 +437,7 @@ fn conversation_rollback_only_hides_target_conversation_messages() {
 #[test]
 fn file_modified_after_target_restores() {
     let dir = tempfile::tempdir().unwrap();
+    let session_dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.txt"), "v2").unwrap();
     let events = vec![
         ts(1, 1),
@@ -427,6 +451,11 @@ fn file_modified_after_target_restores() {
     assert_eq!(plan.restores.len(), 1);
     assert_eq!(plan.restores[0].old_content, "v1");
     assert!(plan.deletes.is_empty());
+    apply_file_revert(&plan, dir.path(), session_dir.path(), 10).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "v1"
+    );
 }
 
 #[test]
@@ -470,6 +499,7 @@ fn message_rewind_file_opt_in_restores_selected_agent_changes() {
 fn message_rewind_uses_full_read_during_selected_turn_as_before_image() {
     let workspace = tempfile::tempdir().unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
+    let session_dir = tempfile::tempdir().unwrap();
     std::fs::write(workspace.path().join("a.txt"), "after").unwrap();
     let events = vec![
         ui(1, 1, "rewind target"),
@@ -490,12 +520,18 @@ fn message_rewind_uses_full_read_during_selected_turn_as_before_image() {
     assert_eq!(plan.restores.len(), 1);
     assert_eq!("before", plan.restores[0].old_content);
     assert!(plan.unrecoverable.is_empty());
+    apply_file_revert(&plan, workspace.path(), session_dir.path(), 10).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join("a.txt")).unwrap(),
+        "before"
+    );
 }
 
 #[test]
 fn message_rewind_deletes_only_an_explicitly_created_file() {
     let workspace = tempfile::tempdir().unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
+    let session_dir = tempfile::tempdir().unwrap();
     std::fs::write(workspace.path().join("new.txt"), "created").unwrap();
     let events = vec![
         ui(1, 1, "rewind target"),
@@ -514,6 +550,8 @@ fn message_rewind_deletes_only_an_explicitly_created_file() {
 
     assert_eq!(plan.deletes, vec![workspace_root.join("new.txt")]);
     assert!(plan.unrecoverable.is_empty());
+    apply_file_revert(&plan, workspace.path(), session_dir.path(), 10).unwrap();
+    assert!(!workspace.path().join("new.txt").exists());
 }
 
 #[test]
@@ -649,7 +687,8 @@ fn file_created_after_target_deletes() {
 #[test]
 fn partial_read_only_marks_unrecoverable() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("b.txt"), "content").unwrap();
+    let session_dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("b.txt"), "changed").unwrap();
     let events = vec![
         ts(1, 1),
         tool_result_read(2, 1, "b.txt", "partial", false),
@@ -660,6 +699,11 @@ fn partial_read_only_marks_unrecoverable() {
     ];
     let plan = compute_file_revert_plan(&events, 1, dir.path());
     assert_eq!(plan.unrecoverable.len(), 1);
+    apply_file_revert(&plan, dir.path(), session_dir.path(), 10).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("b.txt")).unwrap(),
+        "changed"
+    );
 }
 
 #[test]
