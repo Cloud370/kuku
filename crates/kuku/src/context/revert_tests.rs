@@ -87,6 +87,67 @@ fn tr(id: u64, turn: u64, tc: &str, kind: &str, path: &str, content: &str) -> St
     }
 }
 
+fn tr_in(
+    id: u64,
+    turn: u64,
+    conversation: &str,
+    tc: &str,
+    kind: &str,
+    path: &str,
+    content: &str,
+) -> StoredEvent {
+    let mut event = tr(id, turn, tc, kind, path, content);
+    if let EventPayload::ToolResult {
+        conversation: owner,
+        ..
+    } = &mut event.payload
+    {
+        *owner = Some(conversation.into());
+    }
+    event
+}
+
+fn message_rewind_file_read(
+    id: u64,
+    turn: u64,
+    path: &str,
+    canonical_path: &Path,
+    content: &str,
+) -> StoredEvent {
+    let mut event = tool_result_read(id, turn, path, content, true);
+    if let EventPayload::ToolResult {
+        structured: Some(value),
+        ..
+    } = &mut event.payload
+    {
+        value["canonical_path"] = json!(canonical_path.to_string_lossy());
+        value["path"] = json!(path);
+    }
+    event
+}
+
+fn message_rewind_file_write(
+    id: u64,
+    turn: u64,
+    conversation: &str,
+    path: &str,
+    canonical_path: &Path,
+    content: &str,
+    created: bool,
+) -> StoredEvent {
+    let mut event = tr_in(id, turn, conversation, "write", "file_write", path, content);
+    if let EventPayload::ToolResult {
+        structured: Some(value),
+        ..
+    } = &mut event.payload
+    {
+        value["canonical_path"] = json!(canonical_path.to_string_lossy());
+        value["path"] = json!(path);
+        value["created"] = json!(created);
+    }
+    event
+}
+
 fn rb(id: u64, _turn: u64, target: u64, scope: RollbackScope) -> StoredEvent {
     StoredEvent {
         id,
@@ -108,6 +169,20 @@ fn rb_undo(id: u64, _turn: u64, rb_id: u64) -> StoredEvent {
             conversation: "main".into(),
             rollback_event_id: rb_id,
         },
+    }
+}
+
+fn message_rewind(id: u64, address: &str, target_event_id: u64) -> StoredEvent {
+    StoredEvent {
+        id,
+        payload: EventPayload::Unknown(json!({
+            "kind": "runtime.operation",
+            "record": {
+                "operation": "message_rewind",
+                "address": address,
+                "target_event_id": target_event_id,
+            }
+        })),
     }
 }
 
@@ -185,6 +260,46 @@ fn extract_message_user_texts<'a>(events: &[&'a StoredEvent]) -> Vec<&'a str> {
 fn filter_no_rollback_returns_all() {
     let events = vec![ts(1, 1), ui(2, 1, "a"), te(3, 1)];
     assert_eq!(filter_rolled_back_events(&events).len(), 3);
+}
+
+#[test]
+fn message_rewinds_hide_bounded_agent_intervals_without_hiding_new_inputs() {
+    let mut other_agent = ui(8, 1, "other agent");
+    if let EventPayload::MessageUser { conversation, .. } = &mut other_agent.payload {
+        *conversation = "reviewer".into();
+    }
+    let events = vec![
+        ts(1, 1),
+        ui(2, 1, "first target"),
+        te(3, 1),
+        ts(4, 2),
+        ui(5, 2, "tail one"),
+        te(6, 2),
+        message_rewind(7, "main", 2),
+        other_agent,
+        ts(9, 3),
+        ui(10, 3, "second target"),
+        te(11, 3),
+        ts(12, 4),
+        ui(13, 4, "tail two"),
+        te(14, 4),
+        message_rewind(15, "main", 10),
+        ts(16, 5),
+        ui(17, 5, "new input"),
+        te(18, 5),
+    ];
+
+    let visible: Vec<_> = filter_rolled_back_events(&events)
+        .into_iter()
+        .map(|event| event.id)
+        .collect();
+
+    assert!(!visible.contains(&2));
+    assert!(!visible.contains(&5));
+    assert!(!visible.contains(&10));
+    assert!(!visible.contains(&13));
+    assert!(visible.contains(&8));
+    assert!(visible.contains(&17));
 }
 
 #[test]
@@ -313,6 +428,204 @@ fn file_modified_after_target_restores() {
     assert_eq!(plan.restores[0].old_content, "v1");
     assert!(plan.deletes.is_empty());
 }
+
+#[test]
+fn message_rewind_file_opt_in_restores_selected_agent_changes() {
+    let workspace = tempfile::tempdir().unwrap();
+    let session_dir = tempfile::tempdir().unwrap();
+    std::fs::write(workspace.path().join("a.txt"), "after").unwrap();
+    let events = vec![
+        ts(1, 1),
+        message_rewind_file_read(2, 1, "a.txt", &workspace.path().join("a.txt"), "before"),
+        te(3, 1),
+        ts(4, 2),
+        ui(5, 2, "rewind target"),
+        te(6, 2),
+        ts(7, 3),
+        message_rewind_file_write(
+            8,
+            3,
+            "main",
+            "a.txt",
+            &workspace.path().join("a.txt"),
+            "after",
+            false,
+        ),
+        te(9, 3),
+    ];
+
+    let plan = compute_message_rewind_plan(&events, "main", 5, workspace.path()).unwrap();
+
+    assert_eq!(plan.restores.len(), 1);
+    let warnings = apply_file_revert(&plan, workspace.path(), session_dir.path(), 10).unwrap();
+    assert!(warnings.is_empty());
+    assert_eq!(
+        "before",
+        std::fs::read_to_string(workspace.path().join("a.txt")).unwrap()
+    );
+}
+
+#[test]
+fn message_rewind_uses_full_read_during_selected_turn_as_before_image() {
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::write(workspace.path().join("a.txt"), "after").unwrap();
+    let events = vec![
+        ui(1, 1, "rewind target"),
+        message_rewind_file_read(2, 1, "a.txt", &workspace.path().join("a.txt"), "before"),
+        message_rewind_file_write(
+            3,
+            1,
+            "main",
+            "a.txt",
+            &workspace.path().join("a.txt"),
+            "after",
+            false,
+        ),
+    ];
+
+    let plan = compute_message_rewind_plan(&events, "main", 1, workspace.path()).unwrap();
+
+    assert_eq!(plan.restores.len(), 1);
+    assert_eq!("before", plan.restores[0].old_content);
+    assert!(plan.unrecoverable.is_empty());
+}
+
+#[test]
+fn message_rewind_deletes_only_an_explicitly_created_file() {
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::write(workspace.path().join("new.txt"), "created").unwrap();
+    let events = vec![
+        ui(1, 1, "rewind target"),
+        message_rewind_file_write(
+            2,
+            1,
+            "main",
+            "new.txt",
+            &workspace.path().join("new.txt"),
+            "created",
+            true,
+        ),
+    ];
+
+    let plan = compute_message_rewind_plan(&events, "main", 1, workspace.path()).unwrap();
+
+    assert_eq!(plan.deletes, vec![workspace.path().join("new.txt")]);
+    assert!(plan.unrecoverable.is_empty());
+}
+
+#[test]
+fn message_rewind_treats_missing_before_image_as_unrecoverable() {
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::write(workspace.path().join("unknown.txt"), "after").unwrap();
+    let events = vec![
+        ui(1, 1, "rewind target"),
+        message_rewind_file_write(
+            2,
+            1,
+            "main",
+            "unknown.txt",
+            &workspace.path().join("unknown.txt"),
+            "after",
+            false,
+        ),
+    ];
+
+    let plan = compute_message_rewind_plan(&events, "main", 1, workspace.path()).unwrap();
+
+    assert_eq!(
+        plan.unrecoverable,
+        vec![workspace.path().join("unknown.txt")]
+    );
+    assert!(plan.deletes.is_empty());
+}
+
+#[test]
+fn message_rewind_file_plan_rejects_other_agent_later_writes() {
+    let workspace = tempfile::tempdir().unwrap();
+    let events = vec![
+        ts(1, 1),
+        message_rewind_file_read(
+            2,
+            1,
+            "shared.txt",
+            &workspace.path().join("shared.txt"),
+            "before",
+        ),
+        te(3, 1),
+        ts(4, 2),
+        ui(5, 2, "rewind target"),
+        te(6, 2),
+        ts(7, 3),
+        message_rewind_file_write(
+            8,
+            3,
+            "main",
+            "shared.txt",
+            &workspace.path().join("shared.txt"),
+            "main",
+            false,
+        ),
+        te(9, 3),
+        StoredEvent {
+            id: 10,
+            payload: EventPayload::TurnStarted {
+                turn: 4,
+                ts: "t".into(),
+                conversation: "review".into(),
+            },
+        },
+        message_rewind_file_write(
+            11,
+            4,
+            "review",
+            "shared.txt",
+            &workspace.path().join("shared.txt"),
+            "review",
+            false,
+        ),
+    ];
+
+    let error = compute_message_rewind_plan(&events, "main", 5, workspace.path())
+        .err()
+        .unwrap();
+
+    assert!(error.to_string().contains("another Agent"));
+}
+
+#[cfg(unix)]
+#[test]
+fn message_rewind_file_plan_rejects_symlink_paths() {
+    let workspace = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("file.txt"), "outside").unwrap();
+    std::os::unix::fs::symlink(outside.path(), workspace.path().join("link")).unwrap();
+    let events = vec![
+        ts(1, 1),
+        ui(2, 1, "rewind target"),
+        message_rewind_file_write(
+            3,
+            1,
+            "main",
+            "link/file.txt",
+            &workspace.path().join("link/file.txt"),
+            "after",
+            true,
+        ),
+    ];
+
+    let error = compute_message_rewind_plan(&events, "main", 2, workspace.path())
+        .err()
+        .unwrap();
+
+    assert!(error.to_string().contains("symbolic link"));
+    assert_eq!(
+        "outside",
+        std::fs::read_to_string(outside.path().join("file.txt")).unwrap()
+    );
+}
+
+#[path = "revert_tests_message_rewind_regressions.rs"]
+mod message_rewind_regressions;
 
 #[test]
 fn file_created_after_target_deletes() {

@@ -4,7 +4,7 @@ use kuku_client::{Action, HistoryPage, Input, QueuedInput, Receipt, Timing};
 use serde_json::json;
 
 use super::{app, click, key, render, screen};
-use crate::app::Modal;
+use crate::app::{KeyboardFocus, Modal};
 use crate::config::StatusLineSettings;
 use crate::contextual::{ContextControl, PendingCommandIdentity, PendingCommandKind};
 use crate::jobs::{Job, Update};
@@ -305,21 +305,30 @@ fn continue_enter_preserves_composer_draft_and_revalidates_input_identity() {
 }
 
 #[test]
-fn focused_escape_dismisses_without_interrupting_and_ordinary_escape_still_interrupts() {
+fn focused_escape_interrupts_a_running_task_and_returns_to_composer() {
     let mut app = app();
     load_snapshot(&mut app, "running", false);
     key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
     assert!(app.pane().contextual_focus.active);
     key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
     assert!(!app.pane().contextual_focus.active);
-    assert!(!app.effects.iter().any(|job| matches!(job,
-        Job::Save(command) if matches!(command.action, Action::Cancel { .. })
-    )));
-
-    key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
     assert!(app.effects.iter().any(|job| matches!(job,
         Job::Save(command) if matches!(command.action, Action::Cancel { execution_id: 49 })
     )));
+    assert_eq!(KeyboardFocus::Composer, app.pane().keyboard_focus);
+}
+
+#[test]
+fn idle_focused_escape_returns_to_composer_without_side_effects() {
+    let mut app = app();
+    load_snapshot(&mut app, "idle", false);
+    key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
+    assert!(app.pane().contextual_focus.active);
+    app.effects.clear();
+    key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(!app.pane().contextual_focus.active);
+    assert_eq!(KeyboardFocus::Composer, app.pane().keyboard_focus);
+    assert!(app.effects.is_empty());
 }
 
 #[test]

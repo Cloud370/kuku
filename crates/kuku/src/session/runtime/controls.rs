@@ -1,15 +1,151 @@
 use std::collections::BTreeSet;
 
-use crate::event::{EventPayload, EventStore};
+use crate::event::{EventPayload, EventStore, StoredEvent};
 use crate::{Error, Result};
 
 use super::record::{
-    fingerprint, timestamp, validate_address, validate_key, Command, InterruptedExecution, Record,
-    State,
+    fingerprint, timestamp, validate_address, validate_key, AgentState, Command,
+    InterruptedExecution, Record, State,
 };
 use super::{ensure_open, AgentStatus, InputStatus, Receipt, Session, Withdrawal};
 
 impl Session {
+    /// Hide a committed user message and the following visible history for one Agent.
+    pub fn rewind_message(
+        &self,
+        command_id: &str,
+        address: &str,
+        target_event_id: u64,
+        expected_text: &str,
+        restore_files: bool,
+    ) -> Result<(Receipt, Vec<String>)> {
+        let command = command(
+            command_id,
+            address,
+            &(
+                "rewind_message",
+                address,
+                target_event_id,
+                expected_text,
+                restore_files,
+            ),
+        )?;
+        let mut state = self.inner.state.lock().unwrap();
+        ensure_open(&state)?;
+        if let Some(receipt) = state.retry(command_id, &command.fingerprint)? {
+            return Ok((
+                receipt,
+                state
+                    .message_rewind_warnings
+                    .get(command_id)
+                    .cloned()
+                    .unwrap_or_default(),
+            ));
+        }
+        let events = EventStore::replay(&self.inner.events_path)?;
+        let agent = state.agent(address)?;
+        let removed_input_ids = rewind_input_ids(&events, address, target_event_id);
+        if rewind_blocked_except(agent, &removed_input_ids) {
+            return Err(Error::InvalidArgument(
+                "cannot rewind while this Agent is executing or has pending input".into(),
+            ));
+        }
+        if restore_files
+            && state.agents.iter().any(|(candidate, agent)| {
+                if candidate == address {
+                    rewind_blocked_except(agent, &removed_input_ids)
+                } else {
+                    rewind_blocked(agent)
+                }
+            })
+        {
+            return Err(Error::InvalidArgument(
+                "cannot restore files while any Session Agent is active".into(),
+            ));
+        }
+        let target = events
+            .iter()
+            .find(|event| event.id == target_event_id)
+            .ok_or_else(|| Error::InvalidArgument("rewind target is no longer available".into()))?;
+        let EventPayload::MessageUser {
+            conversation,
+            turn,
+            text,
+            ..
+        } = &target.payload
+        else {
+            return Err(Error::InvalidArgument(
+                "rewind target is not a committed user message".into(),
+            ));
+        };
+        if conversation != address
+            || text != expected_text
+            || !crate::context::revert::filter_rolled_back_events(&events)
+                .iter()
+                .any(|event| event.id == target_event_id)
+        {
+            return Err(Error::InvalidArgument(
+                "rewind target belongs to another Agent or is no longer visible".into(),
+            ));
+        }
+        let mut warnings = Vec::new();
+        let mut file_revert = None;
+        if restore_files {
+            let plan = crate::context::revert::compute_message_rewind_plan(
+                &events,
+                address,
+                target_event_id,
+                &self.inner.options.workspace,
+            )?;
+            if !plan.unrecoverable.is_empty() {
+                return Err(Error::InvalidArgument(format!(
+                    "file restore preflight could not recover recorded state for {}",
+                    plan.unrecoverable
+                        .iter()
+                        .map(|path| path.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )));
+            }
+            let session_dir = self.inner.events_path.parent().ok_or_else(|| {
+                Error::InvalidArgument("events path has no session directory".into())
+            })?;
+            let rollback_event_id = events.last().map_or(1, |event| event.id.saturating_add(1));
+            let (transaction, restore_warnings) =
+                crate::context::revert::apply_message_rewind_files(
+                    &plan,
+                    &self.inner.options.workspace,
+                    session_dir,
+                    rollback_event_id,
+                )?;
+            file_revert = Some(transaction);
+            warnings = restore_warnings;
+            warnings.push(
+                "Only recorded in-workspace file changes were restored; shell and external side effects remain.".into(),
+            );
+            warnings.extend(
+                plan.sensitive_files
+                    .iter()
+                    .map(|path| format!("Sensitive file restored: {}", path.display())),
+            );
+        }
+        commit_with_file_revert(file_revert, || {
+            self.commit(
+                &mut state,
+                Record::MessageRewind {
+                    command,
+                    address: address.into(),
+                    target_event_id,
+                    target_turn: *turn,
+                    restore_files,
+                    removed_input_ids: removed_input_ids.into_iter().collect(),
+                    warnings: warnings.clone(),
+                },
+            )
+        })?;
+        Ok((state.commands[command_id].1.clone(), warnings))
+    }
+
     /// Explicitly authorize advancement of pending or interrupted work.
     pub fn advance(&self, address: &str) -> Result<()> {
         self.advance_with_command(address, None).map(|_| ())
@@ -391,6 +527,97 @@ impl Session {
     }
 }
 
+fn rewind_blocked(agent: &AgentState) -> bool {
+    rewind_blocked_except(agent, &BTreeSet::new())
+}
+
+fn rewind_input_ids(
+    events: &[StoredEvent],
+    address: &str,
+    target_event_id: u64,
+) -> BTreeSet<String> {
+    let hidden_messages: Vec<_> = crate::context::revert::filter_rolled_back_events(events)
+        .into_iter()
+        .filter(|event| event.id >= target_event_id)
+        .filter_map(|event| match &event.payload {
+            EventPayload::MessageUser { conversation, .. } if conversation == address => {
+                Some(event.id)
+            }
+            _ => None,
+        })
+        .collect();
+    let mut input_ids = BTreeSet::new();
+    for message_id in hidden_messages {
+        let previous_message_id = events
+            .iter()
+            .filter(|event| event.id < message_id)
+            .filter_map(|event| match &event.payload {
+                EventPayload::MessageUser { conversation, .. } if conversation == address => {
+                    Some(event.id)
+                }
+                _ => None,
+            })
+            .max()
+            .unwrap_or_default();
+        let accepted = events.iter().rev().find(|event| {
+            if event.id <= previous_message_id || event.id >= message_id {
+                return false;
+            }
+            let EventPayload::Unknown(value) = &event.payload else {
+                return false;
+            };
+            value["kind"] == "runtime.operation"
+                && value["record"]["operation"] == "inputs_accepted"
+                && value["record"]["address"] == address
+        });
+        if let Some(accepted) = accepted {
+            let EventPayload::Unknown(value) = &accepted.payload else {
+                unreachable!();
+            };
+            if let Some(ids) = value["record"]["input_ids"].as_array() {
+                input_ids.extend(ids.iter().filter_map(|id| id.as_str().map(str::to_owned)));
+            }
+        }
+    }
+    input_ids
+}
+
+fn rewind_blocked_except(agent: &AgentState, allowed_input_ids: &BTreeSet<String>) -> bool {
+    agent.active_epoch.is_some()
+        || matches!(
+            agent.snapshot.status,
+            AgentStatus::Running | AgentStatus::Waiting
+        )
+        || (agent.snapshot.pending_inputs > 0 && agent.inbox.is_empty())
+        || agent
+            .inbox
+            .iter()
+            .any(|delivery| !allowed_input_ids.contains(&delivery.input.command_id))
+        || agent
+            .accepted
+            .iter()
+            .any(|delivery| !allowed_input_ids.contains(&delivery.input.command_id))
+}
+
+fn commit_with_file_revert<T>(
+    transaction: Option<crate::context::revert::FileRevertTransaction>,
+    commit: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    match commit() {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            if let Some(transaction) = transaction {
+                transaction.rollback().map_err(|rollback_error| {
+                    Error::InvalidEventStream(format!(
+                        "rewind commit failed ({error}) and workspace rollback failed ({rollback_error})"
+                    ))
+                })?;
+            }
+            Err(error)
+        }
+    }
+}
+
 fn cancelled_tool_result(address: &str, turn: u64, id: &str) -> Result<EventPayload> {
     let result =
         crate::tool::ToolResultEnvelope::cancelled("pending action cancelled before dispatch");
@@ -418,4 +645,214 @@ fn command(command_id: &str, address: &str, intent: &impl serde::Serialize) -> R
         command_id: command_id.into(),
         fingerprint: fingerprint(intent)?,
     })
+}
+
+#[cfg(test)]
+mod rewind_guard_tests {
+    use super::*;
+    use crate::session::runtime::record::QueuedDelivery;
+
+    fn idle_agent() -> AgentState {
+        let mut state = State::default();
+        state
+            .reduce(
+                1,
+                Record::AgentCreated {
+                    command_id: "create".into(),
+                    fingerprint: "fingerprint".into(),
+                    address: "main".into(),
+                    config: crate::AgentConfig::default(),
+                },
+            )
+            .unwrap();
+        state.agents.remove("main").unwrap()
+    }
+
+    #[test]
+    fn active_cleanup_epoch_and_pending_inputs_block_rewind() {
+        let mut agent = idle_agent();
+        agent.active_epoch = Some(7);
+        assert!(rewind_blocked(&agent));
+
+        agent.active_epoch = None;
+        agent.snapshot.pending_inputs = 1;
+        assert!(rewind_blocked(&agent));
+    }
+
+    #[test]
+    fn failed_rewind_commit_restores_files_and_retry_can_apply() {
+        let workspace = tempfile::tempdir().unwrap();
+        let session_dir = tempfile::tempdir().unwrap();
+        let path = workspace.path().join("file.txt");
+        std::fs::write(&path, "after").unwrap();
+        let plan = crate::context::revert::RevertPlan {
+            restores: vec![crate::context::revert::FileRestore {
+                path: path.clone(),
+                old_content: "before".into(),
+                old_hash: String::new(),
+                new_content_on_plan: "after".into(),
+            }],
+            deletes: Vec::new(),
+            unrecoverable: Vec::new(),
+            sensitive_files: Vec::new(),
+        };
+        let (transaction, _) = crate::context::revert::apply_message_rewind_files(
+            &plan,
+            workspace.path(),
+            session_dir.path(),
+            3,
+        )
+        .unwrap();
+
+        let error = commit_with_file_revert(Some(transaction), || {
+            Err::<(), _>(Error::InvalidArgument("injected commit failure".into()))
+        })
+        .unwrap_err();
+
+        assert!(error.to_string().contains("injected commit failure"));
+        assert_eq!("after", std::fs::read_to_string(&path).unwrap());
+        let (transaction, _) = crate::context::revert::apply_message_rewind_files(
+            &plan,
+            workspace.path(),
+            session_dir.path(),
+            4,
+        )
+        .unwrap();
+        commit_with_file_revert(Some(transaction), || Ok(())).unwrap();
+        assert_eq!("before", std::fs::read_to_string(path).unwrap());
+    }
+
+    #[test]
+    fn interrupted_resume_rewind_removes_only_affected_input() {
+        let mut state = State::default();
+        state
+            .reduce(
+                1,
+                Record::AgentCreated {
+                    command_id: "create".into(),
+                    fingerprint: "fp".into(),
+                    address: "main".into(),
+                    config: crate::AgentConfig::default(),
+                },
+            )
+            .unwrap();
+        let make_delivery = |id: &str, text: &str| QueuedDelivery {
+            queued_at: 1,
+            receipt: Receipt {
+                command_id: id.into(),
+                event_id: 1,
+                agent: "main".into(),
+            },
+            input: crate::session::runtime::Input::new(id, "main", text),
+        };
+        state.agents.get_mut("main").unwrap().accepted = vec![
+            make_delivery("rewound", "rewound prompt"),
+            make_delivery("unrelated", "keep this input"),
+        ];
+        state
+            .reduce(
+                2,
+                Record::AgentResumed {
+                    address: "main".into(),
+                    command: None,
+                    restore: true,
+                },
+            )
+            .unwrap();
+        let rewind = Record::MessageRewind {
+            command: Command {
+                command_id: "rewind".into(),
+                fingerprint: "fp".into(),
+            },
+            address: "main".into(),
+            target_event_id: 1,
+            target_turn: 1,
+            restore_files: false,
+            removed_input_ids: vec!["rewound".into()],
+            warnings: Vec::new(),
+        };
+        let rewind = Record::from_event(&StoredEvent {
+            id: 3,
+            payload: rewind.payload().unwrap(),
+        })
+        .unwrap()
+        .unwrap();
+        state.reduce(3, rewind).unwrap();
+
+        let agent = state.agent("main").unwrap();
+        assert_eq!(
+            vec!["unrelated"],
+            agent
+                .inbox
+                .iter()
+                .map(|d| d.input.command_id.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(InputStatus::Withdrawn, state.deliveries["rewound"]);
+        state
+            .agents
+            .get_mut("main")
+            .unwrap()
+            .inbox
+            .push_back(make_delivery("new", "new prompt"));
+        state
+            .reduce(
+                4,
+                Record::InputsAccepted {
+                    address: "main".into(),
+                    input_ids: vec!["new".into()],
+                    turn: Some(2),
+                },
+            )
+            .unwrap();
+        assert!(state
+            .agent("main")
+            .unwrap()
+            .accepted
+            .iter()
+            .any(|d| d.input.command_id == "new"));
+    }
+
+    #[test]
+    fn rewind_does_not_remove_an_unaccepted_duplicate_prompt() {
+        let accepted = Record::InputsAccepted {
+            address: "main".into(),
+            input_ids: vec!["rewound".into()],
+            turn: Some(1),
+        };
+        let events = vec![
+            StoredEvent {
+                id: 1,
+                payload: accepted.payload().unwrap(),
+            },
+            StoredEvent {
+                id: 2,
+                payload: EventPayload::MessageUser {
+                    ts: "now".into(),
+                    conversation: "main".into(),
+                    turn: 1,
+                    text: "same prompt".into(),
+                    from: None,
+                    via_tool_call_id: None,
+                },
+            },
+        ];
+        let removed = rewind_input_ids(&events, "main", 2);
+        assert_eq!(BTreeSet::from(["rewound".into()]), removed);
+
+        let make_delivery = |id: &str| QueuedDelivery {
+            queued_at: 3,
+            receipt: Receipt {
+                command_id: id.into(),
+                event_id: 3,
+                agent: "main".into(),
+            },
+            input: crate::session::runtime::Input::new(id, "main", "same prompt"),
+        };
+        let mut agent = idle_agent();
+        agent.accepted.push(make_delivery("rewound"));
+        agent.inbox.push_back(make_delivery("unrelated"));
+        assert!(rewind_blocked_except(&agent, &removed));
+        assert_eq!("unrelated", agent.inbox.front().unwrap().input.command_id);
+    }
 }

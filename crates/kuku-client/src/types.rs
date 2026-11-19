@@ -103,6 +103,15 @@ pub enum Action {
         /// The text delivered under this replacement command's identity.
         text: String,
     },
+    /// Rewind one committed user message and later history for the selected Agent.
+    RewindMessage {
+        /// Exact durable event identity of the selected user message.
+        target_event_id: u64,
+        /// Original text shown by the client, validated against the durable target.
+        text: String,
+        /// Explicit opt-in to restore supported recorded file changes.
+        restore_files: bool,
+    },
     /// Explicitly let an Agent advance eligible work.
     Advance,
     /// Interrupt the specific execution the client observed.
@@ -123,6 +132,9 @@ pub struct Acknowledgement {
     /// Current input status when applicable.
     #[serde(default)]
     pub status: Option<InputStatus>,
+    /// Non-fatal warnings from an acknowledged operation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 /// Service error code and user-facing explanation.

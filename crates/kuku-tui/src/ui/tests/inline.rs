@@ -70,6 +70,7 @@ fn acknowledge_withdrawal(
             },
             replayed: false,
             status,
+            warnings: vec![],
         }),
     ));
 }
@@ -115,7 +116,11 @@ fn inline_queue_click_scroll_and_edit_keep_the_selected_identity() {
     assert_eq!("independent draft", app.pane().draft.text());
     key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
     assert_eq!(KeyboardFocus::Composer, app.pane().keyboard_focus);
-    assert!(app.effects.is_empty());
+    assert!(app.effects.iter().any(|job| matches!(job,
+        crate::jobs::Job::Save(command)
+            if matches!(command.action, Action::Cancel { execution_id: 49 })
+    )));
+    app.effects.clear();
     app.focus_queue_input(selected_id);
 
     key(&mut app, KeyCode::Up, KeyModifiers::NONE);
@@ -456,6 +461,14 @@ fn permission_card_requires_an_explicit_choice_and_stale_requests_do_not_reply()
     assert!(app.effects.is_empty());
 
     let mut deny = super::app();
+    let mut waiting = super::app();
+    let waiting_state = snapshot(&waiting, "waiting", json!(null), permission.clone());
+    load(&mut waiting, waiting_state);
+    waiting.effects.clear();
+    key(&mut waiting, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(waiting.effects.is_empty());
+    assert!(waiting.escape_armed_at.is_none());
+
     let deny_state = snapshot(&deny, "waiting", json!(null), permission.clone());
     load(&mut deny, deny_state);
     key(&mut deny, KeyCode::F(2), KeyModifiers::NONE);

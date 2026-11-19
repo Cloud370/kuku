@@ -12,10 +12,12 @@ use crate::theme::{ACCENT, ERROR, MIN_TRANSCRIPT_INDENT_WIDTH, MUTED, TRANSCRIPT
 
 mod agent;
 mod details;
+mod history;
 mod message;
 mod notes;
 mod preview;
 mod reply;
+mod rewind;
 mod row;
 use row::Row;
 mod tool;
@@ -61,6 +63,7 @@ enum AnchorLine {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HistoryRequest {
+    Recent,
     Older(u64),
     Newer { first: u64, before: u64 },
     Restore(u64),
@@ -69,8 +72,13 @@ pub(crate) enum HistoryRequest {
 impl HistoryRequest {
     pub(crate) fn before(self) -> u64 {
         match self {
+            Self::Recent => 0,
             Self::Older(before) | Self::Newer { before, .. } | Self::Restore(before) => before,
         }
+    }
+
+    pub(crate) fn before_option(self) -> Option<u64> {
+        (self != Self::Recent).then(|| self.before())
     }
 }
 
@@ -330,59 +338,6 @@ impl Transcript {
             self.show_latest();
         }
         None
-    }
-
-    pub(crate) fn apply_page(&mut self, request: HistoryRequest, page: HistoryPage) {
-        if let HistoryRequest::Restore(before) = request {
-            if self
-                .restore
-                .as_ref()
-                .is_some_and(|(expected, _)| *expected == before)
-            {
-                let (_, anchor) = self.restore.take().expect("restoration requested");
-                let window = Window::from_page(page);
-                if window.contains(&anchor.key) {
-                    self.reading = Some(Reading {
-                        window,
-                        anchor,
-                        newer: VecDeque::new(),
-                        unseen: false,
-                        manual: true,
-                    });
-                }
-            }
-            return;
-        }
-        let Some(reading) = &mut self.reading else {
-            return;
-        };
-        match request {
-            HistoryRequest::Older(before) if reading.window.older == Some(before) => {
-                reading.window.older = page.next_before;
-                for record in page.entries.into_iter().filter_map(Record::from_entry) {
-                    reading.window.insert(record);
-                }
-                if let Some(request) = reading.window.trim_back() {
-                    reading.newer.push_front(request);
-                    reading.newer.truncate(MAX_BACKTRACK_PAGES);
-                }
-            }
-            HistoryRequest::Newer { first, .. } if reading.newer.front() == Some(&request) => {
-                reading.newer.pop_front();
-                for record in page
-                    .entries
-                    .into_iter()
-                    .filter(|entry| entry.id >= first)
-                    .filter_map(Record::from_entry)
-                {
-                    reading.window.insert(record);
-                }
-                reading.window.trim_front();
-            }
-            HistoryRequest::Older(_)
-            | HistoryRequest::Newer { .. }
-            | HistoryRequest::Restore(_) => {}
-        }
     }
 
     pub(crate) fn project(&mut self, width: usize, height: usize) -> TranscriptView {
