@@ -237,6 +237,7 @@ fn draft_receipt_and_copy_feedback_keep_the_footer_in_place() {
             },
             replayed: false,
             status: Some(InputStatus::Accepted),
+            warnings: vec![],
         }),
     ));
     let rows = screen(&mut app, &statusline, 140, 24);

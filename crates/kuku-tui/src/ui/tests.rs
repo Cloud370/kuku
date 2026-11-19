@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 mod activity;
-
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
@@ -200,6 +199,7 @@ fn queued_receipt(command: &Command, event_id: u64) -> Acknowledgement {
         },
         replayed: false,
         status: Some(InputStatus::Queued),
+        warnings: vec![],
     }
 }
 

@@ -90,6 +90,7 @@ pub(crate) struct Pane {
     pub(crate) exists: bool,
     pub(crate) title: String,
     pub(crate) draft: Editor,
+    pub(crate) draft_revision: u64,
     pub(crate) transcript: Transcript,
     pub(crate) deliveries: Deliveries,
     keyboard_focus: KeyboardFocus,
@@ -117,6 +118,7 @@ pub(crate) struct Pane {
     refresh_in_flight: bool,
     cleanup_at: Option<Instant>,
     history_in_flight: Option<HistoryRequest>,
+    history_invalidated: bool,
 }
 
 impl Pane {
@@ -296,6 +298,7 @@ pub(crate) struct App {
     pub(crate) statusline_settings: StatusLineSettings,
     pub(crate) text_selection: TextSelection,
     pub(crate) pending: HashMap<String, PendingItem>,
+    pub(crate) rewind_drafts: HashMap<String, RewindDraft>,
     pub(crate) editor_width: usize,
     pub(crate) transcript_area: (usize, usize),
     pub(crate) delivery_area: Rect,
@@ -315,6 +318,15 @@ pub(crate) struct App {
     resolved_workspace: bool,
     cached: VecDeque<Address>,
     navigation: AgentNavigation,
+    pub(crate) escape_armed_at: Option<Instant>,
+    pub(crate) rewind_restore_files: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RewindDraft {
+    pub(crate) address: Address,
+    pub(crate) text: String,
+    pub(crate) revision: u64,
 }
 
 impl App {
@@ -337,6 +349,7 @@ impl App {
             statusline_settings: StatusLineSettings::default(),
             text_selection: TextSelection::default(),
             pending: HashMap::new(),
+            rewind_drafts: HashMap::new(),
             editor_width: 80,
             transcript_area: (80, 16),
             delivery_area: Rect::ZERO,
@@ -355,6 +368,8 @@ impl App {
             quit_after_save: false,
             resolved_workspace: false,
             navigation: AgentNavigation::default(),
+            escape_armed_at: None,
+            rewind_restore_files: false,
         }
     }
 
@@ -504,6 +519,64 @@ impl App {
         self.effects.push(Job::Save(command));
     }
 
+    pub(crate) fn refresh_rewind_history(&mut self) {
+        if !self.require_service() {
+            return;
+        }
+        let request = HistoryRequest::Recent;
+        let selection = self.selection();
+        let pane = self.pane_mut();
+        pane.transcript.invalidate_after_rewind();
+        if pane.history_in_flight.is_some() {
+            pane.history_invalidated = true;
+            return;
+        }
+        pane.history_invalidated = false;
+        pane.history_in_flight = Some(request);
+        self.effects.push(Job::History(selection, request));
+    }
+
+    pub(crate) fn rewind_message(&mut self, event_id: u64, text: String, restore_files: bool) {
+        if !self.require_service() {
+            return;
+        }
+        self.pane_mut().draft.remember(&text);
+        if self.rewind_drafts.len() >= pending::MAX_REWIND_DRAFTS {
+            if let Some(oldest) = self.rewind_drafts.keys().next().cloned() {
+                self.rewind_drafts.remove(&oldest);
+            }
+        }
+        let address = self.active.clone();
+        let command = Command {
+            target: self.target(&address),
+            command_id: new_id(),
+            action: Action::RewindMessage {
+                target_event_id: event_id,
+                text: text.clone(),
+                restore_files,
+            },
+        };
+        let id = command.command_id.clone();
+        self.rewind_drafts.insert(
+            id.clone(),
+            RewindDraft {
+                address: address.clone(),
+                text,
+                revision: self.pane().draft_revision,
+            },
+        );
+        self.pending.insert(
+            id.clone(),
+            PendingItem {
+                command: command.clone(),
+                stage: PendingStage::Saving,
+                origin: Some(self.generation),
+            },
+        );
+        self.update_pending_delivery(&id);
+        self.effects.push(Job::Save(command));
+    }
+
     pub(crate) fn configure(&mut self, config: AgentConfig) {
         if self.pane().exists {
             let target = self.target(&self.active);
@@ -623,10 +696,20 @@ impl App {
                 self.refreshed(result)
             }
             Update::History(selection, request, result) if selection == self.selection() => {
-                self.pane_mut().history_in_flight = None;
-                match result {
-                    Ok(page) => self.pane_mut().transcript.apply_page(request, page),
-                    Err(error) => self.problem(format!("History · {error} · scroll up to retry")),
+                if self.pane().history_invalidated {
+                    let request = HistoryRequest::Recent;
+                    let pane = self.pane_mut();
+                    pane.history_invalidated = false;
+                    pane.history_in_flight = Some(request);
+                    self.effects.push(Job::History(selection, request));
+                } else {
+                    self.pane_mut().history_in_flight = None;
+                    match result {
+                        Ok(page) => self.pane_mut().transcript.apply_page(request, page),
+                        Err(error) => {
+                            self.problem(format!("History · {error} · scroll up to retry"))
+                        }
+                    }
                 }
             }
             Update::Found(ticket, result) => {
@@ -762,6 +845,7 @@ impl App {
         pane.refresh_in_flight = false;
         pane.refresh_due = None;
         pane.history_in_flight = None;
+        pane.history_invalidated = false;
         if !self.available() {
             self.effects.push(Job::StopObserving);
         } else if self.pane().exists {

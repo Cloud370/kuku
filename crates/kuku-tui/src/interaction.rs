@@ -6,6 +6,7 @@ use crossterm::event::{
 use kuku_client::{Action, AgentConfig, Error, Timing};
 use ratatui::buffer::Buffer;
 
+use self::rewind::rewind_instructions;
 use crate::app::{Address, App, Modal, PendingItem, PendingStage};
 use crate::editor::Editor;
 use crate::jobs::{Job, Search, Selection};
@@ -15,7 +16,9 @@ use crate::output::OutputViewer;
 use crate::text::{shorten, single_line, TAB};
 use crate::transcript::{ReplySource, ToolView};
 
+mod input;
 mod pointer;
+mod rewind;
 
 const MOUSE_SCROLL_LINES: isize = 3;
 
@@ -59,43 +62,6 @@ impl App {
             .is_some_and(|notice| notice.transient())
         {
             self.notice = None;
-        }
-    }
-
-    fn key(&mut self, key: KeyEvent) {
-        self.dismiss_confirmation();
-        self.text_selection.cancel_drag();
-        if Shortcut::ESCAPE.matches(key) && self.modal.take().is_some() {
-            self.effects.push(Job::ClosePicker);
-            return;
-        }
-        match self.modal {
-            Some(Modal::Picker(_)) => self.picker_key(key),
-            Some(Modal::Prompt(_)) => self.prompt_key(key),
-            Some(Modal::Output(_)) => self.output_key(key),
-            Some(Modal::StatusLineEditor(_)) => self.statusline_key(key),
-            None => self.composer_key(key),
-        }
-    }
-
-    fn paste(&mut self, text: &str) {
-        self.dismiss_confirmation();
-        self.text_selection.cancel_drag();
-        if let Some(Modal::Picker(picker)) = &mut self.modal {
-            if picker.kind.searchable() {
-                picker.query.insert(&text.replace(['\r', '\n'], " "));
-                picker.selected = 0;
-                self.search(false);
-            }
-        } else if let Some(Modal::Prompt(prompt)) = &mut self.modal {
-            if prompt.kind.multiline() {
-                prompt.editor.insert(text);
-            } else {
-                prompt.editor.insert(&text.replace(['\r', '\n'], " "));
-            }
-        } else if self.modal.is_none() {
-            self.focus_composer();
-            self.pane_mut().draft.insert(text);
         }
     }
 
@@ -156,7 +122,7 @@ impl App {
                 self.command_menu()
             }
             key if Shortcut::REPLY.matches(key) => self.open_reply(),
-            key if Shortcut::ESCAPE.matches(key) => self.interrupt(),
+            key if Shortcut::ESCAPE.matches(key) => self.rewind_escape(),
             key if editing && Shortcut::NEXT_TURN.matches(key) => self.send(Timing::NextTurn),
             key if editing && Shortcut::ENTER.matches(key) => self.send(Timing::Steer),
             key if Shortcut::UP.matches(key)
@@ -287,6 +253,15 @@ impl App {
             return;
         }
         if Shortcut::ENTER.matches(key) {
+            if let PromptKind::RewindMessage { event_id, text, .. } = &prompt.kind {
+                let event_id = *event_id;
+                let text = text.clone();
+                let restore_files = self.rewind_restore_files;
+                self.modal = None;
+                self.rewind_restore_files = false;
+                self.rewind_message(event_id, text, restore_files);
+                return;
+            }
             if prompt.editor.text().trim().is_empty() {
                 return;
             }
@@ -323,8 +298,17 @@ impl App {
                     },
                 ),
                 PromptKind::QueuedInput { .. } => unreachable!("queued input edited above"),
+                PromptKind::RewindMessage { .. } => unreachable!("rewind confirmed above"),
             }
-        } else {
+        } else if key.code == KeyCode::Char(' ')
+            && key.modifiers.is_empty()
+            && matches!(prompt.kind, PromptKind::RewindMessage { .. })
+        {
+            self.rewind_restore_files = !self.rewind_restore_files;
+            if let PromptKind::RewindMessage { text, .. } = &prompt.kind {
+                prompt.instructions = rewind_instructions(text, self.rewind_restore_files);
+            }
+        } else if !matches!(prompt.kind, PromptKind::RewindMessage { .. }) {
             let multiline = prompt.kind.multiline();
             edit(&mut prompt.editor, key, self.modal_editor_width, multiline);
         }
@@ -468,6 +452,23 @@ impl App {
             ChoiceKind::EditQueued(id) => self.edit_queued(id),
             ChoiceKind::Withdraw(input_command_id) => {
                 self.issue(self.active.clone(), Action::Withdraw { input_command_id })
+            }
+            ChoiceKind::RewindMessage {
+                event_id,
+                turn,
+                text,
+            } => {
+                self.rewind_restore_files = false;
+                self.modal = Some(Modal::Prompt(Prompt {
+                    kind: PromptKind::RewindMessage {
+                        event_id,
+                        text: text.clone(),
+                    },
+                    title: format!("Rewind to message · Turn {turn}"),
+                    instructions: rewind_instructions(&text, false),
+                    instructions_top: 0,
+                    editor: Editor::default(),
+                }));
             }
             ChoiceKind::Pending(id) => self.open_pending_item(&id),
             ChoiceKind::PendingRetry(id) => self.pending_retry(&id),
@@ -915,6 +916,9 @@ fn pending_label(item: &PendingItem) -> String {
         }
         Action::ReplaceQueued { text, .. } => {
             format!("Queued edit · {}", shorten(&single_line(text), 110))
+        }
+        Action::RewindMessage { text, .. } => {
+            format!("Rewind · {}", shorten(&single_line(text), 110))
         }
         Action::CreateAgent { .. } => "Create Agent".to_owned(),
         Action::Configure { .. } => "Change settings".to_owned(),
