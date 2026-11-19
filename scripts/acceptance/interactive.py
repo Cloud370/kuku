@@ -363,8 +363,16 @@ def editable_multiline_paste(client):
         discarded = "draft to clear with Ctrl+C"
         terminal.type(discarded)
         terminal.press("\x03")
-        view = terminal.expect("Enter sends your first prompt")
-        assert view["exit_code"] is None and discarded not in view["screen"]
+        view = eventually(
+            "Ctrl+C clears the first-prompt draft",
+            lambda: (
+                result
+                if (result := terminal.request("screen"))["exit_code"] is None
+                and "Enter sends your first prompt" in result["screen"]
+                and discarded not in result["screen"]
+                else None
+            ),
+        )
 
         terminal.press("/qui\t")
 
