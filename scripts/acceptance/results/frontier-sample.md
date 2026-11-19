@@ -6,11 +6,11 @@ This study compares Kuku with Pi 1.4.0 and Codex CLI 0.164.0 on four tasks from 
 
 | Harness | Tasks passed / attempts | Mean inference USD per attempt | Total inference USD / passes | Mean agent + verifier time |
 |---|---:|---:|---:|---:|
-| Kuku, latest attempt per task | 3/4 | 0.05797 | 0.07729 | 253 s |
+| Kuku, latest attempt per task | 3/4 | 0.05799 | 0.07732 | 254 s |
 | Pi 1.4.0 | 13/16 | 0.04340 | 0.05342 | 872 s |
 | Codex CLI 0.164.0 | 15/16 | 0.03041 | 0.03243 | 834 s |
 
-The latest local attempts come from round 7 for Vim, round 9 for async cancellation and round 11 for both log tasks. All four turns completed. Vim lost its script format check after passing in round 6. Async cancellation accounted for $0.12508 of the latest $0.23187 in inference charges. Each published peer ran four attempts per task. Different execution hosts and missing peer first-token and throughput measurements prevent attributing the observed wall-time differences to a harness alone. [Attempt data and measurement definitions](frontier-v1.1-sample.json)
+The latest local attempts come from round 7 for Vim, round 9 for async cancellation, round 11 for log regex and round 12 for log aggregation. All four turns completed. Vim lost its script format check after passing in round 6. Async cancellation accounted for $0.12508 of the latest $0.23197 in inference charges. Each published peer ran four attempts per task. Different execution hosts and missing peer first-token and throughput measurements prevent attributing the observed wall-time differences to a harness alone. [Attempt data and measurement definitions](frontier-v1.1-sample.json)
 
 ## Diagnostic runs
 
@@ -28,10 +28,10 @@ The four scored attempts used DeepSeek-V4.1-Flash-1017 through OpenRouter, pinne
 
 | Task | Original grader | SDK finished | SDK + verifier seconds | Inference USD | Cached input | TTFT p50¹ | Output TPS p50¹ | Mean / peak SDK RSS |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Log date ranges | 2/2 checks | yes | 42.4 + 12.7 | 0.01085 | 80.6% | 1.44 s | 203 | 34.1 / 34.3 MiB |
+| Log date ranges | 2/2 checks | yes | 42.4 + 12.7 | 0.01085 | 80.6% | 1.44 s | 203 | 34.1 / 34.9 MiB |
 | Async cancellation | 6/6 checks | no | 310.9 + 27.1 | 0.07315 | 88.8% | 1.87 s | 212 | 34.3 / 36.2 MiB |
-| Log regex | 1/1 check | no | 210.9 + 115.4 | 0.04781 | 87.4% | 1.68 s | 195 | 35.1 / 37.5 MiB |
-| Large-file Vim edit | 0/5 checks | no | 331.6 + 12.9 | 0.06756 | 85.5% | 1.68 s | 167 | 35.1 / 35.2 MiB |
+| Log regex | 1/1 check | no | 210.9 + 115.4 | 0.04781 | 87.4% | 1.68 s | 195 | 35.1 / 38.2 MiB |
+| Large-file Vim edit | 0/5 checks | no | 331.6 + 12.9 | 0.06756 | 85.5% | 1.68 s | 167 | 35.1 / 36.0 MiB |
 
 ¹ TTFT measures request dispatch to the first meaningful output observed at the proxy. Stream TPS divides completion tokens by the interval from the first meaningful delta through end of stream. Reasoning tokens contribute to completion tokens. Native provider TTFT was unavailable. Memory, CPU, I/O units, sampling coverage and per-request metric coverage are included in the JSON report.
 
@@ -73,7 +73,7 @@ Two fresh sessions at `25ef0eb` used the ordinary SDK turn behavior. Neither ses
 | Task | Original grader | SDK finish | Upstream attempts | Reported inference USD | SDK + verifier seconds | Cached input³ | Proxy first output p50 | Generation TPS | Mean / peak SDK RSS |
 |---|---:|---|---:|---:|---:|---:|---:|---:|---:|
 | Async cancellation | 6/6 | HTTP 429 | 18 | 0.06509 | 248.4 + 25.9 | 91.6% | 1.65 s | 186.0 | 34.3 / 36.7 MiB |
-| Large-file Vim edit | 5/5 | completed | 13 | 0.03732 | 191.8 + 42.3 | 73.1% | 1.33 s | 174.0 | 34.6 / 34.8 MiB |
+| Large-file Vim edit | 5/5 | completed | 13 | 0.03732 | 191.8 + 42.3 | 73.1% | 1.33 s | 174.0 | 34.6 / 35.3 MiB |
 
 ³ Cost, cache and timing measurements cover 17 completed async streams and all 13 Vim streams. The delayed receipts for all 30 confirmed Baseten and matched the stream charges. The 18th async attempt received an upstream HTTP 429 before streaming. The ledger held $0.4718592 against that unpriced request. The SDK's HTTP classifier considered temporary 429 errors retryable, but the runtime filtered out that failure kind. The async session also repeated the same-version overwrite failures described above.
 
@@ -97,7 +97,7 @@ The `round-7` async and Vim trials used the debug SDK example at `b0b3cf2` and r
 |---|---:|---:|---:|---:|---:|---:|---:|
 | Async cancellation | 35/35 | 91.6% | 1.64 s | 149.9 | 10.39 | 35.2 / 37.0 MiB | 496 kB / 5.54 MB |
 | Large-file Vim edit | 12/12 | 77.5% | 1.36 s | 152.7 | 1.82 | 35.2 / 36.0 MiB | 94.6 MB / 132 MB |
-| Log regex | 18/18 | 84.3% | 1.53 s | 160.4 | 3.86 | 35.0 / 35.4 MiB | 11.7 MB / 1.59 MB |
+| Log regex | 18/18 | 84.3% | 1.53 s | 160.4 | 3.86 | 35.0 / 36.3 MiB | 11.7 MB / 1.59 MB |
 
 The delayed receipts confirmed Baseten and matched the stream charges on all 65 requests. First output is the proxy's first meaningful delta. Provider-native TTFT was unavailable. The latest Docker block I/O samples include the tool processes and use Docker's rounded values. The WSL2 kernel had `CONFIG_TASKSTATS` disabled and lacked `/proc/PID/io`, so per-process byte I/O is unknown. The SDK's `getrusage` counters reported zero input and output blocks in all three runs. The closed Sessions retained 834,879, 337,833 and 538,502 file bytes for async, Vim and regex, respectively.
 
@@ -138,29 +138,32 @@ The original grader passed **2/2** and the SDK completed its turn and closed the
 
 The meter saw nine local attempts. Attempt five failed to establish an HTTPS connection before the meter could forward the request. The meter returned HTTP 503 and charged zero for that attempt. The SDK recorded a retry of prepared request 5, then continued to normal completion. Its snapshot counted nine attempts, including one without usage. The durable log contained eight logical requests and one retry. The original selector compared the nine attempts with the eight logical requests and rejected the evidence. The corrected inspector passed on the retained SDK and Session files with streaming and paid output checks enabled. The JSON preserves the original `sdk_evidence` failure and the grader's reward.
 
-The eight streams had 83.6% cached input, proxy first output of 1.32 seconds at p50 and 155.3 generation tokens per second. The SDK used 0.73 CPU seconds and averaged 34.9 MiB RSS with a 35.1 MiB peak. The latest container block I/O was 6.41 MB read and 700 kB written. The SDK's `getrusage` reported zero input and output blocks. Per-process byte I/O and provider-native TTFT were unavailable. The closed Session retained 212,568 file bytes.
+The eight streams had 83.6% cached input, proxy first output of 1.32 seconds at p50 and 155.3 generation tokens per second. The SDK used 0.73 CPU seconds and averaged 34.9 MiB RSS with a 35.4 MiB peak. The latest container block I/O was 6.41 MB read and 700 kB written. The SDK's `getrusage` reported zero input and output blocks. Per-process byte I/O and provider-native TTFT were unavailable. The closed Session retained 212,568 file bytes.
 
 Replay the command above with `--case log-summary-date-ranges` at `1895e01` and omit `--max-output-tokens`. Append its result as `--attempt log-summary-date-ranges RESULT_DIR round-8` when regenerating the JSON. The four follow-up trials added **$0.177278256** in provider-reported charges. The pilot OpenRouter ledger accounted **$3.122238164**, including the earlier conservative holds.
 
 ## Exact edits and QuickJS tool selection
 
-Five fresh attempts used the same pinned Baseten model, max reasoning and original graders. Async cancellation and log regex kept their 131,072-token output allowance. The three log aggregation trials used 262,144. Each had a $1.50 case cap. All 74 streams received matching provider receipts. The five attempts added **$0.223446552** in inference charges. [Attempt records](frontier-v1.1-sample.json)
+Six fresh attempts used the same pinned Baseten model, max reasoning and original graders. Async cancellation and log regex kept their 131,072-token output allowance. The four log aggregation trials used 262,144. Each had a $1.50 case cap. All 84 streams received matching provider receipts. The six attempts added **$0.235461352** in inference charges. [Attempt records](frontier-v1.1-sample.json)
 
 | Case / round | Checks | Model requests | QuickJS calls / host actions | Inference USD | SDK + verifier seconds | Cache hit | First output p50 | Generation TPS p50 | SDK mean / peak RSS |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Async / 9 | 6/6 | 30 | 0 / 0 | 0.12508 | 429.5 + 25.7 | 94.8% | 1.64 s | 208.2 | 36.0 / 37.9 MiB |
-| Log aggregation / 9, control | 2/2 | 7 | 0 / 0 | 0.00779 | 25.8 + 13.5 | 81.3% | 1.24 s | 156.2 | 34.7 / 35.1 MiB |
-| Log aggregation / 10, composition guidance | 2/2 | 11 | 1 / 1 | 0.01579 | 51.7 + 12.6 | 84.9% | 1.40 s | 147.5 | 36.0 / 36.4 MiB |
-| Log aggregation / 11, output field guidance | 2/2 | 8 | 5 / 5 | 0.01191 | 45.8 + 13.7 | 83.3% | 1.43 s | 142.4 | 35.7 / 36.3 MiB |
-| Log regex / 11 | 1/1 | 18 | 2 / 15 | 0.06287 | 274.5 + 20.8 | 90.9% | 1.55 s | 147.3 | 35.2 / 37.4 MiB |
+| Async / 9 | 6/6 | 30 | 0 / 0 | 0.12508 | 429.5 + 25.7 | 94.8% | 1.64 s | 208.2 | 36.0 / 39.4 MiB |
+| Log aggregation / 9, control | 2/2 | 7 | 0 / 0 | 0.00779 | 25.8 + 13.5 | 81.3% | 1.24 s | 156.2 | 34.7 / 35.6 MiB |
+| Log aggregation / 10, composition guidance | 2/2 | 11 | 1 / 1 | 0.01579 | 51.7 + 12.6 | 84.9% | 1.40 s | 147.5 | 36.0 / 37.1 MiB |
+| Log aggregation / 11, output field guidance | 2/2 | 8 | 5 / 5 | 0.01191 | 45.8 + 13.7 | 83.3% | 1.43 s | 142.4 | 35.7 / 36.6 MiB |
+| Log aggregation / 12, complete capture guidance | 2/2 | 10 | 0 / 0 | 0.01201 | 48.2 + 12.1 | 85.6% | 1.28 s | 133.8 | 35.0 / 35.6 MiB |
+| Log regex / 11 | 1/1 | 18 | 2 / 15 | 0.06287 | 274.5 + 20.8 | 90.9% | 1.55 s | 147.3 | 35.2 / 37.8 MiB |
 
-First output is measured at the proxy. TPS uses native completion tokens and generation duration from the provider receipt. Provider-native TTFT and per-process I/O bytes are unavailable on this host. Container block I/O, harness CPU time and memory sampling coverage are included in the JSON.
+First output is measured at the proxy. TPS uses native completion tokens and generation duration from the provider receipt. Provider-native TTFT and per-process I/O bytes are unavailable on this host. Container block I/O, harness CPU time and memory sampling coverage are included in the JSON. Peak RSS uses the largest observed process RSS, sampled high-water mark or final self-reported high-water mark. In round 12 the sampler observed 36,436 KiB and the SDK reported 35,504 KiB at exit. Raw observations and the self-usage figure are preserved. Historical peaks use the same reconciliation.
 
 - **Async edits.** The four previously rejected edits each targeted text that still occurred exactly once. A loopback model replayed the original arguments and relevant earlier file operations through both SDK binaries. The old binary rejected all four. The new binary committed all four, with output bytes matching independent single replacements. In the fresh paid run every `edit_file` succeeded and requests fell from 35 to 30. Cost rose from $0.07321 to $0.12508. Output tokens rose from 31,323 to 71,495, including 26,991 reasoning tokens on the new run's first request before any tool executed.
-- **Log aggregation.** The control used direct tools. Composition guidance produced one QuickJS call that invoked Python. The command produced 123 bytes, but the model's script returned fields that were undefined. The next model request received only `{"exit":0}` and repeated the command. Replaying the identical command with `result.output_preview` returned all 123 bytes in one execution. In the output-field trial, the model used the correct field but initially counted a clipped preview. The next request saw `capture_complete: true` plus the counts and received no preview truncation flag. On the same 737,299-byte stdout, an offline replay counted 260 entries from the preview and 94,547 from the retained output iterator. The latter count matched an independent scan. Both replays used the public SDK with a loopback model and add no scored attempts.
+- **Log aggregation.** The control used direct tools. Composition guidance produced one QuickJS call that invoked Python. The command produced 123 bytes, but the model's script returned fields that were undefined. The next model request received only `{"exit":0}` and repeated the command. Replaying the identical command with `result.output_preview` returned all 123 bytes in one execution. In the output-field trial, the model used the correct field but initially counted a clipped preview. The next request saw `capture_complete: true` plus the counts and received no preview truncation flag. On the same 737,299-byte stdout, an offline replay counted 260 entries from the preview and 94,547 from the retained output iterator. The latter count matched an independent scan. Both replays used the public SDK with a loopback model and add no scored attempts. Round 12 clarified the difference between complete capture and preview in the model-facing tool description. That trial used only direct tools, so its full task pass gives no live evidence about the new script advice. The four log runs offer no evidence of lower cost from raising QuickJS call frequency.
 - **Log regex.** The model used two QuickJS calls for 15 host actions, including grouped file inspections and cleanup. Both the round-7 direct-tool attempt and this one passed in 18 requests and cost approximately $0.06286. More script calls alone did not reduce the number of model requests in this comparison.
 
-Each row is a single stochastic attempt. The comparison distinguishes the script's returned value in the next model request from the host facts retained for inspection. Repeat using the earlier Frontier command with the recorded commit and output allowance, a new run ID, and your own budget ledger. The frozen official snapshot and original attempt order are preserved in the report.
+Each row is a single stochastic attempt. In this Chat Completions route the next tool message carries `model_content`. The SDK stores nested action facts separately. The output-field diagnosis above uses the admitted tool message and its persisted host receipt. [Wire encoding](../../../crates/kuku/src/provider/openai_compat.rs) · [Script result](../../../crates/kuku/src/tool/workspace_script/runtime.rs)
+
+Repeat using the earlier Frontier command with the recorded commit and output allowance, a new run ID, and your own budget ledger. The frozen official snapshot and original attempt order are preserved in the report.
 
 ## Turn completion in peer implementations
 
