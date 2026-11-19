@@ -70,6 +70,7 @@ fn acknowledge_withdrawal(
             },
             replayed: false,
             status,
+            warnings: vec![],
         }),
     ));
 }

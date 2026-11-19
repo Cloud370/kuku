@@ -138,6 +138,11 @@ pub(crate) enum ChoiceKind {
     Tier(String),
     Connection(String),
     Thinking(Option<String>),
+    RewindMessage {
+        event_id: u64,
+        turn: u64,
+        text: String,
+    },
     Pending(String),
     PendingRetry(String),
     PendingCheck(String),
@@ -173,6 +178,7 @@ impl ChoiceKind {
                 | Self::Agent { .. }
                 | Self::CreateAgent
                 | Self::Connection(_)
+                | Self::RewindMessage { .. }
                 | Self::Pending(_)
                 | Self::PendingOpen { .. }
                 | Self::Detail(_)
@@ -239,6 +245,7 @@ pub(crate) enum PickerKind {
     Details,
     Tools,
     Server,
+    Rewind,
 }
 
 impl PickerKind {
@@ -255,6 +262,7 @@ impl PickerKind {
             Self::Details => "Transcript details",
             Self::Tools => "Tool details and saved output",
             Self::Server => "Service status",
+            Self::Rewind => "Rewind to message",
         }
     }
 
@@ -450,6 +458,7 @@ pub(crate) enum PromptKind {
     Model { connection: String },
     Question { request_id: String, target: Target },
     QueuedInput { input_command_id: String },
+    RewindMessage { event_id: u64, text: String },
 }
 
 impl PromptKind {

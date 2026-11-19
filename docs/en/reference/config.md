@@ -16,6 +16,8 @@ $KUKU_HOME/config.toml
 
 The HTTP server defaults to `config.toml` in its data directory and accepts an explicit `--config` path. An already running managed server reports its effective configuration with `kuku server status`. [Configuration](../start/configuration.md)
 
+The interactive TUI offers first-run setup only when its selected local config path is absent. It leaves existing files untouched and stores a credential environment-variable reference, not a key value. See [First-run TUI setup](../start/configuration.md#first-run-tui-setup) for the setup flow and editing defaults.
+
 The terminal client uses a separate preferences file. [Terminal preferences](#terminal-preferences)
 
 ## Top-Level Keys

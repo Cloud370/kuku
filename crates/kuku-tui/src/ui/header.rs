@@ -8,7 +8,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::{App, ServiceStatus};
 use crate::keys::Shortcut;
 use crate::markup::{render_literal, wrap};
-use crate::text::{shorten, single_line};
+use crate::text::{shorten, shorten_middle, single_line, single_line_path};
 use crate::theme::{emphasis, ACCENT, KUKU_MARK, MUTED, WARNING};
 
 const BRAND: &str = "kuku";
@@ -103,7 +103,8 @@ pub(super) fn render_welcome(frame: &mut Frame<'_>, area: Rect, app: &App, show_
         lines.push(line);
     }
     let remaining = usize::from(body.height).saturating_sub(lines.len());
-    lines.extend(welcome_actions(width, remaining));
+    let workspace = format!("Workspace: {}", single_line_path(&app.workspace));
+    lines.extend(welcome_actions(width, remaining, &workspace));
     frame.render_widget(Paragraph::new(lines), body);
 }
 
@@ -138,7 +139,7 @@ fn wordmark(mark: bool) -> Line<'static> {
     line
 }
 
-fn welcome_actions(width: usize, rows: usize) -> Vec<Line<'static>> {
+fn welcome_actions(width: usize, rows: usize, workspace: &str) -> Vec<Line<'static>> {
     let muted = Style::default().fg(MUTED);
     let action = Style::default().fg(Color::Reset);
     let send = if width >= 31 {
@@ -157,19 +158,28 @@ fn welcome_actions(width: usize, rows: usize) -> Vec<Line<'static>> {
     ]);
     let command = Span::styled("/resume", action);
     let caption = Span::styled(resume, muted);
-    if input.width() + SEPARATOR.width() + command.width() + caption.width() <= width {
-        input.push_span(Span::styled(SEPARATOR, muted));
-        input.push_span(command);
-        input.push_span(caption);
-        return vec![input];
-    }
-    if rows <= 1 {
-        return vec![Line::styled(
-            shorten("Enter to send · /resume", width),
+    let mut actions =
+        if input.width() + SEPARATOR.width() + command.width() + caption.width() <= width {
+            input.push_span(Span::styled(SEPARATOR, muted));
+            input.push_span(command);
+            input.push_span(caption);
+            vec![input]
+        } else if rows <= 1 {
+            vec![Line::styled(
+                shorten("Enter to send · /resume", width),
+                muted,
+            )]
+        } else {
+            vec![input, Line::from(vec![command, caption])]
+        };
+    if width >= 70 && rows.saturating_sub(actions.len()) >= 2 {
+        actions.push(Line::styled(shorten_middle(workspace, width), muted));
+        actions.push(Line::styled(
+            "/model is session-only; config.toml sets defaults.",
             muted,
-        )];
+        ));
     }
-    vec![input, Line::from(vec![command, caption])]
+    actions
 }
 
 fn append(line: &mut Line<'static>, label: &str, width: usize, style: Style) {

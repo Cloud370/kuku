@@ -19,7 +19,8 @@ CLI 在标准输出中逐行写出 JSON，在标准错误中给出下一游标�
 | `turn.started`、`message.user`、`model.response`、`model.error` | Turn 的输入和模型服务结果。`turn.completed`、`turn.interrupted`、`turn.cancelled` 记录终止状态。 |
 | `runtime.context_segment`、`runtime.context_admitted`、`runtime.step_prepared` | 静态上下文、新接纳的消息，以及确认消息边界的 Step 准备记录。`body_hash` 标识编码后的请求。 |
 | `runtime.provider_report`、`runtime.model_usage`、`runtime.provider_replay` | 模型服务实际回报的元数据、token 用量或可用的协议原生续接数据。 |
-| `runtime.model_retry` | 记录对已准备请求的有界重试及首次失败类型。 |
+| `runtime.model_retry` | 交互客户端投影支持已准备请求的扩展重试决定格式；此分支不包含核心生产端更新，因此当前运行时事件仍使用旧格式。旧记录缺少 `phase` 时按 `started` 处理。扩展格式的 `phase` 为 `waiting`、`started` 或 `stopped`；等待或开始时，`attempt` 是下一次尝试的 1 起始编号；停止时是最终失败的尝试编号。`failed_attempt`、`max_attempts`、`failed_kind`、`request_id`、`delay_ms`、`ts`、`will_retry`、`message`、`status` 和 `stop_reason` 是可选的策略或诊断字段。只有 `will_retry` 表示是否会发送下一请求。`delay_ms` 仅适用于 `waiting`；`stop_reason` 可以是 `non_retryable`、`attempt_limit`、`request_budget`、`disabled` 或 `stream_started`。 |
+| `model.recovery` | 模型输出恢复事件，保留原有的 `attempt`、`max_attempts`、`reason`、`from_request_id` 和 `to_request_id`，以及恢复专属诊断详情。 |
 | `tool.call`、`runtime.tool_prepared`、`runtime.tool_dispatched`、`tool.result` | 调用请求、最终参数和工具定义、副作用前的派发记录、已落盘的结果。被拒绝的动作可以有工具结果而没有派发记录。 |
 | `permission.requested`、`permission.allow`、`permission.deny` | 某次工具调用的延后授权或决定。可恢复的 Agent 等待和关联回复记录在 `runtime.operation`。 |
 | `handoff` | 用于准备后继上下文段的摘要边界。 |

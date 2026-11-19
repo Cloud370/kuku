@@ -16,6 +16,14 @@ $KUKU_HOME/config.toml
 
 本地服务默认读取所选数据目录下的 `config.toml`。通过 `--config` 可以选择其他文件。运行 `kuku server status` 查看生效路径。已运行的受管服务要切换配置文件时，在服务空闲后运行 `kuku server restart --config PATH`。[文件布局](../reference/file-layout.md) · [运行服务](../guides/run-the-server.md)
 
+## TUI 首次运行设置
+
+交互式启动 `kuku` 时，如果本地配置文件不存在，TUI 会在打开 Session 前提供简短设置流程。它使用与本地服务相同的解析路径，遵循 `--data-dir`、`KUKU_HOME` 和 `--config`，并显示该路径与工作区。所选配置路径只要已存在（包括格式错误的文件），或连接是远程连接，就会跳过设置。
+
+选择 provider、字面模型 ID 和凭据环境变量的**名称**。模型 ID 不能以 `$` 开头，因为配置加载器会将其解释为环境变量引用。设置流程不会显示或保存密钥值，也不会发起模型请求。它只检查指定变量是否有非空值；不会验证凭据或模型 ID。如果变量不存在或为空，可以保存并退出，再在启动 `kuku` 的 shell 中设置变量并重新启动。取消不会创建配置文件。
+
+生成的配置以 `balanced` 为默认 tier，并将所选 provider 和模型用于 `strong`、`balanced`、`light` 三个 tier。编辑 `config.toml` 或运行 `kuku config set` 可以修改持久默认值和各个 tier。在 TUI 中，`/model` 只修改所选 Agent 当前 Session 的配置，不会改变已保存的配置默认值。
+
 ## 设置模型连接
 
 默认配置定义了两个 provider：

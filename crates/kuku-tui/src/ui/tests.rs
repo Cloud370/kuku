@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 mod activity;
-
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
@@ -201,6 +200,7 @@ fn queued_receipt(command: &Command, event_id: u64) -> Acknowledgement {
         },
         replayed: false,
         status: Some(InputStatus::Queued),
+        warnings: vec![],
     }
 }
 
@@ -281,6 +281,8 @@ fn blank_welcome_scales_down_and_active_session_uses_one_branded_row() {
             assert!(rows[5].starts_with(&format!("{indent}/resume opens a saved session")));
         } else {
             assert!(rows[4].contains("/resume opens a saved session"));
+            assert!(rows[5].contains("Workspace: /workspace"));
+            assert!(rows[6].contains("/model is session-only; config.toml sets defaults."));
         }
     }
 
@@ -295,6 +297,19 @@ fn blank_welcome_scales_down_and_active_session_uses_one_branded_row() {
     assert!(heading.contains("修") && heading.contains("复"));
     assert!(active.contains("Opening"));
     assert!(!active.contains("New session"));
+}
+
+#[test]
+fn blank_welcome_shows_the_shortened_workspace_path() {
+    let mut app = app();
+    app.workspace = PathBuf::from(format!("/{}/actual-workspace", "long".repeat(40)));
+    let welcome = screen(&mut app, 118, 28);
+    let workspace = welcome
+        .lines()
+        .find(|line| line.contains("Workspace: "))
+        .unwrap();
+    assert!(workspace.contains('…'));
+    assert!(workspace.trim_end().ends_with("actual-workspace"));
 }
 
 #[test]

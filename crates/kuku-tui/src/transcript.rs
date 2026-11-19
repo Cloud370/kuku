@@ -16,6 +16,7 @@ mod message;
 mod notes;
 mod preview;
 mod reply;
+mod rewind;
 mod row;
 use row::Row;
 mod tool;
@@ -61,6 +62,7 @@ enum AnchorLine {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HistoryRequest {
+    Recent,
     Older(u64),
     Newer { first: u64, before: u64 },
     Restore(u64),
@@ -69,8 +71,13 @@ pub(crate) enum HistoryRequest {
 impl HistoryRequest {
     pub(crate) fn before(self) -> u64 {
         match self {
+            Self::Recent => 0,
             Self::Older(before) | Self::Newer { before, .. } | Self::Restore(before) => before,
         }
+    }
+
+    pub(crate) fn before_option(self) -> Option<u64> {
+        (self != Self::Recent).then(|| self.before())
     }
 }
 
@@ -107,6 +114,16 @@ pub(crate) struct Transcript {
 }
 
 impl Transcript {
+    pub(crate) fn invalidate_after_rewind(&mut self) {
+        self.reply_position = None;
+        self.reading = None;
+        self.restore = None;
+        self.latest_reply = LatestReply::default();
+        self.recent = Window::default();
+        self.current_execution = None;
+        self.detail_items.visible.clear();
+    }
+
     pub(crate) fn replace_recent(&mut self, page: HistoryPage) {
         self.reply_position = None;
         if let Some(reading) = &mut self.reading {
@@ -333,6 +350,10 @@ impl Transcript {
     }
 
     pub(crate) fn apply_page(&mut self, request: HistoryRequest, page: HistoryPage) {
+        if request == HistoryRequest::Recent {
+            self.replace_recent(page);
+            return;
+        }
         if let HistoryRequest::Restore(before) = request {
             if self
                 .restore
@@ -381,7 +402,8 @@ impl Transcript {
             }
             HistoryRequest::Older(_)
             | HistoryRequest::Newer { .. }
-            | HistoryRequest::Restore(_) => {}
+            | HistoryRequest::Restore(_)
+            | HistoryRequest::Recent => {}
         }
     }
 
@@ -712,7 +734,30 @@ impl Record {
                     Body::Notice("Execution stopped", text, MUTED)
                 }
             }
-            HistoryKind::Error => Body::Notice("Provider error", text, ERROR),
+            HistoryKind::Error => {
+                let code = entry.details.get("code").and_then(Value::as_str);
+                let title = crate::retry_notice::model_error_title(code);
+                let hint = crate::retry_notice::model_error_hint(code);
+                let notice = if text.is_empty() {
+                    format!("Next step: {hint}")
+                } else {
+                    format!("{text}\n\nNext step: {hint}")
+                };
+                Body::Notice(title, notice, ERROR)
+            }
+            HistoryKind::Retry => {
+                let retry = entry
+                    .details
+                    .get("retry")
+                    .cloned()
+                    .and_then(|value| serde_json::from_value(value).ok())
+                    .unwrap_or_default();
+                Body::Notice(
+                    "Retry history",
+                    crate::retry_notice::history_text(&retry),
+                    WARNING,
+                )
+            }
             HistoryKind::TurnSummary if entry.turn_summary.is_some() => Body::TurnSummary,
             HistoryKind::TurnSummary => return None,
             HistoryKind::Other => return None,
