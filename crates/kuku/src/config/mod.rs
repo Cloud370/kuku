@@ -7,7 +7,7 @@ pub use mutate::{config_patch_defaults, generate_default, load_and_patch_config,
 pub use provider::{
     OpenRouterPrice, OpenRouterRouting, ProviderAuth, ProviderOptions, ProviderProfile,
 };
-pub use resolve::{load_config, show_redacted};
+pub use resolve::{load_config, parse_config_text, show_redacted};
 pub use types::{
     ApiKey, Config, ConfigFile, DiscoveryConfig, HandoffConfig, LogsConfig, ModelEntry,
     PluginConfig, ProviderConfig, ProviderEntry, ProviderFormat, ResolvedThinking, ThinkLevel,

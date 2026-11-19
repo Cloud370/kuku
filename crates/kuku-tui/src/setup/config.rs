@@ -2,7 +2,7 @@ use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use kuku::config::{generate_default, load_config, ApiKey, Config, ConfigFile};
+use kuku::config::{generate_default, load_config, parse_config_text, ApiKey, Config, ConfigFile};
 use kuku::util::{is_valid_private_key, private_directory, sync_private_directory};
 use kuku_client::ConnectionOptions;
 use tempfile::{Builder, NamedTempFile};
@@ -437,7 +437,7 @@ fn save_with_hook(
     }
 
     let output = document.to_string();
-    let validated: ConfigFile = toml::from_str(&output)
+    let validated: ConfigFile = parse_config_text(&output)
         .map_err(|_| invalid_config("the edited configuration is invalid"))?;
     validated
         .resolve()

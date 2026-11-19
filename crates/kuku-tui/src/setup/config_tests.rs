@@ -41,7 +41,7 @@ async fn existing_settings_preserve_comments_providers_tiers_and_connection_opti
     let settings = Settings::load(options(directory.path(), Some(config.clone())))
         .await
         .unwrap();
-    let mut state = SetupState::new(&settings);
+    let state = SetupState::new(&settings);
     assert!(
         matches!(state.choice(), crate::setup::ConnectionChoice::Existing(name) if name == "anthropic")
     );
@@ -57,6 +57,54 @@ async fn existing_settings_preserve_comments_providers_tiers_and_connection_opti
     assert_eq!("preserve-strong", parsed.model["strong"].model);
     assert_eq!("preserve-light", parsed.model["light"].model);
     assert!(parsed.provider.contains_key("openai"));
+}
+
+#[tokio::test]
+async fn saving_uses_sdk_environment_expansion_and_preserves_references() {
+    const TIER: &str = "_KUKU_SETUP_TEST_TIER";
+    const PROVIDER: &str = "_KUKU_SETUP_TEST_PROVIDER";
+    const MODEL: &str = "_KUKU_SETUP_TEST_MODEL";
+    const FORMAT: &str = "_KUKU_SETUP_TEST_FORMAT";
+    std::env::set_var(TIER, "balanced");
+    std::env::set_var(PROVIDER, "anthropic");
+    std::env::set_var(MODEL, "fixture-env-model");
+    std::env::set_var(FORMAT, "anthropic");
+
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("custom.toml");
+    let contents = generate_default()
+        .replace(
+            "default_model = \"balanced\"",
+            &format!("default_model = \"${TIER}\""),
+        )
+        .replace("provider = \"anthropic\"", &format!("provider = \"${PROVIDER}\""))
+        .replace(
+            "model = \"claude-sonnet-4-6\"",
+            &format!("model = \"${MODEL}\""),
+        )
+        .replace("format = \"anthropic\"", &format!("format = \"${FORMAT}\""));
+    fs::write(&config, contents).unwrap();
+
+    let settings = Settings::load(options(directory.path(), Some(config.clone())))
+        .await
+        .unwrap();
+    let mut state = SetupState::new(&settings);
+    save(&settings, &state).unwrap();
+
+    let output = fs::read_to_string(&config).unwrap();
+    assert!(output.contains(&format!("default_model = \"${TIER}\"")));
+    assert!(output.contains(&format!("provider = \"${PROVIDER}\"")));
+    assert!(output.contains(&format!("model = \"${MODEL}\"")));
+    assert!(output.contains(&format!("format = \"${FORMAT}\"")));
+    let parsed = load_config(&config).unwrap();
+    assert_eq!(Some("balanced"), parsed.default_model.as_deref());
+    assert_eq!("anthropic", parsed.model["strong"].provider);
+    assert_eq!("fixture-env-model", parsed.model["strong"].model);
+    assert_eq!("anthropic", parsed.provider["anthropic"].format.as_str());
+
+    for name in [TIER, PROVIDER, MODEL, FORMAT] {
+        std::env::remove_var(name);
+    }
 }
 
 #[tokio::test]
