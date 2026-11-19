@@ -4,7 +4,6 @@ pub mod agents;
 pub mod config;
 pub mod delete;
 pub mod events;
-pub mod init;
 pub mod list;
 pub mod pending;
 pub mod prompts;
@@ -34,7 +33,8 @@ pub async fn dispatch(command: Command, target: &ConnectionArgs) -> CliResult {
         }
         Command::Init => {
             require_local(target)?;
-            init::run(target)
+            kuku_tui::setup(target.options()).await?;
+            Ok(())
         }
         Command::Prompts(args) => {
             require_local(target)?;
