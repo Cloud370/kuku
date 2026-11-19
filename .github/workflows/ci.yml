@@ -146,6 +146,15 @@ jobs:
           if ($logs.Count -gt 0) { Copy-Item -Path $logs.FullName -Destination $destination -Force }
           $summary = Join-Path $source 'session-runtime-windows-diagnostic-summary.txt'
           if (Test-Path $summary) { Copy-Item -Path $summary -Destination $destination -Force }
+      - name: Upload Windows runtime diagnostic evidence
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: session-runtime-diagnostics-${{ matrix.os }}
+          path: |
+            benchmarks/acceptance/ci-contract/session-runtime-windows-diagnostic-iteration-*.log
+            benchmarks/acceptance/ci-contract/session-runtime-windows-diagnostic-summary.txt
+          if-no-files-found: warn
       - name: Installed client on ${{ matrix.terminal }}
         if: ${{ !cancelled() && (steps.contract.outcome == 'success' || steps.contract.outcome == 'failure') }}
         env:
