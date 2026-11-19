@@ -23,6 +23,8 @@ struct ToolCallKey {
 #[derive(Default)]
 struct ResponseGroup {
     request_id: Option<String>,
+    assistant_source_event_id: Option<u64>,
+    tool_result_source_event_id: Option<u64>,
     text: Option<String>,
     thinking: Option<String>,
     tool_calls: BTreeMap<String, PendingToolCall>,
@@ -38,13 +40,28 @@ pub fn rebuild_history(
     events: &[StoredEvent],
     conversation: &ConversationAddress,
 ) -> (Option<String>, Vec<CanonicalMessage>) {
-    rebuild_history_internal(events, conversation, false)
+    let (summary, messages) = rebuild_history_internal(events, conversation, false);
+    (
+        summary,
+        messages.into_iter().map(|(message, _)| message).collect(),
+    )
 }
 
 pub(crate) fn rebuild_history_for_provider(
     events: &[StoredEvent],
     conversation: &ConversationAddress,
 ) -> (Option<String>, Vec<CanonicalMessage>) {
+    let (summary, messages) = rebuild_history_internal(events, conversation, true);
+    (
+        summary,
+        messages.into_iter().map(|(message, _)| message).collect(),
+    )
+}
+
+pub(crate) fn rebuild_history_for_provider_with_provenance(
+    events: &[StoredEvent],
+    conversation: &ConversationAddress,
+) -> (Option<String>, Vec<(CanonicalMessage, u64)>) {
     rebuild_history_internal(events, conversation, true)
 }
 
@@ -99,7 +116,7 @@ fn rebuild_history_internal(
     events: &[StoredEvent],
     conversation: &ConversationAddress,
     wrap_delegated_prompts: bool,
-) -> (Option<String>, Vec<CanonicalMessage>) {
+) -> (Option<String>, Vec<(CanonicalMessage, u64)>) {
     let filtered = filter_rolled_back_events(events);
     let suppressed_turns = if is_session_runtime(events) {
         HashSet::new()
@@ -189,6 +206,7 @@ fn rebuild_history_internal(
                     flush_group(&mut messages, &mut current_group);
                 }
                 current_group.request_id = Some(request_id.into());
+                current_group.assistant_source_event_id = Some(event.id);
                 if let Ok(protocol) = serde_json::from_value(value["protocol"].clone()) {
                     current_group.replay.push(MessageBlock::ProviderReplay {
                         protocol,
@@ -210,7 +228,7 @@ fn rebuild_history_internal(
                     } else {
                         text.clone()
                     };
-                messages.push(CanonicalMessage::user_text(provider_text));
+                messages.push((CanonicalMessage::user_text(provider_text), event.id));
             }
             EventPayload::ModelResponse {
                 conversation: event_conversation,
@@ -232,6 +250,7 @@ fn rebuild_history_internal(
                     flush_group(&mut messages, &mut current_group);
                 }
                 current_group.request_id = Some(request_id.clone());
+                current_group.assistant_source_event_id = Some(event.id);
                 current_group.text = Some(text.clone());
                 current_group.thinking = thinking.clone();
             }
@@ -261,6 +280,7 @@ fn rebuild_history_internal(
                     flush_group(&mut messages, &mut current_group);
                     current_group.request_id = Some(request_id.clone());
                 }
+                current_group.assistant_source_event_id = Some(event.id);
                 current_group.tool_calls.insert(
                     tool_call_id.clone(),
                     PendingToolCall {
@@ -296,6 +316,7 @@ fn rebuild_history_internal(
                     flush_group(&mut messages, &mut current_group);
                     current_group.request_id = Some(request_id.clone());
                 }
+                current_group.assistant_source_event_id = Some(event.id);
                 current_group.tool_calls.insert(
                     tool_call_id.clone(),
                     PendingToolCall {
@@ -326,6 +347,7 @@ fn rebuild_history_internal(
                         truncated: *truncated,
                     },
                 );
+                current_group.tool_result_source_event_id = Some(event.id);
             }
             EventPayload::ToolResult {
                 conversation: Some(event_conversation),
@@ -348,6 +370,7 @@ fn rebuild_history_internal(
                         truncated: *truncated,
                     },
                 );
+                current_group.tool_result_source_event_id = Some(event.id);
             }
             EventPayload::TurnCompleted {
                 conversation: event_conversation,
@@ -365,9 +388,10 @@ fn rebuild_history_internal(
                 && !response_messages.contains(&(*turn, message_id.as_str(), text.as_str())) =>
             {
                 flush_group(&mut messages, &mut current_group);
-                messages.push(CanonicalMessage::assistant(vec![MessageBlock::Text(
-                    text.clone(),
-                )]));
+                messages.push((
+                    CanonicalMessage::assistant(vec![MessageBlock::Text(text.clone())]),
+                    event.id,
+                ));
             }
             EventPayload::SessionCreated { .. }
             | EventPayload::ContextSources { .. }
@@ -596,7 +620,7 @@ fn event_belongs_to_history_conversation(
     }
 }
 
-fn flush_group(messages: &mut Vec<CanonicalMessage>, group: &mut ResponseGroup) {
+fn flush_group(messages: &mut Vec<(CanonicalMessage, u64)>, group: &mut ResponseGroup) {
     if group.request_id.is_none()
         && group.text.is_none()
         && group.tool_calls.is_empty()
@@ -628,7 +652,13 @@ fn flush_group(messages: &mut Vec<CanonicalMessage>, group: &mut ResponseGroup) 
     }
 
     if !assistant_blocks.is_empty() {
-        messages.push(CanonicalMessage::assistant(assistant_blocks));
+        let source_event_id = group
+            .assistant_source_event_id
+            .expect("canonical assistant messages have a source event");
+        messages.push((
+            CanonicalMessage::assistant(assistant_blocks),
+            source_event_id,
+        ));
     }
 
     let mut result_blocks = Vec::new();
@@ -641,10 +671,16 @@ fn flush_group(messages: &mut Vec<CanonicalMessage>, group: &mut ResponseGroup) 
     }
 
     if !result_blocks.is_empty() {
-        messages.push(CanonicalMessage::user(result_blocks));
+        let source_event_id = group
+            .tool_result_source_event_id
+            .or(group.assistant_source_event_id)
+            .expect("canonical tool results have a source event");
+        messages.push((CanonicalMessage::user(result_blocks), source_event_id));
     }
 
     group.request_id = None;
+    group.assistant_source_event_id = None;
+    group.tool_result_source_event_id = None;
 }
 
 fn cancelled_tool_result(tool_call_id: &str) -> ToolResult {

@@ -26,6 +26,10 @@ Provider-visible system text, prelude, tools, and admitted canonical messages ar
 
 Behavioral Prompt assets remain external or embedded versioned resources, separately from context selection and provider conversion. Protocol-native continuation data remains attached to its assistant response and cannot silently cross an incompatible protocol.
 
+## Message rewind
+
+A committed-message rewind targets one exact user-message event and Agent. It appends a rewind operation to the journal and hides the bounded interval from that message up to (but not including) the rewind commit in the active projection. The original events remain in the append-only journal, and inputs committed after the rewind remain visible. In the TUI, press Escape twice with an empty composer to choose a loaded committed message, then confirm; the original text returns to the composer as an unsent draft. Recorded file changes are left untouched unless explicitly selected; opt-in restoration is limited to supported, recorded in-workspace changes and does not reverse shell or external side effects.
+
 ## Waiting and replies
 
 `ToolAuthorizer` receives the trusted source, agent, final arguments, actual tool definition, and working directory. The default local policy is `TrustedLocal`. Denial or an authorization error prevents dispatch. `Defer` persists an exact pending action and releases active execution context. A matching `reply_permission` checks the prepared action and current tool definition before resuming once.

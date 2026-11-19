@@ -94,6 +94,20 @@ impl RunManager {
                 &text,
                 &http_input_source(),
             ),
+            Command::RewindMessage {
+                target_event_id,
+                text,
+                restore_files,
+            } => {
+                let (receipt, warnings) = open.session.rewind_message(
+                    command_id,
+                    address,
+                    target_event_id,
+                    &text,
+                    restore_files,
+                )?;
+                return Ok(CommandResult::new(receipt, replayed, None).with_warnings(warnings));
+            }
             Command::Advance => open.session.advance_command(command_id, address),
             Command::Cancel { execution_id } => {
                 open.session
@@ -144,6 +158,7 @@ fn activating(command: &Command, session: &Session, address: &str) -> bool {
         | Command::Configure { .. }
         | Command::Withdraw { .. }
         | Command::ReplaceQueued { .. }
+        | Command::RewindMessage { .. }
         | Command::Cancel { .. } => false,
     }
 }

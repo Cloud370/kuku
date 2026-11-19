@@ -203,12 +203,12 @@ pub(crate) fn render_at(
         frame.render_widget(Paragraph::new(line), heading);
     }
     if let Some(draft) = draft {
-        let placeholder = app
-            .pane()
-            .draft
-            .text()
-            .is_empty()
-            .then(|| format!("Type a prompt · {} Actions", Shortcut::ACTIONS.label));
+        let placeholder = app.pane().draft.text().is_empty().then(|| {
+            format!(
+                "Type a prompt · Esc Esc Rewind · {} Actions",
+                Shortcut::ACTIONS.label
+            )
+        });
         render_editor_view(frame, inner, draft, focused, placeholder.as_deref());
     }
     frame.render_widget(Paragraph::new(footer), status);
@@ -327,7 +327,32 @@ fn banner(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
         return Vec::new();
     }
     let pane = app.pane();
-    let mut lines = waiting(app, width);
+    let mut lines = Vec::new();
+    if let Some(retry) = pane.retry_metadata() {
+        let color = match crate::retry_notice::decision(retry) {
+            Some(false) => ERROR,
+            Some(true) | None => WARNING,
+        };
+        lines.push(Line::styled(
+            crate::text::shorten_middle(
+                &crate::retry_notice::banner(retry, time::OffsetDateTime::now_utc()),
+                width,
+            ),
+            emphasis(color),
+        ));
+        let detail_rows = height.saturating_sub(lines.len()).min(2);
+        if detail_rows > 0 {
+            lines.extend(crate::markup::wrap_bounded(
+                vec![Line::styled(
+                    crate::retry_notice::detail(retry),
+                    emphasis(color),
+                )],
+                width,
+                detail_rows,
+            ));
+        }
+    }
+    lines.extend(waiting(app, width));
     if let Some(problem) = app.service_problem() {
         lines.extend(
             problem
@@ -361,7 +386,7 @@ fn banner(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
                     single_line(error)
                 )
             } else {
-                format!("Execution · /model or /continue · {}", single_line(error))
+                format!("Execution failed · {}", single_line(error))
             };
             lines.push(Line::styled(
                 shorten(&recovery, width),
@@ -438,7 +463,9 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Rect
         Modal::Prompt(prompt) => {
             let height = match prompt.kind {
                 PromptKind::Agent | PromptKind::Model { .. } => SHORT_PROMPT_HEIGHT,
-                PromptKind::Question { .. } | PromptKind::QueuedInput { .. } => PICKER_HEIGHT,
+                PromptKind::Question { .. }
+                | PromptKind::QueuedInput { .. }
+                | PromptKind::RewindMessage { .. } => PICKER_HEIGHT,
             };
             let area = popup(area, PICKER_WIDTH, height);
             let inner = render_popup(frame, area, &prompt.title);
@@ -596,22 +623,38 @@ fn picker_line(text: &str, width: usize, selected: bool, style: Style) -> Line<'
 
 fn render_prompt(frame: &mut Frame<'_>, inner: Rect, prompt: &mut Prompt) -> (usize, usize) {
     let width = usize::from(inner.width);
+    let rewind_confirmation = matches!(prompt.kind, PromptKind::RewindMessage { .. });
     let instructions = wrap(
         render_literal(&prompt.instructions, Style::default().fg(MUTED)),
         width,
     );
-    let header_rows = instructions
-        .len()
-        .min(usize::from(inner.height.saturating_sub(3)) / 2);
+    let header_rows = if rewind_confirmation {
+        instructions
+            .len()
+            .min(usize::from(inner.height.saturating_sub(1)))
+    } else {
+        instructions
+            .len()
+            .min(usize::from(inner.height.saturating_sub(3)) / 2)
+    };
     prompt.instructions_top = prompt
         .instructions_top
         .min(instructions.len().saturating_sub(header_rows));
-    let [info, editor, help] = Layout::vertical([
-        Constraint::Length(header_rows as u16),
-        Constraint::Min(0),
-        Constraint::Length(1),
-    ])
-    .areas(inner);
+    let [info, editor, help] = if rewind_confirmation {
+        Layout::vertical([
+            Constraint::Min(0),
+            Constraint::Length(0),
+            Constraint::Length(1),
+        ])
+        .areas(inner)
+    } else {
+        Layout::vertical([
+            Constraint::Length(header_rows as u16),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
+        .areas(inner)
+    };
     frame.render_widget(
         Paragraph::new(
             instructions
@@ -622,17 +665,27 @@ fn render_prompt(frame: &mut Frame<'_>, inner: Rect, prompt: &mut Prompt) -> (us
         ),
         info,
     );
-    render_editor(frame, editor, &mut prompt.editor, true, "Type here…");
+    if !rewind_confirmation {
+        render_editor(frame, editor, &mut prompt.editor, true, "Type here…");
+    }
     frame.render_widget(
         Paragraph::new(Line::styled(
-            format!(
-                "{} Confirm · {} Clear · {}/{} Details · {} Close",
-                Shortcut::ENTER.label,
-                Shortcut::CLEAR.label,
-                Shortcut::PAGE_UP.label,
-                Shortcut::PAGE_DOWN.label,
-                Shortcut::ESCAPE.label,
-            ),
+            if rewind_confirmation {
+                format!(
+                    "{} Commit · Space Toggle file restore · {} Cancel",
+                    Shortcut::ENTER.label,
+                    Shortcut::ESCAPE.label,
+                )
+            } else {
+                format!(
+                    "{} Confirm · {} Clear · {}/{} Details · {} Close",
+                    Shortcut::ENTER.label,
+                    Shortcut::CLEAR.label,
+                    Shortcut::PAGE_UP.label,
+                    Shortcut::PAGE_DOWN.label,
+                    Shortcut::ESCAPE.label,
+                )
+            },
             Style::default().fg(MUTED),
         )),
         help,

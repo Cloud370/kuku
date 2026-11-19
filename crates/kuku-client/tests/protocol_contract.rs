@@ -9,8 +9,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use kuku_client::{
-    Acknowledgement, Action, ApiError, Client, Command, HistoryKind, HistoryPage, InputDelivery,
-    InputStatus, Observation, PendingStore, SubscriptionUpdate, Target, Timing,
+    Acknowledgement, Action, AgentProgress, ApiError, Client, Command, HistoryKind, HistoryPage,
+    InputDelivery, InputStatus, Observation, PendingStore, RetryFailureKind, RetryPhase,
+    RetryStopReason, SubscriptionUpdate, Target, Timing,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -46,6 +47,63 @@ fn shared_protocol_fixture_decodes_history_receipts_observation_and_errors() {
     assert!(matches!(frames[4], Observation::Heartbeat));
     let error: ApiError = serde_json::from_value(fixture["error"].clone()).unwrap();
     assert_eq!("command_conflict", error.code);
+}
+
+#[test]
+fn retry_history_and_snapshot_decode_phases_attempts_and_unknown_values() {
+    let history: HistoryPage = serde_json::from_value(json!({
+        "entries":[{
+            "id":31,"agent":"main","turn":9,"type":"retry","text":null,
+            "retry":{
+                "source":"runtime.model_retry","phase":"waiting","attempt":2,
+                "failed_attempt":1,"max_attempts":4,"failed_kind":"rate_limited",
+                "request_id":"req-1","delay_ms":5000,"ts":"2025-01-01T00:00:00Z",
+                "will_retry":true,"status":429
+            }
+        }],"next_before":null
+    }))
+    .unwrap();
+    assert_eq!(HistoryKind::Retry, history.entries[0].kind);
+    let retry: kuku_client::RetryMetadata =
+        serde_json::from_value(history.entries[0].details["retry"].clone()).unwrap();
+    assert_eq!(RetryPhase::Waiting, retry.phase);
+    assert_eq!(Some(2), retry.attempt);
+    assert_eq!(Some(1), retry.failed_attempt);
+    assert_eq!(Some(4), retry.max_attempts);
+    assert_eq!(Some(RetryFailureKind::RateLimited), retry.failed_kind);
+    assert_eq!(Some("req-1"), retry.request_id.as_deref());
+    assert_eq!(Some(429), retry.status);
+    let legacy: kuku_client::RetryMetadata = serde_json::from_value(json!({
+        "source":"runtime.model_retry","attempt":2
+    }))
+    .unwrap();
+    assert_eq!(RetryPhase::Started, legacy.phase);
+    assert!(legacy.will_retry.is_none());
+
+    let stopped: AgentProgress = serde_json::from_value(json!({
+        "phase":"retry_stopped",
+        "retry":{
+            "source":"runtime.model_retry","phase":"future_phase","attempt":3,
+            "failed_kind":"future_failure","will_retry":false,
+            "stop_reason":"future_policy"
+        }
+    }))
+    .unwrap();
+    assert!(matches!(stopped, AgentProgress::RetryStopped { retry }
+        if retry.phase == RetryPhase::Unknown
+            && retry.failed_kind == Some(RetryFailureKind::Unknown)
+            && retry.stop_reason == Some(RetryStopReason::Unknown)
+            && retry.will_retry == Some(false)));
+
+    let undecided: AgentProgress = serde_json::from_value(json!({
+        "phase":"retry_decision_unknown",
+        "retry":{"source":"runtime.model_retry","phase":"future_phase","attempt":3}
+    }))
+    .unwrap();
+    assert!(
+        matches!(undecided, AgentProgress::RetryDecisionUnknown { retry }
+        if retry.phase == RetryPhase::Unknown && retry.will_retry.is_none())
+    );
 }
 
 #[test]
@@ -89,6 +147,24 @@ fn shared_protocol_preserves_the_command_id_for_each_queue_transition() {
             },
         ],
         delivery
+    );
+}
+
+#[test]
+fn message_rewind_protocol_preserves_exact_event_text_and_restore_opt_in() {
+    let action = Action::RewindMessage {
+        target_event_id: 41,
+        text: "keep this as an unsent draft".into(),
+        restore_files: false,
+    };
+    let encoded = serde_json::to_value(&action).unwrap();
+    assert_eq!("rewind_message", encoded["type"]);
+    assert_eq!(41, encoded["target_event_id"]);
+    assert_eq!("keep this as an unsent draft", encoded["text"]);
+    assert_eq!(false, encoded["restore_files"]);
+    assert_eq!(
+        action,
+        serde_json::from_value(encoded).expect("rewind action round-trips")
     );
 }
 
