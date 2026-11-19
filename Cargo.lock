@@ -1889,6 +1889,7 @@ dependencies = [
  "arboard",
  "base64 0.22.1",
  "crossterm",
+ "fslock",
  "futures-util",
  "kuku",
  "kuku-client",
