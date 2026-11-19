@@ -211,7 +211,7 @@ fn render_step(
                 (
                     CredentialSource::Environment,
                     format!(
-                        "Environment · {} · {environment_status}",
+                        "Environment · {environment_status} · {}",
                         state.environment.text().trim()
                     ),
                 ),

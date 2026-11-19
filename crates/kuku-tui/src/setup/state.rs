@@ -371,6 +371,9 @@ impl SetupState {
             SetupStep::Credential => SetupStep::CredentialSource,
             SetupStep::Review => SetupStep::Credential,
         };
+        if self.credential_source == CredentialSource::Environment {
+            self.refresh_environment_detection();
+        }
     }
 
     fn change_choice(&mut self, direction: isize, settings: &Settings) {

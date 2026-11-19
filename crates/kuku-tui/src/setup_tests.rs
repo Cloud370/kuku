@@ -168,13 +168,57 @@ async fn credential_source_status_is_visible_at_minimum_size() {
     state.environment_detected = false;
 
     let missing = screen(&settings, &mut state, SetupMode::Init, 60, 20);
-    assert!(missing.contains("Environment · ANTHROPIC_API_KEY · not detected"));
+    assert!(missing.contains("Environment · not detected · ANTHROPIC_API_KEY"));
     assert!(missing.contains("Paste API key (save locally)"));
     assert!(missing.contains("Presence only; credential not authenticated."));
 
     state.environment_detected = true;
     let detected = screen(&settings, &mut state, SetupMode::Init, 60, 20);
-    assert!(detected.contains("Environment · ANTHROPIC_API_KEY · detected"));
+    assert!(detected.contains("Environment · detected · ANTHROPIC_API_KEY"));
+
+    state.environment.set_text("K".repeat(200));
+    state.environment_detected = false;
+    let long_name = screen(&settings, &mut state, SetupMode::Init, 60, 20);
+    assert!(long_name.contains("Environment · not detected ·"));
+}
+
+#[tokio::test]
+async fn environment_detection_refreshes_after_edits_paste_and_back_navigation() {
+    let directory = tempfile::tempdir().unwrap();
+    let settings = Settings::load(options(directory.path())).await.unwrap();
+    let mut state = SetupState::new(&settings);
+    state.credential_source = CredentialSource::Environment;
+    state.step = SetupStep::Credential;
+    state
+        .environment
+        .set_text("KUKU_SETUP_PASTE_FIXTURE".into());
+    let pasted_name = "KUKU_SETUP_PASTE_FIXTUREX";
+    let pasted_expected = std::env::var(pasted_name).is_ok_and(|value| !value.trim().is_empty());
+    state.handle(Event::Paste("X".into()), &settings, SetupMode::FirstRun);
+    assert_eq!(pasted_expected, state.environment_set());
+
+    state.environment.set_text("KUKU_SETUP_BACKSPACE_X".into());
+    let edited_name = "KUKU_SETUP_BACKSPACE_";
+    let edited_expected = std::env::var(edited_name).is_ok_and(|value| !value.trim().is_empty());
+    state.handle(
+        Event::Key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)),
+        &settings,
+        SetupMode::FirstRun,
+    );
+    assert_eq!(edited_expected, state.environment_set());
+
+    state.environment.set_text("KUKU_SETUP_BACK_FIXTURE".into());
+    let back_expected =
+        std::env::var("KUKU_SETUP_BACK_FIXTURE").is_ok_and(|value| !value.trim().is_empty());
+    state.environment_detected = !back_expected;
+    state.step = SetupStep::Review;
+    state.handle(
+        Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        &settings,
+        SetupMode::FirstRun,
+    );
+    assert_eq!(SetupStep::Credential, state.step);
+    assert_eq!(back_expected, state.environment_set());
 }
 
 #[tokio::test]
