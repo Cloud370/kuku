@@ -478,18 +478,6 @@ impl Window {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        let provider_retry_scopes = self
-            .records
-            .iter()
-            .filter_map(|record| match &record.body {
-                Body::Retry { metadata, .. } if metadata.source == RetrySource::Provider => Some((
-                    record.owner.as_ref()?.clone(),
-                    record.turn?,
-                    record.execution_id,
-                )),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
         let error_scopes = self
             .records
             .iter()
@@ -531,13 +519,7 @@ impl Window {
                             && retry_position < error_position
                     },
                 );
-                let legacy_error = !provider_retry_scopes.iter().any(
-                    |(retry_agent, retry_turn, retry_execution)| {
-                        agent == retry_agent
-                            && turn == retry_turn
-                            && execution_id == retry_execution
-                    },
-                ) && error_scopes
+                let legacy_error = error_scopes
                     .iter()
                     .filter(|(error_agent, error_turn, error_execution)| {
                         agent == error_agent
