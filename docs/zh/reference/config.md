@@ -16,6 +16,8 @@ $KUKU_HOME/config.toml
 
 HTTP 服务默认读取所选数据目录下的 `config.toml`，也可通过 `--config` 指定路径。运行 `kuku server status` 可查看正在运行的受管服务的生效配置。[配置指南](../start/configuration.md)
 
+交互式 TUI 仅在所选本地配置路径不存在时提供首次运行设置，不会更改已有文件，且只保存凭据环境变量引用，不保存密钥值。设置流程和默认值修改方法见[首次运行设置](../start/configuration.md#tui-首次运行设置)。
+
 终端客户端使用独立的偏好文件。[终端偏好](#终端偏好)
 
 ## 顶层键

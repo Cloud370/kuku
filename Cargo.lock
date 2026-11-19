@@ -1889,6 +1889,7 @@ dependencies = [
  "base64 0.22.1",
  "crossterm",
  "futures-util",
+ "kuku",
  "kuku-client",
  "open",
  "pulldown-cmark",
