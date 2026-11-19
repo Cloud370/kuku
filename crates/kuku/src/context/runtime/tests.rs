@@ -1,6 +1,6 @@
 use super::{
-    project_source, read_agent_events, read_frozen_catalog, ContextCursor, FrozenSegment,
-    MAX_CACHED_READS, MAX_SELECTION_BYTES_FACTOR,
+    project_source, read_agent_events, read_frozen_catalog, ContextCursor, MAX_CACHED_READS,
+    MAX_SELECTION_BYTES_FACTOR,
 };
 use crate::context::{CanonicalMessage, MessageBlock};
 use crate::conversation::address::ConversationAddress;
@@ -141,145 +141,177 @@ fn tool_result_projection_keeps_the_wire_view_in_every_protocol() {
 }
 
 #[test]
-fn rewind_keeps_prior_tool_message_and_drops_same_turn_steering_and_frozen_handoff() {
-    let events = vec![
-        StoredEvent {
-            id: 1,
-            payload: EventPayload::ModelResponse {
-                conversation: Some("main".into()),
-                turn: 1,
-                ts: "t".into(),
-                request_id: "first".into(),
-                text: "earlier assistant".into(),
-                thinking: None,
-                stop_reason: None,
-                input_tokens_total: None,
-                output_tokens_total: None,
-            },
-        },
-        StoredEvent {
-            id: 2,
-            payload: EventPayload::ToolCall {
-                conversation: Some("main".into()),
-                turn: 1,
-                ts: "t".into(),
-                tool_call_id: "tool-1".into(),
-                request_id: "first".into(),
-                index: 0,
-                tool: "file_read".into(),
-                args: json!({}),
-            },
-        },
-        StoredEvent {
-            id: 3,
-            payload: EventPayload::ToolResult {
-                conversation: Some("main".into()),
-                turn: 1,
-                ts: "t".into(),
-                tool_call_id: "tool-1".into(),
-                status: "ok".into(),
-                summary: "earlier tool result".into(),
-                model_content: "earlier tool result".into(),
-                truncated: false,
-                files_read: Vec::new(),
-                files_changed: Vec::new(),
-                commands_run: Vec::new(),
-                memory_changed: None,
-                structured: None,
-            },
-        },
-        StoredEvent {
-            id: 4,
-            payload: EventPayload::MessageUser {
-                conversation: "main".into(),
-                turn: 1,
-                ts: "t".into(),
-                text: "steering input".into(),
-                from: None,
-                via_tool_call_id: None,
-            },
-        },
-        StoredEvent {
-            id: 5,
-            payload: EventPayload::ModelResponse {
-                conversation: Some("main".into()),
-                turn: 1,
-                ts: "t".into(),
-                request_id: "second".into(),
-                text: "later answer".into(),
-                thinking: None,
-                stop_reason: None,
-                input_tokens_total: None,
-                output_tokens_total: None,
-            },
-        },
-        StoredEvent {
-            id: 6,
-            payload: EventPayload::TurnCompleted {
-                turn: 1,
-                ts: "t".into(),
-                conversation: "main".into(),
-            },
-        },
-    ];
-    let catalog = crate::prompt::builtin_prompt_catalog();
-    let segment: FrozenSegment = serde_json::from_value(json!({
-        "signature":"old", "configuration":1, "handoff":2, "system_prompt":"old segment",
-        "prelude":[], "tools":[], "catalog":catalog
-    }))
-    .unwrap();
-    let mut cursor = ContextCursor {
-        latest_turn: Some(1),
-        tail: events,
-        segment: Some(segment),
-        handoff: Some(StoredEvent {
-            id: 2,
-            payload: EventPayload::Handoff {
-                turn: 1,
-                ts: "t".into(),
-                request_id: "handoff".into(),
-                summary: "removed handoff summary".into(),
-                keep_turns: 1,
-            },
-        }),
-        ..ContextCursor::default()
-    };
-    cursor
-        .observe(
-            StoredEvent {
-                id: 8,
-                payload: EventPayload::Unknown(json!({
-                    "kind":"runtime.operation",
-                    "record":{"operation":"message_rewind","address":"main","target_event_id":4}
-                })),
-            },
-            "main",
-            1024 * 1024,
-        )
+fn rewind_prunes_persisted_admissions_by_canonical_replay_provenance_after_reopen() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("events.jsonl");
+    let mut writer = EventStore::open(&path).unwrap();
+    writer
+        .append(EventPayload::TurnStarted {
+            turn: 1,
+            ts: "t".into(),
+            conversation: "main".into(),
+        })
         .unwrap();
+    let catalog = crate::prompt::builtin_prompt_catalog();
+    let segment = writer
+        .append(EventPayload::Unknown(json!({
+            "kind":"runtime.context_segment", "agent":"main", "signature":"fixture",
+            "configuration":1, "handoff":0, "system_prompt":"system", "prelude":[],
+            "tools":[], "catalog":catalog, "connection":"", "protocol":"", "model":"",
+            "endpoint":"", "behavior":"", "identity_slot":1, "workspace":""
+        })))
+        .unwrap()
+        .id;
+    writer
+        .append(EventPayload::Unknown(json!({
+            "kind":"runtime.step_prepared", "agent":"main", "segment":segment,
+            "context_head":0, "source_head":0
+        })))
+        .unwrap();
+    writer
+        .append(EventPayload::ModelResponse {
+            conversation: Some("main".into()),
+            turn: 1,
+            ts: "t".into(),
+            request_id: "first".into(),
+            text: "earlier assistant".into(),
+            thinking: None,
+            stop_reason: None,
+            input_tokens_total: None,
+            output_tokens_total: None,
+        })
+        .unwrap();
+    let tool_call = writer
+        .append(EventPayload::ToolCall {
+            conversation: Some("main".into()),
+            turn: 1,
+            ts: "t".into(),
+            tool_call_id: "tool-1".into(),
+            request_id: "first".into(),
+            index: 0,
+            tool: "file_read".into(),
+            args: json!({}),
+        })
+        .unwrap()
+        .id;
+    let tool_result = writer
+        .append(EventPayload::ToolResult {
+            conversation: Some("main".into()),
+            turn: 1,
+            ts: "t".into(),
+            tool_call_id: "tool-1".into(),
+            status: "ok".into(),
+            summary: "earlier tool result".into(),
+            model_content: "earlier tool result".into(),
+            truncated: false,
+            files_read: Vec::new(),
+            files_changed: Vec::new(),
+            commands_run: Vec::new(),
+            memory_changed: None,
+            structured: None,
+        })
+        .unwrap()
+        .id;
+    let steering = writer
+        .append(EventPayload::MessageUser {
+            conversation: "main".into(),
+            turn: 1,
+            ts: "t".into(),
+            text: "steering input".into(),
+            from: None,
+            via_tool_call_id: None,
+        })
+        .unwrap()
+        .id;
+    let later_answer = writer
+        .append(EventPayload::ModelResponse {
+            conversation: Some("main".into()),
+            turn: 1,
+            ts: "t".into(),
+            request_id: "second".into(),
+            text: "later answer".into(),
+            thinking: None,
+            stop_reason: None,
+            input_tokens_total: None,
+            output_tokens_total: None,
+        })
+        .unwrap()
+        .id;
 
-    let history = cursor.history(&ConversationAddress::MAIN);
-    let body = serde_json::to_string(&rendered_provider_body(
-        history
+    let mut cursor = ContextCursor::default();
+    cursor.refresh(&path, "main", 1024 * 1024).unwrap();
+    let admissions = cursor.history(&ConversationAddress::MAIN);
+    assert_eq!(4, admissions.len());
+
+    let source_head = later_answer;
+    for (ordinal, admitted) in admissions.iter().enumerate() {
+        writer
+            .append(EventPayload::Unknown(json!({
+                "kind":"runtime.context_admitted", "agent":"main", "segment":segment,
+                "ordinal":ordinal, "turn":admitted.turn, "origin":admitted.origin,
+                "source_head":source_head, "admitted_at":admitted.admitted_at,
+                "message":admitted.message.clone()
+            })))
+            .unwrap();
+    }
+    writer
+        .append(EventPayload::Unknown(json!({
+            "kind":"runtime.step_prepared", "agent":"main", "segment":segment,
+            "context_head":admissions.len(), "source_head":source_head
+        })))
+        .unwrap();
+    cursor.refresh(&path, "main", 1024 * 1024).unwrap();
+    assert_eq!(4, cursor.admitted.len());
+
+    writer
+        .append(EventPayload::Unknown(json!({
+            "kind":"runtime.operation",
+            "record":{"operation":"message_rewind","address":"main","target_event_id":steering}
+        })))
+        .unwrap();
+    cursor.refresh(&path, "main", 1024 * 1024).unwrap();
+    drop(writer);
+
+    let assert_provider_body = |cursor: &ContextCursor| {
+        let history = cursor.history(&ConversationAddress::MAIN);
+        let body = serde_json::to_string(&rendered_provider_body(
+            history
+                .iter()
+                .map(|admitted| admitted.message.clone())
+                .collect(),
+            cursor
+                .segment
+                .as_ref()
+                .map(|segment| segment.prelude.clone())
+                .unwrap_or_default(),
+            None,
+        ))
+        .unwrap();
+        assert_eq!(2, history.len());
+        assert_eq!(
+            vec![tool_call, tool_result],
+            history
+                .iter()
+                .map(|item| item.admitted_at)
+                .collect::<Vec<_>>()
+        );
+        assert!(body.contains("earlier assistant"));
+        assert!(body.contains("earlier tool result"));
+        assert!(!body.contains("steering input"));
+        assert!(!body.contains("later answer"));
+    };
+    assert_provider_body(&cursor);
+    assert_eq!(
+        vec![tool_call, tool_result, steering, later_answer],
+        admissions
             .iter()
-            .map(|admitted| admitted.message.clone())
-            .collect(),
-        cursor
-            .segment
-            .as_ref()
-            .map(|segment| segment.prelude.clone())
-            .unwrap_or_default(),
-        None,
-    ))
-    .unwrap();
-    assert_eq!(2, history.len());
-    assert!(history.iter().all(|message| message.admitted_at < 4));
-    assert!(body.contains("earlier assistant"));
-    assert!(body.contains("earlier tool result"));
-    assert!(!body.contains("steering input"));
-    assert!(!body.contains("later answer"));
-    assert!(cursor.segment.is_none());
-    assert!(cursor.handoff.is_none());
+            .map(|item| item.admitted_at)
+            .collect::<Vec<_>>()
+    );
+
+    let mut reopened = ContextCursor::default();
+    reopened.refresh(&path, "main", 1024 * 1024).unwrap();
+    assert_provider_body(&reopened);
 }
 
 #[test]
