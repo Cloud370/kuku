@@ -536,10 +536,7 @@ fn message_rewind_treats_missing_before_image_as_unrecoverable() {
 
     let plan = compute_message_rewind_plan(&events, "main", 1, workspace.path()).unwrap();
 
-    assert_eq!(
-        plan.unrecoverable,
-        vec![workspace_root.join("unknown.txt")]
-    );
+    assert_eq!(plan.unrecoverable, vec![workspace_root.join("unknown.txt")]);
     assert!(plan.deletes.is_empty());
 }
 
