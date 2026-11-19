@@ -107,7 +107,7 @@ impl Settings {
 
     pub(super) fn initial_choice(&self) -> ConnectionChoice {
         if self.existing {
-            if let Some(tier) = self.raw.model.get(&self.default_tier) {
+            if let Some(tier) = self.resolved.tiers.get(&self.default_tier) {
                 return ConnectionChoice::Existing(tier.provider.clone());
             }
         }
@@ -125,13 +125,13 @@ impl Settings {
         match choice {
             ConnectionChoice::Preset(preset) => preset.default_model().into(),
             ConnectionChoice::Existing(name) => self
-                .raw
-                .model
+                .resolved
+                .tiers
                 .get(&self.default_tier)
                 .filter(|entry| entry.provider == *name)
                 .or_else(|| {
-                    self.raw
-                        .model
+                    self.resolved
+                        .tiers
                         .values()
                         .find(|entry| entry.provider == *name)
                 })
@@ -398,8 +398,8 @@ fn save_with_hook(
         .and_then(Item::as_table_mut)
     {
         let route_changed = settings
-            .raw
-            .model
+            .resolved
+            .tiers
             .get(&settings.default_tier)
             .is_none_or(|entry| entry.provider != provider_name || entry.model != model);
         model_entry["provider"] = value(provider_name.as_str());

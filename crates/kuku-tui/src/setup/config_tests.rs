@@ -108,6 +108,40 @@ async fn saving_uses_sdk_environment_expansion_and_preserves_references() {
 }
 
 #[tokio::test]
+async fn prefill_uses_normalized_custom_default_route_and_preserves_options() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("custom.toml");
+    let mut document: DocumentMut = generate_default().parse().unwrap();
+    let mut preferred = document["model"]["balanced"].clone();
+    preferred["provider"] = value(" openai ");
+    preferred["model"] = value(" route-model ");
+    preferred["reasoning_effort"] = value("high");
+    preferred["service_tier"] = value("priority");
+    document["model"]["preferred"] = preferred;
+    document["default_model"] = value("preferred");
+    fs::write(&config, document.to_string()).unwrap();
+
+    let settings = Settings::load(options(directory.path(), Some(config.clone())))
+        .await
+        .unwrap();
+    let state = SetupState::new(&settings);
+    assert_eq!("preferred", settings.default_tier);
+    assert!(matches!(
+        state.choice(),
+        crate::setup::ConnectionChoice::Existing(name) if name == "openai"
+    ));
+    assert_eq!("route-model", state.model.text());
+    save(&settings, &state).unwrap();
+
+    let parsed = load_config(&config).unwrap();
+    let preferred = &parsed.model["preferred"];
+    assert_eq!("openai", preferred.provider);
+    assert_eq!("route-model", preferred.model);
+    assert_eq!(Some("high"), preferred.reasoning_effort.as_deref());
+    assert_eq!(Some("priority"), preferred.service_tier.as_deref());
+}
+
+#[tokio::test]
 async fn new_configuration_keeps_the_three_default_tiers() {
     let directory = tempfile::tempdir().unwrap();
     let settings = Settings::load(options(directory.path(), None))
