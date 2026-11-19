@@ -165,6 +165,20 @@ Each row is a single stochastic attempt. In this Chat Completions route the next
 
 Repeat using the earlier Frontier command with the recorded commit and output allowance, a new run ID, and your own budget ledger. The frozen official snapshot and original attempt order are preserved in the report.
 
+## Round 13 log regex follow-up
+
+Round 13 opened a fresh Session with SDK snapshot `1310600`. It reused the round-11 task files, Docker image and original grader. Both attempts used DeepSeek-V4.1-Flash-1017 at `max` effort through OpenRouter Responses, pinned to Baseten with fallback disabled. The output allowance was 131,072 tokens per request and the case cap was $1.50. The round-13 container ran with one CPU and 2 GiB of memory on x86_64 Linux under WSL2. [Machine-readable results](frontier-v1.1-sample.json)
+
+| Original grader | Upstream requests | QuickJS calls / host actions | Inference USD | SDK + verifier seconds | Cache hit | Proxy first output p50 | Receipt generation TPS p50 | SDK mean / peak RSS |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1/1 | 17 | 15 / 21 | 0.047032612 | 205.7 + 23.9 | 83.4% | 1.56 s | 131.6 | 36.7 / 38.6 MiB |
+
+The first model response called `workspace_script` without a discovery call. It awaited one native command, used `exit_code` and read complete stdout and stderr with `.text()`. The host recorded exit 0 and a complete capture, and the next request admitted the script's returned data. A later script failed when it tried to run the unavailable `python3` executable. The SDK completed the turn, the original grader accepted the retained 480-byte `regex.txt`, and the journal recorded zero Job promotions.
+
+Round 11 also passed, with 18 requests, 274.5 SDK seconds and $0.062867992 in inference charges. These are two single attempts with different SDK builds and model actions. The first-call evidence establishes correct use of the command API on this run. The original grader measures the delivered regex separately. The four-task comparison above retains its round-12 cutoff.
+
+All 17 delayed generation receipts confirmed Baseten and matched the stream charges used for settlement. The meter recorded 341,211 input and 23,336 output tokens, including 18,499 reasoning tokens. The first request had zero cached input tokens. The SDK used 2.42 CPU seconds and its final `getrusage` recorded zero input and output blocks. Docker's last block I/O sample recorded 315 kB read and 1.61 MB written across the container. Provider-native time to first token and all seven process-level I/O counters are unknown for this run.
+
 ## Turn completion in peer implementations
 
 The source checkouts below illustrate design choices. Their revisions can differ from the versions used by the published leaderboard.
