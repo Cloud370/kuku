@@ -2,7 +2,30 @@ use serde_json::json;
 
 use crate::transcript::Transcript;
 
-use super::{Tool, MAX_DETAIL_BYTES};
+use super::{Outcome, State, Tool, MAX_DETAIL_BYTES};
+
+#[test]
+fn remediation_truncated_edit_preview_is_not_full_inline_output() {
+    let fields = json!({
+        "status":"ok",
+        "structured":{
+            "kind":"file_edit",
+            "change":{
+                "added_lines":1,
+                "removed_lines":1,
+                "preview":"--- old\n+++ new\n-clipped\n+diff",
+                "preview_truncated":true
+            }
+        }
+    });
+    let outcome = Outcome::from_fields(fields.as_object().unwrap(), None);
+    let tool = Tool {
+        state: State::Recorded(outcome),
+        ..Tool::default()
+    };
+
+    assert!(!tool.view().has_full_output());
+}
 
 #[test]
 fn late_live_output_does_not_change_a_full_preview() {

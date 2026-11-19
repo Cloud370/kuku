@@ -768,6 +768,7 @@ impl Outcome {
         let inline_output_complete = !truncated
             && structured["capture_complete"].as_bool() != Some(false)
             && structured["quota_truncated"].as_bool() != Some(true)
+            && structured["change"]["preview_truncated"].as_bool() != Some(true)
             && structured["timed_out"].as_bool() != Some(true)
             && structured["cancelled"].as_bool() != Some(true)
             && !content.is_some_and(|text| cap(text, MAX_DETAIL_BYTES).len() < text.len())
