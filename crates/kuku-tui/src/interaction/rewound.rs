@@ -52,6 +52,17 @@ impl App {
                 .transcript
                 .retry_rewind_group(rewind_event_id),
         };
+        let expanded = action == RewindGroupAction::Toggle
+            && self.pane().transcript.is_reading()
+            && self
+                .pane()
+                .transcript
+                .rewind_group_choices()
+                .iter()
+                .any(|choice| choice.rewind_event_id == rewind_event_id && choice.expanded);
+        if expanded {
+            self.focus_history();
+        }
         let Some(request) = request else {
             return action == RewindGroupAction::Toggle && available;
         };
