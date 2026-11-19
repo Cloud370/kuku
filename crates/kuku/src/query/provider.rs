@@ -481,6 +481,8 @@ fn apply_runtime_boundary(pending: &mut PendingRun) -> Result<()> {
         pending.query.max_output_tokens = config.max_output_tokens;
         pending.resolved = None;
     }
+    #[cfg(feature = "test_support")]
+    crate::test_support::wait_after_runtime_boundary(&pending.events_path);
     Ok(())
 }
 
