@@ -98,6 +98,7 @@ pub(crate) struct Pane {
     pub(crate) focused_request: Option<String>,
     pub(crate) permission_choice: Option<bool>,
     pub(crate) request_scroll: usize,
+    pub(crate) request_detail_page_size: usize,
     pub(crate) snapshot: Option<Box<Snapshot>>,
     observed_timing: Option<(u64, TurnTiming)>,
     pub(crate) pending_reply_copy: Option<u64>,

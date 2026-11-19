@@ -1,8 +1,11 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use kuku_client::{Action, Target};
+use ratatui::style::Style;
 
 use crate::app::{App, KeyboardFocus, PendingStage};
 use crate::keys::Shortcut;
+use crate::markup::{render_literal, wrap_bounded};
+use crate::text::single_line;
 
 impl App {
     pub(super) fn inline_key(&mut self, key: KeyEvent) -> bool {
@@ -159,13 +162,17 @@ impl App {
             return true;
         }
         if key.code == KeyCode::PageUp {
+            let page = self.pane().request_detail_page_size.max(1);
+            let end = self.request_scroll_end(page);
             let pane = self.pane_mut();
-            pane.request_scroll = pane.request_scroll.saturating_sub(4);
+            pane.request_scroll = pane.request_scroll.saturating_sub(page).min(end);
             return true;
         }
         if key.code == KeyCode::PageDown {
+            let page = self.pane().request_detail_page_size.max(1);
+            let end = self.request_scroll_end(page);
             let pane = self.pane_mut();
-            pane.request_scroll = pane.request_scroll.saturating_add(4);
+            pane.request_scroll = pane.request_scroll.saturating_add(page).min(end);
             return true;
         }
         if key.code == KeyCode::Left || Shortcut::UP.matches(key) {
@@ -184,6 +191,29 @@ impl App {
             self.pane_mut().keyboard_focus = KeyboardFocus::Composer;
         }
         true
+    }
+
+    fn request_scroll_end(&self, page: usize) -> usize {
+        let Some(request) = self
+            .pane()
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.agent.permission.as_ref())
+        else {
+            return 0;
+        };
+        let details = format!(
+            "Summary: {}\nCandidate:\n{}",
+            single_line(&request.summary),
+            request.candidate
+        );
+        let total = wrap_bounded(
+            render_literal(&details, Style::default()),
+            usize::from(self.request_area.width).max(1),
+            usize::MAX,
+        )
+        .len();
+        total.saturating_sub(page)
     }
 
     pub(crate) fn queue_mutation_pending(&self, input_id: &str) -> bool {

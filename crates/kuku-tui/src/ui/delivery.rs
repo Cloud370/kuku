@@ -22,6 +22,7 @@ pub(super) struct DeliveryView {
 pub(super) struct RequestView {
     pub(super) lines: Vec<Line<'static>>,
     pub(super) permission_choices: Option<(usize, Range<usize>, Range<usize>)>,
+    pub(super) detail_page_size: usize,
 }
 
 pub(super) fn lines(app: &App, width: usize, limit: u16) -> DeliveryView {
@@ -212,12 +213,14 @@ pub(super) fn request_lines(app: &App, width: usize, limit: u16) -> RequestView 
         return RequestView {
             lines: Vec::new(),
             permission_choices: None,
+            detail_page_size: 0,
         };
     }
     let Some(snapshot) = app.pane().snapshot.as_ref() else {
         return RequestView {
             lines: Vec::new(),
             permission_choices: None,
+            detail_page_size: 0,
         };
     };
     let focused = app.pane().keyboard_focus == KeyboardFocus::Request;
@@ -237,12 +240,14 @@ pub(super) fn request_lines(app: &App, width: usize, limit: u16) -> RequestView 
         return RequestView {
             lines: lines.into_iter().take(limit as usize).collect(),
             permission_choices: None,
+            detail_page_size: 0,
         };
     }
     let Some(request) = &snapshot.agent.permission else {
         return RequestView {
             lines: Vec::new(),
             permission_choices: None,
+            detail_page_size: 0,
         };
     };
     let title = if focused {
@@ -263,6 +268,7 @@ pub(super) fn request_lines(app: &App, width: usize, limit: u16) -> RequestView 
         shorten(&title, width),
         emphasis(crate::theme::WARNING),
     )];
+    let mut detail_page_size = 0;
     if focused {
         if limit > 2 {
             lines.push(Line::raw(shorten(
@@ -271,6 +277,7 @@ pub(super) fn request_lines(app: &App, width: usize, limit: u16) -> RequestView 
             )));
         }
         let detail_height = usize::from(limit.saturating_sub(3));
+        detail_page_size = detail_height;
         if detail_height > 0 {
             let details = format!(
                 "Summary: {}\nCandidate:\n{}",
@@ -334,6 +341,7 @@ pub(super) fn request_lines(app: &App, width: usize, limit: u16) -> RequestView 
     RequestView {
         lines: lines.into_iter().take(limit as usize).collect(),
         permission_choices,
+        detail_page_size,
     }
 }
 

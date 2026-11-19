@@ -323,6 +323,40 @@ fn permission_card_requires_an_explicit_choice_and_stale_requests_do_not_reply()
 }
 
 #[test]
+fn short_permission_details_scroll_reaches_the_end_and_clamps() {
+    let mut app = app();
+    let permission = json!({
+        "id":"p-scroll", "conversation":"main", "turn":1, "tool_call_id":"tool-scroll",
+        "tool":"write_file", "risk":"high", "summary":"Review long candidate",
+        "candidate":format!("{}DETAIL-END", "x".repeat(240)), "source":"tool"
+    });
+    let state = snapshot(&app, "waiting", json!(null), permission);
+    load(&mut app, state);
+    key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
+    let mut view = screen(&mut app, 48, 12);
+    let page = app.pane().request_detail_page_size;
+    assert!(
+        (1..=3).contains(&page),
+        "unexpected details page size {page}"
+    );
+    for _ in 0..40 {
+        if view.contains("DETAIL-END") {
+            break;
+        }
+        let before = app.pane().request_scroll;
+        key(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
+        view = screen(&mut app, 48, 12);
+        if before == app.pane().request_scroll {
+            break;
+        }
+    }
+    assert!(view.contains("DETAIL-END"), "{view}");
+    let end = app.pane().request_scroll;
+    key(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
+    assert_eq!(end, app.pane().request_scroll);
+}
+
+#[test]
 fn stale_permission_click_cannot_focus_or_select_a_replacement_request() {
     let mut app = app();
     let permission = json!({

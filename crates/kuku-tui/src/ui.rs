@@ -109,6 +109,7 @@ pub(crate) fn render_at(
         space_above_editor.min(if expanded_request { 12 } else { 3 }),
     );
     let request_height = request.lines.len() as u16;
+    app.pane_mut().request_detail_page_size = request.detail_page_size;
     let deliveries = delivery::lines(
         app,
         width,
