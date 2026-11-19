@@ -139,10 +139,19 @@ mod session_live_evidence {
     use std::env;
     use std::error::Error;
     use std::fs;
+    use std::io;
     use std::path::Path;
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::task::{Context, Poll};
     use std::time::{Duration, Instant};
     use time::format_description::well_known::Rfc3339;
     use time::OffsetDateTime;
+    use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::sync::oneshot;
+    use tokio::task::{JoinHandle, JoinSet};
 
     const MAX_REQUESTS: u64 = 2;
     const MAX_OUTPUT_TOKENS: u32 = 128;
@@ -157,6 +166,280 @@ mod session_live_evidence {
         format: &'static str,
         profile: &'static str,
         upstream: &'static str,
+    }
+
+    #[derive(Default, Clone)]
+    struct ProxyStats {
+        allowed_destination: bool,
+        upstream_tcp_connections: u64,
+        closed_tunnels: u64,
+        forwarded_tunnels: u64,
+        blocked_local_retries: u64,
+        rejected_destinations: u64,
+        first_close_after_start_ms: Option<u64>,
+    }
+
+    #[derive(Clone)]
+    struct ProxyState {
+        host: String,
+        restore: Arc<AtomicBool>,
+        stats: Arc<Mutex<ProxyStats>>,
+        client_to_upstream_bytes: Arc<AtomicU64>,
+        upstream_to_client_bytes: Arc<AtomicU64>,
+        started: Instant,
+    }
+
+    struct ConnectProxy {
+        url: String,
+        state: ProxyState,
+        shutdown: Option<oneshot::Sender<()>>,
+        task: Option<JoinHandle<()>>,
+    }
+
+    struct ProxyEnvironment {
+        old_https_proxy: Option<std::ffi::OsString>,
+        old_all_proxy: Option<std::ffi::OsString>,
+        old_no_proxy: Option<std::ffi::OsString>,
+    }
+
+    struct CountedRead<R> {
+        inner: R,
+        bytes: Arc<AtomicU64>,
+    }
+
+    struct EventCapture<'a> {
+        started: Instant,
+        api_key: &'a str,
+        restore_after_waiting: Option<&'a AtomicBool>,
+        retry_events: Vec<Value>,
+        prepared_steps: u64,
+        saw_model_response: bool,
+        lagged: bool,
+    }
+
+    impl ConnectProxy {
+        async fn start(host: &str) -> io::Result<Self> {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+            let address = listener.local_addr()?;
+            let state = ProxyState {
+                host: host.to_owned(),
+                restore: Arc::new(AtomicBool::new(false)),
+                stats: Arc::new(Mutex::new(ProxyStats::default())),
+                client_to_upstream_bytes: Arc::new(AtomicU64::new(0)),
+                upstream_to_client_bytes: Arc::new(AtomicU64::new(0)),
+                started: Instant::now(),
+            };
+            let server_state = state.clone();
+            let (shutdown, mut stop) = oneshot::channel();
+            let task = tokio::spawn(async move {
+                let mut handlers = JoinSet::new();
+                loop {
+                    tokio::select! {
+                        _ = &mut stop => break,
+                        result = listener.accept() => match result {
+                            Ok((client, _)) => {
+                                let state = server_state.clone();
+                                handlers.spawn(async move { serve_connect(client, state).await; });
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                }
+                handlers.abort_all();
+                while handlers.join_next().await.is_some() {}
+            });
+            Ok(Self {
+                url: format!("http://{address}"),
+                state,
+                shutdown: Some(shutdown),
+                task: Some(task),
+            })
+        }
+
+        fn report(&self) -> Value {
+            let stats = self.state.stats.lock().unwrap().clone();
+            json!({
+                "proxy": "local HTTP CONNECT tunnel; TLS is not intercepted",
+                "allowed_destination": format!("{}:443", self.state.host),
+                "upstream_tcp_connections": stats.upstream_tcp_connections,
+                "closed_tunnels": stats.closed_tunnels,
+                "forwarded_tunnels": stats.forwarded_tunnels,
+                "blocked_local_retries": stats.blocked_local_retries,
+                "rejected_destinations": stats.rejected_destinations,
+                "first_close_after_start_ms": stats.first_close_after_start_ms,
+                "restored_after_waiting_event": self.state.restore.load(Ordering::Acquire),
+                "forwarded_tls_bytes_client_to_upstream": self.state.client_to_upstream_bytes.load(Ordering::Relaxed),
+                "forwarded_tls_bytes_upstream_to_client": self.state.upstream_to_client_bytes.load(Ordering::Relaxed),
+            })
+        }
+
+        async fn stop(&mut self) {
+            if let Some(shutdown) = self.shutdown.take() {
+                let _ = shutdown.send(());
+            }
+            if let Some(task) = self.task.take() {
+                let _ = tokio::time::timeout(Duration::from_secs(3), task).await;
+            }
+        }
+    }
+
+    impl ProxyEnvironment {
+        fn set(proxy_url: &str) -> Self {
+            let old_https_proxy = env::var_os("HTTPS_PROXY");
+            let old_all_proxy = env::var_os("ALL_PROXY");
+            let old_no_proxy = env::var_os("NO_PROXY");
+            env::set_var("HTTPS_PROXY", proxy_url);
+            env::set_var("ALL_PROXY", proxy_url);
+            env::set_var("NO_PROXY", "");
+            Self {
+                old_https_proxy,
+                old_all_proxy,
+                old_no_proxy,
+            }
+        }
+    }
+
+    impl Drop for ProxyEnvironment {
+        fn drop(&mut self) {
+            restore_env("HTTPS_PROXY", self.old_https_proxy.take());
+            restore_env("ALL_PROXY", self.old_all_proxy.take());
+            restore_env("NO_PROXY", self.old_no_proxy.take());
+        }
+    }
+
+    fn restore_env(name: &str, value: Option<std::ffi::OsString>) {
+        if let Some(value) = value {
+            env::set_var(name, value);
+        } else {
+            env::remove_var(name);
+        }
+    }
+
+    impl<R: AsyncRead + Unpin> AsyncRead for CountedRead<R> {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            context: &mut Context<'_>,
+            buffer: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            let this = self.get_mut();
+            let before = buffer.filled().len();
+            match Pin::new(&mut this.inner).poll_read(context, buffer) {
+                Poll::Ready(Ok(())) => {
+                    let read = buffer.filled().len().saturating_sub(before) as u64;
+                    this.bytes.fetch_add(read, Ordering::Relaxed);
+                    Poll::Ready(Ok(()))
+                }
+                other => other,
+            }
+        }
+    }
+
+    impl<R: AsyncWrite + Unpin> AsyncWrite for CountedRead<R> {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            context: &mut Context<'_>,
+            buffer: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Pin::new(&mut self.get_mut().inner).poll_write(context, buffer)
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.get_mut().inner).poll_flush(context)
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.get_mut().inner).poll_shutdown(context)
+        }
+    }
+
+    async fn read_connect_target(client: &mut TcpStream) -> io::Result<String> {
+        let mut request = Vec::new();
+        let mut byte = [0_u8; 1];
+        while request.len() < 8192 {
+            if client.read(&mut byte).await? == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "CONNECT closed",
+                ));
+            }
+            request.push(byte[0]);
+            if request.ends_with(b"\r\n\r\n") {
+                let first_line = String::from_utf8_lossy(&request)
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned();
+                return Ok(first_line
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or_default()
+                    .to_owned());
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "CONNECT too large",
+        ))
+    }
+
+    async fn serve_connect(mut client: TcpStream, state: ProxyState) {
+        let target = match read_connect_target(&mut client).await {
+            Ok(target) => target,
+            Err(_) => return,
+        };
+        if target != format!("{}:443", state.host) {
+            state.stats.lock().unwrap().rejected_destinations += 1;
+            return;
+        }
+        state.stats.lock().unwrap().allowed_destination = true;
+
+        if !state.restore.load(Ordering::Acquire) {
+            let first = state.stats.lock().unwrap().closed_tunnels == 0;
+            if !first {
+                state.stats.lock().unwrap().blocked_local_retries += 1;
+                return;
+            }
+            let upstream = match TcpStream::connect((state.host.as_str(), 443)).await {
+                Ok(upstream) => upstream,
+                Err(_) => return,
+            };
+            state.stats.lock().unwrap().upstream_tcp_connections += 1;
+            if client
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await
+                .is_ok()
+            {
+                let mut stats = state.stats.lock().unwrap();
+                stats.closed_tunnels += 1;
+                stats.first_close_after_start_ms =
+                    Some(u64::try_from(state.started.elapsed().as_millis()).unwrap_or(u64::MAX));
+            }
+            drop(upstream);
+            return;
+        }
+
+        let upstream = match TcpStream::connect((state.host.as_str(), 443)).await {
+            Ok(upstream) => upstream,
+            Err(_) => return,
+        };
+        state.stats.lock().unwrap().upstream_tcp_connections += 1;
+        if client
+            .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            .await
+            .is_err()
+        {
+            return;
+        }
+        state.stats.lock().unwrap().forwarded_tunnels += 1;
+        let mut client_read = CountedRead {
+            inner: client,
+            bytes: Arc::clone(&state.client_to_upstream_bytes),
+        };
+        let mut upstream_read = CountedRead {
+            inner: upstream,
+            bytes: Arc::clone(&state.upstream_to_client_bytes),
+        };
+        let _ = tokio::io::copy_bidirectional(&mut client_read, &mut upstream_read).await;
     }
 
     fn route(name: &str) -> Option<Route> {
@@ -251,30 +534,30 @@ completion = 10.0
         raw
     }
 
-    fn record_observation(
-        observation: Observation,
-        started: Instant,
-        api_key: &str,
-        retry_events: &mut Vec<Value>,
-        prepared_steps: &mut u64,
-        saw_model_response: &mut bool,
-        lagged: &mut bool,
-    ) {
+    fn record_observation(observation: Observation, capture: &mut EventCapture<'_>) {
         let event = match observation {
             Observation::Committed(event) => event,
             Observation::Lagged { .. } => {
-                *lagged = true;
+                capture.lagged = true;
                 return;
             }
             _ => return,
         };
         match event.payload {
-            EventPayload::ModelResponse { .. } => *saw_model_response = true,
+            EventPayload::ModelResponse { .. } => {
+                capture.saw_model_response = true;
+            }
             EventPayload::Unknown(value) => match value.get("kind").and_then(Value::as_str) {
-                Some("runtime.step_prepared") => *prepared_steps += 1,
+                Some("runtime.step_prepared") => capture.prepared_steps += 1,
                 Some("runtime.model_retry") => {
+                    if value["phase"] == "waiting" {
+                        if let Some(restore) = capture.restore_after_waiting {
+                            restore.store(true, Ordering::Release);
+                        }
+                    }
                     let mut summary = Map::new();
                     for field in [
+                        "kind",
                         "agent",
                         "turn",
                         "request_id",
@@ -297,17 +580,18 @@ completion = 10.0
                         let bounded: String = message.chars().take(256).collect();
                         summary.insert(
                             "message".into(),
-                            Value::String(bounded.replace(api_key, "[REDACTED]")),
+                            Value::String(bounded.replace(capture.api_key, "[REDACTED]")),
                         );
                     }
                     summary.insert("event_id".into(), json!(event.id));
                     summary.insert(
                         "observed_elapsed_ms".into(),
-                        json!(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)),
+                        json!(u64::try_from(capture.started.elapsed().as_millis())
+                            .unwrap_or(u64::MAX)),
                     );
-                    retry_events.push(Value::Object(summary));
+                    capture.retry_events.push(Value::Object(summary));
                 }
-                Some("model.response") => *saw_model_response = true,
+                Some("model.response") => capture.saw_model_response = true,
                 _ => {}
             },
             _ => {}
@@ -394,9 +678,25 @@ completion = 10.0
         let scenario = env::var("KUKU_LIVE_SCENARIO")?;
         let api_key = env::var("KUKU_LIVE_API_KEY")?;
         let route = route(&provider_name).ok_or("unknown KUKU_LIVE_PROVIDER")?;
-        if !matches!(scenario.as_str(), "normal" | "invalid_auth") {
-            return Err("scenario must be normal or invalid_auth".into());
+        if !matches!(
+            scenario.as_str(),
+            "normal" | "invalid_auth" | "transport_restore"
+        ) {
+            return Err("scenario must be normal, invalid_auth, or transport_restore".into());
         }
+        if scenario == "transport_restore" && provider_name != "deepseek" {
+            return Err("transport_restore is restricted to the DeepSeek route".into());
+        }
+
+        let mut proxy = if scenario == "transport_restore" {
+            Some(ConnectProxy::start("api.deepseek.com").await?)
+        } else {
+            None
+        };
+        let _proxy_environment = proxy
+            .as_ref()
+            .map(|proxy| ProxyEnvironment::set(&proxy.url));
+        let restore_after_waiting = proxy.as_ref().map(|proxy| Arc::clone(&proxy.state.restore));
 
         let scratch = tempfile::tempdir()?;
         let workspace = scratch.path().join("workspace");
@@ -438,23 +738,20 @@ completion = 10.0
         ))?;
         session.advance("main")?;
 
-        let mut retry_events = Vec::new();
-        let mut prepared_steps = 0;
-        let mut saw_model_response = false;
-        let mut observer_lagged = false;
+        let mut capture = EventCapture {
+            started,
+            api_key: &api_key,
+            restore_after_waiting: restore_after_waiting.as_deref(),
+            retry_events: Vec::new(),
+            prepared_steps: 0,
+            saw_model_response: false,
+            lagged: false,
+        };
         let settled = tokio::time::timeout(RUN_TIMEOUT, async {
             loop {
                 loop {
                     match observer.try_next() {
-                        Ok(Some(observation)) => record_observation(
-                            observation,
-                            started,
-                            &api_key,
-                            &mut retry_events,
-                            &mut prepared_steps,
-                            &mut saw_model_response,
-                            &mut observer_lagged,
-                        ),
+                        Ok(Some(observation)) => record_observation(observation, &mut capture),
                         Ok(None) => break,
                         Err(_) => return Err("session observer failed"),
                     }
@@ -463,20 +760,12 @@ completion = 10.0
                     .agent("main")
                     .map_err(|_| "could not read final agent state")?;
                 if snapshot.status != AgentStatus::Running
-                    && (snapshot.status != AgentStatus::Idle || saw_model_response)
+                    && (snapshot.status != AgentStatus::Idle || capture.saw_model_response)
                 {
                     return Ok(snapshot);
                 }
                 match observer.next().await {
-                    Ok(Some(observation)) => record_observation(
-                        observation,
-                        started,
-                        &api_key,
-                        &mut retry_events,
-                        &mut prepared_steps,
-                        &mut saw_model_response,
-                        &mut observer_lagged,
-                    ),
+                    Ok(Some(observation)) => record_observation(observation, &mut capture),
                     Ok(None) => return Err("session observer closed before settlement"),
                     Err(_) => return Err("session observer failed"),
                 }
@@ -493,17 +782,16 @@ completion = 10.0
             }
         };
         while let Ok(Some(observation)) = observer.try_next() {
-            record_observation(
-                observation,
-                started,
-                &api_key,
-                &mut retry_events,
-                &mut prepared_steps,
-                &mut saw_model_response,
-                &mut observer_lagged,
-            );
+            record_observation(observation, &mut capture);
         }
         let close_succeeded = session.close().await.is_ok();
+        if let Some(proxy) = proxy.as_mut() {
+            proxy.stop().await;
+        }
+        let proxy_report = proxy.as_ref().map(ConnectProxy::report);
+        let retry_events = &capture.retry_events;
+        let prepared_steps = capture.prepared_steps;
+        let observer_lagged = capture.lagged;
 
         let normal_success = snapshot.status == AgentStatus::Idle
             && snapshot
@@ -512,16 +800,52 @@ completion = 10.0
                 .is_some_and(|output| output.contains("LIVE_OK"))
             && snapshot.usage.input_tokens.is_some()
             && snapshot.usage.output_tokens.is_some();
-        let auth_failure = retry_is_auth_failure(&retry_events)
+        let auth_failure = retry_is_auth_failure(retry_events)
             && snapshot.status != AgentStatus::Idle
             && snapshot.usage.model_requests == 1
             && !retry_events
                 .iter()
                 .any(|event| matches!(event["phase"].as_str(), Some("waiting" | "started")));
-        let attempts_from_events = event_attempt_count(prepared_steps, &retry_events);
+        let attempts_from_events = event_attempt_count(prepared_steps, retry_events);
+        let retry_waits = wait_intervals(retry_events);
+        let observed_wait_ms = retry_waits
+            .first()
+            .and_then(|wait| wait["observed_wait_ms"].as_u64());
+        let configured_delay_ms = retry_waits
+            .first()
+            .and_then(|wait| wait["configured_delay_ms"].as_u64());
+        let transport_restore_success = scenario == "transport_restore"
+            && normal_success
+            && snapshot.usage.model_requests == 2
+            && attempts_from_events == 2
+            && retry_events.len() == 2
+            && retry_events[0]["kind"] == "runtime.model_retry"
+            && retry_events[0]["phase"] == "waiting"
+            && retry_events[0]["failed_kind"] == "transport"
+            && retry_events[1]["kind"] == "runtime.model_retry"
+            && retry_events[1]["phase"] == "started"
+            && configured_delay_ms.is_some_and(|delay| (2_000..=2_500).contains(&delay))
+            && observed_wait_ms.is_some_and(|wait| (1_800..=3_500).contains(&wait))
+            && proxy_report.as_ref().is_some_and(|proxy| {
+                proxy["allowed_destination"] == "api.deepseek.com:443"
+                    && proxy["upstream_tcp_connections"] == 2
+                    && proxy["closed_tunnels"] == 1
+                    && proxy["forwarded_tunnels"] == 1
+                    && proxy["rejected_destinations"] == 0
+                    && proxy["restored_after_waiting_event"] == true
+                    && proxy["forwarded_tls_bytes_client_to_upstream"]
+                        .as_u64()
+                        .unwrap_or(0)
+                        > 0
+                    && proxy["forwarded_tls_bytes_upstream_to_client"]
+                        .as_u64()
+                        .unwrap_or(0)
+                        > 0
+            });
         let final_outcome = match scenario.as_str() {
             "normal" if normal_success => "success",
             "invalid_auth" if auth_failure => "permanent_auth_failure",
+            "transport_restore" if transport_restore_success => "transport_retry_restored",
             _ if run_error == Some("session timeout") => "run_timeout",
             _ if snapshot.status == AgentStatus::Idle => "unexpected_response",
             _ => "provider_error",
@@ -530,6 +854,11 @@ completion = 10.0
         let evidence_json = env::var("KUKU_LIVE_EVIDENCE_JSON")?;
         let evidence_markdown = env::var("KUKU_LIVE_EVIDENCE_MD")?;
         let commit = env::var("KUKU_LIVE_COMMIT")?;
+        let timeout_note = if scenario == "transport_restore" {
+            "no request timeout knob; CONNECT tunnel close induced a transport error"
+        } else {
+            "no public request timeout knob; no timeout scenario attempted"
+        };
         let report = json!({
             "schema_version": 1,
             "generated_at_utc": generated_at,
@@ -539,7 +868,8 @@ completion = 10.0
             "base_url": route.base_url,
             "profile": route.profile,
             "wire_format": route.format,
-            "upstream": route.upstream,
+            "configured_upstream": route.upstream,
+            "observed_upstream": null,
             "scenario": scenario,
             "limits": {
                 "max_requests_per_open": MAX_REQUESTS,
@@ -549,6 +879,10 @@ completion = 10.0
                 "run_timeout_seconds": RUN_TIMEOUT.as_secs(),
             },
             "provider_request_timeout_configurable": false,
+            "transport_fault": proxy_report,
+            "failed_tunnel_closed_before_tls_application_data": proxy_report
+                .as_ref()
+                .is_some_and(|proxy| proxy["closed_tunnels"] == 1),
             "final_status": status_name(snapshot.status),
             "final_outcome": final_outcome,
             "response_contains_expected_marker": normal_success,
@@ -557,7 +891,7 @@ completion = 10.0
             "attempts_from_events": attempts_from_events,
             "usage": snapshot.usage,
             "retry_events": retry_events,
-            "actual_retry_waits": wait_intervals(&retry_events),
+            "actual_retry_waits": retry_waits,
             "observer_lagged": observer_lagged,
             "session_closed": close_succeeded,
         });
@@ -566,12 +900,12 @@ completion = 10.0
             return Err("refusing to write evidence containing the active credential".into());
         }
         let markdown = format!(
-            "# Sanitized live provider evidence\n\n- Commit: `{}`\n- UTC: `{}`\n- Provider/model: `{}` / `{}`\n- Upstream: `{}`\n- Scenario: `{}`\n- Outcome: `{}` (`{}`)\n- Prepared steps / provider attempts: {} / {}\n- Usage: `{}`\n- Request timeout config: unavailable; no induced timeout attempted\n\n## Retry events and observed waits\n\n```json\n{}\n```\n",
+            "# Sanitized live provider evidence\n\n- Commit: `{}`\n- UTC: `{}`\n- Provider/model: `{}` / `{}`\n- Configured/pinned upstream: `{}`\n- Independently observed upstream: not captured\n- Scenario: `{}`\n- Outcome: `{}` (`{}`)\n- Prepared steps / provider attempts: {} / {}\n- Usage: `{}`\n- Request timeout config: {timeout_note}\n\n## Retry events and observed waits\n\n```json\n{}\n```\n",
             report["commit"].as_str().unwrap_or(""),
             report["generated_at_utc"].as_str().unwrap_or(""),
             report["provider"].as_str().unwrap_or(""),
             report["model"].as_str().unwrap_or(""),
-            report["upstream"].as_str().unwrap_or(""),
+            report["configured_upstream"].as_str().unwrap_or(""),
             report["scenario"].as_str().unwrap_or(""),
             report["final_outcome"].as_str().unwrap_or(""),
             report["final_status"].as_str().unwrap_or(""),
@@ -595,6 +929,7 @@ completion = 10.0
         let scenario_passed = match scenario.as_str() {
             "normal" => normal_success && !observer_lagged && close_succeeded,
             "invalid_auth" => auth_failure && !observer_lagged && close_succeeded,
+            "transport_restore" => transport_restore_success && !observer_lagged && close_succeeded,
             _ => false,
         };
         assert!(
