@@ -1,13 +1,13 @@
 mod common;
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use httpmock::prelude::{HttpMockRequest, MockServer, POST};
 use httpmock::Mock;
 use serde_json::{json, Value};
 
-use kuku::event::EventPayload;
+use kuku::event::{EventPayload, StoredEvent};
 use kuku::permission::{AuthorizationDecision, ToolAuthorization, ToolAuthorizer};
 use kuku::{
     Activation, AgentConfig, AgentSnapshot, AgentStatus, Input, OutputRead, Session, SessionOptions,
@@ -67,6 +67,106 @@ async fn fixture<'a>(
         .await
 }
 
+static SESSION_RUNTIME_DIAGNOSTIC_START: OnceLock<Instant> = OnceLock::new();
+static SESSION_RUNTIME_DIAGNOSTICS_ENABLED: OnceLock<bool> = OnceLock::new();
+
+fn session_runtime_diagnostics_enabled() -> bool {
+    *SESSION_RUNTIME_DIAGNOSTICS_ENABLED
+        .get_or_init(|| std::env::var_os("KUKU_SESSION_RUNTIME_DIAGNOSTICS").is_some())
+}
+
+fn session_runtime_diagnostic(message: impl AsRef<str>) {
+    if session_runtime_diagnostics_enabled() {
+        let start = SESSION_RUNTIME_DIAGNOSTIC_START.get_or_init(Instant::now);
+        eprintln!(
+            "[session-runtime-diagnostic +{}ms] {}",
+            start.elapsed().as_millis(),
+            message.as_ref()
+        );
+    }
+}
+
+fn session_runtime_event_summary(event: &StoredEvent) -> String {
+    match &event.payload {
+        EventPayload::ContextSources { request_id, .. } => {
+            format!("{} context.sources request_id={request_id}", event.id)
+        }
+        EventPayload::ModelResponse { request_id, .. } => {
+            format!("{} model.response request_id={request_id}", event.id)
+        }
+        EventPayload::ModelError {
+            request_id, kind, ..
+        } => format!(
+            "{} model.error request_id={request_id} kind={kind}",
+            event.id
+        ),
+        EventPayload::ModelRecovery {
+            from_request_id,
+            to_request_id,
+            attempt,
+            ..
+        } => format!(
+            "{} model.recovery from={from_request_id} to={to_request_id} attempt={attempt}",
+            event.id
+        ),
+        EventPayload::ToolCall {
+            tool_call_id,
+            request_id,
+            tool,
+            ..
+        } => format!(
+            "{} tool.call tool={tool} tool_call_id={tool_call_id} request_id={request_id}",
+            event.id
+        ),
+        EventPayload::ToolResult {
+            tool_call_id,
+            status,
+            structured,
+            ..
+        } => {
+            let kind = structured
+                .as_ref()
+                .and_then(|value| value["kind"].as_str())
+                .unwrap_or("unknown");
+            format!(
+                "{} tool.result kind={kind} tool_call_id={tool_call_id} status={status}",
+                event.id
+            )
+        }
+        payload => format!("{} {}", event.id, payload.kind_name()),
+    }
+}
+
+fn session_runtime_timeout_snapshot(session: &Session, address: &str) {
+    let snapshot = session.agent(address).ok();
+    let status = snapshot
+        .as_ref()
+        .map(|state| format!("{:?}", state.status))
+        .unwrap_or_else(|| "unavailable".into());
+    let request_count = snapshot
+        .as_ref()
+        .map(|state| state.usage.model_requests)
+        .unwrap_or_default();
+    let recent_events = session
+        .events_before(None, 16)
+        .unwrap_or_default()
+        .iter()
+        .map(session_runtime_event_summary)
+        .collect::<Vec<_>>()
+        .join(" | ");
+    session_runtime_diagnostic(format!(
+        "timeout snapshot address={address} status={status} request_count={request_count} recent_events=[{recent_events}]"
+    ));
+}
+
+fn session_runtime_event_cursor(session: &Session) -> u64 {
+    session
+        .events_before(None, 1)
+        .ok()
+        .and_then(|events| events.last().map(|event| event.id))
+        .unwrap_or(0)
+}
+
 async fn settled(session: &Session, address: &str) -> AgentSnapshot {
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
@@ -81,8 +181,45 @@ async fn settled(session: &Session, address: &str) -> AgentSnapshot {
     .expect("agent did not settle")
 }
 
+async fn settled_after(session: &Session, address: &str, mut after: u64) -> AgentSnapshot {
+    let diagnostics = session_runtime_diagnostics_enabled();
+    if !diagnostics {
+        return settled(session, address).await;
+    }
+    let mut emitted_events = 0;
+    session_runtime_diagnostic(format!("settled event_cursor={after}"));
+    let result = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let state = session.agent(address).unwrap();
+            if diagnostics {
+                if let Ok(events) = session.events(after, 64) {
+                    for event in events {
+                        after = event.id;
+                        if emitted_events < 64 {
+                            session_runtime_diagnostic(session_runtime_event_summary(&event));
+                        } else if emitted_events == 64 {
+                            session_runtime_diagnostic("event progress capped at 64 events");
+                        }
+                        emitted_events += 1;
+                    }
+                }
+            }
+            if state.status != AgentStatus::Running {
+                return state;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    if result.is_err() && diagnostics {
+        session_runtime_timeout_snapshot(session, address);
+    }
+    result.expect("agent did not settle")
+}
+
 #[tokio::test]
 async fn public_session_executes_real_tools_without_observers_and_reopens() {
+    session_runtime_diagnostic("setup/mocks:start");
     let server = MockServer::start_async().await;
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
@@ -102,11 +239,20 @@ async fn public_session_executes_real_tools_without_observers_and_reopens() {
         "stop",
     )
     .await;
+    session_runtime_diagnostic("setup/mocks:complete");
     let original = options(&server, workspace.path(), data.path());
+    session_runtime_diagnostic("session.open:first:start");
     let session = Session::open(original.clone()).await.unwrap();
+    session_runtime_diagnostic("session.open:first:complete");
     session
         .create_agent("create", "main", AgentConfig::default())
         .unwrap();
+    let first_event_cursor = if session_runtime_diagnostics_enabled() {
+        session_runtime_event_cursor(&session)
+    } else {
+        0
+    };
+    session_runtime_diagnostic("session.send:first:start");
     session
         .send(Input::new(
             "input",
@@ -114,7 +260,10 @@ async fn public_session_executes_real_tools_without_observers_and_reopens() {
             "correct answer.txt and check it",
         ))
         .unwrap();
-    let state = settled(&session, "main").await;
+    session_runtime_diagnostic("session.send:first:complete");
+    session_runtime_diagnostic("settled:first:start");
+    let state = settled_after(&session, "main", first_event_cursor).await;
+    session_runtime_diagnostic("settled:first:complete");
     assert_eq!(AgentStatus::Idle, state.status, "{:?}", state.last_error);
     assert_eq!(Some("done"), state.last_output.as_deref());
     assert_eq!(4, state.usage.model_requests);
@@ -151,21 +300,46 @@ async fn public_session_executes_real_tools_without_observers_and_reopens() {
         .any(|segment| segment.text.contains("after")));
     let id = session.id().to_string();
     let events_path = session.events_path().to_path_buf();
+    session_runtime_diagnostic("session.close:first:start");
     session.close().await.unwrap();
+    session_runtime_diagnostic("session.close:first:complete");
     assert_eq!(1, Session::read_agents(&events_path).unwrap().len());
     let mut reopen = original;
     reopen.session_id = Some(id);
+    session_runtime_diagnostic("session.open:reopen:start");
     let reopened = Session::open(reopen).await.unwrap();
+    session_runtime_diagnostic("session.open:reopen:complete");
     assert_eq!(state.usage, reopened.agent("main").unwrap().usage);
+    let second_event_cursor = if session_runtime_diagnostics_enabled() {
+        session_runtime_event_cursor(&reopened)
+    } else {
+        0
+    };
+    session_runtime_diagnostic("session.send:second:start");
     reopened
         .send(Input::new("followup", "main", "verify the existing result"))
         .unwrap();
-    assert_eq!(AgentStatus::Idle, settled(&reopened, "main").await.status);
+    session_runtime_diagnostic("session.send:second:complete");
+    session_runtime_diagnostic("settled:second:start");
+    assert_eq!(
+        AgentStatus::Idle,
+        settled_after(&reopened, "main", second_event_cursor)
+            .await
+            .status
+    );
+    session_runtime_diagnostic("settled:second:complete");
+    session_runtime_diagnostic("session.close:reopen:start");
     reopened.close().await.unwrap();
+    session_runtime_diagnostic("session.close:reopen:complete");
+    session_runtime_diagnostic("provider mocks:first:start");
     first.assert_hits_async(1).await;
+    session_runtime_diagnostic("provider mocks:first:hit");
     second.assert_hits_async(1).await;
+    session_runtime_diagnostic("provider mocks:second:hit");
     third.assert_hits_async(1).await;
+    session_runtime_diagnostic("provider mocks:third:hit");
     last.assert_hits_async(2).await;
+    session_runtime_diagnostic("provider mocks:last:hit");
 }
 
 #[tokio::test]
