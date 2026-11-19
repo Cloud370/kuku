@@ -280,7 +280,7 @@ def published_reasoning(client):
             assert not any("Check" in row for row in compact.splitlines() if "To main" in row)
             terminal.click_text(compact, "View thinking")
             reader = terminal.expect("Comparing the published results.", state="Esc back")["screen"]
-            assert hidden not in reader and "Esc back" in reader.splitlines()[header_row] and "Type a prompt" in reader
+            assert hidden not in reader and "Esc back" in reader.splitlines()[header_row] and "Enter steer" in reader
             terminal.press("\x1b")
             terminal.expect("View thinking", state="To main · Thinking")
             with client.terminal(workspace) as attached:
@@ -335,9 +335,9 @@ def scroll_mixed_table(client):
         terminal.submit(prompt)
         client.provider.next(prompt).text("\n\n".join([*intro, table, *tail]))
         finished = terminal.expect("Turn 1", state="Finished")["screen"].splitlines()
-        editor_row = next(i for i, row in enumerate(finished) if "Type a prompt" in row)
+        editor_row = next(i for i, row in enumerate(finished) if "Enter steer" in row)
         turn_row = next(i for i, row in enumerate(finished) if "Turn 1" in row and "in" in row)
-        assert finished[turn_row].index("Turn 1") == finished[editor_row].index("Type a prompt"), finished
+        assert finished[turn_row].index("Turn 1") == finished[editor_row].index("Enter steer"), finished
         terminal.type("preserve draft")
         def rows():
             return [line.rstrip() for line in terminal.request("screen")["screen"].splitlines()]

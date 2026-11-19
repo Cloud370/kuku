@@ -363,7 +363,7 @@ def editable_multiline_paste(client):
         discarded = "draft to clear with Ctrl+C"
         terminal.type(discarded)
         terminal.press("\x03")
-        view = terminal.expect("Type a prompt")
+        view = terminal.expect("Enter sends your first prompt")
         assert view["exit_code"] is None and discarded not in view["screen"]
 
         terminal.press("/qui\t")
@@ -588,7 +588,7 @@ def check_agent_reading_position(client, terminal):
     with client.provider.next(follow_up).streaming_text(beginning, f"\n\n{new_content}", "\n\nCheckpoint stream finished") as pauses:
         terminal.expect(beginning, state="Streaming")
         terminal.type(original)
-        terminal.press("\x1bOPqueue\r")
+        terminal.press("\x1b\r")
         terminal.expect(original, state="Queued · next Turn")
         terminal.press("\x1b[A")
         terminal.expect("Edit queued input")
@@ -599,13 +599,10 @@ def check_agent_reading_position(client, terminal):
         terminal.press("\r")
         terminal.expect(queued, state="Queued · next Turn")
         terminal.type(discarded)
-        terminal.press("\x1bOPqueue\r")
+        terminal.press("\x1b\r")
         terminal.expect(discarded, state="Queued · next Turn")
-        terminal.press("/withdraw\r")
-        terminal.expect("Withdraw queued input")
-        terminal.press(discarded)
-        terminal.expect(f"› {discarded}", state="Withdraw queued input")
-        terminal.press("\r")
+        terminal.press("\x1b[A")
+        terminal.press("\x1b[3~")
         eventually("withdrawn request to leave the pending area",
                    lambda: "Input withdrawn" in (screen := terminal.request("screen")["screen"])
                    and discarded not in screen and queued in screen)
@@ -630,7 +627,7 @@ def check_reading_focus(terminal, markers, stream_pause, new_content, queued):
     def checkpoint_at(expected):
         reading = terminal.request("screen")["screen"]
         lines = reading.splitlines()
-        return ("Reading history · ↑↓ scroll" in reading and "Type a prompt" in reading
+        return ("Reading history · ↑↓ scroll" in reading and "Enter steer" in reading
                 and len(lines) > expected and anchor in lines[expected])
 
     terminal.press("\x1b[A")
