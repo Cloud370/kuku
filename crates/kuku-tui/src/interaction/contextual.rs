@@ -41,7 +41,7 @@ impl App {
             return false;
         }
         if let ContextControl::Request { target, request_id } = &control {
-            if !self.focus_request_id(target.clone(), request_id.clone()) {
+            if !self.activate_request_id(target.clone(), request_id.clone()) {
                 return false;
             }
             self.pane_mut().contextual_focus.cursor = Some(control);

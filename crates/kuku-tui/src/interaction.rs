@@ -72,17 +72,27 @@ impl App {
         }
     }
 
+    fn save_question_draft(&mut self, target: &Target, request_id: &str, editor: Editor) {
+        let address = Address::new(target.session_id.clone(), target.agent.clone());
+        if let Some(pane) = self.panes.get_mut(&address) {
+            pane.question_drafts.insert(request_id.to_owned(), editor);
+            pane.keyboard_focus = crate::app::KeyboardFocus::Composer;
+            pane.focused_request = None;
+        }
+    }
+
     fn key(&mut self, key: KeyEvent) {
         self.dismiss_confirmation();
         self.text_selection.cancel_drag();
         if Shortcut::ESCAPE.matches(key) {
             if let Some(modal) = self.modal.take() {
-                if let Modal::Prompt(prompt) = &modal {
-                    if let PromptKind::Question { target, .. } = &prompt.kind {
-                        self.restore_question_composer(target);
+                let close_picker = !matches!(&modal, Modal::Help);
+                if let Modal::Prompt(prompt) = modal {
+                    if let PromptKind::Question { target, request_id } = prompt.kind {
+                        self.save_question_draft(&target, &request_id, prompt.editor);
                     }
                 }
-                if !matches!(modal, Modal::Help) {
+                if close_picker {
                     self.effects.push(Job::ClosePicker);
                 }
                 return;
@@ -583,13 +593,22 @@ impl App {
             self.problem("No request is waiting for this Agent");
             return;
         };
-        let kind = PromptKind::Question {
-            request_id: request.id.clone(),
-            target: self.selection().target,
-        };
+        let request_id = request.id.clone();
+        let target = self.selection().target;
         let title = format!("Answer {}", request.agent);
         let instructions = request.text.clone();
-        self.prompt(kind, title, instructions);
+        let editor = self
+            .pane_mut()
+            .question_drafts
+            .remove(&request_id)
+            .unwrap_or_default();
+        self.modal = Some(Modal::Prompt(Prompt {
+            kind: PromptKind::Question { request_id, target },
+            title,
+            instructions,
+            instructions_top: 0,
+            editor,
+        }));
     }
 
     fn open_thinking(&mut self) {

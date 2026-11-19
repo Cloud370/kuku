@@ -1,6 +1,5 @@
 use ratatui::layout::Rect;
-use ratatui::style::Style;
-use ratatui::text::Span;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
@@ -54,4 +53,37 @@ pub(super) fn service_controls(app: &App) -> Vec<ContextControl> {
         .into_iter()
         .filter(ContextControl::is_service)
         .collect()
+}
+
+pub(super) fn service_row(footer: &[Line<'_>], app: &App) -> Option<(usize, u16)> {
+    let status = app.service_status().label();
+    footer
+        .iter()
+        .enumerate()
+        .find(|(_, line)| line.spans.iter().any(|span| span.content.contains(status)))
+        .map(|(row, line)| (row, u16::try_from(line.width()).unwrap_or(u16::MAX)))
+}
+
+pub(super) fn render_service(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+    let controls = service_controls(app);
+    if area.is_empty() {
+        return;
+    }
+    let mut x = area.x;
+    for control in controls {
+        let remaining = area.right().saturating_sub(x);
+        if remaining == 0 {
+            break;
+        }
+        let width = u16::try_from(label(&control).width())
+            .unwrap_or(u16::MAX)
+            .min(remaining);
+        render_chip(
+            frame,
+            app,
+            &control,
+            Rect::new(x, area.y, width, area.height),
+        );
+        x = x.saturating_add(width).saturating_add(1);
+    }
 }

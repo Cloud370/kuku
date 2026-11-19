@@ -26,12 +26,11 @@ pub(super) fn render_session(
     following: bool,
     tool_hint: Option<&str>,
 ) {
-    let mut controls = app
+    let controls = app
         .contextual_controls()
         .into_iter()
         .find(|control| matches!(control, ContextControl::PreviousAgent { .. }));
-    let mut chips = controls.into_iter().collect::<Vec<_>>();
-    chips.extend(super::contextual::service_controls(app));
+    let chips = controls.into_iter().collect::<Vec<_>>();
     let mut right = area.x.saturating_add(area.width);
     for control in chips.iter().rev() {
         let width = u16::try_from(super::contextual::label(control).width())
