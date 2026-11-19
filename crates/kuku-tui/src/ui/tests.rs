@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 mod activity;
+mod layout;
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
@@ -214,6 +215,7 @@ fn identical_pending_inputs_render_immediately_and_admission_wins_over_a_late_re
         load,
         HistoryPage {
             entries: vec![],
+            rewind_groups: Vec::new(),
             next_before: None,
         },
     ));
@@ -285,6 +287,7 @@ fn clicking_the_queue_opens_an_isolated_editor_and_saves_the_exact_replacement()
         state,
         HistoryPage {
             entries: vec![],
+            rewind_groups: Vec::new(),
             next_before: None,
         },
     ));
@@ -419,6 +422,7 @@ fn switching_agent_keeps_drafts_and_read_position_and_ignores_old_observer() {
                 )
             })
             .collect(),
+        rewind_groups: Vec::new(),
         next_before: Some(1),
     };
     app.update(Update::Loaded(
@@ -553,6 +557,7 @@ fn reading_arrows_and_clicks_keep_pending_input_drafts_and_live_content_scoped()
         state,
         HistoryPage {
             entries,
+            rewind_groups: Vec::new(),
             next_before: None,
         },
     ));
@@ -645,6 +650,7 @@ fn waiting_request_is_explicit_and_escape_preserves_message_draft() {
         waiting,
         HistoryPage {
             entries: vec![],
+            rewind_groups: Vec::new(),
             next_before: None,
         },
     ));
@@ -697,6 +703,7 @@ fn generic_tool_details_render_control_bytes_visibly_and_copy_original_reply() {
             tool_call,
             tool_result,
         ],
+        rewind_groups: Vec::new(),
         next_before: None,
     };
     app.update(Update::Loaded(
@@ -984,30 +991,4 @@ fn click_shift_drag_and_replaced_text_leave_the_clipboard_alone() {
     app.event(up, buffer);
     assert!(app.effects.is_empty());
     assert!(!buffer[start].modifier.contains(Modifier::REVERSED));
-}
-
-#[test]
-fn spacious_composer_and_picker_use_responsive_insets() {
-    let mut app = app();
-    app.pane_mut().draft.insert("甲");
-    let mut wide = Terminal::new(TestBackend::new(128, 32)).unwrap();
-    let mut compact = Terminal::new(TestBackend::new(44, 12)).unwrap();
-    let wide_frame = wide.draw(|frame| render(frame, &mut app)).unwrap();
-    let (wide_x, wide_y) = cell(wide_frame.buffer, "甲");
-    assert!(wide_x >= 6);
-    assert_eq!(
-        wide_frame.buffer[(wide_x, wide_y + 1)].bg,
-        crate::theme::SURFACE
-    );
-    let compact_frame = compact.draw(|frame| render(frame, &mut app)).unwrap();
-    let (compact_x, compact_y) = cell(compact_frame.buffer, "甲");
-    assert!(compact_x < wide_x);
-    assert_eq!(compact_y, 9);
-
-    key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
-    let frame = wide.draw(|frame| render(frame, &mut app)).unwrap();
-    let (x, y) = cell(frame.buffer, "›");
-    assert_ne!(frame.buffer[(x, y)].bg, frame.buffer[(x - 1, y)].bg);
-    assert!(!frame.buffer[(x, y)].modifier.contains(Modifier::DIM));
-    assert!(frame.buffer[(0, 0)].modifier.contains(Modifier::DIM));
 }

@@ -488,6 +488,7 @@ fn copy_fetches_the_complete_committed_reply_and_ignores_older_requests() {
         Box::new(snapshot),
         HistoryPage {
             entries: vec![reply(4, &original)],
+            rewind_groups: Vec::new(),
             next_before: None,
         },
     ));
@@ -552,6 +553,7 @@ fn copy_reply_does_not_use_snapshot_fallback_when_history_has_no_reply() {
         Box::new(snapshot),
         HistoryPage {
             entries: Vec::new(),
+            rewind_groups: Vec::new(),
             next_before: None,
         },
     ));
@@ -563,4 +565,133 @@ fn copy_reply_does_not_use_snapshot_fallback_when_history_has_no_reply() {
         .effects
         .iter()
         .any(|effect| matches!(effect, Job::Copy(_))));
+}
+
+#[test]
+fn readonly_rewind_group_picker_preserves_draft_and_only_reads_hidden_history() {
+    use kuku_client::{HistoryEntry, HistoryKind, HistoryPage, RewindGroup, RewindGroupPage};
+
+    let mut app = connected_app();
+    app.paste("unsent draft");
+    let selection = app.selection();
+    let snapshot = serde_json::from_value(json!({
+        "session_id": app.active.session,
+        "workspace": app.workspace,
+        "cursor": 12,
+        "pending": [],
+        "agents": [],
+        "agent": {
+            "address": app.active.agent, "config": {}, "status": "idle", "pending_inputs": 0,
+            "last_output": null,
+            "usage": { "model_requests": 0, "unreported_requests": 0 },
+        }
+    }))
+    .unwrap();
+    let group = RewindGroup {
+        rewind_event_id: 90,
+        target_event_id: 3,
+        agent: "main".into(),
+        turn_number: Some(2),
+        entry_count: 1,
+    };
+    app.update(Update::Loaded(
+        selection.clone(),
+        Box::new(snapshot),
+        HistoryPage {
+            entries: Vec::new(),
+            rewind_groups: vec![group],
+            next_before: None,
+        },
+    ));
+    app.effects.clear();
+
+    let (key, label, _) = app
+        .pane()
+        .transcript
+        .visible_detail_choices()
+        .into_iter()
+        .next()
+        .unwrap();
+    assert!(label.starts_with("Expand · Rewound content"));
+    assert_eq!(Some(90), key.rewind_group_id());
+    app.open_details();
+    assert!(matches!(
+        &app.modal,
+        Some(Modal::Picker(picker)) if matches!(picker.kind, PickerKind::Details)
+    ));
+    press(&mut app, KeyCode::Esc);
+    assert!(app.modal.is_none());
+    assert_eq!("unsent draft", app.pane().draft.text());
+    app.effects.clear();
+
+    assert!(app.toggle_transcript_detail(&key));
+    assert_eq!("unsent draft", app.pane().draft.text());
+    let request = match app.effects.as_slice() {
+        [Job::RewindGroupHistory(target, request)] if target == &selection => request.clone(),
+        effects => panic!(
+            "expected one read-only group request, got {}",
+            effects.len()
+        ),
+    };
+    assert_eq!(90, request.rewind_event_id);
+    app.effects.clear();
+
+    let mut stale_selection = selection.clone();
+    stale_selection.generation += 1;
+    app.update(Update::RewindGroupHistory(
+        stale_selection,
+        request.clone(),
+        Ok(RewindGroupPage {
+            entries: vec![HistoryEntry {
+                id: 4,
+                agent: "main".into(),
+                turn: Some(2),
+                kind: HistoryKind::Assistant,
+                text: Some("hidden answer".into()),
+                turn_summary: None,
+                details: Default::default(),
+            }],
+            next_before: None,
+        }),
+    ));
+    assert!(app.effects.is_empty());
+    assert_eq!("unsent draft", app.pane().draft.text());
+
+    app.update(Update::RewindGroupHistory(
+        selection,
+        request,
+        Ok(RewindGroupPage {
+            entries: vec![HistoryEntry {
+                id: 4,
+                agent: "main".into(),
+                turn: Some(2),
+                kind: HistoryKind::Assistant,
+                text: Some("hidden answer".into()),
+                turn_summary: None,
+                details: Default::default(),
+            }],
+            next_before: None,
+        }),
+    ));
+    assert!(app.effects.is_empty());
+    assert!(app.pane().transcript.last_reply().is_none());
+    assert!(app.pane().transcript.rewind_messages("main").is_empty());
+    app.copy_reply();
+    assert!(!app
+        .effects
+        .iter()
+        .any(|effect| matches!(effect, Job::Copy(_))));
+    assert_eq!("unsent draft", app.pane().draft.text());
+
+    let collapsed_choice = app
+        .pane()
+        .transcript
+        .visible_detail_choices()
+        .into_iter()
+        .next()
+        .unwrap();
+    assert!(collapsed_choice.1.starts_with("Collapse · Rewound content"));
+    assert!(app.toggle_transcript_detail(&collapsed_choice.0));
+    assert!(app.effects.is_empty());
+    assert_eq!("unsent draft", app.pane().draft.text());
 }

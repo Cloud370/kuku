@@ -6,6 +6,7 @@ use crate::markup::{render_literal, wrap_bounded};
 use crate::text::shorten;
 use crate::theme::{card_padding, emphasis, surface, ACCENT, MUTED, WARNING};
 
+use super::window::TurnHeading;
 use super::{render_rows, Row, MAX_VISUAL_ROWS};
 
 pub(super) fn render_user(title: &str, text: &str, width: usize) -> Vec<Row> {
@@ -152,11 +153,11 @@ pub(super) fn paint_card(rows: &mut [Row], width: usize, color: Color) {
     }
 }
 
-pub(super) fn render_turn(turn: super::TurnHeading, width: usize, user: bool) -> Line<'static> {
+pub(super) fn render_turn(turn: TurnHeading, width: usize, user: bool) -> Line<'static> {
     let label = match turn {
-        super::TurnHeading::Numbered(number) if width < 6 => format!("T{number}"),
-        super::TurnHeading::Numbered(number) => format!("Turn {number}"),
-        super::TurnHeading::Unnumbered => "Turn".to_owned(),
+        TurnHeading::Numbered(number) if width < 6 => format!("T{number}"),
+        TurnHeading::Numbered(number) => format!("Turn {number}"),
+        TurnHeading::Unnumbered => "Turn".to_owned(),
     };
     if user {
         let edge = user_edge(width);

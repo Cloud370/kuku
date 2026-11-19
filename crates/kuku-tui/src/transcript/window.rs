@@ -1,16 +1,17 @@
-use kuku_client::HistoryPage;
+use kuku_client::{HistoryPage, RewindGroup};
 use serde_json::Value;
 
 use super::agent::AgentCards;
 use super::details::{groups, DetailRecord, Details, GroupHeading};
 use super::{
-    Anchor, AnchorLine, AssistantView, Body, HistoryRequest, Key, Record, RenderCache, Row,
-    ToolDetails, MAX_LIVE_RECORDS, MAX_RECORDS,
+    Anchor, AnchorLine, AssistantView, Body, HistoryRequest, Key, Record, RenderCache,
+    RewindGroupState, Row, ToolDetails, MAX_LIVE_RECORDS, MAX_RECORDS,
 };
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct Window {
     pub(super) records: Vec<Record>,
+    pub(super) rewind_groups: Vec<RewindGroupState>,
     pub(super) older: Option<u64>,
 }
 
@@ -18,6 +19,11 @@ impl Window {
     pub(super) fn from_page(page: HistoryPage) -> Self {
         let mut window = Self {
             older: page.next_before,
+            rewind_groups: page
+                .rewind_groups
+                .into_iter()
+                .map(RewindGroupState::new)
+                .collect(),
             ..Self::default()
         };
         for record in page.entries.into_iter().filter_map(Record::from_entry) {
@@ -28,6 +34,41 @@ impl Window {
 
     pub(super) fn contains(&self, key: &Key) -> bool {
         self.records.iter().any(|record| &record.key == key)
+            || self.rewind_groups.iter().any(|group| &group.key == key)
+    }
+
+    pub(super) fn add_rewind_groups(&mut self, groups: impl IntoIterator<Item = RewindGroup>) {
+        for summary in groups {
+            if let Some(group) = self
+                .rewind_groups
+                .iter_mut()
+                .find(|group| group.summary.rewind_event_id == summary.rewind_event_id)
+            {
+                group.update_summary(summary);
+            } else {
+                self.rewind_groups.push(RewindGroupState::new(summary));
+            }
+        }
+        self.rewind_groups.sort_by_key(RewindGroupState::position);
+    }
+
+    pub(super) fn positions(&self) -> Vec<(u64, Key)> {
+        let mut positions = self
+            .records
+            .iter()
+            .filter_map(|record| {
+                record
+                    .position
+                    .map(|position| (position, record.key.clone()))
+            })
+            .chain(
+                self.rewind_groups
+                    .iter()
+                    .map(|group| (group.position(), group.key.clone())),
+            )
+            .collect::<Vec<_>>();
+        positions.sort_by_key(|(position, _)| *position);
+        positions
     }
 
     pub(super) fn remove(&mut self, key: &Key) {
@@ -56,23 +97,41 @@ impl Window {
     }
 
     pub(super) fn trim_front(&mut self) {
-        if self.records.len() > MAX_RECORDS {
-            self.records.drain(..self.records.len() - MAX_RECORDS);
-            self.older = self.records.iter().find_map(|record| record.position);
+        let positions = self.positions();
+        let live = self
+            .records
+            .iter()
+            .filter(|record| record.position.is_none())
+            .count();
+        let keep = MAX_RECORDS.saturating_sub(live);
+        if positions.len() > keep {
+            let first = positions[positions.len() - keep].0;
+            self.records
+                .retain(|record| record.position.is_none_or(|position| position >= first));
+            self.rewind_groups.retain(|group| group.position() >= first);
+            self.older = Some(first);
         }
     }
 
     pub(super) fn trim_back(&mut self) -> Option<HistoryRequest> {
-        if self.records.len() <= MAX_RECORDS {
+        let positions = self.positions();
+        let live = self
+            .records
+            .iter()
+            .filter(|record| record.position.is_none())
+            .count();
+        let keep = MAX_RECORDS.saturating_sub(live);
+        if positions.len() <= keep {
             return None;
         }
-        let truncated = &self.records[MAX_RECORDS..];
-        let first = truncated.iter().find_map(|record| record.position);
-        let last = truncated.iter().rev().find_map(|record| record.position);
-        self.records.truncate(MAX_RECORDS);
+        let first = positions[keep].0;
+        let last = positions.last()?.0;
+        self.records
+            .retain(|record| record.position.is_none_or(|position| position < first));
+        self.rewind_groups.retain(|group| group.position() < first);
         Some(HistoryRequest::Newer {
-            first: first?,
-            before: last?.saturating_add(1),
+            first,
+            before: last.saturating_add(1),
         })
     }
 
@@ -130,7 +189,10 @@ impl Window {
     }
 
     pub(super) fn row_count(&mut self, layout: Layout<'_>) -> usize {
-        self.blocks(layout).map(|block| block.height()).sum()
+        self.blocks(layout)
+            .into_iter()
+            .map(|block| block.height())
+            .sum()
     }
 
     pub(super) fn position_of(&mut self, anchor: &Anchor, layout: Layout<'_>) -> usize {
@@ -148,6 +210,13 @@ impl Window {
             if block.key == &anchor.key {
                 return match anchor.line {
                     AnchorLine::Turn => start,
+                    AnchorLine::RewindEntry { event_id, line } => block
+                        .rewind_group
+                        .and_then(|group| group.row_for_entry(event_id, line))
+                        .map_or(start, |row| start + row),
+                    AnchorLine::Group(row) if block.rewind_group.is_some() => {
+                        start + row.min(block.rows.len().saturating_sub(1))
+                    }
                     AnchorLine::Group(row) => group_row.map_or(start, |(start, height)| {
                         start + row.min(height.saturating_sub(1))
                     }),
@@ -169,6 +238,12 @@ impl Window {
             if row < block.height() {
                 let line = if row == 0 && block.heading.is_some() {
                     AnchorLine::Turn
+                } else if let Some(group) = block.rewind_group {
+                    group
+                        .entry_at(row)
+                        .map_or(AnchorLine::Group(row), |(event_id, line)| {
+                            AnchorLine::RewindEntry { event_id, line }
+                        })
                 } else if row < block.prefix_height() {
                     AnchorLine::Group(row - usize::from(block.heading.is_some()))
                 } else {
@@ -184,29 +259,39 @@ impl Window {
         None
     }
 
-    pub(super) fn blocks<'a>(&'a mut self, layout: Layout<'a>) -> impl Iterator<Item = Block<'a>> {
-        let mut spans = groups(&self.records)
+    pub(super) fn blocks<'a>(&'a mut self, layout: Layout<'a>) -> Vec<Block<'a>> {
+        let from_start = self.older.is_none();
+        let Self {
+            records: window_records,
+            rewind_groups,
+            ..
+        } = self;
+        let mut spans = groups(window_records)
             .into_iter()
             .map(|span| {
-                let open = layout.items.group_open(&self.records[span.range.clone()]);
+                let open = layout.items.group_open(&window_records[span.range.clone()]);
                 let range = span.range.clone();
-                let heading =
-                    GroupHeading::from_span(span, &self.records, open, layout.width, layout.agents);
+                let heading = GroupHeading::from_span(
+                    span,
+                    window_records,
+                    open,
+                    layout.width,
+                    layout.agents,
+                );
                 (range, Some(heading), open)
             })
             .collect::<Vec<_>>()
             .into_iter();
         let mut current = spans.next();
-        let mut records = self
-            .records
+        let mut records = window_records
             .iter_mut()
             .enumerate()
             .filter(|(_, record)| record.visible())
             .peekable();
-        let from_start = self.older.is_none();
         let mut previous_turn = None;
-        std::iter::from_fn(move || {
+        let mut blocks = std::iter::from_fn(move || {
             let (index, record) = records.next()?;
+            let position = record.position.unwrap_or(u64::MAX);
             let heading = record
                 .turn
                 .filter(|&turn| {
@@ -272,6 +357,7 @@ impl Window {
             };
             Some(Block {
                 key,
+                position,
                 heading,
                 user_header,
                 thinking,
@@ -280,8 +366,28 @@ impl Window {
                 collapsed,
                 rows,
                 detail,
+                rewind_group: None,
             })
         })
+        .collect::<Vec<_>>();
+        for group in rewind_groups {
+            group.render(layout.width);
+            blocks.push(Block {
+                key: &group.key,
+                position: group.position(),
+                heading: None,
+                user_header: false,
+                thinking: false,
+                group: None,
+                grouped: false,
+                collapsed: false,
+                rows: &group.rows,
+                detail: None,
+                rewind_group: Some(group),
+            });
+        }
+        blocks.sort_by_key(|block| block.position);
+        blocks
     }
 }
 
@@ -296,12 +402,14 @@ pub(super) struct Layout<'a> {
 
 pub(super) struct Block<'a> {
     pub(super) key: &'a Key,
+    pub(super) position: u64,
     pub(super) heading: Option<TurnHeading>,
     pub(super) user_header: bool,
     pub(super) thinking: bool,
     pub(super) group: Option<GroupHeading>,
     pub(super) rows: &'a [Row],
     pub(super) detail: Option<DetailRecord<'a>>,
+    pub(super) rewind_group: Option<&'a RewindGroupState>,
     pub(super) grouped: bool,
     collapsed: bool,
 }

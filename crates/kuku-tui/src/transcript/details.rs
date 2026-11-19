@@ -11,7 +11,10 @@ use crate::theme::{emphasis, ACCENT, MUTED, SUCCESS};
 
 use super::agent::{AgentCard, AgentCards};
 use super::tool::{style_card, tool_title, Tool};
-use super::{body_inset, render_rows, Key, Record, Row, ToolDetails, Transcript, MAX_RECORDS};
+use super::{
+    body_inset, render_rows, Key, Record, RewindGroupChoice, Row, ToolDetails, Transcript,
+    MAX_RECORDS,
+};
 
 const INSPECTIONS: [(&str, &str, &str); 5] = [
     ("read_file", "file read", "file reads"),
@@ -29,6 +32,13 @@ pub(crate) struct DetailKey {
 }
 
 impl DetailKey {
+    pub(crate) fn rewind_group_id(&self) -> Option<u64> {
+        match (&self.kind, &self.record) {
+            (DetailKind::RewindGroup, Key::RewindGroup(id)) => Some(*id),
+            _ => None,
+        }
+    }
+
     pub(super) fn settle(&mut self, preview: &Key, settled: &Key) {
         if self.record == *preview {
             self.record = settled.clone();
@@ -41,6 +51,7 @@ enum DetailKind {
     Agent,
     Group,
     Reasoning,
+    RewindGroup,
     Tool,
 }
 
@@ -254,12 +265,26 @@ impl Transcript {
     }
 
     pub(crate) fn visible_detail_choices(&self) -> Vec<(DetailKey, String, String)> {
-        self.detail_items
+        let mut choices = self
+            .detail_items
             .visible
             .iter()
             .rev()
             .map(|item| (item.key.clone(), item.label.clone(), item.summary.clone()))
-            .collect()
+            .collect::<Vec<_>>();
+        let rewind_groups: Vec<RewindGroupChoice> = self.rewind_group_choices();
+        choices.extend(rewind_groups.into_iter().rev().map(|group| {
+            let action = if group.expanded { "Collapse" } else { "Expand" };
+            (
+                DetailKey {
+                    kind: DetailKind::RewindGroup,
+                    record: Key::RewindGroup(group.rewind_event_id),
+                },
+                format!("{action} · {}", group.label),
+                format!("Agent {} · {}", group.agent, group.summary),
+            )
+        }));
+        choices
     }
 
     pub(crate) fn latest_notes(&self) -> Option<DetailKey> {
@@ -361,7 +386,7 @@ impl Transcript {
                 }
                 true
             }
-            DetailKind::Tool | DetailKind::Reasoning => false,
+            DetailKind::Tool | DetailKind::Reasoning | DetailKind::RewindGroup => false,
             DetailKind::Group => {
                 let Some(span) = groups(&window.records).into_iter().find(|span| {
                     window.records[span.range.clone()]

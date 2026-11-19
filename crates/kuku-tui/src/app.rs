@@ -20,6 +20,7 @@ use crate::transcript::{HistoryRequest, Transcript};
 mod activity;
 pub(crate) mod agents;
 mod delivery;
+mod history;
 mod navigation;
 mod pending;
 mod reading;
@@ -695,22 +696,11 @@ impl App {
             Update::Refreshed(selection, result) if selection == self.selection() => {
                 self.refreshed(result)
             }
-            Update::History(selection, request, result) if selection == self.selection() => {
-                if self.pane().history_invalidated {
-                    let request = HistoryRequest::Recent;
-                    let pane = self.pane_mut();
-                    pane.history_invalidated = false;
-                    pane.history_in_flight = Some(request);
-                    self.effects.push(Job::History(selection, request));
-                } else {
-                    self.pane_mut().history_in_flight = None;
-                    match result {
-                        Ok(page) => self.pane_mut().transcript.apply_page(request, page),
-                        Err(error) => {
-                            self.problem(format!("History · {error} · scroll up to retry"))
-                        }
-                    }
-                }
+            Update::History(selection, request, result) => {
+                self.apply_history_update(selection, request, result);
+            }
+            Update::RewindGroupHistory(selection, request, result) => {
+                self.apply_rewind_group_history_update(selection, request, result);
             }
             Update::Found(ticket, result) => {
                 if let Some(Modal::Picker(picker)) = &mut self.modal {
@@ -782,7 +772,6 @@ impl App {
             | Update::WatchFailed(..)
             | Update::Observation(..)
             | Update::Refreshed(..)
-            | Update::History(..)
             | Update::DefaultModel(..)
             | Update::Output(..) => {}
         }

@@ -20,6 +20,7 @@ fn page(first: u64, before: u64) -> HistoryPage {
         entries: (first..before)
             .map(|id| response(id, format!("Answer {id}")))
             .collect(),
+        rewind_groups: Vec::new(),
         next_before: (first > 1).then_some(first),
     }
 }
@@ -82,6 +83,7 @@ fn rewind_picker_uses_display_turn_number_and_keeps_event_identity() {
             turn_summary: None,
             details: [("turn_number".into(), json!(2))].into_iter().collect(),
         }],
+        rewind_groups: Vec::new(),
         next_before: None,
     });
 
@@ -224,6 +226,7 @@ fn interrupted_reply_replaces_preview_and_preserves_previous_copy_target() {
     );
     transcript.replace_recent(HistoryPage {
         entries: vec![previous, interruption],
+        rewind_groups: Vec::new(),
         next_before: None,
     });
     assert_eq!(rendered, rows(&mut transcript).join("\n"));
@@ -423,6 +426,7 @@ fn history_page_join_only_marks_genuine_turn_boundaries_and_preserves_the_anchor
     later.details.insert("turn_number".into(), json!(2));
     transcript.replace_recent(HistoryPage {
         entries: vec![first, same_turn, later],
+        rewind_groups: Vec::new(),
         next_before: Some(15),
     });
     let request = transcript.scroll(-100, 44, 10).expect("older history");
@@ -448,6 +452,7 @@ fn history_page_join_only_marks_genuine_turn_boundaries_and_preserves_the_anchor
         request,
         HistoryPage {
             entries: vec![first_message, older_step],
+            rewind_groups: Vec::new(),
             next_before: None,
         },
     );
@@ -510,6 +515,7 @@ fn live_and_committed_turns_use_display_numbers_and_unknown_remains_generic() {
     unknown.details.clear();
     transcript.replace_recent(HistoryPage {
         entries: vec![unknown],
+        rewind_groups: Vec::new(),
         next_before: None,
     });
     assert!(rows(&mut transcript)[0].starts_with("Turn  ─"));

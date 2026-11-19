@@ -4,9 +4,23 @@ use ratatui::layout::Position;
 
 use crate::app::{App, Modal};
 use crate::selection::{ClickTarget, MouseAction};
+use crate::transcript::RewindGroupAction;
 
 impl App {
     pub(super) fn pointer(&mut self, mouse: MouseEvent, screen: &Buffer) {
+        if matches!(mouse.kind, MouseEventKind::Up(MouseButton::Left)) && self.modal.is_none() {
+            if let Some((row, _)) = self.text_selection.transcript_cell(mouse) {
+                if let Some((group_id, action)) = self.pane().transcript.rewind_group_action_at(row)
+                {
+                    match action {
+                        RewindGroupAction::Toggle => self.toggle_readonly_rewind_group(group_id),
+                        RewindGroupAction::Retry => self.retry_readonly_rewind_group(group_id),
+                        RewindGroupAction::More => self.load_more_readonly_rewind_group(group_id),
+                    };
+                    return;
+                }
+            }
+        }
         let click = self.click_target(mouse);
         match self.text_selection.mouse(mouse, screen, click) {
             Some(MouseAction::Copy(text)) => self.copy_text(text),

@@ -36,6 +36,7 @@ impl Journal {
         let mut transcript = Transcript::default();
         transcript.replace_recent(HistoryPage {
             entries: self.0,
+            rewind_groups: Vec::new(),
             next_before: None,
         });
         transcript
@@ -446,6 +447,7 @@ fn older_page_can_extend_an_open_group_without_moving_the_reader_or_invalidating
     let mut transcript = Transcript::default();
     transcript.replace_recent(HistoryPage {
         entries: latest,
+        rewind_groups: Vec::new(),
         next_before: Some(7),
     });
     assert_eq!(
@@ -468,6 +470,7 @@ fn older_page_can_extend_an_open_group_without_moving_the_reader_or_invalidating
         HistoryRequest::Older(7),
         HistoryPage {
             entries: journal.0,
+            rewind_groups: Vec::new(),
             next_before: None,
         },
     );
@@ -540,6 +543,7 @@ fn live_result_joins_the_group_only_on_commit_and_reconnect_keeps_its_expansion(
 
     transcript.replace_recent(HistoryPage {
         entries: complete,
+        rewind_groups: Vec::new(),
         next_before: None,
     });
     let restored = text(&transcript.project(80, 20));

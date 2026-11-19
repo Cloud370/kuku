@@ -19,6 +19,7 @@ use crate::transcript::{ReplySource, ToolView};
 mod input;
 mod pointer;
 mod rewind;
+mod rewound;
 
 const MOUSE_SCROLL_LINES: isize = 3;
 

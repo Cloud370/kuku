@@ -206,7 +206,7 @@ mod tests {
                 entry(8, 2, json!({"type":"assistant","text":"Second reply"})),
                 entry(9, 2, json!({"type":"turn_summary","turn_summary":{"elapsed_ms":8000,"tool_calls":3}})),
             ],
-            next_before: Some(8),
+            rewind_groups: Vec::new(), next_before: Some(8),
         });
         assert_eq!(
             Some(HistoryRequest::Older(8)),
@@ -224,6 +224,7 @@ mod tests {
                         json!({"type":"turn_summary","turn_summary":{"tool_calls":0}}),
                     ),
                 ],
+                rewind_groups: Vec::new(),
                 next_before: None,
             },
         );
