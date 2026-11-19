@@ -432,11 +432,12 @@ fn file_modified_after_target_restores() {
 #[test]
 fn message_rewind_file_opt_in_restores_selected_agent_changes() {
     let workspace = tempfile::tempdir().unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
     let session_dir = tempfile::tempdir().unwrap();
     std::fs::write(workspace.path().join("a.txt"), "after").unwrap();
     let events = vec![
         ts(1, 1),
-        message_rewind_file_read(2, 1, "a.txt", &workspace.path().join("a.txt"), "before"),
+        message_rewind_file_read(2, 1, "a.txt", &workspace_root.join("a.txt"), "before"),
         te(3, 1),
         ts(4, 2),
         ui(5, 2, "rewind target"),
@@ -447,7 +448,7 @@ fn message_rewind_file_opt_in_restores_selected_agent_changes() {
             3,
             "main",
             "a.txt",
-            &workspace.path().join("a.txt"),
+            &workspace_root.join("a.txt"),
             "after",
             false,
         ),
@@ -468,16 +469,17 @@ fn message_rewind_file_opt_in_restores_selected_agent_changes() {
 #[test]
 fn message_rewind_uses_full_read_during_selected_turn_as_before_image() {
     let workspace = tempfile::tempdir().unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
     std::fs::write(workspace.path().join("a.txt"), "after").unwrap();
     let events = vec![
         ui(1, 1, "rewind target"),
-        message_rewind_file_read(2, 1, "a.txt", &workspace.path().join("a.txt"), "before"),
+        message_rewind_file_read(2, 1, "a.txt", &workspace_root.join("a.txt"), "before"),
         message_rewind_file_write(
             3,
             1,
             "main",
             "a.txt",
-            &workspace.path().join("a.txt"),
+            &workspace_root.join("a.txt"),
             "after",
             false,
         ),
@@ -493,6 +495,7 @@ fn message_rewind_uses_full_read_during_selected_turn_as_before_image() {
 #[test]
 fn message_rewind_deletes_only_an_explicitly_created_file() {
     let workspace = tempfile::tempdir().unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
     std::fs::write(workspace.path().join("new.txt"), "created").unwrap();
     let events = vec![
         ui(1, 1, "rewind target"),
@@ -501,7 +504,7 @@ fn message_rewind_deletes_only_an_explicitly_created_file() {
             1,
             "main",
             "new.txt",
-            &workspace.path().join("new.txt"),
+            &workspace_root.join("new.txt"),
             "created",
             true,
         ),
@@ -509,13 +512,14 @@ fn message_rewind_deletes_only_an_explicitly_created_file() {
 
     let plan = compute_message_rewind_plan(&events, "main", 1, workspace.path()).unwrap();
 
-    assert_eq!(plan.deletes, vec![workspace.path().join("new.txt")]);
+    assert_eq!(plan.deletes, vec![workspace_root.join("new.txt")]);
     assert!(plan.unrecoverable.is_empty());
 }
 
 #[test]
 fn message_rewind_treats_missing_before_image_as_unrecoverable() {
     let workspace = tempfile::tempdir().unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
     std::fs::write(workspace.path().join("unknown.txt"), "after").unwrap();
     let events = vec![
         ui(1, 1, "rewind target"),
@@ -524,7 +528,7 @@ fn message_rewind_treats_missing_before_image_as_unrecoverable() {
             1,
             "main",
             "unknown.txt",
-            &workspace.path().join("unknown.txt"),
+            &workspace_root.join("unknown.txt"),
             "after",
             false,
         ),
@@ -534,7 +538,7 @@ fn message_rewind_treats_missing_before_image_as_unrecoverable() {
 
     assert_eq!(
         plan.unrecoverable,
-        vec![workspace.path().join("unknown.txt")]
+        vec![workspace_root.join("unknown.txt")]
     );
     assert!(plan.deletes.is_empty());
 }
@@ -542,13 +546,14 @@ fn message_rewind_treats_missing_before_image_as_unrecoverable() {
 #[test]
 fn message_rewind_file_plan_rejects_other_agent_later_writes() {
     let workspace = tempfile::tempdir().unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
     let events = vec![
         ts(1, 1),
         message_rewind_file_read(
             2,
             1,
             "shared.txt",
-            &workspace.path().join("shared.txt"),
+            &workspace_root.join("shared.txt"),
             "before",
         ),
         te(3, 1),
@@ -561,7 +566,7 @@ fn message_rewind_file_plan_rejects_other_agent_later_writes() {
             3,
             "main",
             "shared.txt",
-            &workspace.path().join("shared.txt"),
+            &workspace_root.join("shared.txt"),
             "main",
             false,
         ),
@@ -579,7 +584,7 @@ fn message_rewind_file_plan_rejects_other_agent_later_writes() {
             4,
             "review",
             "shared.txt",
-            &workspace.path().join("shared.txt"),
+            &workspace_root.join("shared.txt"),
             "review",
             false,
         ),
@@ -596,6 +601,7 @@ fn message_rewind_file_plan_rejects_other_agent_later_writes() {
 #[test]
 fn message_rewind_file_plan_rejects_symlink_paths() {
     let workspace = tempfile::tempdir().unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
     let outside = tempfile::tempdir().unwrap();
     std::fs::write(outside.path().join("file.txt"), "outside").unwrap();
     std::os::unix::fs::symlink(outside.path(), workspace.path().join("link")).unwrap();
@@ -607,7 +613,7 @@ fn message_rewind_file_plan_rejects_symlink_paths() {
             1,
             "main",
             "link/file.txt",
-            &workspace.path().join("link/file.txt"),
+            &workspace_root.join("link/file.txt"),
             "after",
             true,
         ),
