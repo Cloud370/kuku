@@ -76,6 +76,104 @@ fn clicking_restart_only_focuses_it_and_enter_preserves_the_draft() {
 }
 
 #[test]
+fn clicking_stopped_continue_focuses_it_until_enter_advances() {
+    let mut app = app();
+    load_snapshot(&mut app, "stopped", true);
+    let mut terminal = Terminal::new(TestBackend::new(82, 20)).unwrap();
+    let buffer = terminal
+        .draw(|frame| render(frame, &mut app))
+        .unwrap()
+        .buffer;
+    let hit = app
+        .contextual_hits
+        .iter()
+        .find(|hit| matches!(hit.control, ContextControl::Continue { .. }))
+        .unwrap()
+        .area;
+
+    click(&mut app, buffer, (hit.x, hit.y));
+    assert!(matches!(
+        app.pane().contextual_focus.cursor,
+        Some(ContextControl::Continue { .. })
+    ));
+    assert!(app.pane().contextual_focus.active);
+    assert!(!app.effects.iter().any(|effect| matches!(effect,
+        Job::Save(command) if matches!(command.action, Action::Advance)
+    )));
+
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(app.effects.iter().any(|effect| matches!(effect,
+        Job::Save(command) if matches!(command.action, Action::Advance)
+    )));
+}
+
+#[test]
+fn clicking_running_stop_focuses_it_until_enter_interrupts() {
+    let mut app = app();
+    load_snapshot(&mut app, "running", false);
+    let mut terminal = Terminal::new(TestBackend::new(82, 20)).unwrap();
+    let buffer = terminal
+        .draw(|frame| render(frame, &mut app))
+        .unwrap()
+        .buffer;
+    let hit = app
+        .contextual_hits
+        .iter()
+        .find(|hit| matches!(hit.control, ContextControl::Interrupt { .. }))
+        .unwrap()
+        .area;
+
+    click(&mut app, buffer, (hit.x, hit.y));
+    assert!(matches!(
+        app.pane().contextual_focus.cursor,
+        Some(ContextControl::Interrupt {
+            execution_id: 49,
+            ..
+        })
+    ));
+    assert!(app.pane().contextual_focus.active);
+    assert!(!app.effects.iter().any(|effect| matches!(effect,
+        Job::Save(command) if matches!(command.action, Action::Cancel { .. })
+    )));
+
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(app.effects.iter().any(|effect| matches!(effect,
+        Job::Save(command) if matches!(command.action, Action::Cancel { execution_id: 49 })
+    )));
+}
+
+#[test]
+fn clicking_previous_agent_header_focuses_the_registered_hit_area() {
+    let mut app = app();
+    load_snapshot(&mut app, "idle", false);
+    let previous = app.active.clone();
+    let next = crate::app::Address::new(previous.session.clone(), "writer".into());
+    app.select(next, true, "Writer".into());
+    load_snapshot(&mut app, "idle", false);
+
+    let mut terminal = Terminal::new(TestBackend::new(82, 20)).unwrap();
+    let buffer = terminal
+        .draw(|frame| render(frame, &mut app))
+        .unwrap()
+        .buffer;
+    let hit = app
+        .contextual_hits
+        .iter()
+        .find(|hit| matches!(hit.control, ContextControl::PreviousAgent { .. }))
+        .unwrap()
+        .area;
+
+    click(&mut app, buffer, (hit.x, hit.y));
+    assert!(matches!(&app.pane().contextual_focus.cursor,
+        Some(ContextControl::PreviousAgent { target }) if target == &previous));
+    assert!(app.pane().contextual_focus.active);
+    assert_eq!("writer", app.active.agent);
+
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(previous, app.active);
+}
+
+#[test]
 fn narrow_layout_keeps_contextual_service_action_keyboard_reachable() {
     let mut app = app();
     app.pane_mut().exists = true;

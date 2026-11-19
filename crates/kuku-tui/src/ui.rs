@@ -343,6 +343,7 @@ pub(crate) fn render_at(
         request_area,
         delivery_area,
         reading_area,
+        heading,
         inner,
         status,
     ];
