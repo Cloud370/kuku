@@ -494,14 +494,12 @@ impl AnthropicSseParser {
                         })
                         .cloned()
                         .collect::<Vec<_>>();
-                    if !content.is_empty() {
-                        let value = json!({"role": "assistant", "content": content});
-                        validate_replay_size(&value)?;
-                        self.chunks.push(ProviderChunk::Replay {
-                            protocol: ProviderFormat::Anthropic,
-                            value,
-                        });
-                    }
+                    let value = json!({"role": "assistant", "content": content});
+                    validate_replay_size(&value)?;
+                    self.chunks.push(ProviderChunk::Replay {
+                        protocol: ProviderFormat::Anthropic,
+                        value,
+                    });
                 }
                 self.saw_terminal = true;
                 self.chunks.push(ProviderChunk::StreamEnd);

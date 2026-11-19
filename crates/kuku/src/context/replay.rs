@@ -30,6 +30,7 @@ struct ResponseGroup {
     tool_calls: BTreeMap<String, PendingToolCall>,
     tool_results: BTreeMap<String, ToolResult>,
     replay: Vec<MessageBlock>,
+    suppress_thinking: bool,
 }
 
 /// Reconstruct conversation history messages from a session's stored events.
@@ -223,10 +224,18 @@ fn rebuild_history_internal(
                 }
                 current_group.request_id = Some(request_id.into());
                 if let Ok(protocol) = serde_json::from_value(value["protocol"].clone()) {
-                    current_group.replay.push(MessageBlock::ProviderReplay {
-                        protocol,
-                        value: value["value"].clone(),
-                    });
+                    let replay = value["value"].clone();
+                    if protocol == crate::config::ProviderFormat::Anthropic
+                        && replay["role"] == "assistant"
+                        && replay["content"].as_array().is_some_and(Vec::is_empty)
+                    {
+                        current_group.suppress_thinking = true;
+                    } else {
+                        current_group.replay.push(MessageBlock::ProviderReplay {
+                            protocol,
+                            value: replay,
+                        });
+                    }
                 }
             }
             EventPayload::MessageUser {
@@ -645,7 +654,9 @@ fn flush_group(messages: &mut Vec<CanonicalMessage>, group: &mut ResponseGroup) 
 
     let mut assistant_blocks = Vec::new();
     assistant_blocks.append(&mut group.replay);
-    if let Some(thinking) = group.thinking.take().filter(|t| !t.is_empty()) {
+    if group.suppress_thinking {
+        group.thinking = None;
+    } else if let Some(thinking) = group.thinking.take().filter(|t| !t.is_empty()) {
         assistant_blocks.push(MessageBlock::Thinking(thinking));
     }
     if let Some(text) = group.text.take().filter(|text| !text.is_empty()) {
@@ -678,6 +689,7 @@ fn flush_group(messages: &mut Vec<CanonicalMessage>, group: &mut ResponseGroup) 
     }
 
     group.request_id = None;
+    group.suppress_thinking = false;
 }
 
 fn cancelled_tool_result(tool_call_id: &str) -> ToolResult {
