@@ -817,6 +817,7 @@ def markdown_document(client, document=None, reference=False):
         assert not any(marker in screen for marker in (outer, document.fence, "```python")), screen
 
     def toggle_source(terminal):
+        terminal.expect("Enter steer", state="Finished")
         terminal.press("/")
         terminal.expect("Actions and Skills")
         terminal.press("source\r")
@@ -843,15 +844,37 @@ def markdown_document(client, document=None, reference=False):
         else:
             check_preview(frames["complete"], complete=True)
             terminal.type(document.draft)
+            terminal.press("\x10")
+            help_screen = terminal.expect(
+                "Keyboard shortcuts", state="Finished", also=(document.draft,)
+            )["screen"]
+            assert document.draft in help_screen, help_screen
+            terminal.press("\x1b")
+
+            def help_closed():
+                screen = terminal.request("screen")["screen"]
+                if (
+                    document.draft in screen
+                    and preview in screen
+                    and "Finished" in screen
+                    and "Keyboard shortcuts" not in screen
+                ):
+                    return screen
+
+            preserved = eventually("shortcut help to close without changing the draft", help_closed)
+            terminal.press("\x03")
+            empty = terminal.expect("Enter steer", state="Finished")["screen"]
+            assert document.draft not in empty, empty
             toggle_source(terminal)
             frames["source"] = terminal.expect(document.fence, state="Finished")["screen"]
             source = frames["source"]
-            assert all(marker in source for marker in (document.heading, document.table, "```python", document.draft)), source
+            assert all(
+                marker in source
+                for marker in (document.heading, document.table, "```python")
+            ), source
             toggle_source(terminal)
-            restored = terminal.expect("╭─ python ", state="Finished", also=(document.draft, preview))["screen"]
-            assert document.draft in restored, restored
+            restored = terminal.expect("╭─ python ", state="Finished", also=(preview,))["screen"]
             check_preview(restored, complete=True)
-            terminal.press("\x03")
         verification = document.verify(client, workspace)
         terminal.exit_cleanly()
 
