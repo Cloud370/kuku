@@ -3,7 +3,7 @@ use std::ops::Range;
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
 };
-use kuku_client::{Action, AgentConfig, Error, Timing};
+use kuku_client::{Action, AgentConfig, Error, Target, Timing};
 use ratatui::buffer::Buffer;
 
 use crate::app::{Address, App, Modal, PendingItem, PendingStage};
@@ -63,11 +63,24 @@ impl App {
         }
     }
 
+    fn restore_question_composer(&mut self, target: &Target) {
+        let address = Address::new(target.session_id.clone(), target.agent.clone());
+        if let Some(pane) = self.panes.get_mut(&address) {
+            pane.keyboard_focus = crate::app::KeyboardFocus::Composer;
+            pane.focused_request = None;
+        }
+    }
+
     fn key(&mut self, key: KeyEvent) {
         self.dismiss_confirmation();
         self.text_selection.cancel_drag();
         if Shortcut::ESCAPE.matches(key) {
             if let Some(modal) = self.modal.take() {
+                if let Modal::Prompt(prompt) = &modal {
+                    if let PromptKind::Question { target, .. } = &prompt.kind {
+                        self.restore_question_composer(target);
+                    }
+                }
                 if !matches!(modal, Modal::Help) {
                     self.effects.push(Job::ClosePicker);
                 }
@@ -327,6 +340,7 @@ impl App {
                     self.configure(config);
                 }
                 PromptKind::Question { request_id, target } => {
+                    self.restore_question_composer(&target);
                     if self.selection().target != target
                         || !self.pane().snapshot.as_ref().is_some_and(|snapshot| {
                             snapshot

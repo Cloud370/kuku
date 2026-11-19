@@ -215,6 +215,12 @@ fn request_card_is_visible_without_focus_and_question_answer_is_scoped_and_stale
     key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
         if matches!(&prompt.kind, PromptKind::Question { request_id, .. } if request_id == "q-1")));
+    key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    assert_eq!(KeyboardFocus::Composer, app.pane().keyboard_focus);
+    assert_eq!("my independent draft", app.pane().draft.text());
+    app.effects.clear();
+    key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     if let Some(Modal::Prompt(prompt)) = &mut app.modal {
         prompt.editor.set_text("workspace tests".into());
     }
@@ -224,6 +230,36 @@ fn request_card_is_visible_without_focus_and_question_answer_is_scoped_and_stale
     assert!(app.effects.is_empty());
     assert!(app.modal.is_none());
     assert_eq!("my independent draft", app.pane().draft.text());
+    assert_eq!(KeyboardFocus::Composer, app.pane().keyboard_focus);
+}
+
+#[test]
+fn question_reply_restores_composer_after_request_clears() {
+    let mut app = app();
+    let question = json!({
+        "id":"q-submit", "agent":"main", "turn":1,
+        "tool_call_id":"tool-submit", "text":"What should run?"
+    });
+    let waiting = snapshot(&app, "waiting", question, json!(null));
+    load(&mut app, waiting);
+    app.effects.clear();
+    app.pane_mut().draft.insert("existing draft");
+    key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    if let Some(Modal::Prompt(prompt)) = &mut app.modal {
+        prompt.editor.set_text("run workspace tests".into());
+    }
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(KeyboardFocus::Composer, app.pane().keyboard_focus);
+    assert!(app.effects.iter().any(|effect| matches!(effect,
+        crate::jobs::Job::Save(command)
+            if matches!(&command.action, Action::ReplyQuestion { request_id, text }
+                if request_id == "q-submit" && text == "run workspace tests"))));
+
+    let idle = snapshot(&app, "idle", json!(null), json!(null));
+    load(&mut app, idle);
+    key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
+    assert_eq!("existing draftx", app.pane().draft.text());
 }
 
 #[test]
