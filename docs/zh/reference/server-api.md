@@ -124,6 +124,8 @@ Agent 快照和摘要可以包含 `admitted_task` 和 `queued_task`。这两个�
 
 `/events?workspace=...&after=0&limit=100` 返回 `events` 和 `next_after`，供核查原始事实。每条记录含 `id` 和 `payload`。可用 `agent` 过滤扫描页，即使没有匹配条目，`next_after` 也会前移。日志结构见 [Session 事件](events.md)。
 
+持久事件页可能包含直接 `Query` 或子 Agent 查询因输出上限重试产生的 `model.recovery`。这些记录遵循同一 `agent` 过滤规则，含义见 [Session 事件](events.md)。
+
 通过 `/outputs/{output_id}` 读取已知工具输出，传入 `workspace` 及可选的 `agent`（默认 `main`）、`offset` 和 `max_bytes`。Agent 必须持有或收到过该输出。可用 `search` 在读取范围内作字面搜索。响应将数据块放在 `output` 中。当 `output.has_more` 为 true 时，传入 `output.next_offset` 续读。[保留输出](tools.md)
 
 ## 后台 Job

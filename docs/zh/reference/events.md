@@ -16,7 +16,8 @@ CLI 在标准输出中逐行写出 JSON，在标准错误中给出下一游标�
 |---|---|
 | `session.created`、`conversation.opened` | Session 元数据，以及打开某个 Agent 的对话流。 |
 | `runtime.operation` | 状态变化由 `record.operation` 指定。例如 `session_claimed`、`agent_created`、`agent_configured`、`input_delivered`、`inputs_accepted`、`input_withdrawal` 和 `turn_settled`。`execution_started`、`agent_stopped` 和 `agent_resumed` 记录定向执行控制。待决请求和关联回复也通过 Session 操作记录。 |
-| `turn.started`、`message.user`、`model.response`、`model.error` | Turn 的输入和模型服务结果。`turn.completed`、`turn.interrupted`、`turn.cancelled` 记录终止状态。 |
+| `turn.started`、`message.user`、`model.response`、`model.error` | Turn 的输入和模型服务结果；模型响应会保留归一化后的终止状态。`turn.completed`、`turn.interrupted`、`turn.cancelled` 记录终止状态。 |
+| `model.recovery` | 直接 `Query` 或子 Agent 查询遇到输出上限后的一次重试，记录失败和重试请求 ID 及恢复通知来源。 |
 | `runtime.context_segment`、`runtime.context_admitted`、`runtime.step_prepared` | 静态上下文、新接纳的消息，以及确认消息边界的 Step 准备记录。`body_hash` 标识编码后的请求。 |
 | `runtime.provider_report`、`runtime.model_usage`、`runtime.provider_replay` | 模型服务实际回报的元数据、token 用量或可用的协议原生续接数据。 |
 | `runtime.model_retry` | 核心运行时为已准备请求记录 `waiting`、`started` 和 `stopped` 阶段。旧事件缺少 `phase` 时按 `started` 处理。等待或开始时，`attempt` 是下一次尝试的 1 起始编号；停止时是最终失败的尝试编号。`failed_attempt`、`max_attempts`、`failed_kind`、`request_id`、`delay_ms`、`ts`、`will_retry`、`message`、`status` 和 `stop_reason` 携带重试策略或诊断信息。`waiting` 在休眠前写入；`started` 在重新派发前写入。用量统计计入 `started`（包括没有 `phase` 的旧事件），不计入 `waiting` 或 `stopped`。只有 `will_retry` 表示是否会发送下一请求；`delay_ms` 仅适用于 `waiting`。`stop_reason` 可以是 `non_retryable`、`attempt_limit`、`request_budget`、`disabled` 或 `stream_started`。 |
