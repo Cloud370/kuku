@@ -133,6 +133,24 @@ fn thinking_is_available_only_for_its_associated_message() {
 }
 
 #[test]
+fn remediation_thinking_is_unavailable_in_source_mode() {
+    let mut app = connected_app();
+    let details = serde_json::from_value(json!({"reasoning_preview":"private thought"})).unwrap();
+    insert_message(
+        &mut app,
+        68,
+        HistoryKind::Assistant,
+        "visible reply",
+        details,
+    );
+    open_message_actions(&mut app, MessageId::Event(68));
+    choose_message_action(&mut app, MessageAction::Source);
+    open_message_actions(&mut app, MessageId::Event(68));
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+        if !picker.visible_choices().iter().any(|choice| choice.label == "Thinking")));
+}
+
+#[test]
 fn tool_actions_expand_the_selected_call_and_open_saved_or_complete_inline_output() {
     let mut app = connected_app();
     for event in [

@@ -149,6 +149,17 @@ impl Transcript {
             Body::Notice(..) | Body::TurnSummary => return None,
         };
         let (thinking, expandable) = self.message_action_keys(record);
+        let thinking = if matches!(
+            (&key, &self.assistant_view),
+            (
+                super::Key::Event(id),
+                AssistantView::MessageSource(source_id)
+            ) if id == source_id
+        ) {
+            None
+        } else {
+            thinking
+        };
         Some(MessageInfo {
             kind,
             fetch_source,
