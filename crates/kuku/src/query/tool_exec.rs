@@ -41,10 +41,21 @@ pub(crate) fn write_tool_result(
     result: &crate::tool::ToolResultEnvelope,
     events_path: &std::path::Path,
     turn: u64,
+    job_wait: Option<&crate::Session>,
 ) -> crate::error::Result<Option<serde_json::Value>> {
     let mut store = crate::event::EventStore::open(events_path)?;
-    let structured = finalize_persisted_tool_result(store.next_id(), result);
-    let stored = store.append(crate::event::EventPayload::ToolResult {
+    let mut structured = finalize_persisted_tool_result(store.next_id(), result);
+    if let Some(data) = structured
+        .as_mut()
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        if job_wait.is_none()
+            && data.get("kind").and_then(serde_json::Value::as_str) == Some("job_wait_result")
+        {
+            data.remove("kind");
+        }
+    }
+    let payload = crate::event::EventPayload::ToolResult {
         turn,
         ts: now_timestamp()?,
         conversation: slot
@@ -61,7 +72,12 @@ pub(crate) fn write_tool_result(
         commands_run: Vec::new(),
         memory_changed: None,
         structured: structured.clone(),
-    })?;
+    };
+    let stored = if let Some(session) = job_wait {
+        session.append_job_wait_result(payload)?
+    } else {
+        store.append(payload)?
+    };
     Ok(match stored.payload {
         EventPayload::ToolResult { structured, .. } => structured,
         _ => None,
@@ -263,6 +279,7 @@ pub(super) async fn execute_tool_call(
                 conversation: Some(pending.conversation.clone()),
                 kind: super::types::ToolKind::Simple,
                 workspace_ordered: false,
+                job: None,
                 label: String::new(),
                 cancel: std::sync::Arc::new(tokio::sync::Notify::new()),
                 nested_permissions: Default::default(),
@@ -270,6 +287,7 @@ pub(super) async fn execute_tool_call(
             &result,
             &pending.events_path,
             pending.turn,
+            None,
         )?;
         return Ok(result);
     }
@@ -545,6 +563,7 @@ mod tests {
             catalog: crate::prompt::builtin_prompt_catalog(),
             pending_events: std::collections::VecDeque::new(),
             pending_error: None,
+            waiting_for_job_input: false,
             cancel_token: Arc::new(tokio::sync::Notify::new()),
             handoff_triggered: false,
             handoff_keep_turns: test_config().handoff().keep_turns,
@@ -651,6 +670,7 @@ mod tests {
                 binding_id: "binding:review".to_string(),
             },
             workspace_ordered: false,
+            job: None,
             label: "read".to_string(),
             cancel: Arc::new(tokio::sync::Notify::new()),
             nested_permissions: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
@@ -665,7 +685,7 @@ mod tests {
             faults: Default::default(),
             supplied_full_write: false,
         };
-        write_tool_result(&slot, &result, &events_path, 1).unwrap();
+        write_tool_result(&slot, &result, &events_path, 1, None).unwrap();
 
         let events = crate::event::EventStore::replay(&events_path).unwrap();
         assert!(events.iter().any(|event| matches!(

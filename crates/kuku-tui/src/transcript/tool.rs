@@ -61,7 +61,11 @@ pub(super) struct Tool {
 impl Tool {
     pub(super) fn from_entry(entry: &HistoryEntry) -> Self {
         let name = capped(
-            entry.details.get("tool").and_then(Value::as_str),
+            entry
+                .details
+                .get("tool")
+                .and_then(Value::as_str)
+                .or_else(|| entry.details.get("structured")?["tool"].as_str()),
             MAX_LABEL_BYTES,
         );
         if entry.kind == HistoryKind::ToolResult {

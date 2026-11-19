@@ -9,12 +9,10 @@ use crate::tool::{ToolDefinition, ToolResultEnvelope};
 
 use super::shell::shell_command;
 
-const TIMEOUT_CAP_SECONDS: u64 = 600;
-
 pub(super) struct CommandRequest {
     pub(super) invocation: CommandInvocation,
     pub(super) cwd: PathBuf,
-    pub(super) timeout_seconds: u64,
+    pub(super) timeout_seconds: Option<u32>,
 }
 
 impl CommandRequest {
@@ -41,23 +39,7 @@ pub(crate) fn prepare_command_args(
     workspace: &Path,
     definition: &ToolDefinition,
 ) -> Result<PathBuf, ToolResultEnvelope> {
-    if let Some(fields) = args
-        .as_object_mut()
-        .filter(|fields| fields.contains_key("command"))
-    {
-        if !fields.contains_key("shell") {
-            if let Some(default) = definition.input_schema["properties"]["shell"].get("default") {
-                fields.insert("shell".into(), default.clone());
-            }
-        }
-        if fields
-            .get("args")
-            .and_then(Value::as_array)
-            .is_some_and(Vec::is_empty)
-        {
-            fields.remove("args");
-        }
-    }
+    apply_command_defaults(args, definition)?;
     let request = run_command_request(args, workspace)?;
     let cwd = request
         .cwd
@@ -67,13 +49,54 @@ pub(crate) fn prepare_command_args(
     Ok(request.cwd)
 }
 
+fn apply_command_defaults(
+    args: &mut Value,
+    definition: &ToolDefinition,
+) -> Result<(), ToolResultEnvelope> {
+    if let Some(fields) = args.as_object_mut() {
+        if fields.contains_key("background")
+            && definition.input_schema["properties"]
+                .get("background")
+                .is_none()
+        {
+            return Err(invalid("background requires a top-level Session tool call"));
+        }
+        let shell_text = fields.contains_key("command");
+        let mode_field = if shell_text { "shell" } else { "args" };
+        for key in ["cwd", mode_field] {
+            if let Some(default) = definition.input_schema["properties"][key].get("default") {
+                fields.entry(key).or_insert_with(|| default.clone());
+            }
+        }
+        if shell_text
+            && fields
+                .get("args")
+                .and_then(Value::as_array)
+                .is_some_and(Vec::is_empty)
+        {
+            fields.remove("args");
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn command_permission_candidate(args: &Value) -> String {
-    let Some(cwd) = args.get("cwd").and_then(Value::as_str) else {
-        return String::new();
-    };
-    invocation(args)
-        .map(|invocation| serde_json::json!({"cwd": cwd, "invocation": invocation}).to_string())
+    if let Some(candidate) = resolved_candidate(args) {
+        return candidate;
+    }
+    let mut args = args.clone();
+    let definition =
+        crate::tool::registry::run_command_definition(&super::available_shells(), false);
+    apply_command_defaults(&mut args, &definition)
+        .ok()
+        .and_then(|()| resolved_candidate(&args))
         .unwrap_or_default()
+}
+
+fn resolved_candidate(args: &Value) -> Option<String> {
+    let cwd = args.get("cwd")?.as_str()?;
+    let invocation = invocation(args).ok()?;
+    Some(serde_json::json!({"cwd": cwd, "invocation": invocation}).to_string())
 }
 
 pub(super) fn run_command_request(
@@ -86,7 +109,7 @@ pub(super) fn run_command_request(
     if let Some(field) = fields.keys().find(|field| {
         !matches!(
             field.as_str(),
-            "program" | "args" | "shell" | "command" | "cwd" | "timeout" | "brief"
+            "program" | "args" | "shell" | "command" | "cwd" | "timeout" | "brief" | "background"
         )
     }) {
         return Err(invalid(format!("run_command does not accept {field:?}")));
@@ -112,12 +135,19 @@ pub(super) fn run_command_request(
     }
     let timeout_seconds = args
         .get("timeout")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| invalid("run_command requires timeout in seconds"))?;
-    if !(1..=TIMEOUT_CAP_SECONDS).contains(&timeout_seconds) {
-        return Err(invalid(format!(
-            "timeout must be between 1 and {TIMEOUT_CAP_SECONDS} seconds"
-        )));
+        .map(|value| {
+            value
+                .as_u64()
+                .and_then(|seconds| u32::try_from(seconds).ok())
+                .filter(|seconds| *seconds > 0)
+                .ok_or_else(|| invalid("timeout must be a positive 32-bit integer in seconds"))
+        })
+        .transpose()?;
+    if args
+        .get("background")
+        .is_some_and(|value| !value.is_boolean())
+    {
+        return Err(invalid("background must be a boolean"));
     }
     Ok(CommandRequest {
         invocation,

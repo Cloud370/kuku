@@ -34,6 +34,31 @@ fn rows(transcript: &mut Transcript) -> Vec<String> {
 }
 
 #[test]
+fn background_job_start_and_terminal_event_are_separate_transcript_entries() {
+    let start: HistoryEntry = serde_json::from_value(json!({
+        "id": 8, "agent": "main", "turn": 1, "turn_number": 1,
+        "type": "tool_result", "tool_call_id": "call-1",
+        "status": "ok", "summary": "job-1 running: Run tests",
+        "structured": {"kind": "job", "job_id": "job-1", "status": "running",
+                       "tool": "run_command", "output_id": "out-1"},
+    }))
+    .unwrap();
+    let finish: HistoryEntry = serde_json::from_value(json!({
+        "id": 9, "agent": "main", "turn": 1, "turn_number": 1,
+        "type": "job_finished", "job_id": "job-1", "status": "cancelled",
+        "summary": "Process exited after cancellation", "output_id": "out-1",
+    }))
+    .unwrap();
+    let mut transcript = Transcript::default();
+    transcript.apply(start, None);
+    transcript.apply(finish, None);
+    let rendered = rows(&mut transcript).join("\n");
+    assert!(rendered.contains("job-1 running: Run tests"));
+    assert!(rendered.contains("started in background"));
+    assert!(rendered.contains("job-1 · Cancelled"));
+}
+
+#[test]
 fn frozen_history_survives_older_page_arrival_and_many_recent_commits() {
     let mut transcript = Transcript::default();
     transcript.replace_recent(page(51, 70));

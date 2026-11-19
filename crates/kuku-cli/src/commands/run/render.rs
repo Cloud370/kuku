@@ -155,7 +155,19 @@ impl RunRenderer {
     }
 
     pub(super) fn committed(&mut self, entry: &HistoryEntry) -> CliResult {
-        if self.stream_json {
+        if entry.kind == HistoryKind::JobFinished {
+            if self.stream_json {
+                write_json(entry)?;
+            } else if !self.json {
+                let detail = |key| entry.details[key].as_str().unwrap_or_default();
+                println!(
+                    "Job {} {} · {}",
+                    detail("job_id"),
+                    detail("status"),
+                    detail("summary")
+                );
+            }
+        } else if self.stream_json {
             if let Some(result) = tool_record(entry) {
                 write_json(&result)?;
             }
@@ -286,6 +298,7 @@ pub(super) fn tool_record(entry: &HistoryEntry) -> Option<OutputLine> {
         | HistoryKind::Error
         | HistoryKind::Status
         | HistoryKind::TurnSummary
+        | HistoryKind::JobFinished
         | HistoryKind::Other => return None,
     };
     Some(record.with_conversation(Some(entry.agent.clone())))

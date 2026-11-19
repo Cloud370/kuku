@@ -32,9 +32,10 @@ pub(crate) struct AwaitingAction {
     pub(in crate::query) queued: QueuedToolCall,
     pub(crate) request: PermissionRequest,
     pub(crate) partial: ToolResultEnvelope,
+    continuation: Continuation,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(super) struct Continuation {
     action: PreparedAction,
     facts: WorkspaceScriptFacts,
@@ -79,7 +80,7 @@ impl PreparedAction {
         Ok(prepared)
     }
 
-    pub(super) fn suspend(
+    pub(super) fn awaiting(
         self,
         host: &WorkspaceHost,
         queued: QueuedToolCall,
@@ -105,17 +106,36 @@ impl PreparedAction {
             action: self,
             facts,
         };
-        EventStore::open(host.actions.session.events_path())?.append(EventPayload::Unknown(
-            json!({
-                "kind":"workspace.deferred","ts":now_timestamp()?,"agent":host.actions.agent,
-                "turn":host.turn,"tool_call_id":host.call_id,"continuation":continuation
-            }),
-        ))?;
         Ok(AwaitingAction {
             queued,
             request,
             partial,
+            continuation,
         })
+    }
+}
+
+impl AwaitingAction {
+    pub(in crate::query) fn persist(&self, events_path: &Path) -> Result<()> {
+        EventStore::open(events_path)?.append(EventPayload::Unknown(json!({
+            "kind": "workspace.deferred", "ts": now_timestamp()?,
+            "agent": self.request.conversation.as_str(), "turn": self.request.turn,
+            "tool_call_id": self.request.tool_call_id, "continuation": self.continuation,
+        })))?;
+        Ok(())
+    }
+
+    pub(in crate::query) fn blocked_job(self) -> ToolResultEnvelope {
+        let reason = format!(
+            "{} requires approval. The Job stopped before dispatching it.",
+            self.request.tool
+        );
+        ToolResultEnvelope {
+            status: "blocked".into(),
+            summary: "workspace Job stopped at an approval boundary".into(),
+            model_content: format!("{reason}\n{}", self.partial.model_content),
+            ..self.partial
+        }
     }
 }
 
@@ -255,6 +275,7 @@ impl Continuation {
                 "raw_text_after",
                 "content",
                 "segments",
+                "inline_pipes",
                 "matches",
                 "entries",
             ] {

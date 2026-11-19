@@ -34,6 +34,7 @@ async fn command_slot_preserves_timeout_truncation() {
         event_tx,
         None,
         crate::WorkspaceExecutionHost::default(),
+        None,
     );
 
     loop {
@@ -158,6 +159,7 @@ async fn cancelled_run_persists_tool_result_for_finished_active_slot() {
             conversation: None,
             kind: ToolKind::Command { pid: None },
             workspace_ordered: false,
+            job: None,
             label: "print hi".to_string(),
             cancel: std::sync::Arc::new(tokio::sync::Notify::new()),
             nested_permissions: std::sync::Arc::new(std::sync::Mutex::new(

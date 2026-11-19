@@ -15,6 +15,7 @@ use crate::AppState;
 
 mod commands;
 mod events;
+mod jobs;
 mod models;
 mod sessions;
 mod values;
@@ -32,6 +33,11 @@ pub(crate) fn interactive() -> Router<Arc<AppState>> {
         .route("/sessions/{id}/observe", get(events::observe))
         .route("/sessions/{id}/events", get(events::events))
         .route("/sessions/{id}/outputs/{output_id}", get(events::output))
+        .route("/sessions/{id}/jobs", get(jobs::list))
+        .route(
+            "/sessions/{id}/jobs/{job_id}",
+            get(jobs::get).delete(jobs::cancel),
+        )
         .route("/sessions/{id}/values", get(values::list))
         .route(
             "/sessions/{id}/values/{name}",

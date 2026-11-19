@@ -1,3 +1,5 @@
+mod command_output;
+
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -186,6 +188,64 @@ async fn independent_host_promises_run_concurrently_and_keep_request_order() {
 }
 
 #[tokio::test]
+async fn slow_host_replies_do_not_consume_the_javascript_budget() {
+    let result = run(
+        r#"
+        const slow = await workspace.read_file({path: "slow"});
+        const followUp = await workspace.read_file({path: "follow-up"});
+        return [slow.result.path, followUp.result.path];
+        "#,
+        TestHost {
+            operations: vec![ScriptOperation::ReadFile],
+            callback: |call: ScriptCall, _| async move {
+                if call.args["path"] == "slow" {
+                    tokio::time::sleep(Duration::from_millis(400)).await;
+                }
+                ToolResultEnvelope::ok("read finished", "", call.args)
+            },
+        },
+        WorkspaceScriptLimits {
+            timeout_ms: 250,
+            ..Default::default()
+        },
+    )
+    .await;
+    assert_eq!("ok", result.status, "{}", result.model_content);
+    let facts = facts(&result);
+    assert_eq!(json!(["slow", "follow-up"]), facts.value);
+    assert_eq!(2, facts.actions.len());
+    assert!(!facts.timed_out);
+}
+
+#[tokio::test]
+async fn ready_host_replies_progress_while_microtasks_are_queued() {
+    let result = run(
+        r#"
+        let finished = false;
+        const again = () => { if (!finished) Promise.resolve().then(again); };
+        Promise.resolve().then(again);
+        const read = await workspace.read_file({path: "loop"});
+        finished = true;
+        return read.result.path;
+        "#,
+        TestHost {
+            operations: vec![ScriptOperation::ReadFile],
+            callback: |call: ScriptCall, _| async move {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+                ToolResultEnvelope::ok("read finished", "", call.args)
+            },
+        },
+        WorkspaceScriptLimits {
+            timeout_ms: 500,
+            ..Default::default()
+        },
+    )
+    .await;
+    assert_eq!("ok", result.status, "{}", result.model_content);
+    assert_eq!(json!("loop"), facts(&result).value);
+}
+
+#[tokio::test]
 async fn host_queue_bounds_reject_individual_promises_before_dispatch() {
     let result =
         run(
@@ -268,47 +328,97 @@ async fn read_evidence_becomes_available_only_after_the_reply_reaches_javascript
 
 #[tokio::test]
 async fn cancellation_waits_for_host_cleanup_and_keeps_the_observed_result() {
-    let started = Arc::new(Notify::new());
-    let entered = started.clone();
-    let cancel = Arc::new(Notify::new());
-    let host = TestHost {
-        operations: vec![ScriptOperation::RunCommand],
-        callback: move |_: ScriptCall, execution: Arc<ScriptExecution>| {
-            let entered = entered.clone();
-            async move {
-                entered.notify_one();
-                execution.cancelled().await;
-                ToolResultEnvelope::cancelled("command finished cleanup")
-            }
-        },
-    };
     let capacity = WorkspaceExecutionHost::new(1, 1).unwrap();
-    let worker = tokio::spawn(execute(
-        "await workspace.run_command({program:'loop'});".into(),
-        Arc::new(host),
+    for code in [
+        "await workspace.run_command({program:'loop'});",
+        "workspace.run_command({program:'loop'}); while (true) {}",
+    ] {
+        let started = Arc::new(Notify::new());
+        let entered = started.clone();
+        let cancel = Arc::new(Notify::new());
+        let host = TestHost {
+            operations: vec![ScriptOperation::RunCommand],
+            callback: move |_: ScriptCall, execution: Arc<ScriptExecution>| {
+                let entered = entered.clone();
+                async move {
+                    entered.notify_one();
+                    execution.cancelled().await;
+                    ToolResultEnvelope::cancelled("command finished cleanup")
+                }
+            },
+        };
+        let worker = tokio::spawn(execute(
+            code.into(),
+            Arc::new(host),
+            WorkspaceScriptLimits::default(),
+            capacity.clone(),
+            cancel.clone(),
+        ));
+        tokio::time::timeout(Duration::from_secs(3), started.notified())
+            .await
+            .expect("host command entered");
+        cancel.notify_one();
+        let result = worker.await.unwrap();
+        assert_eq!(
+            "cancelled", result.status,
+            "{code}: {}",
+            result.model_content
+        );
+        assert_eq!(0, capacity.metrics().active_workers);
+        let facts = facts(&result);
+        assert!(!facts.cleanup_incomplete);
+        assert!(!facts.timed_out);
+        assert_eq!(1, facts.actions.len());
+        assert_eq!(
+            WorkspaceScriptActionStatus::Cancelled,
+            facts.actions[0].status
+        );
+        assert_eq!("command finished cleanup", facts.actions[0].summary);
+    }
+}
+
+#[tokio::test]
+async fn returning_with_pending_host_work_cancels_it_and_waits_for_cleanup() {
+    let entered = Arc::new(Notify::new());
+    let result = run(
+        r#"
+        workspace.read_file({path: "abandoned"});
+        await workspace.read_file({path: "ready"});
+        return true;
+        "#,
+        TestHost {
+            operations: vec![ScriptOperation::ReadFile],
+            callback: move |call: ScriptCall, execution: Arc<ScriptExecution>| {
+                let entered = entered.clone();
+                async move {
+                    if call.args["path"] == "abandoned" {
+                        entered.notify_one();
+                        execution.cancelled().await;
+                        ToolResultEnvelope::cancelled("read finished cleanup")
+                    } else {
+                        entered.notified().await;
+                        ToolResultEnvelope::ok("read ready", "", json!(null))
+                    }
+                }
+            },
+        },
         WorkspaceScriptLimits::default(),
-        capacity.clone(),
-        cancel.clone(),
-    ));
-    tokio::time::timeout(Duration::from_secs(3), started.notified())
-        .await
-        .expect("host command entered");
-    cancel.notify_one();
-    let result = worker.await.unwrap();
-    assert_eq!("cancelled", result.status);
-    assert_eq!(0, capacity.metrics().active_workers);
+    )
+    .await;
+    assert_eq!("error", result.status);
+    assert!(result.model_content.contains("pending host operations"));
     let facts = facts(&result);
     assert!(!facts.cleanup_incomplete);
-    assert_eq!(1, facts.actions.len());
+    assert_eq!(2, facts.actions.len());
     assert_eq!(
         WorkspaceScriptActionStatus::Cancelled,
         facts.actions[0].status
     );
-    assert_eq!("command finished cleanup", facts.actions[0].summary);
+    assert_eq!(WorkspaceScriptActionStatus::Ok, facts.actions[1].status);
 }
 
 #[tokio::test]
-async fn time_limit_interrupts_busy_javascript_and_includes_waiting_for_capacity() {
+async fn waiting_for_worker_capacity_does_not_consume_the_javascript_budget() {
     let capacity = WorkspaceExecutionHost::new(1, 1).unwrap();
     let limits = WorkspaceScriptLimits {
         timeout_ms: 100,
@@ -318,26 +428,116 @@ async fn time_limit_interrupts_busy_javascript_and_includes_waiting_for_capacity
     let waiting = execute(
         "return 1;".into(),
         empty_host(),
-        limits.clone(),
-        capacity.clone(),
-        Arc::new(Notify::new()),
-    )
-    .await;
-    assert!(facts(&waiting).timed_out);
-    assert_eq!(1, capacity.metrics().started_workers);
-    drop(permit);
-
-    let running = execute(
-        "while (true) {}".into(),
-        empty_host(),
         limits,
         capacity.clone(),
         Arc::new(Notify::new()),
+    );
+    tokio::pin!(waiting);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), waiting.as_mut())
+            .await
+            .is_err()
+    );
+    assert_eq!(1, capacity.metrics().started_workers);
+    drop(permit);
+    let result = waiting.await;
+    assert_eq!("ok", result.status, "{}", result.model_content);
+    assert_eq!(json!(1), facts(&result).value);
+    assert_eq!(2, capacity.metrics().started_workers);
+    assert_eq!(0, capacity.metrics().active_workers);
+}
+
+#[tokio::test]
+async fn the_javascript_budget_interrupts_busy_loops_and_unending_microtasks() {
+    let capacity = WorkspaceExecutionHost::new(1, 1).unwrap();
+    let limits = WorkspaceScriptLimits {
+        timeout_ms: 100,
+        ..Default::default()
+    };
+    for code in ["while (true) {}", "while (true) await Promise.resolve();"] {
+        let running = tokio::time::timeout(
+            Duration::from_secs(5),
+            execute(
+                code.into(),
+                empty_host(),
+                limits.clone(),
+                capacity.clone(),
+                Arc::new(Notify::new()),
+            ),
+        )
+        .await
+        .expect("JavaScript did not stop within its budget");
+        assert!(
+            facts(&running).timed_out,
+            "{code}: {}",
+            running.model_content
+        );
+        assert!(!facts(&running).cleanup_incomplete);
+    }
+    assert_eq!(0, capacity.metrics().active_workers);
+}
+
+#[tokio::test]
+async fn pending_host_work_does_not_pause_a_runnable_microtask_queue() {
+    let result = run(
+        r#"
+        workspace.run_command({program: "blocked"});
+        while (true) await Promise.resolve();
+        "#,
+        TestHost {
+            operations: vec![ScriptOperation::RunCommand],
+            callback: |_, execution: Arc<ScriptExecution>| async move {
+                execution.cancelled().await;
+                ToolResultEnvelope::cancelled("command finished cleanup")
+            },
+        },
+        WorkspaceScriptLimits {
+            timeout_ms: 250,
+            ..Default::default()
+        },
     )
     .await;
-    assert!(facts(&running).timed_out);
-    assert!(!facts(&running).cleanup_incomplete);
-    assert_eq!(0, capacity.metrics().active_workers);
+    let facts = facts(&result);
+    assert!(facts.timed_out, "{}", result.model_content);
+    assert!(!facts.cleanup_incomplete);
+    assert_eq!(1, facts.actions.len());
+    assert_eq!(
+        WorkspaceScriptActionStatus::Cancelled,
+        facts.actions[0].status
+    );
+}
+
+#[tokio::test]
+async fn the_javascript_budget_is_not_reset_by_host_progress() {
+    let result = run(
+        r#"
+        const spin = () => {
+            const stop = Date.now() + 250;
+            while (Date.now() < stop) {}
+        };
+        spin();
+        await workspace.read_file({path: "slow"});
+        spin();
+        return true;
+        "#,
+        TestHost {
+            operations: vec![ScriptOperation::ReadFile],
+            callback: |_, _| async {
+                tokio::time::sleep(Duration::from_millis(350)).await;
+                ToolResultEnvelope::ok("read finished", "", json!(null))
+            },
+        },
+        WorkspaceScriptLimits {
+            timeout_ms: 400,
+            ..Default::default()
+        },
+    )
+    .await;
+    let facts = facts(&result);
+    assert!(facts.timed_out, "{}", result.model_content);
+    assert!(!facts.cleanup_incomplete);
+    assert_eq!(1, facts.actions.len());
+    assert_eq!(WorkspaceScriptActionStatus::Ok, facts.actions[0].status);
 }
 
 #[tokio::test]
@@ -458,14 +658,18 @@ where
     F: Fn(ScriptCall, Arc<ScriptExecution>) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = ToolResultEnvelope> + Send + 'static,
 {
-    execute(
-        code.into(),
-        Arc::new(host),
-        limits,
-        WorkspaceExecutionHost::new(1, 2).unwrap(),
-        Arc::new(Notify::new()),
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        execute(
+            code.into(),
+            Arc::new(host),
+            limits,
+            WorkspaceExecutionHost::new(1, 2).unwrap(),
+            Arc::new(Notify::new()),
+        ),
     )
     .await
+    .expect("workspace script did not finish")
 }
 
 fn empty_host() -> Arc<dyn ScriptHost> {

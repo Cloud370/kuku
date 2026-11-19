@@ -259,6 +259,7 @@ fn bounded_fact(structured: Option<&Value>) -> Value {
                             | "raw_text_after"
                             | "model_content"
                             | "segments"
+                            | "inline_pipes"
                             | "content"
                             | "text"
                     )

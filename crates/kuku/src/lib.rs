@@ -48,10 +48,11 @@ pub use query::{
 pub use session::{delete_session, list_sessions, SessionStatus, SessionSummary};
 pub use session::{
     Activation, AgentConfig, AgentSnapshot, AgentStatus, AgentView, Input, InputSource,
-    InputStatus, InputTiming, ModelUsageSample, NamedValue, NamedValueKind, NamedValueSource,
-    Observation, OutputChunk, OutputRead, OutputSegment, OutputStream, PendingInput,
-    QuestionRequest, Receipt, ReplyPreview, RuntimeLimits, Session, SessionObserver,
-    SessionOptions, TurnSummary, UsageTotals, Withdrawal, MAX_INPUT_VALUES, MAX_VALUE_NAME_BYTES,
+    InputStatus, InputTiming, JobResult, JobSnapshot, JobStatus, ModelUsageSample, NamedValue,
+    NamedValueKind, NamedValueSource, Observation, OutputChunk, OutputRead, OutputSegment,
+    OutputStream, PendingInput, QuestionRequest, Receipt, ReplyPreview, RuntimeLimits, Session,
+    SessionObserver, SessionOptions, TurnSummary, UsageTotals, Withdrawal, MAX_INPUT_VALUES,
+    MAX_VALUE_NAME_BYTES,
 };
 
 #[cfg(test)]

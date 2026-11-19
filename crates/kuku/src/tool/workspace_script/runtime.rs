@@ -3,7 +3,7 @@ use std::pin::Pin;
 use std::sync::atomic::Ordering;
 use std::sync::{mpsc as thread_channel, Arc};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::Value;
@@ -42,20 +42,12 @@ pub(crate) async fn execute(
             format!("code must contain 1–{} UTF-8 bytes", limits.source_bytes),
         );
     }
-    let Some(deadline) = Instant::now().checked_add(Duration::from_millis(limits.timeout_ms))
-    else {
-        return ToolResultEnvelope::error(
-            "invalid workspace script time limit",
-            "time limit exceeds the supported clock range",
-        );
-    };
     let cancelling = cancellation.notified();
     tokio::pin!(cancelling);
     let execution = Arc::new(ScriptExecution::new(limits, host_capacity.operations()));
     let admission = tokio::select! {
         biased;
         _ = &mut cancelling => return result(Finish::Cancelled, &execution),
-        _ = sleep_until(deadline) => return result(Finish::TimedOut, &execution),
         permit = host_capacity.acquire_worker() => permit,
     };
     let permit = match admission {
@@ -63,7 +55,7 @@ pub(crate) async fn execute(
         Err(error) => return result(Finish::Blocked(error.to_string()), &execution),
     };
     let _stop_on_drop = StopOnDrop(execution.clone());
-    let worker = match Worker::start(code, host.as_ref(), execution.clone(), deadline, permit) {
+    let worker = match Worker::start(code, host.as_ref(), execution.clone(), permit) {
         Ok(worker) => worker,
         Err(error) => {
             return result(
@@ -72,9 +64,7 @@ pub(crate) async fn execute(
             )
         }
     };
-    let finish = worker
-        .drive(host, execution.clone(), deadline, cancelling)
-        .await;
+    let finish = worker.drive(host, execution.clone(), cancelling).await;
     result(finish, &execution)
 }
 
@@ -89,7 +79,6 @@ impl Worker {
         code: String,
         host: &dyn ScriptHost,
         execution: Arc<ScriptExecution>,
-        deadline: Instant,
         permit: WorkspaceWorkerPermit,
     ) -> std::io::Result<Self> {
         let (request_tx, requests) = mpsc::channel(execution.limits.queued_operations);
@@ -101,7 +90,7 @@ impl Worker {
             .name("kuku-workspace-script".into())
             .stack_size(native_stack)
             .spawn(move || {
-                let outcome = vm::run(code, methods, execution, deadline, request_tx, reply_rx);
+                let outcome = vm::run(code, methods, execution, request_tx, reply_rx);
                 drop(permit);
                 let _ = finish_tx.send(outcome);
             })?;
@@ -116,7 +105,6 @@ impl Worker {
         mut self,
         host: Arc<dyn ScriptHost>,
         execution: Arc<ScriptExecution>,
-        deadline: Instant,
         mut cancellation: Pin<&mut impl Future<Output = ()>>,
     ) -> Finish {
         let response_capacity = Arc::new(Semaphore::new(execution.limits.host_bytes));
@@ -127,7 +115,6 @@ impl Worker {
             tokio::select! {
                 biased;
                 _ = &mut cancellation => break Finish::Cancelled,
-                _ = sleep_until(deadline) => break Finish::TimedOut,
                 _ = execution.cancelled() => break Finish::HostStopped,
                 outcome = &mut self.finished => {
                     worker_finished = true;
@@ -203,10 +190,6 @@ impl Drop for StopOnDrop {
     }
 }
 
-async fn sleep_until(deadline: Instant) {
-    tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
-}
-
 async fn dispatch(
     request: Request,
     host: Arc<dyn ScriptHost>,
@@ -239,7 +222,7 @@ async fn dispatch(
 }
 
 async fn buffer_response(
-    envelope: ToolResultEnvelope,
+    mut envelope: ToolResultEnvelope,
     op: ScriptOperation,
     observation: Option<ExecutorObservation>,
     execution: &ScriptExecution,
@@ -247,6 +230,22 @@ async fn buffer_response(
 ) -> Result<BufferedResponse, &'static str> {
     if execution.is_cancelled() {
         return Err("workspace script has stopped");
+    }
+    if op == ScriptOperation::RunCommand {
+        if let Some(Value::Object(facts)) = &mut envelope.structured {
+            facts.retain(|key, _| {
+                matches!(
+                    key.as_str(),
+                    "exit_code"
+                        | "termination"
+                        | "output_ref"
+                        | "capture_complete"
+                        | "stdout_bytes"
+                        | "stderr_bytes"
+                        | "inline_pipes"
+                )
+            });
+        }
     }
     let observation = observation.filter(|_| envelope.status == "ok");
     let model_content = if envelope.status == "ok"
@@ -334,7 +333,7 @@ fn result(finish: Finish, execution: &ScriptExecution) -> ToolResultEnvelope {
         Finish::TimedOut => ToolResultEnvelope::error(
             "workspace script timed out",
             format!(
-                "workspace script exceeded its {} ms time limit",
+                "workspace script exhausted its {} ms JavaScript execution budget",
                 execution.limits.timeout_ms
             ),
         ),

@@ -94,6 +94,7 @@ pub(super) fn spawn_tool(
         label,
         cancel,
         nested_permissions: Arc::new(Mutex::new(HashMap::new())),
+        job: None,
     }
 }
 

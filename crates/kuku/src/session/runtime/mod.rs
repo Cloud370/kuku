@@ -4,6 +4,7 @@ mod boundary;
 mod controls;
 mod creation;
 mod driver;
+mod jobs;
 mod observe;
 mod receipts;
 mod record;
@@ -18,6 +19,7 @@ mod workspace_host;
 pub(crate) use workspace_host::WorkspaceWorkerPermit;
 pub use workspace_host::{WorkspaceExecutionHost, WorkspaceExecutionMetrics};
 
+pub(crate) use jobs::JobRequest;
 pub(crate) use retention::{command_output_id, OutputReservation};
 pub(crate) use selection::resolve_agent_model;
 pub(crate) use values::OutputSelector;
@@ -40,8 +42,8 @@ pub use observe::{Observation, ReplyPreview, ReplyPreviews, SessionObserver};
 pub use turns::TurnIndex;
 pub use types::{
     Activation, AgentConfig, AgentSnapshot, AgentStatus, AgentView, Input, InputSource,
-    InputStatus, InputTiming, ModelUsageSample, PendingInput, QuestionRequest, Receipt,
-    RuntimeLimits, SessionOptions, TurnSummary, UsageTotals, Withdrawal,
+    InputStatus, InputTiming, JobResult, JobSnapshot, JobStatus, ModelUsageSample, PendingInput,
+    QuestionRequest, Receipt, RuntimeLimits, SessionOptions, TurnSummary, UsageTotals, Withdrawal,
 };
 pub use values::{
     NamedValue, NamedValueKind, NamedValueSource, MAX_INPUT_VALUES, MAX_VALUE_NAME_BYTES,
@@ -59,6 +61,7 @@ pub(crate) struct SessionInner {
     state: Mutex<State>,
     value_writes: tokio::sync::Mutex<()>,
     workers: Mutex<HashMap<u64, Worker>>,
+    job_workers: Mutex<HashMap<String, jobs::JobWorker>>,
     settlement_failure: OnceLock<String>,
     live: broadcast::Sender<observe::LiveObservation>,
     model_capacity: Arc<Semaphore>,
@@ -150,7 +153,8 @@ impl Session {
             outputs: retention::OutputStore::recover(&output_dir)?,
             ..State::default()
         };
-        writer.visit(|event| reduce_event(&mut state, event))?;
+        let mut job_replay = jobs::JobReplay::default();
+        writer.visit(|event| reduce_event(&mut state, &mut job_replay, event))?;
         creation::prepare_journal(
             &mut writer,
             &mut state,
@@ -173,7 +177,7 @@ impl Session {
             .limits
             .max_requests_per_open
             .map(|limit| Arc::new(std::sync::atomic::AtomicU64::new(limit)));
-        Ok(Self {
+        let session = Self {
             inner: Arc::new(SessionInner {
                 id,
                 options,
@@ -182,6 +186,7 @@ impl Session {
                 state: Mutex::new(state),
                 value_writes: tokio::sync::Mutex::new(()),
                 workers: Mutex::new(HashMap::new()),
+                job_workers: Mutex::new(HashMap::new()),
                 settlement_failure: OnceLock::new(),
                 live,
                 model_capacity,
@@ -190,7 +195,9 @@ impl Session {
                 lease: Mutex::new(Some(lease)),
                 close_result: Mutex::new(None),
             }),
-        })
+        };
+        session.recover_jobs()?;
+        Ok(session)
     }
 
     pub(crate) fn workspace_execution_host(&self) -> WorkspaceExecutionHost {
@@ -328,7 +335,8 @@ impl Session {
             }
             return Ok(receipt);
         }
-        if state.agent(&target)?.inbox.len() >= self.inner.options.limits.max_pending_inputs {
+        if state.agent(&target)?.submitted_inputs() >= self.inner.options.limits.max_pending_inputs
+        {
             return Err(Error::InvalidArgument(format!(
                 "agent '{target}' inbox limit reached"
             )));
@@ -549,7 +557,7 @@ impl Session {
         {
             return Err(Error::QuestionRequestNotPending(request_id.into()));
         }
-        if agent.inbox.len() >= self.inner.options.limits.max_pending_inputs {
+        if agent.submitted_inputs() >= self.inner.options.limits.max_pending_inputs {
             return Err(Error::InvalidArgument(format!(
                 "agent '{address}' inbox limit reached"
             )));
@@ -637,8 +645,12 @@ impl Session {
 
     async fn finish_close(&self) -> std::result::Result<(), String> {
         let workers = std::mem::take(&mut *self.inner.workers.lock().unwrap());
+        let jobs = std::mem::take(&mut *self.inner.job_workers.lock().unwrap());
         for worker in workers.values() {
             let _ = worker.cancel.send(true);
+        }
+        for job in jobs.values() {
+            job.cancel.notify_one();
         }
         let mut failure = None;
         for (_, worker) in workers {
@@ -651,6 +663,19 @@ impl Session {
                 Err(error) => {
                     failure.get_or_insert(Error::InvalidEventStream(format!(
                         "agent '{address}' close failed: {error}"
+                    )));
+                }
+            }
+        }
+        for (id, job) in jobs {
+            match job.join.await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    failure.get_or_insert(error);
+                }
+                Err(error) => {
+                    failure.get_or_insert(Error::InvalidEventStream(format!(
+                        "job '{id}' close failed: {error}"
                     )));
                 }
             }
@@ -715,17 +740,25 @@ fn load_state(events_path: &Path) -> Result<(State, u64)> {
 }
 
 fn replay_state(events_path: &Path, mut state: State) -> Result<(State, u64)> {
-    let cursor = EventStore::visit_path(events_path, |event| reduce_event(&mut state, event))?;
+    let mut job_replay = jobs::JobReplay::default();
+    let cursor = EventStore::visit_path(events_path, |event| {
+        reduce_event(&mut state, &mut job_replay, event)
+    })?;
     state.mark_interrupted();
     Ok((state, cursor))
 }
 
-fn reduce_event(state: &mut State, event: StoredEvent) -> Result<()> {
+fn reduce_event(
+    state: &mut State,
+    job_replay: &mut jobs::JobReplay,
+    event: StoredEvent,
+) -> Result<()> {
     let record = Record::from_event(&event)?;
     state.turns.observe(&event, record.as_ref());
     if let Some(record) = record {
         state.reduce(event.id, record)?;
     }
+    job_replay.observe(state, &event)?;
     state.outputs.observe_dispatch(&event.payload);
     usage::reduce_model_fact(state, &event.payload)
 }

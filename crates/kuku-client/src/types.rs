@@ -297,6 +297,8 @@ pub enum HistoryKind {
     ToolCall,
     /// Durable outcome of a tool invocation.
     ToolResult,
+    /// Durable terminal outcome of a background Job.
+    JobFinished,
     /// Persisted question request.
     Question,
     /// Persisted authorization request.

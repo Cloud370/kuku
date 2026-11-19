@@ -25,6 +25,9 @@ impl ToolProfile {
             Self::None => &[],
             Self::Read => &[
                 "workspace_script",
+                "list_jobs",
+                "wait_job",
+                "cancel_job",
                 "stat_file",
                 "find_files",
                 "read_file",
@@ -36,6 +39,9 @@ impl ToolProfile {
             ],
             Self::ReadWrite => &[
                 "workspace_script",
+                "list_jobs",
+                "wait_job",
+                "cancel_job",
                 "stat_file",
                 "find_files",
                 "read_file",

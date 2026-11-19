@@ -10,7 +10,7 @@ use ratatui::layout::Rect;
 
 use crate::config::StatusLineSettings;
 use crate::editor::Editor;
-use crate::jobs::{Job, Restarted, Selection, Update};
+use crate::jobs::{job_status_label, Job, Restarted, Selection, Update};
 use crate::menu::{Picker, Prompt};
 use crate::output::OutputViewer;
 use crate::selection::TextSelection;
@@ -19,6 +19,7 @@ use crate::transcript::{HistoryRequest, Transcript};
 
 mod activity;
 pub(crate) mod agents;
+mod background_jobs;
 mod delivery;
 mod navigation;
 mod pending;
@@ -29,6 +30,7 @@ mod values;
 pub(crate) use activity::{Activity, ServiceStatus, SubmissionStatus};
 use activity::{ExecutionProgress, Watch};
 use agents::AgentActivities;
+pub(crate) use background_jobs::JobCommand;
 use delivery::Deliveries;
 pub(crate) use delivery::DeliveryRow;
 use navigation::AgentNavigation;
@@ -658,6 +660,14 @@ impl App {
             Update::ValueSaved(selection, text, result) => {
                 self.value_saved(selection, text, result)
             }
+            Update::BackgroundJobCancelled(selection, result) if selection == self.selection() => {
+                match result {
+                    Ok(job) => {
+                        self.confirmation(format!("{} · {}", job.id, job_status_label(job.status)))
+                    }
+                    Err(error) => self.problem(format!("Cancel background job · {error}")),
+                }
+            }
             Update::Sent(id, result) => match result {
                 Ok(ack) => self.acknowledged(&id, ack),
                 Err(error) => self.command_failed(&id, error, false),
@@ -715,6 +725,7 @@ impl App {
             | Update::Observation(..)
             | Update::Refreshed(..)
             | Update::History(..)
+            | Update::BackgroundJobCancelled(..)
             | Update::DefaultModel(..)
             | Update::Output(..) => {}
         }

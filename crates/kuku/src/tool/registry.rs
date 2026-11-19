@@ -19,6 +19,14 @@ pub(crate) struct ToolDefinition {
 }
 
 pub(crate) fn builtin_registry(agent_enabled: bool, skills_enabled: bool) -> Vec<ToolDefinition> {
+    registry(agent_enabled, skills_enabled, false)
+}
+
+pub(crate) fn session_registry(skills_enabled: bool) -> Vec<ToolDefinition> {
+    registry(false, skills_enabled, true)
+}
+
+fn registry(agent_enabled: bool, skills_enabled: bool, session: bool) -> Vec<ToolDefinition> {
     let mut tools = vec![
         tool(
             "find_files",
@@ -169,7 +177,7 @@ pub(crate) fn builtin_registry(agent_enabled: bool, skills_enabled: bool) -> Vec
             20_000,
             "edit",
         ),
-        run_command_definition(&builtin::run_command::available_shells()),
+        run_command_definition(&builtin::run_command::available_shells(), session),
         tool(
             "fetch_url",
             "Download an HTTP(S) response and return its metadata. In a Session, use read_output with the returned output ID to read its body. Standalone queries receive a temporary file path.",
@@ -236,19 +244,19 @@ pub(crate) fn to_tool_schemas(registry: &[ToolDefinition]) -> Vec<ToolSchema> {
         .collect()
 }
 
-fn run_command_definition(shells: &[CommandShell]) -> ToolDefinition {
-    let mut description = "Start an installed executable or a workspace executable with literal arguments. Prefix a workspace-relative program with './' on every platform. Stdout and stderr are captured automatically and returned with an output ID and the observed exit status.".to_string();
+pub(crate) fn run_command_definition(shells: &[CommandShell], session: bool) -> ToolDefinition {
+    let mut description = "Run a command in the Agent workspace.".to_string();
     let mut schema = serde_json::json!({
         "type": "object",
         "additionalProperties": false,
         "properties": {
             "program": {"type": "string", "description": "Executable name or path. Prefix a path relative to cwd with './'."},
-            "args": {"type": "array", "items": {"type": "string"}, "description": "Literal arguments without shell expansion. Use [] for no arguments."},
-            "cwd": {"type": "string", "description": "Working directory relative to the workspace or absolute. Use '.' for workspace root."},
-            "timeout": {"type": "integer", "minimum": 1, "maximum": 600, "description": "Timeout in seconds."},
+            "args": {"type": "array", "items": {"type": "string"}, "default": [], "description": "Literal arguments to program."},
+            "cwd": {"type": "string", "default": ".", "description": "Optional absolute or workspace-relative working directory."},
+            "timeout": {"type": "integer", "minimum": 1, "maximum": u32::MAX, "description": "Optional execution deadline in seconds. Omit to run until completion or cancellation."},
             "brief": {"type": "string", "description": "Optional short description of the action."}
         },
-        "required": ["program", "args", "cwd", "timeout"]
+        "required": ["program"]
     });
     if !shells.is_empty() {
         let platform_shell = if cfg!(windows) {
@@ -262,7 +270,9 @@ fn run_command_definition(shells: &[CommandShell]) -> ToolDefinition {
         });
         if shells.contains(&platform_shell) {
             let default = serde_json::json!(platform_shell);
-            description.push_str(&format!(" Pass shell text in command. It runs in {default} unless you select another listed shell."));
+            description.push_str(&format!(
+                r#" Example: {{"command":"git status"}} runs in {default}."#
+            ));
             schema["properties"]["shell"]["default"] = default;
         } else {
             description.push_str(" For shell syntax, supply command and a listed shell.");
@@ -274,11 +284,16 @@ fn run_command_definition(shells: &[CommandShell]) -> ToolDefinition {
         schema["properties"]["command"] = serde_json::json!({
             "type": "string", "description": "Original shell text evaluated by the selected interpreter."
         });
-        schema["required"] = serde_json::json!(["cwd", "timeout"]);
+        schema.as_object_mut().unwrap().remove("required");
         schema["oneOf"] = serde_json::json!([
-            {"required": ["program", "args"], "not": {"anyOf": [{"required": ["shell"]}, {"required": ["command"]}]}},
+            {"required": ["program"], "not": {"anyOf": [{"required": ["shell"]}, {"required": ["command"]}]}},
             {"required": command_fields, "not": {"required": ["program"]}, "properties": {"args": {"maxItems": 0}}}
         ]);
+    }
+    description.push_str(r#" For literal arguments use {"program":"git","args":["status"]}. Prefix a workspace-relative program with './'. Reports the exit code, a stdout/stderr preview and the retained output ID."#);
+    if session {
+        schema["properties"]["background"] = serde_json::json!({"type":"boolean","description":"Return a Job handle immediately to continue independent work."});
+        description.push_str(" Read more with read_output({id: output_id}). Slow calls return a Job handle and deliver completion automatically. Set background:true to continue independent work immediately.");
     }
     tool(
         "run_command",
@@ -312,13 +327,35 @@ fn tool(
 mod tests {
     use super::{builtin_registry, registry_hash, run_command_definition, tool_names};
     use crate::execution::CommandShell;
-    use crate::tool::builtin::run_command::prepare_command_args;
+    use crate::tool::builtin::run_command::{command_permission_candidate, prepare_command_args};
     use serde_json::json;
+
+    #[test]
+    fn literal_command_defaults_authorize_the_same_invocation_and_only_sessions_accept_background()
+    {
+        let workspace = tempfile::tempdir().unwrap();
+        let minimal = json!({"program":"git"});
+        let mut resolved = minimal.clone();
+        let standalone = run_command_definition(&[], false);
+        prepare_command_args(&mut resolved, workspace.path(), &standalone).unwrap();
+        assert_eq!(resolved["args"], json!([]));
+        assert!(resolved.get("timeout").is_none());
+        assert_eq!(
+            command_permission_candidate(&minimal),
+            command_permission_candidate(&json!({"program":"git","args":[],"cwd":"."}))
+        );
+        let mut background = json!({"program":"git","background":true});
+        assert!(prepare_command_args(&mut background, workspace.path(), &standalone).is_err());
+        let session = run_command_definition(&[], true);
+        assert!(prepare_command_args(&mut background, workspace.path(), &session).is_ok());
+        background["background"] = json!("yes");
+        assert!(prepare_command_args(&mut background, workspace.path(), &session).is_err());
+    }
 
     #[test]
     fn shell_text_requires_a_listed_interpreter_when_the_platform_default_is_absent() {
         let workspace = tempfile::tempdir().unwrap();
-        let definition = run_command_definition(&[CommandShell::Bash]);
+        let definition = run_command_definition(&[CommandShell::Bash], false);
         let schema = &definition.input_schema;
         assert!(schema["properties"]["shell"].get("default").is_none());
         assert_eq!(schema["oneOf"][1]["required"], json!(["command", "shell"]));

@@ -170,6 +170,12 @@ pub(crate) fn event_agent(payload: &EventPayload) -> Option<&str> {
         | EventPayload::ConversationRollbackUndone { conversation, .. }
         | EventPayload::ModelRecovery { conversation, .. }
         | EventPayload::ContextSkills { conversation, .. } => Some(conversation),
+        EventPayload::Unknown(value)
+            if value["kind"] == "runtime.operation"
+                && value["record"]["operation"] == "job_finished" =>
+        {
+            value["record"]["agent"].as_str()
+        }
         EventPayload::Unknown(value) => value["agent"]
             .as_str()
             .or_else(|| value["conversation"].as_str())
@@ -272,6 +278,14 @@ pub(crate) fn history_entry(event: &StoredEvent, turns: &TurnLookup) -> Option<V
         EventPayload::Unknown(value) if value["kind"] == "runtime.operation" => {
             let record = &value["record"];
             match record["operation"].as_str()? {
+                "job_finished" => json!({
+                    "type":"job_finished",
+                    "turn":record["turn"],
+                    "job_id":record["job_id"],
+                    "status":record["status"],
+                    "summary":record["result"]["summary"],
+                    "output_id":output_id(&record["result"]["structured"]),
+                }),
                 "turn_settled" => {
                     summary = Some(turns.summary_at(event.id)?);
                     json!({"type":"turn_summary"})

@@ -8,8 +8,9 @@ use crate::event::{EventPayload, StoredEvent};
 use crate::execution::OutputReference;
 use crate::{Error, Result};
 
+use super::jobs::{JobCompletion, JobIndex, JOB_DELIVERY_PREFIX};
 use super::observe::ReplyPreview;
-use super::retention::OutputStore;
+use super::retention::{CaptureOrigin, OutputStore};
 use super::types::{
     AgentConfig, AgentSnapshot, AgentStatus, AgentView, Input, InputStatus, PendingInput,
     QuestionRequest, Receipt, UsageTotals,
@@ -74,6 +75,8 @@ pub(super) enum Record {
         id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_call_id: Option<String>,
     },
     NamedValueSaved {
         agent: String,
@@ -148,6 +151,14 @@ pub(super) enum Record {
         address: String,
         message: String,
     },
+    JobFinished {
+        job_id: String,
+        agent: String,
+        turn: u64,
+        result: super::JobResult,
+        status: super::JobStatus,
+        delivery: Box<Input>,
+    },
     QuestionRequested {
         address: String,
         request: QuestionRequest,
@@ -202,6 +213,13 @@ pub(super) struct AgentState {
 }
 
 impl AgentState {
+    pub(super) fn submitted_inputs(&self) -> usize {
+        self.inbox
+            .iter()
+            .filter(|entry| !entry.input.command_id.starts_with(JOB_DELIVERY_PREFIX))
+            .count()
+    }
+
     pub(super) fn pending_usage(&self) -> UsageTotals {
         if self.accepted.is_empty() {
             UsageTotals::default()
@@ -261,9 +279,25 @@ pub(super) struct State {
     pub(super) cleanup_failures: BTreeMap<String, String>,
     pub(super) outputs: OutputStore,
     pub(super) values: ValueState,
+    pub(super) jobs: JobIndex,
 }
 
 impl State {
+    pub(super) fn acknowledge_job_result(&mut self, agent: &str, job_id: &str) -> Result<()> {
+        let command_id = format!("{JOB_DELIVERY_PREFIX}{job_id}");
+        let agent = self.agent_mut(agent)?;
+        if let Some(position) = agent
+            .inbox
+            .iter()
+            .position(|entry| entry.input.command_id == command_id)
+        {
+            agent.inbox.remove(position);
+            agent.update_inbox();
+            self.deliveries.insert(command_id, InputStatus::Accepted);
+        }
+        Ok(())
+    }
+
     pub(super) fn reduce(&mut self, event_id: u64, record: Record) -> Result<()> {
         match record {
             Record::SessionClaimed { claim } => self.creation = Some(claim),
@@ -326,10 +360,18 @@ impl State {
                 }
                 self.deliver(event_id, fingerprint, input, values)?;
             }
-            Record::OutputOwned { agent, id, turn } => {
-                self.outputs.claim(&agent, &id);
+            Record::OutputOwned {
+                agent,
+                id,
+                turn,
+                tool_call_id,
+            } => {
+                let origin = turn
+                    .zip(tool_call_id)
+                    .map(|(turn, tool_call_id)| CaptureOrigin { turn, tool_call_id });
+                self.outputs.claim_capture(&agent, &id, origin);
                 if let Some(turn) = turn {
-                    self.values.pin(agent, turn, vec![id]);
+                    self.pin_current_turn(agent, turn, vec![id])?;
                 }
             }
             Record::NamedValueSaved { agent, binding } => {
@@ -337,7 +379,7 @@ impl State {
                 self.values.save(agent, binding);
             }
             Record::OutputsPinned { agent, turn, ids } => {
-                self.values.pin(agent, turn, ids);
+                self.pin_current_turn(agent, turn, ids)?;
             }
             Record::InputWithdrawal {
                 command,
@@ -548,6 +590,23 @@ impl State {
                 agent.snapshot.status = AgentStatus::Idle;
             }
             Record::SessionClosed => {}
+            Record::JobFinished {
+                job_id,
+                agent,
+                turn: _,
+                result,
+                status,
+                delivery,
+            } => {
+                self.jobs.finish(JobCompletion {
+                    event_id,
+                    agent: &agent,
+                    job_id: &job_id,
+                    result: &result,
+                    status,
+                })?;
+                self.deliver(event_id, String::new(), *delivery, Vec::new())?;
+            }
             Record::CleanupFailed { address, message } => {
                 self.agent_mut(&address)?.snapshot.last_error = Some(message.clone());
                 self.cleanup_failures.insert(address, message);
@@ -578,6 +637,14 @@ impl State {
         self.agents.get_mut(address).ok_or_else(|| {
             Error::InvalidArgument(format!("agent '{address}' does not exist in this session"))
         })
+    }
+
+    fn pin_current_turn(&mut self, address: String, turn: u64, ids: Vec<String>) -> Result<()> {
+        let snapshot = &self.agent(&address)?.snapshot;
+        if snapshot.status == AgentStatus::Running && snapshot.turn == Some(turn) {
+            self.values.pin(address, turn, ids);
+        }
+        Ok(())
     }
 
     pub(super) fn agent(&self, address: &str) -> Result<&AgentState> {
@@ -733,6 +800,11 @@ pub(super) fn validate_key(key: &str) -> Result<()> {
     if key.is_empty() || key.len() > 128 {
         return Err(Error::InvalidArgument(
             "command identity must contain 1..=128 bytes".into(),
+        ));
+    }
+    if key.starts_with(JOB_DELIVERY_PREFIX) {
+        return Err(Error::InvalidArgument(
+            "command identity is reserved for Job completion".into(),
         ));
     }
     Ok(())

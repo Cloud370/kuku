@@ -49,6 +49,8 @@ pub(in crate::query) fn ensure_resolved(pending: &mut PendingRun) -> Result<()> 
 
     let mut registry = if let Some(ref overridden) = pending.tool_registry_override {
         overridden.clone()
+    } else if pending.query.runtime.is_some() {
+        tool::registry::session_registry(!pending.query.disable_skills)
     } else {
         tool::builtin_registry(!pending.query.disable_agents, !pending.query.disable_skills)
     };

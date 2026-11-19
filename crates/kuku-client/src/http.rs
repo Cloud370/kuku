@@ -11,7 +11,8 @@ use crate::local::{LocalError, LocalService, SESSION_PROTOCOL_VERSION};
 use crate::subscription::SubscriptionScope;
 use crate::{
     Acknowledgement, AgentConfig, AgentSummary, ApiError, Command, EventPage, HistoryPage,
-    NamedValue, NamedValueSource, OutputChunk, SessionSummary, Snapshot, Subscription, Target,
+    JobSnapshot, NamedValue, NamedValueSource, OutputChunk, SessionSummary, Snapshot, Subscription,
+    Target,
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -283,6 +284,39 @@ impl Client {
             )
             .await?;
         Ok(response.agents)
+    }
+
+    /// List background Jobs owned by the selected Agent.
+    pub async fn jobs(&self, target: &Target) -> Result<Vec<JobSnapshot>, Error> {
+        #[derive(Deserialize)]
+        struct Jobs {
+            jobs: Vec<JobSnapshot>,
+        }
+        let response: Jobs = self
+            .get(
+                ["sessions", &target.session_id, "jobs"],
+                &TargetQuery::new(target),
+            )
+            .await?;
+        Ok(response.jobs)
+    }
+
+    /// Get the current state and any terminal outcome of one background Job.
+    pub async fn job(&self, target: &Target, job_id: &str) -> Result<JobSnapshot, Error> {
+        self.get(
+            ["sessions", &target.session_id, "jobs", job_id],
+            &TargetQuery::new(target),
+        )
+        .await
+    }
+
+    /// Cancel one background Job and return the state observed after cleanup.
+    pub async fn cancel_job(&self, target: &Target, job_id: &str) -> Result<JobSnapshot, Error> {
+        let request = self.request(
+            Method::DELETE,
+            ["sessions", &target.session_id, "jobs", job_id],
+        );
+        self.json(request.query(&TargetQuery::new(target))).await
     }
 
     /// List available Sessions, optionally filtered by workspace or text.

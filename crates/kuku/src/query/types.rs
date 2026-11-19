@@ -284,6 +284,7 @@ pub(crate) struct ExecSlot {
     pub(crate) workspace_ordered: bool,
     pub(crate) label: String,
     pub(crate) cancel: Arc<tokio::sync::Notify>,
+    pub(super) job: Option<Box<super::job_slots::ForegroundJob>>,
     pub(crate) nested_permissions:
         Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<PermissionChoice>>>>,
 }
@@ -304,6 +305,7 @@ pub(crate) enum SlotEvent {
     WorkspacePermission(Box<super::workspace_script::AwaitingAction>),
     Output(ToolEvent),
     Done(crate::tool::ToolResultEnvelope),
+    JobWaitDone(crate::tool::ToolResultEnvelope),
 }
 
 #[derive(Debug)]
@@ -387,6 +389,7 @@ pub(super) struct PendingRun {
     pub(super) catalog: crate::prompt::PromptCatalog,
     pub(super) pending_events: std::collections::VecDeque<UiEvent>,
     pub(super) pending_error: Option<Error>,
+    pub(super) waiting_for_job_input: bool,
     pub(super) cancel_token: Arc<tokio::sync::Notify>,
     pub(super) handoff_triggered: bool,
     pub(super) handoff_keep_turns: usize,

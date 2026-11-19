@@ -183,9 +183,7 @@ async fn run_command_rejects_invalid_timeout_empty_command_and_dangerous_command
     )
     .await;
     assert_eq!(zero.status, "error");
-    assert!(zero
-        .model_content
-        .contains("timeout must be between 1 and 600 seconds"));
+    assert!(zero.model_content.contains("timeout must be a positive"));
 
     let over_cap = run_command(
         &serde_json::json!({"shell": shell_name(), "cwd": ".", "command": stdout_command(), "timeout": 601, "brief": "test"}),
@@ -194,10 +192,7 @@ async fn run_command_rejects_invalid_timeout_empty_command_and_dangerous_command
         None,
     )
     .await;
-    assert_eq!(over_cap.status, "error");
-    assert!(over_cap
-        .model_content
-        .contains("timeout must be between 1 and 600 seconds"));
+    assert_eq!(over_cap.structured.as_ref().unwrap()["exit_code"], 0);
 
     let dangerous = run_command(
         &serde_json::json!({"shell": shell_name(), "cwd": ".", "command": "git reset --hard HEAD", "timeout": 1, "brief": "test danger"}),
@@ -411,10 +406,7 @@ async fn unavailable_shell_fixture() {
         .contains("workspace-relative program with './'"));
     assert!(tool.description.contains("output ID"));
     let schema = &tool.input_schema;
-    assert_eq!(
-        serde_json::json!(["program", "args", "cwd", "timeout"]),
-        schema["required"]
-    );
+    assert_eq!(serde_json::json!(["program"]), schema["required"]);
     assert!(schema["properties"].get("shell").is_none());
     assert!(schema["properties"].get("command").is_none());
 

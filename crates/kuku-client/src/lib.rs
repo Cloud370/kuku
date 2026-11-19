@@ -20,11 +20,11 @@ pub use kuku::execution::{
 pub use kuku::query::ModelPhase;
 pub use kuku::{
     AgentConfig, AgentSelection, AgentSnapshot, AgentStatus, Input, InputSource, InputStatus,
-    InputTiming, NamedValue, NamedValueKind, NamedValueSource, OutputChunk, OutputSegment,
-    OutputStream, PendingInput as QueuedInput, PermissionRequest, QuestionRequest, Receipt,
-    TurnSummary, UsageTotals, WorkspaceScriptActionFacts, WorkspaceScriptActionStatus,
-    WorkspaceScriptFacts, WorkspaceScriptOperation, WorkspaceScriptResultKind, MAX_INPUT_VALUES,
-    MAX_VALUE_NAME_BYTES,
+    InputTiming, JobResult, JobSnapshot, JobStatus, NamedValue, NamedValueKind, NamedValueSource,
+    OutputChunk, OutputSegment, OutputStream, PendingInput as QueuedInput, PermissionRequest,
+    QuestionRequest, Receipt, TurnSummary, UsageTotals, WorkspaceScriptActionFacts,
+    WorkspaceScriptActionStatus, WorkspaceScriptFacts, WorkspaceScriptOperation,
+    WorkspaceScriptResultKind, MAX_INPUT_VALUES, MAX_VALUE_NAME_BYTES,
 };
 pub use pending::PendingStore;
 pub use subscription::{InputDelivery, Observation, Subscription, SubscriptionUpdate};

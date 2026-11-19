@@ -3,11 +3,12 @@ mod deferred;
 pub(crate) use deferred::AwaitingAction;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::{oneshot, Notify};
 
 use crate::event::{EventPayload, EventStore};
 use crate::permission::{AuthorizationDecision, ToolAuthorization, ToolAuthorizer};
@@ -19,12 +20,13 @@ use crate::tool::{ToolDefinition, ToolResultEnvelope};
 use crate::{Error, Result, Session};
 
 use super::helpers::{now_timestamp, permission_candidate};
+use super::job_slots::ForegroundJob;
 use super::types::{ExecSlot, PendingRun, QueuedToolCall, SlotEvent, ToolKind};
 
 pub(super) fn spawn(
     pending: &PendingRun,
     queued: &QueuedToolCall,
-    event_tx: mpsc::Sender<(String, SlotEvent)>,
+    (job, completion): (Box<ForegroundJob>, oneshot::Sender<SlotEvent>),
 ) -> Result<ExecSlot> {
     let continuation = deferred::load(pending, &queued.tool_call.id)?;
     let session = Session {
@@ -37,25 +39,25 @@ pub(super) fn spawn(
                 Error::InvalidArgument("workspace execution requires an open Session".into())
             })?,
     };
-    let mut methods: Vec<_> = ScriptOperation::ALL
-        .into_iter()
-        .filter_map(|op| super::run::find_tool_definition(pending, op.name()).cloned())
-        .collect();
-    if let Some(reader) = methods
-        .iter_mut()
-        .find(|method| method.name == "read_output")
-    {
-        *reader = super::runtime_tools::output::definition_local();
-    }
-    methods.extend(workspace_script::derived_output_definitions());
+    let methods = workspace_script::method_definitions(|op| {
+        let definition = super::run::find_tool_definition(pending, op.name())?;
+        Some(if op == ScriptOperation::ReadOutput {
+            super::runtime_tools::output::definition_local()
+        } else {
+            definition.clone()
+        })
+    });
     let limits = pending.query.runtime_limits.workspace_script.clone();
     let host_capacity = session.workspace_execution_host();
     let host = Arc::new(WorkspaceHost {
         deferred: Mutex::new(None),
+        detached: job.detached_flag(),
         host_result_limit: limits.host_bytes / 2,
         actions: WorkspaceActions {
             session,
             agent: pending.conversation.as_str().into(),
+            original_turn: pending.turn,
+            tool_call_id: queued.tool_call.id.clone(),
             workspace: pending.workspace.clone(),
             preview_bytes: pending.query.runtime_limits.max_preview_bytes,
         },
@@ -75,7 +77,6 @@ pub(super) fn spawn(
     let code = queued.tool_call.args["code"].as_str().map(str::to_owned);
     let cancel = Arc::new(Notify::new());
     let stop = cancel.clone();
-    let id = queued.tool_call.id.clone();
     let original = QueuedToolCall {
         tool_call: queued.tool_call.clone(),
         display_summary: queued.display_summary.clone(),
@@ -100,7 +101,7 @@ pub(super) fn spawn(
                 if !outcome.faults.cleanup_incomplete
                     && !outcome.faults.output_persistence_failed =>
             {
-                match plan.suspend(&host, original, outcome) {
+                match plan.awaiting(&host, original, outcome) {
                     Ok(action) => SlotEvent::WorkspacePermission(Box::new(action)),
                     Err(err) => SlotEvent::Done(ToolResultEnvelope::output_failure(
                         "could not persist workspace approval",
@@ -112,7 +113,7 @@ pub(super) fn spawn(
             }
             _ => SlotEvent::Done(outcome),
         };
-        let _ = event_tx.send((id, event)).await;
+        let _ = completion.send(event);
     });
     Ok(ExecSlot {
         tool_call_id: queued.tool_call.id.clone(),
@@ -121,12 +122,14 @@ pub(super) fn spawn(
         workspace_ordered: true,
         label: queued.display_summary.clone(),
         cancel,
+        job: Some(job),
         nested_permissions: Arc::new(Mutex::new(HashMap::new())),
     })
 }
 
 struct WorkspaceHost {
     deferred: Mutex<Option<deferred::PreparedAction>>,
+    detached: Arc<AtomicBool>,
     actions: WorkspaceActions,
     host_result_limit: usize,
     methods: Vec<ToolDefinition>,
@@ -158,12 +161,19 @@ impl ScriptHost for WorkspaceHost {
 }
 
 impl WorkspaceHost {
+    fn has_step_input(&self) -> Result<bool> {
+        if self.detached.load(Ordering::Acquire) {
+            return Ok(false);
+        }
+        self.actions.session.has_step_input(&self.actions.agent)
+    }
+
     async fn perform(
         &self,
         call: ScriptCall,
         execution: Arc<ScriptExecution>,
     ) -> Result<ToolResultEnvelope> {
-        if self.actions.session.has_step_input(&self.actions.agent)? {
+        if self.has_step_input()? {
             execution.stop();
             return Ok(ToolResultEnvelope::cancelled(
                 "new input arrived at the workspace action boundary",
@@ -245,7 +255,7 @@ impl WorkspaceHost {
             self.authority.as_ref(),
             &action,
         )?;
-        if self.actions.session.has_step_input(&self.actions.agent)? {
+        if self.has_step_input()? {
             execution.stop();
         }
         if execution.is_cancelled() {

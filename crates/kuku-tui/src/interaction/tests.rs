@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use kuku_client::{
-    Acknowledgement, Action, Input, InputSource, InputStatus, InputTiming, NamedValue,
-    NamedValueKind, NamedValueSource, OutputReference, Receipt, Timing,
+    Acknowledgement, Action, Input, InputSource, InputStatus, InputTiming, JobSnapshot, JobStatus,
+    NamedValue, NamedValueKind, NamedValueSource, OutputReference, Receipt, Timing,
 };
 use serde_json::json;
 
@@ -24,6 +24,74 @@ fn connected_app() -> App {
 
 fn press(app: &mut App, code: KeyCode) {
     app.key(KeyEvent::new(code, KeyModifiers::NONE));
+}
+
+#[test]
+fn jobs_picker_lists_ids_and_cancels_the_selected_job() {
+    let mut app = connected_app();
+    app.pane_mut().exists = true;
+    press(&mut app, KeyCode::Char('/'));
+    app.paste("jobs");
+    press(&mut app, KeyCode::Enter);
+    let Some(Job::Find(ticket, Search::Jobs(target))) = app.effects.pop() else {
+        panic!("jobs picker should query the selected Agent");
+    };
+    assert_eq!(target, app.selection().target);
+    let mut job: JobSnapshot = serde_json::from_value(json!({
+        "id": "job-1", "agent": "main", "turn": 1, "tool_call_id": "call-1",
+        "tool": "run_command", "status": "running", "summary": "Run tests", "started_at": 6,
+    }))
+    .unwrap();
+    app.update(Update::Found(
+        ticket,
+        Ok((
+            vec![Choice::new(
+                "job-1",
+                "Running",
+                ChoiceKind::BackgroundJob(Box::new(job.clone())),
+            )],
+            String::new(),
+        )),
+    ));
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+        if matches!(picker.kind, PickerKind::Jobs)
+            && picker.visible_choices()[0].label == "job-1"
+            && picker.visible_choices()[0].detail == "Running"));
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+        if matches!(picker.kind, PickerKind::JobActions)
+            && picker.visible_choices()[0].label == "Cancel job"));
+    press(&mut app, KeyCode::Enter);
+    assert!(
+        matches!(app.effects.last(), Some(Job::CancelBackground(selection, id))
+        if selection.target == target && id == "job-1")
+    );
+    job.status = JobStatus::Cancelled;
+    app.update(Update::BackgroundJobCancelled(app.selection(), Ok(job)));
+    assert!(matches!(&app.notice, Some(notice) if notice.text == "job-1 · Cancelled"));
+}
+
+#[test]
+fn slash_jobs_cancel_works_typed_or_pasted_without_submitting_a_turn() {
+    let mut app = connected_app();
+    app.pane_mut().exists = true;
+    let selection = app.selection();
+    press(&mut app, KeyCode::Char('/'));
+    app.paste("jobs cancel job-7");
+    press(&mut app, KeyCode::Enter);
+    assert!(
+        matches!(app.effects.last(), Some(Job::CancelBackground(target, id))
+        if target == &selection && id == "job-7")
+    );
+
+    app.effects.clear();
+    app.paste("/jobs cancel job-8");
+    press(&mut app, KeyCode::Enter);
+    assert!(
+        matches!(app.effects.as_slice(), [Job::CancelBackground(target, id)]
+        if target == &selection && id == "job-8")
+    );
+    assert!(app.pane().draft.text().is_empty());
 }
 
 #[test]

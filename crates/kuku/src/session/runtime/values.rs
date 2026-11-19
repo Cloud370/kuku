@@ -279,7 +279,7 @@ impl Session {
             format!("value_{identity:x}")
         };
         let mut reservation =
-            self.reserve_retained_output(agent, &id, Some(framed_bytes(bytes.len() as u64)))?;
+            self.reserve_retained_output(agent, &id, Some(framed_bytes(bytes.len() as u64)), None)?;
         let mut writer = OutputWriter::create(
             &output_dir(self.events_path())?,
             &id,

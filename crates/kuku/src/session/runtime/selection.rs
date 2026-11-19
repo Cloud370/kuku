@@ -125,7 +125,7 @@ impl Session {
         let disabled_collaboration_tool = |name: &str| {
             config.no_agents && matches!(name, "create_agent" | "send_message" | "list_agents")
         };
-        let available = crate::tool::builtin_registry(false, !config.no_skills)
+        let available = crate::tool::registry::session_registry(!config.no_skills)
             .into_iter()
             .chain(crate::query::runtime_tool_definitions())
             .chain(
@@ -137,25 +137,28 @@ impl Session {
             .filter(|tool| !matches!(tool.name.as_str(), "agent" | "fetch_web"))
             .filter(|tool| !disabled_collaboration_tool(tool.name.as_str()))
             .collect::<Vec<_>>();
-        let Some(selected) = &config.tools else {
-            return Ok(available);
+        let mut selected_tools = if let Some(selected) = &config.tools {
+            for name in selected {
+                if disabled_collaboration_tool(name) {
+                    return Err(Error::InvalidArgument(format!(
+                        "no_agents disables '{name}'. Set no_agents to false or remove '{name}' from tools."
+                    )));
+                }
+                if !available.iter().any(|tool| tool.name == *name) {
+                    return Err(Error::InvalidArgument(format!(
+                        "selected tool '{name}' is not available"
+                    )));
+                }
+            }
+            available
+                .into_iter()
+                .filter(|tool| selected.contains(&tool.name))
+                .collect()
+        } else {
+            available
         };
-        for name in selected {
-            if disabled_collaboration_tool(name) {
-                return Err(Error::InvalidArgument(format!(
-                    "no_agents disables '{name}'. Set no_agents to false or remove '{name}' from tools."
-                )));
-            }
-            if !available.iter().any(|tool| tool.name == *name) {
-                return Err(Error::InvalidArgument(format!(
-                    "selected tool '{name}' is not available"
-                )));
-            }
-        }
-        Ok(available
-            .into_iter()
-            .filter(|tool| selected.contains(&tool.name))
-            .collect())
+        crate::tool::workspace_script::describe_selected_tools(&mut selected_tools);
+        Ok(selected_tools)
     }
 
     pub(super) fn resolve_model(&self, config: &AgentConfig) -> Result<ResolvedProvider> {

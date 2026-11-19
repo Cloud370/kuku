@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::event::{EventPayload, EventStore};
 use crate::{Error, Result};
 
+use super::jobs::await_job_cleanup;
 use super::record::{
     fingerprint, timestamp, validate_address, validate_key, Command, InterruptedExecution, Record,
     State,
@@ -309,7 +310,7 @@ impl Session {
         address: &str,
         expected: Option<(Command, u64)>,
     ) -> Result<Option<Receipt>> {
-        let (done, failure, receipt) = {
+        let (done, jobs, failure, receipt) = {
             let mut state = self.inner.state.lock().unwrap();
             ensure_open(&state)?;
             if let Some((command, execution)) = &expected {
@@ -367,6 +368,11 @@ impl Session {
             let failed_cleanup =
                 waiting_turn.and_then(|turn| self.settle_cancelled_turn(address, turn).err());
             let failure = stopped.or(failed_cleanup);
+            let jobs = if key.is_none() {
+                self.cancel_owned_jobs(address)
+            } else {
+                Vec::new()
+            };
             let workers = self.inner.workers.lock().unwrap();
             let done = epoch.and_then(|epoch| workers.get(&epoch)).map(|worker| {
                 let _ = worker.cancel.send(true);
@@ -375,9 +381,12 @@ impl Session {
             let receipt = key
                 .and_then(|key| state.commands.get(&key))
                 .map(|(_, receipt)| receipt.clone());
-            (done, failure, receipt)
+            (done, jobs, failure, receipt)
         };
-        let cleanup = self.await_cleanup(address, done).await;
+        let mut cleanup = self.await_cleanup(address, done).await;
+        for job in jobs {
+            cleanup = cleanup.and(await_job_cleanup(job).await);
+        }
         if let Some(error) = failure {
             return Err(error);
         }

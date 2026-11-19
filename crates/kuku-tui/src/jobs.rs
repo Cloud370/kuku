@@ -5,15 +5,16 @@ use std::time::Duration;
 use kuku_client::local::{RestartOutcome, SESSION_PROTOCOL_VERSION};
 use kuku_client::{
     Acknowledgement, AgentConfig, Client, Command, Connection, ConnectionOptions, Error,
-    HistoryKind, HistoryPage, ModelCatalog, ModelSelection, NamedValue, NamedValueKind,
-    NamedValueSource, Observation, OutputChunk, SessionStatus, Snapshot, SubscriptionUpdate,
-    Target,
+    HistoryKind, HistoryPage, JobSnapshot, JobStatus, ModelCatalog, ModelSelection, NamedValue,
+    NamedValueKind, NamedValueSource, Observation, OutputChunk, SessionStatus, Snapshot,
+    SubscriptionUpdate, Target,
 };
 use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinSet};
 
 use crate::menu::{Choice, ChoiceKind, Ticket};
 use crate::output::OUTPUT_PAGE_BYTES;
+use crate::text::single_line;
 use crate::transcript::{HistoryRequest, HISTORY_PAGE};
 
 const UPDATE_CAPACITY: usize = 64;
@@ -33,6 +34,7 @@ pub(crate) enum Search {
     Sessions(String),
     Models,
     Values(Target),
+    Jobs(Target),
     Server,
 }
 
@@ -54,6 +56,7 @@ pub(crate) enum Job {
     ClosePicker,
     Save(Command),
     SaveValue(Selection, Box<ValueSave>),
+    CancelBackground(Selection, String),
     Send(Command),
     Check(Command),
     Discard(Command),
@@ -82,6 +85,7 @@ pub(crate) enum Update {
     Found(Ticket, Result<(Vec<Choice>, String), Error>),
     Saved(Command, Result<(), Error>),
     ValueSaved(Selection, Option<String>, Result<NamedValue, Error>),
+    BackgroundJobCancelled(Selection, Result<JobSnapshot, Error>),
     Sent(String, Result<Acknowledgement, Error>),
     Checked(String, Result<Option<Acknowledgement>, Error>),
     Discarded(String, Result<(), Error>),
@@ -256,6 +260,10 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
                 None
             };
             Update::ValueSaved(selection, text, result)
+        }
+        Job::CancelBackground(selection, id) => {
+            let result = client.cancel_job(&selection.target, &id).await;
+            Update::BackgroundJobCancelled(selection, result)
         }
         Job::Send(command) => {
             let result = connection.pending.submit_saved(client, &command).await;
@@ -483,6 +491,31 @@ async fn find(
             };
             return Ok((choices, header));
         }
+        Search::Jobs(target) => {
+            let choices: Vec<_> = client
+                .jobs(&target)
+                .await?
+                .into_iter()
+                .map(|job| {
+                    Choice::new(
+                        job.id.clone(),
+                        format!(
+                            "{} · {} · {}",
+                            job_status_label(job.status),
+                            job.tool,
+                            single_line(&job.summary)
+                        ),
+                        ChoiceKind::BackgroundJob(Box::new(job)),
+                    )
+                })
+                .collect();
+            let header = if choices.is_empty() {
+                "No background jobs for this Agent"
+            } else {
+                "Select a job to see available actions"
+            };
+            return Ok((choices, header.into()));
+        }
         Search::Server => unreachable!("handled above"),
     };
     Ok((choices, String::new()))
@@ -500,6 +533,16 @@ fn value_choice(value: NamedValue) -> Choice {
         format!("{kind} · {} bytes", value.reference.bytes),
         ChoiceKind::Value(value),
     )
+}
+
+pub(crate) fn job_status_label(status: JobStatus) -> &'static str {
+    match status {
+        JobStatus::Running => "Running",
+        JobStatus::Completed => "Completed",
+        JobStatus::Failed => "Failed",
+        JobStatus::Cancelled => "Cancelled",
+        JobStatus::Interrupted => "Interrupted",
+    }
 }
 
 fn model_choices(catalog: ModelCatalog) -> (Vec<Choice>, String) {

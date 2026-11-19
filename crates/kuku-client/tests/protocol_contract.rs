@@ -10,13 +10,81 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use kuku_client::{
     Acknowledgement, Action, ApiError, Client, Command, HistoryKind, HistoryPage, InputDelivery,
-    InputStatus, Observation, PendingStore, SubscriptionUpdate, Target, Timing,
+    InputStatus, JobStatus, Observation, PendingStore, SubscriptionUpdate, Target, Timing,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 const PROTOCOL: &str =
     include_str!("../../kuku-server/tests/common/fixtures/interactive-protocol.json");
+
+#[tokio::test]
+async fn background_job_requests_use_the_selected_workspace_and_agent() {
+    async fn list(Path(session): Path<String>, Query(query): Query<JobQuery>) -> Json<Value> {
+        assert_eq!(session, target().session_id);
+        check_job_query(query);
+        Json(json!({"jobs": [job("running")]}))
+    }
+
+    async fn show(
+        Path((session, id)): Path<(String, String)>,
+        Query(query): Query<JobQuery>,
+    ) -> Json<Value> {
+        check_job_target(session, id, query);
+        Json(job("running"))
+    }
+
+    async fn cancel(
+        Path((session, id)): Path<(String, String)>,
+        Query(query): Query<JobQuery>,
+    ) -> Json<Value> {
+        check_job_target(session, id, query);
+        Json(job("cancelled"))
+    }
+
+    fn check_job_target(session: String, id: String, query: JobQuery) {
+        assert_eq!(session, target().session_id);
+        assert_eq!(id, "job-1");
+        check_job_query(query);
+    }
+
+    fn check_job_query(query: JobQuery) {
+        assert_eq!(query.workspace, target().workspace);
+        assert_eq!(query.agent, "reviewer");
+    }
+
+    fn job(status: &str) -> Value {
+        json!({
+            "id": "job-1", "agent": "reviewer", "turn": 4, "tool_call_id": "call-1",
+            "tool": "run_command", "status": status, "summary": "Run tests", "started_at": 6,
+        })
+    }
+
+    #[derive(Deserialize)]
+    struct JobQuery {
+        workspace: PathBuf,
+        agent: String,
+    }
+
+    let (client, _server) = start(
+        Router::new()
+            .route("/sessions/{id}/jobs", get(list))
+            .route("/sessions/{id}/jobs/{job_id}", get(show).delete(cancel)),
+    )
+    .await;
+    let target = Target {
+        agent: "reviewer".into(),
+        ..target()
+    };
+    let jobs = client.jobs(&target).await.unwrap();
+    assert_eq!(jobs.len(), 1);
+    let listed = &jobs[0];
+    assert_eq!(listed.status, JobStatus::Running);
+    assert_eq!(*listed, client.job(&target, &listed.id).await.unwrap());
+    let cancelled = client.cancel_job(&target, &listed.id).await.unwrap();
+    assert_eq!(cancelled.id, listed.id);
+    assert_eq!(cancelled.status, JobStatus::Cancelled);
+}
 
 #[test]
 fn shared_protocol_fixture_decodes_history_receipts_observation_and_errors() {

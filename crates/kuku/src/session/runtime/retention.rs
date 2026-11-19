@@ -11,8 +11,9 @@ use crate::tool::builtin::run_command::output::{
 };
 use crate::{Error, Result};
 
+use super::jobs::JobIndex;
 use super::record::Record;
-use super::{ensure_open, AgentStatus, Session, SessionInner};
+use super::{ensure_open, Session, SessionInner};
 
 #[derive(Debug, Default)]
 pub(super) struct OutputStore {
@@ -23,9 +24,16 @@ pub(super) struct OutputStore {
 #[derive(Debug)]
 struct OutputEntry {
     owner: Option<String>,
+    origin: Option<CaptureOrigin>,
     bytes: u64,
     retained_since: SystemTime,
     writing: bool,
+}
+
+#[derive(Debug)]
+pub(super) struct CaptureOrigin {
+    pub(super) turn: u64,
+    pub(super) tool_call_id: String,
 }
 
 pub(crate) struct OutputReservation {
@@ -66,8 +74,22 @@ impl Drop for OutputReservation {
 }
 
 impl Session {
-    pub(crate) fn reserve_output(&self, agent: &str, id: &str) -> Result<OutputReservation> {
-        self.reserve_retained_output(agent, id, None)
+    pub(crate) fn reserve_output(
+        &self,
+        agent: &str,
+        turn: u64,
+        tool_call_id: &str,
+        id: &str,
+    ) -> Result<OutputReservation> {
+        self.reserve_retained_output(
+            agent,
+            id,
+            None,
+            Some(CaptureOrigin {
+                turn,
+                tool_call_id: tool_call_id.into(),
+            }),
+        )
     }
 
     pub(super) fn reserve_retained_output(
@@ -75,17 +97,18 @@ impl Session {
         agent: &str,
         id: &str,
         exact_bytes: Option<u64>,
+        origin: Option<CaptureOrigin>,
     ) -> Result<OutputReservation> {
         let dir = output_dir(self.events_path())?;
         let path = output_path(&dir, id)?;
         let limits = &self.inner.options.limits;
         let mut state = self.inner.state.lock().unwrap();
         ensure_open(&state)?;
-        let snapshot = &state.agent(agent)?.snapshot;
-        let turn = snapshot
-            .turn
-            .filter(|_| snapshot.status == AgentStatus::Running);
-        let pinned = state.values.pinned_outputs();
+        state.agent(agent)?;
+        let mut pinned = state.values.pinned_outputs();
+        if state.jobs.has_active() {
+            pinned.extend(state.outputs.job_pins(&state.jobs));
+        }
         state
             .outputs
             .collect(&dir, limits.output_retention_secs, &pinned)?;
@@ -108,11 +131,12 @@ impl Session {
                 Record::OutputOwned {
                     agent: agent.into(),
                     id: id.into(),
-                    turn,
+                    turn: origin.as_ref().map(|origin| origin.turn),
+                    tool_call_id: origin.as_ref().map(|origin| origin.tool_call_id.clone()),
                 },
             )?;
         }
-        state.outputs.begin(agent, id, max_bytes);
+        state.outputs.begin(agent, id, max_bytes, origin);
         Ok(OutputReservation {
             inner: std::sync::Arc::downgrade(&self.inner),
             dir,
@@ -177,6 +201,23 @@ impl OutputStore {
         if let Some(entry) = self.entries.get_mut(id) {
             entry.owner.get_or_insert_with(|| agent.into());
         }
+    }
+
+    pub(super) fn claim_capture(&mut self, agent: &str, id: &str, origin: Option<CaptureOrigin>) {
+        if let Some(entry) = self.entries.get_mut(id) {
+            if entry.owner.get_or_insert_with(|| agent.into()).as_str() == agent {
+                entry.origin = origin;
+            }
+        }
+    }
+
+    fn job_pins<'a>(&'a self, jobs: &'a JobIndex) -> impl Iterator<Item = String> + 'a {
+        self.entries.iter().filter_map(move |(id, entry)| {
+            let owner = entry.owner.as_deref()?;
+            let origin = entry.origin.as_ref()?;
+            jobs.capture_active(owner, origin.turn, &origin.tool_call_id)
+                .then(|| id.clone())
+        })
     }
 
     pub(super) fn observe_dispatch(&mut self, payload: &EventPayload) {
@@ -248,11 +289,12 @@ impl OutputStore {
         failure.map_or(Ok(()), |error| Err(error.into()))
     }
 
-    fn begin(&mut self, agent: &str, id: &str, bytes: u64) {
+    fn begin(&mut self, agent: &str, id: &str, bytes: u64, origin: Option<CaptureOrigin>) {
         self.entries.insert(
             id.into(),
             OutputEntry {
                 owner: Some(agent.into()),
+                origin,
                 bytes,
                 retained_since: SystemTime::now(),
                 writing: true,
@@ -272,7 +314,9 @@ impl OutputStore {
         match fs::metadata(path) {
             Ok(metadata) => {
                 self.charged_bytes = self.charged_bytes - entry.bytes + metadata.len();
+                let origin = entry.origin.take();
                 *entry = file_entry(metadata, entry.owner.take());
+                entry.origin = origin;
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 self.charged_bytes -= entry.bytes;
@@ -315,6 +359,7 @@ pub(crate) fn command_output_id(agent: &str, turn: u64, id: &str) -> String {
 fn file_entry(metadata: fs::Metadata, owner: Option<String>) -> OutputEntry {
     OutputEntry {
         owner,
+        origin: None,
         bytes: metadata.len(),
         retained_since: metadata.modified().unwrap_or_else(|_| SystemTime::now()),
         writing: false,

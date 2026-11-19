@@ -3,6 +3,7 @@ mod budget;
 mod frozen;
 mod handoff;
 mod helpers;
+mod job_slots;
 mod lifecycle;
 mod provider;
 mod recovery;

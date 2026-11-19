@@ -55,13 +55,17 @@
 
 模型通过 Session 选定的工具调用 [`run_command` 或 `workspace_script`](tools.md#运行本机程序)。嵌入宿主通过 `Session::events` 或 `Session::observe` 读取 `kuku::event::EventPayload::ToolResult` 的 `structured` 字段，可以用 `kuku::execution::CommandExecutionFacts::from_structured` 解码命令结果。`invocation` 保留程序名及参数边界，或解释器及命令文本。`started`、`termination`、`exit_code` 和 `signal` 描述宿主观察到的进程结果。`capture_complete`、`cleanup_incomplete` 和 `output_ref` 描述保留证据与清理情况。可信宿主可将 `output_ref.id` 交给 `Session::read_output` 分页读取，再用 `OutputSegment::as_bytes()` 获取原始字节。`reported_tests` 包含从程序输出获得的统计。任意外部程序造成的文件变更可能仍然未知。
 
+工具返回 [Session Job](tools.md#session-job) 时，用 `Session::jobs(agent)` 列出最近及正在运行的 Job，或用 `Session::job(agent, job_id)` 查询单个 Job。调用 `Session::wait_job(agent, job_id).await` 等待最终结果，或调用 `Session::cancel_job(agent, job_id).await` 请求取消并等待清理。Job 状态包括 `running`、`completed`、`failed`、`cancelled` 和 `interrupted`。终态的 `JobSnapshot.result` 包含该动作的结构化结果。命令捕获完成后，可将其 `output_id` 传给同一个输出读取器，`output_ref` 提供所捕获的字节范围。
+
+`RuntimeLimits.job_foreground_wait_ms` 控制顶层命令和脚本的前台观察窗口。
+
 `workspace_script` 的结果类型为 `kind: "workspace_script_result"`，可以用 `kuku::WorkspaceScriptFacts::from_structured` 解码。结果包含脚本返回的 `value` 及已观察到的宿主 `actions`。每个动作记录 ID、工具、状态、摘要、截断情况及有界结果。动作状态 `unknown` 表示宿主未能确认最终结果。即使脚本失败，也可以结合整次调用的 `timed_out`、`cleanup_incomplete` 和 `not_dispatched` 核对部分完成的工作。见[脚本方法](tools.md#工作区脚本)。
 
 用 `kuku::execution::WorkspaceActionReceipt::from_event` 解码 `workspace.action` 事件，读取日志中脚本内动作的派发和结果事实。在父 `tool_call_id` 内按 `action_id` 关联记录。派发记录缺少对应结果时，副作用仍然未知。
 
 `kuku::execution::FileMutationFacts` 描述写入、精确编辑或移除操作，提供路径、可用的变更前后哈希、字节计数和 `commit_state`。`published_unconfirmed` 表示文件变更已经发生，最终持久化尚未得到确认。重试前应检查文件。
 
-`RuntimeLimits.workspace_script` 限制单次调用的内存、耗时、宿主请求、操作队列和结果大小。在多个 Session 的 `SessionOptions.workspace_host` 中传入同一个 `WorkspaceExecutionHost` 的克隆即可共享容量。进程内默认允许两个脚本 worker 和八个并发工作区操作。脚本宿主动作、直接文件工具、命令和面向模型的输出读取共用操作容量。`WorkspaceExecutionHost::metrics` 可查询当前、峰值和累计启动的 worker 数，无需启动 worker。
+`RuntimeLimits.workspace_script` 限制单次调用的内存、JavaScript 执行时间、宿主请求、操作队列和结果大小。等待宿主动作的时间不计入 JavaScript 执行预算。在多个 Session 的 `SessionOptions.workspace_host` 中传入同一个 `WorkspaceExecutionHost` 的克隆即可共享容量。进程内默认允许两个脚本 worker 和八个并发工作区操作。脚本宿主动作、直接文件工具、命令和面向模型的输出读取共用操作容量。`WorkspaceExecutionHost::metrics` 可查询当前、峰值和累计启动的 worker 数，无需启动 worker。
 
 ## 命名值
 

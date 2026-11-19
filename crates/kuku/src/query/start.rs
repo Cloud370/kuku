@@ -436,6 +436,7 @@ impl Query {
             resumed_permission_requests: resumed_state.resumed_permission_requests,
             pending_events: std::collections::VecDeque::new(),
             pending_error: None,
+            waiting_for_job_input: false,
             config,
             prompts_dir,
             agent_registry,

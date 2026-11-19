@@ -5,9 +5,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 use std::sync::atomic::Ordering;
-use std::sync::mpsc::{Receiver, RecvTimeoutError};
-use std::sync::Arc;
-use std::time::Instant;
+use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use rquickjs::{
     CString as JsCString, Context, Ctx, Error, Exception, Function, Object, Promise, Runtime,
@@ -52,14 +52,47 @@ pub(super) enum Failure {
     Stopped,
 }
 
+struct JavaScriptBudget {
+    started: Instant,
+    limit: Duration,
+    host_wait: Mutex<Duration>,
+}
+
+impl JavaScriptBudget {
+    fn new(limit: Duration) -> Self {
+        Self {
+            started: Instant::now(),
+            limit,
+            host_wait: Mutex::new(Duration::ZERO),
+        }
+    }
+
+    fn expired(&self, now: Instant) -> bool {
+        let elapsed = now.duration_since(self.started);
+        elapsed.saturating_sub(*self.host_wait.lock().unwrap()) >= self.limit
+    }
+
+    fn wait_for_reply(&self, replies: &Receiver<Reply>) -> Result<Reply, Failure> {
+        let wait_started = Instant::now();
+        if self.expired(wait_started) {
+            return Err(Failure::TimedOut);
+        }
+        let reply = replies.recv().map_err(|_| Failure::Stopped);
+        *self.host_wait.lock().unwrap() += wait_started.elapsed();
+        reply
+    }
+}
+
 pub(super) fn run(
     source: String,
     methods: Vec<ToolDefinition>,
     execution: Arc<ScriptExecution>,
-    deadline: Instant,
     requests: mpsc::Sender<Request>,
     replies: Receiver<Reply>,
 ) -> Result<Value, Failure> {
+    let budget = Arc::new(JavaScriptBudget::new(Duration::from_millis(
+        execution.limits.timeout_ms,
+    )));
     #[cfg(any(unix, windows))]
     let runtime = Runtime::new_with_alloc(allocation::ScriptAllocator);
     #[cfg(not(any(unix, windows)))]
@@ -68,15 +101,16 @@ pub(super) fn run(
     runtime.set_memory_limit(execution.limits.heap_bytes);
     runtime.set_max_stack_size(execution.limits.stack_bytes);
     let control = execution.clone();
+    let interrupt_budget = budget.clone();
     runtime.set_interrupt_handler(Some(Box::new(move || {
-        control.is_cancelled() || Instant::now() >= deadline
+        control.is_cancelled() || interrupt_budget.expired(Instant::now())
     })));
     let context = Context::full(&runtime).map_err(runtime_error)?;
     context.with(|ctx| {
         Worker {
             ctx,
             execution,
-            deadline,
+            budget,
             pending: Rc::new(RefCell::new(Pending::default())),
             requests,
             replies,
@@ -102,7 +136,7 @@ struct Continuation<'js> {
 struct Worker<'js> {
     ctx: Ctx<'js>,
     execution: Arc<ScriptExecution>,
-    deadline: Instant,
+    budget: Arc<JavaScriptBudget>,
     pending: Rc<RefCell<Pending<'js>>>,
     requests: mpsc::Sender<Request>,
     replies: Receiver<Reply>,
@@ -110,13 +144,13 @@ struct Worker<'js> {
 
 impl<'js> Worker<'js> {
     fn run(&self, source: String, methods: Vec<ToolDefinition>) -> Result<Value, Failure> {
-        self.check_deadline()?;
+        self.check_running()?;
         let result = self
             .start(source, methods)
             .and_then(|promise| self.complete(promise));
         self.pending.borrow_mut().closed = true;
         let result = result.and_then(|value| self.return_value(value));
-        self.check_deadline()?;
+        self.check_running()?;
         result
     }
 
@@ -149,7 +183,7 @@ impl<'js> Worker<'js> {
             let bridge = Bridge {
                 op,
                 execution: self.execution.clone(),
-                deadline: self.deadline,
+                budget: self.budget.clone(),
                 pending: Rc::downgrade(&self.pending),
                 requests: self.requests.clone(),
             };
@@ -178,7 +212,7 @@ impl<'js> Worker<'js> {
 
     fn complete(&self, promise: Promise<'js>) -> Result<JsValue<'js>, Failure> {
         loop {
-            self.check_deadline()?;
+            self.check_running()?;
             if let Some(result) = promise.result() {
                 self.pending.borrow_mut().closed = true;
                 let value = result.map_err(|error| self.describe(error))?;
@@ -190,7 +224,16 @@ impl<'js> Worker<'js> {
                 }
                 return Ok(value);
             }
-            if self.ctx.execute_pending_job() {
+            let received = match self.replies.try_recv() {
+                Ok(reply) => {
+                    self.resume(reply).map_err(|error| self.describe(error))?;
+                    true
+                }
+                Err(TryRecvError::Empty) => false,
+                Err(TryRecvError::Disconnected) => return Err(Failure::Stopped),
+            };
+            let ran_job = self.ctx.execute_pending_job();
+            if received || ran_job {
                 continue;
             }
             if self.pending.borrow().requests.is_empty() {
@@ -199,15 +242,8 @@ impl<'js> Worker<'js> {
                         .into(),
                 ));
             }
-            let wait = self.deadline.saturating_duration_since(Instant::now());
-            let reply = self
-                .replies
-                .recv_timeout(wait)
-                .map_err(|error| match error {
-                    RecvTimeoutError::Timeout => Failure::TimedOut,
-                    RecvTimeoutError::Disconnected => Failure::Stopped,
-                })?;
-            self.check_deadline()?;
+            let reply = self.budget.wait_for_reply(&self.replies)?;
+            self.check_running()?;
             self.resume(reply).map_err(|error| self.describe(error))?;
         }
     }
@@ -252,19 +288,19 @@ impl<'js> Worker<'js> {
             .map_err(|_| Failure::Error("script result cannot be represented as JSON".into()))
     }
 
-    fn check_deadline(&self) -> Result<(), Failure> {
-        if Instant::now() >= self.deadline {
-            return Err(Failure::TimedOut);
-        }
+    fn check_running(&self) -> Result<(), Failure> {
         if self.execution.is_cancelled() {
             return Err(Failure::Stopped);
+        }
+        if self.budget.expired(Instant::now()) {
+            return Err(Failure::TimedOut);
         }
         Ok(())
     }
 
     fn describe(&self, error: Error) -> Failure {
         self.pending.borrow_mut().closed = true;
-        if let Err(stopped) = self.check_deadline() {
+        if let Err(stopped) = self.check_running() {
             return stopped;
         }
         if !matches!(error, Error::Exception) {
@@ -297,7 +333,7 @@ impl<'js> Worker<'js> {
 struct Bridge<'js> {
     op: ScriptOperation,
     execution: Arc<ScriptExecution>,
-    deadline: Instant,
+    budget: Arc<JavaScriptBudget>,
     pending: Weak<RefCell<Pending<'js>>>,
     requests: mpsc::Sender<Request>,
 }
@@ -357,7 +393,7 @@ impl<'js> Bridge<'js> {
     }
 
     fn check_admission(&self, ctx: &Ctx<'js>, pending: &Pending<'js>) -> rquickjs::Result<()> {
-        if pending.closed || self.execution.is_cancelled() || Instant::now() >= self.deadline {
+        if pending.closed || self.execution.is_cancelled() || self.budget.expired(Instant::now()) {
             return Err(Exception::throw_message(
                 ctx,
                 "workspace script has stopped",

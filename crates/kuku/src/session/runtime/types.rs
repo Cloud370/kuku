@@ -6,6 +6,66 @@ use serde::{Deserialize, Serialize};
 use crate::config::Config;
 use crate::permission::{ToolAuthorizer, TrustedLocal};
 
+/// Durable status of a command or workspace script transferred to a Session Job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobStatus {
+    /// The original execution is still in progress.
+    Running,
+    /// The execution reported success.
+    Completed,
+    /// The execution reported a terminal failure or could not proceed.
+    Failed,
+    /// The execution acknowledged cancellation and cleanup.
+    Cancelled,
+    /// A terminal outcome or cleanup could not be confirmed.
+    Interrupted,
+}
+
+/// Observed terminal facts for the original execution.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobResult {
+    /// Final tool result status.
+    pub status: String,
+    /// Short result summary.
+    pub summary: String,
+    /// Typed tool facts, including original retained output references where available.
+    pub structured: Option<serde_json::Value>,
+    /// Whether the tool omitted part of its model-visible result.
+    pub truncated: bool,
+    /// Whether capture failed to publish its expected retained output.
+    pub output_persistence_failed: bool,
+    /// Whether cleanup of owned resources could not be confirmed.
+    pub cleanup_incomplete: bool,
+}
+
+/// Session-scoped handle and status for an execution's background lifetime.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobSnapshot {
+    /// Stable Job identifier.
+    pub id: String,
+    /// Address of the Agent that owns the Job.
+    pub agent: String,
+    /// Turn where the original tool call was dispatched.
+    pub turn: u64,
+    /// Identity of the original tool call.
+    pub tool_call_id: String,
+    /// Tool that owns the execution.
+    pub tool: String,
+    /// Current durable Job status.
+    pub status: JobStatus,
+    /// Short description of the running Job or its terminal result.
+    pub summary: String,
+    /// Retained output identity for a native command, available after capture is finalized.
+    pub output_id: Option<String>,
+    /// Durable cursor of the original tool result that registered the Job.
+    pub started_at: u64,
+    /// Durable cursor of the terminal Job event.
+    pub finished_at: Option<u64>,
+    /// Terminal facts loaded by a targeted lookup or cancellation.
+    pub result: Option<JobResult>,
+}
+
 /// Configuration and resource ownership for opening a persistent session.
 #[derive(Debug, Clone)]
 pub struct SessionOptions {
@@ -78,6 +138,9 @@ pub struct RuntimeLimits {
     pub max_output_tokens_per_request: Option<u32>,
     /// Maximum simultaneous tools within one agent's step.
     pub max_tools_per_agent: usize,
+    /// Foreground wait in milliseconds before a top-level command or script becomes a Job.
+    #[serde(default = "default_job_foreground_wait_ms")]
+    pub job_foreground_wait_ms: u64,
     /// Maximum retained bytes for one command or host-tool output.
     pub max_output_bytes: u64,
     /// Maximum total physical bytes retained in this session, including capture framing.
@@ -108,6 +171,7 @@ impl Default for RuntimeLimits {
             retry_transient_provider_errors: default_provider_retry(),
             max_output_tokens_per_request: None,
             max_tools_per_agent: 8,
+            job_foreground_wait_ms: default_job_foreground_wait_ms(),
             max_output_bytes: 8 * 1024 * 1024,
             max_retained_output_bytes: default_retained_output_bytes(),
             output_retention_secs: default_output_retention_secs(),
@@ -120,6 +184,10 @@ impl Default for RuntimeLimits {
 
 fn default_provider_retry() -> bool {
     true
+}
+
+fn default_job_foreground_wait_ms() -> u64 {
+    10_000
 }
 
 fn default_retained_output_bytes() -> u64 {

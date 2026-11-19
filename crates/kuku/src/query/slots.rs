@@ -7,7 +7,10 @@ use tokio::sync::{mpsc, oneshot, Notify};
 use crate::event::StoredEvent;
 use crate::tool::ToolResultEnvelope;
 
-use super::types::{ExecSlot, PermissionChoice, SlotEvent, ToolEvent, ToolKind};
+use super::job_slots::ForegroundJob;
+use super::types::{
+    ExecSlot, PendingRun, PermissionChoice, QueuedToolCall, SlotEvent, ToolEvent, ToolKind,
+};
 use super::UiEvent;
 
 pub(crate) fn requires_workspace_ordering(tool_name: &str) -> bool {
@@ -111,6 +114,7 @@ pub(crate) fn spawn_simple_slot(
         workspace_ordered,
         label: summary,
         cancel,
+        job: None,
         nested_permissions: Arc::new(Mutex::new(HashMap::new())),
     }
 }
@@ -244,12 +248,13 @@ pub(crate) fn spawn_agent_slot(
         workspace_ordered: true,
         label: summary,
         cancel,
+        job: None,
         nested_permissions,
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn spawn_command_slot(
+pub(super) fn spawn_command_slot(
     tool_call_id: String,
     conversation: Option<crate::conversation::address::ConversationAddress>,
     args: serde_json::Value,
@@ -258,68 +263,86 @@ pub(crate) fn spawn_command_slot(
     event_tx: mpsc::Sender<(String, SlotEvent)>,
     output: Option<RetainedOutputSpec>,
     capacity: crate::WorkspaceExecutionHost,
+    job: Option<(Box<ForegroundJob>, oneshot::Sender<SlotEvent>)>,
 ) -> ExecSlot {
     let cancel = Arc::new(Notify::new());
     let cancel_cmd = cancel.clone();
     let tc_id = tool_call_id.clone();
+    let (job, completion) = job.unzip();
+    let detached = job.as_ref().map(|job| job.detached_flag());
 
     tokio::spawn(async move {
-        let operations = capacity.operations();
-        let _permit = tokio::select! {
-            biased;
-            _=cancel_cmd.notified()=> {
-                let _=event_tx.send((tc_id,cancelled_slot("command cancelled before dispatch"))).await;
-                return;
-            }
-            permit=operations.acquire_owned()=>permit.expect("host capacity remains open"),
-        };
-        let (tool_tx, mut tool_rx) = mpsc::channel::<crate::tool::builtin::CommandEvent>(64);
+        let result = async {
+            let operations = capacity.operations();
+            let _permit = tokio::select! {
+                biased;
+                _=cancel_cmd.notified()=>return cancelled_slot("command cancelled before dispatch"),
+                permit=operations.acquire_owned()=>permit.expect("host capacity remains open"),
+            };
+            let (tool_tx, mut tool_rx) = mpsc::channel::<crate::tool::builtin::CommandEvent>(64);
 
-        let fwd_tc_id = tc_id.clone();
-        let fwd_event_tx = event_tx.clone();
-        let forward_handle = tokio::spawn(async move {
-            while let Some(ce) = tool_rx.recv().await {
-                let te = match ce {
-                    crate::tool::builtin::CommandEvent::Stdout(text) => ToolEvent::Stdout { text },
-                    crate::tool::builtin::CommandEvent::Stderr(text) => ToolEvent::Stderr { text },
-                };
-                let _ = fwd_event_tx.try_send((fwd_tc_id.clone(), SlotEvent::Output(te)));
-            }
-        });
-
-        let r = match output {
-            Some(mut output) => {
-                let result = crate::tool::builtin::run_command::run_command_with_output(
-                    &args,
-                    &workspace,
-                    Some(tool_tx),
-                    Some(cancel_cmd),
-                    &output.dir,
-                    &output.id,
-                    output.limits,
-                )
-                .await;
-                if result
-                    .structured
-                    .as_ref()
-                    .is_some_and(|facts| facts["output_ref"].is_object())
-                {
-                    output.retention.keep();
+            let fwd_tc_id = tc_id.clone();
+            let fwd_event_tx = event_tx.clone();
+            let forward_handle = tokio::spawn(async move {
+                while let Some(ce) = tool_rx.recv().await {
+                    if detached
+                        .as_ref()
+                        .is_some_and(|detached| detached.load(std::sync::atomic::Ordering::Acquire))
+                    {
+                        break;
+                    }
+                    let te = match ce {
+                        crate::tool::builtin::CommandEvent::Stdout(text) => {
+                            ToolEvent::Stdout { text }
+                        }
+                        crate::tool::builtin::CommandEvent::Stderr(text) => {
+                            ToolEvent::Stderr { text }
+                        }
+                    };
+                    let _ = fwd_event_tx.try_send((fwd_tc_id.clone(), SlotEvent::Output(te)));
                 }
-                result
-            }
-            None => {
-                crate::tool::builtin::run_command(
-                    &args,
-                    &workspace,
-                    Some(tool_tx),
-                    Some(cancel_cmd),
-                )
-                .await
-            }
-        };
-        let _ = forward_handle.await;
-        let _ = event_tx.send((tc_id, SlotEvent::Done(r))).await;
+            });
+
+            let r = match output {
+                Some(mut output) => {
+                    let result = crate::tool::builtin::run_command::run_command_with_output(
+                        &args,
+                        &workspace,
+                        Some(tool_tx),
+                        Some(cancel_cmd),
+                        &output.dir,
+                        &output.id,
+                        output.limits,
+                    )
+                    .await;
+                    if result
+                        .structured
+                        .as_ref()
+                        .is_some_and(|facts| facts["output_ref"].is_object())
+                    {
+                        output.retention.keep();
+                    }
+                    result
+                }
+                None => {
+                    crate::tool::builtin::run_command(
+                        &args,
+                        &workspace,
+                        Some(tool_tx),
+                        Some(cancel_cmd),
+                    )
+                    .await
+                }
+            };
+            let _ = forward_handle.await;
+            SlotEvent::Done(r)
+        }
+        .await;
+        if let Some(completion) = completion {
+            let _ = completion.send(result);
+        } else {
+            let _ = event_tx.send((tc_id, result)).await;
+        }
     });
 
     ExecSlot {
@@ -329,6 +352,7 @@ pub(crate) fn spawn_command_slot(
         workspace_ordered: true,
         label: summary,
         cancel,
+        job,
         nested_permissions: Arc::new(Mutex::new(HashMap::new())),
     }
 }
@@ -350,6 +374,40 @@ pub(crate) struct SlotDispatchArgs {
     pub(crate) events_path: PathBuf,
 }
 
+pub(super) fn spawn_job_control(
+    session: crate::Session,
+    pending: &PendingRun,
+    queued: &QueuedToolCall,
+    event_tx: mpsc::Sender<(String, SlotEvent)>,
+) -> ExecSlot {
+    let cancel = Arc::new(Notify::new());
+    let stop = cancel.clone();
+    let id = queued.tool_call.id.clone();
+    let args = queued.tool_call.args.clone();
+    let owner = pending.conversation.as_str().to_owned();
+    let stop_job = queued.tool_call.name == "cancel_job";
+    tokio::spawn(async move {
+        let result =
+            super::runtime_tools::jobs::control(session, owner, args, stop, stop_job).await;
+        let event = if !stop_job && result.status == "ok" {
+            SlotEvent::JobWaitDone(result)
+        } else {
+            SlotEvent::Done(result)
+        };
+        let _ = event_tx.send((id, event)).await;
+    });
+    ExecSlot {
+        tool_call_id: queued.tool_call.id.clone(),
+        conversation: Some(pending.conversation.clone()),
+        kind: ToolKind::Simple,
+        workspace_ordered: false,
+        label: queued.display_summary.clone(),
+        cancel,
+        job: None,
+        nested_permissions: Default::default(),
+    }
+}
+
 pub(crate) struct RetainedOutputSpec {
     pub(crate) dir: PathBuf,
     pub(crate) id: String,
@@ -368,6 +426,7 @@ pub(crate) fn dispatch_tool_slot(args: SlotDispatchArgs) -> (ExecSlot, ToolKind)
             args.event_tx,
             args.output,
             args.capacity,
+            None,
         );
         (slot, ToolKind::Command { pid: None })
     } else if args.tool_name == "fetch_url" {
@@ -434,6 +493,7 @@ fn spawn_fetch_slot(args: SlotDispatchArgs) -> ExecSlot {
         workspace_ordered: false,
         label: summary,
         cancel,
+        job: None,
         nested_permissions: Arc::new(Mutex::new(HashMap::new())),
     }
 }

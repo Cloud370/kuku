@@ -12,6 +12,7 @@ use crate::theme::{ACCENT, ERROR, MIN_TRANSCRIPT_INDENT_WIDTH, MUTED, TRANSCRIPT
 
 mod agent;
 mod details;
+mod job;
 mod message;
 mod notes;
 mod preview;
@@ -23,6 +24,7 @@ mod window;
 use self::agent::AgentCards;
 pub(crate) use self::details::DetailKey;
 use self::details::{DetailRecord, Details, VisibleDetail};
+use self::job::job_notice;
 use self::message::{paint_card, render_assistant_source, render_record, render_user};
 use self::reply::LatestReply;
 pub(crate) use self::reply::ReplySource;
@@ -672,6 +674,7 @@ impl Record {
                 }
                 Body::Tool(Box::new(Tool::from_entry(&entry)))
             }
+            HistoryKind::JobFinished => job_notice(&entry),
             HistoryKind::Question => Body::Notice("Question", text, WARNING),
             HistoryKind::Permission => Body::Notice("Permission", text, WARNING),
             HistoryKind::QuestionReply => Body::Notice("Answer", text, ACCENT),

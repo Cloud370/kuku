@@ -151,8 +151,7 @@ def named_output_cards(client):
             "workspace_script", "summarize-log",
             code=f"""const chunk = await workspace.read_output({{id: {json.dumps(reference['id'])}}});
 await workspace.write_file({{path: "summary.txt", content: chunk.result.segments[0].text}});
-await workspace.run_command({{program: "kuku-deliberately-missing-fixture", args: [], cwd: ".", timeout: 5}});
-return {{checked: true}};""",
+await workspace.run_command({{program: "kuku-deliberately-missing-fixture"}});""",
         )
         client.provider.next("summarize-log").text("Replay inspected.")
         display = terminal.expect("Replay inspected.", also=(

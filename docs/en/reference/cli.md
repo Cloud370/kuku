@@ -57,6 +57,8 @@ Put options before the prompt in `kuku run`, because it consumes the remaining w
 | `/back` | Return to the last Agent you viewed in this Session. Repeat to switch between the last two. Agent switching keeps each draft and reading position. |
 | `/queue`, `/withdraw`, `/continue` | Queue for the next Turn, withdraw a queued input, or explicitly resume work. |
 | `/queued` | Edit a queued message before admission. With an empty draft, ↑ also opens this picker when an input can be edited. |
+| `/jobs` | List the selected Agent's background jobs with their IDs and states. Select a running job to cancel it or a finished job to read any saved output. |
+| `/jobs cancel <id>` | Cancel the specified background job for the selected Agent and report its resulting state. |
 | F2 or `/reply` | Answer the selected Agent's pending question or authorization. |
 | `/pending` | Check, retry or discard an unconfirmed submission. |
 | `/model`, `/thinking` | Select model or reasoning settings for the selected Agent. |

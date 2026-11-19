@@ -16,8 +16,11 @@
 | `edit_file` | `path`, `old_text`, `new_text` | `replace_all`, `expected_version`, `brief` | `edit` |
 | `write_file` | `path`, `content` | `expected_version`, `brief` | `edit` |
 | `remove_file` | `path` | `expected_version`, `brief` | `edit` |
-| `run_command` | `cwd` 和 `timeout`，再选 `program` + `args` 或 `command` | `brief`、`shell`（命令文本在未列出默认解释器时必填） | `command` |
-| `workspace_script` | `code` | 无 | `execute` |
+| `run_command` | `command` 或 `program` | `args`、`cwd`、`shell`（命令文本在未列出默认解释器时必填）、`timeout`、`background`、`brief` | `command` |
+| `workspace_script` | `code` | `background` | `execute` |
+| `list_jobs` | 无 | `before` | `session` |
+| `wait_job` | `job_id` | 无 | `session` |
+| `cancel_job` | `job_id` | 无 | `session` |
 | `save_value` | `name`，再选 `output_id` 或 `value` | `replace` | `session` |
 | `list_values` | 无 | `prefix`、`after`、`limit` | `read` |
 | `remember_memory` | `scope`, `kind`, `text` | none | `edit` |
@@ -66,51 +69,66 @@
 
 ## 运行本机程序
 
-传入程序名，每个参数对应一个字面字符串。各个平台都用 `./` 指定相对 `cwd` 的可执行文件路径。程序无需参数时传 `args: []`。参数可以是空字符串，也可以包含空格、引号或 shell 元字符。`cwd` 可以是相对工作区的目录或绝对目录，`"."` 表示工作区根目录。`timeout` 为 1 到 600 秒的整数。程序从标准输入立即读到 EOF。
+将 shell 命令文本传入 `command`。工作目录默认为 Agent 的工作区。可用 `cwd` 指定相对工作区的目录或绝对目录。解释器可用时，Linux 和 macOS 默认使用 `sh`，Windows 默认使用 `powershell`。命令语法需要其他解释器或工具未列出默认值时，从工具列出的解释器中指定 `shell`。在 Windows 上，批处理文件和依赖 `cmd.exe` 的命令使用 `shell: "cmd"`。
 
 ```json
-{"program":"cargo","args":["test","-p","kuku"],"cwd":".","timeout":120}
+{"command":"git status"}
 ```
 
-使用管道、重定向或 shell 内建命令时，将完整文本传入 `command`。Linux 和 macOS 默认使用 `sh`，Windows 默认使用 `powershell`，前提是执行宿主已安装对应解释器。命令需要其他解释器或工具未列出默认值时，指定 `shell`。命令文本可以附带空的 `args` 数组，所有实际参数都写在命令文本中。工具定义从 `sh`、`bash`、`zsh`、`cmd`、`powershell`（Windows PowerShell）和 `pwsh`（PowerShell Core）中列出执行宿主上可用的解释器。在 Windows 上，批处理文件和依赖 `cmd.exe` 的命令使用 `shell: "cmd"`。
+直接运行可执行文件时，传入 `program`，并在 `args` 中把每个参数写成一个字面字符串。程序无需参数时可省略 `args`。参数可以是空字符串，也可以包含空格、引号或 shell 元字符。各个平台都用 `./` 指定相对 `cwd` 的可执行文件路径。程序从标准输入立即读到 EOF。需要设置截止时间时，传入以秒为单位的 `timeout`，取值为正的 32 位无符号整数。
 
 ```json
-{"shell":"cmd","command":"type \"build log.txt\"","cwd":".","timeout":10}
+{"program":"cargo","args":["test","-p","kuku"],"timeout":120}
 ```
 
-进程正常退出后，工具状态可以为 `ok`，同时 `exit_code` 为非零值。检查结构化事实中的 `termination`、`exit_code` 和 `capture_complete`。 在工作区脚本中，可从 `run.result.output_preview` 读取有界的命令输出，并用 `output_preview_truncated` 判断预览是否完整。即使捕获完整，预览也可能只有前面的一段。需要完整的 stdout 或 stderr 时，使用保留的 `output_ref.id` 调用 `workspace.output_lines` 或 `workspace.output_chunks`。程序缺失、启动失败、超时和取消有不同的终止原因。识别出的 Rust 测试和 pytest 摘要会提供程序报告的统计与有界证据。需要排查失败或分析未识别的格式时，读取保留输出。见 [SDK 执行事实](sdk.md#工作区执行)。
+省略 `timeout` 时不设置命令截止时间。命令和脚本共用 [Session Job](#session-job) 行为。
+
+进程正常退出后，工具状态可以为 `ok`，同时 `exit_code` 为非零值。检查结构化事实中的 `termination`、`exit_code` 和 `capture_complete`。即使捕获完整，预览也可能截断。程序缺失、启动失败、超时和取消有不同的终止原因。识别出的 Rust 测试和 pytest 摘要会提供程序报告的统计与有界证据。排查失败或读取超出预览的内容时，将保留的 `output_ref.id` 传给 `read_output`。[SDK 执行事实](sdk.md#工作区执行)
+
+## Session Job
+
+顶层 `run_command` 或 `workspace_script` 在前台观察窗口内结束时，工具直接返回结果。窗口默认为 10 秒。若仍在运行，工具返回句柄，其中 `structured.kind` 为 `"job"`，`structured.job_id` 是 Job 标识。使用 `background: true` 可立即获得句柄并继续独立工作。
+
+[Job 生命周期与结果投递](../how-it-works/sessions.md#后台-job) · [权限](../how-it-works/permissions.md)
+
+- `list_jobs({})` 按从新到旧返回当前 Agent 的最多 25 条 Job 摘要。将返回的 `next_before` 作为 `before` 传入可继续翻页。
+- `wait_job({job_id})` 等待当前 Agent 的指定 Job 结束。下一步依赖这一结果时使用。
+- `cancel_job({job_id})` 请求取消当前 Agent 的指定 Job，并等待清理。
+
+使用命令的保留输出引用可检查其捕获内容。[嵌入宿主的 Job API](sdk.md#工作区执行)
 
 ## 工作区脚本
 
-`workspace_script({code})` 在一次性的嵌入式 QuickJS worker 中运行 JavaScript 异步函数体，支持顶层 `await`。worker 由 kuku 提供并按需启动。可以使用标准 JavaScript，包括 `JSON`、正则表达式及用于独立操作的 `Promise.all`。后一动作的参数能由前一结果直接计算时，使用 `await` 在脚本内连续执行。下一步需要模型判断时，返回简短的观察结果。通过 `workspace` 对象执行工作区动作。可用方法取决于 Agent 所选的工具，参数对象与相应直接工具一致。`workspace.methods` 列出可用方法定义。
+`workspace_script({code})` 在一次性的嵌入式 QuickJS worker 中运行 JavaScript 异步函数体，支持顶层 `await`。给外层工具调用传入 `background: true` 可启动 [Session Job](#session-job)。可以使用标准 JavaScript，包括 `JSON`、正则表达式及用于独立操作的 `Promise.all`。后一动作的参数能由前一结果直接计算时，使用 `await` 在脚本内连续执行。下一步需要模型判断时，返回简短的观察结果。`workspace` 上的方法取决于 Agent 所选的工具。`workspace.methods` 列出可用方法定义。
 
-每次宿主调用返回 `{status, summary, truncated, result, model_content}`，其中 `result` 包含结构化数据。例如，`workspace.read_file({path})` 提供原始 `result.raw_text`、SHA-256 `content_hash`，以及从 `start_byte` 到 `end_byte` 的左闭右开字节范围。脚本可用已观察的范围继续编辑，无需把文件内容返回给模型。同一文件版本的读取覆盖全文后，还可以覆盖或移除该文件。在同一次调用中，脚本也可以编辑或覆盖由自身写入完整内容且已确认成功的确切版本。动作仍需经过宿主授权与版本检查。
+大多数宿主方法返回 `{status, summary, truncated, result, model_content}`。检查各动作的 `status`，再从 `result` 读取结构化数据。例如，`workspace.read_file({path})` 提供原始 `result.raw_text`、SHA-256 `content_hash`，以及从 `start_byte` 到 `end_byte` 的左闭右开字节范围。脚本可用已观察的范围继续编辑，无需把文件内容返回给模型。同一文件版本的读取覆盖全文后，还可以覆盖或移除该文件。在同一次调用中，脚本也可以编辑或覆盖由自身写入完整内容且已确认成功的确切版本。动作仍需经过宿主授权与版本检查。
 
 脚本可以返回较小的 JSON 值，为模型提供所需的证据。处理大输出时，用 `workspace.output_lines({id, stream: "stdout"})` 逐行遍历，只保留计算所需的状态。原始字节可以通过[保留输出](#保留的工具输出)读取。JavaScript 变量只在当次调用中存在。可以把选中的结果存为[命名值](#命名会话值)，也可以按用户要求把交付物写入工作区。
 
-例如，把以下 JavaScript 作为 `code` 传入，统计 Rust 构建中标准错误输出的警告数。构建失败时，仍可在结果中获取已观察到的退出码和捕获引用。
+`await workspace.run_command(args)` 等待命令结束。它接受上述命令参数，`background` 除外。进程退出时，只要有整数退出码，就返回 `{exit_code, capture_complete, output_ref, stdout, stderr}`，包括非零退出码。拒绝派发、启动失败、超时或取消等情况会抛出错误。错误提供 `status`，在可用时还提供 `termination` 和 `output_ref`。
+
+两个流的方法相同。`await run.stdout.text()` 读取完整的解码文本，上限为 1 MiB，`await run.stdout.json()` 将同一文本解析为 JSON。用 `for await (const line of run.stderr.lines())` 逐行读取去掉 LF 或 CRLF 的解码文本，单行上限为 128 KiB。遇到捕获不完整或有损解码时，这些方法会报错。需要查看已保留的部分输出或原始字节时，使用 `workspace.output_chunks({id: run.output_ref.id})`。保留输出的分页读取经过 `read_output` 授权。
+
+以下示例统计 Rust 构建中标准错误输出的警告数。
 
 ```javascript
-const run = await workspace.run_command({
-  program: "cargo", args: ["check"], cwd: ".", timeout: 20,
-});
-const facts = run.result;
-if (!facts?.output_ref) return { action: run.status, summary: run.summary };
+const run = await workspace.run_command({command: "cargo check"});
+if (!run.capture_complete) {
+  return {exit_code: run.exit_code, capture_complete: false, output_ref: run.output_ref};
+}
 
 let warnings = 0;
-let complete = facts.capture_complete;
-for await (const line of workspace.output_lines({ id: facts.output_ref.id, stream: "stderr" })) {
-  if (line.text.startsWith("warning:")) warnings++;
-  complete &&= !line.truncated;
+for await (const line of run.stderr.lines()) {
+  if (line.startsWith("warning:")) warnings++;
 }
-return { exitCode: facts.exit_code, warnings, complete, outputId: facts.output_ref.id };
+return {exit_code: run.exit_code, warnings, output_ref: run.output_ref};
 ```
 
 `output_chunks({id, offset?, limit?, search?})` 逐页读取有界输出页，其中包含原始流片段和字节。默认扫描窗口为 65,536 字节，每次请求最多 80,000 字节。`output_lines({id, stream?, offset?, limit?})` 从未过滤的输出页逐行读取去掉末尾换行符的解码文本。两个迭代器都可用 `name` 代替 `id`，解析名称后继续使用同一输出 ID。每行携带流标识、字节偏移和完整性标记。脚本宿主方法独立于脚本返回值报告拒绝、失败和取消。
 
 保存大型派生结果时，先从 `await workspace.create_output({})` 取得 `result.id`，再用 `await workspace.append_output({id, text})` 分批追加 UTF-8 文本。检查各操作的状态。调用 `await workspace.finish_output({id})` 后，检查 `result.capture_complete` 再使用新的 `result.output_ref`。原始捕获仍可单独读取。
 
-输出草稿只在当前脚本调用内有效。创建、追加和完成草稿都需要即时授权决定。宿主选择延后时，该动作返回 `blocked`。
+输出草稿只在当前脚本调用内有效。见[草稿动作的授权规则](../how-it-works/permissions.md)。
 
 ## 保留的工具输出
 

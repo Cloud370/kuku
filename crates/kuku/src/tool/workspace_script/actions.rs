@@ -4,19 +4,27 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use super::{ScriptExecution, ScriptOperation};
+use crate::session::runtime::OutputReservation;
 use crate::tool::builtin;
-use crate::tool::builtin::run_command::{output::OutputLimits, run_command_with_output};
+use crate::tool::builtin::run_command::{output::OutputLimits, run_command_for_script};
 use crate::tool::ToolResultEnvelope;
 use crate::{Result, Session};
 
 pub(crate) struct WorkspaceActions {
     pub(crate) session: Session,
     pub(crate) agent: String,
+    pub(crate) original_turn: u64,
+    pub(crate) tool_call_id: String,
     pub(crate) workspace: PathBuf,
     pub(crate) preview_bytes: usize,
 }
 
 impl WorkspaceActions {
+    pub(super) fn reserve_output(&self, id: &str) -> Result<OutputReservation> {
+        self.session
+            .reserve_output(&self.agent, self.original_turn, &self.tool_call_id, id)
+    }
+
     pub(crate) async fn execute(
         &self,
         op: ScriptOperation,
@@ -28,7 +36,7 @@ impl WorkspaceActions {
         use ScriptOperation as Op;
         match op {
             Op::RunCommand => {
-                let mut reservation = self.session.reserve_output(&self.agent, output_id)?;
+                let mut reservation = self.reserve_output(output_id)?;
                 reservation.discard_on_drop();
                 let output_dir = self
                     .session
@@ -36,17 +44,17 @@ impl WorkspaceActions {
                     .parent()
                     .expect("session parent")
                     .join("outputs");
-                let result = run_command_with_output(
+                let result = run_command_for_script(
                     &args,
                     &self.workspace,
-                    None,
-                    Some(execution.cancellation()),
+                    execution.cancellation(),
                     &output_dir,
                     output_id,
                     OutputLimits {
                         max_output_bytes: reservation.max_bytes(),
                         max_preview_bytes: self.preview_bytes,
                     },
+                    execution.limits.host_bytes,
                 )
                 .await;
                 if result
@@ -59,10 +67,7 @@ impl WorkspaceActions {
                 Ok(result)
             }
             Op::CreateOutput | Op::AppendOutput | Op::FinishOutput => {
-                let value = execution
-                    .outputs
-                    .apply(op, &self.session, &self.agent, output_id, &args)
-                    .await?;
+                let value = execution.outputs.apply(op, self, output_id, &args).await?;
                 Ok(ToolResultEnvelope::ok(
                     op.name(),
                     serde_json::to_string(&value)?,

@@ -27,6 +27,9 @@
 | `GET` | `/sessions/{id}/observe` | 观察游标之后的已提交条目和临时进度 |
 | `GET` | `/sessions/{id}/events` | 分页读取原始已提交事实 |
 | `GET` | `/sessions/{id}/outputs/{output_id}` | 有界读取保留的工具输出 |
+| `GET` | `/sessions/{id}/jobs` | 列出所选 Agent 的后台 Job |
+| `GET` | `/sessions/{id}/jobs/{job_id}` | 查看 Job 及可用的结果 |
+| `DELETE` | `/sessions/{id}/jobs/{job_id}` | 取消 Job 并返回其终态 |
 | `GET` | `/sessions/{id}/values` | 列出所选 Agent 的命名值 |
 | `PUT` | `/sessions/{id}/values/{name}` | 绑定命名值或显式替换来源 |
 | `GET` | `/models` | 已配置的模型目录 |
@@ -34,7 +37,7 @@
 | `GET` | `/workspaces` | 列出工作区 |
 | `GET` | `/workspaces/resolve`、`/workspaces/files`、`/workspaces/skills` | 解析服务端路径，或查找工作区文件与 Skill |
 
-状态响应包含构建和协议版本、`instance_id`、`pid`、生效的 `data_dir` 和 `config_path`、`draining` 以及 `busy`。受管服务重启返回 `202` 表示已释放 writer，进程正在停止。`409` 和 `service_busy` 在 `busy` 列出正在进行的任务。受管客户端会等旧进程释放服务租约后启动替代进程。
+状态响应包含构建和协议版本、`instance_id`、`pid`、生效的 `data_dir` 和 `config_path`、`draining` 以及 `busy`。受管服务重启返回 `202` 表示已释放 writer，进程正在停止。`409` 和 `service_busy` 在 `busy` 列出正在进行的工作，包括运行中的 Job。受管客户端会等旧进程释放服务租约后启动替代进程。
 
 ## 命令与回执
 
@@ -115,6 +118,14 @@ Agent 快照和摘要可以包含 `admitted_task` 和 `queued_task`。这两个�
 `/events?workspace=...&after=0&limit=100` 返回 `events` 和 `next_after`，供核查原始事实。每条记录含 `id` 和 `payload`。可用 `agent` 过滤扫描页，即使没有匹配条目，`next_after` 也会前移。日志结构见 [Session 事件](events.md)。
 
 通过 `/outputs/{output_id}` 读取已知工具输出，传入 `workspace` 及可选的 `agent`（默认 `main`）、`offset` 和 `max_bytes`。Agent 必须持有或收到过该输出。可用 `search` 在读取范围内作字面搜索。响应将数据块放在 `output` 中。当 `output.has_more` 为 true 时，传入 `output.next_offset` 续读。[保留输出](tools.md)
+
+## 后台 Job
+
+Job 路由均要求 `workspace` 和 `agent` 查询参数。`GET /sessions/{id}/jobs` 返回 `{ "jobs": [...] }`，其中包含该 Agent 最近的 Job 和所有运行中 Job 的元信息。单个 Job 查询直接返回快照，终态 `result` 可用时一并返回。若快照包含 `output_id`，可通过输出端点读取保留的命令输出。查询未知 Job 或其他 Agent 的 Job 会返回 `404` 和 `job_not_found`。
+
+`DELETE /sessions/{id}/jobs/{job_id}` 等待指定执行结束并返回结果快照。对已终结的 Job 重复请求会返回已有结果。两个 GET 路由可以直接读取已关闭的 Session。若本服务尚未打开 Session，取消其中未终结的 Job 会返回 `409` 和 `job_not_active`。
+
+归属 Agent 的历史和观察流包含 `job_finished` 条目，带有 `job_id`、`status`、`summary`、原始 `turn` 以及可用的 `output_id`。此条目可能在对应的 Turn 结束后到达。
 
 ## 命名值
 

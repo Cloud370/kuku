@@ -27,6 +27,9 @@ Authenticated clients send `Authorization: Bearer TOKEN`, including on loopback.
 | `GET` | `/sessions/{id}/observe` | Follow committed entries and transient progress after a cursor |
 | `GET` | `/sessions/{id}/events` | Page through raw committed facts |
 | `GET` | `/sessions/{id}/outputs/{output_id}` | Read bounded retained tool output |
+| `GET` | `/sessions/{id}/jobs` | List the selected Agent's background Jobs |
+| `GET` | `/sessions/{id}/jobs/{job_id}` | Inspect a Job and its available result |
+| `DELETE` | `/sessions/{id}/jobs/{job_id}` | Cancel a Job and return its terminal status |
 | `GET` | `/sessions/{id}/values` | List the selected Agent's named values |
 | `PUT` | `/sessions/{id}/values/{name}` | Bind a named value or explicitly replace its source |
 | `GET` | `/models` | Configured model catalog |
@@ -34,7 +37,7 @@ Authenticated clients send `Authorization: Bearer TOKEN`, including on loopback.
 | `GET` | `/workspaces` | List workspaces |
 | `GET` | `/workspaces/resolve`, `/workspaces/files`, `/workspaces/skills` | Resolve a server path or discover workspace files and Skills |
 
-The status response includes the build and protocol versions, `instance_id`, `pid`, effective `data_dir` and `config_path`, `draining`, and `busy`. For a managed restart, `202` acknowledges that writers have been released and the process is stopping. `409` with `service_busy` includes the active work in `busy`. The managed client starts the replacement after the previous process releases its service lease.
+The status response includes the build and protocol versions, `instance_id`, `pid`, effective `data_dir` and `config_path`, `draining`, and `busy`. For a managed restart, `202` acknowledges that writers have been released and the process is stopping. `409` with `service_busy` includes active work such as running Jobs in `busy`. The managed client starts the replacement after the previous process releases its service lease.
 
 ## Commands and receipts
 
@@ -115,6 +118,14 @@ To answer `ask_user` or a deferred tool authorization, use the request ID from t
 `/events?workspace=...&after=0&limit=100` returns `events` and `next_after`. The raw event page is for auditing. Each record has an `id` and `payload`. An optional `agent` filter applies within the scanned page, and `next_after` advances even if that page has no matches. See [Session events](events.md) for the journal schema.
 
 Read a known tool output by its ID in `/outputs/{output_id}`, passing `workspace` and optionally `agent` (default `main`), `offset` and `max_bytes`. The Agent must own or have received the output. Use `search` for a literal match within the range. The response wraps the chunk in `output`. Pass `output.next_offset` to continue when `output.has_more` is true. [Retained output](tools.md)
+
+## Background Jobs
+
+All Job routes require `workspace` and `agent` query parameters. `GET /sessions/{id}/jobs` returns `{ "jobs": [...] }` with metadata for the Agent's recent Jobs and all running Jobs. A Job lookup returns the snapshot directly, including the terminal `result` when available. Use `output_id`, when present, to read the retained command output through the output endpoint. An unknown Job ID or a Job belonging to another Agent returns `404` with `job_not_found`.
+
+`DELETE /sessions/{id}/jobs/{job_id}` waits for the targeted execution to settle and returns the resulting snapshot. Repeating the request for a terminal Job returns its existing result. Both GET routes can read a closed Session without opening it. A DELETE for an unsettled Job in a Session that this server has not opened returns `409` with `job_not_active`.
+
+The owning Agent's history and observation stream include a `job_finished` entry with `job_id`, `status`, `summary`, the original `turn` and any `output_id`. This entry can arrive after its Turn settles.
 
 ## Named values
 

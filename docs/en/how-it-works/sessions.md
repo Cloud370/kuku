@@ -18,6 +18,14 @@ One execution chain advances per Agent, and different Agents can run concurrentl
 
 Execution continues independently of observations. `agent_view` returns an Agent snapshot, queued inputs and the corresponding committed cursor. `events(after, limit)` returns bounded committed pages. `observe(after)` combines a durable reconnectable cursor with bounded transient updates identified by Agent and execution. Slow consumers receive a lag notice and retain access to durable results.
 
+## Background Jobs
+
+A Job gives the Session a handle for an already-dispatched command or workspace script. The Job belongs to the Agent that started it and can keep running after that Turn settles or a client disconnects. It still uses the execution host's resources. The foreground observation window controls when the tool returns a handle. An explicit process deadline still applies after the transfer. [Tool arguments and Job handles](../reference/tools.md#session-jobs)
+
+Reaching the observation limit alone does not trigger a model request. The Session records the terminal outcome and delivers a bounded result to the owning Agent's inbox. The result becomes eligible at a safe boundary in its current or next Turn. The Agent can act on the result without polling. A client can inspect or cancel a specific Job while the Session remains open. [Terminal controls](../reference/cli.md#terminal-interface) · [SDK methods](../reference/sdk.md#workspace-execution)
+
+A targeted stop of the observed Agent execution leaves detached Jobs running. `Session::cancel(agent)` stops that Agent and cancels its Jobs. Closing the Session cancels all live Jobs and waits for cleanup and durable writes. If the runtime stops before recording a terminal outcome, reopening records the unsettled Job as `interrupted`. Inspect its available effects before explicitly starting new work.
+
 ## Storage and context
 
 The [session layout](../reference/file-layout.md#session-layout) contains one authoritative `events.jsonl` journal and retained outputs. One shared writer holds an operating-system lock and incrementally appends synchronized records. Opening repairs an incomplete tail and rejects damaged committed history.
@@ -30,7 +38,7 @@ Behavioral Prompt assets remain external or embedded versioned resources, separa
 
 ## Waiting and replies
 
-`ToolAuthorizer` receives the trusted source, agent, final arguments, actual tool definition, and working directory. The default local policy is `TrustedLocal`. Denial or an authorization error prevents dispatch. `Defer` persists an exact pending action and releases active execution context. A matching `reply_permission` checks the prepared action and current tool definition before resuming once.
+For a pending authorization, use `reply_permission` with the exact request identity and Agent. [Tool authorization and deferred approval](permissions.md)
 
 `ask_user` persists a question and returns a waiting handle once. The agent yields after its current tool batch. `reply_question` delivers correlated input only to the matching pending request. Reopening reconstructs waits; unrelated, conflicting duplicate, or stale replies do not authorize another action. Waiting does not poll a model or hold a model permit.
 
@@ -40,6 +48,6 @@ Command stdout/stderr stream from the first byte through bounded frames to a ses
 
 An Agent can give the capture a [named value](../reference/tools.md#named-session-values). Ordinary captures can age out. Naming an output or attaching it to a delivered input retains the referenced bytes for reuse on reopen. A replaced name leaves delivered references intact. Write long-lived deliverables to the workspace as ordinary files.
 
-`cancel` stops new dispatch and awaits owned work cleanup. Unix process groups and Windows Job objects provide process-tree cleanup; deliberate escape is outside the trusted local process boundary. Inherited pipes have a cleanup deadline. Known incomplete cleanup is persisted and makes cancellation or close report failure.
+Unix process groups and Windows Job objects provide process-tree cleanup for cancellation. Deliberate escape is outside the trusted local process boundary. Inherited pipes have a cleanup deadline. Known incomplete cleanup is persisted and makes cancellation or close report failure.
 
-`close().await` awaits cleanup and durable writes before releasing the writer. Pending inputs and recoverable waits remain. Opening does not automatically activate agents. Interrupted side effects require reconciliation and are not automatically executed again. Provider traces remain optional diagnostic logs, separately from session facts.
+`close().await` releases the writer after [cleanup](#background-jobs). Pending inputs and recoverable waits remain. Opening does not automatically activate Agents or replay interrupted effects. Provider traces remain optional diagnostic logs, separately from session facts.

@@ -22,7 +22,7 @@ use super::slots::requires_workspace_ordering;
 use super::tool_exec::{execute_tool_call, run_tool_pre_hooks};
 use super::types::{
     ModelPhase, PendingPermission, PendingRun, PendingStep, PermissionChoice, QueuedToolCall, Run,
-    RunState, SlotEvent, StreamingChunkState, UiEvent,
+    RunState, StreamingChunkState, UiEvent,
 };
 
 impl Drop for Run {
@@ -39,7 +39,7 @@ impl Drop for Run {
 
 impl Run {
     fn has_active_workspace_ordered_slot(&self) -> bool {
-        self.slots.values().any(|slot| slot.workspace_ordered)
+        self.holds_job() || self.slots.values().any(|slot| slot.workspace_ordered)
     }
 
     /// The session ID for this run.
@@ -122,53 +122,20 @@ impl Run {
         let event = loop {
             self.persist_deferred_runtime_logs();
 
+            if let Some(event) = self.promote_explicit_job()? {
+                break event;
+            }
             if matches!(&self.state, RunState::Pending(_)) {
                 if let Some(event) = self.try_process_queued_call().await? {
                     break self.defer_runtime_log_if_needed(event);
                 }
             }
-            if !self.slots.is_empty() {
-                let slot_event = tokio::select! {
-                    event = self.slot_event_rx.recv() => event,
-                    _ = self.cancel_token.notified() => None,
-                };
-                if let Some((tool_call_id, event)) = slot_event {
-                    match event {
-                        SlotEvent::Output(te) => {
-                            break UiEvent::ToolOutput {
-                                id: tool_call_id,
-                                event: te,
-                            };
-                        }
-                        SlotEvent::WorkspacePermission(action) => {
-                            let action = *action;
-                            if let RunState::Pending(pending) = &mut self.state {
-                                super::helpers::append_permission_request(
-                                    &pending.events_path,
-                                    &pending.conversation,
-                                    pending.turn,
-                                    &action.request,
-                                )?;
-                                self.slots.remove(&tool_call_id);
-                                pending
-                                    .resumed_permission_requests
-                                    .push_front(action.request);
-                                pending.queued_tool_calls.push_front(action.queued);
-                                continue;
-                            }
-                            let event = self.finish_slot(&tool_call_id, action.partial)?;
-                            return Ok(Some(project(event, ToolFaults::default())));
-                        }
-                        SlotEvent::Done(result) => {
-                            let faults = result.faults;
-                            let event = self.finish_slot(&tool_call_id, result)?;
-                            if faults.output_persistence_failed || faults.cleanup_incomplete {
-                                self.cancel();
-                            }
-                            return Ok(Some(project(event, faults)));
-                        }
-                    }
+            let wait_for_job_input = self.job_wait_required()?;
+            if wait_for_job_input || !self.slots.is_empty() {
+                if let Some((event, faults)) = self.poll_tool(wait_for_job_input).await? {
+                    return Ok(Some(project(event, faults)));
                 }
+                continue;
             }
             match std::mem::replace(&mut self.state, RunState::Done(None)) {
                 RunState::Pending(pending) => {
@@ -205,9 +172,20 @@ impl Run {
         Ok(Some(project(event, ToolFaults::default())))
     }
 
-    fn finish_slot(&mut self, id: &str, envelope: ToolResultEnvelope) -> Result<UiEvent> {
+    pub(super) fn finish_slot(
+        &mut self,
+        id: &str,
+        envelope: ToolResultEnvelope,
+        job_wait: bool,
+    ) -> Result<UiEvent> {
         let slot = self.slots.remove(id).expect("slot must exist");
         self.state.record_tool_completion(&envelope.status);
+        let job_session = match &self.state {
+            RunState::Pending(pending) if job_wait => {
+                Some(super::runtime_tools::runtime_session(pending)?)
+            }
+            _ => None,
+        };
         let context = match &self.state {
             RunState::Pending(p) => Some((&p.events_path, p.turn)),
             RunState::Streaming(s) => Some((&s.pending.events_path, s.pending.turn)),
@@ -220,7 +198,13 @@ impl Run {
         };
         let (result, model_content) = match context {
             Some((path, turn)) => {
-                let result = super::tool_exec::write_tool_result(&slot, &envelope, path, turn)?;
+                let result = super::tool_exec::write_tool_result(
+                    &slot,
+                    &envelope,
+                    path,
+                    turn,
+                    job_session.as_ref(),
+                )?;
                 (
                     result,
                     (!envelope.model_content.is_empty()).then_some(envelope.model_content),

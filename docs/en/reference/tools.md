@@ -16,8 +16,11 @@ This page describes the default public Session tool surface used by CLI and serv
 | `edit_file` | `path`, `old_text`, `new_text` | `replace_all`, `expected_version`, `brief` | `edit` |
 | `write_file` | `path`, `content` | `expected_version`, `brief` | `edit` |
 | `remove_file` | `path` | `expected_version`, `brief` | `edit` |
-| `run_command` | `cwd`, `timeout`, and either `program` + `args` or `command` | `brief`, `shell` (required for command text if no default is listed) | `command` |
-| `workspace_script` | `code` | none | `execute` |
+| `run_command` | `command` or `program` | `args`, `cwd`, `shell` (required for command text if no default is listed), `timeout`, `background`, `brief` | `command` |
+| `workspace_script` | `code` | `background` | `execute` |
+| `list_jobs` | none | `before` | `session` |
+| `wait_job` | `job_id` | none | `session` |
+| `cancel_job` | `job_id` | none | `session` |
 | `save_value` | `name` and either `output_id` or `value` | `replace` | `session` |
 | `list_values` | none | `prefix`, `after`, `limit` | `read` |
 | `remember_memory` | `scope`, `kind`, `text` | none | `edit` |
@@ -66,51 +69,66 @@ Important filters:
 
 ## Run a native program
 
-Use the program name and one literal string per argument. Prefix an executable path relative to `cwd` with `./` on any platform. Pass `args: []` for a program with no arguments. Empty strings, spaces, quotes, and shell metacharacters can be parts of arguments. `cwd` can be a workspace-relative or absolute directory. Use `"."` for the workspace root. `timeout` is an integer between 1 and 600 seconds. The program receives EOF on standard input.
+Pass shell text in `command`. The working directory defaults to the Agent's workspace. Use `cwd` for a different workspace-relative or absolute directory. When available, the default shell is `sh` on Linux and macOS and `powershell` on Windows. Select a listed `shell` when the syntax requires another interpreter or the tool lists no default. On Windows, use `shell: "cmd"` for batch files or commands that use `cmd.exe`.
 
 ```json
-{"program":"cargo","args":["test","-p","kuku"],"cwd":".","timeout":120}
+{"command":"git status"}
 ```
 
-For pipes, redirection, or shell built-ins, pass the full text in `command`. When installed, the default is `sh` on Linux and macOS and `powershell` on Windows. Specify `shell` when the text needs another interpreter or the tool lists no default. An empty `args` array is accepted with command text. Put all shell arguments in the command itself. The tool schema advertises the interpreters found on the execution host from `sh`, `bash`, `zsh`, `cmd`, `powershell` (Windows PowerShell), and `pwsh` (PowerShell Core). On Windows, use `shell: "cmd"` for batch files or commands that use `cmd.exe`.
+To call an executable directly, pass `program` and one literal string per argument in `args`. Omit `args` for a program with no arguments. Empty strings, spaces, quotes, and shell metacharacters can be parts of arguments. Prefix an executable path relative to `cwd` with `./` on any platform. Standard input supplies EOF. To set a deadline, pass `timeout` as a positive 32-bit unsigned integer in seconds.
 
 ```json
-{"shell":"cmd","command":"type \"build log.txt\"","cwd":".","timeout":10}
+{"program":"cargo","args":["test","-p","kuku"],"timeout":120}
 ```
 
-An exited process can return tool status `ok` with a nonzero `exit_code`. Check `termination`, `exit_code`, and `capture_complete` in the structured facts. In a workspace script, read short command output from `run.result.output_preview` only when `output_preview_truncated` is false. A complete capture can still have a truncated preview. For complete stdout or stderr, use the retained `output_ref.id` with `workspace.output_lines` or `workspace.output_chunks`. Missing executables, start failures, timeouts, and cancellation have separate termination values. Recognized Rust test and pytest summaries carry program-reported counts and bounded evidence. Use the retained output to investigate failures or formats without a recognized report. See [SDK execution facts](sdk.md#workspace-execution).
+The command runs without a deadline when `timeout` is omitted. The same [Session Job](#session-jobs) behavior applies to commands and scripts.
+
+An exited process can return tool status `ok` with a nonzero `exit_code`. Check `termination`, `exit_code`, and `capture_complete` in the structured facts. A complete capture can still have a truncated preview. Missing executables, start failures, timeouts, and cancellation have separate termination values. Recognized Rust test and pytest summaries carry program-reported counts and bounded evidence. Use the retained `output_ref.id` with `read_output` to investigate failures or read beyond the preview. [SDK execution facts](sdk.md#workspace-execution)
+
+## Session Jobs
+
+A top-level `run_command` or `workspace_script` returns its outcome if it settles within the foreground observation window, which defaults to 10 seconds. If it is still running, the tool returns a handle with `structured.kind: "job"` and `structured.job_id`. Use `background: true` to obtain the handle immediately and continue independent work.
+
+[Job lifetime and result delivery](../how-it-works/sessions.md#background-jobs) · [Permissions](../how-it-works/permissions.md)
+
+- `list_jobs({})` returns up to 25 of the current Agent's Job summaries, newest first. Pass the returned `next_before` as `before` for the next page.
+- `wait_job({job_id})` waits for one of the current Agent's Jobs to settle. Use it when the next action needs that result.
+- `cancel_job({job_id})` requests cancellation of one of the current Agent's Jobs and waits for cleanup.
+
+Use the command's retained output reference to inspect its capture. [Job API for embedding hosts](sdk.md#workspace-execution)
 
 ## Workspace scripts
 
-`workspace_script({code})` runs an async JavaScript function body with top-level `await` in a disposable, embedded QuickJS worker. The worker ships with kuku and starts on demand. Use standard JavaScript, including `JSON`, regular expressions and `Promise.all` for independent operations. Compose dependent actions with `await` when their inputs follow directly from earlier results. Return a short observation when the next decision needs model judgment. Access the workspace through the `workspace` object. Its methods depend on the Agent's selected tools and take the same object arguments as their direct counterparts. `workspace.methods` lists the available definitions.
+`workspace_script({code})` runs an async JavaScript function body with top-level `await` in a disposable, embedded QuickJS worker. Use `background: true` on the outer tool call to start a [Session Job](#session-jobs). Use standard JavaScript, including `JSON`, regular expressions and `Promise.all` for independent operations. Compose dependent actions with `await` when their inputs follow directly from earlier results. Return a short observation when the next decision needs model judgment. The methods on `workspace` depend on the Agent's selected tools. `workspace.methods` lists the available definitions.
 
-Each host call returns `{status, summary, truncated, result, model_content}`. `result` contains the structured data. For example, `workspace.read_file({path})` exposes raw file text in `result.raw_text`, the SHA-256 `content_hash` and the half-open byte range from `start_byte` to `end_byte`. A script can use these observed ranges for a subsequent edit without returning file contents to the model. Complete read coverage of the same file version also supports overwrite and removal. A script can edit or overwrite the exact version of its own confirmed full write within the same invocation. The actions still pass through host authorization and version checks.
+Most host methods return `{status, summary, truncated, result, model_content}`. Check each action's `status` and read structured data from `result`. For example, `workspace.read_file({path})` exposes raw file text in `result.raw_text`, the SHA-256 `content_hash` and the half-open byte range from `start_byte` to `end_byte`. A script can use these observed ranges for a subsequent edit without returning file contents to the model. Complete read coverage of the same file version also supports overwrite and removal. A script can edit or overwrite the exact version of its own confirmed full write within the same invocation. The actions still pass through host authorization and version checks.
 
 Return a small JSON value to give the model the evidence it needs. To process large captures, iterate `workspace.output_lines({id, stream: "stdout"})` and keep only the state needed for the computation. The original bytes remain available through [retained output](#retained-tool-output). Each call owns its JavaScript variables until it finishes. Persist selected results as a [named value](#named-session-values) or write a requested deliverable to the workspace.
 
-For example, pass the following JavaScript as `code` to count warnings on stderr in a Rust build. A failed build still yields its observed exit code and capture reference when available.
+`await workspace.run_command(args)` waits for the command to settle. It accepts the command arguments above except `background`. A process exit with an integer code resolves to `{exit_code, capture_complete, output_ref, stdout, stderr}`, including on nonzero exit. Actions such as a denied dispatch, a launch failure, a timeout or cancellation reject with an error. Check the error's `status`, `termination` and `output_ref` when available.
+
+For either stream, `await run.stdout.text()` reads the complete decoded text up to 1 MiB, and `await run.stdout.json()` parses that text as JSON. Use `for await (const line of run.stderr.lines())` to stream decoded text without LF or CRLF terminators. Lines can contain up to 128 KiB each. The helpers reject incomplete or lossy output. Use `workspace.output_chunks({id: run.output_ref.id})` to inspect retained partial output or raw bytes. Reads that page through retained output use the authorized `read_output` method.
+
+For example, count warnings on stderr in a Rust build.
 
 ```javascript
-const run = await workspace.run_command({
-  program: "cargo", args: ["check"], cwd: ".", timeout: 20,
-});
-const facts = run.result;
-if (!facts?.output_ref) return { action: run.status, summary: run.summary };
+const run = await workspace.run_command({command: "cargo check"});
+if (!run.capture_complete) {
+  return {exit_code: run.exit_code, capture_complete: false, output_ref: run.output_ref};
+}
 
 let warnings = 0;
-let complete = facts.capture_complete;
-for await (const line of workspace.output_lines({ id: facts.output_ref.id, stream: "stderr" })) {
-  if (line.text.startsWith("warning:")) warnings++;
-  complete &&= !line.truncated;
+for await (const line of run.stderr.lines()) {
+  if (line.startsWith("warning:")) warnings++;
 }
-return { exitCode: facts.exit_code, warnings, complete, outputId: facts.output_ref.id };
+return {exit_code: run.exit_code, warnings, output_ref: run.output_ref};
 ```
 
 `output_chunks({id, offset?, limit?, search?})` iterates the bounded output pages with original stream segments and raw bytes. The default scan window is 65,536 bytes, with at most 80,000 bytes per request. `output_lines({id, stream?, offset?, limit?})` iterates decoded lines without their trailing newline and takes unfiltered pages. Both accept `name` in place of `id` and keep reading the original output ID once the iterator resolves the name. Each line carries its stream, byte offsets and completeness flags. Script host methods report denied, failed and cancelled actions independently of the script's return value.
 
 For a large derived result, take `result.id` from `await workspace.create_output({})`, then `await workspace.append_output({id, text})` for each batch of UTF-8 text. Check each action's status. Call `await workspace.finish_output({id})` and check `result.capture_complete` before relying on the new `result.output_ref`. The original capture remains available independently.
 
-An output draft belongs to the current script invocation. Creating, appending to, and finishing a draft require an immediate authorization decision. A deferred decision yields a `blocked` result for that action.
+An output draft belongs to the current script invocation. See the [authorization rules for draft actions](../how-it-works/permissions.md).
 
 ## Retained Tool Output
 

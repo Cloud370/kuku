@@ -6,7 +6,7 @@ use crossterm::event::{
 use kuku_client::{Action, AgentConfig, Error, Timing};
 use ratatui::buffer::Buffer;
 
-use crate::app::{Address, App, Modal, PendingItem, PendingStage};
+use crate::app::{Address, App, JobCommand, Modal, PendingItem, PendingStage};
 use crate::editor::Editor;
 use crate::jobs::{Job, Search, Selection};
 use crate::keys::{AgentDirection, Shortcut};
@@ -161,7 +161,7 @@ impl App {
             key if Shortcut::REPLY.matches(key) => self.open_reply(),
             key if Shortcut::ESCAPE.matches(key) => self.interrupt(),
             key if editing && Shortcut::NEXT_TURN.matches(key) => self.send(Timing::NextTurn),
-            key if editing && Shortcut::ENTER.matches(key) => self.send(Timing::Steer),
+            key if editing && Shortcut::ENTER.matches(key) => self.submit_composer(),
             key if Shortcut::UP.matches(key)
                 && self.pane().draft.text().is_empty()
                 && self.has_queued_input() =>
@@ -228,6 +228,18 @@ impl App {
         };
         match key {
             key if Shortcut::ENTER.matches(key) => {
+                if matches!(picker.kind, PickerKind::Commands) {
+                    if let Some(command) = JobCommand::parse(picker.query.text()) {
+                        if matches!(command, JobCommand::Invalid) {
+                            picker.problem = Some("Use /jobs or /jobs cancel <id>".into());
+                            return;
+                        }
+                        self.modal = None;
+                        self.effects.push(Job::ClosePicker);
+                        self.run_job_command(command);
+                        return;
+                    }
+                }
                 if let Some(choice) = picker.selected_choice() {
                     let kind = picker.kind.clone();
                     self.choose(kind, choice);
@@ -509,6 +521,8 @@ impl App {
                 }
             }
             ChoiceKind::Tool(tool) => self.show_output(tool),
+            ChoiceKind::BackgroundJob(job) => self.open_background_job(*job),
+            ChoiceKind::CancelBackground(id) => self.cancel_background_job(id),
             ChoiceKind::Value(value) => self.open_value(value),
             ChoiceKind::AttachValue(value) => self.attach_value(value),
             ChoiceKind::ReadValue(value) => self.read_value(value),
@@ -535,6 +549,7 @@ impl App {
                 }
             }
             CommandMenu::Interrupt => self.interrupt(),
+            CommandMenu::Jobs => self.open_jobs(),
             CommandMenu::Reply => self.open_reply(),
             CommandMenu::Pending => {
                 self.picker(PickerKind::Pending, self.pending_choices());

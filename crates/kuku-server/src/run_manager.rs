@@ -116,7 +116,7 @@ impl RunManager {
         }
     }
 
-    /// Return identities of active Session commands, executions, and tool cleanup.
+    /// Return identities of active Session commands, executions, Jobs, and tool cleanup.
     pub fn active_run_ids(&self) -> Vec<String> {
         let slots = self.inner.slots.lock().unwrap();
         let mut ids = Vec::new();
@@ -124,6 +124,13 @@ impl RunManager {
             let seen = ids.len();
             if let Some(session) = slot.session.lock().unwrap().as_ref() {
                 ids.extend(session.active_executions().into_iter().map(|(agent, id)| {
+                    format!(
+                        "{}/{agent}/{id} ({})",
+                        slot.session_id,
+                        slot.workspace.display()
+                    )
+                }));
+                ids.extend(session.running_jobs().into_iter().map(|(agent, id)| {
                     format!(
                         "{}/{agent}/{id} ({})",
                         slot.session_id,
@@ -253,11 +260,11 @@ impl RunManager {
         let mut open = slot.open.lock().await;
         let _operation = SessionOperation::begin(&slot.active_operation);
         let result = if let Some(entry) = open.as_ref() {
-            if !entry.session.active_executions().is_empty() {
+            if !entry.session.active_executions().is_empty() || entry.session.has_active_jobs() {
                 return Err(ApiError::new(
                     StatusCode::CONFLICT,
                     "session_busy",
-                    "Session has active execution or cleanup",
+                    "Session has active execution, Jobs, or cleanup",
                 ));
             }
             let closed = entry.session.close().await;
@@ -341,7 +348,7 @@ impl RunManager {
                     manager.release_slot(&path, &slot);
                     break;
                 };
-                if entry.release_idle_permits() {
+                if entry.release_idle_permits() || entry.session.has_active_jobs() {
                     continue;
                 }
                 if let Err(error) = entry.session.close().await {

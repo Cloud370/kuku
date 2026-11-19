@@ -5,12 +5,12 @@ mod streaming;
 
 use super::{
     PendingPermission, PendingRun, PendingStep, PermissionChoice, QueuedToolCall, Run, RunState,
-    SlotEvent, StreamingChunkState, UiEvent,
+    StreamingChunkState, UiEvent,
 };
 use crate::event::{EventPayload, EventStore};
 use crate::provider::types::{ProviderKind, ProviderToolCall, ResolvedProvider, SecretString};
 use crate::query::types::{
-    CumulativeUsage, ExecSlot, PermissionRequest, ResolvedRuntime, ToolKind,
+    CumulativeUsage, ExecSlot, PermissionRequest, ResolvedRuntime, SlotEvent, ToolKind,
 };
 
 fn test_config() -> crate::config::Config {
@@ -78,6 +78,7 @@ pub(super) fn make_test_pending(
         tool_registry_override: None,
         pending_events: std::collections::VecDeque::new(),
         pending_error: None,
+        waiting_for_job_input: false,
         catalog: crate::prompt::builtin_prompt_catalog(),
         cancel_token,
         handoff_triggered: false,

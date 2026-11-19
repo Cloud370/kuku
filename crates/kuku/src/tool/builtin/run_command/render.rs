@@ -1,8 +1,9 @@
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
-use std::path::Path;
 use std::process::ExitStatus;
 use std::time::Duration;
+
+use serde_json::json;
 
 use crate::execution::{
     CommandExecutionFacts, CommandResultKind, CommandStdin, CommandTermination, OutputReference,
@@ -12,8 +13,8 @@ use crate::tool::ToolResultEnvelope;
 
 use super::output::{CaptureMetadata, OutputSegment};
 use super::{
-    output_error, read_output, CommandOutcome, CommandRequest, OutputLimits, OutputRead,
-    OutputStream,
+    output_error, read_output, CommandCapture, CommandOutcome, CommandRequest, CommandView,
+    OutputRead, OutputStream,
 };
 
 const MAX_OUTPUT_PREVIEW_BYTES: usize = 2048;
@@ -23,21 +24,96 @@ pub(super) fn render_command_result(
     outcome: CommandOutcome,
     capture: (CaptureMetadata, Vec<ReportedTests>),
     duration: Duration,
-    output_dir: &Path,
-    output_id: &str,
-    limits: OutputLimits,
+    output: CommandCapture<'_>,
 ) -> ToolResultEnvelope {
     let (metadata, reports) = capture;
-    let filtered = !metadata.summary.is_empty() || !reports.is_empty();
-    let output_preview_limit = limits.max_preview_bytes.min(MAX_OUTPUT_PREVIEW_BYTES);
+    let duration_ms = duration.as_millis().min(u64::MAX as u128) as u64;
+    let summary = format!(
+        "{}, stdout {} lines, stderr {} lines",
+        outcome_summary(request, &outcome, duration_ms),
+        metadata.stdout_lines,
+        metadata.stderr_lines
+    );
+    let termination = if outcome.cancelled {
+        CommandTermination::Cancelled
+    } else if outcome.timed_out {
+        CommandTermination::TimedOut
+    } else if let Some((termination, _)) = &outcome.start_error {
+        *termination
+    } else {
+        CommandTermination::Exited
+    };
+    let status = match termination {
+        CommandTermination::Exited => "ok",
+        CommandTermination::Cancelled => "cancelled",
+        CommandTermination::TimedOut
+        | CommandTermination::ProgramMissing
+        | CommandTermination::StartFailed => "error",
+    };
+    let facts = CommandExecutionFacts {
+        kind: CommandResultKind::CommandResult,
+        invocation: request.invocation.clone(),
+        cwd: request.cwd.to_string_lossy().into_owned(),
+        stdin: CommandStdin::Null,
+        termination,
+        started: outcome.started,
+        exit_code: outcome.exit_status.and_then(|status| status.code()),
+        signal: exit_signal(outcome.exit_status),
+        start_error: outcome.start_error.map(|(_, error)| error),
+        duration_ms,
+        stdout_lines: metadata.stdout_lines,
+        stderr_lines: metadata.stderr_lines,
+        stdout_bytes: metadata.stdout_bytes,
+        stderr_bytes: metadata.stderr_bytes,
+        timed_out: outcome.timed_out,
+        cancelled: outcome.cancelled,
+        output_id: output.id.into(),
+        output_ref: OutputReference {
+            id: output.id.into(),
+            offset: 0,
+            bytes: metadata.stored_bytes,
+        },
+        capture_complete: !metadata.quota_truncated && !metadata.cleanup_incomplete,
+        quota_truncated: metadata.quota_truncated,
+        cleanup_incomplete: metadata.cleanup_incomplete,
+        output_filtered: false,
+        preview_truncated: false,
+        lossy_utf8: false,
+        output_preview: String::new(),
+        output_preview_truncated: metadata.stored_bytes > 0,
+        dropped_events: outcome.dropped_events,
+        summary_lines: metadata.summary.clone(),
+        reported_tests: reports,
+        side_effects_observed: false,
+    };
+    match output.view {
+        CommandView::Model => render_model(status, summary, facts, &metadata, output),
+        CommandView::Script { host_bytes } => {
+            render_script(status, summary, facts, output, host_bytes)
+        }
+    }
+}
+
+fn render_model(
+    status: &str,
+    mut summary: String,
+    mut facts: CommandExecutionFacts,
+    metadata: &CaptureMetadata,
+    output: CommandCapture<'_>,
+) -> ToolResultEnvelope {
+    let filtered = !metadata.summary.is_empty() || !facts.reported_tests.is_empty();
+    let output_preview_limit = output
+        .limits
+        .max_preview_bytes
+        .min(MAX_OUTPUT_PREVIEW_BYTES);
     let read_limit = if filtered {
         output_preview_limit
     } else {
-        limits.max_preview_bytes
+        output.limits.max_preview_bytes
     };
     let chunk = match read_output(
-        output_dir,
-        output_id,
+        output.dir,
+        output.id,
         OutputRead {
             offset: 0,
             limit: read_limit.max(1),
@@ -47,12 +123,6 @@ pub(super) fn render_command_result(
         Ok(chunk) => chunk,
         Err(error) => return output_error("read", error, metadata.cleanup_incomplete),
     };
-    let duration_ms = duration.as_millis().min(u64::MAX as u128) as u64;
-    let mut summary = outcome_summary(request, &outcome, duration_ms);
-    summary.push_str(&format!(
-        ", stdout {} lines, stderr {} lines",
-        metadata.stdout_lines, metadata.stderr_lines
-    ));
     let raw_preview = render_streams(&chunk.segments);
     let mut output_preview = if chunk
         .segments
@@ -72,7 +142,7 @@ pub(super) fn render_command_result(
         format!(
             "{}\n\nBuild/test summary (selected lines):\n{}",
             summary,
-            report_evidence(&metadata.summary, &reports)
+            report_evidence(&metadata.summary, &facts.reported_tests)
         )
     } else {
         let text = if raw_preview.is_empty() {
@@ -82,11 +152,10 @@ pub(super) fn render_command_result(
         };
         format!("{summary}\n\n{text}")
     };
-    let capture_incomplete = metadata.quota_truncated || metadata.cleanup_incomplete;
     let preview_truncated = !filtered && chunk.has_more;
-    let reference = render_reference(output_id, &metadata, filtered, chunk.lossy_utf8);
-    let content_truncated = model_content.len() + reference.len() > limits.max_preview_bytes;
-    let truncated = capture_incomplete || preview_truncated || content_truncated;
+    let reference = render_reference(output.id, metadata, filtered, chunk.lossy_utf8);
+    let content_truncated = model_content.len() + reference.len() > output.limits.max_preview_bytes;
+    let truncated = !facts.capture_complete || preview_truncated || content_truncated;
     if truncated {
         summary.push_str(", output truncated");
     }
@@ -95,75 +164,83 @@ pub(super) fn render_command_result(
     } else {
         reference
     };
-    fit_content(&mut model_content, &suffix, limits.max_preview_bytes);
-    let lossy_utf8 = chunk.lossy_utf8
+    fit_content(&mut model_content, &suffix, output.limits.max_preview_bytes);
+    facts.lossy_utf8 = chunk.lossy_utf8
         && (output_preview.contains(char::REPLACEMENT_CHARACTER)
             || (!filtered && model_content.contains(char::REPLACEMENT_CHARACTER)));
-    let status = if outcome.cancelled {
-        "cancelled"
-    } else if outcome.timed_out || outcome.start_error.is_some() {
-        "error"
+    facts.output_filtered = filtered;
+    facts.preview_truncated = preview_truncated || content_truncated;
+    facts.output_preview = output_preview;
+    facts.output_preview_truncated = output_preview_truncated;
+    ToolResultEnvelope::command(status, summary, model_content, truncated, facts)
+}
+
+fn render_script(
+    status: &str,
+    summary: String,
+    facts: CommandExecutionFacts,
+    output: CommandCapture<'_>,
+    host_bytes: usize,
+) -> ToolResultEnvelope {
+    // NOTE: An inline byte uses at most four JSON bytes. Reserve half the reply for metadata.
+    let bound = output
+        .limits
+        .max_preview_bytes
+        .min(MAX_OUTPUT_PREVIEW_BYTES)
+        .min(host_bytes / 8);
+    let size = facts.output_ref.bytes;
+    let inline = if status == "ok" && facts.capture_complete && size > 0 && size <= bound as u64 {
+        match read_output(
+            output.dir,
+            output.id,
+            OutputRead {
+                offset: 0,
+                limit: size as usize,
+                search: None,
+            },
+        ) {
+            Ok(chunk) => Some(chunk.segments),
+            Err(error) => return output_error("read", error, facts.cleanup_incomplete),
+        }
     } else {
-        "ok"
+        None
     };
-    let termination = if outcome.cancelled {
-        CommandTermination::Cancelled
-    } else if outcome.timed_out {
-        CommandTermination::TimedOut
-    } else if let Some((termination, _)) = &outcome.start_error {
-        *termination
-    } else {
-        CommandTermination::Exited
-    };
-    ToolResultEnvelope::command(
+    let mut result = ToolResultEnvelope::command(
         status,
         summary,
-        model_content,
-        truncated,
-        CommandExecutionFacts {
-            kind: CommandResultKind::CommandResult,
-            invocation: request.invocation.clone(),
-            cwd: request.cwd.to_string_lossy().into_owned(),
-            stdin: CommandStdin::Null,
-            termination,
-            started: outcome.started,
-            exit_code: outcome.exit_status.and_then(|status| status.code()),
-            signal: exit_signal(outcome.exit_status),
-            start_error: outcome.start_error.map(|(_, error)| error),
-            duration_ms,
-            stdout_lines: metadata.stdout_lines,
-            stderr_lines: metadata.stderr_lines,
-            stdout_bytes: metadata.stdout_bytes,
-            stderr_bytes: metadata.stderr_bytes,
-            timed_out: outcome.timed_out,
-            cancelled: outcome.cancelled,
-            output_id: output_id.to_string(),
-            output_ref: OutputReference {
-                id: output_id.to_string(),
-                offset: 0,
-                bytes: metadata.stored_bytes,
-            },
-            capture_complete: !capture_incomplete,
-            quota_truncated: metadata.quota_truncated,
-            cleanup_incomplete: metadata.cleanup_incomplete,
-            output_filtered: filtered,
-            preview_truncated: preview_truncated || content_truncated,
-            lossy_utf8,
-            output_preview,
-            output_preview_truncated,
-            dropped_events: outcome.dropped_events,
-            summary_lines: chunk.summary,
-            reported_tests: reports,
-            side_effects_observed: false,
-        },
-    )
+        String::new(),
+        !facts.capture_complete,
+        facts,
+    );
+    if let Some(segments) = inline {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        for segment in segments {
+            let stream = match segment.stream {
+                OutputStream::Stdout => &mut stdout,
+                OutputStream::Stderr => &mut stderr,
+            };
+            stream.extend_from_slice(segment.as_bytes());
+        }
+        result
+            .structured
+            .as_mut()
+            .expect("command has structured facts")["inline_pipes"] =
+            json!({"stdout":stdout, "stderr":stderr});
+    }
+    result
 }
 
 fn outcome_summary(request: &CommandRequest, outcome: &CommandOutcome, duration_ms: u64) -> String {
     if outcome.cancelled {
         format!("command cancelled after {duration_ms}ms")
     } else if outcome.timed_out {
-        format!("command timed out after {}s", request.timeout_seconds)
+        format!(
+            "command timed out after {}s",
+            request
+                .timeout_seconds
+                .expect("configured command deadline")
+        )
     } else if let Some((termination, error)) = &outcome.start_error {
         let kind = if *termination == CommandTermination::ProgramMissing {
             "program missing"

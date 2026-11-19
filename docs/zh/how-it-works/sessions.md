@@ -18,6 +18,14 @@ Agent 使用稳定的 Session 内扁平地址，例如 `main`、`reviewer` 或 `
 
 执行独立于观察。`agent_view` 返回 Agent 快照、排队输入和对应的已提交游标。`events(after, limit)` 返回有界持久分页。`observe(after)` 组合可续接的持久游标和按 Agent、执行标识关联的有界临时更新。慢消费者收到落后通知，仍能查询持久结果。
 
+## 后台 Job
+
+Session 用 Job 句柄跟踪已派发的命令或工作区脚本。Job 归发起它的 Agent 所有，可以在该 Turn 结束或客户端断开后继续运行，执行期间仍会占用执行宿主的资源。前台观察窗口决定工具何时返回句柄。显式设置的进程截止时间在转入 Job 后继续生效。[工具参数与 Job 句柄](../reference/tools.md#session-job)
+
+仅达到观察时限不会触发模型请求。Session 记录终态并向所属 Agent 的收件箱投递有界结果。该 Agent 可在当前或下一 Turn 的安全边界接纳结果，无需轮询。Session 保持打开时，客户端可以检查或取消指定 Job。[终端控制](../reference/cli.md#终端界面) · [SDK 方法](../reference/sdk.md#工作区执行)
+
+定向停止已观察到的 Agent 执行时，已经分离的 Job 继续运行。`Session::cancel(agent)` 停止指定 Agent 并取消其 Job。关闭 Session 会取消所有仍在运行的 Job，等待清理和持久写入。如果运行时在记录终态前停止，重开时会将未结算的 Job 标记为 `interrupted`。显式启动新工作前，先检查可观察到的副作用。
+
 ## 存储与上下文
 
 [Session 布局](../reference/file-layout.md#session-layout)包含唯一权威 `events.jsonl` 和保留输出。共享 writer 持有操作系统锁，增量追加并同步记录。打开时修复不完整尾部，拒绝已提交历史损坏。
@@ -30,7 +38,7 @@ provider 可见的 system 文本、prelude、工具和已接纳 canonical 消息
 
 ## 等待与回复
 
-`ToolAuthorizer` 接收真实来源、Agent、最终参数、实际工具定义和目录。默认本地策略为 `TrustedLocal`。拒绝或授权错误阻止派发，`Defer` 持久保存精确待决动作并释放活动执行上下文。匹配的 `reply_permission` 核对已准备动作与当前工具定义后仅续接一次。
+存在待决授权时，用 `reply_permission` 回复对应的请求标识和 Agent。[工具授权与延后审批](permissions.md)
 
 `ask_user` 持久保存问题，一次返回等待句柄；当前工具批次结束后让出执行。`reply_question` 仅向匹配待决请求投递关联输入。重开重建等待；无关、内容冲突的重复回复或过期回复不能授权其他动作。等待不轮询模型，也不占模型名额。
 
@@ -40,6 +48,6 @@ provider 可见的 system 文本、prelude、工具和已接纳 canonical 消息
 
 Agent 可以为捕获建立[命名值](../reference/tools.md#命名会话值)。普通捕获可能到期。给输出命名或随输入投递时会保留引用的字节，重开后可以继续读取。替换名称后，已投递的引用仍然有效。长期交付物可作为普通文件写入工作区。
 
-`cancel` 停止新派发并等待所属工作清理。Unix 进程组和 Windows Job 对象提供进程树清理；主动逃离不在可信本地进程边界内。继承管道具有清理截止时间。已知清理不完整会被持久记录，并使取消或关闭报告失败。
+取消时，Unix 进程组和 Windows Job 对象负责清理进程树。主动逃离不在可信本地进程边界内。继承管道具有清理截止时间。已知清理不完整会持久记录，取消或关闭会报错。
 
-`close().await` 等待清理与持久写入后释放 writer。待处理输入与可恢复等待保留。打开不自动激活 Agent。中断副作用要求对账，不自动重做。provider trace 仍是独立于 Session 事实的可选诊断日志。
+`close().await` 在[清理](#后台-job)后释放 writer。待处理输入和可恢复的等待会保留。打开时不会自动激活 Agent 或重放被中断的副作用。Provider trace 是可选诊断日志，与 Session 事实分开。

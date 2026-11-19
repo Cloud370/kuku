@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use kuku_client::{NamedValue, Target};
+use kuku_client::{JobSnapshot, NamedValue, Target};
 use ratatui::layout::{Position, Rect};
 
 use crate::editor::Editor;
@@ -18,6 +18,7 @@ pub(crate) enum CommandMenu {
     Withdraw,
     Advance,
     Interrupt,
+    Jobs,
     Reply,
     Pending,
     Model,
@@ -48,6 +49,7 @@ impl CommandMenu {
         Self::Withdraw,
         Self::Advance,
         Self::Interrupt,
+        Self::Jobs,
         Self::Reply,
         Self::Pending,
         Self::Model,
@@ -78,6 +80,7 @@ impl CommandMenu {
             Self::Withdraw => "withdraw",
             Self::Advance => "continue",
             Self::Interrupt => "interrupt",
+            Self::Jobs => "jobs",
             Self::Reply => "reply",
             Self::Pending => "pending",
             Self::Model => "model",
@@ -109,6 +112,7 @@ impl CommandMenu {
             Self::Withdraw => ("Withdraw input still in the queue", None),
             Self::Advance => ("Continue queued work", None),
             Self::Interrupt => ("Interrupt this execution", Some(Shortcut::ESCAPE)),
+            Self::Jobs => ("List background jobs · /jobs cancel <id>", None),
             Self::Reply => ("Answer or decide a pending request", Some(Shortcut::REPLY)),
             Self::Pending => ("Check, retry or discard unconfirmed commands", None),
             Self::Model => ("Choose a configured model route", Some(Shortcut::MODEL)),
@@ -179,6 +183,8 @@ pub(crate) enum ChoiceKind {
     },
     Detail(DetailKey),
     Tool(ToolView),
+    BackgroundJob(Box<JobSnapshot>),
+    CancelBackground(String),
     Value(NamedValue),
     AttachValue(NamedValue),
     ReadValue(NamedValue),
@@ -196,6 +202,7 @@ impl ChoiceKind {
                     | CommandMenu::Back
                     | CommandMenu::Queued
                     | CommandMenu::Withdraw
+                    | CommandMenu::Jobs
                     | CommandMenu::Reply
                     | CommandMenu::Pending
                     | CommandMenu::Model
@@ -217,6 +224,7 @@ impl ChoiceKind {
                 | Self::PendingOpen { .. }
                 | Self::Detail(_)
                 | Self::Tool(_)
+                | Self::BackgroundJob(_)
                 | Self::Value(_)
                 | Self::AttachValue(_)
                 | Self::ReadValue(_)
@@ -284,6 +292,8 @@ pub(crate) enum PickerKind {
     Permission,
     Details,
     Tools,
+    Jobs,
+    JobActions,
     Values,
     ValueActions,
     Server,
@@ -305,6 +315,8 @@ impl PickerKind {
             Self::Permission => "Authorization required",
             Self::Details => "Transcript details",
             Self::Tools => "Tool details and saved output",
+            Self::Jobs => "Background jobs",
+            Self::JobActions => "Background job",
             Self::Values => "Saved values",
             Self::ValueActions => "Saved value",
             Self::Server => "Service status",
@@ -323,6 +335,7 @@ impl PickerKind {
                 | Self::Queue
                 | Self::Details
                 | Self::Tools
+                | Self::Jobs
                 | Self::Values
         )
     }
@@ -442,8 +455,10 @@ impl Picker {
             .iter()
             .filter(|choice| choice.matches(&query))
             .chain(self.remote.iter().filter(|choice| {
-                !matches!(self.kind, PickerKind::Models | PickerKind::Values)
-                    || choice.matches(&query)
+                !matches!(
+                    self.kind,
+                    PickerKind::Models | PickerKind::Values | PickerKind::Jobs
+                ) || choice.matches(&query)
             }))
             .collect();
         if matches!(self.kind, PickerKind::Commands | PickerKind::Agents) && !query.is_empty() {

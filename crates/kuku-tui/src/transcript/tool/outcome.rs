@@ -38,6 +38,9 @@ impl State {
 
 impl Outcome {
     fn label(&self) -> (&str, Color) {
+        if self.background_job {
+            return ("started in background", ACCENT);
+        }
         if let Some(command) = &self.command_preview {
             return command.label();
         }
@@ -76,6 +79,7 @@ pub(super) struct Outcome {
     pub(super) observation: Option<Observation>,
     pub(super) change: Option<FileChange>,
     pub(super) attention: bool,
+    background_job: bool,
 }
 
 impl Outcome {
@@ -88,9 +92,14 @@ impl Outcome {
         let content = get("model_content");
         let summary = get("summary").or(fallback_summary);
         let succeeded = get("status") == Some("ok");
-        let output_id = get("output_id")
-            .or_else(|| structured["output_id"].as_str())
-            .or_else(|| structured["output_ref"]["id"].as_str());
+        let background_job = structured["kind"].as_str() == Some("job");
+        let output_id = if background_job {
+            None
+        } else {
+            get("output_id")
+                .or_else(|| structured["output_id"].as_str())
+                .or_else(|| structured["output_ref"]["id"].as_str())
+        };
         let truncated = fields
             .get("truncated")
             .and_then(Value::as_bool)
@@ -144,6 +153,7 @@ impl Outcome {
                 .flatten(),
             change,
             attention,
+            background_job,
         }
     }
 

@@ -19,11 +19,16 @@ pub use facts::{
     WorkspaceScriptOperation, WorkspaceScriptResultKind,
 };
 pub(crate) use host::{ScriptCall, ScriptExecution, ScriptFuture, ScriptHost};
-pub(crate) use outputs::definitions as derived_output_definitions;
 pub(crate) use runtime::execute;
 
 const MAX_SCRIPT_ACTIONS: usize = 2048;
 const MAX_SCRIPT_RESULT_BYTES: usize = 64 * 1024;
+const SCRIPT_DESCRIPTION: &str = concat!(
+    "Compose dependent workspace actions in one QuickJS function body with top-level await. Return a small JSON value. ",
+    "workspace.methods lists the available host methods and their input schemas. ",
+    "QuickJS supplies ECMAScript built-ins. Node and browser APIs such as TextEncoder are unavailable. ",
+    "Slow top-level scripts become Session Jobs. Use background:true on workspace_script to return a Job immediately."
+);
 
 /// Bounds one disposable workspace JavaScript worker and its host operations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,7 +38,7 @@ pub struct WorkspaceScriptLimits {
     pub heap_bytes: usize,
     /// Maximum bytes in the QuickJS stack.
     pub stack_bytes: usize,
-    /// Maximum elapsed execution time, including host operations.
+    /// Maximum elapsed JavaScript execution time, excluding worker admission and host waits.
     pub timeout_ms: u64,
     /// Maximum UTF-8 bytes in one script function body.
     pub source_bytes: usize,
@@ -109,27 +114,12 @@ impl WorkspaceScriptLimits {
 pub(crate) fn definition() -> ToolDefinition {
     ToolDefinition {
         name: "workspace_script".into(),
-        description: concat!(
-            "Carry out a sequence of workspace actions in one tool call when later arguments can be computed ",
-            "from earlier results. Use QuickJS with top-level await and return a small JSON value. ",
-            "Use await workspace.<method>({arguments}); workspace.methods lists supported signatures. ",
-            "Check each action's status before using its result. Read file text from result.raw_text. ",
-            "Example: const r = await workspace.read_file({path:'manifest.json'}); ",
-            "if (r.status !== 'ok' || !r.result.is_full_file_snapshot) return r.summary; ",
-            "const {entry} = JSON.parse(r.result.raw_text); const f = await workspace.stat_file({path:entry}); ",
-            "return {entry, status:f.status, exists:f.result?.exists}; ",
-            "For command output, check run.result.exit_code. Use run.result.output_preview for short text ",
-            "when run.result.output_preview_truncated is false. For calculations over longer stdout use ",
-            "for await (const {text} of workspace.output_lines({id:run.result.output_ref.id, stream:'stdout'})) ",
-            "inside this script. capture_complete describes the stored capture, which can exceed the preview. ",
-            "Use workspace.output_chunks({id}) and segment.bytes for raw bytes. Use create_output, append_output and finish_output for large results, ",
-            "or save_value and list_values for named values. QuickJS has standard ECMAScript built-ins; ",
-            "Node and browser APIs such as TextEncoder are unavailable."
-        ).into(),
+        description: SCRIPT_DESCRIPTION.into(),
         input_schema: json!({
             "type":"object",
             "properties":{
-                "code":{"type":"string","minLength":1,"description":"JavaScript async function body with a JSON return value."}
+                "code":{"type":"string","minLength":1,"description":"JavaScript async function body with a JSON return value."},
+                "background":{"type":"boolean","default":false,"description":"Return a Session Job immediately."}
             },
             "required":["code"],
             "additionalProperties":false
@@ -137,5 +127,68 @@ pub(crate) fn definition() -> ToolDefinition {
         read_only: false,
         max_result_chars: 16 * 1024,
         risk: "execute".into(),
+    }
+}
+
+pub(crate) fn method_definitions(
+    mut lookup: impl FnMut(ScriptOperation) -> Option<ToolDefinition>,
+) -> Vec<ToolDefinition> {
+    let derived = outputs::definitions();
+    let mut methods: Vec<_> = ScriptOperation::ALL
+        .into_iter()
+        .filter(|op| !derived.iter().any(|method| method.name == op.name()))
+        .filter_map(&mut lookup)
+        .collect();
+    methods.extend(derived);
+    let can_read = methods.iter().any(|method| method.name == "read_output");
+    if let Some(command) = methods
+        .iter_mut()
+        .find(|method| method.name == "run_command")
+    {
+        outputs::describe_script_command(command, can_read);
+    }
+    methods
+}
+
+pub(crate) fn describe_selected_tools(tools: &mut [ToolDefinition]) {
+    let Some(index) = tools
+        .iter()
+        .position(|tool| tool.name == "workspace_script")
+    else {
+        return;
+    };
+    let methods =
+        method_definitions(|op| tools.iter().find(|tool| tool.name == op.name()).cloned());
+    let mut description = format!("{SCRIPT_DESCRIPTION}\n");
+    if let Some(command) = methods.iter().find(|method| method.name == "run_command") {
+        description.push_str(&command.description);
+        description.push_str("For example, use `const run = await workspace.run_command({program:'git',args:['--version']}); return {exit:run.exit_code, version:(await run.stdout.text()).trim()};`.\n");
+    }
+    description.push_str("The following methods return Promise<{status, summary, result, truncated, model_content}>. Check status before using result. ");
+    for op in ScriptOperation::ALL {
+        if methods.iter().any(|method| method.name == op.name()) {
+            description.push_str(method_result(op));
+        }
+    }
+    tools[index].description = description;
+}
+
+fn method_result(operation: ScriptOperation) -> &'static str {
+    use ScriptOperation as Op;
+    match operation {
+        Op::FindFiles => "find_files({path?,pattern?,max_depth?}) returns result.entries. ",
+        Op::ReadFile => "read_file({path,offset?,limit?}) returns result.raw_text, content_hash, start_byte, end_byte and is_full_file_snapshot. ",
+        Op::SearchText => "search_text({pattern,path?,view?,...}) returns result.matches, has_more and next_offset. ",
+        Op::EditFile => "edit_file({path,old_text,new_text,...}) returns result.replacement_count and content_hash_after. ",
+        Op::WriteFile => "write_file({path,content,expected_version?,brief?}) returns result.content_hash_after and bytes_written. ",
+        Op::StatFile => "stat_file({path,version?}) returns result.exists, entry_kind and optional content_hash. ",
+        Op::RemoveFile => "remove_file({path,expected_version?,brief?}) returns result.bytes_removed. ",
+        Op::RunCommand => "",
+        Op::ReadOutput => "read_output({id or name,offset?,limit?,search?}) returns result.segments, next_offset and has_more. output_chunks(args) yields pages. output_lines({id or name,stream?,offset?,limit?}) yields line records with text and completeness flags. ",
+        Op::SaveValue => "save_value({name,output_id or value,replace?}) returns result.reference. ",
+        Op::ListValues => "list_values({prefix?,after?,limit?}) returns result.values and next_after. ",
+        Op::CreateOutput => "create_output({}) returns result.id. ",
+        Op::AppendOutput => "append_output({id,text}) returns result.submitted_bytes. ",
+        Op::FinishOutput => "finish_output({id}) returns result.output_ref and capture_complete. ",
     }
 }

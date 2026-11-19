@@ -320,6 +320,7 @@ mod tests {
                 conversation: None,
                 kind: ToolKind::Command { pid: None },
                 workspace_ordered: true,
+                job: None,
                 label: "active command".to_string(),
                 cancel: std::sync::Arc::new(tokio::sync::Notify::new()),
                 nested_permissions: std::sync::Arc::new(std::sync::Mutex::new(

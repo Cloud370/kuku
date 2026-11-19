@@ -780,9 +780,9 @@ fn analysis_script(command: &Value) -> String {
     format!(
         r#"
         const command = await workspace.run_command({command});
-        if (command.status !== 'ok' || !command.result.capture_complete) throw new Error(command.summary);
+        if (command.exit_code !== 0 || !command.capture_complete) throw new Error('Check replay was incomplete or failed');
         let bytes = 0, failures = 0;
-        for await (const chunk of workspace.output_chunks({{id: command.result.output_ref.id, limit: {OUTPUT_READ_BYTES}}})) {{
+        for await (const chunk of workspace.output_chunks({{id: command.output_ref.id, limit: {OUTPUT_READ_BYTES}}})) {{
             for (const part of chunk.segments) {{
                 bytes += part.bytes;
                 failures += (part.text.match(/!/g) ?? []).length;
@@ -799,7 +799,7 @@ fn pressure_script(command: &Value) -> String {
         const buffer = new Uint8Array({WORKER_BUFFER_BYTES});
         buffer.fill(17);
         const results = await Promise.all(Array.from({{length: {OPERATIONS_PER_SCRIPT}}}, () => workspace.run_command({command})));
-        const successful = results.filter(action => action.status === 'ok' && action.result.exit_code === 0).length;
+        const successful = results.filter(command => command.exit_code === 0 && command.capture_complete).length;
         return {{successful, buffer_bytes: buffer.length * Number(buffer[buffer.length - 1] === 17)}};
     "#
     )

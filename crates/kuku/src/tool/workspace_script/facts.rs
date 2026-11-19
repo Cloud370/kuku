@@ -116,7 +116,7 @@ pub struct WorkspaceScriptFacts {
     pub value: Value,
     /// Host actions that reached the host dispatch boundary.
     pub actions: Vec<WorkspaceScriptActionFacts>,
-    /// Whether the script wall-clock limit requested interruption.
+    /// Whether the JavaScript execution budget was exhausted.
     pub timed_out: bool,
     /// Whether the host could not confirm completion of resource cleanup.
     pub cleanup_incomplete: bool,

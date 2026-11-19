@@ -1,3 +1,4 @@
+pub(super) mod jobs;
 pub(crate) mod output;
 pub(crate) mod values;
 
@@ -11,10 +12,11 @@ use super::helpers::{
     append_permission_decision, append_permission_request, now_timestamp, permission_candidate,
     permission_rule,
 };
+use super::job_slots::ForegroundJob;
 use super::run::find_tool_definition;
 use super::tool_exec::{execute_tool_call, run_tool_pre_hooks};
 use super::types::{
-    PendingPermission, PendingRun, PendingStep, PermissionChoice, PermissionRequest,
+    ExecSlot, PendingPermission, PendingRun, PendingStep, PermissionChoice, PermissionRequest,
     QueuedToolCall, SlotEvent, ToolKind, UiEvent,
 };
 
@@ -233,41 +235,26 @@ pub(super) async fn dispatch(
             workspace: pending.workspace.clone(),
         };
         let slot = super::adapters::spawn_tool(registered, action, output, event_tx);
-        pending.record_tool_call(&queued.tool_call.name);
-        let event = UiEvent::ToolStart {
-            id: queued.tool_call.id,
-            tool: queued.tool_call.name,
-            summary: queued.display_summary,
-            kind: ToolKind::Simple,
-        };
-        return Ok(PendingStep::Pending {
-            pending: Box::new(pending),
-            slot: Some(slot),
-            event: Some(event),
-        });
+        return start_slot(pending, queued, slot);
     }
-    if queued.tool_call.name == "workspace_script" {
+    if matches!(queued.tool_call.name.as_str(), "wait_job" | "cancel_job") {
+        let session = runtime_session(&pending)?;
         mark_dispatched(&pending, &queued)?;
-        let slot = super::workspace_script::spawn(&pending, &queued, event_tx)?;
-        pending.record_tool_call(&queued.tool_call.name);
-        let event = UiEvent::ToolStart {
-            id: queued.tool_call.id,
-            tool: queued.tool_call.name,
-            summary: queued.display_summary,
-            kind: ToolKind::Simple,
-        };
-        return Ok(PendingStep::Pending {
-            pending: Box::new(pending),
-            slot: Some(slot),
-            event: Some(event),
-        });
+        let slot = super::slots::spawn_job_control(session, &pending, &queued, event_tx);
+        return start_slot(pending, queued, slot);
+    }
+    if matches!(
+        queued.tool_call.name.as_str(),
+        "run_command" | "workspace_script"
+    ) {
+        return start_job_capable_slot(pending, queued, event_tx, active);
     }
     let prior_events = crate::context::runtime::read_agent_events(
         &pending.events_path,
         pending.conversation.as_str(),
         pending.query.runtime_limits.max_request_bytes,
     )?;
-    let output = if matches!(queued.tool_call.name.as_str(), "run_command" | "fetch_url") {
+    let output = if queued.tool_call.name == "fetch_url" {
         match output_spec(&pending, &queued.tool_call.id) {
             Ok(output) => Some(output),
             Err(error) => return output_admission_failed(pending, queued, error),
@@ -276,7 +263,7 @@ pub(super) async fn dispatch(
         None
     };
     mark_dispatched(&pending, &queued)?;
-    let (slot, kind) = super::slots::dispatch_tool_slot(super::slots::SlotDispatchArgs {
+    let (slot, _) = super::slots::dispatch_tool_slot(super::slots::SlotDispatchArgs {
         capacity: runtime_session(&pending)?.workspace_execution_host(),
         output,
         tool_name: queued.tool_call.name.clone(),
@@ -292,12 +279,59 @@ pub(super) async fn dispatch(
         catalog: pending.catalog.clone(),
         events_path: pending.events_path.clone(),
     });
+    start_slot(pending, queued, slot)
+}
+
+fn start_job_capable_slot(
+    pending: PendingRun,
+    queued: QueuedToolCall,
+    event_tx: tokio::sync::mpsc::Sender<(String, SlotEvent)>,
+    active: usize,
+) -> Result<PendingStep> {
+    let session = runtime_session(&pending)?;
+    let agent = pending.conversation.as_str();
+    if active + session.active_jobs(agent) >= pending.query.runtime_limits.max_tools_per_agent {
+        return finish_inline(
+            pending,
+            queued,
+            ToolResultEnvelope::blocked("tool capacity reached", "the action was not dispatched"),
+        );
+    }
+    let slot = if queued.tool_call.name == "run_command" {
+        let output = match output_spec(&pending, &queued.tool_call.id) {
+            Ok(output) => output,
+            Err(error) => return output_admission_failed(pending, queued, error),
+        };
+        mark_dispatched(&pending, &queued)?;
+        super::slots::spawn_command_slot(
+            queued.tool_call.id.clone(),
+            Some(pending.conversation.clone()),
+            queued.tool_call.args.clone(),
+            queued.display_summary.clone(),
+            pending.workspace.clone(),
+            event_tx,
+            Some(output),
+            session.workspace_execution_host(),
+            Some(ForegroundJob::start(&pending, &queued)),
+        )
+    } else {
+        mark_dispatched(&pending, &queued)?;
+        super::workspace_script::spawn(&pending, &queued, ForegroundJob::start(&pending, &queued))?
+    };
+    start_slot(pending, queued, slot)
+}
+
+fn start_slot(
+    mut pending: PendingRun,
+    queued: QueuedToolCall,
+    slot: ExecSlot,
+) -> Result<PendingStep> {
     pending.record_tool_call(&queued.tool_call.name);
     let event = UiEvent::ToolStart {
         id: queued.tool_call.id,
         tool: queued.tool_call.name,
         summary: queued.display_summary,
-        kind,
+        kind: slot.kind.clone(),
     };
     Ok(PendingStep::Pending {
         pending: Box::new(pending),
@@ -380,6 +414,7 @@ pub(super) fn is_inline(name: &str) -> bool {
             | "read_output"
             | "save_value"
             | "list_values"
+            | "list_jobs"
     )
 }
 
@@ -399,7 +434,8 @@ pub(super) fn reject(pending: PendingRun, queued: QueuedToolCall) -> Result<Pend
 fn output_spec(pending: &PendingRun, id: &str) -> Result<super::slots::RetainedOutputSpec> {
     let agent = pending.conversation.as_str();
     let output_id = crate::session::runtime::command_output_id(agent, pending.turn, id);
-    let mut retention = runtime_session(pending)?.reserve_output(agent, &output_id)?;
+    let mut retention =
+        runtime_session(pending)?.reserve_output(agent, pending.turn, id, &output_id)?;
     retention.discard_on_drop();
     Ok(super::slots::RetainedOutputSpec {
         dir: pending
@@ -437,6 +473,9 @@ pub(crate) fn definitions() -> Vec<ToolDefinition> {
         output::definition(),
         values::save_definition(),
         values::list_definition(),
+        jobs::list_definition(),
+        jobs::wait_definition(),
+        jobs::cancel_definition(),
         definition("ask_user", "Persist a question and yield after the current tool batch. Wait for the host to reply to the returned request identity before continuing.", serde_json::json!({"type":"object","properties":{"question":{"type":"string"}},"required":["question"]})),
         definition(
             "create_agent",
@@ -490,6 +529,7 @@ pub(super) async fn execute(
         }
         "save_value" => return values::save(&session, agent, &call.args).await,
         "list_values" => return values::list(&session, agent, &call.args),
+        "list_jobs" => return jobs::list(&session, agent, &call.args),
         "create_agent" => {
             let (address, config) = create_agent_input(&call.args)?;
             serde_json::to_value(session.create_agent(&key, &address, config)?)?
@@ -563,7 +603,7 @@ pub(super) async fn execute(
     ))
 }
 
-fn runtime_session(pending: &PendingRun) -> Result<crate::Session> {
+pub(super) fn runtime_session(pending: &PendingRun) -> Result<crate::Session> {
     let execution = pending
         .query
         .runtime_execution
@@ -702,6 +742,17 @@ async fn prepare(
             definition,
         )
         .map_err(|result| Error::InvalidArgument(result.model_content))?;
+    }
+    if queued.tool_call.name == "workspace_script"
+        && queued
+            .tool_call
+            .args
+            .get("background")
+            .is_some_and(|value| !value.is_boolean())
+    {
+        return Err(Error::InvalidArgument(
+            "background must be a boolean".into(),
+        ));
     }
     let agent = pending.conversation.as_str();
     let turn = pending.turn;
