@@ -16,7 +16,7 @@ This page describes the default public Session tool surface used by CLI and serv
 | `edit_file` | `path`, `old_text`, `new_text` | `replace_all`, `expected_version`, `brief` | `edit` |
 | `write_file` | `path`, `content` | `expected_version`, `brief` | `edit` |
 | `remove_file` | `path` | `expected_version`, `brief` | `edit` |
-| `run_command` | `cwd`, `timeout`, and either `program` + `args` or `shell` + `command` | `brief` | `command` |
+| `run_command` | `cwd`, `timeout`, and either `program` + `args` or `command` | `brief`, `shell` (required for command text if no default is listed) | `command` |
 | `workspace_script` | `code` | none | `execute` |
 | `save_value` | `name` and either `output_id` or `value` | `replace` | `session` |
 | `list_values` | none | `prefix`, `after`, `limit` | `read` |
@@ -72,7 +72,7 @@ Use the program name and one literal string per argument. Prefix an executable p
 {"program":"cargo","args":["test","-p","kuku"],"cwd":".","timeout":120}
 ```
 
-For pipes, redirection, or shell built-ins, choose an interpreter explicitly. The tool schema advertises the interpreters found on the execution host from `sh`, `bash`, `zsh`, `cmd`, `powershell` (Windows PowerShell), and `pwsh` (PowerShell Core). On Windows, use `shell: "cmd"` for batch files or commands that use `cmd.exe`.
+For pipes, redirection, or shell built-ins, pass the full text in `command`. When installed, the default is `sh` on Linux and macOS and `powershell` on Windows. Specify `shell` when the text needs another interpreter or the tool lists no default. An empty `args` array is accepted with command text. Put all shell arguments in the command itself. The tool schema advertises the interpreters found on the execution host from `sh`, `bash`, `zsh`, `cmd`, `powershell` (Windows PowerShell), and `pwsh` (PowerShell Core). On Windows, use `shell: "cmd"` for batch files or commands that use `cmd.exe`.
 
 ```json
 {"shell":"cmd","command":"type \"build log.txt\"","cwd":".","timeout":10}

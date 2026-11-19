@@ -17,6 +17,9 @@ impl ToolAuthorizer for Deferred {
         assert_eq!("main", action.agent);
         assert_eq!("run_command", action.tool.name);
         assert_eq!("echo authorized", action.args["command"]);
+        let shell = if cfg!(windows) { "powershell" } else { "sh" };
+        assert_eq!(shell, action.args["shell"]);
+        assert!(action.args.get("args").is_none());
         assert_eq!(
             Some(std::ffi::OsStr::new("authorized-dir")),
             action.workspace.file_name()
@@ -32,7 +35,7 @@ async fn exact_authorization_survives_close_and_rejects_stale_replies() {
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     std::fs::create_dir(workspace.path().join("authorized-dir")).unwrap();
-    let first = fixture(&server, |request| tool_count(request) == 0, json!({"tool_calls":[tool("command", "run_command", json!({"shell":if cfg!(windows) {"cmd"} else {"sh"},"cwd":"authorized-dir","command":"echo authorized","timeout":2,"brief":"check permission"}))]}), "tool_calls").await;
+    let first = fixture(&server, |request| tool_count(request) == 0, json!({"tool_calls":[tool("command", "run_command", json!({"args":[],"cwd":"authorized-dir","command":"echo authorized","timeout":2,"brief":"check permission"}))]}), "tool_calls").await;
     let last = fixture(
         &server,
         |request| tool_count(request) == 1,
@@ -84,6 +87,12 @@ async fn exact_authorization_survives_close_and_rejects_stale_replies() {
     );
     let done = settled(&session, "main").await;
     assert_eq!(AgentStatus::Idle, done.status, "{:?}", done.last_error);
+    assert!(session.events(0, 256).unwrap().iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::ToolResult { tool_call_id, status, structured: Some(facts), .. }
+            if tool_call_id == "command" && status == "ok" && facts["exit_code"] == 0
+            && facts["output_preview"].as_str().is_some_and(|s| s.trim() == "authorized")
+    )));
     assert!(session
         .reply_permission("stale", "main", &request.id, true)
         .is_err());

@@ -16,7 +16,7 @@
 | `edit_file` | `path`, `old_text`, `new_text` | `replace_all`, `expected_version`, `brief` | `edit` |
 | `write_file` | `path`, `content` | `expected_version`, `brief` | `edit` |
 | `remove_file` | `path` | `expected_version`, `brief` | `edit` |
-| `run_command` | `cwd` 和 `timeout`，再选 `program` + `args` 或 `shell` + `command` | `brief` | `command` |
+| `run_command` | `cwd` 和 `timeout`，再选 `program` + `args` 或 `command` | `brief`、`shell`（命令文本在未列出默认解释器时必填） | `command` |
 | `workspace_script` | `code` | 无 | `execute` |
 | `save_value` | `name`，再选 `output_id` 或 `value` | `replace` | `session` |
 | `list_values` | 无 | `prefix`、`after`、`limit` | `read` |
@@ -72,7 +72,7 @@
 {"program":"cargo","args":["test","-p","kuku"],"cwd":".","timeout":120}
 ```
 
-使用管道、重定向或 shell 内建命令时，显式选择解释器。工具定义从 `sh`、`bash`、`zsh`、`cmd`、`powershell`（Windows PowerShell）和 `pwsh`（PowerShell Core）中列出执行宿主上可用的解释器。在 Windows 上，批处理文件和依赖 `cmd.exe` 的命令使用 `shell: "cmd"`。
+使用管道、重定向或 shell 内建命令时，将完整文本传入 `command`。Linux 和 macOS 默认使用 `sh`，Windows 默认使用 `powershell`，前提是执行宿主已安装对应解释器。命令需要其他解释器或工具未列出默认值时，指定 `shell`。命令文本可以附带空的 `args` 数组，所有实际参数都写在命令文本中。工具定义从 `sh`、`bash`、`zsh`、`cmd`、`powershell`（Windows PowerShell）和 `pwsh`（PowerShell Core）中列出执行宿主上可用的解释器。在 Windows 上，批处理文件和依赖 `cmd.exe` 的命令使用 `shell: "cmd"`。
 
 ```json
 {"shell":"cmd","command":"type \"build log.txt\"","cwd":".","timeout":10}

@@ -216,6 +216,7 @@ impl WorkspaceHost {
             match crate::tool::builtin::run_command::prepare_command_args(
                 &mut args,
                 &self.actions.workspace,
+                definition,
             ) {
                 Ok(cwd) => cwd,
                 Err(result) => return Ok(result),

@@ -197,6 +197,7 @@ impl Continuation {
             crate::tool::builtin::run_command::prepare_command_args(
                 &mut checked,
                 &host.actions.workspace,
+                &action.definition,
             )
             .map(|_| ())
         } else {

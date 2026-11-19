@@ -9,7 +9,7 @@ pub use receipt::{WorkspaceActionDetails, WorkspaceActionReceipt, WorkspaceActio
 
 pub use file::{FileCommitState, FileMutationFacts, FileMutationKind};
 
-/// An explicitly selected interpreter for platform-specific command syntax.
+/// An interpreter for platform-specific command syntax.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CommandShell {

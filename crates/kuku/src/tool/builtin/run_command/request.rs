@@ -5,7 +5,7 @@ use serde_json::Value;
 use tokio::process::Command;
 
 use crate::execution::{CommandInvocation, CommandShell};
-use crate::tool::ToolResultEnvelope;
+use crate::tool::{ToolDefinition, ToolResultEnvelope};
 
 use super::shell::shell_command;
 
@@ -39,7 +39,25 @@ impl CommandRequest {
 pub(crate) fn prepare_command_args(
     args: &mut Value,
     workspace: &Path,
+    definition: &ToolDefinition,
 ) -> Result<PathBuf, ToolResultEnvelope> {
+    if let Some(fields) = args
+        .as_object_mut()
+        .filter(|fields| fields.contains_key("command"))
+    {
+        if !fields.contains_key("shell") {
+            if let Some(default) = definition.input_schema["properties"]["shell"].get("default") {
+                fields.insert("shell".into(), default.clone());
+            }
+        }
+        if fields
+            .get("args")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty)
+        {
+            fields.remove("args");
+        }
+    }
     let request = run_command_request(args, workspace)?;
     let cwd = request
         .cwd
@@ -128,15 +146,13 @@ fn invocation(args: &Value) -> Result<CommandInvocation, ToolResultEnvelope> {
         });
     }
     if args.get("command").is_some() {
-        return Err(invalid("Command text requires an explicit shell. Native execution takes a program and literal args."));
+        return Err(invalid("No default shell is advertised. Supply a listed shell with command, or use program and literal args."));
     }
     let program = args
         .get("program")
         .and_then(Value::as_str)
         .filter(|program| !program.trim().is_empty())
-        .ok_or_else(|| {
-            invalid("run_command requires program and literal args, or explicit shell and command")
-        })?;
+        .ok_or_else(|| invalid("run_command requires program and literal args, or command text"))?;
     let args = args
         .get("args")
         .and_then(Value::as_array)

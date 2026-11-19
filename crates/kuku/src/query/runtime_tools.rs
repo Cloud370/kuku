@@ -699,6 +699,7 @@ async fn prepare(
         crate::tool::builtin::run_command::prepare_command_args(
             &mut queued.tool_call.args,
             &pending.workspace,
+            definition,
         )
         .map_err(|result| Error::InvalidArgument(result.model_content))?;
     }

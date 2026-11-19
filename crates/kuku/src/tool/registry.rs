@@ -251,20 +251,33 @@ fn run_command_definition(shells: &[CommandShell]) -> ToolDefinition {
         "required": ["program", "args", "cwd", "timeout"]
     });
     if !shells.is_empty() {
-        description.push_str(" For shell syntax, select an available interpreter explicitly.");
+        let platform_shell = if cfg!(windows) {
+            CommandShell::Powershell
+        } else {
+            CommandShell::Sh
+        };
+        let mut command_fields = vec!["command"];
+        schema["properties"]["shell"] = serde_json::json!({
+            "type": "string", "enum": shells, "description": "Interpreter for command text."
+        });
+        if shells.contains(&platform_shell) {
+            let default = serde_json::json!(platform_shell);
+            description.push_str(&format!(" Pass shell text in command. It runs in {default} unless you select another listed shell."));
+            schema["properties"]["shell"]["default"] = default;
+        } else {
+            description.push_str(" For shell syntax, supply command and a listed shell.");
+            command_fields.push("shell");
+        }
         if shells.contains(&CommandShell::Cmd) {
             description.push_str(" Use shell='cmd' for .bat or .cmd files.");
         }
-        schema["properties"]["shell"] = serde_json::json!({
-            "type": "string", "enum": shells, "description": "Available interpreter. Provide command with shell."
-        });
         schema["properties"]["command"] = serde_json::json!({
             "type": "string", "description": "Original shell text evaluated by the selected interpreter."
         });
         schema["required"] = serde_json::json!(["cwd", "timeout"]);
         schema["oneOf"] = serde_json::json!([
             {"required": ["program", "args"], "not": {"anyOf": [{"required": ["shell"]}, {"required": ["command"]}]}},
-            {"required": ["shell", "command"], "not": {"anyOf": [{"required": ["program"]}, {"required": ["args"]}]}}
+            {"required": command_fields, "not": {"required": ["program"]}, "properties": {"args": {"maxItems": 0}}}
         ]);
     }
     tool(
@@ -297,7 +310,34 @@ fn tool(
 
 #[cfg(test)]
 mod tests {
-    use super::{builtin_registry, registry_hash, tool_names};
+    use super::{builtin_registry, registry_hash, run_command_definition, tool_names};
+    use crate::execution::CommandShell;
+    use crate::tool::builtin::run_command::prepare_command_args;
+    use serde_json::json;
+
+    #[test]
+    fn shell_text_requires_a_listed_interpreter_when_the_platform_default_is_absent() {
+        let workspace = tempfile::tempdir().unwrap();
+        let definition = run_command_definition(&[CommandShell::Bash]);
+        let schema = &definition.input_schema;
+        assert!(schema["properties"]["shell"].get("default").is_none());
+        assert_eq!(schema["oneOf"][1]["required"], json!(["command", "shell"]));
+        let mut args = json!({"command":"echo ready", "cwd":".", "timeout":5});
+        assert!(prepare_command_args(&mut args, workspace.path(), &definition).is_err());
+        args["shell"] = json!("bash");
+        assert!(prepare_command_args(&mut args, workspace.path(), &definition).is_ok());
+        for conflict in [
+            json!({"args":["-c", "other"]}),
+            json!({"program":"other","args":[]}),
+        ] {
+            let mut mixed = args.clone();
+            mixed
+                .as_object_mut()
+                .unwrap()
+                .extend(conflict.as_object().unwrap().clone());
+            assert!(prepare_command_args(&mut mixed, workspace.path(), &definition).is_err());
+        }
+    }
 
     #[test]
     fn builtin_registry_matches_documented_public_tool_surface() {

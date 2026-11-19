@@ -358,7 +358,7 @@ async fn native_program_missing_and_invalid_executable_have_distinct_facts() {
 }
 
 #[tokio::test]
-async fn implicit_shell_and_mixed_invocation_fields_are_rejected() {
+async fn dispatch_rejects_unprepared_or_mixed_invocations() {
     let dir = workspace();
     for args in [
         serde_json::json!({"command":"echo implicit","cwd":".","timeout":5}),
