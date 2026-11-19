@@ -187,8 +187,10 @@ impl App {
     }
 
     pub(crate) fn queue_mutation_pending(&self, input_id: &str) -> bool {
+        let target = self.selection().target;
         self.pending.values().any(|item| {
-            !matches!(item.stage, PendingStage::Rejected(_))
+            item.command.target == target
+                && !matches!(item.stage, PendingStage::Rejected(_))
                 && matches!(
                     &item.command.action,
                     Action::ReplaceQueued { input_command_id, .. }

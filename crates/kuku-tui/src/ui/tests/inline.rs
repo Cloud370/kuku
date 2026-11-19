@@ -167,6 +167,19 @@ fn pending_queue_mutations_block_duplicate_edits_and_withdrawals() {
     assert!(!app.effects.iter().any(|effect| matches!(effect,
         crate::jobs::Job::Save(command)
             if matches!(&command.action, Action::Withdraw { .. } | Action::ReplaceQueued { .. }))));
+
+    let first_session = app.active.clone();
+    let other_session = crate::app::Address::new(
+        format!("{}-other", first_session.session),
+        first_session.agent,
+    );
+    app.select(other_session, true, "Other session".into());
+    let second_session_state = queued_state(&app, 2);
+    load(&mut app, second_session_state);
+    app.focus_queue_input("queue-1".into());
+    assert!(!app.queue_mutation_pending("queue-1"));
+    app.edit_queued("queue-1".into());
+    assert!(matches!(app.modal, Some(Modal::Prompt(_))));
 }
 
 #[test]
