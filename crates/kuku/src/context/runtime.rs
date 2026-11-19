@@ -74,6 +74,7 @@ pub(crate) struct AdmittedMessage {
     pub(crate) turn: u64,
     pub(crate) origin: MessageOrigin,
     pub(crate) message: CanonicalMessage,
+    pub(crate) admitted_at: u64,
 }
 
 #[derive(Debug, Default)]
@@ -187,6 +188,29 @@ impl ContextCursor {
         agent: &str,
         max_bytes: usize,
     ) -> Result<()> {
+        if let EventPayload::Unknown(value) = &event.payload {
+            let record = &value["record"];
+            if value["kind"] == "runtime.operation"
+                && record["operation"] == "message_rewind"
+                && record["address"] == agent
+            {
+                let target_event_id = record["target_event_id"].as_u64().ok_or_else(|| {
+                    Error::InvalidEventStream("message rewind has no target event".into())
+                })?;
+                self.admitted.retain(|message| {
+                    message.admitted_at < target_event_id || message.admitted_at >= event.id
+                });
+                self.pending_admissions
+                    .retain(|admission| admission.id < target_event_id || admission.id >= event.id);
+                self.tail
+                    .retain(|source| source.id < target_event_id || source.id >= event.id);
+                if self.pending_admissions.is_empty() {
+                    self.pending_source_head = None;
+                }
+                self.recount()?;
+                return Ok(());
+            }
+        }
         if let EventPayload::TurnStarted {
             turn, conversation, ..
         } = &event.payload
@@ -305,6 +329,11 @@ impl ContextCursor {
             }
         }
         for (turn, mut events) in turns {
+            let admitted_at = events
+                .iter()
+                .map(|event| event.id)
+                .max()
+                .unwrap_or_default();
             events.insert(
                 0,
                 StoredEvent {
@@ -321,6 +350,7 @@ impl ContextCursor {
                 turn,
                 origin: MessageOrigin::of(&message),
                 message,
+                admitted_at,
             }));
         }
         result
@@ -355,6 +385,7 @@ impl ContextCursor {
             .into_iter()
             .take(count)
         {
+            let admitted_at = event.id;
             let EventPayload::Unknown(value) = event.payload else {
                 unreachable!("pending context admissions are runtime facts")
             };
@@ -374,6 +405,7 @@ impl ContextCursor {
                 turn: value["turn"].as_u64().or(self.latest_turn).unwrap_or(0),
                 origin,
                 message,
+                admitted_at: value["admitted_at"].as_u64().unwrap_or(admitted_at),
             });
         }
         self.pending_source_head = None;

@@ -92,6 +92,24 @@ fn shared_protocol_preserves_the_command_id_for_each_queue_transition() {
     );
 }
 
+#[test]
+fn message_rewind_protocol_preserves_exact_event_text_and_restore_opt_in() {
+    let action = Action::RewindMessage {
+        target_event_id: 41,
+        text: "keep this as an unsent draft".into(),
+        restore_files: false,
+    };
+    let encoded = serde_json::to_value(&action).unwrap();
+    assert_eq!("rewind_message", encoded["type"]);
+    assert_eq!(41, encoded["target_event_id"]);
+    assert_eq!("keep this as an unsent draft", encoded["text"]);
+    assert_eq!(false, encoded["restore_files"]);
+    assert_eq!(
+        action,
+        serde_json::from_value(encoded).expect("rewind action round-trips")
+    );
+}
+
 #[tokio::test]
 async fn missing_acknowledgement_reopens_exact_command_and_checks_receipt_before_replaying() {
     let calls = Arc::new(SubmitCalls::default());

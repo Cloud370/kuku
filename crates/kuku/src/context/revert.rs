@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
@@ -55,10 +55,21 @@ enum FileStateAt {
 /// Filter events to exclude turns that have been rolled back (conversation scope).
 pub fn filter_rolled_back_events(events: &[StoredEvent]) -> Vec<&StoredEvent> {
     let conversation_rollbacks = active_conversation_rollbacks(events);
+    let message_rewinds: Vec<_> = events.iter().filter_map(message_rewind).collect();
 
     events
         .iter()
         .filter(|event| {
+            if let Some(conversation) = event_conversation_key(&event.payload) {
+                if message_rewinds
+                    .iter()
+                    .any(|(rewind_id, address, target_id)| {
+                        *address == conversation && event.id >= *target_id && event.id < *rewind_id
+                    })
+                {
+                    return false;
+                }
+            }
             if let Some(conversation) = event_conversation_key(&event.payload) {
                 if conversation_rollbacks
                     .get(conversation)
@@ -98,6 +109,22 @@ pub fn filter_rolled_back_events(events: &[StoredEvent]) -> Vec<&StoredEvent> {
             }
         })
         .collect()
+}
+
+fn message_rewind(event: &StoredEvent) -> Option<(u64, &str, u64)> {
+    let EventPayload::Unknown(value) = &event.payload else {
+        return None;
+    };
+    let record = &value["record"];
+    (value["kind"] == "runtime.operation" && record["operation"] == "message_rewind").then(
+        || {
+            Some((
+                event.id,
+                record["address"].as_str()?,
+                record["target_event_id"].as_u64()?,
+            ))
+        },
+    )?
 }
 
 fn active_conversation_rollbacks(events: &[StoredEvent]) -> HashMap<String, ActiveRollback> {
@@ -341,6 +368,176 @@ pub fn compute_file_revert_plan(
         unrecoverable,
         sensitive_files,
     }
+}
+
+pub fn compute_message_rewind_plan(
+    events: &[StoredEvent],
+    conversation: &str,
+    target_event_id: u64,
+    workspace: &Path,
+) -> crate::Result<RevertPlan> {
+    let canonical_workspace = workspace
+        .canonicalize()
+        .map_err(crate::Error::Io)?;
+    let target_pos = events
+        .iter()
+        .position(|event| event.id == target_event_id)
+        .ok_or_else(|| {
+            crate::Error::InvalidArgument("rewind target is no longer available".into())
+        })?;
+    let visible: HashSet<_> = filter_rolled_back_events(events)
+        .into_iter()
+        .map(|event| event.id)
+        .collect();
+    let mut modified = HashMap::new();
+    for event in events.iter().skip(target_pos) {
+        if !visible.contains(&event.id)
+            || event_conversation_key(&event.payload) != Some(conversation)
+        {
+            continue;
+        }
+        if let Some(path) = revertable_path(event) {
+            modified
+                .entry(message_rewind_path(&canonical_workspace, &path)?)
+                .or_insert(path);
+        }
+    }
+
+    for event in events.iter().skip(target_pos) {
+        if event_conversation_key(&event.payload) == Some(conversation) {
+            continue;
+        }
+        if let Some(path) = revertable_path(event) {
+            if resolve_revert_path(&canonical_workspace, &path)
+                .is_some_and(|path| modified.contains_key(&path))
+            {
+                return Err(crate::Error::InvalidArgument(format!(
+                    "cannot restore {} because another Agent recorded a later change",
+                    path
+                )));
+            }
+        }
+    }
+
+    let before = events[..target_pos].to_vec();
+    let mut restores = Vec::new();
+    let mut deletes = Vec::new();
+    let mut unrecoverable = Vec::new();
+    let mut sensitive_files = Vec::new();
+    for (path, recorded_path) in modified {
+        reject_symlink_components(&canonical_workspace, &path)?;
+        let target_state = if before.is_empty() {
+            FileStateAt::Unrecoverable
+        } else {
+            find_file_state_at(&before, &recorded_path, before.len() - 1)
+        };
+        let file_name = path.file_name().unwrap_or_default().to_string_lossy();
+        if crate::util::path::is_sensitive_file_name(&file_name) {
+            sensitive_files.push(path.clone());
+        }
+        match target_state {
+            FileStateAt::Exists(old_content) => {
+                let new_content = std::fs::read_to_string(&path).map_err(crate::Error::Io)?;
+                if old_content != new_content {
+                    let old_hash =
+                        crate::tool::builtin::common::content_hash(old_content.as_bytes());
+                    restores.push(FileRestore {
+                        path,
+                        old_content,
+                        old_hash,
+                        new_content_on_plan: new_content,
+                    });
+                }
+            }
+            FileStateAt::NotExists => {
+                if path.exists() {
+                    deletes.push(path);
+                }
+            }
+            FileStateAt::Unrecoverable => unrecoverable.push(path),
+        }
+    }
+
+    Ok(RevertPlan {
+        restores,
+        deletes,
+        unrecoverable,
+        sensitive_files,
+    })
+}
+
+fn revertable_path(event: &StoredEvent) -> Option<String> {
+    let EventPayload::ToolResult {
+        structured: Some(value),
+        ..
+    } = &event.payload
+    else {
+        return None;
+    };
+    REVERTABLE_KINDS
+        .contains(&value["kind"].as_str()?)
+        .then(|| {
+            value["path"]
+                .as_str()
+                .or_else(|| value["canonical_path"].as_str())
+                .map(str::to_owned)
+        })?
+}
+
+fn message_rewind_path(workspace: &Path, path: &str) -> crate::Result<PathBuf> {
+    let candidate = Path::new(path);
+    let candidate = if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        workspace.join(candidate)
+    };
+    reject_symlink_components(workspace, &candidate)?;
+    resolve_revert_path(workspace, path).ok_or_else(|| {
+        crate::Error::InvalidArgument(format!("file path is outside the workspace: {path}"))
+    })
+}
+
+fn reject_symlink_components(workspace: &Path, path: &Path) -> crate::Result<()> {
+    let relative = path.strip_prefix(workspace).map_err(|_| {
+        crate::Error::InvalidArgument(format!(
+            "file path is outside the workspace: {}",
+            path.display()
+        ))
+    })?;
+    let mut current = workspace.to_path_buf();
+    for component in relative.components() {
+        match component {
+            Component::Normal(name) => current.push(name),
+            Component::CurDir => continue,
+            Component::ParentDir => {
+                current.pop();
+                if !current.starts_with(workspace) {
+                    return Err(crate::Error::InvalidArgument(format!(
+                        "file path is outside the workspace: {}",
+                        path.display()
+                    )));
+                }
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                return Err(crate::Error::InvalidArgument(format!(
+                    "file path is outside the workspace: {}",
+                    path.display()
+                )));
+            }
+        }
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(crate::Error::InvalidArgument(format!(
+                    "cannot restore through a symbolic link: {}",
+                    current.display()
+                )));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(crate::Error::Io(error)),
+        }
+    }
+    Ok(())
 }
 
 fn is_system_dir_path(path: &str) -> bool {

@@ -203,12 +203,12 @@ pub(crate) fn render_at(
         frame.render_widget(Paragraph::new(line), heading);
     }
     if let Some(draft) = draft {
-        let placeholder = app
-            .pane()
-            .draft
-            .text()
-            .is_empty()
-            .then(|| format!("Type a prompt · {} Actions", Shortcut::ACTIONS.label));
+        let placeholder = app.pane().draft.text().is_empty().then(|| {
+            format!(
+                "Prompt · Esc Esc Rewind · {} Actions",
+                Shortcut::ACTIONS.label
+            )
+        });
         render_editor_view(frame, inner, draft, focused, placeholder.as_deref());
     }
     frame.render_widget(Paragraph::new(footer), status);
@@ -438,7 +438,9 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Rect
         Modal::Prompt(prompt) => {
             let height = match prompt.kind {
                 PromptKind::Agent | PromptKind::Model { .. } => SHORT_PROMPT_HEIGHT,
-                PromptKind::Question { .. } | PromptKind::QueuedInput { .. } => PICKER_HEIGHT,
+                PromptKind::Question { .. }
+                | PromptKind::QueuedInput { .. }
+                | PromptKind::RewindMessage { .. } => PICKER_HEIGHT,
             };
             let area = popup(area, PICKER_WIDTH, height);
             let inner = render_popup(frame, area, &prompt.title);

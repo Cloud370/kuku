@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use kuku_client::Action;
+use kuku_client::{Acknowledgement, Action, Receipt};
 use serde_json::json;
 
 use crate::app::{App, Modal};
@@ -202,6 +202,138 @@ fn control_c_clears_dialogs_and_exits_only_from_an_empty_composer() {
     app.key(clear);
     assert!(app.quit);
     assert!(app.effects.is_empty());
+}
+
+#[test]
+fn double_escape_opens_rewind_picker_and_confirmation_is_cancelable_and_opt_in() {
+    let mut app = connected_app();
+    press(&mut app, KeyCode::Esc);
+    assert!(app.modal.is_none());
+    assert!(app.escape_armed_at.is_some());
+
+    press(&mut app, KeyCode::Esc);
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+        if matches!(picker.kind, PickerKind::Rewind)
+            && picker.header.contains("Loaded history only")));
+    app.choose(
+        PickerKind::Rewind,
+        ChoiceKind::RewindMessage {
+            event_id: 17,
+            turn: 4,
+            text: "original prompt".into(),
+        },
+    );
+    assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
+        if matches!(prompt.kind, PromptKind::RewindMessage { event_id: 17, .. })
+            && prompt.instructions.contains("[ ] Restore recorded file changes")));
+
+    press(&mut app, KeyCode::Char(' '));
+    assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
+        if prompt.instructions.contains("[x] Restore recorded file changes")));
+    press(&mut app, KeyCode::Esc);
+    assert!(app.modal.is_none());
+    assert!(app.pending.is_empty());
+    assert!(!app.effects.iter().any(|job| matches!(job, Job::Save(_))));
+}
+
+#[test]
+fn rewind_confirmation_commits_an_unsent_action_without_sending_the_draft() {
+    let mut app = connected_app();
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Esc);
+    app.choose(
+        PickerKind::Rewind,
+        ChoiceKind::RewindMessage {
+            event_id: 23,
+            turn: 6,
+            text: "restore me as a draft".into(),
+        },
+    );
+    press(&mut app, KeyCode::Char(' '));
+    press(&mut app, KeyCode::Enter);
+    assert!(app.pane().draft.text().is_empty());
+    assert!(matches!(app.effects.last(), Some(Job::Save(command))
+        if matches!(&command.action, Action::RewindMessage {
+            target_event_id: 23,
+            text,
+            restore_files: true,
+        } if text == "restore me as a draft")));
+}
+
+#[test]
+fn rewind_ack_restores_unsent_text_but_never_replaces_a_changed_draft() {
+    let mut app = connected_app();
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Esc);
+    app.choose(
+        PickerKind::Rewind,
+        ChoiceKind::RewindMessage {
+            event_id: 31,
+            turn: 8,
+            text: "original text".into(),
+        },
+    );
+    press(&mut app, KeyCode::Enter);
+    let Some(Job::Save(command)) = app.effects.iter().find(|job| matches!(job, Job::Save(_)))
+    else {
+        panic!("rewind command is durably saved")
+    };
+    let id = command.command_id.clone();
+    app.update(Update::Sent(
+        id.clone(),
+        Ok(Acknowledgement {
+            receipt: Receipt {
+                command_id: id.clone(),
+                event_id: 32,
+                agent: "main".into(),
+            },
+            replayed: false,
+            status: None,
+            warnings: vec![],
+        }),
+    ));
+    assert_eq!("original text", app.pane().draft.text());
+    assert!(!app.effects.iter().any(|job| matches!(job, Job::Send(_))));
+
+    let mut edited = connected_app();
+    press(&mut edited, KeyCode::Esc);
+    press(&mut edited, KeyCode::Esc);
+    edited.choose(
+        PickerKind::Rewind,
+        ChoiceKind::RewindMessage {
+            event_id: 41,
+            turn: 9,
+            text: "recoverable original".into(),
+        },
+    );
+    press(&mut edited, KeyCode::Enter);
+    let Some(Job::Save(command)) = edited
+        .effects
+        .iter()
+        .find(|job| matches!(job, Job::Save(_)))
+    else {
+        panic!("rewind command is durably saved")
+    };
+    let id = command.command_id.clone();
+    edited.paste("draft typed while rewind was pending");
+    edited.update(Update::Sent(
+        id.clone(),
+        Ok(Acknowledgement {
+            receipt: Receipt {
+                command_id: id.clone(),
+                event_id: 42,
+                agent: "main".into(),
+            },
+            replayed: false,
+            status: None,
+            warnings: vec![],
+        }),
+    ));
+    assert_eq!(
+        "draft typed while rewind was pending",
+        edited.pane().draft.text()
+    );
+    assert!(edited.rewind_drafts.contains_key(&id));
 }
 
 #[test]

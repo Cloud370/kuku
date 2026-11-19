@@ -16,6 +16,7 @@ mod message;
 mod notes;
 mod preview;
 mod reply;
+mod rewind;
 mod row;
 use row::Row;
 mod tool;
@@ -61,6 +62,7 @@ enum AnchorLine {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HistoryRequest {
+    Recent,
     Older(u64),
     Newer { first: u64, before: u64 },
     Restore(u64),
@@ -69,8 +71,13 @@ pub(crate) enum HistoryRequest {
 impl HistoryRequest {
     pub(crate) fn before(self) -> u64 {
         match self {
+            Self::Recent => 0,
             Self::Older(before) | Self::Newer { before, .. } | Self::Restore(before) => before,
         }
+    }
+
+    pub(crate) fn before_option(self) -> Option<u64> {
+        (self != Self::Recent).then(|| self.before())
     }
 }
 
@@ -333,6 +340,10 @@ impl Transcript {
     }
 
     pub(crate) fn apply_page(&mut self, request: HistoryRequest, page: HistoryPage) {
+        if request == HistoryRequest::Recent {
+            self.replace_recent(page);
+            return;
+        }
         if let HistoryRequest::Restore(before) = request {
             if self
                 .restore
@@ -381,7 +392,8 @@ impl Transcript {
             }
             HistoryRequest::Older(_)
             | HistoryRequest::Newer { .. }
-            | HistoryRequest::Restore(_) => {}
+            | HistoryRequest::Restore(_)
+            | HistoryRequest::Recent => {}
         }
     }
 

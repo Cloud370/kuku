@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::future::Future;
 use std::path::PathBuf;
@@ -111,6 +111,11 @@ pub(super) async fn history(
         Some(end) => Some(query.before.map_or(end, |before| before.min(end))),
         None => query.before,
     };
+    let events = EventStore::replay(&target.path)?;
+    let visible: HashSet<_> = kuku::context::revert::filter_rolled_back_events(&events)
+        .into_iter()
+        .map(|event| event.id)
+        .collect();
     let turns = manager(&state).await.turn_lookup(&target.path, cursor)?;
     let (entries, next_before) = history_page(
         &target.path,
@@ -118,6 +123,7 @@ pub(super) async fn history(
         before,
         limit,
         &turns,
+        &visible,
     )?;
     Ok(Json(
         json!({"ok":true,"entries":entries,"next_before":next_before}),
@@ -217,6 +223,7 @@ fn history_page(
     mut before: Option<u64>,
     limit: usize,
     turns: &TurnLookup,
+    visible: &HashSet<u64>,
 ) -> Result<(Vec<Value>, Option<u64>)> {
     let mut entries = Vec::new();
     let mut bytes = 0;
@@ -228,7 +235,8 @@ fn history_page(
             break;
         }
         for event in page.into_iter().rev() {
-            let entry = (event_agent(&event.payload).unwrap_or("main") == agent)
+            let entry = (visible.contains(&event.id)
+                && event_agent(&event.payload).unwrap_or("main") == agent)
                 .then(|| history_entry(&event, turns))
                 .flatten();
             if let Some(entry) = entry {

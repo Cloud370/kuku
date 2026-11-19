@@ -200,6 +200,7 @@ fn queued_receipt(command: &Command, event_id: u64) -> Acknowledgement {
         },
         replayed: false,
         status: Some(InputStatus::Queued),
+        warnings: vec![],
     }
 }
 

@@ -87,6 +87,26 @@ fn tr(id: u64, turn: u64, tc: &str, kind: &str, path: &str, content: &str) -> St
     }
 }
 
+fn tr_in(
+    id: u64,
+    turn: u64,
+    conversation: &str,
+    tc: &str,
+    kind: &str,
+    path: &str,
+    content: &str,
+) -> StoredEvent {
+    let mut event = tr(id, turn, tc, kind, path, content);
+    if let EventPayload::ToolResult {
+        conversation: owner,
+        ..
+    } = &mut event.payload
+    {
+        *owner = Some(conversation.into());
+    }
+    event
+}
+
 fn rb(id: u64, _turn: u64, target: u64, scope: RollbackScope) -> StoredEvent {
     StoredEvent {
         id,
@@ -108,6 +128,20 @@ fn rb_undo(id: u64, _turn: u64, rb_id: u64) -> StoredEvent {
             conversation: "main".into(),
             rollback_event_id: rb_id,
         },
+    }
+}
+
+fn message_rewind(id: u64, address: &str, target_event_id: u64) -> StoredEvent {
+    StoredEvent {
+        id,
+        payload: EventPayload::Unknown(json!({
+            "kind": "runtime.operation",
+            "record": {
+                "operation": "message_rewind",
+                "address": address,
+                "target_event_id": target_event_id,
+            }
+        })),
     }
 }
 
@@ -185,6 +219,46 @@ fn extract_message_user_texts<'a>(events: &[&'a StoredEvent]) -> Vec<&'a str> {
 fn filter_no_rollback_returns_all() {
     let events = vec![ts(1, 1), ui(2, 1, "a"), te(3, 1)];
     assert_eq!(filter_rolled_back_events(&events).len(), 3);
+}
+
+#[test]
+fn message_rewinds_hide_bounded_agent_intervals_without_hiding_new_inputs() {
+    let mut other_agent = ui(8, 1, "other agent");
+    if let EventPayload::MessageUser { conversation, .. } = &mut other_agent.payload {
+        *conversation = "reviewer".into();
+    }
+    let events = vec![
+        ts(1, 1),
+        ui(2, 1, "first target"),
+        te(3, 1),
+        ts(4, 2),
+        ui(5, 2, "tail one"),
+        te(6, 2),
+        message_rewind(7, "main", 2),
+        other_agent,
+        ts(9, 3),
+        ui(10, 3, "second target"),
+        te(11, 3),
+        ts(12, 4),
+        ui(13, 4, "tail two"),
+        te(14, 4),
+        message_rewind(15, "main", 10),
+        ts(16, 5),
+        ui(17, 5, "new input"),
+        te(18, 5),
+    ];
+
+    let visible: Vec<_> = filter_rolled_back_events(&events)
+        .into_iter()
+        .map(|event| event.id)
+        .collect();
+
+    assert!(!visible.contains(&2));
+    assert!(!visible.contains(&5));
+    assert!(!visible.contains(&10));
+    assert!(!visible.contains(&13));
+    assert!(visible.contains(&8));
+    assert!(visible.contains(&17));
 }
 
 #[test]
@@ -312,6 +386,105 @@ fn file_modified_after_target_restores() {
     assert_eq!(plan.restores.len(), 1);
     assert_eq!(plan.restores[0].old_content, "v1");
     assert!(plan.deletes.is_empty());
+}
+
+#[test]
+fn message_rewind_file_opt_in_restores_selected_agent_changes() {
+    let workspace = tempfile::tempdir().unwrap();
+    let session_dir = tempfile::tempdir().unwrap();
+    std::fs::write(workspace.path().join("a.txt"), "after").unwrap();
+    let events = vec![
+        ts(1, 1),
+        tool_result_read(2, 1, "a.txt", "before", true),
+        te(3, 1),
+        ts(4, 2),
+        ui(5, 2, "rewind target"),
+        te(6, 2),
+        ts(7, 3),
+        tr_in(8, 3, "main", "tc2", "file_write", "a.txt", "after"),
+        te(9, 3),
+    ];
+
+    let plan = compute_message_rewind_plan(&events, "main", 5, workspace.path()).unwrap();
+
+    assert_eq!(plan.restores.len(), 1);
+    let warnings = apply_file_revert(&plan, workspace.path(), session_dir.path(), 10).unwrap();
+    assert!(warnings.is_empty());
+    assert_eq!(
+        "before",
+        std::fs::read_to_string(workspace.path().join("a.txt")).unwrap()
+    );
+}
+
+#[test]
+fn message_rewind_file_plan_rejects_other_agent_later_writes() {
+    let workspace = tempfile::tempdir().unwrap();
+    let events = vec![
+        ts(1, 1),
+        tool_result_read(2, 1, "shared.txt", "before", true),
+        te(3, 1),
+        ts(4, 2),
+        ui(5, 2, "rewind target"),
+        te(6, 2),
+        ts(7, 3),
+        tr_in(
+            8,
+            3,
+            "main",
+            "main-write",
+            "file_write",
+            "shared.txt",
+            "main",
+        ),
+        te(9, 3),
+        StoredEvent {
+            id: 10,
+            payload: EventPayload::TurnStarted {
+                turn: 4,
+                ts: "t".into(),
+                conversation: "review".into(),
+            },
+        },
+        tr_in(
+            11,
+            4,
+            "review",
+            "review-write",
+            "file_write",
+            "shared.txt",
+            "review",
+        ),
+    ];
+
+    let error = compute_message_rewind_plan(&events, "main", 5, workspace.path())
+        .err()
+        .unwrap();
+
+    assert!(error.to_string().contains("another Agent"));
+}
+
+#[cfg(unix)]
+#[test]
+fn message_rewind_file_plan_rejects_symlink_paths() {
+    let workspace = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("file.txt"), "outside").unwrap();
+    std::os::unix::fs::symlink(outside.path(), workspace.path().join("link")).unwrap();
+    let events = vec![
+        ts(1, 1),
+        ui(2, 1, "rewind target"),
+        tr(3, 1, "write", "file_write", "link/file.txt", "after"),
+    ];
+
+    let error = compute_message_rewind_plan(&events, "main", 2, workspace.path())
+        .err()
+        .unwrap();
+
+    assert!(error.to_string().contains("symbolic link"));
+    assert_eq!(
+        "outside",
+        std::fs::read_to_string(outside.path().join("file.txt")).unwrap()
+    );
 }
 
 #[test]

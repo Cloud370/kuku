@@ -10,6 +10,137 @@ use super::record::{
 use super::{ensure_open, AgentStatus, InputStatus, Receipt, Session, Withdrawal};
 
 impl Session {
+    /// Hide a committed user message and the following visible history for one Agent.
+    pub fn rewind_message(
+        &self,
+        command_id: &str,
+        address: &str,
+        target_event_id: u64,
+        expected_text: &str,
+        restore_files: bool,
+    ) -> Result<(Receipt, Vec<String>)> {
+        let command = command(
+            command_id,
+            address,
+            &(
+                "rewind_message",
+                address,
+                target_event_id,
+                expected_text,
+                restore_files,
+            ),
+        )?;
+        let mut state = self.inner.state.lock().unwrap();
+        ensure_open(&state)?;
+        if let Some(receipt) = state.retry(command_id, &command.fingerprint)? {
+            return Ok((
+                receipt,
+                state
+                    .message_rewind_warnings
+                    .get(command_id)
+                    .cloned()
+                    .unwrap_or_default(),
+            ));
+        }
+        let agent = state.agent(address)?;
+        if matches!(
+            agent.snapshot.status,
+            AgentStatus::Running | AgentStatus::Waiting
+        ) || agent.snapshot.pending_inputs > 0
+        {
+            return Err(Error::InvalidArgument(
+                "cannot rewind while this Agent is executing or has pending input".into(),
+            ));
+        }
+        if restore_files
+            && state.agents.values().any(|agent| {
+                matches!(
+                    agent.snapshot.status,
+                    AgentStatus::Running | AgentStatus::Waiting
+                )
+            })
+        {
+            return Err(Error::InvalidArgument(
+                "cannot restore files while any Session Agent is active".into(),
+            ));
+        }
+        let events = EventStore::replay(&self.inner.events_path)?;
+        let target = events
+            .iter()
+            .find(|event| event.id == target_event_id)
+            .ok_or_else(|| Error::InvalidArgument("rewind target is no longer available".into()))?;
+        let EventPayload::MessageUser {
+            conversation,
+            turn,
+            text,
+            ..
+        } = &target.payload
+        else {
+            return Err(Error::InvalidArgument(
+                "rewind target is not a committed user message".into(),
+            ));
+        };
+        if conversation != address
+            || text != expected_text
+            || !crate::context::revert::filter_rolled_back_events(&events)
+                .iter()
+                .any(|event| event.id == target_event_id)
+        {
+            return Err(Error::InvalidArgument(
+                "rewind target belongs to another Agent or is no longer visible".into(),
+            ));
+        }
+        let mut warnings = Vec::new();
+        if restore_files {
+            let plan = crate::context::revert::compute_message_rewind_plan(
+                &events,
+                address,
+                target_event_id,
+                &self.inner.options.workspace,
+            )?;
+            if !plan.unrecoverable.is_empty() {
+                return Err(Error::InvalidArgument(format!(
+                    "file restore preflight could not recover recorded state for {}",
+                    plan.unrecoverable
+                        .iter()
+                        .map(|path| path.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )));
+            }
+            let session_dir = self.inner.events_path.parent().ok_or_else(|| {
+                Error::InvalidArgument("events path has no session directory".into())
+            })?;
+            let rollback_event_id = events.last().map_or(1, |event| event.id.saturating_add(1));
+            warnings = crate::context::revert::apply_file_revert(
+                &plan,
+                &self.inner.options.workspace,
+                session_dir,
+                rollback_event_id,
+            )?;
+            warnings.push(
+                "Only recorded in-workspace file changes were restored; shell and external side effects remain.".into(),
+            );
+            warnings.extend(
+                plan.sensitive_files
+                    .iter()
+                    .map(|path| format!("Sensitive file restored: {}", path.display())),
+            );
+        }
+        self.commit(
+            &mut state,
+            Record::MessageRewind {
+                command,
+                address: address.into(),
+                target_event_id,
+                target_turn: *turn,
+                restore_files,
+                warnings: warnings.clone(),
+            },
+        )?;
+        Ok((state.commands[command_id].1.clone(), warnings))
+    }
+
     /// Explicitly authorize advancement of pending or interrupted work.
     pub fn advance(&self, address: &str) -> Result<()> {
         self.advance_with_command(address, None).map(|_| ())

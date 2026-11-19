@@ -2,7 +2,7 @@ use kuku_client::{Acknowledgement, Action, Command, Error, InputStatus, Target};
 
 use crate::jobs::Job;
 
-use super::{Address, App, SubmissionStatus};
+use super::{Address, App, RewindDraft, SubmissionStatus};
 
 const MAX_CHECKING: usize = 4;
 
@@ -71,6 +71,7 @@ mod tests {
                 },
                 replayed: false,
                 status: None,
+                warnings: vec![],
             }),
         ));
         assert_eq!(Activity::Stopping, app.pane().activity());
@@ -149,6 +150,7 @@ mod tests {
                 },
                 replayed: true,
                 status: Some(InputStatus::Accepted),
+                warnings: vec![],
             })),
         ));
         assert!(reopened.pane().deliveries.rows().is_empty());
@@ -224,6 +226,7 @@ mod tests {
                 },
                 replayed: false,
                 status: Some(InputStatus::Queued),
+                warnings: vec![],
             }),
         ));
         let visible = app.pane().deliveries.rows();
@@ -530,6 +533,7 @@ impl App {
         let Some(item) = self.pending.get_mut(id) else {
             return;
         };
+        let rewind = matches!(&item.command.action, Action::RewindMessage { .. });
         let address = Address::from_target(&item.command.target);
         let rejected = error.definitively_rejected();
         let clear = rejected || save_failure;
@@ -566,6 +570,8 @@ impl App {
         }
         let recovery = if restored {
             "Draft restored"
+        } else if rewind {
+            "Selected text retained in pending action"
         } else {
             "See /pending"
         };
@@ -675,6 +681,35 @@ impl App {
                     Some(InputStatus::Withdrawn) => "Replacement withdrawn",
                     Some(InputStatus::Queued) | None => "Queued input replaced",
                 });
+            }
+            Action::RewindMessage { text, .. } => {
+                let draft = self.rewind_drafts.remove(id).unwrap_or(RewindDraft {
+                    address: address.clone(),
+                    text,
+                    revision: 0,
+                });
+                let mut restored = false;
+                if let Some(pane) = self.panes.get_mut(&draft.address) {
+                    if pane.draft_revision == draft.revision && pane.draft.text().is_empty() {
+                        pane.draft.set_text(draft.text.clone());
+                        pane.draft_revision = pane.draft_revision.wrapping_add(1);
+                        restored = true;
+                    }
+                }
+                if !restored {
+                    self.rewind_drafts.insert(id.to_owned(), draft);
+                }
+                if ack.warnings.is_empty() {
+                    self.confirmation("Message rewound · selected text is an unsent draft");
+                } else {
+                    self.problem(format!(
+                        "Message rewound with warnings · {}",
+                        ack.warnings.join(" · ")
+                    ));
+                }
+                if active {
+                    self.refresh_rewind_history();
+                }
             }
             Action::Advance => self.message("Continue request received"),
             Action::Cancel { execution_id } => {

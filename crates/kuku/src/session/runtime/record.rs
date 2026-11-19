@@ -76,6 +76,15 @@ pub(super) enum Record {
         input_command_id: String,
         text: String,
     },
+    MessageRewind {
+        command: Command,
+        address: String,
+        target_event_id: u64,
+        target_turn: u64,
+        restore_files: bool,
+        #[serde(default)]
+        warnings: Vec<String>,
+    },
     ExecutionStarted {
         address: String,
     },
@@ -231,6 +240,7 @@ pub(super) struct State {
     pub(super) agents: BTreeMap<String, AgentState>,
     pub(super) turns: TurnIndex,
     pub(super) commands: HashMap<String, (String, Receipt)>,
+    pub(super) message_rewind_warnings: HashMap<String, Vec<String>>,
     pub(super) deliveries: HashMap<String, InputStatus>,
     pub(super) withdrawals: HashMap<String, InputStatus>,
     pub(super) creation: Option<CreationClaim>,
@@ -347,6 +357,16 @@ impl State {
                 entry.input.command_id = command_id;
                 entry.input.text = text;
                 agent.update_inbox();
+            }
+            Record::MessageRewind {
+                command,
+                address,
+                warnings,
+                ..
+            } => {
+                self.message_rewind_warnings
+                    .insert(command.command_id.clone(), warnings);
+                self.remember_command(command, event_id, address);
             }
             Record::ExecutionStarted { address } => {
                 let agent = self.agent_mut(&address)?;

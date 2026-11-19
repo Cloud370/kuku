@@ -180,6 +180,137 @@ async fn open_authorized(
 }
 
 #[tokio::test]
+async fn message_rewind_targets_one_event_survives_reopen_and_keeps_new_inputs_in_context() {
+    let root = tempfile::tempdir().unwrap();
+    let (model, mut calls) = mpsc::unbounded_channel();
+    let mut options =
+        SessionOptions::new(root.path(), root.path().join("data"), common::test_config());
+    options.session_id = Some("message-rewind-test".into());
+    options.model_adapter = Some(Arc::new(Model(model)));
+    let session = Session::open(options.clone()).await.unwrap();
+    session
+        .create_agent("create", "main", AgentConfig::default())
+        .unwrap();
+
+    let sentinel = root.path().join("untouched.txt");
+    std::fs::write(&sentinel, "leave this file alone").unwrap();
+    session
+        .send(Input::new("first-input", "main", "original message"))
+        .unwrap();
+    next_call(&mut calls)
+        .await
+        .response
+        .send(Reply::Text("first response"))
+        .unwrap();
+    ready(&session, AgentStatus::Idle).await;
+
+    let before = session.events(0, 128).unwrap();
+    let target = before
+        .iter()
+        .find(|event| {
+            matches!(&event.payload, EventPayload::MessageUser { text, .. } if text == "original message")
+        })
+        .unwrap();
+    let target_id = target.id;
+    let target_turn = match &target.payload {
+        EventPayload::MessageUser { turn, .. } => *turn,
+        _ => unreachable!(),
+    };
+    assert!(session
+        .rewind_message(
+            "wrong-agent",
+            "reviewer",
+            target_id,
+            "original message",
+            false
+        )
+        .is_err());
+    assert!(session
+        .rewind_message(
+            "missing-target",
+            "main",
+            target_id + 100,
+            "original message",
+            false
+        )
+        .is_err());
+    assert_eq!(
+        "leave this file alone",
+        std::fs::read_to_string(&sentinel).unwrap()
+    );
+
+    let head_before = before.last().unwrap().id;
+    let (receipt, warnings) = session
+        .rewind_message(
+            "rewind-command",
+            "main",
+            target_id,
+            "original message",
+            false,
+        )
+        .unwrap();
+    assert!(warnings.is_empty());
+    let raw_after = EventStore::replay(session.events_path()).unwrap();
+    assert_eq!(head_before + 1, raw_after.last().unwrap().id);
+    assert!(
+        !kuku::context::revert::filter_rolled_back_events(&raw_after)
+            .iter()
+            .any(|event| event.id == target_id)
+    );
+
+    session.close().await.unwrap();
+    let reopened = Session::open(options).await.unwrap();
+    let reopened_head = EventStore::replay(reopened.events_path())
+        .unwrap()
+        .last()
+        .unwrap()
+        .id;
+    let (replayed, _) = reopened
+        .rewind_message(
+            "rewind-command",
+            "main",
+            target_id,
+            "original message",
+            false,
+        )
+        .unwrap();
+    assert_eq!(receipt, replayed);
+    assert_eq!(
+        reopened_head,
+        EventStore::replay(reopened.events_path())
+            .unwrap()
+            .last()
+            .unwrap()
+            .id
+    );
+
+    reopened
+        .send(Input::new("fresh-input", "main", "new input after rewind"))
+        .unwrap();
+    let next = next_call(&mut calls).await;
+    let body = next.request.body.to_string();
+    assert!(body.contains("new input after rewind"), "{body}");
+    assert!(!body.contains("original message"), "{body}");
+    next.response.send(Reply::Text("second response")).unwrap();
+    ready(&reopened, AgentStatus::Idle).await;
+    let after_new_input = EventStore::replay(reopened.events_path()).unwrap();
+    let new_message = after_new_input.iter().find(|event| {
+        matches!(&event.payload, EventPayload::MessageUser { text, .. } if text == "new input after rewind")
+    }).unwrap();
+    let new_turn = match &new_message.payload {
+        EventPayload::MessageUser { turn, .. } => *turn,
+        _ => unreachable!(),
+    };
+    assert!(new_turn > target_turn);
+    assert!(
+        kuku::context::revert::filter_rolled_back_events(&after_new_input)
+            .iter()
+            .any(|event| event.id == new_message.id)
+    );
+    reopened.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn separate_authorization_replies_restore_only_undispatched_batch_calls() {
     let (_root, session, mut calls, _) = open_authorized(Arc::new(Defer)).await;
     session

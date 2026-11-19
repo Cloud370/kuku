@@ -146,6 +146,7 @@ fn validate_command(workspace: &FsPath, command: &mut Command) -> Result<Option<
         Command::ReplyQuestion { .. }
         | Command::ReplyPermission { .. }
         | Command::Withdraw { .. }
+        | Command::RewindMessage { .. }
         | Command::Advance
         | Command::Cancel { .. } => {}
     }
