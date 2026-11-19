@@ -107,6 +107,18 @@ fn tr_in(
     event
 }
 
+fn message_rewind_file_write(id: u64, path: &str, content: &str, created: bool) -> StoredEvent {
+    let mut event = tr_in(id, 1, "main", "write", "file_write", path, content);
+    if let EventPayload::ToolResult {
+        structured: Some(value),
+        ..
+    } = &mut event.payload
+    {
+        value["created"] = json!(created);
+    }
+    event
+}
+
 fn rb(id: u64, _turn: u64, target: u64, scope: RollbackScope) -> StoredEvent {
     StoredEvent {
         id,
@@ -414,6 +426,56 @@ fn message_rewind_file_opt_in_restores_selected_agent_changes() {
         "before",
         std::fs::read_to_string(workspace.path().join("a.txt")).unwrap()
     );
+}
+
+#[test]
+fn message_rewind_uses_full_read_during_selected_turn_as_before_image() {
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::write(workspace.path().join("a.txt"), "after").unwrap();
+    let events = vec![
+        ui(1, 1, "rewind target"),
+        tool_result_read(2, 1, "a.txt", "before", true),
+        message_rewind_file_write(3, "a.txt", "after", false),
+    ];
+
+    let plan = compute_message_rewind_plan(&events, "main", 1, workspace.path()).unwrap();
+
+    assert_eq!(plan.restores.len(), 1);
+    assert_eq!("before", plan.restores[0].old_content);
+    assert!(plan.unrecoverable.is_empty());
+}
+
+#[test]
+fn message_rewind_deletes_only_an_explicitly_created_file() {
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::write(workspace.path().join("new.txt"), "created").unwrap();
+    let events = vec![
+        ui(1, 1, "rewind target"),
+        message_rewind_file_write(2, "new.txt", "created", true),
+    ];
+
+    let plan = compute_message_rewind_plan(&events, "main", 1, workspace.path()).unwrap();
+
+    assert_eq!(plan.deletes, vec![workspace.path().join("new.txt")]);
+    assert!(plan.unrecoverable.is_empty());
+}
+
+#[test]
+fn message_rewind_treats_missing_before_image_as_unrecoverable() {
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::write(workspace.path().join("unknown.txt"), "after").unwrap();
+    let events = vec![
+        ui(1, 1, "rewind target"),
+        message_rewind_file_write(2, "unknown.txt", "after", false),
+    ];
+
+    let plan = compute_message_rewind_plan(&events, "main", 1, workspace.path()).unwrap();
+
+    assert_eq!(
+        plan.unrecoverable,
+        vec![workspace.path().join("unknown.txt")]
+    );
+    assert!(plan.deletes.is_empty());
 }
 
 #[test]

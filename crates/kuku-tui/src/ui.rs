@@ -205,7 +205,7 @@ pub(crate) fn render_at(
     if let Some(draft) = draft {
         let placeholder = app.pane().draft.text().is_empty().then(|| {
             format!(
-                "Prompt · Esc Esc Rewind · {} Actions",
+                "Type a prompt · Esc Esc Rewind · {} Actions",
                 Shortcut::ACTIONS.label
             )
         });

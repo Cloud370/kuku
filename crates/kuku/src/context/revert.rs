@@ -10,6 +10,9 @@ use time::OffsetDateTime;
 use crate::conversation::address::ConversationAddress;
 use crate::event::{EventPayload, EventStore, RollbackScope, StoredEvent};
 
+#[path = "revert_message_rewind.rs"]
+mod message_rewind;
+
 const REVERTABLE_KINDS: &[&str] = &["file_edit", "file_write", "memory_write", "forget_memory"];
 
 /// Plan for reverting files to their state before a target turn.
@@ -376,9 +379,7 @@ pub fn compute_message_rewind_plan(
     target_event_id: u64,
     workspace: &Path,
 ) -> crate::Result<RevertPlan> {
-    let canonical_workspace = workspace
-        .canonicalize()
-        .map_err(crate::Error::Io)?;
+    let canonical_workspace = workspace.canonicalize().map_err(crate::Error::Io)?;
     let target_pos = events
         .iter()
         .position(|event| event.id == target_event_id)
@@ -399,7 +400,7 @@ pub fn compute_message_rewind_plan(
         if let Some(path) = revertable_path(event) {
             modified
                 .entry(message_rewind_path(&canonical_workspace, &path)?)
-                .or_insert(path);
+                .or_insert((path, event.id, message_rewind::is_created_file_write(event)));
         }
     }
 
@@ -419,17 +420,21 @@ pub fn compute_message_rewind_plan(
         }
     }
 
-    let before = events[..target_pos].to_vec();
     let mut restores = Vec::new();
     let mut deletes = Vec::new();
     let mut unrecoverable = Vec::new();
     let mut sensitive_files = Vec::new();
-    for (path, recorded_path) in modified {
+    for (path, (_, first_mutation_id, first_mutation_created)) in modified {
         reject_symlink_components(&canonical_workspace, &path)?;
-        let target_state = if before.is_empty() {
-            FileStateAt::Unrecoverable
+        let target_state = if first_mutation_created {
+            FileStateAt::NotExists
         } else {
-            find_file_state_at(&before, &recorded_path, before.len() - 1)
+            let before_mutation: Vec<_> = events
+                .iter()
+                .filter(|event| event.id < first_mutation_id && visible.contains(&event.id))
+                .cloned()
+                .collect();
+            message_rewind::file_state_at(&before_mutation, &path, &canonical_workspace)
         };
         let file_name = path.file_name().unwrap_or_default().to_string_lossy();
         if crate::util::path::is_sensitive_file_name(&file_name) {

@@ -114,6 +114,16 @@ pub(crate) struct Transcript {
 }
 
 impl Transcript {
+    pub(crate) fn invalidate_after_rewind(&mut self) {
+        self.reply_position = None;
+        self.reading = None;
+        self.restore = None;
+        self.latest_reply = LatestReply::default();
+        self.recent = Window::default();
+        self.current_execution = None;
+        self.detail_items.visible.clear();
+    }
+
     pub(crate) fn replace_recent(&mut self, page: HistoryPage) {
         self.reply_position = None;
         if let Some(reading) = &mut self.reading {

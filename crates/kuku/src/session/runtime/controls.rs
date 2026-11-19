@@ -4,8 +4,8 @@ use crate::event::{EventPayload, EventStore};
 use crate::{Error, Result};
 
 use super::record::{
-    fingerprint, timestamp, validate_address, validate_key, Command, InterruptedExecution, Record,
-    State,
+    fingerprint, timestamp, validate_address, validate_key, AgentState, Command,
+    InterruptedExecution, Record, State,
 };
 use super::{ensure_open, AgentStatus, InputStatus, Receipt, Session, Withdrawal};
 
@@ -43,23 +43,12 @@ impl Session {
             ));
         }
         let agent = state.agent(address)?;
-        if matches!(
-            agent.snapshot.status,
-            AgentStatus::Running | AgentStatus::Waiting
-        ) || agent.snapshot.pending_inputs > 0
-        {
+        if rewind_blocked(agent) {
             return Err(Error::InvalidArgument(
                 "cannot rewind while this Agent is executing or has pending input".into(),
             ));
         }
-        if restore_files
-            && state.agents.values().any(|agent| {
-                matches!(
-                    agent.snapshot.status,
-                    AgentStatus::Running | AgentStatus::Waiting
-                )
-            })
-        {
+        if restore_files && state.agents.values().any(rewind_blocked) {
             return Err(Error::InvalidArgument(
                 "cannot restore files while any Session Agent is active".into(),
             ));
@@ -522,6 +511,15 @@ impl Session {
     }
 }
 
+fn rewind_blocked(agent: &AgentState) -> bool {
+    agent.active_epoch.is_some()
+        || agent.snapshot.pending_inputs > 0
+        || matches!(
+            agent.snapshot.status,
+            AgentStatus::Running | AgentStatus::Waiting
+        )
+}
+
 fn cancelled_tool_result(address: &str, turn: u64, id: &str) -> Result<EventPayload> {
     let result =
         crate::tool::ToolResultEnvelope::cancelled("pending action cancelled before dispatch");
@@ -549,4 +547,36 @@ fn command(command_id: &str, address: &str, intent: &impl serde::Serialize) -> R
         command_id: command_id.into(),
         fingerprint: fingerprint(intent)?,
     })
+}
+
+#[cfg(test)]
+mod rewind_guard_tests {
+    use super::*;
+
+    fn idle_agent() -> AgentState {
+        let mut state = State::default();
+        state
+            .reduce(
+                1,
+                Record::AgentCreated {
+                    command_id: "create".into(),
+                    fingerprint: "fingerprint".into(),
+                    address: "main".into(),
+                    config: crate::AgentConfig::default(),
+                },
+            )
+            .unwrap();
+        state.agents.remove("main").unwrap()
+    }
+
+    #[test]
+    fn active_cleanup_epoch_and_pending_inputs_block_rewind() {
+        let mut agent = idle_agent();
+        agent.active_epoch = Some(7);
+        assert!(rewind_blocked(&agent));
+
+        agent.active_epoch = None;
+        agent.snapshot.pending_inputs = 1;
+        assert!(rewind_blocked(&agent));
+    }
 }

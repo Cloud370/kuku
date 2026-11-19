@@ -1,6 +1,8 @@
 use std::time::{Duration, Instant};
 
-use super::*;
+use crate::app::App;
+use crate::menu::{Choice, ChoiceKind, PickerKind};
+use crate::text::{shorten, single_line};
 
 pub(super) fn rewind_instructions(text: &str, restore_files: bool) -> String {
     format!(

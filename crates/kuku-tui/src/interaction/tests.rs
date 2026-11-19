@@ -333,7 +333,9 @@ fn rewind_ack_restores_unsent_text_but_never_replaces_a_changed_draft() {
         "draft typed while rewind was pending",
         edited.pane().draft.text()
     );
-    assert!(edited.rewind_drafts.contains_key(&id));
+    assert!(!edited.rewind_drafts.contains_key(&id));
+    edited.pane_mut().draft.recall(-1);
+    assert_eq!("recoverable original", edited.pane().draft.text());
 }
 
 #[test]

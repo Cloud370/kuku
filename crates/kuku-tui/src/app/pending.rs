@@ -308,6 +308,8 @@ impl PendingStage {
     }
 }
 
+pub(super) const MAX_REWIND_DRAFTS: usize = 64;
+
 impl App {
     pub(crate) fn pending_check(&mut self, id: &str) {
         if self.require_service() {
@@ -696,15 +698,16 @@ impl App {
                         restored = true;
                     }
                 }
-                if !restored {
-                    self.rewind_drafts.insert(id.to_owned(), draft);
-                }
                 if ack.warnings.is_empty() {
-                    self.confirmation("Message rewound · selected text is an unsent draft");
+                    self.confirmation(if restored {
+                        "Message rewound · original text restored as an unsent draft"
+                    } else {
+                        "Message rewound · original text retained in Ctrl+Up history"
+                    });
                 } else {
                     self.problem(format!(
-                        "Message rewound with warnings · {}",
-                        ack.warnings.join(" · ")
+                        "Message rewound with warnings · original text retained in Ctrl+Up history · {}",
+                        ack.warnings.join(" · "),
                     ));
                 }
                 if active {

@@ -1,4 +1,4 @@
-use super::*;
+use super::{Body, Key, Transcript};
 
 impl Transcript {
     pub(crate) fn rewind_messages(&self, agent: &str) -> Vec<(u64, u64, String)> {

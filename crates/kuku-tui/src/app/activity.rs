@@ -294,6 +294,16 @@ pub(crate) struct InputActivity {
 impl App {
     pub(super) fn observe(&mut self, event: Observation) {
         let active_agent = self.active.agent.clone();
+        if matches!(
+            &event,
+            Observation::Committed {
+                agent: Some(agent),
+                operation: Some(operation),
+                ..
+            } if agent == &active_agent && operation == "message_rewind"
+        ) {
+            self.refresh_rewind_history();
+        }
         self.related_agents.observe(&event, &active_agent);
         let pane = self.pane_mut();
         match event {

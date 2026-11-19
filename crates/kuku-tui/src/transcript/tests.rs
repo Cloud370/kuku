@@ -52,6 +52,20 @@ fn frozen_history_survives_older_page_arrival_and_many_recent_commits() {
 }
 
 #[test]
+fn rewind_invalidation_discards_reading_window_and_saved_anchor() {
+    let mut transcript = Transcript::default();
+    transcript.replace_recent(page(51, 91));
+    assert!(transcript.scroll(-200, 44, 10).is_some());
+    assert!(transcript.is_reading());
+
+    transcript.invalidate_after_rewind();
+
+    assert!(!transcript.is_reading());
+    assert_eq!(None, transcript.restore_request());
+    assert!(rows(&mut transcript).is_empty());
+}
+
+#[test]
 fn evicted_view_restores_its_saved_anchor_from_durable_history() {
     let mut transcript = Transcript::default();
     transcript.replace_recent(page(51, 91));

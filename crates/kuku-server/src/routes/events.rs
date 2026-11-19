@@ -12,7 +12,7 @@ use axum::extract::{Path, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
-use kuku::event::{EventPayload, EventStore};
+use kuku::event::{EventPayload, EventStore, StoredEvent};
 use kuku::session::{Observation, OutputRead, Session};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -112,10 +112,7 @@ pub(super) async fn history(
         None => query.before,
     };
     let events = EventStore::replay(&target.path)?;
-    let visible: HashSet<_> = kuku::context::revert::filter_rolled_back_events(&events)
-        .into_iter()
-        .map(|event| event.id)
-        .collect();
+    let visible = history_visible_event_ids(&events);
     let turns = manager(&state).await.turn_lookup(&target.path, cursor)?;
     let (entries, next_before) = history_page(
         &target.path,
@@ -128,6 +125,13 @@ pub(super) async fn history(
     Ok(Json(
         json!({"ok":true,"entries":entries,"next_before":next_before}),
     ))
+}
+
+fn history_visible_event_ids(events: &[StoredEvent]) -> HashSet<u64> {
+    kuku::context::revert::filter_rolled_back_events(events)
+        .into_iter()
+        .map(|event| event.id)
+        .collect()
 }
 
 pub(super) async fn observe(
@@ -416,4 +420,56 @@ async fn follow(
 
 async fn write_frame(send: &FrameWriter, frame: Value) -> bool {
     send.send(Ok(format!("{frame}\n"))).await.is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use kuku::event::{EventPayload, StoredEvent};
+    use serde_json::json;
+
+    use super::history_visible_event_ids;
+
+    fn user_event(id: u64, agent: &str, text: &str) -> StoredEvent {
+        StoredEvent {
+            id,
+            payload: EventPayload::MessageUser {
+                ts: "t".into(),
+                conversation: agent.into(),
+                turn: id,
+                text: text.into(),
+                from: None,
+                via_tool_call_id: None,
+            },
+        }
+    }
+
+    #[test]
+    fn committed_history_hides_only_the_rewound_agent_interval() {
+        let events = vec![
+            user_event(1, "main", "selected"),
+            user_event(2, "main", "later tail"),
+            StoredEvent {
+                id: 3,
+                payload: EventPayload::Unknown(json!({
+                    "id":3,
+                    "kind":"runtime.operation",
+                    "record":{
+                        "operation":"message_rewind",
+                        "address":"main",
+                        "target_event_id":1,
+                    }
+                })),
+            },
+            user_event(4, "main", "new input"),
+            user_event(5, "reviewer", "other Agent"),
+        ];
+
+        let visible = history_visible_event_ids(&events);
+
+        assert!(!visible.contains(&1));
+        assert!(!visible.contains(&2));
+        assert!(visible.contains(&3));
+        assert!(visible.contains(&4));
+        assert!(visible.contains(&5));
+    }
 }
