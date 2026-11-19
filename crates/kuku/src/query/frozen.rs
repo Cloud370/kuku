@@ -541,11 +541,20 @@ fn append_dynamic(
         }
     }
     if let Some(date_message) = date_message {
-        messages.push(AdmittedMessage {
-            turn: pending.turn,
-            origin: MessageOrigin::Runtime,
-            message: date_message.clone(),
-        });
+        let current_input = messages
+            .iter()
+            .position(|admitted| {
+                admitted.turn == pending.turn && admitted.origin == MessageOrigin::Input
+            })
+            .unwrap_or(messages.len());
+        messages.insert(
+            current_input,
+            AdmittedMessage {
+                turn: pending.turn,
+                origin: MessageOrigin::Runtime,
+                message: date_message.clone(),
+            },
+        );
     }
     if !pending.hook_context.is_empty() {
         let template = catalog

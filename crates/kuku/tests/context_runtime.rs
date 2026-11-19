@@ -201,8 +201,19 @@ async fn reopen_replays_frozen_assets_and_exact_admitted_inputs_after_source_cha
     assert!(prepared
         .iter()
         .all(|step| step["prefix_hash"] == prepared[0]["prefix_hash"]));
-    for body in &bodies {
+    for (body, input) in bodies
+        .iter()
+        .zip(["FIRST_INPUT", "SECOND_INPUT", "THIRD_INPUT"])
+    {
         assert_eq!(1, body.to_string().matches("<kuku_runtime_date>").count());
+        let last_user_message = body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|message| message["role"] == "user")
+            .unwrap();
+        assert!(last_user_message["content"].to_string().contains(input));
     }
     let date_admissions = admitted
         .iter()
