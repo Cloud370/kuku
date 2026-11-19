@@ -19,3 +19,5 @@
 3. 适配器编码请求。派发之前，`runtime.step_prepared` 记录上下文段、输入边界、源事件游标、有效设置和请求正文哈希。`prefix_hash` 对固定上下文段边界（系统指令、工具和前置消息）计算哈希；上下文段不变时该值保持稳定。它是规范内容诊断，不保证缓存命中。`prefix_context_head` 与 `history_prefix_hash` 标识并哈希新后缀之前已确认的历史；新上下文段的边界为零，确认历史增长时，该哈希也会变化。匹配的准备记录确认新增消息。重开 Session 后按这些记录恢复已确认的前缀。
 
 之后编辑工作区指令或 Memory 文件，模型已经看过的文本保持原样。交接或不兼容的路线变更会建立后继上下文段。切换路线会移除不兼容的 provider 原生续接数据。模型服务的缓存命中取决于具体端点和它返回的用量。[模块契约](module-contracts.md) · [重开与工具输出测试](../../../crates/kuku/tests/context_runtime.rs)
+
+在 provider 边界，只有当 OpenRouter Chat 的模型 ID 以 `anthropic/claude-` 开头时，Kuku 才会通过顶层 ephemeral 标记请求自动提示缓存。Anthropic Messages 适配器保留其独立的顶层标记行为。这些标记只是缓存请求；模型资格、最小前缀长度、上游路由以及实际缓存读写仍取决于具体 provider，应检查返回的用量。此 OpenRouter Chat 规则不适用于任意 Claude 兼容网关，Kuku 也不会在共享前置消息边界添加显式缓存断点。DeepSeek Chat 使用 provider 自身的自动缓存，不使用此标记。
