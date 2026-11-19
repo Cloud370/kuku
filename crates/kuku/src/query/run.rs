@@ -3,6 +3,7 @@ use std::sync::Arc;
 #[cfg(test)]
 mod completion_tests;
 mod helpers;
+mod provider_error;
 mod queued_calls;
 #[cfg(test)]
 mod tests;
@@ -15,8 +16,8 @@ use crate::tool::{ToolFaults, ToolResultEnvelope};
 use helpers::persist_blocked_tool_result;
 
 use super::helpers::{
-    append_model_error, append_permission_decision, append_turn_cancelled, append_turn_interrupted,
-    display_summary, now_timestamp, permission_candidate,
+    append_permission_decision, append_turn_cancelled, display_summary, now_timestamp,
+    permission_candidate,
 };
 use super::slots::requires_workspace_ordering;
 use super::tool_exec::{execute_tool_call, run_tool_pre_hooks};
@@ -312,7 +313,8 @@ impl Run {
         match poll {
             Err(error) => {
                 self.persist_deferred_runtime_logs_for_pending(&mut streaming.pending);
-                let persisted = record_streaming_provider_error_facts(&streaming, &error);
+                let persisted =
+                    provider_error::record_streaming_provider_error_facts(&streaming, &error);
                 streaming.pending.flush_runtime_logs();
                 persisted?;
                 Err(error)
@@ -362,6 +364,7 @@ impl Run {
                 chunk = streaming.stream.next() => match chunk {
                     Some(Ok(chunk)) => chunk,
                     Some(Err(failure)) => {
+                        streaming.stream_failure = Some(failure.clone());
                         return Err(crate::error::Error::Provider {
                             kind: failure.kind,
                             message: failure.message,
@@ -583,9 +586,11 @@ impl Run {
                     })))?;
                 }
                 ProviderChunk::ServerError { code, message } => {
+                    let failure = crate::provider::classify_stream_error(&code, &message);
+                    streaming.stream_failure = Some(failure.clone());
                     return Err(crate::error::Error::Provider {
-                        kind: crate::provider::types::ProviderFailureKind::Unknown,
-                        message: format!("{code}: {message}"),
+                        kind: failure.kind,
+                        message: failure.message,
                         provider: None,
                         model: None,
                     });
@@ -878,69 +883,6 @@ impl Run {
             summary,
             kind: tool_kind,
         }))
-    }
-}
-
-fn record_streaming_provider_error_facts(
-    streaming: &StreamingChunkState,
-    error: &Error,
-) -> Result<()> {
-    let Error::Provider { kind, message, .. } = error else {
-        return Ok(());
-    };
-    let kind = provider_failure_event_kind(*kind);
-    let turn = streaming.pending.turn;
-    if let Some(execution) = streaming.pending.query.runtime_execution {
-        let address = streaming.conversation.as_str();
-        return super::provider::runtime_session(&streaming.pending, execution)?
-            .commit_model_facts(
-                address,
-                execution,
-                [
-                    EventPayload::ModelError {
-                        conversation: Some(address.into()),
-                        turn,
-                        ts: now_timestamp()?,
-                        request_id: streaming.request_id.clone(),
-                        kind: kind.into(),
-                        message: message.clone(),
-                    },
-                    EventPayload::TurnInterrupted {
-                        conversation: address.into(),
-                        turn,
-                        ts: now_timestamp()?,
-                        reason: kind.into(),
-                    },
-                ],
-            );
-    }
-    let _ = append_model_error(
-        &streaming.pending.events_path,
-        &streaming.conversation,
-        turn,
-        streaming.request_id.clone(),
-        kind,
-        message,
-    );
-    let _ = append_turn_interrupted(
-        &streaming.pending.events_path,
-        &streaming.conversation,
-        turn,
-        kind,
-    );
-    Ok(())
-}
-
-fn provider_failure_event_kind(kind: crate::provider::types::ProviderFailureKind) -> &'static str {
-    match kind {
-        crate::provider::types::ProviderFailureKind::Authentication => "authentication",
-        crate::provider::types::ProviderFailureKind::RateLimited => "rate_limited",
-        crate::provider::types::ProviderFailureKind::ContextTooLarge => "context_too_large",
-        crate::provider::types::ProviderFailureKind::InvalidRequest => "invalid_request",
-        crate::provider::types::ProviderFailureKind::ProviderUnavailable => "provider_unavailable",
-        crate::provider::types::ProviderFailureKind::Transport => "transport",
-        crate::provider::types::ProviderFailureKind::Internal => "internal",
-        crate::provider::types::ProviderFailureKind::Unknown => "unknown",
     }
 }
 

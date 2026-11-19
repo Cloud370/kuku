@@ -92,6 +92,17 @@ pub(crate) fn invalid_request(message: &str) -> ProviderFailure {
     }
 }
 
+pub(crate) fn invalid_response(message: &str) -> ProviderFailure {
+    ProviderFailure {
+        kind: ProviderFailureKind::InvalidResponse,
+        message: message.into(),
+        status: None,
+        provider_request_id: None,
+        retry_after: None,
+        retryable: false,
+    }
+}
+
 fn apply_settings(config: &ResolvedProvider, body: &mut Value) {
     let object = body
         .as_object_mut()

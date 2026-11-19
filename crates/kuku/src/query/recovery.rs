@@ -175,6 +175,8 @@ async fn dispatch_recovery(
             request_id,
             pending,
             stream,
+            provider_attempt: 1,
+            stream_failure: None,
             accumulated_text: String::new(),
             accumulated_thinking: String::new(),
             model_phase: None,
@@ -268,25 +270,6 @@ fn fail_recovery(mut pending: PendingRun, error: Error, reason: &str) -> Result<
     )?;
     pending.flush_runtime_logs();
     Ok(PendingStep::Failed(error))
-}
-
-trait ProviderFailureKindEventName {
-    fn as_event_kind(&self) -> &'static str;
-}
-
-impl ProviderFailureKindEventName for ProviderFailureKind {
-    fn as_event_kind(&self) -> &'static str {
-        match self {
-            Self::Authentication => "authentication",
-            Self::RateLimited => "rate_limited",
-            Self::ContextTooLarge => "context_too_large",
-            Self::InvalidRequest => "invalid_request",
-            Self::ProviderUnavailable => "provider_unavailable",
-            Self::Transport => "transport",
-            Self::Internal => "internal",
-            Self::Unknown => "unknown",
-        }
-    }
 }
 
 #[cfg(test)]

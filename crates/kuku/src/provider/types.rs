@@ -213,13 +213,60 @@ pub(crate) struct ProviderToolCall {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderFailureKind {
     Authentication,
+    PermissionDenied,
+    QuotaExhausted,
     RateLimited,
+    Timeout,
     ContextTooLarge,
     InvalidRequest,
+    InvalidResponse,
     ProviderUnavailable,
     Transport,
     Internal,
     Unknown,
+}
+
+impl ProviderFailureKind {
+    pub(crate) fn as_event_kind(self) -> &'static str {
+        match self {
+            Self::Authentication => "authentication",
+            Self::PermissionDenied => "permission_denied",
+            Self::QuotaExhausted => "quota_exhausted",
+            Self::ContextTooLarge => "context_too_large",
+            Self::InvalidRequest => "invalid_request",
+            Self::RateLimited => "rate_limited",
+            Self::Timeout => "timeout",
+            Self::ProviderUnavailable => "provider_unavailable",
+            Self::Transport => "transport",
+            Self::Internal => "internal",
+            Self::Unknown => "unknown",
+            Self::InvalidResponse => "invalid_response",
+        }
+    }
+
+    pub(crate) fn is_retryable(self) -> bool {
+        matches!(
+            self,
+            Self::RateLimited | Self::Timeout | Self::ProviderUnavailable | Self::Transport
+        )
+    }
+
+    pub(crate) fn safe_retry_message(self) -> &'static str {
+        match self {
+            Self::Authentication => "provider authentication failed; check configured credentials",
+            Self::PermissionDenied => "provider access denied; check provider permissions",
+            Self::QuotaExhausted => "provider quota exhausted; check billing or quota",
+            Self::RateLimited => "provider rate limited",
+            Self::Timeout => "provider request timed out",
+            Self::ContextTooLarge => "provider context limit exceeded; reduce request context",
+            Self::InvalidRequest => "provider rejected the request; check request parameters",
+            Self::InvalidResponse => "provider returned an invalid response",
+            Self::ProviderUnavailable => "provider unavailable",
+            Self::Transport => "provider transport failed",
+            Self::Internal => "internal provider error",
+            Self::Unknown => "unknown provider error",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
