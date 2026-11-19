@@ -230,13 +230,30 @@ def review_saved_commands(terminal, count, evidence):
     wanted = {"diff --git a/report.py": "terminal-diff.txt",
               "CSV regression checks passed": "terminal-check.txt"}
     terminal.request("resize", rows=35, cols=90)
-    for index in range(count):
-        screen = terminal.expect("run_command") ["screen"]
-        terminal.click_text(screen, "Messages" if "Messages" in screen else "Msg")
+    screen = terminal.expect("run_command")["screen"]
+    terminal.click_text(screen, "Messages" if "Messages" in screen else "Msg")
+    screen = terminal.expect("Tool · run_command")["screen"]
+    rows = [line.strip() for line in screen.splitlines() if "Tool · run_command" in line]
+    if len(rows) < count:
+        raise AssertionError(f"Message picker showed {len(rows)} run_command entries; expected {count}")
+
+    reviewed = 0
+    for row in rows:
+        if not wanted:
+            return
+        terminal.click_text(screen, row)
+        actions = terminal.request("screen")["screen"]
+        if "Selected · Tool · run_command" not in actions:
+            terminal.press("\r")
+            actions = terminal.expect("Selected · Tool · run_command")["screen"]
+        if "Full output" not in actions:
+            terminal.press("\x1b")
+            screen = terminal.expect("Tool · run_command")["screen"]
+            continue
+        terminal.click_text(actions, "Full output")
         terminal.press("\r")
-        terminal.press("\x1b[B" * index + "\r")
-        terminal.press("\t\t\r")
         screen = terminal.expect("bytes · PgUp/PgDn")["screen"]
+        reviewed += 1
         for page in range(4):
             output = saved_output_rows(screen)
             for marker in list(wanted):
@@ -257,6 +274,11 @@ def review_saved_commands(terminal, count, evidence):
                     break
         terminal.press("\x1b")
         terminal.expect("CSV totals verified")
+        screen = terminal.request("screen")["screen"]
+        terminal.click_text(screen, "Messages" if "Messages" in screen else "Msg")
+        screen = terminal.expect("Tool · run_command")["screen"]
+    if reviewed < count:
+        raise AssertionError(f"Message picker exposed {reviewed} Full output actions; expected {count}")
     raise AssertionError(f"Saved tool output in the resumed terminal lacked {list(wanted)}")
 
 

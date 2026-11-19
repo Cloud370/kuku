@@ -10,7 +10,7 @@ import re
 import sys
 from urllib.parse import urlencode, urlsplit
 
-from interactive_rendering import check_agent_reading_position, rendering_cases
+from interactive_rendering import check_agent_reading_position, operate_on_assistant, rendering_cases
 from interactive_fixture import (
     DenseTranscript, InstalledClient, MarkdownDocument, TOOL_BRIEF, TOOL_OUTPUT, eventually, http_fixture, install,
     delegate_reviewer, json_response, local_request,
@@ -129,6 +129,7 @@ def two_workspaces_and_disconnect(client):
             client.provider.assert_idle()
 
             right.request("resize", rows=32, cols=180)
+            right.expect("New session", state="Ready", rows=32)
             right.submit("right workspace check")
             client.provider.next("right workspace check").tool(
                 "write_file", "write-right-marker", path="right-marker.txt",
@@ -717,6 +718,9 @@ def dense_transcript(client, reference=False):
         return {"summary_rows": len(headings), "tool_rows": last - headings[0] + 1}
 
     def inspect_tools(terminal):
+        read_while(terminal, lambda value: running_view(value, 32)
+                   and scenario.activity_group in value and scenario.draft in value,
+                   "the resized transcript before paging up")
         terminal.press("\x1b[5~")
         collapsed = read_while(terminal, lambda value: running_view(value, 32)
                                and scenario.activity_group in value and "Reading history" in value,
@@ -811,10 +815,8 @@ def markdown_document(client, document=None, reference=False):
         assert not any(marker in screen for marker in (outer, document.fence, "```python")), screen
 
     def toggle_source(terminal):
-        terminal.expect("Enter steer", state="Finished")
-        terminal.press("/")
-        terminal.expect("Actions and Skills")
-        terminal.press("source\r")
+        screen = terminal.expect("Enter steer", state="Finished")["screen"]
+        operate_on_assistant(terminal, screen, document.intro, "Source")
 
     with client.terminal(workspace) as terminal:
         terminal.request("resize", rows=128, cols=140)

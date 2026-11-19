@@ -16,6 +16,28 @@ def event(name, **fields):
     return f"event: {name}\ndata: {body}\n\n".encode()
 
 
+def operate_on_assistant(terminal, screen, marker, action):
+    terminal.click_text(screen, "Messages" if "Messages" in screen else "Msg")
+    picker = terminal.expect("Loaded active transcript only")["screen"]
+    lines = picker.splitlines()
+    header = next(index for index, line in enumerate(lines) if "Loaded active transcript only" in line)
+    choices = lines[header + 1:]
+    rows = [
+        (index, line) for index, line in enumerate(choices)
+        if "Assistant" in line
+        and (marker in line or index + 1 < len(choices) and marker in choices[index + 1])
+    ]
+    assert len(rows) == 1, picker
+    row = rows[0][1]
+    assert "› Assistant" in row, picker
+    terminal.press("\r")
+    actions = terminal.expect("Selected · Assistant")["screen"]
+    assert marker in actions, actions
+    assert action in actions, actions
+    terminal.click_text(actions, action)
+    terminal.press("\r")
+
+
 def rendering_cases(binary, bridge, directory):
     with InstalledClient(binary, bridge, directory / "delegation") as client:
         targeted_delegation(client)
@@ -153,9 +175,8 @@ def markdown_inline_elements(client):
             eventually("default opener receives first link's URL",
                        lambda: open_log.read_text().splitlines() == [second, first])
         terminal.request("resize", cols=36, rows=38)
-        terminal.expect("中文勾选项", also=("保留待办项", "B Manual", "H₂O"))
-        terminal.click_text(screen, "Messages" if "Messages" in screen else "Msg")
-        terminal.press("\r\t\r")
+        screen = terminal.expect("中文勾选项", also=("保留待办项", "B Manual", "H₂O", "Msg"), rows=38)["screen"]
+        operate_on_assistant(terminal, screen, "<sup>", "Source")
         terminal.expect("x<sup>2</sup>", also=("H<sub>2</sub>O",))
         terminal.exit_cleanly()
 
@@ -296,8 +317,7 @@ def published_reasoning(client):
         completed = terminal.expect(answer, state="Finished", also=("Turn 1", "View thinking"))["screen"]
         assert completed.count("View thinking") == 1 and hidden not in completed
         assert answer in completed.splitlines()[flow_row], completed
-        terminal.click_text(completed, "Messages" if "Messages" in completed else "Msg")
-        terminal.press("\r\t\r")
+        operate_on_assistant(terminal, completed, answer, "Source")
         source = terminal.expect(answer, state="Assistant · source")["screen"]
         assert "Checking the totals." not in source and hidden not in source
         terminal.exit_cleanly()
@@ -307,8 +327,7 @@ def published_reasoning(client):
         reopened.press("\x0f")
         quiet = reopened.expect(answer, state="View thinking")["screen"]
         assert "Comparing the published results." not in quiet
-        reopened.click_text(quiet, "Messages" if "Messages" in quiet else "Msg")
-        reopened.press("\r\t\t\r")
+        operate_on_assistant(reopened, quiet, answer, "Thinking")
         notes = reopened.expect("Comparing the published results.", state="Esc back", also=(answer,))["screen"]
         assert hidden not in settled and hidden not in notes
         answer_row = next(i for i, row in enumerate(notes.splitlines()) if answer in row)
