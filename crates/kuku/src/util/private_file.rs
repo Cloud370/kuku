@@ -77,7 +77,7 @@ fn open_private_key(_path: &Path) -> io::Result<File> {
     ))
 }
 
-#[cfg(any(unix, windows))]
+#[cfg(unix)]
 fn unsafe_file() -> io::Error {
     io::Error::new(
         io::ErrorKind::PermissionDenied,

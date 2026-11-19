@@ -474,6 +474,8 @@ fn private_key(directory: &std::path::Path, contents: &[u8]) -> std::path::PathB
     let mut file = tempfile::NamedTempFile::new_in(directory).unwrap();
     file.write_all(contents).unwrap();
     file.as_file().sync_all().unwrap();
+    #[cfg(windows)]
+    kuku::util::set_config_temp_security(None, file.path(), file.as_file()).unwrap();
     file.keep().unwrap().1
 }
 
