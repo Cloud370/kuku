@@ -2,7 +2,7 @@ use kuku_client::{Acknowledgement, Action, Command, Error, InputStatus, Target};
 
 use crate::jobs::Job;
 
-use super::{Address, App, SubmissionStatus};
+use super::{Address, App, RewindDraft, SubmissionStatus};
 
 const MAX_CHECKING: usize = 4;
 
@@ -71,6 +71,7 @@ mod tests {
                 },
                 replayed: false,
                 status: None,
+                warnings: vec![],
             }),
         ));
         assert_eq!(Activity::Stopping, app.pane().activity());
@@ -149,6 +150,7 @@ mod tests {
                 },
                 replayed: true,
                 status: Some(InputStatus::Accepted),
+                warnings: vec![],
             })),
         ));
         assert!(reopened.pane().deliveries.rows().is_empty());
@@ -224,6 +226,7 @@ mod tests {
                 },
                 replayed: false,
                 status: Some(InputStatus::Queued),
+                warnings: vec![],
             }),
         ));
         let visible = app.pane().deliveries.rows();
@@ -305,6 +308,8 @@ impl PendingStage {
     }
 }
 
+pub(super) const MAX_REWIND_DRAFTS: usize = 64;
+
 impl App {
     pub(crate) fn pending_check(&mut self, id: &str) {
         if self.require_service() {
@@ -341,6 +346,10 @@ impl App {
                 && !matches!(item.command.action, Action::ReplaceQueued { .. })
         }) {
             if let Some(item) = self.pending.remove(id) {
+                if let Action::Withdraw { input_command_id } = &item.command.action {
+                    self.withdrawal_drafts
+                        .remove(&(item.command.target.clone(), input_command_id.clone()));
+                }
                 if let Some(pane) = self
                     .panes
                     .get_mut(&Address::from_target(&item.command.target))
@@ -437,6 +446,10 @@ impl App {
         match result {
             Ok(()) => {
                 if let Some(item) = self.pending.remove(id) {
+                    if let Action::Withdraw { input_command_id } = &item.command.action {
+                        self.withdrawal_drafts
+                            .remove(&(item.command.target.clone(), input_command_id.clone()));
+                    }
                     if let Some(pane) = self
                         .panes
                         .get_mut(&Address::from_target(&item.command.target))
@@ -530,6 +543,7 @@ impl App {
         let Some(item) = self.pending.get_mut(id) else {
             return;
         };
+        let rewind = matches!(&item.command.action, Action::RewindMessage { .. });
         let address = Address::from_target(&item.command.target);
         let rejected = error.definitively_rejected();
         let clear = rejected || save_failure;
@@ -566,6 +580,8 @@ impl App {
         }
         let recovery = if restored {
             "Draft restored"
+        } else if rewind {
+            "Selected text retained in pending action"
         } else {
             "See /pending"
         };
@@ -586,7 +602,8 @@ impl App {
         let Some(item) = self.pending.remove(id) else {
             return;
         };
-        let address = Address::from_target(&item.command.target);
+        let target = item.command.target.clone();
+        let address = Address::from_target(&target);
         let active = address == self.active;
         match item.command.action {
             Action::Send { text, timing, .. } => {
@@ -633,6 +650,18 @@ impl App {
                 self.confirmation("Reply received")
             }
             Action::Withdraw { input_command_id } => {
+                let restore_text = self
+                    .withdrawal_drafts
+                    .remove(&(target, input_command_id.clone()));
+                if ack.status == Some(InputStatus::Withdrawn) {
+                    if let Some(text) = restore_text {
+                        if let Some(pane) = self.panes.get_mut(&address) {
+                            if pane.draft.text().is_empty() {
+                                pane.draft.set_text(text);
+                            }
+                        }
+                    }
+                }
                 if ack.status.is_some() {
                     if let Some(pane) = self.panes.get_mut(&address) {
                         pane.record_submission(
@@ -675,6 +704,36 @@ impl App {
                     Some(InputStatus::Withdrawn) => "Replacement withdrawn",
                     Some(InputStatus::Queued) | None => "Queued input replaced",
                 });
+            }
+            Action::RewindMessage { text, .. } => {
+                let draft = self.rewind_drafts.remove(id).unwrap_or(RewindDraft {
+                    address: address.clone(),
+                    text,
+                    revision: 0,
+                });
+                let mut restored = false;
+                if let Some(pane) = self.panes.get_mut(&draft.address) {
+                    if pane.draft_revision == draft.revision && pane.draft.text().is_empty() {
+                        pane.draft.set_text(draft.text.clone());
+                        pane.draft_revision = pane.draft_revision.wrapping_add(1);
+                        restored = true;
+                    }
+                }
+                if ack.warnings.is_empty() {
+                    self.confirmation(if restored {
+                        "Message rewound · original text restored as an unsent draft"
+                    } else {
+                        "Message rewound · original text retained in Ctrl+Up history"
+                    });
+                } else {
+                    self.problem(format!(
+                        "Message rewound with warnings · original text retained in Ctrl+Up history · {}",
+                        ack.warnings.join(" · "),
+                    ));
+                }
+                if active {
+                    self.refresh_rewind_history();
+                }
             }
             Action::Advance => self.message("Continue request received"),
             Action::Cancel { execution_id } => {

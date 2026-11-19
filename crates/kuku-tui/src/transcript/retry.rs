@@ -30,11 +30,13 @@ pub(super) fn error_body(entry: &HistoryEntry, diagnostic: String) -> Body {
         diagnostic,
         fallback_hint: hint.clone(),
         hint,
+        retry_message: None,
         request_id: entry
             .details
             .get("request_id")
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned),
+        reply_interrupted: false,
     }
 }
 
@@ -62,21 +64,49 @@ pub(super) fn render(
             title,
             diagnostic,
             hint,
+            fallback_hint,
+            retry_message,
+            reply_interrupted,
             ..
         } => {
             let mut notice = String::new();
-            if !diagnostic.is_empty() {
-                notice.push_str(diagnostic);
-            }
-            if !hint.is_empty() {
-                if !notice.is_empty() {
-                    notice.push_str("\n\n");
+            let title = if *reply_interrupted {
+                format!("{title} · Reply interrupted")
+            } else {
+                (*title).to_owned()
+            };
+            if *reply_interrupted {
+                let message = retry_message
+                    .as_deref()
+                    .filter(|message| !message.is_empty());
+                if let Some(message) = message {
+                    notice.push_str(message);
+                } else if !fallback_hint.is_empty() {
+                    notice.push_str("Next step: ");
+                    notice.push_str(fallback_hint);
                 }
-                notice.push_str("Next step: ");
-                notice.push_str(hint);
+                let explanation = message.unwrap_or(fallback_hint);
+                if !diagnostic.is_empty() && diagnostic != explanation {
+                    if !notice.is_empty() {
+                        notice.push_str("\n\n");
+                        notice.push_str("Diagnostic: ");
+                    }
+                    notice.push_str(diagnostic);
+                }
+            } else {
+                if !diagnostic.is_empty() {
+                    notice.push_str(diagnostic);
+                }
+                if !hint.is_empty() {
+                    if !notice.is_empty() {
+                        notice.push_str("\n\n");
+                    }
+                    notice.push_str("Next step: ");
+                    notice.push_str(hint);
+                }
             }
             Some(render_record(
-                title,
+                &title,
                 ERROR,
                 render_literal(&notice, Style::default()),
                 width,

@@ -4,9 +4,34 @@ use serde_json::Value;
 use super::agent::AgentCards;
 use super::details::{groups, DetailRecord, Details, GroupHeading};
 use super::{
-    Anchor, AnchorLine, AssistantView, Body, HistoryRequest, Key, Record, RenderCache, Row,
-    ToolDetails, MAX_BODY_BYTES, MAX_LIVE_RECORDS, MAX_RECORDS,
+    Anchor, AnchorLine, AssistantView, Body, HistoryRequest, Key, Record, Row, ToolDetails,
+    MAX_BODY_BYTES, MAX_LIVE_RECORDS, MAX_RECORDS,
 };
+
+#[derive(Debug, Default)]
+pub(super) struct RenderCache {
+    pub(super) preview: Option<(super::PreviewLayout, Vec<Row>)>,
+    pub(super) source: Option<(usize, Vec<Row>)>,
+}
+
+impl Clone for Record {
+    fn clone(&self) -> Self {
+        Self {
+            key: self.key.clone(),
+            turn: self.turn,
+            turn_number: self.turn_number,
+            owner: self.owner.clone(),
+            execution_id: self.execution_id,
+            position: self.position,
+            before_event: self.before_event,
+            body: self.body.clone(),
+            suppress_interruption: self.suppress_interruption,
+            reasoning_preview: self.reasoning_preview.clone(),
+            turn_summary: self.turn_summary.clone(),
+            rendered: RenderCache::default(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct Window {
@@ -187,10 +212,15 @@ impl Window {
         turn_number: Option<u64>,
         body: impl FnOnce() -> Body,
     ) -> &mut Record {
+        let execution_id = match &key {
+            Key::Preview(execution_id) => Some(*execution_id),
+            Key::Event(_) | Key::Tool { .. } => None,
+        };
         if let Some(index) = self.records.iter().position(|record| record.key == key) {
             let record = &mut self.records[index];
             record.turn = record.turn.or(turn);
             record.turn_number = record.turn_number.or(turn_number);
+            record.execution_id = record.execution_id.or(execution_id);
             return record;
         }
         self.records.push(Record {
@@ -198,9 +228,11 @@ impl Window {
             turn,
             turn_number,
             owner: None,
+            execution_id,
             position: None,
             before_event: None,
             body: body(),
+            suppress_interruption: false,
             turn_summary: None,
             reasoning_preview: String::new(),
             rendered: RenderCache::default(),
@@ -405,7 +437,8 @@ impl Window {
             .iter()
             .filter_map(|record| match &record.body {
                 Body::Retry { metadata, .. }
-                    if crate::retry_notice::decision(metadata) == Some(false) =>
+                    if metadata.source == RetrySource::Provider
+                        && crate::retry_notice::decision(metadata) == Some(false) =>
                 {
                     let agent = record.owner.as_ref()?;
                     let turn = record.turn?;
@@ -414,6 +447,8 @@ impl Window {
                         agent.clone(),
                         turn,
                         request_id.clone(),
+                        record.execution_id,
+                        record.position?,
                         metadata
                             .message
                             .as_deref()
@@ -424,6 +459,49 @@ impl Window {
                 _ => None,
             })
             .collect::<Vec<_>>();
+        let stopped_provider_retries = self
+            .records
+            .iter()
+            .filter_map(|record| match &record.body {
+                Body::Retry { metadata, .. }
+                    if metadata.source == RetrySource::Provider
+                        && crate::retry_notice::decision(metadata) == Some(false) =>
+                {
+                    Some((
+                        record.owner.as_ref()?.clone(),
+                        record.turn?,
+                        metadata.request_id.as_ref()?.clone(),
+                        record.execution_id,
+                        record.position?,
+                    ))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let provider_retry_scopes = self
+            .records
+            .iter()
+            .filter_map(|record| match &record.body {
+                Body::Retry { metadata, .. } if metadata.source == RetrySource::Provider => Some((
+                    record.owner.as_ref()?.clone(),
+                    record.turn?,
+                    record.execution_id,
+                )),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let error_scopes = self
+            .records
+            .iter()
+            .filter_map(|record| match &record.body {
+                Body::ModelError { .. } => Some((
+                    record.owner.as_ref()?.clone(),
+                    record.turn?,
+                    record.execution_id,
+                )),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         let error_requests = self
             .records
             .iter()
@@ -431,10 +509,56 @@ impl Window {
                 Body::ModelError {
                     request_id: Some(request_id),
                     ..
-                } => Some((
+                } if !request_id.trim().is_empty() => Some((
                     record.owner.as_ref()?.clone(),
                     record.turn?,
                     request_id.clone(),
+                    record.execution_id,
+                    record.position?,
+                )),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let correlated_errors = error_requests
+            .iter()
+            .filter(|(agent, turn, request_id, execution_id, error_position)| {
+                let matching_retry = stopped_provider_retries.iter().any(
+                    |(retry_agent, retry_turn, retry_id, retry_execution, retry_position)| {
+                        agent == retry_agent
+                            && turn == retry_turn
+                            && request_id == retry_id
+                            && execution_id == retry_execution
+                            && retry_position < error_position
+                    },
+                );
+                let legacy_error = !provider_retry_scopes.iter().any(
+                    |(retry_agent, retry_turn, retry_execution)| {
+                        agent == retry_agent
+                            && turn == retry_turn
+                            && execution_id == retry_execution
+                    },
+                ) && error_scopes
+                    .iter()
+                    .filter(|(error_agent, error_turn, error_execution)| {
+                        agent == error_agent
+                            && turn == error_turn
+                            && execution_id == error_execution
+                    })
+                    .count()
+                    == 1;
+                matching_retry || legacy_error
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let interruptions = self
+            .records
+            .iter()
+            .filter_map(|record| match &record.body {
+                Body::Notice("Execution interrupted", ..) => Some((
+                    record.owner.as_ref()?.clone(),
+                    record.turn?,
+                    record.execution_id,
+                    record.position?,
                 )),
                 _ => None,
             })
@@ -449,17 +573,30 @@ impl Window {
                     diagnostic,
                     hint,
                     fallback_hint,
+                    retry_message,
+                    reply_interrupted,
                     ..
                 } => {
                     let message = retry_messages
                         .iter()
                         .rev()
-                        .find(|(agent, retry_turn, retry_id, _)| {
-                            owner.as_ref() == Some(agent)
-                                && turn == Some(*retry_turn)
-                                && retry_id == request_id
-                        })
-                        .and_then(|(_, _, _, message)| message.as_ref());
+                        .find(
+                            |(agent, retry_turn, retry_id, retry_execution, retry_position, _)| {
+                                owner.as_ref() == Some(agent)
+                                    && turn == Some(*retry_turn)
+                                    && retry_id == request_id
+                                    && record.execution_id == *retry_execution
+                                    && record
+                                        .position
+                                        .is_some_and(|position| *retry_position < position)
+                            },
+                        )
+                        .and_then(|(_, _, _, _, _, message)| message.as_ref());
+                    let next_retry_message = message.cloned();
+                    if retry_message != &next_retry_message {
+                        *retry_message = next_retry_message;
+                        changed = true;
+                    }
                     let next_hint = match message {
                         Some(message) if message.as_str() == diagnostic.as_str() => String::new(),
                         Some(message) => message.clone(),
@@ -469,6 +606,48 @@ impl Window {
                         *hint = next_hint;
                         changed = true;
                     }
+                    let next_reply_interrupted = correlated_errors.iter().any(
+                        |(agent, error_turn, error_id, error_execution, error_position)| {
+                            owner.as_ref() == Some(agent)
+                                && turn == Some(*error_turn)
+                                && request_id == error_id
+                                && record.execution_id == *error_execution
+                                && record.position == Some(*error_position)
+                                && interruptions.iter().any(
+                                    |(
+                                        interruption_agent,
+                                        interruption_turn,
+                                        interruption_execution,
+                                        interruption_position,
+                                    )| {
+                                        agent == interruption_agent
+                                            && error_turn == interruption_turn
+                                            && error_execution == interruption_execution
+                                            && error_position < interruption_position
+                                    },
+                                )
+                        },
+                    );
+                    if *reply_interrupted != next_reply_interrupted {
+                        *reply_interrupted = next_reply_interrupted;
+                        changed = true;
+                    }
+                }
+                Body::Notice("Execution interrupted", ..) => {
+                    let next_suppressed = correlated_errors.iter().any(
+                        |(agent, error_turn, _, error_execution, error_position)| {
+                            owner.as_ref() == Some(agent)
+                                && turn == Some(*error_turn)
+                                && record.execution_id == *error_execution
+                                && record
+                                    .position
+                                    .is_some_and(|position| *error_position < position)
+                        },
+                    );
+                    if record.suppress_interruption != next_suppressed {
+                        record.suppress_interruption = next_suppressed;
+                        changed = true;
+                    }
                 }
                 Body::Retry {
                     metadata,
@@ -476,11 +655,17 @@ impl Window {
                 } => {
                     let matched_error = crate::retry_notice::decision(metadata) == Some(false)
                         && metadata.request_id.as_ref().is_some_and(|request_id| {
-                            error_requests.iter().any(|(agent, error_turn, error_id)| {
-                                owner.as_ref() == Some(agent)
-                                    && turn == Some(*error_turn)
-                                    && error_id == request_id
-                            })
+                            error_requests.iter().any(
+                                |(agent, error_turn, error_id, error_execution, error_position)| {
+                                    owner.as_ref() == Some(agent)
+                                        && turn == Some(*error_turn)
+                                        && error_id == request_id
+                                        && record.execution_id == *error_execution
+                                        && record
+                                            .position
+                                            .is_some_and(|position| position < *error_position)
+                                },
+                            )
                         });
                     let next_include_detail = !matched_error;
                     if *include_detail != next_include_detail {

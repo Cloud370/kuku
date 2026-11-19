@@ -22,6 +22,7 @@ server = []
 [dependencies]
 kuku = { workspace = true }
 kuku-client = { path = "../kuku-client" }
+kuku-tui = { path = "../kuku-tui" }
 kuku-server = { path = "../kuku-server" }
 clap = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }

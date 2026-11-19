@@ -1,4 +1,5 @@
 use std::collections::{HashMap, VecDeque};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -23,6 +24,7 @@ mod delivery;
 mod navigation;
 mod pending;
 mod reading;
+mod rewind;
 mod timing;
 
 pub(crate) use activity::{Activity, ServiceStatus, SubmissionStatus};
@@ -32,7 +34,7 @@ use delivery::Deliveries;
 pub(crate) use delivery::DeliveryRow;
 use navigation::AgentNavigation;
 pub(crate) use pending::{PendingItem, PendingStage};
-use reading::KeyboardFocus;
+pub(crate) use reading::KeyboardFocus;
 pub(crate) use timing::TurnTiming;
 
 const DEFAULT_AGENT: &str = "main";
@@ -90,9 +92,15 @@ pub(crate) struct Pane {
     pub(crate) exists: bool,
     pub(crate) title: String,
     pub(crate) draft: Editor,
+    pub(crate) draft_revision: u64,
     pub(crate) transcript: Transcript,
     pub(crate) deliveries: Deliveries,
-    keyboard_focus: KeyboardFocus,
+    pub(crate) keyboard_focus: KeyboardFocus,
+    pub(crate) selected_queue_input: Option<String>,
+    pub(crate) focused_request: Option<String>,
+    pub(crate) permission_choice: Option<bool>,
+    pub(crate) request_scroll: usize,
+    pub(crate) request_detail_page_size: usize,
     pub(crate) snapshot: Option<Box<Snapshot>>,
     observed_timing: Option<(u64, TurnTiming)>,
     pub(crate) pending_reply_copy: Option<u64>,
@@ -117,6 +125,7 @@ pub(crate) struct Pane {
     refresh_in_flight: bool,
     cleanup_at: Option<Instant>,
     history_in_flight: Option<HistoryRequest>,
+    history_invalidated: bool,
 }
 
 impl Pane {
@@ -262,6 +271,7 @@ fn model_label(connection: &str, model: &str, effort: Option<&str>) -> String {
 
 #[derive(Debug)]
 pub(crate) enum Modal {
+    Help,
     Picker(Picker),
     Prompt(Prompt),
     Output(Box<OutputViewer>),
@@ -296,9 +306,15 @@ pub(crate) struct App {
     pub(crate) statusline_settings: StatusLineSettings,
     pub(crate) text_selection: TextSelection,
     pub(crate) pending: HashMap<String, PendingItem>,
+    pub(crate) withdrawal_drafts: HashMap<(Target, String), String>,
+    pub(crate) rewind_drafts: HashMap<String, RewindDraft>,
     pub(crate) editor_width: usize,
     pub(crate) transcript_area: (usize, usize),
     pub(crate) delivery_area: Rect,
+    pub(crate) delivery_hits: Vec<(Range<u16>, String)>,
+    pub(crate) request_area: Rect,
+    pub(crate) request_hit: Option<(Target, String)>,
+    pub(crate) permission_choice_areas: [Rect; 2],
     pub(crate) reading_area: Rect,
     pub(crate) composer_area: Rect,
     pub(crate) modal_editor_width: usize,
@@ -315,6 +331,15 @@ pub(crate) struct App {
     resolved_workspace: bool,
     cached: VecDeque<Address>,
     navigation: AgentNavigation,
+    pub(crate) escape_armed_at: Option<Instant>,
+    pub(crate) rewind_restore_files: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RewindDraft {
+    pub(crate) address: Address,
+    pub(crate) text: String,
+    pub(crate) revision: u64,
 }
 
 impl App {
@@ -337,9 +362,15 @@ impl App {
             statusline_settings: StatusLineSettings::default(),
             text_selection: TextSelection::default(),
             pending: HashMap::new(),
+            withdrawal_drafts: HashMap::new(),
+            rewind_drafts: HashMap::new(),
             editor_width: 80,
             transcript_area: (80, 16),
             delivery_area: Rect::ZERO,
+            delivery_hits: Vec::new(),
+            request_area: Rect::ZERO,
+            request_hit: None,
+            permission_choice_areas: [Rect::ZERO; 2],
             reading_area: Rect::ZERO,
             composer_area: Rect::ZERO,
             modal_editor_width: 60,
@@ -355,6 +386,8 @@ impl App {
             quit_after_save: false,
             resolved_workspace: false,
             navigation: AgentNavigation::default(),
+            escape_armed_at: None,
+            rewind_restore_files: false,
         }
     }
 
@@ -623,10 +656,20 @@ impl App {
                 self.refreshed(result)
             }
             Update::History(selection, request, result) if selection == self.selection() => {
-                self.pane_mut().history_in_flight = None;
-                match result {
-                    Ok(page) => self.pane_mut().transcript.apply_page(request, page),
-                    Err(error) => self.problem(format!("History · {error} · scroll up to retry")),
+                if self.pane().history_invalidated {
+                    let request = HistoryRequest::Recent;
+                    let pane = self.pane_mut();
+                    pane.history_invalidated = false;
+                    pane.history_in_flight = Some(request);
+                    self.effects.push(Job::History(selection, request));
+                } else {
+                    self.pane_mut().history_in_flight = None;
+                    match result {
+                        Ok(page) => self.pane_mut().transcript.apply_page(request, page),
+                        Err(error) => {
+                            self.problem(format!("History · {error} · scroll up to retry"))
+                        }
+                    }
                 }
             }
             Update::Found(ticket, result) => {
@@ -762,6 +805,7 @@ impl App {
         pane.refresh_in_flight = false;
         pane.refresh_due = None;
         pane.history_in_flight = None;
+        pane.history_invalidated = false;
         if !self.available() {
             self.effects.push(Job::StopObserving);
         } else if self.pane().exists {
@@ -907,7 +951,6 @@ impl App {
             Ok(mut snapshot) => {
                 snapshot.reply_preview = None;
                 pane.set_snapshot(snapshot);
-                self.sync_withdraw_picker();
             }
             Err(error) => self.problem(format!("Agent state · {error} · /reconnect")),
         }

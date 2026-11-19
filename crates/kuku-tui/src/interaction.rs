@@ -3,9 +3,10 @@ use std::ops::Range;
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
 };
-use kuku_client::{Action, AgentConfig, Error, Timing};
+use kuku_client::{Action, AgentConfig, Error, Target, Timing};
 use ratatui::buffer::Buffer;
 
+use self::rewind::rewind_instructions;
 use crate::app::{Address, App, Modal, PendingItem, PendingStage};
 use crate::editor::Editor;
 use crate::jobs::{Job, Search, Selection};
@@ -15,7 +16,10 @@ use crate::output::OutputViewer;
 use crate::text::{shorten, single_line, TAB};
 use crate::transcript::{ReplySource, ToolView};
 
+mod inline;
+mod input;
 mod pointer;
+mod rewind;
 
 const MOUSE_SCROLL_LINES: isize = 3;
 
@@ -62,53 +66,24 @@ impl App {
         }
     }
 
-    fn key(&mut self, key: KeyEvent) {
-        self.dismiss_confirmation();
-        self.text_selection.cancel_drag();
-        if Shortcut::ESCAPE.matches(key) && self.modal.take().is_some() {
-            self.effects.push(Job::ClosePicker);
-            return;
-        }
-        match self.modal {
-            Some(Modal::Picker(_)) => self.picker_key(key),
-            Some(Modal::Prompt(_)) => self.prompt_key(key),
-            Some(Modal::Output(_)) => self.output_key(key),
-            Some(Modal::StatusLineEditor(_)) => self.statusline_key(key),
-            None => self.composer_key(key),
+    fn restore_question_composer(&mut self, target: &Target) {
+        let address = Address::new(target.session_id.clone(), target.agent.clone());
+        if let Some(pane) = self.panes.get_mut(&address) {
+            pane.keyboard_focus = crate::app::KeyboardFocus::Composer;
+            pane.focused_request = None;
         }
     }
-
-    fn paste(&mut self, text: &str) {
-        self.dismiss_confirmation();
-        self.text_selection.cancel_drag();
-        if let Some(Modal::Picker(picker)) = &mut self.modal {
-            if picker.kind.searchable() {
-                picker.query.insert(&text.replace(['\r', '\n'], " "));
-                picker.selected = 0;
-                self.search(false);
-            }
-        } else if let Some(Modal::Prompt(prompt)) = &mut self.modal {
-            if prompt.kind.multiline() {
-                prompt.editor.insert(text);
-            } else {
-                prompt.editor.insert(&text.replace(['\r', '\n'], " "));
-            }
-        } else if self.modal.is_none() {
-            self.focus_composer();
-            self.pane_mut().draft.insert(text);
-        }
-    }
-
     fn wheel(&mut self, mouse: MouseEvent, amount: isize) {
         self.text_selection.cancel_drag();
         match &mut self.modal {
+            Some(Modal::Help) => {}
             Some(Modal::Output(viewer)) => {
                 if let Some(offset) = viewer.scroll(amount) {
                     self.read_output(offset);
                 }
             }
             Some(Modal::Picker(picker)) => {
-                if matches!(picker.kind, PickerKind::Server | PickerKind::Permission) {
+                if matches!(picker.kind, PickerKind::Server) {
                     picker.header_top = picker.header_top.saturating_add_signed(amount);
                 } else {
                     picker.move_by(amount);
@@ -132,6 +107,9 @@ impl App {
     }
 
     fn composer_key(&mut self, key: KeyEvent) {
+        if self.inline_key(key) {
+            return;
+        }
         if let Some(direction) = AgentDirection::from_key(key) {
             self.cycle_agent(direction);
             return;
@@ -153,17 +131,17 @@ impl App {
                 }
             }
             key if Shortcut::ACTIONS.matches(key) || Shortcut::ACTIONS_ALIAS.matches(key) => {
-                self.command_menu()
+                self.show_shortcut_help()
             }
-            key if Shortcut::REPLY.matches(key) => self.open_reply(),
-            key if Shortcut::ESCAPE.matches(key) => self.interrupt(),
+            key if Shortcut::REPLY.matches(key) => self.focus_request(),
+            key if Shortcut::ESCAPE.matches(key) => self.rewind_escape(),
             key if editing && Shortcut::NEXT_TURN.matches(key) => self.send(Timing::NextTurn),
             key if editing && Shortcut::ENTER.matches(key) => self.send(Timing::Steer),
             key if Shortcut::UP.matches(key)
                 && self.pane().draft.text().is_empty()
                 && self.queued_for_edit().next().is_some() =>
             {
-                self.open_queued()
+                self.focus_queued()
             }
             key if Shortcut::PREVIOUS_PROMPT.matches(key) || Shortcut::NEXT_PROMPT.matches(key) => {
                 self.focus_composer();
@@ -250,13 +228,11 @@ impl App {
             }
             key if Shortcut::UP.matches(key) => picker.move_by(-1),
             key if Shortcut::DOWN.matches(key) => picker.move_by(1),
-            key if Shortcut::PAGE_UP.matches(key)
-                && matches!(picker.kind, PickerKind::Server | PickerKind::Permission) =>
-            {
+            key if Shortcut::PAGE_UP.matches(key) && matches!(picker.kind, PickerKind::Server) => {
                 picker.header_top = picker.header_top.saturating_add_signed(-details_page);
             }
             key if Shortcut::PAGE_DOWN.matches(key)
-                && matches!(picker.kind, PickerKind::Server | PickerKind::Permission) =>
+                && matches!(picker.kind, PickerKind::Server) =>
             {
                 picker.header_top = picker.header_top.saturating_add_signed(details_page);
             }
@@ -287,6 +263,15 @@ impl App {
             return;
         }
         if Shortcut::ENTER.matches(key) {
+            if let PromptKind::RewindMessage { event_id, text, .. } = &prompt.kind {
+                let event_id = *event_id;
+                let text = text.clone();
+                let restore_files = self.rewind_restore_files;
+                self.modal = None;
+                self.rewind_restore_files = false;
+                self.rewind_message(event_id, text, restore_files);
+                return;
+            }
             if prompt.editor.text().trim().is_empty() {
                 return;
             }
@@ -315,16 +300,40 @@ impl App {
                     config.model = Some(content.trim().to_owned());
                     self.configure(config);
                 }
-                PromptKind::Question { request_id } => self.issue(
-                    self.active.clone(),
-                    Action::ReplyQuestion {
-                        request_id,
-                        text: content.to_owned(),
-                    },
-                ),
+                PromptKind::Question { request_id, target } => {
+                    self.restore_question_composer(&target);
+                    if self.selection().target != target
+                        || !self.pane().snapshot.as_ref().is_some_and(|snapshot| {
+                            snapshot
+                                .agent
+                                .question
+                                .as_ref()
+                                .is_some_and(|request| request.id == request_id)
+                        })
+                    {
+                        self.problem("This question is no longer waiting for this Agent");
+                    } else {
+                        self.issue(
+                            self.active.clone(),
+                            Action::ReplyQuestion {
+                                request_id,
+                                text: content.to_owned(),
+                            },
+                        );
+                    }
+                }
                 PromptKind::QueuedInput { .. } => unreachable!("queued input edited above"),
+                PromptKind::RewindMessage { .. } => unreachable!("rewind confirmed above"),
             }
-        } else {
+        } else if key.code == KeyCode::Char(' ')
+            && key.modifiers.is_empty()
+            && matches!(prompt.kind, PromptKind::RewindMessage { .. })
+        {
+            self.rewind_restore_files = !self.rewind_restore_files;
+            if let PromptKind::RewindMessage { text, .. } = &prompt.kind {
+                prompt.instructions = rewind_instructions(text, self.rewind_restore_files);
+            }
+        } else if !matches!(prompt.kind, PromptKind::RewindMessage { .. }) {
             let multiline = prompt.kind.multiline();
             edit(&mut prompt.editor, key, self.modal_editor_width, multiline);
         }
@@ -356,6 +365,10 @@ impl App {
             Shortcut::CONTROL_NEW_LINE.label,
         );
         self.search(true);
+    }
+
+    fn show_shortcut_help(&mut self) {
+        self.modal = Some(Modal::Help);
     }
 
     fn search(&mut self, first: bool) {
@@ -465,9 +478,22 @@ impl App {
                 config.reasoning_effort = effort;
                 self.configure(config);
             }
-            ChoiceKind::EditQueued(id) => self.edit_queued(id),
-            ChoiceKind::Withdraw(input_command_id) => {
-                self.issue(self.active.clone(), Action::Withdraw { input_command_id })
+            ChoiceKind::RewindMessage {
+                event_id,
+                turn,
+                text,
+            } => {
+                self.rewind_restore_files = false;
+                self.modal = Some(Modal::Prompt(Prompt {
+                    kind: PromptKind::RewindMessage {
+                        event_id,
+                        text: text.clone(),
+                    },
+                    title: format!("Rewind to message · Turn {turn}"),
+                    instructions: rewind_instructions(&text, false),
+                    instructions_top: 0,
+                    editor: Editor::default(),
+                }));
             }
             ChoiceKind::Pending(id) => self.open_pending_item(&id),
             ChoiceKind::PendingRetry(id) => self.pending_retry(&id),
@@ -475,10 +501,6 @@ impl App {
             ChoiceKind::PendingDiscard(id) => self.pending_discard(&id),
             ChoiceKind::PendingOpen { target, exists } => self.pending_open(target, exists),
             ChoiceKind::RestoreRejected(id) => self.restore_rejected(&id),
-            ChoiceKind::Permission { request_id, allow } => self.issue(
-                self.active.clone(),
-                Action::ReplyPermission { request_id, allow },
-            ),
             ChoiceKind::Detail(key) => {
                 if !self.toggle_transcript_detail(&key) {
                     self.problem("These details are no longer available");
@@ -498,16 +520,12 @@ impl App {
             }
             CommandMenu::Agents => self.open_agents(),
             CommandMenu::Back => self.back_to_agent(),
-            CommandMenu::Queue => self.send(Timing::NextTurn),
-            CommandMenu::Queued => self.open_queued(),
-            CommandMenu::Withdraw => self.open_queue(),
             CommandMenu::Advance => {
                 if self.pane().exists {
                     self.issue(self.active.clone(), Action::Advance);
                 }
             }
             CommandMenu::Interrupt => self.interrupt(),
-            CommandMenu::Reply => self.open_reply(),
             CommandMenu::Pending => {
                 self.picker(PickerKind::Pending, self.pending_choices());
             }
@@ -548,76 +566,23 @@ impl App {
         self.search(true);
     }
 
-    fn open_queue(&mut self) {
-        self.picker(PickerKind::Queue, Vec::new());
-        self.sync_withdraw_picker();
-    }
-
-    pub(crate) fn sync_withdraw_picker(&mut self) {
-        if !matches!(&self.modal, Some(Modal::Picker(picker)) if matches!(picker.kind, PickerKind::Queue))
-        {
-            return;
-        }
-        let choices = self.pane().snapshot.as_ref().map_or_else(Vec::new, |snap| {
-            snap.pending
-                .iter()
-                .map(|queued| {
-                    Choice::new(
-                        shorten(&single_line(&queued.input.text), 120),
-                        format!(
-                            "{} · receipt {}",
-                            queued.receipt.agent, queued.receipt.event_id
-                        ),
-                        ChoiceKind::Withdraw(queued.receipt.command_id.clone()),
-                    )
-                })
-                .collect()
-        });
-        if let Some(Modal::Picker(picker)) = &mut self.modal {
-            picker.set_local(choices);
-        }
-    }
-
-    fn open_reply(&mut self) {
-        let Some(snapshot) = self.pane().snapshot.as_ref() else {
+    fn answer_question(&mut self) {
+        let Some(request) = self
+            .pane()
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.agent.question.as_ref())
+        else {
             self.problem("No request is waiting for this Agent");
             return;
         };
-        if let Some(request) = &snapshot.agent.question {
-            let kind = PromptKind::Question {
-                request_id: request.id.clone(),
-            };
-            let title = format!("Answer {}", request.agent);
-            let instructions = request.text.clone();
-            self.prompt(kind, title, instructions);
-        } else if let Some(request) = &snapshot.agent.permission {
-            let id = request.id.clone();
-            let header = format!(
-                "{} requests {} · {}\n{}\n{}",
-                self.active.agent, request.tool, request.risk, request.summary, request.candidate
-            );
-            let choices = vec![
-                Choice::new(
-                    "Deny",
-                    "Decline this request",
-                    ChoiceKind::Permission {
-                        request_id: id.clone(),
-                        allow: false,
-                    },
-                ),
-                Choice::new(
-                    "Allow once",
-                    "Approve the displayed request",
-                    ChoiceKind::Permission {
-                        request_id: id,
-                        allow: true,
-                    },
-                ),
-            ];
-            self.picker(PickerKind::Permission, choices).header = header;
-        } else {
-            self.problem("No request is waiting for this Agent");
-        }
+        let kind = PromptKind::Question {
+            request_id: request.id.clone(),
+            target: self.selection().target,
+        };
+        let title = format!("Answer {}", request.agent);
+        let instructions = request.text.clone();
+        self.prompt(kind, title, instructions);
     }
 
     fn open_thinking(&mut self) {
@@ -915,6 +880,9 @@ fn pending_label(item: &PendingItem) -> String {
         }
         Action::ReplaceQueued { text, .. } => {
             format!("Queued edit · {}", shorten(&single_line(text), 110))
+        }
+        Action::RewindMessage { text, .. } => {
+            format!("Rewind · {}", shorten(&single_line(text), 110))
         }
         Action::CreateAgent { .. } => "Create Agent".to_owned(),
         Action::Configure { .. } => "Change settings".to_owned(),

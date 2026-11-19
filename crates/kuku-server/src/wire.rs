@@ -58,6 +58,12 @@ pub(crate) enum Command {
         input_command_id: String,
         text: String,
     },
+    RewindMessage {
+        target_event_id: u64,
+        text: String,
+        #[serde(default)]
+        restore_files: bool,
+    },
     Advance,
     Cancel {
         execution_id: u64,
@@ -122,6 +128,8 @@ pub(crate) struct CommandResult {
     replayed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     status: Option<InputStatus>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    warnings: Vec<String>,
 }
 
 impl CommandResult {
@@ -131,7 +139,13 @@ impl CommandResult {
             receipt,
             replayed,
             status,
+            warnings: Vec::new(),
         }
+    }
+
+    pub(crate) fn with_warnings(mut self, warnings: Vec<String>) -> Self {
+        self.warnings = warnings;
+        self
     }
 }
 

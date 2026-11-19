@@ -17,7 +17,9 @@ pub(super) enum Body {
         diagnostic: String,
         hint: String,
         fallback_hint: String,
+        retry_message: Option<String>,
         request_id: Option<String>,
+        reply_interrupted: bool,
     },
     Retry {
         metadata: RetryMetadata,

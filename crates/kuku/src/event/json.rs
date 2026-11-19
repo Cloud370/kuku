@@ -1,6 +1,26 @@
+use serde::{Serialize, Serializer};
 use serde_json::{Map, Value};
 
+use super::types::EventPayload;
 use super::ModelStopReason;
+
+impl Serialize for EventPayload {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::Unknown(value) => value.serialize(serializer),
+            payload => {
+                let mut value = payload.to_new_json(0).map_err(serde::ser::Error::custom)?;
+                if let Some(object) = value.as_object_mut() {
+                    object.remove("id");
+                }
+                value.serialize(serializer)
+            }
+        }
+    }
+}
 
 pub(super) fn string_field(object: &Map<String, Value>, key: &str) -> Option<String> {
     object.get(key)?.as_str().map(ToOwned::to_owned)

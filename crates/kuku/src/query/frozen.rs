@@ -97,7 +97,9 @@ pub(super) fn prepare(pending: &mut PendingRun) -> Result<PreparedContext> {
     });
     let handoff_changed = previous
         .as_ref()
-        .is_some_and(|segment| segment.handoff != handoff);
+        .map_or(cursor.handoff.is_some(), |segment| {
+            segment.handoff != handoff
+        });
     let workspace_changed = previous
         .as_ref()
         .is_some_and(|segment| segment.workspace != pending.workspace.to_string_lossy());
@@ -281,7 +283,7 @@ pub(super) fn record_prepared(
     }
     for (ordinal, admitted) in context.messages.iter().enumerate().skip(frozen_head) {
         writer.append(EventPayload::Unknown(json!({"kind":"runtime.context_admitted","ts":now_timestamp()?,"agent":pending.conversation.as_str(),"segment":context.segment.id,
-            "ordinal":ordinal,"turn":admitted.turn,"origin":admitted.origin,"source_head":context.source_head,"message":admitted.message})))?;
+            "ordinal":ordinal,"turn":admitted.turn,"origin":admitted.origin,"source_head":context.source_head,"admitted_at":admitted.admitted_at,"message":admitted.message})))?;
     }
     let body_hash = format!("{:x}", Sha256::digest(serde_json::to_vec(&prepared.body)?));
     let payload = EventPayload::Unknown(
@@ -446,6 +448,11 @@ fn append_input_skills(
     pending: &mut PendingRun,
     messages: &mut Vec<AdmittedMessage>,
 ) -> Result<Vec<String>> {
+    let admitted_at = messages
+        .iter()
+        .rev()
+        .find(|message| message.turn == pending.turn && message.origin == MessageOrigin::Input)
+        .map_or(0, |message| message.admitted_at);
     let mut names = std::mem::take(&mut pending.query.input_skills);
     if names.is_empty() {
         return Ok(names);
@@ -486,6 +493,7 @@ fn append_input_skills(
             turn: pending.turn,
             origin: MessageOrigin::Runtime,
             message: CanonicalMessage::user_text(definition.instructions.clone()),
+            admitted_at,
         });
     }
     Ok(names)
@@ -499,6 +507,11 @@ fn append_dynamic(
     resolved: &ResolvedProvider,
     frozen_head: usize,
 ) -> Result<()> {
+    let admitted_at = messages
+        .iter()
+        .rev()
+        .find(|message| message.turn == pending.turn && message.origin == MessageOrigin::Input)
+        .map_or(0, |message| message.admitted_at);
     for admitted in messages
         .iter_mut()
         .skip(frozen_head)
@@ -524,6 +537,7 @@ fn append_dynamic(
             turn: pending.turn,
             origin: MessageOrigin::Runtime,
             message: CanonicalMessage::user_text(text),
+            admitted_at,
         });
     }
     let headroom = crate::notice::compute_context_headroom(
@@ -549,6 +563,7 @@ fn append_dynamic(
             turn: pending.turn,
             origin: MessageOrigin::Runtime,
             message: CanonicalMessage::user_text(prefix),
+            admitted_at,
         });
     }
     Ok(())

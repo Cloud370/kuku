@@ -1,7 +1,7 @@
-use kuku_client::{HistoryEntry, HistoryKind};
+use kuku_client::{HistoryEntry, HistoryKind, HistoryPage};
 use serde_json::json;
 
-use super::{Key, Record, Transcript, MAX_RECORDS};
+use super::{HistoryRequest, Key, Record, Transcript, MAX_RECORDS};
 
 fn retry_entry(
     id: u64,
@@ -52,6 +52,26 @@ fn error_entry(id: u64, turn: u64, request_id: &str, message: &str) -> HistoryEn
         .into_iter()
         .collect(),
     }
+}
+
+fn interruption_entry(
+    id: u64,
+    turn: u64,
+    execution_id: Option<u64>,
+    message: &str,
+) -> HistoryEntry {
+    let mut entry = json!({
+        "id":id,
+        "agent":"main",
+        "turn":turn,
+        "type":"status",
+        "status":"interrupted",
+        "text":message
+    });
+    if let Some(execution_id) = execution_id {
+        entry["execution_id"] = json!(execution_id);
+    }
+    serde_json::from_value(entry).expect("interruption entry")
 }
 
 fn status_entry(id: u64) -> HistoryEntry {
@@ -368,23 +388,146 @@ fn live_partial_precedes_error_and_interruption_notice_without_execution_id() {
         error_entry(10, 7, "req_1", "Fixture connection closed"),
         None,
     );
-    let interruption: HistoryEntry = serde_json::from_value(json!({
-        "id":11,
-        "agent":"main",
-        "turn":7,
-        "turn_number":2,
-        "type":"status",
-        "status":"interrupted",
-        "text":"transport"
-    }))
-    .unwrap();
+    let interruption = interruption_entry(11, 7, None, "transport");
     transcript.apply(interruption, None);
 
     let text = rendered(&mut transcript);
     let partial = text.find("Partial reply").unwrap();
-    assert!(partial < text.find("Transport error").unwrap(), "{text}");
     assert!(
-        partial < text.find("Execution interrupted").unwrap(),
+        partial < text.find("Transport error · Reply interrupted").unwrap(),
         "{text}"
     );
+    assert!(!text.contains("Execution interrupted"), "{text}");
+    assert!(
+        !text.lines().any(|line| line.trim() == "transport"),
+        "{text}"
+    );
+}
+
+#[test]
+fn correlated_provider_interruption_renders_one_error_block_after_page_load() {
+    let retry_message = "Check the provider network, then Continue.";
+    for stop_reason in [
+        "stream_started",
+        "attempt_limit",
+        "non_retryable",
+        "request_budget",
+        "disabled",
+        "future_reason",
+    ] {
+        for message in [retry_message, ""] {
+            let mut transcript = Transcript::default();
+            transcript.apply_page(
+                HistoryRequest::Recent,
+                HistoryPage {
+                    entries: vec![
+                        retry_entry(8, 2, "req_1", message, stop_reason),
+                        error_entry(9, 2, "req_1", "Fixture connection closed"),
+                        interruption_entry(10, 2, None, "transport"),
+                    ],
+                    next_before: None,
+                },
+            );
+
+            let text = rendered(&mut transcript);
+            assert!(
+                text.contains("Transport error · Reply interrupted"),
+                "{text}"
+            );
+            assert_eq!(1, text.matches("Fixture connection closed").count());
+            assert!(
+                text.contains("Diagnostic: Fixture connection closed"),
+                "{text}"
+            );
+            assert!(text.to_lowercase().contains("no automatic retry"), "{text}");
+            if stop_reason == "stream_started" {
+                assert!(text.contains("Reply already started"), "{text}");
+            }
+            if message.is_empty() {
+                assert!(
+                    text.contains("Next step: Wait/check service/network; then Continue."),
+                    "{text}"
+                );
+                assert_eq!(0, text.matches(retry_message).count());
+            } else {
+                assert_eq!(1, text.matches(retry_message).count());
+                assert!(
+                    !text.contains("Next step: Check the provider network, then Continue."),
+                    "{text}"
+                );
+                assert!(
+                    !text.contains("Wait/check service/network; then Continue."),
+                    "{text}"
+                );
+            }
+            assert!(!text.contains("Execution interrupted"), "{text}");
+            assert!(
+                !text.lines().any(|line| line.trim() == "transport"),
+                "{text}"
+            );
+        }
+    }
+}
+
+#[test]
+fn legacy_model_error_and_provider_interruption_are_correlated_on_page_load() {
+    let mut transcript = Transcript::default();
+    transcript.apply_page(
+        HistoryRequest::Recent,
+        HistoryPage {
+            entries: vec![
+                error_entry(9, 2, "req_1", "Fixture connection closed"),
+                interruption_entry(10, 2, None, "transport"),
+            ],
+            next_before: None,
+        },
+    );
+
+    let text = rendered(&mut transcript);
+    assert!(
+        text.contains("Transport error · Reply interrupted"),
+        "{text}"
+    );
+    assert_eq!(1, text.matches("Fixture connection closed").count());
+    assert!(!text.contains("Execution interrupted"), "{text}");
+    assert!(
+        !text.lines().any(|line| line.trim() == "transport"),
+        "{text}"
+    );
+}
+
+#[test]
+fn explicit_stop_and_different_execution_interruption_remain_separate() {
+    for (execution_id, message) in [(Some(12), "User pressed Esc"), (None, "transport")] {
+        let mut transcript = Transcript::default();
+        transcript.apply(
+            retry_entry(
+                8,
+                2,
+                "req_1",
+                "Check network, then Continue.",
+                "stream_started",
+            ),
+            Some(12),
+        );
+        transcript.apply(
+            error_entry(9, 2, "req_1", "Fixture connection closed"),
+            Some(12),
+        );
+        let interruption = interruption_entry(10, 2, execution_id, message);
+        let current_execution = if execution_id.is_some() {
+            Some(12)
+        } else {
+            Some(13)
+        };
+        transcript.apply(interruption, current_execution);
+
+        let text = rendered(&mut transcript);
+        assert!(
+            !text.contains("Transport error · Reply interrupted"),
+            "{text}"
+        );
+        assert!(text.contains("Transport error"), "{text}");
+        assert!(text.contains(message), "{text}");
+    }
 }

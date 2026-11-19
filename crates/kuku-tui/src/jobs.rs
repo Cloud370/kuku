@@ -220,7 +220,7 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
         }
         Job::History(selection, request) => {
             let result = client
-                .history(&selection.target, Some(request.before()), HISTORY_PAGE)
+                .history(&selection.target, request.before_option(), HISTORY_PAGE)
                 .await;
             Update::History(selection, request, result)
         }

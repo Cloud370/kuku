@@ -237,6 +237,7 @@ fn draft_receipt_and_copy_feedback_keep_the_footer_in_place() {
             },
             replayed: false,
             status: Some(InputStatus::Accepted),
+            warnings: vec![],
         }),
     ));
     let rows = screen(&mut app, &statusline, 140, 24);
@@ -265,7 +266,7 @@ fn composer_follows_wrapped_draft_rows_and_caps_the_visible_paste() {
     let statusline = StatusLine::default();
     let rows = screen(&mut app, &statusline, 80, 20);
     assert!(rows[15].contains("To main"));
-    assert!(rows[17].contains("Type a prompt"));
+    assert!(rows[17].contains("Enter steer"));
     app.pane_mut().draft.insert(&"a".repeat(76));
     let rows = screen(&mut app, &statusline, 80, 20);
     assert!(rows[14].contains("To main") && rows[17].trim_end().ends_with('a'));
@@ -416,7 +417,7 @@ fn configured_status_line_can_show_full_metrics_and_connection_details() {
         footer.ends_with("Context 89% used · 129M in · 210K out · Cache hit 75% · 18.4 TPS"),
         "{footer}"
     );
-    assert!(rows[21].contains("Type a prompt"));
+    assert!(rows[21].contains("Enter steer"));
 }
 
 #[test]
@@ -433,7 +434,7 @@ fn selected_agent_metrics_change_with_the_address_and_custom_order() {
         .collect::<Vec<_>>()
         .join(" · ");
     assert_eq!("Agent main · 18.4 TPS · Context 89% used · 210K out · Cache hit 75% · 129M in · /workspace", fields);
-    assert!(rows[16].contains("Type a prompt"));
+    assert!(rows[16].contains("Enter steer"));
 
     app.select(
         Address::new(main.session.clone(), "reviewer".into()),

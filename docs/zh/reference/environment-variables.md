@@ -10,11 +10,13 @@
 | `KUKU_SERVER_PASSWORD` | 通过 `kuku server` 显式启动服务时使用的令牌 |
 | `ANTHROPIC_API_KEY` | `provider.anthropic` 常用的 API key 来源 |
 | `OPENAI_API_KEY` | `provider.openai` 常用的 API key 来源 |
+| `DEEPSEEK_API_KEY` | `provider.deepseek` 常用的 API key 来源 |
+| `OPENROUTER_API_KEY` | `provider.openrouter` 常用的 API key 来源 |
 | `KUKU_PROVIDER_TRACE` | 设为 `1` 时写入 provider 请求和响应 trace 日志 |
 
-`config.toml` 也可以在字符串字段中使用 `$NAME` 引用环境变量。`api_key` 保留环境变量引用并在之后解析；其他字符串字段在配置加载时解析。
+`config.toml` 也可以在字符串字段中使用 `$NAME` 引用环境变量。对于 `api_key`，`$NAME` 明确选择环境变量来源；`file:<绝对路径>` 明确选择私有文件。两种来源不会互相回退；其他字符串字段在配置加载时解析。
 
-模型凭据和 `KUKU_PROVIDER_TRACE` 在服务端环境中设置。新客户端接入时，已运行的服务继续使用自己的环境变量。[配置指南](../start/configuration.md)
+环境变量凭据必须非空。模型凭据和 `KUKU_PROVIDER_TRACE` 在服务端环境中设置。新客户端接入时，已运行的服务继续使用自己的环境变量。[配置指南](../start/configuration.md)
 
 ## Provider Trace 日志
 

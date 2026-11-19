@@ -18,6 +18,7 @@ mod notes;
 mod preview;
 mod reply;
 mod retry;
+mod rewind;
 mod row;
 use row::Row;
 mod tool;
@@ -32,7 +33,7 @@ use self::message::{paint_card, render_assistant_source, render_record, render_u
 use self::reply::LatestReply;
 pub(crate) use self::reply::ReplySource;
 use self::tool::Tool;
-use self::window::{Layout, TurnHeading, Window};
+use self::window::{Layout, RenderCache, TurnHeading, Window};
 
 pub(crate) const HISTORY_PAGE: usize = 48;
 const MAX_RECORDS: usize = HISTORY_PAGE * 3;
@@ -64,6 +65,7 @@ enum AnchorLine {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HistoryRequest {
+    Recent,
     Older(u64),
     Newer { first: u64, before: u64 },
     Restore(u64),
@@ -72,8 +74,13 @@ pub(crate) enum HistoryRequest {
 impl HistoryRequest {
     pub(crate) fn before(self) -> u64 {
         match self {
+            Self::Recent => 0,
             Self::Older(before) | Self::Newer { before, .. } | Self::Restore(before) => before,
         }
+    }
+
+    pub(crate) fn before_option(self) -> Option<u64> {
+        (self != Self::Recent).then(|| self.before())
     }
 }
 
@@ -110,6 +117,16 @@ pub(crate) struct Transcript {
 }
 
 impl Transcript {
+    pub(crate) fn invalidate_after_rewind(&mut self) {
+        self.reply_position = None;
+        self.reading = None;
+        self.restore = None;
+        self.latest_reply = LatestReply::default();
+        self.recent = Window::default();
+        self.current_execution = None;
+        self.detail_items.visible.clear();
+    }
+
     pub(crate) fn replace_recent(&mut self, page: HistoryPage) {
         self.reply_position = None;
         if let Some(reading) = &mut self.reading {
@@ -158,6 +175,9 @@ impl Transcript {
             interrupted_execution
         };
         let mut record = Record::from_entry(entry);
+        if let (Some(record), Some(execution)) = (&mut record, execution) {
+            record.execution_id.get_or_insert(execution);
+        }
         self.recent
             .preserve_interrupted_reply(&mut record, interrupted_execution, entry_turn);
         if let (Some((event, turn)), Some(execution)) = (error_position, self.current_execution) {
@@ -347,6 +367,10 @@ impl Transcript {
     }
 
     pub(crate) fn apply_page(&mut self, request: HistoryRequest, page: HistoryPage) {
+        if request == HistoryRequest::Recent {
+            self.replace_recent(page);
+            return;
+        }
         if let HistoryRequest::Restore(before) = request {
             if self
                 .restore
@@ -395,7 +419,8 @@ impl Transcript {
             }
             HistoryRequest::Older(_)
             | HistoryRequest::Newer { .. }
-            | HistoryRequest::Restore(_) => {}
+            | HistoryRequest::Restore(_)
+            | HistoryRequest::Recent => {}
         }
     }
 
@@ -638,35 +663,14 @@ struct Record {
     turn: Option<u64>,
     turn_number: Option<u64>,
     owner: Option<String>,
+    execution_id: Option<u64>,
     position: Option<u64>,
     before_event: Option<u64>,
     body: Body,
+    suppress_interruption: bool,
     reasoning_preview: String,
     turn_summary: Option<TurnSummary>,
     rendered: RenderCache,
-}
-
-impl Clone for Record {
-    fn clone(&self) -> Self {
-        Self {
-            key: self.key.clone(),
-            turn: self.turn,
-            turn_number: self.turn_number,
-            owner: self.owner.clone(),
-            position: self.position,
-            before_event: self.before_event,
-            body: self.body.clone(),
-            reasoning_preview: self.reasoning_preview.clone(),
-            turn_summary: self.turn_summary.clone(),
-            rendered: RenderCache::default(),
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-struct RenderCache {
-    preview: Option<(PreviewLayout, Vec<Row>)>,
-    source: Option<(usize, Vec<Row>)>,
 }
 
 impl Record {
@@ -680,6 +684,7 @@ impl Record {
                 .and_then(Value::as_str),
             MAX_BODY_BYTES,
         );
+        let execution_id = entry.details.get("execution_id").and_then(Value::as_u64);
         let body = match entry.kind {
             HistoryKind::User => Body::User {
                 sender: entry
@@ -739,9 +744,11 @@ impl Record {
             turn: entry.turn,
             turn_number: entry.details.get("turn_number").and_then(Value::as_u64),
             owner: (!entry.agent.is_empty()).then_some(entry.agent),
+            execution_id,
             position: Some(entry.id),
             before_event: None,
             body,
+            suppress_interruption: false,
             reasoning_preview,
             turn_summary: entry.turn_summary,
             rendered: RenderCache::default(),
@@ -753,6 +760,7 @@ impl Record {
         if self.owner.is_none() {
             self.owner = record.owner;
         }
+        self.execution_id = self.execution_id.or(record.execution_id);
         if self.turn_summary.is_none() && record.turn_summary.is_some() {
             self.turn_summary = record.turn_summary;
             self.rendered = RenderCache::default();
@@ -775,8 +783,9 @@ impl Record {
     }
 
     fn visible(&self) -> bool {
-        matches!((&self.key,&self.body), (Key::Preview(_), Body::Assistant(text)) if text.is_empty())
-            || !matches!(&self.body, Body::Assistant(text) if text.trim().is_empty() && self.reasoning_preview.is_empty())
+        !self.suppress_interruption
+            && (matches!((&self.key,&self.body), (Key::Preview(_), Body::Assistant(text)) if text.is_empty())
+                || !matches!(&self.body, Body::Assistant(text) if text.trim().is_empty() && self.reasoning_preview.is_empty()))
     }
 
     fn tool(&self) -> Option<&Tool> {

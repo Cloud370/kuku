@@ -16,7 +16,7 @@ $KUKU_HOME/config.toml
 
 The HTTP server defaults to `config.toml` in its data directory and accepts an explicit `--config` path. An already running managed server reports its effective configuration with `kuku server status`. [Configuration](../start/configuration.md)
 
-The interactive TUI offers first-run setup only when its selected local config path is absent. It leaves existing files untouched and stores a credential environment-variable reference, not a key value. See [First-run TUI setup](../start/configuration.md#first-run-tui-setup) for the setup flow and editing defaults.
+The interactive TUI and `kuku init` share provider settings. First-run setup runs only when the selected local config is missing; `kuku init` also edits an existing valid config while preserving unrelated TOML. See [Configuration](../start/configuration.md) for key storage and editing behavior.
 
 The terminal client uses a separate preferences file. [Terminal preferences](#terminal-preferences)
 
@@ -56,7 +56,7 @@ Default tiers are `strong`, `balanced`, and `light`.
 |---|---|---|
 | `format` | string | `anthropic`, `openai-chat`, or `openai-responses` |
 | `base_url` | string | Provider API base URL, or `$ENV_VAR_NAME` |
-| `api_key` | string | Literal key, or `$ENV_VAR_NAME` |
+| `api_key` | string | `$ENV_VAR_NAME`, a literal key, or `file:<absolute-path>` |
 | `auth` | `bearer`\|`x-api-key` | Override authentication independently of `format` |
 | `profile` | string | `auto` (default), `openai`, `anthropic`, `deepseek`, `openrouter`, or `compatible` |
 | `reasoning_efforts` | string[] | Override the declared native reasoning values for this connection's models |
@@ -73,7 +73,9 @@ Messages defaults to `x-api-key` authentication; OpenRouter uses Bearer authenti
 
 `routing.order` and `routing.only` contain upstream endpoint tags. `allow_fallbacks` controls upstream fallback; `require_parameters` defaults to `true` for both TOML and SDK construction. Optional `routing.max_price.prompt` and `.completion` cap USD per million tokens and do not cap total spend. OpenRouter receives a stable transport correlation derived from Session, Agent address, and connection name. Each Agent remains separate across Turns and reopen. Routing affinity does not guarantee cache retention. See the [routing](https://openrouter.ai/docs/guides/routing/provider-selection) and [prompt caching](https://openrouter.ai/docs/guides/best-practices/prompt-caching) contracts.
 
-Any string config value whose first character is `$` is treated as an environment variable reference and resolved before validation, except `api_key`, which keeps the env-var reference and resolves later when the provider is used.
+`api_key = "$NAME"` selects only that environment variable. `api_key = "file:/absolute/path"` selects only that file; relative file references are rejected, the file is validated and read at request time, and there is no source fallback. `file:` is a path reference, not a URL. `kuku config show` displays the reference without reading the secret. Keys stored by setup are plaintext (not encrypted) in one private file under `<data-dir>/credentials/`; the directory must be private and outside the workspace. See [File layout](file-layout.md) for Unix permissions and Windows ACL requirements. Existing key files are not automatically deleted.
+
+Any other string config value whose first character is `$` is treated as an environment variable reference and resolved before validation.
 
 ## `discovery`
 

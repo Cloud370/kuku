@@ -10,6 +10,9 @@ use super::{Activity, App, HistoryEntry, InputStatus, ServiceStatus, SubmissionS
 use crate::app::Address;
 use crate::jobs::{Job, Update};
 
+#[path = "rewind_tests.rs"]
+mod rewind_tests;
+
 fn connected() -> App {
     let workspace = PathBuf::from("/workspace");
     let mut app = App::new(workspace.clone(), None);
@@ -918,6 +921,7 @@ fn draft_confirmation_durable_queue_and_admission_are_independent() {
             },
             replayed: false,
             status: Some(InputStatus::Queued),
+            warnings: vec![],
         }),
     ));
     assert_eq!(
@@ -962,6 +966,7 @@ fn first_attachment_observes_input_already_accepted_after_queued_receipt() {
             },
             replayed: false,
             status: Some(InputStatus::Queued),
+            warnings: vec![],
         }),
     ));
     let attached = snapshot(&app, 6, "running", Some(4), 0, Value::Null, None);

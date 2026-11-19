@@ -361,7 +361,7 @@ mod tests {
     }
 
     fn open_editor(app: &mut App) {
-        press(app, KeyCode::Char('p'), KeyModifiers::CONTROL);
+        press(app, KeyCode::Char('/'), KeyModifiers::NONE);
         app.event(
             Event::Paste("/statusline".into()),
             &Buffer::empty(Rect::ZERO),
