@@ -204,8 +204,20 @@ impl ContextCursor {
                     .retain(|admission| admission.id < target_event_id || admission.id >= event.id);
                 self.tail
                     .retain(|source| source.id < target_event_id || source.id >= event.id);
-                self.handoff = None;
-                self.segment = None;
+                if self
+                    .handoff
+                    .as_ref()
+                    .is_some_and(|handoff| handoff.id >= target_event_id)
+                {
+                    self.handoff = None;
+                }
+                if self
+                    .segment
+                    .as_ref()
+                    .is_some_and(|segment| segment.id >= target_event_id)
+                {
+                    self.segment = None;
+                }
                 if self.pending_admissions.is_empty() {
                     self.pending_source_head = None;
                 }

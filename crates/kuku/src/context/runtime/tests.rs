@@ -391,6 +391,121 @@ fn reopened_cursor_drops_rewound_handoff_summary_and_frozen_prelude() {
 }
 
 #[test]
+fn reopened_cursor_preserves_handoff_summary_before_rewind_target() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("events.jsonl");
+    let mut writer = EventStore::open(&path).unwrap();
+    writer
+        .append(EventPayload::TurnStarted {
+            turn: 1,
+            ts: "t".into(),
+            conversation: "main".into(),
+        })
+        .unwrap();
+    let catalog = crate::prompt::builtin_prompt_catalog();
+    let frozen_summary = CanonicalMessage::assistant(vec![MessageBlock::Text(
+        "surviving turn-one summary".into(),
+    )]);
+    let segment = writer
+        .append(EventPayload::Unknown(json!({
+            "kind":"runtime.context_segment", "agent":"main", "signature":"old",
+            "configuration":1, "handoff":4, "system_prompt":"system", "prelude":[frozen_summary],
+            "tools":[], "catalog":catalog, "connection":"", "protocol":"", "model":"",
+            "endpoint":"", "behavior":"", "identity_slot":1, "workspace":""
+        })))
+        .unwrap()
+        .id;
+    writer
+        .append(EventPayload::Unknown(json!({
+            "kind":"runtime.step_prepared", "agent":"main", "segment":segment,
+            "context_head":0, "source_head":0
+        })))
+        .unwrap();
+    let handoff = writer
+        .append(EventPayload::Handoff {
+            turn: 1,
+            ts: "t".into(),
+            request_id: "handoff".into(),
+            summary: "surviving handoff summary".into(),
+            keep_turns: 1,
+        })
+        .unwrap();
+    assert_eq!(4, handoff.id);
+    writer
+        .append(EventPayload::TurnStarted {
+            turn: 2,
+            ts: "t".into(),
+            conversation: "main".into(),
+        })
+        .unwrap();
+    let target = writer
+        .append(EventPayload::MessageUser {
+            conversation: "main".into(),
+            turn: 2,
+            ts: "t".into(),
+            text: "rewound second-turn input".into(),
+            from: None,
+            via_tool_call_id: None,
+        })
+        .unwrap()
+        .id;
+    writer
+        .append(EventPayload::ModelResponse {
+            conversation: Some("main".into()),
+            turn: 2,
+            ts: "t".into(),
+            request_id: "later".into(),
+            text: "rewound second-turn answer".into(),
+            thinking: None,
+            stop_reason: None,
+            input_tokens_total: None,
+            output_tokens_total: None,
+        })
+        .unwrap();
+    writer
+        .append(EventPayload::Unknown(json!({
+            "kind":"runtime.operation",
+            "record":{"operation":"message_rewind","address":"main","target_event_id":target}
+        })))
+        .unwrap();
+    drop(writer);
+
+    let mut reopened = ContextCursor::default();
+    reopened.refresh(&path, "main", 1024 * 1024).unwrap();
+    let handoff_summary = reopened
+        .handoff
+        .as_ref()
+        .and_then(|event| match &event.payload {
+            EventPayload::Handoff { summary, .. } => Some(summary.clone()),
+            _ => None,
+        });
+    let history = reopened.history(&ConversationAddress::MAIN);
+    let body = serde_json::to_string(&rendered_provider_body(
+        history
+            .iter()
+            .map(|admitted| admitted.message.clone())
+            .collect(),
+        reopened
+            .segment
+            .as_ref()
+            .map(|segment| segment.prelude.clone())
+            .unwrap_or_default(),
+        handoff_summary,
+    ))
+    .unwrap();
+
+    assert_eq!(Some(4), reopened.handoff.as_ref().map(|event| event.id));
+    assert_eq!(
+        Some(segment),
+        reopened.segment.as_ref().map(|segment| segment.id)
+    );
+    assert!(body.contains("surviving turn-one summary"));
+    assert!(body.contains("surviving handoff summary"));
+    assert!(!body.contains("rewound second-turn input"));
+    assert!(!body.contains("rewound second-turn answer"));
+}
+
+#[test]
 fn frozen_assets_are_selected_by_agent_across_bounded_pages() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("events.jsonl");
