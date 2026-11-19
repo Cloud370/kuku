@@ -205,7 +205,8 @@ impl ExecutionProgress {
                     self.clear_stream();
                 }
             }
-            "turn.cancelled" | "turn.interrupted" => *self = Self::default(),
+            "turn.cancelled" => *self = Self::default(),
+            "turn.interrupted" => self.retain_terminal_notice(),
             "runtime.tool_dispatched" => {
                 if let Some(id) = tool_call_id {
                     self.tools.insert(id);
@@ -583,7 +584,12 @@ impl Pane {
                 self.live_floor = id;
                 self.retired_execution_floor = id;
             }
-            Some("agent_stopped" | "permission_waiting") => {
+            Some("agent_stopped") => {
+                self.live_floor = id;
+                self.progress = ExecutionProgress::default();
+                self.transcript.clear_reply_preview();
+            }
+            Some("permission_waiting") => {
                 self.live_floor = id;
                 self.progress.clear_stream();
                 self.transcript.clear_reply_preview();
