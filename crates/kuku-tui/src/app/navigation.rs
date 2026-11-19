@@ -367,11 +367,9 @@ mod tests {
 
         let previous = app.previous_agent().cloned().unwrap();
         let previous_draft = app.panes.get(&previous).unwrap().draft.text().to_owned();
-        assert!(
-            app.focus_context_control(crate::contextual::ContextControl::PreviousAgent {
-                target: previous.clone(),
-            })
-        );
+        key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
+        assert!(matches!(app.pane().contextual_focus.cursor,
+            Some(crate::contextual::ContextControl::PreviousAgent { ref target }) if target == &previous));
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(previous.agent, app.active.agent);
         assert_eq!(previous_draft, app.pane().draft.text());

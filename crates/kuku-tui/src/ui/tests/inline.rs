@@ -295,6 +295,10 @@ fn request_card_is_visible_without_focus_and_question_answer_is_scoped_and_stale
     app.effects.clear();
     key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
     assert!(app.modal.is_none());
+    assert!(matches!(
+        app.pane().contextual_focus.cursor,
+        Some(crate::contextual::ContextControl::Restart { .. })
+    ));
     key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
     assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
         if matches!(&prompt.kind, PromptKind::Question { request_id, .. } if request_id == "q-1")
@@ -303,15 +307,50 @@ fn request_card_is_visible_without_focus_and_question_answer_is_scoped_and_stale
     assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
         if prompt.editor.text() == "answer draft"));
     if let Some(Modal::Prompt(prompt)) = &mut app.modal {
-        prompt.editor.set_text("workspace tests".into());
+        assert_eq!("answer draft", prompt.editor.text());
     }
-    let stale_state = snapshot(&app, "waiting", json!(null), json!(null));
+    let replacement_question = json!({
+        "id":"q-2", "agent":"main", "turn":2,
+        "tool_call_id":"tool-2", "text":"What should run instead?"
+    });
+    let stale_state = snapshot(&app, "waiting", replacement_question, json!(null));
     app.pane_mut().snapshot = Some(stale_state);
     key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     assert!(app.effects.is_empty());
     assert!(app.modal.is_none());
     assert_eq!("my independent draft", app.pane().draft.text());
     assert_eq!(KeyboardFocus::Composer, app.pane().keyboard_focus);
+}
+
+#[test]
+fn reconnect_shortcut_survives_permission_request_focus_without_answering_it() {
+    let mut app = app();
+    let permission = json!({
+        "id":"p-reconnect", "conversation":"main", "turn":1,
+        "tool_call_id":"tool-reconnect", "tool":"write_file", "risk":"high",
+        "summary":"Change app.rs", "candidate":"diff", "source":"tool"
+    });
+    let permission_state = snapshot(&app, "waiting", json!(null), permission);
+    load(&mut app, permission_state);
+    key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
+    assert_eq!(KeyboardFocus::Request, app.pane().keyboard_focus);
+    key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    assert!(matches!(
+        app.pane().contextual_focus.cursor,
+        Some(crate::contextual::ContextControl::Restart { .. })
+    ));
+    key(&mut app, KeyCode::BackTab, KeyModifiers::SHIFT);
+    assert_eq!(KeyboardFocus::Request, app.pane().keyboard_focus);
+    app.effects.clear();
+    key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
+    assert!(app
+        .effects
+        .iter()
+        .any(|effect| matches!(effect, crate::jobs::Job::Connect)));
+    assert!(!app.effects.iter().any(|effect| matches!(effect,
+        crate::jobs::Job::Save(command)
+            if matches!(command.action, Action::ReplyPermission { .. })
+    )));
 }
 
 #[test]

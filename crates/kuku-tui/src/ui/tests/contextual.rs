@@ -1,12 +1,15 @@
 use crossterm::event::{KeyCode, KeyModifiers};
+use kuku_client::Error;
 use kuku_client::{Action, HistoryPage, Input, QueuedInput, Receipt, Timing};
 use serde_json::json;
 
 use super::{app, click, key, render, screen};
 use crate::app::Modal;
-use crate::contextual::{ContextControl, PendingCommandIdentity};
+use crate::config::StatusLineSettings;
+use crate::contextual::{ContextControl, PendingCommandIdentity, PendingCommandKind};
 use crate::jobs::{Job, Update};
 use crate::menu::PickerKind;
+use crate::statusline::StatusLine;
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 
@@ -62,7 +65,7 @@ fn clicking_restart_only_focuses_it_and_enter_preserves_the_draft() {
         .unwrap()
         .area;
 
-    click(&mut app, &buffer, (hit.x, hit.y));
+    click(&mut app, buffer, (hit.x, hit.y));
     assert!(app.pane().contextual_focus.active);
     assert!(!app.restarting);
     assert_eq!("unsent draft", app.pane().draft.text());
@@ -80,8 +83,37 @@ fn narrow_layout_keeps_contextual_service_action_keyboard_reachable() {
     assert!(!view.is_empty());
     key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
     assert!(app.pane().contextual_focus.active);
+    let focused = screen(&mut app, 24, 12);
+    assert!(focused.contains("Restart"));
+    assert!(focused.contains("Enter act"));
+    assert!(focused.contains("Esc back"));
     key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     assert!(app.restarting);
+}
+
+#[test]
+fn focused_control_hints_render_with_default_and_custom_statuslines() {
+    let mut ordinary = app();
+    ordinary.pane_mut().exists = true;
+    let ordinary_view = screen(&mut ordinary, 82, 20);
+    assert!(ordinary_view.contains("F2 Restart · Enter"));
+
+    let mut desktop = app();
+    desktop.pane_mut().exists = true;
+    key(&mut desktop, KeyCode::F(2), KeyModifiers::NONE);
+    let default_view = screen(&mut desktop, 82, 20);
+    assert!(default_view.contains("Restart"));
+    assert!(default_view.contains("Enter act"));
+    assert!(default_view.contains("Esc back"));
+
+    let mut custom = app();
+    custom.pane_mut().exists = true;
+    custom.statusline_settings = StatusLineSettings::in_memory(StatusLine::parse("input").unwrap());
+    key(&mut custom, KeyCode::F(2), KeyModifiers::NONE);
+    let custom_view = screen(&mut custom, 82, 20);
+    assert!(custom_view.contains("Restart"));
+    assert!(custom_view.contains("Enter act"));
+    assert!(custom_view.contains("Esc back"));
 }
 
 #[test]
@@ -180,9 +212,14 @@ fn pending_recovery_requires_the_same_saved_command_identity() {
             if commands == &[PendingCommandIdentity {
                 target: command.target.clone(),
                 command_id: command.command_id.clone(),
+                kind: PendingCommandKind::Send,
             }]
     ));
     assert!(current.focus_context_control(control));
+    let focused = screen(&mut current, 82, 20);
+    assert!(focused.contains("Unconfirmed send"));
+    assert!(focused.contains("Enter act"));
+    assert!(focused.contains("Esc back"));
     key(&mut current, KeyCode::Enter, KeyModifiers::NONE);
     assert!(matches!(&current.modal,
         Some(Modal::Picker(picker)) if matches!(picker.kind, PickerKind::Pending)
@@ -199,4 +236,62 @@ fn pending_recovery_requires_the_same_saved_command_identity() {
     stale.pending.remove(&command.command_id);
     key(&mut stale, KeyCode::Enter, KeyModifiers::NONE);
     assert!(stale.modal.is_none());
+}
+
+#[test]
+fn failed_configure_and_other_saved_action_open_recovery_without_a_send() {
+    let mut app = app();
+    for (id, action) in [
+        (
+            "configure-command",
+            Action::Configure {
+                config: Box::default(),
+            },
+        ),
+        (
+            "create-agent-command",
+            Action::CreateAgent {
+                config: Box::default(),
+            },
+        ),
+    ] {
+        app.issue(app.active.clone(), action);
+        let Some(Job::Save(mut command)) = app.effects.pop() else {
+            panic!("saved action should be queued")
+        };
+        command.command_id = id.into();
+        app.update(Update::Saved(command.clone(), Ok(())));
+        app.update(Update::Sent(
+            command.command_id.clone(),
+            Err(Error::Service {
+                status: 503,
+                code: "provider_error".into(),
+                error_message: "provider failed before confirming the action".into(),
+            }),
+        ));
+        app.effects.clear();
+    }
+    let control = app
+        .contextual_controls()
+        .into_iter()
+        .find(|control| matches!(control, ContextControl::PendingRecovery { .. }))
+        .unwrap();
+    assert!(matches!(&control,
+        ContextControl::PendingRecovery { commands }
+            if commands.len() == 2
+                && commands.iter().all(|command| command.kind == PendingCommandKind::Action)
+    ));
+    assert!(!app
+        .pending
+        .values()
+        .any(|item| matches!(item.command.action, Action::Send { .. })));
+    assert!(app.focus_context_control(control));
+    let focused = screen(&mut app, 82, 20);
+    assert!(focused.contains("Unconfirmed action"));
+    assert!(focused.contains("Enter act"));
+    assert!(focused.contains("Esc back"));
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(matches!(&app.modal,
+        Some(Modal::Picker(picker)) if matches!(picker.kind, PickerKind::Pending)
+    ));
 }

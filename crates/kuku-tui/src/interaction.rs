@@ -170,6 +170,10 @@ impl App {
         if self.contextual_key(key) {
             return;
         }
+        if Shortcut::RECONNECT.matches(key) {
+            self.reconnect();
+            return;
+        }
         if self.inline_key(key) {
             return;
         }
@@ -219,7 +223,6 @@ impl App {
                     self.scroll(direction);
                 }
             }
-            key if Shortcut::RECONNECT.matches(key) => self.reconnect(),
             key if Shortcut::MODEL.matches(key) => self.perform(CommandMenu::Model),
             key if Shortcut::DETAILS.matches(key) => {
                 let expanded = self.pane_mut().transcript.toggle_details();

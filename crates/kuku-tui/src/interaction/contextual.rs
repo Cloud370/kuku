@@ -1,7 +1,7 @@
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use kuku_client::Action;
 
-use crate::app::App;
+use crate::app::{App, KeyboardFocus};
 use crate::contextual::ContextControl;
 use crate::keys::Shortcut;
 use crate::menu::PickerKind;
@@ -9,7 +9,18 @@ use crate::menu::PickerKind;
 impl App {
     pub(super) fn contextual_key(&mut self, key: KeyEvent) -> bool {
         if Shortcut::REPLY.matches(key) {
-            return self.cycle_context_control();
+            return self.cycle_context_control(false);
+        }
+        let request_focused = self.pane().keyboard_focus == KeyboardFocus::Request;
+        if (self.pane().contextual_focus.active || request_focused)
+            && (Shortcut::TAB.matches(key)
+                || key.code == KeyCode::BackTab
+                || key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT))
+        {
+            return self.cycle_context_control(
+                key.code == KeyCode::BackTab
+                    || key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT),
+            );
         }
         if !self.pane().contextual_focus.active {
             return false;
@@ -59,7 +70,7 @@ impl App {
         self.pane_mut().contextual_focus.active = false;
     }
 
-    fn cycle_context_control(&mut self) -> bool {
+    fn cycle_context_control(&mut self, reverse: bool) -> bool {
         let controls = self.contextual_controls();
         if controls.is_empty() {
             let focus = &mut self.pane_mut().contextual_focus;
@@ -70,7 +81,16 @@ impl App {
         let current = self.pane().contextual_focus.cursor.as_ref();
         let index = current
             .and_then(|current| controls.iter().position(|control| control == current))
-            .map_or(0, |index| (index + 1) % controls.len());
+            .map_or_else(
+                || if reverse { controls.len() - 1 } else { 0 },
+                |index| {
+                    if reverse {
+                        (index + controls.len() - 1) % controls.len()
+                    } else {
+                        (index + 1) % controls.len()
+                    }
+                },
+            );
         self.focus_context_control(controls[index].clone())
     }
 
@@ -105,7 +125,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{ContextControl, KeyEvent};
     use crossterm::event::KeyModifiers;
 
     #[test]
@@ -129,7 +149,7 @@ mod tests {
     #[test]
     fn enter_activates_focused_service_control_without_sending_the_draft() {
         let mut app = crate::interaction::tests::connected_app();
-        app.pane_mut().draft.insert("unsent".into());
+        app.pane_mut().draft.insert("unsent");
         app.key(KeyEvent::new(
             crossterm::event::KeyCode::F(2),
             KeyModifiers::NONE,
@@ -159,5 +179,35 @@ mod tests {
             KeyModifiers::NONE,
         ));
         assert!(app.effects.is_empty());
+    }
+
+    #[test]
+    fn tab_cycles_focused_controls_in_both_directions() {
+        let mut app = crate::interaction::tests::connected_app();
+        app.connection_problem = Some("offline".into());
+        app.key(KeyEvent::new(
+            crossterm::event::KeyCode::F(2),
+            KeyModifiers::NONE,
+        ));
+        assert!(matches!(
+            app.pane().contextual_focus.cursor,
+            Some(ContextControl::Reconnect { .. })
+        ));
+        app.key(KeyEvent::new(
+            crossterm::event::KeyCode::Tab,
+            KeyModifiers::NONE,
+        ));
+        assert!(matches!(
+            app.pane().contextual_focus.cursor,
+            Some(ContextControl::Restart { .. })
+        ));
+        app.key(KeyEvent::new(
+            crossterm::event::KeyCode::BackTab,
+            KeyModifiers::SHIFT,
+        ));
+        assert!(matches!(
+            app.pane().contextual_focus.cursor,
+            Some(ContextControl::Reconnect { .. })
+        ));
     }
 }

@@ -7,6 +7,13 @@ use crate::app::Address;
 pub(crate) struct PendingCommandIdentity {
     pub(crate) target: Target,
     pub(crate) command_id: String,
+    pub(crate) kind: PendingCommandKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PendingCommandKind {
+    Send,
+    Action,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +46,11 @@ pub(crate) enum ContextControl {
 }
 
 impl ContextControl {
+    pub(crate) fn is_send_recovery(&self) -> bool {
+        matches!(self, Self::PendingRecovery { commands }
+            if !commands.is_empty() && commands.iter().all(|command| command.kind == PendingCommandKind::Send))
+    }
+
     pub(crate) fn is_service(&self) -> bool {
         matches!(self, Self::Reconnect { .. } | Self::Restart { .. })
     }

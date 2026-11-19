@@ -1,6 +1,6 @@
 use kuku_client::{Action, AgentStatus};
 
-use crate::contextual::{ContextControl, PendingCommandIdentity};
+use crate::contextual::{ContextControl, PendingCommandIdentity, PendingCommandKind};
 
 use super::{Activity, App, PendingStage, ServiceStatus};
 
@@ -93,15 +93,15 @@ impl App {
         let mut commands = self
             .pending
             .values()
-            .filter(|item| {
-                matches!(
-                    item.command.action,
-                    Action::Send { .. } | Action::ReplaceQueued { .. }
-                ) && !matches!(item.stage, PendingStage::Discarding)
-            })
+            .filter(|item| !matches!(item.stage, PendingStage::Discarding))
             .map(|item| PendingCommandIdentity {
                 target: item.command.target.clone(),
                 command_id: item.command.command_id.clone(),
+                kind: if matches!(item.command.action, Action::Send { .. }) {
+                    PendingCommandKind::Send
+                } else {
+                    PendingCommandKind::Action
+                },
             })
             .collect::<Vec<_>>();
         commands.sort_by(|left, right| {

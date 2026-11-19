@@ -1,4 +1,5 @@
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
@@ -8,19 +9,73 @@ use crate::app::App;
 use crate::contextual::{ContextControl, ContextHit};
 use crate::keys::Shortcut;
 use crate::text::shorten;
-use crate::theme::{emphasis, focused_row, ACCENT};
+use crate::theme::{emphasis, focused_row, ACCENT, MUTED};
 
 pub(super) fn label(control: &ContextControl) -> String {
     match control {
         ContextControl::Request { .. } => "F2 Request".into(),
-        ContextControl::Continue { .. } => "F2 Continue".into(),
-        ContextControl::Interrupt { .. } => format!("{} Stop", Shortcut::ESCAPE.label),
-        ContextControl::PendingRecovery { .. } => "F2 Recovery".into(),
-        ContextControl::PreviousAgent { .. } => "F2 Back".into(),
-        ContextControl::Reconnect { .. } => {
-            format!("F2 Reconnect · {}", Shortcut::RECONNECT.label)
+        ContextControl::Continue { .. } => "F2 Continue · Enter".into(),
+        ContextControl::Interrupt { .. } => "F2 Stop · Enter".into(),
+        control @ ContextControl::PendingRecovery { .. } => {
+            let title = if control.is_send_recovery() {
+                "Unconfirmed send"
+            } else {
+                "Unconfirmed action"
+            };
+            format!("F2 {title} · Enter")
         }
-        ContextControl::Restart { .. } => "F2 Restart".into(),
+        ContextControl::PreviousAgent { .. } => "F2 Back · Enter".into(),
+        ContextControl::Reconnect { .. } => {
+            format!("F2 Reconnect · {} · Enter", Shortcut::RECONNECT.label)
+        }
+        ContextControl::Restart { .. } => "F2 Restart · Enter".into(),
+    }
+}
+
+fn action_label(control: &ContextControl) -> &'static str {
+    match control {
+        ContextControl::Request { .. } => "Request",
+        ContextControl::Continue { .. } => "Continue",
+        ContextControl::Interrupt { .. } => "Stop",
+        control @ ContextControl::PendingRecovery { .. } => {
+            if control.is_send_recovery() {
+                "Unconfirmed send"
+            } else {
+                "Unconfirmed action"
+            }
+        }
+        ContextControl::PreviousAgent { .. } => "Previous Agent",
+        ContextControl::Reconnect { .. } => "Reconnect",
+        ContextControl::Restart { .. } => "Restart",
+    }
+}
+
+pub(super) fn focused_hint(app: &App, width: usize) -> Option<Vec<Line<'static>>> {
+    if !app.pane().contextual_focus.active {
+        return None;
+    }
+    let action = app
+        .pane()
+        .contextual_focus
+        .cursor
+        .as_ref()
+        .map_or("Context action", action_label);
+    Some(vec![
+        Line::styled(shorten(&format!("▶ {action}"), width), focused_row()),
+        Line::styled(
+            shorten("Enter act · Esc back", width),
+            Style::new().fg(MUTED),
+        ),
+    ])
+}
+
+pub(super) fn recovery_title(control: &ContextControl) -> Option<&'static str> {
+    match control {
+        ContextControl::PendingRecovery { .. } if control.is_send_recovery() => {
+            Some("Unconfirmed send")
+        }
+        ContextControl::PendingRecovery { .. } => Some("Unconfirmed action"),
+        _ => None,
     }
 }
 

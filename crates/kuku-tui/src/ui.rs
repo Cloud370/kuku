@@ -66,8 +66,9 @@ pub(crate) fn render_at(
         area.height,
         activity_frame.agent_activity(app),
     );
+    let focused_hint = contextual::focused_hint(app, width);
     let service_row = contextual::service_row(&footer, app);
-    let status_height = footer.len() as u16;
+    let status_height = focused_hint.as_ref().map_or(footer.len() as u16, |_| 2);
     let status_gap = u16::from(status_height > 0 && area.height >= FOOTER_SPACE_HEIGHT);
     let below_editor = status_height + status_gap;
     let chrome_rows = if area.height > 3 {
@@ -316,21 +317,25 @@ pub(crate) fn render_at(
         });
         render_editor_view(frame, inner, draft, focused, placeholder.as_deref());
     }
-    frame.render_widget(Paragraph::new(footer), status);
-    if let Some((row, used_width)) = service_row {
-        let start = used_width.saturating_add(2).min(status.width);
-        contextual::render_service(
-            frame,
-            app,
-            Rect::new(
-                status.x.saturating_add(start),
-                status
-                    .y
-                    .saturating_add(u16::try_from(row).unwrap_or(u16::MAX)),
-                status.width.saturating_sub(start),
-                1,
-            ),
-        );
+    if let Some(lines) = focused_hint {
+        frame.render_widget(Paragraph::new(lines), status);
+    } else {
+        frame.render_widget(Paragraph::new(footer), status);
+        if let Some((row, used_width)) = service_row {
+            let start = used_width.saturating_add(2).min(status.width);
+            contextual::render_service(
+                frame,
+                app,
+                Rect::new(
+                    status.x.saturating_add(start),
+                    status
+                        .y
+                        .saturating_add(u16::try_from(row).unwrap_or(u16::MAX)),
+                    status.width.saturating_sub(start),
+                    1,
+                ),
+            );
+        }
     }
     let main_areas = [
         transcript,

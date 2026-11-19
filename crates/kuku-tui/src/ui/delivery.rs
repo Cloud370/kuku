@@ -168,6 +168,7 @@ fn recovery_title(
     app: &App,
     control: &ContextControl,
 ) -> (Line<'static>, Option<Range<u16>>) {
+    let title = super::contextual::recovery_title(control).unwrap_or(title);
     let action = super::contextual::label(control);
     let action = shorten(&action, width);
     let action_width = action.width().min(width);
@@ -283,7 +284,7 @@ pub(super) fn request_lines(app: &App, width: usize, limit: u16) -> RequestView 
         let title = if focused {
             "Question · Enter answer · Esc back"
         } else {
-            "Question · F2 focus"
+            "Question · F2 answer"
         };
         let mut lines = vec![Line::styled(
             shorten(title, width),
