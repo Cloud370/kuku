@@ -1868,6 +1868,7 @@ dependencies = [
  "getrandom 0.4.2",
  "httpmock",
  "kuku",
+ "kuku-client",
  "serde",
  "serde_json",
  "sha2",

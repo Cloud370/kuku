@@ -313,6 +313,21 @@ pub(crate) fn history_entry(event: &StoredEvent, turns: &TurnLookup) -> Option<V
     Some(entry)
 }
 
+pub(crate) fn history_entry_for_agent(
+    event: &StoredEvent,
+    turns: &TurnLookup,
+    agent: &str,
+) -> Option<Value> {
+    let mut entry = history_entry(event, turns)?;
+    entry["agent"] = json!(agent);
+    if let Some(turn) = entry["turn"].as_u64() {
+        entry["turn_number"] = turns
+            .number(agent, turn)
+            .map_or(Value::Null, |number| json!(number));
+    }
+    Some(entry)
+}
+
 pub(crate) fn retry_metadata(payload: &EventPayload) -> Option<Value> {
     match payload {
         EventPayload::Unknown(record) if record["kind"] == "runtime.model_retry" => Some(json!({

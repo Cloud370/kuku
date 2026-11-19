@@ -14,12 +14,14 @@ use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use kuku::event::{EventPayload, EventStore, StoredEvent};
 use kuku::session::{Observation, OutputRead, Session};
+use kuku_client::RewindGroup;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, watch};
 use tokio_stream::wrappers::{ReceiverStream, WatchStream};
 use tokio_stream::Stream;
 
+use super::rewind_history::RewindIndex;
 use super::Params;
 use super::{manager, SessionTarget};
 use crate::error_mapping::{ApiError, Result};
@@ -30,10 +32,11 @@ use crate::wire::{
 };
 use crate::AppState;
 
-const HISTORY_DEFAULT_LIMIT: usize = 40;
-const HISTORY_PAGE_BYTES: usize = 1024 * 1024;
-const HISTORY_SCAN_LIMIT: usize = 4096;
-const READ_PAGE_SIZE: usize = 64;
+pub(super) const HISTORY_DEFAULT_LIMIT: usize = 40;
+pub(super) const HISTORY_PAGE_BYTES: usize = 1024 * 1024;
+pub(super) const HISTORY_RESPONSE_OVERHEAD: usize = 512;
+pub(super) const HISTORY_SCAN_LIMIT: usize = 4096;
+pub(super) const READ_PAGE_SIZE: usize = 64;
 const HEARTBEAT: Duration = Duration::from_secs(15);
 
 #[derive(Deserialize)]
@@ -114,17 +117,21 @@ pub(super) async fn history(
     let events = EventStore::replay(&target.path)?;
     let visible = history_visible_event_ids(&events);
     let turns = manager(&state).await.turn_lookup(&target.path, cursor)?;
-    let (entries, next_before) = history_page(
+    let agent = query.agent.as_deref().unwrap_or("main");
+    let rewind_index = RewindIndex::new(&events, &turns);
+    let rewind_groups = rewind_index.groups_for_agent(agent);
+    let (entries, rewind_groups, next_before) = history_page(
         &target.path,
-        query.agent.as_deref().unwrap_or("main"),
+        agent,
         before,
         limit,
         &turns,
         &visible,
+        &rewind_groups,
     )?;
-    Ok(Json(
-        json!({"ok":true,"entries":entries,"next_before":next_before}),
-    ))
+    let response = json!({"ok":true,"entries":entries,"rewind_groups":rewind_groups,"next_before":next_before});
+    validate_response_bytes(&response)?;
+    Ok(Json(response))
 }
 
 fn history_visible_event_ids(events: &[StoredEvent]) -> HashSet<u64> {
@@ -214,9 +221,24 @@ pub(super) async fn output(
     Ok(Json(json!({"ok":true,"output":output})))
 }
 
-fn validate_limit(limit: usize) -> Result<()> {
+pub(super) fn validate_limit(limit: usize) -> Result<()> {
     if !(1..=256).contains(&limit) {
         return Err(ApiError::invalid("limit must be between 1 and 256"));
+    }
+    Ok(())
+}
+
+pub(super) fn validate_response_bytes(response: &Value) -> Result<()> {
+    if serde_json::to_vec(response)
+        .map_err(kuku::Error::from)?
+        .len()
+        > HISTORY_PAGE_BYTES
+    {
+        return Err(ApiError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "history_page_too_large",
+            "history page exceeds the response byte limit",
+        ));
     }
     Ok(())
 }
@@ -228,10 +250,14 @@ fn history_page(
     limit: usize,
     turns: &TurnLookup,
     visible: &HashSet<u64>,
-) -> Result<(Vec<Value>, Option<u64>)> {
+    rewind_groups: &HashMap<u64, Vec<RewindGroup>>,
+) -> Result<(Vec<Value>, Vec<RewindGroup>, Option<u64>)> {
     let mut entries = Vec::new();
+    let mut group_entries = Vec::new();
     let mut bytes = 0;
     let mut scanned = 0;
+    let mut items = 0;
+    let max_item_bytes = HISTORY_PAGE_BYTES.saturating_sub(HISTORY_RESPONSE_OVERHEAD);
     'pages: loop {
         let page = EventStore::read_page_before(path, before, READ_PAGE_SIZE)?;
         if page.is_empty() {
@@ -239,31 +265,66 @@ fn history_page(
             break;
         }
         for event in page.into_iter().rev() {
+            if let Some(groups) = rewind_groups.get(&event.id) {
+                for group in groups {
+                    let size = serde_json::to_vec(group).map_err(kuku::Error::from)?.len();
+                    if size > max_item_bytes {
+                        return Err(ApiError::new(
+                            StatusCode::PAYLOAD_TOO_LARGE,
+                            "history_entry_too_large",
+                            "history item exceeds the response byte limit",
+                        ));
+                    }
+                    if items > 0 && bytes + size > max_item_bytes {
+                        break 'pages;
+                    }
+                    bytes += size;
+                    group_entries.push(group.clone());
+                    items += 1;
+                    if items == limit {
+                        before = Some(event.id);
+                        break 'pages;
+                    }
+                }
+            }
             let entry = (visible.contains(&event.id)
                 && event_agent(&event.payload).unwrap_or("main") == agent)
                 .then(|| history_entry(&event, turns))
                 .flatten();
             if let Some(entry) = entry {
                 let size = serde_json::to_vec(&entry).map_err(kuku::Error::from)?.len();
-                if !entries.is_empty() && bytes + size > HISTORY_PAGE_BYTES {
+                if size > max_item_bytes {
+                    return Err(ApiError::new(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "history_entry_too_large",
+                        "history item exceeds the response byte limit",
+                    ));
+                }
+                if items > 0 && bytes + size > max_item_bytes {
                     break 'pages;
                 }
                 bytes += size;
                 entries.push(entry);
+                items += 1;
+                if items == limit {
+                    before = Some(event.id);
+                    break 'pages;
+                }
             }
             before = Some(event.id);
             scanned += 1;
-            if entries.len() == limit || scanned >= HISTORY_SCAN_LIMIT {
+            if scanned >= HISTORY_SCAN_LIMIT {
                 break 'pages;
             }
         }
     }
     entries.reverse();
+    group_entries.reverse();
     add_tool_names(&mut entries);
-    Ok((entries, before.filter(|id| *id > 1)))
+    Ok((entries, group_entries, before.filter(|id| *id > 1)))
 }
 
-fn add_tool_names(entries: &mut [Value]) {
+pub(super) fn add_tool_names(entries: &mut [Value]) {
     let mut tools = HashMap::new();
     for entry in entries {
         if let (Some(turn), Some(call)) = (entry["turn"].as_u64(), entry["tool_call_id"].as_str()) {
@@ -427,7 +488,7 @@ mod tests {
     use kuku::event::{EventPayload, StoredEvent};
     use serde_json::json;
 
-    use super::history_visible_event_ids;
+    use super::{history_visible_event_ids, validate_response_bytes, HISTORY_PAGE_BYTES};
 
     fn user_event(id: u64, agent: &str, text: &str) -> StoredEvent {
         StoredEvent {
@@ -471,5 +532,18 @@ mod tests {
         assert!(visible.contains(&3));
         assert!(visible.contains(&4));
         assert!(visible.contains(&5));
+    }
+
+    #[test]
+    fn history_response_byte_cap_includes_the_serialized_envelope() {
+        let response = json!({
+            "ok": true,
+            "entries": [],
+            "rewind_groups": [],
+            "next_before": null,
+            "payload": "x".repeat(HISTORY_PAGE_BYTES),
+        });
+
+        assert!(validate_response_bytes(&response).is_err());
     }
 }

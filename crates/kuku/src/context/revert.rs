@@ -16,6 +16,7 @@ mod apply;
 mod message_rewind;
 
 pub(crate) use apply::{apply_message_rewind_files, FileRevertTransaction};
+pub use message_rewind::event_owners;
 use message_rewind::{event_owner, event_turn_owners};
 
 const REVERTABLE_KINDS: &[&str] = &["file_edit", "file_write", "memory_write", "forget_memory"];
