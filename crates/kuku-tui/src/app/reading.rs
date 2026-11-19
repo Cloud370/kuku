@@ -22,8 +22,8 @@ impl App {
     }
 
     pub(crate) fn toggle_transcript_detail(&mut self, key: &crate::transcript::DetailKey) -> bool {
-        if let Some(rewind_event_id) = key.rewind_group_id() {
-            return self.toggle_readonly_rewind_group(rewind_event_id);
+        if let Some((rewind_event_id, action)) = key.rewind_group_action() {
+            return self.activate_readonly_rewind_group(rewind_event_id, action);
         }
         let (width, height) = self.transcript_area;
         if self.pane().transcript.note_is_open(key) {

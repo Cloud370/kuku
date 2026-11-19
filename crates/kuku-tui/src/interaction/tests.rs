@@ -1,14 +1,16 @@
 use std::path::PathBuf;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use kuku_client::{Acknowledgement, Action, Receipt};
+use crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
+use kuku_client::{Acknowledgement, Action, HistoryPage, Receipt, RewindGroup, RewindGroupPage};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 use serde_json::json;
 
 use crate::app::{App, Modal};
 use crate::jobs::{Job, Search, Update};
-use crate::menu::{Choice, ChoiceKind, PickerKind, PromptKind};
+use crate::menu::{Choice, ChoiceKind, CommandMenu, PickerKind, PromptKind};
 
 fn connected_app() -> App {
     let workspace = PathBuf::from("/workspace");
@@ -23,6 +25,171 @@ fn connected_app() -> App {
 
 fn press(app: &mut App, code: KeyCode) {
     app.key(KeyEvent::new(code, KeyModifiers::NONE));
+}
+
+#[test]
+fn details_picker_routes_retry_and_load_earlier_actions_without_changing_draft() {
+    let mut app = connected_app();
+    app.pane_mut().transcript.replace_recent(HistoryPage {
+        entries: Vec::new(),
+        rewind_groups: vec![RewindGroup {
+            rewind_event_id: 50,
+            target_event_id: 2,
+            agent: "main".into(),
+            turn_number: Some(1),
+            entry_count: 2,
+        }],
+        next_before: None,
+    });
+    app.paste("unsent draft");
+
+    app.perform(CommandMenu::Details);
+    press(&mut app, KeyCode::Enter);
+    let request = app
+        .effects
+        .iter()
+        .find_map(|job| match job {
+            Job::RewindGroupHistory(_, request) => Some(request.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(None, request.before);
+    app.effects.clear();
+    assert!(app
+        .pane_mut()
+        .transcript
+        .apply_rewind_group_page(&request, Err("offline".into())));
+    assert!(app
+        .pane()
+        .transcript
+        .rewind_group_choices()
+        .iter()
+        .any(|choice| choice.can_retry));
+
+    app.perform(CommandMenu::Details);
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter);
+    let retry = app
+        .effects
+        .iter()
+        .find_map(|job| match job {
+            Job::RewindGroupHistory(_, request) => Some(request.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(None, retry.before);
+    app.effects.clear();
+    assert!(app.pane_mut().transcript.apply_rewind_group_page(
+        &retry,
+        Ok(RewindGroupPage {
+            entries: Vec::new(),
+            next_before: Some(1),
+        }),
+    ));
+    assert!(app
+        .pane()
+        .transcript
+        .rewind_group_choices()
+        .iter()
+        .any(|choice| choice.can_load_more));
+
+    app.perform(CommandMenu::Details);
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter);
+    let more = app
+        .effects
+        .iter()
+        .find_map(|job| match job {
+            Job::RewindGroupHistory(_, request) => Some(request.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(Some(1), more.before);
+    assert_eq!("unsent draft", app.pane().draft.text());
+}
+
+#[test]
+fn dragging_group_heading_selects_text_without_activating_group() {
+    let mut app = connected_app();
+    app.pane_mut().transcript.replace_recent(HistoryPage {
+        entries: Vec::new(),
+        rewind_groups: vec![RewindGroup {
+            rewind_event_id: 50,
+            target_event_id: 2,
+            agent: "main".into(),
+            turn_number: None,
+            entry_count: 1,
+        }],
+        next_before: None,
+    });
+    let request = app.pane_mut().transcript.toggle_rewind_group(50).unwrap();
+    app.pane_mut().transcript.apply_rewind_group_page(
+        &request,
+        Ok(RewindGroupPage {
+            entries: Vec::new(),
+            next_before: None,
+        }),
+    );
+    app.effects.clear();
+
+    let mut terminal = Terminal::new(TestBackend::new(100, 28)).unwrap();
+    let buffer = terminal
+        .draw(|frame| crate::ui::render(frame, &mut app))
+        .unwrap()
+        .buffer;
+    let width = usize::from(buffer.area.width);
+    let (row, column) = buffer
+        .content
+        .chunks(width)
+        .enumerate()
+        .find_map(|(row, cells)| {
+            let line = cells
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<Vec<_>>()
+                .join("");
+            line.find("Rewound content")
+                .map(|byte| (row as u16, line[..byte].chars().count() as u16))
+        })
+        .unwrap();
+    let send = |app: &mut App, kind, column| {
+        app.event(
+            Event::Mouse(MouseEvent {
+                kind,
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            }),
+            buffer,
+        );
+    };
+    send(&mut app, MouseEventKind::Down(MouseButton::Left), column);
+    send(
+        &mut app,
+        MouseEventKind::Drag(MouseButton::Left),
+        column + 6,
+    );
+    send(&mut app, MouseEventKind::Up(MouseButton::Left), column + 6);
+    assert!(app.effects.iter().any(|job| matches!(job, Job::Copy(_))));
+    assert!(!app
+        .effects
+        .iter()
+        .any(|job| matches!(job, Job::RewindGroupHistory(..))));
+    assert!(app
+        .pane()
+        .transcript
+        .rewind_group_choices()
+        .iter()
+        .any(|group| group.expanded));
+    app.effects.clear();
+    send(&mut app, MouseEventKind::Down(MouseButton::Left), column);
+    send(&mut app, MouseEventKind::Up(MouseButton::Left), column);
+    assert!(app
+        .pane()
+        .transcript
+        .rewind_group_choices()
+        .iter()
+        .all(|group| !group.expanded));
 }
 
 #[test]
@@ -603,7 +770,10 @@ fn readonly_rewind_group_picker_preserves_draft_and_only_reads_hidden_history() 
         .next()
         .unwrap();
     assert!(label.starts_with("Expand · Rewound content"));
-    assert_eq!(Some(90), key.rewind_group_id());
+    assert_eq!(
+        Some((90, crate::transcript::RewindGroupAction::Toggle)),
+        key.rewind_group_action()
+    );
     app.open_details();
     assert!(matches!(
         &app.modal,

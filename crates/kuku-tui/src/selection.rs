@@ -4,11 +4,15 @@ use ratatui::layout::{Position, Rect};
 
 use crate::menu::PickerHit;
 use crate::theme;
-use crate::transcript::DetailKey;
+use crate::transcript::{DetailKey, RewindGroupAction};
 
 #[derive(PartialEq, Eq)]
 pub(crate) enum ClickTarget {
     Detail(DetailKey),
+    RewindGroup {
+        id: u64,
+        action: RewindGroupAction,
+    },
     Agent(kuku_client::Target),
     Link(String),
     Picker(PickerHit),

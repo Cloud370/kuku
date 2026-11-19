@@ -231,7 +231,7 @@ fn rewind_group_page_from_before_a_transcript_refresh_is_discarded() {
     let mut transcript = Transcript::default();
     transcript.replace_recent(HistoryPage {
         entries: Vec::new(),
-        rewind_groups: vec![group],
+        rewind_groups: vec![group.clone()],
         next_before: None,
     });
     assert!(all_rows(&mut transcript)
@@ -240,7 +240,7 @@ fn rewind_group_page_from_before_a_transcript_refresh_is_discarded() {
     let request = transcript.toggle_rewind_group(50).unwrap();
     transcript.replace_recent(HistoryPage {
         entries: Vec::new(),
-        rewind_groups: Vec::new(),
+        rewind_groups: vec![group.clone()],
         next_before: None,
     });
 
@@ -262,6 +262,123 @@ fn rewind_group_page_from_before_a_transcript_refresh_is_discarded() {
     assert!(!all_rows(&mut transcript)
         .join("\n")
         .contains("stale hidden content"));
+    assert!(transcript
+        .rewind_group_choices()
+        .iter()
+        .any(|choice| choice.can_retry));
+    let retry = transcript.retry_rewind_group(50).unwrap();
+    assert_eq!(None, retry.before);
+    assert_ne!(request.epoch, retry.epoch);
+    assert!(transcript.apply_rewind_group_page(
+        &retry,
+        Ok(RewindGroupPage {
+            entries: vec![HistoryEntry {
+                id: 2,
+                agent: "main".into(),
+                turn: Some(1),
+                kind: HistoryKind::User,
+                text: Some("fresh hidden content".into()),
+                turn_summary: None,
+                details: Default::default(),
+            }],
+            next_before: None,
+        }),
+    ));
+    transcript.show_latest();
+    assert!(all_rows(&mut transcript)
+        .join("\n")
+        .contains("fresh hidden content"));
+}
+
+#[test]
+fn rewind_group_page_state_survives_reading_snapshot_and_show_latest() {
+    let mut transcript = Transcript::default();
+    transcript.replace_recent(HistoryPage {
+        entries: Vec::new(),
+        rewind_groups: vec![RewindGroup {
+            rewind_event_id: 50,
+            target_event_id: 2,
+            agent: "main".into(),
+            turn_number: None,
+            entry_count: 1,
+        }],
+        next_before: None,
+    });
+    let request = transcript.toggle_rewind_group(50).unwrap();
+    transcript.show_latest();
+    assert!(transcript.scroll(-1, 44, 10).is_none());
+    assert!(transcript.apply_rewind_group_page(
+        &request,
+        Ok(RewindGroupPage {
+            entries: vec![HistoryEntry {
+                id: 2,
+                agent: "main".into(),
+                turn: Some(1),
+                kind: HistoryKind::User,
+                text: Some("shared hidden page".into()),
+                turn_summary: None,
+                details: Default::default(),
+            }],
+            next_before: None,
+        }),
+    ));
+    assert!(all_rows(&mut transcript)
+        .join("\n")
+        .contains("shared hidden page"));
+    transcript.show_latest();
+    let latest = all_rows(&mut transcript).join("\n");
+    assert!(latest.contains("shared hidden page"));
+    assert!(!latest.contains("Loading rewound content"));
+}
+
+#[test]
+fn rewind_group_expansion_keeps_the_heading_at_the_viewport_anchor() {
+    let mut transcript = Transcript::default();
+    let active = HistoryEntry {
+        id: 100,
+        agent: "main".into(),
+        turn: Some(2),
+        kind: HistoryKind::Assistant,
+        text: Some("latest active reply".into()),
+        turn_summary: None,
+        details: Default::default(),
+    };
+    transcript.replace_recent(HistoryPage {
+        entries: vec![active],
+        rewind_groups: vec![RewindGroup {
+            rewind_event_id: 50,
+            target_event_id: 2,
+            agent: "main".into(),
+            turn_number: Some(1),
+            entry_count: 12,
+        }],
+        next_before: None,
+    });
+    let request = transcript.toggle_rewind_group(50).unwrap();
+    let anchor = transcript.reading_anchor().unwrap();
+    assert_eq!(Key::RewindGroup(50), anchor.key);
+    assert_eq!(AnchorLine::Group(0), anchor.line);
+    let entries = (2..14)
+        .map(|id| HistoryEntry {
+            id,
+            agent: "main".into(),
+            turn: Some(1),
+            kind: HistoryKind::User,
+            text: Some(format!("hidden entry {id} {}", "long content ".repeat(8))),
+            turn_summary: None,
+            details: Default::default(),
+        })
+        .collect();
+    assert!(transcript.apply_rewind_group_page(
+        &request,
+        Ok(RewindGroupPage {
+            entries,
+            next_before: None,
+        }),
+    ));
+    let viewport = rows(&mut transcript);
+    assert!(viewport[0].contains("Rewound content"));
+    assert!(viewport.iter().any(|row| row.contains("hidden entry 2")));
 }
 
 #[test]
@@ -407,7 +524,9 @@ fn rewind_group_only_window_can_scroll_with_empty_active_history() {
         }),
     ));
 
-    assert!(transcript.scroll(-1, 80, 10).is_none());
+    let expanded = rows(&mut transcript);
+    assert!(expanded[0].contains("Rewound content"));
+    assert!(transcript.scroll(10, 80, 10).is_none());
     assert!(transcript.is_reading());
     assert!(matches!(
         transcript.reading.as_ref().unwrap().anchor.line,

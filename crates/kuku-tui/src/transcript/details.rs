@@ -12,8 +12,8 @@ use crate::theme::{emphasis, ACCENT, MUTED, SUCCESS};
 use super::agent::{AgentCard, AgentCards};
 use super::tool::{style_card, tool_title, Tool};
 use super::{
-    body_inset, render_rows, Key, Record, RewindGroupChoice, Row, ToolDetails, Transcript,
-    MAX_RECORDS,
+    body_inset, render_rows, Key, Record, RewindGroupAction, RewindGroupChoice, Row, ToolDetails,
+    Transcript, MAX_RECORDS,
 };
 
 const INSPECTIONS: [(&str, &str, &str); 5] = [
@@ -32,11 +32,17 @@ pub(crate) struct DetailKey {
 }
 
 impl DetailKey {
-    pub(crate) fn rewind_group_id(&self) -> Option<u64> {
-        match (&self.kind, &self.record) {
-            (DetailKind::RewindGroup, Key::RewindGroup(id)) => Some(*id),
-            _ => None,
-        }
+    pub(crate) fn rewind_group_action(&self) -> Option<(u64, RewindGroupAction)> {
+        let Key::RewindGroup(id) = &self.record else {
+            return None;
+        };
+        let action = match self.kind {
+            DetailKind::RewindGroup => RewindGroupAction::Toggle,
+            DetailKind::RewindGroupRetry => RewindGroupAction::Retry,
+            DetailKind::RewindGroupMore => RewindGroupAction::More,
+            _ => return None,
+        };
+        Some((*id, action))
     }
 
     pub(super) fn settle(&mut self, preview: &Key, settled: &Key) {
@@ -52,6 +58,8 @@ enum DetailKind {
     Group,
     Reasoning,
     RewindGroup,
+    RewindGroupMore,
+    RewindGroupRetry,
     Tool,
 }
 
@@ -273,17 +281,32 @@ impl Transcript {
             .map(|item| (item.key.clone(), item.label.clone(), item.summary.clone()))
             .collect::<Vec<_>>();
         let rewind_groups: Vec<RewindGroupChoice> = self.rewind_group_choices();
-        choices.extend(rewind_groups.into_iter().rev().map(|group| {
+        for group in rewind_groups.into_iter().rev() {
             let action = if group.expanded { "Collapse" } else { "Expand" };
-            (
+            let key = Key::RewindGroup(group.rewind_event_id);
+            choices.push((
                 DetailKey {
                     kind: DetailKind::RewindGroup,
-                    record: Key::RewindGroup(group.rewind_event_id),
+                    record: key.clone(),
                 },
                 format!("{action} · {}", group.label),
                 format!("Agent {} · {}", group.agent, group.summary),
-            )
-        }));
+            ));
+            let action = if group.can_retry {
+                Some((DetailKind::RewindGroupRetry, "Retry loading"))
+            } else if group.can_load_more {
+                Some((DetailKind::RewindGroupMore, "Load earlier"))
+            } else {
+                None
+            };
+            if let Some((kind, label)) = action {
+                choices.push((
+                    DetailKey { kind, record: key },
+                    format!("{label} · {}", group.label),
+                    format!("Agent {} · {}", group.agent, group.summary),
+                ));
+            }
+        }
         choices
     }
 
@@ -386,7 +409,11 @@ impl Transcript {
                 }
                 true
             }
-            DetailKind::Tool | DetailKind::Reasoning | DetailKind::RewindGroup => false,
+            DetailKind::Tool
+            | DetailKind::Reasoning
+            | DetailKind::RewindGroup
+            | DetailKind::RewindGroupMore
+            | DetailKind::RewindGroupRetry => false,
             DetailKind::Group => {
                 let Some(span) = groups(&window.records).into_iter().find(|span| {
                     window.records[span.range.clone()]

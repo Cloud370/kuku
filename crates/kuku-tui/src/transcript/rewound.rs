@@ -5,7 +5,7 @@ use crate::markup::{render_literal, wrap_bounded};
 use crate::text::shorten;
 use crate::theme::{emphasis, ACCENT, ERROR, MUTED};
 
-use super::{Key, Row, Transcript, REWIND_GROUP_PAGE};
+use super::{Anchor, AnchorLine, Key, Reading, Row, Transcript, REWIND_GROUP_PAGE};
 
 const MAX_GROUP_ROWS: usize = 768;
 const MAX_GROUP_PAGES: usize = 4;
@@ -34,6 +34,8 @@ pub(crate) struct RewindGroupChoice {
     pub(crate) label: String,
     pub(crate) summary: String,
     pub(crate) expanded: bool,
+    pub(crate) can_load_more: bool,
+    pub(crate) can_retry: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -135,7 +137,7 @@ impl RewindGroupState {
             PageState::Failed(_, error) => {
                 self.push_text(
                     &format!(
-                        "Could not load rewound content · {} · click to retry",
+                        "Could not load rewound content · {} · click or use Details to retry",
                         shorten(&error, 120)
                     ),
                     width,
@@ -166,7 +168,7 @@ impl RewindGroupState {
         }
         if self.next_before.is_some() {
             self.push_text(
-                "Load older rewound content · click or choose this group",
+                "Load older rewound content · click or use Details to load earlier",
                 width,
                 Style::default().fg(ACCENT),
                 Some(RewindGroupAction::More),
@@ -199,6 +201,14 @@ impl RewindGroupState {
         self.row_actions.get(row).copied().flatten()
     }
 
+    pub(super) fn cancel_pending(&mut self) {
+        if let PageState::Loading(before) = self.state.clone() {
+            self.state =
+                PageState::Failed(before, "History refreshed before this page loaded".into());
+            self.rows.clear();
+        }
+    }
+
     pub(super) fn entry_at(&self, row: usize) -> Option<(u64, usize)> {
         self.row_entries.get(row).copied().flatten()
     }
@@ -229,6 +239,10 @@ impl RewindGroupState {
             label: GROUP_LABEL.to_owned(),
             summary: format!("{turn}{} entries{status}", self.summary.entry_count),
             expanded: self.expanded,
+            can_load_more: self.expanded
+                && self.next_before.is_some()
+                && matches!(&self.state, PageState::Idle),
+            can_retry: self.expanded && matches!(&self.state, PageState::Failed(..)),
         }
     }
 
@@ -418,6 +432,78 @@ fn entry_text(entry: &HistoryEntry) -> Option<String> {
 }
 
 impl Transcript {
+    pub(super) fn reset_pending_rewind_group_pages(&mut self) {
+        for group in &mut self.recent.rewind_groups {
+            group.cancel_pending();
+        }
+        if let Some(reading) = &mut self.reading {
+            for group in &mut reading.window.rewind_groups {
+                group.cancel_pending();
+            }
+        }
+    }
+
+    fn sync_rewind_group_state(&mut self, rewind_event_id: u64) {
+        let state = self
+            .reading
+            .as_ref()
+            .and_then(|reading| {
+                reading
+                    .window
+                    .rewind_groups
+                    .iter()
+                    .find(|group| group.summary.rewind_event_id == rewind_event_id)
+            })
+            .or_else(|| {
+                self.recent
+                    .rewind_groups
+                    .iter()
+                    .find(|group| group.summary.rewind_event_id == rewind_event_id)
+            })
+            .cloned();
+        let Some(state) = state else { return };
+        if let Some(group) = self
+            .recent
+            .rewind_groups
+            .iter_mut()
+            .find(|group| group.summary.rewind_event_id == rewind_event_id)
+        {
+            *group = state.clone();
+        }
+        if let Some(group) = self.reading.as_mut().and_then(|reading| {
+            reading
+                .window
+                .rewind_groups
+                .iter_mut()
+                .find(|group| group.summary.rewind_event_id == rewind_event_id)
+        }) {
+            *group = state;
+        }
+    }
+
+    fn anchor_expanded_group(&mut self, rewind_event_id: u64, was_following: bool) {
+        if !was_following
+            || !self
+                .recent
+                .rewind_groups
+                .iter()
+                .any(|group| group.summary.rewind_event_id == rewind_event_id && group.expanded)
+        {
+            return;
+        }
+        let window = self.recent.clone();
+        self.reading = Some(Reading {
+            window,
+            anchor: Anchor {
+                key: Key::RewindGroup(rewind_event_id),
+                line: AnchorLine::Group(0),
+            },
+            newer: std::collections::VecDeque::new(),
+            unseen: false,
+            manual: true,
+        });
+    }
+
     pub(crate) fn rewind_group_choices(&self) -> Vec<RewindGroupChoice> {
         let window = self
             .reading
@@ -435,15 +521,21 @@ impl Transcript {
         rewind_event_id: u64,
     ) -> Option<RewindGroupRequest> {
         let epoch = self.readonly_epoch;
-        let window = self
-            .reading
-            .as_mut()
-            .map_or(&mut self.recent, |reading| &mut reading.window);
-        window
-            .rewind_groups
-            .iter_mut()
-            .find(|group| group.summary.rewind_event_id == rewind_event_id)?
-            .toggle(epoch)
+        let was_following = self.reading.is_none();
+        let request = {
+            let window = self
+                .reading
+                .as_mut()
+                .map_or(&mut self.recent, |reading| &mut reading.window);
+            window
+                .rewind_groups
+                .iter_mut()
+                .find(|group| group.summary.rewind_event_id == rewind_event_id)?
+                .toggle(epoch)
+        };
+        self.sync_rewind_group_state(rewind_event_id);
+        self.anchor_expanded_group(rewind_event_id, was_following);
+        request
     }
 
     pub(crate) fn load_more_rewind_group(
@@ -451,15 +543,21 @@ impl Transcript {
         rewind_event_id: u64,
     ) -> Option<RewindGroupRequest> {
         let epoch = self.readonly_epoch;
-        let window = self
-            .reading
-            .as_mut()
-            .map_or(&mut self.recent, |reading| &mut reading.window);
-        window
-            .rewind_groups
-            .iter_mut()
-            .find(|group| group.summary.rewind_event_id == rewind_event_id)?
-            .more(epoch)
+        let was_following = self.reading.is_none();
+        let request = {
+            let window = self
+                .reading
+                .as_mut()
+                .map_or(&mut self.recent, |reading| &mut reading.window);
+            window
+                .rewind_groups
+                .iter_mut()
+                .find(|group| group.summary.rewind_event_id == rewind_event_id)?
+                .more(epoch)
+        };
+        self.sync_rewind_group_state(rewind_event_id);
+        self.anchor_expanded_group(rewind_event_id, was_following);
+        request
     }
 
     pub(crate) fn retry_rewind_group(
@@ -477,18 +575,49 @@ impl Transcript {
         if request.epoch != self.readonly_epoch {
             return false;
         }
-        let window = self
-            .reading
-            .as_mut()
-            .map_or(&mut self.recent, |reading| &mut reading.window);
-        let Some(group) = window
+        let mut updated = None;
+        if let Some(group) = self.reading.as_mut().and_then(|reading| {
+            reading
+                .window
+                .rewind_groups
+                .iter_mut()
+                .find(|group| group.summary.rewind_event_id == request.rewind_event_id)
+        }) {
+            if group.apply(request, result.clone()) {
+                updated = Some(group.clone());
+            }
+        }
+        if updated.is_none() {
+            if let Some(group) = self
+                .recent
+                .rewind_groups
+                .iter_mut()
+                .find(|group| group.summary.rewind_event_id == request.rewind_event_id)
+            {
+                if group.apply(request, result) {
+                    updated = Some(group.clone());
+                }
+            }
+        }
+        let Some(updated) = updated else { return false };
+        if let Some(group) = self
+            .recent
             .rewind_groups
             .iter_mut()
             .find(|group| group.summary.rewind_event_id == request.rewind_event_id)
-        else {
-            return false;
-        };
-        group.apply(request, result)
+        {
+            *group = updated.clone();
+        }
+        if let Some(group) = self.reading.as_mut().and_then(|reading| {
+            reading
+                .window
+                .rewind_groups
+                .iter_mut()
+                .find(|group| group.summary.rewind_event_id == request.rewind_event_id)
+        }) {
+            *group = updated;
+        }
+        true
     }
 
     pub(crate) fn rewind_group_action_at(&self, row: usize) -> Option<(u64, RewindGroupAction)> {

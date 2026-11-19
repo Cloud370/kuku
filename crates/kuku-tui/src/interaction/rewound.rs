@@ -4,18 +4,34 @@ use crate::transcript::{RewindGroupAction, RewindGroupRequest};
 
 impl App {
     pub(crate) fn toggle_readonly_rewind_group(&mut self, rewind_event_id: u64) -> bool {
-        self.rewind_group_action(rewind_event_id, RewindGroupAction::Toggle)
+        self.dispatch_readonly_rewind_group(rewind_event_id, RewindGroupAction::Toggle)
     }
 
     pub(crate) fn load_more_readonly_rewind_group(&mut self, rewind_event_id: u64) -> bool {
-        self.rewind_group_action(rewind_event_id, RewindGroupAction::More)
+        self.dispatch_readonly_rewind_group(rewind_event_id, RewindGroupAction::More)
     }
 
     pub(crate) fn retry_readonly_rewind_group(&mut self, rewind_event_id: u64) -> bool {
-        self.rewind_group_action(rewind_event_id, RewindGroupAction::Retry)
+        self.dispatch_readonly_rewind_group(rewind_event_id, RewindGroupAction::Retry)
     }
 
-    fn rewind_group_action(&mut self, rewind_event_id: u64, action: RewindGroupAction) -> bool {
+    pub(crate) fn activate_readonly_rewind_group(
+        &mut self,
+        rewind_event_id: u64,
+        action: RewindGroupAction,
+    ) -> bool {
+        match action {
+            RewindGroupAction::Toggle => self.toggle_readonly_rewind_group(rewind_event_id),
+            RewindGroupAction::More => self.load_more_readonly_rewind_group(rewind_event_id),
+            RewindGroupAction::Retry => self.retry_readonly_rewind_group(rewind_event_id),
+        }
+    }
+
+    fn dispatch_readonly_rewind_group(
+        &mut self,
+        rewind_event_id: u64,
+        action: RewindGroupAction,
+    ) -> bool {
         let available = self
             .pane()
             .transcript

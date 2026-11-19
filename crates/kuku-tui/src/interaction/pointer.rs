@@ -4,28 +4,17 @@ use ratatui::layout::Position;
 
 use crate::app::{App, Modal};
 use crate::selection::{ClickTarget, MouseAction};
-use crate::transcript::RewindGroupAction;
 
 impl App {
     pub(super) fn pointer(&mut self, mouse: MouseEvent, screen: &Buffer) {
-        if matches!(mouse.kind, MouseEventKind::Up(MouseButton::Left)) && self.modal.is_none() {
-            if let Some((row, _)) = self.text_selection.transcript_cell(mouse) {
-                if let Some((group_id, action)) = self.pane().transcript.rewind_group_action_at(row)
-                {
-                    match action {
-                        RewindGroupAction::Toggle => self.toggle_readonly_rewind_group(group_id),
-                        RewindGroupAction::Retry => self.retry_readonly_rewind_group(group_id),
-                        RewindGroupAction::More => self.load_more_readonly_rewind_group(group_id),
-                    };
-                    return;
-                }
-            }
-        }
         let click = self.click_target(mouse);
         match self.text_selection.mouse(mouse, screen, click) {
             Some(MouseAction::Copy(text)) => self.copy_text(text),
             Some(MouseAction::Click(ClickTarget::Detail(key))) => {
                 self.toggle_transcript_detail(&key);
+            }
+            Some(MouseAction::Click(ClickTarget::RewindGroup { id, action })) => {
+                self.activate_readonly_rewind_group(id, action);
             }
             Some(MouseAction::Click(ClickTarget::Picker(hit))) => {
                 if let Some(Modal::Picker(picker)) = &mut self.modal {
@@ -121,6 +110,11 @@ impl App {
                     self.text_selection
                         .transcript_cell(mouse)
                         .map(|(row, column)| {
+                            if let Some((id, action)) =
+                                self.pane().transcript.rewind_group_action_at(row)
+                            {
+                                return ClickTarget::RewindGroup { id, action };
+                            }
                             if let Some(url) = self.pane().transcript.markdown_link_at(row, column)
                             {
                                 return ClickTarget::Link(url.to_owned());

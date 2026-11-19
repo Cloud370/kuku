@@ -136,6 +136,7 @@ impl Transcript {
 
     pub(crate) fn replace_recent(&mut self, page: HistoryPage) {
         self.readonly_epoch = self.readonly_epoch.wrapping_add(1);
+        self.reset_pending_rewind_group_pages();
         self.reply_position = None;
         if let Some(reading) = &mut self.reading {
             let previous = self
