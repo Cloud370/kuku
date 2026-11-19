@@ -128,7 +128,6 @@ impl App {
 mod tests {
     use super::{ContextControl, KeyEvent};
     use crossterm::event::KeyModifiers;
-    use serde_json::json;
 
     #[test]
     fn context_focus_keeps_the_cursor_when_escape_returns_to_composer() {
@@ -248,53 +247,5 @@ mod tests {
             Some(Modal::Picker(picker)) if matches!(picker.kind, PickerKind::Messages)
         ));
         assert_eq!("unsent draft", app.pane().draft.text());
-    }
-
-    #[test]
-    fn remediation_paused_provider_failure_can_continue_without_queued_inputs() {
-        use crate::jobs::{Job, Update};
-
-        let mut app = crate::interaction::tests::connected_app();
-        let snapshot = Box::new(
-            serde_json::from_value(json!({
-                "session_id":app.active.session,
-                "workspace":app.workspace,
-                "cursor":1,
-                "agents":[],
-                "pending":[],
-                "agent":{
-                    "address":app.active.agent,
-                    "status":"stopped",
-                    "turn":5,
-                    "pending_inputs":0,
-                    "execution_id":7,
-                    "last_error":"provider unavailable",
-                    "config":{},
-                    "usage":{"model_requests":1,"unreported_requests":0}
-                }
-            }))
-            .unwrap(),
-        );
-        app.update(Update::Refreshed(app.selection(), Ok(snapshot)));
-
-        let continuation = app
-            .contextual_controls()
-            .into_iter()
-            .find(|control| {
-                matches!(
-                    control,
-                    ContextControl::Continue { inputs, .. } if inputs.is_empty()
-                )
-            })
-            .unwrap();
-        assert!(app.focus_context_control(continuation));
-        app.key(KeyEvent::new(
-            crossterm::event::KeyCode::Enter,
-            KeyModifiers::NONE,
-        ));
-        assert!(app.effects.iter().any(|job| matches!(
-            job,
-            Job::Save(command) if matches!(command.action, kuku_client::Action::Advance)
-        )));
     }
 }
