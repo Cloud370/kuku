@@ -383,6 +383,21 @@ impl Transcript {
         match key.kind {
             DetailKind::Agent => self.toggle_agent_record(&key.record),
             DetailKind::Tool if window.contains(&key.record) => {
+                let group_to_open = groups(&window.records)
+                    .into_iter()
+                    .find(|span| {
+                        window.records[span.range.clone()]
+                            .iter()
+                            .any(|record| record.key == key.record)
+                    })
+                    .and_then(|span| {
+                        let records = &window.records[span.range];
+                        (!self.detail_items.group_open(records))
+                            .then(|| DetailKey::message_action(DetailKind::Group, &records[0].key))
+                    });
+                if let Some(group_key) = group_to_open {
+                    self.toggle_detail(&group_key);
+                }
                 if let Some(index) = self
                     .detail_items
                     .inspections

@@ -192,6 +192,7 @@ impl App {
         key: DetailKey,
         message: Option<SelectedMessage>,
     ) {
+        let selected_message = message.is_some();
         if let Some(message) = message {
             let Some(info) = self.resolve_message(&message) else {
                 self.problem("Selected message is no longer available");
@@ -207,12 +208,13 @@ impl App {
             }
             self.project_selected_message();
         }
-        if !self
-            .pane()
-            .transcript
-            .visible_detail_choices()
-            .iter()
-            .any(|(choice, _, _)| choice == &key)
+        if !selected_message
+            && !self
+                .pane()
+                .transcript
+                .visible_detail_choices()
+                .iter()
+                .any(|(choice, _, _)| choice == &key)
         {
             self.problem("These details are no longer available");
             return;

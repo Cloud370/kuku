@@ -223,6 +223,33 @@ fn tool_actions_expand_the_selected_call_and_open_saved_or_complete_inline_outpu
 }
 
 #[test]
+fn remediation_expand_opens_a_nonfirst_tool_in_a_collapsed_group() {
+    let mut app = connected_app();
+    for event in [
+        json!({"id":81,"agent":"main","turn":8,"type":"tool_call","tool":"read_file","tool_call_id":"first-read","args":{"path":"first.txt"}}),
+        json!({"id":82,"agent":"main","turn":8,"type":"tool_result","tool":"read_file","tool_call_id":"first-read","status":"ok","summary":"Read first.txt","model_content":"FIRST-CONTENT"}),
+        json!({"id":83,"agent":"main","turn":8,"type":"tool_call","tool":"read_file","tool_call_id":"second-read","args":{"path":"second.txt"}}),
+        json!({"id":84,"agent":"main","turn":8,"type":"tool_result","tool":"read_file","tool_call_id":"second-read","status":"ok","summary":"Read second.txt","model_content":"SECOND-UNIQUE-CONTENT"}),
+    ] {
+        app.pane_mut()
+            .transcript
+            .apply(serde_json::from_value(event).unwrap(), None);
+    }
+
+    open_message_actions(
+        &mut app,
+        MessageId::Tool {
+            turn: Some(8),
+            call_id: "second-read".into(),
+        },
+    );
+    choose_message_action(&mut app, MessageAction::Expand);
+
+    let rendered = transcript_text(&mut app);
+    assert!(rendered.contains("SECOND-UNIQUE-CONTENT"), "{rendered}");
+}
+
+#[test]
 fn escape_from_expand_action_returns_to_the_selected_message() {
     let mut app = connected_app();
     for event in [
