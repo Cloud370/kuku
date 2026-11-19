@@ -1,4 +1,5 @@
 use std::fmt;
+use std::path::PathBuf;
 
 use crate::config::{ApiKey, ProviderOptions, ProviderProfile};
 use crate::context::CanonicalMessage;
@@ -134,6 +135,7 @@ pub(crate) struct ProviderCorrelation {
     pub(crate) session_id: String,
     pub(crate) agent_address: String,
     pub(crate) connection_name: String,
+    pub(crate) workspace: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]

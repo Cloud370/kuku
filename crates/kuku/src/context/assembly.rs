@@ -412,6 +412,7 @@ mod tests {
         };
         assert!(msg0.contains("<kuku_project_context>"));
         assert!(msg0.contains("instr"));
+        assert!(!msg0.contains("Current date:"));
 
         // [1] tool_guidance
         let msg1 = match &assembly.prelude_messages[1].blocks[..] {

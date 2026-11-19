@@ -230,12 +230,21 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
     };
 
     let prelude_snapshot = assembly.snapshot_prelude();
+    let runtime_date_text = crate::prompt::render_runtime_date(&catalog, &current_date)?;
+    let runtime_date = if contains_current_date(&assembly, &runtime_date_text)
+        || legacy_project_policy_has_date(&assembly, &catalog, &current_date)
+    {
+        None
+    } else {
+        Some(runtime_date_text)
+    };
     let dynamic_turn_prefix = assembly_runtime_prefix(
         assembly.runtime_context.as_deref(),
         pending
             .bootstrap_skill
             .as_ref()
             .map(|skill| skill.body.as_str()),
+        runtime_date.as_deref(),
         &catalog,
     );
     let mut current_turn_prefix = pending
@@ -571,22 +580,16 @@ fn build_runtime_blocks(
         agent_registry.and_then(|reg| crate::agent::catalog::render_agent_catalog(reg, catalog));
 
     // Build skill catalog — this goes into snapshot prelude, not runtime_blocks
-    let skills_text = skill_registry.and_then(|skill_reg| {
-        let loaded_skill_names =
-            crate::skill::session::loaded_skill_names(existing_events, conversation);
-        let skill_changes = if turn > 1 {
-            previous_skill_registry.and_then(|previous_skill_registry| {
-                crate::skill::registry::detect_skill_changes(previous_skill_registry, skill_reg)
+    let skills_text = skill_registry.and_then(crate::skill::catalog::render_static_skill_catalog);
+    let skill_changes = if turn > 1 {
+        skill_registry.and_then(|skill_registry| {
+            previous_skill_registry.and_then(|previous| {
+                crate::skill::registry::detect_skill_changes(previous, skill_registry)
             })
-        } else {
-            None
-        };
-        crate::skill::catalog::render_skill_catalog(
-            skill_reg,
-            &loaded_skill_names,
-            skill_changes.as_ref(),
-        )
-    });
+        })
+    } else {
+        None
+    };
 
     // Dynamic notices remain in runtime_blocks (conversations, inbox, drift)
     let mut notice_bodies: Vec<String> = Vec::new();
@@ -621,6 +624,17 @@ fn build_runtime_blocks(
                 notice_bodies.push(body);
             }
         }
+        let skill_change_line = skill_changes
+            .as_ref()
+            .and_then(|changes| crate::skill::catalog::render_skill_change_notice(changes));
+        if let Some(change_line) = skill_change_line {
+            let template = catalog
+                .blocks
+                .get("notice-skill-changes")
+                .map(|asset| asset.text.as_str())
+                .unwrap_or("<kuku_system_notice>\n{{skill_changes}}\n</kuku_system_notice>");
+            notice_bodies.push(template.replace("{{skill_changes}}", &change_line));
+        }
     }
 
     // Notices are now self-wrapped with <kuku_system_notice> via templates;
@@ -637,6 +651,7 @@ fn build_runtime_blocks(
 fn assembly_runtime_prefix(
     runtime_context: Option<&str>,
     skill_body: Option<&str>,
+    runtime_date: Option<&str>,
     catalog: &crate::prompt::PromptCatalog,
 ) -> Option<String> {
     let mut parts = Vec::new();
@@ -647,6 +662,9 @@ fn assembly_runtime_prefix(
             .map(|a| a.text.as_str())
             .unwrap_or("<kuku_runtime_notices>{{runtime_notices_content}}</kuku_runtime_notices>");
         parts.push(tmpl.replace("{{runtime_notices_content}}", runtime_context));
+    }
+    if let Some(runtime_date) = runtime_date.filter(|value| !value.is_empty()) {
+        parts.push(runtime_date.to_string());
     }
     if let Some(skill_body) = skill_body.filter(|value| !value.is_empty()) {
         let tmpl = catalog
@@ -663,6 +681,34 @@ fn assembly_runtime_prefix(
     } else {
         Some(parts.join("\n"))
     }
+}
+
+fn contains_current_date(assembly: &crate::context::ContextAssembly, runtime_date: &str) -> bool {
+    assembly
+        .prelude_messages
+        .iter()
+        .chain(&assembly.history)
+        .any(|message| {
+            message.blocks.iter().any(
+                |block| matches!(block, MessageBlock::Text(text) if text.contains(runtime_date)),
+            )
+        })
+}
+
+fn legacy_project_policy_has_date(
+    assembly: &crate::context::ContextAssembly,
+    catalog: &crate::prompt::PromptCatalog,
+    current_date: &str,
+) -> bool {
+    catalog
+        .blocks
+        .get("project-policy")
+        .is_some_and(|template| template.text.contains("{{current_date}}"))
+        && assembly.prelude_messages.first().is_some_and(|message| {
+            message.blocks.iter().any(
+                |block| matches!(block, MessageBlock::Text(text) if text.contains(current_date)),
+            )
+        })
 }
 
 pub(super) fn append_handoff_instruction(

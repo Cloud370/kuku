@@ -90,6 +90,15 @@ fn text_message(message: &CanonicalMessage) -> Value {
     json!({"role":if message.role == Role::User {"user"} else {"assistant"},"content":text})
 }
 
+fn request_tool_names(body: &Value) -> Vec<String> {
+    body["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["function"]["name"].as_str().unwrap().to_string())
+        .collect()
+}
+
 #[tokio::test]
 async fn reopen_replays_frozen_assets_and_exact_admitted_inputs_after_source_changes() {
     let server = MockServer::start_async().await;
@@ -177,6 +186,38 @@ async fn reopen_replays_frozen_assets_and_exact_admitted_inputs_after_source_cha
     let admitted = facts(&events, "runtime.context_admitted", "main");
     assert_eq!(1, segments.len());
     assert_eq!(3, prepared.len());
+    assert!(!segments[0]["prelude"].to_string().contains("Current date:"));
+    assert_eq!(0, prepared[0]["prefix_context_head"]);
+    assert!(prepared[1]["prefix_context_head"].as_u64().unwrap() > 0);
+    assert!(prepared[2]["prefix_context_head"].as_u64().unwrap() > 0);
+    assert_ne!(
+        prepared[0]["history_prefix_hash"],
+        prepared[1]["history_prefix_hash"]
+    );
+    assert_ne!(
+        prepared[1]["history_prefix_hash"],
+        prepared[2]["history_prefix_hash"]
+    );
+    assert!(prepared
+        .iter()
+        .all(|step| step["prefix_hash"] == prepared[0]["prefix_hash"]));
+    for body in &bodies {
+        assert_eq!(1, body.to_string().matches("<kuku_runtime_date>").count());
+    }
+    let date_admissions = admitted
+        .iter()
+        .filter(|event| event["origin"] == "runtime")
+        .filter_map(|event| {
+            serde_json::from_value::<CanonicalMessage>(event["message"].clone()).ok()
+        })
+        .filter(|message| {
+            text_message(message)["content"]
+                .as_str()
+                .unwrap()
+                .contains("<kuku_runtime_date>")
+        })
+        .count();
+    assert_eq!(1, date_admissions);
     for (step, body) in prepared.iter().zip(&bodies) {
         assert!(step.get("body").is_none());
         assert!(step["context_prepare_us"].is_u64());
@@ -199,6 +240,60 @@ async fn reopen_replays_frozen_assets_and_exact_admitted_inputs_after_source_cha
         );
         assert_eq!(json!(messages), body["messages"]);
     }
+}
+
+#[tokio::test]
+async fn main_and_explore_share_the_pre_identity_prefix_with_distinct_tools() {
+    let server = MockServer::start_async().await;
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let (original, path) = options(&server, workspace.path(), data.path());
+    let model = server
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path(&path)
+                .matches(common::capture_http_request);
+            then.status(200)
+                .body(response(json!({"content":"done"}), "stop"));
+        })
+        .await;
+    let session = Session::open(original).await.unwrap();
+    for (address, preset) in [("main", None), ("explore", Some("explore"))] {
+        session
+            .create_agent(
+                &format!("create-{address}"),
+                address,
+                AgentConfig {
+                    preset: preset.map(str::to_string),
+                    tier: Some("balanced".into()),
+                    no_skills: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        session
+            .send(Input::new(
+                format!("input-{address}"),
+                address,
+                "inspect files",
+            ))
+            .unwrap();
+        idle(&session, address).await;
+    }
+    session.close().await.unwrap();
+    model.assert_hits_async(2).await;
+    let bodies = common::take_http_requests(&path);
+    assert_eq!(2, bodies.len());
+    let main_messages = bodies[0]["messages"].as_array().unwrap();
+    let explore_messages = bodies[1]["messages"].as_array().unwrap();
+    assert_eq!(&main_messages[..2], &explore_messages[..2]);
+    assert_ne!(bodies[0]["messages"][2], bodies[1]["messages"][2]);
+    let main_tools = request_tool_names(&bodies[0]);
+    let explore_tools = request_tool_names(&bodies[1]);
+    assert!(main_tools.iter().any(|name| name == "read_file"));
+    assert!(explore_tools.iter().any(|name| name == "read_file"));
+    assert!(main_tools.iter().any(|name| name == "edit_file"));
+    assert!(!explore_tools.iter().any(|name| name == "edit_file"));
 }
 
 #[tokio::test]
@@ -342,7 +437,7 @@ async fn unconfirmed_runtime_suffix_can_be_replaced_before_a_retried_preparation
         "runtime.step_prepared",
         "main",
     );
-    assert_eq!(1, prepared[0]["context_head"]);
+    assert_eq!(2, prepared[0]["context_head"]);
     let segment = prepared[0]["segment"].as_u64().unwrap();
     let initial_turn = prepared[0]["turn"].as_u64().unwrap();
     session.close().await.unwrap();
@@ -376,14 +471,14 @@ async fn unconfirmed_runtime_suffix_can_be_replaced_before_a_retried_preparation
             .id;
         for (ordinal, origin, turn, message) in [
             (
-                1,
+                2,
                 "response",
                 initial_turn,
                 CanonicalMessage::assistant(vec![MessageBlock::Text("done".into())]),
             ),
-            (2, "input", turn, CanonicalMessage::user_text("retry-input")),
+            (3, "input", turn, CanonicalMessage::user_text("retry-input")),
             (
-                3,
+                4,
                 "runtime",
                 turn,
                 CanonicalMessage::user_text("UNCONFIRMED_DYNAMIC_NOTICE"),
@@ -405,13 +500,13 @@ async fn unconfirmed_runtime_suffix_can_be_replaced_before_a_retried_preparation
         "runtime.context_admitted",
         "main",
     );
-    for ordinal in [1, 2, 3] {
+    for ordinal in [2, 3, 4] {
         let versions = admissions
             .iter()
             .filter(|value| value["segment"] == segment && value["ordinal"] == ordinal)
             .collect::<Vec<_>>();
         assert_eq!(2, versions.len());
-        if ordinal < 3 {
+        if ordinal < 4 {
             assert_eq!(versions[0]["message"], versions[1]["message"]);
         } else {
             assert_ne!(versions[0]["message"], versions[1]["message"]);
@@ -611,9 +706,87 @@ async fn a_handoff_selects_its_agents_turns_and_does_not_change_another_prefix()
     assert!(bodies[4].to_string().contains("MAIN_HANDOFF"));
     assert_eq!(
         1,
+        bodies[0].to_string().matches("<kuku_runtime_date>").count()
+    );
+    assert_eq!(
+        1,
+        bodies[4].to_string().matches("<kuku_runtime_date>").count()
+    );
+    let main_date_admissions = facts(&events, "runtime.context_admitted", "main")
+        .iter()
+        .filter(|event| event["origin"] == "runtime")
+        .filter_map(|event| {
+            serde_json::from_value::<CanonicalMessage>(event["message"].clone()).ok()
+        })
+        .filter(|message| {
+            text_message(message)["content"]
+                .as_str()
+                .is_some_and(|text| text.contains("<kuku_runtime_date>"))
+        })
+        .count();
+    assert_eq!(2, main_date_admissions);
+    assert_eq!(
+        1,
         facts(&events, "runtime.context_segment", "reviewer").len()
     );
     assert_eq!(2, facts(&events, "runtime.context_segment", "main").len());
+}
+
+#[tokio::test]
+async fn custom_runtime_date_template_is_deduplicated_by_rendered_message() {
+    let server = MockServer::start_async().await;
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let prompts = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(prompts.path().join("runtime")).unwrap();
+    std::fs::write(
+        prompts.path().join("runtime/current-date.md"),
+        "<kuku_custom_runtime_date>\n今天：{{current_date}}\n</kuku_custom_runtime_date>",
+    )
+    .unwrap();
+    let (mut original, path) = options(&server, workspace.path(), data.path());
+    original.prompts_dir = Some(prompts.path().into());
+    let model = server
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path(&path)
+                .matches(common::capture_http_request);
+            then.status(200)
+                .body(response(json!({"content":"answer"}), "stop"));
+        })
+        .await;
+    let session = Session::open(original).await.unwrap();
+    session.create_agent("create", "main", agent()).unwrap();
+    for (command, text) in [("first", "FIRST_INPUT"), ("second", "SECOND_INPUT")] {
+        session.send(Input::new(command, "main", text)).unwrap();
+        idle(&session, "main").await;
+    }
+    let events = session.events(0, 256).unwrap();
+    session.close().await.unwrap();
+    model.assert_hits_async(2).await;
+    let bodies = common::take_http_requests(&path);
+    assert_eq!(2, bodies.len());
+    for body in &bodies {
+        assert_eq!(
+            1,
+            body.to_string()
+                .matches("<kuku_custom_runtime_date>")
+                .count()
+        );
+    }
+    let date_admissions = facts(&events, "runtime.context_admitted", "main")
+        .iter()
+        .filter(|event| event["origin"] == "runtime")
+        .filter_map(|event| {
+            serde_json::from_value::<CanonicalMessage>(event["message"].clone()).ok()
+        })
+        .filter(|message| {
+            text_message(message)["content"]
+                .as_str()
+                .is_some_and(|text| text.contains("<kuku_custom_runtime_date>"))
+        })
+        .count();
+    assert_eq!(1, date_admissions);
 }
 
 #[tokio::test]

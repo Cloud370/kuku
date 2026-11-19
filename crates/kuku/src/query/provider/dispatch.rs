@@ -72,6 +72,7 @@ pub(super) async fn dispatch_provider_step(
         session_id: pending.session_id.clone(),
         agent_address: pending.conversation.as_str().into(),
         connection_name: resolved_config.connection_name.clone(),
+        workspace: pending.workspace.clone(),
     };
     let prepare_started = Instant::now();
     let prepared =

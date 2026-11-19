@@ -1,7 +1,7 @@
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use crate::config::{ProviderAuth, ProviderFormat, ProviderProfile};
+use crate::config::{PromptCacheScope, ProviderAuth, ProviderFormat, ProviderProfile};
 use crate::context::MessageBlock;
 
 use super::types::{
@@ -42,6 +42,9 @@ pub(crate) fn prepare_provider_request(
     body["stream"] = json!(true);
     apply_settings(config, &mut body);
     let correlation_id = correlation.map(correlation_id);
+    if let Some(cache_key) = prompt_cache_key(config, correlation, &url) {
+        body["prompt_cache_key"] = json!(cache_key);
+    }
     if config.capabilities.profile == ProviderProfile::OpenRouter {
         if let Some(value) = &correlation_id {
             body["session_id"] = json!(value);
@@ -187,6 +190,61 @@ fn correlation_id(correlation: &ProviderCorrelation) -> String {
     format!("kuku-{:x}", hash.finalize())
 }
 
+fn prompt_cache_key(
+    config: &ResolvedProvider,
+    correlation: Option<&ProviderCorrelation>,
+    url: &str,
+) -> Option<String> {
+    if config.kind != ProviderKind::OpenAiResponses {
+        return None;
+    }
+    let correlation = correlation?;
+    let scope = config.options.prompt_cache_scope;
+    if scope == PromptCacheScope::Off {
+        return None;
+    }
+
+    let mut hash = Sha256::new();
+    let scope_value = match scope {
+        PromptCacheScope::Workspace => "workspace",
+        PromptCacheScope::Session => "session",
+        PromptCacheScope::Off => "off",
+    };
+    for value in [
+        "kuku-prompt-cache-v1".as_bytes(),
+        scope_value.as_bytes(),
+        config.connection_name.as_bytes(),
+        url.as_bytes(),
+        config.model.as_bytes(),
+    ] {
+        update_hash_field(&mut hash, value);
+    }
+    match scope {
+        PromptCacheScope::Workspace => {
+            let workspace = std::fs::canonicalize(&correlation.workspace).ok()?;
+            for component in workspace.components() {
+                update_hash_field(&mut hash, component.as_os_str().as_encoded_bytes());
+            }
+        }
+        PromptCacheScope::Session => {
+            for value in [
+                correlation.session_id.as_bytes(),
+                correlation.agent_address.as_bytes(),
+                correlation.connection_name.as_bytes(),
+            ] {
+                update_hash_field(&mut hash, value);
+            }
+        }
+        PromptCacheScope::Off => return None,
+    }
+    Some(format!("{:x}", hash.finalize()))
+}
+
+fn update_hash_field(hash: &mut Sha256, value: &[u8]) {
+    hash.update((value.len() as u64).to_be_bytes());
+    hash.update(value);
+}
+
 fn validate_replay(
     config: &ResolvedProvider,
     request: &ProviderRequest<'_>,
@@ -292,12 +350,17 @@ mod tests {
             session_id: "session".into(),
             agent_address: "main".into(),
             connection_name: "router".into(),
+            workspace: std::path::PathBuf::from("."),
         };
         let first = prepare_provider_request(&config, &request, Some(&correlation)).unwrap();
         let repeated = prepare_provider_request(&config, &request, Some(&correlation)).unwrap();
         assert_eq!(first, repeated);
         assert_eq!("low", first.body["reasoning"]["effort"]);
         assert_eq!(true, first.body["provider"]["require_parameters"]);
+        assert_eq!(
+            first.correlation_id.as_deref(),
+            first.body["session_id"].as_str()
+        );
         request.assembly.system_prompt = "later system".into();
         assert_eq!("fixed system", first.body["messages"][0]["content"]);
         let other = prepare_provider_request(
@@ -313,6 +376,171 @@ mod tests {
         let encoded = serde_json::to_string(&first).unwrap();
         assert!(!encoded.contains("api_key"));
         assert_eq!(first, serde_json::from_str(&encoded).unwrap());
+    }
+
+    fn response_cache_key(
+        config: &ResolvedProvider,
+        correlation: Option<&ProviderCorrelation>,
+    ) -> Option<String> {
+        let catalog = crate::prompt::builtin_prompt_catalog();
+        let request = ProviderRequest {
+            assembly: assembly(),
+            catalog: &catalog,
+            current_input: CanonicalPromptInput { parts: Vec::new() },
+            model: config.model.clone(),
+            max_output_tokens: Some(64),
+            temperature: None,
+            stream: true,
+            think_level: crate::config::ThinkLevel::Off,
+            thinking: Default::default(),
+        };
+        prepare_provider_request(config, &request, correlation)
+            .unwrap()
+            .body
+            .get("prompt_cache_key")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    }
+
+    fn response_correlation(
+        workspace: &std::path::Path,
+        session_id: &str,
+        agent_address: &str,
+    ) -> ProviderCorrelation {
+        ProviderCorrelation {
+            session_id: session_id.into(),
+            agent_address: agent_address.into(),
+            connection_name: "openai".into(),
+            workspace: workspace.into(),
+        }
+    }
+
+    #[test]
+    fn workspace_cache_key_is_stable_across_sessions_and_agents_but_scoped_to_route() {
+        let workspace = tempfile::tempdir().unwrap();
+        let other_workspace = tempfile::tempdir().unwrap();
+        let config = ResolvedProvider {
+            kind: ProviderKind::OpenAiResponses,
+            connection_name: "openai".into(),
+            model: "gpt-test".into(),
+            base_url: "https://api.openai.com/v1".into(),
+            ..Default::default()
+        };
+        let main = response_correlation(workspace.path(), "session-one", "main");
+        let dotted_workspace = workspace.path().join(".");
+        let explore = response_correlation(&dotted_workspace, "session-two", "explore");
+        let first = response_cache_key(&config, Some(&main)).unwrap();
+        assert_eq!(64, first.len());
+        assert_eq!(first, response_cache_key(&config, Some(&explore)).unwrap());
+        let raw_workspace = workspace.path().to_string_lossy();
+        assert!(!first.contains(raw_workspace.as_ref()));
+
+        let other_workspace = response_correlation(other_workspace.path(), "session-one", "main");
+        assert_ne!(
+            first,
+            response_cache_key(&config, Some(&other_workspace)).unwrap()
+        );
+
+        let mut other_route = config.clone();
+        other_route.connection_name = "gateway".into();
+        other_route.base_url = "https://gateway.example/v1".into();
+        other_route.model = "routed-model".into();
+        let other_route_correlation = ProviderCorrelation {
+            connection_name: "gateway".into(),
+            ..main.clone()
+        };
+        assert_ne!(
+            first,
+            response_cache_key(&other_route, Some(&other_route_correlation)).unwrap()
+        );
+    }
+
+    #[test]
+    fn session_cache_key_is_per_session_and_agent_and_off_omits_it() {
+        let workspace = tempfile::tempdir().unwrap();
+        let main = response_correlation(workspace.path(), "session-one", "main");
+        let config = ResolvedProvider {
+            kind: ProviderKind::OpenAiResponses,
+            connection_name: "openai".into(),
+            model: "gpt-test".into(),
+            base_url: "https://api.openai.com/v1".into(),
+            options: crate::config::ProviderOptions {
+                prompt_cache_scope: PromptCacheScope::Session,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let first = response_cache_key(&config, Some(&main)).unwrap();
+        assert_ne!(
+            first,
+            response_cache_key(
+                &config,
+                Some(&response_correlation(
+                    workspace.path(),
+                    "session-two",
+                    "main"
+                ))
+            )
+            .unwrap()
+        );
+        assert_ne!(
+            first,
+            response_cache_key(
+                &config,
+                Some(&response_correlation(
+                    workspace.path(),
+                    "session-one",
+                    "explore"
+                ))
+            )
+            .unwrap()
+        );
+        let other_workspace = tempfile::tempdir().unwrap();
+        assert_eq!(
+            first,
+            response_cache_key(
+                &config,
+                Some(&response_correlation(
+                    other_workspace.path(),
+                    "session-one",
+                    "main"
+                ))
+            )
+            .unwrap()
+        );
+        assert_eq!(first, response_cache_key(&config, Some(&main)).unwrap());
+
+        let mut off = config;
+        off.options.prompt_cache_scope = PromptCacheScope::Off;
+        assert_eq!(None, response_cache_key(&off, Some(&main)));
+        assert_eq!(None, response_cache_key(&off, None));
+
+        let missing_path = workspace.path().join("missing");
+        let missing_workspace = response_correlation(&missing_path, "session", "main");
+        let mut workspace_scope = off;
+        workspace_scope.options.prompt_cache_scope = PromptCacheScope::Workspace;
+        assert_eq!(
+            None,
+            response_cache_key(&workspace_scope, Some(&missing_workspace))
+        );
+    }
+
+    #[test]
+    fn prompt_cache_key_is_responses_only_and_requires_correlation() {
+        let workspace = tempfile::tempdir().unwrap();
+        let correlation = response_correlation(workspace.path(), "session", "main");
+        let mut config = ResolvedProvider {
+            kind: ProviderKind::OpenAiCompatible,
+            connection_name: "openai".into(),
+            model: "gpt-test".into(),
+            base_url: "https://api.openai.com/v1".into(),
+            ..Default::default()
+        };
+        assert_eq!(None, response_cache_key(&config, Some(&correlation)));
+        config.kind = ProviderKind::Anthropic;
+        assert_eq!(None, response_cache_key(&config, Some(&correlation)));
+        config.kind = ProviderKind::OpenAiResponses;
+        assert_eq!(None, response_cache_key(&config, None));
     }
 
     #[test]

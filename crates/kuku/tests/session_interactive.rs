@@ -3,6 +3,7 @@ mod common;
 use std::sync::Arc;
 use std::time::Duration;
 
+use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, oneshot, Notify};
 
 use kuku::event::{EventPayload, EventStore, ModelStopReason};
@@ -729,6 +730,17 @@ async fn retry_uses_the_prepared_body_and_leaves_new_input_and_selection_for_the
     assert_eq!(first.request.request_id, retry.request.request_id);
     assert_eq!(first.request.turn, retry.request.turn);
     assert_eq!(first.request.body, retry.request.body);
+    let first_body_hash = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&first.request.body).unwrap())
+    );
+    assert_eq!(
+        first_body_hash,
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&retry.request.body).unwrap())
+        )
+    );
     assert_eq!(first.request.model, retry.request.model);
     assert_eq!(
         InputStatus::Queued,
@@ -750,6 +762,19 @@ async fn retry_uses_the_prepared_body_and_leaves_new_input_and_selection_for_the
     next.response.send(Reply::Text("finished")).unwrap();
     ready(&session, AgentStatus::Idle).await;
     let facts = session.events(0, 256).unwrap();
+    let prepared_hash = facts
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::Unknown(value)
+                if value["kind"] == "runtime.step_prepared"
+                    && value["request_id"].as_str() == Some(first.request.request_id.as_str()) =>
+            {
+                value["body_hash"].as_str()
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(first_body_hash, prepared_hash);
     assert_eq!(2, facts.iter().filter(|event| matches!(&event.payload, EventPayload::Unknown(value) if value["kind"] == "runtime.step_prepared")).count());
     assert_eq!(1, facts.iter().filter(|event| matches!(&event.payload, EventPayload::Unknown(value) if value["kind"] == "runtime.model_retry" && value["attempt"] == 2)).count());
     assert_eq!(3, session.agent("main").unwrap().usage.model_requests);

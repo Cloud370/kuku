@@ -8,21 +8,29 @@ pub fn render_agent_catalog(registry: &AgentRegistry, catalog: &PromptCatalog) -
         .get("agent-catalog")
         .map(|a| a.text.as_str())
         .unwrap_or("<kuku_agent_catalog>\n{{agent_list}}\n</kuku_agent_catalog>");
-    render_agent_directory(registry, 0).map(|directory| tmpl.replace("{{agent_list}}", &directory))
+    render_agent_directory_inner(registry, None)
+        .map(|directory| tmpl.replace("{{agent_list}}", &directory))
 }
 
 pub fn render_agent_directory(
     registry: &AgentRegistry,
     open_conversations: usize,
 ) -> Option<String> {
+    render_agent_directory_inner(registry, Some(open_conversations))
+}
+
+fn render_agent_directory_inner(
+    registry: &AgentRegistry,
+    open_conversations: Option<usize>,
+) -> Option<String> {
     if registry.is_empty() {
         return None;
     }
 
-    let mut lines = vec![
-        "Available contacts:".to_string(),
-        format!("open conversations: {open_conversations}"),
-    ];
+    let mut lines = vec!["Available contacts:".to_string()];
+    if let Some(open_conversations) = open_conversations {
+        lines.push(format!("open conversations: {open_conversations}"));
+    }
 
     for def in registry.definitions() {
         lines.push(format!(

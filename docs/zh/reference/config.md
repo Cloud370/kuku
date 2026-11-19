@@ -62,8 +62,11 @@ Chat 和 Responses 省略 `max_output_tokens` 时使用上游默认值。Anthrop
 | `reasoning_efforts` | string[] | 覆盖该连接模型已声明的原生思考值 |
 | `service_tiers` | string[] | 覆盖该连接模型已声明的原生服务值 |
 | `routing` | table | OpenRouter 上游路由选项 |
+| `prompt_cache_scope` | `workspace`\|`session`\|`off` | Responses 提示缓存键范围，默认为 `workspace` |
 
 内置 `openai` 连接的 `base_url` 是 `https://api.openai.com/v1`，Responses 适配器会在末尾加上 `/responses`。使用网关时，填写该网关提供的 API 基础地址。[OpenAI Responses API](https://developers.openai.com/api/reference/resources/responses/methods/create)
+
+`prompt_cache_scope` 只影响 Responses 请求。`workspace` 将规范化的绝对工作区身份与连接、端点和模型一起哈希，因此同一工作区中的 Agent 和 Session 可以共享缓存键，同时不会发送工作区路径。`session` 使用与传输关联相同的 Session、Agent 地址和连接身份派生独立键，并纳入端点和模型以隔离路由。`off` 不发送 `prompt_cache_key`。缺少关联上下文时，适配器不会生成缓存键。这些设置都不会改变传输关联或 OpenRouter 的 `session_id`。
 
 SDK 按配置名称选择连接。多个连接可以使用同一个 `format`；单独选择协议不会选择第一条匹配连接。显式模型设置覆盖选中的 tier。选择其他连接不会携带无关默认 tier 的原生设置；显式选择的 tier 仍提供默认值，不兼容的选择会失败。
 

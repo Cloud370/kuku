@@ -15,13 +15,13 @@ pub struct PromptCatalog {
     /// block templates: "project-policy", "tool-guidance", "memory",
     /// "agent-catalog", "system-notice", "hook-context",
     /// "notice-agent-directory", "notice-open-conversations",
-    /// "notice-inbox", "notice-loaded-skills", "notice-context-drift"
+    /// "notice-inbox", "notice-loaded-skills", "notice-skill-changes", "notice-context-drift"
     pub blocks: BTreeMap<String, PromptAsset>,
     /// agent identity files: "main", "review", "explore", + user-defined
     pub agents: BTreeMap<String, PromptAsset>,
     /// memory data wrappers: "global", "project"
     pub memory: BTreeMap<String, PromptAsset>,
-    /// runtime templates: "context", "handoff-context", "handoff-instruction", "notice-context-drift"
+    /// runtime templates: "context", "current-date", "handoff-context", "handoff-instruction", "notice-context-drift"
     pub runtime: BTreeMap<String, PromptAsset>,
     /// tool templates: "fetch-web"
     pub tools: BTreeMap<String, PromptAsset>,
@@ -103,6 +103,10 @@ pub fn builtin_prompt_catalog() -> PromptCatalog {
                 p!("blocks", "notice-loaded-skills"),
             );
             m.insert(
+                "notice-skill-changes".into(),
+                p!("blocks", "notice-skill-changes"),
+            );
+            m.insert(
                 "notice-context-drift".into(),
                 p!("blocks", "notice-context-drift"),
             );
@@ -129,6 +133,7 @@ pub fn builtin_prompt_catalog() -> PromptCatalog {
         runtime: {
             let mut m = BTreeMap::new();
             m.insert("context".into(), p!("runtime", "context"));
+            m.insert("current-date".into(), p!("runtime", "current-date"));
             m.insert("handoff-context".into(), p!("runtime", "handoff-context"));
             m.insert(
                 "handoff-instruction".into(),
