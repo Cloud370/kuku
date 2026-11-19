@@ -4,13 +4,35 @@ This study compares Kuku with Pi 1.4.0 and Codex CLI 0.164.0 on four tasks from 
 
 ## Latest four-task comparison
 
-| Harness | Tasks passed / attempts | Mean inference USD per attempt | Total inference USD / passes | Mean agent + verifier time |
+| Harness | Original grader passes / attempts | Mean inference USD per attempt | Total inference USD / passes | Mean agent + verifier time |
 |---|---:|---:|---:|---:|
-| Kuku, latest attempt per task | 3/4 | 0.05799 | 0.07732 | 254 s |
+| Kuku, latest attempt per task | 3/4 | 0.05635 | 0.07514 | 499 s |
 | Pi 1.4.0 | 13/16 | 0.04340 | 0.05342 | 872 s |
 | Codex CLI 0.164.0 | 15/16 | 0.03041 | 0.03243 | 834 s |
 
-The latest local attempts come from round 7 for Vim, round 9 for async cancellation, round 11 for log regex and round 12 for log aggregation. All four turns completed. Vim lost its script format check after passing in round 6. Async cancellation accounted for $0.12508 of the latest $0.23197 in inference charges. Each published peer ran four attempts per task. Different execution hosts and missing peer first-token and throughput measurements prevent attributing the observed wall-time differences to a harness alone. [Attempt data and measurement definitions](frontier-v1.1-sample.json)
+Kuku used one fresh Session per task. Log regex is the round-13 run at `1310600`. The three round-14 runs at `038d50a` overlapped on the local host. Each case ran in an x86_64 Linux container with one CPU and 2 GiB under WSL2. The frozen peer sample used Runta/Baseten, with four scored attempts per task and the published audit adjustments. Host and sample differences limit comparisons of wall time and pass rate. [Attempt data and measurement definitions](frontier-v1.1-sample.json)
+
+| Task / round | Original grader | SDK finish | Upstream requests | Inference USD | SDK + verifier seconds |
+|---|---:|---|---:|---:|---:|
+| Log date ranges / 14 | 2/2 | completed | 7 | 0.008657812 | 30.5 + 12.6 |
+| Async cancellation / 14 | 6/6 | completed | 33 | 0.114632400 | 484.7 + 25.9 |
+| Log regex / 13 | 1/1 | completed | 17 | 0.047032612 | 205.7 + 23.9 |
+| Large-file Vim edit / 14 | 0/5 | deadline exceeded | 16 | 0.055088560 | 1,200.2 + 13.1 |
+
+| Task | Cache hit | Proxy first output p50 | Receipt generation TPS p50 | Mean / peak SDK RSS | Container block I/O read / written |
+|---|---:|---:|---:|---:|---:|
+| Log date ranges | 81.9% | 1.36 s | 133.5 | 35.0 / 35.7 MiB | 14.9 MB / 623 kB |
+| Async cancellation | 95.5% | 1.78 s | 145.4 | 36.3 / 38.3 MiB | 5.04 MB / 5.91 MB |
+| Log regex | 83.4% | 1.56 s | 131.6 | 36.7 / 38.6 MiB | 315 kB / 1.61 MB |
+| Large-file Vim edit | 88.0% | 1.50 s | 151.4 | 36.4 / 36.6 MiB | 94.9 MB / 1.13 GB |
+
+All 73 OpenRouter Responses requests had matching Baseten receipts, totaling $0.225411384 in stream charges. The requests used `max` effort with fallback disabled. Log date ranges allowed 262,144 output tokens per request and the other tasks allowed 131,072. Cache hit rates use observed input tokens across each run, with zero cached tokens on every first request. Proxy first output measures the first meaningful stream delta. Receipt TPS uses native completion tokens and generation time. Provider-native TTFT and per-process I/O counters are unknown. Docker block I/O covers the SDK and tools. Async reached completion after three blocked command calls.
+
+The Vim journal recorded the first automatically promoted Job at event 79, its completion at 80 and the next prepared model request at 86. The second and third Jobs also completed before the next prepared request. The fourth was cancelled at the SDK deadline, with zero additional requests after promotion. The Session closed and the original grader ran with the required script missing.
+
+On request eight, the live Vim model wrote a scratch script and verified that the transformed million-row CSV matched. Round 6 delivered `/app/apply_macros.vim` with `:wq` by request ten and passed 5/5. Round 7 delivered the script with bare `wq` and passed 4/5. The published Vim sample passed 1/4 for Pi and 3/4 for Codex, including one passing Codex artifact from a timed-out agent. The public trial records report outcomes and timing. [Original grader](https://github.com/harbor-framework/terminal-bench-2-1/blob/7131e4375048a0e408a8fb404b5f499d726b695b/tasks/large-scale-text-editing/tests/test_outputs.py#L146-L156)
+
+An unscored offline replay placed the round-14 scratch script at the required path in two fresh containers. The original script passed 4/5 checks. Adding a single colon before `wq` changed only the format check and passed 5/5. Both runs produced identical CSV hashes and used 51 macro keystrokes. The replay used zero model calls.
 
 ## Diagnostic runs
 
@@ -175,7 +197,7 @@ Round 13 opened a fresh Session with SDK snapshot `1310600`. It reused the round
 
 The first model response called `workspace_script` without a discovery call. It awaited one native command, used `exit_code` and read complete stdout and stderr with `.text()`. The host recorded exit 0 and a complete capture, and the next request admitted the script's returned data. A later script failed when it tried to run the unavailable `python3` executable. The SDK completed the turn, the original grader accepted the retained 480-byte `regex.txt`, and the journal recorded zero Job promotions.
 
-Round 11 also passed, with 18 requests, 274.5 SDK seconds and $0.062867992 in inference charges. These are two single attempts with different SDK builds and model actions. The first-call evidence establishes correct use of the command API on this run. The original grader measures the delivered regex separately. The four-task comparison above retains its round-12 cutoff.
+Round 11 also passed, with 18 requests, 274.5 SDK seconds and $0.062867992 in inference charges. These are two single attempts with different SDK builds and model actions. The first-call evidence establishes correct use of the command API on this run. The original grader measures the delivered regex separately.
 
 All 17 delayed generation receipts confirmed Baseten and matched the stream charges used for settlement. The meter recorded 341,211 input and 23,336 output tokens, including 18,499 reasoning tokens. The first request had zero cached input tokens. The SDK used 2.42 CPU seconds and its final `getrusage` recorded zero input and output blocks. Docker's last block I/O sample recorded 315 kB read and 1.61 MB written across the container. Provider-native time to first token and all seven process-level I/O counters are unknown for this run.
 
