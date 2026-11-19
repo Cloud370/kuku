@@ -1,4 +1,4 @@
-use super::{App, Job, Modal, Shortcut};
+use super::{App, Job, Modal, PromptKind, Shortcut};
 use crossterm::event::KeyEvent;
 
 impl App {
@@ -8,15 +8,25 @@ impl App {
         if !Shortcut::ESCAPE.matches(key) {
             self.escape_armed_at = None;
         }
-        if Shortcut::ESCAPE.matches(key) && self.modal.take().is_some() {
-            self.rewind_restore_files = false;
-            self.escape_armed_at = None;
-            self.effects.push(Job::ClosePicker);
-            return;
+        if Shortcut::ESCAPE.matches(key) {
+            if let Some(modal) = self.modal.take() {
+                if let Modal::Prompt(prompt) = &modal {
+                    if let PromptKind::Question { target, .. } = &prompt.kind {
+                        self.restore_question_composer(target);
+                    }
+                }
+                self.rewind_restore_files = false;
+                self.escape_armed_at = None;
+                if !matches!(modal, Modal::Help) {
+                    self.effects.push(Job::ClosePicker);
+                }
+                return;
+            }
         }
         let address = self.active.clone();
         let draft = self.pane().draft.text().to_owned();
         match self.modal {
+            Some(Modal::Help) => {}
             Some(Modal::Picker(_)) => self.picker_key(key),
             Some(Modal::Prompt(_)) => self.prompt_key(key),
             Some(Modal::Output(_)) => self.output_key(key),
@@ -34,6 +44,9 @@ impl App {
         self.dismiss_confirmation();
         self.text_selection.cancel_drag();
         self.escape_armed_at = None;
+        if matches!(&self.modal, Some(Modal::Help)) {
+            return;
+        }
         let address = self.active.clone();
         let draft = self.pane().draft.text().to_owned();
         if let Some(Modal::Picker(picker)) = &mut self.modal {
