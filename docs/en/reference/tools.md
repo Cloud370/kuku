@@ -78,7 +78,7 @@ For pipes, redirection, or shell built-ins, choose an interpreter explicitly. Th
 {"shell":"cmd","command":"type \"build log.txt\"","cwd":".","timeout":10}
 ```
 
-An exited process can return tool status `ok` with a nonzero `exit_code`. Check `termination`, `exit_code`, and `capture_complete` in the structured facts. In a workspace script, read short command output from `run.result.output_preview` and check `output_preview_truncated`. For complete stdout or stderr, use the retained `output_ref.id` with `workspace.output_lines` or `workspace.output_chunks`. Missing executables, start failures, timeouts, and cancellation have separate termination values. Recognized Rust test and pytest summaries carry program-reported counts and bounded evidence. Use the retained output to investigate failures or formats without a recognized report. See [SDK execution facts](sdk.md#workspace-execution).
+An exited process can return tool status `ok` with a nonzero `exit_code`. Check `termination`, `exit_code`, and `capture_complete` in the structured facts. In a workspace script, read short command output from `run.result.output_preview` only when `output_preview_truncated` is false. A complete capture can still have a truncated preview. For complete stdout or stderr, use the retained `output_ref.id` with `workspace.output_lines` or `workspace.output_chunks`. Missing executables, start failures, timeouts, and cancellation have separate termination values. Recognized Rust test and pytest summaries carry program-reported counts and bounded evidence. Use the retained output to investigate failures or formats without a recognized report. See [SDK execution facts](sdk.md#workspace-execution).
 
 ## Workspace scripts
 

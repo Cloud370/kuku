@@ -78,7 +78,7 @@
 {"shell":"cmd","command":"type \"build log.txt\"","cwd":".","timeout":10}
 ```
 
-进程正常退出后，工具状态可以为 `ok`，同时 `exit_code` 为非零值。检查结构化事实中的 `termination`、`exit_code` 和 `capture_complete`。 在工作区脚本中，可从 `run.result.output_preview` 读取有界的命令输出，并检查 `output_preview_truncated`。需要完整的 stdout 或 stderr 时，使用保留的 `output_ref.id` 调用 `workspace.output_lines` 或 `workspace.output_chunks`。程序缺失、启动失败、超时和取消有不同的终止原因。识别出的 Rust 测试和 pytest 摘要会提供程序报告的统计与有界证据。需要排查失败或分析未识别的格式时，读取保留输出。见 [SDK 执行事实](sdk.md#工作区执行)。
+进程正常退出后，工具状态可以为 `ok`，同时 `exit_code` 为非零值。检查结构化事实中的 `termination`、`exit_code` 和 `capture_complete`。 在工作区脚本中，可从 `run.result.output_preview` 读取有界的命令输出，并用 `output_preview_truncated` 判断预览是否完整。即使捕获完整，预览也可能只有前面的一段。需要完整的 stdout 或 stderr 时，使用保留的 `output_ref.id` 调用 `workspace.output_lines` 或 `workspace.output_chunks`。程序缺失、启动失败、超时和取消有不同的终止原因。识别出的 Rust 测试和 pytest 摘要会提供程序报告的统计与有界证据。需要排查失败或分析未识别的格式时，读取保留输出。见 [SDK 执行事实](sdk.md#工作区执行)。
 
 ## 工作区脚本
 

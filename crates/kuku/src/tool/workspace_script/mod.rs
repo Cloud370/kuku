@@ -118,9 +118,10 @@ pub(crate) fn definition() -> ToolDefinition {
             "if (r.status !== 'ok' || !r.result.is_full_file_snapshot) return r.summary; ",
             "const {entry} = JSON.parse(r.result.raw_text); const f = await workspace.stat_file({path:entry}); ",
             "return {entry, status:f.status, exists:f.result?.exists}; ",
-            "workspace.run_command returns result.exit_code and result.output_preview (bounded display text). ",
-            "Check result.capture_complete and result.output_preview_truncated. ",
-            "Stream retained output with for await (const line of workspace.output_lines({id: run.result.output_ref.id})). ",
+            "For command output, check run.result.exit_code. Use run.result.output_preview for short text ",
+            "when run.result.output_preview_truncated is false. For calculations over longer stdout use ",
+            "for await (const {text} of workspace.output_lines({id:run.result.output_ref.id, stream:'stdout'})) ",
+            "inside this script. capture_complete describes the stored capture, which can exceed the preview. ",
             "Use workspace.output_chunks({id}) and segment.bytes for raw bytes. Use create_output, append_output and finish_output for large results, ",
             "or save_value and list_values for named values. QuickJS has standard ECMAScript built-ins; ",
             "Node and browser APIs such as TextEncoder are unavailable."
