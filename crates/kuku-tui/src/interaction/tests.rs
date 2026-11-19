@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use kuku_client::{Acknowledgement, Action, Receipt};
+use ratatui::backend::TestBackend;
+use ratatui::Terminal;
 use serde_json::json;
 
 use crate::app::{App, Modal};
@@ -227,6 +229,8 @@ fn double_escape_opens_rewind_picker_and_confirmation_is_cancelable_and_opt_in()
         if matches!(prompt.kind, PromptKind::RewindMessage { event_id: 17, .. })
             && prompt.instructions.contains("[ ] Restore recorded file changes")));
 
+    press(&mut app, KeyCode::Char('x'));
+    assert!(matches!(&app.modal, Some(Modal::Prompt(prompt)) if prompt.editor.text().is_empty()));
     press(&mut app, KeyCode::Char(' '));
     assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
         if prompt.instructions.contains("[x] Restore recorded file changes")));
@@ -336,6 +340,43 @@ fn rewind_ack_restores_unsent_text_but_never_replaces_a_changed_draft() {
     assert!(!edited.rewind_drafts.contains_key(&id));
     edited.pane_mut().draft.recall(-1);
     assert_eq!("recoverable original", edited.pane().draft.text());
+}
+
+#[test]
+fn rewind_confirmation_render_shows_file_scope_without_an_editor() {
+    let mut app = connected_app();
+    app.choose(
+        PickerKind::Rewind,
+        ChoiceKind::RewindMessage {
+            event_id: 99,
+            turn: 2,
+            text: "selected prompt".into(),
+        },
+    );
+    let mut terminal = Terminal::new(TestBackend::new(92, 26)).unwrap();
+    let frame = terminal
+        .draw(|frame| crate::ui::render(frame, &mut app))
+        .unwrap();
+    let rendered = frame
+        .buffer
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<Vec<_>>()
+        .join("")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let compact = |text: &str| {
+        text.chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>()
+    };
+    let warning = "Restores only recorded workspace file changes; shell commands and external side effects are not reversed.";
+    assert!(compact(&rendered).contains(&compact(warning)), "{rendered}");
+    assert!(rendered.contains("Space Toggle file restore"));
+    assert!(!rendered.contains("Type here"));
 }
 
 #[test]

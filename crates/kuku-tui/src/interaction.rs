@@ -308,7 +308,7 @@ impl App {
             if let PromptKind::RewindMessage { text, .. } = &prompt.kind {
                 prompt.instructions = rewind_instructions(text, self.rewind_restore_files);
             }
-        } else {
+        } else if !matches!(prompt.kind, PromptKind::RewindMessage { .. }) {
             let multiline = prompt.kind.multiline();
             edit(&mut prompt.editor, key, self.modal_editor_width, multiline);
         }

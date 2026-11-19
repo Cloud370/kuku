@@ -66,6 +66,28 @@ fn rewind_invalidation_discards_reading_window_and_saved_anchor() {
 }
 
 #[test]
+fn rewind_picker_uses_display_turn_number_and_keeps_event_identity() {
+    let mut transcript = Transcript::default();
+    transcript.replace_recent(HistoryPage {
+        entries: vec![HistoryEntry {
+            id: 99,
+            agent: "main".into(),
+            turn: Some(23),
+            kind: HistoryKind::User,
+            text: Some("selected prompt".into()),
+            turn_summary: None,
+            details: [("turn_number".into(), json!(2))].into_iter().collect(),
+        }],
+        next_before: None,
+    });
+
+    assert_eq!(
+        vec![(99, 2, "selected prompt".into())],
+        transcript.rewind_messages("main")
+    );
+}
+
+#[test]
 fn evicted_view_restores_its_saved_anchor_from_durable_history() {
     let mut transcript = Transcript::default();
     transcript.replace_recent(page(51, 91));

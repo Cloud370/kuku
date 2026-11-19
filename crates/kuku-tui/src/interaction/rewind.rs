@@ -6,7 +6,7 @@ use crate::text::{shorten, single_line};
 
 pub(super) fn rewind_instructions(text: &str, restore_files: bool) -> String {
     format!(
-        "This message and all subsequent events for this Agent will leave active context. The journal remains unchanged.\n\n{}\n\n[{}] Restore recorded file changes · Space toggles\nEnter commits · Esc cancels",
+        "This message and all subsequent events for this Agent will leave active context. The journal remains unchanged.\nRestores only recorded workspace file changes; shell commands and external side effects are not reversed.\n\n{}\n\n[{}] Restore recorded file changes · Space toggles\nEnter commits · Esc cancels",
         text,
         if restore_files { "x" } else { " " }
     )

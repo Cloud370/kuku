@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 mod activity;
-
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };

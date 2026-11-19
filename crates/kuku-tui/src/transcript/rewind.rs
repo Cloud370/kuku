@@ -16,7 +16,7 @@ impl Transcript {
                 let Body::User { text, .. } = &record.body else {
                     return None;
                 };
-                Some((id, record.turn?, text.clone()))
+                Some((id, record.turn_number.or(record.turn)?, text.clone()))
             })
             .collect()
     }
