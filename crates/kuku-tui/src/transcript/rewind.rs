@@ -1,6 +1,15 @@
-use super::{Body, Key, Transcript};
+use super::{Body, Key, Transcript, Window};
 
 impl Transcript {
+    pub(crate) fn invalidate_after_rewind(&mut self) {
+        self.reply_position = None;
+        self.reading = None;
+        self.restore = None;
+        self.recent = Window::default();
+        self.current_execution = None;
+        self.detail_items.visible.clear();
+    }
+
     pub(crate) fn rewind_messages(&self, agent: &str) -> Vec<(u64, u64, String)> {
         self.recent
             .records

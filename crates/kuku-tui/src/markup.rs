@@ -378,8 +378,8 @@ impl Markdown {
     }
 
     fn render_document(&mut self, source: &str, width: usize, limit: usize) -> Vec<Line<'static>> {
-        let full_label = "Markdown preview · /source";
-        let compact_label = "Markdown · /source";
+        let full_label = "Markdown preview · Messages";
+        let compact_label = "Markdown · Messages";
         let label = if width >= full_label.width() {
             full_label
         } else if width >= compact_label.width() {
@@ -793,7 +793,7 @@ mod tests {
             assert!(plain.iter().any(|line| line == "After example"));
             assert!(plain
                 .iter()
-                .any(|line| line == "Markdown preview · /source"));
+                .any(|line| line == "Markdown preview · Messages"));
             assert!(plain.iter().any(|line| line.starts_with('┌')));
             assert!(plain.iter().any(|line| line.contains("隔离 │ 通过")));
             assert!(plain.iter().any(|line| line == "• 检查结果"));

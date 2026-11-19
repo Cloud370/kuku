@@ -231,11 +231,11 @@ def review_saved_commands(terminal, count, evidence):
               "CSV regression checks passed": "terminal-check.txt"}
     terminal.request("resize", rows=35, cols=90)
     for index in range(count):
-        terminal.press("/tools\r")
-        terminal.expect("Tool details and saved output")
-        terminal.type("run_command Saved output")
-        terminal.expect("› run_command")
+        screen = terminal.expect("run_command") ["screen"]
+        terminal.click_text(screen, "Messages" if "Messages" in screen else "Msg")
+        terminal.press("\r")
         terminal.press("\x1b[B" * index + "\r")
+        terminal.press("\t\t\r")
         screen = terminal.expect("bytes · PgUp/PgDn")["screen"]
         for page in range(4):
             output = saved_output_rows(screen)

@@ -1,10 +1,10 @@
 use crate::app::App;
 use crate::jobs::Job;
 use crate::menu::{Choice, ChoiceKind, MessageAction, PickerKind};
-use crate::transcript::{MessageId, MessageInfo, MessageKind, SelectedMessage};
+use crate::transcript::{DetailKey, MessageId, MessageInfo, MessageKind, SelectedMessage};
 
 impl App {
-    pub(super) fn open_messages_picker(&mut self) {
+    pub(crate) fn open_messages_picker(&mut self) {
         self.open_messages_picker_at(None);
     }
 
@@ -95,13 +95,13 @@ impl App {
                 },
             ));
         }
-        if info.expandable.is_some() {
+        if let Some(key) = info.expandable.clone() {
             choices.push(Choice::new(
                 MessageAction::Expand.label(),
                 "Expand details for this entry",
-                ChoiceKind::MessageAction {
-                    message: message.clone(),
-                    action: MessageAction::Expand,
+                ChoiceKind::Detail {
+                    key,
+                    message: Some(message.clone()),
                 },
             ));
         }
@@ -172,14 +172,7 @@ impl App {
                     self.problem("Details for this message are no longer available");
                     return;
                 };
-                if self.reveal_selected_message(&message) {
-                    self.project_selected_message();
-                    if !self.toggle_transcript_detail(&key) {
-                        self.problem("Details for this message are no longer available");
-                    }
-                } else {
-                    self.problem("Selected message is no longer available");
-                }
+                self.toggle_detail_choice(key, Some(message));
             }
             MessageAction::FullOutput => {
                 let Some(tool) = info.tool.filter(|tool| tool.has_full_output()) else {
@@ -191,6 +184,41 @@ impl App {
             MessageAction::Source => {
                 self.problem("Source is only available for assistant messages");
             }
+        }
+    }
+
+    pub(super) fn toggle_detail_choice(
+        &mut self,
+        key: DetailKey,
+        message: Option<SelectedMessage>,
+    ) {
+        if let Some(message) = message {
+            let Some(info) = self.resolve_message(&message) else {
+                self.problem("Selected message is no longer available");
+                return;
+            };
+            if info.expandable.as_ref() != Some(&key) {
+                self.problem("Details for this message are no longer available");
+                return;
+            }
+            if !self.reveal_selected_message(&message) {
+                self.problem("Selected message is no longer available");
+                return;
+            }
+            self.project_selected_message();
+        }
+        if !self
+            .pane()
+            .transcript
+            .visible_detail_choices()
+            .iter()
+            .any(|(choice, _, _)| choice == &key)
+        {
+            self.problem("These details are no longer available");
+            return;
+        }
+        if !self.toggle_transcript_detail(&key) {
+            self.problem("These details are no longer available");
         }
     }
 

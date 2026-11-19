@@ -223,6 +223,40 @@ fn tool_actions_expand_the_selected_call_and_open_saved_or_complete_inline_outpu
 }
 
 #[test]
+fn escape_from_expand_action_returns_to_the_selected_message() {
+    let mut app = connected_app();
+    for event in [
+        json!({"id":71,"agent":"main","turn":3,"type":"tool_call","tool":"run_command","tool_call_id":"exact-call","args":{"command":"echo selected","brief":"selected command"}}),
+        json!({"id":72,"agent":"main","turn":3,"type":"tool_result","tool":"run_command","tool_call_id":"exact-call","status":"ok","summary":"selected command complete","model_content":"short preview","output_id":"saved-exact-output"}),
+    ] {
+        app.pane_mut()
+            .transcript
+            .apply(serde_json::from_value(event).unwrap(), None);
+    }
+    let id = MessageId::Tool {
+        turn: Some(3),
+        call_id: "exact-call".into(),
+    };
+    open_message_actions(&mut app, id.clone());
+    let Some(Modal::Picker(picker)) = &mut app.modal else {
+        panic!("message actions picker expected")
+    };
+    picker.selected = picker
+        .visible_choices()
+        .iter()
+        .position(|choice| {
+            matches!(&choice.kind, ChoiceKind::Detail { message: Some(message), .. } if message.id == id)
+        })
+        .expect("selected message expand action is available");
+
+    press(&mut app, KeyCode::Esc);
+
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+        if matches!(picker.kind, PickerKind::Messages)
+            && matches!(picker.selected_choice(), Some(ChoiceKind::MessageEntry(message)) if message.id == id)));
+}
+
+#[test]
 fn message_picker_escape_preserves_draft_and_stale_actions_fail_safe() {
     let mut empty = connected_app();
     empty.paste("keep this draft");
@@ -342,11 +376,15 @@ fn mouse_opens_messages_selects_entry_and_runs_action_without_losing_draft() {
         .any(|effect| matches!(effect, Job::Copy(text) if text == "mouse-target user entry")));
     assert_eq!("draft remains editable", app.pane().draft.text());
 
-    let mut compact = Terminal::new(TestBackend::new(40, 30)).unwrap();
-    let screen = draw(&mut app, &mut compact);
-    click_screen(&mut app, &screen, screen_position(&screen, "Msg"));
-    assert!(matches!(&app.modal, Some(Modal::Picker(picker))
-        if matches!(picker.kind, PickerKind::Messages)));
+    for width in [32, 33] {
+        let mut compact = Terminal::new(TestBackend::new(width, 30)).unwrap();
+        let screen = draw(&mut app, &mut compact);
+        let message_button = screen_position(&screen, "Msg");
+        click_screen(&mut app, &screen, message_button);
+        assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+            if matches!(picker.kind, PickerKind::Messages)));
+        app.modal = None;
+    }
 }
 
 #[test]
@@ -367,7 +405,7 @@ fn message_and_rewind_picker_footers_name_their_distinct_modes() {
 }
 
 #[test]
-fn legacy_copy_keeps_async_latest_reply_when_its_entry_is_not_loaded() {
+fn message_picker_excludes_entries_outside_the_active_window() {
     let mut app = connected_app();
     let original = "x".repeat(80_000);
     insert_message(
@@ -391,13 +429,15 @@ fn legacy_copy_keeps_async_latest_reply_when_its_entry_is_not_loaded() {
         .transcript
         .has_assistant_message(111, &app.active.agent));
 
-    let selection = app.selection();
-    app.copy_reply();
-    assert!(matches!(
-        app.effects.as_slice(),
-        [Job::ReplySource(target, 111)] if target == &selection
-    ));
-    app.effects.clear();
-    app.update(Update::ReplySource(selection, 111, Ok(original.clone())));
-    assert!(matches!(app.effects.as_slice(), [Job::Copy(text)] if text == &original));
+    app.open_messages_picker();
+    let Some(Modal::Picker(picker)) = &app.modal else {
+        panic!("message picker expected");
+    };
+    assert!(!picker.visible_choices().iter().any(|choice| matches!(
+        &choice.kind,
+        ChoiceKind::MessageEntry(SelectedMessage {
+            id: MessageId::Event(111),
+            ..
+        })
+    )));
 }

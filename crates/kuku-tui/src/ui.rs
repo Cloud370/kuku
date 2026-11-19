@@ -20,6 +20,7 @@ use crate::theme::{
 };
 
 mod activity;
+mod contextual;
 mod delivery;
 mod header;
 
@@ -44,9 +45,15 @@ pub(crate) fn render_at(
     activity_frame: ActivityFrame,
 ) -> bool {
     let outer = frame.area();
+    app.contextual_hits.clear();
     if outer.is_empty() {
         app.text_selection.clear();
         app.delivery_area = Rect::ZERO;
+        app.delivery_hits.clear();
+        app.request_area = Rect::ZERO;
+        app.request_hit = None;
+        app.permission_choice_areas = [Rect::ZERO; 2];
+        app.contextual_hits.clear();
         app.reading_area = Rect::ZERO;
         app.composer_area = Rect::ZERO;
         return false;
@@ -59,7 +66,9 @@ pub(crate) fn render_at(
         area.height,
         activity_frame.agent_activity(app),
     );
-    let status_height = footer.len() as u16;
+    let focused_hint = contextual::focused_hint(app, width);
+    let service_row = contextual::service_row(&footer, app);
+    let status_height = focused_hint.as_ref().map_or(footer.len() as u16, |_| 2);
     let status_gap = u16::from(status_height > 0 && area.height >= FOOTER_SPACE_HEIGHT);
     let below_editor = status_height + status_gap;
     let chrome_rows = if area.height > 3 {
@@ -95,9 +104,24 @@ pub(crate) fn render_at(
     let dock = reading
         .as_ref()
         .and_then(|_| app.pane().transcript.turn_dock(stats_width));
-    let deliveries = delivery::lines(app, width, space_above_editor);
-    let delivery_height = deliveries.len() as u16;
-    let above_editor = composer_gap + delivery_height;
+    let expanded_request = app.pane().keyboard_focus == crate::app::KeyboardFocus::Request
+        && app.pane().snapshot.as_ref().is_some_and(|snapshot| {
+            snapshot.agent.question.is_none() && snapshot.agent.permission.is_some()
+        });
+    let request = delivery::request_lines(
+        app,
+        width,
+        space_above_editor.min(if expanded_request { 12 } else { 3 }),
+    );
+    let request_height = request.lines.len() as u16;
+    app.pane_mut().request_detail_page_size = request.detail_page_size;
+    let deliveries = delivery::lines(
+        app,
+        width,
+        space_above_editor.saturating_sub(request_height),
+    );
+    let delivery_height = deliveries.lines.len() as u16;
+    let above_editor = composer_gap + request_height + delivery_height;
     let editor_limit = area
         .height
         .saturating_sub(below_editor + chrome_rows + padding_rows + above_editor);
@@ -118,11 +142,12 @@ pub(crate) fn render_at(
         .saturating_sub(editor_height + above_editor + below_editor + MIN_TRANSCRIPT_ROWS)
         .min(MAX_BANNER_ROWS);
     let banner = banner(app, width, usize::from(banner_rows));
-    let [transcript, banner_area, gap, delivery_area, editor, _status_gap, status] =
+    let [transcript, banner_area, gap, request_area, delivery_area, editor, _status_gap, status] =
         Layout::vertical([
             Constraint::Min(0),
             Constraint::Length(banner.len() as u16),
             Constraint::Length(composer_gap),
+            Constraint::Length(request_height),
             Constraint::Length(delivery_height),
             Constraint::Length(editor_height),
             Constraint::Length(status_gap),
@@ -179,8 +204,58 @@ pub(crate) fn render_at(
             reading_area,
         );
     }
-    frame.render_widget(Paragraph::new(deliveries), delivery_area);
+    frame.render_widget(Paragraph::new(request.lines), request_area);
+    frame.render_widget(Paragraph::new(deliveries.lines), delivery_area);
+    if let (Some(range), Some(control)) = (
+        deliveries.recovery_range,
+        app.contextual_controls().into_iter().find(|control| {
+            matches!(
+                control,
+                crate::contextual::ContextControl::PendingRecovery { .. }
+            )
+        }),
+    ) {
+        app.contextual_hits.push(crate::contextual::ContextHit {
+            area: Rect::new(
+                delivery_area.x.saturating_add(range.start),
+                delivery_area.y,
+                range.end.saturating_sub(range.start),
+                1,
+            ),
+            control,
+        });
+    }
+    app.request_area = request_area;
+    let request_id = app.pane().snapshot.as_ref().and_then(|snapshot| {
+        snapshot
+            .agent
+            .question
+            .as_ref()
+            .map(|request| request.id.clone())
+            .or_else(|| {
+                snapshot
+                    .agent
+                    .permission
+                    .as_ref()
+                    .map(|request| request.id.clone())
+            })
+    });
+    app.request_hit = if request_area.is_empty() {
+        None
+    } else {
+        request_id.map(|request_id| (app.selection().target, request_id))
+    };
     app.delivery_area = delivery_area;
+    app.delivery_hits = deliveries.hits;
+    app.permission_choice_areas =
+        request
+            .permission_choices
+            .map_or([Rect::ZERO; 2], |(row, deny, allow)| {
+                [
+                    delivery::choice_area(request_area, row, deny),
+                    delivery::choice_area(request_area, row, allow),
+                ]
+            });
     app.reading_area = reading_area;
     let [heading, _heading_gap, inner] = Layout::vertical([
         Constraint::Length(heading_rows),
@@ -199,24 +274,76 @@ pub(crate) fn render_at(
         } else {
             activity_frame.still()
         };
-        let line = activity::render_heading(app, usize::from(heading.width), state);
-        frame.render_widget(Paragraph::new(line), heading);
+        let run_control = app.contextual_controls().into_iter().find(|control| {
+            matches!(
+                control,
+                crate::contextual::ContextControl::Continue { .. }
+                    | crate::contextual::ContextControl::Interrupt { .. }
+            )
+        });
+        if let Some(control) = run_control.filter(|_| heading.width >= 48) {
+            let chip_width = u16::try_from(contextual::label(&control).width())
+                .unwrap_or(u16::MAX)
+                .min(heading.width);
+            let gap = u16::from(chip_width < heading.width);
+            let left = Rect {
+                width: heading.width.saturating_sub(chip_width + gap),
+                ..heading
+            };
+            let chip = Rect::new(
+                heading.x + left.width + gap,
+                heading.y,
+                chip_width,
+                heading.height,
+            );
+            let line = activity::render_heading(app, usize::from(left.width), state);
+            frame.render_widget(Paragraph::new(line), left);
+            contextual::render_chip(frame, app, &control, chip);
+        } else {
+            let line = activity::render_heading(app, usize::from(heading.width), state);
+            frame.render_widget(Paragraph::new(line), heading);
+        }
     }
     if let Some(draft) = draft {
         let placeholder = app.pane().draft.text().is_empty().then(|| {
-            format!(
-                "Type a prompt · Esc Esc Rewind · {} Actions",
-                Shortcut::ACTIONS.label
+            shorten(
+                &format!(
+                    "Enter steer · {} next Turn · / actions · {} help · F2 controls · Esc Esc Rewind",
+                    Shortcut::NEXT_TURN.label,
+                    Shortcut::ACTIONS.label
+                ),
+                content_width,
             )
         });
         render_editor_view(frame, inner, draft, focused, placeholder.as_deref());
     }
-    frame.render_widget(Paragraph::new(footer), status);
+    if let Some(lines) = focused_hint {
+        frame.render_widget(Paragraph::new(lines), status);
+    } else {
+        frame.render_widget(Paragraph::new(footer), status);
+        if let Some((row, used_width)) = service_row {
+            let start = used_width.saturating_add(2).min(status.width);
+            contextual::render_service(
+                frame,
+                app,
+                Rect::new(
+                    status.x.saturating_add(start),
+                    status
+                        .y
+                        .saturating_add(u16::try_from(row).unwrap_or(u16::MAX)),
+                    status.width.saturating_sub(start),
+                    1,
+                ),
+            );
+        }
+    }
     let main_areas = [
         transcript,
         banner_area,
+        request_area,
         delivery_area,
         reading_area,
+        heading,
         inner,
         status,
     ];
@@ -384,10 +511,7 @@ fn banner(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
     if let Some(snapshot) = &pane.snapshot {
         if let Some(error) = &snapshot.agent.last_error {
             let recovery = if snapshot.agent.status == AgentStatus::Interrupted {
-                format!(
-                    "Interrupted · /continue after reviewing tool effects · {}",
-                    single_line(error)
-                )
+                format!("Interrupted · review tool effects · {}", single_line(error))
             } else {
                 format!("Execution failed · {}", single_line(error))
             };
@@ -447,6 +571,26 @@ fn waiting(app: &App, width: usize) -> Vec<Line<'static>> {
 
 fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Rect> {
     Some(match app.modal.as_mut()? {
+        Modal::Help => {
+            let area = popup(area, 52, 14);
+            let inner = render_popup(frame, area, "Keyboard shortcuts");
+            let lines = [
+                "Enter       Send or steer",
+                "Alt+Enter   Send on the next turn",
+                "Esc         Close/back; stop active work",
+                "↑ / ↓       Edit draft; select queued input",
+                "Delete      Withdraw selected queued input",
+                "F2          Focus a pending request",
+                "Ctrl+P/F1   Show this help",
+                "/ (empty draft) Search actions and Skills",
+                "Esc         Close help",
+            ];
+            frame.render_widget(
+                Paragraph::new(lines.join("\n")).style(Style::new().fg(MUTED)),
+                inner,
+            );
+            inner
+        }
         Modal::Picker(picker) => {
             let height = match picker.kind {
                 PickerKind::Models | PickerKind::Thinking | PickerKind::Agents => {
@@ -610,7 +754,7 @@ fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (us
         );
         let help = if picker.kind.completes_text() {
             format!("{select} · {} Complete · {confirm}", Shortcut::TAB.label)
-        } else if matches!(picker.kind, PickerKind::Server | PickerKind::Permission) {
+        } else if matches!(picker.kind, PickerKind::Server) {
             format!(
                 "{}/{} Details · {select} · {confirm}",
                 Shortcut::PAGE_UP.label,

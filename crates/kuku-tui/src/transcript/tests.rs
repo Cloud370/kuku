@@ -1,7 +1,7 @@
 use kuku_client::{HistoryEntry, HistoryKind, HistoryPage};
 use serde_json::json;
 
-use super::{HistoryRequest, Key, ReplySource, Transcript, HISTORY_PAGE};
+use super::{HistoryRequest, Key, MessageId, Transcript, HISTORY_PAGE};
 
 fn response(id: u64, body: String) -> HistoryEntry {
     HistoryEntry {
@@ -218,10 +218,6 @@ fn interrupted_reply_replaces_preview_and_preserves_previous_copy_target() {
         .any(|pair| pair[0].starts_with("Turn 2  ─") && pair[1] == "Interrupted"));
     assert_eq!(1, rendered.matches("Interrupted body.").count());
     assert!(rendered.contains("Display limit reached"));
-    assert_eq!(
-        Some(ReplySource::Local("Last complete reply")),
-        transcript.last_reply()
-    );
     transcript.replace_recent(HistoryPage {
         entries: vec![previous, interruption],
         next_before: None,
@@ -244,7 +240,6 @@ fn cancellation_without_visible_reply_still_renders_a_turn_marker() {
         .collect::<Vec<_>>()
         .windows(2)
         .any(|pair| pair[0].starts_with("Turn 1  ─") && pair[1] == "Interrupted"));
-    assert!(transcript.last_reply().is_none());
 }
 
 #[test]
@@ -402,7 +397,7 @@ fn toggling_tool_previews_preserves_the_reading_anchor_through_settlement() {
         .any(|row| row.trim_matches('│').trim() == "durable diagnostic"));
     assert!(plain
         .iter()
-        .any(|row| row.trim_matches('│').trim() == "Saved output · /tools"));
+        .any(|row| row.trim_matches('│').trim() == "Saved output"));
     assert!(!plain
         .iter()
         .any(|row| row.contains("live diagnostic") || row.contains("late duplicate")));
@@ -552,10 +547,6 @@ fn a_thinking_only_commit_retires_the_preview_without_emitting_an_empty_assistan
             .count()
     );
     assert!(!view.iter().any(|row| row.contains("temporary answer")));
-    assert_eq!(
-        Some(ReplySource::Local("Previous reply")),
-        transcript.last_reply()
-    );
 }
 
 #[test]
@@ -580,7 +571,6 @@ fn assistant_markdown_keeps_the_model_sections_as_prose_and_raw_copy() {
     assert!(rendered.contains("Suggestions\n\n1. Inspect the log."));
     assert!(rendered.contains("Should I proceed?"));
     assert!(!rendered.contains("Permission") && !rendered.contains("F2"));
-    assert_eq!(Some(ReplySource::Local(reply)), transcript.last_reply());
 }
 
 #[test]
@@ -624,10 +614,6 @@ fn source_keeps_nested_fences_and_both_renderings_are_cached_until_the_reply_cha
     let committed = format!("{chunk}````\n");
     transcript.apply(response(9, committed.clone()), Some(7));
     assert!(rows(&mut transcript).iter().any(|row| row == "````"));
-    assert_eq!(
-        Some(ReplySource::Local(&committed)),
-        transcript.last_reply()
-    );
 }
 
 #[test]
@@ -695,11 +681,10 @@ fn streaming_tables_code_and_unicode_use_the_committed_markdown_layout() {
         .map(ToString::to_string)
         .collect();
     assert_eq!(live, committed);
-    assert_eq!(Some(ReplySource::Local(&source)), transcript.last_reply());
 }
 
 #[test]
-fn latest_reply_keeps_its_history_identity_after_the_visible_window_evicts_it() {
+fn message_entries_exclude_records_evicted_from_the_active_window() {
     let mut transcript = Transcript::default();
     transcript.apply(response(9, "Retained source".into()), None);
     for offset in 0..super::MAX_RECORDS as u64 {
@@ -707,8 +692,8 @@ fn latest_reply_keeps_its_history_identity_after_the_visible_window_evicts_it() 
         entry.kind = HistoryKind::ToolResult;
         transcript.apply(entry, None);
     }
-    assert_eq!(Some(ReplySource::History(9)), transcript.last_reply());
-    transcript.suspend();
-    transcript.replace_recent(page(1, 4));
-    assert_eq!(Some(ReplySource::History(9)), transcript.last_reply());
+    assert!(transcript
+        .message_entries("main")
+        .iter()
+        .all(|entry| entry.id != MessageId::Event(9)));
 }

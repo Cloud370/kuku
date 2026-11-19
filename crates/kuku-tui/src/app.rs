@@ -1,4 +1,5 @@
 use std::collections::{HashMap, VecDeque};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -9,6 +10,7 @@ use kuku_client::{
 use ratatui::layout::Rect;
 
 use crate::config::StatusLineSettings;
+use crate::contextual::{ContextFocus, ContextHit};
 use crate::editor::Editor;
 use crate::jobs::{Job, Restarted, Selection, Update};
 use crate::menu::{Picker, Prompt};
@@ -19,10 +21,12 @@ use crate::transcript::{HistoryRequest, Transcript};
 
 mod activity;
 pub(crate) mod agents;
+mod contextual;
 mod delivery;
 mod navigation;
 mod pending;
 mod reading;
+mod rewind;
 mod timing;
 
 pub(crate) use activity::{Activity, ServiceStatus, SubmissionStatus};
@@ -32,7 +36,7 @@ use delivery::Deliveries;
 pub(crate) use delivery::DeliveryRow;
 use navigation::AgentNavigation;
 pub(crate) use pending::{PendingItem, PendingStage};
-use reading::KeyboardFocus;
+pub(crate) use reading::KeyboardFocus;
 pub(crate) use timing::TurnTiming;
 
 const DEFAULT_AGENT: &str = "main";
@@ -90,10 +94,17 @@ pub(crate) struct Pane {
     pub(crate) exists: bool,
     pub(crate) title: String,
     pub(crate) draft: Editor,
+    pub(crate) question_drafts: HashMap<String, Editor>,
     pub(crate) draft_revision: u64,
     pub(crate) transcript: Transcript,
     pub(crate) deliveries: Deliveries,
-    keyboard_focus: KeyboardFocus,
+    pub(crate) keyboard_focus: KeyboardFocus,
+    pub(crate) contextual_focus: ContextFocus,
+    pub(crate) selected_queue_input: Option<String>,
+    pub(crate) focused_request: Option<String>,
+    pub(crate) permission_choice: Option<bool>,
+    pub(crate) request_scroll: usize,
+    pub(crate) request_detail_page_size: usize,
     pub(crate) snapshot: Option<Box<Snapshot>>,
     observed_timing: Option<(u64, TurnTiming)>,
     pub(crate) pending_reply_copy: Option<u64>,
@@ -265,6 +276,7 @@ fn model_label(connection: &str, model: &str, effort: Option<&str>) -> String {
 
 #[derive(Debug)]
 pub(crate) enum Modal {
+    Help,
     Picker(Picker),
     Prompt(Prompt),
     Output(Box<OutputViewer>),
@@ -299,10 +311,16 @@ pub(crate) struct App {
     pub(crate) statusline_settings: StatusLineSettings,
     pub(crate) text_selection: TextSelection,
     pub(crate) pending: HashMap<String, PendingItem>,
+    pub(crate) withdrawal_drafts: HashMap<(Target, String), String>,
     pub(crate) rewind_drafts: HashMap<String, RewindDraft>,
     pub(crate) editor_width: usize,
     pub(crate) transcript_area: (usize, usize),
     pub(crate) delivery_area: Rect,
+    pub(crate) delivery_hits: Vec<(Range<u16>, String)>,
+    pub(crate) request_area: Rect,
+    pub(crate) request_hit: Option<(Target, String)>,
+    pub(crate) permission_choice_areas: [Rect; 2],
+    pub(crate) contextual_hits: Vec<ContextHit>,
     pub(crate) reading_area: Rect,
     pub(crate) composer_area: Rect,
     pub(crate) modal_editor_width: usize,
@@ -350,10 +368,16 @@ impl App {
             statusline_settings: StatusLineSettings::default(),
             text_selection: TextSelection::default(),
             pending: HashMap::new(),
+            withdrawal_drafts: HashMap::new(),
             rewind_drafts: HashMap::new(),
             editor_width: 80,
             transcript_area: (80, 16),
             delivery_area: Rect::ZERO,
+            delivery_hits: Vec::new(),
+            request_area: Rect::ZERO,
+            request_hit: None,
+            permission_choice_areas: [Rect::ZERO; 2],
+            contextual_hits: Vec::new(),
             reading_area: Rect::ZERO,
             composer_area: Rect::ZERO,
             modal_editor_width: 60,
@@ -445,7 +469,7 @@ impl App {
             self.problem(if self.connecting {
                 "Connecting to the service…"
             } else {
-                "Service unavailable · /reconnect or /server"
+                "Service unavailable · Ctrl+R or /server"
             });
             false
         }
@@ -460,7 +484,7 @@ impl App {
             return;
         }
         if self.pane().sending {
-            self.problem("Wait for the current submission's receipt · /pending");
+            self.problem("Wait for the current submission's receipt before retrying it");
             return;
         }
         let target = self.target(&self.active);
@@ -469,7 +493,7 @@ impl App {
                 && matches!(item.command.action, Action::Send { .. })
                 && !matches!(item.stage, PendingStage::Rejected(_))
         }) {
-            self.problem("Check the previous send in /pending · draft kept");
+            self.problem("Check the previous send with delivery recovery · draft kept");
             return;
         }
         if self.pane().creation_rejected && !self.pane().exists {
@@ -520,64 +544,6 @@ impl App {
         self.effects.push(Job::Save(command));
     }
 
-    pub(crate) fn refresh_rewind_history(&mut self) {
-        if !self.require_service() {
-            return;
-        }
-        let request = HistoryRequest::Recent;
-        let selection = self.selection();
-        let pane = self.pane_mut();
-        pane.transcript.invalidate_after_rewind();
-        if pane.history_in_flight.is_some() {
-            pane.history_invalidated = true;
-            return;
-        }
-        pane.history_invalidated = false;
-        pane.history_in_flight = Some(request);
-        self.effects.push(Job::History(selection, request));
-    }
-
-    pub(crate) fn rewind_message(&mut self, event_id: u64, text: String, restore_files: bool) {
-        if !self.require_service() {
-            return;
-        }
-        self.pane_mut().draft.remember(&text);
-        if self.rewind_drafts.len() >= pending::MAX_REWIND_DRAFTS {
-            if let Some(oldest) = self.rewind_drafts.keys().next().cloned() {
-                self.rewind_drafts.remove(&oldest);
-            }
-        }
-        let address = self.active.clone();
-        let command = Command {
-            target: self.target(&address),
-            command_id: new_id(),
-            action: Action::RewindMessage {
-                target_event_id: event_id,
-                text: text.clone(),
-                restore_files,
-            },
-        };
-        let id = command.command_id.clone();
-        self.rewind_drafts.insert(
-            id.clone(),
-            RewindDraft {
-                address: address.clone(),
-                text,
-                revision: self.pane().draft_revision,
-            },
-        );
-        self.pending.insert(
-            id.clone(),
-            PendingItem {
-                command: command.clone(),
-                stage: PendingStage::Saving,
-                origin: Some(self.generation),
-            },
-        );
-        self.update_pending_delivery(&id);
-        self.effects.push(Job::Save(command));
-    }
-
     pub(crate) fn configure(&mut self, config: AgentConfig) {
         if self.pane().exists {
             let target = self.target(&self.active);
@@ -586,7 +552,7 @@ impl App {
                     && matches!(item.command.action, Action::Configure { .. })
                     && !matches!(item.stage, PendingStage::Rejected(_))
             }) {
-                self.problem("Check the previous settings change in /pending");
+                self.problem("Wait for the previous settings change to be resolved");
                 return;
             }
             self.issue(
@@ -687,7 +653,7 @@ impl App {
             }
             Update::WatchFailed(selection, error) if selection == self.selection() => {
                 self.drop_watch(Watch::Failed(format!(
-                    "Agent updates · {error} · /reconnect"
+                    "Agent updates · {error} · Ctrl+R to reconnect"
                 )));
             }
             Update::Observation(selection, event) if selection == self.selection() => {
@@ -735,9 +701,7 @@ impl App {
             Update::Discarded(id, result) => self.discarded(&id, result),
             Update::Pending(result) => match result {
                 Ok(commands) => self.recover_pending(commands),
-                Err(error) => {
-                    self.problem(format!("Client storage · {error} · /reconnect to recheck"))
-                }
+                Err(error) => self.problem(format!("Client storage · {error} · Ctrl+R to recheck")),
             },
             Update::DefaultModel(version, result)
                 if version == self.model_version && !self.pane().exists =>
@@ -829,9 +793,9 @@ impl App {
     fn connect_failed(&mut self, error: Error) {
         self.connecting = false;
         let recovery = if self.remote {
-            "Check the server host configuration or remote credentials, then /reconnect"
+            "Check the server host configuration or remote credentials, then press Ctrl+R"
         } else {
-            "Use /server for status and restart, or /reconnect to retry"
+            "Use /server for status and restart, or press Ctrl+R to retry"
         };
         self.connection_problem = Some(format!("Connection · {error}\n{recovery}"));
     }
@@ -992,9 +956,8 @@ impl App {
             Ok(mut snapshot) => {
                 snapshot.reply_preview = None;
                 pane.set_snapshot(snapshot);
-                self.sync_withdraw_picker();
             }
-            Err(error) => self.problem(format!("Agent state · {error} · /reconnect")),
+            Err(error) => self.problem(format!("Agent state · {error} · Ctrl+R to reconnect")),
         }
         if let Some(refresh) = refresh_due {
             self.request_refresh(refresh);

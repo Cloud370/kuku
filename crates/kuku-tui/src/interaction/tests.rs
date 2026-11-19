@@ -77,7 +77,12 @@ pub(super) fn choose_message_action(app: &mut App, action: MessageAction) {
         .visible_choices()
         .iter()
         .position(|choice| {
-            matches!(&choice.kind, ChoiceKind::MessageAction { action: found, .. } if *found == action)
+            (action == MessageAction::Expand
+                && matches!(
+                    &choice.kind,
+                    ChoiceKind::Detail { message: Some(_), .. }
+                ))
+                || matches!(&choice.kind, ChoiceKind::MessageAction { action: found, .. } if *found == action)
         })
         .expect("message action is available");
     picker.selected = selected;
@@ -124,7 +129,7 @@ pub(super) fn click_screen(app: &mut App, buffer: &Buffer, point: (u16, u16)) {
 }
 
 #[test]
-fn control_p_f1_and_slash_open_actions() {
+fn help_shortcuts_are_read_only_and_slash_opens_actions() {
     let mut app = connected_app();
     app.paste("unsent draft");
     for key in [
@@ -132,18 +137,47 @@ fn control_p_f1_and_slash_open_actions() {
         KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE),
     ] {
         app.key(key);
-        assert!(matches!(&app.modal,
-            Some(Modal::Picker(picker)) if matches!(picker.kind, PickerKind::Commands)
-        ));
+        assert!(matches!(&app.modal, Some(Modal::Help)));
         assert_eq!("unsent draft", app.pane().draft.text());
+        app.paste("ignored paste");
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(&app.modal, Some(Modal::Help)));
+        assert_eq!("unsent draft", app.pane().draft.text());
+        assert!(app.effects.is_empty());
         press(&mut app, KeyCode::Esc);
+        assert!(app.effects.is_empty());
     }
+    press(&mut app, KeyCode::Char('/'));
+    assert_eq!("unsent draft/", app.pane().draft.text());
+    assert!(app.modal.is_none());
     app.pane_mut().draft.take_text();
     press(&mut app, KeyCode::Char('/'));
     assert!(matches!(&app.modal,
         Some(Modal::Picker(picker)) if matches!(picker.kind, PickerKind::Commands)
     ));
     assert!(app.pane().draft.text().is_empty());
+}
+
+#[test]
+fn skill_named_like_an_action_remains_a_distinct_editable_choice() {
+    let mut app = connected_app();
+    let mut choices = Choice::commands();
+    choices.push(Choice::new(
+        "/skill:new",
+        "Skill · new",
+        ChoiceKind::Skill("new".into()),
+    ));
+    assert!(choices
+        .iter()
+        .any(|choice| { choice.label == "/new" && matches!(choice.kind, ChoiceKind::Command(_)) }));
+    assert!(choices.iter().any(|choice| {
+        choice.label == "/skill:new" && matches!(choice.kind, ChoiceKind::Skill(_))
+    }));
+    app.picker(PickerKind::Commands, choices);
+    app.paste("/skill:new");
+    press(&mut app, KeyCode::Tab);
+    assert_eq!("/skill:new ", app.pane().draft.text());
+    assert!(app.modal.is_none());
 }
 
 #[test]
@@ -208,47 +242,6 @@ pub(super) fn transcript_text(app: &mut App) -> String {
         .join("\n")
 }
 
-fn open_details(app: &mut App) {
-    app.key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
-    app.paste("/details");
-    press(app, KeyCode::Enter);
-    assert!(matches!(&app.modal, Some(Modal::Picker(picker))
-        if matches!(picker.kind, PickerKind::Details)));
-    app.effects.clear();
-}
-
-#[test]
-fn details_search_selects_one_visible_card_and_escape_leaves_previews_alone() {
-    let mut app = connected_app();
-    agent_cards(&mut app);
-    let collapsed = transcript_text(&mut app);
-    assert!(!collapsed.contains("Use precise citations"));
-    assert!(!collapsed.contains("List failing cases"));
-    open_details(&mut app);
-    app.paste("reviewer CLI");
-    let Some(Modal::Picker(picker)) = &app.modal else {
-        panic!("details picker expected");
-    };
-    let choices = picker.visible_choices();
-    assert_eq!(1, choices.len());
-    assert_eq!("Agent reviewer", choices[0].label);
-    assert!(choices[0].detail.contains("Review the CLI"));
-    assert!(app.effects.is_empty(), "search only uses visible cards");
-    press(&mut app, KeyCode::Esc);
-    assert_eq!(collapsed, transcript_text(&mut app));
-
-    open_details(&mut app);
-    app.paste("reviewer");
-    press(&mut app, KeyCode::Enter);
-    assert!(app.modal.is_none());
-    let expanded = transcript_text(&mut app);
-    assert!(
-        expanded.contains("Use precise citations") && expanded.contains("List failing cases"),
-        "{expanded}"
-    );
-    assert!(app.pending.is_empty());
-}
-
 #[test]
 fn control_o_expands_and_collapses_agent_previews_together() {
     let mut app = connected_app();
@@ -268,7 +261,7 @@ fn control_c_clears_dialogs_and_exits_only_from_an_empty_composer() {
     let mut app = connected_app();
     let clear = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
     app.paste("draft to keep");
-    press(&mut app, KeyCode::F(1));
+    app.picker(PickerKind::Commands, Choice::commands());
     app.paste("resume");
     app.effects.clear();
     app.key(clear);
@@ -478,14 +471,13 @@ fn rewind_confirmation_render_shows_file_scope_without_an_editor() {
 }
 
 #[test]
-fn tab_completes_a_slash_action_and_enter_runs_it_with_the_draft_intact() {
+fn tab_completes_a_slash_action_and_enter_runs_it_from_an_empty_draft() {
     let mut app = connected_app();
-    app.paste("draft to keep");
-    press(&mut app, KeyCode::F(1));
+    press(&mut app, KeyCode::Char('/'));
     app.paste("qui");
     press(&mut app, KeyCode::Tab);
     assert!(matches!(&app.modal, Some(Modal::Picker(picker)) if picker.query.text() == "/quit"));
-    assert_eq!("draft to keep", app.pane().draft.text());
+    assert!(app.pane().draft.text().is_empty());
     assert!(!app.quit);
     press(&mut app, KeyCode::Enter);
     assert!(app.modal.is_none());
@@ -512,122 +504,7 @@ fn tab_inserts_paths_and_skills_in_the_draft() {
 }
 
 #[test]
-fn tab_leaves_action_choices_open_and_enter_confirms_the_highlighted_choice() {
-    let mut app = connected_app();
-    let choose_permission = |allow| ChoiceKind::Permission {
-        request_id: "permit-1".into(),
-        allow,
-    };
-    for (kind, choice) in [
-        (PickerKind::Models, ChoiceKind::Tier("review".into())),
-        (PickerKind::Queue, ChoiceKind::Withdraw("queued-1".into())),
-        (PickerKind::Server, ChoiceKind::Restart),
-        (PickerKind::Permission, choose_permission(false)),
-    ] {
-        app.picker(kind, vec![Choice::new("Selected", "", choice)]);
-        press(&mut app, KeyCode::Tab);
-        assert!(matches!(app.modal, Some(Modal::Picker(_))));
-        assert!(app.effects.is_empty());
-    }
-
-    app.picker(
-        PickerKind::Permission,
-        vec![
-            Choice::new("Deny", "", choose_permission(false)),
-            Choice::new("Allow", "", choose_permission(true)),
-        ],
-    );
-    press(&mut app, KeyCode::Down);
-    press(&mut app, KeyCode::Tab);
-    press(&mut app, KeyCode::Enter);
-    assert!(matches!(
-        app.effects.as_slice(),
-        [Job::ClosePicker, Job::Save(command)] if matches!(
-            &command.action,
-            Action::ReplyPermission { request_id, allow: true } if request_id == "permit-1"
-        )
-    ));
-}
-
-#[test]
-fn copy_fetches_the_complete_committed_reply_and_ignores_older_requests() {
-    use kuku_client::{HistoryEntry, HistoryKind, HistoryPage};
-
-    let mut app = connected_app();
-    let snapshot = serde_json::from_value(json!({
-        "session_id": app.active.session,
-        "workspace": app.workspace,
-        "cursor": 4,
-        "pending": [],
-        "agents": [],
-        "agent": {
-            "address": app.active.agent, "config": {}, "status": "running", "pending_inputs": 0,
-            "last_output": "The previous Turn",
-            "usage": {"model_requests": 0, "unreported_requests": 0},
-        }
-    }))
-    .unwrap();
-    let reply = |id, text: &str| HistoryEntry {
-        id,
-        agent: "main".into(),
-        turn: Some(2),
-        kind: HistoryKind::Assistant,
-        text: Some(text.into()),
-        turn_summary: None,
-        details: Default::default(),
-    };
-    let original = format!(
-        "```rust\r\n{}```\r\n\r\n结束  \r\n",
-        "    let 值 = 42;\r\n".repeat(4000)
-    );
-    let selection = app.selection();
-    app.update(Update::Loaded(
-        selection.clone(),
-        Box::new(snapshot),
-        HistoryPage {
-            entries: vec![reply(4, &original)],
-            next_before: None,
-        },
-    ));
-    app.effects.clear();
-    app.copy_reply();
-    assert!(
-        matches!(app.effects.as_slice(), [Job::ReplySource(target, 4)] if target == &selection)
-    );
-    app.effects.clear();
-
-    let mut old_selection = selection.clone();
-    old_selection.generation += 1;
-    app.update(Update::ReplySource(
-        old_selection,
-        4,
-        Ok("Wrong target".into()),
-    ));
-    app.update(Update::ReplySource(
-        selection.clone(),
-        3,
-        Ok("Wrong reply".into()),
-    ));
-    assert!(app.effects.is_empty());
-    app.update(Update::ReplySource(
-        selection.clone(),
-        4,
-        Ok(original.clone()),
-    ));
-    assert!(matches!(app.effects.as_slice(), [Job::Copy(text)] if text == &original));
-
-    app.effects.clear();
-    app.copy_reply();
-    app.effects.clear();
-    let newest = "`Raw` **Markdown**\r\n尾字  \r\n";
-    app.pane_mut().transcript.apply(reply(7, newest), None);
-    app.copy_reply();
-    app.update(Update::ReplySource(selection, 4, Ok(original)));
-    assert!(matches!(app.effects.as_slice(), [Job::Copy(text)] if text == newest));
-}
-
-#[test]
-fn copy_reply_does_not_use_snapshot_fallback_when_history_has_no_reply() {
+fn obsolete_message_commands_are_absent_from_picker() {
     use kuku_client::HistoryPage;
 
     let mut app = connected_app();
@@ -655,10 +532,8 @@ fn copy_reply_does_not_use_snapshot_fallback_when_history_has_no_reply() {
     ));
     app.effects.clear();
 
-    app.copy_reply();
-
-    assert!(!app
-        .effects
-        .iter()
-        .any(|effect| matches!(effect, Job::Copy(_))));
+    let commands = Choice::commands();
+    for name in ["/copy", "/source", "/notes", "/details", "/tools"] {
+        assert!(commands.iter().all(|choice| choice.label != name), "{name}");
+    }
 }

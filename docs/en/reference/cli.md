@@ -46,33 +46,31 @@ Put options before the prompt in `kuku run`, because it consumes the remaining w
 
 | Key or action | Behavior |
 |---|---|
-| Ctrl+C | Clear the draft. With an empty draft, exit the TUI. Running work continues on the server. Inside a dialog, clear the focused input. |
+| Ctrl+C | Clear the draft. With an empty draft, exit the TUI. Running work continues on the server. Inside an editor dialog, clear the focused input. |
 | Enter | Send the draft. A busy Agent accepts it at the next safe model-request boundary, or in the next Turn if the current Turn settles first. |
 | Alt+Enter | Queue the draft for the next Turn. |
 | Shift+Enter or Ctrl+J | Insert a newline in the draft. |
-| Esc | Close the focused menu, or interrupt the selected execution and keep the draft. |
-| Ctrl+P, F1, or `/` in an empty composer | Search available actions and Skills. Choosing a Skill inserts an editable `/skill:NAME` prefix for the next send. |
+| Esc | Close a modal, saving an unsent question answer by request ID while preserving the main draft. Interrupt Running or cleanup work even with contextual, queue or request focus; otherwise dismiss that focus. In an idle empty composer, press Esc twice to open message rewind. |
+| Ctrl+P or F1 | Show read-only shortcut help. The draft is preserved; Enter and clicks do not run actions from help. |
+| `/` in an empty composer | Search available actions and Skills. Choosing a Skill inserts an editable `/skill:NAME` prefix for the next send. |
 | `@` or Tab | Complete workspace-relative paths as draft text. |
 | `/new`, `/resume` | Open a blank draft or find a retained Session. |
 | Alt+← or Alt+→ | Switch directly to the previous or next Agent. The order wraps and starts with `main`, followed by the other addresses in sorted order. |
 | `/agents` | Search the Session's Agents, switch recipients, or create an Agent. The selector shows activity, pending requests and queue counts, with `Admitted` and `Queued` task excerpts when available. |
-| `/back` | Return to the last Agent you viewed in this Session. Repeat to switch between the last two. Agent switching keeps each draft and reading position. |
-| `/queue`, `/withdraw`, `/continue` | Queue for the next Turn, withdraw a queued input, or explicitly resume work. |
-| `/queued` | Edit a queued message before admission. With an empty draft, ↑ also opens this picker when an input can be edited. |
-| F2 or `/reply` | Answer the selected Agent's pending question or authorization. |
-| `/pending` | Check, retry or discard an unconfirmed submission. |
+| Empty draft + ↑, or click an editable Pending inputs row | Select that exact queued input inline. Up/Down changes selection; Enter edits it; Delete withdraws it; Esc returns to the composer unless work is Running or cleaning up, when Esc interrupts. |
+| F2 outside editors | Cycle visible controls in order: request, Continue or Stop, pending-delivery recovery, Previous Agent, then service actions. F2 or click opens a question's answer editor; Esc saves its unsent answer by request ID and preserves the main draft. F2 or click focuses a permission request. Enter activates focused controls; clicks on other side-effect controls only focus them. Esc interrupts Running/cleanup work regardless of focus; otherwise it dismisses focus. Ctrl+R reconnects. |
+| Permission request card | Choose **Deny** or **Allow once** with Left/Right or a click, then press Enter. F2, Left, Enter is the keyboard Deny path. While Waiting, Esc leaves focus without answering or interrupting. |
 | `/model`, `/thinking` | Select model or reasoning settings for the selected Agent. |
 | `/statusline` | Open **Status line settings** to preview, select, reorder and save footer fields. |
 | **Messages** (or **Msg** in a narrow header) | Browse user, assistant and tool entries in the active Agent's loaded transcript. Enter opens only the actions available for that entry; Tab or ←/→ selects an action, Enter runs it, and Esc returns to the message list without changing the composer draft. Full output opens a saved result or a complete inline result when no saved output exists. Read-only rewind history groups are not message-action targets. |
 | Ctrl+O | Expand or collapse visible transcript previews, including tool groups and Agent cards. |
-| `/details` or click a transcript item | Open a tool group to see its calls. Open an individual call for the target, arguments and available output or error. In **Transcript details**, search visible items and press Enter to toggle the selected item. |
-| `/source` | Switch between the rendered view and original Markdown for assistant replies in the current Agent's transcript. The source view keeps the fence markers. |
-| `/tools`, `/copy` | Open retained tool output or copy the complete source of the latest committed assistant reply. |
+| **Messages** in the transcript header (shown as **Msg** in narrow windows) | Browse loaded user, assistant and tool entries for the current Agent. Press Enter to view that entry's available actions; use Tab or ←/→ to select an action, then Enter to run it. Esc returns to the entry list and preserves the draft. Full output opens a saved result or the complete inline result. Readonly rewind groups are not message targets. |
+| Ctrl+O | Expand or collapse visible transcript details together, including tool groups and Agent cards. |
 | Left-button drag | Highlight visible text and copy the selected range to the clipboard on release. |
 | Mouse wheel, Page Up, Page Down | Scroll the transcript. |
 | Ctrl+End or Alt+↑ while reading history | Return to the latest output and resume following. |
-| ↑, ↓ in the editor | Move within a multiline draft and scroll the transcript at its boundaries. Ctrl+↑ and Ctrl+↓ recall sent prompts and restore the draft. |
-| `/server`, `/reconnect`, `/restart` | Inspect the connected service, reconnect, or restart the managed local service. |
+| ↑, ↓ in the editor | Move within a multiline draft and scroll the transcript at its boundaries. Ctrl+↑ and Ctrl+↓ recall sent prompts and restore the draft. In queue focus, Up/Down moves between editable queued inputs. |
+| `/server` | Inspect the connected service and its controls. F2 cycles to reconnect or managed-local restart when available; Ctrl+R still reconnects directly. |
 | Arrow keys, Tab, Enter in a menu | Move the highlight, complete editable text, or activate the selected action, respectively. |
 | `/web`, `/quit` | Open the conversation in the browser or leave the terminal client. |
 
@@ -80,7 +78,7 @@ In a selection dialog, click a row to highlight it. A click can switch the viewe
 
 ### Reading the transcript
 
-Each Turn contains user messages, tool activity and assistant text. Consecutive successful read-only inspections within a Turn are grouped by default, with counts for reads, searches and listings. File changes, running calls, failures and authorization requests stay individually visible. **List Agents** summarizes participants and their activity. **Query Session** summarizes matching events. Open details to inspect individual calls or read original results with `/tools`.
+Each Turn contains user messages, tool activity and assistant text. Consecutive successful read-only inspections within a Turn are grouped by default, with counts for reads, searches and listings. File changes, running calls, failures and authorization requests stay individually visible. **List Agents** summarizes participants and their activity. **Query Session** summarizes matching events. Use **Messages** in the transcript header to inspect individual calls and operate on a selected entry.
 
 While reading earlier output, click **Jump to latest** beside the composer to resume following.
 
@@ -88,7 +86,7 @@ Completed Turn statistics appear once beneath the reply and scroll with it. When
 
 The title of a command card is the short task description, or **Run command** if none was supplied. The card body previews the shell command and its output in execution order. The bottom border shows the status and exit code when available. Open the card for recorded arguments and capture details. Completed writes and edits share the code block frame. A write previews recorded file content with syntax highlighting or rendered Markdown. An edit shows the recorded diff. The footer shows the written or changed line counts.
 
-Sent text appears immediately in **Pending inputs**, above the composer. The same input shows its send, receipt, queue or failure state until it is admitted to the transcript. Unconfirmed sends and queued inputs can be recovered on reopen. Edit a queued input with `/queued` or withdraw it with `/withdraw`. If the Agent admits the input first, its admitted text stays in the transcript.
+Sent text appears immediately in **Pending inputs**, above the composer. The same input shows its send, receipt, queue or failure state until it is admitted to the transcript. Unconfirmed sends and queued inputs can be recovered on reopen. The action picker does not list `/queue`, `/queued`, `/withdraw`, or `/reply`. Select an ordinary queued input with Up from an empty draft or by clicking its row; the selection stays tied to that input as the list changes. Enter opens an isolated editor, Delete withdraws the selected input, and Esc returns to the composer. If the input has already left the queue, the TUI reports the stale selection and does not act on another row. A pending question or permission is also shown in a card above the composer without taking focus. F2 or a click focuses it; answering a question uses its request ID, and permissions require an explicit Deny or Allow once choice before Enter. If the Agent admits an input first, its admitted text stays in the transcript.
 
 Messages delivered by another Agent show the sender's address, for example `From main`, including when they open a Turn.
 
@@ -102,7 +100,7 @@ By default, a fence labeled `md` or `markdown` in an assistant reply previews th
 
 Message, command, Agent, and file preview cards leave space around their content. Code blocks follow the same spacing. Side padding contracts with the terminal width. Agent cards and code blocks fill the available width at their level of indentation. A separate Agent card has its own border and a blank line between it and adjacent commands. Its Details control stays above the expanded task and reply. The Agent name serves as the title. Select **Open agent →** on a confirmed Agent card to switch to that Agent. Narrow cards shorten the action to **Open →**. Creation instructions appear under their own label and wrap across up to three preview lines. Open Details to read longer instructions. Task and reply excerpts each use a single preview line. A delegation card groups creation and delivery to the same Agent. Expand it to inspect the individual actions. Status checks involving only the sender and recipient join that card’s timeline. Checks involving other Agents keep their own counted group. A completed reply keeps its thinking reader beside the Assistant heading.
 
-Thinking appears at the start of the assistant’s answer. The transcript types a muted, single-line excerpt when the provider publishes reasoning. The first line of the reply takes its place. Select **View thinking** or use `/notes` to read the received text at its position in the conversation. The reader shows up to five wrapped lines beside the reply. Use the arrow keys or the wheel over those lines to read more. Esc or a second click on the heading closes it. Copy and Markdown source use the reply text. Thinking from intermediate tool steps remains available through `/details`.
+Thinking appears at the start of the assistant’s answer. The transcript types a muted, single-line excerpt when the provider publishes reasoning. The first line of the reply takes its place. Select **View thinking** or the selected entry's **Thinking** action to read the received text at its position in the conversation. The reader shows up to five wrapped lines beside the reply. Use the arrow keys or the wheel over those lines to read more. Esc or a second click on the heading closes it. Copy and Markdown source use the selected reply text. Thinking from intermediate tool steps remains available through **Messages**.
 
 ### Status and usage
 

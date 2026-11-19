@@ -49,7 +49,7 @@ fn command_preview_keeps_stdout_and_warnings_without_the_model_output_reference(
     assert!(rendered.contains("command timed out; output truncated"));
     assert!(rendered.contains("stdout:\nOutput: from the process"));
     assert!(rendered.contains(&format!(
-        "stderr:\ntry fewer inputs\n{warning}\nSaved output · /tools"
+        "stderr:\ntry fewer inputs\n{warning}\nSaved output"
     )));
     assert!(rendered.contains("系统\n") && rendered.contains("64-bit"));
     assert!(!rendered.contains('␍'));
@@ -136,16 +136,13 @@ fn reads_separated_by_a_turn_boundary_show_each_path_with_its_actual_line_range(
     );
     assert!(rendered.contains("…") && !rendered.contains("Assistant"));
     assert!(rendered.contains("19    gamma") && !rendered.contains("epsilon"));
-    assert_eq!(Some("Ctrl+O hide · /details"), view.tool_hint.as_deref());
+    assert_eq!(Some("Ctrl+O hide"), view.tool_hint.as_deref());
     assert!(!rendered.contains("Ctrl+O"));
     assert_eq!(raw, transcript.tools()[0].details);
 
     transcript.toggle_details();
     let collapsed = transcript.project(84, 24);
-    assert_eq!(
-        Some("Ctrl+O show · /details"),
-        collapsed.tool_hint.as_deref()
-    );
+    assert_eq!(Some("Ctrl+O show"), collapsed.tool_hint.as_deref());
     assert!(!collapsed
         .lines
         .iter()

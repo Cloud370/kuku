@@ -346,6 +346,10 @@ impl App {
                 && !matches!(item.command.action, Action::ReplaceQueued { .. })
         }) {
             if let Some(item) = self.pending.remove(id) {
+                if let Action::Withdraw { input_command_id } = &item.command.action {
+                    self.withdrawal_drafts
+                        .remove(&(item.command.target.clone(), input_command_id.clone()));
+                }
                 if let Some(pane) = self
                     .panes
                     .get_mut(&Address::from_target(&item.command.target))
@@ -382,7 +386,9 @@ impl App {
                 let text = text.clone();
                 self.select(address, true, String::new());
                 self.append_to_draft(&text);
-                self.message("Copied replacement to draft · /pending keeps the saved edit");
+                self.message(
+                    "Copied replacement to draft · delivery recovery keeps the saved edit",
+                );
                 return;
             }
         }
@@ -442,6 +448,10 @@ impl App {
         match result {
             Ok(()) => {
                 if let Some(item) = self.pending.remove(id) {
+                    if let Action::Withdraw { input_command_id } = &item.command.action {
+                        self.withdrawal_drafts
+                            .remove(&(item.command.target.clone(), input_command_id.clone()));
+                    }
                     if let Some(pane) = self
                         .panes
                         .get_mut(&Address::from_target(&item.command.target))
@@ -517,14 +527,14 @@ impl App {
             Ok(None) => {
                 if let Some(item) = self.pending.get_mut(id) {
                     item.stage = PendingStage::Missing;
-                    self.message("No receipt found · /pending to retry or discard");
+                    self.message("No receipt found · use delivery recovery to retry or discard");
                 }
             }
             Err(error) => {
                 if let Some(item) = self.pending.get_mut(id) {
                     item.stage = PendingStage::Unknown(error.to_string());
                 }
-                self.problem(format!("Check receipt · {error} · /pending"));
+                self.problem(format!("Check receipt · {error} · delivery recovery"));
             }
         }
         self.update_pending_delivery(id);
@@ -545,7 +555,9 @@ impl App {
             && matches!(error, Error::Transport(_))
             && self.panes.get(&address).is_some_and(|pane| !pane.exists)
         {
-            self.connection_problem = Some(format!("Service connection · {problem} · /reconnect"));
+            self.connection_problem = Some(format!(
+                "Service connection · {problem} · Ctrl+R to reconnect"
+            ));
         }
         let mut restored = false;
         if let Some(pane) = self.panes.get_mut(&address) {
@@ -575,7 +587,7 @@ impl App {
         } else if rewind {
             "Selected text retained in pending action"
         } else {
-            "See /pending"
+            "Use delivery recovery"
         };
         self.problem(format!(
             "{recovery} · {} · {problem}",
@@ -594,7 +606,8 @@ impl App {
         let Some(item) = self.pending.remove(id) else {
             return;
         };
-        let address = Address::from_target(&item.command.target);
+        let target = item.command.target.clone();
+        let address = Address::from_target(&target);
         let active = address == self.active;
         match item.command.action {
             Action::Send { text, timing, .. } => {
@@ -641,6 +654,18 @@ impl App {
                 self.confirmation("Reply received")
             }
             Action::Withdraw { input_command_id } => {
+                let restore_text = self
+                    .withdrawal_drafts
+                    .remove(&(target, input_command_id.clone()));
+                if ack.status == Some(InputStatus::Withdrawn) {
+                    if let Some(text) = restore_text {
+                        if let Some(pane) = self.panes.get_mut(&address) {
+                            if pane.draft.text().is_empty() {
+                                pane.draft.set_text(text);
+                            }
+                        }
+                    }
+                }
                 if ack.status.is_some() {
                     if let Some(pane) = self.panes.get_mut(&address) {
                         pane.record_submission(

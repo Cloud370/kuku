@@ -51,13 +51,11 @@ impl App {
             }
             key if Shortcut::UP.matches(key) => picker.move_by(-1),
             key if Shortcut::DOWN.matches(key) => picker.move_by(1),
-            key if Shortcut::PAGE_UP.matches(key)
-                && matches!(picker.kind, PickerKind::Server | PickerKind::Permission) =>
-            {
+            key if Shortcut::PAGE_UP.matches(key) && matches!(picker.kind, PickerKind::Server) => {
                 picker.header_top = picker.header_top.saturating_add_signed(-details_page);
             }
             key if Shortcut::PAGE_DOWN.matches(key)
-                && matches!(picker.kind, PickerKind::Server | PickerKind::Permission) =>
+                && matches!(picker.kind, PickerKind::Server) =>
             {
                 picker.header_top = picker.header_top.saturating_add_signed(details_page);
             }

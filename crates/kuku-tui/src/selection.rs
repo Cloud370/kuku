@@ -2,6 +2,7 @@ use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::buffer::{Buffer, CellWidth};
 use ratatui::layout::{Position, Rect};
 
+use crate::contextual::ContextControl;
 use crate::menu::PickerHit;
 use crate::theme;
 use crate::transcript::DetailKey;
@@ -12,7 +13,17 @@ pub(crate) enum ClickTarget {
     Agent(kuku_client::Target),
     Link(String),
     Picker(PickerHit),
-    Queued,
+    QueueInput(String),
+    Contextual(ContextControl),
+    Request {
+        target: kuku_client::Target,
+        request_id: String,
+    },
+    Permission {
+        target: kuku_client::Target,
+        request_id: String,
+        allow: bool,
+    },
     Transcript,
     Composer,
     JumpLatest,
@@ -333,12 +344,12 @@ mod tests {
             selection.mouse(
                 press(MouseEventKind::Down(MouseButton::Left)),
                 &buffer,
-                Some(ClickTarget::Queued),
+                Some(ClickTarget::QueueInput("queue-1".into())),
             );
             buffer[(1, 0)].set_symbol(if same_target { "x" } else { "y" });
             selection.render(&mut buffer, &[area], None);
             let target = if same_target {
-                ClickTarget::Queued
+                ClickTarget::QueueInput("queue-1".into())
             } else {
                 ClickTarget::Transcript
             };
@@ -349,7 +360,7 @@ mod tests {
             );
             assert_eq!(
                 same_target,
-                matches!(released, Some(MouseAction::Click(ClickTarget::Queued)))
+                matches!(released, Some(MouseAction::Click(ClickTarget::QueueInput(id))) if id == "queue-1")
             );
         }
     }

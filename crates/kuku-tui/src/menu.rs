@@ -5,32 +5,17 @@ use ratatui::layout::{Position, Rect};
 
 use crate::editor::Editor;
 use crate::keys::Shortcut;
-use crate::transcript::{DetailKey, SelectedMessage, ToolView};
+use crate::transcript::{DetailKey, SelectedMessage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CommandMenu {
     New,
     Resume,
     Agents,
-    Back,
-    Queue,
-    Queued,
-    Withdraw,
-    Advance,
-    Interrupt,
-    Reply,
-    Pending,
     Model,
     Thinking,
     StatusLine,
-    Copy,
-    Source,
-    Notes,
-    Details,
-    Tools,
     Server,
-    Reconnect,
-    Restart,
     Web,
     Quit,
 }
@@ -40,25 +25,10 @@ impl CommandMenu {
         Self::New,
         Self::Resume,
         Self::Agents,
-        Self::Back,
-        Self::Queue,
-        Self::Queued,
-        Self::Withdraw,
-        Self::Advance,
-        Self::Interrupt,
-        Self::Reply,
-        Self::Pending,
         Self::Model,
         Self::Thinking,
         Self::StatusLine,
-        Self::Copy,
-        Self::Source,
-        Self::Notes,
-        Self::Details,
-        Self::Tools,
         Self::Server,
-        Self::Reconnect,
-        Self::Restart,
         Self::Web,
         Self::Quit,
     ];
@@ -68,25 +38,10 @@ impl CommandMenu {
             Self::New => "new",
             Self::Resume => "resume",
             Self::Agents => "agents",
-            Self::Back => "back",
-            Self::Queue => "queue",
-            Self::Queued => "queued",
-            Self::Withdraw => "withdraw",
-            Self::Advance => "continue",
-            Self::Interrupt => "interrupt",
-            Self::Reply => "reply",
-            Self::Pending => "pending",
             Self::Model => "model",
             Self::Thinking => "thinking",
             Self::StatusLine => "statusline",
-            Self::Copy => "copy",
-            Self::Source => "source",
-            Self::Notes => "notes",
-            Self::Details => "details",
-            Self::Tools => "tools",
             Self::Server => "server",
-            Self::Reconnect => "reconnect",
-            Self::Restart => "restart",
             Self::Web => "web",
             Self::Quit => "quit",
         }
@@ -97,36 +52,10 @@ impl CommandMenu {
             Self::New => ("Open a fresh draft", None),
             Self::Resume => ("Find a conversation in this workspace", None),
             Self::Agents => ("Choose or create an Agent in this Session", None),
-            Self::Back => ("Return to the previous Agent in this Session", None),
-            Self::Queue => ("Send on the next Turn", Some(Shortcut::NEXT_TURN)),
-            Self::Queued => ("Edit input still waiting in the queue", Some(Shortcut::UP)),
-            Self::Withdraw => ("Withdraw input still in the queue", None),
-            Self::Advance => ("Continue queued work", None),
-            Self::Interrupt => ("Interrupt this execution", Some(Shortcut::ESCAPE)),
-            Self::Reply => ("Answer or decide a pending request", Some(Shortcut::REPLY)),
-            Self::Pending => ("Check, retry or discard unconfirmed commands", None),
             Self::Model => ("Choose a configured model route", Some(Shortcut::MODEL)),
             Self::Thinking => ("Choose the model's reasoning setting", None),
             Self::StatusLine => ("Choose and reorder status line fields", None),
-            Self::Copy => ("Copy the latest reply", None),
-            Self::Source => (
-                "Switch between Markdown preview and source for this Agent",
-                None,
-            ),
-            Self::Notes => ("Read thinking in the conversation", None),
-            Self::Details => {
-                return format!(
-                    "Inspect visible tools and Agent cards · {} toggles previews",
-                    Shortcut::DETAILS.label
-                );
-            }
-            Self::Tools => ("Browse tools and saved output", None),
             Self::Server => ("Inspect the connected service", None),
-            Self::Reconnect => (
-                "Reconnect and check unconfirmed commands",
-                Some(Shortcut::RECONNECT),
-            ),
-            Self::Restart => ("Restart the managed local service", None),
             Self::Web => ("Open this target in the browser", None),
             Self::Quit => ("Leave the terminal", None),
         };
@@ -153,9 +82,8 @@ pub(crate) enum ChoiceKind {
     CreateAgent,
     Tier(String),
     Connection(String),
+    Reconnect,
     Thinking(Option<String>),
-    EditQueued(String),
-    Withdraw(String),
     RewindMessage {
         event_id: u64,
         turn: u64,
@@ -175,12 +103,10 @@ pub(crate) enum ChoiceKind {
         exists: bool,
     },
     RestoreRejected(String),
-    Permission {
-        request_id: String,
-        allow: bool,
+    Detail {
+        key: DetailKey,
+        message: Option<SelectedMessage>,
     },
-    Detail(DetailKey),
-    Tool(ToolView),
     Restart,
 }
 
@@ -191,31 +117,20 @@ impl ChoiceKind {
             Self::Command(
                 CommandMenu::Resume
                     | CommandMenu::Agents
-                    | CommandMenu::Back
-                    | CommandMenu::Queued
-                    | CommandMenu::Withdraw
-                    | CommandMenu::Reply
-                    | CommandMenu::Pending
                     | CommandMenu::Model
                     | CommandMenu::Thinking
                     | CommandMenu::StatusLine
-                    | CommandMenu::Notes
-                    | CommandMenu::Source
-                    | CommandMenu::Details
-                    | CommandMenu::Tools
                     | CommandMenu::Server
             ) | Self::Session { .. }
                 | Self::Agent { .. }
                 | Self::CreateAgent
                 | Self::Connection(_)
-                | Self::EditQueued(_)
                 | Self::RewindMessage { .. }
                 | Self::MessageEntry(_)
                 | Self::MessageAction { .. }
                 | Self::Pending(_)
                 | Self::PendingOpen { .. }
-                | Self::Detail(_)
-                | Self::Tool(_)
+                | Self::Detail { .. }
         )
     }
 }
@@ -294,13 +209,8 @@ pub(crate) enum PickerKind {
     Agents,
     Models,
     Thinking,
-    Queued,
-    Queue,
     Pending,
     PendingItem,
-    Permission,
-    Details,
-    Tools,
     Server,
     Rewind,
     Messages,
@@ -316,13 +226,8 @@ impl PickerKind {
             Self::Agents => "Switch Agent",
             Self::Models => "Model route",
             Self::Thinking => "Thinking",
-            Self::Queued => "Edit queued input",
-            Self::Queue => "Withdraw queued input",
             Self::Pending => "Unconfirmed commands",
             Self::PendingItem => "Recover command",
-            Self::Permission => "Authorization required",
-            Self::Details => "Transcript details",
-            Self::Tools => "Tool details and saved output",
             Self::Server => "Service status",
             Self::Rewind => "Rewind to message",
             Self::Messages => "Operate on message",
@@ -333,15 +238,7 @@ impl PickerKind {
     pub(crate) fn searchable(&self) -> bool {
         matches!(
             self,
-            Self::Commands
-                | Self::Paths(_)
-                | Self::Sessions
-                | Self::Agents
-                | Self::Models
-                | Self::Queued
-                | Self::Queue
-                | Self::Details
-                | Self::Tools
+            Self::Commands | Self::Paths(_) | Self::Sessions | Self::Agents | Self::Models
         )
     }
 
@@ -531,7 +428,7 @@ impl Picker {
 pub(crate) enum PromptKind {
     Agent,
     Model { connection: String },
-    Question { request_id: String },
+    Question { request_id: String, target: Target },
     QueuedInput { input_command_id: String },
     RewindMessage { event_id: u64, text: String },
 }
@@ -553,25 +450,32 @@ pub(crate) struct Prompt {
 
 #[cfg(test)]
 mod tests {
-    use super::{Choice, ChoiceKind, CommandMenu, Picker, PickerKind};
+    use super::Choice;
 
     #[test]
-    fn slash_command_names_rank_before_description_matches() {
-        let mut picker = Picker::new(PickerKind::Commands, 0, Choice::commands());
-        for query in ["/pend", "/pending"] {
-            picker.query.set_text(query.into());
-            picker.selected = 0;
-            assert_eq!("/pending", picker.visible_choices()[0].label);
-            assert!(matches!(
-                picker.selected_choice(),
-                Some(ChoiceKind::Command(CommandMenu::Pending))
-            ));
-            picker.move_by(1);
-            assert_eq!("/reply", picker.visible_choices()[1].label);
-            assert!(matches!(
-                picker.selected_choice(),
-                Some(ChoiceKind::Command(CommandMenu::Reply))
-            ));
+    fn action_picker_omits_contextual_and_inline_controls() {
+        let choices = Choice::commands();
+        let labels = choices
+            .iter()
+            .map(|choice| choice.label.as_str())
+            .collect::<Vec<_>>();
+        for omitted in [
+            "/back",
+            "/continue",
+            "/interrupt",
+            "/pending",
+            "/reconnect",
+            "/restart",
+            "/queue",
+            "/queued",
+            "/withdraw",
+            "/reply",
+        ] {
+            assert!(!labels.contains(&omitted));
         }
+        for retained in ["/new", "/resume", "/server", "/quit"] {
+            assert!(labels.contains(&retained));
+        }
+        assert_eq!(9, choices.len());
     }
 }

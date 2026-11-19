@@ -9,13 +9,18 @@ use super::App;
 pub(crate) enum KeyboardFocus {
     #[default]
     Composer,
+    Queue,
+    Request,
     Transcript,
 }
 
 impl App {
     pub(crate) fn composer_focused(&self) -> bool {
         let pane = self.pane();
-        pane.keyboard_focus == KeyboardFocus::Composer || !pane.transcript.is_reading()
+        !pane.contextual_focus.active
+            && (pane.keyboard_focus == KeyboardFocus::Composer
+                || pane.keyboard_focus == KeyboardFocus::Transcript
+                    && !pane.transcript.is_reading())
     }
 
     pub(crate) fn toggle_transcript_detail(&mut self, key: &crate::transcript::DetailKey) -> bool {
@@ -34,17 +39,6 @@ impl App {
             pane.keyboard_focus = KeyboardFocus::Transcript;
         }
         changed
-    }
-
-    pub(crate) fn read_latest_notes(&mut self) {
-        if self.pane_mut().transcript.close_notes() {
-            return;
-        }
-        if let Some(key) = self.pane().transcript.latest_notes() {
-            self.toggle_transcript_detail(&key);
-        } else {
-            self.confirmation("No published thinking in view");
-        }
     }
 
     pub(crate) fn focus_composer(&mut self) {

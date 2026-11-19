@@ -3,7 +3,7 @@ use std::ops::Range;
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
 };
-use kuku_client::{Action, AgentConfig, Error, Timing};
+use kuku_client::{Action, AgentConfig, Error, Target, Timing};
 use ratatui::buffer::Buffer;
 
 use self::rewind::rewind_instructions;
@@ -14,8 +14,10 @@ use crate::keys::{AgentDirection, Shortcut};
 use crate::menu::{Choice, ChoiceKind, CommandMenu, Picker, PickerKind, Prompt, PromptKind};
 use crate::output::OutputViewer;
 use crate::text::{shorten, single_line, TAB};
-use crate::transcript::{ReplySource, ToolView};
+use crate::transcript::ToolView;
 
+mod contextual;
+mod inline;
 mod input;
 mod messages;
 mod picker;
@@ -67,16 +69,32 @@ impl App {
         }
     }
 
+    fn restore_question_composer(&mut self, target: &Target) {
+        let address = Address::new(target.session_id.clone(), target.agent.clone());
+        if let Some(pane) = self.panes.get_mut(&address) {
+            pane.keyboard_focus = crate::app::KeyboardFocus::Composer;
+            pane.focused_request = None;
+        }
+    }
+    fn save_question_draft(&mut self, target: &Target, request_id: &str, editor: Editor) {
+        let address = Address::new(target.session_id.clone(), target.agent.clone());
+        if let Some(pane) = self.panes.get_mut(&address) {
+            pane.question_drafts.insert(request_id.to_owned(), editor);
+            pane.keyboard_focus = crate::app::KeyboardFocus::Composer;
+            pane.focused_request = None;
+        }
+    }
     fn wheel(&mut self, mouse: MouseEvent, amount: isize) {
         self.text_selection.cancel_drag();
         match &mut self.modal {
+            Some(Modal::Help) => {}
             Some(Modal::Output(viewer)) => {
                 if let Some(offset) = viewer.scroll(amount) {
                     self.read_output(offset);
                 }
             }
             Some(Modal::Picker(picker)) => {
-                if matches!(picker.kind, PickerKind::Server | PickerKind::Permission) {
+                if matches!(picker.kind, PickerKind::Server) {
                     picker.header_top = picker.header_top.saturating_add_signed(amount);
                 } else {
                     picker.move_by(amount);
@@ -100,6 +118,16 @@ impl App {
     }
 
     fn composer_key(&mut self, key: KeyEvent) {
+        if self.contextual_key(key) {
+            return;
+        }
+        if Shortcut::RECONNECT.matches(key) {
+            self.reconnect();
+            return;
+        }
+        if self.inline_key(key) {
+            return;
+        }
         if let Some(direction) = AgentDirection::from_key(key) {
             self.cycle_agent(direction);
             return;
@@ -121,9 +149,9 @@ impl App {
                 }
             }
             key if Shortcut::ACTIONS.matches(key) || Shortcut::ACTIONS_ALIAS.matches(key) => {
-                self.command_menu()
+                self.show_shortcut_help()
             }
-            key if Shortcut::REPLY.matches(key) => self.open_reply(),
+            key if Shortcut::REPLY.matches(key) => self.focus_request(),
             key if Shortcut::ESCAPE.matches(key) => self.rewind_escape(),
             key if editing && Shortcut::NEXT_TURN.matches(key) => self.send(Timing::NextTurn),
             key if editing && Shortcut::ENTER.matches(key) => self.send(Timing::Steer),
@@ -131,7 +159,7 @@ impl App {
                 && self.pane().draft.text().is_empty()
                 && self.queued_for_edit().next().is_some() =>
             {
-                self.open_queued()
+                self.focus_queued()
             }
             key if Shortcut::PREVIOUS_PROMPT.matches(key) || Shortcut::NEXT_PROMPT.matches(key) => {
                 self.focus_composer();
@@ -146,7 +174,6 @@ impl App {
                     self.scroll(direction);
                 }
             }
-            key if Shortcut::RECONNECT.matches(key) => self.reconnect(),
             key if Shortcut::MODEL.matches(key) => self.perform(CommandMenu::Model),
             key if Shortcut::DETAILS.matches(key) => {
                 let expanded = self.pane_mut().transcript.toggle_details();
@@ -237,13 +264,28 @@ impl App {
                     config.model = Some(content.trim().to_owned());
                     self.configure(config);
                 }
-                PromptKind::Question { request_id } => self.issue(
-                    self.active.clone(),
-                    Action::ReplyQuestion {
-                        request_id,
-                        text: content.to_owned(),
-                    },
-                ),
+                PromptKind::Question { request_id, target } => {
+                    self.restore_question_composer(&target);
+                    if self.selection().target != target
+                        || !self.pane().snapshot.as_ref().is_some_and(|snapshot| {
+                            snapshot
+                                .agent
+                                .question
+                                .as_ref()
+                                .is_some_and(|request| request.id == request_id)
+                        })
+                    {
+                        self.problem("This question is no longer waiting for this Agent");
+                    } else {
+                        self.issue(
+                            self.active.clone(),
+                            Action::ReplyQuestion {
+                                request_id,
+                                text: content.to_owned(),
+                            },
+                        );
+                    }
+                }
                 PromptKind::QueuedInput { .. } => unreachable!("queued input edited above"),
                 PromptKind::RewindMessage { .. } => unreachable!("rewind confirmed above"),
             }
@@ -289,6 +331,10 @@ impl App {
         self.search(true);
     }
 
+    fn show_shortcut_help(&mut self) {
+        self.modal = Some(Modal::Help);
+    }
+
     fn search(&mut self, first: bool) {
         let available = self.available();
         let Some(Modal::Picker(picker)) = &mut self.modal else {
@@ -309,7 +355,7 @@ impl App {
                         PickerKind::Sessions | PickerKind::Paths(_) | PickerKind::Models
                     )
                 {
-                    picker.problem = Some("Service unavailable · /reconnect".into());
+                    picker.problem = Some("Service unavailable · Ctrl+R to reconnect".into());
                 }
                 return;
             }
@@ -396,10 +442,6 @@ impl App {
                 config.reasoning_effort = effort;
                 self.configure(config);
             }
-            ChoiceKind::EditQueued(id) => self.edit_queued(id),
-            ChoiceKind::Withdraw(input_command_id) => {
-                self.issue(self.active.clone(), Action::Withdraw { input_command_id })
-            }
             ChoiceKind::RewindMessage {
                 event_id,
                 turn,
@@ -427,16 +469,8 @@ impl App {
             ChoiceKind::PendingDiscard(id) => self.pending_discard(&id),
             ChoiceKind::PendingOpen { target, exists } => self.pending_open(target, exists),
             ChoiceKind::RestoreRejected(id) => self.restore_rejected(&id),
-            ChoiceKind::Permission { request_id, allow } => self.issue(
-                self.active.clone(),
-                Action::ReplyPermission { request_id, allow },
-            ),
-            ChoiceKind::Detail(key) => {
-                if !self.toggle_transcript_detail(&key) {
-                    self.problem("These details are no longer available");
-                }
-            }
-            ChoiceKind::Tool(tool) => self.show_output(tool),
+            ChoiceKind::Reconnect => self.reconnect(),
+            ChoiceKind::Detail { key, message } => self.toggle_detail_choice(key, message),
             ChoiceKind::Restart => self.restart(),
         }
     }
@@ -449,41 +483,13 @@ impl App {
                 self.search(true);
             }
             CommandMenu::Agents => self.open_agents(),
-            CommandMenu::Back => self.back_to_agent(),
-            CommandMenu::Queue => self.send(Timing::NextTurn),
-            CommandMenu::Queued => self.open_queued(),
-            CommandMenu::Withdraw => self.open_queue(),
-            CommandMenu::Advance => {
-                if self.pane().exists {
-                    self.issue(self.active.clone(), Action::Advance);
-                }
-            }
-            CommandMenu::Interrupt => self.interrupt(),
-            CommandMenu::Reply => self.open_reply(),
-            CommandMenu::Pending => {
-                self.picker(PickerKind::Pending, self.pending_choices());
-            }
             CommandMenu::Model => {
                 self.picker(PickerKind::Models, Vec::new());
                 self.search(true);
             }
             CommandMenu::Thinking => self.open_thinking(),
             CommandMenu::StatusLine => self.open_statusline(),
-            CommandMenu::Copy => self.copy_reply(),
-            CommandMenu::Source => {
-                let showing_source = self.pane_mut().transcript.toggle_source();
-                self.confirmation(if showing_source {
-                    "Markdown source · /source for preview"
-                } else {
-                    "Markdown preview"
-                });
-            }
-            CommandMenu::Notes => self.read_latest_notes(),
-            CommandMenu::Details => self.open_details(),
-            CommandMenu::Tools => self.open_tools(),
             CommandMenu::Server => self.open_server(),
-            CommandMenu::Reconnect => self.reconnect(),
-            CommandMenu::Restart => self.restart(),
             CommandMenu::Web if self.require_service() => {
                 self.effects.push(Job::Web(
                     self.pane().exists.then(|| self.selection().target),
@@ -500,76 +506,32 @@ impl App {
         self.search(true);
     }
 
-    fn open_queue(&mut self) {
-        self.picker(PickerKind::Queue, Vec::new());
-        self.sync_withdraw_picker();
-    }
-
-    pub(crate) fn sync_withdraw_picker(&mut self) {
-        if !matches!(&self.modal, Some(Modal::Picker(picker)) if matches!(picker.kind, PickerKind::Queue))
-        {
-            return;
-        }
-        let choices = self.pane().snapshot.as_ref().map_or_else(Vec::new, |snap| {
-            snap.pending
-                .iter()
-                .map(|queued| {
-                    Choice::new(
-                        shorten(&single_line(&queued.input.text), 120),
-                        format!(
-                            "{} · receipt {}",
-                            queued.receipt.agent, queued.receipt.event_id
-                        ),
-                        ChoiceKind::Withdraw(queued.receipt.command_id.clone()),
-                    )
-                })
-                .collect()
-        });
-        if let Some(Modal::Picker(picker)) = &mut self.modal {
-            picker.set_local(choices);
-        }
-    }
-
-    fn open_reply(&mut self) {
-        let Some(snapshot) = self.pane().snapshot.as_ref() else {
+    fn answer_question(&mut self) {
+        let Some(request) = self
+            .pane()
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.agent.question.as_ref())
+        else {
             self.problem("No request is waiting for this Agent");
             return;
         };
-        if let Some(request) = &snapshot.agent.question {
-            let kind = PromptKind::Question {
-                request_id: request.id.clone(),
-            };
-            let title = format!("Answer {}", request.agent);
-            let instructions = request.text.clone();
-            self.prompt(kind, title, instructions);
-        } else if let Some(request) = &snapshot.agent.permission {
-            let id = request.id.clone();
-            let header = format!(
-                "{} requests {} · {}\n{}\n{}",
-                self.active.agent, request.tool, request.risk, request.summary, request.candidate
-            );
-            let choices = vec![
-                Choice::new(
-                    "Deny",
-                    "Decline this request",
-                    ChoiceKind::Permission {
-                        request_id: id.clone(),
-                        allow: false,
-                    },
-                ),
-                Choice::new(
-                    "Allow once",
-                    "Approve the displayed request",
-                    ChoiceKind::Permission {
-                        request_id: id,
-                        allow: true,
-                    },
-                ),
-            ];
-            self.picker(PickerKind::Permission, choices).header = header;
-        } else {
-            self.problem("No request is waiting for this Agent");
-        }
+        let request_id = request.id.clone();
+        let target = self.selection().target;
+        let title = format!("Answer {}", request.agent);
+        let instructions = request.text.clone();
+        let editor = self
+            .pane_mut()
+            .question_drafts
+            .remove(&request_id)
+            .unwrap_or_default();
+        self.modal = Some(Modal::Prompt(Prompt {
+            kind: PromptKind::Question { request_id, target },
+            title,
+            instructions,
+            instructions_top: 0,
+            editor,
+        }));
     }
 
     fn open_thinking(&mut self) {
@@ -612,28 +574,6 @@ impl App {
         config
     }
 
-    fn copy_reply(&mut self) {
-        self.pane_mut().pending_reply_copy = None;
-        self.pane_mut().pending_selected_reply_copy = None;
-        let pane = self.pane();
-        let source = pane.transcript.last_reply().or_else(|| {
-            pane.snapshot
-                .as_ref()
-                .and_then(|snapshot| snapshot.agent.last_output.as_deref())
-                .map(ReplySource::Local)
-        });
-        match source {
-            Some(ReplySource::Local(text)) => self.copy_text(text.to_owned()),
-            Some(ReplySource::History(id)) => {
-                if self.require_service() {
-                    self.pane_mut().pending_reply_copy = Some(id);
-                    self.effects.push(Job::ReplySource(self.selection(), id));
-                }
-            }
-            None => self.problem("No assistant reply to copy"),
-        }
-    }
-
     pub(crate) fn copied_reply(
         &mut self,
         selection: Selection,
@@ -669,40 +609,6 @@ impl App {
         self.effects.push(Job::Copy(text));
     }
 
-    fn open_tools(&mut self) {
-        let tools = self
-            .pane()
-            .transcript
-            .tools()
-            .into_iter()
-            .map(|tool| {
-                let name = if tool.name.is_empty() {
-                    "Tool"
-                } else {
-                    &tool.name
-                };
-                let detail = if tool.output_id.is_some() {
-                    format!("Saved output · {}", tool.summary)
-                } else {
-                    tool.summary.clone()
-                };
-                Choice::new(name, detail, ChoiceKind::Tool(tool.clone()))
-            })
-            .collect();
-        self.picker(PickerKind::Tools, tools);
-    }
-
-    fn open_details(&mut self) {
-        let choices = self
-            .pane()
-            .transcript
-            .visible_detail_choices()
-            .into_iter()
-            .map(|(key, label, summary)| Choice::new(label, summary, ChoiceKind::Detail(key)))
-            .collect();
-        self.picker(PickerKind::Details, choices);
-    }
-
     fn show_output(&mut self, tool: ToolView) {
         let id = self.modal_id();
         self.modal = Some(Modal::Output(Box::new(OutputViewer::new(id, tool))));
@@ -722,7 +628,7 @@ impl App {
         let mut actions = vec![Choice::new(
             "Reconnect",
             "Check the connection again",
-            ChoiceKind::Command(CommandMenu::Reconnect),
+            ChoiceKind::Reconnect,
         )];
         if !self.remote {
             actions.push(Choice::new(

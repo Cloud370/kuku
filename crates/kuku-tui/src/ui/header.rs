@@ -6,6 +6,7 @@ use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, ServiceStatus};
+use crate::contextual::ContextControl;
 use crate::keys::Shortcut;
 use crate::markup::{render_literal, wrap};
 use crate::text::{shorten, shorten_middle, single_line, single_line_path};
@@ -21,19 +22,19 @@ const TITLE_RESERVE: usize = 9;
 pub(super) fn render_session(
     frame: &mut Frame<'_>,
     area: Rect,
-    app: &App,
+    app: &mut App,
     following: bool,
     tool_hint: Option<&str>,
 ) -> Option<Rect> {
     let width = usize::from(area.width);
     let messages_label = if width >= 72 {
         " Messages "
-    } else if width >= 32 {
+    } else if width >= 28 {
         " Msg "
     } else {
         ""
     };
-    let messages_width = messages_label.len();
+    let messages_width = messages_label.width();
     let messages_area = (!messages_label.is_empty()).then(|| {
         Rect::new(
             area.x + area.width - messages_width as u16,
@@ -42,11 +43,37 @@ pub(super) fn render_session(
             1,
         )
     });
-    let messages_spacing = if messages_area.is_some() { 1 } else { 0 };
-    let content_width = width.saturating_sub(messages_width + messages_spacing);
-    let mut line = wordmark(width >= SESSION_PREFIX_WIDTH);
+    let mut right = messages_area.map_or(area.x.saturating_add(area.width), |messages| {
+        messages.x.saturating_sub(1)
+    });
+    let controls = app
+        .contextual_controls()
+        .into_iter()
+        .find(|control| matches!(control, ContextControl::PreviousAgent { .. }));
+    for control in controls.iter().rev() {
+        let chip_width = u16::try_from(super::contextual::label(control).width())
+            .unwrap_or(u16::MAX)
+            .min(right.saturating_sub(area.x));
+        if chip_width == 0 {
+            continue;
+        }
+        right = right.saturating_sub(chip_width);
+        super::contextual::render_chip(
+            frame,
+            app,
+            control,
+            Rect::new(right, area.y, chip_width, area.height),
+        );
+        right = right.saturating_sub(1);
+    }
+    let title_area = Rect {
+        width: right.saturating_sub(area.x),
+        ..area
+    };
+    let content_width = usize::from(title_area.width);
+    let mut line = wordmark(content_width >= SESSION_PREFIX_WIDTH);
     let id: String = single_line(&app.active.session).chars().take(8).collect();
-    let identity = if width >= SESSION_PREFIX_WIDTH {
+    let identity = if content_width >= SESSION_PREFIX_WIDTH {
         format!("Session {id}")
     } else {
         id
@@ -88,7 +115,7 @@ pub(super) fn render_session(
         line.push_span(" ".repeat(content_width - line.width() - hint.width()));
         line.push_span(Span::styled(hint, Style::default().fg(MUTED)));
     }
-    frame.render_widget(Paragraph::new(line), area);
+    frame.render_widget(Paragraph::new(line), title_area);
     if let Some(messages_area) = messages_area {
         frame.render_widget(
             Paragraph::new(Span::styled(messages_label, emphasis(ACCENT))),

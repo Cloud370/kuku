@@ -216,6 +216,7 @@ impl Transcript {
         Some(self.assistant_view == AssistantView::MessageSource(*event_id))
     }
 
+    #[cfg(test)]
     pub(crate) fn toggle_source(&mut self) -> bool {
         self.assistant_view = match self.assistant_view {
             AssistantView::Preview => AssistantView::Source,
@@ -225,6 +226,7 @@ impl Transcript {
         self.assistant_view == AssistantView::Source
     }
 
+    #[cfg(test)]
     pub(crate) fn tools(&self) -> Vec<ToolView> {
         let window = self
             .reading

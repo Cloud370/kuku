@@ -3,12 +3,17 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Position;
 
 use crate::app::{App, Modal};
+use crate::contextual::ContextControl;
 use crate::selection::{ClickTarget, MouseAction};
 
 impl App {
     pub(super) fn pointer(&mut self, mouse: MouseEvent, screen: &Buffer) {
         let click = self.click_target(mouse);
-        match self.text_selection.mouse(mouse, screen, click) {
+        let action = self.text_selection.mouse(mouse, screen, click);
+        if matches!(&action, Some(MouseAction::Click(_))) {
+            self.deactivate_context_focus();
+        }
+        match action {
             Some(MouseAction::Copy(text)) => self.copy_text(text),
             Some(MouseAction::Click(ClickTarget::Detail(key))) => {
                 self.toggle_transcript_detail(&key);
@@ -22,12 +27,27 @@ impl App {
                 }
             }
             Some(MouseAction::Click(ClickTarget::Agent(target))) => self.select_agent(target),
+            Some(MouseAction::Click(ClickTarget::Request { target, request_id })) => {
+                self.focus_context_control(ContextControl::Request { target, request_id });
+            }
+            Some(MouseAction::Click(ClickTarget::Permission {
+                target,
+                request_id,
+                allow,
+            })) => {
+                if self.focus_context_control(ContextControl::Request { target, request_id }) {
+                    self.pane_mut().permission_choice = Some(allow);
+                }
+            }
+            Some(MouseAction::Click(ClickTarget::Contextual(control))) => {
+                self.focus_context_control(control);
+            }
             Some(MouseAction::Click(ClickTarget::Link(url))) => {
                 if let Err(error) = crate::open_browser(&url) {
                     self.problem(error.to_string());
                 }
             }
-            Some(MouseAction::Click(ClickTarget::Queued)) => self.open_queued(),
+            Some(MouseAction::Click(ClickTarget::QueueInput(id))) => self.focus_queue_input(id),
             Some(MouseAction::Click(ClickTarget::Messages)) => self.open_messages_picker(),
             Some(MouseAction::Click(ClickTarget::Transcript)) => self.scroll(0),
             Some(MouseAction::Click(ClickTarget::Composer)) => {
@@ -55,9 +75,17 @@ impl App {
         let position = Position::new(mouse.column, mouse.row);
         match &self.modal {
             Some(Modal::Picker(picker)) => picker.hit(position).map(ClickTarget::Picker),
-            Some(Modal::Prompt(_) | Modal::Output(_) | Modal::StatusLineEditor(_)) => None,
+            Some(
+                Modal::Help | Modal::Prompt(_) | Modal::Output(_) | Modal::StatusLineEditor(_),
+            ) => None,
             None => {
-                if self
+                if let Some(hit) = self
+                    .contextual_hits
+                    .iter()
+                    .find(|hit| hit.area.contains(position))
+                {
+                    Some(ClickTarget::Contextual(hit.control.clone()))
+                } else if self
                     .text_selection
                     .messages_area()
                     .is_some_and(|area| area.contains(position))
@@ -69,10 +97,35 @@ impl App {
                     Some(ClickTarget::JumpLatest)
                 } else if self.composer_area.contains(position) {
                     Some(ClickTarget::Composer)
-                } else if self.delivery_area.contains(position)
-                    && self.queued_for_edit().next().is_some()
-                {
-                    Some(ClickTarget::Queued)
+                } else if self.permission_choice_areas[0].contains(position) {
+                    self.request_hit
+                        .as_ref()
+                        .map(|(target, request_id)| ClickTarget::Permission {
+                            target: target.clone(),
+                            request_id: request_id.clone(),
+                            allow: false,
+                        })
+                } else if self.permission_choice_areas[1].contains(position) {
+                    self.request_hit
+                        .as_ref()
+                        .map(|(target, request_id)| ClickTarget::Permission {
+                            target: target.clone(),
+                            request_id: request_id.clone(),
+                            allow: true,
+                        })
+                } else if self.request_area.contains(position) {
+                    self.request_hit
+                        .as_ref()
+                        .map(|(target, request_id)| ClickTarget::Request {
+                            target: target.clone(),
+                            request_id: request_id.clone(),
+                        })
+                } else if self.delivery_area.contains(position) {
+                    let row = mouse.row.saturating_sub(self.delivery_area.y);
+                    self.delivery_hits
+                        .iter()
+                        .find(|(range, _)| range.contains(&row))
+                        .map(|(_, id)| ClickTarget::QueueInput(id.clone()))
                 } else {
                     self.text_selection
                         .transcript_cell(mouse)

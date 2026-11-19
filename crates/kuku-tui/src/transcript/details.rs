@@ -295,6 +295,7 @@ impl Transcript {
             .collect()
     }
 
+    #[cfg(test)]
     pub(crate) fn latest_notes(&self) -> Option<DetailKey> {
         self.detail_items
             .visible
