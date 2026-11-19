@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::Write;
+use std::io::{self, Write};
 use std::sync::{Arc, Barrier};
 
 use kuku::config::{generate_default, load_config, ApiKey};
@@ -48,7 +48,7 @@ async fn existing_settings_preserve_comments_providers_tiers_and_connection_opti
     let settings = Settings::load(options(directory.path(), Some(config.clone())))
         .await
         .unwrap();
-    let state = SetupState::new(&settings);
+    let mut state = SetupState::new(&settings);
     assert!(
         matches!(state.choice(), crate::setup::ConnectionChoice::Existing(name) if name == "anthropic")
     );
@@ -98,7 +98,7 @@ async fn saving_uses_sdk_environment_expansion_and_preserves_references() {
     let settings = Settings::load(options(directory.path(), Some(config.clone())))
         .await
         .unwrap();
-    let mut state = SetupState::new(&settings);
+    let state = SetupState::new(&settings);
     save(&settings, &state).unwrap();
 
     let output = fs::read_to_string(&config).unwrap();
@@ -503,7 +503,7 @@ async fn staged_key_is_removed_when_directory_sync_fails() {
     let error = stage_key_with_sync(&settings, "fixture-only-not-a-real-key", |path, created| {
         assert_eq!(path, settings.credentials_dir);
         assert!(created);
-        Err(io::Error::new(io::ErrorKind::Other, "fixture sync failure"))
+        Err(io::Error::other("fixture sync failure"))
     })
     .err()
     .unwrap();

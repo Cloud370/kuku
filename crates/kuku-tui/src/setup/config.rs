@@ -6,7 +6,7 @@ use kuku::config::{generate_default, load_config, parse_config_text, ApiKey, Con
 use kuku::util::{is_valid_private_key, private_directory, sync_private_directory};
 use kuku_client::ConnectionOptions;
 use tempfile::{Builder, NamedTempFile};
-use toml_edit::{value, DocumentMut, InlineTable, Item, Table, TableLike, Value};
+use toml_edit::{value, DocumentMut, InlineTable, Item, Table, Value};
 
 use super::state::{valid_env_name, valid_stored_key, SetupState};
 use super::{ConnectionChoice, CredentialSource, ProviderPreset};
@@ -405,8 +405,8 @@ fn save_with_hook(
             .tiers
             .get(&settings.default_tier)
             .is_none_or(|entry| entry.provider != provider_name || entry.model != model);
-        model_entry["provider"] = value(provider_name.as_str());
-        model_entry["model"] = value(model.as_str());
+        model_entry.insert("provider", value(provider_name.as_str()));
+        model_entry.insert("model", value(model.as_str()));
         if route_changed {
             model_entry.remove("reasoning_effort");
             model_entry.remove("service_tier");
@@ -438,7 +438,7 @@ fn save_with_hook(
         }
         ConnectionChoice::Preset(preset) => {
             let inline = providers_is_inline(&document);
-            let entry = provider_entry(preset, key_reference.as_str(), inline);
+            let entry = provider_entry(*preset, key_reference.as_str(), inline);
             let providers = document
                 .get_mut("provider")
                 .and_then(Item::as_table_like_mut)
