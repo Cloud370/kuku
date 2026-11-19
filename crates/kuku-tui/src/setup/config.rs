@@ -609,6 +609,7 @@ fn write_config(
                 .set_permissions(permissions.clone())
                 .map_err(|_| invalid_config("cannot preserve configuration permissions"))?;
         }
+        secure_config_temp(settings, &temporary)?;
         temporary
             .write_all(bytes)
             .and_then(|()| temporary.as_file().sync_all())
@@ -620,6 +621,7 @@ fn write_config(
         before_compare.take().expect("single concurrency hook")();
         let mut temporary = NamedTempFile::new_in(parent)
             .map_err(|_| invalid_config("cannot stage the new configuration"))?;
+        secure_config_temp(settings, &temporary)?;
         temporary
             .write_all(bytes)
             .and_then(|()| temporary.as_file().sync_all())
@@ -631,6 +633,23 @@ fn write_config(
     if let Ok(directory) = File::open(parent) {
         let _ = directory.sync_all();
     }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn secure_config_temp(settings: &Settings, temporary: &NamedTempFile) -> io::Result<()> {
+    kuku::util::set_config_temp_security(
+        settings
+            .existing
+            .then_some(settings.config_path.as_path()),
+        temporary.path(),
+        temporary.as_file(),
+    )
+    .map_err(|_| invalid_config("cannot secure configuration file before writing"))
+}
+
+#[cfg(not(windows))]
+fn secure_config_temp(_settings: &Settings, _temporary: &NamedTempFile) -> io::Result<()> {
     Ok(())
 }
 

@@ -31,6 +31,15 @@ pub fn sync_private_directory(path: &Path) -> io::Result<()> {
 }
 
 #[cfg(windows)]
+pub fn set_config_temp_security(
+    source: Option<&Path>,
+    temp_path: &Path,
+    temp_file: &std::fs::File,
+) -> io::Result<()> {
+    windows::set_config_temp_security(source, temp_path, temp_file)
+}
+
+#[cfg(windows)]
 pub(super) fn open_private_key(path: &Path) -> io::Result<std::fs::File> {
     windows::open_private_key(path)
 }

@@ -12,13 +12,14 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidA, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-    GetNamedSecurityInfoW, GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
+    GetNamedSecurityInfoW, GetSecurityInfo, SetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
 };
 use windows_sys::Win32::Security::{
-    EqualSid, GetAce, GetSecurityDescriptorControl, GetTokenInformation, TokenUser,
-    ACCESS_ALLOWED_ACE, ACL, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, INHERITED_ACE,
-    INHERIT_ONLY_ACE, OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION, PSID, SECURITY_ATTRIBUTES,
-    SE_DACL_PROTECTED, TOKEN_QUERY, TOKEN_USER,
+    EqualSid, GetAce, GetSecurityDescriptorControl, GetSecurityDescriptorDacl,
+    GetSecurityDescriptorOwner, GetTokenInformation, TokenUser, ACCESS_ALLOWED_ACE, ACL,
+    CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, INHERITED_ACE, INHERIT_ONLY_ACE,
+    OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSID,
+    SECURITY_ATTRIBUTES, SE_DACL_PROTECTED, TOKEN_QUERY, TOKEN_USER,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateDirectoryW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_ALL_ACCESS,
@@ -147,6 +148,149 @@ pub(super) fn private_directory(path: &Path) -> io::Result<()> {
         return Err(insecure_directory(path));
     }
     Ok(())
+}
+
+pub(super) fn set_config_temp_security(
+    source_path: Option<&Path>,
+    temp_path: &Path,
+    temp_file: &File,
+) -> io::Result<()> {
+    const FILE_READ_ATTRIBUTES: u32 = 0x0080;
+    const READ_CONTROL: u32 = 0x0002_0000;
+    const WRITE_DAC: u32 = 0x0004_0000;
+    const WRITE_OWNER: u32 = 0x0008_0000;
+
+    let source_file = source_path.map(open_config_file).transpose()?;
+    let (owner, dacl, descriptor) = if let Some(source) = &source_file {
+        query_file_security(source.as_raw_handle())?
+    } else {
+        let account = AccountSid::current()?;
+        let descriptor = account.security_descriptor()?;
+        let mut owner = ptr::null_mut();
+        let mut owner_defaulted = 0;
+        // NOTE: The descriptor allocation remains live, the owner slot is writable, and no safe API exposes this SID.
+        if unsafe {
+            GetSecurityDescriptorOwner(descriptor.0, &mut owner, &mut owner_defaulted)
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let mut dacl_present = 0;
+        let mut dacl_defaulted = 0;
+        let mut dacl = ptr::null_mut();
+        // NOTE: The same live descriptor owns the returned DACL; native descriptor access has no safe wrapper.
+        if unsafe {
+            GetSecurityDescriptorDacl(
+                descriptor.0,
+                &mut dacl_present,
+                &mut dacl,
+                &mut dacl_defaulted,
+            )
+        } == 0
+            || dacl_present == 0
+            || dacl.is_null()
+        {
+            return Err(io::Error::last_os_error());
+        }
+        (owner, dacl, descriptor)
+    };
+
+    let (temp_owner, _, temp_descriptor) = query_file_security(temp_file.as_raw_handle())?;
+    let owner_matches = unsafe { EqualSid(temp_owner, owner) != 0 };
+    let access = FILE_READ_ATTRIBUTES
+        | READ_CONTROL
+        | WRITE_DAC
+        | if owner_matches { 0 } else { WRITE_OWNER };
+    let destination = OpenOptions::new()
+        .access_mode(access)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(temp_path)?;
+    let opened_info = file_information(&destination)?;
+    let original_info = file_information(temp_file)?;
+    if opened_info.dwVolumeSerialNumber != original_info.dwVolumeSerialNumber
+        || opened_info.nFileIndexHigh != original_info.nFileIndexHigh
+        || opened_info.nFileIndexLow != original_info.nFileIndexLow
+        || opened_info.dwFileAttributes
+            & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)
+            != 0
+        || opened_info.nNumberOfLinks != 1
+    {
+        return Err(unsafe_file());
+    }
+
+    let mut security = DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION;
+    let owner = if owner_matches {
+        ptr::null_mut()
+    } else {
+        security |= OWNER_SECURITY_INFORMATION;
+        owner
+    };
+    // NOTE: The destination is the verified temp-file handle; owner/DACL pointers remain in live descriptors, and Win32 has no safe ACL setter.
+    let error = unsafe {
+        SetSecurityInfo(
+            destination.as_raw_handle(),
+            SE_FILE_OBJECT,
+            security,
+            owner,
+            ptr::null_mut(),
+            dacl,
+            ptr::null_mut(),
+        )
+    };
+    let _ = (descriptor, temp_descriptor);
+    if error != 0 {
+        return Err(io::Error::from_raw_os_error(error as i32));
+    }
+    Ok(())
+}
+
+fn open_config_file(path: &Path) -> io::Result<File> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    let information = file_information(&file)?;
+    if information.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)
+        != 0
+    {
+        return Err(unsafe_file());
+    }
+    Ok(file)
+}
+
+fn query_file_security(handle: HANDLE) -> io::Result<(PSID, *mut ACL, LocalAllocation)> {
+    let mut owner = ptr::null_mut();
+    let mut dacl = ptr::null_mut();
+    let mut descriptor = ptr::null_mut();
+    // NOTE: The caller keeps the opened handle live and all output slots writable; safe Rust cannot query this handle's DACL.
+    let error = unsafe {
+        GetSecurityInfo(
+            handle,
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            &mut owner,
+            ptr::null_mut(),
+            &mut dacl,
+            ptr::null_mut(),
+            &mut descriptor,
+        )
+    };
+    if error != 0 {
+        return Err(io::Error::from_raw_os_error(error as i32));
+    }
+    if owner.is_null() {
+        return Err(unsafe_file());
+    }
+    Ok((owner, dacl, LocalAllocation(descriptor)))
+}
+
+fn file_information(file: &File) -> io::Result<BY_HANDLE_FILE_INFORMATION> {
+    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    // NOTE: File owns a live handle and information is writable; path metadata cannot establish reparse status for this handle.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(information)
 }
 
 pub(super) fn open_private_key(path: &Path) -> io::Result<File> {
@@ -282,5 +426,31 @@ fn only_user_access(dacl: *const ACL, account: &AccountSid) -> bool {
         u32::from(header.AceFlags) == (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE)
             && (*ace).Mask == FILE_ALL_ACCESS
             && EqualSid(addr_of!((*ace).SidStart).cast_mut().cast(), account.sid()) != 0
+    }
+}
+
+#[cfg(test)]
+mod config_temp_tests {
+    use std::os::windows::io::AsRawHandle;
+
+    use super::{is_private_file, set_config_temp_security, AccountSid};
+
+    #[test]
+    fn config_temp_acl_is_private_and_copied_from_existing_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = tempfile::NamedTempFile::new_in(directory.path()).unwrap();
+        set_config_temp_security(None, source.path(), source.as_file()).unwrap();
+
+        let copied = tempfile::NamedTempFile::new_in(directory.path()).unwrap();
+        set_config_temp_security(
+            Some(source.path()),
+            copied.path(),
+            copied.as_file(),
+        )
+        .unwrap();
+
+        let account = AccountSid::current().unwrap();
+        assert!(is_private_file(source.as_file().as_raw_handle(), &account).unwrap());
+        assert!(is_private_file(copied.as_file().as_raw_handle(), &account).unwrap());
     }
 }
