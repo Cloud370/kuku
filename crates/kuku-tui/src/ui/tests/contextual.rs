@@ -174,6 +174,32 @@ fn clicking_previous_agent_header_focuses_the_registered_hit_area() {
 }
 
 #[test]
+fn contextual_cycle_cursor_is_retained_per_agent_across_navigation() {
+    let mut app = app();
+    load_snapshot(&mut app, "idle", false);
+    let main = app.active.clone();
+    let writer = crate::app::Address::new(main.session.clone(), "writer".into());
+    app.select(writer.clone(), true, "Writer".into());
+    load_snapshot(&mut app, "idle", false);
+
+    key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
+    assert!(matches!(&app.pane().contextual_focus.cursor,
+        Some(ContextControl::PreviousAgent { target }) if target == &main));
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(main, app.active);
+
+    app.select(writer, true, "Writer".into());
+    assert!(!app.pane().contextual_focus.active);
+    assert!(matches!(&app.pane().contextual_focus.cursor,
+        Some(ContextControl::PreviousAgent { target }) if target == &main));
+    key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
+    assert!(matches!(
+        app.pane().contextual_focus.cursor,
+        Some(ContextControl::Restart { .. })
+    ));
+}
+
+#[test]
 fn narrow_layout_keeps_contextual_service_action_keyboard_reachable() {
     let mut app = app();
     app.pane_mut().exists = true;

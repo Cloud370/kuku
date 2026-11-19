@@ -85,8 +85,9 @@ def targeted_delegation(client):
             action = "Open →" if columns == 44 else "Open agent →"
             scene = terminal.expect(action, state="╭─ Agent writer")["screen"]
             terminal.click_text(scene, action)
-            terminal.expect("To writer", state="Proof of delivery")
-            terminal.press("\x1bOQ\r")
+            back = terminal.expect("F2 Back", state="To writer", also=("Proof of delivery",))["screen"]
+            terminal.click_text(back, "F2 Back")
+            terminal.press("\r")
             terminal.expect("To main", state="Received the delegated document.")
         terminal.exit_cleanly()
     client.provider.assert_idle()
