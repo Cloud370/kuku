@@ -3,6 +3,7 @@ mod common;
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use httpmock::prelude::{HttpMockRequest, MockServer, POST};
@@ -35,6 +36,30 @@ fn options(
     config.handoff.enabled = false;
     config.plugin.enabled = false;
     SessionOptions::new(workspace, data, config)
+}
+
+fn anthropic_retry_options(server: &MockServer, workspace: &Path, data: &Path) -> SessionOptions {
+    let mut config = common::test_config();
+    let provider = config.providers.get_mut("anthropic").unwrap();
+    provider.base_url = server.url("/retry-body-identical");
+    provider.options.profile = ProviderProfile::Anthropic;
+    config.handoff.enabled = false;
+    config.plugin.enabled = false;
+    SessionOptions::new(workspace, data, config)
+}
+
+fn retry_request_bodies() -> &'static Mutex<Vec<Vec<u8>>> {
+    static BODIES: OnceLock<Mutex<Vec<Vec<u8>>>> = OnceLock::new();
+    BODIES.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn capture_retry_request_body(request: &HttpMockRequest) -> bool {
+    if let Some(body) = &request.body {
+        retry_request_bodies().lock().unwrap().push(body.clone());
+        true
+    } else {
+        false
+    }
 }
 
 fn body(request: &HttpMockRequest) -> Value {
@@ -254,6 +279,82 @@ async fn recorded_openrouter_responses_done_dispatches_both_tools_and_continues(
     assert!(events.iter().any(|event| matches!(&event.payload, EventPayload::Unknown(value) if value["kind"] == "runtime.provider_report" && value["report"]["cost_usd"] == 0.000157636)));
     first.assert_hits_async(1).await;
     second.assert_hits_async(1).await;
+}
+
+#[tokio::test]
+async fn transient_provider_retry_sends_identical_request_body_bytes() {
+    retry_request_bodies().lock().unwrap().clear();
+    let server = MockServer::start_async().await;
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let first = server
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path("/retry-body-identical/v1/messages")
+                .matches(capture_retry_request_body);
+            then.status(503).body("temporarily unavailable");
+        })
+        .await;
+    let session = Session::open(anthropic_retry_options(
+        &server,
+        workspace.path(),
+        data.path(),
+    ))
+    .await
+    .unwrap();
+    session
+        .create_agent("create", "main", AgentConfig::default())
+        .unwrap();
+    session
+        .send(Input::new("retry_once", "main", "retry this model request"))
+        .unwrap();
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while first.hits_async().await == 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("initial provider request was not observed");
+    first.assert_hits_async(1).await;
+    first.delete_async().await;
+
+    let retry = server
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path("/retry-body-identical/v1/messages")
+                .matches(capture_retry_request_body);
+            then.status(200).body(common::anthropic_sse_response(json!({
+                "id": "retry_success",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type":"text","text":"retry succeeded"}],
+                "stop_reason": "end_turn"
+            })));
+        })
+        .await;
+
+    let snapshot = settle(&session).await;
+    assert_eq!(
+        AgentStatus::Idle,
+        snapshot.status,
+        "{:?}",
+        snapshot.last_error
+    );
+    assert_eq!(None, snapshot.last_error);
+    assert_eq!(Some("retry succeeded"), snapshot.last_output.as_deref());
+    retry.assert_hits_async(1).await;
+    session.close().await.unwrap();
+
+    let bodies = std::mem::take(&mut *retry_request_bodies().lock().unwrap());
+    assert_eq!(2, bodies.len());
+    assert_eq!(bodies[0], bodies[1]);
+
+    let events = EventStore::replay(session.events_path()).unwrap();
+    assert!(events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::Unknown(value) if value["kind"] == "runtime.model_retry"
+    )));
 }
 
 #[cfg(target_os = "linux")]

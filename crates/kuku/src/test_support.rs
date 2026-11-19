@@ -79,6 +79,28 @@ pub fn anthropic_sse_response(msg: Value) -> String {
                 "event: content_block_stop\ndata: {}\n\n",
                 serde_json::json!({"type":"content_block_stop","index":i})
             ));
+        } else if btype == "thinking" {
+            let thinking = block.get("thinking").and_then(Value::as_str).unwrap_or("");
+            sse.push_str(&format!(
+                "event: content_block_start\ndata: {}\n\n",
+                serde_json::json!({"type":"content_block_start","index":i,"content_block":{"type":"thinking","thinking":""}})
+            ));
+            if !thinking.is_empty() {
+                sse.push_str(&format!(
+                    "event: content_block_delta\ndata: {}\n\n",
+                    serde_json::json!({"type":"content_block_delta","index":i,"delta":{"type":"thinking_delta","thinking":thinking}})
+                ));
+            }
+            if let Some(signature) = block.get("signature").and_then(Value::as_str) {
+                sse.push_str(&format!(
+                    "event: content_block_delta\ndata: {}\n\n",
+                    serde_json::json!({"type":"content_block_delta","index":i,"delta":{"type":"signature_delta","signature":signature}})
+                ));
+            }
+            sse.push_str(&format!(
+                "event: content_block_stop\ndata: {}\n\n",
+                serde_json::json!({"type":"content_block_stop","index":i})
+            ));
         } else if btype == "tool_use" {
             let tc_id = block.get("id").and_then(Value::as_str).unwrap_or("tc_1");
             let name = block.get("name").and_then(Value::as_str).unwrap_or("");
