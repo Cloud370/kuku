@@ -156,6 +156,8 @@ pub(crate) fn retry_after(value: &str, now: SystemTime) -> Option<Duration> {
 pub(crate) fn transport_error(error: &wreq::Error) -> ProviderFailure {
     let kind = if error.is_timeout() {
         ProviderFailureKind::Timeout
+    } else if error.is_builder() {
+        ProviderFailureKind::InvalidRequest
     } else {
         ProviderFailureKind::Transport
     };
@@ -176,6 +178,8 @@ fn sanitize_http_message(status: u16, body: &str) -> String {
 fn sanitize_transport_message(error: &wreq::Error) -> String {
     if error.is_timeout() {
         "request timed out".to_string()
+    } else if error.is_builder() {
+        "invalid provider request".to_string()
     } else if error.is_connect() {
         "could not connect to provider".to_string()
     } else {
@@ -193,4 +197,23 @@ fn truncate(input: &str, max_len: usize) -> String {
         output.push('…');
     }
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{transport_error, ProviderFailureKind};
+
+    #[test]
+    fn invalid_url_builder_errors_are_permanent_and_sanitized() {
+        let error = wreq::Client::new()
+            .get("not a valid url")
+            .build()
+            .unwrap_err();
+        assert!(error.is_builder());
+
+        let failure = transport_error(&error);
+        assert_eq!(ProviderFailureKind::InvalidRequest, failure.kind);
+        assert!(!failure.retryable);
+        assert_eq!("invalid provider request", failure.message);
+    }
 }
