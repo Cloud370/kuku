@@ -229,17 +229,19 @@ impl Query {
                 "resume_before_new_turn",
             )?;
             append_turn_started(&events_path, &conversation, turn)?;
-            append_message_user_with_sender(
-                &events_path,
-                &conversation,
-                turn,
-                &self.prompt,
-                self.message_from
-                    .as_ref()
-                    .map(ConversationAddress::as_str)
-                    .or_else(|| self.input_source.agent_address()),
-                self.via_tool_call_id.as_deref(),
-            )?;
+            if !self.skip_user_message {
+                append_message_user_with_sender(
+                    &events_path,
+                    &conversation,
+                    turn,
+                    &self.prompt,
+                    self.message_from
+                        .as_ref()
+                        .map(ConversationAddress::as_str)
+                        .or_else(|| self.input_source.agent_address()),
+                    self.via_tool_call_id.as_deref(),
+                )?;
+            }
 
             if let (Ok(session_log_path), Ok(ts)) =
                 (session_log_path(&kuku_home, &session_id), now_timestamp())

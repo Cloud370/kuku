@@ -5,11 +5,15 @@ use crate::execution::OutputReference;
 use crate::{Error, Result};
 
 use super::record::{timestamp, AgentState, QueuedDelivery, Record, State};
-use super::{AgentConfig, AgentStatus, InputSource, InputTiming, Session, UsageTotals};
+use super::{
+    AgentConfig, AgentStatus, InputSource, InputStatus, InputTiming, Session, UsageTotals,
+};
 
 pub(super) struct TurnWork {
     pub(super) config: AgentConfig,
     pub(super) text: String,
+    pub(super) skip_user_message: bool,
+    pub(super) resume_input_turn: Option<u64>,
     pub(super) source: InputSource,
     pub(super) reply: Option<(String, bool)>,
     pub(super) execution: u64,
@@ -154,6 +158,37 @@ impl Session {
             .last()
             .map(|entry| entry.input.source.clone())
             .unwrap_or_else(|| InputSource::Host("local".into()));
+        let (text, skip_user_message, resume_input_turn) = if reply.is_some() {
+            (input_text(&inputs), false, None)
+        } else {
+            let mut queued = Vec::new();
+            for entry in &inputs {
+                match state.input_status(address, &entry.input.command_id)? {
+                    InputStatus::Queued => queued.push(entry.clone()),
+                    InputStatus::Accepted => {}
+                    InputStatus::Withdrawn => {
+                        return Err(Error::InvalidEventStream(format!(
+                            "agent '{address}': withdrawn input '{}' remains in its inbox",
+                            entry.input.command_id
+                        )))
+                    }
+                }
+            }
+            if queued.is_empty() && !inputs.is_empty() {
+                let resume_input_turn = inputs.last().and_then(|entry| entry.accepted_turn);
+                if let Some(turn) = resume_input_turn {
+                    if let Some(text) = last_user_message_text(self.events_path(), address, turn)? {
+                        (text, true, Some(turn))
+                    } else {
+                        (input_text(&inputs), false, None)
+                    }
+                } else {
+                    (input_text(&inputs), false, None)
+                }
+            } else {
+                (input_text(&queued), false, None)
+            }
+        };
         let turn = if reply.is_some() {
             turn.ok_or_else(|| {
                 Error::InvalidEventStream(format!(
@@ -165,7 +200,9 @@ impl Session {
         };
         Ok(Some(TurnWork {
             config,
-            text: input_text(&inputs),
+            text,
+            skip_user_message,
+            resume_input_turn,
             source,
             skills: if reply.is_some() {
                 Vec::new()
@@ -267,6 +304,36 @@ fn input_text(entries: &[QueuedDelivery]) -> String {
         .map(|entry| input_model_text(&entry.input.text, &entry.values))
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+fn last_user_message_text(
+    events_path: &std::path::Path,
+    address: &str,
+    turn: u64,
+) -> Result<Option<String>> {
+    let mut after = 0;
+    let mut text = None;
+    loop {
+        let events = EventStore::read_page(events_path, after, 256)?;
+        if events.is_empty() {
+            break;
+        }
+        for event in events {
+            after = event.id;
+            if let EventPayload::MessageUser {
+                conversation,
+                turn: event_turn,
+                text: event_text,
+                ..
+            } = event.payload
+            {
+                if conversation == address && event_turn == turn {
+                    text = Some(event_text);
+                }
+            }
+        }
+    }
+    Ok(text)
 }
 
 pub(super) fn input_model_text<'a>(text: &'a str, values: &[OutputReference]) -> Cow<'a, str> {

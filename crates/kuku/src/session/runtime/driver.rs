@@ -348,6 +348,8 @@ impl Session {
         query.runtime_execution = Some(work.execution);
         query.turn_override = Some(work.turn);
         query.events_path_override = Some(self.inner.events_path.clone());
+        query.skip_user_message = work.skip_user_message;
+        query.resume_input_turn = work.resume_input_turn;
         if let Some(model) = &config.model {
             query = query.model(model);
         }
