@@ -327,7 +327,32 @@ fn banner(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
         return Vec::new();
     }
     let pane = app.pane();
-    let mut lines = waiting(app, width);
+    let mut lines = Vec::new();
+    if let Some(retry) = pane.retry_metadata() {
+        let color = match crate::retry_notice::decision(retry) {
+            Some(false) => ERROR,
+            Some(true) | None => WARNING,
+        };
+        lines.push(Line::styled(
+            crate::text::shorten_middle(
+                &crate::retry_notice::banner(retry, time::OffsetDateTime::now_utc()),
+                width,
+            ),
+            emphasis(color),
+        ));
+        let detail_rows = height.saturating_sub(lines.len()).min(2);
+        if detail_rows > 0 {
+            lines.extend(crate::markup::wrap_bounded(
+                vec![Line::styled(
+                    crate::retry_notice::detail(retry),
+                    emphasis(color),
+                )],
+                width,
+                detail_rows,
+            ));
+        }
+    }
+    lines.extend(waiting(app, width));
     if let Some(problem) = app.service_problem() {
         lines.extend(
             problem
@@ -361,7 +386,7 @@ fn banner(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
                     single_line(error)
                 )
             } else {
-                format!("Execution · /model or /continue · {}", single_line(error))
+                format!("Execution failed · {}", single_line(error))
             };
             lines.push(Line::styled(
                 shorten(&recovery, width),

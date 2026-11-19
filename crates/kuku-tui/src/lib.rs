@@ -15,6 +15,7 @@ mod markup;
 mod menu;
 mod onboarding;
 mod output;
+mod retry_notice;
 mod selection;
 mod statusline;
 mod terminal;

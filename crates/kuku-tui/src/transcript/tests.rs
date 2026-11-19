@@ -33,6 +33,10 @@ fn rows(transcript: &mut Transcript) -> Vec<String> {
         .collect()
 }
 
+fn compact(text: &str) -> String {
+    text.split_whitespace().collect()
+}
+
 #[test]
 fn frozen_history_survives_older_page_arrival_and_many_recent_commits() {
     let mut transcript = Transcript::default();
@@ -81,6 +85,75 @@ fn durable_response_replaces_its_live_preview() {
     let rendered = rows(&mut transcript).join("\n");
     assert!(!rendered.contains("temporary preview"));
     assert!(rendered.contains("settled response"));
+}
+
+#[test]
+fn retry_stop_and_explicit_error_code_remain_readable_in_history() {
+    let stopped = HistoryEntry {
+        id: 8,
+        agent: "main".into(),
+        turn: Some(2),
+        kind: HistoryKind::Retry,
+        text: None,
+        turn_summary: None,
+        details: [(
+            "retry".into(),
+            json!({
+                "source":"runtime.model_retry","phase":"stopped","attempt":3,
+                "failed_kind":"transport","will_retry":false,
+                "stop_reason":"attempt_limit"
+            }),
+        )]
+        .into_iter()
+        .collect(),
+    };
+    let error = HistoryEntry {
+        id: 9,
+        agent: "main".into(),
+        turn: Some(2),
+        kind: HistoryKind::Error,
+        text: Some("connection reset".into()),
+        turn_summary: None,
+        details: [("code".into(), json!("transport"))].into_iter().collect(),
+    };
+    let mut transcript = Transcript::default();
+    transcript.apply(stopped, None);
+    transcript.apply(error, None);
+    let rendered = rows(&mut transcript).join(" ");
+    let compacted = compact(&rendered);
+    assert!(rendered.contains("No automatic retry"));
+    assert!(rendered.contains("attempt limit reached"));
+    assert!(rendered.contains("connection reset"));
+    assert!(
+        compacted.contains(&compact("Wait/check service/network; then Continue")),
+        "{rendered}"
+    );
+    assert!(!rendered.contains("Esc stop"));
+}
+
+#[test]
+fn unknown_error_text_is_not_reclassified_by_message_content() {
+    let error = HistoryEntry {
+        id: 10,
+        agent: "main".into(),
+        turn: Some(3),
+        kind: HistoryKind::Error,
+        text: Some("authentication failed while contacting a service".into()),
+        turn_summary: None,
+        details: [("code".into(), json!("unknown"))].into_iter().collect(),
+    };
+    let mut transcript = Transcript::default();
+    transcript.apply(error, None);
+    let rendered = rows(&mut transcript).join(" ");
+    let compacted = compact(&rendered);
+    assert!(rendered.contains("Execution error"));
+    assert!(
+        compacted.contains(&compact("authentication failed while contacting a service")),
+        "{rendered}"
+    );
+    assert!(rendered.contains("Fix the cause, then Continue"));
+    assert!(!rendered.contains("Check credentials"));
+    assert!(!rendered.contains("Provider error"));
 }
 
 #[test]

@@ -712,7 +712,30 @@ impl Record {
                     Body::Notice("Execution stopped", text, MUTED)
                 }
             }
-            HistoryKind::Error => Body::Notice("Provider error", text, ERROR),
+            HistoryKind::Error => {
+                let code = entry.details.get("code").and_then(Value::as_str);
+                let title = crate::retry_notice::model_error_title(code);
+                let hint = crate::retry_notice::model_error_hint(code);
+                let notice = if text.is_empty() {
+                    format!("Next step: {hint}")
+                } else {
+                    format!("{text}\n\nNext step: {hint}")
+                };
+                Body::Notice(title, notice, ERROR)
+            }
+            HistoryKind::Retry => {
+                let retry = entry
+                    .details
+                    .get("retry")
+                    .cloned()
+                    .and_then(|value| serde_json::from_value(value).ok())
+                    .unwrap_or_default();
+                Body::Notice(
+                    "Retry history",
+                    crate::retry_notice::history_text(&retry),
+                    WARNING,
+                )
+            }
             HistoryKind::TurnSummary if entry.turn_summary.is_some() => Body::TurnSummary,
             HistoryKind::TurnSummary => return None,
             HistoryKind::Other => return None,
