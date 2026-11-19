@@ -18,6 +18,16 @@ class MixedTableScrollTests(unittest.TestCase):
 
         self.assertTrue(has_standalone_assistant_rail(frame))
 
+    def test_scans_table_frame_without_assistant_heading(self):
+        frame = [" Before table 00", " After table 00"]
+
+        self.assertFalse(has_standalone_assistant_rail(frame))
+
+    def test_detects_orphan_rail_without_assistant_heading(self):
+        frame = [" Before table 00", " │", " After table 00"]
+
+        self.assertTrue(has_standalone_assistant_rail(frame))
+
 
 class QueuedInputFocusTests(unittest.TestCase):
     def test_detects_the_selected_queued_input(self):
@@ -40,12 +50,20 @@ class QueuedInputFocusTests(unittest.TestCase):
     def test_requires_a_pending_inputs_row(self):
         self.assertFalse(has_selected_queued_input("To main · Draft", "anything"))
 
-    def test_scans_table_frame_without_assistant_heading(self):
-        frame = [" Before table 00", " After table 00"]
+    def test_does_not_match_text_only_in_composer(self):
+        screen = "\n".join(
+            [
+                "Pending inputs · ↑ select · Enter edit · Del withdraw",
+                "  › You · Queued · next Turn",
+                "  Actual queued input",
+                "│ To main · Draft",
+                "Composer text: Obsolete checkpoint follow-up",
+            ]
+        )
 
-        self.assertFalse(has_standalone_assistant_rail(frame))
-
-    def test_detects_orphan_rail_without_assistant_heading(self):
-        frame = [" Before table 00", " │", " After table 00"]
-
-        self.assertTrue(has_standalone_assistant_rail(frame))
+        self.assertIsNone(
+            queued_input_click_position(screen, "Obsolete checkpoint follow-up")
+        )
+        self.assertFalse(
+            has_selected_queued_input(screen, "Obsolete checkpoint follow-up")
+        )
