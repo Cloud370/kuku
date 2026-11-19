@@ -16,7 +16,7 @@ pub async fn run(
         None | Some(ConfigSubcommand::Show) => {
             if !path.exists() {
                 eprintln!("error: config file not found: {}", path.display());
-                eprintln!("hint: run `kuku init` to initialize");
+                eprintln!("hint: run `kuku init` to open interactive settings");
                 std::process::exit(1);
             }
             let output = show_redacted(&path)?;
@@ -26,7 +26,7 @@ pub async fn run(
         Some(ConfigSubcommand::Validate) => {
             if !path.exists() {
                 eprintln!("error: config file not found: {}", path.display());
-                eprintln!("hint: run `kuku init` to initialize");
+                eprintln!("hint: run `kuku init` to open interactive settings");
                 std::process::exit(1);
             }
             let config = load_config(&path)?.resolve()?;
@@ -44,7 +44,7 @@ pub async fn run(
         Some(ConfigSubcommand::Set { key, value }) => {
             if !path.exists() {
                 eprintln!("error: config file not found: {}", path.display());
-                eprintln!("hint: run `kuku init` to initialize");
+                eprintln!("hint: run `kuku init` to open interactive settings");
                 std::process::exit(1);
             }
             set_value(&path, &key, &value)?;

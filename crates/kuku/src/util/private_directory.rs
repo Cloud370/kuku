@@ -25,6 +25,23 @@ pub fn private_directory(path: &Path) -> io::Result<()> {
     ))
 }
 
+#[cfg(windows)]
+/// Secure the empty staged configuration file before any TOML bytes are written.
+///
+/// Copies the existing file's owner and DACL, or applies a current-user-only DACL for a new config.
+pub fn set_config_temp_security(
+    source: Option<&Path>,
+    temp_path: &Path,
+    temp_file: &std::fs::File,
+) -> io::Result<()> {
+    windows::set_config_temp_security(source, temp_path, temp_file)
+}
+
+#[cfg(windows)]
+pub(super) fn open_private_key(path: &Path) -> io::Result<std::fs::File> {
+    windows::open_private_key(path)
+}
+
 #[cfg(unix)]
 fn unix_directory(path: &Path) -> io::Result<()> {
     use std::fs;

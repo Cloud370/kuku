@@ -84,10 +84,11 @@ fn message_rewind_projects_unowned_answers_and_runtime_facts_to_their_agent() {
 #[test]
 fn message_rewind_prefers_canonical_path_for_agent_subdirectory() {
     let workspace = tempfile::tempdir().unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
     let session_dir = tempfile::tempdir().unwrap();
-    let subdir = workspace.path().join("subdir");
+    let subdir = workspace_root.join("subdir");
     std::fs::create_dir(&subdir).unwrap();
-    std::fs::write(workspace.path().join("config.txt"), "root").unwrap();
+    std::fs::write(workspace_root.join("config.txt"), "root").unwrap();
     std::fs::write(subdir.join("config.txt"), "after").unwrap();
     let events = vec![
         ui(1, 1, "rewind target"),
@@ -108,7 +109,7 @@ fn message_rewind_prefers_canonical_path_for_agent_subdirectory() {
 
     assert_eq!(
         "root",
-        std::fs::read_to_string(workspace.path().join("config.txt")).unwrap()
+        std::fs::read_to_string(workspace_root.join("config.txt")).unwrap()
     );
     assert_eq!(
         "before",
@@ -119,10 +120,12 @@ fn message_rewind_prefers_canonical_path_for_agent_subdirectory() {
 #[test]
 fn message_rewind_ignores_disjoint_external_agent_workspace_changes() {
     let workspace = tempfile::tempdir().unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
     let external_workspace = tempfile::tempdir().unwrap();
+    let external_root = external_workspace.path().canonicalize().unwrap();
     let session_dir = tempfile::tempdir().unwrap();
-    let selected = workspace.path().join("selected.txt");
-    let unrelated = external_workspace.path().join("unrelated.txt");
+    let selected = workspace_root.join("selected.txt");
+    let unrelated = external_root.join("unrelated.txt");
     std::fs::write(&selected, "selected after").unwrap();
     std::fs::write(&unrelated, "other Agent after").unwrap();
     let events = vec![
