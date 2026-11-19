@@ -12,6 +12,8 @@ fn staged_file(contents: &[u8]) -> (tempfile::TempDir, std::path::PathBuf) {
     let mut file = tempfile::NamedTempFile::new_in(credentials).unwrap();
     file.write_all(contents).unwrap();
     file.as_file().sync_all().unwrap();
+    #[cfg(windows)]
+    crate::util::set_config_temp_security(None, file.path(), file.as_file()).unwrap();
     let (_, path) = file.keep().unwrap();
     (directory, path)
 }
