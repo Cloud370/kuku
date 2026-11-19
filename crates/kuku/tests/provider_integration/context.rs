@@ -267,7 +267,7 @@ async fn agent_conversation_sees_own_notices_and_incoming_messages_only() {
             request_id: "req_review_2".into(),
             index: 0,
             tool: "run_command".into(),
-            args: serde_json::json!({"command": "cargo test"}),
+            args: serde_json::json!({"program": "cargo", "args": ["test"], "cwd": "."}),
         })
         .unwrap();
     store

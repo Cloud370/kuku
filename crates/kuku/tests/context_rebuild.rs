@@ -161,7 +161,7 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
             assert!(text.contains("<kuku_project_context>"));
             assert!(text.contains("Workspace root: /workspace"));
             assert!(text.contains("Platform: linux"));
-            assert!(text.contains("Current date: 2026-05-14"));
+            assert!(!text.contains("Current date: 2026-05-14"));
             assert!(text.contains("instructions"));
             assert!(!text.contains("<kuku_current_task>"));
         }

@@ -61,7 +61,7 @@ $KUKU_HOME/p/<workspace>/
 └── outputs/<output-id>.output
 ```
 
-`events.jsonl` is authoritative. The OS lock protects a single writer; its file can remain after close. `outputs/` retains bounded framed stdout/stderr for the session lifetime. The public SDK uses flat Agent addresses in the journal, without per-agent directories or hidden Agent aliases. Historical rollback backups can remain in older sessions; the new Session API does not rewrite admitted context in place.
+`events.jsonl` is authoritative. The OS lock protects a single writer, and its file can remain after close. `outputs/` holds bounded framed command captures, derived output and named value contents. The journal records naming and sharing separately from the stored bytes. The public SDK uses flat Agent addresses in the journal, without per-agent directories or hidden Agent aliases. Historical rollback backups can remain in older sessions. The Session API preserves admitted context.
 
 See [Sessions](../how-it-works/sessions.md) for ownership and [SDK](sdk.md) for bounded reads and retention limits.
 

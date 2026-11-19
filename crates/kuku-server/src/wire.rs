@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use kuku::event::{EventPayload, StoredEvent};
+use kuku::execution::OutputReference;
 use kuku::session::{
     AgentConfig, AgentSnapshot, Input, InputSource, InputStatus, InputTiming, Receipt, ReplyPreview,
 };
@@ -29,6 +30,8 @@ pub(crate) enum Command {
         text: String,
         #[serde(default)]
         timing: SendTiming,
+        #[serde(default)]
+        values: Vec<OutputReference>,
         bootstrap_skill: Option<String>,
         create: Option<Box<AgentConfig>>,
         config_patch: Option<Box<AgentConfig>>,
@@ -76,6 +79,14 @@ impl Command {
             create.as_deref()
         } else {
             None
+        }
+    }
+
+    pub(crate) fn values(&self) -> &[OutputReference] {
+        if let Self::Send { values, .. } = self {
+            values
+        } else {
+            &[]
         }
     }
 
@@ -173,6 +184,12 @@ pub(crate) fn event_agent(payload: &EventPayload) -> Option<&str> {
         | EventPayload::ConversationRollbackUndone { conversation, .. }
         | EventPayload::ModelRecovery { conversation, .. }
         | EventPayload::ContextSkills { conversation, .. } => Some(conversation),
+        EventPayload::Unknown(value)
+            if value["kind"] == "runtime.operation"
+                && value["record"]["operation"] == "job_finished" =>
+        {
+            value["record"]["agent"].as_str()
+        }
         EventPayload::Unknown(value) => value["agent"]
             .as_str()
             .or_else(|| value["conversation"].as_str())
@@ -280,6 +297,14 @@ pub(crate) fn history_entry(event: &StoredEvent, turns: &TurnLookup) -> Option<V
         EventPayload::Unknown(value) if value["kind"] == "runtime.operation" => {
             let record = &value["record"];
             match record["operation"].as_str()? {
+                "job_finished" => json!({
+                    "type":"job_finished",
+                    "turn":record["turn"],
+                    "job_id":record["job_id"],
+                    "status":record["status"],
+                    "summary":record["result"]["summary"],
+                    "output_id":output_id(&record["result"]["structured"]),
+                }),
                 "turn_settled" => {
                     summary = Some(turns.summary_at(event.id)?);
                     json!({"type":"turn_summary"})

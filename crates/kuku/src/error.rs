@@ -61,6 +61,17 @@ pub enum Error {
     #[error("execution {0} is no longer active")]
     ExecutionNotActive(u64),
 
+    /// An output body has been reclaimed or is outside the caller's grants.
+    #[error("output '{0}' is unavailable; it may have expired or require an explicit grant")]
+    OutputUnavailable(String),
+
+    /// Remaining capture space is too small for the requested output.
+    #[error("session output quota reached: {available} bytes available")]
+    OutputQuotaExceeded {
+        /// Physical bytes available under both the capture and session limits.
+        available: u64,
+    },
+
     #[error("interrupted open tool state: {0}")]
     InterruptedOpenTool(String),
 
@@ -128,6 +139,8 @@ impl Error {
             Error::InputNotQueued(_) => "input_not_queued",
             Error::SessionCreationConflict(_) => "session_creation_conflict",
             Error::ExecutionNotActive(_) => "execution_not_active",
+            Error::OutputUnavailable(_) => "output_unavailable",
+            Error::OutputQuotaExceeded { .. } => "output_quota_exceeded",
             Error::InterruptedOpenTool(_) => "interrupted_open_tool",
             Error::InvalidPolicy(_) => "internal",
             Error::PromptRender(_) => "internal",

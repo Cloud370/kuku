@@ -6,23 +6,28 @@ mod find_files;
 mod memory;
 pub(crate) mod query_session;
 mod read_file;
+mod remove_file;
 pub(crate) mod run_command;
 mod search_text;
+mod stat_file;
 mod write_file;
 
 #[cfg(test)]
 pub(crate) mod test_helpers;
 
-pub(crate) use edit_file::edit_file;
-pub(crate) use fetch_url::fetch_url;
+pub(crate) use common::prepare_workspace_path;
+pub(crate) use edit_file::{edit_file, edit_file_for_executor};
+pub(crate) use fetch_url::{fetch_url, FetchRetention};
 pub(crate) use fetch_web::fetch_web;
 pub(crate) use find_files::find_files;
 pub(crate) use memory::{forget_memory_with_home, remember_memory_with_home};
 pub(crate) use query_session::query_session;
-pub(crate) use read_file::read_file;
+pub(crate) use read_file::{read_file, read_file_for_executor};
+pub(crate) use remove_file::{remove_file, remove_file_for_executor};
 pub(crate) use run_command::{run_command, CommandEvent};
 pub(crate) use search_text::search_text;
-pub(crate) use write_file::write_file;
+pub(crate) use stat_file::stat_file;
+pub(crate) use write_file::{write_file, write_file_for_executor};
 
 pub(crate) fn agent_definition() -> crate::tool::ToolDefinition {
     crate::tool::ToolDefinition {

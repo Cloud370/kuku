@@ -12,6 +12,7 @@ use crate::theme::{ACCENT, ERROR, MIN_TRANSCRIPT_INDENT_WIDTH, MUTED, TRANSCRIPT
 
 mod agent;
 mod details;
+mod job;
 mod message;
 mod notes;
 mod preview;
@@ -26,10 +27,12 @@ mod window;
 use self::agent::AgentCards;
 pub(crate) use self::details::DetailKey;
 use self::details::{DetailRecord, Details, VisibleDetail};
+use self::job::job_notice;
 use self::message::{paint_card, render_assistant_source, render_record, render_user};
 use self::reply::LatestReply;
 pub(crate) use self::reply::ReplySource;
 use self::tool::Tool;
+pub(crate) use self::tool::ToolView;
 use self::window::{Layout, TurnHeading, Window};
 
 pub(crate) const HISTORY_PAGE: usize = 48;
@@ -286,13 +289,14 @@ impl Transcript {
             .iter()
             .rev()
             .filter_map(|record| match &record.body {
-                Body::Tool(tool) => Some(tool.view()),
+                Body::Tool(tool) => Some(tool),
                 Body::User { .. }
                 | Body::Assistant(_)
                 | Body::Interrupted(_)
                 | Body::Notice(..)
                 | Body::TurnSummary => None,
             })
+            .flat_map(|tool| std::iter::once(tool.view()).chain(tool.output_views()))
             .collect()
     }
 
@@ -446,6 +450,13 @@ impl Transcript {
                 skip -= block.height();
                 continue;
             }
+            if block.turn_gap {
+                if skip == 0 {
+                    lines.push(Line::default());
+                    row_insets.push(0);
+                }
+                skip = skip.saturating_sub(1);
+            }
             if let Some(turn) = block.heading {
                 if skip == 0 {
                     lines.push(message::render_turn(turn, width, block.user_header));
@@ -560,16 +571,6 @@ pub(crate) struct TranscriptView {
     pub(crate) row_insets: Vec<u16>,
     pub(crate) following: bool,
     pub(crate) tool_hint: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct ToolView {
-    pub(crate) name: String,
-    pub(crate) summary: String,
-    pub(crate) invocation: String,
-    pub(crate) details: String,
-    pub(crate) diff: String,
-    pub(crate) output_id: Option<String>,
 }
 
 #[derive(Debug)]
@@ -708,6 +709,7 @@ impl Record {
                 }
                 Body::Tool(Box::new(Tool::from_entry(&entry)))
             }
+            HistoryKind::JobFinished => job_notice(&entry),
             HistoryKind::Question => Body::Notice("Question", text, WARNING),
             HistoryKind::Permission => Body::Notice("Permission", text, WARNING),
             HistoryKind::QuestionReply => Body::Notice("Answer", text, ACCENT),

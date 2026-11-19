@@ -3,6 +3,7 @@ mod budget;
 mod frozen;
 mod handoff;
 mod helpers;
+mod job_slots;
 mod lifecycle;
 mod provider;
 mod recovery;
@@ -15,8 +16,10 @@ mod step;
 mod tool_exec;
 mod tool_response;
 mod types;
+mod workspace_script;
 
 pub(crate) use runtime_tools::definitions as runtime_tool_definitions;
+pub(crate) use workspace_script::cancelled_deferred_script;
 
 pub use types::{
     ModelPhase, ModelRecoveryInfo, PermissionChoice, PermissionRequest, Query, Run, RunOutput,

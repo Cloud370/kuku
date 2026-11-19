@@ -4,7 +4,7 @@ mod interruptions;
 
 use std::env;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -109,6 +109,24 @@ async fn one_observer_gets_selected_text_and_bounded_activity_from_a_streaming_p
         json!({"phase":"streaming","preview":preview}),
         agent_summary(&parent_again, "reviewer")["progress"]
     );
+    let mut late_parent = observe_agent_activity(
+        &server,
+        id,
+        "main",
+        parent_again["cursor"].as_u64().unwrap(),
+    )
+    .await
+    .bytes_stream();
+    let mut late_parent_buffer = Vec::new();
+    let recovered = seek_frame(
+        &mut late_parent,
+        &mut late_parent_buffer,
+        "reviewer prefix on late parent attachment",
+        |frame| frame["agent"] == "reviewer" && frame["event"]["type"] == "reply_preview",
+    )
+    .await;
+    assert_eq!(preview, recovered["event"]["content"]);
+    assert_eq!("", recovered["event"]["reasoning_preview"]);
     let after = snapshot["cursor"].as_u64().unwrap();
     additional.send(()).unwrap();
     let middle = seek_frame(
@@ -119,6 +137,15 @@ async fn one_observer_gets_selected_text_and_bounded_activity_from_a_streaming_p
     )
     .await;
     assert_eq!(between, middle["event"]["content"]);
+    let late_middle = seek_frame(
+        &mut late_parent,
+        &mut late_parent_buffer,
+        "first new delta after the peer prefix",
+        text_frame,
+    )
+    .await;
+    assert_eq!(between, late_middle["event"]["content"]);
+    drop(late_parent);
     drop(reviewer);
 
     let mut reattached = observe_agent_activity(&server, id, "reviewer", after)
@@ -413,10 +440,183 @@ async fn an_observer_disconnect_leaves_exactly_one_durable_tool_result() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn jobs_are_scoped_cancellable_and_readable_after_server_restart() {
+    const MARKER: &str = "Run the background fixture";
+    let mock = mock_provider::start_mock_provider().await;
+    let mut server = TestServer::start(mock_provider::make_test_config(mock.port())).await;
+    let program = install_gate(server.workspace.path());
+    let launch = mock.mock(|when, then| {
+        when.method(Method::POST)
+            .path("/v1/messages")
+            .body_contains(MARKER)
+            .matches(|request| !request_contains_tool_result(request));
+        then.status(200).body(tool_response(
+            "run_command",
+            "job-call",
+            json!({
+                "program":program,"args":["--ignored","--exact","gated_command_fixture","--nocapture"],
+                "cwd":".","timeout":TOOL_TIMEOUT.as_secs(),"brief":"wait for the fixture",
+                "background":true,
+            }),
+        ));
+    });
+    mock.mock(|when, then| {
+        when.method(Method::POST)
+            .path("/v1/messages")
+            .matches(|request| {
+                request_contains_tool_result(request)
+                    || !String::from_utf8_lossy(request.body.as_deref().unwrap_or_default())
+                        .contains(MARKER)
+            });
+        then.status(200)
+            .body(text_response("Fixture turn settled."));
+    });
+    let id = "background-job-routes";
+    server
+        .submit(
+            id,
+            json!({"type":"send","command_id":"initial","text":"Set up the Session","create":{}}),
+        )
+        .await;
+    server
+        .submit(
+            id,
+            json!({"type":"create_agent","command_id":"create-reviewer","agent":"reviewer"}),
+        )
+        .await;
+    server
+        .submit(
+            id,
+            json!({"type":"send","command_id":"launch","agent":"reviewer","text":MARKER}),
+        )
+        .await;
+
+    let get = wreq::Method::GET;
+    let delete = wreq::Method::DELETE;
+    let job = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let (status, response) =
+                job_request(&server, get.clone(), id, "jobs", "reviewer").await;
+            assert_eq!(200, status, "{response}");
+            if !response["jobs"][0].is_null()
+                && server.workspace.path().join("tool-attempts.txt").is_file()
+            {
+                break response["jobs"][0].clone();
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the background fixture should start");
+    let job_id = job["id"].as_str().unwrap();
+    let path = format!("jobs/{job_id}");
+    assert_eq!("running", job["status"]);
+    let service = server
+        .request(get.clone(), "/service/status")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(200, service.status());
+    let service: Value = service.json().await.unwrap();
+    let busy_job = format!("{id}/reviewer/{job_id} (");
+    assert!(service["busy"].as_array().unwrap().iter().any(|work| {
+        work.as_str()
+            .is_some_and(|label| label.starts_with(&busy_job))
+    }));
+    assert_eq!(
+        (200, job.clone()),
+        job_request(&server, get.clone(), id, &path, "reviewer").await
+    );
+    assert_eq!(
+        (200, json!({"jobs":[]})),
+        job_request(&server, get.clone(), id, "jobs", "main").await
+    );
+    for method in [get.clone(), delete.clone()] {
+        let (status, response) = job_request(&server, method, id, &path, "main").await;
+        assert_eq!(404, status, "{response}");
+        assert_eq!("job_not_found", response["code"]);
+    }
+
+    let (status, cancelled) = tokio::time::timeout(
+        Duration::from_secs(5),
+        job_request(&server, delete.clone(), id, &path, "reviewer"),
+    )
+    .await
+    .expect("cancellation should await process cleanup");
+    assert_eq!(200, status, "{cancelled}");
+    assert_eq!("cancelled", cancelled["status"]);
+    assert_eq!(false, cancelled["result"]["cleanup_incomplete"]);
+    let cursor = cancelled["finished_at"].as_u64().unwrap();
+    let after = (cursor - 1).to_string();
+    let mut observer = server
+        .session_request(id, "observe", &[("agent", "reviewer"), ("after", &after)])
+        .send()
+        .await
+        .unwrap()
+        .bytes_stream();
+    let frame = seek_frame(&mut observer, &mut Vec::new(), "Job completion", |frame| {
+        frame["id"] == cursor
+    })
+    .await;
+    assert_eq!("job_finished", frame["operation"]);
+    let entry = &frame["entry"];
+    assert_eq!("job_finished", entry["type"]);
+    assert_eq!("reviewer", entry["agent"]);
+    assert_eq!(job_id, entry["job_id"]);
+    assert_eq!(job["turn"], entry["turn"]);
+    assert_eq!(cancelled["status"], entry["status"]);
+    assert_eq!(cancelled["output_id"], entry["output_id"]);
+    drop(observer);
+
+    server.restart().await;
+    let (status, history) = job_request(&server, get.clone(), id, "history", "reviewer").await;
+    assert_eq!(200, status, "{history}");
+    assert!(history["entries"].as_array().unwrap().contains(entry));
+    let (status, history) = job_request(&server, get.clone(), id, "history", "main").await;
+    assert_eq!(200, status, "{history}");
+    assert!(history["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|entry| entry["type"] != "job_finished"));
+    let (status, list) = job_request(&server, get.clone(), id, "jobs", "reviewer").await;
+    assert_eq!(200, status, "{list}");
+    assert_eq!("cancelled", list["jobs"][0]["status"]);
+    assert!(list["jobs"][0]["result"].is_null());
+    for method in [get, delete] {
+        assert_eq!(
+            (200, cancelled.clone()),
+            job_request(&server, method, id, &path, "reviewer").await
+        );
+    }
+    launch.assert_hits(1);
+    server.close().await;
+}
+
+async fn job_request(
+    server: &TestServer,
+    method: wreq::Method,
+    id: &str,
+    path: &str,
+    agent: &str,
+) -> (u16, Value) {
+    let response = server
+        .request(method, &format!("/sessions/{id}/{path}"))
+        .query(&[
+            ("workspace", server.workspace.path().to_str().unwrap()),
+            ("agent", agent),
+        ])
+        .send()
+        .await
+        .unwrap();
+    (response.status().as_u16(), response.json().await.unwrap())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_later_steer_reaches_the_current_turn_after_a_real_tool_boundary() {
     let mock = mock_provider::start_mock_provider().await;
     let mut server = TestServer::start(mock_provider::make_test_config(mock.port())).await;
-    let command = install_gate(server.workspace.path());
+    let program = install_gate(server.workspace.path());
     let first = mock.mock(|when, then| {
         when.method(Method::POST)
             .path("/v1/messages")
@@ -426,7 +626,8 @@ async fn a_later_steer_reaches_the_current_turn_after_a_real_tool_boundary() {
                 "content":[
                     {"type":"text","text":"Running the gate."},
                     {"type":"tool_use","id":"gated-tool","name":"run_command","input":{
-                        "command":command,"timeout":TOOL_TIMEOUT.as_secs(),"brief":"wait for a file"
+                        "program":program,"args":["--ignored","--exact","gated_command_fixture","--nocapture"],
+                        "cwd":".","timeout":TOOL_TIMEOUT.as_secs(),"brief":"wait for a file"
                     }}
                 ],
                 "stop_reason":"tool_use",
@@ -769,18 +970,14 @@ fn gate_filename() -> String {
     format!("tool-gate{}", env::consts::EXE_SUFFIX)
 }
 
-fn install_gate(workspace: &Path) -> String {
+fn install_gate(workspace: &Path) -> PathBuf {
     let executable = env::current_exe().unwrap();
     let filename = gate_filename();
     let installed = workspace.join(&filename);
     if fs::hard_link(&executable, &installed).is_err() {
         fs::copy(&executable, installed).unwrap();
     }
-    let local = Path::new(".").join(filename);
-    format!(
-        "{} --ignored --exact gated_command_fixture --nocapture",
-        local.display()
-    )
+    Path::new(".").join(filename)
 }
 
 #[test]

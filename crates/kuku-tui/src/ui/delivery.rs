@@ -108,7 +108,7 @@ pub(super) fn lines(app: &App, width: usize, limit: u16) -> DeliveryView {
             rows.len()
         ));
     }
-    if app.queued_for_edit().next().is_some() {
+    if app.has_queued_input() {
         title.push_str(&format!(
             " · {} select · Enter edit · Del withdraw",
             Shortcut::UP.label

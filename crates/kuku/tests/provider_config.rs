@@ -66,7 +66,7 @@ fn default_config() -> Config {
             model: "claude-sonnet-4-6".to_string(),
             think: ThinkLevel::Medium,
             context_window: 200_000,
-            max_output_tokens: 48_000,
+            max_output_tokens: Some(48_000),
             purpose: "balanced".to_string(),
         },
     );
@@ -269,7 +269,7 @@ fn explicit_tier_selects_different_tier() {
             model: "claude-sonnet-4-6".to_string(),
             think: ThinkLevel::Medium,
             context_window: 200_000,
-            max_output_tokens: 48_000,
+            max_output_tokens: Some(48_000),
             purpose: "balanced".to_string(),
         },
     );
@@ -282,7 +282,7 @@ fn explicit_tier_selects_different_tier() {
             model: "claude-haiku-4-5-20251001".to_string(),
             think: ThinkLevel::Off,
             context_window: 200_000,
-            max_output_tokens: 32_000,
+            max_output_tokens: Some(32_000),
             purpose: "light".to_string(),
         },
     );
@@ -327,7 +327,92 @@ fn explicit_tier_selects_different_tier() {
 
     assert_eq!(resolved.model, "claude-haiku-4-5-20251001");
     assert_eq!(resolved.think_level, ThinkLevel::Off);
-    assert_eq!(resolved.max_output_tokens, 32_000);
+    assert_eq!(Some(32_000), resolved.max_output_tokens);
+}
+
+#[test]
+fn host_ceiling_bounds_explicit_agent_or_tier_output() {
+    for (agent, host, expected) in [
+        (None, None, 48_000),
+        (Some(64_000), None, 64_000),
+        (Some(200_000), None, 200_000),
+        (Some(64_000), Some(2_048), 2_048),
+    ] {
+        let resolved = resolve_config(ResolveConfigInput {
+            config: Some(default_config()),
+            max_output_tokens: agent,
+            max_output_tokens_per_request: host,
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(Some(expected), resolved.max_output_tokens);
+    }
+}
+
+#[test]
+fn optional_protocol_does_not_inherit_an_unrelated_messages_presets_limit() {
+    let mut config = default_config();
+    config.providers.insert(
+        "gateway".into(),
+        ProviderConfig {
+            format: ProviderFormat::OpenAiResponses,
+            base_url: "https://gateway.example/v1".into(),
+            api_key: ApiKey::Plaintext("unused".into()),
+            options: Default::default(),
+        },
+    );
+    let input = ResolveConfigInput {
+        config: Some(config),
+        connection: Some("gateway".into()),
+        model: Some("new-model".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        None,
+        resolve_config(input.clone()).unwrap().max_output_tokens
+    );
+    assert_eq!(
+        Some(131_072),
+        resolve_config(ResolveConfigInput {
+            max_output_tokens: Some(131_072),
+            ..input
+        })
+        .unwrap()
+        .max_output_tokens
+    );
+}
+
+#[test]
+fn messages_with_unknown_capacity_requires_a_ceiling_unless_the_endpoint_supports_omission() {
+    let input = ResolveConfigInput {
+        provider: Some(Provider::Anthropic),
+        model: Some("unknown-model".into()),
+        base_url: Some("https://relay.example.test/v1".into()),
+        api_key: Some("unused".into()),
+        ..Default::default()
+    };
+    let error = resolve_config(input.clone()).unwrap_err();
+    assert!(matches!(error, Error::MissingProviderConfig(message)
+        if message.contains("max_output_tokens") && message.contains("unknown-model")));
+
+    let resolved = resolve_config(ResolveConfigInput {
+        max_output_tokens_per_request: Some(4_096),
+        ..input.clone()
+    })
+    .unwrap();
+    assert_eq!(Some(4_096), resolved.max_output_tokens);
+
+    for base_url in [
+        "https://api.deepseek.com/anthropic",
+        "https://openrouter.ai/api/v1",
+    ] {
+        let resolved = resolve_config(ResolveConfigInput {
+            base_url: Some(base_url.into()),
+            ..input.clone()
+        })
+        .unwrap();
+        assert_eq!(None, resolved.max_output_tokens);
+    }
 }
 
 #[test]
@@ -536,9 +621,33 @@ completion = 1.2
         kuku::config::ProviderProfile::OpenRouter,
         connection.options.profile
     );
+    assert_eq!(
+        kuku::config::PromptCacheScope::Workspace,
+        connection.options.prompt_cache_scope
+    );
     let routing = connection.options.routing.unwrap();
     assert_eq!(vec!["wafer/us"], routing.order);
     assert_eq!(Some(false), routing.allow_fallbacks);
     assert!(routing.require_parameters);
     assert!(kuku::config::OpenRouterRouting::default().require_parameters);
+}
+
+#[test]
+fn prompt_cache_scope_config_parses_all_values_and_defaults_to_workspace() {
+    for (value, expected) in [
+        ("workspace", kuku::config::PromptCacheScope::Workspace),
+        ("session", kuku::config::PromptCacheScope::Session),
+        ("off", kuku::config::PromptCacheScope::Off),
+    ] {
+        let provider: kuku::config::ProviderEntry = toml::from_str(&format!(
+            "format = \"openai-responses\"\nbase_url = \"https://api.openai.com/v1\"\napi_key = \"key\"\nprompt_cache_scope = \"{value}\""
+        ))
+        .unwrap();
+        assert_eq!(expected, provider.options.prompt_cache_scope);
+    }
+
+    assert_eq!(
+        kuku::config::PromptCacheScope::Workspace,
+        kuku::config::ProviderOptions::default().prompt_cache_scope
+    );
 }

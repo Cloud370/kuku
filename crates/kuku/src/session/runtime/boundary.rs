@@ -1,4 +1,7 @@
+use std::borrow::Cow;
+
 use crate::event::{EventPayload, EventStore};
+use crate::execution::OutputReference;
 use crate::{Error, Result};
 
 use super::record::{timestamp, AgentState, QueuedDelivery, Record, State};
@@ -36,7 +39,7 @@ impl Session {
         let config = update_model_selection(&agent.snapshot);
         let config = config
             .map(|config| -> Result<_> {
-                let max_output_tokens = self.resolve_model(&config)?.max_output_tokens;
+                self.resolve_model(&config)?;
                 self.commit(
                     &mut state,
                     Record::StepConfigured {
@@ -44,10 +47,7 @@ impl Session {
                         config: config.clone(),
                     },
                 )?;
-                Ok(AgentConfig {
-                    max_output_tokens: Some(max_output_tokens),
-                    ..config
-                })
+                Ok(config)
             })
             .transpose()?;
         let source = self.accept_steering(&mut state, address, turn, &inputs)?;
@@ -178,6 +178,15 @@ impl Session {
         }))
     }
 
+    pub(crate) fn has_step_input(&self, address: &str) -> Result<bool> {
+        let state = self.inner.state.lock().unwrap();
+        Ok(state
+            .agent(address)?
+            .inbox
+            .iter()
+            .any(|entry| entry.input.timing == InputTiming::NextStep))
+    }
+
     fn select_inputs(
         &self,
         agent: &AgentState,
@@ -192,7 +201,7 @@ impl Session {
         let mut bytes = 0;
         eligible
             .take_while(|entry| {
-                bytes += entry.input.text.len() + 2;
+                bytes += input_model_text(&entry.input.text, &entry.values).len() + 2;
                 Some(&entry.input.source) == source
                     && bytes <= self.inner.options.limits.max_input_bytes + 2
             })
@@ -255,9 +264,20 @@ fn update_model_selection(snapshot: &super::AgentSnapshot) -> Option<AgentConfig
 fn input_text(entries: &[QueuedDelivery]) -> String {
     entries
         .iter()
-        .map(|entry| entry.input.text.as_str())
+        .map(|entry| input_model_text(&entry.input.text, &entry.values))
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+pub(super) fn input_model_text<'a>(text: &'a str, values: &[OutputReference]) -> Cow<'a, str> {
+    if values.is_empty() {
+        return Cow::Borrowed(text);
+    }
+    let separator = if text.is_empty() { "" } else { "\n\n" };
+    let references = serde_json::to_string(values).expect("output references are serializable");
+    Cow::Owned(format!(
+        "{text}{separator}<kuku_output_refs>{references}</kuku_output_refs>"
+    ))
 }
 
 fn input_skills(entries: &[QueuedDelivery]) -> Vec<String> {

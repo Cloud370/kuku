@@ -254,15 +254,23 @@ pub(crate) fn render_at(
         frame.render_widget(Paragraph::new(line), heading);
     }
     if let Some(draft) = draft {
-        let placeholder = app.pane().draft.text().is_empty().then(|| {
-            shorten(
-                &format!(
+        let pane = app.pane();
+        let placeholder = pane.draft.text().is_empty().then(|| {
+            let hint = if pane.value_attachments.is_empty() {
+                format!(
                     "Enter steer · {} next Turn · Esc Esc Rewind · / actions · {} help",
                     Shortcut::NEXT_TURN.label,
                     Shortcut::ACTIONS.label
-                ),
-                content_width,
-            )
+                )
+            } else {
+                format!(
+                    "Enter steer · {} next Turn · Esc Esc Rewind · / actions · {} help · {} sends attached values",
+                    Shortcut::NEXT_TURN.label,
+                    Shortcut::ACTIONS.label,
+                    Shortcut::ENTER.label
+                )
+            };
+            shorten(&hint, content_width)
         });
         render_editor_view(frame, inner, draft, focused, placeholder.as_deref());
     }
@@ -409,6 +417,17 @@ fn banner(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
         }
     }
     lines.extend(waiting(app, width));
+    if !pane.value_attachments.is_empty() {
+        let names: Vec<_> = pane
+            .value_attachments
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+        lines.push(Line::styled(
+            shorten(&format!("Attached · {} · /values", names.join(", ")), width),
+            Style::new().fg(ACCENT),
+        ));
+    }
     if let Some(problem) = app.service_problem() {
         lines.extend(
             problem
@@ -541,7 +560,9 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Rect
                 PromptKind::Agent | PromptKind::Model { .. } => SHORT_PROMPT_HEIGHT,
                 PromptKind::Question { .. }
                 | PromptKind::QueuedInput { .. }
-                | PromptKind::RewindMessage { .. } => PICKER_HEIGHT,
+                | PromptKind::RewindMessage { .. }
+                | PromptKind::SavePaste => PICKER_HEIGHT,
+                PromptKind::SaveValue { .. } => SHORT_PROMPT_HEIGHT,
             };
             let area = popup(area, PICKER_WIDTH, height);
             let inner = render_popup(frame, area, &prompt.title);

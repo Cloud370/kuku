@@ -5,13 +5,13 @@ use std::time::{Duration, Instant};
 
 use kuku_client::{
     new_id, Action, AgentConfig, AgentStatus, Command, Error, HistoryKind, HistoryPage,
-    ModelSelection, Snapshot, Target, Timing, UsageTotals,
+    ModelSelection, OutputReference, Snapshot, Target, Timing, UsageTotals,
 };
 use ratatui::layout::Rect;
 
 use crate::config::StatusLineSettings;
 use crate::editor::Editor;
-use crate::jobs::{Job, Restarted, Selection, Update};
+use crate::jobs::{job_status_label, Job, Restarted, Selection, Update};
 use crate::menu::{Picker, Prompt};
 use crate::output::OutputViewer;
 use crate::selection::TextSelection;
@@ -20,15 +20,18 @@ use crate::transcript::{HistoryRequest, Transcript};
 
 mod activity;
 pub(crate) mod agents;
+mod background_jobs;
 mod delivery;
 mod navigation;
 mod pending;
 mod reading;
 mod timing;
+mod values;
 
 pub(crate) use activity::{Activity, ServiceStatus, SubmissionStatus};
 use activity::{ExecutionProgress, Watch};
 use agents::AgentActivities;
+pub(crate) use background_jobs::JobCommand;
 use delivery::Deliveries;
 pub(crate) use delivery::DeliveryRow;
 use navigation::AgentNavigation;
@@ -109,6 +112,8 @@ pub(crate) struct Pane {
     pub(crate) model_problem: Option<String>,
     pub(crate) opening: bool,
     pub(crate) sending: bool,
+    pub(crate) value_attachments: Vec<(String, OutputReference)>,
+    pub(crate) value_saving: bool,
     creation_rejected: bool,
     stopping: Option<u64>,
     watch: Watch,
@@ -472,7 +477,13 @@ impl App {
     }
 
     pub(crate) fn send(&mut self, timing: Timing) {
-        if self.pane().draft.text().trim().is_empty() || !self.require_service() {
+        let empty =
+            self.pane().draft.text().trim().is_empty() && self.pane().value_attachments.is_empty();
+        if empty || !self.require_service() {
+            return;
+        }
+        if self.pane().value_saving {
+            self.problem("Wait for the current save");
             return;
         }
         if self.pane().sending {
@@ -500,12 +511,14 @@ impl App {
             .filter(|skill| !skill.is_empty())
             .map(str::to_owned);
         let create = (!pane.exists).then(|| Box::new(pane.initial_config.clone()));
+        let values = pane.take_values();
         pane.sending = true;
         self.issue(
             active,
             Action::Send {
                 text,
                 timing,
+                values,
                 create,
                 create_agent_if_missing: false,
                 config_patch: None,
@@ -634,6 +647,7 @@ impl App {
             .pending
             .values()
             .any(|item| matches!(item.stage, PendingStage::Saving))
+            || self.panes.values().any(|pane| pane.value_saving)
         {
             self.quit_after_save = true;
             self.message("Saving pending input before leaving…");
@@ -743,6 +757,17 @@ impl App {
                 }
             }
             Update::Saved(command, result) => self.saved(command, result),
+            Update::ValueSaved(selection, text, result) => {
+                self.value_saved(selection, text, result)
+            }
+            Update::BackgroundJobCancelled(selection, result) if selection == self.selection() => {
+                match result {
+                    Ok(job) => {
+                        self.confirmation(format!("{} · {}", job.id, job_status_label(job.status)))
+                    }
+                    Err(error) => self.problem(format!("Cancel background job · {error}")),
+                }
+            }
             Update::Sent(id, result) => match result {
                 Ok(ack) => self.acknowledged(&id, ack),
                 Err(error) => self.command_failed(&id, error, false),
@@ -800,6 +825,7 @@ impl App {
             | Update::Observation(..)
             | Update::Refreshed(..)
             | Update::History(..)
+            | Update::BackgroundJobCancelled(..)
             | Update::DefaultModel(..)
             | Update::Output(..) => {}
         }

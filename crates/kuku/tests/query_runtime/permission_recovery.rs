@@ -12,7 +12,7 @@ async fn pending_permission_resume_reemits_request_before_new_turn() {
                 "role": "assistant",
                 "content": [
                     {"type": "text", "text": "Need approval."},
-                    {"type": "tool_use", "id": "toolu_resume_cmd", "name": "run_command", "input": {"command": "cargo test", "timeout": 60, "brief": "run tests"}}
+                    {"type": "tool_use", "id": "toolu_resume_cmd", "name": "run_command", "input": {"program": "cargo", "args": ["test"], "cwd": ".", "timeout": 60, "brief": "run tests"}}
                 ],
                 "stop_reason": "tool_use",
                 "usage": {"input_tokens": 5, "output_tokens": 6}
@@ -124,7 +124,7 @@ async fn interrupted_open_tool_blocks_resume_without_fake_result() {
             request_id: "req_1".to_string(),
             index: 0,
             tool: "run_command".to_string(),
-            args: serde_json::json!({"command": "printf side-effect", "timeout": 60, "brief": "side effect"}),
+            args: serde_json::json!({"program": "printf", "args": ["side-effect"], "cwd": ".", "timeout": 60, "brief": "side effect"}),
         })
         .unwrap();
     drop(store);
@@ -167,7 +167,7 @@ async fn pending_permission_resume_does_not_append_new_turn_before_decision() {
                 "role": "assistant",
                 "content": [
                     {"type": "text", "text": "Need approval."},
-                    {"type": "tool_use", "id": "toolu_no_turn_cmd", "name": "run_command", "input": {"command": "cargo test", "timeout": 60, "brief": "run tests"}}
+                    {"type": "tool_use", "id": "toolu_no_turn_cmd", "name": "run_command", "input": {"program": "cargo", "args": ["test"], "cwd": ".", "timeout": 60, "brief": "run tests"}}
                 ],
                 "stop_reason": "tool_use",
                 "usage": {"input_tokens": 5, "output_tokens": 6}
@@ -236,7 +236,7 @@ async fn pending_permission_resume_does_not_resolve_config_or_append_facts_befor
                 "role": "assistant",
                 "content": [
                     {"type": "text", "text": "Need approval."},
-                    {"type": "tool_use", "id": "toolu_no_resolve", "name": "run_command", "input": {"command": "cargo test", "timeout": 60, "brief": "run tests"}}
+                    {"type": "tool_use", "id": "toolu_no_resolve", "name": "run_command", "input": {"program": "cargo", "args": ["test"], "cwd": ".", "timeout": 60, "brief": "run tests"}}
                 ],
                 "stop_reason": "tool_use",
                 "usage": {"input_tokens": 5, "output_tokens": 6}
@@ -312,7 +312,7 @@ async fn pending_permission_resume_decide_continues_without_duplicate_turn_or_re
                 "role": "assistant",
                 "content": [
                     {"type": "text", "text": "Need approval."},
-                    {"type": "tool_use", "id": "toolu_resume_decide", "name": "run_command", "input": {"command": "cargo test", "timeout": 60, "brief": "run tests"}}
+                    {"type": "tool_use", "id": "toolu_resume_decide", "name": "run_command", "input": {"program": "cargo", "args": ["test"], "cwd": ".", "timeout": 60, "brief": "run tests"}}
                 ],
                 "stop_reason": "tool_use",
                 "usage": {"input_tokens": 5, "output_tokens": 6}
@@ -410,7 +410,7 @@ async fn pending_permission_resume_allow_executes_original_tool() {
                 "role": "assistant",
                 "content": [
                     {"type": "text", "text": "Need approval."},
-                    {"type": "tool_use", "id": "toolu_resume_allow", "name": "run_command", "input": {"command": "printf resumed-allowed", "timeout": 60, "brief": "print resumed marker"}}
+                    {"type": "tool_use", "id": "toolu_resume_allow", "name": "run_command", "input": {"shell":if cfg!(windows) {"cmd"} else {"sh"},"command":"echo resumed-allowed","cwd":".","timeout":60,"brief":"print resumed marker"}}
                 ],
                 "stop_reason": "tool_use",
                 "usage": {"input_tokens": 5, "output_tokens": 6}
@@ -509,7 +509,7 @@ async fn pending_permission_resume_deny_records_real_deny() {
                 "role": "assistant",
                 "content": [
                     {"type": "text", "text": "Need approval."},
-                    {"type": "tool_use", "id": "toolu_resume_deny", "name": "run_command", "input": {"command": "printf should-not-run", "timeout": 60, "brief": "print denied marker"}}
+                    {"type": "tool_use", "id": "toolu_resume_deny", "name": "run_command", "input": {"program": "printf", "args": ["should-not-run"], "cwd": ".", "timeout": 60, "brief": "print denied marker"}}
                 ],
                 "stop_reason": "tool_use",
                 "usage": {"input_tokens": 5, "output_tokens": 6}
@@ -585,8 +585,8 @@ async fn pending_permission_resume_preserves_sibling_queued_permission() {
                 "role": "assistant",
                 "content": [
                     {"type": "text", "text": "Need two approvals."},
-                    {"type": "tool_use", "id": "toolu_resume_first", "name": "run_command", "input": {"command": "cargo test", "timeout": 60, "brief": "run tests"}},
-                    {"type": "tool_use", "id": "toolu_resume_second", "name": "run_command", "input": {"command": "cargo check", "timeout": 60, "brief": "run check"}}
+                    {"type": "tool_use", "id": "toolu_resume_first", "name": "run_command", "input": {"program": "cargo", "args": ["test"], "cwd": ".", "timeout": 60, "brief": "run tests"}},
+                    {"type": "tool_use", "id": "toolu_resume_second", "name": "run_command", "input": {"program": "cargo", "args": ["check"], "cwd": ".", "timeout": 60, "brief": "run check"}}
                 ],
                 "stop_reason": "tool_use",
                 "usage": {"input_tokens": 5, "output_tokens": 6}

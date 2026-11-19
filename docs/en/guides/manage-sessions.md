@@ -73,6 +73,10 @@ kuku events <session-id> --agent review
 - use `--after <id> --limit <n> --json` for a bounded durable event page; the default limit is 100.
 - inspection accepts `--workspace` and `--data-dir` when the Session lives elsewhere.
 
+## Save and reuse a value
+
+To save a long paste before the first model request, open `/save` in the terminal, paste the text, and give it a name. To keep a command log, open its capture with `/tools` and press S in the viewer. After reopening with `/resume`, use `/values` to read the value or attach its saved reference to your next input. [Terminal commands](../reference/cli.md#terminal-interface)
+
 ## Delete A Session
 
 ```bash

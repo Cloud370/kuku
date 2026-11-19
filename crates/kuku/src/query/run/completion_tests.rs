@@ -1,6 +1,6 @@
 use super::*;
 use crate::event::{EventPayload, EventStore};
-use crate::query::types::{ExecSlot, ToolKind};
+use crate::query::types::{ExecSlot, SlotEvent, ToolKind};
 
 #[tokio::test]
 async fn async_error_completion_is_counted_exactly_once() {
@@ -21,6 +21,7 @@ async fn async_error_completion_is_counted_exactly_once() {
             conversation: None,
             kind: ToolKind::Command { pid: None },
             workspace_ordered: false,
+            job: None,
             label: "failing command".to_string(),
             cancel: std::sync::Arc::new(tokio::sync::Notify::new()),
             nested_permissions: std::sync::Arc::new(std::sync::Mutex::new(

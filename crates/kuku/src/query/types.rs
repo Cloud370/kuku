@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -284,6 +284,7 @@ pub(crate) struct ExecSlot {
     pub(crate) workspace_ordered: bool,
     pub(crate) label: String,
     pub(crate) cancel: Arc<tokio::sync::Notify>,
+    pub(super) job: Option<Box<super::job_slots::ForegroundJob>>,
     pub(crate) nested_permissions:
         Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<PermissionChoice>>>>,
 }
@@ -301,8 +302,10 @@ impl std::fmt::Debug for ExecSlot {
 
 #[derive(Debug)]
 pub(crate) enum SlotEvent {
+    WorkspacePermission(Box<super::workspace_script::AwaitingAction>),
     Output(ToolEvent),
     Done(crate::tool::ToolResultEnvelope),
+    JobWaitDone(crate::tool::ToolResultEnvelope),
 }
 
 #[derive(Debug)]
@@ -370,6 +373,7 @@ pub(super) struct PendingRun {
     pub(super) request_num: u64,
     pub(super) cumulative: CumulativeUsage,
     pub(super) resolved: Option<ResolvedRuntime>,
+    pub(super) admitted_tool_call_ids: HashSet<String>,
     pub(super) queued_tool_calls: VecDeque<QueuedToolCall>,
     pub(super) resumed_permission_requests: VecDeque<PermissionRequest>,
     pub(super) config: Arc<Config>,
@@ -385,6 +389,7 @@ pub(super) struct PendingRun {
     pub(super) catalog: crate::prompt::PromptCatalog,
     pub(super) pending_events: std::collections::VecDeque<UiEvent>,
     pub(super) pending_error: Option<Error>,
+    pub(super) waiting_for_job_input: bool,
     pub(super) cancel_token: Arc<tokio::sync::Notify>,
     pub(super) handoff_triggered: bool,
     pub(super) handoff_keep_turns: usize,

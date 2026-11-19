@@ -1,13 +1,18 @@
+#[path = "support/process_resources.rs"]
+mod process_resources;
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use kuku::event::EventPayload;
+use kuku::execution::CommandExecutionFacts;
 use kuku::query::ModelPhase;
 use kuku::{
-    AgentConfig, AgentStatus, Input, Observation, Session, SessionOptions, ToolEvent, UiEvent,
+    AgentConfig, AgentStatus, Input, NamedValueSource, Observation, OutputRead, Session,
+    SessionOptions, ToolEvent, UiEvent, WorkspaceScriptFacts,
 };
-use serde_json::json;
+use serde_json::{json, Value};
 
 type AnyError = Box<dyn std::error::Error>;
 
@@ -85,9 +90,14 @@ impl StreamMetrics {
     }
 }
 
+#[cfg(not(test))]
 #[tokio::main]
 async fn main() {
-    match execute().await {
+    let result = match arguments(std::env::args().skip(1)) {
+        Ok(args) => execute(args).await,
+        Err(error) => Err(error),
+    };
+    match result {
         Ok(true) => {}
         Ok(false) => std::process::exit(1),
         Err(error) => {
@@ -97,10 +107,12 @@ async fn main() {
     }
 }
 
-async fn execute() -> Result<bool, AnyError> {
-    let args = arguments()?;
+pub(crate) async fn execute(args: BTreeMap<String, String>) -> Result<bool, AnyError> {
     if args.contains_key("help") {
-        println!("session_task --workspace DIR --prompt-file FILE --config FILE --data-dir DIR --output FILE [--session-id ID --agent main --connection NAME --model MODEL --tier TIER --reasoning-effort low --service-tier VALUE --max-steps 12 --max-requests 12 --max-agents 64 --max-output-tokens 32768 --max-context-tokens 131072 --timeout 300 --command-id KEY]");
+        println!("session_task --workspace DIR --prompt-file FILE --config FILE --data-dir DIR --output FILE [--session-id ID --agent main --connection NAME --model MODEL --tier TIER --reasoning-effort low --service-tier VALUE --max-requests N --no-provider-retry --max-agents 64 --max-output-tokens N --max-context-tokens 131072 --max-request-bytes BYTES --timeout 300 --command-id KEY --inspect-named-value NAME --seed-named-json FILE]");
+        println!("--max-requests optionally caps provider attempts across this open session. --no-provider-retry disables the default pre-stream retry.");
+        println!("--max-output-tokens optionally caps each model request. Omit it to use the selected tier or provider default.");
+        println!("--max-request-bytes caps the serialized provider request. It defaults to the SDK's request byte limit.");
         return Ok(true);
     }
     let workspace = PathBuf::from(required(&args, "workspace")?);
@@ -109,11 +121,13 @@ async fn execute() -> Result<bool, AnyError> {
     let prompt = std::fs::read_to_string(required(&args, "prompt-file")?)?;
     let mut config =
         kuku::config::load_config(&PathBuf::from(required(&args, "config")?))?.resolve()?;
-    let max_steps = number(&args, "max-steps", 12_u64)?;
-    let max_requests = number(&args, "max-requests", max_steps)?;
+    let max_requests = optional_number(&args, "max-requests")?;
     let max_agents = number(&args, "max-agents", 64_usize)?;
-    let max_output_tokens = number(&args, "max-output-tokens", 32_768_u32)?;
+    let max_output_tokens = optional_number(&args, "max-output-tokens")?;
     let max_context_tokens = number(&args, "max-context-tokens", 131_072_u32)?;
+    if max_context_tokens == 0 {
+        return Err("--max-context-tokens must be positive".into());
+    }
     let timeout = number(&args, "timeout", 300_u64)?;
     for tier in config.tiers.values_mut() {
         tier.context_window = tier.context_window.min(max_context_tokens);
@@ -121,22 +135,36 @@ async fn execute() -> Result<bool, AnyError> {
     let mut options = SessionOptions::new(workspace, data_dir, config);
     options.session_id = args.get("session-id").cloned();
     options.prompts_dir = args.get("prompts-dir").map(PathBuf::from);
-    options.limits.max_steps_per_turn = max_steps;
-    options.limits.max_requests_per_open = Some(max_requests);
-    options.limits.retry_transient_provider_errors = false;
-    options.limits.max_output_tokens_per_request = Some(max_output_tokens);
+    if let Some(max_requests) = max_requests {
+        options.limits.max_requests_per_open = Some(max_requests);
+    }
+    if args.contains_key("no-provider-retry") {
+        options.limits.retry_transient_provider_errors = false;
+    }
+    options.limits.max_output_tokens_per_request = max_output_tokens;
     options.limits.max_agents = max_agents;
-    options.limits.max_request_bytes = usize::try_from(max_context_tokens)?;
+    options.limits.max_request_bytes =
+        number(&args, "max-request-bytes", options.limits.max_request_bytes)?;
     let limits = options.limits.clone();
+    let inspected_name = args.get("inspect-named-value");
+    let seed = args
+        .get("seed-named-json")
+        .map(|path| -> Result<_, AnyError> {
+            let name = inspected_name.ok_or("--seed-named-json requires --inspect-named-value")?;
+            let json = serde_json::from_slice(&std::fs::read(path)?)?;
+            Ok((name, NamedValueSource::Json(json)))
+        })
+        .transpose()?;
     let session = Session::open(options).await?;
     let agent = args.get("agent").map(String::as_str).unwrap_or("main");
+    let mut named_before = None;
     let selection = AgentConfig {
         connection: args.get("connection").cloned(),
         tier: args.get("tier").cloned(),
         model: args.get("model").cloned(),
         reasoning_effort: args.get("reasoning-effort").cloned(),
         service_tier: args.get("service-tier").cloned(),
-        max_output_tokens: Some(max_output_tokens),
+        max_output_tokens,
         no_agents: args.contains_key("no-agents"),
         no_skills: args.contains_key("no-skills"),
         ..Default::default()
@@ -158,6 +186,10 @@ async fn execute() -> Result<bool, AnyError> {
                 session.create_agent(&format!("create:{agent}"), agent, selection)?;
             }
         }
+        if let Some((name, source)) = seed {
+            session.save_named_value(agent, name, source, false).await?;
+        }
+        named_before = inspected_name.map(|name| inspect_named_value(&session, agent, name));
         session.send(Input::new(command_id, agent, prompt))?;
         session.advance(agent)?;
         loop {
@@ -206,14 +238,17 @@ async fn execute() -> Result<bool, AnyError> {
     while let Some(observation) = observer.try_next()? {
         streaming.observe(observation, agent, started);
     }
+    let named_after = inspected_name.map(|name| inspect_named_value(&session, agent, name));
     let close = session.close().await;
     if let Err(failure) = &close {
         error = Some(failure.to_string());
     }
+    let error = error.or_else(|| snapshot.as_ref().and_then(|state| state.last_error.clone()));
     let mut after = 0;
     let mut facts = BTreeMap::<&str, u64>::new();
     let mut settings = Vec::new();
     let mut reports = Vec::new();
+    let mut workspace_outcomes = Vec::new();
     loop {
         let events = session.events(after, 128)?;
         if events.is_empty() {
@@ -227,9 +262,19 @@ async fn execute() -> Result<bool, AnyError> {
                 {
                     Some("tool_calls")
                 }
-                EventPayload::ToolResult { conversation, .. }
-                    if conversation.as_deref().unwrap_or("main") == agent =>
-                {
+                EventPayload::ToolResult {
+                    conversation,
+                    structured,
+                    tool_call_id,
+                    turn,
+                    ..
+                } if conversation.as_deref().unwrap_or("main") == agent => {
+                    let selected = structured.as_ref().filter(|_| inspected_name.is_some());
+                    if let Some(outcome) = workspace_outcome(selected)? {
+                        workspace_outcomes.push(json!({
+                            "turn": turn, "tool_call_id": tool_call_id, "facts": outcome
+                        }));
+                    }
                     Some("tool_results")
                 }
                 EventPayload::ModelResponse { conversation, .. }
@@ -263,7 +308,11 @@ async fn execute() -> Result<bool, AnyError> {
         && snapshot.as_ref().is_some_and(|snapshot| {
             snapshot.status == AgentStatus::Idle && snapshot.pending_inputs == 0
         });
-    let result = json!({"session_id":session.id(),"agent":snapshot,"agents":session.agents(),"events_path":session.events_path(),"last_event_id":after,"facts":facts,"provider_settings":settings,"provider_reports":reports,"streaming":streaming,"limits":{"max_steps":limits.max_steps_per_turn,"max_requests":limits.max_requests_per_open,"max_agents":limits.max_agents,"max_output_tokens":limits.max_output_tokens_per_request,"max_request_bytes":limits.max_request_bytes,"max_context_tokens":max_context_tokens,"automatic_retries":0},"elapsed_ms":started.elapsed().as_millis(),"cleanup":{"closed":close.is_ok()},"runtime_completed":passed,"error":error});
+    let mut result = json!({"session_id":session.id(),"agent":snapshot,"agents":session.agents(),"events_path":session.events_path(),"last_event_id":after,"facts":facts,"provider_settings":settings,"provider_reports":reports,"streaming":streaming,"limits":{"max_requests":limits.max_requests_per_open,"max_agents":limits.max_agents,"max_output_tokens":limits.max_output_tokens_per_request,"max_request_bytes":limits.max_request_bytes,"max_context_tokens":max_context_tokens,"automatic_retries":u8::from(limits.retry_transient_provider_errors)},"elapsed_ms":started.elapsed().as_millis(),"cleanup":{"closed":close.is_ok()},"runtime_completed":passed,"error":error});
+    result["process_resources"] = json!(process_resources::sample());
+    if inspected_name.is_some() {
+        result["workspace"] = json!({"named_before": named_before, "named_after": named_after, "outcomes": workspace_outcomes});
+    }
     if let Some(parent) = output_path
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
@@ -275,14 +324,53 @@ async fn execute() -> Result<bool, AnyError> {
     Ok(passed)
 }
 
-fn arguments() -> Result<BTreeMap<String, String>, AnyError> {
-    let mut values = std::env::args().skip(1);
+fn workspace_outcome(value: Option<&Value>) -> serde_json::Result<Option<Value>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    match value["kind"].as_str() {
+        Some("command_result") => {
+            serde_json::to_value(CommandExecutionFacts::from_structured(value)?).map(Some)
+        }
+        Some("workspace_script_result") => {
+            serde_json::to_value(WorkspaceScriptFacts::from_structured(value)?).map(Some)
+        }
+        _ => Ok(None),
+    }
+}
+
+fn inspect_named_value(session: &Session, agent: &str, name: &str) -> Value {
+    let result = (|| {
+        let binding = session.named_value(agent, name)?;
+        let page =
+            session.read_agent_output(agent, &binding.reference.id, &OutputRead::default())?;
+        let bytes: Vec<u8> = page
+            .segments
+            .iter()
+            .flat_map(|segment| segment.as_bytes())
+            .copied()
+            .collect();
+        Ok::<_, kuku::Error>(json!({
+            "binding": binding,
+            "complete": page.complete && !page.has_more && !page.capture_truncated && !page.cleanup_incomplete,
+            "value": serde_json::from_slice::<Value>(&bytes).ok()
+        }))
+    })();
+    result.unwrap_or_else(|error| json!({"error": error.to_string()}))
+}
+
+pub(crate) fn arguments(
+    mut values: impl Iterator<Item = String>,
+) -> Result<BTreeMap<String, String>, AnyError> {
     let mut args = BTreeMap::new();
     while let Some(flag) = values.next() {
         let name = flag
             .strip_prefix("--")
             .ok_or_else(|| format!("unexpected positional argument '{flag}'"))?;
-        if matches!(name, "help" | "no-agents" | "no-skills") {
+        if matches!(
+            name,
+            "help" | "no-agents" | "no-skills" | "no-provider-retry"
+        ) {
             args.insert(name.into(), String::new());
             continue;
         }
@@ -300,14 +388,16 @@ fn arguments() -> Result<BTreeMap<String, String>, AnyError> {
                 | "tier"
                 | "reasoning-effort"
                 | "service-tier"
-                | "max-steps"
                 | "max-requests"
                 | "max-agents"
                 | "max-output-tokens"
                 | "max-context-tokens"
+                | "max-request-bytes"
                 | "timeout"
                 | "command-id"
                 | "prompts-dir"
+                | "inspect-named-value"
+                | "seed-named-json"
         ) {
             return Err(format!("unknown option '--{name}'").into());
         }
@@ -332,10 +422,18 @@ fn number<T: std::str::FromStr>(
     name: &str,
     default: T,
 ) -> Result<T, AnyError> {
-    match args.get(name) {
-        Some(value) => value
-            .parse()
-            .map_err(|_| format!("invalid numeric value for '--{name}'").into()),
-        None => Ok(default),
-    }
+    Ok(optional_number(args, name)?.unwrap_or(default))
+}
+
+fn optional_number<T: std::str::FromStr>(
+    args: &BTreeMap<String, String>,
+    name: &str,
+) -> Result<Option<T>, AnyError> {
+    args.get(name)
+        .map(|value| {
+            value
+                .parse()
+                .map_err(|_| format!("invalid numeric value for '--{name}'").into())
+        })
+        .transpose()
 }

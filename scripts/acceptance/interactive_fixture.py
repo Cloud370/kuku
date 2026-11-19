@@ -8,14 +8,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from itertools import count
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import queue
 import re
-import shlex
 import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from urllib.parse import quote, urlencode, urlsplit
@@ -26,6 +26,36 @@ TIMEOUT = 30
 TOOL_BRIEF = "Run installed acceptance fixture"
 TOOL_OUTPUT = "fixture-tool-output-42"
 EXE = ".exe" if os.name == "nt" else ""
+
+
+def cleanup_path(path):
+    if not isinstance(path, PureWindowsPath):
+        return path
+    absolute = str(path)
+    if absolute.startswith("\\\\?\\"):
+        return absolute
+    if absolute.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + absolute[2:]
+    return "\\\\?\\" + absolute
+
+
+@contextlib.contextmanager
+def scratch_directory(base, report, *, prefix):
+    scratch = Path(tempfile.mkdtemp(prefix=prefix, dir=base)).resolve()
+    failed = False
+    try:
+        yield scratch
+    except BaseException:
+        failed = True
+        raise
+    finally:
+        try:
+            shutil.rmtree(cleanup_path(scratch))
+        except OSError as error:
+            report["scratch_cleanup_error"] = f"{error.__class__.__name__}: {error}"
+            report["scratch_path"] = str(scratch)
+            if not failed:
+                raise
 
 
 def eventually(description, probe, timeout=TIMEOUT):
@@ -179,8 +209,8 @@ class ProviderCall:
     def text(self, text, *, usage=None):
         self.reply([{"type": "text", "text": text}], usage)
 
-    def tool(self, name, call_id, **inputs):
-        self.reply([{"type": "tool_use", "id": call_id, "name": name, "input": inputs}])
+    def tool(self, tool_name, call_id, **inputs):
+        self.reply([{"type": "tool_use", "id": call_id, "name": tool_name, "input": inputs}])
 
     def fail(self):
         self.response.put_nowait(json_response({
@@ -696,12 +726,11 @@ class InstalledClient:
         if executable is None:
             fixture = workspace / f"fixture-command{EXE}"
             shutil.copy2(self.bridge, fixture)
-            command = fixture.name if os.name == "nt" else f"./{fixture.name}"
+            program = f"./{fixture.name}"
         else:
-            assert os.name != "nt", "Use the workspace-local fixture executable on Windows"
-            command = shlex.quote(str(executable))
+            program = str(executable)
         self.tool_workspaces.append(workspace)
-        call.tool("run_command", call_id, command=f"{command} --gated-tool", timeout=95, brief=TOOL_BRIEF)
+        call.tool("run_command", call_id, program=program, args=["--gated-tool"], cwd=".", timeout=95, brief=TOOL_BRIEF)
         eventually("gated tool dispatch", lambda: (workspace / "tool-attempts.txt").exists())
 
     @staticmethod

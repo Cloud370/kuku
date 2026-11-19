@@ -155,7 +155,7 @@ fn anthro_with_agents(query_text: &str, server: &MockServer) -> query::Query {
             model: "claude-haiku-4-5".to_string(),
             think: kuku::config::ThinkLevel::Off,
             context_window: 200_000,
-            max_output_tokens: 16_000,
+            max_output_tokens: Some(16_000),
             purpose: "light".to_string(),
         },
     );

@@ -6,7 +6,6 @@
 <kuku_execution_context>
 - Workspace root: {{workspace_root}}
 - Platform: {{platform}}
-- Current date: {{current_date}}
 </kuku_execution_context>
 
 <kuku_models>

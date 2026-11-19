@@ -139,7 +139,7 @@ impl Window {
         for block in self.blocks(layout) {
             if let Some(group) = &block.group {
                 group_row = Some((
-                    start + usize::from(block.heading.is_some()),
+                    start + usize::from(block.turn_gap) + usize::from(block.heading.is_some()),
                     group.rows.len(),
                 ));
             } else if !block.grouped {
@@ -147,7 +147,7 @@ impl Window {
             }
             if block.key == &anchor.key {
                 return match anchor.line {
-                    AnchorLine::Turn => start,
+                    AnchorLine::Turn => start + usize::from(block.turn_gap),
                     AnchorLine::Group(row) => group_row.map_or(start, |(start, height)| {
                         start + row.min(height.saturating_sub(1))
                     }),
@@ -167,12 +167,16 @@ impl Window {
     pub(super) fn anchor_at(&mut self, mut row: usize, layout: Layout<'_>) -> Option<Anchor> {
         for block in self.blocks(layout) {
             if row < block.height() {
-                let line = if row == 0 && block.heading.is_some() {
+                let heading_row = usize::from(block.turn_gap);
+                let prefix = block.prefix_height();
+                let line = if row <= heading_row && block.heading.is_some() {
                     AnchorLine::Turn
-                } else if row < block.prefix_height() {
-                    AnchorLine::Group(row - usize::from(block.heading.is_some()))
+                } else if row < prefix {
+                    AnchorLine::Group(row.saturating_sub(
+                        usize::from(block.turn_gap) + usize::from(block.heading.is_some()),
+                    ))
                 } else {
-                    AnchorLine::Body(row - block.prefix_height())
+                    AnchorLine::Body(row - prefix)
                 };
                 return Some(Anchor {
                     key: block.key.clone(),
@@ -218,6 +222,7 @@ impl Window {
                         .filter(|&number| number > 0)
                         .map_or(TurnHeading::Unnumbered, TurnHeading::Numbered)
                 });
+            let turn_gap = heading.is_some() && previous_turn.is_some();
             previous_turn = record.turn.or(previous_turn);
             if current
                 .as_ref()
@@ -273,6 +278,7 @@ impl Window {
             Some(Block {
                 key,
                 heading,
+                turn_gap,
                 user_header,
                 thinking,
                 group,
@@ -297,6 +303,7 @@ pub(super) struct Layout<'a> {
 pub(super) struct Block<'a> {
     pub(super) key: &'a Key,
     pub(super) heading: Option<TurnHeading>,
+    pub(super) turn_gap: bool,
     pub(super) user_header: bool,
     pub(super) thinking: bool,
     pub(super) group: Option<GroupHeading>,
@@ -318,7 +325,8 @@ impl Block<'_> {
     }
 
     fn prefix_height(&self) -> usize {
-        usize::from(self.heading.is_some())
+        usize::from(self.turn_gap)
+            + usize::from(self.heading.is_some())
             + self.group.as_ref().map_or(0, |group| group.rows.len())
     }
 }

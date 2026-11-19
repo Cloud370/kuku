@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::error::Result;
 use crate::event::{EventPayload, EventStore};
@@ -12,7 +12,8 @@ use crate::query::types::{PendingRun, PendingStep, RequestTiming, StreamingChunk
 
 use super::{emit_runtime_log, pending_failure_step};
 
-const PROVIDER_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(150);
+const PROVIDER_RETRY_DELAY: Duration = Duration::from_millis(150);
+const MAX_AUTOMATIC_RETRY_DELAY: Duration = Duration::from_secs(60);
 
 struct ProviderAttempt {
     stream: crate::provider::ProviderChunkStream,
@@ -71,6 +72,7 @@ pub(super) async fn dispatch_provider_step(
         session_id: pending.session_id.clone(),
         agent_address: pending.conversation.as_str().into(),
         connection_name: resolved_config.connection_name.clone(),
+        workspace: pending.workspace.clone(),
     };
     let prepare_started = Instant::now();
     let prepared =
@@ -81,10 +83,12 @@ pub(super) async fn dispatch_provider_step(
             provider: Some(resolved_config.connection_name.clone()),
             model: Some(resolved_config.model.clone()),
         })?;
-    if serde_json::to_vec(&prepared.body)?.len() > pending.query.runtime_limits.max_request_bytes {
-        return Err(crate::Error::InvalidArgument(
-            "prepared model request exceeds the configured byte limit".into(),
-        ));
+    let request_bytes = serde_json::to_vec(&prepared.body)?.len();
+    let max_request_bytes = pending.query.runtime_limits.max_request_bytes;
+    if request_bytes > max_request_bytes {
+        return Err(crate::Error::InvalidArgument(format!(
+            "prepared model request exceeds the configured byte limit ({request_bytes} bytes, limit {max_request_bytes} bytes)"
+        )));
     }
     let request_prepare_us = prepare_started
         .elapsed()
@@ -247,14 +251,22 @@ async fn dispatch_prepared(
     if pending.query.runtime.is_none()
         || !pending.query.runtime_limits.retry_transient_provider_errors
         || !failure.retryable
-        || !matches!(
-            failure.kind,
-            ProviderFailureKind::Transport | ProviderFailureKind::ProviderUnavailable
-        )
+        || crate::query::budget::exhausted(&pending.query)
+        || failure
+            .retry_after
+            .is_some_and(|delay| delay > MAX_AUTOMATIC_RETRY_DELAY)
     {
         return Ok(initial.map(|stream| ProviderAttempt { stream, started }));
     }
-    tokio::time::sleep(PROVIDER_RETRY_DELAY).await;
+    let delay =
+        failure
+            .retry_after
+            .unwrap_or(if failure.kind == ProviderFailureKind::RateLimited {
+                Duration::from_secs(1)
+            } else {
+                PROVIDER_RETRY_DELAY
+            });
+    tokio::time::sleep(delay).await;
     super::require_runtime_execution(pending)?;
     if crate::query::budget::reserve(&pending.query).is_err() {
         return Ok(initial.map(|stream| ProviderAttempt { stream, started }));
@@ -267,7 +279,7 @@ async fn dispatch_prepared(
     let retry = EventPayload::Unknown(serde_json::json!({
         "kind": "runtime.model_retry", "ts": now_timestamp()?,
         "agent": pending.conversation.as_str(), "turn": pending.turn, "request_id": request_id,
-        "failed_kind": failure.kind.as_event_kind(), "attempt": 2,
+        "failed_kind": failure.kind.as_event_kind(), "attempt": 2, "delay_ms": delay.as_millis() as u64,
     }));
     session.commit_model_facts(pending.conversation.as_str(), execution, [retry])?;
     let started = Instant::now();

@@ -184,6 +184,7 @@ impl Run {
                 pending.record_tool_call(&tool_call.name);
                 let (slot, tool_kind) = crate::query::slots::dispatch_tool_slot(
                     crate::query::slots::SlotDispatchArgs {
+                        capacity: crate::WorkspaceExecutionHost::default(),
                         output: None,
                         tool_name: tool_call.name.clone(),
                         tool_id: tool_call.id.clone(),
@@ -319,6 +320,7 @@ mod tests {
                 conversation: None,
                 kind: ToolKind::Command { pid: None },
                 workspace_ordered: true,
+                job: None,
                 label: "active command".to_string(),
                 cancel: std::sync::Arc::new(tokio::sync::Notify::new()),
                 nested_permissions: std::sync::Arc::new(std::sync::Mutex::new(

@@ -13,6 +13,8 @@ kuku show SESSION_ID --agent reviewer
 
 第二条命令在需要时创建 `reviewer`。之后向同一 Session 和地址再次执行 `kuku run`，会延续它自己的历史。新 Agent 有独立上下文，委派时应把相关文件或已有发现发给它。
 
+要向已有 Agent 分享保留的日志或结果，请让发送方先保存该值，再将名称放入 `send_message` 的 `values` 参数。接收方随任务收到准确的保存引用。见[命名会话值](../reference/tools.md#命名会话值)。
+
 ## 复用预设
 
 项目预设放在 `<workspace>/.kuku/agents/`，个人预设放在 `~/.kuku/agents/`。同名时优先使用项目定义。用 `kuku agents list` 查看目录，用 `kuku agents show NAME` 查看某个预设。[Agent 格式](../reference/agent-format.md)

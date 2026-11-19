@@ -45,9 +45,33 @@
 
 `ModelAdapter` 接收冻结的 `ModelRequest`，包含选定连接、协议、端点、模型、原生设置、关联和精确请求正文，不包含认证请求头；返回由 `ModelEvent` 组成的 `ModelStream`。配置选择和 `agent_selection` 不读取环境凭据，内置 HTTP 传输只在发送前解析凭据；自定义传输自行负责认证。SDK 继续负责准备屏障、请求额度、模型并发、响应校验、用量与持久日志。丢弃适配器尚未完成的 future 或返回的流时，适配器必须释放其传输资源。
 
+同一个 Agent Turn 内，所有模型 Step 的工具调用 ID 都必须唯一，恢复后也一样。不同 Agent 或 Turn 可以复用 ID。
+
 `ToolAdapter` 在打开时提供不可变的 `ToolSpec`，并接收最终的 `ToolAuthorization` 和 `ToolCancellation` 信号。内置名称不可覆盖。Preset 和 `AgentConfig.tools` 从合并后的可用定义中选择工具。每次调用仍通过宿主授权和持久准备／派发边界。声明的写入与外部动作加入同一 Agent 的工作目录有序动作组；声明的读取不加入该组，可与其他工具重叠执行。工具必须在返回前清理所属工作，取消后也一样；SDK 会等待返回。已知清理不完整通过 `ToolOutput.cleanup_incomplete` 返回，使 `cancel` 或 `close` 失败。
 
 工具正文复用命令输出格式和公开 `read_output` 回退；首次模型视图包含完整引用与截断标志，同时受 `ToolSpec.max_result_bytes` 和运行时预览限额约束。过大的结构化数据保存在输出中，不写进日志。宿主适配器负责返回缓冲区的分配，SDK 的保留输出与模型视图分别有界。
+
+## 工作区执行
+
+模型通过 Session 选定的工具调用 [`run_command` 或 `workspace_script`](tools.md#运行本机程序)。嵌入宿主通过 `Session::events` 或 `Session::observe` 读取 `kuku::event::EventPayload::ToolResult` 的 `structured` 字段，可以用 `kuku::execution::CommandExecutionFacts::from_structured` 解码命令结果。`invocation` 保留程序名及参数边界，或解释器及命令文本。`started`、`termination`、`exit_code` 和 `signal` 描述宿主观察到的进程结果。`capture_complete`、`cleanup_incomplete` 和 `output_ref` 描述保留证据与清理情况。可信宿主可将 `output_ref.id` 交给 `Session::read_output` 分页读取，再用 `OutputSegment::as_bytes()` 获取原始字节。`reported_tests` 包含从程序输出获得的统计。任意外部程序造成的文件变更可能仍然未知。
+
+工具返回 [Session Job](tools.md#session-job) 时，用 `Session::jobs(agent)` 列出最近及正在运行的 Job，或用 `Session::job(agent, job_id)` 查询单个 Job。调用 `Session::wait_job(agent, job_id).await` 等待最终结果，或调用 `Session::cancel_job(agent, job_id).await` 请求取消并等待清理。Job 状态包括 `running`、`completed`、`failed`、`cancelled` 和 `interrupted`。终态的 `JobSnapshot.result` 包含该动作的结构化结果。命令捕获完成后，可将其 `output_id` 传给同一个输出读取器，`output_ref` 提供所捕获的字节范围。
+
+`RuntimeLimits.job_foreground_wait_ms` 控制顶层命令和脚本的前台观察窗口。
+
+`workspace_script` 的结果类型为 `kind: "workspace_script_result"`，可以用 `kuku::WorkspaceScriptFacts::from_structured` 解码。结果包含脚本返回的 `value` 及已观察到的宿主 `actions`。每个动作记录 ID、工具、状态、摘要、截断情况及有界结果。动作状态 `unknown` 表示宿主未能确认最终结果。即使脚本失败，也可以结合整次调用的 `timed_out`、`cleanup_incomplete` 和 `not_dispatched` 核对部分完成的工作。见[脚本方法](tools.md#工作区脚本)。
+
+用 `kuku::execution::WorkspaceActionReceipt::from_event` 解码 `workspace.action` 事件，读取日志中脚本内动作的派发和结果事实。在父 `tool_call_id` 内按 `action_id` 关联记录。派发记录缺少对应结果时，副作用仍然未知。
+
+`kuku::execution::FileMutationFacts` 描述写入、精确编辑或移除操作，提供路径、可用的变更前后哈希、字节计数和 `commit_state`。`published_unconfirmed` 表示文件变更已经发生，最终持久化尚未得到确认。重试前应检查文件。
+
+`RuntimeLimits.workspace_script` 限制单次调用的内存、JavaScript 执行时间、宿主请求、操作队列和结果大小。等待宿主动作的时间不计入 JavaScript 执行预算。在多个 Session 的 `SessionOptions.workspace_host` 中传入同一个 `WorkspaceExecutionHost` 的克隆即可共享容量。进程内默认允许两个脚本 worker 和八个并发工作区操作。脚本宿主动作、直接文件工具、命令和面向模型的输出读取共用操作容量。`WorkspaceExecutionHost::metrics` 可查询当前、峰值和累计启动的 worker 数，无需启动 worker。
+
+## 命名值
+
+调用 `Session::save_named_value(agent, name, source, replace).await` 时，`kuku::session::NamedValueSource` 可选 `Text`、`Json`、`Bytes` 或 `Output`。`Output` 按 ID 绑定已有捕获，无需复制。`Session::named_value` 解析单个名称，`Session::named_values` 列出 Agent 的绑定，无需读取正文。对于已关闭的 Session，`Session::read_named_values(events_path, agent)` 无需打开 writer 即可返回同样的元信息。
+
+用 `Session::read_agent_output(agent, output_id, &OutputRead)` 在 Agent 的权限内读取输出，或用 `Session::read_saved_agent_output` 读取已关闭 Session 的输出。通过 `Session::send_with_values` 或 `Session::send_configured_with_values` 提交已解析的 `OutputReference` 值，将这些引用绑定到输入。见[命名与分享语义](tools.md#命名会话值)。
 
 ## 调用程序
 
@@ -56,19 +80,20 @@ cargo run -p kuku --example session_task -- \
   --workspace /path/to/work --prompt-file /path/to/task.txt \
   --config /path/to/config.toml --data-dir /path/to/session-data \
   --connection deepseek --reasoning-effort low \
-  --max-steps 12 --max-requests 32 --max-output-tokens 32768 --max-context-tokens 131072 \
   --output /path/to/result.json
 ```
 
-使用 `--session-id` 重开，使用 `--command-id` 在回执丢失后重试。结果包含持久模型／工具／Turn 事实数、日志路径／游标、provider 设置／报告、限额、耗时和清理状态。`runtime_completed` 表示执行结算，benchmark 仍需实际判定器。`--max-requests` 限制本次打开期间所有 Agent 的总请求，默认等于 `--max-steps`。`--max-agents` 设置保留的 Agent 上限。不自动重试付费请求。请求序列化字节数受 `--max-context-tokens` 约束，作为保守输入 token 上界。
+使用 `--session-id` 重开，使用 `--command-id` 在回执丢失后重试。结果包含持久模型、工具和 Turn 事实数、日志路径和游标、provider 设置和报告、限额、耗时和清理状态。`runtime_completed` 表示执行结算，benchmark 仍需实际判定器。`--max-requests N` 可限制本次打开期间的尝试次数。省略时，示例用 `null` 报告 `max_requests`。`--max-agents` 设置保留的 Agent 上限。`--max-context-tokens` 按 token 设置配置上下文窗口的上限。`--max-request-bytes` 独立限制序列化请求字节数，省略时继承 SDK 默认值。
 
 ## 限额与用量
 
-默认：64 个 Agent、每 Agent 128 条待处理输入、65,536 输入字节、每请求 512 KiB、四个模型流、每 Turn 20 次请求、每 Agent 八个工具、每份保留输出 8 MiB、首次预览 16 KiB、128 条临时观察。`RuntimeLimits.max_output_tokens_per_request` 可限制每个 Agent 请求的有效输出 token；显式 Agent 值取 `min`，选择查询和 prepared 事实反映有效值。`session_task --max-output-tokens` 同时设置宿主上限与主 Agent 选择。`RuntimeLimits.max_requests_per_open` 可限制所有 Agent Turn 的总尝试数，重开后重置，超额工作在发送前拒绝；默认 `None`。零值或不支持边界会失败；预览至少 1 KiB，保留完整引用与标志。
+默认限额允许 64 个 Agent、每 Agent 128 条待处理输入、65,536 输入字节、每次已准备请求 512 KiB、四个模型流、每 Agent 八个工具、每份保留输出 8 MiB、首次预览 16 KiB 和 128 条临时观察。预览至少 1 KiB，以保留完整引用和标志。
 
-`RuntimeLimits.retry_transient_provider_errors` 默认为 true。如果流尚未打开，且遇到可重试的传输故障或模型服务不可用，SDK 可以重试一次。重试沿用已准备请求，并计入同一请求预算。有界 `session_task` 调用程序将此选项设为 false，关闭该重试。
+`RuntimeLimits.max_requests_per_open` 可限制所有 Agent Turn 的总尝试数，重开后重置。`RuntimeLimits.max_output_tokens_per_request` 可为宿主上的每次响应设置生成上限。两者默认都是 `None`。Agent 显式设置的输出上限优先于 tier 配置，宿主上限适用于每个 Agent。Rust 的 `TierConfig.max_output_tokens`、`AgentSelection.max_output_tokens` 和 `ModelSelection.max_output_tokens` 类型均为 `Option<u32>`。协议允许时，省略有效值就由供应商选择默认行为。请求准备记录给出本次请求采用的值。`session_task --max-output-tokens N` 同时设置宿主和主 Agent 的上限。详见[模型配置](config.md#modelname)。
 
-日志每记录最多 1 MiB。分页最多 256 条，达到 1 MiB 目标停止，单条超出时整页小于 2 MiB。输出读取最多 80,000 字节。保留输出配额含帧／元信息，超过后标记不完整并继续排空。这些是每份输出的边界，宿主选择 Session 保留与总磁盘容量。
+`RuntimeLimits.retry_transient_provider_errors` 默认为 true。流尚未打开时，SDK 可以对暂时性传输或 HTTP 错误重试一次，包括临时限流的 HTTP 429。上游明确报告额度耗尽时结束本次尝试。SDK 遵循有效的 `Retry-After`，要求等待超过一分钟时将等待时长告知调用方并交还控制。重试沿用已准备请求，并计入调用方的请求预算。可将此选项设为 false 或使用 `session_task --no-provider-retry` 关闭重试。示例在 `limits.automatic_retries` 中报告允许的重试次数。
+
+日志每记录最多 1 MiB。分页最多 256 条，达到 1 MiB 目标停止，单条超出时整页小于 2 MiB。输出读取最多 80,000 字节。保留输出配额含捕获帧及元信息。达到配额时运行时继续排空管道，并将保留结果标记为不完整。Session 默认保留总计 128 MiB 的数据与 64 个命名绑定。没有引用的普通输出保留 24 小时后可被回收。可通过 `RuntimeLimits` 中的 `max_retained_output_bytes`、`max_named_values` 和 `output_retention_secs` 调整这些限额。
 
 `UsageTotals` 将缺失计数保留为 `None`；`unreported_requests` 标识输入／输出报告不完整。输入总量包含缓存，缓存计数是其子集。原始可选 provider 报告分别持久保存。已知清理不完整使 `cancel` 或 `close` 失败。
 
@@ -86,11 +111,11 @@ cargo run -p kuku --example session_orchestrate -- \
   --continue-prompt-file /path/to/continue.txt \
   --writer-connection direct --writer-tier balanced \
   --reviewer-connection openrouter-openai-responses --reviewer-tier light \
-  --max-steps 8 --max-requests 16 --timer-ms 250 \
+  --max-requests 16 --timer-ms 250 \
   --max-output-tokens 32768 --max-context-tokens 131072 \
   --data-dir /path/to/session-data --output /path/to/result.json
 ```
 
-宿主用 `Activation::Enqueue` 投递前两个输入，分别显式推进接收者，再通过带关联的 `InputSource::External("timer")` 投递定时器输入。每次投递都有稳定的命令 ID，并核对相同重试的回执。示例固定持有两个 Agent，禁用模型创建 Agent 和原生 Skill，分别限制两次打开期间的模型请求总数。重开会续用宿主新授权的请求额度。输出和上下文默认值保持为 32,768 和 131,072 tokens。
+宿主用 `Activation::Enqueue` 投递前两个输入，分别显式推进接收者，再通过带关联的 `InputSource::External("timer")` 投递定时器输入。每次投递都有稳定的命令 ID，并核对相同重试的回执。示例固定持有两个 Agent，禁用模型创建 Agent 和原生 Skill，分别限制两次打开期间的模型请求总数。重开会续用宿主新授权的请求额度。输出和上下文默认值为 32,768 和 131,072 tokens。省略 `--max-request-bytes` 时继承 SDK 的请求字节上限。
 
 宿主负责定时器的生命周期，并在重开后启动它；Session 持久化已投递的输入。观察者在执行稳定后才消费事件，因此观察订阅不会驱动工作。JSON 结果保留逐轮回执与快照、provider 和工具事实、有界的保留命令输出、休眠请求计数，以及关闭和重开证据。`runtime_completed` 要求三轮都稳定为空闲、没有待处理输入，并成功完成持久化关闭；任务产物仍需独立验证。等待中的 Agent 会报告为未完成。

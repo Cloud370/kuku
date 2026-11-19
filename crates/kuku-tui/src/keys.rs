@@ -38,6 +38,7 @@ impl Shortcut {
     pub(crate) const PAGE_UP: Self = Self::plain(KeyCode::PageUp, "PgUp");
     pub(crate) const PAGE_DOWN: Self = Self::plain(KeyCode::PageDown, "PgDn");
     pub(crate) const REFRESH_OUTPUT: Self = Self::plain(KeyCode::Char('r'), "R");
+    pub(crate) const NAME_OUTPUT: Self = Self::plain(KeyCode::Char('s'), "S");
     pub(crate) const NEW_LINE: Self = Self::new(KeyCode::Enter, KeyModifiers::SHIFT, "Shift+Enter");
     pub(crate) const CONTROL_NEW_LINE: Self = Self::control('j', "Ctrl+J");
     pub(crate) const NEXT_TURN: Self = Self::new(KeyCode::Enter, KeyModifiers::ALT, "Alt+Enter");

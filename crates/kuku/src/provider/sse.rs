@@ -214,6 +214,7 @@ fn invalid_frame(message: &str) -> ProviderFailure {
         message: message.into(),
         status: None,
         provider_request_id: None,
+        retry_after: None,
         retryable: false,
     }
 }

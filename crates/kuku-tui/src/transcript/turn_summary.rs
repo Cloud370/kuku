@@ -191,7 +191,9 @@ mod tests {
         assert_eq!(Some(ReplySource::Local(previous)), transcript.last_reply());
         assert!(transcript.toggle_source());
         let raw = rows(&mut transcript, 64);
-        assert!(raw.iter().any(|line| line == "## Partial result"));
+        assert!(raw
+            .iter()
+            .any(|line| line.trim_start() == "## Partial result"));
         assert_eq!(
             "Turn 2   1 tool",
             transcript.turn_dock(64).unwrap().to_string()

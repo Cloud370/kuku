@@ -166,7 +166,6 @@ struct TrackedAgent {
     phase_cursor: u64,
     progress: ExecutionProgress,
     preview: String,
-    snapshot_prefix: bool,
 }
 
 impl TrackedAgent {
@@ -180,7 +179,6 @@ impl TrackedAgent {
             phase_cursor: cursor,
             progress: ExecutionProgress::default(),
             preview: String::new(),
-            snapshot_prefix: false,
         }
     }
 
@@ -189,10 +187,7 @@ impl TrackedAgent {
         agent.settled = summary.turn.is_some();
         agent.failed = summary.last_error_preview.is_some();
         agent.progress = ExecutionProgress::from_snapshot(summary.progress.as_ref());
-        if let Some(AgentProgress::Streaming { preview }) = &summary.progress {
-            agent.preview = excerpt(Some(preview));
-            agent.snapshot_prefix = true;
-        } else if summary.status != AgentStatus::Running {
+        if summary.status != AgentStatus::Running {
             agent.preview = excerpt(
                 summary
                     .last_error_preview
@@ -211,7 +206,12 @@ impl TrackedAgent {
             && self.status == AgentStatus::Running
             && summary.execution_id == self.execution
         {
-            if summary.progress.is_some()
+            let preserves_preview =
+                matches!(summary.progress, Some(AgentProgress::Streaming { .. }))
+                    && self.activity() == Activity::Streaming
+                    && !self.preview.is_empty();
+            if !preserves_preview
+                && summary.progress.is_some()
                 && (cursor > self.phase_cursor
                     || cursor == self.phase_cursor && self.activity() == Activity::Running)
             {
@@ -310,7 +310,12 @@ impl TrackedAgent {
         self.phase_cursor = cursor;
         self.progress.live(event);
         match event["type"].as_str() {
-            Some("text") if !self.snapshot_prefix => {
+            Some("reply_preview") => {
+                let preview = excerpt(event["content"].as_str());
+                preview_changed |= self.preview != preview;
+                self.preview = preview;
+            }
+            Some("text") => {
                 if let Some(text) = event["content"].as_str() {
                     let suffix = cap(text, PREVIEW_BYTES - self.preview.len());
                     self.preview.push_str(suffix);
@@ -326,7 +331,6 @@ impl TrackedAgent {
     fn clear_preview(&mut self) -> bool {
         let changed = !self.preview.is_empty();
         self.preview.clear();
-        self.snapshot_prefix = false;
         changed
     }
 
@@ -443,6 +447,24 @@ mod tests {
     fn apply_live(app: &mut App, selection: Selection, execution: u64, cursor: u64, text: &str) {
         let frame = serde_json::from_value(live_frame(execution, cursor, text)).unwrap();
         app.update(Update::Observation(selection, frame));
+    }
+
+    #[test]
+    fn attaching_after_a_peer_delta_preserves_repeated_text_in_new_deltas() {
+        let mut app = attached();
+        load(&mut app, 10, "running", Some(8), None);
+        let frame = |kind: &str, content: &str| {
+            json!({
+                "type":"live","agent":"reviewer","execution_id":8,"cursor":11,
+                "event":{"type":kind,"phase":"streaming","content":content},
+            })
+        };
+        observe(&mut app, frame("reply_preview", "repeat "));
+        observe(&mut app, frame("text", "repeat "));
+        observe(&mut app, frame("text", "repeat"));
+        let activity = reviewer(&app).unwrap();
+        assert_eq!(Activity::Streaming, activity.status);
+        assert_eq!(Some("repeat repeat repeat"), activity.preview);
     }
 
     #[test]

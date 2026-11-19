@@ -1,7 +1,7 @@
 mod config {
     pub use kuku::config::{
-        ApiKey, ProviderAuth, ProviderFormat, ProviderOptions, ProviderProfile, ResolvedThinking,
-        ThinkLevel,
+        ApiKey, PromptCacheScope, ProviderAuth, ProviderFormat, ProviderOptions, ProviderProfile,
+        ResolvedThinking, ThinkLevel,
     };
 }
 

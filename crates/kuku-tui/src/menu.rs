@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use kuku_client::Target;
+use kuku_client::{JobSnapshot, NamedValue, Target};
 use ratatui::layout::{Position, Rect};
 
 use crate::editor::Editor;
@@ -15,6 +15,7 @@ pub(crate) enum CommandMenu {
     Back,
     Advance,
     Interrupt,
+    Jobs,
     Pending,
     Model,
     Thinking,
@@ -24,6 +25,8 @@ pub(crate) enum CommandMenu {
     Notes,
     Details,
     Tools,
+    Save,
+    Values,
     Server,
     Reconnect,
     Restart,
@@ -39,6 +42,7 @@ impl CommandMenu {
         Self::Back,
         Self::Advance,
         Self::Interrupt,
+        Self::Jobs,
         Self::Pending,
         Self::Model,
         Self::Thinking,
@@ -48,6 +52,8 @@ impl CommandMenu {
         Self::Notes,
         Self::Details,
         Self::Tools,
+        Self::Save,
+        Self::Values,
         Self::Server,
         Self::Reconnect,
         Self::Restart,
@@ -63,6 +69,7 @@ impl CommandMenu {
             Self::Back => "back",
             Self::Advance => "continue",
             Self::Interrupt => "interrupt",
+            Self::Jobs => "jobs",
             Self::Pending => "pending",
             Self::Model => "model",
             Self::Thinking => "thinking",
@@ -72,6 +79,8 @@ impl CommandMenu {
             Self::Notes => "notes",
             Self::Details => "details",
             Self::Tools => "tools",
+            Self::Save => "save",
+            Self::Values => "values",
             Self::Server => "server",
             Self::Reconnect => "reconnect",
             Self::Restart => "restart",
@@ -88,6 +97,7 @@ impl CommandMenu {
             Self::Back => ("Return to the previous Agent in this Session", None),
             Self::Advance => ("Continue queued work", None),
             Self::Interrupt => ("Interrupt this execution", Some(Shortcut::ESCAPE)),
+            Self::Jobs => ("List background jobs · /jobs cancel <id>", None),
             Self::Pending => ("Check, retry or discard unconfirmed commands", None),
             Self::Model => ("Choose a configured model route", Some(Shortcut::MODEL)),
             Self::Thinking => ("Choose the model's reasoning setting", None),
@@ -105,6 +115,8 @@ impl CommandMenu {
                 );
             }
             Self::Tools => ("Browse tools and saved output", None),
+            Self::Save => ("Name pasted text or the current draft", None),
+            Self::Values => ("Browse and attach saved values", None),
             Self::Server => ("Inspect the connected service", None),
             Self::Reconnect => (
                 "Reconnect and check unconfirmed commands",
@@ -154,6 +166,12 @@ pub(crate) enum ChoiceKind {
     RestoreRejected(String),
     Detail(DetailKey),
     Tool(ToolView),
+    BackgroundJob(Box<JobSnapshot>),
+    CancelBackground(String),
+    Value(NamedValue),
+    AttachValue(NamedValue),
+    ReadValue(NamedValue),
+    ClearValues,
     Restart,
 }
 
@@ -165,6 +183,7 @@ impl ChoiceKind {
                 CommandMenu::Resume
                     | CommandMenu::Agents
                     | CommandMenu::Back
+                    | CommandMenu::Jobs
                     | CommandMenu::Pending
                     | CommandMenu::Model
                     | CommandMenu::Thinking
@@ -173,6 +192,8 @@ impl ChoiceKind {
                     | CommandMenu::Source
                     | CommandMenu::Details
                     | CommandMenu::Tools
+                    | CommandMenu::Save
+                    | CommandMenu::Values
                     | CommandMenu::Server
             ) | Self::Session { .. }
                 | Self::Agent { .. }
@@ -183,6 +204,10 @@ impl ChoiceKind {
                 | Self::PendingOpen { .. }
                 | Self::Detail(_)
                 | Self::Tool(_)
+                | Self::BackgroundJob(_)
+                | Self::Value(_)
+                | Self::AttachValue(_)
+                | Self::ReadValue(_)
         )
     }
 }
@@ -244,6 +269,10 @@ pub(crate) enum PickerKind {
     PendingItem,
     Details,
     Tools,
+    Jobs,
+    JobActions,
+    Values,
+    ValueActions,
     Server,
     Rewind,
 }
@@ -261,6 +290,10 @@ impl PickerKind {
             Self::PendingItem => "Recover command",
             Self::Details => "Transcript details",
             Self::Tools => "Tool details and saved output",
+            Self::Jobs => "Background jobs",
+            Self::JobActions => "Background job",
+            Self::Values => "Saved values",
+            Self::ValueActions => "Saved value",
             Self::Server => "Service status",
             Self::Rewind => "Rewind to message",
         }
@@ -276,6 +309,8 @@ impl PickerKind {
                 | Self::Models
                 | Self::Details
                 | Self::Tools
+                | Self::Jobs
+                | Self::Values
         )
     }
 
@@ -394,7 +429,10 @@ impl Picker {
             .iter()
             .filter(|choice| choice.matches(&query))
             .chain(self.remote.iter().filter(|choice| {
-                !matches!(self.kind, PickerKind::Models) || choice.matches(&query)
+                !matches!(
+                    self.kind,
+                    PickerKind::Models | PickerKind::Values | PickerKind::Jobs
+                ) || choice.matches(&query)
             }))
             .collect();
         if matches!(self.kind, PickerKind::Commands | PickerKind::Agents) && !query.is_empty() {
@@ -459,11 +497,16 @@ pub(crate) enum PromptKind {
     Question { request_id: String, target: Target },
     QueuedInput { input_command_id: String },
     RewindMessage { event_id: u64, text: String },
+    SavePaste,
+    SaveValue { output_id: Option<String> },
 }
 
 impl PromptKind {
     pub(crate) fn multiline(&self) -> bool {
-        matches!(self, Self::Question { .. } | Self::QueuedInput { .. })
+        matches!(
+            self,
+            Self::Question { .. } | Self::QueuedInput { .. } | Self::SavePaste
+        )
     }
 }
 

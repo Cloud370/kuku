@@ -3,10 +3,11 @@ use ratatui::text::{Line, Span};
 use serde_json::Value;
 
 use crate::text::shorten;
-use crate::theme::{emphasis, MUTED, SURFACE_TEXT};
+use crate::theme::{card_padding, emphasis, MUTED, SURFACE_TEXT};
 
 use super::{
-    append_bounded, Body, Key, RenderCache, Row, Transcript, DISPLAY_LIMIT_NOTICE, MAX_BODY_BYTES,
+    append_bounded, body_inset, Body, Key, RenderCache, Row, Transcript, DISPLAY_LIMIT_NOTICE,
+    MAX_BODY_BYTES, MAX_VISUAL_ROWS,
 };
 
 #[derive(Debug)]
@@ -301,11 +302,18 @@ pub(super) fn render_assistant(
         rows.push(Row::plain(Line::default()));
     }
     if has_reply {
-        rows.extend(
-            super::message::render_markdown_record(role, SURFACE_TEXT, text, width)
-                .into_iter()
-                .skip(usize::from(joined)),
-        );
+        let body_inset = body_inset(width);
+        let body_width =
+            width.saturating_sub(usize::from(body_inset) + usize::from(card_padding(width).right));
+        rows.extend({
+            let (lines, links) = crate::markup::linked_markdown(text, body_width, MAX_VISUAL_ROWS);
+            let mut rendered =
+                super::message::render_record(role, SURFACE_TEXT, lines, width, body_inset);
+            for row in &mut rendered {
+                row.links = links.resolve(&mut row.line);
+            }
+            rendered.into_iter().skip(usize::from(joined))
+        });
     }
     rows
 }

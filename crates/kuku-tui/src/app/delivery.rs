@@ -256,6 +256,14 @@ pub(super) fn ordinary_input(entry: &QueuedInput) -> bool {
 }
 
 impl App {
+    pub(crate) fn has_queued_input(&self) -> bool {
+        self.pane()
+            .deliveries
+            .rows()
+            .iter()
+            .any(|row| row.status == SubmissionStatus::Queued)
+    }
+
     pub(crate) fn queued_for_edit(&self) -> impl Iterator<Item = &QueuedInput> {
         let pane = self.pane();
         pane.snapshot

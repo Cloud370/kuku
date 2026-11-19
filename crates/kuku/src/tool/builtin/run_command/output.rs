@@ -7,7 +7,10 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
+use crate::execution::ReportedTests;
+
 use super::encoding::display_text;
+use super::reports::ReportCollector;
 
 const HEADER_BYTES: usize = 4096;
 const MAGIC: &[u8; 8] = b"KUKUOUT1";
@@ -17,10 +20,11 @@ const MAX_READ_BYTES: usize = super::RUN_COMMAND_MAX_CHARS;
 const DEFAULT_READ_BYTES: usize = 16 * 1024;
 const MAX_READ_SEGMENTS: usize = 4096;
 const MAX_SEARCH_BYTES: usize = 4096;
-const MAX_OUTPUT_BYTES: u64 = 1024 * 1024 * 1024;
+pub(crate) const MAX_OUTPUT_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_SUMMARY_LINES: usize = 6;
 const MAX_SUMMARY_LINE_BYTES: usize = 192;
 const MAX_PENDING_LINE_BYTES: usize = 1024;
+pub(crate) const OUTPUT_DRAFT_SUFFIX: &str = ".output-draft";
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct OutputLimits {
@@ -158,6 +162,7 @@ pub(crate) struct OutputWriter {
     metadata: CaptureMetadata,
     stdout: StreamSummary,
     stderr: StreamSummary,
+    reports: Option<ReportCollector>,
 }
 
 impl OutputWriter {
@@ -166,33 +171,41 @@ impl OutputWriter {
         output_id: &str,
         limits: OutputLimits,
     ) -> io::Result<Self> {
-        if !(HEADER_BYTES as u64..=MAX_OUTPUT_BYTES).contains(&limits.max_output_bytes) {
-            return Err(invalid_output(
-                "output quota must be between 4096 bytes and 1 GiB",
-            ));
-        }
-        if limits.max_preview_bytes > MAX_READ_BYTES {
-            return Err(invalid_output("output preview must be at most 80000 bytes"));
-        }
-        let path = output_path(output_dir, output_id)?;
-        crate::util::fs_sync::create_dir_all(output_dir)?;
-        let mut file = tokio::fs::File::from_std(
-            crate::util::fs_sync::write_options()
-                .create_new(true)
-                .open(&path)?,
-        );
-        let metadata = CaptureMetadata::default();
-        file.write_all(&encode_header(&metadata)?).await?;
-        file.flush().await?;
-        Ok(Self {
-            file,
-            path,
-            file_bytes: HEADER_BYTES as u64,
-            quota: limits.max_output_bytes,
-            metadata,
-            stdout: StreamSummary::default(),
-            stderr: StreamSummary::default(),
-        })
+        let path = Self::prepare(output_dir, output_id, limits)?;
+        let file = crate::util::fs_sync::write_options()
+            .create_new(true)
+            .open(&path)?;
+        Self::initialize(file, path, limits).await
+    }
+
+    pub(crate) async fn create_staged(
+        output_dir: &Path,
+        output_id: &str,
+        limits: OutputLimits,
+    ) -> io::Result<(Self, OutputDraft)> {
+        let destination = Self::prepare(output_dir, output_id, limits)?;
+        let (file, path) = tempfile::Builder::new()
+            .prefix(output_id)
+            .rand_bytes(0)
+            .suffix(OUTPUT_DRAFT_SUFFIX)
+            .make_in(output_dir, |path| {
+                crate::util::fs_sync::write_options()
+                    .create_new(true)
+                    .open(path)
+            })?
+            .into_parts();
+        let writer = Self::initialize(file, path.to_path_buf(), limits).await?;
+        Ok((writer, OutputDraft { path, destination }))
+    }
+
+    pub(super) async fn create_command(
+        output_dir: &Path,
+        output_id: &str,
+        limits: OutputLimits,
+    ) -> io::Result<Self> {
+        let mut writer = Self::create(output_dir, output_id, limits).await?;
+        writer.reports = Some(ReportCollector::default());
+        Ok(writer)
     }
 
     pub(crate) async fn write(&mut self, stream: OutputStream, bytes: &[u8]) -> io::Result<()> {
@@ -200,7 +213,7 @@ impl OutputWriter {
             OutputStream::Stdout => &mut self.stdout,
             OutputStream::Stderr => &mut self.stderr,
         };
-        summary.observe(bytes, &mut self.metadata.summary);
+        summary.observe(bytes, &mut self.metadata.summary, &mut self.reports);
         let remaining = self.quota.saturating_sub(self.file_bytes);
         let kept = bytes
             .len()
@@ -219,9 +232,30 @@ impl OutputWriter {
         Ok(())
     }
 
-    pub(crate) async fn finish(mut self, cleanup_incomplete: bool) -> io::Result<CaptureMetadata> {
-        self.stdout.finish(&mut self.metadata.summary);
-        self.stderr.finish(&mut self.metadata.summary);
+    pub(crate) async fn finish(self, cleanup_incomplete: bool) -> io::Result<CaptureMetadata> {
+        self.finish_command(cleanup_incomplete)
+            .await
+            .map(|(metadata, _)| metadata)
+    }
+
+    pub(crate) fn quota_truncated(&self) -> bool {
+        self.metadata.quota_truncated
+    }
+
+    pub(crate) async fn close(self) {
+        drop(self.file.into_std().await);
+    }
+
+    pub(super) async fn finish_command(
+        mut self,
+        cleanup_incomplete: bool,
+    ) -> io::Result<(CaptureMetadata, Vec<ReportedTests>)> {
+        if !cleanup_incomplete {
+            self.stdout
+                .finish(&mut self.metadata.summary, &mut self.reports);
+            self.stderr
+                .finish(&mut self.metadata.summary, &mut self.reports);
+        }
         self.metadata.stdout_bytes = self.stdout.bytes;
         self.metadata.stderr_bytes = self.stderr.bytes;
         self.metadata.stdout_lines = self.stdout.line_count();
@@ -235,7 +269,57 @@ impl OutputWriter {
         let file = self.file.into_std().await;
         crate::util::fs_sync::sync_file(&file)?;
         crate::util::fs_sync::sync_parent(&self.path)?;
-        Ok(self.metadata)
+        let reports = self
+            .reports
+            .map(ReportCollector::finish)
+            .unwrap_or_default();
+        Ok((self.metadata, reports))
+    }
+
+    fn prepare(output_dir: &Path, output_id: &str, limits: OutputLimits) -> io::Result<PathBuf> {
+        if !(HEADER_BYTES as u64..=MAX_OUTPUT_BYTES).contains(&limits.max_output_bytes) {
+            return Err(invalid_output(
+                "output quota must be between 4096 bytes and 1 GiB",
+            ));
+        }
+        if limits.max_preview_bytes > MAX_READ_BYTES {
+            return Err(invalid_output("output preview must be at most 80000 bytes"));
+        }
+        let path = output_path(output_dir, output_id)?;
+        crate::util::fs_sync::create_dir_all(output_dir)?;
+        Ok(path)
+    }
+
+    async fn initialize(file: fs::File, path: PathBuf, limits: OutputLimits) -> io::Result<Self> {
+        let mut file = tokio::fs::File::from_std(file);
+        let metadata = CaptureMetadata::default();
+        file.write_all(&encode_header(&metadata)?).await?;
+        file.flush().await?;
+        Ok(Self {
+            file,
+            path,
+            file_bytes: HEADER_BYTES as u64,
+            quota: limits.max_output_bytes,
+            metadata,
+            stdout: StreamSummary::default(),
+            stderr: StreamSummary::default(),
+            reports: None,
+        })
+    }
+}
+
+pub(crate) struct OutputDraft {
+    path: tempfile::TempPath,
+    destination: PathBuf,
+}
+
+impl OutputDraft {
+    pub(crate) fn publish(self) -> io::Result<()> {
+        crate::util::fs_sync::rename(&self.path, &self.destination)
+    }
+
+    pub(crate) fn discard(self) -> io::Result<()> {
+        self.path.close()
     }
 }
 
@@ -249,13 +333,18 @@ struct StreamSummary {
 }
 
 impl StreamSummary {
-    fn observe(&mut self, bytes: &[u8], summary: &mut Vec<String>) {
+    fn observe(
+        &mut self,
+        bytes: &[u8],
+        summary: &mut Vec<String>,
+        reports: &mut Option<ReportCollector>,
+    ) {
         self.bytes = self.bytes.saturating_add(bytes.len() as u64);
         for &byte in bytes {
             self.last_newline = byte == b'\n';
             if self.last_newline {
                 self.newlines = self.newlines.saturating_add(1);
-                self.finish(summary);
+                self.finish(summary, reports);
             } else if self.pending.len() < MAX_PENDING_LINE_BYTES {
                 self.pending.push(byte);
             } else {
@@ -264,9 +353,14 @@ impl StreamSummary {
         }
     }
 
-    fn finish(&mut self, summary: &mut Vec<String>) {
-        let (text, _) = display_text(&self.pending, true, !self.long_line);
+    fn finish(&mut self, summary: &mut Vec<String>, reports: &mut Option<ReportCollector>) {
+        let (text, lossy) = display_text(&self.pending, true, !self.long_line);
         let text = text.trim();
+        if !self.long_line && !lossy {
+            if let Some(reports) = reports {
+                reports.observe(text);
+            }
+        }
         if !self.long_line && is_summary_line(text) {
             let mut line = text
                 .chars()
@@ -295,7 +389,29 @@ pub(crate) fn read_output(
     request: OutputRead,
 ) -> io::Result<OutputChunk> {
     validate_read(&request)?;
-    let mut file = fs::File::open(output_path(output_dir, output_id)?)?;
+    read_open_output(open_output(output_dir, output_id)?, output_id, request)
+}
+
+pub(crate) fn open_output(output_dir: &Path, output_id: &str) -> io::Result<fs::File> {
+    fs::File::open(output_path(output_dir, output_id)?)
+}
+
+pub(crate) fn capture_metadata(output_dir: &Path, output_id: &str) -> io::Result<CaptureMetadata> {
+    decode_header(&mut open_output(output_dir, output_id)?)
+}
+
+pub(crate) fn framed_bytes(payload: u64) -> u64 {
+    (HEADER_BYTES as u64)
+        .saturating_add(payload)
+        .saturating_add(payload.div_ceil(MAX_FRAME_BYTES as u64) * FRAME_HEADER_BYTES as u64)
+}
+
+pub(crate) fn read_open_output(
+    mut file: fs::File,
+    output_id: &str,
+    request: OutputRead,
+) -> io::Result<OutputChunk> {
+    validate_read(&request)?;
     let metadata = decode_header(&mut file)?;
     let mut window = OutputWindow::default();
     let mut logical_offset = 0;
@@ -415,7 +531,12 @@ impl OutputWindow {
     }
 }
 
-fn output_path(output_dir: &Path, output_id: &str) -> io::Result<PathBuf> {
+pub(crate) fn output_path(output_dir: &Path, output_id: &str) -> io::Result<PathBuf> {
+    validate_output_id(output_id)?;
+    Ok(output_dir.join(format!("{output_id}.output")))
+}
+
+pub(crate) fn validate_output_id(output_id: &str) -> io::Result<()> {
     if output_id.is_empty()
         || output_id.len() > 128
         || !output_id
@@ -426,7 +547,7 @@ fn output_path(output_dir: &Path, output_id: &str) -> io::Result<PathBuf> {
             "output id must contain 1-128 ASCII letters, digits, '-' or '_'",
         ));
     }
-    Ok(output_dir.join(format!("{output_id}.output")))
+    Ok(())
 }
 
 fn encode_header(metadata: &CaptureMetadata) -> io::Result<[u8; HEADER_BYTES]> {

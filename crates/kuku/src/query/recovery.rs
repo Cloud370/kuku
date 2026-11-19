@@ -8,7 +8,6 @@ use super::helpers::{append_model_error, append_turn_interrupted, now_timestamp}
 use super::request::RecoveredRequest;
 use super::types::{ModelRecoveryInfo, PendingRun, PendingStep, StreamingChunkState, UiEvent};
 
-const MAX_REQUEST_LOOP: u64 = 20;
 const MAX_RECOVERY_ATTEMPTS: u8 = 1;
 const RECOVERY_SUFFIX_OVERHEAD_BYTES: usize = 128;
 
@@ -28,9 +27,6 @@ pub(super) async fn schedule(
     let next_request_num = pending.request_num.checked_add(1).ok_or_else(|| {
         Error::InvalidEventStream("provider request id overflow during recovery".to_string())
     })?;
-    if next_request_num > MAX_REQUEST_LOOP {
-        return interrupt(pending, "loop_limit");
-    }
     let Some(base) = pending.request_base.as_ref() else {
         return interrupt(pending, "length");
     };
@@ -97,7 +93,7 @@ fn preflight_context(
                 .expect("resolved runtime exists")
                 .config,
         ),
-        Some(base.max_output_tokens()),
+        base.max_output_tokens(),
         Some(estimated_input),
     );
     let suffix_tokens = conservative_suffix_tokens(base.recovery_asset().text.len())?;
@@ -229,13 +225,14 @@ async fn dispatch_recovery(
 
 fn interrupt(mut pending: PendingRun, reason: &str) -> Result<PendingStep> {
     let message = if reason == "length" && pending.recovery_count > 0 {
-        let max_output_tokens = pending
+        let limit = pending
             .request_base
             .as_ref()
-            .map(super::request::OwnedRequestBase::max_output_tokens)
-            .unwrap_or_default();
+            .and_then(super::request::OwnedRequestBase::max_output_tokens)
+            .map(|limit| format!("max_output_tokens={limit}"))
+            .unwrap_or_else(|| "the provider's output limit".to_string());
         format!(
-            "model reached max_output_tokens={max_output_tokens} after recovery attempt {}/{}; the turn remains incomplete",
+            "model reached {limit} after recovery attempt {}/{}; the turn remains incomplete",
             pending.recovery_count, MAX_RECOVERY_ATTEMPTS
         )
     } else {

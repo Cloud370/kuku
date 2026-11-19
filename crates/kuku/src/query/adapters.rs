@@ -15,7 +15,7 @@ use crate::tool::builtin::run_command::output::{
 use crate::tool::{ToolFaults, ToolResultEnvelope};
 use crate::{ModelRequest, Result};
 
-use super::slots::CommandOutputSpec;
+use super::slots::RetainedOutputSpec;
 use super::types::{ExecSlot, PendingRun, SlotEvent, ToolKind};
 
 pub(super) async fn model_stream(
@@ -54,9 +54,12 @@ fn model_failure(error: crate::Error) -> ProviderFailure {
         message: error.to_string(),
         status: None,
         provider_request_id: None,
+        retry_after: None,
         retryable: matches!(
             kind,
-            ProviderFailureKind::Transport | ProviderFailureKind::ProviderUnavailable
+            ProviderFailureKind::Transport
+                | ProviderFailureKind::ProviderUnavailable
+                | ProviderFailureKind::RateLimited
         ),
     }
 }
@@ -64,7 +67,7 @@ fn model_failure(error: crate::Error) -> ProviderFailure {
 pub(super) fn spawn_tool(
     registered: RegisteredTool,
     action: ToolAuthorization,
-    output: CommandOutputSpec,
+    output: RetainedOutputSpec,
     event_tx: mpsc::Sender<(String, SlotEvent)>,
 ) -> ExecSlot {
     let cancel = Arc::new(Notify::new());
@@ -91,13 +94,14 @@ pub(super) fn spawn_tool(
         label,
         cancel,
         nested_permissions: Arc::new(Mutex::new(HashMap::new())),
+        job: None,
     }
 }
 
 async fn execute_tool(
     registered: RegisteredTool,
     action: ToolAuthorization,
-    mut output: CommandOutputSpec,
+    mut output: RetainedOutputSpec,
     cancel: Arc<Notify>,
 ) -> Result<ToolResultEnvelope> {
     output.limits.max_preview_bytes = output
@@ -153,7 +157,7 @@ async fn capture_tool_result(
     registered: RegisteredTool,
     mut result: ToolOutput,
     mut writer: OutputWriter,
-    output: CommandOutputSpec,
+    mut output: RetainedOutputSpec,
 ) -> Result<ToolResultEnvelope> {
     write_bytes(&mut writer, result.content.as_bytes()).await?;
     let data = match result.data.take() {
@@ -170,6 +174,7 @@ async fn capture_tool_result(
         None => None,
     };
     let metadata = writer.finish(result.cleanup_incomplete).await?;
+    output.retention.keep();
     let chunk = read_output(
         &output.dir,
         &output.id,
@@ -208,6 +213,7 @@ async fn capture_tool_result(
             cleanup_incomplete: metadata.cleanup_incomplete,
             ..Default::default()
         },
+        supplied_full_write: false,
         structured: Some(
             serde_json::json!({"kind":"host_tool_result","tool":registered.spec.name,"data":data,"output_id":output.id,
             "output_ref":{"id":output.id,"offset":0,"bytes":metadata.stored_bytes},"capture_complete":!metadata.quota_truncated && !metadata.cleanup_incomplete,

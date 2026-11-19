@@ -1,7 +1,9 @@
+use crate::execution::OutputReference;
+use crate::tool::builtin::run_command::output::validate_output_id;
 use crate::{Error, Result};
 
 use super::record::{fingerprint, validate_address, validate_key};
-use super::{AgentConfig, Input, InputSource, Receipt, Session};
+use super::{AgentConfig, Input, InputSource, Receipt, Session, MAX_INPUT_VALUES};
 
 impl Session {
     /// Find a committed command receipt without accepting or activating work.
@@ -45,7 +47,16 @@ impl Session {
 
     /// Verify a delivered input's receipt without committing or activating work.
     pub fn input_receipt(&self, input: &Input) -> Result<Option<Receipt>> {
-        let digest = input_fingerprint(input)?;
+        self.input_receipt_with_values(input, &[])
+    }
+
+    /// Verify a delivered input and its exact output references against a committed receipt.
+    pub fn input_receipt_with_values(
+        &self,
+        input: &Input,
+        values: &[OutputReference],
+    ) -> Result<Option<Receipt>> {
+        let digest = input_fingerprint_with_values(input, values)?;
         self.inner
             .state
             .lock()
@@ -79,6 +90,13 @@ impl Session {
 }
 
 pub(super) fn input_fingerprint(input: &Input) -> Result<String> {
+    input_fingerprint_with_values(input, &[])
+}
+
+pub(super) fn input_fingerprint_with_values(
+    input: &Input,
+    values: &[OutputReference],
+) -> Result<String> {
     validate_key(&input.command_id)?;
     validate_address(&input.target)?;
     if let Some(skill) = &input.bootstrap_skill {
@@ -108,7 +126,19 @@ pub(super) fn input_fingerprint(input: &Input) -> Result<String> {
             "input source or correlation exceeds 256 bytes".into(),
         ));
     }
-    fingerprint(&("send", input))
+    if values.is_empty() {
+        return fingerprint(&("send", input));
+    }
+    if values.len() > MAX_INPUT_VALUES {
+        return Err(Error::InvalidArgument(format!(
+            "input can attach at most {MAX_INPUT_VALUES} outputs"
+        )));
+    }
+    for reference in values {
+        validate_output_id(&reference.id)
+            .map_err(|error| Error::InvalidArgument(error.to_string()))?;
+    }
+    fingerprint(&("send", input, values))
 }
 
 pub(super) fn permission_fingerprint(

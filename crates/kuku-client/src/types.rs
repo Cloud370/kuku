@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use crate::{
     AgentConfig, AgentSelection, AgentSnapshot, AgentStatus, InputStatus, ModelPhase,
-    PermissionRequest, QuestionRequest, QueuedInput, Receipt, StoredEvent,
+    OutputReference, PermissionRequest, QuestionRequest, QueuedInput, Receipt, StoredEvent,
 };
 
 /// The exact server-side workspace, Session, and Agent selected by a caller.
@@ -51,6 +51,9 @@ pub enum Action {
         text: String,
         /// The boundary where the Agent may accept the input.
         timing: Timing,
+        /// Exact saved output references attached to the input.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        values: Vec<OutputReference>,
         /// Optional Skill instructions selected for this input's acceptance boundary.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bootstrap_skill: Option<String>,
@@ -441,6 +444,8 @@ pub enum HistoryKind {
     ToolCall,
     /// Durable outcome of a tool invocation.
     ToolResult,
+    /// Durable terminal outcome of a background Job.
+    JobFinished,
     /// Persisted question request.
     Question,
     /// Persisted authorization request.

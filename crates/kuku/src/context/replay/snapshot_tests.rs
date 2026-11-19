@@ -1,8 +1,22 @@
-use super::effective_snapshot_events;
+use super::{effective_snapshot_events, SUPPLIED_FULL_WRITE};
 use crate::conversation::address::ConversationAddress;
-use crate::event::{EventPayload, RollbackScope, StoredEvent};
+use crate::event::{EventPayload, ModelStopReason, RollbackScope, StoredEvent};
 
 fn read_event(id: u64, turn: u64, conversation: Option<&str>) -> StoredEvent {
+    snapshot_event(
+        id,
+        turn,
+        conversation,
+        serde_json::json!({"kind": "file_content"}),
+    )
+}
+
+fn snapshot_event(
+    id: u64,
+    turn: u64,
+    conversation: Option<&str>,
+    facts: serde_json::Value,
+) -> StoredEvent {
     StoredEvent {
         id,
         payload: EventPayload::ToolResult {
@@ -18,9 +32,53 @@ fn read_event(id: u64, turn: u64, conversation: Option<&str>) -> StoredEvent {
             files_changed: Vec::new(),
             commands_run: Vec::new(),
             memory_changed: None,
-            structured: Some(serde_json::json!({"kind": "file_content"})),
+            structured: Some(facts),
         },
     }
+}
+
+#[test]
+fn legacy_full_write_requires_a_later_response_in_the_effective_conversation() {
+    let response = |id, agent: &str| StoredEvent {
+        id,
+        payload: EventPayload::ModelResponse {
+            conversation: Some(agent.into()),
+            turn: 1,
+            ts: String::new(),
+            request_id: format!("req_{id}"),
+            text: String::new(),
+            thinking: None,
+            stop_reason: Some(ModelStopReason::ToolUse),
+            input_tokens_total: None,
+            output_tokens_total: None,
+        },
+    };
+    let write = snapshot_event(
+        2,
+        1,
+        Some("main"),
+        serde_json::json!({
+            "kind": "file_write", "canonical_path": "fixture.txt", "commit_state": "committed",
+            "content_hash_after": "digest", (SUPPLIED_FULL_WRITE): true,
+        }),
+    );
+    let snapshots = |events: &[StoredEvent]| {
+        ids(effective_snapshot_events(
+            events,
+            &ConversationAddress::MAIN,
+        ))
+    };
+    let mut events = vec![response(1, "main"), write, response(3, "reviewer")];
+    assert!(snapshots(&events).is_empty());
+
+    events.push(response(4, "main"));
+    assert_eq!(vec![2], snapshots(&events));
+    events.push(rollback_for(5, "main", 1, 3));
+    assert!(snapshots(&events).is_empty());
+
+    events.pop();
+    events.push(handoff(5, 1, 0));
+    assert!(snapshots(&events).is_empty());
 }
 
 fn rollback_for(id: u64, conversation: &str, to_turn: u64, to_event_id: u64) -> StoredEvent {

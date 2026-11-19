@@ -2,11 +2,12 @@ use std::sync::Arc;
 
 use tokio::sync::watch;
 
+use crate::event::{EventPayload, EventStore};
 use crate::query::{PermissionChoice, UiEvent};
 use crate::{Error, Result};
 
 use super::boundary::TurnWork;
-use super::record::{Record, State};
+use super::record::{timestamp, Record, State};
 use super::{ensure_open, Activation, AgentStatus, InputSource, Session, Worker};
 
 enum DriveFailure {
@@ -353,7 +354,9 @@ impl Session {
         if let Some(tier) = &config.tier {
             query = query.tier(tier);
         }
-        query = query.max_output_tokens(self.resolve_model(&config)?.max_output_tokens);
+        if let Some(max_output_tokens) = config.max_output_tokens {
+            query = query.max_output_tokens(max_output_tokens);
+        }
         if let Some(prompts_dir) = &self.inner.options.prompts_dir {
             query = query.prompts_dir(prompts_dir);
         }
@@ -451,6 +454,9 @@ impl Session {
         let (DriveFailure::Execution(error) | DriveFailure::Cleanup(error)) = failure;
         let usage = agent.pending_usage();
         let turn = agent.snapshot.turn.filter(|_| !agent.accepted.is_empty());
+        if let Some(turn) = turn {
+            self.interrupt_open_turn(address, turn, error.code())?;
+        }
         self.commit(
             &mut state,
             Record::TurnSettled {
@@ -463,6 +469,52 @@ impl Session {
             },
         )?;
         state.agent_mut(address)?.active_epoch = None;
+        Ok(())
+    }
+
+    fn interrupt_open_turn(&self, address: &str, turn: u64, reason: &str) -> Result<()> {
+        let mut cursor = turn;
+        let mut started = false;
+        loop {
+            let events = self.events(cursor, 128)?;
+            if events.is_empty() {
+                break;
+            }
+            for event in events {
+                cursor = event.id;
+                match event.payload {
+                    EventPayload::TurnStarted {
+                        conversation,
+                        turn: target,
+                        ..
+                    } if conversation == address && target == turn => started = true,
+                    EventPayload::TurnCompleted {
+                        conversation,
+                        turn: target,
+                        ..
+                    }
+                    | EventPayload::TurnCancelled {
+                        conversation,
+                        turn: target,
+                        ..
+                    }
+                    | EventPayload::TurnInterrupted {
+                        conversation,
+                        turn: target,
+                        ..
+                    } if conversation == address && target == turn => return Ok(()),
+                    _ => {}
+                }
+            }
+        }
+        if started {
+            EventStore::open(self.events_path())?.append(EventPayload::TurnInterrupted {
+                ts: timestamp()?,
+                conversation: address.into(),
+                turn,
+                reason: reason.into(),
+            })?;
+        }
         Ok(())
     }
 

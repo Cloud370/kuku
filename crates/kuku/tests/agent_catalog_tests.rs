@@ -20,6 +20,7 @@ fn catalog_does_not_leak_full_instructions() {
     assert!(catalog.contains("- review:"));
     assert!(catalog.contains("- explore:"));
     assert!(catalog.contains("Available contacts:"));
+    assert!(!catalog.contains("open conversations:"));
 }
 
 #[test]

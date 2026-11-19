@@ -5,14 +5,18 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::event::{EventPayload, StoredEvent};
+use crate::execution::OutputReference;
 use crate::{Error, Result};
 
+use super::jobs::{JobCompletion, JobIndex, JOB_DELIVERY_PREFIX};
 use super::observe::ReplyPreview;
+use super::retention::{CaptureOrigin, OutputStore};
 use super::types::{
     AgentConfig, AgentSnapshot, AgentStatus, AgentView, Input, InputStatus, PendingInput,
     QuestionRequest, Receipt, UsageTotals,
 };
 use super::usage::AgentUsage;
+use super::values::{NamedBinding, ValueState};
 use super::TurnIndex;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,6 +67,25 @@ pub(super) enum Record {
         input: Input,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         config: Option<AgentConfig>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        values: Vec<OutputReference>,
+    },
+    OutputOwned {
+        agent: String,
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_call_id: Option<String>,
+    },
+    NamedValueSaved {
+        agent: String,
+        binding: NamedBinding,
+    },
+    OutputsPinned {
+        agent: String,
+        turn: u64,
+        ids: Vec<String>,
     },
     InputWithdrawal {
         command: Command,
@@ -139,6 +162,14 @@ pub(super) enum Record {
         address: String,
         message: String,
     },
+    JobFinished {
+        job_id: String,
+        agent: String,
+        turn: u64,
+        result: super::JobResult,
+        status: super::JobStatus,
+        delivery: Box<Input>,
+    },
     QuestionRequested {
         address: String,
         request: QuestionRequest,
@@ -176,6 +207,7 @@ pub(super) struct QueuedDelivery {
     pub(super) queued_at: u64,
     pub(super) receipt: Receipt,
     pub(super) input: Input,
+    pub(super) values: Vec<OutputReference>,
 }
 
 #[derive(Debug)]
@@ -192,6 +224,13 @@ pub(super) struct AgentState {
 }
 
 impl AgentState {
+    pub(super) fn submitted_inputs(&self) -> usize {
+        self.inbox
+            .iter()
+            .filter(|entry| !entry.input.command_id.starts_with(JOB_DELIVERY_PREFIX))
+            .count()
+    }
+
     pub(super) fn pending_usage(&self) -> UsageTotals {
         if self.accepted.is_empty() {
             UsageTotals::default()
@@ -250,9 +289,27 @@ pub(super) struct State {
     pub(super) closed: bool,
     pub(super) closed_cursor: u64,
     pub(super) cleanup_failures: BTreeMap<String, String>,
+    pub(super) outputs: OutputStore,
+    pub(super) values: ValueState,
+    pub(super) jobs: JobIndex,
 }
 
 impl State {
+    pub(super) fn acknowledge_job_result(&mut self, agent: &str, job_id: &str) -> Result<()> {
+        let command_id = format!("{JOB_DELIVERY_PREFIX}{job_id}");
+        let agent = self.agent_mut(agent)?;
+        if let Some(position) = agent
+            .inbox
+            .iter()
+            .position(|entry| entry.input.command_id == command_id)
+        {
+            agent.inbox.remove(position);
+            agent.update_inbox();
+            self.deliveries.insert(command_id, InputStatus::Accepted);
+        }
+        Ok(())
+    }
+
     pub(super) fn reduce(&mut self, event_id: u64, record: Record) -> Result<()> {
         match record {
             Record::SessionClaimed { claim } => self.creation = Some(claim),
@@ -308,11 +365,33 @@ impl State {
                 fingerprint,
                 input,
                 config,
+                values,
             } => {
                 if let Some(config) = config {
                     self.agent_mut(&input.target)?.set_config(config);
                 }
-                self.deliver(event_id, fingerprint, input)?;
+                self.deliver(event_id, fingerprint, input, values)?;
+            }
+            Record::OutputOwned {
+                agent,
+                id,
+                turn,
+                tool_call_id,
+            } => {
+                let origin = turn
+                    .zip(tool_call_id)
+                    .map(|(turn, tool_call_id)| CaptureOrigin { turn, tool_call_id });
+                self.outputs.claim_capture(&agent, &id, origin);
+                if let Some(turn) = turn {
+                    self.pin_current_turn(agent, turn, vec![id])?;
+                }
+            }
+            Record::NamedValueSaved { agent, binding } => {
+                self.outputs.claim(&agent, &binding.value.reference.id);
+                self.values.save(agent, binding);
+            }
+            Record::OutputsPinned { agent, turn, ids } => {
+                self.pin_current_turn(agent, turn, ids)?;
             }
             Record::InputWithdrawal {
                 command,
@@ -427,6 +506,11 @@ impl State {
                 input_ids,
                 turn,
             } => {
+                let admitted_turn = turn.unwrap_or(event_id);
+                let previous_turn = self.agent(&address)?.snapshot.turn;
+                if previous_turn != Some(admitted_turn) {
+                    self.values.release_turn(&address, previous_turn);
+                }
                 for id in &input_ids {
                     self.deliveries.insert(id.clone(), InputStatus::Accepted);
                 }
@@ -451,7 +535,7 @@ impl State {
                 }
                 agent.update_inbox();
                 agent.snapshot.status = AgentStatus::Running;
-                agent.snapshot.turn = Some(turn.unwrap_or(event_id));
+                agent.snapshot.turn = Some(admitted_turn);
                 agent.snapshot.execution_id.get_or_insert(event_id);
                 if agent.snapshot.active_config.is_none() {
                     agent.snapshot.active_config = Some(agent.snapshot.config.clone());
@@ -466,6 +550,10 @@ impl State {
                 turn,
                 usage,
             } => {
+                if !matches!(status, AgentStatus::Waiting | AgentStatus::Interrupted) {
+                    self.values
+                        .release_turn(&address, turn.or(self.agent(&address)?.snapshot.turn));
+                }
                 let agent = self.agent_mut(&address)?;
                 agent.reply_preview = None;
                 agent.snapshot.status = status;
@@ -500,6 +588,10 @@ impl State {
             } => {
                 if let Some(command) = command {
                     self.remember_command(command, event_id, address.clone());
+                }
+                if !cleanup_pending {
+                    self.values
+                        .release_turn(&address, self.agent(&address)?.snapshot.turn);
                 }
                 let agent = self.agent_mut(&address)?;
                 agent.reply_preview = None;
@@ -558,6 +650,23 @@ impl State {
                 agent.snapshot.status = AgentStatus::Idle;
             }
             Record::SessionClosed => {}
+            Record::JobFinished {
+                job_id,
+                agent,
+                turn: _,
+                result,
+                status,
+                delivery,
+            } => {
+                self.jobs.finish(JobCompletion {
+                    event_id,
+                    agent: &agent,
+                    job_id: &job_id,
+                    result: &result,
+                    status,
+                })?;
+                self.deliver(event_id, String::new(), *delivery, Vec::new())?;
+            }
             Record::CleanupFailed { address, message } => {
                 self.agent_mut(&address)?.snapshot.last_error = Some(message.clone());
                 self.cleanup_failures.insert(address, message);
@@ -578,7 +687,7 @@ impl State {
                 } else if agent.snapshot.status != AgentStatus::Running {
                     agent.snapshot.status = AgentStatus::Idle;
                 }
-                self.deliver(event_id, fingerprint, input)?;
+                self.deliver(event_id, fingerprint, input, Vec::new())?;
             }
         }
         Ok(())
@@ -588,6 +697,14 @@ impl State {
         self.agents.get_mut(address).ok_or_else(|| {
             Error::InvalidArgument(format!("agent '{address}' does not exist in this session"))
         })
+    }
+
+    fn pin_current_turn(&mut self, address: String, turn: u64, ids: Vec<String>) -> Result<()> {
+        let snapshot = &self.agent(&address)?.snapshot;
+        if snapshot.status == AgentStatus::Running && snapshot.turn == Some(turn) {
+            self.values.pin(address, turn, ids);
+        }
+        Ok(())
     }
 
     pub(super) fn agent(&self, address: &str) -> Result<&AgentState> {
@@ -673,7 +790,13 @@ impl State {
         }
     }
 
-    fn deliver(&mut self, event_id: u64, fingerprint: String, input: Input) -> Result<()> {
+    fn deliver(
+        &mut self,
+        event_id: u64,
+        fingerprint: String,
+        input: Input,
+        values: Vec<OutputReference>,
+    ) -> Result<()> {
         self.remember(
             input.command_id.clone(),
             fingerprint,
@@ -683,11 +806,13 @@ impl State {
         self.deliveries
             .insert(input.command_id.clone(), InputStatus::Queued);
         let receipt = self.commands[&input.command_id].1.clone();
+        self.values.grant(&input.target, &values);
         let agent = self.agent_mut(&input.target)?;
         agent.inbox.push_back(QueuedDelivery {
             queued_at: event_id,
             receipt,
             input,
+            values,
         });
         agent.update_inbox();
         Ok(())
@@ -735,6 +860,11 @@ pub(super) fn validate_key(key: &str) -> Result<()> {
     if key.is_empty() || key.len() > 128 {
         return Err(Error::InvalidArgument(
             "command identity must contain 1..=128 bytes".into(),
+        ));
+    }
+    if key.starts_with(JOB_DELIVERY_PREFIX) {
+        return Err(Error::InvalidArgument(
+            "command identity is reserved for Job completion".into(),
         ));
     }
     Ok(())

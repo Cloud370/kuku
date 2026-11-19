@@ -100,7 +100,7 @@ async fn command_mutation_finishes_before_same_run_edit_starts() {
                 "content": [
                     {"type": "text", "text": "Mutating the target."},
                     {"type": "tool_use", "id": "toolu_command", "name": "run_command", "input": {
-                        "command": "saved=$(cat race.txt); printf ready > command-read; while [ ! -f release-command ]; do sleep 0.01; done; printf '%s\\ncommand\\n' \"$saved\" > race.txt",
+                        "shell":"sh","cwd":".","command": "saved=$(cat race.txt); printf ready > command-read; while [ ! -f release-command ]; do sleep 0.01; done; printf '%s\\ncommand\\n' \"$saved\" > race.txt",
                         "timeout": 10,
                         "brief": "write from a captured copy"
                     }},
@@ -139,7 +139,7 @@ async fn command_mutation_finishes_before_same_run_edit_starts() {
     wait_for_file(&env.workspace.path().join("command-read")).await;
 
     let mut next_event = Box::pin(run.next());
-    let early_edit_request = std::future::poll_fn(|cx| {
+    let early_edit_event = std::future::poll_fn(|cx| {
         Poll::Ready(match next_event.as_mut().poll(cx) {
             Poll::Ready(event) => Some(event),
             Poll::Pending => None,
@@ -148,27 +148,22 @@ async fn command_mutation_finishes_before_same_run_edit_starts() {
     .await;
     drop(next_event);
 
-    let edit_end = if let Some(event) = early_edit_request {
-        let edit_start = event.unwrap().expect("queued edit event");
-        assert!(matches!(edit_start, UiEvent::ToolStart { ref id, .. } if id == "toolu_edit"));
-        let edit_end = next_tool_end(&mut run, "toolu_edit").await;
-        std::fs::write(env.workspace.path().join("release-command"), "go").unwrap();
-        let _ = next_tool_end(&mut run, "toolu_command").await;
-        edit_end
-    } else {
-        std::fs::write(env.workspace.path().join("release-command"), "go").unwrap();
-        let _ = next_tool_end(&mut run, "toolu_command").await;
-        let _ = next_tool_start(&mut run, "toolu_edit").await;
-        next_tool_end(&mut run, "toolu_edit").await
-    };
+    std::fs::write(env.workspace.path().join("release-command"), "go").unwrap();
+    assert!(
+        early_edit_event.is_none(),
+        "edit advanced while the command was active: {early_edit_event:?}"
+    );
+    let _ = next_tool_end(&mut run, "toolu_command").await;
+    let _ = next_tool_start(&mut run, "toolu_edit").await;
+    let edit_end = next_tool_end(&mut run, "toolu_edit").await;
 
     let (status, result) = tool_end_status(edit_end, "toolu_edit");
-    assert_eq!(status, "error");
+    assert_eq!("ok", status);
+    assert_eq!(1, result.unwrap()["replacement_count"]);
     assert_eq!(
-        result.unwrap()["reason_code"],
-        serde_json::Value::String("snapshot_stale".to_string())
+        "edited\ncommand\n",
+        std::fs::read_to_string(target).unwrap()
     );
-    assert_eq!(std::fs::read_to_string(target).unwrap(), "alpha\ncommand\n");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -201,7 +196,7 @@ async fn command_mutation_finishes_before_same_run_memory_write_starts() {
                 "role": "assistant",
                 "content": [
                     {"type": "tool_use", "id": "toolu_memory_command", "name": "run_command", "input": {
-                        "command": command,
+                        "shell":"sh","cwd":".","command": command,
                         "timeout": 10,
                         "brief": "restore captured memory"
                     }},
@@ -290,7 +285,7 @@ async fn read_only_tool_starts_while_ordered_tool_waits_for_active_mutation() {
                 "role": "assistant",
                 "content": [
                     {"type": "tool_use", "id": "toolu_blocking_command", "name": "run_command", "input": {
-                        "command": "printf ready > mixed-command-ready; while [ ! -f release-mixed-command ]; do sleep 0.01; done",
+                        "shell":"sh","cwd":".","command": "printf ready > mixed-command-ready; while [ ! -f release-mixed-command ]; do sleep 0.01; done",
                         "timeout": 10,
                         "brief": "wait for release"
                     }},

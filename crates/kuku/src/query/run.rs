@@ -16,13 +16,13 @@ use helpers::persist_blocked_tool_result;
 
 use super::helpers::{
     append_model_error, append_permission_decision, append_turn_cancelled, append_turn_interrupted,
-    display_summary, now_timestamp, permission_candidate, permission_rule,
+    display_summary, now_timestamp, permission_candidate,
 };
 use super::slots::requires_workspace_ordering;
 use super::tool_exec::{execute_tool_call, run_tool_pre_hooks};
 use super::types::{
     ModelPhase, PendingPermission, PendingRun, PendingStep, PermissionChoice, QueuedToolCall, Run,
-    RunState, SlotEvent, StreamingChunkState, UiEvent,
+    RunState, StreamingChunkState, UiEvent,
 };
 
 impl Drop for Run {
@@ -39,7 +39,7 @@ impl Drop for Run {
 
 impl Run {
     fn has_active_workspace_ordered_slot(&self) -> bool {
-        self.slots.values().any(|slot| slot.workspace_ordered)
+        self.holds_job() || self.slots.values().any(|slot| slot.workspace_ordered)
     }
 
     /// The session ID for this run.
@@ -122,34 +122,20 @@ impl Run {
         let event = loop {
             self.persist_deferred_runtime_logs();
 
+            if let Some(event) = self.promote_explicit_job()? {
+                break event;
+            }
             if matches!(&self.state, RunState::Pending(_)) {
                 if let Some(event) = self.try_process_queued_call().await? {
                     break self.defer_runtime_log_if_needed(event);
                 }
             }
-            if !self.slots.is_empty() {
-                let slot_event = tokio::select! {
-                    event = self.slot_event_rx.recv() => event,
-                    _ = self.cancel_token.notified() => None,
-                };
-                if let Some((tool_call_id, event)) = slot_event {
-                    match event {
-                        SlotEvent::Output(te) => {
-                            break UiEvent::ToolOutput {
-                                id: tool_call_id,
-                                event: te,
-                            };
-                        }
-                        SlotEvent::Done(result) => {
-                            let faults = result.faults;
-                            let event = self.finish_slot(&tool_call_id, result)?;
-                            if faults.output_persistence_failed || faults.cleanup_incomplete {
-                                self.cancel();
-                            }
-                            return Ok(Some(project(event, faults)));
-                        }
-                    }
+            let wait_for_job_input = self.job_wait_required()?;
+            if wait_for_job_input || !self.slots.is_empty() {
+                if let Some((event, faults)) = self.poll_tool(wait_for_job_input).await? {
+                    return Ok(Some(project(event, faults)));
                 }
+                continue;
             }
             match std::mem::replace(&mut self.state, RunState::Done(None)) {
                 RunState::Pending(pending) => {
@@ -186,9 +172,20 @@ impl Run {
         Ok(Some(project(event, ToolFaults::default())))
     }
 
-    fn finish_slot(&mut self, id: &str, envelope: ToolResultEnvelope) -> Result<UiEvent> {
+    pub(super) fn finish_slot(
+        &mut self,
+        id: &str,
+        envelope: ToolResultEnvelope,
+        job_wait: bool,
+    ) -> Result<UiEvent> {
         let slot = self.slots.remove(id).expect("slot must exist");
         self.state.record_tool_completion(&envelope.status);
+        let job_session = match &self.state {
+            RunState::Pending(pending) if job_wait => {
+                Some(super::runtime_tools::runtime_session(pending)?)
+            }
+            _ => None,
+        };
         let context = match &self.state {
             RunState::Pending(p) => Some((&p.events_path, p.turn)),
             RunState::Streaming(s) => Some((&s.pending.events_path, s.pending.turn)),
@@ -201,7 +198,13 @@ impl Run {
         };
         let (result, model_content) = match context {
             Some((path, turn)) => {
-                let result = super::tool_exec::write_tool_result(&slot, &envelope, path, turn)?;
+                let result = super::tool_exec::write_tool_result(
+                    &slot,
+                    &envelope,
+                    path,
+                    turn,
+                    job_session.as_ref(),
+                )?;
                 (
                     result,
                     (!envelope.model_content.is_empty()).then_some(envelope.model_content),
@@ -703,7 +706,7 @@ impl Run {
                 )));
             }
         };
-        let result = crate::tool::ToolResultEnvelope::cancelled("permission request cancelled");
+        let result = super::workspace_script::cancelled_permission(waiting)?;
         let mut store = EventStore::open(&waiting.pending.events_path)?;
         store.append(EventPayload::ToolResult {
             turn: waiting.pending.turn,
@@ -751,23 +754,25 @@ impl Run {
             super::provider::ensure_resolved(&mut pending)?;
             super::runtime_tools::validate_prepared(&pending, &tool_call)?;
         }
-        let rule = permission_rule(
-            &pending.kuku_home,
-            &pending.workspace,
-            &tool_call.name,
-            &tool_call.args,
-        );
-        if matches!(choice, PermissionChoice::Project) {
-            append_project_allow_rule(
-                &pending.policy_path,
-                &tool_call.name,
-                &permission_candidate(
+        let (granted_tool, candidate) = if waiting.request.source == "workspace_script" {
+            (
+                waiting.request.tool.clone(),
+                waiting.request.candidate.clone(),
+            )
+        } else {
+            (
+                tool_call.name.clone(),
+                permission_candidate(
                     &pending.kuku_home,
                     &pending.workspace,
                     &tool_call.name,
                     &tool_call.args,
                 ),
-            )?;
+            )
+        };
+        let rule = format!("{granted_tool}({candidate})");
+        if matches!(choice, PermissionChoice::Project) {
+            append_project_allow_rule(&pending.policy_path, &granted_tool, &candidate)?;
         }
         append_permission_decision(
             &pending.events_path,
@@ -850,6 +855,7 @@ impl Run {
         let summary = display_summary(&tool_call.name, &hook_result.args, None);
         pending.record_tool_call(&tool_call.name);
         let (slot, tool_kind) = super::slots::dispatch_tool_slot(super::slots::SlotDispatchArgs {
+            capacity: crate::WorkspaceExecutionHost::default(),
             output: None,
             tool_name: tool_call.name.clone(),
             tool_id: tool_call.id.clone(),

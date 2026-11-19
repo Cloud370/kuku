@@ -958,6 +958,7 @@ impl OpenAiResponsesSseParser {
             message: TRUNCATED_STREAM_MESSAGE.to_string(),
             status: None,
             provider_request_id: None,
+            retry_after: None,
             retryable: true,
         })
     }

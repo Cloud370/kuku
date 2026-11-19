@@ -1,12 +1,15 @@
 use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use kuku_client::{Acknowledgement, Action, Receipt};
+use kuku_client::{
+    Acknowledgement, Action, Input, InputSource, InputStatus, InputTiming, JobSnapshot, JobStatus,
+    NamedValue, NamedValueKind, NamedValueSource, OutputReference, Receipt, Timing,
+};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 use serde_json::json;
 
-use crate::app::{App, Modal};
+use crate::app::{App, KeyboardFocus, Modal};
 use crate::jobs::{Job, Search, Update};
 use crate::menu::{Choice, ChoiceKind, PickerKind, PromptKind};
 
@@ -23,6 +26,173 @@ fn connected_app() -> App {
 
 fn press(app: &mut App, code: KeyCode) {
     app.key(KeyEvent::new(code, KeyModifiers::NONE));
+}
+
+#[test]
+fn jobs_picker_lists_ids_and_cancels_the_selected_job() {
+    let mut app = connected_app();
+    app.pane_mut().exists = true;
+    press(&mut app, KeyCode::Char('/'));
+    app.paste("jobs");
+    press(&mut app, KeyCode::Enter);
+    let Some(Job::Find(ticket, Search::Jobs(target))) = app.effects.pop() else {
+        panic!("jobs picker should query the selected Agent");
+    };
+    assert_eq!(target, app.selection().target);
+    let mut job: JobSnapshot = serde_json::from_value(json!({
+        "id": "job-1", "agent": "main", "turn": 1, "tool_call_id": "call-1",
+        "tool": "run_command", "status": "running", "summary": "Run tests", "started_at": 6,
+    }))
+    .unwrap();
+    app.update(Update::Found(
+        ticket,
+        Ok((
+            vec![Choice::new(
+                "job-1",
+                "Running",
+                ChoiceKind::BackgroundJob(Box::new(job.clone())),
+            )],
+            String::new(),
+        )),
+    ));
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+        if matches!(picker.kind, PickerKind::Jobs)
+            && picker.visible_choices()[0].label == "job-1"
+            && picker.visible_choices()[0].detail == "Running"));
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+        if matches!(picker.kind, PickerKind::JobActions)
+            && picker.visible_choices()[0].label == "Cancel job"));
+    press(&mut app, KeyCode::Enter);
+    assert!(
+        matches!(app.effects.last(), Some(Job::CancelBackground(selection, id))
+        if selection.target == target && id == "job-1")
+    );
+    job.status = JobStatus::Cancelled;
+    app.update(Update::BackgroundJobCancelled(app.selection(), Ok(job)));
+    assert!(matches!(&app.notice, Some(notice) if notice.text == "job-1 · Cancelled"));
+}
+
+#[test]
+fn slash_jobs_cancel_works_typed_or_pasted_without_submitting_a_turn() {
+    let mut app = connected_app();
+    app.pane_mut().exists = true;
+    let selection = app.selection();
+    press(&mut app, KeyCode::Char('/'));
+    app.paste("jobs cancel job-7");
+    press(&mut app, KeyCode::Enter);
+    assert!(
+        matches!(app.effects.last(), Some(Job::CancelBackground(target, id))
+        if target == &selection && id == "job-7")
+    );
+
+    app.effects.clear();
+    app.paste("/jobs cancel job-8");
+    press(&mut app, KeyCode::Enter);
+    assert!(
+        matches!(app.effects.as_slice(), [Job::CancelBackground(target, id)]
+        if target == &selection && id == "job-8")
+    );
+    assert!(app.pane().draft.text().is_empty());
+}
+
+#[test]
+fn naming_a_paste_before_any_prompt_saves_text_and_attaches_the_exact_reference() {
+    let mut app = connected_app();
+    press(&mut app, KeyCode::Char('/'));
+    app.paste("save");
+    press(&mut app, KeyCode::Enter);
+    assert!(
+        matches!(&app.modal, Some(Modal::Prompt(prompt)) if matches!(prompt.kind, PromptKind::SavePaste))
+    );
+
+    let input = "preserve these\n中文 values";
+    app.paste(input);
+    press(&mut app, KeyCode::Enter);
+    app.paste("baseline");
+    press(&mut app, KeyCode::Enter);
+    let mut jobs = std::mem::take(&mut app.effects);
+    let Some(Job::SaveValue(selection, save)) = jobs.pop() else {
+        panic!("the paste needs a value save");
+    };
+    assert!(!jobs.iter().any(|job| matches!(job, Job::Save(_))));
+    assert_eq!("baseline", save.name);
+    assert_eq!(NamedValueSource::Text(input.into()), save.source);
+    assert!(save.create.is_some());
+    assert_eq!(input, app.pane().draft.text());
+
+    let reference = OutputReference {
+        id: "saved-paste".into(),
+        offset: 0,
+        bytes: input.len() as u64,
+    };
+    let value = NamedValue {
+        name: save.name,
+        kind: NamedValueKind::Text,
+        reference: reference.clone(),
+    };
+    app.update(Update::ValueSaved(
+        selection,
+        Some(input.into()),
+        Ok(value.clone()),
+    ));
+    assert!(app.pane().exists);
+    assert!(app.pane().draft.text().is_empty());
+
+    app.open_value(value);
+    press(&mut app, KeyCode::Enter);
+    app.paste("Review the attached facts");
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(app.effects.last(), Some(Job::Save(command))
+        if matches!(&command.action, Action::Send { text, create: None, values, .. }
+            if text == "Review the attached facts" && *values == [reference])));
+}
+
+#[test]
+fn queued_input_is_selected_inline_after_its_receipt_appears_in_snapshot() {
+    let mut app = connected_app();
+    app.pane_mut().exists = true;
+    app.paste("queued text");
+    app.send(Timing::NextTurn);
+    let Some(Job::Save(command)) = app.effects.pop() else {
+        panic!("queued input should be locally pending");
+    };
+    let receipt = Receipt {
+        agent: command.target.agent,
+        command_id: command.command_id.clone(),
+        event_id: 7,
+    };
+    app.update(Update::Sent(
+        command.command_id.clone(),
+        Ok(Acknowledgement {
+            receipt: receipt.clone(),
+            status: Some(InputStatus::Queued),
+            replayed: false,
+        }),
+    ));
+    press(&mut app, KeyCode::Up);
+    assert!(app.modal.is_none());
+    assert!(matches!(app.pane().keyboard_focus, KeyboardFocus::Composer));
+    let input_id = command.command_id.clone();
+    let mut input = Input::new(input_id.clone(), "main", "queued text");
+    input.source = InputSource::Host("http".into());
+    input.timing = InputTiming::NextTurn;
+    let snapshot = serde_json::from_value(json!({
+        "session_id":app.active.session,"workspace":app.workspace,"cursor":7,
+        "agent":{"address":"main","status":"running","config":{},"pending_inputs":1,
+                 "usage":{"model_requests":0,"unreported_requests":0}},
+        "agents":[],
+        "pending":[{"receipt":receipt,"input":input}]
+    }))
+    .unwrap();
+    let selection = app.selection();
+    app.update(Update::Refreshed(selection, Ok(Box::new(snapshot))));
+    press(&mut app, KeyCode::Up);
+    assert!(matches!(app.pane().keyboard_focus, KeyboardFocus::Queue));
+    assert_eq!(
+        Some(input_id.as_str()),
+        app.pane().selected_queue_input.as_deref()
+    );
 }
 
 #[test]

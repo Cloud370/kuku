@@ -1,8 +1,8 @@
 use std::io::{self, IsTerminal, Write};
 use std::time::Instant;
 
-use kuku::{ModelRecoveryInfo, ToolKind};
-use kuku_client::{AgentSnapshot, AgentStatus};
+use kuku::ModelRecoveryInfo;
+use kuku_client::{AgentSnapshot, AgentStatus, HistoryEntry, HistoryKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -25,7 +25,6 @@ enum Preview {
         id: String,
         tool: String,
         summary: String,
-        kind: ToolKind,
     },
     ToolEnd {
         id: String,
@@ -60,7 +59,6 @@ pub(super) struct RunRenderer {
     rendered_text: String,
     in_thinking: bool,
     thinking_start: Option<Instant>,
-    tool_conversations: std::collections::HashMap<String, String>,
 }
 
 impl RunRenderer {
@@ -79,7 +77,6 @@ impl RunRenderer {
             rendered_text: String::new(),
             in_thinking: false,
             thinking_start: None,
-            tool_conversations: std::collections::HashMap::new(),
         }
     }
 
@@ -119,19 +116,9 @@ impl RunRenderer {
                     }
                 }
             }
-            Preview::ToolStart {
-                id,
-                tool,
-                summary,
-                kind,
-            } => {
+            Preview::ToolStart { id, tool, summary } => {
                 self.close_thinking();
-                if let Some(conversation) = conversation_for_tool_kind(&kind) {
-                    self.tool_conversations.insert(id.clone(), conversation);
-                }
-                if self.stream_json {
-                    write_json(&tool_call_line(tool, id, summary, &kind))?;
-                } else {
+                if !self.stream_json {
                     println!("\n{}", self.display.tool_call(&tool, &summary, &id));
                 }
             }
@@ -140,10 +127,7 @@ impl RunRenderer {
                 status,
                 summary,
             } => {
-                if self.stream_json {
-                    let conversation = self.tool_conversations.remove(&id);
-                    write_json(&tool_result_line(id, status, summary, conversation))?;
-                } else {
+                if !self.stream_json {
                     println!("{}", self.display.tool_result(&status, &summary, &id));
                 }
             }
@@ -165,6 +149,27 @@ impl RunRenderer {
                 if self.stream_json {
                     write_json(&event)?;
                 }
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn committed(&mut self, entry: &HistoryEntry) -> CliResult {
+        if entry.kind == HistoryKind::JobFinished {
+            if self.stream_json {
+                write_json(entry)?;
+            } else if !self.json {
+                let detail = |key| entry.details[key].as_str().unwrap_or_default();
+                println!(
+                    "Job {} {} · {}",
+                    detail("job_id"),
+                    detail("status"),
+                    detail("summary")
+                );
+            }
+        } else if self.stream_json {
+            if let Some(result) = tool_record(entry) {
+                write_json(&result)?;
             }
         }
         Ok(())
@@ -256,30 +261,48 @@ pub(super) fn write_json(record: &impl Serialize) -> CliResult {
     Ok(())
 }
 
-pub(super) fn conversation_for_tool_kind(kind: &ToolKind) -> Option<String> {
-    match kind {
-        ToolKind::Agent { conversation, .. } => Some(conversation.as_str().into()),
-        _ => None,
-    }
-}
-
-pub(super) fn tool_call_line(
-    tool: String,
-    id: String,
-    summary: String,
-    kind: &ToolKind,
-) -> OutputLine {
-    OutputLine::tool_call(tool, id, summary, Value::Null)
-        .with_conversation(conversation_for_tool_kind(kind))
-}
-
-pub(super) fn tool_result_line(
-    id: String,
-    status: String,
-    summary: String,
-    conversation: Option<String>,
-) -> OutputLine {
-    OutputLine::tool_result(id, status, summary, None, false).with_conversation(conversation)
+pub(super) fn tool_record(entry: &HistoryEntry) -> Option<OutputLine> {
+    let text = |key| entry.details.get(key).and_then(Value::as_str);
+    let id = text("tool_call_id")?.to_owned();
+    let record = match entry.kind {
+        HistoryKind::ToolCall => {
+            let name = text("tool")?;
+            let args = entry.details.get("args").cloned().unwrap_or_default();
+            let summary = args["brief"].as_str().unwrap_or(name).to_owned();
+            OutputLine::tool_call(name.to_owned(), id, summary, args)
+        }
+        HistoryKind::ToolResult => OutputLine::tool_result(
+            id,
+            text("status")?.to_owned(),
+            text("summary").unwrap_or_default().to_owned(),
+            text("model_content").map(str::to_owned),
+            entry
+                .details
+                .get("truncated")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        )
+        .with_structured(
+            entry
+                .details
+                .get("structured")
+                .filter(|value| !value.is_null())
+                .cloned(),
+        ),
+        HistoryKind::User
+        | HistoryKind::Assistant
+        | HistoryKind::Question
+        | HistoryKind::Permission
+        | HistoryKind::QuestionReply
+        | HistoryKind::PermissionReply
+        | HistoryKind::Error
+        | HistoryKind::Status
+        | HistoryKind::TurnSummary
+        | HistoryKind::JobFinished
+        | HistoryKind::Retry
+        | HistoryKind::Other => return None,
+    };
+    Some(record.with_conversation(Some(entry.agent.clone())))
 }
 
 pub(super) fn nested_model_recovery(event: &Value) -> Option<ModelRecoveryInfo> {

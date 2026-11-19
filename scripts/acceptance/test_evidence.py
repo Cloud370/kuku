@@ -1,14 +1,14 @@
 import copy
 import hashlib
 import json
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import subprocess
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
-from evidence import inspect_sdk, SessionFacts
+from evidence import comparison_path, inspect_sdk, SessionFacts
 
 
 class Fixture:
@@ -28,7 +28,7 @@ class Fixture:
         self.admit(0, {"role": "User", "blocks": [{"Text": "private workload must stay in original facts"}]})
         first = self.step("request-1", 1)
         self.model("request-1", "tool_use", "")
-        self.args = {"command": "printf done", "timeout": 3}
+        self.args = {"program": "printf", "args": ["done"], "cwd": ".", "timeout": 3}
         self.add("tool.call", conversation="main", turn=self.turn, request_id="request-1",
                  tool_call_id="call-1", tool="run_command", args=self.args, index=0)
         self.add("runtime.tool_prepared", agent="main", turn=self.turn, tool_call_id="call-1", args=self.args,
@@ -63,7 +63,8 @@ class Fixture:
                        "events_path": "/kuku/data/p/app/sessions/fixture/events.jsonl", "last_event_id": len(self.records),
                        "facts": {"tool_calls": 1, "tool_results": 1, "model_responses": 2, "prepared_steps": 2, "turns_completed": 1},
                        "provider_settings": [first, second], "provider_reports": [], "limits": {"max_steps": 12,
-                       "max_request_bytes": 65536, "max_output_tokens": 4096, "automatic_retries": 0},
+                       "max_request_bytes": 65536, "max_context_tokens": 131072, "max_output_tokens": 4096,
+                       "automatic_retries": 0},
                        "runtime_completed": True, "error": None, "cleanup": {"closed": True}}
 
     def add(self, kind, **fields):
@@ -151,12 +152,65 @@ class Fixture:
         self.report["facts"] = {key: value * 2 for key, value in self.report["facts"].items()}
         self.report["agent"]["turn"] = self.turn
 
-    def inspect(self):
+    def inspect(self, **options):
         self.write()
-        return inspect_sdk(self.report_path, self.data, "fixture", "/kuku/data", "fixture")
+        return inspect_sdk(self.report_path, self.data, "fixture", "/kuku/data", "fixture", **options)
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_metered_limits_can_declare_no_count_limit_and_one_retry(self):
+        limits = self.fixture.report["limits"]
+        limits.pop("max_steps")
+        limits.update(max_requests=None, automatic_retries=1)
+        evidence = self.fixture.inspect()
+        self.assertTrue(evidence["passed"], evidence.get("error"))
+        self.assertIsNone(evidence["limits"]["max_requests"])
+        self.assertEqual(evidence["limits"]["max_request_bytes"], 65536)
+        self.assertEqual(evidence["limits"]["max_context_tokens"], 131072)
+        self.assertEqual(evidence["limits"]["automatic_retries"], 1)
+        self.assertFalse(self.fixture.inspect(require_fixed_limits=True)["passed"])
+        limits["max_requests"] = 22
+        self.assertFalse(self.fixture.inspect(require_fixed_limits=True)["passed"])
+        limits["automatic_retries"] = 0
+        self.assertTrue(self.fixture.inspect(require_fixed_limits=True)["passed"])
+
+    def test_ordinary_inspection_allows_no_host_output_ceiling(self):
+        self.fixture.report["limits"].update(max_requests=12, max_output_tokens=None)
+        evidence = self.fixture.inspect()
+        self.assertTrue(evidence["passed"], evidence.get("error"))
+        self.assertIsNone(evidence["limits"]["max_output_tokens"])
+        for options in ({"require_fixed_limits": True}, {"require_output_limit": True}):
+            evidence = self.fixture.inspect(**options)
+            self.assertFalse(evidence["passed"])
+            self.assertIn("requires a finite output token limit", evidence["error"])
+
+    def test_windows_extended_paths_preserve_drive_and_share_containment(self):
+        def within(path, root):
+            return comparison_path(PureWindowsPath(path)).is_relative_to(comparison_path(PureWindowsPath(root)))
+
+        self.assertTrue(within(r"\\?\W:\accept\sessions\events.jsonl", r"w:\accept"))
+        self.assertTrue(within(r"w:\accept\events.jsonl", r"\\?\W:\accept"))
+        self.assertFalse(within(r"\\?\W:\accept-other\events.jsonl", r"w:\accept"))
+        self.assertFalse(within(r"\\?\C:\accept\events.jsonl", r"w:\accept"))
+        self.assertTrue(within(r"\\?\UNC\host\share\data\events.jsonl", r"\\host\share\data"))
+        self.assertFalse(within(r"\\?\UNC\host\other\data\events.jsonl", r"\\host\share\data"))
+        self.assertFalse(within(r"\\?\UNC\other\share\data\events.jsonl", r"\\host\share\data"))
+
+    def test_receipt_list_can_be_a_valid_tool_result(self):
+        for event in self.fixture.records:
+            if event["kind"] == "tool.call":
+                event.update(tool="list_agents", args={"wait_for": "reviewer"})
+            elif event["kind"] == "runtime.tool_prepared":
+                event["definition"]["schema"]["name"] = "list_agents"
+            elif event["kind"] == "tool.result":
+                event["structured"] = [{"address": "reviewer", "status": "idle", "last_output": "checked"}]
+            elif event["kind"] == "runtime.context_admitted":
+                for block in event["message"]["blocks"]:
+                    if "ToolUse" in block:
+                        block["ToolUse"].update(name="list_agents", args={"wait_for": "reviewer"})
+        result = self.fixture.inspect()
+        self.assertTrue(result["passed"], result)
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.fixture = Fixture(Path(self.temporary.name))
@@ -397,6 +451,24 @@ class EvidenceTests(unittest.TestCase):
         self.assertIsNone(result["usage"]["input_tokens"])
         self.assertIsNone(result["usage"]["provider_reported_cost_usd"])
         self.assertEqual(result["usage"]["cost_ledger_basis"], "conservative_upper_bound")
+
+    def test_pre_stream_retry_counts_an_attempt_without_a_second_prepared_step(self):
+        fixture = self.fixture
+        index = next(i for i, event in enumerate(fixture.records) if event["kind"] == "runtime.model_usage")
+        retry = {"kind": "runtime.model_retry", "agent": "main", "turn": fixture.turn,
+                 "request_id": "request-1", "attempt": 2}
+        fixture.records[index:index] = [retry, dict(retry)]
+        fixture.renumber()
+        fixture.report["limits"]["automatic_retries"] = 1
+        fixture.totals.update(model_requests=3, unreported_requests=1)
+        result = fixture.inspect()
+        self.assertTrue(result["passed"], result)
+        self.assertEqual(2, result["facts"]["prepared_steps"])
+        for usage in (result["usage"], result["session_usage"]):
+            self.assertEqual(3, usage["requests"])
+            self.assertEqual(1, usage["unreported_requests"])
+            self.assertIsNone(usage["input_tokens"])
+            self.assertEqual(200, usage["reported_partial"]["input_tokens"])
 
     def test_zero_usage_for_nonempty_requests_does_not_establish_free_work(self):
         for event in self.fixture.records:

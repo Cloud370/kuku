@@ -4,15 +4,25 @@ mod boundary;
 mod controls;
 mod creation;
 mod driver;
+mod jobs;
 mod observe;
 mod receipts;
 mod record;
+mod retention;
 mod selection;
 mod turns;
 mod types;
 mod usage;
+mod values;
+mod workspace_host;
 
+pub(crate) use workspace_host::WorkspaceWorkerPermit;
+pub use workspace_host::{WorkspaceExecutionHost, WorkspaceExecutionMetrics};
+
+pub(crate) use jobs::JobRequest;
+pub(crate) use retention::{command_output_id, OutputReservation};
 pub(crate) use selection::resolve_agent_model;
+pub(crate) use values::OutputSelector;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -22,6 +32,7 @@ use tokio::sync::{broadcast, watch, Semaphore};
 use tokio::task::JoinHandle;
 
 use crate::event::{EventStore, StoredEvent};
+use crate::execution::OutputReference;
 use crate::{Error, Result};
 
 pub use crate::tool::builtin::run_command::output::{
@@ -31,8 +42,11 @@ pub use observe::{Observation, ReplyPreview, ReplyPreviews, SessionObserver};
 pub use turns::TurnIndex;
 pub use types::{
     Activation, AgentConfig, AgentSnapshot, AgentStatus, AgentView, Input, InputSource,
-    InputStatus, InputTiming, ModelUsageSample, PendingInput, QuestionRequest, Receipt,
-    RuntimeLimits, SessionOptions, TurnSummary, UsageTotals, Withdrawal,
+    InputStatus, InputTiming, JobResult, JobSnapshot, JobStatus, ModelUsageSample, PendingInput,
+    QuestionRequest, Receipt, RuntimeLimits, SessionOptions, TurnSummary, UsageTotals, Withdrawal,
+};
+pub use values::{
+    NamedValue, NamedValueKind, NamedValueSource, MAX_INPUT_VALUES, MAX_VALUE_NAME_BYTES,
 };
 
 use record::{fingerprint, validate_address, validate_key, Command, Record, State};
@@ -45,7 +59,9 @@ pub(crate) struct SessionInner {
     events_path: PathBuf,
     writer: Mutex<Option<EventStore>>,
     state: Mutex<State>,
+    value_writes: tokio::sync::Mutex<()>,
     workers: Mutex<HashMap<u64, Worker>>,
+    job_workers: Mutex<HashMap<String, jobs::JobWorker>>,
     settlement_failure: OnceLock<String>,
     live: broadcast::Sender<observe::LiveObservation>,
     model_capacity: Arc<Semaphore>,
@@ -132,8 +148,13 @@ impl Session {
         }
         let lease = SessionLease::acquire(events_path.clone())?;
         let mut writer = EventStore::open(&events_path)?;
-        let mut state = State::default();
-        writer.visit(|event| reduce_event(&mut state, event))?;
+        let output_dir = retention::output_dir(&events_path)?;
+        let mut state = State {
+            outputs: retention::OutputStore::recover(&output_dir)?,
+            ..State::default()
+        };
+        let mut job_replay = jobs::JobReplay::default();
+        writer.visit(|event| reduce_event(&mut state, &mut job_replay, event))?;
         creation::prepare_journal(
             &mut writer,
             &mut state,
@@ -145,20 +166,27 @@ impl Session {
             options.prompts_dir = claim.prompts_dir.clone();
         }
         state.mark_interrupted();
+        state.outputs.collect(
+            &output_dir,
+            options.limits.output_retention_secs,
+            &state.values.pinned_outputs(),
+        )?;
         let (live, _) = broadcast::channel(options.limits.observation_capacity);
         let model_capacity = Arc::new(Semaphore::new(options.limits.max_model_requests));
         let model_request_budget = options
             .limits
             .max_requests_per_open
             .map(|limit| Arc::new(std::sync::atomic::AtomicU64::new(limit)));
-        Ok(Self {
+        let session = Self {
             inner: Arc::new(SessionInner {
                 id,
                 options,
                 events_path,
                 writer: Mutex::new(Some(writer)),
                 state: Mutex::new(state),
+                value_writes: tokio::sync::Mutex::new(()),
                 workers: Mutex::new(HashMap::new()),
+                job_workers: Mutex::new(HashMap::new()),
                 settlement_failure: OnceLock::new(),
                 live,
                 model_capacity,
@@ -167,7 +195,13 @@ impl Session {
                 lease: Mutex::new(Some(lease)),
                 close_result: Mutex::new(None),
             }),
-        })
+        };
+        session.recover_jobs()?;
+        Ok(session)
+    }
+
+    pub(crate) fn workspace_execution_host(&self) -> WorkspaceExecutionHost {
+        self.inner.options.workspace_host.clone()
     }
 
     /// Return the stable identity used when reopening this session.
@@ -248,23 +282,45 @@ impl Session {
 
     /// Persist delivery before acknowledging it and optionally wake an idle recipient.
     pub fn send(&self, input: Input) -> Result<Receipt> {
-        self.send_input(input, None)
+        self.send_input(input, None, &[])
+    }
+
+    /// Deliver exact retained references to the recipient with the input's durable receipt.
+    pub fn send_with_values(&self, input: Input, values: &[OutputReference]) -> Result<Receipt> {
+        self.send_input(input, None, values)
     }
 
     /// Commit a configuration and input together, using the input correlation to identify the configuration intent.
     pub fn send_configured(&self, input: Input, config: AgentConfig) -> Result<Receipt> {
+        self.send_configured_with_values(input, config, &[])
+    }
+
+    /// Commit configuration, input and retained reference grants in one delivery.
+    pub fn send_configured_with_values(
+        &self,
+        input: Input,
+        config: AgentConfig,
+        values: &[OutputReference],
+    ) -> Result<Receipt> {
         if input.correlation.as_deref().is_none_or(str::is_empty) {
             return Err(Error::InvalidArgument(
                 "configured delivery requires an input correlation for its configuration intent"
                     .into(),
             ));
         }
-        self.send_input(input, Some(config))
+        self.send_input(input, Some(config), values)
     }
 
-    fn send_input(&self, input: Input, config: Option<AgentConfig>) -> Result<Receipt> {
-        let digest = receipts::input_fingerprint(&input)?;
-        if input.text.len() > self.inner.options.limits.max_input_bytes {
+    fn send_input(
+        &self,
+        input: Input,
+        config: Option<AgentConfig>,
+        values: &[OutputReference],
+    ) -> Result<Receipt> {
+        let digest = receipts::input_fingerprint_with_values(&input, values)?;
+        if boundary::input_model_text(&input.text, values).len()
+            > self.inner.options.limits.max_input_bytes
+        {
             return Err(Error::InvalidArgument(
                 "input exceeds the configured byte limit".into(),
             ));
@@ -279,11 +335,13 @@ impl Session {
             }
             return Ok(receipt);
         }
-        if state.agent(&target)?.inbox.len() >= self.inner.options.limits.max_pending_inputs {
+        if state.agent(&target)?.submitted_inputs() >= self.inner.options.limits.max_pending_inputs
+        {
             return Err(Error::InvalidArgument(format!(
                 "agent '{target}' inbox limit reached"
             )));
         }
+        self.validate_input_values(&state, &input, values)?;
         let config = config
             .map(|config| {
                 let config = self.resolve_defaults(&target, config)?;
@@ -308,6 +366,7 @@ impl Session {
                 fingerprint: digest,
                 input,
                 config,
+                values: values.to_vec(),
             },
         )?;
         let receipt = state.commands[&key].1.clone();
@@ -377,7 +436,7 @@ impl Session {
         Ok(state.snapshots())
     }
 
-    /// Read retained command output by bounded range, search, or incremental cursor.
+    /// Read retained output as a trusted host by bounded range, search, or incremental cursor.
     pub fn read_output(&self, output_id: &str, request: &OutputRead) -> Result<OutputChunk> {
         Self::read_saved_output(&self.inner.events_path, output_id, request)
     }
@@ -388,13 +447,8 @@ impl Session {
         output_id: &str,
         request: &OutputRead,
     ) -> Result<OutputChunk> {
-        Ok(crate::tool::builtin::run_command::output::read_output(
-            &events_path
-                .parent()
-                .ok_or_else(|| {
-                    Error::InvalidArgument("events path has no session directory".into())
-                })?
-                .join("outputs"),
+        Ok(crate::tool::builtin::run_command::output::read_open_output(
+            retention::open_retained_output(&retention::output_dir(events_path)?, output_id)?,
             output_id,
             request.clone(),
         )?)
@@ -503,7 +557,7 @@ impl Session {
         {
             return Err(Error::QuestionRequestNotPending(request_id.into()));
         }
-        if agent.inbox.len() >= self.inner.options.limits.max_pending_inputs {
+        if agent.submitted_inputs() >= self.inner.options.limits.max_pending_inputs {
             return Err(Error::InvalidArgument(format!(
                 "agent '{address}' inbox limit reached"
             )));
@@ -591,8 +645,12 @@ impl Session {
 
     async fn finish_close(&self) -> std::result::Result<(), String> {
         let workers = std::mem::take(&mut *self.inner.workers.lock().unwrap());
+        let jobs = std::mem::take(&mut *self.inner.job_workers.lock().unwrap());
         for worker in workers.values() {
             let _ = worker.cancel.send(true);
+        }
+        for job in jobs.values() {
+            job.cancel.notify_one();
         }
         let mut failure = None;
         for (_, worker) in workers {
@@ -609,6 +667,20 @@ impl Session {
                 }
             }
         }
+        for (id, job) in jobs {
+            match job.join.await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    failure.get_or_insert(error);
+                }
+                Err(error) => {
+                    failure.get_or_insert(Error::InvalidEventStream(format!(
+                        "job '{id}' close failed: {error}"
+                    )));
+                }
+            }
+        }
+        let _values = self.inner.value_writes.lock().await;
         let mut state = self.inner.state.lock().unwrap();
         if let Some(message) = state.cleanup_failures.values().next() {
             failure.get_or_insert_with(|| Error::InvalidEventStream(message.clone()));
@@ -664,22 +736,38 @@ fn ensure_open(state: &State) -> Result<()> {
 }
 
 fn load_state(events_path: &Path) -> Result<(State, u64)> {
-    let mut state = State::default();
-    let cursor = EventStore::visit_path(events_path, |event| reduce_event(&mut state, event))?;
+    replay_state(events_path, State::default())
+}
+
+fn replay_state(events_path: &Path, mut state: State) -> Result<(State, u64)> {
+    let mut job_replay = jobs::JobReplay::default();
+    let cursor = EventStore::visit_path(events_path, |event| {
+        reduce_event(&mut state, &mut job_replay, event)
+    })?;
     state.mark_interrupted();
     Ok((state, cursor))
 }
 
-fn reduce_event(state: &mut State, event: StoredEvent) -> Result<()> {
+fn reduce_event(
+    state: &mut State,
+    job_replay: &mut jobs::JobReplay,
+    event: StoredEvent,
+) -> Result<()> {
     let record = Record::from_event(&event)?;
     state.turns.observe(&event, record.as_ref());
     if let Some(record) = record {
         state.reduce(event.id, record)?;
     }
+    job_replay.observe(state, &event)?;
+    state.outputs.observe_dispatch(&event.payload);
     usage::reduce_model_fact(state, &event.payload)
 }
 
 fn validate_limits(limits: &RuntimeLimits) -> Result<()> {
+    limits
+        .workspace_script
+        .validate()
+        .map_err(Error::InvalidArgument)?;
     if limits.max_requests_per_open == Some(0) || limits.max_output_tokens_per_request == Some(0) {
         return Err(Error::InvalidArgument(
             "optional model request and output-token limits must be positive".into(),
@@ -699,12 +787,12 @@ fn validate_limits(limits: &RuntimeLimits) -> Result<()> {
         || limits.max_input_bytes > 262_144
         || limits.max_model_requests == 0
         || limits.max_model_requests > 256
-        || limits.max_steps_per_turn == 0
-        || limits.max_steps_per_turn > 1024
         || limits.max_tools_per_agent == 0
         || limits.max_tools_per_agent > 128
         || limits.max_output_bytes < 4096
         || limits.max_output_bytes > 1024 * 1024 * 1024
+        || limits.max_retained_output_bytes < 4096
+        || limits.max_named_values > 4096
         || limits.max_preview_bytes == 0
         || limits.max_preview_bytes > 65_536
         || limits.observation_capacity == 0

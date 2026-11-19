@@ -1,12 +1,12 @@
 use clap::Parser;
 use kuku::conversation::address::ConversationAddress;
-use kuku::{PermissionRequest, ToolEvent, ToolKind, UiEvent};
+use kuku::{PermissionRequest, ToolEvent, UiEvent};
+use kuku_client::HistoryEntry;
+use serde_json::{json, Value};
 
 use crate::cli_args::{Cli, Command};
 
-use super::render::{
-    conversation_for_tool_kind, nested_model_recovery, tool_call_line, tool_result_line,
-};
+use super::render::{nested_model_recovery, tool_record};
 use super::{
     parse_slash_command, permission_ask_line, permission_decision_line, run_input,
     slash_command_candidate,
@@ -103,32 +103,34 @@ fn stream_json_permission_lines_include_request_conversation() {
 }
 
 #[test]
-fn stream_json_agent_tool_call_includes_conversation() {
-    let kind = ToolKind::Agent {
-        conversation: ConversationAddress::parse("review").unwrap(),
-        binding_id: "binding_1".into(),
-    };
-    let line = tool_call_line(
-        "agent".into(),
-        "toolu_agent".into(),
-        "run review agent".into(),
-        &kind,
-    );
-    let value: serde_json::Value = serde_json::from_str(&line.to_json_line()).unwrap();
-    assert_eq!(Some("review".into()), conversation_for_tool_kind(&kind));
+fn stream_json_tool_call_includes_agent_and_literal_arguments() {
+    let args = json!({"program":"fixture","args":["a & b",""],"cwd":".","timeout":8});
+    let value = serialized_tool(json!({
+        "id":1,"agent":"review","type":"tool_call","tool":"run_command",
+        "tool_call_id":"check","args":args
+    }));
     assert_eq!("review", value["conversation"]);
+    assert_eq!(args, value["args"]);
 }
 
 #[test]
-fn stream_json_agent_tool_result_includes_conversation() {
-    let line = tool_result_line(
-        "toolu_agent".into(),
-        "ok".into(),
-        "review complete".into(),
-        Some("review".into()),
-    );
-    let value: serde_json::Value = serde_json::from_str(&line.to_json_line()).unwrap();
+fn stream_json_tool_result_keeps_the_durable_evidence() {
+    let value = serialized_tool(json!({
+        "id":2,"agent":"review","type":"tool_result","tool_call_id":"check",
+        "status":"ok","summary":"finished","model_content":"checked","truncated":true,
+        "structured":{"exit_code":14,"output_ref":{"id":"saved","bytes":100,"offset":0}},
+    }));
     assert_eq!("review", value["conversation"]);
+    assert_eq!("checked", value["output"]);
+    assert_eq!(true, value["truncated"]);
+    assert_eq!(14, value["structured"]["exit_code"]);
+    assert_eq!("saved", value["structured"]["output_ref"]["id"]);
+}
+
+fn serialized_tool(entry: Value) -> Value {
+    let entry: HistoryEntry = serde_json::from_value(entry).unwrap();
+    let line = tool_record(&entry).unwrap();
+    serde_json::from_str(&line.to_json_line()).unwrap()
 }
 
 #[test]
