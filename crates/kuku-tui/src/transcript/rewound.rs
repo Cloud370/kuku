@@ -277,9 +277,10 @@ impl RewindGroupState {
     pub(super) fn more(&mut self, epoch: u64) -> Option<RewindGroupRequest> {
         match &self.state {
             PageState::Failed(before, _) => self.begin(*before, epoch),
-            _ => self
+            PageState::Idle => self
                 .next_before
                 .and_then(|before| self.begin(Some(before), epoch)),
+            PageState::Loading(_) => None,
         }
     }
 
