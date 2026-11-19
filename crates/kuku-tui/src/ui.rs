@@ -11,7 +11,6 @@ use crate::editor::{Editor, EditorView};
 use crate::keys::Shortcut;
 use crate::markup::{render_literal, wrap};
 use crate::menu::{Choice, ChoiceKind, Picker, PickerKind, Prompt, PromptKind};
-use crate::model_default::SAVE_SCOPE;
 use crate::output::OutputViewer;
 use crate::text::{shorten, single_line};
 use crate::theme::{
@@ -23,6 +22,7 @@ use crate::theme::{
 mod activity;
 mod delivery;
 mod header;
+mod model_default_confirmation;
 
 pub(crate) use activity::{ActivityClock, ActivityFrame};
 
@@ -706,12 +706,16 @@ fn render_model_default_confirmation(
         render_literal(&picker.header, Style::default().fg(MUTED)),
         width,
     );
-    let scope = wrap(
-        render_literal(SAVE_SCOPE, Style::default().fg(MUTED)),
-        width,
-    );
+    let scope = model_default_confirmation::wrap_scope(width);
     let available_rows = usize::from(inner.height);
-    let can_confirm = width >= 32 && available_rows >= scope.len().saturating_add(6);
+    let terminal_area = frame.area();
+    let can_confirm = terminal_area.width >= 60
+        && terminal_area.height >= 20
+        && width >= 32
+        && scope
+            .as_ref()
+            .is_some_and(|scope| available_rows >= scope.len().saturating_add(6));
+    let scope = scope.unwrap_or_default();
     let save = Choice::new(
         "Save as default",
         "Write the confirmed config change",
