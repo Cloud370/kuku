@@ -1,5 +1,4 @@
-#[path = "../common/mod.rs"]
-mod common;
+use super::common;
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -510,7 +509,7 @@ async fn native_unsigned_thinking_only_turn_reopens_without_replaying_thinking()
 }
 
 #[tokio::test]
-async fn reopened_native_session_sends_admitted_unsigned_replay_under_compatible_profile() {
+async fn reopened_native_session_rejects_passive_compatible_profile_change() {
     let server = MockServer::start_async().await;
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
@@ -604,17 +603,12 @@ async fn reopened_native_session_sends_admitted_unsigned_replay_under_compatible
         ))
         .unwrap();
     let reopened_snapshot = settle(&reopened).await;
-    assert_eq!(
-        AgentStatus::Idle,
-        reopened_snapshot.status,
-        "{:?}",
-        reopened_snapshot.last_error
-    );
-    assert_eq!(
-        Some("compatible answer"),
-        reopened_snapshot.last_output.as_deref()
-    );
-    second.assert_hits_async(1).await;
+    assert_eq!(AgentStatus::Interrupted, reopened_snapshot.status);
+    assert!(reopened_snapshot
+        .last_error
+        .as_deref()
+        .is_some_and(|error| { error.contains("frozen provider route or capabilities") }));
+    second.assert_hits_async(0).await;
     reopened.close().await.unwrap();
 
     let history_after_flip = std::fs::read(&events_path).unwrap();
@@ -625,21 +619,11 @@ async fn reopened_native_session_sends_admitted_unsigned_replay_under_compatible
         provider_replay_value(&events_after_flip)
     );
     let bodies = common::take_http_requests(&endpoint);
-    assert_eq!(2, bodies.len());
-    let second_messages = bodies[1]["messages"].as_array().unwrap();
-    let replay_index = second_messages
-        .iter()
-        .position(|message| message == &replay_before_flip)
-        .expect("reopened request should send the admitted assistant replay");
-    let followup_index = second_messages
-        .iter()
-        .rposition(|message| message["role"] == "user")
-        .unwrap();
-    assert!(replay_index < followup_index);
+    assert_eq!(1, bodies.len());
 }
 
 #[tokio::test]
-async fn reopened_compatible_session_rejects_unsigned_replay_under_native_profile() {
+async fn reopened_compatible_session_rejects_passive_native_profile_change() {
     let server = MockServer::start_async().await;
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
@@ -744,8 +728,7 @@ async fn reopened_compatible_session_rejects_unsigned_replay_under_native_profil
         reopened_snapshot
             .last_error
             .as_deref()
-            .is_some_and(|error| error
-                .contains("native Messages thinking replay requires its original signed block")),
+            .is_some_and(|error| { error.contains("frozen provider route or capabilities") }),
         "unexpected error: {:?}",
         reopened_snapshot.last_error
     );
