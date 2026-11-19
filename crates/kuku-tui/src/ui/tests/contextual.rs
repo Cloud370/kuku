@@ -248,7 +248,7 @@ fn focused_control_hints_render_with_default_and_custom_statuslines() {
 }
 
 #[test]
-fn continue_requires_stopped_work_with_pending_inputs() {
+fn continue_requires_stopped_work_but_not_pending_inputs() {
     let mut stopped = app();
     load_snapshot(&mut stopped, "stopped", true);
     assert!(stopped
@@ -258,7 +258,7 @@ fn continue_requires_stopped_work_with_pending_inputs() {
 
     let mut no_input = app();
     load_snapshot(&mut no_input, "stopped", false);
-    assert!(!no_input
+    assert!(no_input
         .contextual_controls()
         .iter()
         .any(|control| matches!(control, ContextControl::Continue { .. })));

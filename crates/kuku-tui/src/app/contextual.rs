@@ -74,8 +74,6 @@ impl App {
                 snapshot.agent.status,
                 AgentStatus::Stopped | AgentStatus::Interrupted
             )
-            || snapshot.agent.pending_inputs == 0
-            || snapshot.pending.is_empty()
         {
             return None;
         }
