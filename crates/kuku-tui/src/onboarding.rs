@@ -350,10 +350,16 @@ impl SetupState {
     }
 }
 
-pub(crate) fn run_if_needed(options: &ConnectionOptions) -> io::Result<bool> {
+pub(crate) async fn run_if_needed(options: &ConnectionOptions) -> io::Result<bool> {
     let Some(config_path) = missing_local_config(options) else {
         return Ok(true);
     };
+    let Ok(service) = options.local_service() else {
+        return Ok(true);
+    };
+    if !status_allows_setup(service.status().await) {
+        return Ok(true);
+    }
     let workspace = options.workspace().unwrap_or_else(|_| {
         options
             .workspace
@@ -376,6 +382,10 @@ pub(crate) fn run_if_needed(options: &ConnectionOptions) -> io::Result<bool> {
             Ok(false)
         }
     }
+}
+
+fn status_allows_setup<T, E>(status: Result<Option<T>, E>) -> bool {
+    matches!(status, Ok(None))
 }
 
 fn missing_local_config(options: &ConnectionOptions) -> Option<PathBuf> {

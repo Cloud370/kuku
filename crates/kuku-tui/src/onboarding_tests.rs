@@ -11,8 +11,8 @@ use tempfile::TempDir;
 
 use super::{
     build_config, env_value_is_nonempty, missing_local_config, persist_setup, render,
-    valid_env_name, valid_model_id, write_config_exclusive, Finish, ProviderPreset, SetupState,
-    SetupStep,
+    status_allows_setup, valid_env_name, valid_model_id, write_config_exclusive, Finish,
+    ProviderPreset, SetupState, SetupStep,
 };
 
 fn options(data_dir: &std::path::Path) -> ConnectionOptions {
@@ -76,6 +76,44 @@ fn setup_is_offered_only_for_a_missing_local_config_and_resolves_selected_paths(
     let mut token_only = selected.clone();
     token_only.token = Some("ignored-invalid-token".into());
     assert_eq!(None, missing_local_config(&token_only));
+}
+
+#[test]
+fn a_live_custom_config_service_skips_setup_for_a_missing_default_config() {
+    let directory = TempDir::new().unwrap();
+    let selected = options(directory.path());
+    let default_config = missing_local_config(&selected).unwrap();
+    let active_config = directory.path().join("custom.toml");
+    fs::write(&active_config, "[model.balanced]\n").unwrap();
+
+    assert!(!default_config.exists());
+    assert_ne!(default_config, active_config);
+    let status: Result<Option<PathBuf>, ()> = Ok(Some(active_config));
+    assert!(!status_allows_setup(status));
+}
+
+#[tokio::test]
+async fn stale_discovery_without_a_live_service_still_allows_setup() {
+    let directory = TempDir::new().unwrap();
+    let selected = options(directory.path());
+    let config_path = missing_local_config(&selected).unwrap();
+    let service_directory = directory.path().join("service");
+    kuku::util::private_directory(&service_directory).unwrap();
+    fs::write(service_directory.join("connection.json"), b"stale record").unwrap();
+
+    let status = selected.local_service().unwrap().status().await;
+    let description = match &status {
+        Ok(None) => "no live service".to_owned(),
+        Ok(Some(active)) => format!("live service using {:?}", active.status().config_path),
+        Err(error) => format!("status error: {error}"),
+    };
+    assert!(status_allows_setup(status), "{description}");
+    assert!(!config_path.exists());
+}
+
+#[test]
+fn a_status_error_leaves_the_normal_connection_path_in_control() {
+    assert!(!status_allows_setup::<(), _>(Err("status unavailable")));
 }
 
 #[test]

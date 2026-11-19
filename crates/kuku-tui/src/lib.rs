@@ -31,7 +31,7 @@ pub async fn run(options: ConnectionOptions) -> io::Result<()> {
             "Interactive kuku needs a terminal. Use `kuku run` for scripts.",
         ));
     }
-    if !onboarding::run_if_needed(&options)? {
+    if !onboarding::run_if_needed(&options).await? {
         return Ok(());
     }
     terminal::run(options).await
