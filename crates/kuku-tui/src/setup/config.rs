@@ -518,6 +518,13 @@ fn write_config(
         .ok_or_else(|| invalid_config("configuration path has no parent directory"))?;
     fs::create_dir_all(parent)
         .map_err(|_| invalid_config("cannot create configuration directory"))?;
+    let canonical_path = canonical_config_path(&settings.config_path)?;
+    let mut lock_path = canonical_path.as_os_str().to_os_string();
+    lock_path.push(".lock");
+    let mut lock = fslock::LockFile::open(&PathBuf::from(lock_path))
+        .map_err(|_| invalid_config("cannot lock configuration for update"))?;
+    lock.lock()
+        .map_err(|_| invalid_config("cannot lock configuration for update"))?;
     let mut before_compare = Some(before_compare);
     if let Some(original) = &settings.original_bytes {
         before_compare.take().expect("single concurrency hook")();
@@ -566,6 +573,22 @@ fn write_config(
         let _ = directory.sync_all();
     }
     Ok(())
+}
+
+fn canonical_config_path(path: &Path) -> io::Result<PathBuf> {
+    match fs::canonicalize(path) {
+        Ok(path) => Ok(path),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let parent = path
+                .parent()
+                .ok_or_else(|| invalid_config("configuration path has no parent directory"))?;
+            let name = path
+                .file_name()
+                .ok_or_else(|| invalid_config("configuration path has no file name"))?;
+            Ok(fs::canonicalize(parent)?.join(name))
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn unsafe_storage() -> io::Error {

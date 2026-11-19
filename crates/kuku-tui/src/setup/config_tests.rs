@@ -1,5 +1,6 @@
 use std::fs;
 use std::io::Write;
+use std::sync::{Arc, Barrier};
 
 use kuku::config::{generate_default, load_config, ApiKey};
 use kuku::util::private_directory;
@@ -297,6 +298,42 @@ async fn concurrent_config_edit_removes_only_the_newly_staged_key() {
         fs::read_to_string(config).unwrap()
     );
     assert_eq!(0, fs::read_dir(&settings.credentials_dir).unwrap().count());
+}
+
+#[tokio::test]
+async fn simultaneous_settings_saves_allow_only_one_writer() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("custom.toml");
+    fs::write(&config, generate_default()).unwrap();
+    let first_settings = Settings::load(options(directory.path(), Some(config.clone())))
+        .await
+        .unwrap();
+    let second_settings = Settings::load(options(directory.path(), Some(config.clone())))
+        .await
+        .unwrap();
+    let mut first_state = SetupState::new(&first_settings);
+    first_state.model.set_text("writer-one-model".into());
+    let mut second_state = SetupState::new(&second_settings);
+    second_state.model.set_text("writer-two-model".into());
+    let barrier = Arc::new(Barrier::new(2));
+
+    let first_barrier = Arc::clone(&barrier);
+    let first = std::thread::spawn(move || {
+        first_barrier.wait();
+        save(&first_settings, &first_state)
+    });
+    let second_barrier = Arc::clone(&barrier);
+    let second = std::thread::spawn(move || {
+        second_barrier.wait();
+        save(&second_settings, &second_state)
+    });
+    let first = first.join().unwrap();
+    let second = second.join().unwrap();
+
+    assert!(first.is_ok() != second.is_ok());
+    let saved = load_config(&config).unwrap();
+    assert!(saved.model["balanced"].model == "writer-one-model"
+        || saved.model["balanced"].model == "writer-two-model");
 }
 
 #[tokio::test]
