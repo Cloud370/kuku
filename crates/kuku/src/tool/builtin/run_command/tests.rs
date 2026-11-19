@@ -353,14 +353,23 @@ async fn native_program_missing_and_invalid_executable_have_distinct_facts() {
 }
 
 #[tokio::test]
-async fn dispatch_rejects_unprepared_or_mixed_invocations() {
+async fn prepared_dispatch_rejects_unresolved_or_mixed_invocations() {
     let dir = workspace();
     for args in [
         serde_json::json!({"command":"echo implicit","cwd":".","timeout":5}),
         serde_json::json!({"program":"echo","args":["mixed"],"shell":"sh","command":"echo mixed","cwd":".","timeout":5}),
         serde_json::json!({"program":"echo","args":["cwd missing"],"timeout":5}),
     ] {
-        let result = run_command(&args, dir.path(), None, None).await;
+        let result = run_command_with_output(
+            &args,
+            dir.path(),
+            None,
+            None,
+            &dir.path().join("capture"),
+            "unprepared",
+            OutputLimits::default(),
+        )
+        .await;
         assert_eq!("error", result.status, "{result:?}");
         assert_eq!("error", result.structured.unwrap()["kind"]);
     }
