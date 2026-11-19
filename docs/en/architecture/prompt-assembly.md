@@ -4,7 +4,7 @@ The public Session SDK prepares a model Step for one Agent. The input consists o
 
 Keep stable behavioral guidance short and usable across models with different capabilities. Interpret the latest task in context and use the requested deliverable to decide independently whether to reply, write to the workspace or execute a command. Express general responsibilities and verify them across paraphrases and tasks with the same intent.
 
-For a requested file, verify the working version at its intended destination. Keep that version usable during further experiments. When applying an unproven method at scale would be expensive, check the complete method on a small representative input first. The user's requirements determine when the work is complete.
+Use the user's goal to judge whether further work could change the result. Choose checks that resolve a relevant uncertainty, taking their cost into account. The form of delivery follows the request.
 
 ## Start a context segment
 
