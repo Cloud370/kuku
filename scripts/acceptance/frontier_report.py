@@ -620,7 +620,9 @@ def session_summary(live, sdk):
         return tools, result
     statuses = Counter()
     calls = 0
-    script_calls = script_receipts = script_actions = 0
+    script_calls = script_actions = 0
+    pending_scripts = set()
+    script_evidence_complete = True
     observed = {**result, 'durable_turn_settled': False}
     agent = sdk.get('agent') or 'main'
     provider_error_turn, provider_error_kind = None, None
@@ -628,17 +630,29 @@ def session_summary(live, sdk):
         with candidates[0].open(encoding='utf-8') as source:
             for line in source:
                 event = object_value(json.loads(line))
+                event_agent = event.get('conversation') or event.get('agent') or 'main'
                 if event.get('kind') == 'tool.call':
                     calls += 1
                     if event.get('tool') == 'workspace_script':
                         script_calls += 1
+                        call_id = event.get('tool_call_id')
+                        if isinstance(call_id, str) and call_id:
+                            call = (event_agent, event.get('turn'), call_id)
+                            if call in pending_scripts:
+                                script_evidence_complete = False
+                            pending_scripts.add(call)
+                        else:
+                            script_evidence_complete = False
                 if event.get('kind') == 'tool.result':
                     statuses[allowed(event.get('status'), TOOL_STATUSES) or 'unknown'] += 1
-                    receipt = object_value(event.get('structured'))
-                    if receipt.get('kind') == 'workspace_script_result' and isinstance(receipt.get('actions'), list):
-                        script_receipts += 1
-                        script_actions += len(receipt['actions'])
-                event_agent = event.get('conversation') or event.get('agent') or 'main'
+                    call = (event_agent, event.get('turn'), event.get('tool_call_id'))
+                    if call in pending_scripts:
+                        pending_scripts.remove(call)
+                        receipt = object_value(event.get('structured'))
+                        if receipt.get('kind') == 'workspace_script_result' and isinstance(receipt.get('actions'), list):
+                            script_actions += len(receipt['actions'])
+                        else:
+                            script_evidence_complete = False
                 if event_agent == agent:
                     kind = allowed(event.get('kind'), TURN_EVENTS)
                     if kind is not None:
@@ -664,13 +678,13 @@ def session_summary(live, sdk):
                                     settled_status=allowed(operation.get('status'), SETTLED_STATUSES),
                                     sdk_error_kind=error_kind,
                                     sdk_error_detail='request_bytes_limit' if error == SDK_REQUEST_BYTES_ERROR else None)
-    except (OSError, UnicodeError, ValueError):
+    except (OSError, UnicodeError, ValueError, TypeError):
         return tools, result
     results = sum(statuses.values())
     tools = {'tool_calls': calls, 'tool_results': results, 'tool_errors': statuses['error'],
              'non_ok_results': results - statuses['ok'] if not statuses['unknown'] else None,
              'workspace_script_calls': script_calls,
-             'workspace_script_host_actions': script_actions if script_receipts == script_calls else None}
+             'workspace_script_host_actions': script_actions if script_evidence_complete and not pending_scripts else None}
     return tools, observed
 
 

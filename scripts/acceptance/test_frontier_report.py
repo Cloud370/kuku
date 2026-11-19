@@ -129,6 +129,8 @@ class FrontierReportTests(unittest.TestCase):
                 event('tool.call', tool='run_command')
                 self.assertEqual((0, 0), counts())
                 event('tool.call', tool='workspace_script', tool_call_id='a')
+                event('tool.result', tool_call_id='a', conversation='reviewer', status='ok',
+                      structured={'kind': 'workspace_script_result', 'actions': [{'tool': 'read_file'}]})
                 self.assertEqual((1, None), counts())
                 event('tool.result', tool_call_id='a', status='ok',
                       structured={'kind': 'workspace_script_result', 'actions': []})
