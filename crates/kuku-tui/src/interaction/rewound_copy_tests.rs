@@ -88,11 +88,7 @@ fn rewind_group_row_inset_preserves_multibyte_copy() {
         MouseEventKind::Drag(MouseButton::Left),
         column + 40,
     );
-    send(
-        &mut app,
-        MouseEventKind::Up(MouseButton::Left),
-        column + 40,
-    );
+    send(&mut app, MouseEventKind::Up(MouseButton::Left), column + 40);
 
     let copied = app
         .effects

@@ -99,6 +99,9 @@ fn expanding_rewind_group_focuses_history_and_escape_restores_multiline_draft() 
 
     app.perform(CommandMenu::Details);
     press(&mut app, KeyCode::Enter);
-    assert!(app.composer_focused(), "collapsing should not steal composer focus");
+    assert!(
+        app.composer_focused(),
+        "collapsing should not steal composer focus"
+    );
     assert_eq!(draft, app.pane().draft.text());
 }

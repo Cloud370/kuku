@@ -387,8 +387,7 @@ impl RewindGroupState {
         }
         self.rows.extend(lines.into_iter().map(|mut line| {
             if inset > 0 && !line.spans.is_empty() {
-                line.spans
-                    .insert(0, Span::raw(" ".repeat(inset)));
+                line.spans.insert(0, Span::raw(" ".repeat(inset)));
             }
             Row {
                 line,
