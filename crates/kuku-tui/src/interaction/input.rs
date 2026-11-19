@@ -24,6 +24,10 @@ impl App {
                 self.escape_armed_at = None;
                 return;
             }
+            if self.pane_mut().transcript.close_notes() {
+                self.escape_armed_at = None;
+                return;
+            }
             self.rewind_escape();
             return;
         }
