@@ -133,21 +133,65 @@ fn thinking_is_available_only_for_its_associated_message() {
 }
 
 #[test]
-fn remediation_thinking_is_unavailable_in_source_mode() {
+fn remediation_thinking_from_source_opens_only_the_selected_reply_notes() {
     let mut app = connected_app();
-    let details = serde_json::from_value(json!({"reasoning_preview":"private thought"})).unwrap();
+    let older_details =
+        serde_json::from_value(json!({"reasoning_preview":"older private thought"})).unwrap();
     insert_message(
         &mut app,
         68,
         HistoryKind::Assistant,
-        "visible reply",
-        details,
+        "**older selected reply**",
+        older_details,
     );
+    let newer_details =
+        serde_json::from_value(json!({"reasoning_preview":"newer private thought"})).unwrap();
+    insert_message(
+        &mut app,
+        69,
+        HistoryKind::Assistant,
+        "**newer reply**",
+        newer_details,
+    );
+    app.paste("preserved draft");
+
     open_message_actions(&mut app, MessageId::Event(68));
     choose_message_action(&mut app, MessageAction::Source);
     open_message_actions(&mut app, MessageId::Event(68));
     assert!(matches!(&app.modal, Some(Modal::Picker(picker))
-        if !picker.visible_choices().iter().any(|choice| choice.label == "Thinking")));
+        if picker.visible_choices().iter().any(|choice| choice.label == "Thinking")));
+    choose_message_action(&mut app, MessageAction::Thinking);
+    let older_render = transcript_text(&mut app);
+    assert!(
+        older_render.contains("older private thought"),
+        "{older_render}"
+    );
+    assert!(
+        !older_render.contains("newer private thought"),
+        "{older_render}"
+    );
+    assert!(
+        older_render.contains("older selected reply"),
+        "{older_render}"
+    );
+    assert!(
+        !older_render.contains("**older selected reply**"),
+        "{older_render}"
+    );
+    assert_eq!("preserved draft", app.pane().draft.text());
+
+    open_message_actions(&mut app, MessageId::Event(69));
+    choose_message_action(&mut app, MessageAction::Thinking);
+    let newer_render = transcript_text(&mut app);
+    assert!(
+        newer_render.contains("newer private thought"),
+        "{newer_render}"
+    );
+    assert!(
+        !newer_render.contains("older private thought"),
+        "{newer_render}"
+    );
+    assert_eq!("preserved draft", app.pane().draft.text());
 }
 
 #[test]
@@ -294,6 +338,23 @@ fn remediation_copy_is_not_offered_for_thinking_only_or_empty_tool_entries() {
     );
     assert!(matches!(&app.modal, Some(Modal::Picker(picker))
         if !picker.visible_choices().iter().any(|choice| choice.label == "Copy")));
+
+    app.effects.clear();
+    app.execute_message_action(
+        SelectedMessage {
+            selection: app.selection(),
+            id: MessageId::Tool {
+                turn: Some(7),
+                call_id: "empty-result".into(),
+            },
+        },
+        MessageAction::Copy,
+    );
+    assert!(!app
+        .effects
+        .iter()
+        .any(|effect| matches!(effect, Job::Copy(_))));
+    assert!(app.notice.as_ref().is_some_and(|notice| notice.error));
 }
 
 #[test]

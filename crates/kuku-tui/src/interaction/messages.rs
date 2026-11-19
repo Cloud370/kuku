@@ -165,6 +165,7 @@ impl App {
                     return;
                 };
                 if self.reveal_selected_message(&message) {
+                    self.pane_mut().transcript.show_message_preview(&message.id);
                     self.project_selected_message();
                     if !self.toggle_transcript_detail(&key) {
                         self.problem("Thinking for this message is no longer available");

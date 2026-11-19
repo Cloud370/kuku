@@ -149,17 +149,6 @@ impl Transcript {
             Body::Notice(..) | Body::TurnSummary => return None,
         };
         let (thinking, expandable) = self.message_action_keys(record);
-        let thinking = if matches!(
-            (&key, &self.assistant_view),
-            (
-                super::Key::Event(id),
-                AssistantView::MessageSource(source_id)
-            ) if id == source_id
-        ) {
-            None
-        } else {
-            thinking
-        };
         Some(MessageInfo {
             kind,
             fetch_source,
@@ -225,6 +214,15 @@ impl Transcript {
             AssistantView::MessageSource(*event_id)
         };
         Some(self.assistant_view == AssistantView::MessageSource(*event_id))
+    }
+
+    pub(crate) fn show_message_preview(&mut self, id: &MessageId) {
+        let MessageId::Event(event_id) = id else {
+            return;
+        };
+        if self.assistant_view == AssistantView::MessageSource(*event_id) {
+            self.assistant_view = AssistantView::Preview;
+        }
     }
 
     #[cfg(test)]
