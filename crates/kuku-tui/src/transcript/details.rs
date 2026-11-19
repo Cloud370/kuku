@@ -29,6 +29,13 @@ pub(crate) struct DetailKey {
 }
 
 impl DetailKey {
+    fn message_action(kind: DetailKind, record: &Key) -> Self {
+        Self {
+            kind,
+            record: record.clone(),
+        }
+    }
+
     pub(super) fn settle(&mut self, preview: &Key, settled: &Key) {
         if self.record == *preview {
             self.record = settled.clone();
@@ -204,6 +211,32 @@ pub(super) enum DetailRecord<'a> {
 }
 
 impl Transcript {
+    pub(super) fn message_action_keys(
+        &self,
+        record: &Record,
+    ) -> (Option<DetailKey>, Option<DetailKey>) {
+        let thinking = (!record.reasoning_preview.is_empty())
+            .then(|| DetailKey::message_action(DetailKind::Reasoning, &record.key));
+        let expandable = self
+            .detail_items
+            .visible
+            .iter()
+            .find(|item| item.key.record == record.key && item.key.kind != DetailKind::Reasoning)
+            .map(|item| item.key.clone())
+            .or_else(|| match &record.body {
+                super::Body::Tool(tool) => Some(DetailKey::message_action(
+                    if tool.agent_card().is_some() {
+                        DetailKind::Agent
+                    } else {
+                        DetailKind::Tool
+                    },
+                    &record.key,
+                )),
+                _ => None,
+            });
+        (thinking, expandable)
+    }
+
     pub(crate) fn markdown_link_at(&self, row: usize, column: usize) -> Option<&str> {
         let row = match &self.notes {
             Some(notes) if notes.hit(row) => return None,

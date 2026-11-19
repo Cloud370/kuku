@@ -13,6 +13,7 @@ use crate::theme::{ACCENT, ERROR, MIN_TRANSCRIPT_INDENT_WIDTH, MUTED, TRANSCRIPT
 mod agent;
 mod details;
 mod message;
+mod messages;
 mod notes;
 mod preview;
 mod reply;
@@ -27,6 +28,7 @@ use self::agent::AgentCards;
 pub(crate) use self::details::DetailKey;
 use self::details::{DetailRecord, Details, VisibleDetail};
 use self::message::{paint_card, render_assistant_source, render_record, render_user};
+pub(crate) use self::messages::{MessageId, MessageInfo, MessageKind, SelectedMessage};
 use self::reply::LatestReply;
 pub(crate) use self::reply::ReplySource;
 use self::tool::Tool;
@@ -95,6 +97,7 @@ enum AssistantView {
     #[default]
     Preview,
     Source,
+    MessageSource(u64),
 }
 
 #[derive(Debug, Default)]
@@ -262,38 +265,6 @@ impl Transcript {
             .set_details(expanded, self.detail_items.agent_keys());
         self.toggle_group_details(expanded);
         expanded
-    }
-
-    pub(crate) fn toggle_source(&mut self) -> bool {
-        self.assistant_view = match self.assistant_view {
-            AssistantView::Preview => AssistantView::Source,
-            AssistantView::Source => AssistantView::Preview,
-        };
-        self.assistant_view == AssistantView::Source
-    }
-
-    pub(crate) fn last_reply(&self) -> Option<ReplySource<'_>> {
-        self.latest_reply.source(&self.recent.records)
-    }
-
-    pub(crate) fn tools(&self) -> Vec<ToolView> {
-        let window = self
-            .reading
-            .as_ref()
-            .map_or(&self.recent, |reading| &reading.window);
-        window
-            .records
-            .iter()
-            .rev()
-            .filter_map(|record| match &record.body {
-                Body::Tool(tool) => Some(tool.view()),
-                Body::User { .. }
-                | Body::Assistant(_)
-                | Body::Interrupted(_)
-                | Body::Notice(..)
-                | Body::TurnSummary => None,
-            })
-            .collect()
     }
 
     pub(crate) fn scroll(
@@ -570,6 +541,7 @@ pub(crate) struct ToolView {
     pub(crate) details: String,
     pub(crate) diff: String,
     pub(crate) output_id: Option<String>,
+    pub(crate) inline_output_complete: bool,
 }
 
 #[derive(Debug)]
@@ -825,9 +797,14 @@ impl Record {
             agents,
             items,
         } = layout;
-        let source_body = match (assistant, &self.body) {
-            (AssistantView::Source, Body::Assistant(text)) => Some((text, false)),
-            (AssistantView::Source, Body::Interrupted(text)) => Some((text, true)),
+        let source_selected = match assistant {
+            AssistantView::Source => true,
+            AssistantView::MessageSource(id) => self.key == Key::Event(id),
+            AssistantView::Preview => false,
+        };
+        let source_body = match (source_selected, &self.body) {
+            (true, Body::Assistant(text)) => Some((text, false)),
+            (true, Body::Interrupted(text)) => Some((text, true)),
             _ => None,
         };
         if let Some((text, interrupted)) = source_body {

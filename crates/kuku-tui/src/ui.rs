@@ -271,6 +271,7 @@ fn render_transcript(
     activity: &ActivityFrame,
 ) -> Vec<u16> {
     if area.is_empty() {
+        app.text_selection.set_messages_area(None);
         app.transcript_area = (usize::from(area.width).max(1), 1);
         return Vec::new();
     }
@@ -298,19 +299,21 @@ fn render_transcript(
         };
     }
     if view.lines.is_empty() && !app.pane().exists {
+        app.text_selection.set_messages_area(None);
         header::render_welcome(frame, area, app, show_service_problem);
         return Vec::new();
     }
     if view.lines.is_empty() && height > 0 {
         view.lines = header::empty_notice(app, width, show_service_problem);
     }
-    header::render_session(
+    let messages_area = header::render_session(
         frame,
         header,
         app,
         view.following,
         view.tool_hint.as_deref(),
     );
+    app.text_selection.set_messages_area(messages_area);
     for (row, line) in view.lines.iter().take(height).enumerate() {
         if line.style.bg.is_some() {
             let area = Rect::new(body.x, body.y + row as u16, body.width, 1);
@@ -584,6 +587,15 @@ fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (us
             shorten(&single_line(error), width),
             Style::default().fg(ERROR),
         )
+    } else if let Some(help) = match picker.kind {
+        PickerKind::Messages => Some("Operate message · ↑↓ Select · Enter Actions · Esc Close"),
+        PickerKind::MessageActions => {
+            Some("Operate message · ←→/Tab Select · Enter Run · Esc Back")
+        }
+        PickerKind::Rewind => Some("Rewind · ↑↓ Select · Enter Rewind · Esc Close"),
+        _ => None,
+    } {
+        Line::styled(shorten(help, width), Style::new().fg(MUTED))
     } else if width < 32 {
         Line::styled(
             shorten("↑↓ Select · Enter · Esc", width),

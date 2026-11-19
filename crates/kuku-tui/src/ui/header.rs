@@ -24,8 +24,26 @@ pub(super) fn render_session(
     app: &App,
     following: bool,
     tool_hint: Option<&str>,
-) {
+) -> Option<Rect> {
     let width = usize::from(area.width);
+    let messages_label = if width >= 72 {
+        " Messages "
+    } else if width >= 32 {
+        " Msg "
+    } else {
+        ""
+    };
+    let messages_width = messages_label.len();
+    let messages_area = (!messages_label.is_empty()).then(|| {
+        Rect::new(
+            area.x + area.width - messages_width as u16,
+            area.y,
+            messages_width as u16,
+            1,
+        )
+    });
+    let messages_spacing = if messages_area.is_some() { 1 } else { 0 };
+    let content_width = width.saturating_sub(messages_width + messages_spacing);
     let mut line = wordmark(width >= SESSION_PREFIX_WIDTH);
     let id: String = single_line(&app.active.session).chars().take(8).collect();
     let identity = if width >= SESSION_PREFIX_WIDTH {
@@ -33,9 +51,14 @@ pub(super) fn render_session(
     } else {
         id
     };
-    append(&mut line, &identity, width, Style::default().fg(MUTED));
+    append(
+        &mut line,
+        &identity,
+        content_width,
+        Style::default().fg(MUTED),
+    );
     let title = single_line(&app.pane().title);
-    let room = width.saturating_sub(line.width() + TITLE_RESERVE);
+    let room = content_width.saturating_sub(line.width() + TITLE_RESERVE);
     let primary_hint = following.then_some(tool_hint).flatten();
     let navigation = if app
         .pane()
@@ -59,13 +82,20 @@ pub(super) fn render_session(
         None => navigation.to_owned(),
     };
     let hint = (hint.width() <= room).then_some(hint);
-    let title_width = width - hint.as_ref().map_or(0, |hint| hint.width() + 2);
+    let title_width = content_width - hint.as_ref().map_or(0, |hint| hint.width() + 2);
     append(&mut line, &title, title_width, emphasis(Color::Reset));
     if let Some(hint) = hint {
-        line.push_span(" ".repeat(width - line.width() - hint.width()));
+        line.push_span(" ".repeat(content_width - line.width() - hint.width()));
         line.push_span(Span::styled(hint, Style::default().fg(MUTED)));
     }
     frame.render_widget(Paragraph::new(line), area);
+    if let Some(messages_area) = messages_area {
+        frame.render_widget(
+            Paragraph::new(Span::styled(messages_label, emphasis(ACCENT))),
+            messages_area,
+        );
+    }
+    messages_area
 }
 
 pub(super) fn render_welcome(frame: &mut Frame<'_>, area: Rect, app: &App, show_problem: bool) {

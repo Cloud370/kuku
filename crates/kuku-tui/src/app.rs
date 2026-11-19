@@ -97,6 +97,7 @@ pub(crate) struct Pane {
     pub(crate) snapshot: Option<Box<Snapshot>>,
     observed_timing: Option<(u64, TurnTiming)>,
     pub(crate) pending_reply_copy: Option<u64>,
+    pub(crate) pending_selected_reply_copy: Option<u64>,
     pub(crate) initial_config: AgentConfig,
     initial_model: Option<ModelSelection>,
     config_receipt: Option<(u64, Box<AgentConfig>)>,

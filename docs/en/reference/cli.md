@@ -63,6 +63,7 @@ Put options before the prompt in `kuku run`, because it consumes the remaining w
 | `/pending` | Check, retry or discard an unconfirmed submission. |
 | `/model`, `/thinking` | Select model or reasoning settings for the selected Agent. |
 | `/statusline` | Open **Status line settings** to preview, select, reorder and save footer fields. |
+| **Messages** (or **Msg** in a narrow header) | Browse user, assistant and tool entries in the active Agent's loaded transcript. Enter opens only the actions available for that entry; Tab or ←/→ selects an action, Enter runs it, and Esc returns to the message list without changing the composer draft. Full output opens a saved result or a complete inline result when no saved output exists. Read-only rewind history groups are not message-action targets. |
 | Ctrl+O | Expand or collapse visible transcript previews, including tool groups and Agent cards. |
 | `/details` or click a transcript item | Open a tool group to see its calls. Open an individual call for the target, arguments and available output or error. In **Transcript details**, search visible items and press Enter to toggle the selected item. |
 | `/source` | Switch between the rendered view and original Markdown for assistant replies in the current Agent's transcript. The source view keeps the fence markers. |
@@ -75,7 +76,7 @@ Put options before the prompt in `kuku run`, because it consumes the remaining w
 | Arrow keys, Tab, Enter in a menu | Move the highlight, complete editable text, or activate the selected action, respectively. |
 | `/web`, `/quit` | Open the conversation in the browser or leave the terminal client. |
 
-In a selection dialog, click a row to highlight it. A click can switch the viewed Agent or Session, open a model ID editor, or show transcript details and retained output. Applying a tier or reasoning setting, deciding an authorization, withdrawing an input or restarting still requires Enter.
+In a selection dialog, click a row to highlight it. A click can switch the viewed Agent or Session, open a model ID editor, or show transcript details and retained output. The Messages header button opens the entry selector, where clicking an entry opens its actions and clicking an action runs it. Applying a tier or reasoning setting, deciding an authorization, withdrawing an input or restarting still requires Enter.
 
 ### Reading the transcript
 

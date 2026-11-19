@@ -1,4 +1,5 @@
 use super::{App, Job, Modal, Shortcut};
+use crate::menu::{ChoiceKind, PickerKind};
 use crossterm::event::KeyEvent;
 
 impl App {
@@ -8,11 +9,29 @@ impl App {
         if !Shortcut::ESCAPE.matches(key) {
             self.escape_armed_at = None;
         }
-        if Shortcut::ESCAPE.matches(key) && self.modal.take().is_some() {
-            self.rewind_restore_files = false;
-            self.escape_armed_at = None;
-            self.effects.push(Job::ClosePicker);
-            return;
+        if Shortcut::ESCAPE.matches(key) {
+            let selected_message = match &self.modal {
+                Some(Modal::Picker(picker))
+                    if matches!(picker.kind, PickerKind::MessageActions) =>
+                {
+                    match picker.selected_choice() {
+                        Some(ChoiceKind::MessageAction { message, .. }) => Some(message),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+            if let Some(message) = selected_message {
+                self.back_to_messages(message);
+                self.escape_armed_at = None;
+                return;
+            }
+            if self.modal.take().is_some() {
+                self.rewind_restore_files = false;
+                self.escape_armed_at = None;
+                self.effects.push(Job::ClosePicker);
+                return;
+            }
         }
         let address = self.active.clone();
         let draft = self.pane().draft.text().to_owned();

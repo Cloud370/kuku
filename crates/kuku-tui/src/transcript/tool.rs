@@ -45,6 +45,13 @@ pub(super) struct Tool {
     agent_request: Option<AgentRequest>,
 }
 
+impl ToolView {
+    pub(crate) fn has_full_output(&self) -> bool {
+        self.output_id.is_some()
+            || (self.inline_output_complete && (!self.details.is_empty() || !self.diff.is_empty()))
+    }
+}
+
 impl Tool {
     pub(super) fn from_entry(entry: &HistoryEntry) -> Self {
         let name = capped(
@@ -168,6 +175,7 @@ impl Tool {
             details: self.result().to_owned(),
             diff: self.diff().unwrap_or_default().to_owned(),
             output_id: outcome.and_then(|outcome| outcome.output_id.clone()),
+            inline_output_complete: outcome.is_some_and(|outcome| outcome.inline_output_complete),
         }
     }
 
@@ -742,6 +750,7 @@ struct Outcome {
     diff: String,
     exit_code: Option<i64>,
     output_id: Option<String>,
+    inline_output_complete: bool,
     command_preview: Option<CommandPreview>,
     file_read: Option<FileRead>,
     receipt: Option<Receipt>,
@@ -767,6 +776,14 @@ impl Outcome {
             .get("truncated")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        let diff = structured["diff"].as_str().or_else(|| get("diff"));
+        let inline_output_complete = !truncated
+            && structured["capture_complete"].as_bool() != Some(false)
+            && structured["quota_truncated"].as_bool() != Some(true)
+            && structured["timed_out"].as_bool() != Some(true)
+            && structured["cancelled"].as_bool() != Some(true)
+            && !content.is_some_and(|text| cap(text, MAX_DETAIL_BYTES).len() < text.len())
+            && !diff.is_some_and(|text| cap(text, MAX_DETAIL_BYTES).len() < text.len());
         let attention = [
             "cleanup_incomplete",
             "quota_truncated",
@@ -790,12 +807,10 @@ impl Outcome {
                 MAX_DETAIL_BYTES,
             ),
             content: capped(content, MAX_DETAIL_BYTES),
-            diff: capped(
-                structured["diff"].as_str().or_else(|| get("diff")),
-                MAX_DETAIL_BYTES,
-            ),
+            diff: capped(diff, MAX_DETAIL_BYTES),
             exit_code: structured["exit_code"].as_i64(),
             output_id: output_id.map(str::to_owned),
+            inline_output_complete,
             command_preview: CommandPreview::from_result(content, structured, output_id, truncated),
             file_read: FileRead::from_result(structured, truncated),
             receipt: succeeded.then(|| agent_receipt(structured)).flatten(),

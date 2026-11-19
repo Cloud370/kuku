@@ -17,6 +17,8 @@ use crate::text::{shorten, single_line, TAB};
 use crate::transcript::{ReplySource, ToolView};
 
 mod input;
+mod messages;
+mod picker;
 mod pointer;
 mod rewind;
 
@@ -178,61 +180,6 @@ impl App {
             _ if editing => {
                 let width = self.editor_width;
                 edit(&mut self.pane_mut().draft, key, width, true);
-            }
-            _ => {}
-        }
-    }
-
-    fn picker_key(&mut self, key: KeyEvent) {
-        let page = self.modal_page as isize;
-        let details_page = self.modal_info_rows.max(1) as isize;
-        let Some(Modal::Picker(picker)) = &mut self.modal else {
-            return;
-        };
-        match key {
-            key if Shortcut::ENTER.matches(key) => {
-                if let Some(choice) = picker.selected_choice() {
-                    let kind = picker.kind.clone();
-                    self.choose(kind, choice);
-                }
-            }
-            key if Shortcut::TAB.matches(key) && picker.kind.completes_text() => {
-                match (&picker.kind, picker.selected_choice()) {
-                    (PickerKind::Commands, Some(ChoiceKind::Command(command))) => {
-                        let completed = format!("/{}", command.name());
-                        if picker.query.text() != completed {
-                            picker.query.set_text(completed);
-                            picker.selected = 0;
-                            self.search(false);
-                        }
-                    }
-                    (PickerKind::Commands, Some(choice @ ChoiceKind::Skill(_)))
-                    | (PickerKind::Paths(_), Some(choice @ ChoiceKind::Path(_))) => {
-                        let kind = picker.kind.clone();
-                        self.choose(kind, choice);
-                    }
-                    _ => {}
-                }
-            }
-            key if Shortcut::UP.matches(key) => picker.move_by(-1),
-            key if Shortcut::DOWN.matches(key) => picker.move_by(1),
-            key if Shortcut::PAGE_UP.matches(key)
-                && matches!(picker.kind, PickerKind::Server | PickerKind::Permission) =>
-            {
-                picker.header_top = picker.header_top.saturating_add_signed(-details_page);
-            }
-            key if Shortcut::PAGE_DOWN.matches(key)
-                && matches!(picker.kind, PickerKind::Server | PickerKind::Permission) =>
-            {
-                picker.header_top = picker.header_top.saturating_add_signed(details_page);
-            }
-            key if Shortcut::PAGE_UP.matches(key) => picker.move_by(-page),
-            key if Shortcut::PAGE_DOWN.matches(key) => picker.move_by(page),
-            _ if picker.kind.searchable()
-                && edit(&mut picker.query, key, self.modal_editor_width, false) =>
-            {
-                picker.selected = 0;
-                self.search(false);
             }
             _ => {}
         }
@@ -470,6 +417,10 @@ impl App {
                     editor: Editor::default(),
                 }));
             }
+            ChoiceKind::MessageEntry(message) => self.open_message_actions(message),
+            ChoiceKind::MessageAction { message, action } => {
+                self.execute_message_action(message, action)
+            }
             ChoiceKind::Pending(id) => self.open_pending_item(&id),
             ChoiceKind::PendingRetry(id) => self.pending_retry(&id),
             ChoiceKind::PendingCheck(id) => self.pending_check(&id),
@@ -663,6 +614,7 @@ impl App {
 
     fn copy_reply(&mut self) {
         self.pane_mut().pending_reply_copy = None;
+        self.pane_mut().pending_selected_reply_copy = None;
         let pane = self.pane();
         let source = pane.transcript.last_reply().or_else(|| {
             pane.snapshot
@@ -691,10 +643,21 @@ impl App {
         if selection != self.selection() || self.pane().pending_reply_copy != Some(id) {
             return;
         }
+        if self.pane().pending_selected_reply_copy == Some(id)
+            && !self
+                .pane()
+                .transcript
+                .has_assistant_message(id, &self.active.agent)
+        {
+            self.pane_mut().pending_reply_copy = None;
+            self.pane_mut().pending_selected_reply_copy = None;
+            return;
+        }
         match result {
             Ok(text) => self.copy_text(text),
             Err(error) => {
                 self.pane_mut().pending_reply_copy = None;
+                self.pane_mut().pending_selected_reply_copy = None;
                 self.problem(format!("Copy reply · {error}"));
             }
         }
@@ -702,6 +665,7 @@ impl App {
 
     fn copy_text(&mut self, text: String) {
         self.pane_mut().pending_reply_copy = None;
+        self.pane_mut().pending_selected_reply_copy = None;
         self.effects.push(Job::Copy(text));
     }
 
@@ -995,5 +959,8 @@ fn move_cursor(editor: &mut Editor, key: KeyEvent, width: usize, multiline: bool
     }
 }
 
+#[cfg(test)]
+#[path = "interaction/message_tests.rs"]
+mod message_tests;
 #[cfg(test)]
 mod tests;

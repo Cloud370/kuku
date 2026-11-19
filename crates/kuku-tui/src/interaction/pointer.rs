@@ -28,6 +28,7 @@ impl App {
                 }
             }
             Some(MouseAction::Click(ClickTarget::Queued)) => self.open_queued(),
+            Some(MouseAction::Click(ClickTarget::Messages)) => self.open_messages_picker(),
             Some(MouseAction::Click(ClickTarget::Transcript)) => self.scroll(0),
             Some(MouseAction::Click(ClickTarget::Composer)) => {
                 let area = self.composer_area;
@@ -56,7 +57,15 @@ impl App {
             Some(Modal::Picker(picker)) => picker.hit(position).map(ClickTarget::Picker),
             Some(Modal::Prompt(_) | Modal::Output(_) | Modal::StatusLineEditor(_)) => None,
             None => {
-                if self.reading_area.contains(position) && self.pane().transcript.is_reading() {
+                if self
+                    .text_selection
+                    .messages_area()
+                    .is_some_and(|area| area.contains(position))
+                {
+                    Some(ClickTarget::Messages)
+                } else if self.reading_area.contains(position)
+                    && self.pane().transcript.is_reading()
+                {
                     Some(ClickTarget::JumpLatest)
                 } else if self.composer_area.contains(position) {
                     Some(ClickTarget::Composer)

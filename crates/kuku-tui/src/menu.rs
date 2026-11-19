@@ -5,7 +5,7 @@ use ratatui::layout::{Position, Rect};
 
 use crate::editor::Editor;
 use crate::keys::Shortcut;
-use crate::transcript::{DetailKey, ToolView};
+use crate::transcript::{DetailKey, SelectedMessage, ToolView};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CommandMenu {
@@ -161,6 +161,11 @@ pub(crate) enum ChoiceKind {
         turn: u64,
         text: String,
     },
+    MessageEntry(SelectedMessage),
+    MessageAction {
+        message: SelectedMessage,
+        action: MessageAction,
+    },
     Pending(String),
     PendingRetry(String),
     PendingCheck(String),
@@ -205,11 +210,34 @@ impl ChoiceKind {
                 | Self::Connection(_)
                 | Self::EditQueued(_)
                 | Self::RewindMessage { .. }
+                | Self::MessageEntry(_)
+                | Self::MessageAction { .. }
                 | Self::Pending(_)
                 | Self::PendingOpen { .. }
                 | Self::Detail(_)
                 | Self::Tool(_)
         )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MessageAction {
+    Copy,
+    Source,
+    Thinking,
+    Expand,
+    FullOutput,
+}
+
+impl MessageAction {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Copy => "Copy",
+            Self::Source => "Source",
+            Self::Thinking => "Thinking",
+            Self::Expand => "Expand",
+            Self::FullOutput => "Full output",
+        }
     }
 }
 
@@ -275,6 +303,8 @@ pub(crate) enum PickerKind {
     Tools,
     Server,
     Rewind,
+    Messages,
+    MessageActions,
 }
 
 impl PickerKind {
@@ -295,6 +325,8 @@ impl PickerKind {
             Self::Tools => "Tool details and saved output",
             Self::Server => "Service status",
             Self::Rewind => "Rewind to message",
+            Self::Messages => "Operate on message",
+            Self::MessageActions => "Message actions",
         }
     }
 
@@ -400,6 +432,15 @@ impl Picker {
     pub(crate) fn move_by(&mut self, amount: isize) {
         self.selected = self.selected.saturating_add_signed(amount);
         self.clamp_selection();
+    }
+
+    pub(crate) fn cycle_by(&mut self, amount: isize) {
+        let count = self.visible_choices().len();
+        if count == 0 {
+            return;
+        }
+        self.selected = (self.selected as isize + amount).rem_euclid(count as isize) as usize;
+        self.invalidate_rows();
     }
 
     pub(crate) fn clamp_selection(&mut self) {

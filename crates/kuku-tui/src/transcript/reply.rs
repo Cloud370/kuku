@@ -44,6 +44,12 @@ impl LatestReply {
     }
 }
 
+impl super::Transcript {
+    pub(crate) fn last_reply(&self) -> Option<ReplySource<'_>> {
+        self.latest_reply.source(&self.recent.records)
+    }
+}
+
 #[derive(Debug)]
 struct Reply {
     id: u64,

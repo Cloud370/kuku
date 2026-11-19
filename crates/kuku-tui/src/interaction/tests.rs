@@ -1,16 +1,20 @@
 use std::path::PathBuf;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use kuku_client::{Acknowledgement, Action, Receipt};
+use crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
+use kuku_client::{Acknowledgement, Action, HistoryEntry, HistoryKind, Receipt};
 use ratatui::backend::TestBackend;
+use ratatui::buffer::Buffer;
 use ratatui::Terminal;
 use serde_json::json;
 
 use crate::app::{App, Modal};
 use crate::jobs::{Job, Search, Update};
-use crate::menu::{Choice, ChoiceKind, PickerKind, PromptKind};
+use crate::menu::{Choice, ChoiceKind, MessageAction, PickerKind, PromptKind};
+use crate::transcript::MessageId;
 
-fn connected_app() -> App {
+pub(super) fn connected_app() -> App {
     let workspace = PathBuf::from("/workspace");
     let mut app = App::new(workspace.clone(), None);
     app.update(Update::Connected {
@@ -21,8 +25,102 @@ fn connected_app() -> App {
     app
 }
 
-fn press(app: &mut App, code: KeyCode) {
+pub(super) fn press(app: &mut App, code: KeyCode) {
     app.key(KeyEvent::new(code, KeyModifiers::NONE));
+}
+
+pub(super) fn insert_message(
+    app: &mut App,
+    id: u64,
+    kind: HistoryKind,
+    text: &str,
+    details: serde_json::Map<String, serde_json::Value>,
+) {
+    let agent = app.active.agent.clone();
+    app.pane_mut().transcript.apply(
+        HistoryEntry {
+            id,
+            agent,
+            turn: Some(3),
+            kind,
+            text: Some(text.to_owned()),
+            turn_summary: None,
+            details,
+        },
+        None,
+    );
+}
+
+pub(super) fn open_message_actions(app: &mut App, id: MessageId) {
+    app.open_messages_picker();
+    let Some(Modal::Picker(picker)) = &mut app.modal else {
+        panic!("message picker expected")
+    };
+    let selected = picker
+        .visible_choices()
+        .iter()
+        .position(
+            |choice| matches!(&choice.kind, ChoiceKind::MessageEntry(message) if message.id == id),
+        )
+        .expect("message entry is available");
+    picker.selected = selected;
+    press(app, KeyCode::Enter);
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+        if matches!(picker.kind, PickerKind::MessageActions)));
+}
+
+pub(super) fn choose_message_action(app: &mut App, action: MessageAction) {
+    let Some(Modal::Picker(picker)) = &mut app.modal else {
+        panic!("message action picker expected")
+    };
+    let selected = picker
+        .visible_choices()
+        .iter()
+        .position(|choice| {
+            matches!(&choice.kind, ChoiceKind::MessageAction { action: found, .. } if *found == action)
+        })
+        .expect("message action is available");
+    picker.selected = selected;
+    press(app, KeyCode::Enter);
+}
+
+pub(super) fn draw(app: &mut App, terminal: &mut Terminal<TestBackend>) -> Buffer {
+    terminal
+        .draw(|frame| crate::ui::render(frame, app))
+        .unwrap();
+    terminal.backend().buffer().clone()
+}
+
+pub(super) fn screen_position(buffer: &Buffer, text: &str) -> (u16, u16) {
+    let width = usize::from(buffer.area.width);
+    for row in 0..usize::from(buffer.area.height) {
+        let start = row * width;
+        let line = buffer.content[start..start + width]
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        if let Some(column) = line.find(text) {
+            return (column as u16, row as u16);
+        }
+    }
+    panic!("screen text not found: {text}");
+}
+
+pub(super) fn click_screen(app: &mut App, buffer: &Buffer, point: (u16, u16)) {
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        app.event(
+            Event::Mouse(MouseEvent {
+                kind,
+                column: point.0,
+                row: point.1,
+                modifiers: KeyModifiers::NONE,
+            }),
+            buffer,
+        );
+    }
 }
 
 #[test]
@@ -99,7 +197,7 @@ fn agent_cards(app: &mut App) {
     }
 }
 
-fn transcript_text(app: &mut App) -> String {
+pub(super) fn transcript_text(app: &mut App) -> String {
     app.pane_mut()
         .transcript
         .project(96, 32)
