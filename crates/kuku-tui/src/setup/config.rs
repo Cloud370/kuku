@@ -22,7 +22,6 @@ pub(super) struct Settings {
     pub(super) raw: ConfigFile,
     pub(super) resolved: Config,
     pub(super) default_tier: String,
-    pub(super) live_service: bool,
     pub(super) existing: bool,
     storage_error: Option<&'static str>,
 }
@@ -40,6 +39,39 @@ impl Settings {
             .as_ref()
             .and_then(|connection| connection.status().config_path.as_deref())
             .map(PathBuf::from);
+        Self::load_with_status(options, active_config)
+    }
+
+    pub(super) async fn load_for_first_run(options: ConnectionOptions) -> io::Result<Option<Self>> {
+        let Ok(service) = options.local_service() else {
+            return Ok(None);
+        };
+        let status = match service.status().await {
+            Ok(active) => Ok(active.is_some()),
+            Err(_) => Err(()),
+        };
+        if !super::service_is_idle(status) {
+            return Ok(None);
+        }
+        let settings = Self::load_with_status(options, None)?;
+        if super::should_offer_setup(
+            Ok(false),
+            settings.existing,
+            settings.default_route_credential_available(),
+        ) {
+            Ok(Some(settings))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn load_with_status(
+        options: ConnectionOptions,
+        active_config: Option<PathBuf>,
+    ) -> io::Result<Self> {
+        let service = options
+            .local_service()
+            .map_err(|_| invalid_config("cannot resolve local service paths"))?;
         if options.config.is_some()
             && active_config
                 .as_deref()
@@ -72,7 +104,6 @@ impl Settings {
             raw: loaded.raw,
             resolved: loaded.resolved,
             default_tier,
-            live_service: active.is_some(),
             existing: loaded.existing,
             storage_error: None,
         };
@@ -152,18 +183,44 @@ impl Settings {
     }
 
     pub(super) fn source_for(&self, choice: &ConnectionChoice) -> CredentialSource {
-        match self.key_for(choice) {
-            Some(ApiKey::Env(_)) | None => CredentialSource::Environment,
-            Some(ApiKey::File(_) | ApiKey::Plaintext(_)) => CredentialSource::StoredKey,
-        }
+        let key = self.key_for(choice);
+        let environment_available = match key {
+            Some(key @ ApiKey::Env(_)) => resolved_credential_available(key),
+            None => {
+                let key = ApiKey::Env(self.environment_for(choice));
+                resolved_credential_available(&key)
+            }
+            Some(ApiKey::File(_) | ApiKey::Plaintext(_)) => false,
+        };
+        preferred_source(key, environment_available, self.can_store_key())
     }
 
     pub(super) fn saved_key_available(&self, choice: &ConnectionChoice) -> bool {
         match self.key_for(choice) {
-            Some(ApiKey::Plaintext(_)) => self.can_store_key(),
+            Some(ApiKey::Plaintext(value)) => self.can_store_key() && !value.trim().is_empty(),
             Some(ApiKey::File(path)) => self.can_store_key() && is_valid_private_key(path),
             _ => false,
         }
+    }
+
+    pub(super) fn default_route_credential_available(&self) -> bool {
+        self.default_route_credential_available_with(|key| key.resolve().ok())
+    }
+
+    fn default_route_credential_available_with(
+        &self,
+        resolve: impl FnOnce(&ApiKey) -> Option<String>,
+    ) -> bool {
+        let Some(key) = self
+            .resolved
+            .tiers
+            .get(&self.default_tier)
+            .and_then(|tier| self.resolved.providers.get(&tier.provider))
+            .map(|provider| &provider.api_key)
+        else {
+            return false;
+        };
+        resolve(key).is_some_and(|value| !value.trim().is_empty())
     }
 
     pub(super) fn file_reference_in_current_store(&self, path: &Path) -> bool {
@@ -227,6 +284,23 @@ impl Settings {
         }
         Ok(())
     }
+}
+
+fn preferred_source(
+    key: Option<&ApiKey>,
+    environment_available: bool,
+    can_store_key: bool,
+) -> CredentialSource {
+    match key {
+        Some(ApiKey::File(_) | ApiKey::Plaintext(_)) => CredentialSource::StoredKey,
+        _ if environment_available => CredentialSource::Environment,
+        _ if can_store_key => CredentialSource::StoredKey,
+        _ => CredentialSource::Environment,
+    }
+}
+
+fn resolved_credential_available(key: &ApiKey) -> bool {
+    key.resolve().is_ok_and(|value| !value.trim().is_empty())
 }
 
 struct LoadedDocument {
