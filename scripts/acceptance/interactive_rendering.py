@@ -336,6 +336,38 @@ def check_agent_reading_position(client, terminal):
     discarded = "Obsolete checkpoint follow-up"
     beginning = "Streaming checkpoint update"
     new_content = "Another checkpoint arrived while reading"
+
+    def composer_lines(screen):
+        start = screen.find("Pending inputs")
+        positions = [
+            position for label in ("To main", "To reviewer")
+            if (position := screen.find(label, start)) >= 0
+        ]
+        if start < 0 or not positions:
+            return []
+        return screen[min(positions):].splitlines()
+
+    def queued_row_contains(screen, text):
+        start = screen.find("Pending inputs")
+        positions = [
+            position for label in ("To main", "To reviewer")
+            if (position := screen.find(label, start)) >= 0
+        ]
+        if start < 0 or not positions:
+            return False
+        lines = screen[start:min(positions)].splitlines()
+        for index, line in enumerate(lines):
+            if "Queued ·" not in line:
+                continue
+            stop = next(
+                (next_index for next_index in range(index + 1, len(lines))
+                 if "You ·" in lines[next_index]),
+                len(lines),
+            )
+            if text in "\n".join(lines[index:stop]):
+                return True
+        return False
+
     terminal.submit(follow_up)
     with client.provider.next(follow_up).streaming_text(beginning, f"\n\n{new_content}", "\n\nCheckpoint stream finished") as pauses:
         terminal.expect(beginning, state="Streaming")
@@ -353,27 +385,45 @@ def check_agent_reading_position(client, terminal):
         terminal.press("\x1b\r")
         terminal.expect(discarded, state="Queued · next Turn")
         terminal.press("\x1b[A")
+        screen = eventually(
+            "discarded input to remain queued in its delivery row",
+            lambda: result
+            if queued_row_contains((result := terminal.request("screen"))["screen"], discarded)
+            else None,
+        )["screen"]
+        terminal.click_text(screen, discarded)
         terminal.press("\x1b[3~")
 
         def withdrawn_from_pending():
             screen = terminal.request("screen")["screen"]
-            start = screen.find("Pending inputs")
-            end = screen.find("To main", start)
-            if start < 0 or end < 0:
-                return None
-            pending = screen[start:end]
-            if "Input withdrawn" in screen and queued in pending and discarded not in pending and discarded in screen:
+            composer = composer_lines(screen)
+            if (
+                "Input withdrawn" in screen
+                and queued_row_contains(screen, queued)
+                and not queued_row_contains(screen, discarded)
+                and composer
+                and "Draft" in composer[0]
+                and discarded in "\n".join(composer[1:])
+            ):
                 return screen
 
-        eventually("withdrawn input to leave the pending area and restore its draft", withdrawn_from_pending)
+        eventually("withdrawn input to leave the queued rows and restore its draft", withdrawn_from_pending)
         terminal.press("\x03")
-        eventually(
-            "restored withdrawal draft to clear",
-            lambda: result
-            if (result := terminal.request("screen"))["exit_code"] is None
-            and "discarded" not in result["screen"]
-            else None,
-        )
+
+        def withdrawal_draft_cleared():
+            result = terminal.request("screen")
+            if result["exit_code"] is not None or result["console_restored"]:
+                return None
+            composer = composer_lines(result["screen"])
+            if (
+                composer
+                and "Draft" not in composer[0]
+                and "Enter steer" in "\n".join(composer[1:])
+                and discarded not in "\n".join(composer[1:])
+            ):
+                return result
+
+        eventually("restored withdrawal draft to clear", withdrawal_draft_cleared)
         check_reading_focus(terminal, markers, pauses[0], new_content, queued)
     delivered = client.provider.next(queued)
     messages = json.dumps(delivered.request["messages"], ensure_ascii=False)
