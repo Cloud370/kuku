@@ -10,8 +10,13 @@ use time::OffsetDateTime;
 use crate::conversation::address::ConversationAddress;
 use crate::event::{EventPayload, EventStore, RollbackScope, StoredEvent};
 
+#[path = "revert_apply.rs"]
+mod apply;
 #[path = "revert_message_rewind.rs"]
 mod message_rewind;
+
+pub(crate) use apply::{apply_message_rewind_files, FileRevertTransaction};
+use message_rewind::{event_owner, event_turn_owners};
 
 const REVERTABLE_KINDS: &[&str] = &["file_edit", "file_write", "memory_write", "forget_memory"];
 
@@ -59,19 +64,20 @@ enum FileStateAt {
 pub fn filter_rolled_back_events(events: &[StoredEvent]) -> Vec<&StoredEvent> {
     let conversation_rollbacks = active_conversation_rollbacks(events);
     let message_rewinds: Vec<_> = events.iter().filter_map(message_rewind).collect();
+    let turn_owners = event_turn_owners(events);
 
     events
         .iter()
         .filter(|event| {
-            if let Some(conversation) = event_conversation_key(&event.payload) {
-                if message_rewinds
-                    .iter()
-                    .any(|(rewind_id, address, target_id)| {
-                        *address == conversation && event.id >= *target_id && event.id < *rewind_id
-                    })
-                {
-                    return false;
-                }
+            if message_rewinds
+                .iter()
+                .any(|(rewind_id, address, target_id)| {
+                    event_owner(event, &turn_owners) == Some(*address)
+                        && event.id >= *target_id
+                        && event.id < *rewind_id
+                })
+            {
+                return false;
             }
             if let Some(conversation) = event_conversation_key(&event.payload) {
                 if conversation_rollbacks
@@ -391,10 +397,9 @@ pub fn compute_message_rewind_plan(
         .map(|event| event.id)
         .collect();
     let mut modified = HashMap::new();
+    let turn_owners = event_turn_owners(events);
     for event in events.iter().skip(target_pos) {
-        if !visible.contains(&event.id)
-            || event_conversation_key(&event.payload) != Some(conversation)
-        {
+        if !visible.contains(&event.id) || event_owner(event, &turn_owners) != Some(conversation) {
             continue;
         }
         if let Some(path) = revertable_path(event) {
@@ -405,13 +410,12 @@ pub fn compute_message_rewind_plan(
     }
 
     for event in events.iter().skip(target_pos) {
-        if event_conversation_key(&event.payload) == Some(conversation) {
+        if event_owner(event, &turn_owners) == Some(conversation) {
             continue;
         }
         if let Some(path) = revertable_path(event) {
-            if resolve_revert_path(&canonical_workspace, &path)
-                .is_some_and(|path| modified.contains_key(&path))
-            {
+            let resolved = message_rewind_path(&canonical_workspace, &path)?;
+            if modified.contains_key(&resolved) {
                 return Err(crate::Error::InvalidArgument(format!(
                     "cannot restore {} because another Agent recorded a later change",
                     path
@@ -482,20 +486,21 @@ fn revertable_path(event: &StoredEvent) -> Option<String> {
     REVERTABLE_KINDS
         .contains(&value["kind"].as_str()?)
         .then(|| {
-            value["path"]
+            value["canonical_path"]
                 .as_str()
-                .or_else(|| value["canonical_path"].as_str())
+                .or_else(|| value["path"].as_str())
                 .map(str::to_owned)
         })?
 }
 
 fn message_rewind_path(workspace: &Path, path: &str) -> crate::Result<PathBuf> {
     let candidate = Path::new(path);
-    let candidate = if candidate.is_absolute() {
-        candidate.to_path_buf()
-    } else {
-        workspace.join(candidate)
-    };
+    if !candidate.is_absolute() {
+        return Err(crate::Error::InvalidArgument(format!(
+            "cannot safely restore ambiguous relative file path without its Agent workspace: {path}"
+        )));
+    }
+    let candidate = candidate.to_path_buf();
     reject_symlink_components(workspace, &candidate)?;
     resolve_revert_path(workspace, path).ok_or_else(|| {
         crate::Error::InvalidArgument(format!("file path is outside the workspace: {path}"))

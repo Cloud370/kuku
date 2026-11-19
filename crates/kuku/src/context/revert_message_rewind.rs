@@ -1,8 +1,42 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use crate::event::{EventPayload, StoredEvent};
 
 use super::{resolve_revert_path, FileStateAt, REVERTABLE_KINDS};
+
+pub(super) fn event_turn_owners(events: &[StoredEvent]) -> HashMap<u64, String> {
+    let mut owners = HashMap::new();
+    for event in events {
+        if let (Some(turn), Some(owner)) = (
+            super::conversation_event_turn(&event.payload),
+            super::conversation_event_conversation(&event.payload),
+        ) {
+            owners.insert(turn, owner.to_owned());
+        }
+    }
+    owners
+}
+
+pub(super) fn event_owner<'a>(
+    event: &'a StoredEvent,
+    turn_owners: &'a HashMap<u64, String>,
+) -> Option<&'a str> {
+    if let Some(owner) = super::conversation_event_conversation(&event.payload) {
+        return Some(owner);
+    }
+    if let EventPayload::Unknown(value) = &event.payload {
+        if let Some(owner) = value["record"]["address"]
+            .as_str()
+            .or_else(|| value["agent"].as_str())
+        {
+            return Some(owner);
+        }
+    }
+    super::conversation_event_turn(&event.payload)
+        .and_then(|turn| turn_owners.get(&turn))
+        .map(String::as_str)
+}
 
 pub(super) fn is_created_file_write(event: &StoredEvent) -> bool {
     matches!(
@@ -27,13 +61,16 @@ pub(super) fn file_state_at(
         else {
             continue;
         };
-        let path_matches = ["canonical_path", "path"].into_iter().any(|key| {
-            value[key]
-                .as_str()
-                .and_then(|path| resolve_revert_path(workspace, path))
-                .as_deref()
-                == Some(target_path)
-        });
+        let Some(path) = value["canonical_path"]
+            .as_str()
+            .or_else(|| value["path"].as_str())
+        else {
+            continue;
+        };
+        if !Path::new(path).is_absolute() {
+            continue;
+        }
+        let path_matches = resolve_revert_path(workspace, path).as_deref() == Some(target_path);
         if !path_matches {
             continue;
         }

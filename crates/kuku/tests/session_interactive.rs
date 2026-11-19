@@ -1,4 +1,6 @@
 mod common;
+#[path = "session_interactive/message_rewind_tests.rs"]
+mod message_rewind_tests;
 
 use std::sync::Arc;
 use std::time::Duration;

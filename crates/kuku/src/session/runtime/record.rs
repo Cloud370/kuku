@@ -83,6 +83,8 @@ pub(super) enum Record {
         target_turn: u64,
         restore_files: bool,
         #[serde(default)]
+        removed_input_ids: Vec<String>,
+        #[serde(default)]
         warnings: Vec<String>,
     },
     ExecutionStarted {
@@ -361,9 +363,46 @@ impl State {
             Record::MessageRewind {
                 command,
                 address,
+                removed_input_ids,
                 warnings,
                 ..
             } => {
+                let removed = {
+                    let agent = self.agent_mut(&address)?;
+                    let ids: HashSet<_> = removed_input_ids.into_iter().collect();
+                    if ids.is_empty() {
+                        Vec::new()
+                    } else {
+                        let mut removed = Vec::new();
+                        agent.accepted.retain(|delivery| {
+                            if ids.contains(&delivery.input.command_id) {
+                                removed.push(delivery.input.command_id.clone());
+                                false
+                            } else {
+                                true
+                            }
+                        });
+                        agent.inbox.retain(|delivery| {
+                            if ids.contains(&delivery.input.command_id) {
+                                removed.push(delivery.input.command_id.clone());
+                                false
+                            } else {
+                                true
+                            }
+                        });
+                        for id in &removed {
+                            agent.question_replies.remove(id);
+                        }
+                        if !removed.is_empty() {
+                            agent.snapshot.admitted_task = None;
+                        }
+                        agent.update_inbox();
+                        removed
+                    }
+                };
+                for id in removed {
+                    self.deliveries.insert(id, InputStatus::Withdrawn);
+                }
                 self.message_rewind_warnings
                     .insert(command.command_id.clone(), warnings);
                 self.remember_command(command, event_id, address);
