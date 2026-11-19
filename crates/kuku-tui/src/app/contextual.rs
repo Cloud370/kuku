@@ -73,7 +73,7 @@ impl App {
             AgentStatus::Stopped => {
                 snapshot.agent.pending_inputs > 0 && !snapshot.pending.is_empty()
             }
-            _ => false,
+            AgentStatus::Idle | AgentStatus::Running | AgentStatus::Waiting => false,
         };
         if snapshot.cleaning_up || !can_continue {
             return None;
