@@ -51,7 +51,8 @@ pub use values::{
 
 use record::{fingerprint, validate_address, validate_key, Command, Record, State};
 
-type CleanupOutcome = Option<std::result::Result<(), String>>;
+type WorkerOutcome = std::result::Result<(), String>;
+type CleanupOutcome = Option<WorkerOutcome>;
 
 pub(crate) struct SessionInner {
     id: String,
@@ -61,6 +62,7 @@ pub(crate) struct SessionInner {
     state: Mutex<State>,
     value_writes: tokio::sync::Mutex<()>,
     workers: Mutex<HashMap<u64, Worker>>,
+    worker_outcomes: Mutex<HashMap<String, (u64, WorkerOutcome)>>,
     job_workers: Mutex<HashMap<String, jobs::JobWorker>>,
     settlement_failure: OnceLock<String>,
     live: broadcast::Sender<observe::LiveObservation>,
@@ -186,6 +188,7 @@ impl Session {
                 state: Mutex::new(state),
                 value_writes: tokio::sync::Mutex::new(()),
                 workers: Mutex::new(HashMap::new()),
+                worker_outcomes: Mutex::new(HashMap::new()),
                 job_workers: Mutex::new(HashMap::new()),
                 settlement_failure: OnceLock::new(),
                 live,
@@ -399,30 +402,101 @@ impl Session {
         self.inner.state.lock().unwrap().snapshot(address)
     }
 
-    pub(crate) async fn wait_for_agent(&self, address: &str) -> Result<AgentSnapshot> {
-        let done = {
+    /// Wait for an agent's latest worker and surface its execution or cleanup error.
+    /// Return the current snapshot immediately when the agent has no worker outcome.
+    pub async fn wait_for_agent(&self, address: &str) -> Result<AgentSnapshot> {
+        let (snapshot, active_epoch, worker) = {
             let state = self.inner.state.lock().unwrap();
             let agent = state.agent(address)?;
-            if agent.snapshot.status != AgentStatus::Running {
-                return state.snapshot(address);
-            }
-            agent.active_epoch.and_then(|epoch| {
-                self.inner
-                    .workers
-                    .lock()
-                    .unwrap()
+            let active_epoch = agent.active_epoch;
+            let workers = self.inner.workers.lock().unwrap();
+            let worker = match active_epoch {
+                Some(epoch) => workers
                     .get(&epoch)
-                    .map(|worker| worker.done.clone())
-            })
+                    .filter(|worker| worker.address == address)
+                    .map(|worker| (epoch, worker.done.clone())),
+                None => workers
+                    .iter()
+                    .filter(|(_, worker)| worker.address == address)
+                    .max_by_key(|(epoch, _)| *epoch)
+                    .map(|(epoch, worker)| (*epoch, worker.done.clone())),
+            };
+            (state.snapshot(address)?, active_epoch, worker)
         };
-        if let Some(mut done) = done {
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(30),
-                done.wait_for(|result| result.is_some()),
-            )
-            .await;
-        }
+        let completed = self
+            .inner
+            .worker_outcomes
+            .lock()
+            .unwrap()
+            .get(address)
+            .cloned();
+        let outcome = match active_epoch {
+            Some(epoch) => {
+                if let Some((completed_epoch, outcome)) = completed {
+                    if completed_epoch == epoch {
+                        outcome
+                    } else {
+                        self.wait_for_worker(epoch, worker).await?
+                    }
+                } else {
+                    self.wait_for_worker(epoch, worker).await?
+                }
+            }
+            None => match (worker, completed) {
+                (Some((worker_epoch, _)), Some((completed_epoch, outcome)))
+                    if completed_epoch >= worker_epoch =>
+                {
+                    outcome
+                }
+                (Some((worker_epoch, done)), _) => {
+                    self.wait_for_worker(worker_epoch, Some((worker_epoch, done)))
+                        .await?
+                }
+                (None, Some((_, outcome))) => outcome,
+                (None, None) => return Ok(snapshot),
+            },
+        };
+        outcome.map_err(Error::InvalidEventStream)?;
         self.agent(address)
+    }
+
+    async fn wait_for_worker(
+        &self,
+        epoch: u64,
+        worker: Option<(u64, watch::Receiver<CleanupOutcome>)>,
+    ) -> Result<WorkerOutcome> {
+        let Some((worker_epoch, mut done)) =
+            worker.filter(|(worker_epoch, _)| *worker_epoch == epoch)
+        else {
+            return Err(Error::InvalidEventStream(
+                "running agent has no active worker".into(),
+            ));
+        };
+        debug_assert_eq!(worker_epoch, epoch);
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            loop {
+                if let Some(outcome) = done.borrow().clone() {
+                    return Ok(outcome);
+                }
+                done.changed().await.map_err(|_| {
+                    Error::InvalidEventStream(
+                        "agent worker ended without publishing a completion result".into(),
+                    )
+                })?;
+            }
+        })
+        .await
+        .map_err(|_| Error::InvalidEventStream("agent wait timed out".into()))?
+    }
+
+    pub(crate) fn record_worker_outcome(&self, address: &str, epoch: u64, outcome: WorkerOutcome) {
+        let mut outcomes = self.inner.worker_outcomes.lock().unwrap();
+        if outcomes
+            .get(address)
+            .is_none_or(|(previous_epoch, _)| epoch > *previous_epoch)
+        {
+            outcomes.insert(address.into(), (epoch, outcome));
+        }
     }
 
     /// Return all retained agents in stable address order.

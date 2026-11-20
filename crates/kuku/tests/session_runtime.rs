@@ -10,7 +10,7 @@ use httpmock::prelude::{HttpMockRequest, MockServer, POST};
 use httpmock::Mock;
 use serde_json::{json, Value};
 
-use kuku::event::EventPayload;
+use kuku::event::{EventPayload, ModelStopReason};
 #[cfg(unix)]
 use kuku::permission::{AuthorizationDecision, ToolAuthorization, ToolAuthorizer};
 use kuku::{
@@ -70,17 +70,91 @@ async fn fixture<'a>(
 }
 
 async fn settled(session: &Session, address: &str) -> AgentSnapshot {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            let state = session.agent(address).unwrap();
-            if state.status != AgentStatus::Running {
-                return state;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+    settled_during(session, address, "session execution").await
+}
+
+async fn settled_during(session: &Session, address: &str, stage: &'static str) -> AgentSnapshot {
+    match wait_for_agent_during(session, address, stage).await {
+        Ok(snapshot) => snapshot,
+        Err(_) => panic!(
+            "agent wait failed during {stage}; last recorded execution phase: {}",
+            last_recorded_execution_phase(session, address)
+        ),
+    }
+}
+
+async fn wait_for_agent_during(
+    session: &Session,
+    address: &str,
+    stage: &'static str,
+) -> std::result::Result<AgentSnapshot, kuku::Error> {
+    match tokio::time::timeout(Duration::from_secs(10), session.wait_for_agent(address)).await {
+        Ok(outcome) => outcome,
+        Err(_) => panic!(
+            "agent did not settle during {stage}; last recorded execution phase: {}",
+            last_recorded_execution_phase(session, address)
+        ),
+    }
+}
+
+fn last_recorded_execution_phase(session: &Session, address: &str) -> &'static str {
+    let mut after = 0;
+    let mut phase = None;
+    loop {
+        let Ok(events) = session.events(after, 256) else {
+            return "unknown";
+        };
+        if events.is_empty() {
+            return phase.unwrap_or("unknown");
         }
-    })
-    .await
-    .expect("agent did not settle")
+        for event in events {
+            if let Some(latest) = execution_phase(&event.payload, address) {
+                phase = Some(latest);
+            }
+            after = event.id;
+        }
+    }
+}
+
+fn execution_phase(event: &EventPayload, address: &str) -> Option<&'static str> {
+    match event {
+        EventPayload::TurnCompleted { conversation, .. }
+        | EventPayload::TurnCancelled { conversation, .. }
+        | EventPayload::TurnInterrupted { conversation, .. }
+            if conversation == address =>
+        {
+            Some("settlement")
+        }
+        EventPayload::TurnStarted { conversation, .. } if conversation == address => {
+            Some("provider")
+        }
+        EventPayload::ModelRecovery { conversation, .. } if conversation == address => {
+            Some("provider")
+        }
+        EventPayload::ToolCall { conversation, .. }
+        | EventPayload::ToolResult { conversation, .. }
+            if conversation.as_deref() == Some(address) =>
+        {
+            Some("tool")
+        }
+        EventPayload::ModelResponse {
+            conversation,
+            stop_reason: Some(ModelStopReason::EndTurn),
+            ..
+        } if conversation.as_deref() == Some(address) => Some("settlement"),
+        EventPayload::ModelResponse {
+            conversation,
+            stop_reason: Some(ModelStopReason::ToolUse),
+            ..
+        } if conversation.as_deref() == Some(address) => Some("tool"),
+        EventPayload::ModelResponse { conversation, .. }
+        | EventPayload::ModelError { conversation, .. }
+            if conversation.as_deref() == Some(address) =>
+        {
+            Some("provider")
+        }
+        _ => None,
+    }
 }
 
 #[tokio::test]
@@ -116,7 +190,7 @@ async fn public_session_executes_real_tools_without_observers_and_reopens() {
             "correct answer.txt and check it",
         ))
         .unwrap();
-    let state = settled(&session, "main").await;
+    let state = settled_during(&session, "main", "initial execution").await;
     assert_eq!(AgentStatus::Idle, state.status, "{:?}", state.last_error);
     assert_eq!(Some("done"), state.last_output.as_deref());
     assert_eq!(4, state.usage.model_requests);
@@ -162,7 +236,12 @@ async fn public_session_executes_real_tools_without_observers_and_reopens() {
     reopened
         .send(Input::new("followup", "main", "verify the existing result"))
         .unwrap();
-    assert_eq!(AgentStatus::Idle, settled(&reopened, "main").await.status);
+    assert_eq!(
+        AgentStatus::Idle,
+        settled_during(&reopened, "main", "reopened execution")
+            .await
+            .status
+    );
     reopened.close().await.unwrap();
     first.assert_hits_async(1).await;
     second.assert_hits_async(1).await;
@@ -484,7 +563,13 @@ async fn command_output_failure_after_a_side_effect_stops_model_dispatch() {
         session
             .send(Input::new("input", "main", "run command"))
             .unwrap();
-        let snapshot = settled(&session, "main").await;
+        let wait_error = wait_for_agent_during(&session, "main", "command output failure")
+            .await
+            .unwrap_err();
+        assert!(wait_error
+            .to_string()
+            .contains("tool output could not be durably captured"));
+        let snapshot = session.agent("main").unwrap();
         assert_eq!(
             "ran",
             std::fs::read_to_string(workspace.path().join("ran.txt")).unwrap()
