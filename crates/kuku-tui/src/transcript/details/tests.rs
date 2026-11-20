@@ -2,7 +2,7 @@ use kuku_client::{HistoryEntry, HistoryPage};
 use serde_json::{json, Value};
 
 use super::super::{AnchorLine, HistoryRequest, Transcript, TranscriptView};
-use super::DetailKind;
+use super::{DetailKey, DetailKind};
 
 #[derive(Default)]
 struct Journal(Vec<HistoryEntry>);
@@ -56,6 +56,34 @@ fn line(view: &TranscriptView, part: &str) -> usize {
         .iter()
         .position(|line| line.to_string().contains(part))
         .unwrap_or_else(|| panic!("missing {part:?}\n{}", text(view)))
+}
+
+fn delegation_transcript() -> Transcript {
+    let mut journal = Journal::default();
+    journal.tool(
+        "create_agent",
+        json!({"address":"writer","instructions":"Create the report"}),
+        json!({"status":"ok","structured":{"agent":"writer","command_id":"create","event_id":2}}),
+    );
+    journal.tool(
+        "send_message",
+        json!({"to":"writer","message":"Draft the report"}),
+        json!({"status":"ok","structured":{"agent":"writer","command_id":"send","event_id":5}}),
+    );
+    journal.load()
+}
+
+fn delegation_action(transcript: &Transcript, tool_name: &str) -> DetailKey {
+    let entry = transcript
+        .message_entries("main")
+        .into_iter()
+        .find(|entry| entry.label.contains(tool_name))
+        .unwrap();
+    transcript
+        .message_info(&entry.id, "main")
+        .unwrap()
+        .expandable
+        .unwrap()
 }
 
 #[test]
@@ -176,6 +204,88 @@ fn first_tool_message_opens_its_details_instead_of_its_group_heading() {
     assert!(detail.contains("Requested arguments"));
     assert!(detail.contains("\"offset\":2"));
     assert!(detail.contains("contents for first.txt"));
+}
+
+#[test]
+fn expand_first_delegation_message_opens_agent_card_inside_collapsed_group() {
+    let mut transcript = delegation_transcript();
+    let collapsed = transcript.project(82, 44);
+    let collapsed_text = text(&collapsed);
+    let group = transcript
+        .visible_detail_choices()
+        .into_iter()
+        .find(|(key, _, _)| key.kind == DetailKind::Group)
+        .map(|(key, _, _)| key)
+        .expect("delegation group is visible");
+    let action = delegation_action(&transcript, "create_agent");
+
+    assert_eq!(group.record, action.record);
+    assert_eq!(DetailKind::Agent, action.kind);
+    assert!(!collapsed_text.contains("Requested instructions"));
+    assert!(transcript.toggle_detail(&action));
+
+    let expanded = text(&transcript.project(82, 44));
+    assert!(
+        expanded.contains("Requested instructions"),
+        "Agent detail remains hidden in its collapsed delegation group:\n{expanded}"
+    );
+}
+
+#[test]
+fn expand_nonfirst_delegation_message_opens_agent_card_inside_collapsed_group() {
+    let mut transcript = delegation_transcript();
+    let collapsed = transcript.project(82, 44);
+    let collapsed_text = text(&collapsed);
+    let group = transcript
+        .visible_detail_choices()
+        .into_iter()
+        .find(|(key, _, _)| key.kind == DetailKind::Group)
+        .map(|(key, _, _)| key)
+        .expect("delegation group is visible");
+    let action = delegation_action(&transcript, "send_message");
+
+    assert_ne!(group.record, action.record);
+    assert_eq!(DetailKind::Agent, action.kind);
+    assert!(!collapsed_text.contains("Requested task"));
+    assert!(transcript.toggle_detail(&action));
+
+    let expanded = text(&transcript.project(82, 44));
+    assert!(
+        expanded.contains("Requested task"),
+        "Nonfirst Agent detail remains hidden in its collapsed delegation group:\n{expanded}"
+    );
+}
+
+#[test]
+fn collapsed_delegation_expand_reopens_group_without_closing_agent_inspection() {
+    let mut transcript = delegation_transcript();
+    transcript.project(82, 44);
+    let group = transcript
+        .visible_detail_choices()
+        .into_iter()
+        .find(|(key, _, _)| key.kind == DetailKind::Group)
+        .map(|(key, _, _)| key)
+        .expect("delegation group is visible");
+    let action = delegation_action(&transcript, "create_agent");
+
+    assert!(transcript.toggle_detail(&group));
+    assert!(transcript.toggle_detail(&action));
+    assert!(!text(&transcript.project(82, 44)).contains("Requested instructions"));
+    assert!(transcript.toggle_detail(&action));
+    assert!(text(&transcript.project(82, 44)).contains("Requested instructions"));
+
+    assert!(transcript.toggle_detail(&group));
+    let collapsed = text(&transcript.project(82, 44));
+    assert!(collapsed.contains("▸ Timeline"));
+    assert!(!collapsed.contains("Requested instructions"));
+    assert!(transcript.toggle_detail(&action));
+
+    let reopened = text(&transcript.project(82, 44));
+    assert!(reopened.contains("▾ Timeline"), "{reopened}");
+    assert!(
+        reopened.contains("Requested instructions"),
+        "Opening the selected delegation detail must leave its inspection open:\n{reopened}"
+    );
 }
 
 #[test]
