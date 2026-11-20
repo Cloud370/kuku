@@ -18,9 +18,11 @@ The local service uses the selected data directory's `config.toml` by default. C
 
 ## First-run TUI setup
 
-When you start interactive `kuku` without a local config file, the TUI offers a short setup before opening the session. It uses the same resolved path as the local service, honoring `--data-dir`, `KUKU_HOME`, and `--config`, and shows both that path and the workspace. Setup is skipped when the selected config path already exists (including a malformed file) and for remote connections.
+When you start interactive `kuku` without a local config file, the TUI offers shared settings before opening the session. The same flow is available as `kuku init` (or `kuku-cli init`) for local connections; it requires a TTY and makes no writes when run without one. It honors `--data-dir`, `KUKU_HOME`, and `--config`. With a live managed service, setup uses its authenticated active config path; a conflicting explicit `--config` is an error. It never starts a service just to configure it. First-run setup is skipped for an existing config, a live service, or a remote connection.
 
-Choose a provider, a literal model ID, and a credential environment-variable **name**. Model IDs cannot start with `$`, which the config loader interprets as an environment-variable reference. The setup never displays or stores key values and makes no model request. It only checks whether the named variable has a non-empty value; it does not validate the credential or the model ID. If the variable is missing or empty, you can save and exit, set it in the shell that launches `kuku`, and restart. Canceling does not create a config.
+Choose an existing named connection or a preset, then edit the current default tier's model ID. Model IDs cannot start with `$`, which the config loader interprets as an environment-variable reference. Choose one credential source explicitly: an environment-variable name or a pasted stored key. Environment mode checks only whether the named variable is non-empty; it never displays the value. Stored-key input is masked, and the key is saved as plaintext (not encrypted) in a private file under `<data-dir>/credentials/`, outside the workspace. There is no fallback between sources. Setup makes no model request. If an environment variable is missing or empty, you can save and exit, set it in the server's environment, and restart.
+
+The first setup of a new config retains the previous `strong`, `balanced`, and `light` defaults. Editing an existing config changes only its selected default tier and the chosen connection fields; comments, custom endpoints, provider options, other providers, and other tiers are preserved. Existing inline credentials are never shown and move to private storage only when you explicitly save. A file reference already under this service's credentials directory is kept when the key input is blank. Other valid private file references are moved into this data directory only when you explicitly save; the original file is preserved. Malformed configs are not overwritten. Canceling or going back does not save config or key files.
 
 The generated config uses `balanced` as its default tier and initializes `strong`, `balanced`, and `light` with the selected provider and model. Edit `config.toml` or use `kuku config set` to change persistent defaults and individual tiers. In the TUI, `/model` changes the selected Agent's session configuration only; it does not change the saved config default.
 
@@ -31,7 +33,7 @@ The default config defines two providers:
 - `provider.anthropic` with `api_key = "$ANTHROPIC_API_KEY"`
 - `provider.openai` with `api_key = "$OPENAI_API_KEY"`
 
-You can keep secrets in environment variables or store a literal `api_key` in `config.toml`.
+Use an explicit `api_key = "$VARIABLE_NAME"` reference or `api_key = "file:<absolute-path>"`. The interactive settings flow stores new pasted keys under the service data directory and writes only the absolute file reference to TOML. These files are plaintext, not encrypted. See [Config](../reference/config.md) and [File layout](../reference/file-layout.md).
 
 Set the environment for the server process. If you change a key in your terminal after the managed service starts, run `kuku server restart` from that terminal when the service is idle. For a remote connection, configure the key on the server machine. After validating a change to the active config file, the service uses the new configuration when it opens Sessions.
 

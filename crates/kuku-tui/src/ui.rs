@@ -455,28 +455,41 @@ fn banner(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
     }
     let pane = app.pane();
     let mut lines = Vec::new();
+    let stopped_retry = pane
+        .retry_metadata()
+        .is_some_and(|retry| crate::retry_notice::decision(retry) == Some(false));
     if let Some(retry) = pane.retry_metadata() {
         let color = match crate::retry_notice::decision(retry) {
             Some(false) => ERROR,
             Some(true) | None => WARNING,
         };
-        lines.push(Line::styled(
-            crate::text::shorten_middle(
-                &crate::retry_notice::banner(retry, time::OffsetDateTime::now_utc()),
-                width,
-            ),
-            emphasis(color),
-        ));
-        let detail_rows = height.saturating_sub(lines.len()).min(2);
-        if detail_rows > 0 {
-            lines.extend(crate::markup::wrap_bounded(
-                vec![Line::styled(
-                    crate::retry_notice::detail(retry),
-                    emphasis(color),
-                )],
-                width,
-                detail_rows,
+        if stopped_retry {
+            lines.push(Line::styled(
+                shorten(
+                    "Automatic retry stopped; see transcript for details.",
+                    width,
+                ),
+                emphasis(color),
             ));
+        } else {
+            lines.push(Line::styled(
+                crate::text::shorten_middle(
+                    &crate::retry_notice::banner(retry, time::OffsetDateTime::now_utc()),
+                    width,
+                ),
+                emphasis(color),
+            ));
+            let detail_rows = height.saturating_sub(lines.len()).min(2);
+            if detail_rows > 0 {
+                lines.extend(crate::markup::wrap_bounded(
+                    vec![Line::styled(
+                        crate::retry_notice::detail(retry),
+                        emphasis(color),
+                    )],
+                    width,
+                    detail_rows,
+                ));
+            }
         }
     }
     lines.extend(waiting(app, width));
@@ -505,17 +518,19 @@ fn banner(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
             Style::default().fg(ACCENT),
         ));
     }
-    if let Some(snapshot) = &pane.snapshot {
-        if let Some(error) = &snapshot.agent.last_error {
-            let recovery = if snapshot.agent.status == AgentStatus::Interrupted {
-                format!("Interrupted · review tool effects · {}", single_line(error))
-            } else {
-                format!("Execution failed · {}", single_line(error))
-            };
-            lines.push(Line::styled(
-                shorten(&recovery, width),
-                Style::default().fg(ERROR),
-            ));
+    if !stopped_retry {
+        if let Some(snapshot) = &pane.snapshot {
+            if let Some(error) = &snapshot.agent.last_error {
+                let recovery = if snapshot.agent.status == AgentStatus::Interrupted {
+                    format!("Interrupted · review tool effects · {}", single_line(error))
+                } else {
+                    format!("Execution failed · {}", single_line(error))
+                };
+                lines.push(Line::styled(
+                    shorten(&recovery, width),
+                    Style::default().fg(ERROR),
+                ));
+            }
         }
     }
     if let Some(notice) = app.notice.as_ref().filter(|notice| !notice.transient()) {

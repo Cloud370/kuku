@@ -1,15 +1,18 @@
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use crossterm::event::{KeyCode, KeyModifiers};
-use kuku_client::{AgentProgress, Error, HistoryPage, Observation};
+use kuku_client::{
+    Acknowledgement, Action, AgentProgress, Error, HistoryPage, Observation, Receipt,
+};
 use ratatui::style::Modifier;
 use ratatui::{backend::TestBackend, Terminal};
 use serde_json::json;
 
+use super::super::banner;
 use super::{activity_screen, app, key, screen, snapshot};
 use crate::app::{Address, App};
 use crate::config::StatusLineSettings;
-use crate::jobs::Update;
+use crate::jobs::{Job, Update};
 use crate::statusline::StatusLine;
 use crate::ui::{render_at, ActivityClock};
 
@@ -221,4 +224,91 @@ fn retry_warning_keeps_stop_action_visible_with_narrow_unicode_text() {
         assert!(screen.contains("Esc stop"), "{screen}");
         assert!(compact.contains("服务暂时不可用"), "{screen}");
     }
+}
+#[test]
+fn stopped_execution_notice_is_rendered_above_the_composer() {
+    let mut app = app();
+    app.select(app.active.clone(), true, "Stopped execution".into());
+    let selection = app.selection();
+    app.update(Update::Loaded(
+        selection.clone(),
+        snapshot(&app, "running", json!(null), json!(null)),
+        HistoryPage {
+            entries: Vec::new(),
+            next_before: None,
+        },
+    ));
+    app.update(Update::WatchConnected(selection));
+    app.interrupt();
+    let command = app.effects.iter().find_map(|job| match job {
+        Job::Save(command) if matches!(&command.action, Action::Cancel { execution_id: 49 }) => {
+            Some(command.clone())
+        }
+        _ => None,
+    });
+    let command = command.expect("running execution should save its cancel command");
+    app.update(Update::Sent(
+        command.command_id.clone(),
+        Ok(Acknowledgement {
+            receipt: Receipt {
+                command_id: command.command_id,
+                event_id: 53,
+                agent: "main".into(),
+            },
+            replayed: false,
+            status: None,
+            warnings: vec![],
+        }),
+    ));
+
+    let rendered = screen(&mut app, 92, 24);
+    assert!(
+        rendered.contains("Execution stopped · draft kept"),
+        "{rendered}"
+    );
+}
+
+#[test]
+fn stopped_retry_footer_does_not_repeat_transcript_details() {
+    let mut app = app();
+    app.select(app.active.clone(), true, "Stopped retry".into());
+    let selection = app.selection();
+    let mut current = snapshot(&app, "interrupted", json!(null), json!(null));
+    current.agent.last_error = Some("Fixture connection closed".into());
+    current.progress = Some(
+        serde_json::from_value(json!({
+            "phase":"retrying_model",
+            "retry":{
+                "source":"runtime.model_retry",
+                "phase":"stopped",
+                "attempt":2,
+                "max_attempts":3,
+                "request_id":"req_1",
+                "failed_kind":"transport",
+                "status":502,
+                "will_retry":false,
+                "stop_reason":"stream_started",
+                "message":"Fixture connection closed"
+            }
+        }))
+        .unwrap(),
+    );
+    app.update(Update::Loaded(
+        selection.clone(),
+        current,
+        HistoryPage {
+            entries: Vec::new(),
+            next_before: None,
+        },
+    ));
+    app.update(Update::WatchConnected(selection));
+
+    let lines = banner(&app, 80, 3);
+    assert_eq!(1, lines.len());
+    let footer = lines[0].to_string();
+    assert_eq!(
+        "Automatic retry stopped; see transcript for details.",
+        footer
+    );
+    assert!(!footer.contains("Fixture connection closed"));
 }
