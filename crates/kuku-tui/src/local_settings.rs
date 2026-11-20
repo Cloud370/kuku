@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use kuku_client::local::LocalConnection;
 use kuku_client::{Connection, ConnectionOptions};
 use url::Url;
 
@@ -37,6 +38,16 @@ pub(crate) async fn active_service(
     if !same_service_endpoint(connection.client.endpoint(), active.endpoint()) {
         return Err(LOCAL_SERVICE_CHANGED.into());
     }
+    service_identity(options, &active)
+}
+
+pub(crate) fn service_identity(
+    options: &ConnectionOptions,
+    active: &LocalConnection,
+) -> Result<ServiceIdentity, String> {
+    let service = options
+        .local_service()
+        .map_err(|_| LOCAL_SERVICE_REQUIRED)?;
     let status = active.status();
     let config_path = active_config_path(
         options.config.is_some(),

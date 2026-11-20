@@ -124,6 +124,10 @@ impl App {
     }
 
     pub(super) fn credential_repair_connected(&mut self) {
+        if self.connection_problem.is_some() {
+            self.credential_repair_connect_failed();
+            return;
+        }
         let target = self.selection().target;
         if let Some(repair) = &mut self.credential_repair {
             if repair.request.target == target {

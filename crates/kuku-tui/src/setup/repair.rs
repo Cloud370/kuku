@@ -348,13 +348,16 @@ impl CredentialRepair {
 
 #[cfg(test)]
 mod tests {
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use ratatui::Terminal;
 
-    use super::*;
+    use super::{
+        CredentialRepair, CredentialRepairAction, CredentialRepairApplied, CredentialRepairRequest,
+        FailedRoute, PreparedCredentialRepair, Stage,
+    };
     use crate::app::App;
 
     fn state(app: &App) -> CredentialRepair {
@@ -505,5 +508,28 @@ mod tests {
             CredentialRepairAction::None
         ));
         assert_eq!(Stage::Confirm, state.stage);
+    }
+
+    #[test]
+    fn a_rejected_reconnection_never_marks_credentials_ready_for_the_session() {
+        let workspace = std::env::current_dir().unwrap();
+        let mut app = App::new(workspace.clone(), None);
+        app.update(crate::jobs::Update::Connected {
+            endpoint: "http://127.0.0.1:1".into(),
+            workspace: workspace.clone(),
+        });
+        let mut repair = state(&app);
+        repair.stage = Stage::Saving;
+        assert!(repair.saved(Ok(CredentialRepairApplied::Applied)));
+        app.credential_repair = Some(Box::new(repair));
+        app.update(crate::jobs::Update::Connected {
+            endpoint: "http://127.0.0.1:2".into(),
+            workspace: workspace.join("changed-workspace"),
+        });
+        assert!(app.connection_problem.is_some());
+        assert_eq!(
+            Stage::ReconnectFailed,
+            app.credential_repair.as_ref().unwrap().stage
+        );
     }
 }

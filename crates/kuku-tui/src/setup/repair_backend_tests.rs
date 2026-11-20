@@ -1,12 +1,23 @@
 use std::fs;
+use std::sync::Arc;
 
 use httpmock::prelude::{MockServer, GET};
 use kuku::config::{generate_default, load_config, ApiKey};
-use kuku_client::{AgentSelection, RetryMetadata, RetryPhase};
+use kuku_client::{
+    AgentProgress, AgentSelection, AgentStatus, Connection, ConnectionOptions, RetryFailureKind,
+    RetryMetadata, RetryPhase, RetrySource, Snapshot,
+};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use toml_edit::{value, DocumentMut};
 
-use super::*;
+use super::super::config::{save_credential, Settings};
+use super::{
+    authentication_failure, prepare, verify_failure, verify_restarted_service, verify_route,
+    CredentialRepairApplied, CredentialRepairPlan, FailedRoute, PreparedCredentialRepair,
+    SavedCredentialRepair,
+};
+use crate::local_settings::ServiceIdentity;
 
 fn snapshot() -> Snapshot {
     let mut snapshot: Snapshot = serde_json::from_value(json!({
@@ -274,4 +285,29 @@ fn busy_service_keeps_the_saved_state_and_requires_an_explicit_restart_action() 
         repair.handle(enter()),
         CredentialRepairAction::Restart(_)
     ));
+}
+
+#[test]
+fn restart_confirmation_uses_the_returned_instance_even_when_its_endpoint_changes() {
+    let directory = tempfile::tempdir().unwrap();
+    let config_path = directory.path().join("config.toml");
+    fs::write(&config_path, "saved configuration").unwrap();
+    let before = ServiceIdentity {
+        endpoint: "http://127.0.0.1:1111".into(),
+        instance_id: "before".into(),
+        pid: 1,
+        data_dir: directory.path().to_string_lossy().into_owned(),
+        config_path,
+    };
+    let saved = SavedCredentialRepair {
+        config_sha256: format!("{:x}", Sha256::digest(b"saved configuration")),
+        service: before.clone(),
+    };
+    let mut after = before;
+    after.endpoint = "http://127.0.0.1:2222".into();
+    assert!(verify_restarted_service(&saved, &after).is_err());
+    after.instance_id = "after".into();
+    assert!(verify_restarted_service(&saved, &after).is_ok());
+    after.config_path = directory.path().join("another.toml");
+    assert!(verify_restarted_service(&saved, &after).is_err());
 }

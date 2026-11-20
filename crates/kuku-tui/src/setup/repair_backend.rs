@@ -10,7 +10,9 @@ use kuku_client::{
 };
 use sha2::{Digest, Sha256};
 
-use crate::local_settings::{active_service, ensure_same_service, ServiceIdentity};
+use crate::local_settings::{
+    active_service, ensure_same_service, service_identity, ServiceIdentity,
+};
 
 use super::config::{save_credential, Settings};
 
@@ -186,22 +188,27 @@ async fn restart(
     ensure_same_service(&saved.service, &current).map_err(|_| CHANGED)?;
     verify_saved_config(saved)?;
     let local = options.local_service().map_err(|_| CHANGED)?;
-    match local
-        .restart()
-        .await
-        .map_err(|_| "Restart failed; use the local service restart action when it is idle.")?
-    {
-        RestartOutcome::Deferred(_) => {
-            return Err(
+    let restarted =
+        match local
+            .restart()
+            .await
+            .map_err(|_| "Restart failed; use the local service restart action when it is idle.")?
+        {
+            RestartOutcome::Deferred(_) => return Err(
                 "Other work is still active. Finish it, then choose Restart local service here."
                     .into(),
-            )
-        }
-        RestartOutcome::Restarted(_) => {}
-    }
-    let restarted = active_service(options, connection)
-        .await
-        .map_err(|_| CHANGED)?;
+            ),
+            RestartOutcome::Restarted(connection) => {
+                service_identity(options, &connection).map_err(|_| CHANGED)?
+            }
+        };
+    verify_restarted_service(saved, &restarted)
+}
+
+fn verify_restarted_service(
+    saved: &SavedCredentialRepair,
+    restarted: &ServiceIdentity,
+) -> Result<(), String> {
     if restarted.config_path != saved.service.config_path
         || restarted.data_dir != saved.service.data_dir
         || restarted.instance_id == saved.service.instance_id
