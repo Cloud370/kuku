@@ -1,6 +1,7 @@
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
+from interactive import wait_restart_and_recover_crash
 from interactive_fixture import Terminal
 from interactive_rendering import (
     click_queued_input,
@@ -11,6 +12,42 @@ from interactive_rendering import (
     queued_input_click_position,
     rendered_running_transcript,
 )
+
+
+class PendingQuestionRestartTests(unittest.TestCase):
+    def test_visible_question_waits_for_settlement_before_restart(self):
+        client = MagicMock()
+        question = {"id": "pending-question", "text": "Which durable answer should I use?"}
+        client.snapshot.side_effect = [
+            {"status": "running", "question": question},
+            {"status": "waiting", "question": question},
+        ]
+
+        class RestartObserved(Exception):
+            pass
+
+        def restart(*args):
+            self.assertEqual(2, client.snapshot.call_count)
+            raise RestartObserved
+
+        client.cli.side_effect = restart
+        with self.assertRaises(RestartObserved):
+            wait_restart_and_recover_crash(client, "workspace", "session", "title")
+
+        client.cli.assert_called_once_with("workspace", "server", "restart")
+        client.provider.next.assert_called_once_with("persist a pending question")
+
+    def test_unsettled_question_times_out_without_restarting_or_resubmitting(self):
+        client = MagicMock()
+        client.snapshot.return_value = {"status": "running", "question": None}
+        with (
+            patch("interactive_fixture.time.monotonic", side_effect=[0, 31]),
+            self.assertRaisesRegex(AssertionError, "pending question to settle"),
+        ):
+            wait_restart_and_recover_crash(client, "workspace", "session", "title")
+
+        client.cli.assert_not_called()
+        client.provider.next.assert_called_once_with("persist a pending question")
 
 
 class MixedTableScrollTests(unittest.TestCase):

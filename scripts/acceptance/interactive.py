@@ -434,8 +434,10 @@ def wait_restart_and_recover_crash(client, workspace, session, title):
         client.provider.next(question_prompt).tool("ask_user", "waiting-fixture", question=question)
         terminal.expect(question)
         terminal.exit_cleanly()
-    waiting = client.snapshot(workspace, session)
-    assert waiting["status"] == "waiting"
+    waiting = eventually("the pending question to settle before restart", lambda: (
+        snapshot if (snapshot := client.snapshot(workspace, session))["status"] == "waiting" else None
+    ))
+    assert waiting["question"]["text"] == question
     request_id = waiting["question"]["id"]
     original = client.connection()
     client.cli(workspace, "server", "restart")
