@@ -288,7 +288,49 @@ fn focused_control_hints_render_with_default_and_custom_statuslines() {
 }
 
 #[test]
-fn continue_requires_pending_inputs_for_stopped_but_not_interrupted_work() {
+fn continue_requires_pending_inputs_for_idle_and_stopped_but_not_interrupted_work() {
+    let mut idle = app();
+    load_snapshot(&mut idle, "idle", true);
+    assert!(idle
+        .contextual_controls()
+        .iter()
+        .any(|control| matches!(control, ContextControl::Continue { .. })));
+
+    let mut idle_empty = app();
+    load_snapshot(&mut idle_empty, "idle", false);
+    assert!(!idle_empty
+        .contextual_controls()
+        .iter()
+        .any(|control| matches!(control, ContextControl::Continue { .. })));
+
+    let mut idle_without_count = app();
+    load_snapshot(&mut idle_without_count, "idle", true);
+    idle_without_count
+        .pane_mut()
+        .snapshot
+        .as_mut()
+        .unwrap()
+        .agent
+        .pending_inputs = 0;
+    assert!(!idle_without_count
+        .contextual_controls()
+        .iter()
+        .any(|control| matches!(control, ContextControl::Continue { .. })));
+
+    let mut idle_without_queue = app();
+    load_snapshot(&mut idle_without_queue, "idle", false);
+    idle_without_queue
+        .pane_mut()
+        .snapshot
+        .as_mut()
+        .unwrap()
+        .agent
+        .pending_inputs = 1;
+    assert!(!idle_without_queue
+        .contextual_controls()
+        .iter()
+        .any(|control| matches!(control, ContextControl::Continue { .. })));
+
     let mut stopped = app();
     load_snapshot(&mut stopped, "stopped", true);
     assert!(stopped
@@ -363,6 +405,45 @@ fn interrupted_continue_with_empty_queue_advances() {
     ));
     key(&mut interrupted, KeyCode::Enter, KeyModifiers::NONE);
     assert!(interrupted.effects.iter().any(|job| matches!(job,
+        Job::Save(command) if matches!(command.action, Action::Advance)
+    )));
+}
+
+#[test]
+fn idle_continue_focuses_advances_and_revalidates_queued_identity() {
+    let mut idle = app();
+    load_snapshot(&mut idle, "idle", true);
+    idle.pane_mut()
+        .draft
+        .set_text("unsent composer draft".into());
+    key(&mut idle, KeyCode::F(2), KeyModifiers::NONE);
+    assert!(matches!(
+        idle.pane().contextual_focus.cursor.as_ref(),
+        Some(ContextControl::Continue { inputs, .. })
+            if inputs.len() == 1 && inputs[0] == "queued-command"
+    ));
+    key(&mut idle, KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!("unsent composer draft", idle.pane().draft.text());
+    assert!(idle.effects.iter().any(|job| matches!(job,
+        Job::Save(command) if matches!(command.action, Action::Advance)
+    )));
+
+    let mut cleaning = app();
+    load_snapshot(&mut cleaning, "idle", true);
+    cleaning.pane_mut().snapshot.as_mut().unwrap().cleaning_up = true;
+    assert!(!cleaning
+        .contextual_controls()
+        .iter()
+        .any(|control| matches!(control, ContextControl::Continue { .. })));
+
+    let mut stale = app();
+    load_snapshot(&mut stale, "idle", true);
+    key(&mut stale, KeyCode::F(2), KeyModifiers::NONE);
+    stale.pane_mut().snapshot.as_mut().unwrap().pending[0]
+        .receipt
+        .command_id = "replacement-command".into();
+    key(&mut stale, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(!stale.effects.iter().any(|job| matches!(job,
         Job::Save(command) if matches!(command.action, Action::Advance)
     )));
 }

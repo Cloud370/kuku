@@ -390,7 +390,8 @@ pub(crate) struct InputActivity {
 
 impl App {
     pub(super) fn observe(&mut self, event: Observation) {
-        let active_agent = self.active.agent.clone();
+        let active_address = self.active.clone();
+        let active_agent = active_address.agent.clone();
         if matches!(
             &event,
             Observation::Committed {
@@ -431,6 +432,7 @@ impl App {
                 if request_changed {
                     pane.request_usage_floor = id;
                 }
+                let mut execution_started = false;
                 if same_agent {
                     let elapsed = entry.as_ref().and_then(|entry| entry.turn_summary.as_ref());
                     pane.observe_timing(
@@ -442,7 +444,7 @@ impl App {
                     if let Some(delivery) = delivery {
                         pane.deliveries.committed(id, *delivery);
                     }
-                    pane.observe_execution(
+                    execution_started = pane.observe_execution(
                         id,
                         &kind,
                         operation.as_deref(),
@@ -464,6 +466,9 @@ impl App {
                 if state_changed || request_changed {
                     self.request_refresh(SnapshotRefresh::AfterCommit(id));
                 }
+                if execution_started {
+                    self.clear_execution_notice_on_start(&active_address, id);
+                }
             }
             Observation::Live {
                 agent,
@@ -482,13 +487,22 @@ impl App {
                         .execution
                         .is_none_or(|execution| execution_id >= execution)
                 {
+                    let mut execution_started = false;
                     if !terminal && pane.execution != Some(execution_id) {
                         pane.execution = Some(execution_id);
+                        pane.latest_execution_started = Some(
+                            pane.latest_execution_started
+                                .map_or(execution_id, |latest| latest.max(execution_id)),
+                        );
                         pane.progress = ExecutionProgress::default();
+                        execution_started = true;
                     }
                     pane.note_live_reply(cursor, &event);
                     pane.transcript
                         .live(execution_id, turn, turn_number, &event);
+                    if execution_started {
+                        self.clear_execution_notice_on_start(&active_address, execution_id);
+                    }
                 }
             }
             Observation::Lagged { .. } => {
@@ -569,20 +583,25 @@ impl Pane {
         operation: Option<&str>,
         entry: Option<&HistoryEntry>,
         tool_call_id: Option<String>,
-    ) {
+    ) -> bool {
         if id <= self.live_floor
             || id <= self.retired_execution_floor
             || self.execution.is_some_and(|active| id < active)
         {
-            return;
+            return false;
         }
         self.live_floor = id;
+        let execution_started = operation == Some("execution_started");
         match operation {
             Some("execution_started") => {
                 if self.execution != Some(id) {
                     self.progress = ExecutionProgress::default();
                 }
                 self.execution = Some(id);
+                self.latest_execution_started = Some(
+                    self.latest_execution_started
+                        .map_or(id, |latest| latest.max(id)),
+                );
                 self.live_floor = id;
             }
             Some("turn_settled") => {
@@ -616,7 +635,7 @@ impl Pane {
         ) {
             self.live_floor = id;
             if id <= self.latest_reply_cursor {
-                return;
+                return execution_started;
             }
             let preserve_preview = matches!(kind, "runtime.model_retry" | "model.recovery")
                 || (kind == "model.error" && self.progress.is_stopped_retry());
@@ -625,6 +644,7 @@ impl Pane {
             }
         }
         self.progress.committed(kind, entry, tool_call_id);
+        execution_started
     }
 
     pub(crate) fn retry_metadata(&self) -> Option<&RetryMetadata> {
