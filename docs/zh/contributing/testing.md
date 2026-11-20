@@ -68,7 +68,7 @@ python3 scripts/acceptance/run.py interactive --desktop --archive PATH_TO_WINDOW
 
 要复测安装包升级，提供两个包含不同可执行文件、均支持持久 Session 的平台归档。选择入口在工具运行期间调用平台安装器替换程序，验证重启被推迟、原工具仅执行一次，以及新服务能恢复同一 Session。
 
-终端场景在 Linux 和 macOS 通过 Unix PTY 驱动安装好的 `kuku`，在 Windows 使用 ConPTY。用带内嵌资源的二进制和 `--browser` 选项可加入 Chromium 场景。按 [Web CI](../../../.github/workflows/web-ci.yml) 安装 Playwright Python 包和 Chromium。场景使用可控的本地模型端点，实际运行客户端和服务，无需模型凭据或付费请求。各层需要验证的行为见[交互客户端计划](../architecture/interactive-clients.md#开发时如何测试)。场景通过原生终端操作 Ctrl+C 和菜单补全，分别保持模型请求与工具处于运行中以核对显示状态，并在服务断开时检查连接指示。本地模型端点报告已知的输入、缓存读取和输出 token 数，供安装后的终端核对上下文占用、累计 token 和缓存命中率，并检查实测 TPS、Agent 地址与工作目录。
+终端场景在 Linux 和 macOS 通过 Unix PTY 驱动安装好的 `kuku`，在 Windows 使用 ConPTY。公共终端模拟器在 DEC 同步刷新期间保留上一帧，提交后才提供新帧；[协议测试](../../../apps/kuku/tests/terminal_state.rs)覆盖分片更新、调整大小和光标报告。用带内嵌资源的二进制和 `--browser` 选项可加入 Chromium 场景。按 [CI 浏览器准备步骤](../../../.github/workflows/ci.yml) 安装 Playwright Python 包和 Chromium。场景使用可控的本地模型端点，实际运行客户端和服务，无需模型凭据或付费请求。各层需要验证的行为见[交互客户端计划](../architecture/interactive-clients.md#开发时如何测试)。场景通过原生终端操作 Ctrl+C 和菜单补全，分别保持模型请求与工具处于运行中以核对显示状态，并在服务断开时检查连接指示。本地模型端点报告已知的输入、缓存读取和输出 token 数，供安装后的终端核对上下文占用、累计 token 和缓存命中率，并检查实测 TPS、Agent 地址与工作目录。
 
 维护中的生命周期场景从缺失凭据修复走到首个已认证回复，保存默认模型并检查新建和重开 Session 实际使用的模型，以及用键盘 ↑/Delete 撤回精确排队输入，同时保留其草稿和另一条排队输入。场景也会重开只读回退内容并核对下一次 provider 请求不含被排除的内容，跨过最近 48 条已提交消息选择精确回退目标，并用受控的 401 验证遮蔽凭据更新和安全服务重启。认证修复场景确认只有显式 Continue 才会用替换凭据重试保留的原输入，且仅重试一次。键盘覆盖与现有鼠标撤回检查并存。
 

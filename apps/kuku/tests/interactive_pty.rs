@@ -11,6 +11,11 @@ use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+#[path = "support/terminal_state.rs"]
+mod terminal_state;
+
+use terminal_state::{TerminalInput, TerminalState};
+
 const ROWS: NonZeroU16 = NonZeroU16::new(32).unwrap();
 const COLS: NonZeroU16 = NonZeroU16::new(140).unwrap();
 const TOOL_TIMEOUT: Duration = Duration::from_secs(90);
@@ -21,46 +26,6 @@ enum Request {
     Screen,
     Resize { rows: NonZeroU16, cols: NonZeroU16 },
     Write { text: String },
-}
-
-#[derive(Clone)]
-struct TerminalInput(Arc<Mutex<Option<Box<dyn Write + Send>>>>);
-
-impl TerminalInput {
-    fn new(writer: Box<dyn Write + Send>) -> Self {
-        Self(Arc::new(Mutex::new(Some(writer))))
-    }
-
-    fn write(&self, bytes: &[u8]) -> io::Result<()> {
-        let mut slot = self.0.lock().unwrap();
-        let writer = slot
-            .as_mut()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "terminal input closed"))?;
-        writer.write_all(bytes)?;
-        writer.flush()
-    }
-
-    fn close(&self) {
-        self.0.lock().unwrap().take();
-    }
-}
-
-impl vt100::Callbacks for TerminalInput {
-    fn unhandled_csi(
-        &mut self,
-        screen: &mut vt100::Screen,
-        first: Option<u8>,
-        second: Option<u8>,
-        parameters: &[&[u16]],
-        command: char,
-    ) {
-        // NOTE: ConPTY inherits the cursor via a report from its host terminal before the child can start.
-        if (first, second, command) == (None, None, 'n') && parameters == [&[6]] {
-            let (row, column) = screen.cursor_position();
-            let report = format!("\x1b[{};{}R", row + 1, column + 1);
-            let _ = self.write(report.as_bytes());
-        }
-    }
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -133,7 +98,7 @@ fn host_terminal(
         ROWS,
         COLS,
         0,
-        input.clone(),
+        TerminalState::new(input.clone()),
     )));
     let parser = viewport.clone();
     thread::spawn(move || {
@@ -154,7 +119,7 @@ fn host_terminal(
                 Request::Screen => {
                     let exit_code = child.try_wait()?.map(|status| status.exit_code());
                     let parser = viewport.lock().unwrap();
-                    let screen = parser.screen();
+                    let screen = parser.callbacks().screen(parser.screen());
                     #[cfg(unix)]
                     let console_restored = before.is_some() && before == pair.master.get_termios();
                     #[cfg(windows)]

@@ -214,8 +214,13 @@ def two_workspaces_and_disconnect(client):
     with client.terminal(workspace) as reopened:
         reopened.resume(prompt)
         screen = reopened.expect(final)["screen"]
-        assert screen.count(final) == 1, "Restored terminal must show one durable response"
-        assert screen.count(TOOL_BRIEF) == 1 and "╰─ ok" in screen, "Restored terminal must show one tool result"
+        assert screen.count(final) == 1, (
+            f"Restored terminal must show one durable response (count={screen.count(final)})\n{screen}"
+        )
+        assert screen.count(TOOL_BRIEF) == 1 and "╰─ ok" in screen, (
+            f"Restored terminal must show one tool result (cards={screen.count(TOOL_BRIEF)}, "
+            f"ok={'╰─ ok' in screen})\n{screen}"
+        )
         compact = reopened.expect("TPS")["screen"].splitlines()[-1]
         assert "main" in compact and "Context" in compact and "Cache hit" not in compact, compact
         assert not re.search(r"\d(?:[.\d]*[KMB])? (?:in|out)\b", compact), compact
