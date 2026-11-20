@@ -1,4 +1,5 @@
 use std::fs;
+use std::path::Path;
 
 use httpmock::prelude::{MockServer, POST};
 use serde_json::{json, Value};
@@ -15,11 +16,13 @@ async fn distinct_workspaces_share_guidance_and_behavior_before_project_policy()
     let workspace_b = tempfile::tempdir().unwrap();
     let data_a = tempfile::tempdir().unwrap();
     let data_b = tempfile::tempdir().unwrap();
+    let workspace_a_alias = workspace_a.path().join(".");
+    let workspace_b_alias = workspace_b.path().join(".");
     fs::write(workspace_a.path().join("AGENTS.md"), "POLICY_A").unwrap();
     fs::write(workspace_b.path().join("AGENTS.md"), "POLICY_B").unwrap();
-    let (first, path) = options(&server, workspace_a.path(), data_a.path());
+    let (first, path) = options(&server, &workspace_a_alias, data_a.path());
     let mut second = first.clone();
-    second.workspace = workspace_b.path().into();
+    second.workspace = workspace_b_alias.clone();
     second.data_dir = data_b.path().into();
     let model = server
         .mock_async(|when, then| {
@@ -55,12 +58,22 @@ async fn distinct_workspaces_share_guidance_and_behavior_before_project_policy()
     );
     assert_eq!("SHARED_BEHAVIOR", a[3]["content"]);
     for (messages, policy, workspace) in [
-        (a, "POLICY_A", workspace_a.path()),
-        (b, "POLICY_B", workspace_b.path()),
+        (a, "POLICY_A", workspace_a_alias.as_path()),
+        (b, "POLICY_B", workspace_b_alias.as_path()),
     ] {
         let project = messages[4]["content"].as_str().unwrap();
         assert!(project.contains(policy));
-        assert!(project.contains(workspace.to_str().unwrap()));
+        let rendered_workspace = project
+            .lines()
+            .find_map(|line| line.strip_prefix("- Workspace root: "))
+            .expect("project context names its workspace root");
+        let expected_workspace = workspace.canonicalize().unwrap();
+        assert_eq!(
+            expected_workspace.components().collect::<Vec<_>>(),
+            Path::new(rendered_workspace)
+                .components()
+                .collect::<Vec<_>>()
+        );
     }
     assert_ne!(a[4], b[4]);
     assert_eq!(&a[5..], &b[5..]);
