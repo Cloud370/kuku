@@ -15,11 +15,12 @@ use crate::execution::{
 };
 
 use super::super::test_helpers::{noisy_timeout_command, workspace};
-use super::{blocked_command_reason, run_command, RUN_COMMAND_MAX_CHARS};
-#[cfg(unix)]
 use super::{
-    read_output, run_command_with_output, CommandEvent, OutputLimits, OutputRead, OutputStream,
+    blocked_command_reason, run_command, run_command_with_output, OutputLimits,
+    RUN_COMMAND_MAX_CHARS,
 };
+#[cfg(unix)]
+use super::{read_output, CommandEvent, OutputRead, OutputStream};
 
 #[cfg(unix)]
 fn stdout_command() -> &'static str {
