@@ -2,6 +2,7 @@ use kuku_client::Receipt;
 use ratatui::style::Color;
 use serde_json::{Map, Value};
 
+use crate::text::cap;
 use crate::theme::{ACCENT, ERROR, MUTED, SUCCESS, WARNING};
 
 use super::command::CommandPreview;
@@ -72,6 +73,7 @@ pub(super) struct Outcome {
     pub(super) diff: String,
     pub(super) exit_code: Option<i64>,
     pub(super) output_id: Option<String>,
+    pub(super) inline_output_complete: bool,
     pub(super) command_preview: Option<Box<CommandPreview>>,
     pub(super) script: Option<Box<ScriptPreview>>,
     pub(super) file_read: Option<FileRead>,
@@ -104,6 +106,16 @@ impl Outcome {
             .get("truncated")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        let diff = structured["diff"].as_str().or_else(|| get("diff"));
+        let inline_output_complete = !truncated
+            && structured["capture_complete"].as_bool() != Some(false)
+            && structured["quota_truncated"].as_bool() != Some(true)
+            && structured["output_preview_truncated"].as_bool() != Some(true)
+            && structured["change"]["preview_truncated"].as_bool() != Some(true)
+            && structured["timed_out"].as_bool() != Some(true)
+            && structured["cancelled"].as_bool() != Some(true)
+            && !content.is_some_and(|text| cap(text, MAX_DETAIL_BYTES).len() < text.len())
+            && !diff.is_some_and(|text| cap(text, MAX_DETAIL_BYTES).len() < text.len());
         let command_preview = CommandPreview::from_result(structured);
         let attention = [
             "cleanup_incomplete",
@@ -128,15 +140,13 @@ impl Outcome {
                 |command| command.invocation(),
             ),
             content: capped(content, MAX_DETAIL_BYTES),
-            diff: capped(
-                structured["diff"].as_str().or_else(|| get("diff")),
-                MAX_DETAIL_BYTES,
-            ),
+            diff: capped(diff, MAX_DETAIL_BYTES),
             exit_code: command_preview
                 .as_ref()
                 .and_then(|command| command.exit_code())
                 .or_else(|| structured["exit_code"].as_i64()),
             output_id: output_id.map(str::to_owned),
+            inline_output_complete,
             command_preview,
             script: ScriptPreview::from_result(structured),
             file_read: FileRead::from_result(structured, truncated),

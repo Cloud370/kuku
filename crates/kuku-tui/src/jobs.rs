@@ -6,8 +6,8 @@ use kuku_client::local::{RestartOutcome, SESSION_PROTOCOL_VERSION};
 use kuku_client::{
     Acknowledgement, AgentConfig, Client, Command, Connection, ConnectionOptions, Error,
     HistoryKind, HistoryPage, JobSnapshot, JobStatus, ModelCatalog, ModelSelection, NamedValue,
-    NamedValueKind, NamedValueSource, Observation, OutputChunk, SessionStatus, Snapshot,
-    SubscriptionUpdate, Target,
+    NamedValueKind, NamedValueSource, Observation, OutputChunk, RewindGroupPage, SessionStatus,
+    Snapshot, SubscriptionUpdate, Target,
 };
 use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinSet};
@@ -16,7 +16,7 @@ use crate::menu::{Choice, ChoiceKind, Ticket};
 use crate::model_default::{self, PreparedDefaultSave, ResolvedModel};
 use crate::output::OUTPUT_PAGE_BYTES;
 use crate::text::single_line;
-use crate::transcript::{HistoryRequest, HISTORY_PAGE};
+use crate::transcript::{HistoryRequest, RewindGroupRequest, HISTORY_PAGE, REWIND_GROUP_PAGE};
 
 const UPDATE_CAPACITY: usize = 64;
 const SEARCH_DELAY: Duration = Duration::from_millis(70);
@@ -53,6 +53,7 @@ pub(crate) enum Job {
     Refresh(Selection),
     RefreshProgress(Selection),
     History(Selection, HistoryRequest),
+    RewindGroupHistory(Selection, RewindGroupRequest),
     Find(Ticket, Search),
     ClosePicker,
     PrepareDefault {
@@ -93,6 +94,11 @@ pub(crate) enum Update {
     Observation(Selection, Observation),
     Refreshed(Selection, Result<Box<Snapshot>, Error>),
     History(Selection, HistoryRequest, Result<HistoryPage, Error>),
+    RewindGroupHistory(
+        Selection,
+        RewindGroupRequest,
+        Result<RewindGroupPage, Error>,
+    ),
     Found(Ticket, Result<(Vec<Choice>, String), Error>),
     PreparedDefault(u64, Selection, Result<PreparedDefaultSave, String>),
     SavedDefault(u64, Selection, Result<(), String>),
@@ -282,6 +288,17 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
                 .await;
             Update::History(selection, request, result)
         }
+        Job::RewindGroupHistory(selection, request) => {
+            let result = client
+                .rewind_group_history(
+                    &selection.target,
+                    request.rewind_event_id,
+                    request.before,
+                    REWIND_GROUP_PAGE,
+                )
+                .await;
+            Update::RewindGroupHistory(selection, request, result)
+        }
         Job::Save(command) => {
             let save = command.clone();
             let result = tokio::task::spawn_blocking(move || connection.pending.save(&save)).await;
@@ -455,7 +472,7 @@ async fn find(
     if matches!(query, Search::Server) {
         return Ok((Vec::new(), service_status(options, connection).await?));
     }
-    let connection = connection.ok_or_else(|| Error::Options("Connect with /reconnect".into()))?;
+    let connection = connection.ok_or_else(|| Error::Options("Reconnect with Ctrl+R".into()))?;
     let client = &connection.client;
     let workspace = &connection.workspace;
     let choices = match query {

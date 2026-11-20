@@ -118,6 +118,17 @@ fn shared_protocol_fixture_decodes_history_receipts_observation_and_errors() {
 }
 
 #[test]
+fn legacy_history_page_defaults_to_empty_rewind_groups() {
+    let history: HistoryPage = serde_json::from_value(json!({
+        "entries": [],
+        "next_before": null
+    }))
+    .unwrap();
+
+    assert!(history.rewind_groups.is_empty());
+}
+
+#[test]
 fn retry_history_and_snapshot_decode_phases_attempts_and_unknown_values() {
     let history: HistoryPage = serde_json::from_value(json!({
         "entries":[{

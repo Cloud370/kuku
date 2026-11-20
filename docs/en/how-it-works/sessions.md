@@ -46,6 +46,8 @@ Behavioral Prompt assets remain external or embedded versioned resources, separa
 
 A committed-message rewind targets one exact user-message event and Agent. It appends a rewind operation to the journal and hides the bounded interval from that message up to (but not including) the rewind commit in the active projection. The original events remain in the append-only journal, and inputs committed after the rewind remain visible. In the TUI, press Escape twice with an empty composer to choose a loaded committed message, then confirm; the original text returns to the composer as an unsent draft. Recorded file changes are left untouched unless explicitly selected; opt-in restoration is limited to supported, recorded in-workspace changes and does not reverse shell or external side effects.
 
+Committed history keeps `HistoryPage.entries` active-only and returns rewind-group summaries separately, anchored at each target message's original timeline position. A client expands a group by lazily reading bounded pages from `/history/rewinds/{rewind_event_id}`. This is a read-only view: hidden entries never return to active history or provider context, and browsing does not mutate the Session. If rewind ranges overlap, each entry belongs to the first applicable rewind for its Agent; a later rewind hiding an earlier rewind operation does not hide the earlier group's read-only view.
+
 ## Waiting and replies
 
 For a pending authorization, use `reply_permission` with the exact request identity and Agent. [Tool authorization and deferred approval](permissions.md)

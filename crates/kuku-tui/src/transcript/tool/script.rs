@@ -207,9 +207,9 @@ impl Tool {
         ));
         if !actions.is_empty() {
             let hint = if actions.iter().any(has_output) {
-                "Actions and saved output · /tools"
+                "Actions and saved output · Messages"
             } else {
-                "Actions · /tools"
+                "Actions · Messages"
             };
             rows.extend(render_preview(hint, ACCENT, width, 1, inset));
         }

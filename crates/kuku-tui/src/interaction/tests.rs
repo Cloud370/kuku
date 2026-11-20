@@ -1,19 +1,24 @@
 use std::path::PathBuf;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use kuku_client::{
-    Acknowledgement, Action, Input, InputSource, InputStatus, InputTiming, JobSnapshot, JobStatus,
-    NamedValue, NamedValueKind, NamedValueSource, OutputReference, Receipt, Timing,
+    Acknowledgement, Action, HistoryEntry, HistoryKind, Input, InputSource, InputStatus,
+    InputTiming, JobSnapshot, JobStatus, NamedValue, NamedValueKind, NamedValueSource,
+    OutputReference, Receipt, Timing,
 };
 use ratatui::backend::TestBackend;
+use ratatui::buffer::Buffer;
 use ratatui::Terminal;
 use serde_json::json;
 
 use crate::app::{App, KeyboardFocus, Modal};
 use crate::jobs::{Job, Search, Update};
-use crate::menu::{Choice, ChoiceKind, PickerKind, PromptKind};
+use crate::menu::{Choice, ChoiceKind, MessageAction, PickerKind, PromptKind};
+use crate::transcript::MessageId;
 
-fn connected_app() -> App {
+pub(super) fn connected_app() -> App {
     let workspace = PathBuf::from("/workspace");
     let mut app = App::new(workspace.clone(), None);
     app.update(Update::Connected {
@@ -24,8 +29,107 @@ fn connected_app() -> App {
     app
 }
 
-fn press(app: &mut App, code: KeyCode) {
+pub(super) fn press(app: &mut App, code: KeyCode) {
     app.key(KeyEvent::new(code, KeyModifiers::NONE));
+}
+
+pub(super) fn insert_message(
+    app: &mut App,
+    id: u64,
+    kind: HistoryKind,
+    text: &str,
+    details: serde_json::Map<String, serde_json::Value>,
+) {
+    let agent = app.active.agent.clone();
+    app.pane_mut().transcript.apply(
+        HistoryEntry {
+            id,
+            agent,
+            turn: Some(3),
+            kind,
+            text: Some(text.to_owned()),
+            turn_summary: None,
+            details,
+        },
+        None,
+    );
+}
+
+pub(super) fn open_message_actions(app: &mut App, id: MessageId) {
+    app.open_messages_picker();
+    let Some(Modal::Picker(picker)) = &mut app.modal else {
+        panic!("message picker expected")
+    };
+    let selected = picker
+        .visible_choices()
+        .iter()
+        .position(
+            |choice| matches!(&choice.kind, ChoiceKind::MessageEntry(message) if message.id == id),
+        )
+        .expect("message entry is available");
+    picker.selected = selected;
+    press(app, KeyCode::Enter);
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+        if matches!(picker.kind, PickerKind::MessageActions)));
+}
+
+pub(super) fn choose_message_action(app: &mut App, action: MessageAction) {
+    let Some(Modal::Picker(picker)) = &mut app.modal else {
+        panic!("message action picker expected")
+    };
+    let selected = picker
+        .visible_choices()
+        .iter()
+        .position(|choice| {
+            (action == MessageAction::Expand
+                && matches!(
+                    &choice.kind,
+                    ChoiceKind::Detail { message: Some(_), .. }
+                ))
+                || matches!(&choice.kind, ChoiceKind::MessageAction { action: found, .. } if *found == action)
+        })
+        .expect("message action is available");
+    picker.selected = selected;
+    press(app, KeyCode::Enter);
+}
+
+pub(super) fn draw(app: &mut App, terminal: &mut Terminal<TestBackend>) -> Buffer {
+    terminal
+        .draw(|frame| crate::ui::render(frame, app))
+        .unwrap();
+    terminal.backend().buffer().clone()
+}
+
+pub(super) fn screen_position(buffer: &Buffer, text: &str) -> (u16, u16) {
+    let width = usize::from(buffer.area.width);
+    for row in 0..usize::from(buffer.area.height) {
+        let start = row * width;
+        let line = buffer.content[start..start + width]
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        if let Some(column) = line.find(text) {
+            return (column as u16, row as u16);
+        }
+    }
+    panic!("screen text not found: {text}");
+}
+
+pub(super) fn click_screen(app: &mut App, buffer: &Buffer, point: (u16, u16)) {
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        app.event(
+            Event::Mouse(MouseEvent {
+                kind,
+                column: point.0,
+                row: point.1,
+                modifiers: KeyModifiers::NONE,
+            }),
+            buffer,
+        );
+    }
 }
 
 #[test]
@@ -273,6 +377,104 @@ fn plain_arrows_preserve_the_draft_and_history_requires_an_explicit_shortcut() {
     assert_eq!(11, app.pane().draft.cursor());
 }
 
+#[test]
+fn escape_from_history_focus_returns_to_composer_with_multiline_draft() {
+    let mut app = connected_app();
+    for id in 1..=20 {
+        insert_message(
+            &mut app,
+            id,
+            HistoryKind::User,
+            &format!("history {id}"),
+            serde_json::Map::new(),
+        );
+    }
+    app.paste("first\nsecond");
+    press(&mut app, KeyCode::Left);
+    let draft = app.pane().draft.text().to_owned();
+    let cursor = app.pane().draft.cursor();
+
+    press(&mut app, KeyCode::PageUp);
+    assert!(app.pane().transcript.is_reading());
+    assert_eq!(
+        crate::app::KeyboardFocus::Transcript,
+        app.pane().keyboard_focus
+    );
+    assert!(!app.composer_focused());
+
+    press(&mut app, KeyCode::Esc);
+    assert!(app.composer_focused());
+    assert_eq!(
+        crate::app::KeyboardFocus::Composer,
+        app.pane().keyboard_focus
+    );
+    assert_eq!(draft, app.pane().draft.text());
+    assert_eq!(cursor, app.pane().draft.cursor());
+    assert_eq!(None, app.escape_armed_at);
+    assert!(app.modal.is_none());
+}
+
+#[test]
+fn escape_from_running_history_focus_interrupts_before_returning_to_composer() {
+    let mut app = connected_app();
+    let snapshot = Box::new(
+        serde_json::from_value(json!({
+            "session_id": app.active.session,
+            "workspace": app.workspace,
+            "cursor": 100,
+            "agents": [],
+            "pending": [],
+            "progress": null,
+            "agent": {
+                "address": app.active.agent,
+                "status": "running",
+                "turn": 3,
+                "pending_inputs": 0,
+                "execution_id": 42,
+                "last_error": null,
+                "config": {},
+                "usage": {"model_requests": 0, "unreported_requests": 0}
+            }
+        }))
+        .unwrap(),
+    );
+    app.update(Update::Loaded(
+        app.selection(),
+        snapshot,
+        serde_json::from_value(json!({
+            "entries": [],
+            "rewind_groups": [],
+            "next_before": null
+        }))
+        .unwrap(),
+    ));
+    app.effects.clear();
+    for id in 1..=20 {
+        insert_message(
+            &mut app,
+            id,
+            HistoryKind::User,
+            &format!("history {id}"),
+            serde_json::Map::new(),
+        );
+    }
+    app.paste("first\nsecond");
+    press(&mut app, KeyCode::PageUp);
+    assert!(app.pane().transcript.is_reading());
+
+    press(&mut app, KeyCode::Esc);
+
+    let Some(Job::Save(command)) = app.effects.pop() else {
+        panic!("Escape while running must issue an interrupt")
+    };
+    assert!(matches!(
+        command.action,
+        Action::Cancel { execution_id: 42 }
+    ));
+    assert!(app.composer_focused());
+    assert_eq!("first\nsecond", app.pane().draft.text());
+}
+
 fn agent_cards(app: &mut App) {
     for (index, mut event) in [
         json!({
@@ -302,7 +504,7 @@ fn agent_cards(app: &mut App) {
     }
 }
 
-fn transcript_text(app: &mut App) -> String {
+pub(super) fn transcript_text(app: &mut App) -> String {
     app.pane_mut()
         .transcript
         .project(96, 32)
@@ -311,47 +513,6 @@ fn transcript_text(app: &mut App) -> String {
         .map(|line| line.to_string())
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-fn open_details(app: &mut App) {
-    app.key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
-    app.paste("/details");
-    press(app, KeyCode::Enter);
-    assert!(matches!(&app.modal, Some(Modal::Picker(picker))
-        if matches!(picker.kind, PickerKind::Details)));
-    app.effects.clear();
-}
-
-#[test]
-fn details_search_selects_one_visible_card_and_escape_leaves_previews_alone() {
-    let mut app = connected_app();
-    agent_cards(&mut app);
-    let collapsed = transcript_text(&mut app);
-    assert!(!collapsed.contains("Use precise citations"));
-    assert!(!collapsed.contains("List failing cases"));
-    open_details(&mut app);
-    app.paste("reviewer CLI");
-    let Some(Modal::Picker(picker)) = &app.modal else {
-        panic!("details picker expected");
-    };
-    let choices = picker.visible_choices();
-    assert_eq!(1, choices.len());
-    assert_eq!("Agent reviewer", choices[0].label);
-    assert!(choices[0].detail.contains("Review the CLI"));
-    assert!(app.effects.is_empty(), "search only uses visible cards");
-    press(&mut app, KeyCode::Esc);
-    assert_eq!(collapsed, transcript_text(&mut app));
-
-    open_details(&mut app);
-    app.paste("reviewer");
-    press(&mut app, KeyCode::Enter);
-    assert!(app.modal.is_none());
-    let expanded = transcript_text(&mut app);
-    assert!(
-        expanded.contains("Use precise citations") && expanded.contains("List failing cases"),
-        "{expanded}"
-    );
-    assert!(app.pending.is_empty());
 }
 
 #[test]
@@ -621,84 +782,7 @@ fn tab_inserts_paths_and_skills_in_the_draft() {
 }
 
 #[test]
-fn copy_fetches_the_complete_committed_reply_and_ignores_older_requests() {
-    use kuku_client::{HistoryEntry, HistoryKind, HistoryPage};
-
-    let mut app = connected_app();
-    let snapshot = serde_json::from_value(json!({
-        "session_id": app.active.session,
-        "workspace": app.workspace,
-        "cursor": 4,
-        "pending": [],
-        "agents": [],
-        "agent": {
-            "address": app.active.agent, "config": {}, "status": "running", "pending_inputs": 0,
-            "last_output": "The previous Turn",
-            "usage": {"model_requests": 0, "unreported_requests": 0},
-        }
-    }))
-    .unwrap();
-    let reply = |id, text: &str| HistoryEntry {
-        id,
-        agent: "main".into(),
-        turn: Some(2),
-        kind: HistoryKind::Assistant,
-        text: Some(text.into()),
-        turn_summary: None,
-        details: Default::default(),
-    };
-    let original = format!(
-        "```rust\r\n{}```\r\n\r\n结束  \r\n",
-        "    let 值 = 42;\r\n".repeat(4000)
-    );
-    let selection = app.selection();
-    app.update(Update::Loaded(
-        selection.clone(),
-        Box::new(snapshot),
-        HistoryPage {
-            entries: vec![reply(4, &original)],
-            next_before: None,
-        },
-    ));
-    app.effects.clear();
-    app.copy_reply();
-    assert!(
-        matches!(app.effects.as_slice(), [Job::ReplySource(target, 4)] if target == &selection)
-    );
-    app.effects.clear();
-
-    let mut old_selection = selection.clone();
-    old_selection.generation += 1;
-    app.update(Update::ReplySource(
-        old_selection,
-        4,
-        Ok("Wrong target".into()),
-    ));
-    app.update(Update::ReplySource(
-        selection.clone(),
-        3,
-        Ok("Wrong reply".into()),
-    ));
-    assert!(app.effects.is_empty());
-    app.update(Update::ReplySource(
-        selection.clone(),
-        4,
-        Ok(original.clone()),
-    ));
-    assert!(matches!(app.effects.as_slice(), [Job::Copy(text)] if text == &original));
-
-    app.effects.clear();
-    app.copy_reply();
-    app.effects.clear();
-    let newest = "`Raw` **Markdown**\r\n尾字  \r\n";
-    app.pane_mut().transcript.apply(reply(7, newest), None);
-    app.copy_reply();
-    app.update(Update::ReplySource(selection, 4, Ok(original)));
-    assert!(matches!(app.effects.as_slice(), [Job::Copy(text)] if text == newest));
-}
-
-#[test]
-fn copy_reply_does_not_use_snapshot_fallback_when_history_has_no_reply() {
+fn obsolete_message_commands_are_absent_from_picker() {
     use kuku_client::HistoryPage;
 
     let mut app = connected_app();
@@ -721,15 +805,14 @@ fn copy_reply_does_not_use_snapshot_fallback_when_history_has_no_reply() {
         Box::new(snapshot),
         HistoryPage {
             entries: Vec::new(),
+            rewind_groups: Vec::new(),
             next_before: None,
         },
     ));
     app.effects.clear();
 
-    app.copy_reply();
-
-    assert!(!app
-        .effects
-        .iter()
-        .any(|effect| matches!(effect, Job::Copy(_))));
+    let commands = Choice::commands();
+    for name in ["/copy", "/source", "/notes", "/details", "/tools"] {
+        assert!(commands.iter().all(|choice| choice.label != name), "{name}");
+    }
 }

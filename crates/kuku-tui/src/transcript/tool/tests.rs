@@ -2,7 +2,30 @@ use serde_json::{json, Value};
 
 use crate::transcript::Transcript;
 
-use super::{Tool, MAX_DETAIL_BYTES};
+use super::{Outcome, State, Tool, MAX_DETAIL_BYTES};
+
+#[test]
+fn remediation_truncated_edit_preview_is_not_full_inline_output() {
+    let fields = json!({
+        "status":"ok",
+        "structured":{
+            "kind":"file_edit",
+            "change":{
+                "added_lines":1,
+                "removed_lines":1,
+                "preview":"--- old\n+++ new\n-clipped\n+diff",
+                "preview_truncated":true
+            }
+        }
+    });
+    let outcome = Outcome::from_fields(fields.as_object().unwrap(), None);
+    let tool = Tool {
+        state: State::Recorded(outcome),
+        ..Tool::default()
+    };
+
+    assert!(!tool.view().has_full_output());
+}
 
 #[test]
 fn command_invocations_display_literal_arguments_and_an_explicit_interpreter() {
@@ -61,9 +84,20 @@ fn script_card_reports_completed_effects_and_unknown_actions_from_host_facts() {
         assert!(rendered.contains(evidence), "{evidence}\n{rendered}");
     }
     assert!(!rendered.contains("Everything passed"));
-    let tools = transcript.tools();
-    assert_eq!(2, tools.len());
-    assert_eq!(Some("retained-report"), tools[1].output_id.as_deref());
+    let message = transcript
+        .message_info(
+            &crate::transcript::MessageId::Tool {
+                turn: Some(1),
+                call_id: "script".into(),
+            },
+            "main",
+        )
+        .unwrap();
+    assert_eq!(2, message.outputs.len());
+    assert_eq!(
+        Some("retained-report"),
+        message.outputs[1].output_id.as_deref()
+    );
 }
 
 #[test]
@@ -115,9 +149,12 @@ fn command_preview_keeps_stdout_and_warnings_without_the_model_output_reference(
     );
     assert!(rendered.contains("command timed out; output truncated"));
     assert!(rendered.contains("stdout:\nOutput: from the process"));
-    assert!(rendered.contains(&format!(
-        "stderr:\ntry fewer inputs\nSaved output · /tools\n{warning}"
-    )));
+    assert!(
+        rendered.contains(&format!(
+            "stderr:\ntry fewer inputs\nSaved output\n{warning}"
+        )),
+        "{rendered}"
+    );
     assert!(rendered.contains("系统\n") && rendered.contains("64-bit"));
     assert!(!rendered.contains('␍'));
     assert!(!rendered.contains(marker));
@@ -203,16 +240,13 @@ fn reads_separated_by_a_turn_boundary_show_each_path_with_its_actual_line_range(
     );
     assert!(rendered.contains("…") && !rendered.contains("Assistant"));
     assert!(rendered.contains("19    gamma") && !rendered.contains("epsilon"));
-    assert_eq!(Some("Ctrl+O hide · /details"), view.tool_hint.as_deref());
+    assert_eq!(Some("Ctrl+O hide"), view.tool_hint.as_deref());
     assert!(!rendered.contains("Ctrl+O"));
     assert_eq!(raw, transcript.tools()[0].details);
 
     transcript.toggle_details();
     let collapsed = transcript.project(84, 24);
-    assert_eq!(
-        Some("Ctrl+O show · /details"),
-        collapsed.tool_hint.as_deref()
-    );
+    assert_eq!(Some("Ctrl+O show"), collapsed.tool_hint.as_deref());
     assert!(!collapsed
         .lines
         .iter()

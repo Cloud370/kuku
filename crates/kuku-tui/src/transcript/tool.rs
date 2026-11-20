@@ -45,6 +45,7 @@ pub(crate) struct ToolView {
     pub(crate) diff: String,
     pub(crate) output_id: Option<String>,
     pub(crate) evidence: String,
+    pub(crate) inline_output_complete: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -56,6 +57,13 @@ pub(super) struct Tool {
     progress: String,
     state: State,
     agent_request: Option<AgentRequest>,
+}
+
+impl ToolView {
+    pub(crate) fn has_full_output(&self) -> bool {
+        self.output_id.is_some()
+            || (self.inline_output_complete && (!self.details.is_empty() || !self.diff.is_empty()))
+    }
 }
 
 impl Tool {
@@ -186,6 +194,7 @@ impl Tool {
             diff: self.diff().unwrap_or_default().to_owned(),
             output_id: outcome.and_then(|outcome| outcome.output_id.clone()),
             evidence: outcome.map_or_else(String::new, Outcome::evidence),
+            inline_output_complete: outcome.is_some_and(|outcome| outcome.inline_output_complete),
         }
     }
 
@@ -411,13 +420,7 @@ impl Tool {
         if inspecting {
             self.render_arguments(&mut rows, width, inset);
             if self.session_caption().is_some() && !self.result().is_empty() {
-                rows.extend(render_preview(
-                    "Raw result · /tools",
-                    MUTED,
-                    width,
-                    1,
-                    inset,
-                ));
+                rows.extend(render_preview("Raw result", MUTED, width, 1, inset));
             }
         }
         if expanded {
@@ -440,13 +443,7 @@ impl Tool {
             };
             rows.extend(render_rows(result, width, limit, inset));
             if !concise && outcome.is_some_and(|outcome| outcome.output_id.is_some()) {
-                rows.extend(render_preview(
-                    "Saved output · /tools",
-                    ACCENT,
-                    width,
-                    2,
-                    inset,
-                ));
+                rows.extend(render_preview("Saved output", ACCENT, width, 2, inset));
             }
         }
         if let Some(preview) = command {
@@ -525,7 +522,7 @@ impl Tool {
         let fallback = if outcome.content.is_empty() {
             "Result details unavailable"
         } else {
-            "Result available · /tools"
+            "Result available"
         };
         Some(fallback)
     }

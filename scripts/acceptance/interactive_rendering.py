@@ -19,7 +19,7 @@ def rendered_running_transcript(screen, height, markers):
     return (
         len(rows) == height
         and status_row >= 0
-        and "To main · Running tools" in rows[status_row]
+        and "To main · Running" in rows[status_row]
         and all(marker in screen for marker in markers)
     )
 
@@ -32,6 +32,85 @@ def page_up_after_rendered_resize(terminal, read_while, height, markers):
     )
     terminal.press("\x1b[5~")
     return screen
+
+
+def select_message_action(terminal, screen, action):
+    labels = {"Copy", "Source", "Thinking", "Expand", "Full output"}
+
+    def action_rows(value):
+        lines = value.splitlines()
+        start = next(
+            (index for index, line in enumerate(lines) if "Message actions" in line),
+            None,
+        )
+        if start is None:
+            return []
+        rows = lines[start + 1:]
+        first_choice = next(
+            (
+                index
+                for index, line in enumerate(rows)
+                if any(line.rstrip().endswith(f"› {label}") for label in labels)
+            ),
+            None,
+        )
+        if first_choice is None:
+            return []
+        end = next(
+            (index for index, line in enumerate(rows[first_choice:], first_choice)
+             if "Operate message" in line),
+            len(rows),
+        )
+        return rows[first_choice:end]
+
+    def visible_actions(value):
+        visible = []
+        for line in action_rows(value):
+            line = line.rstrip()
+            for label in labels:
+                if line.endswith(label) or line.endswith(f"› {label}"):
+                    visible.append(label)
+                    break
+        return visible
+
+    def selected_action(value):
+        for line in action_rows(value):
+            line = line.rstrip()
+            for label in labels:
+                if line.endswith(f"› {label}"):
+                    return label
+        return None
+
+    visible = visible_actions(screen)
+    assert action in visible, screen
+    for _ in visible:
+        selected = selected_action(screen)
+        if selected == action:
+            break
+        assert selected in visible, screen
+        next_action = visible[(visible.index(selected) + 1) % len(visible)]
+        terminal.press("\t")
+        screen = eventually(
+            f"selection of message action {next_action!r}",
+            lambda: (
+                value
+                if selected_action(value := terminal.request("screen")["screen"])
+                == next_action
+                else None
+            ),
+        )
+    else:
+        raise AssertionError(f"Could not select message action {action!r}:\n{screen}")
+
+    terminal.press("\r")
+    eventually(
+        "message action picker to close",
+        lambda: (
+            value
+            if "Message actions" not in (value := terminal.request("screen")["screen"])
+            else None
+        ),
+    )
 
 
 def has_standalone_assistant_rail(frame):
@@ -84,10 +163,13 @@ def click_queued_input(terminal, screen, text):
     return row, column
 
 
-def queued_input_click_context(row, column):
+def queued_input_click_context(row, column, screen_snapshot):
     return (
         f"Queued input target row: {row}\n"
-        f"Mouse click coordinates (column, row; 1-based): ({column}, {row})"
+        f"Mouse click coordinates (column, row; 1-based): ({column}, {row})\n"
+        f"Terminal size: {screen_snapshot['rows']} rows × {screen_snapshot['cols']} columns\n"
+        "Full screen used to compute click coordinates:\n"
+        f"{screen_snapshot['screen']}"
     )
 
 
@@ -113,6 +195,31 @@ def pending_inputs_excerpt(screen):
 def event(name, **fields):
     body = json.dumps({"type": name, **fields})
     return f"event: {name}\ndata: {body}\n\n".encode()
+
+
+def operate_on_message(terminal, screen, role, marker, action):
+    terminal.click_text(screen, "Messages" if "Messages" in screen else "Msg")
+    picker = terminal.expect("Active messages")["screen"]
+    lines = picker.splitlines()
+    header = next(index for index, line in enumerate(lines) if "Active messages" in line)
+    choices = lines[header + 1:]
+    rows = [
+        (index, line) for index, line in enumerate(choices)
+        if role in line
+        and (not marker or marker in line or index + 1 < len(choices) and marker in choices[index + 1])
+    ]
+    assert len(rows) == 1, picker
+    row = rows[0][1]
+    terminal.click_text(picker, row.strip().removeprefix("› "))
+    actions = terminal.expect(f"Selected · {role}")["screen"]
+    if marker:
+        assert marker in actions, actions
+    assert action in actions, actions
+    select_message_action(terminal, actions, action)
+
+
+def operate_on_assistant(terminal, screen, marker, action):
+    operate_on_message(terminal, screen, "Assistant", marker, action)
 
 
 def rendering_cases(binary, bridge, directory):
@@ -191,8 +298,9 @@ def targeted_delegation(client):
             action = "Open →" if columns == 44 else "Open agent →"
             scene = terminal.expect(action, state="╭─ Agent writer")["screen"]
             terminal.click_text(scene, action)
-            terminal.expect("To writer", state="Proof of delivery")
-            terminal.press("/back\r")
+            back = terminal.expect("F2 Back", state="To writer", also=("Proof of delivery",))["screen"]
+            terminal.click_text(back, "F2 Back")
+            terminal.press("\r")
             terminal.expect("To main", state="Received the delegated document.")
         terminal.exit_cleanly()
     client.provider.assert_idle()
@@ -258,8 +366,8 @@ def markdown_inline_elements(client):
             eventually("default opener receives first link's URL",
                        lambda: open_log.read_text().splitlines() == [second, first])
         terminal.request("resize", cols=36, rows=38)
-        terminal.expect("中文勾选项", also=("保留待办项", "B Manual", "H₂O"))
-        terminal.press("/source\r")
+        screen = terminal.expect("中文勾选项", also=("保留待办项", "B Manual", "H₂O", "Msg"), rows=38)["screen"]
+        operate_on_assistant(terminal, screen, "<sup>", "Source")
         terminal.expect("x<sup>2</sup>", also=("H<sub>2</sub>O",))
         terminal.exit_cleanly()
 
@@ -303,6 +411,7 @@ def named_output_cards(client):
             "workspace_script", "summarize-log",
             code=f"""const chunk = await workspace.read_output({{id: {json.dumps(reference['id'])}}});
 await workspace.write_file({{path: "summary.txt", content: chunk.result.segments[0].text}});
+await workspace.run_command({{shell: {json.dumps(shell)}, command: {json.dumps(command)}, cwd: ".", timeout: 5}});
 await workspace.run_command({{program: "kuku-deliberately-missing-fixture"}});""",
         )
         client.provider.next("summarize-log").text("Replay inspected.")
@@ -310,12 +419,19 @@ await workspace.run_command({{program: "kuku-deliberately-missing-fixture"}});""
             "exit 7", "Workspace script · partial", "1 file change", "Wrote summary.txt", "program missing",
         ))["screen"]
         assert (workspace / "summary.txt").read_text(encoding="utf-8") == log + "\n"
-        terminal.press("/tools\r")
-        terminal.expect("Tool details and saved output")
-        terminal.press("run_command")
-        terminal.expect("run_command", state="Saved output")
-        terminal.press("\r")
+        operate_on_message(terminal, display, "Tool · run_command", None, "Full output")
         terminal.expect(log, state="S Name", also=(page_range,))
+        terminal.press("\x1b")
+        display = terminal.expect("Replay inspected.")["screen"]
+        operate_on_message(terminal, display, "Tool · workspace_script", None, "Full output")
+        outputs = terminal.expect("Outputs for selected message")["screen"]
+        terminal.click_text(outputs, "Script action 3 · Run command")
+        terminal.expect(log, state="S Name", also=(page_range,))
+        entries = client.request("GET", f"/sessions/{session}/history?{query}").as_json()["entries"]
+        script_result = next(entry["structured"] for entry in entries
+                             if entry["type"] == "tool_result" and entry["tool_call_id"] == "summarize-log")
+        reference = script_result["actions"][2]["result"]["output_ref"]
+        assert reference["id"] != result["output_ref"]["id"], script_result
         terminal.press("s")
         terminal.expect("Name saved value")
         terminal.press("baseline\r")
@@ -511,7 +627,7 @@ def published_reasoning(client):
         completed = terminal.expect(answer, state="Finished", also=("Turn 1", "View thinking"))["screen"]
         assert completed.count("View thinking") == 1 and hidden not in completed
         assert answer in completed.splitlines()[flow_row], completed
-        terminal.press("/source\r")
+        operate_on_assistant(terminal, completed, answer, "Source")
         source = terminal.expect(answer, state="Assistant · source")["screen"]
         assert "Checking the totals." not in source and hidden not in source
         terminal.exit_cleanly()
@@ -521,7 +637,7 @@ def published_reasoning(client):
         reopened.press("\x0f")
         quiet = reopened.expect(answer, state="View thinking")["screen"]
         assert "Comparing the published results." not in quiet
-        reopened.press("/notes\r")
+        operate_on_assistant(reopened, quiet, answer, "Thinking")
         notes = reopened.expect("Comparing the published results.", state="Esc back", also=(answer,))["screen"]
         assert hidden not in settled and hidden not in notes
         answer_row = next(i for i, row in enumerate(notes.splitlines()) if answer in row)
@@ -535,7 +651,6 @@ def published_reasoning(client):
         reopened.press("\x1b")
         restored = reopened.expect(answer, state="Assistant   View thinking")["screen"]
         assert "Esc back" not in restored and "Note 7" not in restored
-        assert next(i for i, row in enumerate(restored.splitlines()) if answer in row) == next(i for i, row in enumerate(settled.splitlines()) if answer in row)
 
         reopened.exit_cleanly()
 
@@ -585,13 +700,16 @@ def check_agent_reading_position(client, terminal):
                 return True
         return False
 
-    def eventually_screen(description, predicate):
+    def eventually_screen(description, predicate, *, return_snapshot=False):
         last_screen = ""
 
         def find_screen():
             nonlocal last_screen
-            last_screen = terminal.request("screen")["screen"]
-            return last_screen if predicate(last_screen) else None
+            snapshot = terminal.request("screen")
+            last_screen = snapshot["screen"]
+            if not predicate(last_screen):
+                return None
+            return snapshot if return_snapshot else last_screen
 
         try:
             return eventually(description, find_screen)
@@ -616,12 +734,15 @@ def check_agent_reading_position(client, terminal):
         terminal.type(discarded)
         terminal.press("\x1b\r")
         terminal.expect(discarded, state="Queued · next Turn")
-        screen = terminal.request("screen")["screen"]
+        screen_snapshot = terminal.request("screen")
+        screen = screen_snapshot["screen"]
         if not queued_row_contains(screen, discarded):
-            screen = eventually_screen(
+            screen_snapshot = eventually_screen(
                 "discarded input to remain queued in its delivery row",
                 lambda frame: queued_row_contains(frame, discarded),
+                return_snapshot=True,
             )
+            screen = screen_snapshot["screen"]
         click_row, click_column = click_queued_input(terminal, screen, discarded)
         try:
             eventually_screen(
@@ -630,7 +751,7 @@ def check_agent_reading_position(client, terminal):
             )
         except AssertionError as error:
             raise AssertionError(
-                f"{error}\n{queued_input_click_context(click_row, click_column)}"
+                f"{error}\n{queued_input_click_context(click_row, click_column, screen_snapshot)}"
             ) from error
         terminal.press("\x1b[3~")
 

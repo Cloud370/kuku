@@ -411,6 +411,7 @@ mod tests {
             snapshot,
             HistoryPage {
                 entries: Vec::new(),
+                rewind_groups: Vec::new(),
                 next_before: None,
             },
         ));

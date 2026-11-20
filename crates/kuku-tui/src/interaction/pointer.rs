@@ -3,15 +3,23 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Position;
 
 use crate::app::{App, Modal};
+use crate::contextual::ContextControl;
 use crate::selection::{ClickTarget, MouseAction};
 
 impl App {
     pub(super) fn pointer(&mut self, mouse: MouseEvent, screen: &Buffer) {
         let click = self.click_target(mouse);
-        match self.text_selection.mouse(mouse, screen, click) {
+        let action = self.text_selection.mouse(mouse, screen, click);
+        if matches!(&action, Some(MouseAction::Click(_))) {
+            self.deactivate_context_focus();
+        }
+        match action {
             Some(MouseAction::Copy(text)) => self.copy_text(text),
             Some(MouseAction::Click(ClickTarget::Detail(key))) => {
                 self.toggle_transcript_detail(&key);
+            }
+            Some(MouseAction::Click(ClickTarget::RewindGroup { id, action })) => {
+                self.activate_readonly_rewind_group(id, action);
             }
             Some(MouseAction::Click(ClickTarget::Picker(hit))) => {
                 if let Some(Modal::Picker(picker)) = &mut self.modal {
@@ -23,24 +31,28 @@ impl App {
                 }
             }
             Some(MouseAction::Click(ClickTarget::Agent(target))) => self.select_agent(target),
-            Some(MouseAction::Click(ClickTarget::QueueInput(id))) => self.focus_queue_input(id),
             Some(MouseAction::Click(ClickTarget::Request { target, request_id })) => {
-                self.activate_request_id(target, request_id);
+                self.focus_context_control(ContextControl::Request { target, request_id });
             }
             Some(MouseAction::Click(ClickTarget::Permission {
                 target,
                 request_id,
                 allow,
             })) => {
-                if self.focus_request_id(target, request_id) {
+                if self.focus_context_control(ContextControl::Request { target, request_id }) {
                     self.pane_mut().permission_choice = Some(allow);
                 }
+            }
+            Some(MouseAction::Click(ClickTarget::Contextual(control))) => {
+                self.focus_context_control(control);
             }
             Some(MouseAction::Click(ClickTarget::Link(url))) => {
                 if let Err(error) = crate::open_browser(&url) {
                     self.problem(error.to_string());
                 }
             }
+            Some(MouseAction::Click(ClickTarget::QueueInput(id))) => self.focus_queue_input(id),
+            Some(MouseAction::Click(ClickTarget::Messages)) => self.open_messages_picker(),
             Some(MouseAction::Click(ClickTarget::Transcript)) => self.scroll(0),
             Some(MouseAction::Click(ClickTarget::Composer)) => {
                 let area = self.composer_area;
@@ -71,7 +83,21 @@ impl App {
                 Modal::Help | Modal::Prompt(_) | Modal::Output(_) | Modal::StatusLineEditor(_),
             ) => None,
             None => {
-                if self.reading_area.contains(position) && self.pane().transcript.is_reading() {
+                if let Some(hit) = self
+                    .contextual_hits
+                    .iter()
+                    .find(|hit| hit.area.contains(position))
+                {
+                    Some(ClickTarget::Contextual(hit.control.clone()))
+                } else if self
+                    .text_selection
+                    .messages_area()
+                    .is_some_and(|area| area.contains(position))
+                {
+                    Some(ClickTarget::Messages)
+                } else if self.reading_area.contains(position)
+                    && self.pane().transcript.is_reading()
+                {
                     Some(ClickTarget::JumpLatest)
                 } else if self.composer_area.contains(position) {
                     Some(ClickTarget::Composer)
@@ -108,6 +134,11 @@ impl App {
                     self.text_selection
                         .transcript_cell(mouse)
                         .map(|(row, column)| {
+                            if let Some((id, action)) =
+                                self.pane().transcript.rewind_group_action_at(row)
+                            {
+                                return ClickTarget::RewindGroup { id, action };
+                            }
                             if let Some(url) = self.pane().transcript.markdown_link_at(row, column)
                             {
                                 return ClickTarget::Link(url.to_owned());

@@ -111,37 +111,37 @@ pub(crate) enum ConnectionChoice {
 }
 
 pub(crate) async fn run(options: ConnectionOptions, mode: SetupMode) -> io::Result<bool> {
-    validate_entry(
-        &options,
-        io::stdin().is_terminal() && io::stdout().is_terminal(),
-        "Interactive settings require a terminal; edit config.toml or use `kuku config set`.",
-    )?;
-    if mode == SetupMode::FirstRun {
-        let service = match options.local_service() {
-            Ok(service) => service,
-            Err(_) => return Ok(true),
-        };
-        let live_or_unavailable = match service.status().await {
-            Ok(Some(_)) | Err(_) => true,
-            Ok(None) => false,
-        };
-        let missing = matches!(
-            std::fs::symlink_metadata(service.config_path()),
-            Err(error) if error.kind() == io::ErrorKind::NotFound
-        );
-        if live_or_unavailable || !missing {
-            return Ok(true);
+    let settings = match mode {
+        SetupMode::Init => {
+            validate_entry(
+                &options,
+                io::stdin().is_terminal() && io::stdout().is_terminal(),
+                "Interactive settings require a terminal; edit config.toml or use `kuku config set`.",
+            )?;
+            config::Settings::load(options.clone()).await?
         }
-    }
-    let settings = config::Settings::load(options).await?;
-    if mode == SetupMode::FirstRun && (settings.live_service || settings.existing) {
-        return Ok(true);
-    }
+        SetupMode::FirstRun => {
+            let Some(settings) = config::Settings::load_for_first_run(options.clone()).await?
+            else {
+                return Ok(true);
+            };
+            validate_entry(
+                &options,
+                io::stdin().is_terminal() && io::stdout().is_terminal(),
+                "Interactive settings require a terminal; edit config.toml or use `kuku config set`.",
+            )?;
+            settings
+        }
+    };
     let mut state = state::SetupState::new(&settings);
     let finish = ui::run(&settings, &mut state, mode)?;
     if finish == Finish::Cancel {
         println!("Setup canceled. No files were changed.");
         return Ok(false);
+    }
+    if mode == SetupMode::FirstRun && !first_run_service_is_idle(&options).await {
+        println!("Local service is active or unavailable; setup was not saved.");
+        return Ok(true);
     }
     config::save(&settings, &state)?;
     println!("Saved settings to {}.", settings.config_path.display());
@@ -160,6 +160,25 @@ pub(crate) async fn run(options: ConnectionOptions, mode: SetupMode) -> io::Resu
     }
     println!("Setup made no model request.");
     Ok(finish == Finish::SaveAndContinue)
+}
+
+async fn first_run_service_is_idle(options: &ConnectionOptions) -> bool {
+    let Ok(service) = options.local_service() else {
+        return false;
+    };
+    matches!(service.status().await, Ok(None))
+}
+
+pub(super) fn should_offer_setup(
+    status: Result<bool, ()>,
+    existing: bool,
+    credential_ready: bool,
+) -> bool {
+    service_is_idle(status) && (!existing || !credential_ready)
+}
+
+pub(super) fn service_is_idle(status: Result<bool, ()>) -> bool {
+    matches!(status, Ok(false))
 }
 
 pub(crate) fn validate_entry(

@@ -64,7 +64,7 @@ python3 scripts/acceptance/run.py interactive --desktop --archive PATH_TO_WINDOW
 
 对照终端布局时，为两个版本使用同一套固定输入和窗口网格尺寸。安装场景检查 `/statusline` 的预览、保存、重开和恢复默认，并验证带着未发送草稿在多个工作中的 Agent 之间切换。工具密集对话在同一轮至少执行 20 次调用，包括成功操作、缺失文件和等待释放的命令。场景在工具运行和代码围栏未闭合时分别捕获宽窄终端画面，再核对完成的中文报告、保留的工具事实和未发送草稿。有界 `installed-interactive.log` 保存终端画面和检查结果。[终端场景](../../../scripts/acceptance/interactive.py)
 
-在装有 Docker 的 Linux 上用 `--desktop` 加入 Xfce Terminal 和 IBus 拼音场景。选择入口使用 Ubuntu 软件包构建镜像，并在仅有回环网络的隔离 Xvfb 会话中运行。场景通过图形界面验证中文组字、可编辑的多行粘贴、`/copy` 和终端字体缩放。首次构建时 Docker 需要访问 Ubuntu 镜像和软件仓库。安装后的可执行文件和选择入口的原生测试 helper 都须能在镜像中运行。`desktop/result.json` 记录包版本、终端网格尺寸、提交与复制的固定文本及有界截图的 hash。
+在装有 Docker 的 Linux 上用 `--desktop` 加入 Xfce Terminal 和 IBus 拼音场景。选择入口使用 Ubuntu 软件包构建镜像，并在仅有回环网络的隔离 Xvfb 会话中运行。场景通过图形界面验证中文组字、可编辑的多行粘贴、**Messages → Copy** 和终端字体缩放。首次构建时 Docker 需要访问 Ubuntu 镜像和软件仓库。安装后的可执行文件和选择入口的原生测试 helper 都须能在镜像中运行。`desktop/result.json` 记录包版本、终端网格尺寸、提交与复制的固定文本及有界截图的 hash。
 
 桌面场景复用工具密集对话，捕获宽窄视图并核对复制出的报告原文。截图与 `desktop/result.json` 一起保留，有采集时也保存动作菜单、模型选择器及状态栏编辑器截图。[桌面场景](../../../scripts/acceptance/desktop)
 

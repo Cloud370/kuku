@@ -17,11 +17,16 @@ pub(crate) enum KeyboardFocus {
 impl App {
     pub(crate) fn composer_focused(&self) -> bool {
         let pane = self.pane();
-        pane.keyboard_focus == KeyboardFocus::Composer
-            || pane.keyboard_focus == KeyboardFocus::Transcript && !pane.transcript.is_reading()
+        !pane.contextual_focus.active
+            && (pane.keyboard_focus == KeyboardFocus::Composer
+                || pane.keyboard_focus == KeyboardFocus::Transcript
+                    && !pane.transcript.is_reading())
     }
 
     pub(crate) fn toggle_transcript_detail(&mut self, key: &crate::transcript::DetailKey) -> bool {
+        if let Some((rewind_event_id, action)) = key.rewind_group_action() {
+            return self.activate_readonly_rewind_group(rewind_event_id, action);
+        }
         let (width, height) = self.transcript_area;
         if self.pane().transcript.note_is_open(key) {
             return self.pane_mut().transcript.close_notes();
@@ -39,19 +44,14 @@ impl App {
         changed
     }
 
-    pub(crate) fn read_latest_notes(&mut self) {
-        if self.pane_mut().transcript.close_notes() {
-            return;
-        }
-        if let Some(key) = self.pane().transcript.latest_notes() {
-            self.toggle_transcript_detail(&key);
-        } else {
-            self.confirmation("No published thinking in view");
-        }
+    pub(crate) fn focus_composer(&mut self) {
+        let pane = self.pane_mut();
+        pane.keyboard_focus = KeyboardFocus::Composer;
+        pane.transcript.set_focused_rewind_group(None);
     }
 
-    pub(crate) fn focus_composer(&mut self) {
-        self.pane_mut().keyboard_focus = KeyboardFocus::Composer;
+    pub(crate) fn focus_history(&mut self) {
+        self.pane_mut().keyboard_focus = KeyboardFocus::Transcript;
     }
 
     pub(crate) fn jump_latest(&mut self) {
@@ -60,8 +60,16 @@ impl App {
     }
 
     pub(crate) fn reading_key(&mut self, key: KeyEvent) -> bool {
-        if Shortcut::ESCAPE.matches(key) && self.pane_mut().transcript.close_notes() {
-            return true;
+        if Shortcut::ESCAPE.matches(key) {
+            if self.pane_mut().transcript.close_notes() {
+                return true;
+            }
+            if self.pane().keyboard_focus == KeyboardFocus::Transcript
+                && self.pane().transcript.is_reading()
+            {
+                self.focus_composer();
+                return true;
+            }
         }
         if Shortcut::LATEST.matches(key)
             || Shortcut::READING_BACK.matches(key) && self.pane().transcript.is_reading()
@@ -93,17 +101,16 @@ impl App {
 
     pub(crate) fn scroll(&mut self, amount: isize) {
         let (width, height) = self.transcript_area;
-        let pane = self.pane_mut();
-        if pane.transcript.scroll_notes(amount) {
-            pane.keyboard_focus = KeyboardFocus::Transcript;
+        if self.pane_mut().transcript.scroll_notes(amount) {
+            self.focus_history();
             return;
         }
-        let request = pane.transcript.scroll(amount, width, height);
-        pane.keyboard_focus = if pane.transcript.is_reading() {
-            KeyboardFocus::Transcript
+        let request = self.pane_mut().transcript.scroll(amount, width, height);
+        if self.pane().transcript.is_reading() {
+            self.focus_history();
         } else {
-            KeyboardFocus::Composer
-        };
+            self.focus_composer();
+        }
         if let Some(request) = request {
             if self.pane().history_in_flight.is_none() && self.require_service() {
                 self.pane_mut().history_in_flight = Some(request);

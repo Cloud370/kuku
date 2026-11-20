@@ -31,8 +31,8 @@ pub use subscription::{InputDelivery, Observation, Subscription, SubscriptionUpd
 pub use types::{
     Acknowledgement, Action, AgentProgress, AgentSettlement, AgentSummary, ApiError, Command,
     EventPage, HistoryEntry, HistoryKind, HistoryPage, ModelDefaultPlan, ReplyPreview,
-    RetryFailureKind, RetryMetadata, RetryPhase, RetrySource, RetryStopReason, SessionStatus,
-    SessionSummary, Snapshot, Target, Timing,
+    RetryFailureKind, RetryMetadata, RetryPhase, RetrySource, RetryStopReason, RewindGroup,
+    RewindGroupPage, SessionStatus, SessionSummary, Snapshot, Target, Timing,
 };
 pub use workspace::{ConnectionSummary, ModelCatalog, SkillSummary, TierSummary};
 

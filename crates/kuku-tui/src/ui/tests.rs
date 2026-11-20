@@ -1,12 +1,16 @@
 use std::path::PathBuf;
 mod activity;
+mod contextual;
+mod layout;
 mod model_default;
+mod reading;
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use kuku_client::{
     Acknowledgement, Action, Command, Error, HistoryEntry, HistoryKind, HistoryPage, Input,
-    InputSource, InputStatus, Observation, QueuedInput, Receipt, Snapshot, Target, Timing,
+    InputSource, InputStatus, InputTiming, Observation, QueuedInput, Receipt, Snapshot, Target,
+    Timing,
 };
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -17,11 +21,11 @@ use serde_json::json;
 use unicode_width::UnicodeWidthStr;
 
 use super::{render, render_at, ActivityFrame};
-use crate::app::{Address, App, Modal};
+use crate::app::{Address, App, KeyboardFocus, Modal};
 use crate::jobs::{Job, Update};
-use crate::menu::{Choice, ChoiceKind, PickerKind, PromptKind};
+use crate::menu::{Choice, ChoiceKind, MessageAction, PickerKind, PromptKind};
 use crate::output::OutputViewer;
-use crate::transcript::ToolView;
+use crate::transcript::{MessageId, SelectedMessage, ToolView};
 
 fn screen(app: &mut App, width: u16, height: u16) -> String {
     activity_screen(app, width, height, None).0
@@ -111,52 +115,34 @@ fn text_position(buffer: &Buffer, text: &str) -> (u16, u16) {
     panic!("missing rendered text {text:?}");
 }
 
-#[test]
-fn composer_click_places_the_caret_in_scrolled_and_wrapped_unicode_text() {
-    let mut app = app();
-    let mut terminal = Terminal::new(TestBackend::new(30, 20)).unwrap();
-    let prefix = "earlier\n".repeat(6) + &"x".repeat(24);
-    app.pane_mut()
-        .draft
-        .insert(&format!("{prefix}中文e\u{301}👨‍👩‍👧‍👦end"));
-    let buffer = terminal
-        .draw(|frame| render(frame, &mut app))
-        .unwrap()
-        .buffer;
-    let (x, y) = cell(buffer, "中");
-    assert!(y > app.composer_area.y);
-    app.event(
-        Event::Resize(buffer.area.width, buffer.area.height + 8),
-        buffer,
-    );
-    app.event(Event::Resize(buffer.area.width, buffer.area.height), buffer);
-    click(&mut app, buffer, (x + 1, y));
-    key(&mut app, KeyCode::Char('!'), KeyModifiers::NONE);
-    assert_eq!(
-        app.pane().draft.text(),
-        format!("{prefix}!中文e\u{301}👨‍👩‍👧‍👦end")
-    );
-    let buffer = terminal
-        .draw(|frame| render(frame, &mut app))
-        .unwrap()
-        .buffer;
-    let point = cell(buffer, "👨‍👩‍👧‍👦");
-    click(&mut app, buffer, point);
-    key(&mut app, KeyCode::Char('?'), KeyModifiers::NONE);
-    assert_eq!(
-        app.pane().draft.text(),
-        format!("{prefix}!中文e\u{301}?👨‍👩‍👧‍👦end")
-    );
-}
-
-fn command(app: &mut App, name: &str) {
-    let draft = app.pane_mut().draft.take_text();
-    key(app, KeyCode::Char('/'), KeyModifiers::NONE);
-    for character in name.chars() {
-        key(app, KeyCode::Char(character), KeyModifiers::NONE);
-    }
+fn message_action(app: &mut App, id: u64, action: MessageAction) {
+    app.open_messages_picker();
+    let Some(Modal::Picker(picker)) = &mut app.modal else {
+        panic!("message picker expected");
+    };
+    picker.selected = picker
+        .visible_choices()
+        .iter()
+        .position(|choice| matches!(
+            &choice.kind,
+            ChoiceKind::MessageEntry(SelectedMessage { id: MessageId::Event(event), .. }) if *event == id
+        ))
+        .expect("message entry is available");
     key(app, KeyCode::Enter, KeyModifiers::NONE);
-    app.pane_mut().draft.set_text(draft);
+    let Some(Modal::Picker(picker)) = &mut app.modal else {
+        panic!("message action picker expected");
+    };
+    picker.selected = picker
+        .visible_choices()
+        .iter()
+        .position(|choice| {
+            matches!(
+                &choice.kind,
+                ChoiceKind::MessageAction { action: candidate, .. } if *candidate == action
+            )
+        })
+        .expect("message action is available");
+    key(app, KeyCode::Enter, KeyModifiers::NONE);
 }
 
 fn entry(id: u64, agent: &str, kind: HistoryKind, text: &str) -> HistoryEntry {
@@ -230,6 +216,7 @@ fn identical_pending_inputs_render_immediately_and_admission_wins_over_a_late_re
         load,
         HistoryPage {
             entries: vec![],
+            rewind_groups: Vec::new(),
             next_before: None,
         },
     ));
@@ -279,6 +266,81 @@ fn identical_pending_inputs_render_immediately_and_admission_wins_over_a_late_re
     );
     assert!(!accepted.contains("Pending inputs"));
     assert_eq!(2, accepted.matches(text).count());
+}
+
+#[test]
+fn clicking_the_queue_focuses_its_inline_editor_and_saves_the_exact_replacement() {
+    let mut app = app();
+    let mut state = snapshot(&app, "running", json!(null), json!(null));
+    let mut input = Input::new("original", "main", "old queued text\n次の行");
+    input.source = InputSource::Host("http".into());
+    input.timing = InputTiming::NextTurn;
+    state.pending.push(QueuedInput {
+        input,
+        receipt: Receipt {
+            command_id: "original".into(),
+            event_id: 51,
+            agent: "main".into(),
+        },
+    });
+    app.update(Update::Loaded(
+        app.selection(),
+        state,
+        HistoryPage {
+            entries: vec![],
+            rewind_groups: Vec::new(),
+            next_before: None,
+        },
+    ));
+    app.pane_mut().draft.insert("independent draft");
+    let rendered = screen(&mut app, 92, 26);
+    assert!(rendered.contains("Queued · next Turn") && rendered.contains("old queued text"));
+    let mut terminal = Terminal::new(TestBackend::new(92, 26)).unwrap();
+    let buffer = terminal
+        .draw(|frame| render(frame, &mut app))
+        .unwrap()
+        .buffer;
+    let visible_row = app
+        .delivery_hits
+        .first()
+        .filter(|(_, id)| id == "original")
+        .map(|(range, _)| range.start)
+        .expect("visible queued input");
+    let point = (app.delivery_area.x, app.delivery_area.y + visible_row);
+    click(&mut app, buffer, point);
+    assert!(app.modal.is_none());
+    assert_eq!(KeyboardFocus::Queue, app.pane().keyboard_focus);
+    assert_eq!(Some("original"), app.pane().selected_queue_input.as_deref());
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(
+        matches!(&app.modal, Some(Modal::Prompt(prompt)) if prompt.editor.text() == "old queued text\n次の行")
+    );
+    key(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
+    event(&mut app, Event::Paste("edit\r\n第三行".into()));
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    let replacement = saved_input(&app);
+    assert!(
+        matches!(&replacement.action, Action::ReplaceQueued { input_command_id, text }
+        if input_command_id == "original" && text == "edit\n第三行")
+    );
+    assert_eq!("independent draft", app.pane().draft.text());
+    assert!(app
+        .pane()
+        .deliveries
+        .rows()
+        .iter()
+        .any(|row| row.id == "original"));
+
+    app.update(Update::Saved(replacement.clone(), Ok(())));
+    app.update(Update::Sent(
+        replacement.command_id.clone(),
+        Ok(queued_receipt(&replacement, 53)),
+    ));
+    let rows = app.pane().deliveries.rows();
+    assert_eq!(1, rows.len());
+    assert_eq!(&replacement.command_id, &rows[0].id);
+    assert_eq!(Timing::NextTurn, rows[0].timing);
+    assert_eq!("edit\n第三行", rows[0].text);
 }
 
 #[test]
@@ -366,6 +428,7 @@ fn switching_agent_keeps_drafts_and_read_position_and_ignores_old_observer() {
                 )
             })
             .collect(),
+        rewind_groups: Vec::new(),
         next_before: Some(1),
     };
     app.update(Update::Loaded(
@@ -442,23 +505,13 @@ fn source_action_completes_on_tab_and_toggles_one_pane_without_changing_copy() {
     app.pane_mut().draft.insert("reviewer draft");
     app.select(main.clone(), true, "Example".into());
 
-    let main_draft = app.pane_mut().draft.take_text();
-    key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
-    for character in "sou".chars() {
-        key(&mut app, KeyCode::Char(character), KeyModifiers::NONE);
-    }
-    key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
-    assert!(matches!(&app.modal, Some(Modal::Picker(picker)) if picker.query.text() == "/source"));
-    app.effects.clear();
-    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-    app.pane_mut().draft.set_text(main_draft);
-    assert!(matches!(app.effects.as_slice(), [Job::ClosePicker]));
+    message_action(&mut app, 1, MessageAction::Source);
     let source = screen(&mut app, 100, 24);
     assert!(source.contains("Assistant · source"));
     assert!(source.contains("````markdown") && source.contains("```rust"));
     assert!(source.contains("main draft"));
 
-    command(&mut app, "copy");
+    message_action(&mut app, 1, MessageAction::Copy);
     assert!(app
         .effects
         .iter()
@@ -469,7 +522,7 @@ fn source_action_completes_on_tab_and_toggles_one_pane_without_changing_copy() {
     assert!(!other.contains("**Reviewer reply**"));
     app.select(main, true, "Example".into());
     assert!(screen(&mut app, 100, 24).contains("````markdown"));
-    command(&mut app, "source");
+    message_action(&mut app, 1, MessageAction::Source);
     assert!(!screen(&mut app, 100, 24).contains("````markdown"));
 }
 
@@ -502,6 +555,7 @@ fn reading_arrows_and_clicks_keep_pending_input_drafts_and_live_content_scoped()
         state,
         HistoryPage {
             entries,
+            rewind_groups: Vec::new(),
             next_before: None,
         },
     ));
@@ -577,6 +631,62 @@ fn reading_arrows_and_clicks_keep_pending_input_drafts_and_live_content_scoped()
 }
 
 #[test]
+fn waiting_request_is_explicit_and_escape_preserves_message_draft() {
+    let mut app = app();
+    app.select(app.active.clone(), true, "Waiting conversation".into());
+    let target = app.selection();
+    let waiting = snapshot(
+        &app,
+        "waiting",
+        json!({
+            "id":"q-1", "agent":"main", "turn":1,"tool_call_id":"tool-1","text":"Which test target?"
+        }),
+        json!(null),
+    );
+    app.update(Update::Loaded(
+        target,
+        waiting,
+        HistoryPage {
+            entries: vec![],
+            rewind_groups: Vec::new(),
+            next_before: None,
+        },
+    ));
+    event(&mut app, Event::Paste("my independent draft".into()));
+    let view = screen(&mut app, 82, 20);
+    assert!(view.contains("Waiting · main · F2 Reply"));
+    assert!(view.contains("Which test target?"));
+    key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
+    key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    assert_eq!("my independent draft", app.pane().draft.text());
+    assert!(!app
+        .effects
+        .iter()
+        .any(|effect| matches!(effect, Job::Save(_))));
+    let control_count = app.contextual_controls().len();
+    for _ in 0..control_count {
+        key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
+    }
+    event(&mut app, Event::Paste("workspace tests".into()));
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    let action = app
+        .effects
+        .iter()
+        .find_map(|effect| {
+            if let Job::Save(command) = effect {
+                Some(&command.action)
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    assert!(
+        matches!(action, Action::ReplyQuestion { request_id, text } if request_id == "q-1" && text == "workspace tests")
+    );
+    assert_eq!("my independent draft", app.pane().draft.text());
+}
+
+#[test]
 fn generic_tool_details_render_control_bytes_visibly_and_copy_original_reply() {
     let mut app = app();
     app.select(app.active.clone(), true, "Tool test".into());
@@ -594,6 +704,7 @@ fn generic_tool_details_render_control_bytes_visibly_and_copy_original_reply() {
             tool_call,
             tool_result,
         ],
+        rewind_groups: Vec::new(),
         next_before: None,
     };
     app.update(Update::Loaded(
@@ -612,7 +723,7 @@ fn generic_tool_details_render_control_bytes_visibly_and_copy_original_reply() {
     assert!(!view.contains("before␛[2Jafter"));
     key(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
     assert!(screen(&mut app, 72, 25).contains("before␛[2Jafter"));
-    command(&mut app, "copy");
+    message_action(&mut app, 2, MessageAction::Copy);
     assert!(app
         .effects
         .iter()
@@ -702,6 +813,7 @@ fn mouse_drag_copies_sanitized_text_from_tool_output_popup() {
             diff: String::new(),
             output_id: None,
             evidence: String::new(),
+            inline_output_complete: false,
         },
     ))));
     let mut terminal = Terminal::new(TestBackend::new(58, 18)).unwrap();
@@ -854,30 +966,4 @@ fn click_shift_drag_and_replaced_text_leave_the_clipboard_alone() {
     app.event(up, buffer);
     assert!(app.effects.is_empty());
     assert!(!buffer[start].modifier.contains(Modifier::REVERSED));
-}
-
-#[test]
-fn spacious_composer_and_picker_use_responsive_insets() {
-    let mut app = app();
-    app.pane_mut().draft.insert("甲");
-    let mut wide = Terminal::new(TestBackend::new(128, 32)).unwrap();
-    let mut compact = Terminal::new(TestBackend::new(44, 12)).unwrap();
-    let wide_frame = wide.draw(|frame| render(frame, &mut app)).unwrap();
-    let (wide_x, wide_y) = cell(wide_frame.buffer, "甲");
-    assert!(wide_x >= 6);
-    assert_eq!(
-        wide_frame.buffer[(wide_x, wide_y + 1)].bg,
-        crate::theme::SURFACE
-    );
-    let compact_frame = compact.draw(|frame| render(frame, &mut app)).unwrap();
-    let (compact_x, compact_y) = cell(compact_frame.buffer, "甲");
-    assert!(compact_x < wide_x);
-    assert_eq!(compact_y, 9);
-
-    app.picker(PickerKind::Commands, Choice::commands());
-    let frame = wide.draw(|frame| render(frame, &mut app)).unwrap();
-    let (x, y) = cell(frame.buffer, "›");
-    assert_ne!(frame.buffer[(x, y)].bg, frame.buffer[(x - 1, y)].bg);
-    assert!(!frame.buffer[(x, y)].modifier.contains(Modifier::DIM));
-    assert!(frame.buffer[(0, 0)].modifier.contains(Modifier::DIM));
 }

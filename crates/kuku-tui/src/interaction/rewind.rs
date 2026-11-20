@@ -13,20 +13,48 @@ pub(super) fn rewind_instructions(text: &str, restore_files: bool) -> String {
 }
 
 impl App {
+    pub(crate) fn escape_interrupts_running(&self) -> bool {
+        self.pane().snapshot.as_ref().is_some_and(|snapshot| {
+            snapshot.cleaning_up || snapshot.agent.status == kuku_client::AgentStatus::Running
+        })
+    }
+
     pub(super) fn rewind_escape(&mut self) {
-        let draft_empty = self.pane().draft.text().is_empty();
-        let busy = self.pane().execution().is_some()
-            || self.pane().snapshot.as_ref().is_some_and(|snapshot| {
-                snapshot.cleaning_up
-                    || matches!(
-                        snapshot.agent.status,
-                        kuku_client::AgentStatus::Running | kuku_client::AgentStatus::Waiting
-                    )
-                    || !snapshot.pending.is_empty()
-            });
-        if !draft_empty || busy {
+        let status = self
+            .pane()
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.agent.status);
+        if self.escape_interrupts_running() {
             self.escape_armed_at = None;
             self.interrupt();
+            self.deactivate_context_focus();
+            self.focus_composer();
+            return;
+        }
+        if status == Some(kuku_client::AgentStatus::Waiting)
+            || self.pane().contextual_focus.active
+            || matches!(
+                self.pane().keyboard_focus,
+                crate::app::KeyboardFocus::Request | crate::app::KeyboardFocus::Queue
+            )
+        {
+            self.escape_armed_at = None;
+            self.deactivate_context_focus();
+            self.focus_composer();
+            return;
+        }
+        if self.pane().keyboard_focus == crate::app::KeyboardFocus::Transcript
+            && self.pane().transcript.is_reading()
+            && !self.pane().draft.text().is_empty()
+        {
+            self.escape_armed_at = None;
+            self.deactivate_context_focus();
+            self.focus_composer();
+            return;
+        }
+        if !self.pane().draft.text().is_empty() {
+            self.escape_armed_at = None;
             return;
         }
         let now = Instant::now();

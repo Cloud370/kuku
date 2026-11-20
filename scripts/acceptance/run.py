@@ -728,6 +728,16 @@ def run_interactive(args, directory, record):
         try:
             checked(command, "installed-interactive", timeout=420, cwd=scratch_dir)
         finally:
+            lifecycle = {}
+            for case, name in (("settings", "first-run"), ("defaults", "model-default"),
+                               ("rewind", "readonly-rewind")):
+                source = scratch_dir / "test" / case / f"{name}.json"
+                if source.is_file():
+                    destination = directory / f"{name}.json"
+                    shutil.copy2(source, destination)
+                    lifecycle[name] = str(destination)
+            if lifecycle:
+                record["lifecycle"] = lifecycle
             if args.desktop:
                 run_desktop(args, binary, bridge, scratch_dir, directory, record, checked)
     record["passed"] = True

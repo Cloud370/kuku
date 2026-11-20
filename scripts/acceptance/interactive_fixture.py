@@ -23,6 +23,8 @@ from urllib.parse import quote, urlencode, urlsplit
 
 CONFIG = Path(__file__).resolve().with_name("fixtures") / "config.toml"
 TIMEOUT = 30
+TERMINAL_ROWS = 32
+TERMINAL_COLS = 140
 TOOL_BRIEF = "Run installed acceptance fixture"
 TOOL_OUTPUT = "fixture-tool-output-42"
 EXE = ".exe" if os.name == "nt" else ""
@@ -497,6 +499,8 @@ class Provider:
 
 class Terminal:
     def __init__(self, bridge, binary, workspace, env, args=()):
+        self.rows = TERMINAL_ROWS
+        self.cols = TERMINAL_COLS
         self.process = subprocess.Popen(
             [bridge, binary, *args], cwd=workspace, env=env, stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, text=True, encoding="utf-8",
@@ -536,7 +540,14 @@ class Terminal:
     def request(self, operation, **fields):
         self.process.stdin.write(json.dumps({"op": operation, **fields}) + "\n")
         self.process.stdin.flush()
-        return self.receive()
+        response = self.receive()
+        if operation == "resize":
+            self.rows = response["rows"]
+            self.cols = response["cols"]
+        elif operation == "screen":
+            response["rows"] = self.rows
+            response["cols"] = self.cols
+        return response
 
     def press(self, text):
         self.request("write", text=text)

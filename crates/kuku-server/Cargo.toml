@@ -18,6 +18,7 @@ path = "src/bin/kuku-server.rs"
 
 [dependencies]
 kuku = { workspace = true }
+kuku-client = { path = "../kuku-client" }
 axum = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
 tower-http = { workspace = true }

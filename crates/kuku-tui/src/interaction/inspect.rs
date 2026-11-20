@@ -5,38 +5,28 @@ use crate::output::OutputViewer;
 use crate::transcript::ToolView;
 
 impl App {
-    pub(super) fn open_tools(&mut self) {
-        let tools = self
-            .pane()
-            .transcript
-            .tools()
+    pub(super) fn show_outputs(&mut self, mut outputs: Vec<ToolView>) {
+        if outputs.len() == 1 {
+            self.show_output(outputs.remove(0));
+            return;
+        }
+        let choices = outputs
             .into_iter()
             .map(|tool| {
                 let name = if tool.name.is_empty() {
-                    "Tool"
+                    "Tool".to_owned()
                 } else {
-                    &tool.name
+                    tool.name.clone()
                 };
                 let detail = if tool.output_id.is_some() {
                     format!("Saved output · {}", tool.summary)
                 } else {
                     tool.summary.clone()
                 };
-                Choice::new(name, detail, ChoiceKind::Tool(tool.clone()))
+                Choice::new(name, detail, ChoiceKind::Tool(tool))
             })
             .collect();
-        self.picker(PickerKind::Tools, tools);
-    }
-
-    pub(super) fn open_details(&mut self) {
-        let choices = self
-            .pane()
-            .transcript
-            .visible_detail_choices()
-            .into_iter()
-            .map(|(key, label, summary)| Choice::new(label, summary, ChoiceKind::Detail(key)))
-            .collect();
-        self.picker(PickerKind::Details, choices);
+        self.picker(PickerKind::Tools, choices).header = "Outputs for selected message".into();
     }
 
     pub(crate) fn show_output(&mut self, tool: ToolView) {

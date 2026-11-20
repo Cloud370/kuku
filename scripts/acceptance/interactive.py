@@ -10,9 +10,11 @@ import re
 import sys
 from urllib.parse import urlencode, urlsplit
 
+from interactive_lifecycle import lifecycle_cases
 from interactive_rendering import (
     check_agent_reading_position,
     named_output_cards,
+    operate_on_assistant,
     page_up_after_rendered_resize,
     rendering_cases,
 )
@@ -134,6 +136,7 @@ def two_workspaces_and_disconnect(client):
             client.provider.assert_idle()
 
             right.request("resize", rows=32, cols=180)
+            right.expect("New session", state="Ready", rows=32)
             right.submit("right workspace check")
             client.provider.next("right workspace check").tool(
                 "write_file", "write-right-marker", path="right-marker.txt",
@@ -524,7 +527,7 @@ def recover_from_provider_failure(client):
         eventually("recovery input to queue before explicit continuation",
                    lambda: client.snapshot(workspace, session)["pending_inputs"] == 1)
         client.provider.assert_idle(duration=0.2)
-        terminal.press("/continue\r")
+        terminal.press("\x1bOQ\r")
         client.provider.next(recovery).text("provider recovered")
         terminal.expect("provider recovered")
         terminal.exit_cleanly()
@@ -669,16 +672,19 @@ def delegated_agent_cards(client):
         reopened.press("/")
         reopened.expect("Actions and Skills")
         reopened.press("\x1b")
-        reopened.press("/details\r")
-        reopened.expect("Transcript details")
-        reopened.press("reviewer")
-
-        choices = reopened.expect("› Agent reviewer", state=task)["screen"]
-        screens.append(("Searching the delegation card", choices))
-        reopened.press("\r")
+        eventually(
+            "actions picker to close",
+            lambda: (
+                screen
+                if "Actions and Skills"
+                not in (screen := reopened.request("screen")["screen"])
+                else None
+            ),
+        )
+        reopened.press("\x0f")
         restored = reopened.expect("Latest Agent reply", state="Requested instructions")["screen"]
         assert conclusion in restored and "Live Agent reply" not in restored, restored
-        screens.append(("Restored completed Agent card", restored))
+        screens.append(("Expanded completed Agent card", restored))
         check_agent_reading_position(client, reopened)
         reopened.exit_cleanly()
     client.provider.assert_idle()
@@ -716,7 +722,7 @@ def dense_transcript(client, reference=False):
     def running_view(screen, height):
         rows = screen.split("\n")
         return len(rows) == height and (
-            "Running tools" in rows[-1] or any("To main · Running tools" in row for row in rows[-8:])
+            "Running tools" in rows[-1] or any("To main · Running" in row for row in rows[-8:])
         )
 
     def measure_tools(terminal):
@@ -780,7 +786,7 @@ def dense_transcript(client, reference=False):
 
         terminal.click_text(restored, "Read file · error")
         error = terminal.expect("Requested arguments")["screen"]
-        assert f"path does not exist: {scenario.missing}" in error and "Running tools" in error and scenario.draft in error, error
+        assert f"path does not exist: {scenario.missing}" in error and "To main · Running" in error and scenario.draft in error, error
         screens.append(("Independent failed call with its exact error", error))
         terminal.click_text(error, "Read file · error")
         terminal.press("\x1b[1;5F")
@@ -845,10 +851,8 @@ def markdown_document(client, document=None, reference=False):
         assert not any(marker in screen for marker in (outer, document.fence, "```python")), screen
 
     def toggle_source(terminal):
-        terminal.expect("Enter steer", state="Finished")
-        terminal.press("/")
-        terminal.expect("Actions and Skills")
-        terminal.press("source\r")
+        screen = terminal.expect("Enter steer", state="Finished")["screen"]
+        operate_on_assistant(terminal, screen, document.intro, "Source")
 
     with client.terminal(workspace) as terminal:
         terminal.request("resize", rows=128, cols=140)
@@ -937,6 +941,7 @@ def main():
         configure_statusline(client)
         preserve_draft_after_interrupt(client)
         editable_multiline_paste(client)
+        lifecycle_cases(options.binary, options.bridge, options.directory)
         rendering_cases(options.binary, options.bridge, options.directory)
         wait_restart_and_recover_crash(client, workspace, session, title)
         remote_authorization_and_script_json(client, client.workspace("work-script"))

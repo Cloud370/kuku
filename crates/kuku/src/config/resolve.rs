@@ -29,21 +29,33 @@ pub fn load_config(path: &Path) -> Result<ConfigFile> {
 
 /// Parse config TOML text using the SDK's environment-reference expansion semantics.
 pub fn parse_config_text(raw: &str) -> Result<ConfigFile> {
+    parse_config_text_with_env(raw, |name| std::env::var(name))
+}
+
+/// Parse config TOML text using the supplied environment-variable lookup.
+pub fn parse_config_text_with_env(
+    raw: &str,
+    environment: impl Fn(&str) -> std::result::Result<String, std::env::VarError>,
+) -> Result<ConfigFile> {
     let mut value = toml::from_str::<toml::Value>(raw)
         .map_err(|error| Error::ConfigLoad(format!("invalid config: {error}")))?;
-    resolve_env_refs(&mut value, "")?;
+    resolve_env_refs(&mut value, "", &environment)?;
     value
         .try_into()
         .map_err(|error| Error::ConfigLoad(format!("invalid config: {error}")))
 }
 
-fn resolve_env_refs(value: &mut toml::Value, path: &str) -> Result<()> {
+fn resolve_env_refs(
+    value: &mut toml::Value,
+    path: &str,
+    environment: &impl Fn(&str) -> std::result::Result<String, std::env::VarError>,
+) -> Result<()> {
     match value {
         toml::Value::String(raw) if should_resolve_env_ref(path, raw) => {
             let env_name = raw
                 .strip_prefix('$')
                 .expect("should_resolve_env_ref checked prefix");
-            *raw = std::env::var(env_name).map_err(|_| {
+            *raw = environment(env_name).map_err(|_| {
                 Error::ConfigLoad(format!(
                     "env var '{env_name}' referenced by {} is not set",
                     display_path(path)
@@ -58,7 +70,7 @@ fn resolve_env_refs(value: &mut toml::Value, path: &str) -> Result<()> {
                 } else {
                     format!("{path}[{index}]")
                 };
-                resolve_env_refs(item, &item_path)?;
+                resolve_env_refs(item, &item_path, environment)?;
             }
             Ok(())
         }
@@ -69,7 +81,7 @@ fn resolve_env_refs(value: &mut toml::Value, path: &str) -> Result<()> {
                 } else {
                     format!("{path}.{key}")
                 };
-                resolve_env_refs(item, &item_path)?;
+                resolve_env_refs(item, &item_path, environment)?;
             }
             Ok(())
         }
@@ -324,4 +336,32 @@ pub fn show_redacted(path: &Path) -> Result<String> {
     let config_file = load_config(path)?;
     let config = config_file.resolve()?;
     Ok(config.redacted_display())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::parse_config_text_with_env;
+
+    #[test]
+    fn parse_config_text_uses_the_supplied_environment_lookup() {
+        let raw = r#"
+default_model = "balanced"
+model = { balanced = { provider = "anthropic", model = "fixture-model" } }
+provider = { anthropic = { format = "anthropic", base_url = "https://api.anthropic.com", api_key = "fixture-key" } }
+[discovery]
+extra_user_paths = ["$KUKU_HOME"]
+"#;
+        let parsed = parse_config_text_with_env(raw, |name| {
+            assert_eq!("KUKU_HOME", name);
+            Ok("service-data".into())
+        })
+        .unwrap();
+
+        assert_eq!(
+            vec![PathBuf::from("service-data")],
+            parsed.discovery.unwrap().extra_user_paths
+        );
+    }
 }

@@ -659,7 +659,7 @@ mod tests {
                 && !plain.contains("proposed")
                 && !plain.contains("Finished")
         );
-        assert_eq!(Some("Ctrl+O show · /details"), view.tool_hint.as_deref());
+        assert_eq!(Some("Ctrl+O show"), view.tool_hint.as_deref());
         assert_eq!(None, transcript.detail_at(0));
         let choices = agent_choices(&transcript);
         assert_eq!(1, choices.len());
@@ -671,17 +671,11 @@ mod tests {
         assert!(body.contains("Requested task") && body.contains("List failing cases"));
         assert!(body.contains("Requested instructions") && body.contains("Use precise citations"));
         assert!(body.contains("Verify fixtures"));
-        assert_eq!(
-            Some("Ctrl+O hide · /details"),
-            expanded.tool_hint.as_deref()
-        );
+        assert_eq!(Some("Ctrl+O hide"), expanded.tool_hint.as_deref());
 
         assert!(!transcript.toggle_details());
         let collapsed = transcript.project(90, 24);
-        assert_eq!(
-            Some("Ctrl+O show · /details"),
-            collapsed.tool_hint.as_deref()
-        );
+        assert_eq!(Some("Ctrl+O show"), collapsed.tool_hint.as_deref());
         let body = lines(&collapsed).join("\n");
         assert!(
             body.contains("Verify fixtures")
