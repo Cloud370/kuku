@@ -118,6 +118,8 @@ fn host_terminal(
         }
     });
     let mut child = pair.slave.spawn_command(command)?;
+    let mut terminal_rows = ROWS;
+    let mut terminal_cols = COLS;
     let mut stdout = io::stdout().lock();
     let result = (|| {
         send(
@@ -136,6 +138,8 @@ fn host_terminal(
                     let console_restored = exit_code == Some(0);
                     json!({
                         "screen": screen.rows(0, screen.size().1.get()).collect::<Vec<_>>().join("\n"),
+                        "rows": terminal_rows.get(),
+                        "cols": terminal_cols.get(),
                         "alternate_screen": screen.alternate_screen(),
                         "cursor_hidden": screen.hide_cursor(),
                         "bracketed_paste": screen.bracketed_paste(),
@@ -150,6 +154,8 @@ fn host_terminal(
                         cols: cols.get(),
                         ..size
                     })?;
+                    terminal_rows = rows;
+                    terminal_cols = cols;
                     json!({"rows": rows, "cols": cols})
                 }
                 Request::Write { text } => {

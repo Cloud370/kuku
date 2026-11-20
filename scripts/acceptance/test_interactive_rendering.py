@@ -63,11 +63,23 @@ class QueuedInputFocusTests(unittest.TestCase):
 
         terminal.press.assert_not_called()
 
-    def test_click_failure_context_includes_target_row_and_coordinates(self):
+    def test_click_failure_context_includes_original_screen_and_dimensions(self):
+        screen = "\n".join([
+            "Transcript context above the pending inputs",
+            "Pending inputs · ↑ select · Enter edit · Del withdraw",
+            "  You · Queued · next Turn",
+            "  Obsolete checkpoint follow-up",
+            "Composer draft below the pending inputs",
+        ])
+        snapshot = {"screen": screen, "rows": 32, "cols": 140}
+
         self.assertEqual(
-            "Queued input target row: 4\n"
-            "Mouse click coordinates (column, row; 1-based): (3, 4)",
-            queued_input_click_context(4, 3),
+            "Queued input target row: 24\n"
+            "Mouse click coordinates (column, row; 1-based): (6, 24)\n"
+            "Terminal size: 32 rows × 140 columns\n"
+            "Full screen used to compute click coordinates:\n"
+            f"{screen}",
+            queued_input_click_context(24, 6, snapshot),
         )
 
     def test_detects_the_selected_queued_input(self):
