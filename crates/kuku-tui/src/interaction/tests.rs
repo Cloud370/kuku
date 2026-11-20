@@ -266,11 +266,12 @@ fn escape_from_running_history_focus_interrupts_before_returning_to_composer() {
     app.update(Update::Loaded(
         app.selection(),
         snapshot,
-        kuku_client::HistoryPage {
-            entries: Vec::new(),
-            rewind_groups: Vec::new(),
-            next_before: None,
-        },
+        serde_json::from_value(json!({
+            "entries": [],
+            "rewind_groups": [],
+            "next_before": null
+        }))
+        .unwrap(),
     ));
     app.effects.clear();
     for id in 1..=20 {
