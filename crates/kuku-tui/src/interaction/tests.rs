@@ -239,6 +239,66 @@ fn escape_from_history_focus_returns_to_composer_with_multiline_draft() {
     assert!(app.modal.is_none());
 }
 
+#[test]
+fn escape_from_running_history_focus_interrupts_before_returning_to_composer() {
+    let mut app = connected_app();
+    let snapshot = Box::new(
+        serde_json::from_value(json!({
+            "session_id": app.active.session,
+            "workspace": app.workspace,
+            "cursor": 100,
+            "agents": [],
+            "pending": [],
+            "progress": null,
+            "agent": {
+                "address": app.active.agent,
+                "status": "running",
+                "turn": 3,
+                "pending_inputs": 0,
+                "execution_id": 42,
+                "last_error": null,
+                "config": {},
+                "usage": {"model_requests": 0, "unreported_requests": 0}
+            }
+        }))
+        .unwrap(),
+    );
+    app.update(Update::Loaded(
+        app.selection(),
+        snapshot,
+        kuku_client::HistoryPage {
+            entries: Vec::new(),
+            rewind_groups: Vec::new(),
+            next_before: None,
+        },
+    ));
+    app.effects.clear();
+    for id in 1..=20 {
+        insert_message(
+            &mut app,
+            id,
+            HistoryKind::User,
+            &format!("history {id}"),
+            serde_json::Map::new(),
+        );
+    }
+    app.paste("first\nsecond");
+    press(&mut app, KeyCode::PageUp);
+    assert!(app.pane().transcript.is_reading());
+
+    press(&mut app, KeyCode::Esc);
+
+    let Some(Job::Save(command)) = app.effects.pop() else {
+        panic!("Escape while running must issue an interrupt")
+    };
+    assert!(matches!(
+        command.action,
+        Action::Cancel { execution_id: 42 }
+    ));
+    assert!(app.composer_focused());
+    assert_eq!("first\nsecond", app.pane().draft.text());
+}
+
 fn agent_cards(app: &mut App) {
     for (index, mut event) in [
         json!({

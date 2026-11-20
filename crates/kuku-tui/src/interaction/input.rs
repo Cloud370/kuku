@@ -63,15 +63,6 @@ impl App {
                 self.escape_armed_at = None;
                 return;
             }
-            if self.pane().keyboard_focus == crate::app::KeyboardFocus::Transcript
-                && self.pane().transcript.is_reading()
-                && !self.pane().draft.text().is_empty()
-            {
-                self.deactivate_context_focus();
-                self.focus_composer();
-                self.escape_armed_at = None;
-                return;
-            }
             self.rewind_escape();
             return;
         }
