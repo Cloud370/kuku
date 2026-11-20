@@ -1,9 +1,11 @@
 """Installed-terminal checks for settings, defaults and retained rewind history."""
 
 import json
+import re
+import tomllib
 from urllib.parse import urlencode
 
-from interactive_fixture import InstalledClient, eventually
+from interactive_fixture import InstalledClient, eventually, json_response
 from interactive_rendering import has_selected_queued_input
 
 
@@ -15,6 +17,29 @@ def lifecycle_cases(binary, bridge, directory):
         keyboard_queue_withdrawal(client)
     with InstalledClient(binary, bridge, directory / "rewind") as client:
         readonly_rewind(client)
+    with InstalledClient(binary, bridge, directory / "rewind-history") as client:
+        paginated_rewind(client)
+    runtime_credential_repair(binary, bridge, directory / "auth-repair")
+
+
+def focus_action(terminal, action):
+    def focused():
+        return next((line.strip() for line in terminal.request("screen")["screen"].splitlines()
+                     if "▶ " in line), None)
+
+    for _ in range(10):
+        before = focused()
+        if before and f"▶ {action}" in before:
+            return
+        terminal.press("\x1bOQ")
+        try:
+            eventually("F2 to focus the next visible action", lambda: (
+                after if (after := focused()) is not None and after != before else None
+            ))
+        except AssertionError as error:
+            screen = terminal.request("screen")["screen"]
+            raise AssertionError(f"{error}\nLast terminal screen:\n{screen}") from error
+    raise AssertionError(f"No visible contextual action {action!r}")
 
 
 def first_run_credential_repair(binary, bridge, directory):
@@ -260,3 +285,173 @@ def keyboard_queue_withdrawal(client):
         "withdrawn_input_in_request": withdrawn in messages,
     }, ensure_ascii=False, indent=2), encoding="utf-8")
     print("Keyboard Up/Delete withdrew the exact input, restored its draft and kept the other input queued.")
+
+
+def paginated_rewind(client):
+    workspace = client.workspace("work-rewind-history")
+    prompts = [f"HISTORY-PAGE-USER-{index:02d}" for index in range(1, 27)]
+    replies = [f"HISTORY-PAGE-ANSWER-{index:02d}" for index in range(1, 27)]
+    query = {"workspace": workspace, "agent": "main", "limit": 48}
+
+    def history():
+        return client.request("GET", f"/sessions/{session}/history?{urlencode(query)}").as_json()
+
+    def oldest_message(terminal):
+        terminal.press("\x1b")
+        terminal.expect("Press Esc again")
+        terminal.press("\x1b")
+        screen = terminal.expect("Rewind to message", also=(
+            prompts[-1], "↑ at the top loads earlier messages",
+        ))["screen"]
+        for steps in range(40):
+            if re.search(r"› Turn 1(?:\s|$)", screen) and prompts[0] in screen:
+                return steps, screen
+            terminal.press("\x1b[5~")
+
+            def moved():
+                value = terminal.request("screen")["screen"]
+                return value if value != screen and "Loading earlier messages…" not in value else None
+
+            try:
+                screen = eventually("rewind selection to advance toward the earliest message", moved)
+            except AssertionError as error:
+                screen = terminal.request("screen")["screen"]
+                raise AssertionError(f"{error}\nLast terminal screen:\n{screen}") from error
+        raise AssertionError(f"Could not select the earliest committed message:\n{screen}")
+
+    with client.terminal(workspace) as terminal:
+        terminal.expect("New session", state="Ready")
+        first_id = None
+        for prompt, reply in zip(prompts, replies):
+            terminal.submit(prompt)
+            client.provider.next(prompt).text(reply)
+            terminal.expect(reply, state="Finished")
+            if first_id is None:
+                session = client.session(workspace)
+                first_id = next(entry["id"] for entry in history()["entries"]
+                                if entry["type"] == "user" and entry["text"] == prompt)
+        terminal.exit_cleanly()
+    before = history()
+    assert before["next_before"] is not None
+    assert all(entry["id"] != first_id for entry in before["entries"])
+    with client.terminal(workspace) as terminal:
+        terminal.resume(prompts[0])
+        terminal.expect(replies[-1], state="Finished")
+        cancelled_steps, cancelled = oldest_message(terminal)
+        assert cancelled_steps > 0
+        terminal.press("\x1b")
+        terminal.expect("To main", state="Finished")
+        assert history() == before, "Browsing and cancelling rewind changed durable history"
+        client.provider.assert_idle()
+        confirmed_steps, selected = oldest_message(terminal)
+        terminal.press("\r")
+        confirmation = terminal.expect("Rewind to message · Turn 1", also=(prompts[0], "Enter commits"))["screen"]
+        terminal.press("\r")
+        terminal.expect("Rewound content · read-only", also=(prompts[0],))
+        rewound = history()
+        assert [group["target_event_id"] for group in rewound["rewind_groups"]] == [first_id]
+        assert not any(entry["type"] == "user" for entry in rewound["entries"])
+        terminal.press("\x03")
+        terminal.submit("Continue after the earliest paginated rewind")
+        call = client.provider.next("Continue after the earliest paginated rewind")
+        context = json.dumps(call.request["messages"])
+        assert all(text not in context for text in prompts + replies)
+        call.text("The earliest message was selected across history pages.")
+        terminal.press("\x1b[1;5F")
+        terminal.expect("The earliest message was selected across history pages.", state="Finished")
+        terminal.exit_cleanly()
+    client.provider.assert_idle()
+    (client.directory / "rewind-history.json").write_text(json.dumps({
+        "session": session, "committed_messages": len(prompts) + len(replies),
+        "initial_next_before": before["next_before"], "target_event_id": first_id,
+        "cancelled_page_steps": cancelled_steps, "confirmed_page_steps": confirmed_steps,
+        "cancelled_selection_screen": cancelled, "confirmed_selection_screen": selected,
+        "confirmation_screen": confirmation, "rewind_groups": rewound["rewind_groups"],
+        "discarded_content_in_next_request": any(text in context for text in prompts + replies),
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    print("Rewind loaded beyond 48 committed messages, cancelled safely and confirmed the exact earliest event.")
+
+
+def runtime_credential_repair(binary, bridge, directory):
+    instance = InstalledClient(binary, bridge, directory)
+    repaired_key = "fixture-repaired-key"
+    attempts = []
+    original_dispatch = instance.provider.dispatch
+
+    def dispatch(method, path, headers, body):
+        if method == "POST" and path == "/v1/messages":
+            key = headers.get("x-api-key")
+            if key == "test-key":
+                attempts.append("original")
+                return json_response({"type": "error", "error": {
+                    "type": "authentication_error", "message": "fixture credential rejected",
+                }}, 401)
+            assert key == repaired_key, "Unexpected credential reached the fixture provider"
+            attempts.append("repaired")
+        return original_dispatch(method, path, headers, body)
+
+    instance.provider.dispatch = dispatch
+    with instance as client:
+        workspace = client.workspace("work-auth-repair")
+        prompt = "AUTH-REPAIR-ORIGINAL-INPUT-481"
+        draft = "An independent draft survives credential repair"
+        config_path = client.home / "config.toml"
+        original_config = tomllib.loads(config_path.read_text())
+        with client.terminal(workspace) as terminal:
+            terminal.expect("New session", state="Ready")
+            terminal.submit(prompt)
+            failure = terminal.expect("Repair credentials", also=("No automatic retry",))["screen"]
+            session = client.session(workspace)
+            original = client.connection()
+            terminal.type(draft)
+            focus_action(terminal, "Repair credentials")
+            terminal.press("\r")
+            terminal.expect("Repair provider credentials", also=("Paste",))
+            terminal.press(f"\x1b[200~{repaired_key}\x1b[201~")
+            masked = terminal.expect("•" * len(repaired_key))["screen"]
+            assert repaired_key not in masked
+            terminal.press("\r")
+            review = terminal.expect("Save credentials and restart local service")["screen"]
+            assert attempts == ["original"], attempts
+            terminal.press("\r")
+            applied = terminal.expect("No retry has been sent.")["screen"]
+            restarted = client.connection()
+            assert restarted["instance_id"] != original["instance_id"]
+            assert restarted["config_path"] == original["config_path"]
+            assert attempts == ["original"], "Repair or restart sent a model request"
+            assert client.session(workspace) == session
+            terminal.press("\r")
+            terminal.expect(draft, also=("Continue",))
+            focus_action(terminal, "Continue")
+            terminal.press("\r")
+            retried = client.provider.next(prompt)
+            context = json.dumps(retried.request["messages"])
+            assert context.count(prompt) == 1
+            retried.text("The repaired credential retried the retained input once.")
+            terminal.expect("The repaired credential retried the retained input once.", state="Finished", also=(draft,))
+            assert attempts == ["original", "repaired"], attempts
+            query = urlencode({"workspace": workspace, "agent": "main", "limit": 64})
+            entries = client.request("GET", f"/sessions/{session}/history?{query}").as_json()["entries"]
+            retained = [entry for entry in entries if entry["type"] == "user" and entry["text"] == prompt]
+            assert len(retained) == 1
+            terminal.press("\x03")
+            terminal.exit_cleanly()
+        saved_text = config_path.read_text()
+        assert repaired_key not in saved_text
+        saved_config = tomllib.loads(saved_text)
+        key_ref = saved_config["provider"]["test-anthropic"].pop("api_key")
+        original_config["provider"]["test-anthropic"].pop("api_key")
+        assert saved_config == original_config, "Repair changed unrelated provider or model settings"
+        assert key_ref.startswith("file:")
+        credential_files = list((client.home / "credentials").iterdir())
+        assert len(credential_files) == 1 and credential_files[0].read_text() == repaired_key
+        client.provider.assert_idle()
+        (client.directory / "auth-repair.json").write_text(json.dumps({
+            "session": session, "failed_screen": failure, "masked_screen": masked,
+            "review_screen": review, "applied_screen": applied,
+            "provider_attempts": attempts, "service_instance_changed": True,
+            "config_path_unchanged": True, "unrelated_config_preserved": True,
+            "retained_user_messages": len(retained), "retry_input_occurrences": context.count(prompt),
+            "private_credential_files": len(credential_files),
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+    print("Authentication repair saved a private credential, safely restarted and retried the same input only after Continue.")
