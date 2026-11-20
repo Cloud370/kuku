@@ -6,12 +6,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::routing::post;
-use axum::Router;
+use axum::{Json, Router};
 use common::mock_provider::{self, anthropic_sse_response, text_response, tool_response};
 use common::TestServer;
 use kuku::event::{EventPayload, EventStore};
 use serde_json::{json, Value};
-use tokio::net::TcpListener;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 
 async fn start_provider<F: Future<Output = String> + Send + 'static>(
@@ -20,7 +21,8 @@ async fn start_provider<F: Future<Output = String> + Send + 'static>(
     let responses = Arc::new(Mutex::new(responses.into_iter().collect::<VecDeque<_>>()));
     let router = Router::new().route(
         "/v1/messages",
-        post(move || {
+        post(move |Json(request): Json<Value>| {
+            assert!(request["messages"].is_array(), "complete model request");
             let responses = responses.clone();
             async move {
                 let response = responses
@@ -39,6 +41,41 @@ async fn start_provider<F: Future<Output = String> + Send + 'static>(
     let port = listener.local_addr().unwrap().port();
     let task = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     (port, task)
+}
+
+#[tokio::test]
+async fn provider_fixture_reads_the_complete_request_before_responding() {
+    let (requested, mut received) = oneshot::channel();
+    let (port, provider) = start_provider([async move {
+        requested.send(()).unwrap();
+        text_response("complete request received")
+    }])
+    .await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let body = br#"{"model":"fixture","messages":[{"role":"user","content":"fixture request"}]}"#;
+        let headers = format!(
+            "POST /v1/messages HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nExpect: 100-continue\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(headers.as_bytes()).await.unwrap();
+        let mut interim = Vec::new();
+        while !interim.ends_with(b"\r\n\r\n") {
+            interim.push(stream.read_u8().await.expect("provider closed before accepting the request body"));
+            assert!(interim.len() < 1024);
+        }
+        assert!(interim.starts_with(b"HTTP/1.1 100 "), "provider replied before accepting the request body: {}", String::from_utf8_lossy(&interim));
+        assert!(matches!(received.try_recv(), Err(oneshot::error::TryRecvError::Empty)));
+        stream.write_all(body).await.unwrap();
+        received.await.unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        assert!(response.starts_with(b"HTTP/1.1 200 "));
+        assert!(response.windows(b"complete request received".len()).any(|part| part == b"complete request received"));
+    })
+    .await
+    .expect("provider fixture did not consume the complete request");
+    provider.abort();
 }
 
 async fn send(server: &TestServer, id: &str) {
@@ -243,10 +280,12 @@ async fn stop_racing_a_model_response_counts_only_calls_committed_before_it() {
     let server = TestServer::start_deferred(mock_provider::make_test_config(port)).await;
     let id = "stop-tool-commit-race";
     send(&server, id).await;
-    tokio::time::timeout(Duration::from_secs(5), received)
-        .await
-        .unwrap()
-        .unwrap();
+    let admission = tokio::time::timeout(Duration::from_secs(5), received).await;
+    assert!(
+        matches!(admission, Ok(Ok(()))),
+        "model fixture was not reached: {admission:?}; snapshot: {:?}",
+        tokio::time::timeout(Duration::from_secs(1), server.snapshot(id, "main")).await
+    );
     let running = server.snapshot(id, "main").await;
     let agent = &running["agent"];
     let turn = agent["turn"].as_u64().unwrap();
