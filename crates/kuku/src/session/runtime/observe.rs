@@ -545,6 +545,7 @@ mod tests {
                 Record::InputsAccepted {
                     address: address.to_owned(),
                     input_ids: vec![format!("send-{id}")],
+                    message_input_ids: Vec::new(),
                     turn,
                 }
                 .payload()

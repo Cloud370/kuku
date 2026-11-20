@@ -109,6 +109,8 @@ pub(super) enum Record {
     InputsAccepted {
         address: String,
         input_ids: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        message_input_ids: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn: Option<u64>,
     },
@@ -197,6 +199,7 @@ pub(super) struct QueuedDelivery {
     pub(super) receipt: Receipt,
     pub(super) input: Input,
     pub(super) values: Vec<OutputReference>,
+    pub(super) accepted_turn: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -444,6 +447,7 @@ impl State {
             Record::InputsAccepted {
                 address,
                 input_ids,
+                message_input_ids,
                 turn,
             } => {
                 let admitted_turn = turn.unwrap_or(event_id);
@@ -465,7 +469,12 @@ impl State {
                                 "agent {address}: accepted input {id} was not pending"
                             ))
                         })?;
-                    let input = agent.inbox.remove(index).expect("input position exists");
+                    let mut input = agent.inbox.remove(index).expect("input position exists");
+                    if message_input_ids.contains(&id) {
+                        input.accepted_turn = Some(admitted_turn);
+                    } else {
+                        input.accepted_turn.get_or_insert(admitted_turn);
+                    }
                     if !agent.question_replies.remove(&id) {
                         if let Some(preview) = task_preview(&input.input.text) {
                             agent.snapshot.admitted_task = Some(preview);
@@ -753,6 +762,7 @@ impl State {
             receipt,
             input,
             values,
+            accepted_turn: None,
         });
         agent.update_inbox();
         Ok(())

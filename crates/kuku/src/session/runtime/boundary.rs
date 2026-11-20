@@ -1,15 +1,20 @@
 use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
 
 use crate::event::{EventPayload, EventStore};
 use crate::execution::OutputReference;
 use crate::{Error, Result};
 
 use super::record::{timestamp, AgentState, QueuedDelivery, Record, State};
-use super::{AgentConfig, AgentStatus, InputSource, InputTiming, Session, UsageTotals};
+use super::{
+    AgentConfig, AgentStatus, InputSource, InputStatus, InputTiming, Session, UsageTotals,
+};
 
 pub(super) struct TurnWork {
     pub(super) config: AgentConfig,
     pub(super) text: String,
+    pub(super) skip_user_message: bool,
+    pub(super) resume_input_turn: Option<u64>,
     pub(super) source: InputSource,
     pub(super) reply: Option<(String, bool)>,
     pub(super) execution: u64,
@@ -69,7 +74,11 @@ impl Session {
             return Ok(None);
         };
         let source = first.input.source.clone();
-        self.accept(state, address, inputs, Some(turn))?;
+        let message_input_ids = inputs
+            .iter()
+            .map(|entry| entry.input.command_id.clone())
+            .collect::<Vec<_>>();
+        self.accept(state, address, inputs, Some(turn), &message_input_ids)?;
         EventStore::open(self.events_path())?.append(EventPayload::MessageUser {
             turn,
             ts: timestamp()?,
@@ -154,6 +163,69 @@ impl Session {
             .last()
             .map(|entry| entry.input.source.clone())
             .unwrap_or_else(|| InputSource::Host("local".into()));
+        let mut source_turns = inputs
+            .iter()
+            .filter_map(|entry| entry.accepted_turn)
+            .collect::<HashSet<_>>();
+        if reply.is_some() {
+            source_turns.extend(turn);
+        }
+        let persisted_messages = user_message_texts(self.events_path(), address, &source_turns)?;
+        let (text, skip_user_message, resume_input_turn, message_input_ids) = if reply.is_some() {
+            let resume_input_turn = inputs.last().and_then(|entry| entry.accepted_turn).or(turn);
+            let text = resume_input_turn
+                .and_then(|source_turn| persisted_messages.get(&source_turn).cloned())
+                .unwrap_or_else(|| input_text(&inputs));
+            (text, true, resume_input_turn, Vec::new())
+        } else {
+            let mut prompt_inputs = Vec::new();
+            let mut message_input_ids = Vec::new();
+            for entry in &inputs {
+                match state.input_status(address, &entry.input.command_id)? {
+                    InputStatus::Queued => {
+                        prompt_inputs.push(entry.clone());
+                        message_input_ids.push(entry.input.command_id.clone());
+                    }
+                    InputStatus::Accepted => {
+                        let persisted = entry.accepted_turn.is_some_and(|source_turn| {
+                            persisted_messages.contains_key(&source_turn)
+                        });
+                        if !persisted {
+                            prompt_inputs.push(entry.clone());
+                            message_input_ids.push(entry.input.command_id.clone());
+                        }
+                    }
+                    InputStatus::Withdrawn => {
+                        return Err(Error::InvalidEventStream(format!(
+                            "agent '{address}': withdrawn input '{}' remains in its inbox",
+                            entry.input.command_id
+                        )))
+                    }
+                }
+            }
+            if prompt_inputs.is_empty() && !inputs.is_empty() {
+                let resume_input_turn = inputs.last().and_then(|entry| entry.accepted_turn);
+                if let Some(source_turn) = resume_input_turn {
+                    if let Some(text) = persisted_messages.get(&source_turn) {
+                        (text.clone(), true, Some(source_turn), Vec::new())
+                    } else {
+                        let message_input_ids = inputs
+                            .iter()
+                            .map(|entry| entry.input.command_id.clone())
+                            .collect();
+                        (input_text(&inputs), false, None, message_input_ids)
+                    }
+                } else {
+                    let message_input_ids = inputs
+                        .iter()
+                        .map(|entry| entry.input.command_id.clone())
+                        .collect();
+                    (input_text(&inputs), false, None, message_input_ids)
+                }
+            } else {
+                (input_text(&prompt_inputs), false, None, message_input_ids)
+            }
+        };
         let turn = if reply.is_some() {
             turn.ok_or_else(|| {
                 Error::InvalidEventStream(format!(
@@ -161,11 +233,13 @@ impl Session {
                 ))
             })?
         } else {
-            self.accept(&mut state, address, &inputs, None)?
+            self.accept(&mut state, address, &inputs, None, &message_input_ids)?
         };
         Ok(Some(TurnWork {
             config,
-            text: input_text(&inputs),
+            text,
+            skip_user_message,
+            resume_input_turn,
             source,
             skills: if reply.is_some() {
                 Vec::new()
@@ -215,6 +289,7 @@ impl Session {
         address: &str,
         entries: &[QueuedDelivery],
         turn: Option<u64>,
+        message_input_ids: &[String],
     ) -> Result<u64> {
         self.commit(
             state,
@@ -224,6 +299,7 @@ impl Session {
                     .iter()
                     .map(|entry| entry.input.command_id.clone())
                     .collect(),
+                message_input_ids: message_input_ids.to_vec(),
                 turn,
             },
         )
@@ -267,6 +343,39 @@ fn input_text(entries: &[QueuedDelivery]) -> String {
         .map(|entry| input_model_text(&entry.input.text, &entry.values))
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+fn user_message_texts(
+    events_path: &std::path::Path,
+    address: &str,
+    turns: &HashSet<u64>,
+) -> Result<HashMap<u64, String>> {
+    let mut after = 0;
+    let mut texts = HashMap::new();
+    if turns.is_empty() {
+        return Ok(texts);
+    }
+    loop {
+        let events = EventStore::read_page(events_path, after, 256)?;
+        if events.is_empty() {
+            break;
+        }
+        for event in events {
+            after = event.id;
+            if let EventPayload::MessageUser {
+                conversation,
+                turn: event_turn,
+                text: event_text,
+                ..
+            } = event.payload
+            {
+                if conversation == address && turns.contains(&event_turn) {
+                    texts.insert(event_turn, event_text);
+                }
+            }
+        }
+    }
+    Ok(texts)
 }
 
 pub(super) fn input_model_text<'a>(text: &'a str, values: &[OutputReference]) -> Cow<'a, str> {
