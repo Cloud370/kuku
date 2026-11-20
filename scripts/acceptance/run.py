@@ -717,7 +717,10 @@ def run_interactive(args, directory, record):
 
         version = checked([str(binary), "--version"], "installed-version", timeout=30, cwd=scratch_dir)
         record["binary"]["version"] = Path(version["log"]).read_text(encoding="utf-8").strip()
-        bridge = build_bridge()
+        bridge_source = build_bridge()
+        bridge = scratch_dir / f"interactive_pty{EXE}"
+        shutil.copy2(bridge_source, bridge)
+        record["bridge"] = config_record(bridge)
         command = [sys.executable, str(Path(__file__).with_name("interactive.py")), "--binary", str(binary),
                    "--bridge", str(bridge), "--directory", str(scratch_dir / "test")]
         if args.upgrade_from:
