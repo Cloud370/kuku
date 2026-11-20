@@ -59,9 +59,9 @@ impl Session {
                 Ok(()) => Ok(()),
                 Err(failure) => session.settle_worker_failure(&target, epoch, failure),
             };
-            let _ = complete.send(Some(
-                result.as_ref().map(|_| ()).map_err(ToString::to_string),
-            ));
+            let outcome = result.as_ref().map(|_| ()).map_err(ToString::to_string);
+            session.record_worker_outcome(&target, epoch, outcome.clone());
+            let _ = complete.send(Some(outcome));
             result
         });
         workers.insert(
@@ -566,5 +566,365 @@ impl Session {
             }
         }
         failure.map_or(Ok(()), Err)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use crate::config::{
+        ApiKey, Config, DiscoveryConfig, HandoffConfig, LogsConfig, PluginConfig, ProviderConfig,
+        ProviderFormat, ThinkLevel, TierConfig, UpdateConfig,
+    };
+    use crate::event::EventPayload;
+    use crate::{
+        AdapterFuture, AgentConfig, Error, ModelAdapter, ModelRequest, ModelStream, Session,
+    };
+    use tokio::sync::{watch, Notify};
+
+    use super::super::{AgentStatus, Input, SessionOptions, Worker};
+    use super::Record;
+
+    #[derive(Debug)]
+    struct GatedModel {
+        started: Arc<Notify>,
+        resume: Arc<Notify>,
+    }
+
+    impl ModelAdapter for GatedModel {
+        fn stream(&self, _request: ModelRequest) -> AdapterFuture<'_, ModelStream> {
+            let started = self.started.clone();
+            let resume = self.resume.clone();
+            Box::pin(async move {
+                started.notify_one();
+                resume.notified().await;
+                Err(Error::InvalidEventStream("fixture provider failure".into()))
+            })
+        }
+    }
+
+    fn model_config() -> Config {
+        let mut tiers = BTreeMap::new();
+        tiers.insert(
+            "balanced".into(),
+            TierConfig {
+                provider: "openai".into(),
+                model: "runtime-test".into(),
+                think: ThinkLevel::Off,
+                reasoning_effort: None,
+                service_tier: None,
+                context_window: 8192,
+                max_output_tokens: Some(128),
+                purpose: "balanced".into(),
+            },
+        );
+        let providers = BTreeMap::from([(
+            "openai".into(),
+            ProviderConfig {
+                format: ProviderFormat::OpenAiChat,
+                base_url: "https://example.invalid/v1".into(),
+                api_key: ApiKey::Plaintext("test".into()),
+                options: Default::default(),
+            },
+        )]);
+        Config {
+            tiers,
+            providers,
+            default_tier: "balanced".into(),
+            discovery: DiscoveryConfig::default(),
+            handoff: HandoffConfig::default(),
+            logs: LogsConfig::default(),
+            plugin: PluginConfig::default(),
+            update: UpdateConfig::default(),
+        }
+    }
+
+    async fn session_with_agent() -> (tempfile::TempDir, Session) {
+        let directory = tempfile::tempdir().unwrap();
+        let config = Config {
+            tiers: BTreeMap::new(),
+            providers: BTreeMap::new(),
+            default_tier: String::new(),
+            discovery: DiscoveryConfig::default(),
+            handoff: HandoffConfig::default(),
+            logs: LogsConfig::default(),
+            plugin: PluginConfig::default(),
+            update: UpdateConfig::default(),
+        };
+        let options = SessionOptions::new(directory.path(), directory.path().join("data"), config);
+        let session = Session::open(options).await.unwrap();
+        let mut state = session.inner.state.lock().unwrap();
+        session
+            .commit(
+                &mut state,
+                Record::AgentCreated {
+                    command_id: "create-main".into(),
+                    fingerprint: String::new(),
+                    address: "main".into(),
+                    config: AgentConfig::default(),
+                },
+            )
+            .unwrap();
+        drop(state);
+        (directory, session)
+    }
+
+    async fn running_session() -> (tempfile::TempDir, Session, u64) {
+        let (directory, session) = session_with_agent().await;
+        let epoch = 17;
+        let mut state = session.inner.state.lock().unwrap();
+        session
+            .commit(
+                &mut state,
+                Record::ExecutionStarted {
+                    address: "main".into(),
+                },
+            )
+            .unwrap();
+        state.agent_mut("main").unwrap().active_epoch = Some(epoch);
+        drop(state);
+        (directory, session, epoch)
+    }
+
+    #[tokio::test]
+    async fn wait_for_agent_returns_snapshot_when_agent_is_idle() {
+        let (_directory, session) = session_with_agent().await;
+        let snapshot = session.wait_for_agent("main").await.unwrap();
+        assert_eq!(AgentStatus::Idle, snapshot.status);
+        session.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn wait_for_agent_reports_missing_or_empty_worker_completion() {
+        let (_directory, session, _) = running_session().await;
+        let missing = session.wait_for_agent("main").await.unwrap_err();
+        assert!(missing
+            .to_string()
+            .contains("running agent has no active worker"));
+        session.close().await.unwrap();
+
+        let (_directory, session, epoch) = running_session().await;
+        let (cancel, _) = watch::channel(false);
+        let (complete, done) = watch::channel(None);
+        let join = tokio::spawn(async { Ok::<(), Error>(()) });
+        drop(complete);
+        session.inner.workers.lock().unwrap().insert(
+            epoch,
+            Worker {
+                address: "main".into(),
+                cancel,
+                done,
+                join,
+            },
+        );
+
+        let empty = session.wait_for_agent("main").await.unwrap_err();
+        assert!(empty
+            .to_string()
+            .contains("agent worker ended without publishing a completion result"));
+        session.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn wait_for_agent_returns_a_typed_timeout() {
+        let (_directory, session, epoch) = running_session().await;
+        let (cancel, _) = watch::channel(false);
+        let (complete, done) = watch::channel(None);
+        let join = tokio::spawn(async { Ok::<(), Error>(()) });
+        session.inner.workers.lock().unwrap().insert(
+            epoch,
+            Worker {
+                address: "main".into(),
+                cancel,
+                done,
+                join,
+            },
+        );
+
+        let error = session
+            .wait_for_agent_with_timeout("main", Duration::from_millis(10))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::AgentWaitTimeout));
+        drop(complete);
+        session.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn wait_for_agent_surfaces_completed_error_after_terminal_state_and_worker_pruning() {
+        let (_directory, session, epoch) = running_session().await;
+        {
+            let mut state = session.inner.state.lock().unwrap();
+            session
+                .commit(
+                    &mut state,
+                    Record::TurnSettled {
+                        address: "main".into(),
+                        status: AgentStatus::Interrupted,
+                        output: None,
+                        error: Some("worker cleanup failure".into()),
+                        turn: None,
+                        usage: Default::default(),
+                    },
+                )
+                .unwrap();
+            state.agent_mut("main").unwrap().active_epoch = None;
+        }
+        let (cancel, _) = watch::channel(false);
+        let (complete, done) = watch::channel(Some(Err("worker cleanup failure".into())));
+        drop(complete);
+        let join = tokio::spawn(async {
+            Err::<(), _>(Error::InvalidEventStream("worker cleanup failure".into()))
+        });
+        session.record_worker_outcome("main", epoch, Err("worker cleanup failure".into()));
+        session.inner.workers.lock().unwrap().insert(
+            epoch,
+            Worker {
+                address: "main".into(),
+                cancel,
+                done,
+                join,
+            },
+        );
+
+        assert_eq!(
+            AgentStatus::Interrupted,
+            session.agent("main").unwrap().status
+        );
+        let error = session.wait_for_agent("main").await.unwrap_err();
+        assert!(error.to_string().contains("worker cleanup failure"));
+
+        let worker = session
+            .inner
+            .workers
+            .lock()
+            .unwrap()
+            .remove(&epoch)
+            .unwrap();
+        let _ = worker.join.await;
+        let error = session.wait_for_agent("main").await.unwrap_err();
+        assert!(error.to_string().contains("worker cleanup failure"));
+        session.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn wait_for_agent_uses_newer_success_instead_of_stale_worker_failure() {
+        let (_directory, session, epoch) = running_session().await;
+        {
+            let mut state = session.inner.state.lock().unwrap();
+            session
+                .commit(
+                    &mut state,
+                    Record::TurnSettled {
+                        address: "main".into(),
+                        status: AgentStatus::Idle,
+                        output: None,
+                        error: None,
+                        turn: None,
+                        usage: Default::default(),
+                    },
+                )
+                .unwrap();
+            state.agent_mut("main").unwrap().active_epoch = None;
+        }
+        session.record_worker_outcome("main", epoch - 1, Err("stale worker failure".into()));
+        let (cancel, _) = watch::channel(false);
+        let (complete, done) = watch::channel(Some(Ok(())));
+        drop(complete);
+        let join = tokio::spawn(async { Ok::<(), Error>(()) });
+        session.inner.workers.lock().unwrap().insert(
+            epoch,
+            Worker {
+                address: "main".into(),
+                cancel,
+                done,
+                join,
+            },
+        );
+
+        let snapshot = session.wait_for_agent("main").await.unwrap();
+        assert_eq!(AgentStatus::Idle, snapshot.status);
+
+        session.record_worker_outcome("main", epoch, Ok(()));
+        session.record_worker_outcome("main", epoch - 1, Err("late stale failure".into()));
+        let worker = session
+            .inner
+            .workers
+            .lock()
+            .unwrap()
+            .remove(&epoch)
+            .unwrap();
+        let _ = worker.join.await;
+
+        let snapshot = session.wait_for_agent("main").await.unwrap();
+        assert_eq!(AgentStatus::Idle, snapshot.status);
+        session.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn poisoned_writer_failure_reaches_waiter_through_production_worker() {
+        let directory = tempfile::tempdir().unwrap();
+        let started = Arc::new(Notify::new());
+        let resume = Arc::new(Notify::new());
+        let mut options = SessionOptions::new(
+            directory.path(),
+            directory.path().join("data"),
+            model_config(),
+        );
+        options.model_adapter = Some(Arc::new(GatedModel {
+            started: started.clone(),
+            resume: resume.clone(),
+        }));
+        let session = Session::open(options).await.unwrap();
+        session
+            .create_agent("create-main", "main", AgentConfig::default())
+            .unwrap();
+        session
+            .send(Input::new("request", "main", "finish the task"))
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(2), started.notified())
+            .await
+            .expect("production worker did not reach the model adapter");
+        session
+            .inner
+            .writer
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .fail_next_write_for_test();
+        resume.notify_one();
+
+        let waiter = tokio::time::timeout(Duration::from_secs(2), session.wait_for_agent("main"))
+            .await
+            .expect("waiter did not return promptly");
+        let error = waiter.unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("injected event journal write failure"));
+        assert_eq!(AgentStatus::Running, session.agent("main").unwrap().status);
+
+        let close_error = session.close().await.unwrap_err();
+        assert!(close_error
+            .to_string()
+            .contains("injected event journal write failure"));
+        assert_eq!(AgentStatus::Running, session.agent("main").unwrap().status);
+        let events = session.events(0, 256).unwrap();
+        assert!(!events.iter().any(|event| matches!(
+            &event.payload,
+            EventPayload::TurnCompleted { conversation, .. }
+                | EventPayload::TurnCancelled { conversation, .. }
+                | EventPayload::TurnInterrupted { conversation, .. }
+                if conversation == "main"
+        ) || matches!(
+            &event.payload,
+            EventPayload::Unknown(value)
+                if value["kind"] == "runtime.operation"
+                    && value["record"]["operation"] == "turn_settled"
+        )));
     }
 }

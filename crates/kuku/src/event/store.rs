@@ -90,6 +90,8 @@ struct Writer {
     committed_len: u64,
     last_id: u64,
     poison: Option<String>,
+    #[cfg(test)]
+    fail_next_write: bool,
 }
 
 struct LockedJournal {
@@ -151,6 +153,8 @@ impl Writer {
             committed_len,
             last_id,
             poison: None,
+            #[cfg(test)]
+            fail_next_write: false,
         })
     }
 
@@ -166,12 +170,25 @@ impl Writer {
     }
 
     fn commit(&mut self, path: &Path, event_id: u64, record: &[u8]) -> Result<()> {
+        #[cfg(test)]
+        let injected_failure = if self.fail_next_write {
+            self.fail_next_write = false;
+            Some(io::Error::other("injected event journal write failure"))
+        } else {
+            None
+        };
+        #[cfg(not(test))]
+        let injected_failure: Option<io::Error> = None;
         let file = &mut self.journal.as_mut().unwrap().file;
-        if let Err(error) = file
-            .seek(SeekFrom::Start(self.committed_len))
-            .and_then(|_| file.write_all(record))
-            .and_then(|()| fs_sync::sync_file(file))
-        {
+        let result = injected_failure.map_or_else(
+            || {
+                file.seek(SeekFrom::Start(self.committed_len))
+                    .and_then(|_| file.write_all(record))
+                    .and_then(|()| fs_sync::sync_file(file))
+            },
+            Err,
+        );
+        if let Err(error) = result {
             self.poison = Some(error.to_string());
             return Err(io::Error::new(
                 error.kind(),
@@ -313,6 +330,11 @@ impl EventStore {
         drop(writer);
         self.changed().notify_waiters();
         Ok(event)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_write_for_test(&self) {
+        self.inner.writer.lock().unwrap().fail_next_write = true;
     }
 
     /// Read committed events after an ID, capped at 256 records and a 1 MiB page target.
