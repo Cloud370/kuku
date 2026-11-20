@@ -4,26 +4,37 @@ use super::{App, PendingItem, PendingStage, RewindDraft};
 use crate::jobs::Job;
 use crate::menu::{Choice, ChoiceKind, PickerKind, RewindHistory};
 use crate::text::{shorten, single_line};
-use crate::transcript::HistoryRequest;
+use crate::transcript::{HistoryRequest, MAX_BODY_BYTES, MAX_RECORDS};
+
+pub(super) enum RewindWindow {
+    Recent,
+    Earlier,
+}
 
 impl App {
     pub(crate) fn open_rewind_picker(&mut self) {
         let selection = self.selection();
-        let next_before = self.pane().transcript.rewind_before();
+        let mut next_before = self.pane().transcript.rewind_before();
         let mut messages = self.pane().transcript.rewind_messages(&self.active.agent);
         messages.sort_by_key(|(event_id, _, _)| *event_id);
-        let choices = messages
+        let selected = messages.last().map(|(event_id, _, _)| *event_id);
+        let mut choices = messages
             .into_iter()
             .map(|(event_id, turn, text)| rewind_choice(event_id, turn, text))
             .collect();
+        let window_limited = bound_rewind_choices(&mut choices, selected, RewindWindow::Recent);
+        if window_limited {
+            next_before = choices.first().and_then(rewind_event_id);
+        }
         let picker = self.picker(PickerKind::Rewind, choices);
         picker.rewind_history = Some(RewindHistory {
             selection,
             next_before,
             pending_before: None,
+            window_limited,
         });
         picker.selected = picker.choice_count().saturating_sub(1);
-        picker.header = rewind_history_header(next_before, false).into();
+        picker.header = rewind_history_header(next_before, false, window_limited);
     }
 
     pub(crate) fn rewind_picker_current(&mut self, ticket: u64) -> bool {
@@ -142,8 +153,9 @@ impl App {
         };
         history.pending_before = Some(before);
         let selection = history.selection.clone();
+        let window_limited = history.window_limited;
         let ticket = picker.begin_search();
-        picker.header = rewind_history_header(Some(before), true).into();
+        picker.header = rewind_history_header(Some(before), true, window_limited);
         self.effects
             .push(Job::RewindHistory(selection, ticket, before));
     }
@@ -161,12 +173,56 @@ pub(super) fn rewind_choice(event_id: u64, turn: u64, text: String) -> Choice {
     )
 }
 
-pub(super) fn rewind_history_header(next_before: Option<u64>, loading: bool) -> &'static str {
-    if loading {
+pub(super) fn rewind_history_header(
+    next_before: Option<u64>,
+    loading: bool,
+    window_limited: bool,
+) -> String {
+    let status = if loading {
         "Loading earlier messages…"
     } else if next_before.is_some() {
         "↑ at the top loads earlier messages"
     } else {
         "All earlier messages loaded"
+    };
+    if window_limited {
+        format!("{status}\nHistory window limit reached · reopen rewind for recent messages")
+    } else {
+        status.into()
+    }
+}
+
+pub(super) fn bound_rewind_choices(
+    choices: &mut Vec<Choice>,
+    selected: Option<u64>,
+    window: RewindWindow,
+) -> bool {
+    let mut bytes: usize = choices.iter().map(rewind_text_bytes).sum();
+    let mut limited = false;
+    while choices.len() > MAX_RECORDS || bytes > MAX_RECORDS * MAX_BODY_BYTES {
+        let removable = |choice: &Choice| rewind_event_id(choice) != selected;
+        let index = match window {
+            RewindWindow::Recent => choices.iter().position(removable),
+            RewindWindow::Earlier => choices.iter().rposition(removable),
+        }
+        // NOTE: Opening choices use bounded transcript bodies; later selections come from this already bounded window.
+        .expect("the selected message fits the rewind window");
+        bytes -= rewind_text_bytes(&choices.remove(index));
+        limited = true;
+    }
+    limited
+}
+
+fn rewind_event_id(choice: &Choice) -> Option<u64> {
+    match choice.kind {
+        ChoiceKind::RewindMessage { event_id, .. } => Some(event_id),
+        _ => None,
+    }
+}
+
+fn rewind_text_bytes(choice: &Choice) -> usize {
+    match &choice.kind {
+        ChoiceKind::RewindMessage { text, .. } => text.len(),
+        _ => 0,
     }
 }

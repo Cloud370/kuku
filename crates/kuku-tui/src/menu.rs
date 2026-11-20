@@ -547,6 +547,7 @@ pub(crate) struct RewindHistory {
     pub(crate) selection: Selection,
     pub(crate) next_before: Option<u64>,
     pub(crate) pending_before: Option<u64>,
+    pub(crate) window_limited: bool,
 }
 
 #[derive(Debug)]

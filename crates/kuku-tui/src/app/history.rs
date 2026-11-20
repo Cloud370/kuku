@@ -6,7 +6,7 @@ use crate::jobs::{Job, Selection};
 use crate::menu::{ChoiceKind, Ticket};
 use crate::transcript::{HistoryRequest, RewindGroupRequest};
 
-use super::rewind::{rewind_choice, rewind_history_header};
+use super::rewind::{bound_rewind_choices, rewind_choice, rewind_history_header, RewindWindow};
 use super::App;
 
 impl App {
@@ -37,17 +37,25 @@ impl App {
         match result {
             Ok(page) if page.next_before.is_none_or(|next| next < before) => {
                 history.next_before = page.next_before;
-                picker.header = rewind_history_header(page.next_before, false).into();
+                let next_before = history.next_before;
                 picker.problem = None;
-                merge_rewind_page(picker, page, before, &selection.target.agent);
+                let limited = merge_rewind_page(picker, page, before, &selection.target.agent);
+                let history = picker
+                    .rewind_history
+                    .as_mut()
+                    .expect("rewind history exists");
+                history.window_limited |= limited;
+                picker.header = rewind_history_header(next_before, false, history.window_limited);
             }
             Ok(_) => {
                 picker.problem = Some("History did not advance · ↑ at the top retries".into());
-                picker.header = rewind_history_header(history.next_before, false).into();
+                picker.header =
+                    rewind_history_header(history.next_before, false, history.window_limited);
             }
             Err(error) => {
                 picker.problem = Some(format!("History · {error} · ↑ at the top retries"));
-                picker.header = rewind_history_header(history.next_before, false).into();
+                picker.header =
+                    rewind_history_header(history.next_before, false, history.window_limited);
             }
         }
     }
@@ -97,7 +105,7 @@ fn merge_rewind_page(
     page: HistoryPage,
     before: u64,
     agent: &str,
-) {
+) -> bool {
     let selected = match picker.selected_choice() {
         Some(ChoiceKind::RewindMessage { event_id, .. }) => Some(event_id),
         _ => None,
@@ -125,10 +133,12 @@ fn merge_rewind_page(
             .entry(entry.id)
             .or_insert_with(|| rewind_choice(entry.id, turn, entry.text.unwrap_or_default()));
     }
-    let choices: Vec<_> = choices.into_values().collect();
+    let mut choices: Vec<_> = choices.into_values().collect();
+    let limited = bound_rewind_choices(&mut choices, selected, RewindWindow::Earlier);
     let selected = selected
         .and_then(|selected| choices.iter().position(|choice| matches!(choice.kind, ChoiceKind::RewindMessage { event_id, .. } if event_id == selected)))
         .unwrap_or_else(|| choices.len().saturating_sub(1));
     picker.set_local(choices);
     picker.selected = selected;
+    limited
 }

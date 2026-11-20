@@ -43,9 +43,9 @@ use self::window::{Layout, RenderCache, Window};
 
 pub(crate) const HISTORY_PAGE: usize = 48;
 pub(crate) const REWIND_GROUP_PAGE: usize = 12;
-const MAX_RECORDS: usize = HISTORY_PAGE * 3;
+pub(crate) const MAX_RECORDS: usize = HISTORY_PAGE * 3;
 const MAX_LIVE_RECORDS: usize = 32;
-const MAX_BODY_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_BODY_BYTES: usize = 64 * 1024;
 const MAX_BACKTRACK_PAGES: usize = 128;
 const MAX_VISUAL_ROWS: usize = 768;
 const DISPLAY_LIMIT_NOTICE: &str = "\n… Display limit reached";
