@@ -7,7 +7,7 @@ use kuku::util::private_directory;
 use kuku_client::ConnectionOptions;
 use toml_edit::{value, DocumentMut};
 
-use super::{save, save_with_hook, stage_key_with_sync, Settings};
+use super::{save, save_with_hook, save_with_lookup, stage_key_with_sync, Settings};
 use crate::setup::state::SetupState;
 use crate::setup::{should_offer_setup, CredentialSource};
 
@@ -62,6 +62,45 @@ async fn missing_default_file_credential_reopens_with_current_route_and_preserve
     ));
     assert_eq!("balanced-model", state.model.text());
     assert_eq!(original, fs::read_to_string(config).unwrap());
+}
+
+#[tokio::test]
+async fn first_run_uses_managed_data_dir_for_kuku_home_references() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("custom.toml");
+    let missing_key = directory.path().join("missing.credential");
+    let data_dir = directory.path().join("service-data");
+    let mut document: DocumentMut = INLINE_CONFIG.parse().unwrap();
+    document["provider"]["anthropic"]["api_key"] = value(format!("file:{}", missing_key.display()));
+    let original = format!("{document}\n[discovery]\nextra_user_paths = [\"$KUKU_HOME\"]\n");
+    fs::write(&config, original).unwrap();
+    let environment = |name: &str| match name {
+        "KUKU_HOME" => Err(std::env::VarError::NotPresent),
+        _ => std::env::var(name),
+    };
+
+    let settings = Settings::load_for_first_run_with_lookup(
+        options(directory.path(), Some(config.clone())),
+        &environment,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+
+    assert_eq!(
+        vec![data_dir.clone()],
+        settings.raw.discovery.as_ref().unwrap().extra_user_paths
+    );
+    assert!(!settings.default_route_credential_available());
+    let mut state = SetupState::new(&settings);
+    state.credential_source = CredentialSource::StoredKey;
+    state
+        .stored_key
+        .set_text("fixture-only-not-a-real-key".into());
+    save_with_lookup(&settings, &state, &environment, || {}).unwrap();
+    assert!(fs::read_to_string(config)
+        .unwrap()
+        .contains("extra_user_paths = [\"$KUKU_HOME\"]"));
 }
 
 #[tokio::test]

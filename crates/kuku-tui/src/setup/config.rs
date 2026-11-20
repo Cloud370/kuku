@@ -1,15 +1,17 @@
+use std::env::VarError;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use kuku::config::{generate_default, load_config, parse_config_text, ApiKey, Config, ConfigFile};
+use super::state::{valid_env_name, valid_stored_key, SetupState};
+use super::{ConnectionChoice, CredentialSource, ProviderPreset};
+use kuku::config::{generate_default, parse_config_text_with_env, ApiKey, Config, ConfigFile};
 use kuku::util::{is_valid_private_key, private_directory, sync_private_file};
 use kuku_client::ConnectionOptions;
 use tempfile::{Builder, NamedTempFile};
 use toml_edit::{value, DocumentMut, InlineTable, Item, Table, Value};
 
-use super::state::{valid_env_name, valid_stored_key, SetupState};
-use super::{ConnectionChoice, CredentialSource, ProviderPreset};
+type EnvironmentLookup<'a> = &'a dyn Fn(&str) -> Result<String, VarError>;
 
 pub(super) struct Settings {
     pub(super) config_path: PathBuf,
@@ -28,6 +30,14 @@ pub(super) struct Settings {
 
 impl Settings {
     pub(super) async fn load(options: ConnectionOptions) -> io::Result<Self> {
+        let environment = |name: &str| std::env::var(name);
+        Self::load_with_lookup(options, &environment).await
+    }
+
+    async fn load_with_lookup(
+        options: ConnectionOptions,
+        environment: EnvironmentLookup<'_>,
+    ) -> io::Result<Self> {
         let service = options
             .local_service()
             .map_err(|_| invalid_config("cannot resolve local service paths"))?;
@@ -39,10 +49,18 @@ impl Settings {
             .as_ref()
             .and_then(|connection| connection.status().config_path.as_deref())
             .map(PathBuf::from);
-        Self::load_with_status(options, active_config)
+        Self::load_with_status(options, active_config, environment)
     }
 
     pub(super) async fn load_for_first_run(options: ConnectionOptions) -> io::Result<Option<Self>> {
+        let environment = |name: &str| std::env::var(name);
+        Self::load_for_first_run_with_lookup(options, &environment).await
+    }
+
+    async fn load_for_first_run_with_lookup(
+        options: ConnectionOptions,
+        environment: EnvironmentLookup<'_>,
+    ) -> io::Result<Option<Self>> {
         let Ok(service) = options.local_service() else {
             return Ok(None);
         };
@@ -53,7 +71,7 @@ impl Settings {
         if !super::service_is_idle(status) {
             return Ok(None);
         }
-        let settings = Self::load_with_status(options, None)?;
+        let settings = Self::load_with_status(options, None, environment)?;
         if super::should_offer_setup(
             Ok(false),
             settings.existing,
@@ -68,6 +86,7 @@ impl Settings {
     fn load_with_status(
         options: ConnectionOptions,
         active_config: Option<PathBuf>,
+        environment: EnvironmentLookup<'_>,
     ) -> io::Result<Self> {
         let service = options
             .local_service()
@@ -87,7 +106,7 @@ impl Settings {
             .workspace()
             .map_err(|_| invalid_config("cannot resolve the workspace path"))?;
         let credentials_dir = data_dir.join("credentials");
-        let loaded = load_document(&config_path)?;
+        let loaded = load_document(&config_path, &data_dir, environment)?;
         let default_tier = loaded
             .raw
             .default_model
@@ -312,7 +331,28 @@ struct LoadedDocument {
     existing: bool,
 }
 
-fn load_document(path: &Path) -> io::Result<LoadedDocument> {
+fn parse_service_config(
+    raw: &str,
+    data_dir: &Path,
+    environment: EnvironmentLookup<'_>,
+) -> Result<ConfigFile, kuku::Error> {
+    parse_config_text_with_env(raw, |name| {
+        if name == "KUKU_HOME" {
+            data_dir
+                .to_str()
+                .map(str::to_owned)
+                .ok_or_else(|| VarError::NotUnicode(data_dir.as_os_str().to_os_string()))
+        } else {
+            environment(name)
+        }
+    })
+}
+
+fn load_document(
+    path: &Path,
+    data_dir: &Path,
+    environment: EnvironmentLookup<'_>,
+) -> io::Result<LoadedDocument> {
     let original_bytes = match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
             Some(fs::read(path).map_err(|_| invalid_config("cannot read the configuration file"))?)
@@ -331,7 +371,7 @@ fn load_document(path: &Path) -> io::Result<LoadedDocument> {
         let document = contents
             .parse::<DocumentMut>()
             .map_err(|_| invalid_config("the existing configuration is invalid"))?;
-        let raw = load_config(path)
+        let raw = parse_service_config(contents, data_dir, environment)
             .map_err(|_| invalid_config("the existing configuration is invalid"))?;
         let resolved = raw
             .resolve()
@@ -370,6 +410,16 @@ pub(super) fn save(settings: &Settings, state: &SetupState) -> io::Result<()> {
 fn save_with_hook(
     settings: &Settings,
     state: &SetupState,
+    before_compare: impl FnOnce(),
+) -> io::Result<()> {
+    let environment = |name: &str| std::env::var(name);
+    save_with_lookup(settings, state, &environment, before_compare)
+}
+
+fn save_with_lookup(
+    settings: &Settings,
+    state: &SetupState,
+    environment: EnvironmentLookup<'_>,
     before_compare: impl FnOnce(),
 ) -> io::Result<()> {
     let model = state
@@ -522,7 +572,7 @@ fn save_with_hook(
     }
 
     let output = document.to_string();
-    let validated: ConfigFile = parse_config_text(&output)
+    let validated: ConfigFile = parse_service_config(&output, &settings.data_dir, environment)
         .map_err(|_| invalid_config("the edited configuration is invalid"))?;
     validated
         .resolve()
