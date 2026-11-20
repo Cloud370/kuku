@@ -38,7 +38,6 @@ pub(super) fn wrap_scope(width: usize) -> Option<Vec<Line<'static>>> {
     }
     Some(lines)
 }
-
 pub(super) fn render_model_default_confirmation(
     frame: &mut Frame<'_>,
     inner: Rect,
