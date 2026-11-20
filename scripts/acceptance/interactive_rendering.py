@@ -10,6 +10,29 @@ from urllib.parse import urlencode
 
 from interactive_fixture import InstalledClient, Response, StreamPause, eventually
 
+RUNNING_STATUS_ROWS_FROM_BOTTOM = 6
+
+
+def rendered_running_transcript(screen, height, markers):
+    rows = screen.splitlines()
+    status_row = height - RUNNING_STATUS_ROWS_FROM_BOTTOM
+    return (
+        len(rows) == height
+        and status_row >= 0
+        and "To main · Running tools" in rows[status_row]
+        and all(marker in screen for marker in markers)
+    )
+
+
+def page_up_after_rendered_resize(terminal, read_while, height, markers):
+    screen = read_while(
+        terminal,
+        lambda value: rendered_running_transcript(value, height, markers),
+        f"the rendered {height}-row running transcript before PageUp",
+    )
+    terminal.press("\x1b[5~")
+    return screen
+
 
 def has_standalone_assistant_rail(frame):
     assistant_row = next(
@@ -52,9 +75,20 @@ def queued_input_click_position(screen, text):
 def click_queued_input(terminal, screen, text):
     position = queued_input_click_position(screen, text)
     if position is None:
-        raise AssertionError("Queued input is not visible in the pending-input panel")
+        raise AssertionError(
+            "Queued input is not visible in the pending-input panel; "
+            "target row unavailable; no click coordinates were sent"
+        )
     row, column = position
     terminal.press(f"\x1b[<0;{column};{row}M\x1b[<0;{column};{row}m")
+    return row, column
+
+
+def queued_input_click_context(row, column):
+    return (
+        f"Queued input target row: {row}\n"
+        f"Mouse click coordinates (column, row; 1-based): ({column}, {row})"
+    )
 
 
 def has_selected_queued_input(screen, text):
@@ -471,11 +505,16 @@ def check_agent_reading_position(client, terminal):
                 "discarded input to remain queued in its delivery row",
                 lambda frame: queued_row_contains(frame, discarded),
             )
-        click_queued_input(terminal, screen, discarded)
-        eventually_screen(
-            "mouse to focus the discarded queued input",
-            lambda frame: has_selected_queued_input(frame, discarded),
-        )
+        click_row, click_column = click_queued_input(terminal, screen, discarded)
+        try:
+            eventually_screen(
+                "mouse to focus the discarded queued input",
+                lambda frame: has_selected_queued_input(frame, discarded),
+            )
+        except AssertionError as error:
+            raise AssertionError(
+                f"{error}\n{queued_input_click_context(click_row, click_column)}"
+            ) from error
         terminal.press("\x1b[3~")
 
         def withdrawn_from_pending(screen):
