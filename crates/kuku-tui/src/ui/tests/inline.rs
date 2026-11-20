@@ -14,6 +14,7 @@ use crate::menu::{PickerKind, PromptKind};
 
 fn queued_state(app: &App, count: usize) -> Box<kuku_client::Snapshot> {
     let mut state = snapshot(app, "running", json!(null), json!(null));
+    state.cursor = 60 + count as u64;
     for index in 0..count {
         let id = format!("queue-{index}");
         let mut input = Input::new(id.clone(), "main", format!("queued text {index}"));

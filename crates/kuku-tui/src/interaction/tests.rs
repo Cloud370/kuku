@@ -252,11 +252,10 @@ fn naming_a_paste_before_any_prompt_saves_text_and_attaches_the_exact_reference(
             if text == "Review the attached facts" && *values == [reference])));
 }
 
-#[test]
-fn queued_input_is_selected_inline_after_its_receipt_appears_in_snapshot() {
+fn queued_receipt_before_snapshot(text: &str) -> (App, Box<kuku_client::Snapshot>) {
     let mut app = connected_app();
     app.pane_mut().exists = true;
-    app.paste("queued text");
+    app.paste(text);
     app.send(Timing::NextTurn);
     let Some(Job::Save(command)) = app.effects.pop() else {
         panic!("queued input should be locally pending");
@@ -275,11 +274,7 @@ fn queued_input_is_selected_inline_after_its_receipt_appears_in_snapshot() {
             warnings: Vec::new(),
         }),
     ));
-    press(&mut app, KeyCode::Up);
-    assert!(app.modal.is_none());
-    assert!(matches!(app.pane().keyboard_focus, KeyboardFocus::Composer));
-    let input_id = command.command_id.clone();
-    let mut input = Input::new(input_id.clone(), "main", "queued text");
+    let mut input = Input::new(command.command_id, "main", text);
     input.source = InputSource::Host("http".into());
     input.timing = InputTiming::NextTurn;
     let snapshot = serde_json::from_value(json!({
@@ -290,17 +285,89 @@ fn queued_input_is_selected_inline_after_its_receipt_appears_in_snapshot() {
         "pending":[{"receipt":receipt,"input":input}]
     }))
     .unwrap();
-    let selection = app.selection();
-    app.update(Update::Refreshed(selection, Ok(Box::new(snapshot))));
+    (app, Box::new(snapshot))
+}
+
+#[test]
+fn queued_input_edit_waits_for_complete_text_in_the_receipt_snapshot() {
+    let text = format!("{} complete queued input", "x".repeat(10_000));
+    let (mut app, snapshot) = queued_receipt_before_snapshot(&text);
+    let input_id = snapshot.pending[0].receipt.command_id.clone();
+    let mut terminal = Terminal::new(TestBackend::new(92, 26)).unwrap();
+    draw(&mut app, &mut terminal);
+    assert!(app.delivery_hits.iter().any(|(_, id)| id == &input_id));
     press(&mut app, KeyCode::Up);
     assert!(matches!(app.pane().keyboard_focus, KeyboardFocus::Queue));
+    assert!(!app.pane().deliveries.rows()[0]
+        .text
+        .contains("complete queued input"));
+    press(&mut app, KeyCode::Enter);
+    assert!(app.modal.is_none());
+    assert!(app.effects.iter().any(|job| matches!(job, Job::Refresh(_))));
+    app.update(Update::Refreshed(app.selection(), Ok(snapshot)));
     assert_eq!(
         Some(input_id.as_str()),
         app.pane().selected_queue_input.as_deref()
     );
-    press(&mut app, KeyCode::Enter);
     assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
-        if matches!(prompt.kind, PromptKind::QueuedInput { .. }) && prompt.editor.text() == "queued text"));
+        if matches!(prompt.kind, PromptKind::QueuedInput { .. }) && prompt.editor.text() == text));
+}
+
+#[test]
+fn deferred_queued_input_actions_do_not_survive_cancel_draft_edits_or_target_changes() {
+    enum Invalidation {
+        Escape,
+        Draft,
+        Target,
+        Consumed,
+    }
+    for invalidation in [
+        Invalidation::Escape,
+        Invalidation::Draft,
+        Invalidation::Target,
+        Invalidation::Consumed,
+    ] {
+        let (mut app, mut snapshot) = queued_receipt_before_snapshot("queued text");
+        let mut selection = app.selection();
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Enter);
+        app.effects.clear();
+        match invalidation {
+            Invalidation::Escape => press(&mut app, KeyCode::Esc),
+            Invalidation::Draft => app.paste("new independent draft"),
+            Invalidation::Target => {
+                let original = app.active.clone();
+                let address =
+                    crate::app::Address::new(app.active.session.clone(), "reviewer".into());
+                app.select(address, true, "Reviewer".into());
+                app.select(original, true, "Main".into());
+                selection = app.selection();
+            }
+            Invalidation::Consumed => {
+                snapshot.cursor += 1;
+                snapshot.pending.clear();
+                snapshot.agent.pending_inputs = 0;
+            }
+        }
+        app.update(Update::Refreshed(selection, Ok(snapshot)));
+        assert!(app.modal.is_none());
+        assert!(!app.effects.iter().any(|job| matches!(job, Job::Save(_))));
+        if matches!(invalidation, Invalidation::Draft) {
+            assert_eq!("new independent draft", app.pane().draft.text());
+        }
+    }
+}
+
+#[test]
+fn deferred_queued_withdrawal_uses_the_refreshed_input_identity() {
+    let (mut app, snapshot) = queued_receipt_before_snapshot("queued text");
+    let id = snapshot.pending[0].receipt.command_id.clone();
+    press(&mut app, KeyCode::Up);
+    press(&mut app, KeyCode::Delete);
+    app.effects.clear();
+    app.update(Update::Refreshed(app.selection(), Ok(snapshot)));
+    assert!(app.effects.iter().any(|job| matches!(job, Job::Save(command)
+        if matches!(&command.action, Action::Withdraw { input_command_id } if input_command_id == &id))));
 }
 
 #[test]

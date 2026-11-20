@@ -39,8 +39,8 @@ pub(crate) use activity::{Activity, ServiceStatus, SubmissionStatus};
 use activity::{ExecutionProgress, Watch};
 use agents::AgentActivities;
 pub(crate) use background_jobs::JobCommand;
-use delivery::Deliveries;
-pub(crate) use delivery::DeliveryRow;
+use delivery::{Deliveries, PendingQueueAction};
+pub(crate) use delivery::{DeliveryRow, QueueAction};
 use navigation::AgentNavigation;
 pub(crate) use notice::Notice;
 pub(crate) use pending::{PendingItem, PendingStage};
@@ -340,6 +340,7 @@ pub(crate) struct App {
     model_version: u64,
     pending_model_default: Option<PendingDefaultSave>,
     saving_model_default: Option<(u64, Selection)>,
+    pending_queue_action: Option<PendingQueueAction>,
     checking: VecDeque<String>,
     outstanding_checks: usize,
     quit_after_save: bool,
@@ -399,6 +400,7 @@ impl App {
             model_version: 0,
             pending_model_default: None,
             saving_model_default: None,
+            pending_queue_action: None,
             checking: VecDeque::new(),
             outstanding_checks: 0,
             quit_after_save: false,
@@ -647,6 +649,7 @@ impl App {
         }
         self.sync_pending_picker();
         self.sync_agent_picker();
+        self.resume_queue_action();
     }
 
     fn target(&self, address: &Address) -> Target {
