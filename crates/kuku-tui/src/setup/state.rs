@@ -1,5 +1,3 @@
-use std::env;
-
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use kuku::config::ApiKey;
 
@@ -24,6 +22,7 @@ pub(super) enum SetupStep {
 pub(super) enum ReviewAction {
     SaveAndContinue,
     SaveAndExit,
+    RepairCredential,
     Back,
     Cancel,
 }
@@ -33,6 +32,7 @@ impl ReviewAction {
         match self {
             Self::SaveAndContinue => "Save and continue",
             Self::SaveAndExit => "Save and exit",
+            Self::RepairCredential => "Paste API key",
             Self::Back => "Back",
             Self::Cancel => "Cancel",
         }
@@ -45,12 +45,14 @@ pub(super) struct SetupState {
     pub(super) step: SetupStep,
     pub(super) model: Editor,
     pub(super) environment: Editor,
+    pub(super) environment_detected: bool,
     pub(super) stored_key: Editor,
     pub(super) credential_source: CredentialSource,
     pub(super) review_selection: usize,
     pub(super) finish: Option<Finish>,
     pub(super) problem: Option<String>,
     saved_key_available: bool,
+    can_store_key: bool,
 }
 
 impl SetupState {
@@ -66,12 +68,14 @@ impl SetupState {
             step: SetupStep::Connection,
             model: Editor::default(),
             environment: Editor::default(),
+            environment_detected: false,
             stored_key: Editor::default(),
             credential_source: CredentialSource::Environment,
             review_selection: 0,
             finish: None,
             problem: None,
             saved_key_available: false,
+            can_store_key: settings.can_store_key(),
         };
         state.load_selection(settings);
         state
@@ -94,9 +98,7 @@ impl SetupState {
     }
 
     pub(super) fn environment_set(&self) -> bool {
-        self.environment_name()
-            .and_then(|name| env::var(name).ok())
-            .is_some_and(|value| !value.is_empty())
+        self.environment_detected
     }
 
     pub(super) fn stored_key_is_entered(&self) -> bool {
@@ -154,6 +156,11 @@ impl SetupState {
                     },
                     _ => return,
                 }
+                if self.step == SetupStep::Credential
+                    && self.credential_source == CredentialSource::Environment
+                {
+                    self.refresh_environment_detection();
+                }
                 self.problem = None;
             }
             _ => {}
@@ -183,6 +190,11 @@ impl SetupState {
             if let Some(editor) = self.editor_mut() {
                 editor.set_text(String::new());
             }
+            if self.step == SetupStep::Credential
+                && self.credential_source == CredentialSource::Environment
+            {
+                self.refresh_environment_detection();
+            }
             self.problem = None;
             return;
         }
@@ -208,6 +220,9 @@ impl SetupState {
                         return;
                     }
                     self.credential_source = source;
+                    if source == CredentialSource::Environment {
+                        self.refresh_environment_detection();
+                    }
                     self.review_selection = 0;
                     self.problem = None;
                 }
@@ -276,6 +291,9 @@ impl SetupState {
                 self.problem = None;
             }
             _ => {}
+        }
+        if self.credential_source == CredentialSource::Environment {
+            self.refresh_environment_detection();
         }
     }
 
@@ -353,6 +371,9 @@ impl SetupState {
             SetupStep::Credential => SetupStep::CredentialSource,
             SetupStep::Review => SetupStep::Credential,
         };
+        if self.credential_source == CredentialSource::Environment {
+            self.refresh_environment_detection();
+        }
     }
 
     fn change_choice(&mut self, direction: isize, settings: &Settings) {
@@ -369,6 +390,15 @@ impl SetupState {
         self.credential_source = settings.source_for(&choice);
         self.stored_key.set_text(String::new());
         self.saved_key_available = settings.saved_key_available(&choice);
+        self.refresh_environment_detection();
+    }
+
+    fn refresh_environment_detection(&mut self) {
+        self.environment_detected = self.environment_name().is_some_and(|name| {
+            ApiKey::Env(name)
+                .resolve()
+                .is_ok_and(|value| !value.trim().is_empty())
+        });
     }
 
     fn move_review(&mut self, direction: isize, mode: SetupMode) {
@@ -379,14 +409,20 @@ impl SetupState {
 
     pub(super) fn review_choices(&self, mode: SetupMode) -> Vec<ReviewAction> {
         let mut choices = Vec::new();
-        if mode == SetupMode::FirstRun && self.credential_ready() {
-            choices.push(ReviewAction::SaveAndContinue);
+        if mode == SetupMode::FirstRun {
+            if self.credential_ready() {
+                choices.push(ReviewAction::SaveAndContinue);
+            } else if self.can_store_key {
+                choices.push(ReviewAction::RepairCredential);
+            } else {
+                choices.push(ReviewAction::Back);
+            }
         }
-        choices.extend([
-            ReviewAction::SaveAndExit,
-            ReviewAction::Back,
-            ReviewAction::Cancel,
-        ]);
+        choices.push(ReviewAction::SaveAndExit);
+        if !choices.contains(&ReviewAction::Back) {
+            choices.push(ReviewAction::Back);
+        }
+        choices.push(ReviewAction::Cancel);
         choices
     }
 
@@ -400,6 +436,11 @@ impl SetupState {
         match action {
             ReviewAction::SaveAndContinue => self.finish = Some(Finish::SaveAndContinue),
             ReviewAction::SaveAndExit => self.finish = Some(Finish::SaveAndExit),
+            ReviewAction::RepairCredential => {
+                self.credential_source = CredentialSource::StoredKey;
+                self.step = SetupStep::Credential;
+                self.problem = None;
+            }
             ReviewAction::Back => self.previous(),
             ReviewAction::Cancel => self.finish = Some(Finish::Cancel),
         }
