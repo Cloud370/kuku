@@ -453,8 +453,8 @@ async fn native_unsigned_thinking_only_turn_reopens_without_replaying_thinking()
     first.assert_hits_async(1).await;
     first.delete_async().await;
     let events_path = session.events_path().to_path_buf();
-    let history_before_reopen = std::fs::read(&events_path).unwrap();
     session.close().await.unwrap();
+    let history_before_reopen = std::fs::read(&events_path).unwrap();
 
     let reopened = Session::open(anthropic_session_options(
         &server,
@@ -577,13 +577,13 @@ async fn reopened_native_session_rejects_passive_compatible_profile_change() {
     first.assert_hits_async(1).await;
     first.delete_async().await;
     let events_path = session.events_path().to_path_buf();
-    let history_before_flip = std::fs::read(&events_path).unwrap();
     let replay_before_flip = provider_replay_value(&EventStore::replay(&events_path).unwrap());
     assert_eq!(
         json!({"role":"assistant","content":[{"type":"text","text":"native answer"}]}),
         replay_before_flip
     );
     session.close().await.unwrap();
+    let history_before_flip = std::fs::read(&events_path).unwrap();
 
     let reopened = Session::open(anthropic_session_options(
         &server,
@@ -694,7 +694,6 @@ async fn reopened_compatible_session_rejects_passive_native_profile_change() {
     first.assert_hits_async(1).await;
     first.delete_async().await;
     let events_path = session.events_path().to_path_buf();
-    let history_before_flip = std::fs::read(&events_path).unwrap();
     let replay_before_flip = provider_replay_value(&EventStore::replay(&events_path).unwrap());
     assert_eq!(
         json!([
@@ -704,6 +703,7 @@ async fn reopened_compatible_session_rejects_passive_native_profile_change() {
         replay_before_flip["content"]
     );
     session.close().await.unwrap();
+    let history_before_flip = std::fs::read(&events_path).unwrap();
 
     let reopened = Session::open(anthropic_session_options(
         &server,

@@ -218,6 +218,29 @@ impl Writer {
         read_all(file.take(self.committed_len), path)
     }
 
+    #[cfg(feature = "test_support")]
+    fn committed_bytes(&mut self, path: &Path) -> Result<Vec<u8>> {
+        self.ensure_healthy(path)?;
+        let file = &mut self.journal.as_mut().unwrap().file;
+        let position = file.stream_position()?;
+        let result = (|| -> io::Result<Vec<u8>> {
+            file.seek(SeekFrom::Start(0))?;
+            let mut bytes = Vec::new();
+            (&mut *file)
+                .take(self.committed_len)
+                .read_to_end(&mut bytes)?;
+            if bytes.len() as u64 != self.committed_len {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "committed journal prefix was truncated",
+                ));
+            }
+            Ok(bytes)
+        })();
+        file.seek(SeekFrom::Start(position))?;
+        Ok(result?)
+    }
+
     fn read_after(&mut self, path: &Path, after: u64, limit: usize) -> Result<Vec<StoredEvent>> {
         self.ensure_healthy(path)?;
         if limit == 0 || after >= self.last_id {
@@ -423,6 +446,21 @@ impl EventStore {
         let _file_lock = acquire_file_lock(&path)?;
         let journal = LockedJournal::reader(&path)?;
         read_all(&journal.file, &path)
+    }
+
+    #[cfg(feature = "test_support")]
+    pub(crate) fn read_active_journal_for_test(path: &Path) -> Result<Vec<u8>> {
+        let path = fs::canonicalize(path)?;
+        let stores = registry().lock().unwrap();
+        let inner = find_active_store(&stores, &path).ok_or_else(|| {
+            Error::InvalidArgument(format!(
+                "event store {} has no active writer",
+                path.display()
+            ))
+        })?;
+        drop(stores);
+        let mut writer = inner.writer.lock().unwrap();
+        writer.committed_bytes(&path)
     }
 
     pub(crate) fn visit(&self, visit: impl FnMut(StoredEvent) -> Result<()>) -> Result<u64> {

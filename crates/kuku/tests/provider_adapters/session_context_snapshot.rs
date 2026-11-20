@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 
 use kuku::config::{ApiKey, ProviderAuth, ProviderProfile};
 use kuku::event::{EventPayload, EventStore, StoredEvent};
+use kuku::test_support::read_active_journal;
 use kuku::{AgentConfig, AgentSnapshot, AgentStatus, Input, Session, SessionOptions};
 
 use super::common;
@@ -245,7 +246,6 @@ async fn same_route_reopen_keeps_snapshot_segment_and_admitted_prefix() {
     );
     first.assert_hits_async(1).await;
     let events_path = session.events_path().to_path_buf();
-    let bytes_before = std::fs::read(&events_path).unwrap();
     let events_before = EventStore::replay(&events_path).unwrap();
     let segments_before = facts(&events_before, "runtime.context_segment");
     let admissions_before = facts(&events_before, "runtime.context_admitted");
@@ -256,6 +256,7 @@ async fn same_route_reopen_keeps_snapshot_segment_and_admitted_prefix() {
         segments_before[0]["route_selectors"]["query_connection"]
     );
     session.close().await.unwrap();
+    let bytes_before = std::fs::read(&events_path).unwrap();
 
     let reopened = Session::open(options).await.unwrap();
     let second_snapshot = send(
@@ -349,11 +350,11 @@ async fn assert_passive_profile_flip(
     );
     first.assert_hits_async(1).await;
     let events_path = session.events_path().to_path_buf();
-    let bytes_before = std::fs::read(&events_path).unwrap();
     let events_before = EventStore::replay(&events_path).unwrap();
     let segments_before = facts(&events_before, "runtime.context_segment");
     let admissions_before = facts(&events_before, "runtime.context_admitted");
     session.close().await.unwrap();
+    let bytes_before = std::fs::read(&events_path).unwrap();
 
     let changed_options = session_options(
         server, workspace, data, name, "route", &base_path, to, "test-key",
@@ -368,6 +369,7 @@ async fn assert_passive_profile_flip(
     .await;
     assert_interrupted_for_route_snapshot(&blocked_snapshot);
     blocked.assert_hits_async(0).await;
+    changed.close().await.unwrap();
     let bytes_after_block = std::fs::read(&events_path).unwrap();
     assert!(bytes_after_block.starts_with(&bytes_before));
     let events_after_block = EventStore::replay(&events_path).unwrap();
@@ -379,8 +381,6 @@ async fn assert_passive_profile_flip(
         admissions_before,
         facts(&events_after_block, "runtime.context_admitted")
     );
-    changed.close().await.unwrap();
-
     let restored = Session::open(original_options).await.unwrap();
     restored.advance("main").unwrap();
     let restored_snapshot = wait_for_output(&restored, "restored").await;
@@ -478,11 +478,11 @@ async fn passive_endpoint_change_is_rejected_before_dispatch() {
     );
     first.assert_hits_async(1).await;
     let events_path = session.events_path().to_path_buf();
-    let bytes_before = std::fs::read(&events_path).unwrap();
     let events_before = EventStore::replay(&events_path).unwrap();
     let segments_before = facts(&events_before, "runtime.context_segment");
     let admissions_before = facts(&events_before, "runtime.context_admitted");
     session.close().await.unwrap();
+    let bytes_before = std::fs::read(&events_path).unwrap();
 
     let changed_options = session_options(
         &server,
@@ -498,6 +498,7 @@ async fn passive_endpoint_change_is_rejected_before_dispatch() {
     let snapshot = send(&changed, "endpoint-change", "endpoint follow-up", None).await;
     assert_interrupted_for_route_snapshot(&snapshot);
     blocked.assert_hits_async(0).await;
+    changed.close().await.unwrap();
     let bytes_after = std::fs::read(&events_path).unwrap();
     assert!(bytes_after.starts_with(&bytes_before));
     let events_after = EventStore::replay(&events_path).unwrap();
@@ -509,7 +510,6 @@ async fn passive_endpoint_change_is_rejected_before_dispatch() {
         admissions_before,
         facts(&events_after, "runtime.context_admitted")
     );
-    changed.close().await.unwrap();
 }
 
 #[tokio::test]
@@ -653,11 +653,11 @@ async fn unrelated_agent_configuration_does_not_authorize_profile_drift() {
     );
     first.assert_hits_async(1).await;
     let events_path = session.events_path().to_path_buf();
-    let bytes_before = std::fs::read(&events_path).unwrap();
     let events_before = EventStore::replay(&events_path).unwrap();
     let segments_before = facts(&events_before, "runtime.context_segment");
     let admissions_before = facts(&events_before, "runtime.context_admitted");
     session.close().await.unwrap();
+    let bytes_before = std::fs::read(&events_path).unwrap();
 
     let changed_options = session_options(
         &server,
@@ -683,6 +683,7 @@ async fn unrelated_agent_configuration_does_not_authorize_profile_drift() {
     let snapshot = send(&changed, "follow-up", "unrelated configure follow-up", None).await;
     assert_interrupted_for_route_snapshot(&snapshot);
     blocked.assert_hits_async(0).await;
+    changed.close().await.unwrap();
     let bytes_after = std::fs::read(&events_path).unwrap();
     assert!(bytes_after.starts_with(&bytes_before));
     let events_after = EventStore::replay(&events_path).unwrap();
@@ -694,7 +695,6 @@ async fn unrelated_agent_configuration_does_not_authorize_profile_drift() {
         admissions_before,
         facts(&events_after, "runtime.context_admitted")
     );
-    changed.close().await.unwrap();
 }
 
 #[tokio::test]
@@ -780,7 +780,7 @@ async fn explicit_distinct_native_connection_creates_successor_without_unsigned_
     first.assert_hits_async(1).await;
     compatible_final.assert_hits_async(1).await;
     let events_path = session.events_path().to_path_buf();
-    let bytes_before = std::fs::read(&events_path).unwrap();
+    let bytes_before = read_active_journal(&events_path).unwrap();
     let events_before = EventStore::replay(&events_path).unwrap();
     let segments_before = facts(&events_before, "runtime.context_segment");
     let admissions_before = facts(&events_before, "runtime.context_admitted");

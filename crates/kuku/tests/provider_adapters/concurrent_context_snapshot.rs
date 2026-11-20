@@ -102,9 +102,8 @@ async fn concurrent_configuration_between_boundary_and_snapshot_reopens_on_new_r
         .unwrap();
     assert_eq!(created_id, segments[0]["configuration"].as_u64().unwrap());
     assert!(configured_id > segments[0]["configuration"].as_u64().unwrap());
-    let bytes_before = std::fs::read(&events_path).unwrap();
-
     session.close().await.unwrap();
+    let bytes_before = std::fs::read(&events_path).unwrap();
     drop(session);
 
     let mut reopened_options = session_options(

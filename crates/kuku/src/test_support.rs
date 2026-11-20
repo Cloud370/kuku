@@ -10,6 +10,11 @@ use serde_json::Value;
 
 const TOOL_OUTPUT: &str = "fixture-tool-output-42";
 
+/// Read exact committed journal bytes through an existing in-process writer.
+pub fn read_active_journal(path: &Path) -> crate::Result<Vec<u8>> {
+    crate::event::EventStore::read_active_journal_for_test(path)
+}
+
 struct RuntimeBoundaryPauseState {
     events_path: PathBuf,
     reached: Barrier,
