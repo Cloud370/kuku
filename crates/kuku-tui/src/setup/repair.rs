@@ -470,6 +470,8 @@ mod tests {
             1,
             old,
             Ok(PreparedCredentialRepair::Remote(FailedRoute {
+                protocol: kuku::config::ProviderFormat::Anthropic,
+                endpoint: "https://api.anthropic.com".parse().unwrap(),
                 connection: "old".into(),
                 model: "old".into(),
             })),

@@ -13,9 +13,9 @@ use toml_edit::{value, DocumentMut};
 
 use super::super::config::{save_credential, Settings};
 use super::{
-    authentication_failure, prepare, verify_failure, verify_restarted_service, verify_route,
-    CredentialRepairApplied, CredentialRepairPlan, FailedRoute, PreparedCredentialRepair,
-    SavedCredentialRepair,
+    authentication_failure, prepare, verify_config_route, verify_failure, verify_restarted_service,
+    verify_route, CredentialRepairApplied, CredentialRepairPlan, FailedRoute,
+    PreparedCredentialRepair, SavedCredentialRepair,
 };
 use crate::local_settings::ServiceIdentity;
 
@@ -93,6 +93,8 @@ fn credential_repair_revalidates_request_identity_and_the_actual_failed_route() 
     let mut snapshot = snapshot();
     let request = authentication_failure(&snapshot).unwrap();
     let route = FailedRoute {
+        protocol: kuku::config::ProviderFormat::Anthropic,
+        endpoint: "https://api.anthropic.com".parse().unwrap(),
         connection: "actual-failed-provider".into(),
         model: "actual-model".into(),
     };
@@ -193,13 +195,25 @@ async fn remote_and_token_connections_read_the_failed_route_without_writing_loca
         .await;
     let events = server
         .mock_async(|when, then| {
-            when.method(GET).path("/sessions/session/events");
+            when.method(GET).path("/sessions/session/events").query_param("after", "6");
             then.status(200).json_body(json!({"events":[
             {"id":9,"kind":"runtime.step_prepared","agent":"main","turn":7,
-             "request_id":"req-1","connection":"older-failed-route","model":"older-model"},
+             "request_id":"req-1","connection":"older-failed-route","model":"older-model","segment":7},
             {"id":10,"kind":"runtime.step_prepared","agent":"main","turn":7,
-             "request_id":"req-1","connection":"actual-failed-provider","model":"actual-model"}
+             "request_id":"req-1","connection":"actual-failed-provider","model":"actual-model","segment":8}
         ],"next_after":20}));
+        })
+        .await;
+    let segment = server
+        .mock_async(|when, then| {
+            when.method(GET)
+                .path("/sessions/session/events")
+                .query_param("after", "7");
+            then.status(200).json_body(json!({"events":[
+            {"id":8,"kind":"runtime.context_segment","agent":"main",
+             "connection":"actual-failed-provider","model":"actual-model",
+             "protocol":"anthropic","endpoint":"https://api.anthropic.com"}
+        ],"next_after":8}));
         })
         .await;
     let directory = tempfile::tempdir().unwrap();
@@ -230,6 +244,7 @@ async fn remote_and_token_connections_read_the_failed_route_without_writing_loca
     }
     snapshot.assert_hits_async(2).await;
     events.assert_hits_async(2).await;
+    segment.assert_hits_async(2).await;
 }
 
 #[test]
@@ -256,6 +271,8 @@ fn busy_service_keeps_the_saved_state_and_requires_an_explicit_restart_action() 
             service: service.clone(),
             request,
             route: FailedRoute {
+                protocol: kuku::config::ProviderFormat::Anthropic,
+                endpoint: "https://api.anthropic.com".parse().unwrap(),
                 connection: "anthropic".into(),
                 model: "fixture-model".into(),
             },
@@ -310,4 +327,38 @@ fn restart_confirmation_uses_the_returned_instance_even_when_its_endpoint_change
     assert!(verify_restarted_service(&saved, &after).is_ok());
     after.config_path = directory.path().join("another.toml");
     assert!(verify_restarted_service(&saved, &after).is_err());
+}
+
+#[test]
+fn the_same_connection_name_cannot_hide_a_changed_endpoint_or_protocol() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut settings = settings(directory.path(), generate_default());
+    let provider = &settings.resolved.providers["anthropic"];
+    let route = FailedRoute {
+        connection: "anthropic".into(),
+        model: "fixture-model".into(),
+        endpoint: provider.base_url.parse().unwrap(),
+        protocol: provider.format,
+    };
+    assert!(verify_config_route(&settings, &route).is_ok());
+    settings
+        .resolved
+        .providers
+        .get_mut("anthropic")
+        .unwrap()
+        .base_url = "https://changed.invalid".into();
+    assert!(verify_config_route(&settings, &route).is_err());
+    settings
+        .resolved
+        .providers
+        .get_mut("anthropic")
+        .unwrap()
+        .base_url = route.endpoint.as_str().into();
+    settings
+        .resolved
+        .providers
+        .get_mut("anthropic")
+        .unwrap()
+        .format = kuku::config::ProviderFormat::OpenAiResponses;
+    assert!(verify_config_route(&settings, &route).is_err());
 }

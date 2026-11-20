@@ -2,6 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use kuku::config::ProviderFormat;
 use kuku::event::EventPayload;
 use kuku_client::local::RestartOutcome;
 use kuku_client::{
@@ -9,6 +10,7 @@ use kuku_client::{
     Snapshot, Target,
 };
 use sha2::{Digest, Sha256};
+use url::Url;
 
 use crate::local_settings::{
     active_service, ensure_same_service, service_identity, ServiceIdentity,
@@ -18,6 +20,7 @@ use super::config::{save_credential, Settings};
 
 const CHANGED: &str =
     "The failed request, model, or local service changed; reopen credential repair.";
+const ROUTE_UNAVAILABLE: &str = "The failed request has no complete recorded route. Inspect the service connection settings on its host before retrying; no credential was saved.";
 const SAVE_FAILED: &str = "The credential could not be saved. No settings were changed; reopen credential repair and try again.";
 const SAVED_NOT_APPLIED: &str = "Credentials were saved, but application to this Session is not confirmed. No request was retried.";
 
@@ -32,6 +35,8 @@ pub(crate) struct CredentialRepairRequest {
 pub(crate) struct FailedRoute {
     pub(crate) connection: String,
     pub(crate) model: String,
+    pub(crate) protocol: ProviderFormat,
+    pub(crate) endpoint: Url,
 }
 
 pub(crate) struct CredentialRepairPlan {
@@ -112,6 +117,7 @@ pub(crate) async fn prepare(
     if !settings.can_store_key() || !settings.resolved.providers.contains_key(&route.connection) {
         return Err("Private credential storage is unavailable for this connection. Correct the service configuration on its host and restart it before retrying.".into());
     }
+    verify_config_route(&settings, &route)?;
     let current = active_service(options, Some(connection))
         .await
         .map_err(|_| CHANGED)?;
@@ -145,6 +151,7 @@ pub(crate) async fn save(
         .map_err(|_| CHANGED)?;
     verify_failure(&snapshot, &plan.request)?;
     verify_route(&snapshot, &plan.route)?;
+    verify_config_route(&plan.settings, &plan.route)?;
     let service = plan.service.clone();
     let config_sha256 = tokio::task::spawn_blocking(move || {
         save_credential(&plan.settings, &plan.route.connection, &key)
@@ -235,7 +242,9 @@ fn verify_failure(snapshot: &Snapshot, request: &CredentialRepairRequest) -> Res
 
 fn verify_route(snapshot: &Snapshot, route: &FailedRoute) -> Result<(), String> {
     let same_route = |selection: &kuku_client::AgentSelection| {
-        selection.connection == route.connection && selection.model == route.model
+        selection.connection == route.connection
+            && selection.model == route.model
+            && selection.protocol == route.protocol
     };
     if !snapshot.selection.as_ref().is_some_and(same_route)
         || snapshot
@@ -243,6 +252,19 @@ fn verify_route(snapshot: &Snapshot, route: &FailedRoute) -> Result<(), String> 
             .as_ref()
             .is_some_and(|selection| !same_route(selection))
     {
+        return Err(CHANGED.into());
+    }
+    Ok(())
+}
+
+fn verify_config_route(settings: &Settings, route: &FailedRoute) -> Result<(), String> {
+    let provider = settings
+        .resolved
+        .providers
+        .get(&route.connection)
+        .ok_or(CHANGED)?;
+    let endpoint = Url::parse(&provider.base_url).map_err(|_| CHANGED)?;
+    if provider.format != route.protocol || endpoint != route.endpoint {
         return Err(CHANGED.into());
     }
     Ok(())
@@ -277,10 +299,17 @@ async fn failed_route(
                 && record["turn"] == request.turn
                 && record["request_id"] == request.request_id
             {
-                selected = Some(FailedRoute {
-                    connection: record["connection"].as_str().ok_or(CHANGED)?.to_owned(),
-                    model: record["model"].as_str().ok_or(CHANGED)?.to_owned(),
-                });
+                selected = Some((
+                    record["connection"]
+                        .as_str()
+                        .ok_or(ROUTE_UNAVAILABLE)?
+                        .to_owned(),
+                    record["model"]
+                        .as_str()
+                        .ok_or(ROUTE_UNAVAILABLE)?
+                        .to_owned(),
+                    record["segment"].as_u64().ok_or(ROUTE_UNAVAILABLE)?,
+                ));
             }
         }
         if page.next_after <= after {
@@ -288,7 +317,46 @@ async fn failed_route(
         }
         after = page.next_after;
     }
-    selected.ok_or_else(|| CHANGED.to_owned())
+    let (name, model, segment) = selected.ok_or(ROUTE_UNAVAILABLE)?;
+    let page = connection
+        .client
+        .events(
+            &request.target.workspace,
+            &request.target.session_id,
+            Some(&request.target.agent),
+            segment.saturating_sub(1),
+            1,
+        )
+        .await
+        .map_err(|_| ROUTE_UNAVAILABLE)?;
+    let record = page
+        .events
+        .into_iter()
+        .find_map(|event| match event.payload {
+            EventPayload::Unknown(record)
+                if event.id == segment
+                    && record["kind"] == "runtime.context_segment"
+                    && record["agent"] == request.target.agent
+                    && record["connection"] == name
+                    && record["model"] == model =>
+            {
+                Some(record)
+            }
+            _ => None,
+        })
+        .ok_or(ROUTE_UNAVAILABLE)?;
+    let protocol = match record["protocol"].as_str().ok_or(ROUTE_UNAVAILABLE)? {
+        "openai-compatible" => ProviderFormat::OpenAiChat,
+        protocol => protocol.parse().map_err(|_| ROUTE_UNAVAILABLE)?,
+    };
+    let endpoint = Url::parse(record["endpoint"].as_str().ok_or(ROUTE_UNAVAILABLE)?)
+        .map_err(|_| ROUTE_UNAVAILABLE)?;
+    Ok(FailedRoute {
+        connection: name,
+        model,
+        protocol,
+        endpoint,
+    })
 }
 
 #[cfg(test)]
