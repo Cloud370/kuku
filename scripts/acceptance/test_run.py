@@ -413,6 +413,25 @@ class AcceptanceTests(unittest.TestCase):
             self.assertEqual(env["CARGO_TARGET_DIR"], str(ACCEPTANCE.ROOT / "target"))
             self.assertEqual(os.environ["CARGO_TARGET_DIR"], "/shared-target")
 
+    def test_workspace_cargo_output_preserves_the_native_helper_identity(self):
+        profile = {"opt_level": "0", "debuginfo": 2, "test": True}
+        helper = {"reason": "compiler-artifact", "executable": "/build/native-helper",
+                  "target": {"name": "interactive_pty", "kind": ["test"]},
+                  "profile": profile, "features": ["default"], "fresh": True}
+        application = {"reason": "compiler-artifact", "executable": "/build/kuku",
+                       "target": {"name": "kuku", "kind": ["bin"]}}
+        log = self.directory / "cargo.log"
+        log.write_text("\n".join(json.dumps(item) for item in (helper, application)))
+        self.assertEqual(ACCEPTANCE.pty_artifact(log), Path(helper["executable"]))
+        self.assertEqual(ACCEPTANCE.pty_build(log), helper)
+
+    def test_cargo_binary_cannot_be_used_as_the_native_helper(self):
+        log = self.directory / "cargo.log"
+        log.write_text(json.dumps({"reason": "compiler-artifact", "executable": "/build/decoy",
+                                  "target": {"name": "interactive_pty", "kind": ["bin"]}}))
+        with self.assertRaisesRegex(ValueError, "native PTY test helper"):
+            ACCEPTANCE.pty_artifact(log)
+
     def test_release_archives_only_extract_the_binary(self):
         source = self.directory / "source"
         source.write_bytes(b"installed executable")

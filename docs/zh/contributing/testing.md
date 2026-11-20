@@ -14,6 +14,8 @@ python3 scripts/acceptance/run.py integration
 
 `contract` 启用 `kuku/test_support`，运行 workspace 测试，包含受 feature 控制的运行时套件、共享客户端和 TUI 测试。`protocol` 选择 provider 适配、配置、错误、集成、追踪及缓存通知固定输入，无需付费请求。`integration` 依次执行只读格式检查、启用测试 feature 的 workspace／all-target Clippy 和 `contract`。CI 在 Linux、macOS 和 Windows 运行相同的契约测试与安装终端场景，保留有界证据。Web CI 另运行安装浏览器场景。真实模型调用和 Linux benchmark 容器需要在本地明确选择。
 
+两个 CI workflow 都运行目标为 `main` 或 `feat/interactive-clients` 的 PR，以及推送到 `main` 的提交。核心 CI checkout PR 源分支 head；WebUI CI 保留 GitHub 的 PR merge-ref checkout。记录实际提交／工作树，只有 tree 相同时才复用源 head 的证据。其他分支的推送需要通过 PR 触发 WebUI 检查。同一 PR 的新运行会取消旧运行。Rust 缓存在失败后保留依赖并报告精确命中；Cargo 仍验证构建指纹，所有已选择的检查照常运行。PTY helper 使用与契约测试相同的 workspace／`kuku/test_support` feature 解析，记录编译器报告的 feature、profile 和缓存复用状态。从源码安装时，受测应用仍为嵌入 Web 资源的 release 构建。
+
 选择入口将 `CARGO_TARGET_DIR` 固定为当前 checkout 的 `target/`，不改变宿主环境。每个 worktree 使用独立 target，即使串行构建也不共享：workspace 产物可能错误复用另一源码树的缓存。本地 target 可以使用第三方依赖缓存作为种子，但首次构建前先执行一次 `cargo clean --target-dir target -p kuku -p kuku-cli -p kuku-server -p kuku-client -p kuku-tui -p kuku-app` 清除 workspace 产物。记录提交／工作树、target 目录、feature、profile 和二进制 hash；共享 target 构建的冻结二进制本身不能证明对应的源码版本。
 
 编辑时使用针对性检查，在运行时集成批次收尾执行一次所需 Rust 集成检查。等价的直接命令为：

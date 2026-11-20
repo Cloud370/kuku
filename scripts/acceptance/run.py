@@ -570,7 +570,7 @@ def extract_release_binary(archive, binary):
     binary.chmod(0o755)
 
 
-def pty_artifact(log):
+def pty_build(log):
     for line in reversed(Path(log).read_text(encoding="utf-8").splitlines()):
         try:
             message = json.loads(line)
@@ -579,8 +579,12 @@ def pty_artifact(log):
         if message.get("reason") == "compiler-artifact" and message.get("executable"):
             target = message["target"]
             if target["name"] == "interactive_pty" and "test" in target["kind"]:
-                return Path(message["executable"])
+                return message
     raise ValueError("Cargo did not report the compiled native PTY test helper")
+
+
+def pty_artifact(log):
+    return Path(pty_build(log)["executable"])
 
 
 def verify_desktop_report(report, record):
@@ -683,9 +687,12 @@ def run_interactive(args, directory, record):
         return require_success(result)
 
     def build_bridge():
-        compiled = checked(["cargo", "test", "--locked", "-p", "kuku-app", "--test", "interactive_pty",
+        compiled = checked(["cargo", "test", "--locked", "--workspace", "--features", "kuku/test_support",
+                            "--test", "interactive_pty",
                             "--no-run", "--message-format=json"], "native-pty-build")
-        return pty_artifact(compiled["log"])
+        artifact = pty_build(compiled["log"])
+        record["bridge_build"] = {key: artifact[key] for key in ("features", "profile", "fresh")}
+        return Path(artifact["executable"])
 
     with scratch_directory(scratch, record, prefix="kuku-interactive-") as scratch_dir:
         if args.live or args.intent:
