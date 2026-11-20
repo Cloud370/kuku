@@ -231,11 +231,39 @@ pub(super) fn prepare(pending: &mut PendingRun) -> Result<PreparedContext> {
         },
     )?;
     let current_input = if pending.query.skip_user_message {
+        let source_turn = pending.query.resume_input_turn.unwrap_or(pending.turn);
+        let input_is_present = messages.iter().any(|admitted| {
+            admitted.origin == MessageOrigin::Input
+                && (admitted.turn == pending.turn || admitted.turn == source_turn)
+        });
+        let admitted_at = if input_is_present {
+            0
+        } else {
+            EventStore::replay(&pending.events_path)?
+                .into_iter()
+                .find_map(|event| {
+                    let EventPayload::MessageUser {
+                        turn,
+                        conversation,
+                        text,
+                        ..
+                    } = &event.payload
+                    else {
+                        return None;
+                    };
+                    (*turn == source_turn
+                        && conversation == pending.conversation.as_str()
+                        && text == &pending.query.prompt)
+                        .then_some(event.id)
+                })
+                .unwrap_or(cursor.after)
+        };
         resumed_current_input(
             &mut messages,
             pending.turn,
             pending.query.resume_input_turn,
             &pending.query.prompt,
+            admitted_at,
         )
     } else {
         messages.iter().rposition(|admitted| {
@@ -804,6 +832,7 @@ fn resumed_current_input(
     current_turn: u64,
     source_turn: Option<u64>,
     prompt: &str,
+    admitted_at: u64,
 ) -> Option<usize> {
     if let Some(index) = messages.iter().rposition(|admitted| {
         admitted.turn == current_turn && admitted.origin == MessageOrigin::Input
@@ -822,6 +851,7 @@ fn resumed_current_input(
         turn,
         origin: MessageOrigin::Input,
         message: CanonicalMessage::user_text(prompt.to_owned()),
+        admitted_at,
     });
     Some(messages.len() - 1)
 }

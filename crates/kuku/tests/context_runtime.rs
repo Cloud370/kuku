@@ -509,23 +509,6 @@ async fn unconfirmed_runtime_suffix_can_be_replaced_before_a_retried_preparation
     );
     session.advance("main").unwrap();
     idle(&session, "main").await;
-    let admissions = facts(
-        &session.events(0, 256).unwrap(),
-        "runtime.context_admitted",
-        "main",
-    );
-    for ordinal in [2, 3, 4] {
-        let versions = admissions
-            .iter()
-            .filter(|value| value["segment"] == segment && value["ordinal"] == ordinal)
-            .collect::<Vec<_>>();
-        assert_eq!(2, versions.len());
-        if ordinal < 4 {
-            assert_eq!(versions[0]["message"], versions[1]["message"]);
-        } else {
-            assert_ne!(versions[0]["message"], versions[1]["message"]);
-        }
-    }
     session.close().await.unwrap();
     let session = Session::open(original).await.unwrap();
     session
@@ -535,6 +518,15 @@ async fn unconfirmed_runtime_suffix_can_be_replaced_before_a_retried_preparation
     session.close().await.unwrap();
     model.assert_hits_async(3).await;
     let bodies = common::take_http_requests(&path);
+    assert_eq!(
+        1,
+        bodies[1]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|message| message.to_string().contains("retry-input"))
+            .count()
+    );
     assert!(bodies[2]["messages"]
         .as_array()
         .unwrap()

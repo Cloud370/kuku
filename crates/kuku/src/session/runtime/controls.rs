@@ -774,7 +774,7 @@ mod rewind_guard_tests {
                 },
             )
             .unwrap();
-        let make_delivery = |id: &str, text: &str| QueuedDelivery {
+        let make_delivery = |id: &str, text: &str, accepted_turn: Option<u64>| QueuedDelivery {
             queued_at: 1,
             receipt: Receipt {
                 command_id: id.into(),
@@ -783,10 +783,11 @@ mod rewind_guard_tests {
             },
             input: crate::session::runtime::Input::new(id, "main", text),
             values: Vec::new(),
+            accepted_turn,
         };
         state.agents.get_mut("main").unwrap().accepted = vec![
-            make_delivery("rewound", "rewound prompt"),
-            make_delivery("unrelated", "keep this input"),
+            make_delivery("rewound", "rewound prompt", Some(1)),
+            make_delivery("unrelated", "keep this input", Some(1)),
         ];
         state
             .reduce(
@@ -833,13 +834,14 @@ mod rewind_guard_tests {
             .get_mut("main")
             .unwrap()
             .inbox
-            .push_back(make_delivery("new", "new prompt"));
+            .push_back(make_delivery("new", "new prompt", None));
         state
             .reduce(
                 4,
                 Record::InputsAccepted {
                     address: "main".into(),
                     input_ids: vec!["new".into()],
+                    message_input_ids: Vec::new(),
                     turn: Some(2),
                 },
             )
@@ -857,6 +859,7 @@ mod rewind_guard_tests {
         let accepted = Record::InputsAccepted {
             address: "main".into(),
             input_ids: vec!["rewound".into()],
+            message_input_ids: vec!["rewound".into()],
             turn: Some(1),
         };
         let events = vec![
@@ -879,7 +882,7 @@ mod rewind_guard_tests {
         let removed = rewind_input_ids(&events, "main", 2);
         assert_eq!(BTreeSet::from(["rewound".into()]), removed);
 
-        let make_delivery = |id: &str| QueuedDelivery {
+        let make_delivery = |id: &str, accepted_turn: Option<u64>| QueuedDelivery {
             queued_at: 3,
             receipt: Receipt {
                 command_id: id.into(),
@@ -888,10 +891,11 @@ mod rewind_guard_tests {
             },
             input: crate::session::runtime::Input::new(id, "main", "same prompt"),
             values: Vec::new(),
+            accepted_turn,
         };
         let mut agent = idle_agent();
-        agent.accepted.push(make_delivery("rewound"));
-        agent.inbox.push_back(make_delivery("unrelated"));
+        agent.accepted.push(make_delivery("rewound", Some(1)));
+        agent.inbox.push_back(make_delivery("unrelated", None));
         assert!(rewind_blocked_except(&agent, &removed));
         assert_eq!("unrelated", agent.inbox.front().unwrap().input.command_id);
     }
