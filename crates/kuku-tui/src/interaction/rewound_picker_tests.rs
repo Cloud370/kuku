@@ -236,6 +236,7 @@ fn messages_revalidates_group_selection_and_routes_retry_and_more() {
     let Some(Modal::Picker(picker)) = app.modal.as_ref() else {
         panic!("Messages picker expected")
     };
+    let ticket = picker.ticket.id;
     let Some(choice) = picker
         .visible_choices()
         .into_iter()
@@ -257,7 +258,7 @@ fn messages_revalidates_group_selection_and_routes_retry_and_more() {
         rewind_event_id,
         action,
     };
-    app.choose(PickerKind::Messages, stale);
+    app.choose(PickerKind::Messages, stale, ticket);
     assert!(!app
         .effects
         .iter()

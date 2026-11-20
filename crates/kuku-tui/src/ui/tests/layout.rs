@@ -1,9 +1,10 @@
+use crossterm::event::{Event, KeyCode, KeyModifiers};
 use ratatui::style::Modifier;
 use ratatui::{backend::TestBackend, Terminal};
 
 use crate::menu::{Choice, PickerKind};
 
-use super::{app, cell, render};
+use super::{app, cell, click, key, render};
 
 #[test]
 fn spacious_composer_and_picker_use_responsive_insets() {
@@ -29,4 +30,42 @@ fn spacious_composer_and_picker_use_responsive_insets() {
     assert_ne!(frame.buffer[(x, y)].bg, frame.buffer[(x - 1, y)].bg);
     assert!(!frame.buffer[(x, y)].modifier.contains(Modifier::DIM));
     assert!(frame.buffer[(0, 0)].modifier.contains(Modifier::DIM));
+}
+
+#[test]
+fn composer_click_places_the_caret_in_scrolled_and_wrapped_unicode_text() {
+    let mut app = app();
+    let mut terminal = Terminal::new(TestBackend::new(30, 20)).unwrap();
+    let prefix = "earlier\n".repeat(6) + &"x".repeat(24);
+    app.pane_mut()
+        .draft
+        .insert(&format!("{prefix}中文e\u{301}👨‍👩‍👧‍👦end"));
+    let buffer = terminal
+        .draw(|frame| render(frame, &mut app))
+        .unwrap()
+        .buffer;
+    let (x, y) = cell(buffer, "中");
+    assert!(y > app.composer_area.y);
+    app.event(
+        Event::Resize(buffer.area.width, buffer.area.height + 8),
+        buffer,
+    );
+    app.event(Event::Resize(buffer.area.width, buffer.area.height), buffer);
+    click(&mut app, buffer, (x + 1, y));
+    key(&mut app, KeyCode::Char('!'), KeyModifiers::NONE);
+    assert_eq!(
+        app.pane().draft.text(),
+        format!("{prefix}!中文e\u{301}👨‍👩‍👧‍👦end")
+    );
+    let buffer = terminal
+        .draw(|frame| render(frame, &mut app))
+        .unwrap()
+        .buffer;
+    let point = cell(buffer, "👨‍👩‍👧‍👦");
+    click(&mut app, buffer, point);
+    key(&mut app, KeyCode::Char('?'), KeyModifiers::NONE);
+    assert_eq!(
+        app.pane().draft.text(),
+        format!("{prefix}!中文e\u{301}?👨‍👩‍👧‍👦end")
+    );
 }

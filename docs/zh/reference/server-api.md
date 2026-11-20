@@ -14,6 +14,7 @@
 |---|---|---|
 | `GET` | `/health` | 构建与协议版本 |
 | `GET` | `/service/status` | 生效的服务身份与活动 |
+| `GET` | `/service/model-default-plan` | 根据受管服务配置验证仅本地写入的模型默认计划 |
 | `POST` | `/service/restart` | 请求受管服务释放 Session 后退出，以便正常替换 |
 | `POST` | `/service/browser-ticket` | 认证后签发一次性浏览器接入票据 |
 | `POST` | `/service/browser-session` | 在受管浏览器来源交换票据 |
@@ -34,6 +35,8 @@
 | `GET` | `/workspaces/resolve`、`/workspaces/files`、`/workspaces/skills` | 解析服务端路径，或查找工作区文件与 Skill |
 
 状态响应包含构建和协议版本、`instance_id`、`pid`、生效的 `data_dir` 和 `config_path`、`draining` 以及 `busy`。受管服务重启返回 `202` 表示已释放 writer，进程正在停止。`409` 和 `service_busy` 在 `busy` 列出正在进行的任务。受管客户端会等旧进程释放服务租约后启动替代进程。
+
+`GET /service/model-default-plan` 仅适用于存在活动配置文件的受管服务。它要求常规 Bearer 认证，并执行相同的回环主机和来源检查，响应包含 `Cache-Control: no-store`，只接受 `connection`、`model` 和 `config_sha256` 查询字段。服务在自身进程环境中读取活动配置并验证请求路由；`config_sha256` 必须与客户端持有的原始字节一致。响应只包含 `tier`、`overwrite_user_default` 和 `config_sha256`，不会写入文件、解析凭据或发送模型请求。客户端仍负责本地且带并发保护的配置编辑。配置已变化、路由不可用、服务非受管或配置不可读时，会返回不泄露敏感信息的通用错误。
 
 ## 命令与回执
 

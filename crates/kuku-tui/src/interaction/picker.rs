@@ -28,7 +28,8 @@ impl App {
             key if Shortcut::ENTER.matches(key) => {
                 if let Some(choice) = picker.selected_choice() {
                     let kind = picker.kind.clone();
-                    self.choose(kind, choice);
+                    let ticket = picker.ticket.id;
+                    self.choose(kind, choice, ticket);
                 }
             }
             key if Shortcut::TAB.matches(key) && picker.kind.completes_text() => {
@@ -44,18 +45,21 @@ impl App {
                     (PickerKind::Commands, Some(choice @ ChoiceKind::Skill(_)))
                     | (PickerKind::Paths(_), Some(choice @ ChoiceKind::Path(_))) => {
                         let kind = picker.kind.clone();
-                        self.choose(kind, choice);
+                        let ticket = picker.ticket.id;
+                        self.choose(kind, choice, ticket);
                     }
                     _ => {}
                 }
             }
             key if Shortcut::UP.matches(key) => picker.move_by(-1),
             key if Shortcut::DOWN.matches(key) => picker.move_by(1),
-            key if Shortcut::PAGE_UP.matches(key) && matches!(picker.kind, PickerKind::Server) => {
+            key if Shortcut::PAGE_UP.matches(key)
+                && matches!(picker.kind, PickerKind::Server | PickerKind::ModelDefault) =>
+            {
                 picker.header_top = picker.header_top.saturating_add_signed(-details_page);
             }
             key if Shortcut::PAGE_DOWN.matches(key)
-                && matches!(picker.kind, PickerKind::Server) =>
+                && matches!(picker.kind, PickerKind::Server | PickerKind::ModelDefault) =>
             {
                 picker.header_top = picker.header_top.saturating_add_signed(details_page);
             }

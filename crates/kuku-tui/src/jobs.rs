@@ -12,6 +12,7 @@ use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinSet};
 
 use crate::menu::{Choice, ChoiceKind, Ticket};
+use crate::model_default::{self, PreparedDefaultSave, ResolvedModel};
 use crate::output::OUTPUT_PAGE_BYTES;
 use crate::transcript::{HistoryRequest, RewindGroupRequest, HISTORY_PAGE, REWIND_GROUP_PAGE};
 
@@ -44,6 +45,16 @@ pub(crate) enum Job {
     RewindGroupHistory(Selection, RewindGroupRequest),
     Find(Ticket, Search),
     ClosePicker,
+    PrepareDefault {
+        ticket: u64,
+        selection: Selection,
+        route: ResolvedModel,
+    },
+    SaveDefault {
+        ticket: u64,
+        selection: Selection,
+        plan: PreparedDefaultSave,
+    },
     Save(Command),
     Send(Command),
     Check(Command),
@@ -76,6 +87,8 @@ pub(crate) enum Update {
         Result<RewindGroupPage, Error>,
     ),
     Found(Ticket, Result<(Vec<Choice>, String), Error>),
+    PreparedDefault(u64, Selection, Result<PreparedDefaultSave, String>),
+    SavedDefault(u64, Selection, Result<(), String>),
     Saved(Command, Result<(), Error>),
     Sent(String, Result<Acknowledgement, Error>),
     Checked(String, Result<Option<Acknowledgement>, Error>),
@@ -162,6 +175,36 @@ impl Jobs {
                 }));
             }
             Job::ClosePicker => Self::abort(&mut self.finder),
+            Job::PrepareDefault {
+                ticket,
+                selection,
+                route,
+            } => {
+                let options = self.options.clone();
+                let connection = self.connection.clone();
+                self.spawn(async move {
+                    Update::PreparedDefault(
+                        ticket,
+                        selection,
+                        model_default::prepare(&options, connection.as_ref(), route).await,
+                    )
+                });
+            }
+            Job::SaveDefault {
+                ticket,
+                selection,
+                plan,
+            } => {
+                let options = self.options.clone();
+                let connection = self.connection.clone();
+                self.spawn(async move {
+                    Update::SavedDefault(
+                        ticket,
+                        selection,
+                        model_default::save(&options, connection.as_ref(), plan).await,
+                    )
+                });
+            }
             Job::Restart => {
                 let options = self.options.clone();
                 self.spawn(async move { Update::Restarted(restart(&options).await) });
@@ -272,6 +315,9 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
         }
         Job::Model(config, version) => {
             Update::DefaultModel(version, client.resolve_model(&config).await)
+        }
+        Job::PrepareDefault { .. } | Job::SaveDefault { .. } => {
+            unreachable!("default-save jobs are handled before connected jobs")
         }
         Job::Output(selection, id, output_id, offset) => {
             let result = client
@@ -493,7 +539,10 @@ fn model_choices(catalog: ModelCatalog) -> (Vec<Choice>, String) {
     }
     (
         choices,
-        format!("Server default Tier: {}", catalog.default_tier),
+        format!(
+            "Default tier: {} · route choices are session-only; save the current route explicitly",
+            catalog.default_tier
+        ),
     )
 }
 

@@ -2,6 +2,7 @@ use std::path::PathBuf;
 mod activity;
 mod contextual;
 mod layout;
+mod model_default;
 mod reading;
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -100,42 +101,18 @@ fn cell(buffer: &Buffer, symbol: &str) -> (u16, u16) {
     buffer.pos_of(index)
 }
 
-#[test]
-fn composer_click_places_the_caret_in_scrolled_and_wrapped_unicode_text() {
-    let mut app = app();
-    let mut terminal = Terminal::new(TestBackend::new(30, 20)).unwrap();
-    let prefix = "earlier\n".repeat(6) + &"x".repeat(24);
-    app.pane_mut()
-        .draft
-        .insert(&format!("{prefix}中文e\u{301}👨‍👩‍👧‍👦end"));
-    let buffer = terminal
-        .draw(|frame| render(frame, &mut app))
-        .unwrap()
-        .buffer;
-    let (x, y) = cell(buffer, "中");
-    assert!(y > app.composer_area.y);
-    app.event(
-        Event::Resize(buffer.area.width, buffer.area.height + 8),
-        buffer,
-    );
-    app.event(Event::Resize(buffer.area.width, buffer.area.height), buffer);
-    click(&mut app, buffer, (x + 1, y));
-    key(&mut app, KeyCode::Char('!'), KeyModifiers::NONE);
-    assert_eq!(
-        app.pane().draft.text(),
-        format!("{prefix}!中文e\u{301}👨‍👩‍👧‍👦end")
-    );
-    let buffer = terminal
-        .draw(|frame| render(frame, &mut app))
-        .unwrap()
-        .buffer;
-    let point = cell(buffer, "👨‍👩‍👧‍👦");
-    click(&mut app, buffer, point);
-    key(&mut app, KeyCode::Char('?'), KeyModifiers::NONE);
-    assert_eq!(
-        app.pane().draft.text(),
-        format!("{prefix}!中文e\u{301}?👨‍👩‍👧‍👦end")
-    );
+fn text_position(buffer: &Buffer, text: &str) -> (u16, u16) {
+    let area = buffer.area;
+    for row in area.top()..area.bottom() {
+        let line = (area.left()..area.right())
+            .map(|column| buffer[(column, row)].symbol())
+            .collect::<String>();
+        if let Some(byte_index) = line.find(text) {
+            let column = UnicodeWidthStr::width(&line[..byte_index]);
+            return (area.left() + column as u16, row);
+        }
+    }
+    panic!("missing rendered text {text:?}");
 }
 
 fn message_action(app: &mut App, id: u64, action: MessageAction) {
@@ -382,7 +359,7 @@ fn blank_welcome_scales_down_and_active_session_uses_one_branded_row() {
         } else {
             assert!(rows[4].contains("/resume opens a saved session"));
             assert!(rows[5].contains("Workspace: /workspace"));
-            assert!(rows[6].contains("/model is session-only; config.toml sets defaults."));
+            assert!(rows[6].contains("/model: Set current model as default to persist the route."));
         }
     }
 

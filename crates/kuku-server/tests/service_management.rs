@@ -10,6 +10,7 @@ use axum::Router;
 use kuku::session::{AgentStatus, Session, SessionOptions};
 use kuku_server::server_args::ServerArgs;
 use serde_json::{json, Value};
+use sha2::Digest;
 use tokio::net::TcpListener;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
@@ -197,6 +198,60 @@ async fn discovery_and_browser_handoff_are_bound_to_one_authenticated_instance()
             .status()
     );
     daemon.wait_for_stop().await;
+}
+
+#[tokio::test]
+async fn model_default_plan_is_authenticated_hash_bound_and_has_no_path_input() {
+    let home = tempfile::tempdir().unwrap();
+    let config = common::mock_provider::make_test_config(9);
+    let daemon = Daemon::start(home.path(), &config, None).await;
+    let path = home.path().join("config.toml");
+    let mut raw = fs::read_to_string(&path).unwrap();
+    raw.push_str("\n# safe-plan-secret-marker\n");
+    fs::write(&path, &raw).unwrap();
+    let digest = format!("{:x}", sha2::Sha256::digest(raw.as_bytes()));
+    let model = &config.tiers["balanced"].model;
+    let route = format!(
+        "/service/model-default-plan?connection=anthropic&model={model}&config_sha256={digest}"
+    );
+
+    let unauthorized = daemon.request(Method::GET, &route).send().await.unwrap();
+    assert_eq!(401, unauthorized.status());
+
+    let response = daemon.native(Method::GET, &route).send().await.unwrap();
+    assert_eq!(200, response.status());
+    assert_eq!("no-store", response.headers()["cache-control"]);
+    let plan: Value = response.json().await.unwrap();
+    let mut fields = plan
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    fields.sort();
+    assert_eq!(
+        ["config_sha256", "overwrite_user_default", "tier"],
+        fields.as_slice()
+    );
+    assert!(!plan.to_string().contains("safe-plan-secret-marker"));
+
+    let mismatch = route.replace(&digest, &"0".repeat(64));
+    let response = daemon.native(Method::GET, &mismatch).send().await.unwrap();
+    assert_eq!(409, response.status());
+    let error: Value = response.json().await.unwrap();
+    assert_eq!("config_changed", error["code"]);
+    assert!(!error.to_string().contains("safe-plan-secret-marker"));
+
+    let arbitrary_path = format!("{route}&config_path=%2Ftmp%2Fother.toml");
+    assert_eq!(
+        400,
+        daemon
+            .native(Method::GET, &arbitrary_path)
+            .send()
+            .await
+            .unwrap()
+            .status()
+    );
 }
 
 #[tokio::test]
