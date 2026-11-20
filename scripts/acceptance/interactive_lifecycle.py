@@ -190,11 +190,39 @@ def readonly_rewind(client):
         messages = terminal.expect("Rewound · read-only")["screen"]
         assert discarded_reply not in messages
         terminal.click_text(messages, "Expand group")
-        readonly = terminal.expect(discarded_reply, also=("excluded from model context",))["screen"]
+        readonly = terminal.expect(discarded_reply, also=("excluded from model context", "Esc input"))["screen"]
         terminal.press("\x1b")
-        terminal.expect("Continue from the active anchor")
-        terminal.press("\r")
-        continued = client.provider.next("Continue from the active anchor")
+        return_screen = readonly
+        enter_sent = False
+
+        def composer_returned():
+            nonlocal return_screen
+            return_screen = terminal.request("screen")["screen"]
+            return return_screen if (
+                "Continue from the active anchor" in return_screen
+                and "Reading history · Editing" in return_screen
+                and "Esc input" not in return_screen
+            ) else None
+
+        try:
+            eventually("Esc to restore composer focus before Enter", composer_returned)
+            terminal.press("\r")
+            enter_sent = True
+            continued = client.provider.next("Continue from the active anchor")
+        except AssertionError as error:
+            screen = terminal.request("screen")["screen"]
+            query = urlencode({"workspace": workspace, "agent": "main", "progress": "true"})
+            snapshot = client.request("GET", f"/sessions/{session}/snapshot?{query}").as_json()
+            diagnostic = {
+                "expanded_screen": readonly, "screen_after_escape": return_screen,
+                "screen_after_enter": screen, "agent_status": snapshot["agent"]["status"],
+                "pending_inputs": snapshot["pending"], "enter_sent": enter_sent,
+            }
+            (client.directory / "readonly-rewind-failure.json").write_text(json.dumps(
+                diagnostic, ensure_ascii=False, indent=2,
+            ), encoding="utf-8")
+            raise AssertionError(f"{error}\nLast terminal screen:\n{screen}\n"
+                                 f"Agent: {diagnostic['agent_status']} · pending: {len(snapshot['pending'])}") from error
         context = json.dumps(continued.request["messages"])
         assert kept_reply in context
         assert discarded_prompt not in context and discarded_reply not in context
@@ -219,6 +247,8 @@ def readonly_rewind(client):
         "session": session,
         "rewind_groups": history["rewind_groups"],
         "readonly_screen": readonly,
+        "screen_after_escape": return_screen,
+        "composer_return_observed": "Esc input" not in return_screen and "Editing" in return_screen,
         "active_anchor_in_next_request": kept_reply in context,
         "discarded_content_in_next_request": discarded_reply in context,
     }, ensure_ascii=False, indent=2), encoding="utf-8")

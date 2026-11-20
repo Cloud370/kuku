@@ -734,7 +734,8 @@ def run_interactive(args, directory, record):
             lifecycle = {}
             for case, name in (("settings", "first-run"), ("defaults", "model-default"),
                                ("keyboard-queue", "keyboard-queue-withdrawal"),
-                               ("rewind", "readonly-rewind"), ("rewind-history", "rewind-history"),
+                               ("rewind", "readonly-rewind"), ("rewind", "readonly-rewind-failure"),
+                               ("rewind-history", "rewind-history"),
                                ("auth-repair", "auth-repair")):
                 source = scratch_dir / "test" / case / f"{name}.json"
                 if source.is_file():
