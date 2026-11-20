@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use kuku::config::ProviderFormat;
 use kuku::event::EventPayload;
-use kuku_client::local::RestartOutcome;
+use kuku_client::local::{LocalError, RestartOutcome};
 use kuku_client::{
     AgentProgress, AgentStatus, Connection, ConnectionOptions, RetryFailureKind, RetryMetadata,
     RetrySource, Snapshot, Target,
@@ -61,6 +61,12 @@ pub(crate) struct SavedCredentialRepair {
 pub(crate) enum CredentialRepairApplied {
     Applied,
     SavedNotApplied(SavedCredentialRepair, String),
+    SavedTargetChanged(String),
+}
+
+enum RestartFailure {
+    TargetChanged(String),
+    Retryable(String),
 }
 
 pub(crate) fn authentication_failure(snapshot: &Snapshot) -> Option<CredentialRepairRequest> {
@@ -182,7 +188,10 @@ pub(crate) async fn apply(
 ) -> CredentialRepairApplied {
     match restart(options, connection, &saved).await {
         Ok(()) => CredentialRepairApplied::Applied,
-        Err(reason) => CredentialRepairApplied::SavedNotApplied(
+        Err(RestartFailure::TargetChanged(reason)) => {
+            CredentialRepairApplied::SavedTargetChanged(format!("{SAVED_NOT_APPLIED}\n{reason}"))
+        }
+        Err(RestartFailure::Retryable(reason)) => CredentialRepairApplied::SavedNotApplied(
             saved,
             format!("{SAVED_NOT_APPLIED}\n{reason}"),
         ),
@@ -193,28 +202,46 @@ async fn restart(
     options: &ConnectionOptions,
     connection: Option<&Connection>,
     saved: &SavedCredentialRepair,
-) -> Result<(), String> {
+) -> Result<(), RestartFailure> {
     let current = active_service(options, connection)
         .await
-        .map_err(|_| CHANGED)?;
-    ensure_same_service(&saved.service, &current).map_err(|_| CHANGED)?;
-    verify_saved_config(saved)?;
-    let local = options.local_service().map_err(|_| CHANGED)?;
+        .map_err(|_| RestartFailure::TargetChanged(CHANGED.into()))?;
+    ensure_same_service(&saved.service, &current)
+        .map_err(|_| RestartFailure::TargetChanged(CHANGED.into()))?;
+    verify_saved_config(saved).map_err(RestartFailure::TargetChanged)?;
+    let local = options
+        .local_service()
+        .map_err(|_| RestartFailure::TargetChanged(CHANGED.into()))?;
+    let expected = local
+        .status()
+        .await
+        .map_err(|_| RestartFailure::TargetChanged(CHANGED.into()))?
+        .ok_or_else(|| RestartFailure::TargetChanged(CHANGED.into()))?;
+    let expected_identity = service_identity(options, &expected)
+        .map_err(|_| RestartFailure::TargetChanged(CHANGED.into()))?;
+    ensure_same_service(&saved.service, &expected_identity)
+        .map_err(|_| RestartFailure::TargetChanged(CHANGED.into()))?;
     let restarted =
         match local
-            .restart()
+            .restart_if_current(&expected)
             .await
-            .map_err(|_| "Restart failed; use the local service restart action when it is idle.")?
+            .map_err(|error| match error {
+                LocalError::ServiceChanged => RestartFailure::TargetChanged(
+                    "The local service changed before restart. Its replacement was not stopped or restarted.".into(),
+                ),
+                _ => RestartFailure::Retryable("Restart failed; use the local service restart action when it is idle.".into()),
+            })?
         {
-            RestartOutcome::Deferred(_) => return Err(
+            RestartOutcome::Deferred(_) => return Err(RestartFailure::Retryable(
                 "Other work is still active. Finish it, then choose Restart local service here."
                     .into(),
-            ),
+            )),
             RestartOutcome::Restarted(connection) => {
-                service_identity(options, &connection).map_err(|_| CHANGED)?
+                service_identity(options, &connection)
+                    .map_err(|_| RestartFailure::TargetChanged(CHANGED.into()))?
             }
         };
-    verify_restarted_service(saved, &restarted)
+    verify_restarted_service(saved, &restarted).map_err(RestartFailure::TargetChanged)
 }
 
 fn verify_restarted_service(

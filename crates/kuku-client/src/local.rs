@@ -76,6 +76,11 @@ pub enum LocalError {
     /// Discovery failed to identify the running process.
     #[error("service discovery does not match the authenticated server in {0}")]
     Identity(PathBuf),
+    /// The previously observed service was replaced or disappeared before restart.
+    #[error(
+        "the managed server changed before restart; inspect its current instance before retrying"
+    )]
+    ServiceChanged,
     /// The service is using a different explicitly selected configuration.
     #[error("the managed server is using {active}; requested {requested}. Run kuku server restart with the requested --config to switch")]
     ConfigConflict {
@@ -231,8 +236,31 @@ impl LocalService {
 
     /// Replace an idle managed service or report the work preventing safe replacement.
     pub async fn restart(&self) -> Result<RestartOutcome, LocalError> {
+        self.restart_expected(None).await
+    }
+
+    /// Restart only the observed instance, failing before stopping or launching a replacement if it changed.
+    pub async fn restart_if_current(
+        &self,
+        expected: &LocalConnection,
+    ) -> Result<RestartOutcome, LocalError> {
+        self.restart_expected(Some(expected)).await
+    }
+
+    async fn restart_expected(
+        &self,
+        expected: Option<&LocalConnection>,
+    ) -> Result<RestartOutcome, LocalError> {
         let _launcher = self.acquire_launcher().await?;
-        let Some(connection) = self.wait_for_live_instance().await? else {
+        let current = self.wait_for_live_instance().await?;
+        if expected.is_some_and(|expected| {
+            current
+                .as_ref()
+                .is_none_or(|current| !expected.same_instance(current))
+        }) {
+            return Err(LocalError::ServiceChanged);
+        }
+        let Some(connection) = current else {
             let launched = self.start(&self.config_path, ephemeral_address()).await?;
             return Ok(RestartOutcome::Restarted(launched));
         };
@@ -366,6 +394,15 @@ impl LocalConnection {
     /// Return the service status observed by discovery.
     pub fn status(&self) -> &ServiceStatus {
         &self.status
+    }
+
+    fn same_instance(&self, other: &Self) -> bool {
+        self.address == other.address
+            && self.token == other.token
+            && self.config_path == other.config_path
+            && self.status.instance_id == other.status.instance_id
+            && self.status.pid == other.status.pid
+            && self.status.data_dir == other.status.data_dir
     }
 }
 
@@ -644,8 +681,202 @@ fn transport(error: wreq::Error) -> LocalError {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::future::{poll_fn, Future};
+    use std::net::SocketAddr;
+    use std::path::Path;
+    use std::sync::{Arc, Mutex};
+    use std::task::Poll;
 
-    use super::{LocalError, LocalService};
+    use axum::extract::State;
+    use axum::http::StatusCode;
+    use axum::routing::get;
+    use axum::{Json, Router};
+    use serde_json::json;
+
+    use super::{LocalError, LocalService, ServiceStatus};
+
+    struct ManagedState {
+        status: Mutex<ServiceStatus>,
+        restarts: Mutex<Vec<String>>,
+    }
+
+    struct ManagedFixture {
+        _home: tempfile::TempDir,
+        service: LocalService,
+        lease: Option<fs::File>,
+        state: Arc<ManagedState>,
+        address: SocketAddr,
+        server: tokio::task::JoinHandle<()>,
+    }
+
+    impl ManagedFixture {
+        async fn new() -> Self {
+            let home = tempfile::tempdir().unwrap();
+            fs::write(
+                home.path().join("config.toml"),
+                kuku::config::generate_default(),
+            )
+            .unwrap();
+            let service = LocalService::resolve(home.path(), None).unwrap();
+            let directory = service.service_directory();
+            kuku::util::private_directory(&directory).unwrap();
+            let lease = fs::File::create(directory.join("instance.lock")).unwrap();
+            lease.try_lock().unwrap();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let state = Arc::new(ManagedState {
+                status: Mutex::new(ServiceStatus {
+                    version: "fixture".into(),
+                    protocol_version: super::SESSION_PROTOCOL_VERSION,
+                    management_version: super::MANAGEMENT_VERSION,
+                    instance_id: Some("a".repeat(64)),
+                    pid: Some(std::process::id()),
+                    data_dir: Some(service.data_dir().to_string_lossy().into_owned()),
+                    config_path: Some(service.config_path().to_string_lossy().into_owned()),
+                    busy: Vec::new(),
+                    draining: false,
+                }),
+                restarts: Mutex::new(Vec::new()),
+            });
+            let app = Router::new()
+                .route("/service/status", get(managed_status))
+                .route("/service/restart", axum::routing::post(managed_restart))
+                .with_state(state.clone());
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let fixture = Self {
+                _home: home,
+                service,
+                lease: Some(lease),
+                state,
+                address,
+                server,
+            };
+            fixture.publish('a', fixture.service.config_path());
+            fixture
+        }
+
+        fn publish(&self, instance: char, config: &Path) {
+            fs::write(config, kuku::config::generate_default()).unwrap();
+            let mut status = self.state.status.lock().unwrap();
+            status.instance_id = Some(instance.to_string().repeat(64));
+            status.config_path = Some(config.to_string_lossy().into_owned());
+            fs::write(self.service.service_directory().join("connection.json"), serde_json::to_vec(&json!({
+                "address":self.address,"token":"c".repeat(64),"instance_id":status.instance_id,
+                "pid":status.pid,"config_path":config.as_os_str(),"data_dir":self.service.data_dir().as_os_str(),
+            })).unwrap()).unwrap();
+        }
+    }
+
+    impl Drop for ManagedFixture {
+        fn drop(&mut self) {
+            self.lease.take();
+            self.server.abort();
+        }
+    }
+
+    async fn managed_status(State(state): State<Arc<ManagedState>>) -> Json<ServiceStatus> {
+        Json(state.status.lock().unwrap().clone())
+    }
+
+    async fn managed_restart(
+        State(state): State<Arc<ManagedState>>,
+    ) -> (StatusCode, Json<serde_json::Value>) {
+        state
+            .restarts
+            .lock()
+            .unwrap()
+            .push(state.status.lock().unwrap().instance_id.clone().unwrap());
+        (
+            StatusCode::CONFLICT,
+            Json(
+                json!({"code":"service_busy","message":"fixture remains running","busy":["fixture work"]}),
+            ),
+        )
+    }
+
+    #[tokio::test]
+    async fn observed_instance_replacement_while_waiting_for_launcher_is_not_restarted() {
+        let fixture = ManagedFixture::new().await;
+        let observed = fixture.service.status().await.unwrap().unwrap();
+        let mut launcher =
+            fslock::LockFile::open(&fixture.service.service_directory().join("launcher.lock"))
+                .unwrap();
+        launcher.lock().unwrap();
+        let mut restart = Box::pin(fixture.service.restart_if_current(&observed));
+        poll_fn(|context| {
+            assert!(restart.as_mut().poll(context).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        fixture.publish('b', &fixture.service.data_dir().join("config-b.toml"));
+        launcher.unlock().unwrap();
+        assert!(matches!(restart.await, Err(LocalError::ServiceChanged)));
+        assert_eq!(
+            0,
+            fixture.state.restarts.lock().unwrap().len(),
+            "a replacement instance must receive no restart request"
+        );
+        assert_ne!(
+            observed.status().instance_id,
+            fixture
+                .service
+                .status()
+                .await
+                .unwrap()
+                .unwrap()
+                .status()
+                .instance_id
+        );
+    }
+
+    #[tokio::test]
+    async fn conditional_restart_does_not_launch_when_the_observed_instance_disappears() {
+        let mut fixture = ManagedFixture::new().await;
+        let observed = fixture.service.status().await.unwrap().unwrap();
+        fixture.lease.take();
+        assert!(matches!(
+            fixture.service.restart_if_current(&observed).await,
+            Err(LocalError::ServiceChanged)
+        ));
+        assert!(fixture.state.restarts.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn conditional_restart_keeps_busy_work_outside_instance_identity() {
+        let fixture = ManagedFixture::new().await;
+        let observed = fixture.service.status().await.unwrap().unwrap();
+        fixture.state.status.lock().unwrap().busy = vec!["new work".into()];
+        assert!(
+            matches!(fixture.service.restart_if_current(&observed).await, Ok(super::RestartOutcome::Deferred(status)) if status.busy == ["fixture work"])
+        );
+        assert_eq!(1, fixture.state.restarts.lock().unwrap().len());
+    }
+
+    #[tokio::test]
+    async fn explicit_restart_still_operates_on_the_current_replacement() {
+        let fixture = ManagedFixture::new().await;
+        let observed = fixture.service.status().await.unwrap().unwrap();
+        fixture.publish('b', &fixture.service.data_dir().join("config-b.toml"));
+        assert!(matches!(
+            fixture.service.restart().await,
+            Ok(super::RestartOutcome::Deferred(_))
+        ));
+        assert_eq!(
+            ["b".repeat(64)],
+            fixture.state.restarts.lock().unwrap().as_slice()
+        );
+        assert_ne!(
+            observed.status().instance_id,
+            fixture
+                .service
+                .status()
+                .await
+                .unwrap()
+                .unwrap()
+                .status()
+                .instance_id
+        );
+    }
 
     #[tokio::test]
     async fn abandoned_discovery_is_ignored_even_if_its_record_is_invalid() {
