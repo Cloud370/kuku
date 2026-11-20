@@ -59,6 +59,8 @@ pub struct Query {
     pub(crate) runtime_execution: Option<u64>,
     pub(crate) turn_override: Option<u64>,
     pub(crate) events_path_override: Option<PathBuf>,
+    pub(crate) skip_user_message: bool,
+    pub(crate) resume_input_turn: Option<u64>,
     pub(crate) model_request_budget: Option<Arc<std::sync::atomic::AtomicU64>>,
 }
 
@@ -632,6 +634,8 @@ impl Query {
             runtime_execution: None,
             turn_override: None,
             events_path_override: None,
+            skip_user_message: false,
+            resume_input_turn: None,
             model_request_budget: None,
         }
     }

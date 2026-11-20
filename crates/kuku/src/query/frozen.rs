@@ -230,14 +230,21 @@ pub(super) fn prepare(pending: &mut PendingRun) -> Result<PreparedContext> {
             cursor.admitted.len()
         },
     )?;
-    let current_input = messages
-        .iter()
-        .rposition(|admitted| {
+    let current_input = if pending.query.skip_user_message {
+        resumed_current_input(
+            &mut messages,
+            pending.turn,
+            pending.query.resume_input_turn,
+            &pending.query.prompt,
+        )
+    } else {
+        messages.iter().rposition(|admitted| {
             admitted.turn == pending.turn && admitted.origin == MessageOrigin::Input
         })
-        .ok_or_else(|| {
-            Error::InvalidEventStream("prepared context has no admitted current input".into())
-        })?;
+    }
+    .ok_or_else(|| {
+        Error::InvalidEventStream("prepared context has no admitted current input".into())
+    })?;
     let assembly = ContextAssembly {
         system_prompt: segment.system_prompt.clone(),
         prelude_messages: segment.prelude.clone(),
@@ -792,6 +799,33 @@ fn insert_runtime_date(
     );
 }
 
+fn resumed_current_input(
+    messages: &mut Vec<AdmittedMessage>,
+    current_turn: u64,
+    source_turn: Option<u64>,
+    prompt: &str,
+) -> Option<usize> {
+    if let Some(index) = messages.iter().rposition(|admitted| {
+        admitted.turn == current_turn && admitted.origin == MessageOrigin::Input
+    }) {
+        return Some(index);
+    }
+    if let Some(source_turn) = source_turn {
+        if let Some(index) = messages.iter().rposition(|admitted| {
+            admitted.turn == source_turn && admitted.origin == MessageOrigin::Input
+        }) {
+            return Some(index);
+        }
+    }
+    let turn = source_turn.unwrap_or(current_turn);
+    messages.push(AdmittedMessage {
+        turn,
+        origin: MessageOrigin::Input,
+        message: CanonicalMessage::user_text(prompt.to_owned()),
+    });
+    Some(messages.len() - 1)
+}
+
 fn legacy_project_policy_has_date(segment: &FrozenSegment, current_date: &str) -> bool {
     segment.catalog.blocks.get("project-policy").is_some_and(|template| {
         segment.prelude.iter().any(|message| {
@@ -816,6 +850,9 @@ fn micros(started: Instant) -> u64 {
 #[cfg(test)]
 #[path = "frozen/date_tests.rs"]
 mod date_tests;
+#[cfg(test)]
+#[path = "frozen/resume_tests.rs"]
+mod resume_tests;
 #[cfg(test)]
 mod snapshot_tests {
     use super::*;

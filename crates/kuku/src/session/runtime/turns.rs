@@ -220,6 +220,7 @@ mod tests {
             Record::InputsAccepted {
                 address: address.into(),
                 input_ids: vec!["test".into()],
+                message_input_ids: Vec::new(),
                 turn,
             },
         )

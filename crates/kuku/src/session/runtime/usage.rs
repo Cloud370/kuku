@@ -332,6 +332,7 @@ mod tests {
                 Record::InputsAccepted {
                     address: address.into(),
                     input_ids: Vec::new(),
+                    message_input_ids: Vec::new(),
                     turn: None,
                 }
                 .payload()

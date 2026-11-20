@@ -1,6 +1,10 @@
 #[path = "session_runtime/authorization.rs"]
 mod authorization;
 mod common;
+#[path = "session_runtime/permission_resume.rs"]
+mod permission_resume;
+#[path = "session_runtime/unpersisted_resume.rs"]
+mod unpersisted_resume;
 
 #[cfg(unix)]
 use std::sync::Arc;
@@ -42,6 +46,31 @@ fn tool_count(request: &HttpMockRequest) -> usize {
         .count()
 }
 
+fn user_message_count(body: &Value, text: &str) -> usize {
+    body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|message| message["role"] == "user" && message["content"] == text)
+        .count()
+}
+
+fn request_has_original_input_once(request: &HttpMockRequest) -> bool {
+    let body: Value = serde_json::from_slice(request.body.as_deref().unwrap_or_default()).unwrap();
+    user_message_count(&body, "retain this accepted work") == 1
+}
+
+fn request_has_original_input_twice(request: &HttpMockRequest) -> bool {
+    let body: Value = serde_json::from_slice(request.body.as_deref().unwrap_or_default()).unwrap();
+    user_message_count(&body, "retain this accepted work") == 2
+}
+
+fn request_has_original_and_queued_input_once(request: &HttpMockRequest) -> bool {
+    let body: Value = serde_json::from_slice(request.body.as_deref().unwrap_or_default()).unwrap();
+    user_message_count(&body, "retain this accepted work") == 1
+        && user_message_count(&body, "queued during interruption") == 1
+}
+
 fn response(message: Value, finish_reason: &str) -> String {
     common::openai_sse_response(
         json!({"id":"runtime-test","model":"runtime-test","choices":[{"message":message,"finish_reason":finish_reason}],"usage":{"prompt_tokens":100,"completion_tokens":20}}),
@@ -70,7 +99,15 @@ async fn fixture<'a>(
 }
 
 async fn settled(session: &Session, address: &str) -> AgentSnapshot {
-    tokio::time::timeout(Duration::from_secs(10), async {
+    settled_with_timeout(session, address, Duration::from_secs(10)).await
+}
+
+async fn settled_with_timeout(
+    session: &Session,
+    address: &str,
+    timeout: Duration,
+) -> AgentSnapshot {
+    tokio::time::timeout(timeout, async {
         loop {
             let state = session.agent(address).unwrap();
             if state.status != AgentStatus::Running {
@@ -81,6 +118,20 @@ async fn settled(session: &Session, address: &str) -> AgentSnapshot {
     })
     .await
     .expect("agent did not settle")
+}
+
+async fn settled_with_output(session: &Session, address: &str, output: &str) -> AgentSnapshot {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let state = session.agent(address).unwrap();
+            if state.last_output.as_deref() == Some(output) {
+                return state;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("agent did not produce the expected output")
 }
 
 #[tokio::test]
@@ -338,12 +389,27 @@ async fn receipts_are_durable_idempotent_and_enqueue_requires_explicit_advance()
 
 #[tokio::test]
 async fn settled_provider_failure_allows_close_and_explicit_advance_after_reopen() {
-    retry_interrupted_input(true, 400, 1, true).await;
+    retry_interrupted_input(true, 400, 1, true, 0, false).await;
+}
+
+#[tokio::test]
+async fn repeated_provider_failure_and_reopen_keeps_one_original_user_message() {
+    retry_interrupted_input(true, 400, 1, true, 1, false).await;
+}
+
+#[tokio::test]
+async fn queued_input_joins_restored_accepted_input_without_duplication() {
+    retry_interrupted_input(true, 400, 1, true, 0, true).await;
 }
 
 #[tokio::test]
 async fn successful_explicit_retry_after_rate_limiting_can_close_the_same_session() {
-    retry_interrupted_input(false, 429, 1, false).await;
+    retry_interrupted_input(false, 429, 1, false, 0, false).await;
+}
+
+#[tokio::test]
+async fn exhausted_provider_retries_can_continue_without_duplicating_input() {
+    retry_interrupted_input(false, 429, 6, true, 0, false).await;
 }
 
 async fn retry_interrupted_input(
@@ -351,13 +417,17 @@ async fn retry_interrupted_input(
     status: u16,
     failed_attempts: usize,
     automatic_retries: bool,
+    continued_failures: usize,
+    queue_new_input: bool,
 ) {
     let server = MockServer::start_async().await;
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let failure = server
         .mock_async(|when, then| {
-            when.method(POST).path("/chat/completions");
+            when.method(POST)
+                .path("/chat/completions")
+                .matches(request_has_original_input_once);
             then.status(status).body("provider fixture failure");
         })
         .await;
@@ -370,7 +440,11 @@ async fn retry_interrupted_input(
     session
         .send(Input::new("input", "main", "retain this accepted work"))
         .unwrap();
-    let failed = settled(&session, "main").await;
+    let failed = if automatic_retries && status == 429 {
+        settled_with_timeout(&session, "main", Duration::from_secs(90)).await
+    } else {
+        settled(&session, "main").await
+    };
     assert_eq!(AgentStatus::Interrupted, failed.status);
     assert!(
         failed
@@ -383,6 +457,18 @@ async fn retry_interrupted_input(
     assert_eq!(failed_attempts as u64, failed.usage.model_requests);
     assert_eq!(failed_attempts as u64, failed.usage.unreported_requests);
     assert_eq!(None, failed.usage.input_tokens);
+    assert_eq!(0, failed.pending_inputs);
+    assert_eq!(
+        1,
+        session
+            .events(0, 128)
+            .unwrap()
+            .iter()
+            .filter(|event| matches!(&event.payload,
+                EventPayload::MessageUser { text, .. } if text == "retain this accepted work"
+            ))
+            .count()
+    );
     assert_eq!(
         1,
         session
@@ -396,34 +482,184 @@ async fn retry_interrupted_input(
             .count(),
         "provider failure already records its own interruption"
     );
-    failure.assert_hits_async(failed_attempts).await;
-    let session = if reopen {
-        let mut options = original;
+    let mut reopen_options = None;
+    let mut session = if reopen {
+        let mut options = original.clone();
         options.session_id = Some(session.id().into());
         session.close().await.unwrap();
-        let reopened = Session::open(options).await.unwrap();
+        let reopened = Session::open(options.clone()).await.unwrap();
         assert_eq!(failed, reopened.agent("main").unwrap());
+        reopen_options = Some(options);
         reopened
     } else {
         session
     };
+
+    for _ in 0..continued_failures {
+        session.advance("main").unwrap();
+        let failed_again = settled(&session, "main").await;
+        assert_eq!(AgentStatus::Interrupted, failed_again.status);
+        assert_eq!(0, failed_again.pending_inputs);
+        assert_eq!(
+            1,
+            session
+                .events(0, 128)
+                .unwrap()
+                .iter()
+                .filter(|event| matches!(&event.payload,
+                    EventPayload::MessageUser { text, .. } if text == "retain this accepted work"
+                ))
+                .count()
+        );
+        if let Some(options) = &reopen_options {
+            session.close().await.unwrap();
+            let reopened = Session::open(options.clone()).await.unwrap();
+            assert_eq!(failed_again, reopened.agent("main").unwrap());
+            session = reopened;
+        }
+    }
+
+    if queue_new_input {
+        session
+            .send(Input::new(
+                "queued-during-interruption",
+                "main",
+                "queued during interruption",
+            ))
+            .unwrap();
+        assert_eq!(1, session.agent("main").unwrap().pending_inputs);
+    }
+    failure
+        .assert_hits_async(failed_attempts + continued_failures)
+        .await;
     failure.delete_async().await;
+    let success_matcher: fn(&HttpMockRequest) -> bool = if queue_new_input {
+        request_has_original_and_queued_input_once
+    } else {
+        request_has_original_input_once
+    };
     let success = fixture(
         &server,
-        |request| {
-            String::from_utf8_lossy(request.body.as_deref().unwrap_or_default())
-                .contains("retain this accepted work")
-        },
+        success_matcher,
         json!({"content":"retried"}),
         "stop",
     )
     .await;
     session.advance("main").unwrap();
     let done = settled(&session, "main").await;
+    assert_eq!(
+        1,
+        session
+            .events(0, 128)
+            .unwrap()
+            .iter()
+            .filter(|event| matches!(&event.payload,
+                EventPayload::MessageUser { text, .. } if text == "retain this accepted work"
+            ))
+            .count()
+    );
+    if queue_new_input {
+        assert_eq!(
+            1,
+            session
+                .events(0, 128)
+                .unwrap()
+                .iter()
+                .filter(|event| matches!(&event.payload,
+                    EventPayload::MessageUser { text, .. } if text == "queued during interruption"
+                ))
+                .count()
+        );
+    }
     assert_eq!(AgentStatus::Idle, done.status, "{:?}", done.last_error);
     assert_eq!(Some("retried"), done.last_output.as_deref());
-    session.close().await.unwrap();
     success.assert_hits_async(1).await;
+    success.delete_async().await;
+
+    let same_text = fixture(
+        &server,
+        request_has_original_input_twice,
+        json!({"content":"same text persisted"}),
+        "stop",
+    )
+    .await;
+    session
+        .send(Input::new(
+            "same-text-new-command",
+            "main",
+            "retain this accepted work",
+        ))
+        .unwrap();
+    let done = settled_with_output(&session, "main", "same text persisted").await;
+    assert_eq!(AgentStatus::Idle, done.status, "{:?}", done.last_error);
+    assert_eq!(
+        2,
+        session
+            .events(0, 128)
+            .unwrap()
+            .iter()
+            .filter(|event| matches!(&event.payload,
+                EventPayload::MessageUser { text, .. } if text == "retain this accepted work"
+            ))
+            .count()
+    );
+    same_text.assert_hits_async(1).await;
+    same_text.delete_async().await;
+
+    let next = fixture(
+        &server,
+        |request| {
+            String::from_utf8_lossy(request.body.as_deref().unwrap_or_default())
+                .contains("a distinct new submission")
+        },
+        json!({"content":"next input persisted"}),
+        "stop",
+    )
+    .await;
+    session
+        .send(Input::new(
+            "next-input",
+            "main",
+            "a distinct new submission",
+        ))
+        .unwrap();
+    let done = settled_with_output(&session, "main", "next input persisted").await;
+    assert_eq!(AgentStatus::Idle, done.status, "{:?}", done.last_error);
+    assert_eq!(Some("next input persisted"), done.last_output.as_deref());
+    let user_messages = session
+        .events(0, 128)
+        .unwrap()
+        .into_iter()
+        .filter_map(|event| match event.payload {
+            EventPayload::MessageUser { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        2,
+        user_messages
+            .iter()
+            .filter(|text| *text == "retain this accepted work")
+            .count()
+    );
+    assert_eq!(
+        1,
+        user_messages
+            .iter()
+            .filter(|text| *text == "a distinct new submission")
+            .count()
+    );
+    if queue_new_input {
+        assert_eq!(
+            1,
+            user_messages
+                .iter()
+                .filter(|text| *text == "queued during interruption")
+                .count()
+        );
+    }
+    session.close().await.unwrap();
+    next.assert_hits_async(1).await;
 }
 
 #[cfg(unix)]
