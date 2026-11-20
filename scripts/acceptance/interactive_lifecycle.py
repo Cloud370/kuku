@@ -1,5 +1,6 @@
 """Installed-terminal checks for settings, defaults and retained rewind history."""
 
+import difflib
 import json
 import re
 from urllib.parse import urlencode
@@ -399,13 +400,13 @@ def runtime_credential_repair(binary, bridge, directory):
         config_path.write_text(config_path.read_text().replace(
             'api_key = "test-key"', 'api_key = "$KUKU_ACCEPTANCE_REJECTED_KEY"',
         ))
-        original_config = config_path.read_text()
         with client.terminal(workspace) as terminal:
             terminal.expect("New session", state="Ready")
             terminal.submit(prompt)
             failure = terminal.expect("Authentication error", state="Interrupted", also=("No automatic retry",))["screen"]
             session = client.session(workspace)
             original = client.connection()
+            original_config = config_path.read_text()
             terminal.type(draft)
             focus_action(terminal, "Repair credentials")
             terminal.press("\r")
@@ -446,7 +447,9 @@ def runtime_credential_repair(binary, bridge, directory):
         saved_config, saved_keys = normalize(saved_text)
         unchanged_config, original_keys = normalize(original_config)
         assert saved_keys == original_keys == 1
-        assert saved_config == unchanged_config, "Repair changed unrelated provider or model settings"
+        assert saved_config == unchanged_config, "Repair changed unrelated provider or model settings\n" + "\n".join(
+            difflib.unified_diff(unchanged_config.splitlines(), saved_config.splitlines())
+        )
         assert client.env["KUKU_ACCEPTANCE_REJECTED_KEY"] == "test-key"
         credential_files = list((client.home / "credentials").iterdir())
         assert len(credential_files) == 1 and credential_files[0].read_text() == repaired_key
