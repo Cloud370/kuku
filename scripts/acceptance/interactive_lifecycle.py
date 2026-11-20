@@ -403,7 +403,7 @@ def runtime_credential_repair(binary, bridge, directory):
         with client.terminal(workspace) as terminal:
             terminal.expect("New session", state="Ready")
             terminal.submit(prompt)
-            failure = terminal.expect("Repair credentials", also=("No automatic retry",))["screen"]
+            failure = terminal.expect("Authentication error", state="Interrupted", also=("No automatic retry",))["screen"]
             session = client.session(workspace)
             original = client.connection()
             terminal.type(draft)
