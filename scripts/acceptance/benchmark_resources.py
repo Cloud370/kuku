@@ -12,11 +12,18 @@ IO_FIELDS = ('rchar', 'wchar', 'syscr', 'syscw', 'read_bytes', 'write_bytes', 'c
 PROCESS_IO_SCOPE = 'SDK process and waited-for children. rchar and wchar count logical bytes.'
 EXTERNAL_PROCESS_IO = 'proc_pid_io'
 FINAL_PROCESS_IO = 'proc_self_io'
+PROC_TICKS_PER_SECOND_FALLBACK = 100
 PROC = '''p=$(cat /logs/agent/sdk.pid 2>/dev/null) || exit 1
 d=/proc/$p
 cat "$d/stat" "$d/status" 2>/dev/null || exit 1
 cat "$d/io" 2>/dev/null || :
 '''
+
+
+def proc_ticks_per_second():
+    sysconf = getattr(os, 'sysconf', None)
+    return sysconf('SC_CLK_TCK') if sysconf is not None else PROC_TICKS_PER_SECOND_FALLBACK
+
 
 def peak_rss_kib(*observations):
     return max((value for value in observations
@@ -71,7 +78,7 @@ class ResourceSampler:
             self.observed += elapsed
         self.previous = (identity, rss, when)
         self.data['sdk_process_samples'] += 1
-        self.data['sdk_cpu_seconds'] = (int(stat[11]) + int(stat[12])) / os.sysconf('SC_CLK_TCK')
+        self.data['sdk_cpu_seconds'] = (int(stat[11]) + int(stat[12])) / proc_ticks_per_second()
         for source, target in [('VmRSS','sdk_peak_rss_kib'),('VmHWM','sdk_peak_rss_high_water_kib'),('Threads','sdk_threads_max')]:
             if source in fields:
                 self.data[target] = max(self.data[target] or 0, fields[source])

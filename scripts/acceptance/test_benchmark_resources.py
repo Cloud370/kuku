@@ -2,19 +2,28 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from benchmark_resources import IO_FIELDS, PROCESS_IO_SCOPE, include_final_process_usage, ResourceSampler
 from frontier_report import resource_summary
 
 
-def proc(rss, hwm, start_time=222):
+def proc(rss, hwm, start_time=222, user_ticks=0, system_ticks=0):
     stat = ['S'] + ['0'] * 21
+    stat[11] = str(user_ticks)
+    stat[12] = str(system_ticks)
     stat[19] = str(start_time)
     return (f"7 (name with spaces) {' '.join(stat)}\nVmRSS: {rss} kB\nVmHWM: {hwm} kB\n"
             "rchar: 12\nwchar: 13\nsyscr: 1\nsyscw: 2\nread_bytes: 0\nwrite_bytes: 4096\ncancelled_write_bytes: 0\n")
 
 
 class ResourceEvidenceTest(unittest.TestCase):
+    def test_proc_cpu_ticks_have_windows_fallback_without_sysconf(self):
+        sampler = ResourceSampler('unused')
+        with patch('benchmark_resources.os.sysconf', None, create=True):
+            sampler.observe(proc(10, 30, user_ticks=30, system_ticks=20), 10.0)
+        self.assertEqual(sampler.data['sdk_cpu_seconds'], 0.5)
+
     def test_unequal_intervals_and_missing_samples(self):
         sampler = ResourceSampler('unused')
         sampler.observe(proc(10, 30), 10.0)

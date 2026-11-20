@@ -112,7 +112,13 @@ def generation_receipt(identifier, **changes):
 class FrontierReportTests(unittest.TestCase):
     def test_workspace_script_counts_distinguish_local_js_host_actions_and_missing_receipts(self):
         with tempfile.TemporaryDirectory() as temporary:
-            live = Path(temporary)
+            live_root = Path(temporary) / 'live'
+            live_root.mkdir()
+            live = Path(temporary) / 'live-alias'
+            try:
+                live.symlink_to(live_root, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                live = live_root
             path = live / 'session-data/p/app/sessions/sample/events.jsonl'
             path.parent.mkdir(parents=True)
 

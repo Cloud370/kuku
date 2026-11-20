@@ -38,6 +38,10 @@ fn tool_result_event(
     }
 }
 
+fn never_cancelled() -> bool {
+    false
+}
+
 fn assert_real_tool_rewind(workspace_alias: &Path, session_dir: &Path) {
     let conversation = ConversationAddress::MAIN;
     let file_alias = workspace_alias.join("rewind.txt");
@@ -51,6 +55,7 @@ fn assert_real_tool_rewind(workspace_alias: &Path, session_dir: &Path) {
         &conversation,
         &events,
         3,
+        &never_cancelled,
     );
     assert_eq!(read_before.status, "ok");
     let read_snapshot = read_before.structured.as_ref().unwrap();
@@ -74,6 +79,7 @@ fn assert_real_tool_rewind(workspace_alias: &Path, session_dir: &Path) {
         workspace_alias,
         &conversation,
         &events,
+        &never_cancelled,
     );
     assert_eq!(write.status, "ok");
     assert_eq!(
@@ -88,6 +94,7 @@ fn assert_real_tool_rewind(workspace_alias: &Path, session_dir: &Path) {
         &conversation,
         &events,
         5,
+        &never_cancelled,
     );
     assert_eq!(read_after.status, "ok");
     assert_eq!(
@@ -111,6 +118,7 @@ fn assert_real_tool_rewind(workspace_alias: &Path, session_dir: &Path) {
         workspace_alias,
         &conversation,
         &events,
+        &never_cancelled,
     );
     assert_eq!(edit.status, "ok");
     assert_eq!(
@@ -155,6 +163,7 @@ fn assert_real_legacy_file_revert(workspace_alias: &Path, session_dir: &Path) {
         &conversation,
         &events,
         3,
+        &never_cancelled,
     );
     assert_eq!(read.status, "ok");
     assert_eq!(
@@ -170,6 +179,7 @@ fn assert_real_legacy_file_revert(workspace_alias: &Path, session_dir: &Path) {
         workspace_alias,
         &conversation,
         &events,
+        &never_cancelled,
     );
     assert_eq!(write.status, "ok");
     assert_eq!(
@@ -209,6 +219,7 @@ fn assert_real_mutation_backed_rewind(workspace_alias: &Path, session_dir: &Path
         &conversation,
         &events,
         3,
+        &never_cancelled,
     );
     assert_eq!(read_before.status, "ok");
     events.push(tool_result_event(
@@ -224,6 +235,7 @@ fn assert_real_mutation_backed_rewind(workspace_alias: &Path, session_dir: &Path
         workspace_alias,
         &conversation,
         &events,
+        &never_cancelled,
     );
     assert_eq!(write.status, "ok");
     assert_eq!(
@@ -242,6 +254,7 @@ fn assert_real_mutation_backed_rewind(workspace_alias: &Path, session_dir: &Path
         &conversation,
         &events,
         5,
+        &never_cancelled,
     );
     assert_eq!(read_before_edit.status, "ok");
     events.push(tool_result_event(
@@ -261,6 +274,7 @@ fn assert_real_mutation_backed_rewind(workspace_alias: &Path, session_dir: &Path
         workspace_alias,
         &conversation,
         &events,
+        &never_cancelled,
     );
     assert_eq!(edit.status, "ok");
     assert_eq!(
@@ -279,6 +293,7 @@ fn assert_real_mutation_backed_rewind(workspace_alias: &Path, session_dir: &Path
         &conversation,
         &events,
         7,
+        &never_cancelled,
     );
     assert_eq!(read_after_edit.status, "ok");
     events.push(tool_result_event(
@@ -297,6 +312,7 @@ fn assert_real_mutation_backed_rewind(workspace_alias: &Path, session_dir: &Path
         workspace_alias,
         &conversation,
         &events,
+        &never_cancelled,
     );
     assert_eq!(target_write.status, "ok");
     events.push(tool_result_event(
@@ -390,6 +406,7 @@ fn assert_real_created_file_deletion(workspace_alias: &Path, session_dir: &Path)
         workspace_alias,
         &conversation,
         &events,
+        &never_cancelled,
     );
     assert_eq!(write.status, "ok");
     let structured = write.structured.as_ref().unwrap();

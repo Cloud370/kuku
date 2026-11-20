@@ -614,10 +614,14 @@ def session_summary(live, sdk):
     result = {'terminal_event': terminal, 'interrupt_reason': None, 'durable_turn_settled': None,
               'settled_status': None, 'sdk_error_kind': None, 'sdk_error_detail': None}
     session_root = live / 'session-data'
-    if session_root.resolve() != live.resolve() / 'session-data':
+    resolved_session_root = session_root.resolve()
+    if resolved_session_root != live.resolve() / 'session-data':
         return tools, result
     candidates = sorted(session_root.glob('p/*/sessions/*/events.jsonl'))
-    if len(candidates) != 1 or candidates[0].resolve() != candidates[0]:
+    if len(candidates) != 1:
+        return tools, result
+    candidate = candidates[0]
+    if candidate.resolve() != resolved_session_root / candidate.relative_to(session_root):
         return tools, result
     statuses = Counter()
     calls = 0
