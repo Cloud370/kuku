@@ -182,6 +182,7 @@ class ProviderCall:
         self.bridge = bridge
         self.id = f"msg_fixture_{index}"
         self.response = queue.Queue(maxsize=1)
+        self.completed_job = None
 
     def expect(self, text):
         assert text in json.dumps(self.request["messages"], ensure_ascii=False), (
@@ -189,7 +190,7 @@ class ProviderCall:
         )
         return self
 
-    def expect_tool_output(self, call_id, output):
+    def tool_result(self, call_id):
         results = [
             block for message in self.request["messages"]
             if isinstance(message.get("content"), list) for block in message["content"]
@@ -198,6 +199,10 @@ class ProviderCall:
         assert len(results) == 1, f"Expected one tool result for {call_id}, got {len(results)}"
         result = results[0]
         assert not result.get("is_error", False), f"Tool {call_id} failed: {result}"
+        return result
+
+    def expect_tool_output(self, call_id, output):
+        result = self.tool_result(call_id)
         assert output in json.dumps(result["content"], ensure_ascii=False), (
             f"Tool {call_id} did not return {output!r}: {result}"
         )
@@ -391,7 +396,7 @@ class DenseTranscript:
             self.client.release_tool(self.workspace)
 
     def streaming_reply(self):
-        return self.client.provider.next("dense-gate").streaming_text(self.partial, self.tail, chunk_size=8)
+        return self.client.completed_tool(self.workspace, "dense-gate").streaming_text(self.partial, self.tail, chunk_size=8)
 
     def desktop(self, type_text, enter, capture_widths, copy_reply, toggle_details, *, gate_executable=None):
         type_text(self.prompt)
@@ -439,7 +444,7 @@ class DenseTranscript:
         assert saved["complete"] and not saved["capture_truncated"] and not saved["has_more"]
         assert "".join(segment["text"] for segment in saved["segments"]).splitlines() == [TOOL_OUTPUT]
         client.provider.assert_idle()
-        return {"tool_calls": len(expected) + 1, "failed_calls": 1, "reply_bytes": len(self.reply.encode()),
+        return {"tool_calls": len(calls), "failed_calls": 1, "reply_bytes": len(self.reply.encode()),
                 "reply_sha256": hashlib.sha256(self.reply.encode()).hexdigest(), "complete_saved_output": True}
 
     def settled_snapshot(self):
@@ -775,7 +780,7 @@ class InstalledClient:
         assert current["pid"] == connection["pid"], "Managed service PID changed"
         assert current["instance_id"] == connection["instance_id"], "Managed service identity changed"
 
-    def gated_tool(self, workspace, call, call_id, *, executable=None):
+    def gated_tool(self, workspace, call, call_id, *, executable=None, background=False):
         if executable is None:
             fixture = workspace / f"fixture-command{EXE}"
             shutil.copy2(self.bridge, fixture)
@@ -783,8 +788,30 @@ class InstalledClient:
         else:
             program = str(executable)
         self.tool_workspaces.append(workspace)
-        call.tool("run_command", call_id, program=program, args=["--gated-tool"], cwd=".", timeout=95, brief=TOOL_BRIEF)
+        call.tool("run_command", call_id, program=program, args=["--gated-tool"], cwd=".",
+                  timeout=95, brief=TOOL_BRIEF, background=background)
         eventually("gated tool dispatch", lambda: (workspace / "tool-attempts.txt").exists())
+
+    def completed_tool(self, workspace, call_id):
+        call = self.provider.next(call_id)
+        content = call.tool_result(call_id)["content"]
+        handle = json.loads(content) if content.startswith("{") else {}
+        if handle.get("kind") != "job":
+            return call.expect_tool_output(call_id, TOOL_OUTPUT)
+        job_id = handle["job_id"]
+        wait_id = f"{call_id}-wait"
+        call.tool("wait_job", wait_id, job_id=job_id)
+        call = self.provider.next(wait_id).expect_tool_output(wait_id, TOOL_OUTPUT)
+        query = urlencode({"workspace": workspace, "agent": "main"})
+        session = self.session(workspace)
+        job = self.request("GET", f"/sessions/{session}/jobs/{job_id}?{query}").as_json()
+        assert job["tool_call_id"] == call_id and job["status"] == "completed", job
+        assert job["result"]["status"] == "ok", job
+        facts = job["result"]["structured"]
+        assert facts["exit_code"] == 0 and facts["capture_complete"] and not facts["cleanup_incomplete"], job
+        assert TOOL_OUTPUT in facts["output_preview"], job
+        call.completed_job = job
+        return call
 
     @staticmethod
     def release_tool(workspace):

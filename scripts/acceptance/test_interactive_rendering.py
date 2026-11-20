@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import MagicMock, Mock, patch
 
 from interactive import wait_restart_and_recover_crash
-from interactive_fixture import ProviderCall, Terminal, run_cases
+from interactive_fixture import InstalledClient, ProviderCall, Terminal, TOOL_OUTPUT, run_cases
 from interactive_rendering import (
     click_queued_input,
     has_selected_queued_input,
@@ -85,6 +85,34 @@ class ProviderToolResultTests(unittest.TestCase):
                           "content": "proof followed by capture failure"})
         with self.assertRaisesRegex(AssertionError, "Tool fixture failed"):
             call.expect_tool_output("fixture", "proof")
+
+    def job_client(self, exit_code=0):
+        client = object.__new__(InstalledClient)
+        handle = self.call({"type": "tool_result", "tool_use_id": "fixture",
+                            "content": json.dumps({"kind": "job", "job_id": "job-1"})})
+        handle.tool = Mock()
+        waited = self.call({"type": "tool_result", "tool_use_id": "fixture-wait", "content": TOOL_OUTPUT})
+        client.provider = Mock()
+        client.provider.next.side_effect = [handle, waited]
+        client.session = Mock(return_value="session")
+        client.request = Mock()
+        client.request.return_value.as_json.return_value = {
+            "id": "job-1", "tool_call_id": "fixture", "status": "completed",
+            "result": {"status": "ok", "structured": {"exit_code": exit_code,
+                "capture_complete": True, "cleanup_incomplete": False, "output_preview": TOOL_OUTPUT}},
+        }
+        return client, handle, waited
+
+    def test_background_handle_requires_wait_and_successful_durable_command_facts(self):
+        client, handle, waited = self.job_client()
+        self.assertIs(waited, client.completed_tool("workspace", "fixture"))
+        handle.tool.assert_called_once_with("wait_job", "fixture-wait", job_id="job-1")
+        self.assertEqual("job-1", waited.completed_job["id"])
+
+    def test_background_output_marker_cannot_hide_a_failed_command(self):
+        client, _, _ = self.job_client(exit_code=1)
+        with self.assertRaises(AssertionError):
+            client.completed_tool("workspace", "fixture")
 
 
 class PendingQuestionRestartTests(unittest.TestCase):

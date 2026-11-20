@@ -5,7 +5,7 @@ import json
 import re
 from urllib.parse import urlencode
 
-from interactive_fixture import InstalledClient, eventually, json_response, run_cases
+from interactive_fixture import InstalledClient, TOOL_BRIEF, TOOL_OUTPUT, eventually, json_response, run_cases
 from interactive_rendering import has_selected_queued_input
 
 
@@ -17,6 +17,7 @@ def lifecycle_cases(binary, bridge, directory):
     cases = [("first-run", lambda: first_run_credential_repair(binary, bridge, directory / "settings"))]
     cases.extend((name, lambda name=name, operation=operation: configured(name, operation))
                  for name, operation in (
+                     ("background-job", background_job_recovery),
                      ("defaults", persistent_model_default),
                      ("keyboard-queue", keyboard_queue_withdrawal),
                      ("rewind", readonly_rewind),
@@ -24,6 +25,56 @@ def lifecycle_cases(binary, bridge, directory):
                  ))
     cases.append(("auth-repair", lambda: runtime_credential_repair(binary, bridge, directory / "auth-repair")))
     run_cases(cases)
+
+
+def verify_restored_tool(terminal, job, history):
+    if job is not None:
+        terminal.press("\x0f")
+        terminal.expect("Ctrl+O show")
+        terminal.press("\x1b[5~")
+        screen = terminal.expect(TOOL_BRIEF, also=("started in background", "Background job",
+                                                 f"{job['id']} · Completed"))["screen"]
+        assert screen.count(f"╭─ {TOOL_BRIEF}") == 1 and screen.count("Background job") == 1, screen
+        terminal.press("\x1b[6~")
+        terminal.press("\x0f")
+        terminal.expect(TOOL_OUTPUT)
+        return
+    screen = terminal.expect(TOOL_BRIEF)["screen"]
+    assert screen.count(f"╭─ {TOOL_BRIEF}") == 1 and "╰─ ok" in screen, f"{screen}\nCommitted tool: {history}"
+    assert "--gated-tool" in screen and TOOL_OUTPUT in screen
+    terminal.press("\x0f")
+    collapsed = terminal.expect("Ctrl+O show")["screen"]
+    assert "Saved output" not in collapsed and "--gated-tool" not in collapsed
+    terminal.press("\x0f")
+    terminal.expect(TOOL_BRIEF, also=(TOOL_OUTPUT,))
+
+
+def background_job_recovery(client, *, explicit=False):
+    workspace = client.workspace("work-background")
+    prompt, final = "Keep a background command across client exit", "Background command completed once"
+    with client.terminal(workspace) as terminal:
+        terminal.expect("New session", state="Ready")
+        terminal.submit(prompt)
+        client.gated_tool(workspace, client.provider.next(prompt), "background-proof", background=explicit)
+        session = client.session(workspace)
+        query = urlencode({"workspace": workspace, "agent": "main"})
+        eventually("durable background Job registration", lambda: client.request(
+            "GET", f"/sessions/{session}/jobs?{query}").as_json()["jobs"])
+        terminal.expect("started in background")
+        terminal.exit_cleanly()
+    client.release_tool(workspace)
+    completed = client.completed_tool(workspace, "background-proof")
+    assert completed.completed_job is not None
+    completed.text(final)
+    session = client.session(workspace)
+    eventually("background reply to commit", lambda: client.snapshot(workspace, session)["last_output"] == final)
+    client.verify_tool(workspace)
+    with client.terminal(workspace) as terminal:
+        terminal.resume(prompt)
+        terminal.expect(final)
+        verify_restored_tool(terminal, completed.completed_job, None)
+        terminal.exit_cleanly()
+    client.provider.assert_idle()
 
 
 def focus_action(terminal, action):

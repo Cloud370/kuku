@@ -10,7 +10,7 @@ import re
 import sys
 from urllib.parse import urlencode, urlsplit
 
-from interactive_lifecycle import lifecycle_cases
+from interactive_lifecycle import lifecycle_cases, verify_restored_tool
 from interactive_rendering import (
     check_agent_reading_position,
     named_output_cards,
@@ -52,7 +52,7 @@ def installed_upgrade(client, previous, current):
     assert deferred["service"]["version"] == original_version
     client.assert_current_service(original)
     client.release_tool(workspace)
-    client.provider.next("upgrade-gated-tool").expect_tool_output("upgrade-gated-tool", TOOL_OUTPUT).text(output)
+    client.completed_tool(workspace, "upgrade-gated-tool").text(output)
     eventually("old service to complete the tool", lambda: client.snapshot(workspace, session)["last_output"] == output)
     eventually("old service to become idle", lambda: not client.status()["busy"])
     client.verify_tool(workspace)
@@ -207,7 +207,8 @@ def two_workspaces_and_disconnect(client):
 
     client.assert_current_service(original)
     client.release_tool(workspace)
-    client.provider.next(tool_id).expect_tool_output(tool_id, TOOL_OUTPUT).text(final)
+    completed = client.completed_tool(workspace, tool_id)
+    completed.text(final)
     eventually("tool and response to commit without a client",
                lambda: client.snapshot(workspace, session)["last_output"] == final)
     client.verify_tool(workspace)
@@ -217,27 +218,19 @@ def two_workspaces_and_disconnect(client):
     calls = [entry for entry in tool_history if entry["type"] == "tool_call"]
     results = [entry for entry in tool_history if entry["type"] == "tool_result"]
     assert len(calls) == len(results) == 1 and results[0]["status"] == "ok", tool_history
-    assert calls[0]["args"]["brief"] == TOOL_BRIEF and TOOL_OUTPUT in results[0]["model_content"], tool_history
+    assert calls[0]["args"]["brief"] == TOOL_BRIEF, tool_history
+    if completed.completed_job is None:
+        assert TOOL_OUTPUT in results[0]["model_content"], tool_history
     with client.terminal(workspace) as reopened:
         reopened.resume(prompt)
         screen = reopened.expect(final)["screen"]
         assert screen.count(final) == 1, (
             f"Restored terminal must show one durable response (count={screen.count(final)})\n{screen}"
         )
-        assert screen.count(TOOL_BRIEF) == 1 and "╰─ ok" in screen, (
-            f"Restored terminal must show one tool result (cards={screen.count(TOOL_BRIEF)}, "
-            f"ok={'╰─ ok' in screen})\n{screen}\nCommitted tool: {json.dumps(tool_history)}"
-        )
         compact = reopened.expect("TPS")["screen"].splitlines()[-1]
         assert "main" in compact and "Context" in compact and "Cache hit" not in compact, compact
         assert not re.search(r"\d(?:[.\d]*[KMB])? (?:in|out)\b", compact), compact
-        details = reopened.expect(TOOL_BRIEF)["screen"]
-        assert "--gated-tool" in details and TOOL_OUTPUT in details
-        reopened.press("\x0f")
-        collapsed = reopened.expect("Ctrl+O show")["screen"]
-        assert "Saved output" not in collapsed and "--gated-tool" not in collapsed
-        reopened.press("\x0f")
-        reopened.expect(TOOL_BRIEF, also=(TOOL_OUTPUT,))
+        verify_restored_tool(reopened, completed.completed_job, tool_history)
         reopened.exit_cleanly()
     client.assert_current_service(original)
     client.provider.assert_idle(duration=0.2)
@@ -576,7 +569,7 @@ def lost_first_receipt(client):
             eventually("durable receipt that is lost to the client", lambda: committed)
             client.gated_tool(workspace, call, "lost-ack-fixture-tool")
             client.release_tool(workspace)
-            client.provider.next("lost-ack-fixture-tool").expect_tool_output("lost-ack-fixture-tool", TOOL_OUTPUT).text("first receipt executed once")
+            client.completed_tool(workspace, "lost-ack-fixture-tool").text("first receipt executed once")
             client.finish(process, success=False)
         session = client.session(workspace)
         eventually("committed result before client relaunch",
