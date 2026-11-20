@@ -202,6 +202,37 @@ fn plain_arrows_preserve_the_draft_and_history_requires_an_explicit_shortcut() {
     assert_eq!(11, app.pane().draft.cursor());
 }
 
+#[test]
+fn escape_from_history_focus_returns_to_composer_with_multiline_draft() {
+    let mut app = connected_app();
+    for id in 1..=20 {
+        insert_message(
+            &mut app,
+            id,
+            HistoryKind::User,
+            &format!("history {id}"),
+            serde_json::Map::new(),
+        );
+    }
+    app.paste("first\nsecond");
+    press(&mut app, KeyCode::Left);
+    let draft = app.pane().draft.text().to_owned();
+    let cursor = app.pane().draft.cursor();
+
+    press(&mut app, KeyCode::PageUp);
+    assert!(app.pane().transcript.is_reading());
+    assert_eq!(crate::app::KeyboardFocus::Transcript, app.pane().keyboard_focus);
+    assert!(!app.composer_focused());
+
+    press(&mut app, KeyCode::Esc);
+    assert!(app.composer_focused());
+    assert_eq!(crate::app::KeyboardFocus::Composer, app.pane().keyboard_focus);
+    assert_eq!(draft, app.pane().draft.text());
+    assert_eq!(cursor, app.pane().draft.cursor());
+    assert_eq!(None, app.escape_armed_at);
+    assert!(app.modal.is_none());
+}
+
 fn agent_cards(app: &mut App) {
     for (index, mut event) in [
         json!({
