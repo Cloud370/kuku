@@ -106,7 +106,10 @@ impl Transcript {
                         };
                         (label, detail)
                     }
-                    Body::Notice(..) | Body::TurnSummary => return None,
+                    Body::Notice(..)
+                    | Body::ModelError { .. }
+                    | Body::Retry { .. }
+                    | Body::TurnSummary => return None,
                 };
                 let turn = record
                     .turn_number
@@ -146,7 +149,9 @@ impl Transcript {
                 };
                 (MessageKind::Tool, text, Some(view), false)
             }
-            Body::Notice(..) | Body::TurnSummary => return None,
+            Body::Notice(..) | Body::ModelError { .. } | Body::Retry { .. } | Body::TurnSummary => {
+                return None
+            }
         };
         let (thinking, expandable) = self.message_action_keys(record);
         Some(MessageInfo {
@@ -223,36 +228,5 @@ impl Transcript {
         if self.assistant_view == AssistantView::MessageSource(*event_id) {
             self.assistant_view = AssistantView::Preview;
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn toggle_source(&mut self) -> bool {
-        self.assistant_view = match self.assistant_view {
-            AssistantView::Preview => AssistantView::Source,
-            AssistantView::Source => AssistantView::Preview,
-            AssistantView::MessageSource(_) => AssistantView::Source,
-        };
-        self.assistant_view == AssistantView::Source
-    }
-
-    #[cfg(test)]
-    pub(crate) fn tools(&self) -> Vec<ToolView> {
-        let window = self
-            .reading
-            .as_ref()
-            .map_or(&self.recent, |reading| &reading.window);
-        window
-            .records
-            .iter()
-            .rev()
-            .filter_map(|record| match &record.body {
-                Body::Tool(tool) => Some(tool.view()),
-                Body::User { .. }
-                | Body::Assistant(_)
-                | Body::Interrupted(_)
-                | Body::Notice(..)
-                | Body::TurnSummary => None,
-            })
-            .collect()
     }
 }

@@ -69,7 +69,7 @@ pub(crate) fn detail(retry: &RetryMetadata) -> String {
     parts.join(" · ")
 }
 
-pub(crate) fn history_text(retry: &RetryMetadata) -> String {
+pub(crate) fn history_text(retry: &RetryMetadata, include_detail: bool) -> String {
     let state = match decision(retry) {
         Some(false) => stopped_reason(retry),
         None => "Retry decision recorded".to_owned(),
@@ -82,7 +82,11 @@ pub(crate) fn history_text(retry: &RetryMetadata) -> String {
     if let Some(attempt) = attempt_label(retry) {
         parts.push(attempt);
     }
-    parts.push(detail(retry));
+    if include_detail {
+        parts.push(detail(retry));
+    } else if let Some(status) = retry.status {
+        parts.push(format!("HTTP {status}"));
+    }
     parts.join(" · ")
 }
 
@@ -300,7 +304,7 @@ mod tests {
             stop_reason: Some(RetryStopReason::StreamStarted),
             ..RetryMetadata::default()
         };
-        let text = history_text(&stopped);
+        let text = history_text(&stopped, true);
         assert!(text.contains("Reply already started; no automatic retry"));
         assert!(!text.contains("Esc stop"));
         assert!(!text.contains("currently retrying"));
