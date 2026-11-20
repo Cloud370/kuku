@@ -2,7 +2,6 @@
 
 import json
 import re
-import tomllib
 from urllib.parse import urlencode
 
 from interactive_fixture import InstalledClient, eventually, json_response
@@ -396,7 +395,11 @@ def runtime_credential_repair(binary, bridge, directory):
         prompt = "AUTH-REPAIR-ORIGINAL-INPUT-481"
         draft = "An independent draft survives credential repair"
         config_path = client.home / "config.toml"
-        original_config = tomllib.loads(config_path.read_text())
+        client.env["KUKU_ACCEPTANCE_REJECTED_KEY"] = "test-key"
+        config_path.write_text(config_path.read_text().replace(
+            'api_key = "test-key"', 'api_key = "$KUKU_ACCEPTANCE_REJECTED_KEY"',
+        ))
+        original_config = config_path.read_text()
         with client.terminal(workspace) as terminal:
             terminal.expect("New session", state="Ready")
             terminal.submit(prompt)
@@ -438,11 +441,13 @@ def runtime_credential_repair(binary, bridge, directory):
             terminal.exit_cleanly()
         saved_text = config_path.read_text()
         assert repaired_key not in saved_text
-        saved_config = tomllib.loads(saved_text)
-        key_ref = saved_config["provider"]["test-anthropic"].pop("api_key")
-        original_config["provider"]["test-anthropic"].pop("api_key")
-        assert saved_config == original_config, "Repair changed unrelated provider or model settings"
-        assert key_ref.startswith("file:")
+        assert re.search(r'''(?m)^api_key = (["'])file:[^\r\n]+\1$''', saved_text)
+        normalize = lambda text: re.subn(r"(?m)^api_key = .*?$", "api_key = <credential>", text)
+        saved_config, saved_keys = normalize(saved_text)
+        unchanged_config, original_keys = normalize(original_config)
+        assert saved_keys == original_keys == 1
+        assert saved_config == unchanged_config, "Repair changed unrelated provider or model settings"
+        assert client.env["KUKU_ACCEPTANCE_REJECTED_KEY"] == "test-key"
         credential_files = list((client.home / "credentials").iterdir())
         assert len(credential_files) == 1 and credential_files[0].read_text() == repaired_key
         client.provider.assert_idle()
