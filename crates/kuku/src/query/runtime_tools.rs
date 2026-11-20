@@ -566,7 +566,9 @@ pub(super) async fn execute(
                         "an Agent cannot wait for itself".into(),
                     ));
                 }
-                serde_json::json!([agent_listing(session.wait_for_agent(address).await?, true)])
+                let waited = session.wait_for_agent(address).await;
+                let snapshot = current_agent_after_wait(waited, || session.agent(address))?;
+                serde_json::json!([agent_listing(snapshot, true)])
             } else {
                 serde_json::Value::Array(
                     session
@@ -634,6 +636,16 @@ fn agent_listing(agent: crate::AgentSnapshot, include_reply: bool) -> serde_json
         }
     }
     item
+}
+
+fn current_agent_after_wait<T>(
+    waited: Result<T>,
+    current: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    match waited {
+        Err(Error::AgentWaitTimeout) => current(),
+        result => result,
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -913,8 +925,33 @@ fn required<'a>(args: &'a serde_json::Value, field: &str) -> Result<&'a str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{create_agent_input, normalize_create_agent_args};
+    use super::{create_agent_input, current_agent_after_wait, normalize_create_agent_args};
+    use crate::Error;
     use serde_json::json;
+
+    #[test]
+    fn list_agents_wait_falls_back_only_on_timeout() {
+        let mut fallback_called = false;
+        let current = current_agent_after_wait(Err(Error::AgentWaitTimeout), || {
+            fallback_called = true;
+            Ok("current state")
+        })
+        .unwrap();
+        assert_eq!("current state", current);
+        assert!(fallback_called);
+
+        let mut fallback_called = false;
+        let error = current_agent_after_wait::<&str>(
+            Err(Error::InvalidEventStream("worker failure".into())),
+            || {
+                fallback_called = true;
+                Ok("current state")
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(error, Error::InvalidEventStream(message) if message == "worker failure"));
+        assert!(!fallback_called);
+    }
 
     #[test]
     fn create_agent_preserves_values_outside_optional_identifiers() {

@@ -729,6 +729,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn wait_for_agent_returns_a_typed_timeout() {
+        let (_directory, session, epoch) = running_session().await;
+        let (cancel, _) = watch::channel(false);
+        let (complete, done) = watch::channel(None);
+        let join = tokio::spawn(async { Ok::<(), Error>(()) });
+        session.inner.workers.lock().unwrap().insert(
+            epoch,
+            Worker {
+                address: "main".into(),
+                cancel,
+                done,
+                join,
+            },
+        );
+
+        let error = session
+            .wait_for_agent_with_timeout("main", Duration::from_millis(10))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::AgentWaitTimeout));
+        drop(complete);
+        session.close().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn wait_for_agent_surfaces_completed_error_after_terminal_state_and_worker_pruning() {
         let (_directory, session, epoch) = running_session().await;
         {

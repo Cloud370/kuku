@@ -153,8 +153,7 @@ async fn wait_for_agent_with_timeout(
             );
         }
         match tokio::time::timeout(remaining, session.wait_for_agent(address)).await {
-            Ok(Err(kuku::Error::InvalidEventStream(message)))
-                if message == "agent wait timed out" => {}
+            Ok(Err(kuku::Error::AgentWaitTimeout)) => {}
             Ok(outcome) => return outcome,
             Err(_) => panic!(
                 "agent did not settle during {stage}; last recorded execution phase: {}",

@@ -412,8 +412,17 @@ impl Session {
     ///
     /// Returns an error if the agent does not exist, an active worker is missing or ends without
     /// publishing a result, a worker reports an execution or cleanup failure, or a worker does
-    /// not finish within 30 seconds.
+    /// not finish within 30 seconds. A wait timeout is returned as [`Error::AgentWaitTimeout`].
     pub async fn wait_for_agent(&self, address: &str) -> Result<AgentSnapshot> {
+        self.wait_for_agent_with_timeout(address, std::time::Duration::from_secs(30))
+            .await
+    }
+
+    pub(crate) async fn wait_for_agent_with_timeout(
+        &self,
+        address: &str,
+        timeout: std::time::Duration,
+    ) -> Result<AgentSnapshot> {
         let (snapshot, active_epoch, worker) = {
             let state = self.inner.state.lock().unwrap();
             let agent = state.agent(address)?;
@@ -445,10 +454,10 @@ impl Session {
                     if completed_epoch == epoch {
                         outcome
                     } else {
-                        self.wait_for_worker(epoch, worker).await?
+                        self.wait_for_worker(epoch, worker, timeout).await?
                     }
                 } else {
-                    self.wait_for_worker(epoch, worker).await?
+                    self.wait_for_worker(epoch, worker, timeout).await?
                 }
             }
             None => match (worker, completed) {
@@ -458,7 +467,7 @@ impl Session {
                     outcome
                 }
                 (Some((worker_epoch, done)), _) => {
-                    self.wait_for_worker(worker_epoch, Some((worker_epoch, done)))
+                    self.wait_for_worker(worker_epoch, Some((worker_epoch, done)), timeout)
                         .await?
                 }
                 (None, Some((_, outcome))) => outcome,
@@ -473,6 +482,7 @@ impl Session {
         &self,
         epoch: u64,
         worker: Option<(u64, watch::Receiver<CleanupOutcome>)>,
+        timeout: std::time::Duration,
     ) -> Result<WorkerOutcome> {
         let Some((worker_epoch, mut done)) =
             worker.filter(|(worker_epoch, _)| *worker_epoch == epoch)
@@ -482,7 +492,7 @@ impl Session {
             ));
         };
         debug_assert_eq!(worker_epoch, epoch);
-        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        tokio::time::timeout(timeout, async {
             loop {
                 if let Some(outcome) = done.borrow().clone() {
                     return Ok(outcome);
@@ -495,7 +505,7 @@ impl Session {
             }
         })
         .await
-        .map_err(|_| Error::InvalidEventStream("agent wait timed out".into()))?
+        .map_err(|_| Error::AgentWaitTimeout)?
     }
 
     pub(crate) fn record_worker_outcome(&self, address: &str, epoch: u64, outcome: WorkerOutcome) {
