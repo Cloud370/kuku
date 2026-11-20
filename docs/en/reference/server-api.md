@@ -1,122 +1,151 @@
 # Server API
 
-## Start the Server
+The terminal, script and browser clients use the same HTTP Session contract. The server owns execution and resolves workspaces, model selection and provider credentials on its machine. Observers can disconnect and return while execution continues. For local service discovery and explicit server setup, see [Run the server](../guides/run-the-server.md).
 
-The default address is `127.0.0.1:17777`. Non-loopback listeners require `--password`.
+## Authentication and versions
 
-## Authentication
+Authenticated clients send `Authorization: Bearer TOKEN`, including on loopback. For managed local launches, `kuku web` opens the embedded browser with a short-lived, single-use ticket in the URL fragment. The page removes the fragment and exchanges the ticket for a separate browser bearer token, stored in that tab's `sessionStorage`. Reloading the same tab keeps its connection credentials for that service instance. An explicitly started service uses its configured access token. The default server tool policy trusts the authenticated user and permits file and command tools.
 
-Loopback clients bypass password checks. Remote clients send `Authorization: Bearer <token>`. Failed authentication returns HTTP 200 with `{"ok":false,"code":"auth_required","message":"password required"}`.
-
-The default single-user server uses trusted-local tool authorization. Embedded hosts can provide `AppState.authorizer` to allow, deny, or defer exact tool actions.
+`GET /health` is public and reports `version`, `protocol_version` and `management_version`. The protocol version describes the Session API. When upgrading a managed server, you can still check service status and request an orderly restart if the Session API versions differ. Missing or rejected credentials return `401` with `auth_required`. A managed server also checks its loopback host and the supplied browser origin.
 
 ## Endpoints
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/health` | Health check |
-| `POST` | `/runs` | Submit work and observe NDJSON |
-| `DELETE` | `/runs/{id}` | Cancel and await owned cleanup |
-| `POST` | `/runs/{id}/responses` | Answer a pending question or authorization |
-| `POST` | `/sessions/{id}/responses` | Reopen a persistent Session and answer its exact pending request |
-| `GET` | `/sessions` | List retained Sessions |
+| `GET` | `/health` | Build and protocol versions |
+| `GET` | `/service/status` | Effective service identity and activity |
+| `GET` | `/service/model-default-plan` | Validate a file-only model-default plan against the managed service config |
+| `POST` | `/service/restart` | Ask a managed service to release its Sessions and stop for orderly replacement |
+| `POST` | `/service/browser-ticket` | Issue an authenticated one-time browser handoff ticket |
+| `POST` | `/service/browser-session` | Exchange a ticket on the managed browser origin |
+| `GET` | `/sessions` | List retained Sessions, optionally filtered by `workspace` or `search` |
 | `DELETE` | `/sessions/{id}` | Delete a closed Session |
-| `GET` | `/sessions/{id}/events` | Read a bounded durable page and optional recent progress |
-| `GET` | `/sessions/{id}/conversations` | Inspect stable Agents inside one Session |
+| `POST` | `/sessions/{id}/commands` | Submit a durable command |
+| `GET` | `/sessions/{id}/receipts/{command_id}` | Look up a committed command receipt |
+| `GET` | `/sessions/{id}/agents` | Summarize Agents in the workspace's Session |
+| `GET` | `/sessions/{id}/snapshot` | Current Agent and queue state at a committed cursor |
+| `GET` | `/sessions/{id}/history` | Read conversation entries before a cursor |
+| `GET` | `/sessions/{id}/history/rewinds/{rewind_event_id}` | Read one committed rewind group without changing active history |
+| `GET` | `/sessions/{id}/observe` | Follow committed entries and transient progress after a cursor |
+| `GET` | `/sessions/{id}/events` | Page through raw committed facts |
+| `GET` | `/sessions/{id}/outputs/{output_id}` | Read bounded retained tool output |
+| `GET` | `/sessions/{id}/jobs` | List the selected Agent's background Jobs |
+| `GET` | `/sessions/{id}/jobs/{job_id}` | Inspect a Job and its available result |
+| `DELETE` | `/sessions/{id}/jobs/{job_id}` | Cancel a Job and return its terminal status |
+| `GET` | `/sessions/{id}/values` | List the selected Agent's named values |
+| `PUT` | `/sessions/{id}/values/{name}` | Bind a named value or explicitly replace its source |
+| `GET` | `/models` | Configured model catalog |
+| `GET` | `/models/resolve` | Resolve effective settings for a proposed Agent configuration |
+| `GET` | `/workspaces` | List workspaces |
+| `GET` | `/workspaces/resolve`, `/workspaces/files`, `/workspaces/skills` | Resolve a server path or discover workspace files and Skills |
 
-Request bodies are limited to 10 MB. SDK input and execution limits still apply.
+The status response includes the build and protocol versions, `instance_id`, `pid`, effective `data_dir` and `config_path`, `draining`, and `busy`. For a managed restart, `202` acknowledges that writers have been released and the process is stopping. `409` with `service_busy` includes active work such as running Jobs in `busy`. The managed client starts the replacement after the previous process releases its service lease.
 
-## `GET /health`
+`GET /service/model-default-plan` is available only on a managed service with an active config file. It requires the usual bearer authentication and loopback/origin checks, returns `Cache-Control: no-store`, and accepts only the query fields `connection`, `model`, and `config_sha256`. The service reads its active config file and validates the requested route in the service process environment. `config_sha256` must match the exact bytes held by the client. The response contains only `tier`, `overwrite_user_default`, and `config_sha256`; it neither writes the file nor resolves credentials or sends a model request. The client remains responsible for the local, guarded config edit. A changed config, unusable route, unmanaged service, or unavailable config is rejected with a generic error.
 
-```json
-{"ok":true,"version":"0.1.0","workspace":"/server/working/directory"}
-```
+## Commands and receipts
 
-## `POST /runs`
+Choose a unique Session ID and command ID before the initial send. The body includes the absolute path to the workspace on the server, the target Agent address and the command identity. Include `create` with initial Agent configuration when sending to a new Session.
 
 ```json
 {
-  "prompt": "check this project",
   "workspace": "/code/my-project",
-  "session_id": "optional-session",
-  "agent": "reviewer",
-  "connection": "named-connection",
-  "model": "exact-model-id",
-  "command_id": "optional-caller-command"
+  "agent": "main",
+  "command_id": "input-389cd599",
+  "type": "send",
+  "text": "Summarize this directory",
+  "timing": "steer",
+  "create": {}
 }
 ```
 
-`workspace` must be a directory. `session_id` is optional; `agent` defaults to `main`. Addresses are flat, stable lowercase ASCII letters, digits, `-`, or `_`, up to 64 bytes. `conversation` remains an input alias for `agent`.
+Use `create: {}` for the configured default settings. Supply initial model settings inside `create` or send an explicit `configure` command for an existing Agent. An Agent keeps its own retained context and settings across clients. Model selection uses the [SDK resolver](sdk.md#operations).
 
-Model selection uses the SDK resolver. Optional fields are `tier`, `connection`, `model`, `reasoning_effort`, `service_tier`, and `max_output_tokens`. `no_agents` and `no_skills` disable their tool surfaces. An exact connection selects its configured endpoint regardless of protocol overlap. Reopening without model options preserves that Agent's configuration; explicit changes affect only that Agent. A changed route clears previous Agent-local reasoning/service overrides before applying new explicit values.
+| Command `type` | Additional fields | Effect |
+|---|---|---|
+| `send` | `text`, optional `timing`, `create`, and `values` | Durable delivery. The default `steer` allows the next safe model-request boundary. `next_turn` waits for the next Turn. |
+| `create_agent` | `config` | Create the addressed Agent with independent context. |
+| `configure` | `config` | Change model or defaults at a safe boundary. |
+| `reply_question` | `request_id`, `text` | Answer the exact pending question. |
+| `reply_permission` | `request_id`, `allow` | Decide the exact pending authorization. |
+| `withdraw` | `input_command_id` | Withdraw a queued input or return its current status. |
+| `replace_queued` | `input_command_id`, `text` | Replace text before admission while preserving the queue position and timing. |
+| `advance` | | Explicitly resume an Agent. |
+| `cancel` | `execution_id` | Cancel the observed execution and await cleanup. |
 
-`command_id` accepts 1–100 bytes and is the SDK input's idempotency identity. The returned `run_id` identifies this HTTP execution handle; it is separate from the Session-local command identity. Receipt acknowledges durable delivery, while terminal execution facts arrive later. Reuse the same Session and Agent to continue its context. Other addresses in the Session have independent contexts and may execute concurrently. New commands for an already-running or waiting address fail visibly. A fresh command for a stopped/interrupted target explicitly advances it. Retrying the same input command returns HTTP JSON with `ok`, `replayed: true`, its original durable `receipt`, and the retained `run_id` when still available. This retry does not allocate another execution slot, alter configuration, or dispatch work again. Conflicting input or explicit configuration reuse fails. SDK callers can still enqueue fresh inputs at safe runtime boundaries; the HTTP host keeps one active control handle per Agent.
+A successful command returns JSON with `ok`, `receipt` and `replayed`. `receipt` includes `command_id`, `event_id` and `agent`. Input commands can report `status` as `queued`, `accepted` or `withdrawn`. A durable receipt acknowledges delivery. Model acceptance and execution settlement are separate facts.
 
-Fresh execution uses `application/x-ndjson`; receipt-only acknowledgements use JSON. When the last HTTP run finishes, the server waits for Agents already running in that Session before closing it. Waiting and interrupted Agents stay dormant. Session execution continues when the HTTP observer disconnects. Closing or slowing a client does not control the execution chain.
+To pair an existing Agent's new input with selection changes, send `config_patch`. To let a script create an absent Agent in an existing Session, also send `create_agent_if_missing: true`. For a new Session, use `create` for its initial Agent and optional `prompts_dir` for an absolute path to custom Prompt assets on the server.
 
-## NDJSON Wire Events
+Use `bootstrap_skill` on `send` to attach a Skill to that input at its admission boundary.
 
-`run_start` contains `run_id`, `session_id`, `agent`, and the durable input `receipt`. Live updates include `turn_start`, `model_request`, `text`, `thinking`, `tool_start`, `tool_output`, `tool_end`, and `log`.
+`replace_queued` records a new receipt and marks the original input as withdrawn in the same commit. If the original input is already admitted or otherwise absent from the queue, the command returns `409` with `input_not_queued`.
 
-`committed` identifies a durable event by `id` and `kind`; read its payload through the event endpoint. `lagged` reports dropped transient updates; reconnect using the durable event cursor. Queues are bounded: 256 broadcast messages and 200 recent messages; the recent buffer is capped at 1 MiB per run. Live progress may be lost; committed facts and the terminal response remain inspectable through the Session log.
+If a response is lost, query the receipt endpoint with `workspace`. A missing receipt returns `404` and `receipt_not_found`. If you resend, keep the original Session, Agent, command ID and payload. Replaying a committed command returns the original receipt. Reusing a command ID for a conflicting intent returns HTTP `409`. `?replay_only=true` validates a candidate replay and returns `receipt_not_found` if the command has yet to commit.
 
-A question emits `question` with its exact `id`, `agent`, and `text`. A deferred authorization emits `permission` with its matching request identity. Each pending request identity is emitted once per retained HTTP control, including when a question and authorization coexist. Answering the question does not decide the authorization. Waiting releases the server execution slot; it does not time out into implicit approval or denial. `question` and `permission` are nonterminal: the original stream and HTTP control remain open for a matching reply or cancellation.
+Client errors use `{"ok":false,"code":"...","message":"..."}`. Invalid requests return `400`, absent resources `404`, conflicting operations `409`, and an exhausted execution limit `429`. A stale execution identity or mismatched reply is a conflict. Retain the original command identity when retrying an uncertain delivery.
 
-Terminal events are `done`, `cancelled`, or `error`. `done` follows durable settlement and includes `session_id`, `agent`, `text`, `turn`, cumulative provider `usage`, and the Agent's `config`. `conversation` mirrors the Agent address for existing consumers. A completed Turn does not establish task success; inspect actual files and verifier commands.
+## Snapshot, history and observation
 
-```json
-{"type":"run_start","run_id":"http-run-1","session_id":"...","agent":"main","receipt":{"command_id":"command-1","event_id":3,"agent":"main"}}
-{"type":"text","content":"hello","agent":"main"}
-{"type":"done","session_id":"...","agent":"main","conversation":"main","text":"done","turn":1,"usage":{"model_requests":1},"config":{}}
-```
+1. Request `/snapshot?workspace=...&agent=...`. The JSON response includes `session_id`, `workspace`, the committed `cursor`, a selected `agent` snapshot, an `agents` summary, `pending` inputs and the model `selection`. A selection failure appears as `selection_error`. Agent state carries the execution identity and pending question or permission where applicable. Each pending item includes its `receipt` and `input`. A missing Agent returns `404` with `agent_not_found`. `/agents?workspace=...` provides all Agent summaries and a cursor without selecting a recipient. Add `progress=true` to request the observed phase at the snapshot cursor. `progress.phase` can be `waiting_for_model`, `thinking`, `streaming`, `tool_arguments`, `running_tools`, `retrying_model`, `retry_stopped` or `retry_decision_unknown`. Retry phases include a `retry` object with the durable attempt, failure kind or recovery reason, request identity and available policy metadata. A stopped retry has `will_retry:false`.
+2. Request `/history?workspace=...&agent=...&before=CURSOR_PLUS_ONE&limit=...` for the most recent page through that snapshot, in ascending order. Use the returned `next_before` for an earlier page. `before` is exclusive. `entries` contains only active conversation history; `rewind_groups` is a separate, default-empty list of summaries with `rewind_event_id`, original-position `target_event_id`, `agent`, optional display `turn_number`, and `entry_count`. Group headers are paginated with active entries at the target's original timeline position and count toward the page's entry and byte bounds. Retry decisions and model recoveries appear as `type:"retry"` entries with a structured `retry` object; completed history does not imply that a retry is still active.
+3. Expand a group on demand with `/history/rewinds/{rewind_event_id}?workspace=...&agent=...&before=...&limit=...`. `agent` is required and must match the group. `before` is an optional exclusive cursor; `limit` is bounded like `/history`. The response has `entries` and `next_before`, and reuses the normal display-entry projection. Overlapping ranges assign each entry to the first applicable rewind for the same Agent. These read-only pages never add hidden entries to active history or model context; later rewinds do not make earlier group pages disappear.
+4. Connect to `/observe?workspace=...&agent=...&after=CURSOR` for NDJSON with commits after the snapshot. Add `include_agent_activity=true` with a selected Agent to receive sibling activity in the same subscription. Sibling text deltas and settlement previews are bounded, and sibling tool output is omitted. Agent summaries provide the last output or error preview when reconnecting. Omit `agent` to observe Session-wide. Update your resume cursor from committed records. Reconnect after the last committed cursor on disconnect or lag.
 
-Provider usage and unknown reporting follow the [Session SDK](../how-it-works/sessions.md). Active `log` updates are observability records, separate from persisted execution facts.
+The selected Agent’s `agent.usage` contains cumulative token counts and counts of requests that reported input or output. `cache_measured_input_tokens` and `cache_measured_read_tokens` sum input and cache reads over the same requests with valid paired counts. When available, `latest_request` carries `input_tokens`, `output_tokens`, `context_window_tokens` and `elapsed_us` for one request. Optional measurements may be absent on older records. [Terminal usage fields](cli.md#terminal-interface)
 
-## `DELETE /runs/{id}`
+When available, `agent.turn_started_at_ms` is the latest Turn's first admission time in milliseconds since the Unix epoch. After settlement, `agent.turn_elapsed_ms` gives its final elapsed time in milliseconds. The committed `inputs_accepted` frame for a new Turn can also carry `turn_started_at_ms`.
 
-Success returns `{"ok":true}` after cancellation and cleanup have completed. A missing run returns `session_not_found`; cleanup errors return `cleanup_failed` and their message. Server shutdown closes Sessions, preserves pending waits, awaits owned cleanup, and reports failures.
+`committed` lines contain `id` and `kind`, plus an Agent address, conversation entry or state-change indicator when applicable. `live` lines carry `agent`, `execution_id`, `turn`, `cursor` and a transient `event`. Match those identities to the current view and replace previews when committed results arrive. A `lagged` line carries `skipped` transient observations. The stream can also emit `heartbeat` or `error` lines. Durable state remains readable after lag.
 
-## `POST /runs/{id}/responses`
+When present, a committed frame's `delivery` associates queue changes with command IDs. `accepted` carries `input_ids`, `withdrawn` carries `input_id`, and `replaced` carries `input_id` and `replacement_id`.
 
-```json
-{"interaction_id":"exact-pending-request","agent":"reviewer","choice":"once","command_id":"reply-1"}
-```
+A snapshot requested with `progress=true` may include `reply_preview` for the selected Agent. It carries `execution_id`, `turn`, optional `turn_number`, `phase`, `text` and `truncated`. The phase is `thinking`, `streaming` or `tool_arguments`. The text is a UTF-8 prefix of the active request's visible reply capped at 64 KiB. `truncated` means the reply has already exceeded the retained prefix. An optional `reasoning_preview` carries a bounded prefix of provider-visible reasoning text or a published summary for the selected Agent. Live `reasoning_preview` events append to it. Committed assistant entries can carry the same field.
 
-`choice` is `once` or `deny` for authorization, or `answer` with a `text` field for a question. `agent` is optional but must match the original run when supplied. `conversation` remains its alias. Session/project-wide grants are not inferred from a reply. A caller-selected `command_id` gives idempotent reply retries. Mismatched or stale request identities fail without advancing the Agent.
+Retry progress projection accepts durable `runtime.model_retry` and `model.recovery` records. The core producer update for the extended `runtime.model_retry` shape is not part of this branch, so current runtime events still use the legacy shape. A missing legacy `phase` means `started`; a missing legacy `will_retry` follows started-event semantics. In the extended shape, `will_retry` is the sole indicator of whether another request will be sent. `delay_ms` is a wait-policy value only for `phase:"waiting"`; clients may derive remaining time from that event's `ts`, but must not infer waits from provider response headers.
 
-Replies to a currently open server run continue through its original stream. Success returns JSON `{"ok":true,"receipt":{...}}`.
+At the same snapshot cursor, other Agents can also have `progress.phase` in their entries in `agents`. A `streaming` entry includes `progress.preview`, up to 512 UTF-8 bytes from the start of that Agent's active reply. Phases `thinking` and `tool_arguments` carry activity only.
 
-## `POST /sessions/{id}/responses`
+On an Agent-scoped attachment with `include_agent_activity=true`, the stream can also send a `live` line with `event.type` set to `reply_preview`, the phase in `event.phase`, the prefix in `event.content` and the limit flag in `event.truncated`. Replace the matching in-memory preview with this prefix, then apply later deltas. The stream captures the prefix and begins following new deltas at the same attachment boundary. In this scope, live `thinking` and `tool_arguments` events indicate activity only. Tool execution begins at committed dispatch. Only committed records advance the resume cursor.
 
-Use the persistent Session identity after a server restart; no old HTTP `run_id` is needed. The body uses the same reply fields and requires `workspace`:
+History entries carry a durable `id`, Agent address, optional Turn identity, its per-Agent display ordinal (`turn_number`) when known, and a `type` such as `user`, `assistant`, `tool_call`, `tool_result`, `question`, `permission`, `question_reply`, `permission_reply`, `status` or `error`. A tool result can include a summary, structured details and a retained `output_id`. A committed frame can also carry the runtime `operation` or a `settlement` with the Turn result.
 
-```json
-{"workspace":"/code/my-project","agent":"reviewer","interaction_id":"exact-pending-request","choice":"answer","text":"the requested information","command_id":"reply-1"}
-```
+For a `user` entry, `agent` identifies the recipient. When trusted runtime input records an Agent sender, `from` contains that sender's Session-local address, including on the input that opens a Turn.
 
-The Session must already exist. `agent` defaults to `main`. The host opens that Session, calls its matching SDK reply operation, and retains the same runtime through continuation. If it waits again, its stream and control stay open while execution capacity is released. A new HTTP execution returns the normal NDJSON stream and a new `run_id`; `run_start.receipt` identifies the durable reply. If this Agent already has a retained HTTP control, the reply returns JSON acknowledgement with that `run_id` and continues through its existing stream. Duplicate reply commands return JSON `{"ok":true,"replayed":true,"run_id":null,"receipt":{...}}` when no HTTP control remains; a retained control supplies its existing `run_id`. A new reply through a retained control returns the same acknowledgement shape with `replayed:false`. Neither duplicate path creates another continuation. Mismatched/stale requests and conflicting retries fail without model or tool dispatch.
+An explicit interruption can produce a `status` entry with `status: "interrupted"`, the `execution_id`, and the Turn identity and number when available. Its `text` holds up to 64 KiB of the interrupted reply, or is `null` if no visible text was retained. `truncated` indicates a longer partial reply. The raw journal can link its `turn.cancelled` event to the stop record with `stop_event_id`.
 
-## `GET /sessions`
+A settled Turn can have a `turn_summary` entry. When a Turn is explicitly interrupted, its interrupted `status` entry can carry the same summary. The `turn_summary` object has `tool_calls`, the count of committed tool calls including calls awaiting authorization. Available measurements include `elapsed_ms` from admission to settlement, `input_tokens` and `output_tokens` when all model requests reported the corresponding count, and `cache_hit_percent` over requests with paired cache-read and input counts.
 
-An optional `workspace` query filters the list. Response: `{"ok":true,"sessions":[]}`. Each Session includes `session_id`, `workspace`, `title`, `created_at`, `turn_count`, `status`, `mtime`, and `size`.
+Agent snapshots and summaries can include `admitted_task` and `queued_task`. These nullable strings are bounded excerpts of the latest admitted task input and the latest task input still queued, respectively. Replies to questions are excluded from task excerpts. Use `pending_inputs`, `question` and `permission` for queue and decision state.
 
-## `GET /sessions/{id}/conversations`
+To answer `ask_user` or a deferred tool authorization, use the request ID from the snapshot. Competing replies are checked against the exact pending request. Reopening a Session preserves pending requests and queued inputs. A dispatch without a confirmed result may have changed files or triggered a side effect. Inspect the workspace before continuing interrupted work. [Sessions](../how-it-works/sessions.md)
 
-An optional `workspace` selects the Session location. This retained endpoint returns `{"ok":true,"session_id":"...","conversations":[]}`. Each item reports `agent`/`conversation`, `status`, `pending_inputs`, pending `permission`/`question`, `config`, and `usage`. Reading does not advance execution or acquire another Session runtime. Status follows the [offline journal snapshot](sdk.md#operations), so it alone does not establish whether an active HTTP execution has stopped.
+## Raw events and retained tool output
 
-## `DELETE /sessions/{id}`
+`/events?workspace=...&after=0&limit=100` returns `events` and `next_after`. The raw event page is for auditing. Each record has an `id` and `payload`. An optional `agent` filter applies within the scanned page, and `next_after` advances even if that page has no matches. See [Session events](events.md) for the journal schema.
 
-An optional `workspace` selects the location. Common errors are `session_locked`, `session_not_found`, and `internal`.
+Persisted pages may include `model.recovery` for an output-limit retry in a direct or child-Agent query. These records follow the same `agent` filter; see [Session events](events.md) for their meaning.
 
-## `GET /sessions/{id}/events`
+Read a known tool output by its ID in `/outputs/{output_id}`, passing `workspace` and optionally `agent` (default `main`), `offset` and `max_bytes`. The Agent must own or have received the output. Use `search` for a literal match within the range. The response wraps the chunk in `output`. Pass `output.next_offset` to continue when `output.has_more` is true. [Retained output](tools.md)
 
-Query fields:
+## Background Jobs
 
-- `after`: exclusive durable event cursor, default 0.
-- `limit`: maximum scanned records, default 100; accepts 1–256.
-- `agent` or `conversation`: optional address filter within the bounded ledger page.
-- `workspace`: Session location.
+All Job routes require `workspace` and `agent` query parameters. `GET /sessions/{id}/jobs` returns `{ "jobs": [...] }` with metadata for the Agent's recent Jobs and all running Jobs. A Job lookup returns the snapshot directly, including the terminal `result` when available. Use `output_id`, when present, to read the retained command output through the output endpoint. An unknown Job ID or a Job belonging to another Agent returns `404` with `job_not_found`.
 
-The response always contains `events`, `next_after`, and `active_stream`. `next_after` is the last scanned ledger cursor, even when filtering excludes every event. Use it for the next page. Stored events retain their `id` and `payload`; active recent progress is optional and never replaces durable records.
+`DELETE /sessions/{id}/jobs/{job_id}` waits for the targeted execution to settle and returns the resulting snapshot. Repeating the request for a terminal Job returns its existing result. Both GET routes can read a closed Session without opening it. A DELETE for an unsettled Job in a Session that this server has not opened returns `409` with `job_not_active`.
 
-A separate process holding the Session writer may prevent a read; that resource conflict is returned visibly rather than starting another writer.
+The owning Agent's history and observation stream include a `job_finished` entry with `job_id`, `status`, `summary`, the original `turn` and any `output_id`. This entry can arrive after its Turn settles.
+
+## Named values
+
+`GET /sessions/{id}/values?workspace=...&agent=...` returns `{ "values": [...] }`. Each item contains `name`, `kind`, and `reference` (`id`, `offset`, `bytes`). Read its payload through the output endpoint with the same Agent.
+
+`PUT /sessions/{id}/values/{name}` takes a JSON body with `workspace`, `agent`, `source`, and optional `replace` (default `false`). The source object carries `kind` and `value`. Supported kinds are `text` for a UTF-8 string, `json` for a JSON value, `bytes` for an array of byte values, and `output` for an existing output ID. For a new Session, pass `create` with the initial `main` Agent configuration to save before the first input. The response contains the saved value metadata.
+
+On `send` to an existing Agent, `values` can carry the selected `reference` objects. The command binds those exact references to the submitted input. [Named Session values](tools.md#named-session-values)
+
+## Discover models and workspaces
+
+`/models` returns `default_tier`, `connections` and `tiers`. A connection identifies its `name` and wire `protocol`. A tier identifies its `name`, `connection`, `model` and `purpose`, together with settings and capabilities or a resolution error. Pass model selection fields such as `tier`, `connection`, `model`, `reasoning_effort` or `service_tier` to `/models/resolve` to get a resolved `selection`.
+
+`/workspaces` returns `workspaces`. Pass an existing absolute directory as `workspace` to `/workspaces/resolve` to obtain the canonical path. `/workspaces/files` and `/workspaces/skills` also accept a `query` filter and return `paths` and `skills`, respectively. File matches are workspace-relative paths and Skill matches include names and descriptions.

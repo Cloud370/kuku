@@ -160,6 +160,7 @@ const WRITE_TOOLS: &[&str] = &[
     "Bash",
     "edit_file",
     "write_file",
+    "remove_file",
     "run_command",
     "remember_memory",
     "forget_memory",

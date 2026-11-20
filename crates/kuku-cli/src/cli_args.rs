@@ -3,13 +3,77 @@
 //! Defined in the library crate so commands (in lib) can import them.
 //! The binary crate only parses and dispatches.
 
+use std::path::PathBuf;
+
 use clap::{Args, Parser, Subcommand};
+use kuku_client::{Connection, ConnectionOptions, Error};
 
 #[derive(Parser)]
-#[command(name = "kuku", version = env!("KUKU_VERSION"), about = "file-native agent runtime")]
+#[command(name = "kuku", version = kuku_server::BUILD_VERSION, about = "file-native agent runtime")]
 pub struct Cli {
+    /// Select the service and workspace for the requested action.
+    #[command(flatten)]
+    pub target: ConnectionArgs,
     #[command(subcommand)]
     pub command: Option<Command>,
+}
+
+/// Shared command-line connection choices.
+#[derive(Args, Clone, Default)]
+pub struct ConnectionArgs {
+    /// Workspace on the connected service host (local default: current directory).
+    #[arg(short, long, global = true)]
+    pub workspace: Option<PathBuf>,
+    /// User data directory (default: KUKU_HOME or ~/.kuku).
+    #[arg(long, global = true)]
+    pub data_dir: Option<PathBuf>,
+    /// Configuration file for the managed service.
+    #[arg(long, global = true)]
+    pub config: Option<PathBuf>,
+    /// Explicit remote service URL.
+    #[arg(long, global = true)]
+    pub remote: Option<String>,
+    /// Remote service token (may also be supplied as KUKU_TOKEN).
+    #[arg(long, global = true, requires = "remote")]
+    pub token: Option<String>,
+}
+
+impl ConnectionArgs {
+    /// Copy CLI choices into the shared client's connection options.
+    pub fn options(&self) -> ConnectionOptions {
+        ConnectionOptions {
+            workspace: self.workspace.clone(),
+            data_dir: self.data_dir.clone(),
+            config: self.config.clone(),
+            remote: self.remote.clone(),
+            token: self.token.clone(),
+        }
+    }
+
+    /// Connect to the selected service and resolve its workspace.
+    pub async fn connect(&self) -> Result<Connection, Error> {
+        self.options().connect().await
+    }
+
+    /// Resolve local management without starting a service.
+    pub fn local_service(&self) -> Result<kuku_client::local::LocalService, Error> {
+        self.options().local_service()
+    }
+
+    /// Return the explicit remote connection, if selected.
+    pub fn remote_connection(&self) -> Result<Option<kuku_client::Client>, Error> {
+        self.options().remote_connection()
+    }
+
+    /// Get the user data path without starting a service.
+    pub fn data_dir(&self) -> Result<PathBuf, Error> {
+        self.options().data_dir()
+    }
+
+    /// Get the selected workspace path without starting a service.
+    pub fn workspace(&self) -> Result<PathBuf, Error> {
+        self.options().workspace()
+    }
 }
 
 #[derive(Subcommand)]
@@ -26,9 +90,11 @@ pub enum Command {
     List(ListArgs),
     /// Delete a session
     Delete(DeleteArgs),
+    /// Recover an unconfirmed command
+    Pending(PendingArgs),
     /// Show or manage configuration
     Config(ConfigArgs),
-    /// Initialize config and directory structure
+    /// Open interactive provider settings
     Init,
     /// Show or export embedded prompt assets
     Prompts(PromptsArgs),
@@ -36,14 +102,99 @@ pub enum Command {
     Agents(AgentsArgs),
     /// List or inspect available skill definitions
     Skills(SkillsArgs),
-    /// Start the HTTP API server
+    /// Start or manage the HTTP service
+    Server(ServerCommandArgs),
+    /// Open the selected service in a browser
     #[cfg(feature = "server")]
-    Server(kuku_server::server_args::ServerArgs),
-    /// Start the HTTP server with embedded Web UI
-    #[cfg(feature = "server")]
-    Web(kuku_server::server_args::ServerArgs),
+    Web(WebArgs),
+    /// Internal entry point used to launch the managed service.
+    #[command(name = "__managed-server", hide = true)]
+    ManagedServer(ServerCommandArgs),
 }
 
+/// Arguments for starting or managing the service.
+#[derive(Args)]
+pub struct ServerCommandArgs {
+    /// Listen address for an explicit foreground server.
+    #[arg(long, default_value = "127.0.0.1:17777")]
+    pub listen: String,
+    /// Foreground service password (may also be supplied as KUKU_SERVER_PASSWORD).
+    #[arg(long)]
+    pub password: Option<String>,
+    /// Maximum concurrent foreground executions.
+    #[arg(long, default_value = "16")]
+    pub max_concurrent_runs: usize,
+    /// Optional service management operation.
+    #[command(subcommand)]
+    pub command: Option<ServerCommand>,
+}
+
+impl ServerCommandArgs {
+    /// Build service-host arguments with the selected data and config paths.
+    pub fn into_server_args(self, target: &ConnectionArgs) -> kuku_server::server_args::ServerArgs {
+        kuku_server::server_args::ServerArgs {
+            listen: self.listen,
+            config: target.config.clone(),
+            data_dir: target.data_dir.clone(),
+            password: self.password,
+            max_concurrent_runs: self.max_concurrent_runs,
+            managed: false,
+        }
+    }
+}
+
+/// Operations on an existing service.
+#[derive(Subcommand)]
+pub enum ServerCommand {
+    /// Show the service version, configuration, and running work.
+    Status,
+    /// Restart the managed service when running work has settled.
+    Restart,
+}
+
+/// Select the conversation to open in a browser.
+#[cfg(feature = "server")]
+#[derive(Args)]
+pub struct WebArgs {
+    /// Session to open.
+    #[arg(long)]
+    pub session: Option<String>,
+    /// Agent to focus within the Session.
+    #[arg(long, requires = "session")]
+    pub agent: Option<String>,
+    /// Print a one-time sign-in link for use on a headless terminal.
+    #[arg(long)]
+    pub print_url: bool,
+}
+
+/// Choose how to handle a pending command.
+#[derive(Args)]
+pub struct PendingArgs {
+    /// Operation; defaults to `list`.
+    #[command(subcommand)]
+    pub command: Option<PendingCommand>,
+}
+
+/// Actions for recovering a pending command.
+#[derive(Subcommand)]
+pub enum PendingCommand {
+    /// Query receipts and list commands that still need a decision.
+    List,
+    /// Send the exact original intent again if its durable receipt is missing.
+    Resend(PendingTargetArgs),
+    /// Discard the local pending intent if its durable receipt is missing.
+    Discard(PendingTargetArgs),
+}
+
+/// Identify one pending command in the selected workspace.
+#[derive(Args)]
+pub struct PendingTargetArgs {
+    /// Original command identity shown by `kuku pending list`.
+    pub command_id: String,
+    /// Select a Session when the command ID is reused in more than one.
+    #[arg(long)]
+    pub session: Option<String>,
+}
 // ── Prompts ──
 
 #[derive(Args)]
@@ -97,14 +248,6 @@ pub struct RunArgs {
     #[arg(long, default_value = "main")]
     pub agent: String,
 
-    /// Working directory (defaults to the current directory)
-    #[arg(long)]
-    pub workspace: Option<String>,
-
-    /// Persistent data directory (defaults to KUKU_HOME or ~/.kuku)
-    #[arg(long)]
-    pub data_dir: Option<String>,
-
     /// Provider-supported reasoning effort
     #[arg(long)]
     pub reasoning_effort: Option<String>,
@@ -145,13 +288,9 @@ pub struct RunArgs {
     #[arg(long = "verbose", conflicts_with_all = ["json", "stream_json"])]
     pub verbose: bool,
 
-    /// Path to config.toml (default: ~/.kuku/config.toml)
-    #[arg(long = "config")]
-    pub config: Option<String>,
-
     /// Directory containing prompt files to override embedded defaults
     #[arg(long = "prompts-dir")]
-    pub prompts_dir: Option<String>,
+    pub prompts_dir: Option<PathBuf>,
 
     /// Disable create_agent, send_message, and list_agents; keep ask_user
     #[arg(long = "no-agents")]
@@ -160,14 +299,6 @@ pub struct RunArgs {
     /// Disable the default skill tool surface (`list_skills`, `search_skills`, `use_skill`) and slash-skill loading
     #[arg(long = "no-skills")]
     pub no_skills: bool,
-
-    /// Internal: pre-parsed skill body from interactive slash command
-    #[arg(skip)]
-    pub skill_body: Option<String>,
-
-    /// Internal: name for a pre-parsed bootstrap skill
-    #[arg(skip)]
-    pub bootstrap_skill_name: Option<String>,
 }
 
 /// Select one durable request and an explicit host reply.
@@ -192,15 +323,6 @@ pub struct ReplyArgs {
     /// Caller command identity, allowing safe retries
     #[arg(long)]
     pub command_id: Option<String>,
-    /// Working directory
-    #[arg(long)]
-    pub workspace: Option<String>,
-    /// Persistent data directory
-    #[arg(long)]
-    pub data_dir: Option<String>,
-    /// Configuration file
-    #[arg(long)]
-    pub config: Option<String>,
 }
 
 // ── Agents ──
@@ -254,12 +376,6 @@ pub struct ShowArgs {
     /// Emit the durable Agent snapshot, including pending requests
     #[arg(long)]
     pub json: bool,
-    /// Working directory
-    #[arg(long)]
-    pub workspace: Option<String>,
-    /// Persistent data directory
-    #[arg(long)]
-    pub data_dir: Option<String>,
 }
 
 // ── Events ──
@@ -282,12 +398,6 @@ pub struct EventsArgs {
     /// Emit stored event JSON lines
     #[arg(long)]
     pub json: bool,
-    /// Working directory
-    #[arg(long)]
-    pub workspace: Option<String>,
-    /// Persistent data directory
-    #[arg(long)]
-    pub data_dir: Option<String>,
 
     /// Verbose output (-v for metadata, -vv for full context)
     #[arg(short = 'v', long = "verbose", action = clap::ArgAction::Count)]
@@ -305,16 +415,9 @@ pub struct ListArgs {
     #[arg(short = 'a', long = "all")]
     pub all: bool,
 
-    /// Filter to a specific workspace (overrides auto-detect)
-    #[arg(short = 'w', long = "workspace")]
-    pub workspace: Option<String>,
-
     /// Verbose listing (mtime, created_at)
     #[arg(short = 'v', long = "verbose")]
     pub verbose: bool,
-    /// Persistent data directory
-    #[arg(long)]
-    pub data_dir: Option<String>,
 }
 
 // ── Delete ──
@@ -323,10 +426,6 @@ pub struct ListArgs {
 pub struct DeleteArgs {
     /// Session ID to delete
     pub session_id: String,
-
-    /// Workspace the session belongs to
-    #[arg(short = 'w', long = "workspace")]
-    pub workspace: Option<String>,
 }
 
 // ── Config ──
@@ -335,10 +434,6 @@ pub struct DeleteArgs {
 pub struct ConfigArgs {
     #[command(subcommand)]
     pub cmd: Option<ConfigSubcommand>,
-
-    /// Path to config.toml (default: ~/.kuku/config.toml)
-    #[arg(long = "config", global = true)]
-    pub config: Option<String>,
 }
 
 #[derive(Subcommand)]

@@ -25,13 +25,15 @@ async fn command_slot_preserves_timeout_truncation() {
         "tool_timeout".to_string(),
         None,
         serde_json::json!({
-            "command": noisy_timeout_command(dir.path()),
+            "shell":if cfg!(windows) {"cmd"} else {"sh"},"cwd":".","command": noisy_timeout_command(dir.path()),
             "timeout": 1,
             "brief": "produce bounded timeout output",
         }),
         "produce bounded timeout output".to_string(),
         dir.path().to_path_buf(),
         event_tx,
+        None,
+        crate::WorkspaceExecutionHost::default(),
         None,
     );
 
@@ -144,7 +146,7 @@ async fn cancelled_run_persists_tool_result_for_finished_active_slot() {
             request_id: "req_1".to_string(),
             index: 0,
             tool: "run_command".to_string(),
-            args: serde_json::json!({"command": "printf hi", "timeout": 60, "brief": "print hi"}),
+            args: serde_json::json!({"program": "printf", "args": ["hi"], "cwd": ".", "timeout": 60, "brief": "print hi"}),
         })
         .unwrap();
 
@@ -157,6 +159,7 @@ async fn cancelled_run_persists_tool_result_for_finished_active_slot() {
             conversation: None,
             kind: ToolKind::Command { pid: None },
             workspace_ordered: false,
+            job: None,
             label: "print hi".to_string(),
             cancel: std::sync::Arc::new(tokio::sync::Notify::new()),
             nested_permissions: std::sync::Arc::new(std::sync::Mutex::new(

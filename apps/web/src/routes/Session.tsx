@@ -1,190 +1,450 @@
-import { useParams, useNavigate } from "react-router-dom";
-import { useEffect, useCallback } from "react";
-import { MainLayout } from "@/components/layout/MainLayout";
-import { TurnCard } from "@/components/chat/TurnCard";
-import { TextContent } from "@/components/chat/TextContent";
-import { ToolCard } from "@/components/chat/ToolCard";
-import { ThinkingBlock } from "@/components/chat/ThinkingBlock";
-import { ErrorNotice } from "@/components/chat/ErrorNotice";
-import { CancelledNotice } from "@/components/chat/CancelledNotice";
-import { PermissionDock } from "@/components/chat/PermissionDock";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { SubmitEvent, ReactNode } from "react";
+import { Link, useNavigate } from "react-router-dom";
+import { errorMessage } from "@/api/client";
+import type { AgentStatus, Command, SendTiming, Target } from "@/api/sessions";
 import { Composer } from "@/components/chat/Composer";
-import { RightPanel } from "@/components/right-panel/RightPanel";
+import { ConversationTimeline } from "@/components/chat/ConversationTimeline";
+import { ErrorNotice } from "@/components/chat/ErrorNotice";
+import { ModelControl } from "@/components/chat/ModelControl";
+import { PendingQuestion } from "@/components/chat/PendingQuestion";
+import { PermissionDock } from "@/components/chat/PermissionDock";
+import { LeftSidebar } from "@/components/layout/LeftSidebar";
+import { MainLayout } from "@/components/layout/MainLayout";
+import { SessionBrowser } from "@/components/layout/SessionBrowser";
 import { DiffViewer } from "@/components/right-panel/DiffViewer";
-import { TerminalPanel } from "@/components/right-panel/TerminalPanel";
+import type { DiffViewerProps } from "@/components/right-panel/DiffViewer";
+import { RightPanel } from "@/components/right-panel/RightPanel";
 import { StatusPanel } from "@/components/right-panel/StatusPanel";
-import { useUIStore } from "@/stores/ui";
-import { useRunStore } from "@/stores/run";
-import { useSessionEvents } from "@/queries/sessions";
-import { replayToTurns } from "@/adapters/replay";
-import type { EventPayload } from "@/adapters/replay";
-import { createRun } from "@/api/runs";
-import type { StoredEventItem } from "@/api/sessions";
+import { TerminalPanel } from "@/components/right-panel/TerminalPanel";
+import { Button } from "@/components/ui/Button";
+import { Input } from "@/components/ui/Input";
+import { visibleOutput } from "@/lib/output";
+import { useConversation } from "@/queries/conversation";
+import { useAgents } from "@/queries/sessions";
+import { useCommands } from "@/stores/commands";
+import { targetKey, useDrafts } from "@/stores/drafts";
+import { sessionHref, workspaceHref } from "./navigation";
 
-function replayEvent(event: StoredEventItem): EventPayload {
-  return { ...(event.payload as EventPayload), id: event.id };
+const statusLabels: Record<AgentStatus, string> = {
+  idle: "Idle",
+  running: "Running",
+  waiting: "Waiting for reply",
+  stopped: "Stopped",
+  interrupted: "Interrupted",
+};
+
+function diffLines(diff: string | undefined): NonNullable<DiffViewerProps["lines"]> {
+  return (
+    diff?.split("\n").map((line) => ({
+      content: visibleOutput(line),
+      type:
+        line.startsWith("+") && !line.startsWith("+++")
+          ? "added"
+          : line.startsWith("-") && !line.startsWith("---")
+            ? "removed"
+            : "unchanged",
+    })) ?? []
+  );
 }
 
-function riskIcon(risk: string): string {
-  if (risk === "command") return ">";
-  if (risk === "file_write") return "+";
-  if (risk === "file_read") return "\u{1F441}";
-  return "\u{1F527}";
-}
-
-export function Session() {
-  const { id } = useParams<{ id: string }>();
+export function Session({ target, workspacePanel }: { target: Target; workspacePanel: ReactNode }) {
+  const { workspace, session, agent } = target;
+  const isNew = session === "";
+  const key = targetKey(target);
+  const draft = useDrafts((s) => s.drafts[key] ?? "");
+  const changeDraft = useDrafts((s) => s.change);
+  const pending = useCommands((s) => s.pending);
+  const submit = useCommands((s) => s.submit);
   const navigate = useNavigate();
-  const workspace = useUIStore((s) => s.workspace);
-  const { turns, status, pendingPermission, loadTurns, pushWireLine, pushActiveStream, setStatus, clear, addUserTurn, respondToPermission } = useRunStore();
-  const isNew = !id || id === "new";
-
-  const { data } = useSessionEvents(isNew ? undefined : id, workspace);
-
-  useEffect(() => {
-    clear();
-  }, [id, clear]);
-
-  useEffect(() => {
-    if (!data) return;
-    if (Array.isArray(data)) {
-      loadTurns(replayToTurns(data.map(replayEvent)));
-    } else {
-      loadTurns(replayToTurns(data.events.map(replayEvent)));
-      if (data.active_stream?.length) {
-        pushActiveStream(data.active_stream);
-      }
-    }
-  }, [data, loadTurns, pushActiveStream]);
-
-  const handleSubmit = useCallback(
-    (prompt: string, _model: string) => {
-      setStatus("streaming");
-      addUserTurn(prompt);
-      void createRun(
-        prompt,
-        workspace,
-        isNew ? undefined : id,
-        (line) => {
-          pushWireLine(line);
-        },
-        (sessionId) => {
-          if (isNew) void navigate(`/session/${sessionId}`, { replace: true });
-        },
-        () => {
-          setStatus("error");
-        },
-      );
-    },
-    [workspace, id, isNew, pushWireLine, setStatus, addUserTurn, navigate],
+  const [tier, setTier] = useState("");
+  const [error, setError] = useState<string>();
+  const [creatingAgent, setCreatingAgent] = useState(false);
+  const viewport = useRef<HTMLDivElement>(null);
+  const followLatest = useRef(true);
+  const scrollAnchor = useRef<number>(undefined);
+  const observationTarget = useMemo(
+    () => (session ? { workspace, session, agent } : undefined),
+    [workspace, session, agent],
+  );
+  const { view, loadOlder, refresh, reconnect } = useConversation(observationTarget);
+  const fallback = useAgents(target, !view.snapshot && view.errorCode === "agent_not_found");
+  const snapshot = view.snapshot;
+  const agents = snapshot?.agents ?? fallback.data?.agents ?? [];
+  const status = snapshot?.agent.status;
+  const execution = agents.find(({ address }) => address === agent)?.execution_id;
+  const question = snapshot?.agent.question;
+  const permission = snapshot?.agent.permission;
+  const busy = status === "running" || status === "waiting";
+  const cleaning = snapshot?.cleaning_up === true;
+  const enabled = !!snapshot && view.connection === "connected";
+  const lastDiff = view.entries.findLast(
+    (entry) => entry.type === "tool_result" && typeof entry.structured?.diff === "string",
+  );
+  const diff =
+    lastDiff?.type === "tool_result" && typeof lastDiff.structured?.diff === "string"
+      ? lastDiff.structured.diff
+      : undefined;
+  const unconfirmedCreate = pending.some(
+    ({ intent }) =>
+      intent.workspace === workspace &&
+      intent.command.type === "send" &&
+      intent.command.create !== undefined,
   );
 
-  const isLoading = !isNew && status === "idle";
-  if (isLoading) {
-    return (
-      <div className="h-screen flex items-center justify-center text-[var(--color-text-muted)]">
-        Loading...
-      </div>
+  function pendingAction(type: Command["type"], requestId?: string) {
+    return pending.some(
+      ({ intent }) =>
+        intent.session === session &&
+        intent.workspace === workspace &&
+        intent.agent === agent &&
+        intent.command.type === type &&
+        (requestId === undefined ||
+          ("request_id" in intent.command && intent.command.request_id === requestId)),
     );
   }
 
+  useLayoutEffect(() => {
+    const panel = viewport.current;
+    if (!panel) return;
+    if (scrollAnchor.current !== undefined) {
+      panel.scrollTop = panel.scrollHeight - scrollAnchor.current;
+      scrollAnchor.current = undefined;
+    } else if (followLatest.current) {
+      panel.scrollTop = panel.scrollHeight;
+    }
+  }, [view.entries, view.preview]);
+
+  async function dispatch(command: Command, to = target, onSaved?: () => void) {
+    setError(undefined);
+    try {
+      await submit({ ...to, command, commandId: crypto.randomUUID() }, onSaved);
+      refresh();
+    } catch (error) {
+      setError(errorMessage(error));
+    }
+  }
+
+  function send(text: string, timing: SendTiming) {
+    if (isNew) {
+      if (unconfirmedCreate) return;
+      const initial = tier ? { tier } : {};
+      void dispatch(
+        { type: "send", text, timing, create: initial },
+        { ...target, session: `s-${crypto.randomUUID()}` },
+        () => {
+          changeDraft(key, "");
+        },
+      );
+    } else {
+      void dispatch({ type: "send", text, timing }, target, () => {
+        changeDraft(key, "");
+      });
+    }
+  }
+
+  function changeTier(value: string) {
+    if (!snapshot) {
+      setTier(value);
+      return;
+    }
+    const config = {
+      ...snapshot.agent.config,
+      tier: value || null,
+      connection: null,
+      model: null,
+      reasoning_effort: null,
+      service_tier: null,
+    };
+    void dispatch({ type: "configure", config });
+  }
+
+  function createAgent(event: SubmitEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const address = new FormData(event.currentTarget).get("address");
+    if (typeof address !== "string" || !address) return;
+    void dispatch({ type: "create_agent", config: {} }, { ...target, agent: address }, () => {
+      setCreatingAgent(false);
+    });
+  }
+
+  const context = {
+    model: snapshot?.selection?.model,
+    provider: snapshot?.selection?.connection,
+    tier: snapshot?.agent.config.tier,
+    turn: snapshot?.agent.turn,
+    tokens: snapshot?.agent.usage,
+    sessionId: session,
+    workspace: snapshot?.agent.config.workspace ?? workspace,
+    agent,
+  };
+  const executionError = snapshot?.agent.last_error;
+  const lastErrorVisible = view.entries.some(
+    (entry) => entry.type === "error" && entry.text === executionError,
+  );
+
   return (
     <MainLayout
-      sessionTitle={id ?? "New Session"}
-      sessionStatus={status === "streaming" ? "running" : "idle"}
+      sessionTitle={session || "New Session"}
+      sessionStatus={status === "running" || status === "waiting" ? status : "idle"}
+      leftPanel={
+        <LeftSidebar
+          workspacePanel={workspacePanel}
+          sessions={<SessionBrowser workspace={workspace} activeId={session} />}
+        />
+      }
       rightPanel={
         <RightPanel
-          diffContent={<DiffViewer />}
-          terminalContent={<TerminalPanel />}
-          statusContent={<StatusPanel />}
+          diffContent={<DiffViewer lines={diffLines(diff)} />}
+          terminalContent={
+            <TerminalPanel
+              lines={view.preview?.tools.flatMap(({ lines }) => lines).slice(-50) ?? []}
+            />
+          }
+          statusContent={
+            <StatusPanel
+              context={context}
+              events={view.entries.slice(-50).map(({ id, type }) => `#${String(id)} ${type}`)}
+            />
+          }
         />
       }
     >
-      <div className="flex flex-col flex-1 min-h-0">
-        <div className="flex-1 overflow-auto px-4 py-4 space-y-3">
-          {turns.length === 0 && isNew ? (
-            <div className="text-center text-[var(--color-text-muted)] mt-20">
-              Start a conversation.
-            </div>
-          ) : (
-            turns.map((turn) => (
-              <div key={turn.turnNumber} className="space-y-3">
-                <TurnCard role="user">
-                  <p>{turn.userText}</p>
-                </TurnCard>
-                <TurnCard role="agent">
-                  {turn.agent.error && (
-                    <ErrorNotice
-                      type="internal"
-                      message={turn.agent.error.message}
-                    />
-                  )}
-                  {turn.status === "cancelled" && (
-                    <CancelledNotice turnNumber={turn.turnNumber} />
-                  )}
-                  {turn.agent.thinking && (
-                    <ThinkingBlock>{turn.agent.thinking}</ThinkingBlock>
-                  )}
-                  {turn.agent.text && (
-                    <TextContent text={turn.agent.text} />
-                  )}
-                  {turn.agent.tools.map((t) => {
-                    const hasSub = t.subEvents.length > 0 || t.modelContent;
-                    return (
-                      <ToolCard
-                        key={t.id}
-                        name={t.name}
-                        summary={t.summary}
-                        status={
-                          t.status === "running"
-                            ? "running"
-                            : t.status === "error"
-                              ? "error"
-                              : "completed"
-                        }
-                        kind={t.kind === "agent" ? "agent" : "tool"}
-                        childSessionId={t.childSessionId}
-                      >
-                        {hasSub ? (
-                          <div className="space-y-1">
-                            {t.modelContent ? (
-                              <pre className="text-xs text-[var(--color-text-secondary)] whitespace-pre-wrap">
-                                {t.modelContent}
-                              </pre>
-                            ) : null}
-                            {t.subEvents.map((se, i) => {
-                              if (se.type === "stdout")
-                                return <pre key={i} className="font-mono text-xs text-[var(--color-text-primary)] whitespace-pre-wrap">{se.text}</pre>;
-                              if (se.type === "stderr")
-                                return <pre key={i} className="font-mono text-xs text-red-400 whitespace-pre-wrap">{se.text}</pre>;
-                              if (se.type === "thinking")
-                                return <p key={i} className="text-xs text-[var(--color-text-muted)] whitespace-pre-wrap">{se.content}</p>;
-                              if (se.type === "text")
-                                return <p key={i} className="text-sm text-[var(--color-text-secondary)] whitespace-pre-wrap">{se.content}</p>;
-                              return null;
-                            })}
-                          </div>
-                        ) : undefined}
-                      </ToolCard>
-                    );
-                  })}
-                </TurnCard>
-              </div>
-            ))
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex flex-wrap gap-2 shrink-0 items-center px-4 py-2 border-b border-[var(--color-border)] text-xs">
+          <Link to={workspaceHref(workspace)} className="text-[var(--color-accent)] underline">
+            Sessions
+          </Link>
+          <span title={workspace} className="min-w-0 truncate text-[var(--color-text-muted)]">
+            {workspace}
+          </span>
+          {agents.length > 0 && (
+            <select
+              aria-label="Agent"
+              value={agent}
+              className="rounded border border-[var(--color-border)] bg-[var(--color-surface-raised)] px-1.5 py-1"
+              onChange={(event) => {
+                void navigate(sessionHref({ ...target, agent: event.target.value }));
+              }}
+            >
+              {!agents.some(({ address }) => address === agent) && (
+                <option value={agent} disabled>
+                  {agent} (unavailable)
+                </option>
+              )}
+              {agents.map(({ address, status }) => (
+                <option key={address} value={address}>
+                  {address} ({statusLabels[status]})
+                </option>
+              ))}
+            </select>
+          )}
+          {status && (
+            <span role="status" className="font-medium">
+              {cleaning ? "Stopping…" : statusLabels[status]}
+            </span>
+          )}
+          {execution != null && busy && (
+            <Button
+              size="sm"
+              variant="danger"
+              disabled={!enabled || pendingAction("cancel")}
+              onClick={() => {
+                void dispatch({ type: "cancel", execution_id: execution });
+              }}
+            >
+              Stop
+            </Button>
+          )}
+          {(status === "stopped" ||
+            status === "interrupted" ||
+            (status === "idle" && !!snapshot?.pending.length)) && (
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={!enabled || cleaning || pendingAction("advance")}
+              onClick={() => {
+                void dispatch({ type: "advance" });
+              }}
+            >
+              Continue
+            </Button>
+          )}
+          {enabled && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                setCreatingAgent(!creatingAgent);
+              }}
+            >
+              {creatingAgent ? "Cancel" : "New agent"}
+            </Button>
+          )}
+          {creatingAgent && enabled && (
+            <form onSubmit={createAgent} className="flex gap-1 items-center">
+              <Input
+                name="address"
+                aria-label="Agent address"
+                placeholder="reviewer"
+                pattern={"[a-z0-9_\\-]{1,64}"}
+                required
+              />
+              <Button type="submit" size="sm">
+                Create agent
+              </Button>
+            </form>
           )}
         </div>
-        {pendingPermission && (
-            <PermissionDock
-              toolIcon={riskIcon(pendingPermission.risk)}
-              toolName={pendingPermission.tool}
-              riskLabel={pendingPermission.risk}
-              summary={pendingPermission.summary}
-              onDeny={() => { void respondToPermission(id ?? "", pendingPermission.id, "deny"); }}
-              onAllowOnce={() => { void respondToPermission(id ?? "", pendingPermission.id, "once"); }}
-              onAllowAlways={() => { void respondToPermission(id ?? "", pendingPermission.id, "project"); }}
-            />
+        {!isNew && view.connection !== "connected" && (
+          <div className="px-4 py-2 flex items-center gap-3 text-xs" role="status">
+            {view.connection === "connecting"
+              ? "Loading conversation…"
+              : view.connection === "reconnecting"
+                ? "Reconnecting…"
+                : "Conversation unavailable"}
+            {view.error && <span className="text-red-400">{view.error}</span>}
+            {view.connection === "failed" && (
+              <Button variant="secondary" size="sm" onClick={reconnect}>
+                Retry connection
+              </Button>
+            )}
+          </div>
+        )}
+        {view.connection === "connected" && view.error && (
+          <div className="px-4 py-2 flex items-center gap-3 text-xs" role="alert">
+            <span className="text-red-400">{view.error}</span>
+            <Button variant="secondary" size="sm" onClick={refresh}>
+              Refresh status
+            </Button>
+          </div>
+        )}
+        <div
+          ref={viewport}
+          className="flex-1 overflow-auto px-4 py-4 space-y-3"
+          onScroll={(event) => {
+            const panel = event.currentTarget;
+            followLatest.current = panel.scrollHeight - panel.scrollTop - panel.clientHeight < 48;
+          }}
+        >
+          {view.before !== null && (
+            <div className="text-center">
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={view.loadingOlder}
+                onClick={() => {
+                  loadOlder(() => {
+                    const panel = viewport.current;
+                    if (panel) scrollAnchor.current = panel.scrollHeight - panel.scrollTop;
+                  });
+                }}
+              >
+                {view.loadingOlder ? "Loading earlier messages…" : "Load earlier messages"}
+              </Button>
+              {view.historyError && (
+                <p role="alert" className="text-xs text-red-400">
+                  {view.historyError}
+                </p>
+              )}
+            </div>
           )}
-          <Composer onSubmit={handleSubmit} />
+          <ConversationTimeline target={target} view={view} />
+          {executionError && !lastErrorVisible && (
+            <ErrorNotice type="server" message={executionError} />
+          )}
+        </div>
+        {!!snapshot?.pending.length && (
+          <div className="max-h-32 overflow-auto shrink-0 border-t border-[var(--color-border)] px-4 py-2">
+            <p className="text-xs font-medium">Queued for {agent}</p>
+            <ul>
+              {snapshot.pending.map(({ receipt, input }) => (
+                <li
+                  key={receipt.command_id}
+                  className="flex items-center justify-between gap-2 text-sm"
+                >
+                  <span className="truncate" title={input.text}>
+                    {input.text}
+                  </span>
+                  <span className="text-xs text-[var(--color-text-muted)] ml-auto">
+                    {input.timing === "next_turn" ? "Next turn" : "Next step"}
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={!enabled || pendingAction("withdraw")}
+                    onClick={() => {
+                      void dispatch({ type: "withdraw", input_command_id: receipt.command_id });
+                    }}
+                  >
+                    Withdraw
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {question && (
+          <PendingQuestion
+            key={question.id}
+            request={question}
+            agent={agent}
+            disabled={!enabled || pendingAction("reply_question", question.id)}
+            onAnswer={(text) => {
+              void dispatch({ type: "reply_question", request_id: question.id, text });
+            }}
+          />
+        )}
+        {permission && (
+          <PermissionDock
+            toolName={`${agent} · ${permission.tool}`}
+            riskLabel={permission.risk}
+            requestId={permission.id}
+            summary={permission.summary}
+            detail={
+              permission.candidate && permission.candidate !== permission.summary
+                ? visibleOutput(permission.candidate)
+                : undefined
+            }
+            disabled={!enabled || pendingAction("reply_permission", permission.id)}
+            onDeny={() => {
+              void dispatch({ type: "reply_permission", request_id: permission.id, allow: false });
+            }}
+            onAllowOnce={() => {
+              void dispatch({ type: "reply_permission", request_id: permission.id, allow: true });
+            }}
+          />
+        )}
+        <Composer
+          agent={agent}
+          busy={busy}
+          value={draft}
+          onChange={(text) => {
+            changeDraft(key, text);
+          }}
+          onSubmit={send}
+          disabled={isNew ? unconfirmedCreate : !enabled || cleaning}
+          error={
+            error ??
+            snapshot?.pending_selection_error?.message ??
+            snapshot?.selection_error?.message
+          }
+          onDismissError={
+            error
+              ? () => {
+                  setError(undefined);
+                }
+              : undefined
+          }
+          modelControl={
+            <ModelControl
+              snapshot={snapshot}
+              tier={tier}
+              onChange={changeTier}
+              disabled={!isNew && (!enabled || pendingAction("configure"))}
+            />
+          }
+        />
       </div>
     </MainLayout>
   );

@@ -1,10 +1,10 @@
-"""Bounded, read-only checks of session_task reports against durable SDK facts."""
+"""Bounded evidence capture and read-only checks against durable SDK facts."""
 
 from collections import Counter
 import hashlib
 import json
 import math
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 
 
@@ -13,6 +13,85 @@ RESULT_VIEW_FIELDS = ("tool_call_id", "status", "summary", "model_content", "tru
 STREAM_COUNTERS = ("model_text_chunks", "model_thinking_chunks", "tool_output_chunks", "model_text_bytes",
                    "model_thinking_bytes", "tool_output_bytes", "model_request_events", "committed_events", "lagged_updates")
 MAX_STAGED_TOOL_BLOCKS = 16_384
+
+
+class FailureSummary:
+    LIMIT = 16_384
+    LINE_LIMIT = 4096
+    HEADERS = (b"Test failure summaries\n", b"\nPanic locations and bounded context\n")
+
+    def __init__(self):
+        self.partial = b""
+        self.skipping_line = False
+        self.summaries = bytearray()
+        self.details = bytearray()
+        self.capacity = (self.LIMIT - sum(map(len, self.HEADERS))) // 2
+        self.context = 0
+        self.target_list = False
+        self.truncated = False
+
+    def feed(self, chunk):
+        if self.skipping_line:
+            end = chunk.find(b"\n")
+            if end < 0:
+                return
+            chunk = chunk[end + 1:]
+            self.skipping_line = False
+        pending = self.partial + chunk
+        lines = pending.split(b"\n")
+        self.partial = lines.pop()
+        for line in lines:
+            if len(line) <= self.LINE_LIMIT:
+                self.line(line.rstrip(b"\r"))
+            else:
+                self.truncated = True
+        if len(self.partial) > self.LINE_LIMIT:
+            self.partial = b""
+            self.skipping_line = True
+            self.truncated = True
+
+    def append(self, target, line):
+        if len(target) + len(line) + 1 <= self.capacity:
+            target.extend(line + b"\n")
+        else:
+            self.truncated = True
+
+    def line(self, line):
+        line = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", line)
+        marker = (line.startswith(b"test ") and b"... FAILED" in line
+                  or line.startswith((b"test result: FAILED", b"error:", b"error[")))
+        if marker or self.target_list and line.startswith(b"    "):
+            self.append(self.summaries, line)
+        if line.startswith(b"error:") and b"target" in line and b"failed" in line:
+            self.target_list = True
+        elif line.strip() and not line.startswith(b"    "):
+            self.target_list = False
+        if line.startswith(b"thread ") and b" panicked at " in line:
+            self.append(self.details, line)
+            self.context = 3
+        elif self.context:
+            self.append(self.details, line)
+            self.context -= 1
+
+    def write(self, directory, label, redact):
+        if self.partial:
+            self.line(self.partial.rstrip(b"\r"))
+            self.partial = b""
+        output = b""
+        if self.summaries or self.details:
+            raw = self.HEADERS[0] + self.summaries + self.HEADERS[1] + self.details
+            output = redact(raw.decode("utf-8", errors="replace")).encode()
+            self.truncated |= len(output) > self.LIMIT
+            output = output[:self.LIMIT].decode("utf-8", errors="ignore").encode()
+        path = directory / f"{label}-failures.log"
+        if output:
+            path.write_bytes(output)
+        else:
+            path.unlink(missing_ok=True)
+        return {"failure_summary": {"log": str(path) if output else None,
+                                    "retained_bytes": path.stat().st_size if output else 0,
+                                    "limit_bytes": self.LIMIT,
+                                    "truncated": self.truncated}}
 
 
 def require(condition, message):
@@ -25,9 +104,21 @@ def fingerprint(value):
                                      ensure_ascii=False).encode()).hexdigest()
 
 
+def comparison_path(path):
+    if not isinstance(path, PureWindowsPath):
+        return path
+    root = path.anchor
+    if root.lower().startswith("\\\\?\\unc\\"):
+        return PureWindowsPath("\\\\" + root[8:], *path.parts[1:])
+    if root.startswith("\\\\?\\") and re.fullmatch(r"[A-Za-z]:\\", root[4:]):
+        return PureWindowsPath(root[4:], *path.parts[1:])
+    return path
+
+
 def under(directory, path):
-    resolved = path.resolve()
-    require(resolved.is_relative_to(directory.resolve()), "evidence path escapes the Session data directory")
+    resolved, base = path.resolve(), directory.resolve()
+    require(comparison_path(resolved).is_relative_to(comparison_path(base)),
+            "evidence path escapes the Session data directory")
     return resolved
 
 
@@ -76,6 +167,8 @@ def output_reference(events_path, structured):
 
 
 def usage_summary(requests, usages, reports, session_scope=False):
+    retries = sum(step.get("retry_count", 0) for step in requests.values())
+    attempts = len(requests) + retries
     partial = {}
     complete = {}
     for field in TOKEN_FIELDS:
@@ -85,12 +178,14 @@ def usage_summary(requests, usages, reports, session_scope=False):
         known = [value for value in values if value is not None]
         partial[field] = sum(known) if known else None
         complete[field] = sum(known) if requests and len(known) == len(requests) else None
-    missing = sum(any((usages.get(request) or {}).get(field) is None
+    missing = retries + sum(any((usages.get(request) or {}).get(field) is None
                       for field in ("input_tokens", "output_tokens")) for request in requests)
     zero_input = sum((usages.get(request) or {}).get("input_tokens") == 0 for request in requests)
     if all(complete[field] is not None for field in TOKEN_FIELDS if field != "output_tokens"):
         require(complete["cache_read_input_tokens"] + complete["cache_creation_input_tokens"] <= complete["input_tokens"],
                 "reported cached input exceeds total input tokens")
+    if retries:
+        complete = dict.fromkeys(TOKEN_FIELDS)
     costs = {}
     providers = set()
     for event in reports:
@@ -106,7 +201,7 @@ def usage_summary(requests, usages, reports, session_scope=False):
                 key = (event.get("agent", "main"), *key)
             costs[key] = cost
     complete_cost = missing == 0 and zero_input == 0 and bool(requests) and all(request in costs for request in requests)
-    return {"requests": len(requests), "unreported_requests": missing,
+    return {"requests": attempts, "unreported_requests": missing,
             "zero_input_requests": zero_input, "complete": bool(requests) and missing == 0 and zero_input == 0, **complete,
             "reported_partial": partial,
             "uncached_input_tokens": (complete["input_tokens"] - complete["cache_read_input_tokens"]
@@ -190,6 +285,15 @@ class SessionFacts:
             require(all(isinstance(metadata[field], str) and len(metadata[field]) <= 512 for field in ("connection", "model")),
                     "prepared request routing metadata is invalid or oversized")
             self.session_steps[session_request] = metadata
+        elif kind == "runtime.model_retry":
+            require(session_request in self.session_steps and session_request not in self.session_usages,
+                    "retry has no active prepared request")
+            attempt = event.get("attempt", 2)
+            require(type(attempt) is int and attempt >= 2, "retry attempt must be an integer of at least two")
+            step = self.session_steps[session_request]
+            if attempt > step.get("last_attempt", 1):
+                step["last_attempt"] = attempt
+                step["retry_count"] = step.get("retry_count", 0) + 1
         elif kind in ("runtime.model_usage", "runtime.provider_report"):
             require(session_request in self.session_steps, "Session usage or report has no prepared request")
             if kind == "runtime.model_usage":
@@ -264,10 +368,11 @@ class SessionFacts:
             self.results[key] = fingerprint({field: event.get(field) for field in RESULT_VIEW_FIELDS})
             self.result_events[key] = identity
             self.counts["tool_results"] += 1
-            structured = event.get("structured") or {}
-            require(structured.get("cleanup_incomplete") is not True, "tool result reports incomplete cleanup")
-            if structured.get("kind") == "command_result":
-                self.outputs.append(output_reference(self.events_path, structured))
+            structured = event.get("structured")
+            if isinstance(structured, dict):
+                require(structured.get("cleanup_incomplete") is not True, "tool result reports incomplete cleanup")
+                if structured.get("kind") == "command_result":
+                    self.outputs.append(output_reference(self.events_path, structured))
         elif kind == "turn.completed":
             self.counts["turns_completed"] += 1
 
@@ -371,7 +476,7 @@ class SessionFacts:
                 self.admitted_results.add(matches[0])
                 pending.pop(call_id)
 
-    def finish(self, report):
+    def finish(self, report, require_fixed_limits, require_output_limit):
         snapshot = report.get("agent") or {}
         require(report.get("session_id") == self.session_id, "SDK report names a different durable Session")
         require(report.get("last_event_id") == self.last_id, "SDK event cursor differs from the durable log")
@@ -399,15 +504,27 @@ class SessionFacts:
         require(self.steps.keys() == self.responses.keys() == self.usages.keys(),
                 "prepared requests do not have paired model response and usage facts")
         limits = report.get("limits", {})
-        require(type(limits.get("max_steps")) is int and limits["max_steps"] > 0
+        max_requests, max_steps = limits.get("max_requests"), limits.get("max_steps")
+        max_output_tokens = limits.get("max_output_tokens")
+        retries = limits.get("automatic_retries")
+        require(("max_requests" in limits or max_steps is not None)
+                and (max_requests is None or type(max_requests) is int and max_requests > 0)
+                and (max_steps is None or type(max_steps) is int and max_steps > 0)
                 and type(limits.get("max_request_bytes")) is int and limits["max_request_bytes"] >= 4096
-                and type(limits.get("max_output_tokens")) is int and limits["max_output_tokens"] > 0
-                and limits.get("automatic_retries") == 0, "SDK report has no explicit bounded request/retry limits")
-        require(all(count <= limits["max_steps"] for count in Counter(step.get("turn") for step in self.steps.values()).values()),
-                "durable model requests exceeded the declared per-turn limit")
+                and "max_output_tokens" in limits
+                and (max_output_tokens is None or type(max_output_tokens) is int and max_output_tokens > 0)
+                and type(retries) is int and retries in (0, 1), "SDK report has invalid request/retry limits")
+        if require_fixed_limits or require_output_limit:
+            require(max_output_tokens is not None, "paid SDK evidence requires a finite output token limit")
+        if require_fixed_limits:
+            require(max_requests is not None and retries == 0,
+                    "paid SDK evidence requires a finite request limit and disabled automatic retries")
+        if max_steps is not None:
+            require(all(count <= max_steps for count in Counter(step.get("turn") for step in self.steps.values()).values()),
+                    "durable model requests exceeded the declared per-turn limit")
         usage = usage_summary(self.steps, self.usages, self.reports)
         normalized = snapshot.get("usage", {})
-        require(normalized.get("model_requests") == len(self.usages)
+        require(normalized.get("model_requests") == usage["requests"]
                 and normalized.get("unreported_requests") == usage["unreported_requests"],
                 "SDK usage request counters differ from durable usage")
         require(all(normalized.get(field) == usage["reported_partial"][field] for field in TOKEN_FIELDS),
@@ -422,7 +539,8 @@ class SessionFacts:
                 "connections": sorted({step["connection"] for step in self.steps.values()})}
 
 
-def inspect_sdk(result_path, data_dir, connection=None, container_data=None, session_id=None, require_streaming=False):
+def inspect_sdk(result_path, data_dir, connection=None, container_data=None, session_id=None, require_streaming=False,
+                *, require_fixed_limits=False, require_output_limit=False):
     inspected = {"passed": False, "result_path": str(result_path), "data_dir": str(data_dir)}
     try:
         report = json_file(result_path)
@@ -450,7 +568,8 @@ def inspect_sdk(result_path, data_dir, connection=None, container_data=None, ses
                     records += 1
                     require(records <= 100_000, "event log exceeds the diagnostic record limit")
                     facts.accept(json.loads(line))
-        inspected.update(facts.finish(report), events_path=str(path), events_sha256=digest.hexdigest(), records=records)
+        inspected.update(facts.finish(report, require_fixed_limits, require_output_limit), events_path=str(path),
+                         events_sha256=digest.hexdigest(), records=records)
         if require_streaming:
             require(inspected["streaming"]["coverage_complete"], "required SDK streaming coverage is missing, empty or lagged")
     except (OSError, ValueError, TypeError, KeyError, AttributeError) as error:

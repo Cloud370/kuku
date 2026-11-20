@@ -1,7 +1,9 @@
-use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use crate::config::ProviderFormat;
+use serde_json::{json, Value};
+
+use crate::config::{ProviderFormat, ProviderProfile};
 use crate::context::{CanonicalMessage, MessageBlock, Role};
 use crate::event::ModelStopReason;
 
@@ -20,6 +22,7 @@ pub(crate) fn chat_completions_url(base_url: &str) -> String {
 }
 
 pub(crate) fn render_body(request: &ProviderRequest<'_>) -> Value {
+    let has_tools = !request.assembly.tools.is_empty();
     let mut messages = vec![json!({
         "role": "system",
         "content": request.assembly.system_prompt,
@@ -38,7 +41,7 @@ pub(crate) fn render_body(request: &ProviderRequest<'_>) -> Value {
     for message in &request.assembly.history {
         match message.role {
             Role::User => messages.extend(convert_user_message(message)),
-            Role::Assistant => messages.push(convert_assistant_message(message)),
+            Role::Assistant => messages.push(convert_assistant_message(message, has_tools)),
         }
     }
 
@@ -78,7 +81,7 @@ pub(crate) fn render_body(request: &ProviderRequest<'_>) -> Value {
         };
         body["reasoning_effort"] = json!(effort);
     }
-    if !request.assembly.tools.is_empty() {
+    if has_tools {
         body["tools"] = json!(request
             .assembly
             .tools
@@ -130,17 +133,7 @@ fn convert_user_message(message: &CanonicalMessage) -> Vec<Value> {
     messages
 }
 
-fn convert_assistant_message(message: &CanonicalMessage) -> Value {
-    let thinking = message
-        .blocks
-        .iter()
-        .filter_map(|block| match block {
-            MessageBlock::Thinking(text) => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("");
-
+fn convert_assistant_message(message: &CanonicalMessage, has_tools: bool) -> Value {
     let text = message
         .blocks
         .iter()
@@ -175,13 +168,14 @@ fn convert_assistant_message(message: &CanonicalMessage) -> Value {
         .collect::<Vec<_>>();
 
     let mut msg = json!({"role": "assistant"});
-    if let Some(details) = native_replay(message, ProviderFormat::OpenAiChat)
-        .and_then(|value| value.get("reasoning_details"))
-    {
-        msg["reasoning_details"] = details.clone();
-    }
-    if !thinking.is_empty() && msg.get("reasoning_details").is_none() {
-        msg["reasoning_content"] = json!(thinking);
+    if let Some(replay) = native_replay(message, ProviderFormat::OpenAiChat) {
+        if let Some(details) = replay.get("reasoning_details") {
+            msg["reasoning_details"] = details.clone();
+        } else if has_tools {
+            if let Some(content) = replay.get("reasoning_content") {
+                msg["reasoning_content"] = content.clone();
+            }
+        }
     }
     if tool_calls.is_empty() {
         msg["content"] = json!(text);
@@ -211,7 +205,9 @@ pub(crate) async fn stream_prepared(
     let TransportResponse { response, trace } =
         send_prepared(config, prepared, trace_metadata).await?;
     let url = prepared.url.clone();
-    let parser = Arc::new(Mutex::new(OpenAiCompatSseParser::new()));
+    let parser = Arc::new(Mutex::new(OpenAiCompatSseParser::new(
+        config.capabilities.profile == ProviderProfile::DeepSeek,
+    )));
     let frame_parser = Arc::clone(&parser);
     let eof_parser = Arc::clone(&parser);
     let frame_trace = trace.clone();
@@ -233,26 +229,30 @@ pub(crate) async fn stream_prepared(
 }
 
 struct OpenAiCompatSseParser {
+    public_reasoning_text: bool,
     chunks: Vec<ProviderChunk>,
     started: bool,
-    tool_call_indices: Vec<u64>,
+    tool_calls: BTreeMap<u64, (String, String)>,
     invalid_tool_stream: bool,
     saw_done: bool,
     stop_reason: Option<ModelStopReason>,
+    reasoning_content: Option<String>,
     reasoning_details: Vec<Value>,
     replay_budget: ReplayBudget,
     reports: ReportAccumulator,
 }
 
 impl OpenAiCompatSseParser {
-    fn new() -> Self {
+    fn new(public_reasoning_text: bool) -> Self {
         Self {
+            public_reasoning_text,
             chunks: Vec::new(),
             started: false,
-            tool_call_indices: Vec::new(),
+            tool_calls: BTreeMap::new(),
             invalid_tool_stream: false,
             saw_done: false,
             stop_reason: None,
+            reasoning_content: None,
             reasoning_details: Vec::new(),
             replay_budget: ReplayBudget::default(),
             reports: ReportAccumulator::default(),
@@ -276,15 +276,16 @@ impl OpenAiCompatSseParser {
         }
 
         let data: Value = serde_json::from_str(data_str).map_err(|_| {
-            super::prepare::invalid_request("provider emitted malformed JSON event")
+            super::prepare::invalid_response("provider emitted malformed JSON event")
         })?;
 
         if let Some(err) = data.get("error") {
-            let code = err
-                .get("type")
-                .and_then(Value::as_str)
-                .unwrap_or("server_error")
-                .to_string();
+            let code = super::error::select_provider_error_code(
+                err.get("code").and_then(Value::as_str),
+                err.get("type").and_then(Value::as_str),
+            )
+            .unwrap_or("server_error")
+            .to_string();
             let message = err
                 .get("message")
                 .and_then(Value::as_str)
@@ -310,7 +311,7 @@ impl OpenAiCompatSseParser {
             self.chunks.push(ProviderChunk::Report { report });
         }
         if data.get("usage").is_some_and(Value::is_object) {
-            if let Some(usage) = self.reports.usage(ProviderFormat::OpenAiChat) {
+            if let Some(usage) = self.reports.usage(ProviderFormat::OpenAiChat, true) {
                 self.chunks.push(usage);
             }
         }
@@ -321,98 +322,34 @@ impl OpenAiCompatSseParser {
         };
 
         let choice = &choices[0];
-        let delta = choice.get("delta");
+        let delta = choice.get("delta").unwrap_or(&Value::Null);
+        let reason = choice
+            .get("finish_reason")
+            .and_then(Value::as_str)
+            .and_then(ModelStopReason::from_wire);
+        let repeated_finish = reason.is_some() && reason == self.stop_reason;
 
-        if let Some(text) = delta.and_then(|d| d.get("content")).and_then(Value::as_str) {
-            if !text.is_empty() {
+        self.capture_reasoning(delta, repeated_finish)?;
+        for field in ["content", "refusal"] {
+            if let Some(text) = delta.get(field).and_then(nonempty_string) {
                 self.chunks.push(ProviderChunk::TextDelta {
                     text: text.to_string(),
                 });
             }
         }
-
-        if let Some(text) = delta
-            .and_then(|d| d.get("reasoning_content").or_else(|| d.get("reasoning")))
-            .and_then(Value::as_str)
-        {
-            if !text.is_empty() {
-                self.chunks.push(ProviderChunk::ThinkingDelta {
-                    text: text.to_string(),
-                });
-            }
-        }
-
-        if let Some(details) = delta
-            .and_then(|delta| delta.get("reasoning_details"))
-            .and_then(Value::as_array)
-        {
-            self.merge_reasoning_details(details)?;
-        }
-
-        if let Some(tool_calls) = delta
-            .and_then(|d| d.get("tool_calls"))
-            .and_then(Value::as_array)
-        {
+        if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
             for tc in tool_calls {
-                let Some(index) = tc.get("index").and_then(Value::as_u64) else {
-                    self.invalid_tool_stream = true;
-                    self.chunks.push(ProviderChunk::InvalidToolStream);
-                    continue;
-                };
-                let function = tc.get("function");
-
-                if let Some(id) = tc.get("id").and_then(Value::as_str) {
-                    let name = function
-                        .and_then(|f| f.get("name"))
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_string();
-                    self.chunks.push(ProviderChunk::ToolCallStart {
-                        index,
-                        id: id.to_string(),
-                        name,
-                    });
-                    if !self.tool_call_indices.contains(&index) {
-                        self.tool_call_indices.push(index);
-                    }
-                }
-
-                if let Some(args) = function
-                    .and_then(|f| f.get("arguments"))
-                    .and_then(Value::as_str)
-                {
-                    if !args.is_empty() {
-                        self.chunks.push(ProviderChunk::ToolCallArgDelta {
-                            index,
-                            fragment: args.to_string(),
-                        });
-                    }
-                }
+                self.tool_delta(tc)?;
             }
         }
 
-        if let Some(reason) = choice
-            .get("finish_reason")
-            .and_then(Value::as_str)
-            .and_then(ModelStopReason::from_wire)
-        {
-            if self.stop_reason.as_ref() == Some(&reason) {
-                return Ok(self.take_chunks());
+        if let Some(reason) = reason.filter(|_| !repeated_finish) {
+            if self.stop_reason.replace(reason.clone()).is_none() {
+                self.finish_reasoning()?;
+                for &index in self.tool_calls.keys() {
+                    self.chunks.push(ProviderChunk::ToolCallStop { index });
+                }
             }
-            self.stop_reason = Some(reason.clone());
-            if !self.reasoning_details.is_empty() {
-                let value = json!({"reasoning_details": self.reasoning_details});
-                validate_replay_size(&value)?;
-                self.chunks.push(ProviderChunk::Replay {
-                    protocol: ProviderFormat::OpenAiChat,
-                    value,
-                });
-            }
-            for &idx in &self.tool_call_indices {
-                self.chunks.push(ProviderChunk::ToolCallStop { index: idx });
-            }
-            self.tool_call_indices.clear();
-
             self.chunks.push(ProviderChunk::StopReason {
                 reason: if self.invalid_tool_stream {
                     ModelStopReason::InvalidResponse
@@ -425,29 +362,169 @@ impl OpenAiCompatSseParser {
         Ok(self.take_chunks())
     }
 
+    fn tool_delta(&mut self, delta: &Value) -> Result<(), ProviderFailure> {
+        let Some(index) = delta.get("index").and_then(Value::as_u64) else {
+            self.invalidate_tool_stream();
+            return Ok(());
+        };
+        self.replay_budget.add(delta)?;
+        let id = delta.get("id").and_then(nonempty_string);
+        let name = delta.pointer("/function/name").and_then(nonempty_string);
+        match self.tool_calls.get(&index) {
+            Some((previous_id, previous_name)) => {
+                if id.is_some_and(|id| id != previous_id)
+                    || name.is_some_and(|name| name != previous_name)
+                {
+                    self.invalidate_tool_stream();
+                }
+            }
+            None => {
+                if self.tool_calls.len() >= MAX_REPLAY_ITEMS {
+                    return Err(super::prepare::invalid_request(
+                        "too many native tool calls",
+                    ));
+                }
+                if let Some((id, name)) = id.zip(name).filter(|(id, name)| {
+                    !id.trim().is_empty()
+                        && !name.trim().is_empty()
+                        && !self.tool_calls.values().any(|(existing, _)| existing == id)
+                }) {
+                    self.tool_calls
+                        .insert(index, (id.to_string(), name.to_string()));
+                    self.chunks.push(ProviderChunk::ToolCallStart {
+                        index,
+                        id: id.to_string(),
+                        name: name.to_string(),
+                    });
+                } else {
+                    self.invalidate_tool_stream();
+                }
+            }
+        }
+        if let Some(fragment) = delta
+            .pointer("/function/arguments")
+            .and_then(nonempty_string)
+        {
+            self.chunks.push(ProviderChunk::ToolCallArgDelta {
+                index,
+                fragment: fragment.to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    fn invalidate_tool_stream(&mut self) {
+        self.invalid_tool_stream = true;
+        self.chunks.push(ProviderChunk::InvalidToolStream);
+    }
+
+    fn capture_reasoning(
+        &mut self,
+        delta: &Value,
+        repeated_finish: bool,
+    ) -> Result<(), ProviderFailure> {
+        let content = delta.get("reasoning_content").and_then(Value::as_str);
+        let details = delta
+            .get("reasoning_details")
+            .and_then(Value::as_array)
+            .filter(|_| !repeated_finish);
+        if content.is_some_and(|content| !content.is_empty())
+            || delta.get("reasoning").and_then(nonempty_string).is_some()
+            || details.is_some_and(|items| !items.is_empty())
+        {
+            self.chunks.push(ProviderChunk::Reasoning);
+        }
+        if self.stop_reason.is_none() {
+            if let Some(content) = content {
+                if self.public_reasoning_text && !content.is_empty() {
+                    self.chunks.push(ProviderChunk::ThinkingDelta {
+                        text: content.into(),
+                    });
+                }
+                self.replay_budget
+                    .add(&Value::String(content.to_string()))?;
+                self.reasoning_content
+                    .get_or_insert_default()
+                    .push_str(content);
+            }
+            if let Some(details) = details {
+                self.merge_reasoning_details(details)?;
+                for detail in details {
+                    if detail["type"] == "reasoning.summary" {
+                        if let Some(text) =
+                            detail["summary"].as_str().filter(|text| !text.is_empty())
+                        {
+                            self.chunks
+                                .push(ProviderChunk::ThinkingDelta { text: text.into() });
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn finish_reasoning(&mut self) -> Result<(), ProviderFailure> {
+        let value = if !self.reasoning_details.is_empty() {
+            if self
+                .reasoning_details
+                .iter()
+                .all(|item| reasoning_index(item).is_some())
+            {
+                self.reasoning_details.sort_by_key(reasoning_index);
+            }
+            json!({"reasoning_details": std::mem::take(&mut self.reasoning_details)})
+        } else if let Some(content) = self.reasoning_content.take() {
+            json!({"reasoning_content": content})
+        } else {
+            return Ok(());
+        };
+        validate_replay_size(&value)?;
+        self.chunks.push(ProviderChunk::Replay {
+            protocol: ProviderFormat::OpenAiChat,
+            value,
+        });
+        Ok(())
+    }
+
     fn merge_reasoning_details(&mut self, details: &[Value]) -> Result<(), ProviderFailure> {
         for detail in details {
             self.replay_budget.add(detail)?;
-            let existing = detail
-                .get("index")
-                .and_then(Value::as_u64)
-                .and_then(|index| {
-                    self.reasoning_details
-                        .iter_mut()
-                        .find(|value| value.get("index").and_then(Value::as_u64) == Some(index))
-                });
+            let existing = self.reasoning_details.iter_mut().find(|value| {
+                match reasoning_index(detail).zip(reasoning_index(value)) {
+                    Some((incoming, prior)) => incoming == prior,
+                    None => {
+                        detail.get("id").and_then(nonempty_string).is_some()
+                            && detail.get("id") == value.get("id")
+                            && detail.get("type") == value.get("type")
+                    }
+                }
+            });
             if let Some(existing) = existing {
+                if ["id", "type"].iter().any(|field| {
+                    existing
+                        .get(field)
+                        .and_then(nonempty_string)
+                        .zip(detail.get(field).and_then(nonempty_string))
+                        .is_some_and(|(prior, incoming)| prior != incoming)
+                }) {
+                    return Err(super::prepare::invalid_request(
+                        "provider changed native reasoning item identity",
+                    ));
+                }
                 if let (Some(target), Some(update)) = (existing.as_object_mut(), detail.as_object())
                 {
                     for (key, value) in update {
+                        let previous = target.get_mut(key);
                         if matches!(key.as_str(), "text" | "summary" | "data") {
-                            if let (Some(existing), Some(fragment)) = (
-                                target.get(key).and_then(Value::as_str).map(str::to_string),
-                                value.as_str(),
-                            ) {
-                                target.insert(key.clone(), Value::String(existing + fragment));
+                            if let (Some(Value::String(existing)), Some(fragment)) =
+                                (previous, value.as_str())
+                            {
+                                existing.push_str(fragment);
                                 continue;
                             }
+                        } else if value.is_null() && previous.is_some() {
+                            continue;
                         }
                         target.insert(key.clone(), value.clone());
                     }
@@ -470,11 +547,12 @@ impl OpenAiCompatSseParser {
         }
 
         Err(ProviderFailure {
-            kind: crate::provider::types::ProviderFailureKind::Transport,
+            kind: crate::provider::types::ProviderFailureKind::InvalidResponse,
             message: TRUNCATED_STREAM_MESSAGE.to_string(),
             status: None,
             provider_request_id: None,
-            retryable: true,
+            retry_after: None,
+            retryable: false,
         })
     }
 
@@ -483,13 +561,21 @@ impl OpenAiCompatSseParser {
     }
 }
 
+fn nonempty_string(value: &Value) -> Option<&str> {
+    value.as_str().filter(|value| !value.is_empty())
+}
+
+fn reasoning_index(value: &Value) -> Option<u64> {
+    value.get("index").and_then(Value::as_u64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn repeated_finish_reason_preserves_usage_without_repeating_replay_or_completion() {
-        let mut parser = OpenAiCompatSseParser::new();
+        let mut parser = OpenAiCompatSseParser::new(false);
         parser.feed(concat!(
             "data: ",
             r#"{"id":"chat_gateway","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_read","function":{"name":"read_file","arguments":"{}"}}],"reasoning_details":[{"index":0,"type":"reasoning.encrypted","data":"cipher"}]},"finish_reason":null}]}"#
@@ -543,7 +629,7 @@ mod tests {
 
     #[test]
     fn conflicting_finish_reason_remains_visible_to_the_runtime() {
-        let mut parser = OpenAiCompatSseParser::new();
+        let mut parser = OpenAiCompatSseParser::new(false);
         let mut chunks = parser
             .feed(r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#)
             .unwrap();
@@ -567,7 +653,7 @@ mod tests {
 
     #[test]
     fn repeated_finish_reason_does_not_hide_late_tool_arguments() {
-        let mut parser = OpenAiCompatSseParser::new();
+        let mut parser = OpenAiCompatSseParser::new(false);
         parser
             .feed(r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#)
             .unwrap();
@@ -579,8 +665,99 @@ mod tests {
     }
 
     #[test]
+    fn parallel_tool_deltas_cannot_change_an_existing_index_or_reuse_its_id() {
+        for conflicting in [
+            r#"{"index":0,"id":"right","function":{"arguments":"{}"}}"#,
+            r#"{"index":2,"id":"right","function":{"name":"read_file","arguments":"{}"}}"#,
+        ] {
+            let mut parser = OpenAiCompatSseParser::new(false);
+            parser.feed(r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"left","function":{"name":"read_file","arguments":"{}"}},{"index":1,"id":"right","function":{"name":"read_file","arguments":"{}"}}]}}]}"#).unwrap();
+            let choices = json!([{"delta":{"tool_calls":[serde_json::from_str::<Value>(conflicting).unwrap()]},"finish_reason":"tool_calls"}]);
+            let chunks = parser
+                .feed(&format!("data: {}", json!({"choices":choices})))
+                .unwrap();
+            assert!(chunks
+                .iter()
+                .any(|chunk| matches!(chunk, ProviderChunk::InvalidToolStream)));
+            assert!(chunks.iter().any(|chunk| matches!(
+                chunk,
+                ProviderChunk::StopReason {
+                    reason: ModelStopReason::InvalidResponse
+                }
+            )));
+        }
+    }
+
+    #[test]
+    fn only_explicit_summary_details_publish_text() {
+        let mut parser = OpenAiCompatSseParser::new(false);
+        let delta = json!({"reasoning_content":"raw","reasoning_details":[
+            {"type":"reasoning.encrypted","index":0,"data":"opaque"},
+            {"type":"reasoning.summary","index":1,"summary":"Checking dates."}
+        ]});
+        let event = json!({"choices":[{"delta":delta}]});
+        let published: Vec<_> = parser
+            .feed(&format!("data: {event}"))
+            .unwrap()
+            .into_iter()
+            .filter_map(|chunk| match chunk {
+                ProviderChunk::ThinkingDelta { text } => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(published, ["Checking dates."]);
+    }
+
+    #[test]
+    fn native_reasoning_keeps_explicit_order_and_signatures_through_fragmentation() {
+        let mut parser = OpenAiCompatSseParser::new(false);
+        for details in [
+            json!([
+                {"type":"reasoning.text","index":2,"id":"signed","text":"native","signature":null},
+                {"type":"reasoning.encrypted","index":0,"id":"encrypted","data":"cipher"}
+            ]),
+            json!([{"type":"reasoning.text","id":"signed","text":" fragment","signature":"fixture-signature"}]),
+            json!([{"type":"reasoning.text","index":2,"id":"signed","signature":null}]),
+        ] {
+            let chunks = parser
+                .feed(&format!(
+                    "data: {}",
+                    json!({"choices":[{"delta":{"reasoning_details":details}}]})
+                ))
+                .unwrap();
+            assert!(chunks
+                .iter()
+                .any(|chunk| matches!(chunk, ProviderChunk::Reasoning)));
+            assert!(!chunks.iter().any(|chunk| matches!(
+                chunk,
+                ProviderChunk::ThinkingDelta { .. } | ProviderChunk::TextDelta { .. }
+            )));
+        }
+        let chunks = parser
+            .feed(r#"data: {"choices":[{"delta":{},"finish_reason":"stop"}]}"#)
+            .unwrap();
+        let replay = chunks
+            .iter()
+            .find_map(|chunk| match chunk {
+                ProviderChunk::Replay {
+                    protocol: ProviderFormat::OpenAiChat,
+                    value,
+                } => Some(value),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            json!([
+                {"type":"reasoning.encrypted","index":0,"id":"encrypted","data":"cipher"},
+                {"type":"reasoning.text","index":2,"id":"signed","text":"native fragment","signature":"fixture-signature"}
+            ]),
+            replay["reasoning_details"]
+        );
+    }
+
+    #[test]
     fn feed_error_emits_server_error_chunk() {
-        let mut parser = OpenAiCompatSseParser::new();
+        let mut parser = OpenAiCompatSseParser::new(false);
         let frame =
             r#"data: {"error": {"type": "server_error", "message": "something went wrong"}}"#;
         let chunks = parser.feed(frame).unwrap();
@@ -595,9 +772,30 @@ mod tests {
     }
 
     #[test]
-    fn usage_on_completion_chunk_is_emitted() {
-        let mut parser = OpenAiCompatSseParser::new();
-        let frame = r#"data: {"id":"chatcmpl_usage","choices":[{"index":0,"delta":{"content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":88,"completion_tokens":18,"total_tokens":106,"prompt_tokens_details":{"cached_tokens":34}}}"#;
+    fn feed_error_uses_code_only_and_prefers_permanent_type() {
+        for (frame, expected) in [
+            (
+                r#"data: {"error":{"code":"insufficient_quota","message":"quota"}}"#,
+                "insufficient_quota",
+            ),
+            (
+                r#"data: {"error":{"code":"rate_limit_exceeded","type":"insufficient_quota","message":"quota"}}"#,
+                "insufficient_quota",
+            ),
+        ] {
+            let mut parser = OpenAiCompatSseParser::new(false);
+            let chunks = parser.feed(frame).unwrap();
+            assert!(matches!(
+                chunks.as_slice(),
+                [ProviderChunk::ServerError { code, .. }] if code == expected
+            ));
+        }
+    }
+
+    #[test]
+    fn usage_on_completion_chunk_emits_cache_read_and_write_counts() {
+        let mut parser = OpenAiCompatSseParser::new(false);
+        let frame = r#"data: {"id":"chatcmpl_usage","choices":[{"index":0,"delta":{"content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":88,"completion_tokens":18,"total_tokens":106,"prompt_tokens_details":{"cached_tokens":34,"cache_write_tokens":12}}}"#;
 
         let chunks = parser.feed(frame).unwrap();
 
@@ -607,14 +805,14 @@ mod tests {
                 input_tokens: Some(88),
                 output_tokens: Some(18),
                 cache_read_input_tokens: Some(34),
-                cache_creation_input_tokens: None
+                cache_creation_input_tokens: Some(12)
             }
         )));
     }
 
     #[test]
     fn deepseek_usage_reports_prompt_cache_hits() {
-        let mut parser = OpenAiCompatSseParser::new();
+        let mut parser = OpenAiCompatSseParser::new(false);
         let frame = r#"data: {"id":"chatcmpl_usage","choices":[],"usage":{"prompt_tokens":88,"completion_tokens":18,"prompt_cache_hit_tokens":34,"prompt_cache_miss_tokens":54}}"#;
 
         let chunks = parser.feed(frame).unwrap();
@@ -632,7 +830,7 @@ mod tests {
 
     #[test]
     fn tool_finish_reason_emits_typed_tool_completion() {
-        let mut parser = OpenAiCompatSseParser::new();
+        let mut parser = OpenAiCompatSseParser::new(false);
         parser
             .feed(
                 r#"data: {"id":"chatcmpl_tool","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read_file","arguments":"{}"}}]},"finish_reason":null}]}"#,
@@ -653,7 +851,7 @@ mod tests {
     #[test]
     fn missing_or_malformed_tool_index_is_invalid() {
         for index in ["null", "\"zero\""] {
-            let mut parser = OpenAiCompatSseParser::new();
+            let mut parser = OpenAiCompatSseParser::new(false);
             parser.feed(&format!(
                 r#"data: {{"id":"chatcmpl_tool","choices":[{{"index":0,"delta":{{"tool_calls":[{{"index":{index},"id":"call_1","function":{{"name":"read_file","arguments":"{{}}"}}}}]}},"finish_reason":null}}]}}"#,
             )).unwrap();
@@ -663,7 +861,7 @@ mod tests {
             assert!(chunks.iter().any(|chunk| matches!(chunk, ProviderChunk::StopReason { reason } if reason == &ModelStopReason::InvalidResponse)));
         }
 
-        let mut parser = OpenAiCompatSseParser::new();
+        let mut parser = OpenAiCompatSseParser::new(false);
         let chunks = parser.feed(
             r#"data: {"id":"chatcmpl_tool","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read_file","arguments":"{}"}}]},"finish_reason":null}]}"#,
         ).unwrap();
@@ -674,7 +872,7 @@ mod tests {
 
     #[test]
     fn truncated_stream_does_not_emit_stream_end() {
-        let mut parser = OpenAiCompatSseParser::new();
+        let mut parser = OpenAiCompatSseParser::new(false);
         let mut chunks = parser
             .feed(
             r#"data: {"id":"chatcmpl_truncated","choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}"#,
@@ -689,5 +887,11 @@ mod tests {
         assert!(!chunks
             .iter()
             .any(|chunk| matches!(chunk, ProviderChunk::StreamEnd)));
+        let failure = parser.finish().unwrap_err();
+        assert_eq!(
+            crate::provider::types::ProviderFailureKind::InvalidResponse,
+            failure.kind
+        );
+        assert!(!failure.retryable);
     }
 }

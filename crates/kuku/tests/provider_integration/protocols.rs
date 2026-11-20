@@ -44,6 +44,270 @@ async fn anthropic_success_returns_text_and_writes_events() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn unsigned_thinking_is_durable_across_three_turns_and_profile_flip() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+    let session_id = "s_unsigned_prefix";
+
+    for (turn, base_path, prompt, thought, answer) in [
+        (
+            1,
+            "/unsigned-history-1",
+            "prefix turn one",
+            "thought one",
+            "answer one",
+        ),
+        (
+            2,
+            "/unsigned-history-2",
+            "prefix turn two",
+            "thought two",
+            "answer two",
+        ),
+        (
+            3,
+            "/unsigned-history-3",
+            "prefix turn three",
+            "thought three",
+            "answer three",
+        ),
+    ] {
+        let thinking = if turn == 2 {
+            serde_json::json!({"type":"thinking","thinking":thought,"signature":""})
+        } else {
+            serde_json::json!({"type":"thinking","thinking":thought})
+        };
+        let endpoint = format!("{base_path}/v1/messages");
+        let response = anthropic_sse_response(serde_json::json!({
+            "id": format!("msg_{turn}"),
+            "type": "message",
+            "role": "assistant",
+            "content": [thinking, {"type":"text","text":answer}],
+            "stop_reason": "end_turn"
+        }));
+        server.mock(|when, then| {
+            when.method(POST)
+                .path(endpoint.as_str())
+                .matches(common::capture_http_request);
+            then.status(200).body(response);
+        });
+
+        let output = anthro_profile(prompt, &server, base_path, ProviderProfile::Anthropic)
+            .session(session_id)
+            .run()
+            .await
+            .unwrap();
+        assert_eq!(answer, output.text);
+    }
+
+    let paths = [
+        "/unsigned-history-1/v1/messages",
+        "/unsigned-history-2/v1/messages",
+        "/unsigned-history-3/v1/messages",
+    ];
+    let bodies = paths
+        .iter()
+        .map(|path| common::take_http_requests(path).remove(0))
+        .collect::<Vec<_>>();
+    let stable_prefix = |body: &serde_json::Value| {
+        serde_json::json!({
+            "model": body["model"],
+            "system": body["system"],
+            "tools": body["tools"],
+            "cache_control": body["cache_control"],
+            "thinking": body["thinking"],
+            "output_config": body["output_config"],
+        })
+    };
+    assert_eq!(stable_prefix(&bodies[0]), stable_prefix(&bodies[1]));
+    assert_eq!(stable_prefix(&bodies[1]), stable_prefix(&bodies[2]));
+
+    let second_messages = bodies[1]["messages"].as_array().unwrap();
+    let third_messages = bodies[2]["messages"].as_array().unwrap();
+    assert!(second_messages.len() >= 2);
+    assert!(third_messages.len() >= 2);
+    assert_eq!(&second_messages[..2], &third_messages[..2]);
+
+    let admitted_history_path = env.events_path(session_id);
+    let admitted_history_bytes = std::fs::read(&admitted_history_path).unwrap();
+    let events_before_flip = EventStore::replay(env.events_path(session_id)).unwrap();
+    let replay_events = |events: &[kuku::event::StoredEvent]| {
+        events
+            .iter()
+            .filter_map(|event| match &event.payload {
+                EventPayload::Unknown(value)
+                    if value["kind"] == "runtime.provider_replay"
+                        && value["turn"].as_u64().is_some_and(|turn| turn <= 3) =>
+                {
+                    Some((value["turn"].as_u64().unwrap(), event.payload.clone()))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let admitted_before_flip = replay_events(&events_before_flip);
+    assert_eq!(3, admitted_before_flip.len());
+    for (turn, thought, answer) in [
+        (1, "thought one", "answer one"),
+        (2, "thought two", "answer two"),
+        (3, "thought three", "answer three"),
+    ] {
+        assert!(events_before_flip.iter().any(|event| matches!(
+            &event.payload,
+            EventPayload::ModelResponse {
+                turn: event_turn,
+                thinking: Some(thinking),
+                stop_reason: Some(ModelStopReason::EndTurn),
+                ..
+            } if *event_turn == turn && thinking == thought
+        )));
+        let replay = admitted_before_flip
+            .iter()
+            .find_map(|(event_turn, payload)| {
+                (*event_turn == turn).then_some(payload)
+            })
+            .unwrap();
+        let EventPayload::Unknown(value) = replay else {
+            panic!("provider replay event must remain durable");
+        };
+        assert_eq!(
+            serde_json::json!([{"type":"text","text":answer}]),
+            value["value"]["content"]
+        );
+    }
+
+    let flip_path = "/unsigned-history-flip";
+    let flip_endpoint = format!("{flip_path}/v1/messages");
+    server.mock(|when, then| {
+        when.method(POST)
+            .path(flip_endpoint.as_str())
+            .matches(common::capture_http_request);
+        then.status(200).body(anthropic_sse_response(serde_json::json!({
+            "id": "msg_flip",
+            "type": "message",
+            "role": "assistant",
+            "content": [
+                {"type":"thinking","thinking":"compatible thought"},
+                {"type":"text","text":"answer after flip"}
+            ],
+            "stop_reason": "end_turn"
+        })));
+    });
+    let output = anthro_profile(
+        "flip provider profile",
+        &server,
+        flip_path,
+        ProviderProfile::Compatible,
+    )
+    .session(session_id)
+    .run()
+    .await
+    .unwrap();
+    assert_eq!("answer after flip", output.text);
+
+    let flipped_history_bytes = std::fs::read(&admitted_history_path).unwrap();
+    assert!(flipped_history_bytes.starts_with(&admitted_history_bytes));
+    let events_after_flip = EventStore::replay(env.events_path(session_id)).unwrap();
+    assert_eq!(admitted_before_flip, replay_events(&events_after_flip));
+    let flip_replay = events_after_flip.iter().find_map(|event| match &event.payload {
+        EventPayload::Unknown(value)
+            if value["kind"] == "runtime.provider_replay" && value["turn"] == 4 =>
+        {
+            Some(&value["value"]["content"])
+        }
+        _ => None,
+    });
+    assert_eq!(
+        Some(&serde_json::json!([
+            {"type":"thinking","thinking":"compatible thought"},
+            {"type":"text","text":"answer after flip"}
+        ])),
+        flip_replay
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn unsigned_thinking_does_not_block_tool_dispatch_through_sdk() {
+    let env = TestEnv::new();
+    let server = MockServer::start();
+    std::fs::write(env.workspace.path().join("README.md"), "# Unsigned thinking").unwrap();
+    let endpoint = "/unsigned-thinking-tool/v1/messages";
+    let tool_mock = server.mock(|when, then| {
+        context_conditions(when, "find files").path(endpoint);
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_unsigned_tool",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type":"thinking","thinking":"I should inspect the workspace."},
+                    {"type":"text","text":"Inspecting files."},
+                    {"type":"tool_use","id":"toolu_unsigned","name":"find_files","input":{"path":"."}}
+                ],
+                "stop_reason": "tool_use"
+            })));
+    });
+    let final_mock = server.mock(|when, then| {
+        when.method(POST).path(endpoint);
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_unsigned_final",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type":"text","text":"README.md found."}],
+                "stop_reason": "end_turn"
+            })));
+    });
+
+    let output = anthro_profile(
+        "find files",
+        &server,
+        "/unsigned-thinking-tool",
+        ProviderProfile::Anthropic,
+    )
+    .run()
+    .await
+    .unwrap();
+    tool_mock.assert();
+    final_mock.assert();
+    assert_eq!("README.md found.", output.text);
+
+    let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
+    assert!(events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::ModelResponse {
+            thinking: Some(thinking),
+            stop_reason: Some(ModelStopReason::ToolUse),
+            ..
+        } if thinking == "I should inspect the workspace."
+    )));
+    assert!(events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::ToolCall {
+            tool,
+            tool_call_id,
+            ..
+        } if tool == "find_files" && tool_call_id == "toolu_unsigned"
+    )));
+    assert!(events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::ToolResult { status, model_content, .. }
+            if status == "ok" && model_content.contains("README.md")
+    )));
+    assert!(events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::Unknown(value)
+            if value["kind"] == "runtime.provider_replay"
+                && value["turn"] == 1
+                && value["value"]["content"]
+                    == serde_json::json!([
+                        {"type":"text","text":"Inspecting files."},
+                        {"type":"tool_use","id":"toolu_unsigned","name":"find_files","input":{"path":"."}}
+                    ])
+    )));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn anthropic_length_response_is_retried_once_with_frozen_notice() {
     let env = TestEnv::new();
     let server = MockServer::start();
@@ -332,59 +596,78 @@ async fn openai_chat_second_length_interrupts_after_one_recovery() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn openai_responses_length_recovery_keeps_original_input_prefix() {
-    let env = TestEnv::new();
-    let server = MockServer::start();
-    let first = server.mock(|when, then| {
-        when.method(POST)
-            .path("/responses")
-            .matches(is_original_request)
-            .body_contains(r#""max_output_tokens":37"#);
-        then.status(200).body(responses_sse(
-            "resp_length",
-            "partial",
-            concat!(
-                "event: response.incomplete\n",
-                "data: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"resp_length\",\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_tokens\"},\"usage\":{\"input_tokens\":8,\"output_tokens\":37}}}\n\n",
-            ),
-        ));
-    });
-    let second = server.mock(|when, then| {
-        when.method(POST)
-            .path("/responses")
-            .body_contains("finish the responses task")
-            .body_contains("previous model attempt reached its output limit")
-            .body_contains(r#""max_output_tokens":37"#);
-        then.status(200).body(responses_sse(
-            "resp_recovered",
-            "completed",
-            concat!(
-                "event: response.completed\n",
-                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_recovered\",\"status\":\"completed\",\"usage\":{\"input_tokens\":9,\"output_tokens\":6}}}\n\n",
-            ),
-        ));
-    });
+async fn openai_responses_length_recovery_keeps_original_input_and_optional_limit() {
+    for (prefix, limit) in [("/recovery-limited", Some(37)), ("/recovery-default", None)] {
+        let env = TestEnv::new();
+        let server = MockServer::start();
+        let path = format!("{prefix}/responses");
+        let first = server.mock(|when, then| {
+            when.method(POST)
+                .path(&path)
+                .matches(is_original_request)
+                .matches(common::capture_http_request);
+            then.status(200).body(responses_sse(
+                "resp_length",
+                "partial",
+                concat!(
+                    "event: response.incomplete\n",
+                    "data: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"resp_length\",\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_tokens\"},\"usage\":{\"input_tokens\":8,\"output_tokens\":37}}}\n\n",
+                ),
+            ));
+        });
+        let second = server.mock(|when, then| {
+            when.method(POST)
+                .path(&path)
+                .body_contains("finish the responses task")
+                .body_contains("previous model attempt reached its output limit")
+                .matches(common::capture_http_request);
+            then.status(200).body(responses_sse(
+                "resp_recovered",
+                "completed",
+                concat!(
+                    "event: response.completed\n",
+                    "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_recovered\",\"status\":\"completed\",\"usage\":{\"input_tokens\":9,\"output_tokens\":6}}}\n\n",
+                ),
+            ));
+        });
 
-    let output = query("finish the responses task")
-        .provider(Provider::OpenAiResponses)
-        .model("test-responses")
-        .base_url(server.base_url())
-        .api_key("responses-key")
-        .max_output_tokens(37)
-        .config(test_config())
-        .run()
-        .await
-        .unwrap();
+        let mut config = test_config();
+        let tier = config.tiers.get_mut("balanced").unwrap();
+        tier.max_output_tokens = None;
+        if limit.is_some() {
+            tier.context_window = 10_000;
+        }
+        let mut request = query("finish the responses task")
+            .provider(Provider::OpenAiResponses)
+            .model("test-responses")
+            .base_url(server.url(prefix))
+            .api_key("responses-key")
+            .config(config);
+        if let Some(limit) = limit {
+            request = request.max_output_tokens(limit);
+        }
+        let output = request.run().await.unwrap();
 
-    first.assert();
-    second.assert();
-    assert_eq!("completed", output.text);
-    assert_eq!(2, output.model_request_count);
-    assert_eq!(Some(43), output.usage.and_then(|usage| usage.output_tokens));
-    let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
-    assert!(events
-        .iter()
-        .any(|event| matches!(event.payload, EventPayload::ModelRecovery { .. })));
+        first.assert();
+        second.assert();
+        let requests = common::take_http_requests(&path);
+        assert_eq!(2, requests.len());
+        let expected = limit.map(|value| serde_json::json!(value));
+        for body in requests {
+            assert_eq!(expected.as_ref(), body.get("max_output_tokens"));
+        }
+        assert_eq!("completed", output.text);
+        assert_eq!(2, output.model_request_count);
+        assert_eq!(Some(43), output.usage.and_then(|usage| usage.output_tokens));
+        let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
+        assert!(events.iter().any(
+            |event| matches!(event.payload, EventPayload::ModelRecovery {
+            failed_max_output_tokens,
+            retry_max_output_tokens,
+            ..
+        } if failed_max_output_tokens == limit && retry_max_output_tokens == limit)
+        ));
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]

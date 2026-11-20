@@ -4,11 +4,11 @@ use std::path::{Path, PathBuf};
 use crate::conversation::address::ConversationAddress;
 use crate::conversation::{reduce_conversations, TurnTerminal};
 use crate::error::Result;
-use crate::event;
+use crate::event::{self, EventPayload, EventStore, StoredEvent};
 use crate::session::SessionStatus;
 
 #[derive(Debug, Clone)]
-/// Summary metadata for a session, extracted from disk without full event replay.
+/// Summary metadata for a session in a workspace.
 pub struct SessionSummary {
     pub session_id: String,
     pub workspace: PathBuf,
@@ -59,12 +59,17 @@ fn collect_sessions(
             continue;
         }
         let session_id = entry.file_name().to_string_lossy().into_owned();
-        let title = event::scan::scan_first_user_input(&events_path).unwrap_or_default();
-        let created_at = event::scan::scan_session_meta(&events_path).unwrap_or_default();
-        let turn_count = event::scan::scan_turn_count(&events_path);
-        let events = event::EventStore::replay(&events_path).unwrap_or_default();
+        let replay = EventStore::replay(&events_path);
+        let (title, created_at, turn_count) = match &replay {
+            Ok(events) => journal_metadata(events),
+            Err(_) => (
+                event::scan::scan_first_user_input(&events_path).unwrap_or_default(),
+                event::scan::scan_session_meta(&events_path).unwrap_or_default(),
+                event::scan::scan_turn_count(&events_path),
+            ),
+        };
         let lock_path = entry.path().join("lock");
-        let status = session_status(&lock_path, &events);
+        let status = session_status(&lock_path, replay.as_deref().unwrap_or_default());
 
         let (mtime, size) = file_stat(&events_path);
 
@@ -80,6 +85,34 @@ fn collect_sessions(
         });
     }
     Ok(())
+}
+
+fn journal_metadata(events: &[StoredEvent]) -> (String, String, u64) {
+    let mut title = None;
+    let mut created = None;
+    let mut turns = 0;
+    for event in events {
+        match &event.payload {
+            EventPayload::MessageUser { text, .. } if title.is_none() => {
+                title = Some(text.as_str())
+            }
+            EventPayload::SessionCreated { created_at, .. } => created = Some(created_at.as_str()),
+            EventPayload::Unknown(value)
+                if created.is_none()
+                    && value["kind"] == "runtime.operation"
+                    && value["record"]["operation"] == "session_claimed" =>
+            {
+                created = value["record"]["claim"]["created_at"].as_str();
+            }
+            EventPayload::TurnStarted { .. } => turns += 1,
+            _ => {}
+        }
+    }
+    (
+        title.unwrap_or_default().to_owned(),
+        created.unwrap_or_default().to_owned(),
+        turns,
+    )
 }
 
 fn session_status(lock_path: &Path, events: &[event::StoredEvent]) -> SessionStatus {

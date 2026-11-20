@@ -13,8 +13,23 @@ use super::provider::types::{
 };
 use super::{current_input, sample_assembly, test_catalog};
 
+#[path = "../common/mod.rs"]
+mod common;
+
 #[path = "gateway.rs"]
 mod gateway;
+
+#[path = "retry.rs"]
+mod retry;
+
+#[path = "session_context_snapshot.rs"]
+mod session_context_snapshot;
+
+#[path = "legacy_context_snapshot.rs"]
+mod legacy_context_snapshot;
+
+#[path = "concurrent_context_snapshot.rs"]
+mod concurrent_context_snapshot;
 
 #[tokio::test]
 async fn three_protocols_preserve_tool_batches_native_replay_and_multiturn_prefixes() {
@@ -24,6 +39,12 @@ async fn three_protocols_preserve_tool_batches_native_replay_and_multiturn_prefi
             ProviderKind::OpenAiCompatible,
             ProviderProfile::OpenRouter,
             "deepseek/deepseek-v4.1-flash-1017",
+        ),
+        (
+            ProviderFormat::OpenAiChat,
+            ProviderKind::OpenAiCompatible,
+            ProviderProfile::DeepSeek,
+            "deepseek-flash",
         ),
         (
             ProviderFormat::OpenAiResponses,
@@ -36,6 +57,12 @@ async fn three_protocols_preserve_tool_batches_native_replay_and_multiturn_prefi
             ProviderKind::Anthropic,
             ProviderProfile::Anthropic,
             "claude-sonnet-4-6",
+        ),
+        (
+            ProviderFormat::Anthropic,
+            ProviderKind::Anthropic,
+            ProviderProfile::DeepSeek,
+            "deepseek-flash",
         ),
     ] {
         let server = MockServer::start();
@@ -80,13 +107,30 @@ async fn three_protocols_preserve_tool_batches_native_replay_and_multiturn_prefi
             session_id: "fixed-session".into(),
             agent_address: "main".into(),
             connection_name: "fixture".into(),
+            workspace: std::path::PathBuf::from("."),
         };
         let first =
             super::provider::prepare_provider_request(&config, &request, Some(&correlation))
                 .unwrap();
-        let first_mock = mock_request(&server, &first, &fixture(protocol, 1, model));
+        let first_mock = mock_request(&server, &first, &fixture(protocol, profile, 1, model));
         let (assistant, calls, reports) = collect_response(&config, &first).await;
         assert_eq!(2, calls.len());
+        let public: String = assistant
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                MessageBlock::Thinking(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        let expected = match (protocol, profile) {
+            (ProviderFormat::Anthropic, _) => "first native fixture\n\nsecond native fixture",
+            (ProviderFormat::OpenAiChat, ProviderProfile::DeepSeek) => {
+                "fixture reasoning, continued"
+            }
+            _ => "",
+        };
+        assert_eq!(expected, public);
         assert_eq!(Some(0.001), reports.last().unwrap().cost_usd);
         assert_eq!(
             Some(30),
@@ -135,8 +179,8 @@ async fn three_protocols_preserve_tool_batches_native_replay_and_multiturn_prefi
                 .unwrap();
         assert_eq!(first.correlation_id, second.correlation_id);
         assert!(wire_messages(&second.body).starts_with(wire_messages(&first.body)));
-        assert_tool_continuation(protocol, &second.body);
-        let second_mock = mock_request(&server, &second, &fixture(protocol, 2, model));
+        assert_tool_continuation(protocol, profile, &second.body);
+        let second_mock = mock_request(&server, &second, &fixture(protocol, profile, 2, model));
         let (assistant, calls, _) = collect_response(&config, &second).await;
         assert!(calls.is_empty());
         assert!(assistant
@@ -153,7 +197,22 @@ async fn three_protocols_preserve_tool_batches_native_replay_and_multiturn_prefi
                 .unwrap();
         assert_eq!(first.correlation_id, third.correlation_id);
         assert!(wire_messages(&third.body).starts_with(wire_messages(&second.body)));
-        let third_mock = mock_request(&server, &third, &fixture(protocol, 3, model));
+        if profile == ProviderProfile::DeepSeek && protocol == ProviderFormat::OpenAiChat {
+            assert!(wire_messages(&third.body).iter().any(|message| {
+                message["role"] == "assistant"
+                    && message["content"] == "sum=7"
+                    && message["reasoning_content"] == "fixture reasoning for the second response"
+            }));
+            let mut no_tools = request.clone();
+            no_tools.assembly.tools.clear();
+            let plain =
+                super::provider::prepare_provider_request(&config, &no_tools, Some(&correlation))
+                    .unwrap();
+            assert!(wire_messages(&plain.body)
+                .iter()
+                .all(|message| message.get("reasoning_content").is_none()));
+        }
+        let third_mock = mock_request(&server, &third, &fixture(protocol, profile, 3, model));
         let (assistant, calls, _) = collect_response(&config, &third).await;
         assert!(calls.is_empty());
         assert!(assistant
@@ -219,6 +278,7 @@ async fn collect_response(
             ProviderChunk::InvalidToolStream => panic!("fixture produced an invalid tool stream"),
             ProviderChunk::ServerError { code, message } => panic!("{code}: {message}"),
             ProviderChunk::StreamStart { .. }
+            | ProviderChunk::Reasoning
             | ProviderChunk::ContentBlockStop { .. }
             | ProviderChunk::StreamUsage { .. }
             | ProviderChunk::StopReason { .. } => {}
@@ -256,7 +316,7 @@ fn wire_messages(body: &Value) -> &[Value] {
         .unwrap()
 }
 
-fn assert_tool_continuation(protocol: ProviderFormat, body: &Value) {
+fn assert_tool_continuation(protocol: ProviderFormat, profile: ProviderProfile, body: &Value) {
     let messages = wire_messages(body);
     match protocol {
         ProviderFormat::OpenAiChat => {
@@ -264,8 +324,17 @@ fn assert_tool_continuation(protocol: ProviderFormat, body: &Value) {
                 .iter()
                 .find(|value| value.get("tool_calls").is_some())
                 .unwrap();
-            assert_eq!("cipher-fixture", assistant["reasoning_details"][0]["data"]);
-            assert!(assistant.get("reasoning_content").is_none());
+            if profile == ProviderProfile::DeepSeek {
+                assert_eq!(
+                    "fixture reasoning, continued",
+                    assistant["reasoning_content"]
+                );
+                assert_eq!("Checking files.", assistant["content"]);
+                assert!(assistant.get("reasoning_details").is_none());
+            } else {
+                assert_eq!("cipher-fixture", assistant["reasoning_details"][0]["data"]);
+                assert!(assistant.get("reasoning_content").is_none());
+            }
             assert_eq!(2, assistant["tool_calls"].as_array().unwrap().len());
             for (id, content) in [("c1", "3"), ("c2", "4")] {
                 assert!(messages.iter().any(|value| value["role"] == "tool"
@@ -276,6 +345,9 @@ fn assert_tool_continuation(protocol: ProviderFormat, body: &Value) {
         ProviderFormat::OpenAiResponses => {
             assert!(messages.iter().any(|value| value["type"] == "reasoning"
                 && value["encrypted_content"] == "cipher-fixture"));
+            assert!(messages.iter().any(|value| value["id"] == "checking"
+                && value["phase"] == "commentary"
+                && value["content"][0]["text"] == "Checking files."));
             for (id, content) in [("c1", "3"), ("c2", "4")] {
                 assert!(messages.iter().any(|value| value["type"] == "function_call"
                     && value["call_id"] == id
@@ -297,7 +369,24 @@ fn assert_tool_continuation(protocol: ProviderFormat, body: &Value) {
                         })
                 })
                 .unwrap();
-            assert_eq!("signed-fixture", assistant["content"][0]["signature"]);
+            let native = assistant["content"].as_array().unwrap();
+            assert_eq!(
+                ["thinking", "text", "tool_use", "thinking", "tool_use"],
+                native
+                    .iter()
+                    .map(|block| block["type"].as_str().unwrap())
+                    .collect::<Vec<_>>()
+                    .as_slice()
+            );
+            assert_eq!("Checking files.", native[1]["text"]);
+            assert_eq!("second native fixture", native[3]["thinking"]);
+            if profile == ProviderProfile::Anthropic {
+                assert_eq!("signed-fixture", native[0]["signature"]);
+                assert_eq!("signed-continuation", native[3]["signature"]);
+            } else {
+                assert!(native[0].get("signature").is_none());
+                assert!(native[3].get("signature").is_none());
+            }
             let results = messages.last().unwrap()["content"].as_array().unwrap();
             for (id, content) in [("c1", "3"), ("c2", "4")] {
                 assert!(results.iter().any(|value| value["type"] == "tool_result"
@@ -313,15 +402,19 @@ fn event(kind: &str, value: Value) -> String {
     format!("event: {kind}\r\ndata: {value}\r\n\r\n")
 }
 
-fn fixture(protocol: ProviderFormat, turn: u8, model: &str) -> String {
+fn fixture(protocol: ProviderFormat, profile: ProviderProfile, turn: u8, model: &str) -> String {
     match protocol {
-        ProviderFormat::OpenAiChat => chat_fixture(turn, model),
+        ProviderFormat::OpenAiChat => {
+            chat_fixture(turn, model, profile == ProviderProfile::DeepSeek)
+        }
         ProviderFormat::OpenAiResponses => responses_fixture(turn, model),
-        ProviderFormat::Anthropic => messages_fixture(turn, model),
+        ProviderFormat::Anthropic => {
+            messages_fixture(turn, model, profile == ProviderProfile::Anthropic)
+        }
     }
 }
 
-fn chat_fixture(turn: u8, model: &str) -> String {
+fn chat_fixture(turn: u8, model: &str, deepseek: bool) -> String {
     let chunk = |delta: Value, finish: Value| {
         format!(
             ": gateway keepalive\r\ndata: {}\r\n\r\n",
@@ -329,18 +422,28 @@ fn chat_fixture(turn: u8, model: &str) -> String {
         )
     };
     let mut output = if turn == 1 {
-        chunk(
-            json!({"reasoning":"plan","reasoning_details":[{"index":0,"type":"reasoning.encrypted","data":"cipher-"}],"tool_calls":[{"index":0,"id":"c1","function":{"name":"read_file","arguments":"{\"path\":"}},{"index":1,"id":"c2","function":{"name":"read_file","arguments":"{\"path\":"}}]}),
-            Value::Null,
-        ) + &chunk(
-            json!({"reasoning_details":[{"index":0,"type":"reasoning.encrypted","data":"fixture"}],"tool_calls":[{"index":1,"function":{"arguments":"\"right.txt\"}"}},{"index":0,"function":{"arguments":"\"left.txt\"}"}}]}),
-            Value::Null,
-        ) + &chunk(json!({}), json!("tool_calls"))
+        let mut first = json!({"tool_calls":[{"index":0,"id":"c1","function":{"name":"read_file","arguments":"{\"path\":"}},{"index":1,"id":"c2","function":{"name":"read_file","arguments":"{\"path\":"}}]});
+        let mut second = json!({"tool_calls":[{"index":1,"id":"c2","function":{"arguments":"\"right.txt\"}"}},{"index":0,"function":{"arguments":"\"left.txt\"}"}}]});
+        if deepseek {
+            first["reasoning_content"] = json!("fixture reasoning,");
+            first["content"] = json!("Checking files.");
+            second["reasoning_content"] = json!(" continued");
+        } else {
+            first["reasoning"] = json!("fixture reasoning");
+            first["reasoning_details"] =
+                json!([{"index":0,"type":"reasoning.encrypted","data":"cipher-"}]);
+            second["reasoning_details"] =
+                json!([{"index":0,"type":"reasoning.encrypted","data":"fixture"}]);
+        }
+        chunk(first, Value::Null)
+            + &chunk(second, Value::Null)
+            + &chunk(json!({}), json!("tool_calls"))
     } else {
-        chunk(
-            json!({"content":if turn == 2 {"sum=7"} else {"confirmed"}}),
-            json!("stop"),
-        )
+        let mut delta = json!({"content":if turn == 2 {"sum=7"} else {"confirmed"}});
+        if deepseek && turn == 2 {
+            delta["reasoning_content"] = json!("fixture reasoning for the second response");
+        }
+        chunk(delta, json!("stop"))
     };
     output += &format!(
         "data: {}\r\n\r\ndata: [DONE]\r\n\r\n",
@@ -349,26 +452,34 @@ fn chat_fixture(turn: u8, model: &str) -> String {
     output
 }
 
-fn messages_fixture(turn: u8, model: &str) -> String {
+fn messages_fixture(turn: u8, model: &str, signed: bool) -> String {
     let mut output = event(
         "message_start",
         json!({"message":{"id":format!("msg-{turn}"),"model":model,"usage":{"input_tokens":10,"cache_read_input_tokens":20,"cache_creation_input_tokens":0,"output_tokens":0}}}),
     );
     if turn == 1 {
+        output += &messages_thinking(
+            0,
+            "first native fixture",
+            signed.then_some("signed-fixture"),
+        );
         output += &event(
             "content_block_start",
-            json!({"index":0,"content_block":{"type":"thinking","thinking":""}}),
+            json!({"index":1,"content_block":{"type":"text","text":""}}),
         );
         output += &event(
             "content_block_delta",
-            json!({"index":0,"delta":{"type":"thinking_delta","thinking":"plan"}}),
+            json!({"index":1,"delta":{"type":"text_delta","text":"Checking files."}}),
         );
-        output += &event(
-            "content_block_delta",
-            json!({"index":0,"delta":{"type":"signature_delta","signature":"signed-fixture"}}),
-        );
-        output += &event("content_block_stop", json!({"index":0}));
-        for (index, id, path) in [(1, "c1", "left.txt"), (2, "c2", "right.txt")] {
+        output += &event("content_block_stop", json!({"index":1}));
+        for (index, id, path) in [(2, "c1", "left.txt"), (4, "c2", "right.txt")] {
+            if index == 4 {
+                output += &messages_thinking(
+                    3,
+                    "second native fixture",
+                    signed.then_some("signed-continuation"),
+                );
+            }
             output += &event(
                 "content_block_start",
                 json!({"index":index,"content_block":{"type":"tool_use","id":id,"name":"read_file","input":{}}}),
@@ -394,6 +505,23 @@ fn messages_fixture(turn: u8, model: &str) -> String {
     output
 }
 
+fn messages_thinking(index: u64, text: &str, signature: Option<&str>) -> String {
+    let mut events = event(
+        "content_block_start",
+        json!({"index":index,"content_block":{"type":"thinking","thinking":""}}),
+    ) + &event(
+        "content_block_delta",
+        json!({"index":index,"delta":{"type":"thinking_delta","thinking":text}}),
+    );
+    if let Some(signature) = signature {
+        events += &event(
+            "content_block_delta",
+            json!({"index":index,"delta":{"type":"signature_delta","signature":signature}}),
+        );
+    }
+    events + &event("content_block_stop", json!({"index":index}))
+}
+
 fn responses_fixture(turn: u8, model: &str) -> String {
     let mut output = event(
         "response.created",
@@ -411,22 +539,45 @@ fn responses_fixture(turn: u8, model: &str) -> String {
             json!({"output_index":0,"item":reasoning}),
         );
         items.push(reasoning);
-        for (index, id, path) in [(1, "c1", "left.txt"), (2, "c2", "right.txt")] {
-            let mut item = json!({"id":format!("fc-{id}"),"type":"function_call","call_id":id,"name":"read_file","arguments":""});
+        let commentary = json!({"id":"checking","type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"Checking files."}]});
+        output += &event(
+            "response.output_item.added",
+            json!({"output_index":1,"item":commentary}),
+        );
+        output += &event(
+            "response.output_text.delta",
+            json!({"output_index":1,"item_id":"checking","content_index":0,"delta":"Checking files."}),
+        );
+        output += &event(
+            "response.output_item.done",
+            json!({"output_index":1,"item":commentary}),
+        );
+        items.push(commentary);
+        let calls = [(2, "c1", "left.txt"), (3, "c2", "right.txt")];
+        for (index, id, _) in calls {
+            let item = json!({"id":format!("fc-{id}"),"type":"function_call","call_id":id,"name":"read_file","arguments":""});
             output += &event(
                 "response.output_item.added",
                 json!({"output_index":index,"item":item}),
             );
-            let arguments = json!({"path":path}).to_string();
             output += &event(
                 "response.function_call_arguments.delta",
-                json!({"output_index":index,"item_id":format!("fc-{id}"),"delta":arguments}),
+                json!({"output_index":index,"item_id":format!("fc-{id}"),"delta":"{\"path\":"}),
             );
+        }
+        for (index, id, path) in calls.into_iter().rev() {
+            output += &event(
+                "response.function_call_arguments.delta",
+                json!({"output_index":index,"item_id":format!("fc-{id}"),"delta":format!("\"{path}\"}}")}),
+            );
+        }
+        for (index, id, path) in calls {
+            let arguments = json!({"path":path}).to_string();
             output += &event(
                 "response.function_call_arguments.done",
                 json!({"output_index":index,"item_id":format!("fc-{id}"),"arguments":arguments}),
             );
-            item["arguments"] = json!(arguments);
+            let item = json!({"id":format!("fc-{id}"),"type":"function_call","call_id":id,"name":"read_file","arguments":arguments});
             output += &event(
                 "response.output_item.done",
                 json!({"output_index":index,"item":item}),

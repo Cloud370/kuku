@@ -9,6 +9,7 @@
 - [Overview](overview.md)
 - [Host Apps](host-apps.md)
 - [交互客户端重构计划](interactive-clients.md) — server、Rust TUI 与 WebUI 的客户端契约、交付顺序和终端测试
+- [工作区执行与会话变量](workspace-execution.md) — 跨端脚本、宿主事实、命名数据及采纳条件
 - [Prompt Assembly](prompt-assembly.md)
 - [Module Contracts](module-contracts.md)
 - [Extension Runtime](extension-runtime.md)

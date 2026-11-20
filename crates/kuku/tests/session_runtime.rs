@@ -1,6 +1,16 @@
+#[path = "session_runtime/authorization.rs"]
+mod authorization;
 mod common;
+#[path = "session_runtime/permission_resume.rs"]
+mod permission_resume;
+#[path = "session_runtime/unpersisted_resume.rs"]
+mod unpersisted_resume;
+#[path = "session_runtime/wait_support.rs"]
+mod wait_support;
 
+#[cfg(unix)]
 use std::sync::Arc;
+#[cfg(unix)]
 use std::time::Duration;
 
 use httpmock::prelude::{HttpMockRequest, MockServer, POST};
@@ -8,10 +18,12 @@ use httpmock::Mock;
 use serde_json::{json, Value};
 
 use kuku::event::EventPayload;
+#[cfg(unix)]
 use kuku::permission::{AuthorizationDecision, ToolAuthorization, ToolAuthorizer};
-use kuku::{
-    Activation, AgentConfig, AgentSnapshot, AgentStatus, Input, OutputRead, Session, SessionOptions,
-};
+use kuku::{Activation, AgentConfig, AgentStatus, Input, OutputRead, Session, SessionOptions};
+#[cfg(unix)]
+use wait_support::wait_for_agent_during;
+use wait_support::{settled, settled_during, settled_with_output};
 
 fn options(
     server: &MockServer,
@@ -25,9 +37,7 @@ fn options(
     config.tiers.get_mut("balanced").unwrap().think = kuku::config::ThinkLevel::Off;
     config.handoff.enabled = false;
     config.plugin.enabled = false;
-    let mut options = SessionOptions::new(workspace, data, config);
-    options.limits.max_steps_per_turn = 8;
-    options
+    SessionOptions::new(workspace, data, config)
 }
 
 fn tool_count(request: &HttpMockRequest) -> usize {
@@ -38,6 +48,31 @@ fn tool_count(request: &HttpMockRequest) -> usize {
         .iter()
         .filter(|message| message["role"] == "tool")
         .count()
+}
+
+fn user_message_count(body: &Value, text: &str) -> usize {
+    body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|message| message["role"] == "user" && message["content"] == text)
+        .count()
+}
+
+fn request_has_original_input_once(request: &HttpMockRequest) -> bool {
+    let body: Value = serde_json::from_slice(request.body.as_deref().unwrap_or_default()).unwrap();
+    user_message_count(&body, "retain this accepted work") == 1
+}
+
+fn request_has_original_input_twice(request: &HttpMockRequest) -> bool {
+    let body: Value = serde_json::from_slice(request.body.as_deref().unwrap_or_default()).unwrap();
+    user_message_count(&body, "retain this accepted work") == 2
+}
+
+fn request_has_original_and_queued_input_once(request: &HttpMockRequest) -> bool {
+    let body: Value = serde_json::from_slice(request.body.as_deref().unwrap_or_default()).unwrap();
+    user_message_count(&body, "retain this accepted work") == 1
+        && user_message_count(&body, "queued during interruption") == 1
 }
 
 fn response(message: Value, finish_reason: &str) -> String {
@@ -67,20 +102,6 @@ async fn fixture<'a>(
         .await
 }
 
-async fn settled(session: &Session, address: &str) -> AgentSnapshot {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            let state = session.agent(address).unwrap();
-            if state.status != AgentStatus::Running {
-                return state;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("agent did not settle")
-}
-
 #[tokio::test]
 async fn public_session_executes_real_tools_without_observers_and_reopens() {
     let server = MockServer::start_async().await;
@@ -94,7 +115,7 @@ async fn public_session_executes_real_tools_without_observers_and_reopens() {
     } else {
         "cat answer.txt"
     };
-    let third = fixture(&server, |request| tool_count(request) == 3, json!({"tool_calls":[tool("command", "run_command", json!({"command":command,"timeout":3,"brief":"check result"}))]}), "tool_calls").await;
+    let third = fixture(&server, |request| tool_count(request) == 3, json!({"tool_calls":[tool("command", "run_command", json!({"shell":if cfg!(windows) {"cmd"} else {"sh"},"cwd":".","command":command,"timeout":3,"brief":"check result"}))]}), "tool_calls").await;
     let last = fixture(
         &server,
         |request| tool_count(request) == 4,
@@ -114,9 +135,16 @@ async fn public_session_executes_real_tools_without_observers_and_reopens() {
             "correct answer.txt and check it",
         ))
         .unwrap();
-    let state = settled(&session, "main").await;
+    let state = settled_during(&session, "main", "initial execution").await;
     assert_eq!(AgentStatus::Idle, state.status, "{:?}", state.last_error);
     assert_eq!(Some("done"), state.last_output.as_deref());
+    assert_eq!(4, state.usage.model_requests);
+    assert_eq!(Some(400), state.usage.input_tokens);
+    assert_eq!(Some(80), state.usage.output_tokens);
+    assert_eq!(
+        Some(100),
+        state.usage.latest_request.as_ref().unwrap().input_tokens
+    );
     assert_eq!(
         "after\n",
         std::fs::read_to_string(workspace.path().join("answer.txt")).unwrap()
@@ -149,15 +177,137 @@ async fn public_session_executes_real_tools_without_observers_and_reopens() {
     let mut reopen = original;
     reopen.session_id = Some(id);
     let reopened = Session::open(reopen).await.unwrap();
+    assert_eq!(state.usage, reopened.agent("main").unwrap().usage);
     reopened
         .send(Input::new("followup", "main", "verify the existing result"))
         .unwrap();
-    assert_eq!(AgentStatus::Idle, settled(&reopened, "main").await.status);
+    assert_eq!(
+        AgentStatus::Idle,
+        settled_during(&reopened, "main", "reopened execution")
+            .await
+            .status
+    );
     reopened.close().await.unwrap();
     first.assert_hits_async(1).await;
     second.assert_hits_async(1).await;
     third.assert_hits_async(1).await;
     last.assert_hits_async(2).await;
+}
+
+#[tokio::test]
+async fn provider_measurements_are_request_bound_and_replay_per_agent() {
+    let server = MockServer::start_async().await;
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let mut original = options(&server, workspace.path(), data.path());
+    original
+        .config
+        .tiers
+        .get_mut("balanced")
+        .unwrap()
+        .context_window = 100_000;
+    let mut fixtures = Vec::new();
+    for (model, usage) in [
+        (
+            "complete",
+            json!({
+                "prompt_tokens": 10_000,
+                "completion_tokens": 50,
+                "prompt_tokens_details": {"cached_tokens": 0},
+                "completion_tokens_details": {"reasoning_tokens": 35},
+            }),
+        ),
+        ("output-only", json!({"completion_tokens": 30})),
+        ("input-only", json!({"prompt_tokens": 20_000})),
+    ] {
+        let expected_body = json!({"model": model}).to_string();
+        let body = common::openai_sse_response(json!({
+            "id": "usage-fixture", "model": model, "usage": usage,
+            "choices": [{"message": {"content": "measured"}, "finish_reason": "stop"}],
+        }));
+        fixtures.push(
+            server
+                .mock_async(move |when, then| {
+                    when.method(POST)
+                        .path("/chat/completions")
+                        .json_body_partial(expected_body);
+                    then.status(200)
+                        .header("content-type", "text/event-stream")
+                        .body(body);
+                })
+                .await,
+        );
+    }
+    let session = Session::open(original.clone()).await.unwrap();
+    for (agent, model) in [("main", "complete"), ("reviewer", "output-only")] {
+        session
+            .create_agent(
+                &format!("create:{agent}"),
+                agent,
+                AgentConfig {
+                    model: Some(model.into()),
+                    ..AgentConfig::default()
+                },
+            )
+            .unwrap();
+        session
+            .send(Input::new(format!("first:{agent}"), agent, "measure usage"))
+            .unwrap();
+    }
+    let main = settled(&session, "main").await.usage;
+    let reviewer = settled(&session, "reviewer").await.usage;
+    assert_eq!(Some(10.0), main.context_percent());
+    assert_eq!(Some(0.0), main.cache_hit_percent());
+    assert_eq!(Some(50), main.output_tokens);
+    assert!(main.input_tokens_complete() && main.output_tokens_complete());
+    let rate = main.average_output_tokens_per_second();
+    let sample = main.latest_request.as_ref().unwrap();
+    assert_eq!(
+        Some(50.0 * 1_000_000.0 / sample.elapsed_us.unwrap() as f64),
+        rate
+    );
+    assert_eq!(rate, main.output_tokens_per_second());
+    assert_eq!(None, reviewer.context_percent());
+    assert_eq!(None, reviewer.input_tokens);
+    assert_eq!(Some(30), reviewer.output_tokens);
+    assert!(!reviewer.input_tokens_complete() && reviewer.output_tokens_complete());
+
+    session
+        .configure_agent(
+            "new-route",
+            "main",
+            AgentConfig {
+                model: Some("input-only".into()),
+                ..AgentConfig::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(None, session.agent("main").unwrap().usage.latest_request);
+    session
+        .send(Input::new("second:main", "main", "measure the new route"))
+        .unwrap();
+    let main = settled(&session, "main").await.usage;
+    assert_eq!(2, main.model_requests);
+    assert_eq!(Some(30_000), main.input_tokens);
+    assert_eq!(Some(50), main.output_tokens);
+    assert!(main.input_tokens_complete() && !main.output_tokens_complete());
+    assert_eq!(Some(20.0), main.context_percent());
+    assert_eq!(None, main.output_tokens_per_second());
+    assert_eq!(rate, main.average_output_tokens_per_second());
+    assert_eq!(Some(0.0), main.cache_hit_percent());
+    assert_eq!(10_000, main.cache_measured_input_tokens);
+    assert_eq!(0, main.cache_measured_read_tokens);
+    assert_eq!(reviewer, session.agent("reviewer").unwrap().usage);
+
+    original.session_id = Some(session.id().into());
+    session.close().await.unwrap();
+    let reopened = Session::open(original).await.unwrap();
+    assert_eq!(main, reopened.agent("main").unwrap().usage);
+    assert_eq!(reviewer, reopened.agent("reviewer").unwrap().usage);
+    reopened.close().await.unwrap();
+    for fixture in fixtures {
+        fixture.assert_hits_async(1).await;
+    }
 }
 
 #[tokio::test]
@@ -210,279 +360,46 @@ async fn receipts_are_durable_idempotent_and_enqueue_requires_explicit_advance()
     model.assert_hits_async(1).await;
 }
 
-#[derive(Debug)]
-struct Deferred;
-
-impl ToolAuthorizer for Deferred {
-    fn authorize(&self, action: &ToolAuthorization) -> kuku::Result<AuthorizationDecision> {
-        assert_eq!("main", action.agent);
-        assert_eq!("run_command", action.tool.name);
-        assert_eq!("echo authorized", action.args["command"]);
-        Ok(AuthorizationDecision::Defer)
-    }
+#[tokio::test]
+async fn settled_provider_failure_allows_close_and_explicit_advance_after_reopen() {
+    retry_interrupted_input(true, 400, true, 0, false).await;
 }
 
 #[tokio::test]
-async fn exact_authorization_survives_close_and_rejects_stale_replies() {
-    let server = MockServer::start_async().await;
-    let workspace = tempfile::tempdir().unwrap();
-    let data = tempfile::tempdir().unwrap();
-    let first = fixture(&server, |request| tool_count(request) == 0, json!({"tool_calls":[tool("command", "run_command", json!({"command":"echo authorized","timeout":2,"brief":"check permission"}))]}), "tool_calls").await;
-    let last = fixture(
-        &server,
-        |request| tool_count(request) == 1,
-        json!({"content":"authorized"}),
-        "stop",
-    )
-    .await;
-    let mut original = options(&server, workspace.path(), data.path());
-    original.authorizer = Arc::new(Deferred);
-    let session = Session::open(original.clone()).await.unwrap();
-    session
-        .create_agent("create", "main", AgentConfig::default())
-        .unwrap();
-    session
-        .send(Input::new("input", "main", "run exact command"))
-        .unwrap();
-    let waiting = settled(&session, "main").await;
-    assert_eq!(
-        AgentStatus::Waiting,
-        waiting.status,
-        "{:?}",
-        waiting.last_error
-    );
-    let request = waiting.permission.unwrap();
-    assert!(session
-        .reply_permission("wrong", "main", "unrelated", true)
-        .is_err());
-    let mut reopen = original;
-    reopen.session_id = Some(session.id().into());
-    session.close().await.unwrap();
-    let session = Session::open(reopen).await.unwrap();
-    let receipt = session
-        .reply_permission("reply", "main", &request.id, true)
-        .unwrap();
-    assert_eq!(
-        Some(receipt.clone()),
-        session
-            .reply_permission_receipt("reply", "main", &request.id, true)
-            .unwrap()
-    );
-    assert!(session
-        .reply_permission_receipt("reply", "main", &request.id, false)
-        .is_err());
-    assert_eq!(
-        receipt,
-        session
-            .reply_permission("reply", "main", &request.id, true)
-            .unwrap()
-    );
-    let done = settled(&session, "main").await;
-    assert_eq!(AgentStatus::Idle, done.status, "{:?}", done.last_error);
-    assert!(session
-        .reply_permission("stale", "main", &request.id, true)
-        .is_err());
-    session.close().await.unwrap();
-    first.assert_hits_async(1).await;
-    last.assert_hits_async(1).await;
-}
-
-#[derive(Debug)]
-struct DeferCommands;
-
-impl ToolAuthorizer for DeferCommands {
-    fn authorize(&self, action: &ToolAuthorization) -> kuku::Result<AuthorizationDecision> {
-        Ok(if action.tool.name == "run_command" {
-            AuthorizationDecision::Defer
-        } else {
-            AuthorizationDecision::Allow
-        })
-    }
+async fn repeated_provider_failure_and_reopen_keeps_one_original_user_message() {
+    retry_interrupted_input(true, 400, true, 1, false).await;
 }
 
 #[tokio::test]
-async fn question_reply_waits_in_inbox_until_prior_authorization_is_settled() {
-    let server = MockServer::start_async().await;
-    let workspace = tempfile::tempdir().unwrap();
-    let data = tempfile::tempdir().unwrap();
-    let first = fixture(&server, |request| tool_count(request) == 0, json!({"tool_calls":[tool("question", "ask_user", json!({"question":"Which color?"})),tool("command", "run_command", json!({"command":"echo authorized","timeout":2,"brief":"run after authorization"}))]}), "tool_calls").await;
-    let last = fixture(
-        &server,
-        |request| {
-            tool_count(request) == 2
-                && String::from_utf8_lossy(request.body.as_deref().unwrap_or_default())
-                    .contains("blue-answer")
-        },
-        json!({"content":"answer accepted"}),
-        "stop",
-    )
-    .await;
-    let mut original = options(&server, workspace.path(), data.path());
-    original.authorizer = Arc::new(DeferCommands);
-    let session = Session::open(original.clone()).await.unwrap();
-    session
-        .create_agent("create", "main", AgentConfig::default())
-        .unwrap();
-    session
-        .send(Input::new(
-            "input",
-            "main",
-            "ask a question and run the command",
-        ))
-        .unwrap();
-    let waiting = settled(&session, "main").await;
-    assert_eq!(
-        AgentStatus::Waiting,
-        waiting.status,
-        "{:?}",
-        waiting.last_error
-    );
-    let question = waiting.question.unwrap();
-    let permission = waiting.permission.unwrap();
-    let receipt = session
-        .reply_question("answer", "main", &question.id, "blue-answer")
-        .unwrap();
-    assert_eq!(
-        Some(receipt.clone()),
-        session
-            .reply_question_receipt("answer", "main", &question.id, "blue-answer")
-            .unwrap()
-    );
-    assert!(session
-        .reply_question_receipt("answer", "main", &question.id, "different-answer")
-        .is_err());
-    assert_eq!(
-        receipt,
-        session
-            .reply_question("answer", "main", &question.id, "blue-answer")
-            .unwrap()
-    );
-    assert_eq!(AgentStatus::Waiting, session.agent("main").unwrap().status);
-    assert_eq!(1, session.agent("main").unwrap().pending_inputs);
-    let mut reopen = original;
-    reopen.session_id = Some(session.id().into());
-    session.close().await.unwrap();
-    let session = Session::open(reopen).await.unwrap();
-    session
-        .reply_permission("allow", "main", &permission.id, true)
-        .unwrap();
-    let done = settled(&session, "main").await;
-    assert_eq!(AgentStatus::Idle, done.status, "{:?}", done.last_error);
-    assert_eq!(Some("answer accepted"), done.last_output.as_deref());
-    assert!(session.events(0, 256).unwrap().iter().any(|event| matches!(&event.payload, EventPayload::MessageUser { text, .. } if text == "blue-answer")));
-    assert!(session
-        .reply_question("stale", "main", &question.id, "ignored")
-        .is_err());
-    session.close().await.unwrap();
-    first.assert_hits_async(1).await;
-    last.assert_hits_async(1).await;
-}
-
-#[tokio::test]
-async fn independent_same_protocol_agents_restore_permissions_in_reverse_order() {
-    let first_server = MockServer::start_async().await;
-    let second_server = MockServer::start_async().await;
-    let workspace = tempfile::tempdir().unwrap();
-    let data = tempfile::tempdir().unwrap();
-    let first_request = fixture(&first_server, |request| tool_count(request) == 0, json!({"tool_calls":[tool("command", "run_command", json!({"command":"echo first","timeout":2,"brief":"first independent action"}))]}), "tool_calls").await;
-    let first_final = fixture(
-        &first_server,
-        |request| tool_count(request) == 1,
-        json!({"content":"first done"}),
-        "stop",
-    )
-    .await;
-    let second_request = fixture(&second_server, |request| tool_count(request) == 0 && !String::from_utf8_lossy(request.body.as_deref().unwrap_or_default()).contains("MAIN_SECRET"), json!({"tool_calls":[tool("command", "run_command", json!({"command":"echo second","timeout":2,"brief":"second independent action"}))]}), "tool_calls").await;
-    let second_final = fixture(
-        &second_server,
-        |request| {
-            tool_count(request) == 1
-                && !String::from_utf8_lossy(request.body.as_deref().unwrap_or_default())
-                    .contains("MAIN_SECRET")
-        },
-        json!({"content":"second done"}),
-        "stop",
-    )
-    .await;
-    let mut original = options(&first_server, workspace.path(), data.path());
-    let mut connection = original.config.providers["openai"].clone();
-    connection.base_url = second_server.url("");
-    original
-        .config
-        .providers
-        .insert("second".into(), connection);
-    original.authorizer = Arc::new(DeferCommands);
-    original.limits.max_model_requests = 1;
-    let session = Session::open(original.clone()).await.unwrap();
-    session
-        .create_agent("first", "main", AgentConfig::default())
-        .unwrap();
-    session
-        .create_agent(
-            "second",
-            "reviewer",
-            AgentConfig {
-                connection: Some("second".into()),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    session
-        .send(Input::new("input-a", "main", "MAIN_SECRET first task"))
-        .unwrap();
-    session
-        .send(Input::new(
-            "input-b",
-            "reviewer",
-            "independent selected material",
-        ))
-        .unwrap();
-    let first = settled(&session, "main").await.permission.unwrap();
-    let second = settled(&session, "reviewer").await.permission.unwrap();
-    assert_ne!(first.turn, second.turn);
-    let mut reopen = original;
-    reopen.session_id = Some(session.id().into());
-    session.close().await.unwrap();
-    let session = Session::open(reopen).await.unwrap();
-    session
-        .reply_permission("reply-b", "reviewer", &second.id, true)
-        .unwrap();
-    let second = settled(&session, "reviewer").await;
-    assert_eq!(AgentStatus::Idle, second.status, "{:?}", second.last_error);
-    assert_eq!(AgentStatus::Waiting, session.agent("main").unwrap().status);
-    session
-        .reply_permission("reply-a", "main", &first.id, true)
-        .unwrap();
-    let first = settled(&session, "main").await;
-    assert_eq!(AgentStatus::Idle, first.status, "{:?}", first.last_error);
-    session.close().await.unwrap();
-    first_request.assert_hits_async(1).await;
-    first_final.assert_hits_async(1).await;
-    second_request.assert_hits_async(1).await;
-    second_final.assert_hits_async(1).await;
-}
-
-#[tokio::test]
-async fn explicit_advance_retries_an_interrupted_input_after_reopen() {
-    retry_interrupted_input(true, 400).await;
+async fn queued_input_joins_restored_accepted_input_without_duplication() {
+    retry_interrupted_input(true, 400, true, 0, true).await;
 }
 
 #[tokio::test]
 async fn successful_explicit_retry_after_rate_limiting_can_close_the_same_session() {
-    retry_interrupted_input(false, 429).await;
+    retry_interrupted_input(false, 429, false, 0, false).await;
 }
 
-async fn retry_interrupted_input(reopen: bool, status: u16) {
+async fn retry_interrupted_input(
+    reopen: bool,
+    status: u16,
+    automatic_retries: bool,
+    continued_failures: usize,
+    queue_new_input: bool,
+) {
     let server = MockServer::start_async().await;
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let failure = server
         .mock_async(|when, then| {
-            when.method(POST).path("/chat/completions");
+            when.method(POST)
+                .path("/chat/completions")
+                .matches(request_has_original_input_once);
             then.status(status).body("provider fixture failure");
         })
         .await;
-    let original = options(&server, workspace.path(), data.path());
+    let mut original = options(&server, workspace.path(), data.path());
+    original.limits.retry_transient_provider_errors = automatic_retries;
     let session = Session::open(original.clone()).await.unwrap();
     session
         .create_agent("create", "main", AgentConfig::default())
@@ -492,71 +409,218 @@ async fn retry_interrupted_input(reopen: bool, status: u16) {
         .unwrap();
     let failed = settled(&session, "main").await;
     assert_eq!(AgentStatus::Interrupted, failed.status);
+    assert!(
+        failed
+            .last_error
+            .as_ref()
+            .is_some_and(|error| error.contains(&format!("HTTP {status}"))),
+        "{failed:?}"
+    );
+    assert!(session.active_executions().is_empty());
     assert_eq!(1, failed.usage.model_requests);
     assert_eq!(1, failed.usage.unreported_requests);
     assert_eq!(None, failed.usage.input_tokens);
-    failure.assert_hits_async(1).await;
-    let session = if reopen {
-        let mut options = original;
+    assert_eq!(0, failed.pending_inputs);
+    assert_eq!(
+        1,
+        session
+            .events(0, 128)
+            .unwrap()
+            .iter()
+            .filter(|event| matches!(&event.payload,
+                EventPayload::MessageUser { text, .. } if text == "retain this accepted work"
+            ))
+            .count()
+    );
+    assert_eq!(
+        1,
+        session
+            .events(0, 128)
+            .unwrap()
+            .iter()
+            .filter(|event| matches!(&event.payload,
+                EventPayload::TurnInterrupted { conversation, turn, .. }
+                    if conversation == "main" && Some(*turn) == failed.turn
+            ))
+            .count(),
+        "provider failure already records its own interruption"
+    );
+    let mut reopen_options = None;
+    let mut session = if reopen {
+        let mut options = original.clone();
         options.session_id = Some(session.id().into());
-        assert!(session.close().await.is_err());
-        Session::open(options).await.unwrap()
+        session.close().await.unwrap();
+        let reopened = Session::open(options.clone()).await.unwrap();
+        assert_eq!(failed, reopened.agent("main").unwrap());
+        reopen_options = Some(options);
+        reopened
     } else {
         session
     };
+
+    for _ in 0..continued_failures {
+        session.advance("main").unwrap();
+        let failed_again = settled(&session, "main").await;
+        assert_eq!(AgentStatus::Interrupted, failed_again.status);
+        assert_eq!(0, failed_again.pending_inputs);
+        assert_eq!(
+            1,
+            session
+                .events(0, 128)
+                .unwrap()
+                .iter()
+                .filter(|event| matches!(&event.payload,
+                    EventPayload::MessageUser { text, .. } if text == "retain this accepted work"
+                ))
+                .count()
+        );
+        if let Some(options) = &reopen_options {
+            session.close().await.unwrap();
+            let reopened = Session::open(options.clone()).await.unwrap();
+            assert_eq!(failed_again, reopened.agent("main").unwrap());
+            session = reopened;
+        }
+    }
+
+    if queue_new_input {
+        session
+            .send(Input::new(
+                "queued-during-interruption",
+                "main",
+                "queued during interruption",
+            ))
+            .unwrap();
+        assert_eq!(1, session.agent("main").unwrap().pending_inputs);
+    }
+    failure.assert_hits_async(1 + continued_failures).await;
     failure.delete_async().await;
+    let success_matcher: fn(&HttpMockRequest) -> bool = if queue_new_input {
+        request_has_original_and_queued_input_once
+    } else {
+        request_has_original_input_once
+    };
     let success = fixture(
         &server,
-        |request| {
-            String::from_utf8_lossy(request.body.as_deref().unwrap_or_default())
-                .contains("retain this accepted work")
-        },
+        success_matcher,
         json!({"content":"retried"}),
         "stop",
     )
     .await;
     session.advance("main").unwrap();
     let done = settled(&session, "main").await;
+    assert_eq!(
+        1,
+        session
+            .events(0, 128)
+            .unwrap()
+            .iter()
+            .filter(|event| matches!(&event.payload,
+                EventPayload::MessageUser { text, .. } if text == "retain this accepted work"
+            ))
+            .count()
+    );
+    if queue_new_input {
+        assert_eq!(
+            1,
+            session
+                .events(0, 128)
+                .unwrap()
+                .iter()
+                .filter(|event| matches!(&event.payload,
+                    EventPayload::MessageUser { text, .. } if text == "queued during interruption"
+                ))
+                .count()
+        );
+    }
     assert_eq!(AgentStatus::Idle, done.status, "{:?}", done.last_error);
     assert_eq!(Some("retried"), done.last_output.as_deref());
-    session.close().await.unwrap();
     success.assert_hits_async(1).await;
-}
+    success.delete_async().await;
 
-#[tokio::test]
-async fn cancelling_a_durable_wait_expires_both_question_and_authorization() {
-    let server = MockServer::start_async().await;
-    let workspace = tempfile::tempdir().unwrap();
-    let data = tempfile::tempdir().unwrap();
-    let model = fixture(&server, |_| true, json!({"tool_calls":[tool("question", "ask_user", json!({"question":"Continue?"})),tool("command", "run_command", json!({"command":"echo never-dispatched","timeout":2,"brief":"deferred action"}))]}), "tool_calls").await;
-    let mut reopen = options(&server, workspace.path(), data.path());
-    reopen.authorizer = Arc::new(DeferCommands);
-    let session = Session::open(reopen.clone()).await.unwrap();
+    let same_text = fixture(
+        &server,
+        request_has_original_input_twice,
+        json!({"content":"same text persisted"}),
+        "stop",
+    )
+    .await;
     session
-        .create_agent("create", "main", AgentConfig::default())
+        .send(Input::new(
+            "same-text-new-command",
+            "main",
+            "retain this accepted work",
+        ))
         .unwrap();
+    let done = settled_with_output(&session, "main", "same text persisted").await;
+    assert_eq!(AgentStatus::Idle, done.status, "{:?}", done.last_error);
+    assert_eq!(
+        2,
+        session
+            .events(0, 128)
+            .unwrap()
+            .iter()
+            .filter(|event| matches!(&event.payload,
+                EventPayload::MessageUser { text, .. } if text == "retain this accepted work"
+            ))
+            .count()
+    );
+    same_text.assert_hits_async(1).await;
+    same_text.delete_async().await;
+
+    let next = fixture(
+        &server,
+        |request| {
+            String::from_utf8_lossy(request.body.as_deref().unwrap_or_default())
+                .contains("a distinct new submission")
+        },
+        json!({"content":"next input persisted"}),
+        "stop",
+    )
+    .await;
     session
-        .send(Input::new("input", "main", "wait for host input"))
+        .send(Input::new(
+            "next-input",
+            "main",
+            "a distinct new submission",
+        ))
         .unwrap();
-    let waiting = settled(&session, "main").await;
-    let question = waiting.question.unwrap();
-    let permission = waiting.permission.unwrap();
-    session.cancel("main").await.unwrap();
-    assert_eq!(AgentStatus::Stopped, session.agent("main").unwrap().status);
-    assert!(session
-        .reply_question("late-answer", "main", &question.id, "too late")
-        .is_err());
-    assert!(session
-        .reply_permission("late-allow", "main", &permission.id, true)
-        .is_err());
-    assert!(session.events(0, 256).unwrap().iter().any(|event| matches!(&event.payload, EventPayload::ToolResult { tool_call_id, status, .. } if tool_call_id == "command" && status == "cancelled")));
-    reopen.session_id = Some(session.id().into());
+    let done = settled_with_output(&session, "main", "next input persisted").await;
+    assert_eq!(AgentStatus::Idle, done.status, "{:?}", done.last_error);
+    assert_eq!(Some("next input persisted"), done.last_output.as_deref());
+    let user_messages = session
+        .events(0, 128)
+        .unwrap()
+        .into_iter()
+        .filter_map(|event| match event.payload {
+            EventPayload::MessageUser { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        2,
+        user_messages
+            .iter()
+            .filter(|text| *text == "retain this accepted work")
+            .count()
+    );
+    assert_eq!(
+        1,
+        user_messages
+            .iter()
+            .filter(|text| *text == "a distinct new submission")
+            .count()
+    );
+    if queue_new_input {
+        assert_eq!(
+            1,
+            user_messages
+                .iter()
+                .filter(|text| *text == "queued during interruption")
+                .count()
+        );
+    }
     session.close().await.unwrap();
-    let reopened = Session::open(reopen).await.unwrap();
-    assert!(reopened.agent("main").unwrap().question.is_none());
-    assert!(reopened.agent("main").unwrap().permission.is_none());
-    reopened.close().await.unwrap();
-    model.assert_hits_async(1).await;
+    next.assert_hits_async(1).await;
 }
 
 #[cfg(unix)]
@@ -598,7 +662,7 @@ async fn command_output_failure_after_a_side_effect_stops_model_dispatch() {
             &server,
             |r| tool_count(r) == 0,
             json!({"tool_calls":[tool("command","run_command",json!({
-                "command":format!("printf ran > ran.txt && {rename} && printf captured"),
+                "shell":"sh","cwd":".","command":format!("printf ran > ran.txt && {rename} && printf captured"),
                 "timeout": 5, "brief": "exercise command output recovery",
             }))]}),
             "tool_calls",
@@ -617,7 +681,13 @@ async fn command_output_failure_after_a_side_effect_stops_model_dispatch() {
         session
             .send(Input::new("input", "main", "run command"))
             .unwrap();
-        let snapshot = settled(&session, "main").await;
+        let wait_error = wait_for_agent_during(&session, "main", "command output failure")
+            .await
+            .unwrap_err();
+        assert!(wait_error
+            .to_string()
+            .contains("tool output could not be durably captured"));
+        let snapshot = session.agent("main").unwrap();
         assert_eq!(
             "ran",
             std::fs::read_to_string(workspace.path().join("ran.txt")).unwrap()
@@ -627,7 +697,11 @@ async fn command_output_failure_after_a_side_effect_stops_model_dispatch() {
             snapshot.status,
             "{operation}: {snapshot:?}"
         );
-        assert!(session.close().await.is_err());
+        let error = session.close().await.unwrap_err().to_string();
+        assert!(
+            error.contains("tool output could not be durably captured"),
+            "{error}"
+        );
         first.assert_hits_async(1).await;
         next.assert_hits_async(0).await;
         assert!(session.events(0, 256).unwrap().iter().any(|event| matches!(&event.payload,
@@ -645,7 +719,7 @@ async fn execution_error_drains_dispatched_command_and_preserves_reported_usage(
     let server = MockServer::start_async().await;
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
-    let _model = fixture(&server, |_| true, json!({"tool_calls":[tool("command", "run_command", json!({"command":"sleep 0.3; echo escaped > after-close.txt","timeout":3,"brief":"write after delay"})),tool("agents", "list_agents", json!({}))]}), "tool_calls").await;
+    let _model = fixture(&server, |_| true, json!({"tool_calls":[tool("command", "run_command", json!({"shell":"sh","cwd":".","command":"sleep 0.3; echo escaped > after-close.txt","timeout":3,"brief":"write after delay"})),tool("agents", "list_agents", json!({}))]}), "tool_calls").await;
     let mut opts = options(&server, workspace.path(), data.path());
     let policy = kuku::session::project_policy_path(data.path(), workspace.path()).unwrap();
     std::fs::create_dir_all(policy.parent().unwrap()).unwrap();
@@ -661,7 +735,7 @@ async fn execution_error_drains_dispatched_command_and_preserves_reported_usage(
     assert_eq!(AgentStatus::Interrupted, failed.status);
     assert_eq!(1, failed.usage.model_requests);
     assert_eq!(Some(100), failed.usage.input_tokens);
-    assert!(session.close().await.is_err());
+    session.close().await.unwrap();
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert!(
         !workspace.path().join("after-close.txt").exists(),
@@ -679,7 +753,7 @@ async fn dropping_a_polled_close_keeps_cleanup_owned_and_allows_reconnecting() {
     let server = MockServer::start_async().await;
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
-    let _model = fixture(&server, |_| true, json!({"tool_calls":[tool("command", "run_command", json!({"command":"echo started > started.txt; sleep 1; echo escaped > after-close.txt","timeout":3,"brief":"long owned command"}))]}), "tool_calls").await;
+    let _model = fixture(&server, |_| true, json!({"tool_calls":[tool("command", "run_command", json!({"shell":"sh","cwd":".","command":"echo started > started.txt; sleep 1; echo escaped > after-close.txt","timeout":3,"brief":"long owned command"}))]}), "tool_calls").await;
     let mut reopen = options(&server, workspace.path(), data.path());
     let session = Session::open(reopen.clone()).await.unwrap();
     session
@@ -704,10 +778,28 @@ async fn dropping_a_polled_close_keeps_cleanup_owned_and_allows_reconnecting() {
         })
         .await;
     }
-    tokio::time::timeout(Duration::from_secs(3), session.close())
+    let closed = tokio::time::timeout(Duration::from_secs(3), session.close())
         .await
-        .unwrap()
         .unwrap();
+    let events = session.events(0, 256).unwrap();
+    let result = events.iter().find_map(|event| match &event.payload {
+        EventPayload::ToolResult {
+            tool_call_id,
+            status,
+            structured,
+            ..
+        } if tool_call_id == "command" => Some((status, structured)),
+        _ => None,
+    });
+    assert!(
+        closed.is_ok(),
+        "{closed:?}, durable command result: {result:?}"
+    );
+    let (status, facts) = result.expect("close must persist the command result");
+    assert_eq!("cancelled", status);
+    let facts = facts.as_ref().unwrap();
+    assert_eq!(false, facts["cleanup_incomplete"]);
+    assert_eq!(true, facts["capture_complete"]);
     assert!(!workspace.path().join("after-close.txt").exists());
     reopen.session_id = Some(session.id().into());
     let reopened = Session::open(reopen).await.unwrap();
@@ -747,8 +839,8 @@ async fn request_limit_is_shared_across_agents_and_turns_and_resets_on_reopen() 
     assert_eq!(AgentStatus::Interrupted, interrupted.status);
     assert!(interrupted
         .last_error
-        .unwrap()
-        .contains("model request limit exhausted"));
+        .as_deref()
+        .is_some_and(|error| error.contains("model request limit exhausted")));
     assert_eq!(1, interrupted.usage.model_requests);
     let steps = session.events(0, 256).unwrap().into_iter().filter(|event| matches!(&event.payload, EventPayload::Unknown(value) if value["kind"] == "runtime.step_prepared")).count();
     assert_eq!(
@@ -757,8 +849,9 @@ async fn request_limit_is_shared_across_agents_and_turns_and_resets_on_reopen() 
     );
     model.assert_hits_async(2).await;
     original.session_id = Some(session.id().into());
-    let _ = session.close().await;
+    session.close().await.unwrap();
     let reopened = Session::open(original).await.unwrap();
+    assert_eq!(interrupted, reopened.agent("main").unwrap());
     reopened.advance("main").unwrap();
     assert_eq!(AgentStatus::Idle, settled(&reopened, "main").await.status);
     assert_eq!(2, reopened.agent("main").unwrap().usage.model_requests);
@@ -824,7 +917,12 @@ async fn presets_select_the_final_tools_and_explicit_model_overrides_tier_defaul
             assert!(names.contains(&"read_file"));
             assert!(names.iter().all(|name| matches!(
                 *name,
-                "read_file" | "find_files" | "search_text" | "fetch_url" | "read_output"
+                "read_file"
+                    | "find_files"
+                    | "search_text"
+                    | "fetch_url"
+                    | "read_output"
+                    | "list_values"
             )));
         } else {
             assert_eq!("explicit", body["model"]);

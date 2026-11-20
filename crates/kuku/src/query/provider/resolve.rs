@@ -17,6 +17,7 @@ pub(in crate::query) fn ensure_resolved(pending: &mut PendingRun) -> Result<()> 
         base_url: pending.query.base_url.clone(),
         api_key: pending.query.api_key.clone(),
         max_output_tokens: pending.query.max_output_tokens,
+        max_output_tokens_per_request: pending.query.runtime_limits.max_output_tokens_per_request,
         config: Some((*pending.config).clone()),
         connection: pending.query.connection.clone(),
         reasoning_effort: pending.query.reasoning_effort.clone(),
@@ -48,6 +49,8 @@ pub(in crate::query) fn ensure_resolved(pending: &mut PendingRun) -> Result<()> 
 
     let mut registry = if let Some(ref overridden) = pending.tool_registry_override {
         overridden.clone()
+    } else if pending.query.runtime.is_some() {
+        tool::registry::session_registry(!pending.query.disable_skills)
     } else {
         tool::builtin_registry(!pending.query.disable_agents, !pending.query.disable_skills)
     };

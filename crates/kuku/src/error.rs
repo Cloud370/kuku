@@ -21,6 +21,9 @@ pub enum Error {
     #[error("invalid event stream: {0}")]
     InvalidEventStream(String),
 
+    #[error("agent wait timed out")]
+    AgentWaitTimeout,
+
     #[error("invalid session id: {0}")]
     InvalidSessionId(String),
 
@@ -40,6 +43,37 @@ pub enum Error {
 
     #[error("permission request not pending: {0}")]
     PermissionRequestNotPending(String),
+
+    /// The specified question already settled or belongs to another agent.
+    #[error("question request not pending: {0}")]
+    QuestionRequestNotPending(String),
+
+    /// A committed command identity was reused with different content.
+    #[error("command '{0}' was already committed with different content")]
+    CommandConflict(String),
+
+    /// The selected input is unavailable for queued replacement.
+    #[error("input '{0}' is no longer queued for replacement")]
+    InputNotQueued(String),
+
+    /// A session identity was already retained by another creation intent.
+    #[error("session '{0}' was already created by a different intent")]
+    SessionCreationConflict(String),
+
+    /// The observed execution is no longer available to interrupt.
+    #[error("execution {0} is no longer active")]
+    ExecutionNotActive(u64),
+
+    /// An output body has been reclaimed or is outside the caller's grants.
+    #[error("output '{0}' is unavailable; it may have expired or require an explicit grant")]
+    OutputUnavailable(String),
+
+    /// Remaining capture space is too small for the requested output.
+    #[error("session output quota reached: {available} bytes available")]
+    OutputQuotaExceeded {
+        /// Physical bytes available under both the capture and session limits.
+        available: u64,
+    },
 
     #[error("interrupted open tool state: {0}")]
     InterruptedOpenTool(String),
@@ -89,13 +123,18 @@ impl Error {
             Error::MissingHomeDirectory
             | Error::InvalidKukuHome(_)
             | Error::InvalidEventStream(_)
+            | Error::AgentWaitTimeout
             | Error::InvalidSessionId(_)
             | Error::InvalidWorkspacePath(_) => "internal",
             Error::Provider { kind, .. } => match kind {
                 ProviderFailureKind::Authentication => "provider_auth",
+                ProviderFailureKind::PermissionDenied => "provider_permission",
+                ProviderFailureKind::QuotaExhausted => "provider_quota",
                 ProviderFailureKind::RateLimited => "provider_rate_limit",
+                ProviderFailureKind::Timeout => "provider_timeout",
                 ProviderFailureKind::ContextTooLarge => "provider_overflow",
                 ProviderFailureKind::InvalidRequest => "invalid_request",
+                ProviderFailureKind::InvalidResponse => "provider_invalid_response",
                 ProviderFailureKind::ProviderUnavailable => "provider_network",
                 ProviderFailureKind::Transport => "provider_network",
                 ProviderFailureKind::Internal => "internal",
@@ -103,6 +142,13 @@ impl Error {
             },
             Error::MissingProviderConfig(_) => "internal",
             Error::PermissionRequestNotPending(_) => "internal",
+            Error::QuestionRequestNotPending(_) => "question_not_pending",
+            Error::CommandConflict(_) => "command_conflict",
+            Error::InputNotQueued(_) => "input_not_queued",
+            Error::SessionCreationConflict(_) => "session_creation_conflict",
+            Error::ExecutionNotActive(_) => "execution_not_active",
+            Error::OutputUnavailable(_) => "output_unavailable",
+            Error::OutputQuotaExceeded { .. } => "output_quota_exceeded",
             Error::InterruptedOpenTool(_) => "interrupted_open_tool",
             Error::InvalidPolicy(_) => "internal",
             Error::PromptRender(_) => "internal",

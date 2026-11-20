@@ -323,6 +323,177 @@ fn static_pages_share_the_active_writer_and_keep_count_and_byte_limits() {
     assert_eq!(603, EventStore::read_page(&path, 602, 256).unwrap()[0].id);
 }
 
+#[cfg(feature = "test_support")]
+mod active_journal {
+    use std::io::{Seek, SeekFrom, Write};
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    use super::{payload, EventStore};
+
+    #[test]
+    fn snapshot_preserves_original_bytes_and_position_before_more_appends() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("events.jsonl");
+        let original =
+            b"{ \"id\": 1, \"kind\": \"runtime.test\", \"opaque\": {\"escaped\":\"\\u0061\"} }\r\n";
+        std::fs::write(&path, original).unwrap();
+        let mut store = EventStore::open(&path).unwrap();
+        {
+            let mut writer = store.inner.writer.lock().unwrap();
+            writer
+                .journal
+                .as_mut()
+                .unwrap()
+                .file
+                .seek(SeekFrom::Start(7))
+                .unwrap();
+        }
+
+        assert_eq!(
+            original,
+            EventStore::read_active_journal_for_test(&path)
+                .unwrap()
+                .as_slice()
+        );
+        {
+            let mut writer = store.inner.writer.lock().unwrap();
+            assert_eq!(
+                7,
+                writer
+                    .journal
+                    .as_mut()
+                    .unwrap()
+                    .file
+                    .stream_position()
+                    .unwrap()
+            );
+        }
+        assert_eq!(2, store.append(payload()).unwrap().id);
+        assert_eq!(2, store.read_after(1, 1).unwrap()[0].id);
+        let snapshot = EventStore::read_active_journal_for_test(&path).unwrap();
+        assert!(snapshot.starts_with(original));
+        assert_eq!(2, EventStore::replay(&path).unwrap().len());
+        drop(store);
+        assert_eq!(snapshot, std::fs::read(&path).unwrap());
+        assert!(EventStore::read_active_journal_for_test(&path)
+            .unwrap_err()
+            .to_string()
+            .contains("no active writer"));
+        assert_eq!(snapshot, std::fs::read(&path).unwrap());
+    }
+
+    #[test]
+    fn snapshot_excludes_uncommitted_bytes_without_repairing_them() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("events.jsonl");
+        let mut store = EventStore::open(&path).unwrap();
+        store.append(payload()).unwrap();
+        let committed = EventStore::read_active_journal_for_test(&path).unwrap();
+        let tail = b"{\"id\":2";
+        {
+            let mut writer = store.inner.writer.lock().unwrap();
+            let file = &mut writer.journal.as_mut().unwrap().file;
+            file.seek(SeekFrom::End(0)).unwrap();
+            file.write_all(tail).unwrap();
+            file.sync_all().unwrap();
+            file.seek(SeekFrom::Start(3)).unwrap();
+        }
+
+        assert_eq!(
+            committed,
+            EventStore::read_active_journal_for_test(&path).unwrap()
+        );
+        {
+            let mut writer = store.inner.writer.lock().unwrap();
+            let file = &mut writer.journal.as_mut().unwrap().file;
+            assert_eq!(3, file.stream_position().unwrap());
+            assert_eq!(
+                (committed.len() + tail.len()) as u64,
+                file.metadata().unwrap().len()
+            );
+        }
+        assert_eq!(1, store.read_after(0, 10).unwrap().len());
+        assert_eq!(2, store.append(payload()).unwrap().id);
+        let snapshot = EventStore::read_active_journal_for_test(&path).unwrap();
+        assert!(snapshot.starts_with(&committed));
+        assert_eq!(2, EventStore::replay(&path).unwrap().len());
+        drop(store);
+        assert_eq!(snapshot, std::fs::read(&path).unwrap());
+    }
+
+    #[test]
+    fn truncated_prefix_fails_and_restores_position() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("events.jsonl");
+        let mut store = EventStore::open(&path).unwrap();
+        store.append(payload()).unwrap();
+        {
+            let mut writer = store.inner.writer.lock().unwrap();
+            let length = writer.committed_len;
+            let file = &mut writer.journal.as_mut().unwrap().file;
+            file.set_len(length - 1).unwrap();
+            file.seek(SeekFrom::Start(5)).unwrap();
+        }
+
+        assert!(EventStore::read_active_journal_for_test(&path)
+            .unwrap_err()
+            .to_string()
+            .contains("committed journal prefix was truncated"));
+        let mut writer = store.inner.writer.lock().unwrap();
+        assert_eq!(
+            5,
+            writer
+                .journal
+                .as_mut()
+                .unwrap()
+                .file
+                .stream_position()
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn concurrent_appends_only_expose_complete_committed_prefixes() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("events.jsonl");
+        let mut store = EventStore::open(&path).unwrap();
+        store.append(payload()).unwrap();
+        let mut shared = store.clone();
+        let barrier = Arc::new(Barrier::new(2));
+        let append_barrier = barrier.clone();
+        let appending = thread::spawn(move || {
+            for _ in 0..32 {
+                append_barrier.wait();
+                shared.append(payload()).unwrap();
+                append_barrier.wait();
+            }
+        });
+        let mut previous = EventStore::read_active_journal_for_test(&path).unwrap();
+        for before in 1..=32 {
+            barrier.wait();
+            let snapshot = EventStore::read_active_journal_for_test(&path).unwrap();
+            assert!(snapshot.starts_with(&previous));
+            let events: Vec<serde_json::Value> = snapshot
+                .split(|byte| *byte == b'\n')
+                .filter(|line| !line.is_empty())
+                .map(|line| serde_json::from_slice(line).unwrap())
+                .collect();
+            assert!((before..=before + 1).contains(&events.len()));
+            for (index, event) in events.iter().enumerate() {
+                assert_eq!(Some(index as u64 + 1), event["id"].as_u64());
+            }
+            previous = snapshot;
+            barrier.wait();
+        }
+        appending.join().unwrap();
+        assert_eq!(33, EventStore::replay(&path).unwrap().len());
+        let snapshot = EventStore::read_active_journal_for_test(&path).unwrap();
+        drop(store);
+        assert_eq!(snapshot, std::fs::read(&path).unwrap());
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn stores_open_below_unmodified_unlistable_ancestors() {

@@ -13,7 +13,7 @@ const DEFAULT_LIMIT: usize = 20;
 pub(crate) fn query_session_definition() -> crate::tool::ToolDefinition {
     crate::tool::ToolDefinition {
         name: "query_session".to_string(),
-        description: "Query historical session events that are no longer in your visible conversation context. DO NOT use this tool if the information you need is already present in the messages above. Only call when you need to recall details from earlier in the session that have been handed off or are otherwise outside your current context window.".to_string(),
+        description: "Recall events outside your visible conversation. Filter by Agent, event kind, text or Turn range.".to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -50,6 +50,7 @@ pub(crate) fn query_session(args: &Value, events_path: &Path) -> ToolResultEnvel
         truncated,
         structured: None,
         faults: Default::default(),
+        supplied_full_write: false,
     }
 }
 

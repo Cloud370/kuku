@@ -51,12 +51,7 @@ pub(super) fn permission_candidate(
     args: &serde_json::Value,
 ) -> String {
     match name {
-        "run_command" => args
-            .get("command")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("")
-            .trim()
-            .to_string(),
+        "run_command" => crate::tool::builtin::run_command::command_permission_candidate(args),
         "remember_memory" | "forget_memory" => match args
             .get("scope")
             .and_then(serde_json::Value::as_str)
@@ -101,6 +96,8 @@ pub(super) fn display_summary(
         "edit_file" | "write_file" => args
             .get("brief")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| args["path"].as_str())
             .unwrap_or(tool)
             .to_string(),
         "search_text" => {
@@ -114,6 +111,9 @@ pub(super) fn display_summary(
         "run_command" => args
             .get("brief")
             .and_then(|v| v.as_str())
+            .filter(|brief| !brief.trim().is_empty())
+            .or_else(|| args["program"].as_str())
+            .or_else(|| args["shell"].as_str())
             .unwrap_or(tool)
             .to_string(),
         "agent" => args
@@ -229,7 +229,7 @@ pub(super) fn append_message_user_with_sender(
     conversation: &ConversationAddress,
     turn: u64,
     text: &str,
-    from: Option<&ConversationAddress>,
+    from: Option<&str>,
     via_tool_call_id: Option<&str>,
 ) -> Result<()> {
     append_event(
@@ -239,7 +239,7 @@ pub(super) fn append_message_user_with_sender(
             ts: now_timestamp()?,
             conversation: conversation.as_str().to_string(),
             text: text.to_string(),
-            from: from.map(|address| address.as_str().to_string()),
+            from: from.map(str::to_owned),
             via_tool_call_id: via_tool_call_id.map(ToOwned::to_owned),
         },
     )
@@ -303,9 +303,20 @@ fn has_terminal_event(
     conversation: &ConversationAddress,
     turn: u64,
 ) -> Result<bool> {
-    Ok(EventStore::replay(events_path)?
-        .iter()
-        .any(|event| match &event.payload {
+    Ok(turn_terminal_facts(events_path, conversation, turn)?.0)
+}
+
+fn turn_terminal_facts(
+    events_path: &std::path::Path,
+    conversation: &ConversationAddress,
+    turn: u64,
+) -> Result<(bool, Option<u64>)> {
+    let mut stop_event_id = None;
+    for event in EventStore::replay(events_path)? {
+        if event.payload.is_explicit_stop(conversation.as_str(), turn) {
+            stop_event_id = Some(event.id);
+        }
+        let terminal = match &event.payload {
             EventPayload::TurnCompleted {
                 conversation: event_conversation,
                 turn: event_turn,
@@ -322,7 +333,12 @@ fn has_terminal_event(
                 ..
             } => *event_turn == turn && event_conversation == conversation.as_str(),
             _ => false,
-        }))
+        };
+        if terminal {
+            return Ok((true, stop_event_id));
+        }
+    }
+    Ok((false, stop_event_id))
 }
 
 pub(super) fn append_turn_completed(
@@ -349,7 +365,8 @@ pub(super) fn append_turn_cancelled(
     turn: u64,
     reason: &str,
 ) -> Result<()> {
-    if has_terminal_event(events_path, conversation, turn)? {
+    let (terminal, stop_event_id) = turn_terminal_facts(events_path, conversation, turn)?;
+    if terminal {
         return Ok(());
     }
     append_event(
@@ -359,6 +376,7 @@ pub(super) fn append_turn_cancelled(
             conversation: conversation.as_str().to_string(),
             turn,
             reason: reason.to_string(),
+            stop_event_id,
         },
     )
 }
@@ -402,7 +420,18 @@ pub(super) fn validate_existing_session(events: &[crate::event::StoredEvent]) ->
         return Ok(());
     }
 
-    match events.first().map(|event| &event.payload) {
+    let mut events = events.iter();
+    let first = events.next();
+    let metadata = match first.map(|event| &event.payload) {
+        Some(EventPayload::Unknown(value))
+            if value["kind"] == "runtime.operation"
+                && value["record"]["operation"] == "session_claimed" =>
+        {
+            events.next()
+        }
+        _ => first,
+    };
+    match metadata.map(|event| &event.payload) {
         Some(EventPayload::SessionCreated { .. }) => Ok(()),
         _ => Err(crate::error::Error::InvalidEventStream(
             "first event must be session.created".to_string(),
@@ -588,17 +617,17 @@ mod tests {
 
     #[test]
     fn display_summary_run_command() {
-        let args = serde_json::json!({"command": "cargo build --release", "timeout": 60, "brief": "build release"});
+        let args = serde_json::json!({"program": "cargo", "args": ["build", "--release"], "cwd": ".", "timeout": 60, "brief": "build release"});
         let s = display_summary("run_command", &args, None);
         assert_eq!(s, "build release");
     }
 
     #[test]
     fn display_summary_run_command_truncated() {
-        let args = serde_json::json!({"command": "echo hi", "timeout": 60, "brief": "cargo build --release --features=full,test --target=x86_64-unknown-linux-gnu"});
+        let args = serde_json::json!({"program": "echo", "args": ["hi"], "cwd": ".", "timeout": 60, "brief": "cargo build --release --features=full,test --target=x86_64-unknown-linux-gnu"});
         let s = display_summary("run_command", &args, Some(30));
         assert!(s.ends_with("..."), "should end with ...");
-        let cjk_args = serde_json::json!({"command": "echo hi", "timeout": 60, "brief": "构建项目/src/文件.txt"});
+        let cjk_args = serde_json::json!({"program": "echo", "args": ["hi"], "cwd": ".", "timeout": 60, "brief": "构建项目/src/文件.txt"});
         let s2 = display_summary("run_command", &cjk_args, Some(5));
         assert!(s2.ends_with("..."), "CJK truncation should not panic: {s2}");
     }

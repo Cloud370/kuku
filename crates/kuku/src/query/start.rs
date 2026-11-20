@@ -1,6 +1,7 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
+use crate::conversation::address::ConversationAddress;
 use crate::error::{Error, Result};
 use crate::event::{EventPayload, EventStore};
 use crate::log::{
@@ -148,13 +149,21 @@ impl Query {
             Some(super::lifecycle::reduce_lifecycle(&existing_events))
         };
         let conversation = self.conversation.clone();
-        reject_interrupted_open_tools(lifecycle.as_ref(), &session_id, &conversation)?;
         let resumed_permission = lifecycle.as_ref().and_then(|state| {
             state
                 .pending_permissions
                 .iter()
                 .find(|pending| pending.request.conversation == conversation)
         });
+        let resumable_batch = resumed_permission
+            .filter(|_| self.runtime.is_some())
+            .map(|pending| pending.turn);
+        reject_interrupted_open_tools(
+            lifecycle.as_ref(),
+            &session_id,
+            &conversation,
+            resumable_batch,
+        )?;
         let mut bootstrap_skill = if resumed_permission.is_some() {
             None
         } else {
@@ -220,14 +229,19 @@ impl Query {
                 "resume_before_new_turn",
             )?;
             append_turn_started(&events_path, &conversation, turn)?;
-            append_message_user_with_sender(
-                &events_path,
-                &conversation,
-                turn,
-                &self.prompt,
-                self.message_from.as_ref(),
-                self.via_tool_call_id.as_deref(),
-            )?;
+            if !self.skip_user_message {
+                append_message_user_with_sender(
+                    &events_path,
+                    &conversation,
+                    turn,
+                    &self.prompt,
+                    self.message_from
+                        .as_ref()
+                        .map(ConversationAddress::as_str)
+                        .or_else(|| self.input_source.agent_address()),
+                    self.via_tool_call_id.as_deref(),
+                )?;
+            }
 
             if let (Ok(session_log_path), Ok(ts)) =
                 (session_log_path(&kuku_home, &session_id), now_timestamp())
@@ -363,6 +377,22 @@ impl Query {
         );
 
         let mut resumed_state = resumed_state(lifecycle.as_ref(), turn);
+        if let (Some(lifecycle), Some(turn)) = (lifecycle.as_ref(), resumable_batch) {
+            for open in lifecycle
+                .open_tools
+                .iter()
+                .filter(|open| is_undispatched_batch_call(open, &conversation, turn))
+            {
+                resumed_state.queued_tool_calls.push_back(QueuedToolCall {
+                    display_summary: super::helpers::display_summary(
+                        &open.tool_call.name,
+                        &open.tool_call.args,
+                        None,
+                    ),
+                    tool_call: open.tool_call.clone(),
+                });
+            }
+        }
         if self.runtime.is_some() {
             for queued in &mut resumed_state.queued_tool_calls {
                 if let Some(args) =
@@ -386,6 +416,8 @@ impl Query {
             }
         }
         let agent_binding_id = self.agent_binding_id.clone();
+        let (admitted_tool_call_ids, tool_rounds) =
+            resumed_tools(&existing_events, turn, &conversation);
 
         let cleanup_context = Some((events_path.clone(), turn));
         let pending = PendingRun {
@@ -401,10 +433,12 @@ impl Query {
             request_num: resumed_request_num(&existing_events, turn, &conversation),
             cumulative: super::types::CumulativeUsage::default(),
             resolved: None,
+            admitted_tool_call_ids,
             queued_tool_calls: resumed_state.queued_tool_calls,
             resumed_permission_requests: resumed_state.resumed_permission_requests,
             pending_events: std::collections::VecDeque::new(),
             pending_error: None,
+            waiting_for_job_input: false,
             config,
             prompts_dir,
             agent_registry,
@@ -423,7 +457,7 @@ impl Query {
             hook_context: Vec::new(),
             force_continue_count: 0,
             model_request_count: resumed_model_request_count(&existing_events, turn, &conversation),
-            tool_rounds: resumed_tool_rounds(&existing_events, turn, &conversation),
+            tool_rounds,
             tool_calls: 0,
             tool_names: Vec::new(),
             tool_denied: 0,
@@ -577,15 +611,16 @@ fn reject_interrupted_open_tools(
     lifecycle: Option<&super::lifecycle::LifecycleState>,
     session_id: &str,
     conversation: &crate::conversation::address::ConversationAddress,
+    resumable_batch: Option<u64>,
 ) -> Result<()> {
     let Some(lifecycle) = lifecycle else {
         return Ok(());
     };
-    let Some(open_tool) = lifecycle
-        .open_tools
-        .iter()
-        .find(|open_tool| &open_tool.conversation == conversation)
-    else {
+    let Some(open_tool) = lifecycle.open_tools.iter().find(|open| {
+        &open.conversation == conversation
+            && !resumable_batch
+                .is_some_and(|turn| is_undispatched_batch_call(open, conversation, turn))
+    }) else {
         return Ok(());
     };
 
@@ -593,6 +628,16 @@ fn reject_interrupted_open_tools(
         "session {session_id} has unresolved tool call {} from turn {}; review the session before resuming",
         open_tool.tool_call.id, open_tool.turn
     )))
+}
+
+fn is_undispatched_batch_call(
+    open: &super::lifecycle::OpenToolLifecycle,
+    conversation: &crate::conversation::address::ConversationAddress,
+    turn: u64,
+) -> bool {
+    &open.conversation == conversation
+        && open.turn == turn
+        && open.kind == super::lifecycle::OpenToolKind::Interrupted
 }
 
 fn resumed_model_request_count(
@@ -635,29 +680,31 @@ fn resumed_model_request_count(
     request_ids.len() as u64
 }
 
-fn resumed_tool_rounds(
+fn resumed_tools(
     events: &[crate::event::StoredEvent],
     turn: u64,
     conversation: &crate::conversation::address::ConversationAddress,
-) -> u64 {
-    let mut request_ids = Vec::<&str>::new();
+) -> (HashSet<String>, u64) {
+    let mut tool_call_ids = HashSet::new();
+    let mut request_ids = HashSet::new();
     for event in events {
         if let EventPayload::ToolCall {
             turn: event_turn,
             conversation: event_conversation,
             request_id,
+            tool_call_id,
             ..
         } = &event.payload
         {
             if *event_turn == turn
                 && event_matches_conversation(event_conversation.as_deref(), conversation)
-                && !request_ids.iter().any(|id| *id == request_id)
             {
-                request_ids.push(request_id);
+                tool_call_ids.insert(tool_call_id.clone());
+                request_ids.insert(request_id.as_str());
             }
         }
     }
-    request_ids.len() as u64
+    (tool_call_ids, request_ids.len() as u64)
 }
 
 fn resumed_request_num(

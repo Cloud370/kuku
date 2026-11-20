@@ -3,6 +3,7 @@ use std::sync::Arc;
 #[cfg(test)]
 mod completion_tests;
 mod helpers;
+mod provider_error;
 mod queued_calls;
 #[cfg(test)]
 mod tests;
@@ -15,14 +16,14 @@ use crate::tool::{ToolFaults, ToolResultEnvelope};
 use helpers::persist_blocked_tool_result;
 
 use super::helpers::{
-    append_model_error, append_permission_decision, append_turn_cancelled, append_turn_interrupted,
-    display_summary, now_timestamp, permission_candidate, permission_rule,
+    append_permission_decision, append_turn_cancelled, display_summary, now_timestamp,
+    permission_candidate,
 };
 use super::slots::requires_workspace_ordering;
 use super::tool_exec::{execute_tool_call, run_tool_pre_hooks};
 use super::types::{
-    PendingPermission, PendingRun, PendingStep, PermissionChoice, QueuedToolCall, Run, RunState,
-    SlotEvent, StreamingChunkState, UiEvent,
+    ModelPhase, PendingPermission, PendingRun, PendingStep, PermissionChoice, QueuedToolCall, Run,
+    RunState, StreamingChunkState, UiEvent,
 };
 
 impl Drop for Run {
@@ -39,7 +40,7 @@ impl Drop for Run {
 
 impl Run {
     fn has_active_workspace_ordered_slot(&self) -> bool {
-        self.slots.values().any(|slot| slot.workspace_ordered)
+        self.holds_job() || self.slots.values().any(|slot| slot.workspace_ordered)
     }
 
     /// The session ID for this run.
@@ -62,8 +63,7 @@ impl Run {
         self.cancel_token.clone()
     }
 
-    /// Cancel the current run. Streaming is aborted, pending permissions are denied,
-    /// and the cancelled model.response enters history.
+    /// Cancel the current run, abort streaming, and close pending permissions.
     pub fn cancel(&mut self) {
         for slot in self.slots.values() {
             slot.cancel.notify_one();
@@ -123,34 +123,20 @@ impl Run {
         let event = loop {
             self.persist_deferred_runtime_logs();
 
+            if let Some(event) = self.promote_explicit_job()? {
+                break event;
+            }
             if matches!(&self.state, RunState::Pending(_)) {
                 if let Some(event) = self.try_process_queued_call().await? {
                     break self.defer_runtime_log_if_needed(event);
                 }
             }
-            if !self.slots.is_empty() {
-                let slot_event = tokio::select! {
-                    event = self.slot_event_rx.recv() => event,
-                    _ = self.cancel_token.notified() => None,
-                };
-                if let Some((tool_call_id, event)) = slot_event {
-                    match event {
-                        SlotEvent::Output(te) => {
-                            break UiEvent::ToolOutput {
-                                id: tool_call_id,
-                                event: te,
-                            };
-                        }
-                        SlotEvent::Done(result) => {
-                            let faults = result.faults;
-                            let event = self.finish_slot(&tool_call_id, result)?;
-                            if faults.output_persistence_failed || faults.cleanup_incomplete {
-                                self.cancel();
-                            }
-                            return Ok(Some(project(event, faults)));
-                        }
-                    }
+            let wait_for_job_input = self.job_wait_required()?;
+            if wait_for_job_input || !self.slots.is_empty() {
+                if let Some((event, faults)) = self.poll_tool(wait_for_job_input).await? {
+                    return Ok(Some(project(event, faults)));
                 }
+                continue;
             }
             match std::mem::replace(&mut self.state, RunState::Done(None)) {
                 RunState::Pending(pending) => {
@@ -187,9 +173,20 @@ impl Run {
         Ok(Some(project(event, ToolFaults::default())))
     }
 
-    fn finish_slot(&mut self, id: &str, envelope: ToolResultEnvelope) -> Result<UiEvent> {
+    pub(super) fn finish_slot(
+        &mut self,
+        id: &str,
+        envelope: ToolResultEnvelope,
+        job_wait: bool,
+    ) -> Result<UiEvent> {
         let slot = self.slots.remove(id).expect("slot must exist");
         self.state.record_tool_completion(&envelope.status);
+        let job_session = match &self.state {
+            RunState::Pending(pending) if job_wait => {
+                Some(super::runtime_tools::runtime_session(pending)?)
+            }
+            _ => None,
+        };
         let context = match &self.state {
             RunState::Pending(p) => Some((&p.events_path, p.turn)),
             RunState::Streaming(s) => Some((&s.pending.events_path, s.pending.turn)),
@@ -202,7 +199,13 @@ impl Run {
         };
         let (result, model_content) = match context {
             Some((path, turn)) => {
-                let result = super::tool_exec::write_tool_result(&slot, &envelope, path, turn)?;
+                let result = super::tool_exec::write_tool_result(
+                    &slot,
+                    &envelope,
+                    path,
+                    turn,
+                    job_session.as_ref(),
+                )?;
                 (
                     result,
                     (!envelope.model_content.is_empty()).then_some(envelope.model_content),
@@ -310,8 +313,10 @@ impl Run {
         match poll {
             Err(error) => {
                 self.persist_deferred_runtime_logs_for_pending(&mut streaming.pending);
-                record_streaming_provider_error_facts(&streaming, &error);
+                let persisted =
+                    provider_error::record_streaming_provider_error_facts(&streaming, &error);
                 streaming.pending.flush_runtime_logs();
+                persisted?;
                 Err(error)
             }
             Ok(Some(event)) => {
@@ -359,6 +364,7 @@ impl Run {
                 chunk = streaming.stream.next() => match chunk {
                     Some(Ok(chunk)) => chunk,
                     Some(Err(failure)) => {
+                        streaming.stream_failure = Some(failure.clone());
                         return Err(crate::error::Error::Provider {
                             kind: failure.kind,
                             message: failure.message,
@@ -398,21 +404,39 @@ impl Run {
                     if let Some(ref mut detector) = streaming.handoff_detector {
                         if let Some(user_text) = detector.process(&text) {
                             if !user_text.is_empty() {
+                                streaming.model_phase = Some(ModelPhase::Streaming);
                                 streaming.accumulated_text.push_str(&user_text);
                                 return Ok(Some(UiEvent::TextDelta { text: user_text }));
                             }
                         }
                         continue;
                     }
+                    if !text.is_empty() {
+                        streaming.model_phase = Some(ModelPhase::Streaming);
+                    }
                     streaming.accumulated_text.push_str(&text);
                     return Ok(Some(UiEvent::TextDelta { text }));
+                }
+                ProviderChunk::Reasoning => {
+                    if streaming.stop_reason.is_some() {
+                        streaming.terminal_stream_invalid = true;
+                    }
+                    streaming
+                        .thinking_start
+                        .get_or_insert_with(std::time::Instant::now);
+                    if let Some(event) = streaming.model_progress(ModelPhase::Thinking) {
+                        return Ok(Some(event));
+                    }
                 }
                 ProviderChunk::ThinkingDelta { text } => {
                     if streaming.stop_reason.is_some() {
                         streaming.terminal_stream_invalid = true;
                     }
-                    if streaming.thinking_start.is_none() {
-                        streaming.thinking_start = Some(std::time::Instant::now());
+                    if !text.is_empty() {
+                        streaming
+                            .thinking_start
+                            .get_or_insert_with(std::time::Instant::now);
+                        streaming.model_phase = Some(ModelPhase::Thinking);
                     }
                     streaming.accumulated_thinking.push_str(&text);
                     return Ok(Some(UiEvent::ThinkingDelta { text }));
@@ -438,6 +462,11 @@ impl Run {
                         index,
                     });
                     streaming.tool_arg_buffers.push((index, String::new()));
+                    if !streaming.tool_stream_invalid {
+                        if let Some(event) = streaming.model_progress(ModelPhase::ToolArguments) {
+                            return Ok(Some(event));
+                        }
+                    }
                 }
                 ProviderChunk::ToolCallArgDelta { index, fragment } => {
                     if streaming.stop_reason.is_some() {
@@ -452,6 +481,7 @@ impl Run {
                     if !has_single_start || streaming.tool_call_completions.contains(&index) {
                         streaming.tool_stream_invalid = true;
                     }
+                    let has_fragment = !fragment.is_empty();
                     if let Some((_, buf)) = streaming
                         .tool_arg_buffers
                         .iter_mut()
@@ -460,6 +490,14 @@ impl Run {
                         buf.push_str(&fragment);
                     } else {
                         streaming.tool_arg_buffers.push((index, fragment));
+                    }
+                    if has_fragment && !streaming.tool_stream_invalid {
+                        if let Some(start) = streaming.thinking_start.take() {
+                            streaming.thinking_duration_ms += start.elapsed().as_millis() as u64;
+                        }
+                        if let Some(event) = streaming.model_progress(ModelPhase::ToolArguments) {
+                            return Ok(Some(event));
+                        }
                     }
                 }
                 ProviderChunk::ToolCallStop { index } => {
@@ -529,11 +567,16 @@ impl Run {
                     }
                 }
                 ProviderChunk::Replay { protocol, value } => {
-                    EventStore::open(&streaming.pending.events_path)?.append(EventPayload::Unknown(serde_json::json!({
+                    let replay = EventPayload::Unknown(serde_json::json!({
                         "kind": "runtime.provider_replay", "ts": now_timestamp()?,
                         "agent": streaming.conversation.as_str(), "turn": streaming.pending.turn,
                         "request_id": streaming.request_id, "protocol": protocol, "value": value,
-                    })))?;
+                    }));
+                    if streaming.pending.query.runtime_execution.is_some() {
+                        streaming.provider_replay.push(replay);
+                    } else {
+                        EventStore::open(&streaming.pending.events_path)?.append(replay)?;
+                    }
                 }
                 ProviderChunk::Report { report } => {
                     EventStore::open(&streaming.pending.events_path)?.append(EventPayload::Unknown(serde_json::json!({
@@ -543,15 +586,21 @@ impl Run {
                     })))?;
                 }
                 ProviderChunk::ServerError { code, message } => {
+                    let failure = crate::provider::classify_stream_error(&code, &message);
+                    streaming.stream_failure = Some(failure.clone());
                     return Err(crate::error::Error::Provider {
-                        kind: crate::provider::types::ProviderFailureKind::Unknown,
-                        message: format!("{code}: {message}"),
+                        kind: failure.kind,
+                        message: failure.message,
                         provider: None,
                         model: None,
                     });
                 }
                 ProviderChunk::StreamEnd => {
                     streaming.stream_ended = true;
+                    if let Some(timing) = &mut streaming.request_timing {
+                        timing.elapsed_us =
+                            u64::try_from(timing.started.elapsed().as_micros()).ok();
+                    }
                 }
             }
         }
@@ -662,7 +711,7 @@ impl Run {
                 )));
             }
         };
-        let result = crate::tool::ToolResultEnvelope::cancelled("permission request cancelled");
+        let result = super::workspace_script::cancelled_permission(waiting)?;
         let mut store = EventStore::open(&waiting.pending.events_path)?;
         store.append(EventPayload::ToolResult {
             turn: waiting.pending.turn,
@@ -710,23 +759,25 @@ impl Run {
             super::provider::ensure_resolved(&mut pending)?;
             super::runtime_tools::validate_prepared(&pending, &tool_call)?;
         }
-        let rule = permission_rule(
-            &pending.kuku_home,
-            &pending.workspace,
-            &tool_call.name,
-            &tool_call.args,
-        );
-        if matches!(choice, PermissionChoice::Project) {
-            append_project_allow_rule(
-                &pending.policy_path,
-                &tool_call.name,
-                &permission_candidate(
+        let (granted_tool, candidate) = if waiting.request.source == "workspace_script" {
+            (
+                waiting.request.tool.clone(),
+                waiting.request.candidate.clone(),
+            )
+        } else {
+            (
+                tool_call.name.clone(),
+                permission_candidate(
                     &pending.kuku_home,
                     &pending.workspace,
                     &tool_call.name,
                     &tool_call.args,
                 ),
-            )?;
+            )
+        };
+        let rule = format!("{granted_tool}({candidate})");
+        if matches!(choice, PermissionChoice::Project) {
+            append_project_allow_rule(&pending.policy_path, &granted_tool, &candidate)?;
         }
         append_permission_decision(
             &pending.events_path,
@@ -809,6 +860,7 @@ impl Run {
         let summary = display_summary(&tool_call.name, &hook_result.args, None);
         pending.record_tool_call(&tool_call.name);
         let (slot, tool_kind) = super::slots::dispatch_tool_slot(super::slots::SlotDispatchArgs {
+            capacity: crate::WorkspaceExecutionHost::default(),
             output: None,
             tool_name: tool_call.name.clone(),
             tool_id: tool_call.id.clone(),
@@ -831,39 +883,6 @@ impl Run {
             summary,
             kind: tool_kind,
         }))
-    }
-}
-
-fn record_streaming_provider_error_facts(streaming: &StreamingChunkState, error: &Error) {
-    let Error::Provider { kind, message, .. } = error else {
-        return;
-    };
-    let _ = append_model_error(
-        &streaming.pending.events_path,
-        &streaming.conversation,
-        streaming.pending.turn,
-        streaming.request_id.clone(),
-        provider_failure_event_kind(*kind),
-        message,
-    );
-    let _ = append_turn_interrupted(
-        &streaming.pending.events_path,
-        &streaming.conversation,
-        streaming.pending.turn,
-        provider_failure_event_kind(*kind),
-    );
-}
-
-fn provider_failure_event_kind(kind: crate::provider::types::ProviderFailureKind) -> &'static str {
-    match kind {
-        crate::provider::types::ProviderFailureKind::Authentication => "authentication",
-        crate::provider::types::ProviderFailureKind::RateLimited => "rate_limited",
-        crate::provider::types::ProviderFailureKind::ContextTooLarge => "context_too_large",
-        crate::provider::types::ProviderFailureKind::InvalidRequest => "invalid_request",
-        crate::provider::types::ProviderFailureKind::ProviderUnavailable => "provider_unavailable",
-        crate::provider::types::ProviderFailureKind::Transport => "transport",
-        crate::provider::types::ProviderFailureKind::Internal => "internal",
-        crate::provider::types::ProviderFailureKind::Unknown => "unknown",
     }
 }
 

@@ -193,6 +193,71 @@ async fn settled(session: &Session, address: &str) -> kuku::AgentSnapshot {
     .unwrap()
 }
 
+#[tokio::test]
+async fn optional_output_limit_is_omitted_from_ordinary_provider_requests() {
+    use kuku::config::ProviderFormat::{Anthropic, OpenAiChat, OpenAiResponses};
+
+    for (protocol, base_url, model_id) in [
+        (OpenAiChat, "https://api.deepseek.com", "deepseek-flash"),
+        (OpenAiResponses, "https://api.openai.com/v1", "gpt-6-luna"),
+        (
+            Anthropic,
+            "https://api.deepseek.com/anthropic",
+            "deepseek-flash",
+        ),
+        (
+            OpenAiResponses,
+            "https://openrouter.ai/api/v1",
+            "vendor/model",
+        ),
+        (OpenAiChat, "https://relay.example.test/v1", "custom-model"),
+    ] {
+        let workspace = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let model = Arc::new(Model::default());
+        let mut config = common::test_config();
+        config.plugin.enabled = false;
+        config.discovery.auto_discover = false;
+        let provider = config.providers.get_mut("openai").unwrap();
+        provider.format = protocol;
+        provider.base_url = base_url.into();
+        provider.options = Default::default();
+        let tier = config.tiers.get_mut("balanced").unwrap();
+        tier.provider = "openai".into();
+        tier.model = model_id.into();
+        tier.max_output_tokens = None;
+        let mut options = SessionOptions::new(workspace.path(), data.path(), config);
+        options.model_adapter = Some(model.clone());
+        let session = Session::open(options).await.unwrap();
+        session
+            .create_agent("create", "child", AgentConfig::default())
+            .unwrap();
+        let selection = session.agent_selection("child").unwrap();
+        assert_eq!(None, selection.max_output_tokens);
+        session
+            .send(Input::new("input", "child", "Complete a task"))
+            .unwrap();
+        assert_eq!(AgentStatus::Idle, settled(&session, "child").await.status);
+
+        {
+            let requests = model.requests.lock().unwrap();
+            assert_eq!(1, requests.len());
+            let body = &requests[0].body;
+            for field in ["max_tokens", "max_completion_tokens", "max_output_tokens"] {
+                assert!(body.get(field).is_none(), "{base_url}, {field}");
+            }
+        }
+        assert!(session
+            .events(0, 256)
+            .unwrap()
+            .iter()
+            .any(|event| matches!(&event.payload,
+            EventPayload::Unknown(value) if value["kind"] == "runtime.step_prepared"
+                && value["max_output_tokens"].is_null())));
+        session.close().await.unwrap();
+    }
+}
+
 fn agent() -> AgentConfig {
     AgentConfig {
         tools: Some(vec!["host_file".into()]),
@@ -299,7 +364,7 @@ async fn external_model_and_tool_use_final_selection_authority_and_durable_bound
         )
         .unwrap();
     assert_eq!(
-        32768,
+        Some(32768),
         session.agent_selection("child").unwrap().max_output_tokens
     );
     session
@@ -379,7 +444,13 @@ async fn custom_tool_cancellation_waits_for_cleanup_and_known_failure_is_visible
         assert_eq!(1, model.requests.lock().unwrap().len());
         let events = session.events(0, 256).unwrap();
         assert!(events.iter().any(|event| matches!(&event.payload, EventPayload::ToolResult { status, structured:Some(value), .. } if status == "cancelled" && value["cleanup_incomplete"] == incomplete)));
-        assert_eq!(!incomplete, session.close().await.is_ok());
+        let close = session.close().await;
+        if incomplete {
+            let error = close.unwrap_err().to_string();
+            assert!(error.contains("tool cleanup did not finish"), "{error}");
+        } else {
+            close.unwrap();
+        }
     }
 }
 
@@ -422,7 +493,7 @@ async fn host_tool_output_commit_failure_stops_dispatch_and_survives_another_age
 
 #[cfg(unix)]
 #[tokio::test]
-async fn close_reports_both_the_reaped_output_failure_and_another_worker_error() {
+async fn close_reports_reaped_output_failure_separately_from_another_agents_execution_error() {
     verify_output_failure_on_close(true).await;
 }
 
@@ -466,9 +537,14 @@ async fn verify_output_failure_on_close(exhaust_request_budget: bool) {
         session
             .send(Input::new("over-budget", "child", "one more turn"))
             .unwrap();
-        assert_eq!(
-            AgentStatus::Interrupted,
-            settled(&session, "child").await.status
+        let interrupted = settled(&session, "child").await;
+        assert_eq!(AgentStatus::Interrupted, interrupted.status);
+        assert!(
+            interrupted
+                .last_error
+                .as_ref()
+                .is_some_and(|error| error.contains("model request limit exhausted")),
+            "{interrupted:?}"
         );
     }
     assert!(
@@ -496,9 +572,7 @@ async fn verify_output_failure_on_close(exhaust_request_budget: bool) {
         error.contains("tool output could not be durably captured"),
         "{error}"
     );
-    if exhaust_request_budget {
-        assert!(error.contains("model request limit exhausted"), "{error}");
-    }
+    assert!(!error.contains("model request limit exhausted"), "{error}");
     assert_eq!(error, session.close().await.unwrap_err().to_string());
     assert!(
         session

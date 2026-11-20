@@ -8,7 +8,7 @@ pub(super) struct OwnedRequestBase {
     catalog: PromptCatalog,
     current_input: CanonicalPromptInput,
     model: String,
-    max_output_tokens: u32,
+    max_output_tokens: Option<u32>,
     temperature: Option<f32>,
     think_level: crate::config::ThinkLevel,
     thinking: crate::config::ResolvedThinking,
@@ -23,7 +23,7 @@ impl OwnedRequestBase {
         catalog: PromptCatalog,
         current_input: CanonicalPromptInput,
         model: String,
-        max_output_tokens: u32,
+        max_output_tokens: Option<u32>,
         temperature: Option<f32>,
         think_level: crate::config::ThinkLevel,
         thinking: crate::config::ResolvedThinking,
@@ -67,7 +67,7 @@ impl OwnedRequestBase {
             catalog: &self.catalog,
             current_input: self.current_input.clone(),
             model: self.model.clone(),
-            max_output_tokens: Some(self.max_output_tokens),
+            max_output_tokens: self.max_output_tokens,
             temperature: self.temperature,
             stream: true,
             think_level: self.think_level,
@@ -125,7 +125,7 @@ impl OwnedRequestBase {
         &self.recovery
     }
 
-    pub(super) fn max_output_tokens(&self) -> u32 {
+    pub(super) fn max_output_tokens(&self) -> Option<u32> {
         self.max_output_tokens
     }
 
@@ -142,7 +142,7 @@ pub(super) struct RecoveredRequest {
     catalog: PromptCatalog,
     current_input: CanonicalPromptInput,
     model: String,
-    max_output_tokens: u32,
+    max_output_tokens: Option<u32>,
     temperature: Option<f32>,
     think_level: crate::config::ThinkLevel,
     thinking: crate::config::ResolvedThinking,
@@ -155,7 +155,7 @@ impl RecoveredRequest {
             catalog: &self.catalog,
             current_input: self.current_input.clone(),
             model: self.model.clone(),
-            max_output_tokens: Some(self.max_output_tokens),
+            max_output_tokens: self.max_output_tokens,
             temperature: self.temperature,
             stream: true,
             think_level: self.think_level,
@@ -196,7 +196,7 @@ mod tests {
                 parts: vec![input_message],
             },
             "test-model".to_string(),
-            1000,
+            Some(1000),
             None,
             think_level,
             crate::config::ResolvedThinking::default(),
@@ -215,7 +215,7 @@ mod tests {
             base_url: "https://example.test".to_string(),
             api_key: SecretString::new("test-key"),
             max_context_tokens: 10_000,
-            max_output_tokens: 1000,
+            max_output_tokens: Some(1000),
             think_level: crate::config::ThinkLevel::Medium,
             thinking: crate::config::ResolvedThinking::default(),
             ..Default::default()

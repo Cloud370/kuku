@@ -1,0 +1,48 @@
+{
+  "first_send": {
+    "workspace": "/work/kuku",
+    "agent": "main",
+    "command_id": "send-example",
+    "type": "send",
+    "text": "Inspect the workspace",
+    "timing": "steer",
+    "create": {}
+  },
+  "receipt": {
+    "ok": true,
+    "receipt": {"command_id": "send-example", "event_id": 4, "agent": "main"},
+    "replayed": false,
+    "status": "queued"
+  },
+  "history": {
+    "ok": true,
+    "entries": [
+      {"id": 8, "agent": "main", "turn": 1, "type": "user", "text": "Inspect the workspace", "from": null},
+      {"id": 15, "agent": "main", "turn": 1, "type": "tool_call", "tool": "run_command", "tool_call_id": "tool-1", "args": {"program": "pwd", "args": [], "cwd": ".", "timeout": 5}},
+      {"id": 18, "agent": "main", "turn": 1, "type": "tool_result", "tool_call_id": "tool-1", "status": "ok", "summary": "command exited", "output_id": "out-1", "model_content": "/work/kuku", "structured": {"kind": "command_result", "exit_code": 0, "output_id": "out-1"}}
+    ],
+    "next_before": null
+  },
+  "observation": [
+    {"type": "live", "agent": "main", "execution_id": 5, "turn": 1, "cursor": 20, "event": {"type": "text", "content": "I found"}},
+    {"type": "committed", "id": 22, "agent": "main", "kind": "model.response", "turn": 1, "request_id": "req_2", "entry": {"id": 22, "agent": "main", "turn": 1, "type": "assistant", "text": "I found the workspace.", "thinking": null, "request_id": "req_2"}},
+    {"type": "committed", "id": 24, "agent": "main", "kind": "runtime.operation", "operation": "turn_settled", "state_changed": true},
+    {"type": "lagged", "skipped": 25},
+    {"type": "heartbeat"}
+  ],
+  "queued_replacement": {
+    "type": "replace_queued",
+    "input_command_id": "send-example",
+    "text": "Inspect the two modified files"
+  },
+  "queue_observation": [
+    {"type": "committed", "id": 25, "agent": "main", "kind": "runtime.operation", "operation": "input_replacement", "state_changed": true, "delivery": {"status": "replaced", "input_id": "send-example", "replacement_id": "edited-example"}},
+    {"type": "committed", "id": 26, "agent": "main", "kind": "runtime.operation", "operation": "input_withdrawal", "state_changed": true, "delivery": {"status": "withdrawn", "input_id": "other-example"}},
+    {"type": "committed", "id": 27, "agent": "main", "kind": "runtime.operation", "operation": "inputs_accepted", "state_changed": true, "delivery": {"status": "accepted", "input_ids": ["edited-example"]}}
+  ],
+  "error": {
+    "ok": false,
+    "code": "command_conflict",
+    "message": "command 'send-example' was already committed with different intent"
+  }
+}

@@ -8,7 +8,6 @@ use super::helpers::{append_model_error, append_turn_interrupted, now_timestamp}
 use super::request::RecoveredRequest;
 use super::types::{ModelRecoveryInfo, PendingRun, PendingStep, StreamingChunkState, UiEvent};
 
-const MAX_REQUEST_LOOP: u64 = 20;
 const MAX_RECOVERY_ATTEMPTS: u8 = 1;
 const RECOVERY_SUFFIX_OVERHEAD_BYTES: usize = 128;
 
@@ -28,9 +27,6 @@ pub(super) async fn schedule(
     let next_request_num = pending.request_num.checked_add(1).ok_or_else(|| {
         Error::InvalidEventStream("provider request id overflow during recovery".to_string())
     })?;
-    if next_request_num > MAX_REQUEST_LOOP {
-        return interrupt(pending, "loop_limit");
-    }
     let Some(base) = pending.request_base.as_ref() else {
         return interrupt(pending, "length");
     };
@@ -83,10 +79,7 @@ fn preflight_context(
     pending: &PendingRun,
     usage: Option<&crate::provider::types::ProviderUsage>,
 ) -> Result<()> {
-    let Some(usage) = usage else {
-        return Ok(());
-    };
-    let Some(estimated_input) = input_tokens_total(usage)? else {
+    let Some(estimated_input) = usage.and_then(|usage| usage.input_tokens) else {
         return Ok(());
     };
     let estimated_input = u32::try_from(estimated_input).map_err(|_| {
@@ -100,7 +93,7 @@ fn preflight_context(
                 .expect("resolved runtime exists")
                 .config,
         ),
-        Some(base.max_output_tokens()),
+        base.max_output_tokens(),
         Some(estimated_input),
     );
     let suffix_tokens = conservative_suffix_tokens(base.recovery_asset().text.len())?;
@@ -130,25 +123,6 @@ fn conservative_suffix_tokens(text_bytes: usize) -> Result<u32> {
         .ok_or_else(|| Error::InvalidEventStream("recovery suffix size overflow".to_string()))?;
     u32::try_from(suffix_bytes)
         .map_err(|_| Error::InvalidEventStream("recovery suffix is too large".to_string()))
-}
-
-fn input_tokens_total(usage: &crate::provider::types::ProviderUsage) -> Result<Option<u64>> {
-    let mut total: u64 = 0;
-    let mut seen = false;
-    for value in [
-        usage.input_tokens,
-        usage.cache_read_input_tokens,
-        usage.cache_creation_input_tokens,
-    ]
-    .into_iter()
-    .flatten()
-    {
-        total = total.checked_add(value).ok_or_else(|| {
-            Error::InvalidEventStream("model input usage overflow during recovery".to_string())
-        })?;
-        seen = true;
-    }
-    Ok(seen.then_some(total))
 }
 
 async fn dispatch_recovery(
@@ -201,8 +175,12 @@ async fn dispatch_recovery(
             request_id,
             pending,
             stream,
+            provider_attempt: 1,
+            stream_failure: None,
             accumulated_text: String::new(),
             accumulated_thinking: String::new(),
+            model_phase: None,
+            provider_replay: Vec::new(),
             stop_reason: None,
             tool_calls: Vec::new(),
             tool_arg_buffers: Vec::new(),
@@ -212,6 +190,7 @@ async fn dispatch_recovery(
             stream_ended: false,
             provider_request_id: None,
             usage: None,
+            request_timing: None,
             lead_events,
             handoff_detector: handoff_active.then(super::handoff::HandoffDetector::new),
             thinking_start: None,
@@ -248,13 +227,14 @@ async fn dispatch_recovery(
 
 fn interrupt(mut pending: PendingRun, reason: &str) -> Result<PendingStep> {
     let message = if reason == "length" && pending.recovery_count > 0 {
-        let max_output_tokens = pending
+        let limit = pending
             .request_base
             .as_ref()
-            .map(super::request::OwnedRequestBase::max_output_tokens)
-            .unwrap_or_default();
+            .and_then(super::request::OwnedRequestBase::max_output_tokens)
+            .map(|limit| format!("max_output_tokens={limit}"))
+            .unwrap_or_else(|| "the provider's output limit".to_string());
         format!(
-            "model reached max_output_tokens={max_output_tokens} after recovery attempt {}/{}; the turn remains incomplete",
+            "model reached {limit} after recovery attempt {}/{}; the turn remains incomplete",
             pending.recovery_count, MAX_RECOVERY_ATTEMPTS
         )
     } else {
@@ -292,44 +272,9 @@ fn fail_recovery(mut pending: PendingRun, error: Error, reason: &str) -> Result<
     Ok(PendingStep::Failed(error))
 }
 
-trait ProviderFailureKindEventName {
-    fn as_event_kind(&self) -> &'static str;
-}
-
-impl ProviderFailureKindEventName for ProviderFailureKind {
-    fn as_event_kind(&self) -> &'static str {
-        match self {
-            Self::Authentication => "authentication",
-            Self::RateLimited => "rate_limited",
-            Self::ContextTooLarge => "context_too_large",
-            Self::InvalidRequest => "invalid_request",
-            Self::ProviderUnavailable => "provider_unavailable",
-            Self::Transport => "transport",
-            Self::Internal => "internal",
-            Self::Unknown => "unknown",
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn input_usage_overflow_is_not_treated_as_missing() {
-        let usage = crate::provider::types::ProviderUsage {
-            input_tokens: Some(u64::MAX),
-            output_tokens: None,
-            cache_read_input_tokens: Some(1),
-            cache_creation_input_tokens: None,
-        };
-
-        assert!(matches!(
-            input_tokens_total(&usage),
-            Err(Error::InvalidEventStream(message))
-                if message.contains("input usage overflow")
-        ));
-    }
 
     #[test]
     fn suffix_estimate_reserves_one_token_per_byte() {

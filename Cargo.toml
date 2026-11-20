@@ -1,5 +1,12 @@
 [workspace]
-members = ["crates/kuku", "crates/kuku-cli", "crates/kuku-server", "apps/kuku"]
+members = [
+    "crates/kuku",
+    "crates/kuku-client",
+    "crates/kuku-cli",
+    "crates/kuku-server",
+    "crates/kuku-tui",
+    "apps/kuku",
+]
 default-members = ["apps/kuku"]
 resolver = "2"
 
@@ -21,6 +28,7 @@ arc-swap = "1"
 home = "0.5.12"
 
 [profile.release]
+opt-level = "s"
 strip = true
 lto = "thin"
 codegen-units = 4

@@ -33,6 +33,19 @@ pub enum ProviderProfile {
     Compatible,
 }
 
+/// Scope used to group compatible Responses prompts for provider-side caching.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PromptCacheScope {
+    /// Share a cache key across Sessions and Agents in the same workspace.
+    #[default]
+    Workspace,
+    /// Share only within the same Session and Agent address.
+    Session,
+    /// Do not send a Responses prompt-cache key.
+    Off,
+}
+
 /// Optional connection behavior and capability declarations.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ProviderOptions {
@@ -51,6 +64,9 @@ pub struct ProviderOptions {
     /// Apply OpenRouter's provider selection rules without changing the model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routing: Option<OpenRouterRouting>,
+    /// Scope for Responses prompt caching; ignored by other protocols.
+    #[serde(default)]
+    pub prompt_cache_scope: PromptCacheScope,
 }
 
 /// OpenRouter upstream routing constraints for this connection.

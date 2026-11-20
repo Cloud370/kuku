@@ -210,10 +210,11 @@ impl SseDecoder {
 
 fn invalid_frame(message: &str) -> ProviderFailure {
     ProviderFailure {
-        kind: ProviderFailureKind::Transport,
+        kind: ProviderFailureKind::InvalidResponse,
         message: message.into(),
         status: None,
         provider_request_id: None,
+        retry_after: None,
         retryable: false,
     }
 }

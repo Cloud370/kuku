@@ -2,6 +2,8 @@
 
 每个 Session 在 kuku home 下拥有一个目录和一份账本。
 
+在终端界面用 `/resume` 查找当前工作区的 Session，用 `/agents` 切换接收者。各窗口保留各自的草稿。一个客户端回复问题或授权后，观察该 Agent 的其他客户端可以看到结果。[终端界面命令](../reference/cli.md#终端界面)
+
 ## 列出 Session
 
 只列当前工作区：
@@ -71,6 +73,10 @@ kuku events <session-id> --agent review
 - 使用 `--after <id> --limit <n> --json` 读取有界持久页，默认上限为 100 条。
 - Session 位于其他位置时，检查命令接受 `--workspace` 和 `--data-dir`。
 
+## 保存和复用值
+
+要在首次模型请求前保存长文本，可在终端打开 `/save`，粘贴后为文本命名。要保留命令日志，可用 `/tools` 打开其捕获，在查看器中按 S。使用 `/resume` 重开 Session 后，可用 `/values` 读取保存值，或将保存的引用附到下一次输入。见[终端命令](../reference/cli.md#终端界面)。
+
 ## 删除 Session
 
 ```bash
@@ -79,7 +85,7 @@ kuku delete <session-id>
 
 属于另一个工作区时添加 `--workspace`。
 
-关闭 Session 保留已提交上下文和待决请求。已经接纳至 Provider 可见上下文的输入不可变；交互宿主不再提供原地转录回滚。
+关闭 Session 会保留已提交上下文和待决请求。输入在排队期间可从交互客户端撤回，接纳到模型上下文后不可修改。[Session](../how-it-works/sessions.md)
 
 ## 相关页面
 

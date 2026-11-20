@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::fmt;
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -113,13 +114,29 @@ pub struct ModelEntry {
     pub purpose: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProviderEntry {
     pub format: ProviderFormat,
     pub base_url: String,
     pub api_key: String,
     #[serde(default, flatten)]
     pub options: super::provider::ProviderOptions,
+}
+
+impl fmt::Debug for ProviderEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let api_key = if self.api_key.starts_with('$') || self.api_key.starts_with("file:") {
+            self.api_key.as_str()
+        } else {
+            "<redacted>"
+        };
+        f.debug_struct("ProviderEntry")
+            .field("format", &self.format)
+            .field("base_url", &self.base_url)
+            .field("api_key", &api_key)
+            .field("options", &self.options)
+            .finish()
+    }
 }
 
 // ── Validated / resolved config ──
@@ -254,7 +271,8 @@ pub struct TierConfig {
     pub reasoning_effort: Option<String>,
     pub service_tier: Option<String>,
     pub context_window: u32,
-    pub max_output_tokens: u32,
+    /// Optional ceiling for one model response.
+    pub max_output_tokens: Option<u32>,
     pub purpose: String,
 }
 
@@ -266,10 +284,21 @@ pub struct ProviderConfig {
     pub options: super::provider::ProviderOptions,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum ApiKey {
     Env(String),
+    File(PathBuf),
     Plaintext(String),
+}
+
+impl fmt::Debug for ApiKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Env(name) => f.debug_tuple("Env").field(name).finish(),
+            Self::File(path) => f.debug_tuple("File").field(path).finish(),
+            Self::Plaintext(_) => f.write_str("Plaintext(<redacted>)"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -390,7 +419,9 @@ impl Config {
             out.push_str(&format!("model = \"{}\"\n", tier.model));
             out.push_str(&format!("think = \"{}\"\n", tier.think.as_str()));
             out.push_str(&format!("context_window = {}\n", tier.context_window));
-            out.push_str(&format!("max_output_tokens = {}\n", tier.max_output_tokens));
+            if let Some(max_output_tokens) = tier.max_output_tokens {
+                out.push_str(&format!("max_output_tokens = {max_output_tokens}\n"));
+            }
             if !tier.purpose.is_empty() && tier.purpose != *name {
                 out.push_str(&format!("purpose = \"{}\"\n", tier.purpose));
             }
@@ -403,7 +434,14 @@ impl Config {
             out.push_str(&format!("base_url = \"{}\"\n", provider.base_url));
             match &provider.api_key {
                 ApiKey::Plaintext(_) => out.push_str("api_key = \"<redacted>\"\n"),
-                ApiKey::Env(env) => out.push_str(&format!("api_key = \"${env}\"\n")),
+                ApiKey::Env(env) => out.push_str(&format!(
+                    "api_key = {}\n",
+                    toml_edit::value(format!("${env}"))
+                )),
+                ApiKey::File(path) => {
+                    let reference = format!("file:{}", path.display());
+                    out.push_str(&format!("api_key = {}\n", toml_edit::value(reference)));
+                }
             }
             out.push('\n');
         }

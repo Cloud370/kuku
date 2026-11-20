@@ -1,14 +1,14 @@
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 use std::time::Instant;
 
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
-use crate::context::assembly::render_project_policy;
-use crate::context::runtime::{AdmittedMessage, FrozenSegment, MessageOrigin};
+use crate::context::assembly::assemble_segment_context;
+use crate::context::runtime::{AdmittedMessage, FrozenSegment, MessageOrigin, RouteSelectors};
 use crate::context::{
-    assemble_context, CanonicalMessage, ContextAssembly, ContextInput, EnvironmentSource,
-    MessageBlock,
+    CanonicalMessage, ContextAssembly, ContextInput, EnvironmentSource, MessageBlock, Role,
 };
 use crate::event::{EventPayload, EventStore};
 use crate::prompt::PromptCatalog;
@@ -32,10 +32,12 @@ pub(super) struct ContextCommit {
     messages: Vec<AdmittedMessage>,
     source_head: u64,
     current_input: usize,
+    prefix_context_head: usize,
     new_segment: bool,
     reason: &'static str,
     context_prepare_us: u64,
     events_read: u64,
+    input_skills: Vec<String>,
 }
 
 pub(super) fn prepare(pending: &mut PendingRun) -> Result<PreparedContext> {
@@ -60,10 +62,17 @@ pub(super) fn prepare(pending: &mut PendingRun) -> Result<PreparedContext> {
         pending.conversation.as_str(),
         pending.query.runtime_limits.max_request_bytes,
     )?;
+    let route_selectors = RouteSelectors {
+        query_connection: pending.query.connection.clone(),
+        query_model: pending.query.model.clone(),
+        query_tier: pending.query.tier.clone(),
+    };
+    cursor.select_configuration(&route_selectors);
     let catalog = cursor
         .catalog
         .clone()
         .unwrap_or_else(|| pending.catalog.clone());
+    let current_date = current_date_string();
     let behavior = pending
         .query
         .agent_instructions
@@ -83,20 +92,50 @@ pub(super) fn prepare(pending: &mut PendingRun) -> Result<PreparedContext> {
         .map(|event| event.id)
         .or_else(|| cursor.segment.as_ref().map(|segment| segment.handoff))
         .unwrap_or(0);
-    let signature = signature(pending, &resolved, &tools, &behavior, handoff)?;
+    let current_signature = signature(
+        pending,
+        &resolved,
+        &route_selectors,
+        &tools,
+        &behavior,
+        handoff,
+    )?;
     let previous = cursor.segment.clone();
+    let snapshot = previous
+        .as_ref()
+        .map(|segment| {
+            check_route_snapshot(
+                pending.conversation.as_str(),
+                segment,
+                cursor.configured,
+                &resolved,
+                &route_selectors,
+            )
+        })
+        .transpose()?;
+    let (legacy_segment, route_changed) = match snapshot {
+        Some(RouteSnapshot::Legacy) => (true, false),
+        Some(RouteSnapshot::Current { route_changed }) => (false, route_changed),
+        None => (false, false),
+    };
+    let legacy_signature_for_comparison = if legacy_segment {
+        Some(legacy_signature(
+            pending, &resolved, &tools, &behavior, handoff,
+        )?)
+    } else {
+        None
+    };
+    let signature_for_comparison = legacy_signature_for_comparison
+        .as_deref()
+        .unwrap_or(&current_signature);
     let new_segment = previous
         .as_ref()
-        .is_none_or(|segment| segment.signature != signature);
-    let route_changed = previous.as_ref().is_some_and(|segment| {
-        segment.connection != resolved.connection_name
-            || segment.protocol != resolved.kind.as_str()
-            || segment.model != resolved.model
-            || segment.endpoint != resolved.base_url
-    });
+        .is_none_or(|segment| segment.signature.as_str() != signature_for_comparison);
     let handoff_changed = previous
         .as_ref()
-        .is_some_and(|segment| segment.handoff != handoff);
+        .map_or(cursor.handoff.is_some(), |segment| {
+            segment.handoff != handoff
+        });
     let workspace_changed = previous
         .as_ref()
         .is_some_and(|segment| segment.workspace != pending.workspace.to_string_lossy());
@@ -125,6 +164,9 @@ pub(super) fn prepare(pending: &mut PendingRun) -> Result<PreparedContext> {
         };
         select_turns(&mut messages, turn, keep);
     }
+    if legacy_segment {
+        reject_ambiguous_legacy_replay(pending.conversation.as_str(), &messages)?;
+    }
     if route_changed {
         for admitted in &mut messages {
             admitted.message.blocks.retain(|block| {
@@ -136,15 +178,22 @@ pub(super) fn prepare(pending: &mut PendingRun) -> Result<PreparedContext> {
         }
         messages.retain(|admitted| !admitted.message.blocks.is_empty());
     }
+    let date_message =
+        CanonicalMessage::user_text(crate::prompt::render_runtime_date(&catalog, &current_date)?);
+    let date_already_admitted = messages.iter().any(|admitted| {
+        admitted.origin == MessageOrigin::Runtime && admitted.message == date_message
+    }) || legacy_project_policy_has_date(&segment, &current_date);
     if new_segment {
         replace_behavior(&mut segment, &behavior)?;
-        segment.signature = signature;
+        segment.signature = current_signature;
         segment.configuration = cursor.configuration.max(segment.configuration);
         segment.handoff = handoff;
         segment.connection = resolved.connection_name.clone();
         segment.protocol = resolved.kind.as_str().into();
         segment.model = resolved.model.clone();
         segment.endpoint = resolved.base_url.clone();
+        segment.capabilities = Some(resolved.capabilities.clone());
+        segment.route_selectors = Some(route_selectors.clone());
         segment.tools = tools;
         if handoff_changed {
             if let Some(EventPayload::Handoff { summary, .. }) =
@@ -163,10 +212,12 @@ pub(super) fn prepare(pending: &mut PendingRun) -> Result<PreparedContext> {
             }
         }
     }
+    let input_skills = append_input_skills(pending, &mut messages)?;
     append_dynamic(
         pending,
         &mut messages,
         &catalog,
+        (!date_already_admitted).then_some(&date_message),
         if handoff_changed || route_changed || workspace_changed {
             None
         } else {
@@ -179,14 +230,49 @@ pub(super) fn prepare(pending: &mut PendingRun) -> Result<PreparedContext> {
             cursor.admitted.len()
         },
     )?;
-    let current_input = messages
-        .iter()
-        .rposition(|admitted| {
+    let current_input = if pending.query.skip_user_message {
+        let source_turn = pending.query.resume_input_turn.unwrap_or(pending.turn);
+        let input_is_present = messages.iter().any(|admitted| {
+            admitted.origin == MessageOrigin::Input
+                && (admitted.turn == pending.turn || admitted.turn == source_turn)
+        });
+        let admitted_at = if input_is_present {
+            0
+        } else {
+            EventStore::replay(&pending.events_path)?
+                .into_iter()
+                .find_map(|event| {
+                    let EventPayload::MessageUser {
+                        turn,
+                        conversation,
+                        text,
+                        ..
+                    } = &event.payload
+                    else {
+                        return None;
+                    };
+                    (*turn == source_turn
+                        && conversation == pending.conversation.as_str()
+                        && text == &pending.query.prompt)
+                        .then_some(event.id)
+                })
+                .unwrap_or(cursor.after)
+        };
+        resumed_current_input(
+            &mut messages,
+            pending.turn,
+            pending.query.resume_input_turn,
+            &pending.query.prompt,
+            admitted_at,
+        )
+    } else {
+        messages.iter().rposition(|admitted| {
             admitted.turn == pending.turn && admitted.origin == MessageOrigin::Input
         })
-        .ok_or_else(|| {
-            Error::InvalidEventStream("prepared context has no admitted current input".into())
-        })?;
+    }
+    .ok_or_else(|| {
+        Error::InvalidEventStream("prepared context has no admitted current input".into())
+    })?;
     let assembly = ContextAssembly {
         system_prompt: segment.system_prompt.clone(),
         prelude_messages: segment.prelude.clone(),
@@ -219,6 +305,11 @@ pub(super) fn prepare(pending: &mut PendingRun) -> Result<PreparedContext> {
         messages,
         source_head: cursor.after,
         current_input,
+        prefix_context_head: if new_segment {
+            0
+        } else {
+            cursor.admitted.len()
+        },
         new_segment,
         reason: if previous.is_none() {
             "initial"
@@ -229,6 +320,7 @@ pub(super) fn prepare(pending: &mut PendingRun) -> Result<PreparedContext> {
         },
         context_prepare_us: micros(started),
         events_read: cursor.events_read - read_before,
+        input_skills,
     };
     pending.context_cursor = Some(cursor);
     Ok(PreparedContext { request, commit })
@@ -241,6 +333,11 @@ pub(super) fn record_prepared(
     mut context: ContextCommit,
     request_prepare_us: u64,
 ) -> Result<()> {
+    let execution = pending
+        .query
+        .runtime_execution
+        .expect("prepared context belongs to a session execution");
+    let session = super::provider::runtime_session(pending, execution)?;
     let cursor = pending
         .context_cursor
         .as_mut()
@@ -251,14 +348,21 @@ pub(super) fn record_prepared(
         context.segment.id = writer.append(EventPayload::Unknown(json!({"kind":"runtime.context_segment","ts":now_timestamp()?,"agent":pending.conversation.as_str(),
             "signature":context.segment.signature,"predecessor":predecessor,"configuration":context.segment.configuration,"handoff":context.segment.handoff,"reason":context.reason,
             "connection":context.segment.connection,"protocol":context.segment.protocol,"model":context.segment.model,"endpoint":context.segment.endpoint,
+            "capabilities":context.segment.capabilities,"route_selectors":context.segment.route_selectors,
             "system_prompt":context.segment.system_prompt,"prelude":context.segment.prelude,"tools":context.segment.tools,"catalog":context.segment.catalog,
             "behavior":context.segment.behavior,"identity_slot":context.segment.identity_slot,"handoff_prelude":context.segment.handoff_prelude,"workspace":context.segment.workspace})))?.id;
     }
-    let frozen_head = if context.new_segment {
+    let frozen_head = context.prefix_context_head;
+    let expected_frozen_head = if context.new_segment {
         0
     } else {
         cursor.admitted.len()
     };
+    if frozen_head != expected_frozen_head {
+        return Err(Error::InvalidEventStream(
+            "prepared history boundary differs from the committed prefix".into(),
+        ));
+    }
     if context.messages.len() < frozen_head
         || context
             .messages
@@ -273,15 +377,28 @@ pub(super) fn record_prepared(
     }
     for (ordinal, admitted) in context.messages.iter().enumerate().skip(frozen_head) {
         writer.append(EventPayload::Unknown(json!({"kind":"runtime.context_admitted","ts":now_timestamp()?,"agent":pending.conversation.as_str(),"segment":context.segment.id,
-            "ordinal":ordinal,"turn":admitted.turn,"origin":admitted.origin,"source_head":context.source_head,"message":admitted.message})))?;
+            "ordinal":ordinal,"turn":admitted.turn,"origin":admitted.origin,"source_head":context.source_head,"admitted_at":admitted.admitted_at,"message":admitted.message})))?;
     }
     let body_hash = format!("{:x}", Sha256::digest(serde_json::to_vec(&prepared.body)?));
-    writer.append(EventPayload::Unknown(json!({"kind":"runtime.step_prepared","ts":now_timestamp()?,"agent":pending.conversation.as_str(),"turn":pending.turn,"request_id":request_id,
+    let prefix_hash = segment_prefix_hash(&context.segment)?;
+    let history_prefix = context
+        .messages
+        .iter()
+        .take(frozen_head)
+        .map(|admitted| &admitted.message)
+        .collect::<Vec<_>>();
+    let history_prefix_hash = content_hash(&history_prefix)?;
+    let payload = EventPayload::Unknown(
+        json!({"kind":"runtime.step_prepared","ts":now_timestamp()?,"agent":pending.conversation.as_str(),"turn":pending.turn,"request_id":request_id,
         "segment":context.segment.id,"context_head":context.messages.len(),"current_input":context.current_input,"source_head":context.source_head,
         "connection":prepared.connection_name,"protocol":context.segment.protocol,"model":prepared.model,"url":prepared.url,"settings":prepared.settings,"correlation_id":prepared.correlation_id,
         "max_output_tokens":prepared.body.get("max_output_tokens").or_else(|| prepared.body.get("max_tokens")).or_else(|| prepared.body.get("max_completion_tokens")),"temperature":prepared.body.get("temperature"),
         "context_window_tokens":pending.resolved.as_ref().map(|runtime| runtime.config.max_context_tokens),"max_request_bytes":pending.query.runtime_limits.max_request_bytes,"request_bytes":serde_json::to_vec(&prepared.body)?.len(),
-        "body_hash":body_hash,"context_prepare_us":context.context_prepare_us,"request_prepare_us":request_prepare_us,"context_events_read":context.events_read})))?;
+        "body_hash":body_hash,"prefix_context_head":context.prefix_context_head,"prefix_hash":prefix_hash,"history_prefix_hash":history_prefix_hash,
+        "context_prepare_us":context.context_prepare_us,"request_prepare_us":request_prepare_us,"context_events_read":context.events_read,
+        "input_skills":context.input_skills}),
+    );
+    session.commit_model_facts(pending.conversation.as_str(), execution, [payload])?;
     cursor.commit(context.segment, context.messages, context.source_head)
 }
 
@@ -312,8 +429,7 @@ fn initial_segment(
         agent_instructions: behavior.into(),
         response_contract: pending.query.response_contract.clone(),
     };
-    let slot = usize::from(!render_project_policy(&input, catalog)?.is_empty());
-    let mut assembly = assemble_context(input, catalog)?;
+    let (mut assembly, slot) = assemble_segment_context(input, catalog)?;
     if let Some(text) = pending
         .agent_registry
         .as_ref()
@@ -326,7 +442,7 @@ fn initial_segment(
     if let Some(text) = pending
         .skill_registry
         .as_ref()
-        .and_then(|registry| crate::skill::catalog::render_skill_catalog(registry, &[], None))
+        .and_then(crate::skill::catalog::render_static_skill_catalog)
     {
         assembly
             .prelude_messages
@@ -350,6 +466,8 @@ fn initial_segment(
         protocol: String::new(),
         model: String::new(),
         endpoint: String::new(),
+        capabilities: None,
+        route_selectors: None,
         behavior: behavior.into(),
         identity_slot: slot,
         handoff_prelude: None,
@@ -360,6 +478,7 @@ fn initial_segment(
 fn signature(
     pending: &PendingRun,
     resolved: &ResolvedProvider,
+    route_selectors: &RouteSelectors,
     tools: &[crate::context::ToolSchema],
     behavior: &str,
     handoff: u64,
@@ -371,6 +490,8 @@ fn signature(
             &resolved.connection_name,
             &resolved.base_url,
             &resolved.model,
+            &resolved.capabilities,
+            route_selectors,
             &resolved.settings,
             resolved.max_context_tokens,
             resolved.max_output_tokens,
@@ -381,6 +502,70 @@ fn signature(
             handoff
         ))?)
     ))
+}
+
+fn legacy_signature(
+    pending: &PendingRun,
+    resolved: &ResolvedProvider,
+    tools: &[crate::context::ToolSchema],
+    behavior: &str,
+    handoff: u64,
+) -> Result<String> {
+    let serialized = legacy_signature_bytes((
+        resolved.kind.as_str(),
+        &resolved.connection_name,
+        &resolved.base_url,
+        &resolved.model,
+        &resolved.settings,
+        resolved.max_context_tokens,
+        resolved.max_output_tokens,
+        pending.query.temperature,
+        &pending.workspace,
+        tools,
+        behavior,
+        handoff,
+    ))?;
+    Ok(format!("{:x}", Sha256::digest(serialized)))
+}
+
+type LegacySignatureParts<'a> = (
+    &'a str,
+    &'a str,
+    &'a str,
+    &'a str,
+    &'a crate::provider::types::ProviderSettings,
+    u32,
+    Option<u32>,
+    Option<f32>,
+    &'a PathBuf,
+    &'a [crate::context::ToolSchema],
+    &'a str,
+    u64,
+);
+
+fn legacy_signature_bytes(parts: LegacySignatureParts<'_>) -> Result<Vec<u8>> {
+    Ok(serde_json::to_vec(&parts)?)
+}
+
+fn reject_ambiguous_legacy_replay(agent: &str, messages: &[AdmittedMessage]) -> Result<()> {
+    if messages.iter().any(|admitted| {
+        admitted.message.role == Role::Assistant
+            && admitted
+                .message
+                .blocks
+                .iter()
+                .any(|block| matches!(block, MessageBlock::Thinking(_)))
+            && !admitted
+                .message
+                .blocks
+                .iter()
+                .any(|block| matches!(block, MessageBlock::ProviderReplay { .. }))
+    }) {
+        return Err(Error::MissingProviderConfig(format!(
+            "agent '{agent}' has legacy assistant thinking without a durable provider replay decision; refusing ambiguous continuation under the active provider profile. Start a new Session with fresh context."
+        )));
+    }
+    Ok(())
 }
 
 fn replace_behavior(segment: &mut FrozenSegment, behavior: &str) -> Result<()> {
@@ -417,6 +602,56 @@ fn replace_behavior(segment: &mut FrozenSegment, behavior: &str) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug)]
+enum RouteSnapshot {
+    Legacy,
+    Current { route_changed: bool },
+}
+
+fn check_route_snapshot(
+    agent: &str,
+    segment: &FrozenSegment,
+    configured: u64,
+    resolved: &ResolvedProvider,
+    selectors: &RouteSelectors,
+) -> Result<RouteSnapshot> {
+    let connection_changed = segment.connection != resolved.connection_name;
+    let protocol_changed = segment.protocol != resolved.kind.as_str();
+    let model_changed = segment.model != resolved.model;
+    let endpoint_changed = segment.endpoint != resolved.base_url;
+    let effective_route_changed =
+        connection_changed || protocol_changed || model_changed || endpoint_changed;
+    let (capabilities, recorded_selectors) = match (
+        segment.capabilities.as_ref(),
+        segment.route_selectors.as_ref(),
+    ) {
+        (None, None) => {
+            if effective_route_changed {
+                return Err(Error::MissingProviderConfig(format!(
+                    "agent '{agent}' has a legacy context segment whose recorded effective connection, protocol, model, or endpoint differs from the active route; restore the recorded route or start a new Session"
+                )));
+            }
+            return Ok(RouteSnapshot::Legacy);
+        }
+        (Some(capabilities), Some(recorded_selectors)) => (capabilities, recorded_selectors),
+        _ => {
+            return Err(Error::MissingProviderConfig(format!(
+                "agent '{agent}' has an inconsistent partial provider route snapshot; restore the recorded configuration or start a new Session"
+            )));
+        }
+    };
+    let selectors_changed = recorded_selectors != selectors;
+    let route_changed = effective_route_changed || selectors_changed;
+    let capabilities_changed = capabilities != &resolved.capabilities;
+    let explicit_route_change = configured > segment.configuration && selectors_changed;
+    if (route_changed || capabilities_changed) && !explicit_route_change {
+        return Err(Error::MissingProviderConfig(format!(
+            "agent '{agent}' has a frozen provider route or capabilities that differ from the active configuration; restore the recorded route/profile, explicitly configure a different connection, model, or tier with configure_agent, or start a new Session"
+        )));
+    }
+    Ok(RouteSnapshot::Current { route_changed })
+}
+
 fn select_turns(messages: &mut Vec<AdmittedMessage>, through: u64, keep: usize) {
     let retained = messages
         .iter()
@@ -430,14 +665,75 @@ fn select_turns(messages: &mut Vec<AdmittedMessage>, through: u64, keep: usize) 
     messages.retain(|message| message.turn > through || retained.contains(&message.turn));
 }
 
+fn append_input_skills(
+    pending: &mut PendingRun,
+    messages: &mut Vec<AdmittedMessage>,
+) -> Result<Vec<String>> {
+    let admitted_at = messages
+        .iter()
+        .rev()
+        .find(|message| message.turn == pending.turn && message.origin == MessageOrigin::Input)
+        .map_or(0, |message| message.admitted_at);
+    let mut names = std::mem::take(&mut pending.query.input_skills);
+    if names.is_empty() {
+        return Ok(names);
+    }
+    if pending.query.disable_skills {
+        return Err(Error::InvalidArgument(
+            "selected input skill cannot load while skills are disabled".into(),
+        ));
+    }
+    let mut seen = BTreeSet::new();
+    names.retain(|name| seen.insert(name.clone()));
+    let discovered = names
+        .iter()
+        .any(|name| {
+            pending
+                .skill_registry
+                .as_ref()
+                .is_none_or(|registry| registry.get(name).is_none())
+        })
+        .then(|| {
+            crate::skill::session::build_registry_snapshot_for_host(
+                &pending.kuku_home,
+                &pending.workspace,
+                &pending.config,
+            )
+        })
+        .transpose()?;
+    for name in &names {
+        let definition = pending
+            .skill_registry
+            .as_ref()
+            .and_then(|registry| registry.get(name))
+            .or_else(|| discovered.as_ref().and_then(|registry| registry.get(name)))
+            .ok_or_else(|| {
+                Error::InvalidArgument(format!("selected input skill '{name}' was not found"))
+            })?;
+        messages.push(AdmittedMessage {
+            turn: pending.turn,
+            origin: MessageOrigin::Runtime,
+            message: CanonicalMessage::user_text(definition.instructions.clone()),
+            admitted_at,
+        });
+    }
+    Ok(names)
+}
+
 fn append_dynamic(
     pending: &mut PendingRun,
     messages: &mut Vec<AdmittedMessage>,
     catalog: &PromptCatalog,
+    date_message: Option<&CanonicalMessage>,
     input_tokens: Option<u32>,
     resolved: &ResolvedProvider,
     frozen_head: usize,
 ) -> Result<()> {
+    let admitted_at = messages
+        .iter()
+        .rev()
+        .find(|message| message.turn == pending.turn && message.origin == MessageOrigin::Input)
+        .map_or(0, |message| message.admitted_at);
     for admitted in messages
         .iter_mut()
         .skip(frozen_head)
@@ -449,6 +745,15 @@ fn append_dynamic(
                 .blocks
                 .insert(0, MessageBlock::Text(prefix.clone()));
         }
+    }
+    if let Some(date_message) = date_message {
+        insert_runtime_date(
+            messages,
+            pending.turn,
+            date_message,
+            frozen_head,
+            admitted_at,
+        );
     }
     if !pending.hook_context.is_empty() {
         let template = catalog
@@ -463,13 +768,14 @@ fn append_dynamic(
             turn: pending.turn,
             origin: MessageOrigin::Runtime,
             message: CanonicalMessage::user_text(text),
+            admitted_at,
         });
     }
     let headroom = crate::notice::compute_context_headroom(
         resolved
             .max_context_tokens
             .saturating_sub(resolved.think_level.overhead_tokens()),
-        Some(resolved.max_output_tokens),
+        resolved.max_output_tokens,
         input_tokens,
     );
     let config = pending.config.handoff();
@@ -488,11 +794,227 @@ fn append_dynamic(
             turn: pending.turn,
             origin: MessageOrigin::Runtime,
             message: CanonicalMessage::user_text(prefix),
+            admitted_at,
         });
     }
     Ok(())
 }
 
+fn insert_runtime_date(
+    messages: &mut Vec<AdmittedMessage>,
+    turn: u64,
+    date_message: &CanonicalMessage,
+    frozen_head: usize,
+    admitted_at: u64,
+) {
+    let current_input = messages
+        .iter()
+        .position(|admitted| admitted.turn == turn && admitted.origin == MessageOrigin::Input)
+        .unwrap_or(messages.len());
+    let insertion_index = if current_input < frozen_head {
+        messages.len()
+    } else {
+        current_input
+    };
+    messages.insert(
+        insertion_index,
+        AdmittedMessage {
+            turn,
+            origin: MessageOrigin::Runtime,
+            message: date_message.clone(),
+            admitted_at,
+        },
+    );
+}
+
+fn resumed_current_input(
+    messages: &mut Vec<AdmittedMessage>,
+    current_turn: u64,
+    source_turn: Option<u64>,
+    prompt: &str,
+    admitted_at: u64,
+) -> Option<usize> {
+    if let Some(index) = messages.iter().rposition(|admitted| {
+        admitted.turn == current_turn && admitted.origin == MessageOrigin::Input
+    }) {
+        return Some(index);
+    }
+    if let Some(source_turn) = source_turn {
+        if let Some(index) = messages.iter().rposition(|admitted| {
+            admitted.turn == source_turn && admitted.origin == MessageOrigin::Input
+        }) {
+            return Some(index);
+        }
+    }
+    let turn = source_turn.unwrap_or(current_turn);
+    messages.push(AdmittedMessage {
+        turn,
+        origin: MessageOrigin::Input,
+        message: CanonicalMessage::user_text(prompt.to_owned()),
+        admitted_at,
+    });
+    Some(messages.len() - 1)
+}
+
+fn legacy_project_policy_has_date(segment: &FrozenSegment, current_date: &str) -> bool {
+    segment.catalog.blocks.get("project-policy").is_some_and(|template| {
+        segment.prelude.iter().any(|message| {
+            message.blocks.iter().any(|block| {
+                matches!(block, MessageBlock::Text(text) if crate::prompt::render::project_policy_has_date(text, &template.text, current_date))
+            })
+        })
+    })
+}
+
+fn content_hash(value: &impl serde::Serialize) -> Result<String> {
+    Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(value)?)))
+}
+
+fn segment_prefix_hash(segment: &FrozenSegment) -> Result<String> {
+    content_hash(&(&segment.system_prompt, &segment.tools, &segment.prelude))
+}
+
 fn micros(started: Instant) -> u64 {
     started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64
+}
+#[cfg(test)]
+#[path = "frozen/date_tests.rs"]
+mod date_tests;
+#[cfg(test)]
+#[path = "frozen/resume_tests.rs"]
+mod resume_tests;
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    use crate::config::ProviderProfile;
+    use crate::provider::types::ProviderKind;
+
+    fn snapshot_fixture() -> (FrozenSegment, ResolvedProvider, RouteSelectors) {
+        let resolved = ResolvedProvider::default();
+        let selectors = RouteSelectors {
+            query_connection: Some("default".into()),
+            query_model: Some("test-model".into()),
+            query_tier: Some("balanced".into()),
+        };
+        let segment = FrozenSegment {
+            id: 1,
+            signature: "fixture".into(),
+            configuration: 5,
+            handoff: 0,
+            system_prompt: String::new(),
+            prelude: Vec::new(),
+            tools: Vec::new(),
+            catalog: crate::prompt::builtin_prompt_catalog(),
+            connection: resolved.connection_name.clone(),
+            protocol: resolved.kind.as_str().into(),
+            model: resolved.model.clone(),
+            endpoint: resolved.base_url.clone(),
+            capabilities: Some(resolved.capabilities.clone()),
+            route_selectors: Some(selectors.clone()),
+            behavior: String::new(),
+            identity_slot: 1,
+            handoff_prelude: None,
+            workspace: String::new(),
+        };
+        (segment, resolved, selectors)
+    }
+
+    #[test]
+    fn capability_drift_requires_a_changed_route_selector() {
+        let (segment, mut resolved, selectors) = snapshot_fixture();
+        resolved.capabilities.profile = ProviderProfile::Anthropic;
+        let error = check_route_snapshot("main", &segment, 6, &resolved, &selectors)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("restore the recorded route/profile"));
+    }
+
+    #[test]
+    fn a_new_configured_route_selector_authorizes_projection() {
+        let (segment, mut resolved, _) = snapshot_fixture();
+        resolved.connection_name = "native".into();
+        resolved.kind = ProviderKind::Anthropic;
+        resolved.capabilities.profile = ProviderProfile::Anthropic;
+        let selectors = RouteSelectors {
+            query_connection: Some("native".into()),
+            query_model: Some("test-model".into()),
+            query_tier: Some("balanced".into()),
+        };
+        assert!(matches!(
+            check_route_snapshot(
+                "main",
+                &segment,
+                segment.configuration + 1,
+                &resolved,
+                &selectors,
+            )
+            .unwrap(),
+            RouteSnapshot::Current {
+                route_changed: true
+            }
+        ));
+    }
+
+    #[test]
+    fn a_configured_boundary_without_route_change_does_not_authorize_drift() {
+        let (segment, mut resolved, selectors) = snapshot_fixture();
+        resolved.capabilities.profile = ProviderProfile::Anthropic;
+        let error = check_route_snapshot("main", &segment, 6, &resolved, &selectors)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("configure_agent"));
+    }
+
+    #[test]
+    fn legacy_segment_matches_only_the_recorded_effective_route() {
+        let (mut segment, mut resolved, selectors) = snapshot_fixture();
+        segment.capabilities = None;
+        segment.route_selectors = None;
+        assert!(matches!(
+            check_route_snapshot("main", &segment, 0, &resolved, &selectors).unwrap(),
+            RouteSnapshot::Legacy
+        ));
+
+        resolved.base_url = "https://changed.example".into();
+        let error = check_route_snapshot("main", &segment, 0, &resolved, &selectors)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("restore the recorded route"));
+    }
+
+    #[test]
+    fn partial_legacy_route_snapshot_is_rejected() {
+        let (mut segment, resolved, selectors) = snapshot_fixture();
+        segment.capabilities = None;
+        let error = check_route_snapshot("main", &segment, 0, &resolved, &selectors)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("inconsistent partial provider route snapshot"));
+    }
+
+    #[test]
+    fn legacy_signature_uses_the_exact_pre_snapshot_tuple() {
+        let settings = crate::provider::types::ProviderSettings::default();
+        let workspace = std::path::PathBuf::from("workspace");
+        let tools = Vec::<crate::context::ToolSchema>::new();
+        let bytes = legacy_signature_bytes((
+            "anthropic",
+            "conn",
+            "https://endpoint",
+            "model",
+            &settings,
+            100_000,
+            Some(2048),
+            Some(0.5),
+            &workspace,
+            &tools,
+            "behavior",
+            7,
+        ))
+        .unwrap();
+        assert_eq!(
+            br#"["anthropic","conn","https://endpoint","model",{"requested_reasoning_effort":null,"reasoning_effort":null,"requested_service_tier":null,"service_tier":null},100000,2048,0.5,"workspace",[],"behavior",7]"#,
+            bytes.as_slice()
+        );
+    }
 }

@@ -1,7 +1,7 @@
 mod config {
     pub use kuku::config::{
-        ApiKey, ProviderAuth, ProviderFormat, ProviderOptions, ProviderProfile, ResolvedThinking,
-        ThinkLevel,
+        ApiKey, PromptCacheScope, ProviderAuth, ProviderFormat, ProviderOptions, ProviderProfile,
+        ResolvedThinking, ThinkLevel,
     };
 }
 
@@ -186,7 +186,7 @@ fn sample_assembly() -> ContextAssembly {
                 "<kuku_execution_context>\n- Workspace root: /workspace\n- Platform: linux\n- Current date: 2026-05-14\n</kuku_execution_context>\n\n<kuku_project_instructions>\nfollow project instructions\n</kuku_project_instructions>\n\n<kuku_memory>\n<kuku_global_memory>\n- remember the user prefers concise answers\n</kuku_global_memory>\n<kuku_project_memory>\n- No project memory.\n</kuku_project_memory>\n</kuku_memory>"
             ),
             CanonicalMessage::user_text(
-                "<kuku_tool_guidance>\nUse tools to establish evidence before concluding or modifying.\n\nGuidance:\n- Do not guess when tools can establish the answer.\n- Prefer collecting enough evidence in fewer rounds instead of many tiny rounds.\n- When multiple read-only tool calls are independent and the targets are already known, prefer batching them in the same round.\n- When one step depends on the result of another, keep the calls sequential.\n- Understand the relevant context before modifying files.\n- Prefer focused edits over broader rewrites when both would work.\n- Reserve `run_command` for validation, project commands, scripts, generators, and other cases where a command is the right tool.\n- Treat tool results as evidence.\n- Do not claim conclusions that are not supported by tool or file evidence.\n</kuku_tool_guidance>"
+                "<kuku_tool_guidance>Example guidance for this request.</kuku_tool_guidance>"
             ),
         ],
         history: vec![
@@ -426,7 +426,7 @@ fn anthropic_render_body_preserves_layer_order() {
     assert!(body["messages"][1]["content"][0]["text"]
         .as_str()
         .unwrap()
-        .contains("Use tools to establish evidence before concluding or modifying."));
+        .contains("Example guidance for this request."));
 }
 
 #[test]

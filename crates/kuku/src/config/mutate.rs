@@ -2,7 +2,7 @@ use std::io::Write as _;
 use std::path::Path;
 use std::str::FromStr;
 
-use super::resolve::parse_config_file;
+use super::resolve::parse_config_text;
 use crate::config::types::{ConfigFile, ThinkLevel};
 use crate::error::{Error, Result};
 
@@ -18,7 +18,7 @@ pub fn generate_default() -> &'static str {
 /// Detect missing config sections via struct deserialization, then inject
 /// defaults using `toml_edit` to preserve user comments and formatting.
 pub fn config_patch_defaults(raw: &str) -> Result<(String, bool)> {
-    let file: ConfigFile = parse_config_file(raw)?;
+    let file: ConfigFile = parse_config_text(raw)?;
 
     if file.handoff.is_some()
         && file.logs.is_some()
@@ -123,11 +123,11 @@ pub(crate) fn load_and_patch_config_with_hook(
                 temp.persist(path)
                     .map_err(|error| Error::ConfigLoad(format!("cannot save config: {error}")))?;
             } else {
-                return parse_config_file(&current);
+                return parse_config_text(&current);
             }
         }
     }
-    parse_config_file(&patched)
+    parse_config_text(&patched)
 }
 
 /// Modify a single value in a config file by dot-notation key.

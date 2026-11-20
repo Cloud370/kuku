@@ -1,5 +1,7 @@
 use serde_json::Value;
 
+use crate::execution::CommandExecutionFacts;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ToolErrorReason {
     SnapshotRequired,
@@ -33,9 +35,31 @@ pub(crate) struct ToolResultEnvelope {
     pub truncated: bool,
     pub structured: Option<Value>,
     pub(crate) faults: ToolFaults,
+    pub(crate) supplied_full_write: bool,
 }
 
 impl ToolResultEnvelope {
+    pub(crate) fn command(
+        status: &str,
+        summary: String,
+        model_content: String,
+        truncated: bool,
+        facts: CommandExecutionFacts,
+    ) -> Self {
+        Self {
+            status: status.to_string(),
+            summary,
+            model_content,
+            truncated,
+            faults: ToolFaults {
+                cleanup_incomplete: facts.cleanup_incomplete,
+                ..Default::default()
+            },
+            structured: Some(serde_json::to_value(facts).expect("command facts serialize to JSON")),
+            supplied_full_write: false,
+        }
+    }
+
     pub(crate) fn blocked_marker() -> Value {
         serde_json::json!({"kind": "blocked"})
     }
@@ -52,6 +76,7 @@ impl ToolResultEnvelope {
             truncated: false,
             structured: Some(structured),
             faults: ToolFaults::default(),
+            supplied_full_write: false,
         }
     }
 
@@ -67,6 +92,7 @@ impl ToolResultEnvelope {
             truncated: true,
             structured: Some(structured),
             faults: ToolFaults::default(),
+            supplied_full_write: false,
         }
     }
 
@@ -78,6 +104,7 @@ impl ToolResultEnvelope {
             truncated: false,
             structured: Some(serde_json::json!({"kind": "error"})),
             faults: ToolFaults::default(),
+            supplied_full_write: false,
         }
     }
 
@@ -114,6 +141,7 @@ impl ToolResultEnvelope {
                 "reason_code": reason.as_str(),
             })),
             faults: ToolFaults::default(),
+            supplied_full_write: false,
         }
     }
 
@@ -125,6 +153,7 @@ impl ToolResultEnvelope {
             truncated: false,
             structured: Some(Self::blocked_marker()),
             faults: ToolFaults::default(),
+            supplied_full_write: false,
         }
     }
 
@@ -136,6 +165,7 @@ impl ToolResultEnvelope {
             truncated: false,
             structured: Some(serde_json::json!({"kind": "cancelled"})),
             faults: ToolFaults::default(),
+            supplied_full_write: false,
         }
     }
 }

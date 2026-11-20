@@ -1,6 +1,6 @@
 # kuku 文档
 
-kuku 是处于测试阶段的文件原生 Rust Agent SDK。首次体验可以安装 CLI，在自己选的工作目录运行任务。需要客户端断开后再连接时，使用 HTTP server。[安装](start/install.md) · [第一个任务](start/quickstart.md) · [运行服务](guides/run-the-server.md)
+kuku 是处于测试阶段的文件原生 Rust Agent SDK。在工作区运行 `kuku` 即可从终端开始任务，也可以从浏览器回到同一个 Session。[安装](start/install.md) · [第一个任务](start/quickstart.md) · [运行服务](guides/run-the-server.md)
 
 ## 栏目
 

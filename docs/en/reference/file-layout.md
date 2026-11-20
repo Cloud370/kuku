@@ -19,6 +19,7 @@ $KUKU_HOME/
 ```text
 $KUKU_HOME/
 ├── config.toml
+├── credentials/
 ├── memory.md
 ├── packages/
 ├── agents/
@@ -28,6 +29,8 @@ $KUKU_HOME/
 ```
 
 `logs/` stores observability logs. Session facts remain in each session's `events.jsonl`.
+
+`credentials/` contains private, immutable plaintext key files created by interactive setup. Configs reference them with `api_key = "file:<absolute-path>"`; secrets are not copied into TOML or shown by `kuku config show`. The credentials directory must be outside the workspace. On Unix it uses mode `0700`, and each key file uses `0600` (owner access only). On Windows, setup requires a protected ACL that grants access only to the current user. Symlinks and insecure existing paths are rejected rather than repaired. Files are not encrypted and are not automatically deleted when a config changes.
 
 When provider tracing is enabled with `KUKU_PROVIDER_TRACE=1`, request and response diagnostics are written under:
 
@@ -61,7 +64,7 @@ $KUKU_HOME/p/<workspace>/
 └── outputs/<output-id>.output
 ```
 
-`events.jsonl` is authoritative. The OS lock protects a single writer; its file can remain after close. `outputs/` retains bounded framed stdout/stderr for the session lifetime. The public SDK uses flat Agent addresses in the journal, without per-agent directories or hidden Agent aliases. Historical rollback backups can remain in older sessions; the new Session API does not rewrite admitted context in place.
+`events.jsonl` is authoritative. The OS lock protects a single writer, and its file can remain after close. `outputs/` holds bounded framed command captures, derived output and named value contents. The journal records naming and sharing separately from the stored bytes. The public SDK uses flat Agent addresses in the journal, without per-agent directories or hidden Agent aliases. Historical rollback backups can remain in older sessions. The Session API preserves admitted context.
 
 See [Sessions](../how-it-works/sessions.md) for ownership and [SDK](sdk.md) for bounded reads and retention limits.
 

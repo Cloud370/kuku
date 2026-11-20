@@ -1,10 +1,3 @@
-use crate::error::Result;
-use crate::event::{EventPayload, EventStore, ModelStopReason};
-use crate::log::{LogLevel, LogRecord, LogScope};
-use crate::permission::{
-    decide_tool_call, load_project_policy, recover_session_grants, GateDecisionKind, GateSource,
-};
-
 use super::helpers::{
     append_permission_decision, append_permission_request, append_turn_cancelled,
     append_turn_completed, append_turn_interrupted, display_summary, gate_choice, gate_source_name,
@@ -18,6 +11,12 @@ use super::tool_response::validate_tool_calls;
 use super::types::{
     PendingPermission, PendingRun, PendingStep, PermissionChoice, PermissionRequest,
     QueuedToolCall, StreamingChunkState, UiEvent,
+};
+use crate::error::Result;
+use crate::event::{EventPayload, EventStore, ModelStopReason};
+use crate::log::{LogLevel, LogRecord, LogScope};
+use crate::permission::{
+    decide_tool_call, load_project_policy, recover_session_grants, GateDecisionKind, GateSource,
 };
 
 /// Maximum times a model.post_response hook can force-continue (exit code 2)
@@ -199,15 +198,19 @@ pub(super) async fn finish_streaming(mut state: StreamingChunkState) -> Result<P
         request_id,
         accumulated_text,
         accumulated_thinking,
+        provider_replay,
         stop_reason,
         tool_calls,
         tool_arg_buffers,
         tool_call_completions,
         tool_stream_invalid,
         terminal_stream_invalid,
-        usage,
+        stream_ended,
+        mut usage,
+        request_timing,
         handoff_detector,
         thinking_duration_ms,
+        provider_attempt,
         ..
     } = state;
 
@@ -226,6 +229,7 @@ pub(super) async fn finish_streaming(mut state: StreamingChunkState) -> Result<P
             tool_arg_buffers,
             tool_call_completions,
             tool_stream_invalid,
+            &pending.admitted_tool_call_ids,
         )
     });
     let final_stop_reason = if terminal_stream_invalid {
@@ -250,26 +254,39 @@ pub(super) async fn finish_streaming(mut state: StreamingChunkState) -> Result<P
         final_stop_reason,
         ModelStopReason::EndTurn | ModelStopReason::ToolUse
     );
-    {
-        let mut store = EventStore::open(&pending.events_path)?;
-        if pending.query.runtime.is_some() {
-            store.append(EventPayload::Unknown(serde_json::json!({"kind":"runtime.model_usage","ts":now_timestamp()?,"agent":pending.conversation.as_str(),"turn":pending.turn,"request_id":request_id,"usage":usage})))?;
+    let terminal_measured = stream_ended && !terminal_stream_invalid;
+    if pending.query.runtime_execution.is_some() && !terminal_measured {
+        if let Some(usage) = &mut usage {
+            usage.output_tokens = None;
         }
-        store.append(EventPayload::ModelResponse {
-            conversation: Some(pending.conversation.as_str().to_string()),
-            turn: pending.turn,
-            ts: now_timestamp()?,
-            request_id: request_id.clone(),
-            text: accumulated_text.clone(),
-            thinking: if accumulated_thinking.is_empty() {
-                None
-            } else {
-                Some(accumulated_thinking.clone())
-            },
-            stop_reason: Some(final_stop_reason.clone()),
-            input_tokens_total: usage.as_ref().and_then(input_tokens_total),
-            output_tokens_total: usage.as_ref().and_then(|usage| usage.output_tokens),
-        })?;
+    }
+    let response = EventPayload::ModelResponse {
+        conversation: Some(pending.conversation.as_str().to_string()),
+        turn: pending.turn,
+        ts: now_timestamp()?,
+        request_id: request_id.clone(),
+        text: accumulated_text.clone(),
+        thinking: (!accumulated_thinking.is_empty()).then(|| accumulated_thinking.clone()),
+        stop_reason: Some(final_stop_reason.clone()),
+        input_tokens_total: usage.as_ref().and_then(|usage| usage.input_tokens),
+        output_tokens_total: usage.as_ref().and_then(|usage| usage.output_tokens),
+    };
+    if let Some(execution) = pending.query.runtime_execution {
+        let elapsed_us = request_timing
+            .filter(|_| terminal_measured)
+            .and_then(|timing| timing.elapsed_us);
+        let measurement = EventPayload::Unknown(serde_json::json!({
+            "kind": "runtime.model_usage", "ts": now_timestamp()?,
+            "agent": pending.conversation.as_str(), "turn": pending.turn,
+            "request_id": request_id, "usage": usage, "elapsed_us": elapsed_us,
+        }));
+        super::provider::runtime_session(&pending, execution)?.commit_model_facts(
+            pending.conversation.as_str(),
+            execution,
+            provider_replay.into_iter().chain([measurement, response]),
+        )?;
+    } else {
+        EventStore::open(&pending.events_path)?.append(response)?;
     }
 
     if let Some(ref u) = usage {
@@ -310,42 +327,26 @@ pub(super) async fn finish_streaming(mut state: StreamingChunkState) -> Result<P
     }
 
     if !is_success {
-        append_turn_interrupted(
-            &pending.events_path,
-            &conversation,
-            pending.turn,
-            final_stop_reason.wire_value(),
+        let failure = super::provider::record_terminal_stop(
+            &mut pending,
+            &request_id,
+            provider_attempt,
+            &final_stop_reason,
         )?;
-        pending.flush_runtime_logs();
-        return Ok(PendingStep::Failed(crate::error::Error::Provider {
-            kind: crate::provider::types::ProviderFailureKind::InvalidRequest,
-            message: format!(
-                "model response ended with terminal state {}",
-                final_stop_reason.wire_value()
-            ),
-            provider: None,
-            model: None,
-        }));
+        return Ok(PendingStep::Failed(failure));
     }
 
     let tool_calls = if matches!(final_stop_reason, ModelStopReason::ToolUse) {
         match validated_tool_calls {
             Some(Ok(tool_calls)) => tool_calls,
             Some(Err(_)) | None => {
-                append_turn_interrupted(
-                    &pending.events_path,
-                    &conversation,
-                    pending.turn,
-                    ModelStopReason::InvalidResponse.wire_value(),
+                let failure = super::provider::record_terminal_stop(
+                    &mut pending,
+                    &request_id,
+                    provider_attempt,
+                    &ModelStopReason::InvalidResponse,
                 )?;
-                pending.flush_runtime_logs();
-                return Ok(PendingStep::Failed(crate::error::Error::Provider {
-                    kind: crate::provider::types::ProviderFailureKind::InvalidRequest,
-                    message: "model response ended with terminal state invalid_response"
-                        .to_string(),
-                    provider: None,
-                    model: None,
-                }));
+                return Ok(PendingStep::Failed(failure));
             }
         }
     } else {
@@ -481,21 +482,32 @@ pub(super) async fn finish_streaming(mut state: StreamingChunkState) -> Result<P
             ));
         }
 
-        for tool_call in &tool_calls {
-            store.append(EventPayload::ToolCall {
-                turn: pending.turn,
-                ts: now_timestamp()?,
-                conversation: Some(pending.conversation.as_str().to_string()),
-                tool_call_id: tool_call.id.clone(),
-                request_id: request_id.clone(),
-                index: tool_call.index,
-                tool: tool_call.name.clone(),
-                args: tool_call.args.clone(),
-            })?;
+        let ts = now_timestamp()?;
+        let facts = tool_calls.iter().map(|tool_call| EventPayload::ToolCall {
+            turn: pending.turn,
+            ts: ts.clone(),
+            conversation: Some(pending.conversation.as_str().to_string()),
+            tool_call_id: tool_call.id.clone(),
+            request_id: request_id.clone(),
+            index: tool_call.index,
+            tool: tool_call.name.clone(),
+            args: tool_call.args.clone(),
+        });
+        if let Some(execution) = pending.query.runtime_execution {
+            super::provider::runtime_session(&pending, execution)?.commit_model_facts(
+                pending.conversation.as_str(),
+                execution,
+                facts,
+            )?;
+        } else {
+            for fact in facts {
+                store.append(fact)?;
+            }
         }
     }
 
     for tool_call in tool_calls {
+        pending.admitted_tool_call_ids.insert(tool_call.id.clone());
         let display = display_summary(&tool_call.name, &tool_call.args, None);
         pending.queued_tool_calls.push_back(QueuedToolCall {
             tool_call,
@@ -515,11 +527,10 @@ fn persist_runtime_model_usage_log(
     request_id: &str,
     usage: &crate::provider::types::ProviderUsage,
 ) -> Result<()> {
-    let input_tokens_total = input_tokens_total(usage);
-    let cache_hit_rate = match (input_tokens_total, usage.cache_read_input_tokens) {
-        (Some(total), Some(cache_read)) if total > 0 => Some(cache_read as f64 / total as f64),
-        _ => None,
-    };
+    let cache_hit_rate = usage
+        .cache_input_counts()
+        .filter(|(_, input)| *input > 0)
+        .map(|(read, input)| read as f64 / input as f64);
 
     let mut record = LogRecord::new(now_timestamp()?, LogLevel::Info, LogScope::Runtime);
     record.kind = "runtime.model_usage".to_string();
@@ -534,15 +545,11 @@ fn persist_runtime_model_usage_log(
         "output_tokens": usage.output_tokens,
         "cache_read_input_tokens": usage.cache_read_input_tokens,
         "cache_creation_input_tokens": usage.cache_creation_input_tokens,
-        "input_tokens_total": input_tokens_total,
+        "input_tokens_total": usage.input_tokens,
         "cache_hit_rate": cache_hit_rate,
     }));
     let _ = pending.runtime_log_writer.push(record);
     Ok(())
-}
-
-fn input_tokens_total(usage: &crate::provider::types::ProviderUsage) -> Option<u64> {
-    usage.input_tokens
 }
 
 fn add_usage_total(total: &mut Option<u64>, value: Option<u64>) -> Result<()> {
@@ -567,36 +574,7 @@ pub(super) async fn advance_pending(
         notified.enable()
     };
     if is_cancelled {
-        append_turn_cancelled(
-            &pending.events_path,
-            &pending.conversation,
-            pending.turn,
-            "user_cancelled",
-        )?;
-        pending.flush_runtime_logs();
-        return Ok(PendingStep::Done(
-            super::types::RunOutput {
-                session_id: pending.session_id.clone(),
-                conversation: pending.conversation.clone(),
-                text: String::new(),
-                usage: None,
-                turn: pending.turn,
-                model_request_count: pending.model_request_count,
-                thinking_duration_ms: pending.thinking_duration_ms,
-                tool_summary: super::types::ToolSummary {
-                    total_calls: pending.tool_calls,
-                    names: pending.tool_names.clone(),
-                    denied: pending.tool_denied,
-                    errors: pending.tool_errors,
-                    rounds: pending.tool_rounds,
-                },
-                plugin_registry: pending.plugin_registry.clone(),
-                session_dir: pending.events_path.parent().unwrap().to_path_buf(),
-                workspace: pending.workspace.clone(),
-            },
-            None,
-            pending.turn,
-        ));
+        return cancellation_step(pending);
     }
 
     // Drain pending_events from previous inline executions (deny/blocked/skill)
@@ -869,6 +847,7 @@ pub(super) async fn advance_pending(
                     }
 
                     let (slot, tool_kind) = dispatch_tool_slot(SlotDispatchArgs {
+                        capacity: crate::WorkspaceExecutionHost::default(),
                         output: None,
                         tool_name: queued.tool_call.name.clone(),
                         tool_id: id.clone(),
@@ -938,6 +917,39 @@ pub(super) async fn advance_pending(
         return super::runtime_tools::yield_step(pending);
     }
     super::provider::call_provider_step(pending).await
+}
+
+pub(super) fn cancellation_step(mut pending: PendingRun) -> Result<PendingStep> {
+    append_turn_cancelled(
+        &pending.events_path,
+        &pending.conversation,
+        pending.turn,
+        "user_cancelled",
+    )?;
+    pending.flush_runtime_logs();
+    Ok(PendingStep::Done(
+        super::types::RunOutput {
+            session_id: pending.session_id.clone(),
+            conversation: pending.conversation.clone(),
+            text: String::new(),
+            usage: None,
+            turn: pending.turn,
+            model_request_count: pending.model_request_count,
+            thinking_duration_ms: pending.thinking_duration_ms,
+            tool_summary: super::types::ToolSummary {
+                total_calls: pending.tool_calls,
+                names: pending.tool_names.clone(),
+                denied: pending.tool_denied,
+                errors: pending.tool_errors,
+                rounds: pending.tool_rounds,
+            },
+            plugin_registry: pending.plugin_registry.clone(),
+            session_dir: pending.events_path.parent().unwrap().to_path_buf(),
+            workspace: pending.workspace.clone(),
+        },
+        None,
+        pending.turn,
+    ))
 }
 
 fn truncate_summary(s: &str, max: usize) -> String {

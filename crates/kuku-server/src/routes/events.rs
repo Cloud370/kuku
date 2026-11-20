@@ -1,272 +1,554 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::convert::Infallible;
+use std::future::Future;
+use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
+use std::time::Duration;
 
-use axum::extract::{Path, Query, State};
-use axum::Json;
+use axum::body::Body;
+use axum::extract::{Path, State};
+use axum::http::{header, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::{Extension, Json};
+use kuku::event::{EventPayload, EventStore, StoredEvent};
+use kuku::session::{Observation, OutputRead, Session};
+use kuku_client::RewindGroup;
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
+use tokio::sync::{mpsc, watch};
+use tokio_stream::wrappers::{ReceiverStream, WatchStream};
+use tokio_stream::Stream;
 
+use super::rewind_history::RewindIndex;
+use super::Params;
+use super::{manager, SessionTarget};
+use crate::error_mapping::{ApiError, Result};
+use crate::run_manager::{RunManager, TurnLookup};
+use crate::wire::{
+    agent_activity_frame, committed_frame, event_agent, history_entry, live_frame,
+    reply_preview_frame,
+};
 use crate::AppState;
 
+pub(super) const HISTORY_DEFAULT_LIMIT: usize = 40;
+pub(super) const HISTORY_PAGE_BYTES: usize = 1024 * 1024;
+pub(super) const HISTORY_RESPONSE_OVERHEAD: usize = 512;
+pub(super) const HISTORY_SCAN_LIMIT: usize = 4096;
+pub(super) const READ_PAGE_SIZE: usize = 64;
+const HEARTBEAT: Duration = Duration::from_secs(15);
+
 #[derive(Deserialize)]
-pub struct EventsQuery {
-    pub after: Option<u64>,
-    #[serde(alias = "agent")]
-    pub conversation: Option<String>,
-    pub limit: Option<usize>,
-    pub workspace: Option<String>,
+pub(super) struct EventsQuery {
+    workspace: PathBuf,
+    after: Option<u64>,
+    #[serde(alias = "conversation")]
+    agent: Option<String>,
+    limit: Option<usize>,
 }
 
-fn event_matches_conversation(payload: &kuku::event::EventPayload, conversation: &str) -> bool {
-    match crate::wire::event_agent(payload) {
-        Some(value) => value == conversation,
-        None => {
-            matches!(payload, kuku::event::EventPayload::SessionCreated { .. })
-                || conversation == "main"
-        }
-    }
+#[derive(Deserialize)]
+pub(super) struct HistoryQuery {
+    workspace: PathBuf,
+    agent: Option<String>,
+    before: Option<u64>,
+    limit: Option<usize>,
 }
 
-fn stream_event_conversation(value: &serde_json::Value) -> Option<&str> {
-    value
-        .get("agent")
-        .and_then(|item| item.as_str())
-        .or_else(|| {
-            value
-                .get("payload")
-                .and_then(|payload| payload.get("record"))
-                .and_then(|record| record.get("address"))
-                .and_then(|item| item.as_str())
-        })
-        .or_else(|| {
-            value
-                .get("payload")
-                .and_then(|payload| payload.get("record"))
-                .and_then(|record| record.get("input"))
-                .and_then(|input| input.get("target"))
-                .and_then(|item| item.as_str())
-        })
-        .or_else(|| value.get("conversation").and_then(|item| item.as_str()))
-        .or_else(|| {
-            value
-                .get("kind")
-                .and_then(|kind| kind.get("agent"))
-                .and_then(|agent| agent.get("conversation"))
-                .and_then(|item| item.as_str())
-        })
+#[derive(Deserialize)]
+pub(super) struct ObserveQuery {
+    workspace: PathBuf,
+    agent: Option<String>,
+    after: Option<u64>,
+    #[serde(default)]
+    include_agent_activity: bool,
 }
 
-fn stream_event_agent_conversation(value: &serde_json::Value) -> Option<&str> {
-    if value.get("type").and_then(|item| item.as_str()) != Some("tool_start") {
-        return None;
-    }
-
-    value
-        .get("kind")
-        .and_then(|kind| kind.get("agent"))
-        .and_then(|agent| agent.get("conversation"))
-        .and_then(|item| item.as_str())
+#[derive(Deserialize)]
+pub(super) struct OutputQuery {
+    workspace: PathBuf,
+    agent: Option<String>,
+    offset: Option<u64>,
+    max_bytes: Option<usize>,
+    search: Option<String>,
 }
 
-struct StreamConversationFilter<'a> {
-    conversation: &'a str,
-    agent_tool_conversations: HashMap<String, String>,
-}
-
-impl<'a> StreamConversationFilter<'a> {
-    fn new(conversation: &'a str) -> Self {
-        Self {
-            conversation,
-            agent_tool_conversations: HashMap::new(),
-        }
-    }
-
-    fn matches(&mut self, value: &serde_json::Value) -> bool {
-        let event_type = value.get("type").and_then(|item| item.as_str());
-        let id = value.get("id").and_then(|item| item.as_str());
-
-        if let (Some("tool_start"), Some(id), Some(conversation)) =
-            (event_type, id, stream_event_agent_conversation(value))
-        {
-            self.agent_tool_conversations
-                .insert(id.to_string(), conversation.to_string());
-        }
-
-        let matched_tool_conversation = id.and_then(|id| self.agent_tool_conversations.get(id));
-        let matches = if let Some(conversation) = matched_tool_conversation {
-            conversation == self.conversation
-        } else if let Some(conversation) = stream_event_conversation(value) {
-            conversation == self.conversation
-        } else {
-            self.conversation == "main"
-        };
-
-        if event_type == Some("tool_end") {
-            if let Some(id) = id {
-                self.agent_tool_conversations.remove(id);
-            }
-        }
-
-        matches
-    }
-}
-
-pub async fn events(
+pub(super) async fn events(
     State(state): State<Arc<AppState>>,
-    Path(session_id): Path<String>,
-    Query(params): Query<EventsQuery>,
-) -> Json<serde_json::Value> {
-    let home = &state.kuku_home;
+    Path(id): Path<String>,
+    Params(query): Params<EventsQuery>,
+) -> Result<Json<Value>> {
+    let target = SessionTarget::new(&state, &query.workspace, &id)?;
+    target.require_exists()?;
+    let after = query.after.unwrap_or(0);
+    let limit = query.limit.unwrap_or(100);
+    validate_limit(limit)?;
+    let events = EventStore::read_page(&target.path, after, limit)?;
+    let next_after = events.last().map_or(after, |event| event.id);
+    let filtered = events
+        .iter()
+        .filter(|event| {
+            query.agent.as_ref().is_none_or(|agent| {
+                matches!(event.payload, EventPayload::SessionCreated { .. })
+                    || event_agent(&event.payload).unwrap_or("main") == agent
+            })
+        })
+        .map(|event| json!({"id":event.id,"payload":event.payload}))
+        .collect::<Vec<_>>();
+    Ok(Json(
+        json!({"ok":true,"events":filtered,"next_after":next_after}),
+    ))
+}
 
-    let workspace = match params.workspace {
-        Some(ws) => std::path::PathBuf::from(ws),
-        None => match kuku::session::current_workspace() {
-            Ok(w) => w,
-            Err(_) => {
-                return Json(
-                    json!({"ok": false, "code": "invalid_request", "message": "workspace parameter required"}),
-                );
-            }
-        },
+pub(super) async fn history(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Params(query): Params<HistoryQuery>,
+) -> Result<Json<Value>> {
+    let target = SessionTarget::new(&state, &query.workspace, &id)?;
+    target.require_exists()?;
+    let limit = query.limit.unwrap_or(HISTORY_DEFAULT_LIMIT);
+    validate_limit(limit)?;
+    let cursor = EventStore::read_head(&target.path)?;
+    let before = match cursor.checked_add(1) {
+        Some(end) => Some(query.before.map_or(end, |before| before.min(end))),
+        None => query.before,
     };
+    let events = EventStore::replay(&target.path)?;
+    let visible = history_visible_event_ids(&events);
+    let turns = manager(&state).await.turn_lookup(&target.path, cursor)?;
+    let agent = query.agent.as_deref().unwrap_or("main");
+    let rewind_index = RewindIndex::new(&events, &turns);
+    let rewind_groups = rewind_index.groups_for_agent(agent);
+    let (entries, rewind_groups, next_before) = history_page(
+        &target.path,
+        agent,
+        before,
+        limit,
+        &turns,
+        &visible,
+        &rewind_groups,
+    )?;
+    let response = json!({"ok":true,"entries":entries,"rewind_groups":rewind_groups,"next_before":next_before});
+    validate_response_bytes(&response)?;
+    Ok(Json(response))
+}
 
-    let events_path = match kuku::session::session_events_path(home, &workspace, &session_id) {
-        Ok(p) => p,
-        Err(_) => {
-            return Json(
-                json!({"ok": false, "code": "session_not_found", "message": "session not found"}),
-            );
+fn history_visible_event_ids(events: &[StoredEvent]) -> HashSet<u64> {
+    kuku::context::revert::filter_rolled_back_events(events)
+        .into_iter()
+        .map(|event| event.id)
+        .collect()
+}
+
+pub(super) async fn observe(
+    State(state): State<Arc<AppState>>,
+    Extension(stop): Extension<watch::Receiver<bool>>,
+    Path(id): Path<String>,
+    Params(query): Params<ObserveQuery>,
+) -> Result<Response> {
+    let target = SessionTarget::new(&state, &query.workspace, &id)?;
+    let after = query.after.unwrap_or_default();
+    {
+        let stopping = stop.borrow();
+        if *stopping {
+            return Err(ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "service_draining",
+                "the server is stopping",
+            ));
+        }
+        target.require_exists()?;
+        if after != 0 && after > EventStore::read_head(&target.path)? {
+            return Err(ApiError::invalid(
+                "observation cursor is ahead of the Session",
+            ));
+        }
+    }
+    let manager = manager(&state).await;
+    let (send, read) = mpsc::channel(1);
+    let follow = async move {
+        if let Err(error) = follow(
+            &manager,
+            &target,
+            query.agent.as_deref(),
+            query.include_agent_activity,
+            after,
+            &send,
+        )
+        .await
+        {
+            let mut value = error.value();
+            value["type"] = json!("error");
+            let _ = write_frame(&send, value).await;
         }
     };
+    let body = ObservationBody {
+        frames: ReceiverStream::new(read),
+        follow: Some(Box::pin(follow)),
+        stopped: WatchStream::from_changes(stop.clone()),
+        stop,
+    };
+    Ok((
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/x-ndjson"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        Body::from_stream(body),
+    )
+        .into_response())
+}
 
-    if !events_path.exists() {
-        return Json(
-            json!({"ok": false, "code": "session_not_found", "message": "session not found"}),
-        );
+pub(super) async fn output(
+    State(state): State<Arc<AppState>>,
+    Path((id, output_id)): Path<(String, String)>,
+    Params(query): Params<OutputQuery>,
+) -> Result<Json<Value>> {
+    let target = SessionTarget::new(&state, &query.workspace, &id)?;
+    target.require_exists()?;
+    let mut read = OutputRead {
+        search: query.search,
+        ..OutputRead::default()
+    };
+    if let Some(offset) = query.offset {
+        read.offset = offset;
     }
+    if let Some(max_bytes) = query.max_bytes {
+        read.limit = max_bytes;
+    }
+    let agent = query.agent.as_deref().unwrap_or("main");
+    let output = match manager(&state).await.open_session(&target.path) {
+        Some(session) => session.read_agent_output(agent, &output_id, &read)?,
+        None => Session::read_saved_agent_output(&target.path, agent, &output_id, &read)?,
+    };
+    Ok(Json(json!({"ok":true,"output":output})))
+}
 
-    let after = params.after.unwrap_or(0);
-    let limit = params.limit.unwrap_or(100);
+pub(super) fn validate_limit(limit: usize) -> Result<()> {
     if !(1..=256).contains(&limit) {
-        return Json(
-            json!({"ok":false,"code":"invalid_request","message":"limit must be between 1 and 256"}),
-        );
+        return Err(ApiError::invalid("limit must be between 1 and 256"));
     }
-    let events = match kuku::event::EventStore::read_page(&events_path, after, limit) {
-        Ok(e) => e,
-        Err(e) => return Json(json!({"ok": false, "code": "internal", "message": e.to_string()})),
-    };
+    Ok(())
+}
 
-    let next_after = events.last().map(|event| event.id).unwrap_or(after);
-    let conversation = params.conversation.as_deref();
-    let filtered: Vec<_> = events
-        .iter()
-        .filter(|e| e.id > after)
-        .filter(|event| {
-            conversation
-                .is_none_or(|conversation| event_matches_conversation(&event.payload, conversation))
-        })
-        .map(|e| {
-            json!({
-                "id": e.id,
-                "payload": serde_json::to_value(&e.payload).unwrap_or_default(),
-            })
-        })
-        .collect();
+pub(super) fn validate_response_bytes(response: &Value) -> Result<()> {
+    if serde_json::to_vec(response)
+        .map_err(kuku::Error::from)?
+        .len()
+        > HISTORY_PAGE_BYTES
+    {
+        return Err(ApiError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "history_page_too_large",
+            "history page exceeds the response byte limit",
+        ));
+    }
+    Ok(())
+}
 
-    let active_stream: Vec<serde_json::Value> = {
-        let mgr = state.run_manager.lock().await;
-        let mut stream_filter = conversation.map(StreamConversationFilter::new);
-        mgr.recent_events(&session_id)
-            .into_iter()
-            .filter_map(|line| serde_json::from_str::<serde_json::Value>(&line).ok())
-            .filter(|value| {
-                stream_filter
-                    .as_mut()
-                    .is_none_or(|filter| filter.matches(value))
-            })
-            .collect()
-    };
+fn history_page(
+    path: &std::path::Path,
+    agent: &str,
+    mut before: Option<u64>,
+    limit: usize,
+    turns: &TurnLookup,
+    visible: &HashSet<u64>,
+    rewind_groups: &HashMap<u64, Vec<RewindGroup>>,
+) -> Result<(Vec<Value>, Vec<RewindGroup>, Option<u64>)> {
+    let mut entries = Vec::new();
+    let mut group_entries = Vec::new();
+    let mut bytes = 0;
+    let mut scanned = 0;
+    let mut items = 0;
+    let max_item_bytes = HISTORY_PAGE_BYTES.saturating_sub(HISTORY_RESPONSE_OVERHEAD);
+    'pages: loop {
+        let page = EventStore::read_page_before(path, before, READ_PAGE_SIZE)?;
+        if page.is_empty() {
+            before = None;
+            break;
+        }
+        for event in page.into_iter().rev() {
+            if let Some(groups) = rewind_groups.get(&event.id) {
+                for group in groups {
+                    let size = serde_json::to_vec(group).map_err(kuku::Error::from)?.len();
+                    if size > max_item_bytes {
+                        return Err(ApiError::new(
+                            StatusCode::PAYLOAD_TOO_LARGE,
+                            "history_entry_too_large",
+                            "history item exceeds the response byte limit",
+                        ));
+                    }
+                    if items > 0 && bytes + size > max_item_bytes {
+                        break 'pages;
+                    }
+                    bytes += size;
+                    group_entries.push(group.clone());
+                    items += 1;
+                    if items == limit {
+                        before = Some(event.id);
+                        break 'pages;
+                    }
+                }
+            }
+            let entry = (visible.contains(&event.id)
+                && event_agent(&event.payload).unwrap_or("main") == agent)
+                .then(|| history_entry(&event, turns))
+                .flatten();
+            if let Some(entry) = entry {
+                let size = serde_json::to_vec(&entry).map_err(kuku::Error::from)?.len();
+                if size > max_item_bytes {
+                    return Err(ApiError::new(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "history_entry_too_large",
+                        "history item exceeds the response byte limit",
+                    ));
+                }
+                if items > 0 && bytes + size > max_item_bytes {
+                    break 'pages;
+                }
+                bytes += size;
+                entries.push(entry);
+                items += 1;
+                if items == limit {
+                    before = Some(event.id);
+                    break 'pages;
+                }
+            }
+            before = Some(event.id);
+            scanned += 1;
+            if scanned >= HISTORY_SCAN_LIMIT {
+                break 'pages;
+            }
+        }
+    }
+    entries.reverse();
+    group_entries.reverse();
+    add_tool_names(&mut entries);
+    Ok((entries, group_entries, before.filter(|id| *id > 1)))
+}
 
-    Json(json!({"events": filtered, "next_after": next_after, "active_stream": active_stream}))
+pub(super) fn add_tool_names(entries: &mut [Value]) {
+    let mut tools = HashMap::new();
+    for entry in entries {
+        if let (Some(turn), Some(call)) = (entry["turn"].as_u64(), entry["tool_call_id"].as_str()) {
+            if let Some(tool) = entry["tool"].as_str() {
+                tools.insert((turn, call.to_owned()), tool.to_owned());
+            } else if let Some(tool) = tools.get(&(turn, call.to_owned())) {
+                entry["tool"] = json!(tool);
+            }
+        }
+    }
+}
+
+type Frame = std::result::Result<String, Infallible>;
+type FrameWriter = mpsc::Sender<Frame>;
+
+struct ObservationBody<F> {
+    frames: ReceiverStream<Frame>,
+    follow: Option<Pin<Box<F>>>,
+    stopped: WatchStream<bool>,
+    stop: watch::Receiver<bool>,
+}
+
+impl<F: Future<Output = ()>> Stream for ObservationBody<F> {
+    type Item = Frame;
+
+    fn poll_next(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        let stop_event = Pin::new(&mut this.stopped).poll_next(context);
+        // Hold the stop watch's read guard while the follower may touch the journal.
+        let stopping = this.stop.borrow();
+        if *stopping || matches!(stop_event, Poll::Ready(None)) {
+            this.follow = None;
+            return Poll::Ready(None);
+        }
+        if let Some(follow) = &mut this.follow {
+            if follow.as_mut().poll(context).is_ready() {
+                this.follow = None;
+            }
+        }
+        Pin::new(&mut this.frames).poll_next(context)
+    }
+}
+
+async fn follow(
+    manager: &RunManager,
+    target: &SessionTarget,
+    agent: Option<&str>,
+    include_agent_activity: bool,
+    mut after: u64,
+    send: &FrameWriter,
+) -> Result<()> {
+    let mut changes = manager.changes();
+    let mut ping = tokio::time::interval_at(tokio::time::Instant::now() + HEARTBEAT, HEARTBEAT);
+    ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        if let Some(session) = manager.open_session(&target.path) {
+            let turns = TurnLookup::Live(session.clone());
+            let mut observer = match agent.filter(|_| include_agent_activity) {
+                Some(address) => session.observe_agent_with_activity(after, address),
+                None => session.observe(after),
+            };
+            loop {
+                let observation = tokio::select! {
+                    _ = send.closed() => return Ok(()),
+                    _ = ping.tick() => {
+                        if !write_frame(send, json!({"type":"heartbeat"})).await {
+                            return Ok(());
+                        }
+                        continue;
+                    }
+                    item = observer.next() => item?,
+                };
+                let Some(observation) = observation else {
+                    break;
+                };
+                let frame = match observation {
+                    Observation::Committed(event) => {
+                        after = event.id;
+                        Some(committed_frame(
+                            &event,
+                            agent,
+                            include_agent_activity,
+                            &turns,
+                        ))
+                    }
+                    Observation::Live {
+                        agent: source,
+                        event,
+                        execution_id,
+                        after,
+                        turn,
+                    } => {
+                        if agent.is_none_or(|agent| agent == source) {
+                            live_frame(
+                                &event,
+                                &source,
+                                execution_id,
+                                turn,
+                                after,
+                                session.turn_number(&source, turn),
+                                include_agent_activity,
+                            )
+                        } else if include_agent_activity {
+                            agent_activity_frame(&event, &source, execution_id, turn, after)
+                        } else {
+                            None
+                        }
+                    }
+                    Observation::Lagged { skipped } => {
+                        Some(json!({"type":"lagged","skipped":skipped}))
+                    }
+                    Observation::ReplyPreview {
+                        agent,
+                        after,
+                        reply,
+                    } => {
+                        let turn_number = session.turn_number(&agent, reply.turn);
+                        Some(reply_preview_frame(&agent, after, &reply, turn_number))
+                    }
+                };
+                if let Some(frame) = frame {
+                    if !write_frame(send, frame).await {
+                        return Ok(());
+                    }
+                }
+            }
+            tokio::task::yield_now().await;
+        } else {
+            target.require_exists()?;
+            let events = EventStore::read_page(&target.path, after, READ_PAGE_SIZE)?;
+            if let Some(last) = events.last() {
+                let turns = manager.turn_lookup(&target.path, last.id)?;
+                for event in events {
+                    after = event.id;
+                    let frame = committed_frame(&event, agent, include_agent_activity, &turns);
+                    if !write_frame(send, frame).await {
+                        return Ok(());
+                    }
+                }
+                continue;
+            }
+            tokio::select! {
+                _ = send.closed() => return Ok(()),
+                _ = changes.changed() => {}
+                _ = ping.tick() => {
+                    if !write_frame(send, json!({"type":"heartbeat"})).await {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn write_frame(send: &FrameWriter, frame: Value) -> bool {
+    send.send(Ok(format!("{frame}\n"))).await.is_ok()
 }
 
 #[cfg(test)]
 mod tests {
+    use kuku::event::{EventPayload, StoredEvent};
     use serde_json::json;
 
-    use super::StreamConversationFilter;
+    use super::{history_visible_event_ids, validate_response_bytes, HISTORY_PAGE_BYTES};
 
-    fn filter_stream_events(
-        values: Vec<serde_json::Value>,
-        conversation: &str,
-    ) -> Vec<serde_json::Value> {
-        let mut filter = StreamConversationFilter::new(conversation);
-        values
-            .into_iter()
-            .filter(|value| filter.matches(value))
-            .collect()
+    fn user_event(id: u64, agent: &str, text: &str) -> StoredEvent {
+        StoredEvent {
+            id,
+            payload: EventPayload::MessageUser {
+                ts: "t".into(),
+                conversation: agent.into(),
+                turn: id,
+                text: text.into(),
+                from: None,
+                via_tool_call_id: None,
+            },
+        }
     }
 
     #[test]
-    fn stream_conversation_filter_rejects_unscoped_live_events() {
-        let event = json!({"event": "line", "text": "unscoped output"});
+    fn committed_history_hides_only_the_rewound_agent_interval() {
+        let events = vec![
+            user_event(1, "main", "selected"),
+            user_event(2, "main", "later tail"),
+            StoredEvent {
+                id: 3,
+                payload: EventPayload::Unknown(json!({
+                    "id":3,
+                    "kind":"runtime.operation",
+                    "record":{
+                        "operation":"message_rewind",
+                        "address":"main",
+                        "target_event_id":1,
+                    }
+                })),
+            },
+            user_event(4, "main", "new input"),
+            user_event(5, "reviewer", "other Agent"),
+        ];
 
-        let mut filter = StreamConversationFilter::new("review");
+        let visible = history_visible_event_ids(&events);
 
-        assert!(!filter.matches(&event));
+        assert!(!visible.contains(&1));
+        assert!(!visible.contains(&2));
+        assert!(visible.contains(&3));
+        assert!(visible.contains(&4));
+        assert!(visible.contains(&5));
     }
 
     #[test]
-    fn stream_conversation_filter_keeps_delegated_agent_tool_chain() {
-        let events = filter_stream_events(
-            vec![
-                json!({"type": "text", "content": "main text"}),
-                json!({"type": "tool_start", "id": "agent_review", "tool": "agent", "kind": {"agent": {"conversation": "review", "binding_id": null}}, "conversation": "review"}),
-                json!({"type": "tool_output", "id": "agent_review", "event": {"text": "review child text"}}),
-                json!({"type": "tool_output", "id": "agent_review", "event": {"tool_start": {"id": "child_tool", "tool": "read_file", "summary": "read", "kind": "simple"}}}),
-                json!({"type": "tool_output", "id": "other_agent", "event": {"text": "other child text"}}),
-                json!({"type": "tool_end", "id": "agent_review", "status": "ok", "summary": "done"}),
-                json!({"type": "done", "conversation": "review", "text": "review done"}),
-            ],
-            "review",
-        );
+    fn history_response_byte_cap_includes_the_serialized_envelope() {
+        let response = json!({
+            "ok": true,
+            "entries": [],
+            "rewind_groups": [],
+            "next_before": null,
+            "payload": "x".repeat(HISTORY_PAGE_BYTES),
+        });
 
-        assert_eq!(events.len(), 5);
-        assert!(events.iter().any(|event| event["type"] == "tool_start"));
-        assert!(events
-            .iter()
-            .any(|event| event["event"]["text"] == "review child text"));
-        assert!(events
-            .iter()
-            .any(|event| event["event"]["tool_start"]["id"] == "child_tool"));
-        assert!(events.iter().any(|event| event["type"] == "tool_end"));
-        assert!(events.iter().any(|event| event["type"] == "done"));
-        assert!(!events.iter().any(|event| event["content"] == "main text"));
-        assert!(!events
-            .iter()
-            .any(|event| event["event"]["text"] == "other child text"));
-    }
-
-    #[test]
-    fn main_stream_filter_keeps_unscoped_main_events_without_delegated_child_output() {
-        let events = filter_stream_events(
-            vec![
-                json!({"type": "text", "content": "main text"}),
-                json!({"type": "tool_start", "id": "agent_review", "tool": "agent", "kind": {"agent": {"conversation": "review", "binding_id": null}}, "conversation": "review"}),
-                json!({"type": "tool_output", "id": "agent_review", "event": {"text": "review child text"}}),
-                json!({"type": "tool_end", "id": "agent_review", "status": "ok", "summary": "done"}),
-                json!({"type": "done", "conversation": "main", "text": "main done"}),
-            ],
-            "main",
-        );
-
-        assert_eq!(events.len(), 2);
-        assert!(events.iter().any(|event| event["content"] == "main text"));
-        assert!(events.iter().any(|event| event["type"] == "done"));
-        assert!(!events.iter().any(|event| event["id"] == "agent_review"));
-        assert!(!events
-            .iter()
-            .any(|event| event["event"]["text"] == "review child text"));
+        assert!(validate_response_bytes(&response).is_err());
     }
 }

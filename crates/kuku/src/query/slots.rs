@@ -7,13 +7,19 @@ use tokio::sync::{mpsc, oneshot, Notify};
 use crate::event::StoredEvent;
 use crate::tool::ToolResultEnvelope;
 
-use super::types::{ExecSlot, PermissionChoice, SlotEvent, ToolEvent, ToolKind};
+use super::job_slots::ForegroundJob;
+use super::types::{
+    ExecSlot, PendingRun, PermissionChoice, QueuedToolCall, SlotEvent, ToolEvent, ToolKind,
+};
 use super::UiEvent;
 
 pub(crate) fn requires_workspace_ordering(tool_name: &str) -> bool {
     matches!(
         tool_name,
         "read_file"
+            | "workspace_script"
+            | "stat_file"
+            | "remove_file"
             | "edit_file"
             | "write_file"
             | "remember_memory"
@@ -37,6 +43,7 @@ pub(crate) fn spawn_simple_slot(
     config: std::sync::Arc<crate::config::Config>,
     catalog: crate::prompt::PromptCatalog,
     events_path: PathBuf,
+    capacity: crate::WorkspaceExecutionHost,
 ) -> ExecSlot {
     let cancel = Arc::new(Notify::new());
     let cancel_clone = cancel.clone();
@@ -48,22 +55,54 @@ pub(crate) fn spawn_simple_slot(
     let workspace_ordered = requires_workspace_ordering(&tool_name);
 
     tokio::spawn(async move {
-        let result = tokio::select! {
-            biased;
-            _ = cancel_clone.notified() => cancelled_slot("cancelled"),
-            r = crate::tool::dispatch::dispatch(
-                &tool_name,
-                &args,
-                &workspace,
-                &kuku_home,
-                &dispatch_conversation,
-                &prior_events,
-                0,
-                Some(&dispatch_tool_call_id),
-                &config,
-                &catalog,
-                &events_path,
-            ) => SlotEvent::Done(r),
+        let result = if crate::tool::dispatch::is_workspace_file(&tool_name) {
+            let operations = capacity.operations();
+            let permit = tokio::select! {
+                biased;
+                _ = cancel_clone.notified() => None,
+                permit = operations.acquire_owned() => permit.ok(),
+            };
+            if let Some(permit) = permit {
+                use std::sync::atomic::{AtomicBool, Ordering};
+                let stopped = Arc::new(AtomicBool::new(false));
+                let check = stopped.clone();
+                let mut work = tokio::task::spawn_blocking(move || {
+                    let _permit = permit;
+                    crate::tool::dispatch::dispatch_workspace_file(
+                        &tool_name,
+                        &args,
+                        &workspace,
+                        &dispatch_conversation,
+                        &prior_events,
+                        0,
+                        Some(&dispatch_tool_call_id),
+                        &|| check.load(Ordering::Acquire),
+                    )
+                    .expect("a known workspace file operation")
+                });
+                let outcome = tokio::select! {
+                    biased;
+                    _ = cancel_clone.notified() => {
+                        stopped.store(true,Ordering::Release);
+                        work.await
+                    }
+                    result = &mut work => result,
+                };
+                SlotEvent::Done(outcome.unwrap_or_else(|err| {
+                    ToolResultEnvelope::error("workspace file worker failed", err.to_string())
+                }))
+            } else {
+                cancelled_slot("workspace operation cancelled before dispatch")
+            }
+        } else {
+            tokio::select! {
+                biased;
+                _ = cancel_clone.notified() => cancelled_slot("cancelled"),
+                r = crate::tool::dispatch::dispatch(
+                    &tool_name,&args,&workspace,&kuku_home,&dispatch_conversation,&prior_events,
+                    0,Some(&dispatch_tool_call_id),&config,&catalog,&events_path,
+                ) => SlotEvent::Done(r),
+            }
         };
         let _ = event_tx.send((tc_id, result)).await;
     });
@@ -75,6 +114,7 @@ pub(crate) fn spawn_simple_slot(
         workspace_ordered,
         label: summary,
         cancel,
+        job: None,
         nested_permissions: Arc::new(Mutex::new(HashMap::new())),
     }
 }
@@ -208,63 +248,101 @@ pub(crate) fn spawn_agent_slot(
         workspace_ordered: true,
         label: summary,
         cancel,
+        job: None,
         nested_permissions,
     }
 }
 
-pub(crate) fn spawn_command_slot(
+#[allow(clippy::too_many_arguments)]
+pub(super) fn spawn_command_slot(
     tool_call_id: String,
     conversation: Option<crate::conversation::address::ConversationAddress>,
     args: serde_json::Value,
     summary: String,
     workspace: PathBuf,
     event_tx: mpsc::Sender<(String, SlotEvent)>,
-    output: Option<CommandOutputSpec>,
+    output: Option<RetainedOutputSpec>,
+    capacity: crate::WorkspaceExecutionHost,
+    job: Option<(Box<ForegroundJob>, oneshot::Sender<SlotEvent>)>,
 ) -> ExecSlot {
     let cancel = Arc::new(Notify::new());
     let cancel_cmd = cancel.clone();
     let tc_id = tool_call_id.clone();
+    let (job, completion) = job.unzip();
+    let detached = job.as_ref().map(|job| job.detached_flag());
 
     tokio::spawn(async move {
-        let (tool_tx, mut tool_rx) = mpsc::channel::<crate::tool::builtin::CommandEvent>(64);
+        let result = async {
+            let operations = capacity.operations();
+            let _permit = tokio::select! {
+                biased;
+                _=cancel_cmd.notified()=>return cancelled_slot("command cancelled before dispatch"),
+                permit=operations.acquire_owned()=>permit.expect("host capacity remains open"),
+            };
+            let (tool_tx, mut tool_rx) = mpsc::channel::<crate::tool::builtin::CommandEvent>(64);
 
-        let fwd_tc_id = tc_id.clone();
-        let fwd_event_tx = event_tx.clone();
-        let forward_handle = tokio::spawn(async move {
-            while let Some(ce) = tool_rx.recv().await {
-                let te = match ce {
-                    crate::tool::builtin::CommandEvent::Stdout(text) => ToolEvent::Stdout { text },
-                    crate::tool::builtin::CommandEvent::Stderr(text) => ToolEvent::Stderr { text },
-                };
-                let _ = fwd_event_tx.try_send((fwd_tc_id.clone(), SlotEvent::Output(te)));
-            }
-        });
+            let fwd_tc_id = tc_id.clone();
+            let fwd_event_tx = event_tx.clone();
+            let forward_handle = tokio::spawn(async move {
+                while let Some(ce) = tool_rx.recv().await {
+                    if detached
+                        .as_ref()
+                        .is_some_and(|detached| detached.load(std::sync::atomic::Ordering::Acquire))
+                    {
+                        break;
+                    }
+                    let te = match ce {
+                        crate::tool::builtin::CommandEvent::Stdout(text) => {
+                            ToolEvent::Stdout { text }
+                        }
+                        crate::tool::builtin::CommandEvent::Stderr(text) => {
+                            ToolEvent::Stderr { text }
+                        }
+                    };
+                    let _ = fwd_event_tx.try_send((fwd_tc_id.clone(), SlotEvent::Output(te)));
+                }
+            });
 
-        let r = match output {
-            Some(output) => {
-                crate::tool::builtin::run_command::run_command_with_output(
-                    &args,
-                    &workspace,
-                    Some(tool_tx),
-                    Some(cancel_cmd),
-                    &output.dir,
-                    &output.id,
-                    output.limits,
-                )
-                .await
-            }
-            None => {
-                crate::tool::builtin::run_command(
-                    &args,
-                    &workspace,
-                    Some(tool_tx),
-                    Some(cancel_cmd),
-                )
-                .await
-            }
-        };
-        let _ = forward_handle.await;
-        let _ = event_tx.send((tc_id, SlotEvent::Done(r))).await;
+            let r = match output {
+                Some(mut output) => {
+                    let result = crate::tool::builtin::run_command::run_command_with_output(
+                        &args,
+                        &workspace,
+                        Some(tool_tx),
+                        Some(cancel_cmd),
+                        &output.dir,
+                        &output.id,
+                        output.limits,
+                    )
+                    .await;
+                    if result
+                        .structured
+                        .as_ref()
+                        .is_some_and(|facts| facts["output_ref"].is_object())
+                    {
+                        output.retention.keep();
+                    }
+                    result
+                }
+                None => {
+                    crate::tool::builtin::run_command(
+                        &args,
+                        &workspace,
+                        Some(tool_tx),
+                        Some(cancel_cmd),
+                    )
+                    .await
+                }
+            };
+            let _ = forward_handle.await;
+            SlotEvent::Done(r)
+        }
+        .await;
+        if let Some(completion) = completion {
+            let _ = completion.send(result);
+        } else {
+            let _ = event_tx.send((tc_id, result)).await;
+        }
     });
 
     ExecSlot {
@@ -274,12 +352,14 @@ pub(crate) fn spawn_command_slot(
         workspace_ordered: true,
         label: summary,
         cancel,
+        job,
         nested_permissions: Arc::new(Mutex::new(HashMap::new())),
     }
 }
 
 pub(crate) struct SlotDispatchArgs {
-    pub(crate) output: Option<CommandOutputSpec>,
+    pub(crate) capacity: crate::WorkspaceExecutionHost,
+    pub(crate) output: Option<RetainedOutputSpec>,
     pub(crate) tool_name: String,
     pub(crate) tool_id: String,
     pub(crate) conversation: Option<crate::conversation::address::ConversationAddress>,
@@ -294,10 +374,45 @@ pub(crate) struct SlotDispatchArgs {
     pub(crate) events_path: PathBuf,
 }
 
-pub(crate) struct CommandOutputSpec {
+pub(super) fn spawn_job_control(
+    session: crate::Session,
+    pending: &PendingRun,
+    queued: &QueuedToolCall,
+    event_tx: mpsc::Sender<(String, SlotEvent)>,
+) -> ExecSlot {
+    let cancel = Arc::new(Notify::new());
+    let stop = cancel.clone();
+    let id = queued.tool_call.id.clone();
+    let args = queued.tool_call.args.clone();
+    let owner = pending.conversation.as_str().to_owned();
+    let stop_job = queued.tool_call.name == "cancel_job";
+    tokio::spawn(async move {
+        let result =
+            super::runtime_tools::jobs::control(session, owner, args, stop, stop_job).await;
+        let event = if !stop_job && result.status == "ok" {
+            SlotEvent::JobWaitDone(result)
+        } else {
+            SlotEvent::Done(result)
+        };
+        let _ = event_tx.send((id, event)).await;
+    });
+    ExecSlot {
+        tool_call_id: queued.tool_call.id.clone(),
+        conversation: Some(pending.conversation.clone()),
+        kind: ToolKind::Simple,
+        workspace_ordered: false,
+        label: queued.display_summary.clone(),
+        cancel,
+        job: None,
+        nested_permissions: Default::default(),
+    }
+}
+
+pub(crate) struct RetainedOutputSpec {
     pub(crate) dir: PathBuf,
     pub(crate) id: String,
     pub(crate) limits: crate::tool::builtin::run_command::output::OutputLimits,
+    pub(crate) retention: crate::session::runtime::OutputReservation,
 }
 
 pub(crate) fn dispatch_tool_slot(args: SlotDispatchArgs) -> (ExecSlot, ToolKind) {
@@ -310,8 +425,12 @@ pub(crate) fn dispatch_tool_slot(args: SlotDispatchArgs) -> (ExecSlot, ToolKind)
             args.workspace,
             args.event_tx,
             args.output,
+            args.capacity,
+            None,
         );
         (slot, ToolKind::Command { pid: None })
+    } else if args.tool_name == "fetch_url" {
+        (spawn_fetch_slot(args), ToolKind::Simple)
     } else {
         let slot = spawn_simple_slot(
             args.tool_id,
@@ -326,8 +445,56 @@ pub(crate) fn dispatch_tool_slot(args: SlotDispatchArgs) -> (ExecSlot, ToolKind)
             args.config,
             args.catalog,
             args.events_path,
+            args.capacity,
         );
         (slot, ToolKind::Simple)
+    }
+}
+
+fn spawn_fetch_slot(args: SlotDispatchArgs) -> ExecSlot {
+    let SlotDispatchArgs {
+        output,
+        tool_id,
+        conversation,
+        args,
+        summary,
+        workspace,
+        event_tx,
+        ..
+    } = args;
+    let cancel = Arc::new(Notify::new());
+    let fetch_cancel = cancel.clone();
+    let finished_id = tool_id.clone();
+    tokio::spawn(async move {
+        let retention = output
+            .as_ref()
+            .map(|output| crate::tool::builtin::FetchRetention {
+                dir: &output.dir,
+                id: &output.id,
+                limits: output.limits,
+            });
+        let result =
+            crate::tool::builtin::fetch_url(&args, &workspace, retention, &fetch_cancel).await;
+        if let Some(mut output) = output {
+            if result
+                .structured
+                .as_ref()
+                .is_some_and(|facts| facts["output_ref"].is_object())
+            {
+                output.retention.keep();
+            }
+        }
+        let _ = event_tx.send((finished_id, SlotEvent::Done(result))).await;
+    });
+    ExecSlot {
+        tool_call_id: tool_id,
+        conversation,
+        kind: ToolKind::Simple,
+        workspace_ordered: false,
+        label: summary,
+        cancel,
+        job: None,
+        nested_permissions: Arc::new(Mutex::new(HashMap::new())),
     }
 }
 
@@ -379,7 +546,10 @@ pub(crate) fn map_ui_to_tool_event(event: crate::query::UiEvent) -> Option<ToolE
         }),
         UiEvent::ModelRecovery { info } => Some(ToolEvent::ModelRecovery { info }),
         UiEvent::Done { .. } => None,
-        UiEvent::TurnStart { .. } | UiEvent::Log { .. } | UiEvent::Cancelled { .. } => None,
+        UiEvent::TurnStart { .. }
+        | UiEvent::Log { .. }
+        | UiEvent::Cancelled { .. }
+        | UiEvent::ModelProgress { .. } => None,
     }
 }
 
@@ -402,11 +572,13 @@ mod tests {
         id: u64,
         dir: &std::path::Path,
         conversation: Option<&str>,
-        content: &[u8],
+        content: &str,
+        start_line: usize,
     ) -> StoredEvent {
         use sha2::{Digest, Sha256};
 
         let canonical = dir.join("visible.txt").canonicalize().unwrap();
+        let raw_text = content.lines().nth(start_line - 1).unwrap();
         StoredEvent {
             id,
             payload: crate::event::EventPayload::ToolResult {
@@ -416,7 +588,7 @@ mod tests {
                 tool_call_id: format!("read_{id}"),
                 status: "ok".to_string(),
                 summary: "read".to_string(),
-                model_content: "1\talpha".to_string(),
+                model_content: format!("{start_line}\t{raw_text}"),
                 truncated: false,
                 files_read: Vec::new(),
                 files_changed: Vec::new(),
@@ -425,13 +597,13 @@ mod tests {
                 structured: Some(serde_json::json!({
                     "kind": "file_content",
                     "canonical_path": canonical.to_string_lossy(),
-                    "content_hash": format!("sha256:{:x}", Sha256::digest(content)),
-                    "raw_text": String::from_utf8_lossy(content),
+                    "content_hash": format!("sha256:{:x}", Sha256::digest(content.as_bytes())),
+                    "raw_text": raw_text,
                     "read_event_id": id,
-                    "start_line": 1,
+                    "start_line": start_line,
                     "line_count": 1,
-                    "total_lines": 1,
-                    "is_full_file_snapshot": true,
+                    "total_lines": content.lines().count(),
+                    "is_full_file_snapshot": false,
                     "cached": false,
                 })),
             },
@@ -479,10 +651,11 @@ mod tests {
     #[tokio::test]
     async fn simple_slot_scopes_file_snapshot_to_active_conversation() {
         let dir = tempfile::tempdir().unwrap();
-        let content = b"alpha\n";
-        std::fs::write(dir.path().join("visible.txt"), content).unwrap();
-        let main_read = read_event(1, dir.path(), None, content);
-        let review_read = read_event(2, dir.path(), Some("review"), content);
+        let path = dir.path().join("visible.txt");
+        let content = "alpha\nalpha\n";
+        std::fs::write(&path, content).unwrap();
+        let main_read = read_event(1, dir.path(), None, content, 1);
+        let review_read = read_event(2, dir.path(), Some("review"), content, 2);
         let review = crate::conversation::address::ConversationAddress::parse("review").unwrap();
         let args = serde_json::json!({
             "path": "visible.txt",
@@ -500,17 +673,19 @@ mod tests {
             "edit".to_string(),
             dir.path().to_path_buf(),
             dir.path().to_path_buf(),
-            vec![main_read],
+            vec![main_read.clone()],
             event_tx.clone(),
             test_config(),
             crate::prompt::builtin_prompt_catalog(),
             dir.path().join("events.jsonl"),
+            crate::WorkspaceExecutionHost::default(),
         );
         let (_, denied) = event_rx.recv().await.unwrap();
         let SlotEvent::Done(result) = denied else {
             panic!("expected completed slot");
         };
         assert_eq!("error", result.status);
+        assert_eq!(content, std::fs::read_to_string(&path).unwrap());
 
         spawn_simple_slot(
             "edit_review_snapshot".to_string(),
@@ -520,11 +695,12 @@ mod tests {
             "edit".to_string(),
             dir.path().to_path_buf(),
             dir.path().to_path_buf(),
-            vec![review_read],
+            vec![main_read, review_read],
             event_tx,
             test_config(),
             crate::prompt::builtin_prompt_catalog(),
             dir.path().join("events.jsonl"),
+            crate::WorkspaceExecutionHost::default(),
         );
         let (_, allowed) = event_rx.recv().await.unwrap();
         let SlotEvent::Done(result) = allowed else {
@@ -532,9 +708,6 @@ mod tests {
         };
 
         assert_eq!("ok", result.status);
-        assert_eq!(
-            std::fs::read_to_string(dir.path().join("visible.txt")).unwrap(),
-            "omega\n"
-        );
+        assert_eq!("alpha\nomega\n", std::fs::read_to_string(path).unwrap());
     }
 }

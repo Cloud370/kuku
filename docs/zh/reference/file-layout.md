@@ -19,6 +19,7 @@ $KUKU_HOME/
 ```text
 $KUKU_HOME/
 ├── config.toml
+├── credentials/
 ├── memory.md
 ├── packages/
 ├── agents/
@@ -28,6 +29,8 @@ $KUKU_HOME/
 ```
 
 `logs/` 存放可观测性日志。Session 事实仍保存在各个 Session 的 `events.jsonl` 中。
+
+`credentials/` 保存交互式设置创建的私有、不可变明文密钥文件。配置通过 `api_key = "file:<绝对路径>"` 引用它们；密钥不会复制到 TOML，也不会由 `kuku config show` 显示。凭据目录必须位于工作区之外。Unix 下目录权限为 `0700`，每个密钥文件为 `0600`（仅所有者可访问）；Windows 下要求受保护的 ACL，仅允许当前用户访问。遇到符号链接或权限不安全的路径时会拒绝使用，不会自动修复。文件未加密，配置更改后不会自动删除。
 
 当通过 `KUKU_PROVIDER_TRACE=1` 开启 provider trace 时，请求和响应诊断信息会写入：
 
@@ -61,7 +64,7 @@ $KUKU_HOME/p/<workspace>/
 └── outputs/<output-id>.output
 ```
 
-`events.jsonl` 是权威事实。操作系统锁保护唯一 writer，锁文件可在关闭后保留。`outputs/` 在 Session 生命周期内保留有界帧 stdout/stderr。公开 SDK 在日志中使用扁平 Agent 地址，不设每 Agent 目录或隐藏别名。旧 Session 的历史回滚备份可继续保留；新 Session API 不原地改写已接纳上下文。
+`events.jsonl` 是权威事实。操作系统锁保护唯一 writer，锁文件可在关闭后保留。`outputs/` 按有界帧保存命令捕获、派生输出和命名值的内容。日志单独记录命名和分享。公开 SDK 在日志中使用扁平 Agent 地址，不设每 Agent 目录或隐藏别名。旧 Session 的历史回滚备份可继续保留。Session API 保留已接纳的上下文。
 
 所有权见 [Sessions](../how-it-works/sessions.md)，有界读取与保留边界见 [SDK](sdk.md)。
 

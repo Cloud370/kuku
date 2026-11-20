@@ -2,7 +2,7 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use crate::config::ProviderFormat;
+use crate::config::{ProviderFormat, ProviderProfile};
 use crate::context::{CanonicalMessage, MessageBlock, Role};
 use crate::event::ModelStopReason;
 
@@ -192,7 +192,9 @@ pub(crate) async fn stream_prepared(
     let TransportResponse { response, trace } =
         send_prepared(config, prepared, trace_metadata).await?;
     let url = prepared.url.clone();
-    let parser = Arc::new(Mutex::new(OpenAiResponsesSseParser::new()));
+    let parser = Arc::new(Mutex::new(OpenAiResponsesSseParser::new(
+        config.capabilities.profile == ProviderProfile::DeepSeek,
+    )));
     let frame_parser = Arc::clone(&parser);
     let eof_parser = Arc::clone(&parser);
     let frame_trace = trace.clone();
@@ -230,6 +232,7 @@ enum ResponseTerminalEvent {
 }
 
 struct OpenAiResponsesSseParser {
+    public_reasoning_text: bool,
     chunks: Vec<ProviderChunk>,
     started: bool,
     terminal_event: Option<ResponseTerminalEvent>,
@@ -239,12 +242,14 @@ struct OpenAiResponsesSseParser {
     invalid_function_calls: bool,
     replay_items: BTreeMap<u64, Value>,
     replay_budget: ReplayBudget,
+    summary_lengths: BTreeMap<(u64, u64), usize>,
     reports: ReportAccumulator,
 }
 
 impl OpenAiResponsesSseParser {
-    fn new() -> Self {
+    fn new(public_reasoning_text: bool) -> Self {
         Self {
+            public_reasoning_text,
             chunks: Vec::new(),
             started: false,
             terminal_event: None,
@@ -254,7 +259,49 @@ impl OpenAiResponsesSseParser {
             invalid_function_calls: false,
             replay_items: BTreeMap::new(),
             replay_budget: ReplayBudget::default(),
+            summary_lengths: BTreeMap::new(),
             reports: ReportAccumulator::default(),
+        }
+    }
+
+    fn publish_item_summary(&mut self, index: u64, item: &Value) {
+        if item["type"] == "reasoning" {
+            if let Some(parts) = item["summary"].as_array() {
+                for (part, value) in parts.iter().enumerate() {
+                    if value["type"] == "summary_text" {
+                        if let Some(text) = value["text"].as_str() {
+                            self.publish_summary(index, part as u64, text, true);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn publish_summary(&mut self, item: u64, part: u64, text: &str, complete: bool) {
+        if text.is_empty() {
+            return;
+        }
+        let key = (item, part);
+        let is_new = !self.summary_lengths.contains_key(&key);
+        if is_new && self.summary_lengths.len() >= MAX_REPLAY_ITEMS {
+            return;
+        }
+        let separate = is_new && !self.summary_lengths.is_empty();
+        let length = self.summary_lengths.entry(key).or_default();
+        let delta = if complete {
+            text.get(*length..).unwrap_or_default()
+        } else {
+            text
+        };
+        if !delta.is_empty() {
+            *length += delta.len();
+            let text = if separate {
+                format!("\n\n{delta}")
+            } else {
+                delta.into()
+            };
+            self.chunks.push(ProviderChunk::ThinkingDelta { text });
         }
     }
 
@@ -399,7 +446,7 @@ impl OpenAiResponsesSseParser {
             };
         }
         let data: Value = serde_json::from_str(&frame.data).map_err(|_| {
-            super::prepare::invalid_request("provider emitted malformed JSON event")
+            super::prepare::invalid_response("provider emitted malformed JSON event")
         })?;
 
         let event_type = frame
@@ -495,9 +542,11 @@ impl OpenAiResponsesSseParser {
                         id: call_id,
                         name,
                     });
+                } else if item_type == "reasoning" {
+                    self.chunks.push(ProviderChunk::Reasoning);
                 }
             }
-            "response.output_text.delta" => {
+            "response.output_text.delta" | "response.refusal.delta" => {
                 if let Some(delta) = data.get("delta").and_then(Value::as_str) {
                     if !delta.is_empty() {
                         self.chunks.push(ProviderChunk::TextDelta {
@@ -507,12 +556,22 @@ impl OpenAiResponsesSseParser {
                 }
             }
             "response.reasoning_text.delta" => {
-                if let Some(delta) = data.get("delta").and_then(Value::as_str) {
-                    if !delta.is_empty() {
-                        self.chunks.push(ProviderChunk::ThinkingDelta {
-                            text: delta.to_string(),
-                        });
-                    }
+                if let Some(text) = data["delta"].as_str().filter(|text| !text.is_empty()) {
+                    self.chunks.push(if self.public_reasoning_text {
+                        ProviderChunk::ThinkingDelta { text: text.into() }
+                    } else {
+                        ProviderChunk::Reasoning
+                    });
+                }
+            }
+            "response.reasoning_summary_text.delta" | "response.reasoning_summary_text.done" => {
+                let complete = event_type.ends_with(".done");
+                if let (Some(item), Some(part), Some(text)) = (
+                    data["output_index"].as_u64(),
+                    data["summary_index"].as_u64(),
+                    data[if complete { "text" } else { "delta" }].as_str(),
+                ) {
+                    self.publish_summary(item, part, text, complete);
                 }
             }
             "response.function_call_arguments.delta" => {
@@ -624,6 +683,7 @@ impl OpenAiResponsesSseParser {
                     data.get("item"),
                 ) {
                     self.replay_budget.add(item)?;
+                    self.publish_item_summary(index, item);
                     self.replay_items.insert(index, item.clone());
                 }
                 self.finish_output_item(&data);
@@ -633,6 +693,11 @@ impl OpenAiResponsesSseParser {
                     self.push_usage(resp)?;
                     let reason = self.completed_reason(resp);
                     if reason != ModelStopReason::InvalidResponse {
+                        if let Some(items) = resp["output"].as_array() {
+                            for (index, item) in items.iter().enumerate() {
+                                self.publish_item_summary(index as u64, item);
+                            }
+                        }
                         let output = resp
                             .get("output")
                             .and_then(Value::as_array)
@@ -675,9 +740,6 @@ impl OpenAiResponsesSseParser {
                 self.chunks.push(ProviderChunk::StreamEnd);
             }
             "response.failed" | "error" => {
-                if let Some(response) = data.get("response") {
-                    self.push_usage(response)?;
-                }
                 let error = if event_type == "error" {
                     Some(&data)
                 } else {
@@ -685,8 +747,12 @@ impl OpenAiResponsesSseParser {
                         .and_then(|response| response.get("error"))
                 };
                 let code = error
-                    .and_then(|value| value.get("code").or_else(|| value.get("type")))
-                    .and_then(Value::as_str)
+                    .and_then(|value| {
+                        super::error::select_provider_error_code(
+                            value.get("code").and_then(Value::as_str),
+                            value.get("type").and_then(Value::as_str),
+                        )
+                    })
                     .unwrap_or(event_type)
                     .to_string();
                 let message = error
@@ -696,6 +762,9 @@ impl OpenAiResponsesSseParser {
                     .to_string();
                 self.chunks
                     .push(ProviderChunk::ServerError { code, message });
+                if let Some(response) = data.get("response") {
+                    self.push_usage(response)?;
+                }
                 self.terminal_event = Some(if event_type == "response.failed" {
                     ResponseTerminalEvent::Failed
                 } else {
@@ -713,7 +782,7 @@ impl OpenAiResponsesSseParser {
             self.chunks.push(ProviderChunk::Report { report });
         }
         if response.get("usage").is_some_and(Value::is_object) {
-            if let Some(usage) = self.reports.usage(ProviderFormat::OpenAiResponses) {
+            if let Some(usage) = self.reports.usage(ProviderFormat::OpenAiResponses, true) {
                 self.chunks.push(usage);
             }
         }
@@ -889,11 +958,12 @@ impl OpenAiResponsesSseParser {
         }
 
         Err(ProviderFailure {
-            kind: crate::provider::types::ProviderFailureKind::Transport,
+            kind: crate::provider::types::ProviderFailureKind::InvalidResponse,
             message: TRUNCATED_STREAM_MESSAGE.to_string(),
             status: None,
             provider_request_id: None,
-            retryable: true,
+            retry_after: None,
+            retryable: false,
         })
     }
 
@@ -905,7 +975,7 @@ impl OpenAiResponsesSseParser {
 #[cfg(test)]
 #[allow(dead_code)] // included via include!() in integration tests
 pub(crate) fn parse_responses_sse(body: &str) -> Vec<ProviderChunk> {
-    let mut parser = OpenAiResponsesSseParser::new();
+    let mut parser = OpenAiResponsesSseParser::new(false);
     let mut chunks = Vec::new();
     for frame in body.split("\n\n") {
         chunks.extend(parser.feed(frame.trim()).unwrap());

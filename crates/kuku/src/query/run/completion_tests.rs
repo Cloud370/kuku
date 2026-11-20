@@ -1,6 +1,6 @@
 use super::*;
 use crate::event::{EventPayload, EventStore};
-use crate::query::types::{ExecSlot, ToolKind};
+use crate::query::types::{ExecSlot, SlotEvent, ToolKind};
 
 #[tokio::test]
 async fn async_error_completion_is_counted_exactly_once() {
@@ -21,6 +21,7 @@ async fn async_error_completion_is_counted_exactly_once() {
             conversation: None,
             kind: ToolKind::Command { pid: None },
             workspace_ordered: false,
+            job: None,
             label: "failing command".to_string(),
             cancel: std::sync::Arc::new(tokio::sync::Notify::new()),
             nested_permissions: std::sync::Arc::new(std::sync::Mutex::new(
@@ -67,8 +68,12 @@ async fn async_error_completion_is_counted_exactly_once() {
         conversation: crate::conversation::address::ConversationAddress::MAIN,
         request_id: "req_complete".to_string(),
         stream: Box::pin(tokio_stream::empty()),
+        provider_attempt: 1,
+        stream_failure: None,
         accumulated_text: "complete".to_string(),
         accumulated_thinking: String::new(),
+        model_phase: None,
+        provider_replay: Vec::new(),
         stop_reason: Some(crate::event::ModelStopReason::EndTurn),
         tool_calls: Vec::new(),
         tool_arg_buffers: Vec::new(),
@@ -78,6 +83,7 @@ async fn async_error_completion_is_counted_exactly_once() {
         stream_ended: false,
         provider_request_id: None,
         usage: None,
+        request_timing: None,
         lead_events: Vec::new(),
         handoff_detector: None,
         thinking_start: None,
@@ -116,8 +122,12 @@ async fn length_stop_interrupts_without_completing_the_turn() {
         conversation: crate::conversation::address::ConversationAddress::MAIN,
         request_id: "req_length".to_string(),
         stream: Box::pin(tokio_stream::empty()),
+        provider_attempt: 1,
+        stream_failure: None,
         accumulated_text: "partial output".to_string(),
         accumulated_thinking: String::new(),
+        model_phase: None,
+        provider_replay: Vec::new(),
         stop_reason: Some(crate::event::ModelStopReason::Length),
         tool_calls: Vec::new(),
         tool_arg_buffers: Vec::new(),
@@ -127,6 +137,7 @@ async fn length_stop_interrupts_without_completing_the_turn() {
         stream_ended: false,
         provider_request_id: None,
         usage: None,
+        request_timing: None,
         lead_events: Vec::new(),
         handoff_detector: None,
         thinking_start: None,

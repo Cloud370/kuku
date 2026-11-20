@@ -12,6 +12,10 @@ kuku is an **embeddable, file-native Rust Agent SDK with a usable default Harnes
 
 Give reliability, low resource use, and low human/model cognitive cost equal weight. A mechanism needs a concrete job and one owner. The default Harness supplies working prompts, tools, model selection, and delegation; callers need not assemble an agent platform. Custom Harnesses choose recipients, context, scheduling, and work completion through explicit SDK operations, without replacing persistence, authorization, or execution.
 
+The default Harness follows the user’s intended stage of work, including exploration, drafts and delivery. Evaluation callers own benchmark budgets, scoring and unattended scheduling. A normal turn follows the conversation and tool results to completion. A caller with an execution budget can enforce it independently.
+
+Leave the generation limit to the provider when its protocol allows omission. An Agent or host can set an explicit ceiling. Presets for protocols that require a limit supply it in configuration.
+
 ## Preserve from kuku
 
 - **Keep behavioral Prompt text in versioned assets/templates**, outside Rust execution branches and tool implementations. Structured runtime facts are not themselves Prompt templates.
@@ -69,6 +73,8 @@ Distinguish waiting, canceling current execution, and closing live resources. Ca
 Bound model requests, tool processes, inbox admission, output, and observer queues separately. Dormant Agents need no polling model calls, dedicated OS threads/processes, or permanent full-history copies. Share immutable assets and suitable clients; keep only needed active context. Waiting for a person consumes no model-execution slot. Measure local memory/I/O separately from cache-aware model cost and user-visible latency.
 
 ## Workspace, trust, and scope
+
+Workspace actions should return bounded model evidence and machine-readable execution facts for hosts. Explicitly named Session values should survive reopening with on-demand access to their content. The proposed [workspace execution design](workspace-execution.md) covers scripting, retention, resource costs and acceptance.
 
 A workspace is an ordinary directory. Agents share it by default; callers may choose another directory. Core behavior is identical with and without Git. Worktrees, commits, and merges remain explicit choices; file conflict checks use observed content/version. The SDK does not seize process cwd, environment, signals, global logging, or unrelated processes.
 

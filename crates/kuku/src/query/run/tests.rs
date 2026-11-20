@@ -5,12 +5,12 @@ mod streaming;
 
 use super::{
     PendingPermission, PendingRun, PendingStep, PermissionChoice, QueuedToolCall, Run, RunState,
-    SlotEvent, StreamingChunkState, UiEvent,
+    StreamingChunkState, UiEvent,
 };
 use crate::event::{EventPayload, EventStore};
 use crate::provider::types::{ProviderKind, ProviderToolCall, ResolvedProvider, SecretString};
 use crate::query::types::{
-    CumulativeUsage, ExecSlot, PermissionRequest, ResolvedRuntime, ToolKind,
+    CumulativeUsage, ExecSlot, PermissionRequest, ResolvedRuntime, SlotEvent, ToolKind,
 };
 
 fn test_config() -> crate::config::Config {
@@ -63,6 +63,7 @@ pub(super) fn make_test_pending(
         request_num: 1,
         cumulative: CumulativeUsage::default(),
         resolved: None,
+        admitted_tool_call_ids: Default::default(),
         queued_tool_calls: std::collections::VecDeque::new(),
         resumed_permission_requests: std::collections::VecDeque::new(),
         config: std::sync::Arc::new(test_config()),
@@ -77,6 +78,7 @@ pub(super) fn make_test_pending(
         tool_registry_override: None,
         pending_events: std::collections::VecDeque::new(),
         pending_error: None,
+        waiting_for_job_input: false,
         catalog: crate::prompt::builtin_prompt_catalog(),
         cancel_token,
         handoff_triggered: false,
@@ -107,8 +109,12 @@ fn tool_stream_state(
         conversation: crate::conversation::address::ConversationAddress::MAIN,
         request_id: "req_tool_stream".to_string(),
         stream: Box::pin(tokio_stream::iter(chunks.into_iter().map(Ok))),
+        provider_attempt: 1,
+        stream_failure: None,
         accumulated_text: String::new(),
         accumulated_thinking: String::new(),
+        model_phase: None,
+        provider_replay: Vec::new(),
         stop_reason: None,
         tool_calls: Vec::new(),
         tool_arg_buffers: Vec::new(),
@@ -118,6 +124,7 @@ fn tool_stream_state(
         stream_ended: false,
         provider_request_id: None,
         usage: None,
+        request_timing: None,
         lead_events: Vec::new(),
         handoff_detector: None,
         thinking_start: None,
@@ -197,7 +204,7 @@ fn make_waiting_run(
         tool_call: ProviderToolCall {
             id: queued_tool_call_id.to_string(),
             name: "run_command".to_string(),
-            args: serde_json::json!({"command": "printf hi", "timeout": 60, "brief": "print hi"}),
+            args: serde_json::json!({"program": "printf", "args": ["hi"], "cwd": ".", "timeout": 60, "brief": "print hi"}),
             index: 0,
         },
         display_summary: "print hi".to_string(),
@@ -217,7 +224,9 @@ fn make_waiting_run(
                 tool: "run_command".to_string(),
                 risk: "command".to_string(),
                 summary: "print hi".to_string(),
-                candidate: "printf hi".to_string(),
+                candidate: crate::tool::builtin::run_command::command_permission_candidate(
+                    &serde_json::json!({"program":"printf","args":["hi"],"cwd":"."}),
+                ),
                 source: "default_ask".to_string(),
             },
         })),
@@ -238,7 +247,7 @@ fn test_resolved_runtime() -> ResolvedRuntime {
             base_url: "https://example.test".to_string(),
             api_key: SecretString::new("test-key"),
             max_context_tokens: 1000,
-            max_output_tokens: 1000,
+            max_output_tokens: Some(1000),
             think_level: crate::config::ThinkLevel::Off,
             thinking: crate::config::ResolvedThinking::default(),
             ..Default::default()
@@ -254,6 +263,157 @@ fn test_resolved_runtime() -> ResolvedRuntime {
     }
 }
 
+fn assert_prepared_handoff_after_rewind(target_before_handoff: bool, expect_summary: bool) {
+    let directory = tempfile::tempdir().unwrap();
+    let events_path = directory.path().join("events.jsonl");
+    let mut writer = EventStore::open(&events_path).unwrap();
+    writer
+        .append(EventPayload::TurnStarted {
+            turn: 1,
+            ts: "t".into(),
+            conversation: "main".into(),
+        })
+        .unwrap();
+    let target = if target_before_handoff {
+        Some(
+            writer
+                .append(EventPayload::MessageUser {
+                    conversation: "main".into(),
+                    turn: 1,
+                    ts: "t".into(),
+                    text: "rewound target input".into(),
+                    from: None,
+                    via_tool_call_id: None,
+                })
+                .unwrap(),
+        )
+    } else {
+        None
+    };
+    let handoff = writer
+        .append(EventPayload::Handoff {
+            turn: 1,
+            ts: "t".into(),
+            request_id: "handoff".into(),
+            summary: "retained handoff summary".into(),
+            keep_turns: 1,
+        })
+        .unwrap();
+    let target = match target {
+        Some(target) => target,
+        None => {
+            writer
+                .append(EventPayload::TurnStarted {
+                    turn: 2,
+                    ts: "t".into(),
+                    conversation: "main".into(),
+                })
+                .unwrap();
+            writer
+                .append(EventPayload::MessageUser {
+                    conversation: "main".into(),
+                    turn: 2,
+                    ts: "t".into(),
+                    text: "rewound target input".into(),
+                    from: None,
+                    via_tool_call_id: None,
+                })
+                .unwrap()
+        }
+    };
+    let catalog = crate::prompt::builtin_prompt_catalog();
+    let old_prelude = crate::context::CanonicalMessage::user_text("retained handoff summary");
+    let segment_value = serde_json::json!({
+        "kind":"runtime.context_segment", "agent":"main", "signature":"old",
+        "configuration":1, "handoff":handoff.id, "system_prompt":"old system",
+        "prelude":[old_prelude], "tools":[], "catalog":catalog,
+        "connection":"default", "protocol":"openai_compatible", "model":"test-model",
+        "endpoint":"https://example.test", "behavior":"", "identity_slot":1,
+        "handoff_prelude":0, "workspace":directory.path().display().to_string()
+    });
+    let segment_event = writer
+        .append(EventPayload::Unknown(segment_value.clone()))
+        .unwrap();
+    writer
+        .append(EventPayload::Unknown(serde_json::json!({
+            "kind":"runtime.step_prepared", "agent":"main", "segment":segment_event.id,
+            "context_head":0, "source_head":target.id
+        })))
+        .unwrap();
+    let rewind = writer
+        .append(EventPayload::Unknown(serde_json::json!({
+            "kind":"runtime.operation",
+            "record":{"operation":"message_rewind","address":"main","target_event_id":target.id}
+        })))
+        .unwrap();
+    writer
+        .append(EventPayload::TurnStarted {
+            turn: 3,
+            ts: "t".into(),
+            conversation: "main".into(),
+        })
+        .unwrap();
+    writer
+        .append(EventPayload::MessageUser {
+            conversation: "main".into(),
+            turn: 3,
+            ts: "t".into(),
+            text: "new input after rewind".into(),
+            from: None,
+            via_tool_call_id: None,
+        })
+        .unwrap();
+    drop(writer);
+
+    let mut segment: crate::context::runtime::FrozenSegment =
+        serde_json::from_value(segment_value).unwrap();
+    segment.id = segment_event.id;
+    let mut cursor = crate::context::runtime::ContextCursor::default();
+    cursor.after = rewind.id;
+    cursor.handoff = Some(handoff);
+    cursor.segment = Some(segment);
+    cursor.observe(rewind, "main", 1024 * 1024).unwrap();
+    assert!(cursor.segment.is_none());
+    assert_eq!(expect_summary, cursor.handoff.is_some());
+
+    let mut pending = make_test_pending(
+        events_path,
+        directory.path(),
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+    );
+    pending.turn = 3;
+    pending.resolved = Some(test_resolved_runtime());
+    pending.context_cursor = Some(Box::new(cursor));
+    let prepared = crate::query::frozen::prepare(&mut pending).unwrap();
+    let request = prepared.request.request();
+    let has_text = |messages: &[crate::context::CanonicalMessage], text: &str| {
+        messages.iter().any(|message| {
+            message.blocks.iter().any(|block| match block {
+                crate::context::MessageBlock::Text(value) => value.contains(text),
+                _ => false,
+            })
+        })
+    };
+    assert_eq!(
+        expect_summary,
+        has_text(
+            &request.assembly.prelude_messages,
+            "retained handoff summary"
+        )
+    );
+    assert!(has_text(
+        &request.assembly.history,
+        "new input after rewind"
+    ));
+    assert!(!has_text(&request.assembly.history, "rewound target input"));
+}
+
+#[test]
+fn prepare_rehydrates_only_handoffs_that_precede_rewind_target() {
+    assert_prepared_handoff_after_rewind(false, true);
+    assert_prepared_handoff_after_rewind(true, false);
+}
+
 fn make_queued_run(events_path: std::path::PathBuf, dir: &std::path::Path) -> Run {
     let mut pending = make_test_pending(
         events_path,
@@ -265,7 +425,7 @@ fn make_queued_run(events_path: std::path::PathBuf, dir: &std::path::Path) -> Ru
         tool_call: ProviderToolCall {
             id: "tool_queued".to_string(),
             name: "run_command".to_string(),
-            args: serde_json::json!({"command": "printf hi", "timeout": 60, "brief": "print hi"}),
+            args: serde_json::json!({"program": "printf", "args": ["hi"], "cwd": ".", "timeout": 60, "brief": "print hi"}),
             index: 0,
         },
         display_summary: "print hi".to_string(),

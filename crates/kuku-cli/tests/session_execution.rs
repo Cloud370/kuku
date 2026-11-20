@@ -3,6 +3,7 @@ use std::process::{Command, Output};
 
 use httpmock::{Method, MockServer};
 use kuku::session::{AgentStatus, Session};
+use kuku_client::local::LocalService;
 use serde_json::{json, Value};
 
 fn tool_round(request: &httpmock::prelude::HttpMockRequest) -> usize {
@@ -87,6 +88,11 @@ provider = "primary"
 model = "fixture-model"
 think = "off"
 max_output_tokens = 512
+[model.delegated]
+provider = "secondary"
+model = "fixture-model"
+think = "off"
+max_output_tokens = 512
 [provider.primary]
 format = "anthropic"
 base_url = "http://127.0.0.1:{primary}"
@@ -107,7 +113,7 @@ reasoning_efforts = ["none"]
 }
 
 fn invoke(workspace: &Path, home: &Path, config: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_kuku-cli"))
+    let mut output = Command::new(env!("CARGO_BIN_EXE_kuku-cli"))
         .current_dir(workspace)
         .env("KUKU_HOME", home)
         .arg("run")
@@ -115,9 +121,49 @@ fn invoke(workspace: &Path, home: &Path, config: &Path, args: &[&str]) -> Output
         .arg(config)
         .args(args)
         .output()
-        .unwrap()
+        .unwrap();
+    if !output.status.success() {
+        output.stderr.extend_from_slice(
+            format!(
+                "\nCLI invocation: {args:?}\nFixture sessions: {:?}\n",
+                fixture_sessions(workspace, home)
+            )
+            .as_bytes(),
+        );
+    }
+    output
 }
 
+fn fixture_sessions(workspace: &Path, home: &Path) -> kuku::Result<Value> {
+    let sessions = kuku::session::list_sessions(home, Some(workspace))?;
+    let mut records = Vec::new();
+    for session in sessions.into_iter().take(4) {
+        let path = kuku::session::session_events_path(home, workspace, &session.session_id)?;
+        let events = kuku::event::EventStore::replay(&path)?;
+        let tail: Vec<_> = events
+            .iter()
+            .rev()
+            .take(8)
+            .map(|event| {
+                let operation = match &event.payload {
+                    kuku::event::EventPayload::Unknown(value) => {
+                        value["record"]["operation"].clone()
+                    }
+                    _ => Value::Null,
+                };
+                json!({"id":event.id,"kind":event.payload.kind_name(),"operation":operation})
+            })
+            .collect();
+        let agents: Vec<_> = Session::read_agents(&path)?
+            .into_iter()
+            .map(|agent| json!({"agent":agent.address,"status":agent.status}))
+            .collect();
+        records.push(json!({"session":session.session_id,"agents":agents,"latest_events":tail}));
+    }
+    Ok(json!(records))
+}
+
+#[track_caller]
 fn result(output: &Output) -> Value {
     assert!(
         output.status.success(),
@@ -130,6 +176,117 @@ fn result(output: &Output) -> Value {
             String::from_utf8_lossy(&output.stdout)
         )
     })
+}
+
+fn json_lines(output: &Output) -> Vec<Value> {
+    output
+        .stdout
+        .strip_suffix(b"\n")
+        .expect("stream must end with a line terminator")
+        .split(|byte| *byte == b'\n')
+        .map(|line| {
+            serde_json::from_slice(line).unwrap_or_else(|error| {
+                panic!("invalid JSON line {line:?}: {error}");
+            })
+        })
+        .collect()
+}
+
+async fn stop_managed(home: &Path) {
+    let service = LocalService::resolve(home, None).unwrap();
+    if let Some(connection) = service.status().await.unwrap() {
+        let response = wreq::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .post(format!("{}/service/restart", connection.endpoint()))
+            .bearer_auth(connection.token())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(wreq::StatusCode::ACCEPTED, response.status());
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(5), service.wait_for_exit())
+        .await
+        .expect("fixture should release its local service lease")
+        .expect("fixture should inspect its local service lease");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cli_stream_json_emits_one_record_per_line_for_progress_completion_and_model_failure() {
+    let primary = MockServer::start_async().await;
+    let secondary = MockServer::start_async().await;
+    mock_round(
+        &primary,
+        0,
+        json!([{"type":"tool_use","id":"read","name":"read_file","input":{"path":"fixture.txt"}}]),
+        "tool_use",
+    );
+    mock_round(
+        &primary,
+        1,
+        json!([{"type":"text","text":"First line.\nSecond line."}]),
+        "end_turn",
+    );
+    secondary.mock(|when, then| {
+        when.method(Method::POST).path("/v1/messages");
+        then.status(400)
+            .header("content-type", "application/json")
+            .json_body(json!({"type":"error","error":{"type":"invalid_request_error","message":"fixture model failure"}}));
+    });
+    let workspace = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(workspace.path().join("fixture.txt"), "fixture data\n").unwrap();
+    let config = config_file(home.path(), primary.port(), secondary.port());
+    let success = invoke(
+        workspace.path(),
+        home.path(),
+        &config,
+        &["--stream-json", "read fixture"],
+    );
+    let failure = invoke(
+        workspace.path(),
+        home.path(),
+        &config,
+        &[
+            "--connection",
+            "secondary",
+            "--stream-json",
+            "fail at the model",
+        ],
+    );
+    stop_managed(home.path()).await;
+
+    assert!(
+        success.status.success(),
+        "{}",
+        String::from_utf8_lossy(&success.stderr)
+    );
+    let records = json_lines(&success);
+    assert_eq!("started", records[0]["event"]);
+    let tools: Vec<_> = records
+        .iter()
+        .filter(|record| matches!(record["type"].as_str(), Some("tool_call" | "tool_result")))
+        .collect();
+    assert_eq!(2, tools.len(), "{records:?}");
+    assert_eq!("tool_call", tools[0]["type"]);
+    assert_eq!("fixture.txt", tools[0]["args"]["path"]);
+    assert_eq!("tool_result", tools[1]["type"]);
+    assert_eq!("file_content", tools[1]["structured"]["kind"]);
+    assert_eq!("fixture data\n", tools[1]["structured"]["raw_text"]);
+    let final_result = records.last().unwrap();
+    assert_eq!("completed", final_result["event"]);
+    assert_eq!("First line.\nSecond line.", final_result["response"]);
+
+    assert_eq!(Some(1), failure.status.code());
+    let failed_records = json_lines(&failure);
+    assert_eq!("started", failed_records[0]["event"]);
+    let final_result = failed_records.last().unwrap();
+    assert_eq!("session", final_result["type"]);
+    assert!(final_result["error"]
+        .as_str()
+        .is_some_and(|error| error.contains("fixture model failure")));
+    assert!(String::from_utf8_lossy(&failure.stderr).contains("fixture model failure"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -150,7 +307,7 @@ async fn cli_persists_file_and_command_results_then_reopens_same_agent() {
     mock_round(
         &mock,
         2,
-        json!([{"type":"tool_use","id":"verify","name":"run_command","input":{"command":"git diff --no-index --exit-code expected.txt answer.txt","timeout":10,"brief":"verify actual file"}}]),
+        json!([{"type":"tool_use","id":"verify","name":"run_command","input":{"program": "git", "args": ["diff", "--no-index", "--exit-code", "expected.txt", "answer.txt"], "cwd": ".","timeout":10,"brief":"verify actual file"}}]),
         "tool_use",
     );
     mock_round(
@@ -185,6 +342,7 @@ async fn cli_persists_file_and_command_results_then_reopens_same_agent() {
     );
     assert!(!workspace.path().join(".git").exists());
     let session_id = value["session_id"].as_str().unwrap();
+    stop_managed(home.path()).await;
     let path =
         kuku::session::session_events_path(home.path(), workspace.path(), session_id).unwrap();
     let agents = Session::read_agents(&path).unwrap();
@@ -227,6 +385,8 @@ async fn cli_persists_file_and_command_results_then_reopens_same_agent() {
             "balanced",
             "--model",
             "reopened-exact-model",
+            "--command-id",
+            "configured-continuation",
             "--json",
             "verify model selection",
         ],
@@ -235,6 +395,25 @@ async fn cli_persists_file_and_command_results_then_reopens_same_agent() {
     assert_eq!("primary", overridden["config"]["connection"]);
     assert_eq!("balanced", overridden["config"]["tier"]);
     assert_eq!("reopened-exact-model", overridden["config"]["model"]);
+    let replayed = result(&invoke(
+        workspace.path(),
+        home.path(),
+        &config,
+        &[
+            "--session",
+            session_id,
+            "--tier",
+            "balanced",
+            "--model",
+            "reopened-exact-model",
+            "--command-id",
+            "configured-continuation",
+            "--json",
+            "verify model selection",
+        ],
+    ));
+    assert_eq!("acknowledged", replayed["event"]);
+    assert_eq!(true, replayed["replayed"]);
     explicit_model.assert_hits(1);
     let show = Command::new(env!("CARGO_BIN_EXE_kuku-cli"))
         .current_dir(workspace.path())
@@ -247,6 +426,24 @@ async fn cli_persists_file_and_command_results_then_reopens_same_agent() {
         "Explicit model.",
         String::from_utf8(show.stdout).unwrap().trim()
     );
+    let events = Command::new(env!("CARGO_BIN_EXE_kuku-cli"))
+        .current_dir(workspace.path())
+        .env("KUKU_HOME", home.path())
+        .args([
+            "events",
+            session_id,
+            "--limit",
+            "1",
+            "--agent",
+            "unmatched",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(events.status.success());
+    assert!(events.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&events.stderr).contains("next event cursor: 1"));
+    stop_managed(home.path()).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -277,6 +474,7 @@ async fn cli_selects_exact_connection_when_protocol_matches() {
     ));
     assert_eq!("Secondary route.", output["response"]);
     assert_eq!("secondary", output["config"]["connection"]);
+    stop_managed(home.path()).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -350,6 +548,7 @@ async fn cli_reopens_question_and_rejects_stale_answers_without_new_work() {
     assert!(!reply("stale-new-command").status.success());
     question.assert_hits(1);
     answer.assert_hits(1);
+    stop_managed(home.path()).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -360,7 +559,7 @@ async fn cli_main_turn_completion_waits_for_running_independent_agent() {
         &primary,
         0,
         json!([
-            {"type":"tool_use","id":"create-worker","name":"create_agent","input":{"address":"worker","connection":"secondary","model":"fixture-model","instructions":"Write the delegated proof file."}},
+            {"type":"tool_use","id":"create-worker","name":"create_agent","input":{"address":"worker","tier":"delegated","instructions":"Write the delegated proof file."}},
             {"type":"tool_use","id":"send-worker","name":"send_message","input":{"to":"worker","message":"write delegated-proof.txt with delegated\n"}}
         ]),
         "tool_use",
@@ -400,6 +599,7 @@ async fn cli_main_turn_completion_waits_for_running_independent_agent() {
         "delegated\n",
         std::fs::read_to_string(workspace.path().join("delegated-proof.txt")).unwrap()
     );
+    stop_managed(home.path()).await;
     let path = kuku::session::session_events_path(
         home.path(),
         workspace.path(),
@@ -416,12 +616,12 @@ async fn cli_main_turn_completion_waits_for_running_independent_agent() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn cli_repeated_command_acknowledges_interruption_without_authorizing_resume() {
+async fn cli_disconnect_keeps_server_work_running_and_replay_does_not_restart_it() {
     let mock = MockServer::start_async().await;
     let model = mock.mock(|when, then| {
         when.method(Method::POST).path("/v1/messages");
         then.status(200).delay(std::time::Duration::from_secs(3)).body(kuku::test_support::anthropic_sse_response(json!({
-            "id":"interrupted","type":"message","role":"assistant","content":[{"type":"text","text":"Must not resume on retry."}],
+            "id":"detached","type":"message","role":"assistant","content":[{"type":"text","text":"Completed after disconnect."}],
             "stop_reason":"end_turn","usage":{"input_tokens":5,"output_tokens":6}
         })));
     });
@@ -478,26 +678,30 @@ async fn cli_repeated_command_acknowledges_interruption_without_authorizing_resu
         ],
     ));
     assert_eq!("acknowledged", acknowledged["event"]);
-    assert_eq!("interrupted", acknowledged["state"]["status"]);
-    let restored = Session::open(options).await.unwrap();
-    assert_eq!(
-        AgentStatus::Interrupted,
-        restored.agent("main").unwrap().status
-    );
-    let mut cursor = 0;
-    loop {
-        let page = restored.events(cursor, 128).unwrap();
-        if page.is_empty() {
-            break;
-        }
-        for event in page {
-            cursor = event.id;
-            if let kuku::event::EventPayload::Unknown(value) = event.payload {
-                assert_ne!("agent_resumed", value["record"]["operation"]);
+    assert_eq!(true, acknowledged["replayed"]);
+    let service = LocalService::resolve(home.path(), Some(&config_path)).unwrap();
+    let client = kuku_client::Client::local(&service).await.unwrap();
+    let target = kuku_client::Target {
+        workspace: workspace.path().canonicalize().unwrap(),
+        session_id: "retry-interrupted".into(),
+        agent: "main".into(),
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let snapshot = client.snapshot(&target).await.unwrap();
+            if snapshot.agent.status == AgentStatus::Idle {
+                assert_eq!(
+                    Some("Completed after disconnect."),
+                    snapshot.agent.last_output.as_deref()
+                );
+                break;
             }
+            assert_eq!(AgentStatus::Running, snapshot.agent.status);
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-    }
-    restored.close().await.unwrap();
+    })
+    .await
+    .expect("server must complete the original run after the CLI process exits");
     model.assert_hits(1);
     let continued = result(&invoke(
         workspace.path(),
@@ -509,10 +713,11 @@ async fn cli_repeated_command_acknowledges_interruption_without_authorizing_resu
             "--command-id",
             "authorized-continuation",
             "--json",
-            "explicitly continue after checking no effects",
+            "explicitly send a new input",
         ],
     ));
     assert_eq!("completed", continued["event"]);
     assert_eq!("idle", continued["status"]);
     model.assert_hits(2);
+    stop_managed(home.path()).await;
 }

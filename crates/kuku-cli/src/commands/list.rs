@@ -1,52 +1,24 @@
-use std::path::PathBuf;
+use kuku_client::{AgentSummary, SessionStatus};
 
-use kuku::session::{current_workspace, kuku_home, list_sessions, Session, SessionStatus};
-
-use crate::cli_args::ListArgs;
+use crate::cli_args::{ConnectionArgs, ListArgs};
+use crate::commands::CliResult;
 use crate::display::util::truncate;
 
 /// List sessions: `kuku list [-a] [-w <workspace>] [-v]`
-pub async fn run(args: ListArgs) -> Result<(), Box<dyn std::error::Error>> {
-    let home = match args.data_dir {
-        Some(path) => PathBuf::from(path),
-        None => kuku_home()?,
-    };
-
+pub async fn run(args: ListArgs, target: &ConnectionArgs) -> CliResult {
+    let options = target.options();
+    let client = options.client().await?;
     if let Some(session_id) = args.session_id.as_deref() {
-        let workspace = match args.workspace.as_deref() {
-            Some(path) => PathBuf::from(path),
-            None => current_workspace()?,
-        };
-        let path = kuku::session::session_events_path(&home, &workspace, session_id)?;
-        let agents = Session::read_agents(&path)?;
-        if agents.is_empty() {
-            println!("no agents found");
-            return Ok(());
-        }
-        println!("{:<24} {:<16} pending", "agent", "status");
-        for agent in agents {
-            println!(
-                "{:<24} {:<16} {}",
-                agent.address,
-                serde_json::to_value(agent.status)?,
-                agent.pending_inputs
-            );
-        }
-        return Ok(());
+        let workspace = client.workspace(options.workspace()?).await?;
+        return render_agents(client.agents(&workspace, session_id).await?);
     }
-
-    let workspace_override = args.workspace.map(PathBuf::from);
-    let default_ws;
-    let (workspace, show_workspace_col) = if workspace_override.is_some() {
-        (workspace_override.as_deref(), false)
-    } else if args.all {
-        (None, true)
+    let show_workspace_col = args.all && target.workspace.is_none();
+    let workspace = if show_workspace_col {
+        None
     } else {
-        default_ws = current_workspace()?;
-        (Some(default_ws.as_path()), false)
+        Some(client.workspace(options.workspace()?).await?)
     };
-
-    let sessions = list_sessions(&home, workspace)?;
+    let sessions = client.sessions(workspace.as_deref(), None).await?;
 
     if sessions.is_empty() {
         println!("no sessions found");
@@ -111,6 +83,23 @@ pub async fn run(args: ListArgs) -> Result<(), Box<dyn std::error::Error>> {
                 s.session_id, title, status, size, s.turn_count
             );
         }
+    }
+    Ok(())
+}
+
+fn render_agents(agents: Vec<AgentSummary>) -> CliResult {
+    if agents.is_empty() {
+        println!("no agents found");
+        return Ok(());
+    }
+    println!("{:<24} {:<16} pending", "agent", "status");
+    for agent in agents {
+        println!(
+            "{:<24} {:<16} {}",
+            agent.address,
+            serde_json::to_value(agent.status)?,
+            agent.pending_inputs
+        );
     }
     Ok(())
 }

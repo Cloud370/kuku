@@ -2,13 +2,22 @@
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
 use crate::conversation::address::ConversationAddress;
 use crate::event::{EventPayload, EventStore, RollbackScope, StoredEvent};
+
+#[path = "revert_apply.rs"]
+mod apply;
+#[path = "revert_message_rewind.rs"]
+mod message_rewind;
+
+pub(crate) use apply::{apply_message_rewind_files, FileRevertTransaction};
+pub use message_rewind::event_owners;
+use message_rewind::{event_owner, event_turn_owners};
 
 const REVERTABLE_KINDS: &[&str] = &["file_edit", "file_write", "memory_write", "forget_memory"];
 
@@ -55,10 +64,22 @@ enum FileStateAt {
 /// Filter events to exclude turns that have been rolled back (conversation scope).
 pub fn filter_rolled_back_events(events: &[StoredEvent]) -> Vec<&StoredEvent> {
     let conversation_rollbacks = active_conversation_rollbacks(events);
+    let message_rewinds: Vec<_> = events.iter().filter_map(message_rewind).collect();
+    let turn_owners = event_turn_owners(events);
 
     events
         .iter()
         .filter(|event| {
+            if message_rewinds
+                .iter()
+                .any(|(rewind_id, address, target_id)| {
+                    event_owner(event, &turn_owners) == Some(*address)
+                        && event.id >= *target_id
+                        && event.id < *rewind_id
+                })
+            {
+                return false;
+            }
             if let Some(conversation) = event_conversation_key(&event.payload) {
                 if conversation_rollbacks
                     .get(conversation)
@@ -98,6 +119,22 @@ pub fn filter_rolled_back_events(events: &[StoredEvent]) -> Vec<&StoredEvent> {
             }
         })
         .collect()
+}
+
+fn message_rewind(event: &StoredEvent) -> Option<(u64, &str, u64)> {
+    let EventPayload::Unknown(value) = &event.payload else {
+        return None;
+    };
+    let record = &value["record"];
+    (value["kind"] == "runtime.operation" && record["operation"] == "message_rewind").then(
+        || {
+            Some((
+                event.id,
+                record["address"].as_str()?,
+                record["target_event_id"].as_u64()?,
+            ))
+        },
+    )?
 }
 
 fn active_conversation_rollbacks(events: &[StoredEvent]) -> HashMap<String, ActiveRollback> {
@@ -343,6 +380,187 @@ pub fn compute_file_revert_plan(
     }
 }
 
+pub fn compute_message_rewind_plan(
+    events: &[StoredEvent],
+    conversation: &str,
+    target_event_id: u64,
+    workspace: &Path,
+) -> crate::Result<RevertPlan> {
+    let canonical_workspace = workspace.canonicalize().map_err(crate::Error::Io)?;
+    let target_pos = events
+        .iter()
+        .position(|event| event.id == target_event_id)
+        .ok_or_else(|| {
+            crate::Error::InvalidArgument("rewind target is no longer available".into())
+        })?;
+    let visible: HashSet<_> = filter_rolled_back_events(events)
+        .into_iter()
+        .map(|event| event.id)
+        .collect();
+    let mut modified = HashMap::new();
+    let turn_owners = event_turn_owners(events);
+    for event in events.iter().skip(target_pos) {
+        if !visible.contains(&event.id) || event_owner(event, &turn_owners) != Some(conversation) {
+            continue;
+        }
+        if let Some(path) = revertable_path(event) {
+            modified
+                .entry(message_rewind_path(&canonical_workspace, &path)?)
+                .or_insert((path, event.id, message_rewind::is_created_file_write(event)));
+        }
+    }
+
+    for event in events.iter().skip(target_pos) {
+        if event_owner(event, &turn_owners) == Some(conversation) {
+            continue;
+        }
+        if let Some(path) = revertable_path(event) {
+            let resolved = message_rewind_comparison_path(&path)?;
+            if modified.contains_key(&resolved) {
+                return Err(crate::Error::InvalidArgument(format!(
+                    "cannot restore {} because another Agent recorded a later change",
+                    path
+                )));
+            }
+        }
+    }
+
+    let mut restores = Vec::new();
+    let mut deletes = Vec::new();
+    let mut unrecoverable = Vec::new();
+    let mut sensitive_files = Vec::new();
+    for (path, (_, first_mutation_id, first_mutation_created)) in modified {
+        reject_symlink_components(&canonical_workspace, &path)?;
+        let target_state = if first_mutation_created {
+            FileStateAt::NotExists
+        } else {
+            let before_mutation: Vec<_> = events
+                .iter()
+                .filter(|event| event.id < first_mutation_id && visible.contains(&event.id))
+                .cloned()
+                .collect();
+            message_rewind::file_state_at(&before_mutation, &path, &canonical_workspace)
+        };
+        let file_name = path.file_name().unwrap_or_default().to_string_lossy();
+        if crate::util::path::is_sensitive_file_name(&file_name) {
+            sensitive_files.push(path.clone());
+        }
+        match target_state {
+            FileStateAt::Exists(old_content) => {
+                let new_content = std::fs::read_to_string(&path).map_err(crate::Error::Io)?;
+                if old_content != new_content {
+                    let old_hash =
+                        crate::tool::builtin::common::content_hash(old_content.as_bytes());
+                    restores.push(FileRestore {
+                        path,
+                        old_content,
+                        old_hash,
+                        new_content_on_plan: new_content,
+                    });
+                }
+            }
+            FileStateAt::NotExists => {
+                if path.exists() {
+                    deletes.push(path);
+                }
+            }
+            FileStateAt::Unrecoverable => unrecoverable.push(path),
+        }
+    }
+
+    Ok(RevertPlan {
+        restores,
+        deletes,
+        unrecoverable,
+        sensitive_files,
+    })
+}
+
+fn revertable_path(event: &StoredEvent) -> Option<String> {
+    let EventPayload::ToolResult {
+        structured: Some(value),
+        ..
+    } = &event.payload
+    else {
+        return None;
+    };
+    REVERTABLE_KINDS
+        .contains(&value["kind"].as_str()?)
+        .then(|| {
+            value["canonical_path"]
+                .as_str()
+                .or_else(|| value["path"].as_str())
+                .map(str::to_owned)
+        })?
+}
+
+fn message_rewind_path(workspace: &Path, path: &str) -> crate::Result<PathBuf> {
+    let candidate = Path::new(path);
+    if !candidate.is_absolute() {
+        return Err(crate::Error::InvalidArgument(format!(
+            "cannot safely restore ambiguous relative file path without its Agent workspace: {path}"
+        )));
+    }
+    let candidate = candidate.to_path_buf();
+    reject_symlink_components(workspace, &candidate)?;
+    resolve_revert_path(workspace, path).ok_or_else(|| {
+        crate::Error::InvalidArgument(format!("file path is outside the workspace: {path}"))
+    })
+}
+
+fn message_rewind_comparison_path(path: &str) -> crate::Result<PathBuf> {
+    let candidate = Path::new(path);
+    if !candidate.is_absolute() {
+        return Err(crate::Error::InvalidArgument(format!(
+            "cannot safely compare ambiguous relative file path without its Agent workspace: {path}"
+        )));
+    }
+    canonicalize_event_path(candidate).map_err(crate::Error::Io)
+}
+
+fn reject_symlink_components(workspace: &Path, path: &Path) -> crate::Result<()> {
+    let relative = path.strip_prefix(workspace).map_err(|_| {
+        crate::Error::InvalidArgument(format!(
+            "file path is outside the workspace: {}",
+            path.display()
+        ))
+    })?;
+    let mut current = workspace.to_path_buf();
+    for component in relative.components() {
+        match component {
+            Component::Normal(name) => current.push(name),
+            Component::CurDir => continue,
+            Component::ParentDir => {
+                current.pop();
+                if !current.starts_with(workspace) {
+                    return Err(crate::Error::InvalidArgument(format!(
+                        "file path is outside the workspace: {}",
+                        path.display()
+                    )));
+                }
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                return Err(crate::Error::InvalidArgument(format!(
+                    "file path is outside the workspace: {}",
+                    path.display()
+                )));
+            }
+        }
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(crate::Error::InvalidArgument(format!(
+                    "cannot restore through a symbolic link: {}",
+                    current.display()
+                )));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(crate::Error::Io(error)),
+        }
+    }
+    Ok(())
+}
+
 fn is_system_dir_path(path: &str) -> bool {
     let normalized = crate::util::path::normalize_path_sep(path);
     normalized
@@ -361,6 +579,18 @@ fn resolve_revert_path(workspace: &Path, event_path: &str) -> Option<PathBuf> {
 }
 
 fn canonicalize_revert_target(workspace: &Path, path: &Path) -> Result<PathBuf, std::io::Error> {
+    let resolved = canonicalize_event_path(path)?;
+    if resolved.starts_with(workspace) {
+        Ok(resolved)
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("path outside workspace: {}", resolved.display()),
+        ))
+    }
+}
+
+fn canonicalize_event_path(path: &Path) -> Result<PathBuf, std::io::Error> {
     let normalized =
         crate::tool::builtin::common::normalize_existing_components(path.to_path_buf());
     let mut existing = normalized.as_path();
@@ -387,14 +617,7 @@ fn canonicalize_revert_target(workspace: &Path, path: &Path) -> Result<PathBuf, 
         resolved.push(component);
     }
 
-    if resolved.starts_with(workspace) {
-        Ok(resolved)
-    } else {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            format!("path outside workspace: {}", resolved.display()),
-        ))
-    }
+    Ok(resolved)
 }
 
 fn find_turn_end_pos(events: &[StoredEvent], target_turn: u64) -> usize {
@@ -426,7 +649,7 @@ fn find_file_state_at(events: &[StoredEvent], canonical_path: &str, at_pos: usiz
                 && s["canonical_path"].as_str() == Some(canonical_path)
                 && s["is_full_file_snapshot"].as_bool().unwrap_or(false)
             {
-                if let Some(text) = s["raw_text_after"].as_str() {
+                if let Some(text) = s["raw_text"].as_str() {
                     return FileStateAt::Exists(text.to_string());
                 }
             }

@@ -1,46 +1,193 @@
 #[cfg(unix)]
 use std::io;
+#[cfg(target_os = "macos")]
+use std::mem::size_of;
+#[cfg(unix)]
+use std::process::ExitStatus;
 
 #[cfg(unix)]
 use tokio::process::{Child, Command};
-
-#[cfg(unix)]
-const SIGNAL_KILL: i32 = 9;
-#[cfg(unix)]
-const NO_SUCH_PROCESS: i32 = 3;
+#[cfg(target_os = "macos")]
+use tokio::signal::unix::{signal, Signal, SignalKind};
 
 #[cfg(unix)]
 pub(super) struct ProcessTree {
     group: Option<i32>,
+    #[cfg(target_os = "macos")]
+    exited: Signal,
 }
 
 #[cfg(unix)]
 impl ProcessTree {
     pub(super) fn spawn(command: &mut Command) -> io::Result<(Child, Self)> {
+        #[cfg(target_os = "macos")]
+        let exited = signal(SignalKind::child())?;
         command.process_group(0).kill_on_drop(true);
         let child = command.spawn()?;
         let group = child.id().map(|id| id as i32);
-        Ok((child, Self { group }))
+        Ok((
+            child,
+            Self {
+                group,
+                #[cfg(target_os = "macos")]
+                exited,
+            },
+        ))
     }
 
-    pub(super) fn terminate(&mut self) -> io::Result<()> {
-        let Some(group) = self.group.take() else {
+    pub(super) fn request_stop(&mut self, child: &mut Child) -> io::Result<()> {
+        #[cfg(target_os = "macos")]
+        {
+            if let Some(pid) = child.id() {
+                self.observe_leader_exit(pid)?;
+                let _ = child.start_kill();
+            } else {
+                self.group = None;
+            }
+            self.signal_group()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let result = self.signal_group();
+            let _ = child.start_kill();
+            if result.is_ok() {
+                self.group = None;
+            }
+            result
+        }
+    }
+
+    pub(super) async fn wait(&mut self, child: &mut Child) -> io::Result<ExitStatus> {
+        #[cfg(target_os = "macos")]
+        while self.group.is_some() {
+            if let Some(status) = self.reap_after_group_sweep(child)? {
+                return Ok(status);
+            }
+            self.exited
+                .recv()
+                .await
+                .ok_or_else(|| io::Error::other("child exit notification closed"))?;
+        }
+        let status = child.wait().await?;
+        self.finish_group()?;
+        Ok(status)
+    }
+
+    pub(super) fn try_wait(&mut self, child: &mut Child) -> io::Result<Option<ExitStatus>> {
+        #[cfg(target_os = "macos")]
+        if self.group.is_some() {
+            return self.reap_after_group_sweep(child);
+        }
+        let status = child.try_wait()?;
+        if status.is_some() {
+            self.finish_group()?;
+        }
+        Ok(status)
+    }
+
+    fn finish_group(&mut self) -> io::Result<()> {
+        let result = self.signal_group();
+        self.group = None;
+        result
+    }
+
+    fn signal_group(&self) -> io::Result<()> {
+        let Some(group) = self.group else {
             return Ok(());
         };
-        unsafe extern "C" {
-            fn kill(pid: i32, signal: i32) -> i32;
-        }
         // NOTE: The positive child id names our dedicated process group; negative pid targets only that group. Rust has no safe group-signal API.
-        let result = unsafe { kill(-group, SIGNAL_KILL) };
+        let result = unsafe { libc::kill(-group, libc::SIGKILL) };
         if result == 0 {
             return Ok(());
         }
         let error = io::Error::last_os_error();
-        if error.raw_os_error() == Some(NO_SUCH_PROCESS) {
-            Ok(())
-        } else {
-            self.group = Some(group);
-            Err(error)
+        match error.raw_os_error() {
+            Some(libc::ESRCH) => Ok(()),
+            #[cfg(target_os = "macos")]
+            Some(libc::EPERM) if group_has_no_live_members(group) => Ok(()),
+            _ => Err(error),
+        }
+    }
+
+    #[cfg(any(target_os = "macos", all(target_os = "linux", test)))]
+    fn reap_after_group_sweep(&mut self, child: &mut Child) -> io::Result<Option<ExitStatus>> {
+        let Some(pid) = child.id() else {
+            self.group = None;
+            return child.try_wait();
+        };
+        if !self.observe_leader_exit(pid)? {
+            return Ok(None);
+        }
+        // NOTE: Darwin snapshots group membership for each signal. Sweep again before releasing the exited leader's PID.
+        self.signal_group()?;
+        self.group = None;
+        child.try_wait()
+    }
+
+    #[cfg(any(target_os = "macos", all(target_os = "linux", test)))]
+    fn observe_leader_exit(&mut self, pid: u32) -> io::Result<bool> {
+        exited_without_reaping(pid).inspect_err(|error| {
+            if error.raw_os_error() == Some(libc::ECHILD) {
+                self.group = None;
+            }
+        })
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn group_has_no_live_members(group: libc::pid_t) -> bool {
+    // NOTE: A null buffer requests the capacity in PID slots. The leader's PID is still owned.
+    let capacity = unsafe { libc::proc_listpgrppids(group, std::ptr::null_mut(), 0) };
+    if capacity <= 0 {
+        return false;
+    }
+    let Some(bytes) = capacity.checked_mul(size_of::<libc::pid_t>() as libc::c_int) else {
+        return false;
+    };
+    let mut members = vec![0; capacity as usize];
+    // NOTE: The buffer has the advertised length. Clear thread-local errno to distinguish an empty list from an error.
+    let count = unsafe {
+        *libc::__error() = 0;
+        libc::proc_listpgrppids(group, members.as_mut_ptr().cast(), bytes)
+    };
+    if count == 0 {
+        return io::Error::last_os_error().raw_os_error() == Some(0);
+    }
+    // Darwin's group signal returns EPERM even if the only members are zombies.
+    count > 0
+        && count < capacity
+        && members[..count as usize].iter().all(|&pid| {
+            // NOTE: getpgid queries the PID without signalling it and excludes zombies on Darwin.
+            let member_group = unsafe { libc::getpgid(pid) };
+            if member_group == -1 {
+                io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+            } else {
+                member_group != group
+            }
+        })
+}
+
+#[cfg(any(target_os = "macos", all(target_os = "linux", test)))]
+fn exited_without_reaping(pid: u32) -> io::Result<bool> {
+    loop {
+        // NOTE: Zero is the no-event sentinel. waitid writes siginfo_t for this owned child without consuming its exit status.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // NOTE: The flags keep this nonblocking and leave the observed child's PID owned until the subsequent reap.
+        let result = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        };
+        if result == 0 {
+            // NOTE: The pid field is valid in the initialized event or remains the zero sentinel.
+            return Ok(unsafe { info.si_pid() } != 0);
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
         }
     }
 }
@@ -48,7 +195,16 @@ impl ProcessTree {
 #[cfg(unix)]
 impl Drop for ProcessTree {
     fn drop(&mut self) {
-        let _ = self.terminate();
+        #[cfg(target_os = "macos")]
+        {
+            let Some(group) = self.group else {
+                return;
+            };
+            if self.observe_leader_exit(group as u32).is_err() {
+                return;
+            }
+        }
+        let _ = self.finish_group();
     }
 }
 
@@ -57,6 +213,7 @@ mod windows {
     use std::io;
     use std::mem::{size_of, zeroed};
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use std::process::ExitStatus;
     use std::ptr;
 
     use tokio::process::{Child, Command};
@@ -70,7 +227,7 @@ mod windows {
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
     use windows_sys::Win32::System::Threading::{
-        OpenThread, ResumeThread, CREATE_SUSPENDED, THREAD_SUSPEND_RESUME,
+        OpenThread, ResumeThread, CREATE_NO_WINDOW, CREATE_SUSPENDED, THREAD_SUSPEND_RESUME,
     };
 
     pub(crate) struct ProcessTree {
@@ -80,7 +237,9 @@ mod windows {
     impl ProcessTree {
         pub(crate) fn spawn(command: &mut Command) -> io::Result<(Child, Self)> {
             let job = create_job()?;
-            command.creation_flags(CREATE_SUSPENDED).kill_on_drop(true);
+            command
+                .creation_flags(CREATE_SUSPENDED | CREATE_NO_WINDOW)
+                .kill_on_drop(true);
             let mut child = command.spawn()?;
             let result = assign_and_resume(&job, &child);
             if let Err(error) = result {
@@ -90,9 +249,24 @@ mod windows {
             Ok((child, Self { job: Some(job) }))
         }
 
-        pub(crate) fn terminate(&mut self) -> io::Result<()> {
+        pub(crate) fn request_stop(&mut self, child: &mut Child) -> io::Result<()> {
             self.job.take();
+            let _ = child.start_kill();
             Ok(())
+        }
+
+        pub(crate) async fn wait(&mut self, child: &mut Child) -> io::Result<ExitStatus> {
+            let status = child.wait().await?;
+            self.job.take();
+            Ok(status)
+        }
+
+        pub(crate) fn try_wait(&mut self, child: &mut Child) -> io::Result<Option<ExitStatus>> {
+            let status = child.try_wait()?;
+            if status.is_some() {
+                self.job.take();
+            }
+            Ok(status)
         }
     }
 
@@ -180,3 +354,79 @@ mod windows {
 
 #[cfg(windows)]
 pub(super) use windows::ProcessTree;
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod tests {
+    use std::os::unix::process::ExitStatusExt;
+
+    use tokio::process::Command;
+    use tokio::time::{sleep, timeout, Duration};
+
+    use super::ProcessTree;
+    #[cfg(target_os = "macos")]
+    use super::{exited_without_reaping, group_has_no_live_members};
+
+    #[tokio::test]
+    async fn pre_reap_sweep_stops_a_process_that_joined_after_the_first_signal() {
+        let (mut leader, mut tree) = ProcessTree::spawn(Command::new("sleep").arg("30")).unwrap();
+        let group = leader.id().unwrap() as i32;
+        tree.signal_group().unwrap();
+
+        let mut late = Command::new("sleep")
+            .arg("30")
+            .process_group(group)
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        assert!(late.try_wait().unwrap().is_none());
+        let leader_status = timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(status) = tree.reap_after_group_sweep(&mut leader).unwrap() {
+                    break status;
+                }
+                sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let late_status = timeout(Duration::from_secs(2), late.wait())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(Some(libc::SIGKILL), leader_status.signal());
+        assert_eq!(Some(libc::SIGKILL), late_status.signal());
+        assert_eq!(None, leader.id());
+        assert_eq!(None, tree.group);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn zombie_only_group_can_be_swept_before_reaping_the_leader() {
+        let (mut leader, mut tree) = ProcessTree::spawn(Command::new("sleep").arg("30")).unwrap();
+        let group = leader.id().unwrap() as i32;
+        let mut sibling = Command::new("sh")
+            .args(["-c", "exit 7"])
+            .process_group(group)
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let sibling_pid = sibling.id().unwrap();
+        timeout(Duration::from_secs(2), async {
+            while !exited_without_reaping(sibling_pid).unwrap() {
+                sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!group_has_no_live_members(group));
+
+        tree.request_stop(&mut leader).unwrap();
+        let status = timeout(Duration::from_secs(2), tree.wait(&mut leader))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(Some(libc::SIGKILL), status.signal());
+        assert_eq!(Some(7), sibling.try_wait().unwrap().unwrap().code());
+        assert_eq!(None, tree.group);
+    }
+}

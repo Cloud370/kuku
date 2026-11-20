@@ -1,122 +1,151 @@
-# Server API
+# HTTP 服务接口
 
-## 启动服务
+终端、脚本和浏览器客户端共用 HTTP Session 契约。服务负责执行，并在服务端机器上解析工作区、模型选择和模型凭据。观察客户端断开后，服务可以继续执行，客户端随后仍可重连。关于本地服务发现与显式启动方式，见[运行服务](../guides/run-the-server.md)。
 
-默认地址为 `127.0.0.1:17777`。监听非回环地址需要 `--password`。
+## 认证与版本
 
-## 认证
+客户端访问接口时发送 `Authorization: Bearer TOKEN`，回环连接也需要认证。`kuku web` 打开受管本地服务的内嵌界面时，通过 URL 片段传递短时一次性票据。页面清除片段，将票据交换成独立的浏览器令牌，并保存在该标签页的 `sessionStorage`。刷新同一标签页时可继续用该令牌连接同一服务实例。显式启动的服务使用其配置的访问令牌。服务的默认工具策略信任已认证的用户，允许文件和命令工具。
 
-回环客户端跳过密码检查。远程客户端发送 `Authorization: Bearer <token>`。认证失败以 HTTP 200 返回 `{"ok":false,"code":"auth_required","message":"password required"}`。
+公开的 `GET /health` 返回 `version`、`protocol_version` 和 `management_version`。`protocol_version` 描述 Session API。升级受管服务时，即使 Session API 版本不同，仍可以查看服务状态和请求正常重启。缺少令牌或令牌无效时，返回 `401` 和 `auth_required`。受管服务还会检查回环主机和请求携带的浏览器来源。
 
-默认单用户服务使用 trusted-local 工具授权。嵌入宿主可通过 `AppState.authorizer` 允许、拒绝或延后精确工具动作。
-
-## 端点
+## 接口一览
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
-| `GET` | `/health` | 健康检查 |
-| `POST` | `/runs` | 提交工作并观察 NDJSON |
-| `DELETE` | `/runs/{id}` | 取消并等待所拥有工作的清理 |
-| `POST` | `/runs/{id}/responses` | 回复待决问题或授权 |
-| `POST` | `/sessions/{id}/responses` | 重开持久 Session 并回复精确待决请求 |
-| `GET` | `/sessions` | 列出保留的 Session |
+| `GET` | `/health` | 构建与协议版本 |
+| `GET` | `/service/status` | 生效的服务身份与活动 |
+| `GET` | `/service/model-default-plan` | 根据受管服务配置验证仅本地写入的模型默认计划 |
+| `POST` | `/service/restart` | 请求受管服务释放 Session 后退出，以便正常替换 |
+| `POST` | `/service/browser-ticket` | 认证后签发一次性浏览器接入票据 |
+| `POST` | `/service/browser-session` | 在受管浏览器来源交换票据 |
+| `GET` | `/sessions` | 列出保留的 Session，可按 `workspace` 或 `search` 过滤 |
 | `DELETE` | `/sessions/{id}` | 删除已关闭的 Session |
-| `GET` | `/sessions/{id}/events` | 读取有界持久页及可选近期进度 |
-| `GET` | `/sessions/{id}/conversations` | 查看一个 Session 中的稳定 Agent |
+| `POST` | `/sessions/{id}/commands` | 提交持久命令 |
+| `GET` | `/sessions/{id}/receipts/{command_id}` | 查找已提交的命令回执 |
+| `GET` | `/sessions/{id}/agents` | 查看工作区内该 Session 的 Agent 摘要 |
+| `GET` | `/sessions/{id}/snapshot` | 与已提交游标对应的 Agent 和队列状态 |
+| `GET` | `/sessions/{id}/history` | 读取游标之前的对话条目 |
+| `GET` | `/sessions/{id}/history/rewinds/{rewind_event_id}` | 只读查看一次已提交的消息回退，不改变活动历史 |
+| `GET` | `/sessions/{id}/observe` | 观察游标之后的已提交条目和临时进度 |
+| `GET` | `/sessions/{id}/events` | 分页读取原始已提交事实 |
+| `GET` | `/sessions/{id}/outputs/{output_id}` | 有界读取保留的工具输出 |
+| `GET` | `/sessions/{id}/jobs` | 列出所选 Agent 的后台 Job |
+| `GET` | `/sessions/{id}/jobs/{job_id}` | 查看 Job 及可用的结果 |
+| `DELETE` | `/sessions/{id}/jobs/{job_id}` | 取消 Job 并返回其终态 |
+| `GET` | `/sessions/{id}/values` | 列出所选 Agent 的命名值 |
+| `PUT` | `/sessions/{id}/values/{name}` | 绑定命名值或显式替换来源 |
+| `GET` | `/models` | 已配置的模型目录 |
+| `GET` | `/models/resolve` | 解析候选 Agent 配置的生效设置 |
+| `GET` | `/workspaces` | 列出工作区 |
+| `GET` | `/workspaces/resolve`、`/workspaces/files`、`/workspaces/skills` | 解析服务端路径，或查找工作区文件与 Skill |
 
-请求体上限为 10 MB，SDK 的输入和执行限制仍然生效。
+状态响应包含构建和协议版本、`instance_id`、`pid`、生效的 `data_dir` 和 `config_path`、`draining` 以及 `busy`。受管服务重启返回 `202` 表示已释放 writer，进程正在停止。`409` 和 `service_busy` 在 `busy` 列出正在进行的工作，包括运行中的 Job。受管客户端会等旧进程释放服务租约后启动替代进程。
 
-## `GET /health`
+`GET /service/model-default-plan` 仅适用于存在活动配置文件的受管服务。它要求常规 Bearer 认证，并执行相同的回环主机和来源检查，响应包含 `Cache-Control: no-store`，只接受 `connection`、`model` 和 `config_sha256` 查询字段。服务在自身进程环境中读取活动配置并验证请求路由；`config_sha256` 必须与客户端持有的原始字节一致。响应只包含 `tier`、`overwrite_user_default` 和 `config_sha256`，不会写入文件、解析凭据或发送模型请求。客户端仍负责本地且带并发保护的配置编辑。配置已变化、路由不可用、服务非受管或配置不可读时，会返回不泄露敏感信息的通用错误。
 
-```json
-{"ok":true,"version":"0.1.0","workspace":"/server/working/directory"}
-```
+## 命令与回执
 
-## `POST /runs`
+首次发送前选定唯一的 Session ID 和命令 ID。请求体包含服务端工作区的绝对路径、目标 Agent 地址和命令标识。向新 Session 发送时，在 `create` 中写入 Agent 初始配置。
 
 ```json
 {
-  "prompt": "check this project",
   "workspace": "/code/my-project",
-  "session_id": "optional-session",
-  "agent": "reviewer",
-  "connection": "named-connection",
-  "model": "exact-model-id",
-  "command_id": "optional-caller-command"
+  "agent": "main",
+  "command_id": "input-389cd599",
+  "type": "send",
+  "text": "Summarize this directory",
+  "timing": "steer",
+  "create": {}
 }
 ```
 
-`workspace` 必须是目录。`session_id` 可选，`agent` 默认 `main`。稳定地址为扁平的小写 ASCII 字母、数字、`-` 或 `_`，最多 64 字节。输入仍接受 `conversation` 作为 `agent` 别名。
+`create: {}` 使用已配置的默认值。初次发送时在 `create` 中指定模型设置，已有 Agent 可使用显式 `configure` 命令。模型选择由 [SDK](sdk.md#操作) 解析。Agent 的上下文和设置会跨客户端保留。
 
-模型选择复用 SDK 解析器。可选字段为 `tier`、`connection`、`model`、`reasoning_effort`、`service_tier` 和 `max_output_tokens`。`no_agents`、`no_skills` 禁用对应工具面。精确连接按配置名称选择端点，不因协议相同而选用其他连接。重开时不传模型参数会保留该 Agent 的配置；显式修改只影响该 Agent。切换路由时先清除旧的 Agent 局部 reasoning/service 覆盖值，再应用新显式值。
+| 命令 `type` | 其他字段 | 行为 |
+|---|---|---|
+| `send` | `text`，可选 `timing`、`create` 和 `values` | 持久投递。默认的 `steer` 可在下一个安全的模型请求边界接纳，`next_turn` 等待下一轮。 |
+| `create_agent` | `config` | 按地址创建拥有独立上下文的 Agent。 |
+| `configure` | `config` | 在安全边界修改模型或默认值。 |
+| `reply_question` | `request_id`、`text` | 回答精确的待决问题。 |
+| `reply_permission` | `request_id`、`allow` | 决定精确的待决授权。 |
+| `withdraw` | `input_command_id` | 撤回排队输入或返回其当前状态。 |
+| `replace_queued` | `input_command_id`、`text` | 在接纳前替换文本，保留队列位置和投递时机。 |
+| `advance` | | 显式继续 Agent 的工作。 |
+| `cancel` | `execution_id` | 取消观察到的那次执行并等待清理。 |
 
-`command_id` 接受 1–100 字节，是 SDK 输入幂等标识，返回的 `run_id` 标识本次 HTTP 执行控制句柄，与 Session 内命令标识分开。回执确认输入已经持久化，执行终结事实随后产生。重复使用同一 Session 和 Agent 延续其上下文；同一 Session 中其他地址具有独立上下文，可并发执行。对已在运行或等待的地址提交新命令会明确失败。对已停止/中断的目标提交新命令会显式推进它。重试同一输入命令时返回 HTTP JSON，包含 `ok`、`replayed: true`、原始持久 `receipt`，以及仍被保留时的 `run_id`。重试不会再占执行槽位、修改配置或重复派发；输入或显式配置的冲突复用会失败。SDK 调用方仍可在安全边界接纳新输入，HTTP 宿主维持每个 Agent 一个活动控制句柄。
+命令成功时返回含 `ok`、`receipt` 和 `replayed` 的 JSON。回执包含 `command_id`、`event_id` 和 `agent`。输入命令可以报告 `status` 为 `queued`、`accepted` 或 `withdrawn`。持久回执表示已经投递。模型接纳和执行结算分别记录。
 
-新执行响应为 `application/x-ndjson`；仅确认回执时返回 JSON。最后一个 HTTP run 完成后，服务会等待该 Session 中已在运行的 Agent 结算，再关闭资源。等待和中断的 Agent 保持休眠。HTTP 观察者断开后 Session 继续执行，关闭或放慢客户端不会成为执行链的控制者。
+在给已有 Agent 发送输入的同时修改模型选择时，传入 `config_patch`。若脚本需要在已有 Session 中创建缺失的 Agent，还要传入 `create_agent_if_missing: true`。新 Session 使用 `create` 设置初始 Agent，也可以用 `prompts_dir` 指定服务端自定义 Prompt 资源的绝对路径。
 
-## NDJSON 事件
+通过 `send` 的 `bootstrap_skill` 为该条输入指定 Skill，在接纳时应用。
 
-`run_start` 包含 `run_id`、`session_id`、`agent` 和持久输入 `receipt`。瞬时更新包括 `turn_start`、`model_request`、`text`、`thinking`、`tool_start`、`tool_output`、`tool_end` 和 `log`。
+`replace_queued` 在同一次提交中记录新回执，并将原输入标为已撤回。若原输入已经接纳或因其他原因离开队列，命令返回 `409` 和 `input_not_queued`。
 
-`committed` 通过 `id` 和 `kind` 标识持久事件，完整 payload 从事件端点读取。`lagged` 报告丢失的瞬时更新，可使用持久游标重新读取。队列有界：广播最多 256 条，近期缓冲最多 200 条；近期缓冲每个 run 不超过 1 MiB。瞬时进度可能丢失，已提交事实与终结响应仍可通过 Session 日志检查。
+如果没有收到响应，带上 `workspace` 查询回执接口。缺失的回执返回 HTTP `404` 和 `receipt_not_found`。要重发时，保持原 Session、Agent、命令标识和请求内容。重放已提交命令会返回原回执。以相同的命令标识提交冲突内容会返回 HTTP `409`。`?replay_only=true` 用于校验重放请求，命令尚未提交时返回 `receipt_not_found`。
 
-问题发送带精确 `id`、`agent` 和 `text` 的 `question` 事件；延后授权发送带匹配标识的 `permission`。每个待决请求标识在一个保留的 HTTP 控制中只通知一次，问题与授权并存时也分别通知；回答问题不会决定授权。等待会释放服务执行槽位，不会因超时隐式授权或拒绝。`question` 和 `permission` 都不是终结事件，原流与 HTTP 控制仍保持打开，等待匹配的回复或取消。
+客户端错误返回 `{"ok":false,"code":"...","message":"..."}`。无效请求返回 `400`，不存在的资源返回 `404`，冲突操作返回 `409`，执行名额耗尽返回 `429`。过期的执行标识或不匹配的回复会触发冲突。投递结果不确定时，保留原命令标识用于重试。
 
-终结事件为 `done`、`cancelled` 或 `error`。`done` 位于持久结算之后，含 `session_id`、`agent`、`text`、`turn`、累计 Provider `usage` 和 Agent `config`。`conversation` 为兼容现有消费者而镜像 Agent 地址。Turn 完成不代表任务成功，应检查真实文件与判定命令。
+## 快照、历史与观察
 
-```json
-{"type":"run_start","run_id":"http-run-1","session_id":"...","agent":"main","receipt":{"command_id":"command-1","event_id":3,"agent":"main"}}
-{"type":"text","content":"hello","agent":"main"}
-{"type":"done","session_id":"...","agent":"main","conversation":"main","text":"done","turn":1,"usage":{"model_requests":1},"config":{}}
-```
+1. 请求 `/snapshot?workspace=...&agent=...`。JSON 响应包含 `session_id`、`workspace`、已提交 `cursor`、所选 `agent` 快照、`agents` 摘要、`pending` 输入和模型 `selection`。模型设置解析失败时返回 `selection_error`。Agent 状态包含相应的执行标识以及待决问题或授权。每个待接纳条目都含有 `receipt` 和 `input`。Agent 不存在时返回 `404` 和 `agent_not_found`。`/agents?workspace=...` 可直接取得所有 Agent 摘要及游标。加上 `progress=true` 可请求快照游标处已观察到的执行阶段。`progress.phase` 可以是 `waiting_for_model`、`thinking`、`streaming`、`tool_arguments`、`running_tools`、`retrying_model`、`retry_stopped` 或 `retry_decision_unknown`。重试阶段会带有 `retry` 对象，包含持久化的尝试编号、失败类型或恢复原因、请求标识和可用策略元数据。停止重试时 `will_retry` 为 `false`。
+2. 请求 `/history?workspace=...&agent=...&before=CURSOR_PLUS_ONE&limit=...`，取得截至该快照、按升序排列的最新一页。用返回的 `next_before` 读取上一页。`before` 为排他游标。`entries` 只包含活动对话历史；单独的 `rewind_groups` 默认是空数组，包含 `rewind_event_id`、原始时间线位置 `target_event_id`、`agent`、可选的显示轮次 `turn_number` 和 `entry_count`。组标题按目标消息的原始位置与活动条目共同分页，并计入页面条目数与字节上限。重试决定和模型恢复会以 `type:"retry"` 条目及结构化 `retry` 对象呈现；历史记录不代表重试仍在进行。
+3. 展开某组时按需请求 `/history/rewinds/{rewind_event_id}?workspace=...&agent=...&before=...&limit=...`。必须提供与该组匹配的 `agent`。`before` 是可选的排他游标，`limit` 与 `/history` 一样有界。响应包含 `entries` 和 `next_before`，并复用普通历史条目的显示投影。重叠范围中的每个条目只归属于同一 Agent 的第一个适用回退。只读分页不会把隐藏条目放回活动历史或模型上下文；后续回退也不会使早期回退组无法查看。
+4. 连接 `/observe?workspace=...&agent=...&after=CURSOR`，接收包含快照之后提交记录的 NDJSON。省略 `agent` 可以观察整个 Session。从已提交的条目更新续读游标。断开或落后时，从最后的已提交游标重连。对所选 Agent 设置 `include_agent_activity=true`，同一订阅即可收到其他 Agent 的活动。其增量文本及结算预览有长度上限，工具输出仅在切换到对应 Agent 后提供。重连后，Agent 摘要提供最近的输出或错误预览。
 
-Provider 用量及未知报告遵循 [Session SDK](../how-it-works/sessions.md)。活动 `log` 为可观察性记录，与持久执行事实分开存放。
+所选 Agent 的 `agent.usage` 包含累计 token 数，以及报告输入或输出量的请求数。`cache_measured_input_tokens` 和 `cache_measured_read_tokens` 分别汇总同一批提供有效成对计数的请求中的输入与缓存读取量。有测量时，`latest_request` 提供同一次请求的 `input_tokens`、`output_tokens`、`context_window_tokens` 和 `elapsed_us`。旧记录可能缺少可选测量字段。[终端用量字段](cli.md#终端界面)
 
-## `DELETE /runs/{id}`
+有记录时，`agent.turn_started_at_ms` 是最近轮次首次接纳输入的时间，单位为自 Unix 纪元起的毫秒数。轮次结算后，`agent.turn_elapsed_ms` 提供该轮最终耗时，单位为毫秒。新轮次的已提交 `inputs_accepted` 帧也可带有 `turn_started_at_ms`。
 
-取消及清理完成后返回 `{"ok":true}`。run 不存在返回 `session_not_found`；清理失败返回 `cleanup_failed` 和错误消息。服务退出时关闭 Session、保留待决等待、等待清理并报告失败。
+`committed` 行包含 `id` 和 `kind`，适用时还包含 Agent 地址、对话条目或状态变更标记。`live` 行包含 `agent`、`execution_id`、`turn`、`cursor` 和临时 `event`。核对它们与当前视图的标识，收到正式结果后替换临时预览。`lagged` 行包含跳过的临时观察数 `skipped`。观察流还可以发送 `heartbeat` 或 `error` 行。观察落后后仍可读取持久状态。
 
-## `POST /runs/{id}/responses`
+已提交帧可通过 `delivery` 将队列变化关联到命令标识。`accepted` 带有 `input_ids`，`withdrawn` 带有 `input_id`，`replaced` 带有 `input_id` 和 `replacement_id`。
 
-```json
-{"interaction_id":"exact-pending-request","agent":"reviewer","choice":"once","command_id":"reply-1"}
-```
+带 `progress=true` 的快照可以包含所选 Agent 的 `reply_preview`，其中有 `execution_id`、`turn`、可选的 `turn_number`、`phase`、`text` 和 `truncated`。阶段为 `thinking`、`streaming` 或 `tool_arguments`。文本是活动请求的可见回复 UTF-8 前缀，最多 64 KiB。`truncated` 表示回复已经超过保留前缀的上限。 所选 Agent 的可选字段 `reasoning_preview` 保存服务方公开的思考文字或摘要的有界前缀，实时 `reasoning_preview` 事件追加该文本。已提交的助手条目也可包含此字段。
 
-授权的 `choice` 为 `once` 或 `deny`；问题使用 `answer` 并提供 `text`。`agent` 可选，提供时必须匹配原 run；`conversation` 仍为别名。回复不会隐含 Session/项目范围授权。调用方指定 `command_id` 可安全重试同一回复。错误或过期请求不会推进 Agent。
+重试进度投影支持持久化的 `runtime.model_retry` 和 `model.recovery` 记录。此分支不包含扩展 `runtime.model_retry` 格式的核心生产端更新，因此当前运行时事件仍使用旧格式。旧记录缺少 `phase` 时按 `started` 处理；旧记录缺少 `will_retry` 时沿用 started 事件语义。扩展格式仅以 `will_retry` 表示是否会发送下一请求。`delay_ms` 仅在 `phase:"waiting"` 时表示策略等待时长；客户端可结合该事件的 `ts` 推导剩余时间，不得从供应商响应头推断等待时间。
 
-当前打开的服务 run 通过原流继续。成功时返回 JSON `{"ok":true,"receipt":{...}}`。
+在同一快照游标处，`agents` 中其他 Agent 的条目也可包含 `progress.phase`。`streaming` 条目的 `progress.preview` 包含该 Agent 当前回复开头的 UTF-8 文本，最多 512 字节。`thinking` 与 `tool_arguments` 仅报告活动。
 
-## `POST /sessions/{id}/responses`
+指定 Agent 且设置 `include_agent_activity=true` 时，观察流也可以发送 `event.type` 为 `reply_preview` 的 `live` 行。阶段放在 `event.phase`，前缀放在 `event.content`，截断标志放在 `event.truncated`。用该前缀替换对应的内存预览，再应用后续增量。取得前缀与开始接收新增量共用同一接入边界。在此订阅范围内，实时 `thinking` 与 `tool_arguments` 事件仅报告活动。工具从已提交的派发开始执行。续读游标只随已提交记录推进。
 
-服务重启后使用持久 Session 标识，无需旧 HTTP `run_id`。请求沿用回复字段，并必须提供 `workspace`：
+历史条目包含持久的 `id`、Agent 地址、可选的 Turn 标识、在该 Agent 内的显示序号（已知时提供 `turn_number`），以及 `user`、`assistant`、`tool_call`、`tool_result`、`question`、`permission`、`question_reply`、`permission_reply`、`status` 或 `error` 等 `type`。工具结果可以包含摘要、结构化详情以及保留的 `output_id`。已提交条目也可以带有运行时 `operation` 或记录该轮结果的 `settlement`。
 
-```json
-{"workspace":"/code/my-project","agent":"reviewer","interaction_id":"exact-pending-request","choice":"answer","text":"the requested information","command_id":"reply-1"}
-```
+在 `user` 条目中，`agent` 标识接收者。可信运行时输入记录了发送 Agent 时，`from` 包含该 Agent 在 Session 内的地址。开启一轮的输入也保留此字段。
 
-Session 必须已存在，`agent` 默认 `main`。宿主重开该 Session，调用匹配的 SDK 回复操作，并在续接期间保留同一运行时。再次等待时，流与控制保持打开，同时释放执行容量。新的 HTTP 执行返回普通 NDJSON 流和新 `run_id`，`run_start.receipt` 指向持久回复。若该 Agent 已有保留的 HTTP 控制，则返回含该 `run_id` 的 JSON 回执，并通过原流继续。重复回复在没有 HTTP 控制时返回 JSON `{"ok":true,"replayed":true,"run_id":null,"receipt":{...}}`，仍有控制时返回其现有 `run_id`。通过保留控制提交新回复时，回执结构相同，`replayed:false`。两种重复路径都不产生第二次续接。错误/过期请求和冲突重试均不会派发模型或工具。
+显式打断可以产生 `status` 为 `"interrupted"` 的 `status` 条目，包含 `execution_id`，也会提供已知的轮次标识和序号。`text` 保留最多 64 KiB 的中断回复，未保留可见正文时为 `null`。`truncated` 表示中断回复超过上限。原始日志可用 `stop_event_id` 将 `turn.cancelled` 对应到停止记录。
 
-## `GET /sessions`
+已结算的轮次可以有 `turn_summary` 条目。显式打断轮次时，中断的 `status` 条目可以附带同样的摘要。`turn_summary` 对象的 `tool_calls` 是已提交的工具调用数，包括等待授权的调用。可用测量包括从接纳到结算的 `elapsed_ms`、所有模型请求均报告相应计数时的 `input_tokens` 或 `output_tokens`，以及按成对输入与缓存读取计数计算的 `cache_hit_percent`。
 
-可选 `workspace` 查询用于过滤。响应为 `{"ok":true,"sessions":[]}`。Session 条目包含 `session_id`、`workspace`、`title`、`created_at`、`turn_count`、`status`、`mtime` 和 `size`。
+Agent 快照和摘要可以包含 `admitted_task` 和 `queued_task`。这两个可为空的字符串分别摘录最近接纳的任务输入和仍在排队的最新任务输入，摘录长度有限。任务摘录不含问题回复。排队数量和待决事项分别读取 `pending_inputs`、`question` 和 `permission`。
 
-## `GET /sessions/{id}/conversations`
+回复 `ask_user` 或待决工具授权时，使用快照里的请求标识。并发的回复逐一核对同一待决请求。重开 Session 会保留待决请求和排队输入。已派发但没有确认结果的工具可能已经修改文件或触发副作用。继续中断的工作前检查工作区。[Session](../how-it-works/sessions.md)
 
-可选 `workspace` 指定 Session 位置。保留的端点返回 `{"ok":true,"session_id":"...","conversations":[]}`。每项报告 `agent`/`conversation`、`status`、`pending_inputs`、待决 `permission`/`question`、`config` 和 `usage`。读取不会推进执行或获取第二个 Session 运行时。状态遵循[离线账本快照](sdk.md#操作)，仅凭它无法判定活动 HTTP 执行是否已经停止。
+## 原始事件与工具输出
 
-## `DELETE /sessions/{id}`
+`/events?workspace=...&after=0&limit=100` 返回 `events` 和 `next_after`，供核查原始事实。每条记录含 `id` 和 `payload`。可用 `agent` 过滤扫描页，即使没有匹配条目，`next_after` 也会前移。日志结构见 [Session 事件](events.md)。
 
-可选 `workspace` 指定位置。常见错误为 `session_locked`、`session_not_found` 和 `internal`。
+持久事件页可能包含直接 `Query` 或子 Agent 查询因输出上限重试产生的 `model.recovery`。这些记录遵循同一 `agent` 过滤规则，含义见 [Session 事件](events.md)。
 
-## `GET /sessions/{id}/events`
+通过 `/outputs/{output_id}` 读取已知工具输出，传入 `workspace` 及可选的 `agent`（默认 `main`）、`offset` 和 `max_bytes`。Agent 必须持有或收到过该输出。可用 `search` 在读取范围内作字面搜索。响应将数据块放在 `output` 中。当 `output.has_more` 为 true 时，传入 `output.next_offset` 续读。[保留输出](tools.md)
 
-查询字段：
+## 后台 Job
 
-- `after`：排他的持久事件游标，默认 0。
-- `limit`：最多扫描的记录数，默认 100，接受 1–256。
-- `agent` 或 `conversation`：有界账本页内的地址过滤。
-- `workspace`：Session 位置。
+Job 路由均要求 `workspace` 和 `agent` 查询参数。`GET /sessions/{id}/jobs` 返回 `{ "jobs": [...] }`，其中包含该 Agent 最近的 Job 和所有运行中 Job 的元信息。单个 Job 查询直接返回快照，终态 `result` 可用时一并返回。若快照包含 `output_id`，可通过输出端点读取保留的命令输出。查询未知 Job 或其他 Agent 的 Job 会返回 `404` 和 `job_not_found`。
 
-响应始终包含 `events`、`next_after` 和 `active_stream`。即使过滤排除了所有事件，`next_after` 仍为最后扫描到的账本游标，应将其用于下一页。持久事件保留 `id` 和 `payload`；近期活动进度可为空，不替代持久记录。
+`DELETE /sessions/{id}/jobs/{job_id}` 等待指定执行结束并返回结果快照。对已终结的 Job 重复请求会返回已有结果。两个 GET 路由可以直接读取已关闭的 Session。若本服务尚未打开 Session，取消其中未终结的 Job 会返回 `409` 和 `job_not_active`。
 
-其他进程持有 Session writer 时可能阻止读取；服务会明确返回资源冲突，不启动第二个 writer。
+归属 Agent 的历史和观察流包含 `job_finished` 条目，带有 `job_id`、`status`、`summary`、原始 `turn` 以及可用的 `output_id`。此条目可能在对应的 Turn 结束后到达。
+
+## 命名值
+
+`GET /sessions/{id}/values?workspace=...&agent=...` 返回 `{ "values": [...] }`。每项含 `name`、`kind` 和 `reference`（`id`、`offset`、`bytes`）。使用同一 Agent 的输出端点可读取正文。
+
+`PUT /sessions/{id}/values/{name}` 接受包含 `workspace`、`agent`、`source` 和可选 `replace`（默认 `false`）的 JSON 对象。`source` 包含 `kind` 和 `value`。`kind` 可取 `text` 表示 UTF-8 字符串、`json` 表示 JSON 值、`bytes` 表示字节数值数组，或 `output` 表示已有输出 ID。对于新 Session，可以用 `create` 传入初始 `main` Agent 的配置，在首次输入前保存。响应返回保存的值元信息。
+
+对已有 Agent 使用 `send` 时，可在 `values` 中传入所选的 `reference` 对象。命令将这些精确引用绑定到提交的输入。见[命名会话值](tools.md#命名会话值)。
+
+## 查找模型和工作区
+
+`/models` 返回 `default_tier`、`connections` 和 `tiers`。连接有 `name` 和线路 `protocol`。模型档包含 `name`、`connection`、`model` 和 `purpose`，以及设置与能力或解析错误。向 `/models/resolve` 传入 `tier`、`connection`、`model`、`reasoning_effort` 或 `service_tier` 等模型选择字段，可得到解析后的 `selection`。
+
+`/workspaces` 返回 `workspaces`。向 `/workspaces/resolve` 将已有目录的绝对路径作为 `workspace` 传入，可取得规范路径。`/workspaces/files` 和 `/workspaces/skills` 还接受 `query` 过滤参数，分别返回 `paths` 和 `skills`。匹配的文件是工作区相对路径，匹配的 Skill 包含名称和描述。

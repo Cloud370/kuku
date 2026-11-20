@@ -4,7 +4,7 @@
 
 ## 选择验证范围
 
-按改动行为选择检查。持续维护的选择入口使用 Python 3.10+，将有界证据写入已忽略的 `benchmarks/acceptance/` 目录：
+按改动行为选择检查。服务端测试夹具复用一个本地 HTTP 客户端，就绪等待共用用例截止时间，不把单个阶段的启动耗时当作性能断言。失败快照只保留有界执行状态，排除配置和长对话文本。每项不变量只保留一处主要覆盖：重试上限与退避交给已有虚拟时钟 provider 测试，Session 测试负责中断与显式恢复，不再用另一份真实等待退避的集成测试重复完整组合。持续维护的选择入口使用 Python 3.10+，将有界证据写入已忽略的 `benchmarks/acceptance/` 目录：
 
 ```bash
 python3 scripts/acceptance/run.py contract
@@ -12,16 +12,28 @@ python3 scripts/acceptance/run.py protocol
 python3 scripts/acceptance/run.py integration
 ```
 
-`contract` 启用 `kuku/test_support`，运行 SDK、CLI 和 server 测试，包含受 feature 控制的运行时套件。`protocol` 选择 provider 适配、配置、错误、集成、追踪及缓存通知固定输入，不发起付费请求。`integration` 依次执行只读格式检查、启用测试 feature 的 workspace／all-target Clippy 和 `contract`。CI 在 Linux、macOS 和 Windows 运行同一契约选择并保留有界证据。CI 另外检查带内嵌 Web 资源的二进制能否编译。真实模型调用和 Linux benchmark 容器需要在本地明确选择。
+Windows workspace 选择器串行运行独立 Rust 测试用例（`--test-threads=1`），各用例内部验证的并发保持不变。Shell 语法和输出检查复用子进程启动预算；进程超时测试先观察真实子进程就绪，再推进 Tokio 时钟触发截止时间，并检查实际进程清理。
 
-选择入口将 `CARGO_TARGET_DIR` 固定为当前 checkout 的 `target/`，不改变宿主环境。每个 worktree 使用独立 target，即使串行构建也不共享：workspace 产物可能错误复用另一源码树的缓存。本地 target 可以使用第三方依赖缓存作为种子，但首次构建前先执行一次 `cargo clean --target-dir target -p kuku -p kuku-cli -p kuku-server -p kuku-app` 清除 workspace 产物。记录提交／工作树、target 目录、feature、profile 和二进制 hash；共享 target 构建的冻结二进制本身不能证明对应的源码版本。
+`contract` 启用 `kuku/test_support`，运行 workspace 测试，包含受 feature 控制的运行时套件、共享客户端和 TUI 测试。某个测试程序失败后会继续运行其余测试程序，任一测试失败仍返回失败。`protocol` 选择 provider 适配、配置、错误、集成、追踪及缓存通知固定输入，无需付费请求。`integration` 依次执行只读格式检查、启用测试 feature 的 workspace／all-target Clippy 和 `contract`。草稿 PR 与 main 推送只运行一套 Linux workspace 契约与 Python 工具检查，加上格式检查和 Clippy。进入评审的 PR 与手动触发的 CI 执行 Linux、macOS、Windows 三平台契约及 Python 工具检查，并运行安装终端、Windows 桌面与 Linux 浏览器交接验收，保留有界证据。浏览器交接复用 Linux 已安装程序，不再由另一个 workflow 重复构建。真实模型调用和 Linux benchmark 容器需要在本地明确选择。
+
+契约测试采集保留原有 64 KiB 输出尾部和完整输出 hash。独立失败摘要在 16 KiB UTF-8 字节范围内保留失败测试名、panic 位置与少量上下文，以及 Cargo 失败 target。`failure_summary.truncated` 标记遗漏内容；失败仍由子进程退出状态判定。
+
+契约测试、release 安装和 PTY 构建通过 Cargo 原生 `--timings` 在 `target/cargo-timings/` 生成报告。CI 将其保存为 `build-timings-<os>` artifact，以便分别评估编译与测试执行时间。判断耗时变化是否来自源码前，先比较缓存状态、feature 与 profile。
+
+两个 workflow 都支持目标为 `main` 或 `feat/interactive-clients` 的 PR，以及 main 推送。WebUI 检查的路径范围限于 `apps/web/**` 和自身 workflow，Rust 改动不再触发重复的安装浏览器构建。PR 检查统一使用 GitHub 的 merge-ref。记录实际 commit/tree，只有 tree 相同才复用源分支证据。同一 PR 的旧运行会被取消。Python 工具检查失败不会阻止 Rust 契约与安装验收作业收集各自结果。失败后保留 Rust 依赖缓存；Cargo 仍校验构建指纹。PTY helper 共享契约测试的 workspace/`kuku/test_support` feature 解析，并记录编译身份。
+
+手动 CI 默认 `platform=all`。排查单个平台时可选 `linux`、`macos` 或 `windows`；运行标题标明所选范围，不同平台的运行不会互相取消。单平台运行只提供定向证据，不能替代合并前的完整门禁。
+
+草稿 PR 通过不代表安装验收通过。合并前，将 PR 转为待评审或为目标版本以 `platform=all` 手动触发 CI，并要求完整矩阵通过。完整验收保留带嵌入 Web 资源的真实 release 安装；选择 Windows 桌面检查时必须完成桌面准备。独立安装场景使用隔离服务，单个场景失败后继续其余场景，保留原始错误并让整体返回失败。现有每条命令的超时界限保持不变。每个场景打印耗时，最多 16 KiB 的失败详情在最后一个场景之后再次输出，避免后续输出挤掉失败终端画面。受控模型只有核实工具结果后才能回复成功，模拟成功消息本身不能证明工具成功。命令可能在前台完成，也可能返回 Job 句柄；固定模型通过 `wait_job` 等待并核对持久化命令事实后才能报告成功。安装恢复场景还会明确等到自动转为 Job，再通过正常历史滚动检查重开的启动卡片和完成通知。需要执行持续活跃的测试会保持模型请求，完成相关断言后再释放响应，不依赖固定响应延迟。
+
+选择入口将 `CARGO_TARGET_DIR` 固定为当前 checkout 的 `target/`，不改变宿主环境。每个 worktree 使用独立 target，即使串行构建也不共享：workspace 产物可能错误复用另一源码树的缓存。本地 target 可以使用第三方依赖缓存作为种子，但首次构建前先执行一次 `cargo clean --target-dir target -p kuku -p kuku-cli -p kuku-server -p kuku-client -p kuku-tui -p kuku-app` 清除 workspace 产物。记录提交／工作树、target 目录、feature、profile 和二进制 hash；共享 target 构建的冻结二进制本身不能证明对应的源码版本。
 
 编辑时使用针对性检查，在运行时集成批次收尾执行一次所需 Rust 集成检查。等价的直接命令为：
 
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --features kuku/test_support -- -D warnings
-cargo test -p kuku -p kuku-cli -p kuku-server --features kuku/test_support
+cargo test --workspace --no-fail-fast --features kuku/test_support
 ```
 
 相关写入者停止修改后，先格式化修改的 Rust 范围，再运行只读格式检查。编辑中可用 `cargo check` 快速反馈。不因随后要提交或推送就重复通过的检查；代码、配置或集成变化使证据失效时再补测。纯文档改动使用下方的文档检查。
@@ -43,6 +55,81 @@ cargo test -p kuku --features test_support --test provider_integration --test qu
 | CI 平台矩阵 | 实际运行的平台与配置结果 |
 
 独立检查改动文件、命令退出状态、持久事实和资源清理，不依赖 Agent 最终措辞。直接 HTTP 探测验证连通性或供应商行为，不代表 SDK 已集成。真实模型成功不证明罕见失败场景的保证。
+
+## 安装客户端验收
+
+终端输入、服务发现、内嵌浏览器和发行打包变更，使用安装客户端验收入口。
+
+```bash
+python3 scripts/acceptance/run.py interactive
+python3 scripts/acceptance/run.py interactive --archive PATH_TO_PLATFORM_ARCHIVE --browser
+python3 scripts/acceptance/run.py interactive --archive NEW_ARCHIVE --upgrade-from OLD_ARCHIVE
+python3 scripts/acceptance/run.py interactive --desktop --archive PATH_TO_LINUX_ARCHIVE
+python3 scripts/acceptance/run.py interactive --desktop --archive PATH_TO_WINDOWS_ARCHIVE --windows-terminal PATH_TO_WINDOWS_TERMINAL_EXE
+```
+
+默认使用仓库指定的 Node 版本构建 Web 资源，再安装当前源码中带 `embedded-web-assets` 的 `kuku`。`--archive` 测试对应平台的 `.tar.gz` 或 `.zip` 发行包。`--binary` 复制已经构建或安装的可执行文件。临时安装前缀、空白数据目录和工作区都在源码树外。`--scratch-base` 可另选源码树外的临时目录。选择入口将二进制 hash、原生终端类型、所选场景和结果写入现有的证据目录。
+
+要复测安装包升级，提供两个包含不同可执行文件、均支持持久 Session 的平台归档。选择入口在工具运行期间调用平台安装器替换程序，验证重启被推迟、原工具仅执行一次，以及新服务能恢复同一 Session。
+
+终端场景在 Linux 和 macOS 通过 Unix PTY 驱动安装好的 `kuku`，在 Windows 使用 ConPTY。公共终端模拟器在 DEC 同步刷新期间保留上一帧，提交后才提供新帧；[协议测试](../../../apps/kuku/tests/terminal_state.rs)覆盖分片更新、调整大小和光标报告。用带内嵌资源的二进制和 `--browser` 选项可加入 Chromium 场景。按 [CI 浏览器准备步骤](../../../.github/workflows/ci.yml) 安装 Playwright Python 包和 Chromium。场景使用可控的本地模型端点，实际运行客户端和服务，无需模型凭据或付费请求。各层需要验证的行为见[交互客户端计划](../architecture/interactive-clients.md#开发时如何测试)。场景通过原生终端操作 Ctrl+C 和菜单补全，分别保持模型请求与工具处于运行中以核对显示状态，并在服务断开时检查连接指示。本地模型端点报告已知的输入、缓存读取和输出 token 数，供安装后的终端核对上下文占用、累计 token 和缓存命中率，并检查实测 TPS、Agent 地址与工作目录。
+
+维护中的生命周期场景从缺失凭据修复走到首个已认证回复，保存默认模型并检查新建和重开 Session 实际使用的模型，以及用键盘 ↑/Delete 撤回精确排队输入，同时保留其草稿和另一条排队输入。场景也会重开只读回退内容并核对下一次 provider 请求不含被排除的内容，跨过最近 48 条已提交消息选择精确回退目标，并用受控的 401 验证遮蔽凭据更新和安全服务重启。认证修复场景确认只有显式 Continue 才会用替换凭据重试保留的原输入，且仅重试一次。键盘覆盖与现有鼠标撤回检查并存。
+
+对照终端布局时，为两个版本使用同一套固定输入和窗口网格尺寸。安装场景检查 `/statusline` 的预览、保存、重开和恢复默认，并验证带着未发送草稿在多个工作中的 Agent 之间切换。工具密集对话在同一轮至少执行 20 次调用，包括成功操作、缺失文件和等待释放的命令。场景在工具运行和代码围栏未闭合时分别捕获宽窄终端画面，再核对完成的中文报告、保留的工具事实和未发送草稿。有界 `installed-interactive.log` 保存终端画面和检查结果。[终端场景](../../../scripts/acceptance/interactive.py)
+
+在装有 Docker 的 Linux 上用 `--desktop` 加入 Xfce Terminal 和 IBus 拼音场景。选择入口使用 Ubuntu 软件包构建镜像，并在仅有回环网络的隔离 Xvfb 会话中运行。场景通过图形界面验证中文组字、可编辑的多行粘贴、**Messages → Copy** 和终端字体缩放。首次构建时 Docker 需要访问 Ubuntu 镜像和软件仓库。安装后的可执行文件和选择入口的原生测试 helper 都须能在镜像中运行。`desktop/result.json` 记录包版本、终端网格尺寸、提交与复制的固定文本及有界截图的 hash。
+
+桌面场景复用工具密集对话，捕获宽窄视图并核对复制出的报告原文。截图与 `desktop/result.json` 一起保留，有采集时也保存动作菜单、模型选择器及状态栏编辑器截图。[桌面场景](../../../scripts/acceptance/desktop)
+
+Windows Terminal 场景需要专用的活动测试桌面、独立剪贴板、美式键盘布局和 Windows Terminal 默认快捷键。在运行场景的 Python 环境安装 Pillow，然后通过 `--windows-terminal` 指定已有的 `WindowsTerminal.exe`。场景使用鼠标左键拖选回复中的一段文字，松开后核对 Windows 剪贴板。启用微软拼音后可验收候选组字和提交。微软拼音不可用时，场景仍记录复制、可编辑的多行粘贴和字体缩放的结果，并将 GUI 覆盖标为不完整。[Windows CI 任务](../../../.github/workflows/ci.yml) 准备便携版 Terminal，尝试配置拼音，并将预检结果随场景证据保存。macOS 的人工实操单独记录平台证据。
+
+显式选择 `--live` 后，使用平台安装器、发行包和 Chromium，通过安装后的客户端发起有预算限制的 DeepSeek 调用。此模式要求从显式凭据文件读取 DeepSeek 密钥，并使用已有[预算账本](#凭据与运行产物)。经授权可用 `--ledger` 选择另一份现有账本。使用唯一的运行 ID 和已授权的账本。
+
+```bash
+python3 scripts/acceptance/run.py --run-id LIVE_RUN_ID interactive --archive PATH_TO_PLATFORM_ARCHIVE --live --secrets PATH_TO_CREDENTIAL_FILE
+```
+
+`live-result.json` 记录实际模型路线、请求和任务结果。场景核对实际项目修改及测试输出、Agent 切换、工具运行期间更换客户端，以及在终端、浏览器和脚本客户端之间接续工作。[真实调用场景](../../../scripts/acceptance/interactive_live.py)
+
+通过 `--intent deepseek` 或 `--intent openrouter` 在原生终端中检查真实模型执行的动作。用例验证终端显示的回复措辞、跨轮次的文件内容，以及独立委派。委派用例核对首次创建请求成功，以及 main 收到子 Agent 的结果后才向用户展示。可用 `--intent-case delivery` 或 `--intent-case delegation` 单独运行其中一组。
+
+```bash
+python3 scripts/acceptance/run.py --run-id INTENT_RUN_ID interactive \
+  --intent openrouter --intent-case delegation --binary PATH_TO_BINARY \
+  --intent-model openai/gpt-6.1-terra --intent-effort high --intent-upstream openai \
+  --revision EXPECTED_GIT_COMMIT --scratch-base PATH_OUTSIDE_CHECKOUT \
+  --secrets PATH_TO_CREDENTIAL_FILE --ledger PATH_TO_AUTHORIZED_LEDGER
+```
+
+可用 `--archive` 代替 `--binary`。验收在预留预算前核对安装后二进制的提交版本。直连 DeepSeek 时默认使用 `deepseek-flash`，通过 OpenRouter 时默认使用 `openai/gpt-6-luna` 和 `openai` 端点，默认思考档为 `low`。用 `--intent-model` 和 `--intent-effort` 覆盖模型和请求档位，用 `--intent-upstream` 指定准确的 OpenRouter 端点标签。验收限制请求数和输出，包括重试。`intent/result.json` 记录用例检查、终端画面路径和用量。意图验收要求确认路由，使用 OpenRouter 时会根据生成回执核对模型、上游 provider 和可用的费用。检查结果后在所选账本结算预留额度。见[意图验收场景](../../../scripts/acceptance/interactive_intent.py)和[凭据与运行产物](#凭据与运行产物)。
+
+分别记录确定性检查、平台执行和人工体验。人工验收时，在源码树外安装候选版本，用已配置的模型读取文件、完成修改并运行检查，再核对实际文件、diff 和工具结果。从浏览器和另一个终端恢复同一 Session。分别记录 Linux、Windows Terminal 的输入法、粘贴、复制与缩放检查，以及实际 macOS 覆盖。模型调用证据遵循下方规则，无法执行的场景标为待验证。
+
+## 工作区执行验收
+
+用 `workspace` 通过公开 SDK 示例或已安装的终端客户端执行同一项大日志任务。验收运行本机日志夹具，核对生成报告的准确内容和观察到的命令事实，随后重开 Session，验证用命名值复现报告时无需再次运行夹具。产品使用隔离的 `PATH`。Python 在产品进程之外驱动验收。见[工作区场景](../../../scripts/acceptance/workspace.py)。
+
+```bash
+cargo build --locked -p kuku --example session_task
+python3 scripts/acceptance/run.py workspace --sdk target/debug/examples/session_task
+python3 scripts/acceptance/run.py workspace --binary PATH_TO_BINARY
+```
+
+Windows 构建使用带 `.exe` 后缀的路径。可以用 `--archive` 代替 `--binary` 验收本地发行包。选择器默认构建本机夹具，也可以用 `--bridge` 复用已有构建。用 `--scratch-base` 可指定源码树之外的临时目录。使用 `--sdk` 时可以加上 `--handoff-only`，预存一份命名报告，验证独立审查 Agent 能读取共享引用并报告发现。
+
+默认使用本地确定性 provider。工作区的正式真实模型验收先跑直连 DeepSeek 的 `deepseek-flash`、`high`，再用 OpenRouter 的 `openai/gpt-6.1-terra`、`high` 和 `openai` 端点交叉验证。选择对应的 `--provider` 时会应用这些默认值。为每家服务传入对应的 `--secrets` 和 `--ledger`。下面通过公开 SDK 调用程序显式记录每条路线。
+
+```bash
+python3 scripts/acceptance/run.py --run-id WORKSPACE_DEEPSEEK_RUN workspace \
+  --sdk target/debug/examples/session_task --provider deepseek --model deepseek-flash \
+  --effort high --secrets PATH_TO_CREDENTIAL_FILE --ledger PATH_TO_DEEPSEEK_LEDGER
+python3 scripts/acceptance/run.py --run-id WORKSPACE_OPENROUTER_RUN workspace \
+  --sdk target/debug/examples/session_task --provider openrouter --model openai/gpt-6.1-terra \
+  --effort high --upstream openai --secrets PATH_TO_CREDENTIAL_FILE --ledger PATH_TO_OPENROUTER_LEDGER
+```
+
+`workspace/result.json` 记录任务检查、费用、发送的模型和思考档，以及路由证据。无法核实时，`workspace` 选择器允许 `upstream_confirmed: null`。OpenRouter 未返回生成回执时，只能报告请求已固定到哪个端点，实际上游仍未知。思考档同样按请求值报告，除非 provider 回报实际值。确认路由不一致会使本次验收失败。见[凭据与运行产物](#凭据与运行产物)。
 
 ## 测试归属与证据
 
@@ -77,18 +164,68 @@ Linux／Docker 预检将固定源码检出到已忽略的 `benchmarks/sources/`�
 
 SDK 运行时，入口分别采样 SDK RSS／RSS 高水位、CPU 时间和线程数，以及整个容器的 CPU、内存、进程数和 I/O。采样与输出日志均有界；未采样值保持 `null`，不把整容器数据归因于 SDK。下方专门的资源调用程序测量其余生命周期边界。
 
+## FrontierHarness 公开小样本
+
+`frontier` 套件在[题目清单](../../../scripts/acceptance/cases.json)中固定 FrontierHarness Eval v1.1.0 的四道题，覆盖日志汇总、异步取消、正则表达式和 Vim 大文件编辑。每题使用上游题面、镜像构建上下文和原始判分器。在有 Git、Docker、Python 3.10+ 和仓库指定 Rust 工具链的 Linux 上，先用空提交确认判分器能识别失败。构建和评分依赖需要网络，这一步没有模型费用。[数据集来源](https://hub.harborframework.com/datasets/frontier-harness-eval/frontier-harness-eval)
+
+```sh
+cargo build --locked -p kuku --example session_task
+python3 scripts/acceptance/run.py --run-id smoke-regex benchmark \
+  --suite frontier --case regex-log --mode preflight
+```
+
+实跑时，将 `KUKU_TEST_OPENROUTER_API_KEY=...` 写入仓库外的私有文件。计量程序在宿主机持有上游密钥，并从共用美元账本中为每题预留额度。以下命令每题最多预留 $0.75，经 OpenRouter 固定到 DeepSeek 官方端点，模型为 `deepseek/deepseek-v4.1-flash-1017`，推理强度为 `max`。首次运行时设定总额，复测沿用同一账本，每次使用新的运行 ID。示例显式设置 131,072 tokens，用于复现历史对照。省略 `--max-output-tokens` 时采用固定路由公布的生成容量。路由未公布容量时须显式指定。计量程序会在预留费用前确认单次请求按最高用量计算仍能落在美元预算内。默认由单题美元额度和题目时限约束运行。复现历史限次对照组时可另加记录中的 `--max-requests`。结算按实际用量或明确标记的保守估计计算。
+
+```sh
+ledger="$PWD/benchmarks/acceptance/frontier-budget.json"
+keys="$HOME/.config/kuku/frontier.env"
+python3 scripts/acceptance/run.py budget init --ledger "$ledger" \
+  --authorization local-frontier-sample --limit-usd 3
+printf '%s\n' log-summary-date-ranges cancel-async-tasks regex-log large-scale-text-editing | \
+  xargs -P 4 -I '{}' python3 scripts/acceptance/run.py --run-id 'sample-{}' benchmark \
+    --suite frontier --case '{}' --mode live --provider openrouter --upstream deepseek \
+    --max-output-tokens 131072 --case-cap-usd 0.75 \
+    --sdk-binary target/debug/examples/session_task --ledger "$ledger" --secrets "$keys"
+```
+
+如果账户的数据策略排除了所选上游，可以使用与策略兼容的固定端点（如 `--upstream baseten`）另起一轮，并记录路由变化。OpenRouter 可能在流结束时已返回费用，而 generation 回执稍后才可用。给下方报告命令加上 `--refresh-receipts "$keys"` 可查询这些试验已有的回执。之后可离线复用已核对的回执，每笔费用只统计一次。
+
+下载官方快照生成可分享的报告。每题按时间顺序传入历次运行，保留所有失败。结果分别给出上游评分、SDK 完成状态、模型成本和判分耗时。Pi 官方数据使用同一模型版本，每题四次，经过审计，使用 Runta 和 Baseten。对比缓存时同时查看实际服务商、输入 token 中已缓存的比例、用量覆盖情况和首个请求。报告只导出允许公开的字段，原始 Session 与私有凭据保存在本机。[官方结果](https://frontierharness.org/live/) · [OpenRouter 路由](https://openrouter.ai/docs/guides/routing/provider-selection)
+
+```sh
+mkdir -p benchmarks/acceptance/public
+curl -fsSL https://frontierharness.org/api/live -o benchmarks/acceptance/public/live.json
+python3 scripts/acceptance/frontier_report.py --official-live benchmarks/acceptance/public/live.json \
+  --attempt log-summary-date-ranges benchmarks/acceptance/sample-log-summary-date-ranges \
+  --attempt cancel-async-tasks benchmarks/acceptance/sample-cancel-async-tasks \
+  --attempt regex-log benchmarks/acceptance/sample-regex-log \
+  --attempt large-scale-text-editing benchmarks/acceptance/sample-large-scale-text-editing \
+  --output benchmarks/acceptance/public/results.json
+```
+
+SDK 在写入结果前采集 Linux `getrusage(RUSAGE_SELF)`，得到本进程峰值 RSS、CPU 时间、文件系统输入和输出块计数。宿主采样器按相邻样本的时间间隔估算平均 RSS，并报告覆盖窗口。最后一次 Linux `/proc/PID/io` 读数可能包含已等待结束的子进程，分别记录逻辑读写量、系统调用数和存储字节。容器快照还包含工具进程。判分在 SDK 采样结束后进行。计量程序分开记录到首个有效流式输出的时间与供应商原生指标，并给出 TPS 与缓存命中统计的分母。
+
+[小样本结果与 Session 诊断](../../../scripts/acceptance/results/frontier-sample.md)保留探索阶段的各次尝试及统一配置下的复测。
+
 ## 资源测量
 
 ```bash
 python3 scripts/acceptance/run.py metrics
 python3 scripts/acceptance/run.py metrics --profile release
+python3 scripts/acceptance/run.py metrics --profile release --cpu-count 1 --address-space-mib 512
 ```
 
 此本地选择在当前 checkout 的独立 target 中构建 [`resource_probe.rs`](../../../crates/kuku/examples/resource_probe.rs)，使用既有固定 SSE／配置 helper，通过公开 `Session` 执行。它不加载付费凭据或费用台账。默认规模为 32 个空闲 Agent、64 次真实队列输入追加、5 次关闭／重开、4 MiB 命令输出与 1 MiB 保留配额，以及两个独立推进的 Agent。输出子进程复用调用程序二进制，不增加另一套 SDK 执行器。
 
 `caller.json` 记录工作规模、样本数组及单位、nearest-rank 追加／重开百分位数、首次 Session 打开时间、输出字节／配额／读取边界、并发与持久路径。仅在实际准备事实存在时报告 SDK 的 `context_prepare_us` 和 `request_prepare_us`；输入到完成的延迟另行测量，不能替代这两项。首次打开和重开不清空操作系统文件缓存。
 
-Linux `/proc` 采样分别记录 SDK 调用进程和工具后代。固定 provider 位于调用进程内，其开销包含在进程占用中，并单独记录基线。CPU 使用秒、RSS 使用 KiB；缺失 I/O 计数或未采样阶段保持未知。保留输出和事件文件的逻辑字节数单独记录。运行包含构建 profile、target 目录、二进制／源码 hash、进程限制和清理结果。`measurements_complete` 与 `missing_measurements` 区分本地任务成功及缺失测量；对比运行前固定条件。Rust 调用程序保持可跨平台，当前进程采样器需要 Linux。
+工作区负载通过公开 SDK 读取器和嵌入式脚本分别分页处理同一份本机程序日志。它记录首次和重复调用的延迟、worker 数量，以及峰值与任务结束后的进程采样。两个 Session 共享同一个 `WorkspaceExecutionHost`，提交的脚本数超过 worker 并发额度。保留检查跟踪磁盘增长，回收普通捕获，并验证命名基线在重开和尝试超配额后仍可读取。默认重复六次任务，使用两个脚本 worker，允许四个脚本宿主操作并发。用 `--repeated-tasks`、`--script-workers` 或 `--script-host-operations` 可改变负载。
+
+Linux `/proc` 和 Windows 进程 API 分别采样 SDK 调用进程和工具后代。固定 provider 位于调用进程内，计入进程占用，并单独记录基线。CPU 使用秒，RSS 使用 KiB。未采样阶段和不可用计数保持未知。保留输出和事件文件的逻辑字节数单独记录。运行包含构建 profile、target 目录、二进制及源码哈希、进程限制和清理结果。`measurements_complete` 与 `missing_measurements` 区分本地任务成功和测量缺失。
+
+在 Linux 上，`--cpu-count` 限定调用进程及其后代可用的 CPU。`--address-space-mib` 限定各个进程的虚拟地址空间。Rust 调用程序可以跨平台运行。此选择器当前在 Linux 和 Windows 提供进程采样。
+
+用 `--pressure-rounds 3` 可以在同一个调用进程里对比多轮峰值和空闲阶段。在 Linux 上，如果能读取 `/proc/<pid>/smaps_rollup`，选择器也会记录匿名内存与文件映射内存。
 
 ## 真实协议验收
 
@@ -128,6 +265,13 @@ OpenRouter 当前默认路由综合考虑有效价格，包括观察到的缓存
 
 罕见或不确定出现的错误、批次，以及可能被网关规范化的供应商特有重放数据，使用针对性的原生协议固定输入补充验证。OpenRouter 覆盖属于网关覆盖，不证明同样请求可直连 OpenAI 或 Anthropic 官方端点。具备凭据时增加官方直连检查，但不把开通新账号作为启动重构的前提。准确记录跑过的路径，缺少的真实覆盖标记为未验证。
 
+用固定流录制验证模型服务的思考活动、可见正文、交替到达的参数片段和工具派发。检查参数片段对应正确的调用、工具在派发后才执行，以及协议原生思考数据在工具续接与 Session 重开后仍可用。核对对话只呈现思考活动状态和可见回复，私有思考原文保持私有。
+
+- OpenAI Responses 按 `output_index` 和 `item_id` 关联参数片段，用 `call_id` 配对工具结果。无状态重放核对输出顺序、加密思考项和助手消息阶段。[流式事件](https://developers.openai.com/api/reference/resources/responses/streaming-events) · [思考](https://developers.openai.com/api/docs/guides/reasoning)
+- Anthropic Messages 按内容块索引分别装配工具输入和思考。加入省略正文但带签名的思考块，核对续接保留原块和签名。[流式消息](https://platform.claude.com/docs/en/build-with-claude/streaming) · [思考](https://platform.claude.com/docs/en/build-with-claude/thinking)
+- DeepSeek Chat Completions 在携带 `tools` 的请求中核对早先各轮的 `reasoning_content` 重放，包含没有工具调用的轮次。DeepSeek Responses 验证无状态路径上的原生思考项与 `reasoning_text` 事件。[思考模式](https://api-docs.deepseek.com/guides/thinking_mode/) · [Responses](https://api-docs.deepseek.com/guides/responses_api/)
+- OpenRouter Chat Completions 核对续接中 `reasoning_details` 的顺序及其签名或加密数据。OpenRouter Responses 保留有序输出项。通过实际回报的上游元数据确认真实请求由哪家供应商处理。[思考](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens) · [供应商路由](https://openrouter.ai/docs/guides/routing/provider-selection)
+
 DeepSeek Responses 无状态，不支持 `previous_response_id`；其 Messages 兼容层会忽略 `service_tier`、`cache_control` 等选项。HTTP 成功不能证明这些设置已生效。显式不支持的选择必须可见，并区分端点能力和线路协议本身。
 
 ## 凭据与运行产物
@@ -138,11 +282,12 @@ DeepSeek Responses 无状态，不支持 `previous_response_id`；其 Messages �
 
 付费测试前记录用户授权的请求／费用范围、模型／设置、输出限制、超时和重试策略。执行包括重试在内的适用限额。配置中的上限不构成再次使用已完成测试额度的新授权。不要从编码 Agent 的模型推断凭据，也不要失败后静默增加思考档或预算。
 
-`benchmarks/acceptance/budget.json` 是本次重构唯一的本地费用台账。按用户的任务授权初始化一次，不通过重建台账清零费用：
+使用所选 API 服务获授权的费用账本。DeepSeek 与 OpenRouter 分别授权时，各用独立账本。通用预算命令默认使用 `benchmarks/acceptance/budget.json`。使用独立账本时应显式指定相应文件。按授权范围初始化一次并保留费用历史。
 
 ```bash
-python3 scripts/acceptance/run.py budget init --authorization TASK_AUTHORIZATION --limit-usd 5 --opening-spent-usd 0
-python3 scripts/acceptance/run.py budget show
+python3 scripts/acceptance/run.py budget init --ledger PATH_TO_LEDGER \
+  --authorization TASK_AUTHORIZATION --limit-usd 5 --opening-spent-usd 0
+python3 scripts/acceptance/run.py budget show --ledger PATH_TO_LEDGER
 ```
 
 `live` 和 `benchmark --mode live` 都要求 `--reserve-usd` 与 `--reservation-reason`。启动付费进程前，入口先计算 `--config` 的 hash，不复制其中可能存在的内联凭据，再锁定台账并预留保守上界，覆盖最大请求数、输入／输出 token、provider 单价和全部重试。`live` 要求 `--sdk-result` 和 `--session-data`，执行 `--` 后给出的公开 SDK／CLI 调用程序，显式从 `--secrets` 加载凭据；它不是 HTTP 连通性探测。调用程序必须实际执行预留估算所用的请求／token／重试上限。单价上限或账本预留本身不能约束模型循环；输出上限由调用者显式选择，不为适应预留额度而降低。

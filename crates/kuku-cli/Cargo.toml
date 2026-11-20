@@ -17,11 +17,13 @@ name = "kuku-cli"
 path = "src/bin/kuku-cli.rs"
 
 [features]
-server = ["kuku-server"]
+server = []
 
 [dependencies]
 kuku = { workspace = true }
-kuku-server = { path = "../kuku-server", optional = true }
+kuku-client = { path = "../kuku-client" }
+kuku-tui = { path = "../kuku-tui" }
+kuku-server = { path = "../kuku-server" }
 clap = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 serde = { workspace = true }
@@ -32,3 +34,4 @@ time = { version = "0.3", default-features = false, features = ["std", "formatti
 kuku = { workspace = true, features = ["test_support"] }
 httpmock = "0.7"
 tempfile = "3"
+wreq = { version = "6.0.0-rc.28", features = ["json"] }

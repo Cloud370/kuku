@@ -8,15 +8,25 @@
 |---|---|---|---|
 | `find_files` | none | `path`, `pattern`, `max_depth` | `read` |
 | `read_file` | `path` | `offset`, `limit` | `read` |
-| `read_output` | `id` | `offset`, `limit`, `search` | `read` |
+| `stat_file` | `path` | `version` | `read` |
+| `read_output` | `id` 或 `name` | `offset`, `limit`, `search` | `read` |
 | `search_text` | `pattern` | `path`, `include`, `view`, `offset`, `limit`, `context` | `read` |
 | `fetch_url` | `url` | none | `read` |
 | `query_session` | none | `search`, `kind`, `conversation`, `after`, `from_turn`, `to_turn`, `limit`, `skip_rolled_back` | `read` |
-| `edit_file` | `path`, `old_text`, `new_text`, `brief` | `replace_all` | `edit` |
-| `write_file` | `path`, `content`, `brief` | none | `edit` |
-| `run_command` | `command`, `timeout`, `brief` | none | `command` |
+| `edit_file` | `path`, `old_text`, `new_text` | `replace_all`, `expected_version`, `brief` | `edit` |
+| `write_file` | `path`, `content` | `expected_version`, `brief` | `edit` |
+| `remove_file` | `path` | `expected_version`, `brief` | `edit` |
+| `run_command` | `command` 或 `program` | `args`、`cwd`、`shell`（命令文本在未列出默认解释器时必填）、`timeout`、`background`、`brief` | `command` |
+| `workspace_script` | `code` | `background` | `execute` |
+| `list_jobs` | 无 | `before` | `session` |
+| `wait_job` | `job_id` | 无 | `session` |
+| `cancel_job` | `job_id` | 无 | `session` |
+| `save_value` | `name`，再选 `output_id` 或 `value` | `replace` | `session` |
+| `list_values` | 无 | `prefix`、`after`、`limit` | `read` |
 | `remember_memory` | `scope`, `kind`, `text` | none | `edit` |
 | `forget_memory` | `scope`, `text` | none | `edit` |
+
+工具指引按 Agent 实际可用的能力组装。只回复的 Agent 不加载工具流程。委派和记忆写入指引只发给具备相应工具的 Agent。编辑、写入和命令调用的 `brief` 是可选的显示标签。
 
 条件 Skill 工具：
 
@@ -31,11 +41,13 @@
 | Tool | Required args | Optional args | Risk |
 |---|---|---|---|
 | `ask_user` | `question` | none | `session` |
-| `create_agent` | `address` | `connection`, `tier`, `model`, `preset`, `instructions`, `reasoning_effort`, `service_tier`, `max_output_tokens`, `no_agents`, `no_skills`, `bootstrap_skill`, `tools`, `workspace` | `session` |
-| `send_message` | `to`, `message` | `wake` | `session` |
-| `list_agents` | none | none | `session` |
+| `create_agent` | `address` | `instructions`, `tools`, `preset`, `tier`, `workspace` | `session` |
+| `send_message` | `to`, `message` | `wake`, `values` | `session` |
+| `list_agents` | none | `wait_for` | `session` |
 
-`create_agent` 创建稳定、扁平的 Session 内地址及独立上下文，可选的 `preset` 提供联系卡。应传入接收方所需的完整指令和任务材料。`send_message` 向已有 Agent 投递，返回持久投递回执，不代表最终工作结果。`wake` 默认为 true；false 仅入箱，等待显式推进。`list_agents` 读取保留状态和最后持久输出，不消费观察流。
+`create_agent` 创建稳定、扁平的 Session 内地址及独立上下文，可选的 `preset` 提供联系卡。应传入接收方所需的完整指令和任务材料。`send_message` 向已有 Agent 投递，返回持久投递回执，不代表最终工作结果。`wake` 默认为 true；false 仅入箱，等待显式推进。`list_agents` 默认读取精简状态列表。传入目标地址 `wait_for` 可等待该 Agent 当前执行结束并读取已完成的回复，最多等待 30 秒，超时返回当前状态。
+
+模型创建 Agent 时指定地址，并按需选择角色指令、工具白名单、preset、tier 和工作目录。宿主通过 SDK 配置供应商参数。
 
 `ask_user` 持久化问题，并在当前工具批次边界让出执行。宿主通过 SDK、CLI `reply` 或 server 回复端点，使用精确请求标识作答。问题和授权的等待语义见 [Session](../how-it-works/sessions.md#等待与回复)。
 
@@ -55,13 +67,77 @@
 
 `query_session` 用于历史回忆，不应用来重复读取当前消息中已经存在的数据。
 
+## 运行本机程序
+
+将 shell 命令文本传入 `command`。工作目录默认为 Agent 的工作区。可用 `cwd` 指定相对工作区的目录或绝对目录。解释器可用时，Linux 和 macOS 默认使用 `sh`，Windows 默认使用 `powershell`。命令语法需要其他解释器或工具未列出默认值时，从工具列出的解释器中指定 `shell`。在 Windows 上，批处理文件和依赖 `cmd.exe` 的命令使用 `shell: "cmd"`。
+
+```json
+{"command":"git status"}
+```
+
+直接运行可执行文件时，传入 `program`，并在 `args` 中把每个参数写成一个字面字符串。程序无需参数时可省略 `args`。参数可以是空字符串，也可以包含空格、引号或 shell 元字符。各个平台都用 `./` 指定相对 `cwd` 的可执行文件路径。程序从标准输入立即读到 EOF。需要设置截止时间时，传入以秒为单位的 `timeout`，取值为正的 32 位无符号整数。
+
+```json
+{"program":"cargo","args":["test","-p","kuku"],"timeout":120}
+```
+
+省略 `timeout` 时不设置命令截止时间。命令和脚本共用 [Session Job](#session-job) 行为。
+
+进程正常退出后，工具状态可以为 `ok`，同时 `exit_code` 为非零值。检查结构化事实中的 `termination`、`exit_code` 和 `capture_complete`。即使捕获完整，预览也可能截断。程序缺失、启动失败、超时和取消有不同的终止原因。识别出的 Rust 测试和 pytest 摘要会提供程序报告的统计与有界证据。排查失败或读取超出预览的内容时，将保留的 `output_ref.id` 传给 `read_output`。[SDK 执行事实](sdk.md#工作区执行)
+
+## Session Job
+
+顶层 `run_command` 或 `workspace_script` 在前台观察窗口内结束时，工具直接返回结果。窗口默认为 10 秒。若仍在运行，工具返回句柄，其中 `structured.kind` 为 `"job"`，`structured.job_id` 是 Job 标识。使用 `background: true` 可立即获得句柄并继续独立工作。
+
+[Job 生命周期与结果投递](../how-it-works/sessions.md#后台-job) · [权限](../how-it-works/permissions.md)
+
+- `list_jobs({})` 按从新到旧返回当前 Agent 的最多 25 条 Job 摘要。将返回的 `next_before` 作为 `before` 传入可继续翻页。
+- `wait_job({job_id})` 等待当前 Agent 的指定 Job 结束。下一步依赖这一结果时使用。
+- `cancel_job({job_id})` 请求取消当前 Agent 的指定 Job，并等待清理。
+
+使用命令的保留输出引用可检查其捕获内容。[嵌入宿主的 Job API](sdk.md#工作区执行)
+
+## 工作区脚本
+
+`workspace_script({code})` 在一次性的嵌入式 QuickJS worker 中运行 JavaScript 异步函数体，支持顶层 `await`。给外层工具调用传入 `background: true` 可启动 [Session Job](#session-job)。可以使用标准 JavaScript，包括 `JSON`、正则表达式及用于独立操作的 `Promise.all`。后一动作的参数能由前一结果直接计算时，使用 `await` 在脚本内连续执行。下一步需要模型判断时，返回简短的观察结果。`workspace` 上的方法取决于 Agent 所选的工具。`workspace.methods` 列出可用方法定义。
+
+大多数宿主方法返回 `{status, summary, truncated, result, model_content}`。检查各动作的 `status`，再从 `result` 读取结构化数据。例如，`workspace.read_file({path})` 提供原始 `result.raw_text`、SHA-256 `content_hash`，以及从 `start_byte` 到 `end_byte` 的左闭右开字节范围。脚本可用已观察的范围继续编辑，无需把文件内容返回给模型。同一文件版本的读取覆盖全文后，还可以覆盖或移除该文件。在同一次调用中，脚本也可以编辑或覆盖由自身写入完整内容且已确认成功的确切版本。动作仍需经过宿主授权与版本检查。
+
+脚本可以返回较小的 JSON 值，为模型提供所需的证据。处理大输出时，用 `workspace.output_lines({id, stream: "stdout"})` 逐行遍历，只保留计算所需的状态。原始字节可以通过[保留输出](#保留的工具输出)读取。JavaScript 变量只在当次调用中存在。可以把选中的结果存为[命名值](#命名会话值)，也可以按用户要求把交付物写入工作区。
+
+`await workspace.run_command(args)` 等待命令结束。它接受上述命令参数，`background` 除外。进程退出时，只要有整数退出码，就返回 `{exit_code, capture_complete, output_ref, stdout, stderr}`，包括非零退出码。拒绝派发、启动失败、超时或取消等情况会抛出错误。错误提供 `status`，在可用时还提供 `termination` 和 `output_ref`。
+
+两个流的方法相同。`await run.stdout.text()` 读取完整的解码文本，上限为 1 MiB，`await run.stdout.json()` 将同一文本解析为 JSON。用 `for await (const line of run.stderr.lines())` 逐行读取去掉 LF 或 CRLF 的解码文本，单行上限为 128 KiB。遇到捕获不完整或有损解码时，这些方法会报错。需要查看已保留的部分输出或原始字节时，使用 `workspace.output_chunks({id: run.output_ref.id})`。保留输出的分页读取经过 `read_output` 授权。
+
+以下示例统计 Rust 构建中标准错误输出的警告数。
+
+```javascript
+const run = await workspace.run_command({command: "cargo check"});
+if (!run.capture_complete) {
+  return {exit_code: run.exit_code, capture_complete: false, output_ref: run.output_ref};
+}
+
+let warnings = 0;
+for await (const line of run.stderr.lines()) {
+  if (line.startsWith("warning:")) warnings++;
+}
+return {exit_code: run.exit_code, warnings, output_ref: run.output_ref};
+```
+
+`output_chunks({id, offset?, limit?, search?})` 逐页读取有界输出页，其中包含原始流片段和字节。默认扫描窗口为 65,536 字节，每次请求最多 80,000 字节。`output_lines({id, stream?, offset?, limit?})` 从未过滤的输出页逐行读取去掉末尾换行符的解码文本。两个迭代器都可用 `name` 代替 `id`，解析名称后继续使用同一输出 ID。每行携带流标识、字节偏移和完整性标记。脚本宿主方法独立于脚本返回值报告拒绝、失败和取消。
+
+保存大型派生结果时，先从 `await workspace.create_output({})` 取得 `result.id`，再用 `await workspace.append_output({id, text})` 分批追加 UTF-8 文本。检查各操作的状态。调用 `await workspace.finish_output({id})` 后，检查 `result.capture_complete` 再使用新的 `result.output_ref`。原始捕获仍可单独读取。
+
+输出草稿只在当前脚本调用内有效。见[草稿动作的授权规则](../how-it-works/permissions.md)。
+
 ## 保留的工具输出
 
-`read_output` 读取由 Session 持有、由 `run_command` 等工具返回的输出 ID。它与 `Session::read_output` 共用同一个有界读取器，不接受文件系统路径。即使该工具只读，仍须经过宿主授权。
+`read_output` 按输出 ID 或当前 Agent 的准确值名读取 Session 保留数据，使用 SDK 的同一有界读取器。每次调用都须经过宿主授权。下表是直接工具的限额，脚本读取器的参数定义见 `workspace.methods`。
 
 | Argument | Contract |
 |---|---|
-| `id` | 必需的输出 ID：1–128 个 ASCII 字母、数字、`-` 或 `_` |
+| `id` | 由 1–128 个 ASCII 字母、数字、`-` 或 `_` 组成的输出 ID。`id` 和 `name` 二选一。 |
+| `name` | Agent 持有的保存值的准确名称 |
 | `offset` | 按捕获顺序跨 stdout 和 stderr 的非负原始字节偏移；默认 `0` |
 | `limit` | 扫描的原始字节数上限：`1`–`8192`；默认 `4096` |
 | `search` | 可选的字面量过滤：`1`–`4096` 个 UTF-8 字节，且不得长于 `limit` |
@@ -70,9 +146,21 @@
 
 `segments` 保留流标识、捕获顺序、原始偏移和字节数。通过 `next_offset` 和 `has_more` 续读；下一次读取应传入 `next_offset`，不要自行加上 `limit`。字面量搜索的相邻扫描窗口可能保留重叠。匹配页为空但 `has_more: true` 时仍需继续。`filtered` 表示搜索结果，`lossy_utf8` 表示替换了无效或被窗口切开的 UTF-8 字节。
 
+文本视图移除 ANSI 颜色码。Windows 优先按 UTF-8 读取；对于标准输出和标准错误中的完整文本行，也会尝试宿主的 OEM 代码页。二进制数据和不完整字符仍可能显示替换符。显示文本与捕获字节不同时，`raw_bytes` 保留原始字节。其他情况下，可由 UTF-8 文本直接得到原始字节。SDK 调用方可统一使用 `OutputSegment::as_bytes()`。
+
 `complete` 表示写入器已完成收尾。`capture_truncated` 表示捕获配额导致输出丢弃；`cleanup_incomplete` 表示管道清理达到截止时间。即使返回的 JSON 页满足大小上限，这些标记也会明确保留。`summary` 包含读取器选出的构建或测试结果行。捕获数据的生命周期和清理语义见 [输出与清理](../how-it-works/sessions.md#输出与清理)。
 
 每个调用方自行提供偏移。重复读取已完成的输出不会消费数据，UI 读取也不会推进模型游标。无效 ID、参数类型、扫描上限或搜索长度会返回错误，不进行越界读取。
+
+## 命名会话值
+
+用 `save_value({name, output_id})` 给已有捕获命名，无需复制其字节，也可用 `save_value({name, value})` 保存最多 16 KiB 的字面 JSON 值。字符串按 UTF-8 文本保存。名称区分大小写，以 ASCII 字母开头，最多 64 个 ASCII 字母、数字、下划线或连字符。
+
+用 `list_values({prefix?, after?, limit?})` 查询名称、类型及引用。结果包含 `values` 和 `next_after`，每页按名称顺序返回最多 32 项。将 `next_after` 作为 `after` 传入可继续翻页。用 `read_output({name})` 按需取内容。名称绑定归当前 Agent 所有，关闭并重开 Session 后仍可使用。重复保存同一来源是幂等操作。用 `replace: true` 把现有名称绑定到新的来源。
+
+脚本可用这些工具时，通过 `await workspace.save_value({name, value})` 保存计算结果，或传入 `output_id` 绑定保留输出。用 `await workspace.list_values()` 查询当前 Agent 的名称。两种方法沿用对应直接工具的参数和授权。
+
+用 `send_message({to, message, values: ["build_log"]})` 在下达任务时向接收方分享固定的值引用。每条消息最多可分享八个准确名称或完整输出引用。以后替换 `build_log` 的绑定，已投递的引用仍然有效。接收方可以用共享的 ID 读取该引用。
 
 ## Tool Result Envelope
 
@@ -83,23 +171,26 @@
 | `status` | `ok`、`error`、`blocked` 或 `cancelled` |
 | `summary` | 简短结果摘要 |
 | `model_content` | 供下一步使用的证据 |
-| `truncated` | `model_content` 是否被截断 |
+| `truncated` | 证据是否截断，包括命令捕获不完整的情况 |
 | `structured` | 可选的机器可读细节 |
 
-与 snapshot 有关的 `edit_file` 和 `write_file` 错误会保留 `structured.kind: "error"`，并增加一个用于恢复的 `reason_code`：`snapshot_required`、`full_snapshot_required`、`snapshot_stale` 或 `old_text_not_visible`。
+文件变更中与快照有关的错误会保留 `structured.kind: "error"`，并增加用于恢复的 `reason_code`，例如 `snapshot_required`、`full_snapshot_required`、`snapshot_stale` 或 `old_text_not_visible`。
 
-在单个推进中的 Agent 内，Kuku 会让 `read_file`、`edit_file`、`write_file`、`remember_memory`、`forget_memory` 和 `run_command` 槽位彼此串行。命令的写入路径无法静态判定，因此相互独立的命令也可能等待；其他只读工具仍可并发。同一 Session 中不同 Agent 可并发推进。该顺序只覆盖 Kuku 管理的槽位，不覆盖外部进程，因此 snapshot hash 检查仍然适用。
+在单个推进中的 Agent 内，kuku 会让 `read_file`、`stat_file`、`edit_file`、`write_file`、`remove_file`、`remember_memory`、`forget_memory`、`run_command` 和 `workspace_script` 槽位彼此串行。其他只读工具仍可并发。同一 Session 中不同 Agent 可并发推进。快照哈希检查能发现读写之间的变化，包括外部进程造成的变更。
 
 ## Notes By Tool
 
-- `find_files` 返回相对路径，并跳过常见构建目录。
+- `find_files` 在有界的 `entries` 中返回相对路径。列表中的目录以 `/` 结尾。扫描会跳过常见构建目录。
 - `read_file` 返回带行号内容，并支持分页。
-- `search_text` 基于正则，支持 `files`、`lines` 和 `count` 视图。
-- `fetch_url` 下载到临时目录，拒绝非 HTTP(S) URL 和内嵌凭证，并限制 50 MB。
+- `stat_file` 返回路径类型（`file`、`directory`、`other` 或 `missing`）、是否存在及可用的文件大小。设置 `version: true` 时会流式读取普通文件的字节并计算 SHA-256 `content_hash`，结果只提供哈希，不包含文件正文。
+- `search_text` 基于正则，支持 `files`、`lines` 和 `count` 视图。结构化 `matches` 提供路径和行号，`lines` 还提供有界文本。通过 `next_offset` 续读。可将匹配的原文用于编辑，也可读取相邻行以补充上下文。
+- `fetch_url` 下载最大 50 MiB 的 HTTP(S) 响应正文。即使服务器返回错误响应，结果也会包含 HTTP 状态码。在 Session 内，完整正文必须能存入可用的输出配额。下载完成后，发起请求的 Agent 可将 `output_ref.id` 传给 `read_output` 读取正文。取消下载会丢弃已接收的部分。独立查询返回临时文件路径。工具会拒绝带内嵌密码的 URL。
 - `query_session` 会过滤 Session 账本，默认排除 rolled-back 事件，并截断单条事件内容。
-- `edit_file` 要求 `old_text` 唯一匹配一个仍在当前 conversation 有效历史中可见的 read snapshot。局部或截断读取只能授权实际展示的原始文件文本，而 `replace_all=true` 需要整文件 snapshot。只有在匹配 CRLF 文件确有需要时，LF 输入才会映射为 CRLF，并保持替换文本的换行风格。写入时文件 hash 仍须一致。
-- `write_file` 只有在当前 conversation 的有效历史中仍可见先前的整文件 read snapshot 时，才允许覆盖已有文件。
-- `run_command` 要求 `timeout` 以秒为单位。
+- `edit_file` 可直接替换已知的 `old_text`，只要它在当前文件中仅出现一次。文件其他部分的修改会保留。若原文出现多次，工具可接受在当前版本已观察范围内的唯一匹配。多个位置都符合时，提供更多相邻原文来定位。`replace_all=true` 需要掌握该版本的整文件内容。只有在匹配 CRLF 文件确有需要时，LF 输入才会映射为 CRLF，并保持替换文本的换行风格。写入时文件哈希仍须一致。
+- `write_file` 可以覆盖 Agent 在有效历史中完整读取过的文件版本，或由它自身写入完整内容且已确认成功的版本。当前路径和哈希都必须与证据一致。局部编辑不足以确认变更后的整文件内容。
+- `remove_file` 在 `expected_version` 与当前哈希一致时移除普通文件。省略该参数时，需要同一版本的整文件读取。移除二进制文件可用 `stat_file({path, version: true})` 获取哈希，再作为 `expected_version` 传入。末级路径为符号链接时会拒绝该请求。
+- 文件工具的 `expected_version` 可使用返回的 `sha256:` 版本串，也可使用同一完整的 64 位十六进制 SHA-256 摘要。内容检查比较全部摘要位。
+- `edit_file` 和 `write_file` 可传入先前读取或已确认写入的 `content_hash` 作为 `expected_version`，进行附加版本检查。如果观察之后文件任意位置发生变化都应拒绝操作，就传入该版本。
 - `remember_memory` 和 `forget_memory` 通过专用 API 写入 memory 文件。
 
 ## Memory Tool Enums

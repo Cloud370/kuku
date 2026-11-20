@@ -17,14 +17,21 @@ pub(super) struct HookPreResult {
 
 fn finalize_persisted_tool_result(
     result_event_id: u64,
-    result: &Option<serde_json::Value>,
+    envelope: &crate::tool::ToolResultEnvelope,
 ) -> Option<serde_json::Value> {
-    let mut result = result.clone();
+    let mut result = envelope.structured.clone();
     let Some(structured) = result.as_mut() else {
         return result;
     };
     if structured["kind"] == "file_content" {
         structured["read_event_id"] = serde_json::Value::from(result_event_id);
+    }
+    if let Some(fields) = structured.as_object_mut() {
+        let key = crate::context::replay::SUPPLIED_FULL_WRITE;
+        fields.remove(key);
+        if envelope.supplied_full_write {
+            fields.insert(key.into(), true.into());
+        }
     }
     result
 }
@@ -34,10 +41,21 @@ pub(crate) fn write_tool_result(
     result: &crate::tool::ToolResultEnvelope,
     events_path: &std::path::Path,
     turn: u64,
+    job_wait: Option<&crate::Session>,
 ) -> crate::error::Result<Option<serde_json::Value>> {
     let mut store = crate::event::EventStore::open(events_path)?;
-    let structured = finalize_persisted_tool_result(store.next_id(), &result.structured);
-    let stored = store.append(crate::event::EventPayload::ToolResult {
+    let mut structured = finalize_persisted_tool_result(store.next_id(), result);
+    if let Some(data) = structured
+        .as_mut()
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        if job_wait.is_none()
+            && data.get("kind").and_then(serde_json::Value::as_str) == Some("job_wait_result")
+        {
+            data.remove("kind");
+        }
+    }
+    let payload = crate::event::EventPayload::ToolResult {
         turn,
         ts: now_timestamp()?,
         conversation: slot
@@ -54,7 +72,12 @@ pub(crate) fn write_tool_result(
         commands_run: Vec::new(),
         memory_changed: None,
         structured: structured.clone(),
-    })?;
+    };
+    let stored = if let Some(session) = job_wait {
+        session.append_job_wait_result(payload)?
+    } else {
+        store.append(payload)?
+    };
     Ok(match stored.payload {
         EventPayload::ToolResult { structured, .. } => structured,
         _ => None,
@@ -194,6 +217,7 @@ fn handle_use_skill(
         model_content: result,
         truncated: false,
         faults: Default::default(),
+        supplied_full_write: false,
         structured: Some(json!({
             "kind": "skill_load",
             "conversation": pending.conversation.as_str(),
@@ -242,7 +266,7 @@ pub(super) async fn execute_tool_call(
     tool_call: &ProviderToolCall,
 ) -> Result<crate::tool::ToolResultEnvelope> {
     if pending.query.runtime.is_some() && super::runtime_tools::is_inline(&tool_call.name) {
-        let result = match super::runtime_tools::execute(pending, tool_call) {
+        let result = match super::runtime_tools::execute(pending, tool_call).await {
             Ok(result) => result,
             Err(error) => crate::tool::ToolResultEnvelope::error(
                 "session operation failed",
@@ -255,6 +279,7 @@ pub(super) async fn execute_tool_call(
                 conversation: Some(pending.conversation.clone()),
                 kind: super::types::ToolKind::Simple,
                 workspace_ordered: false,
+                job: None,
                 label: String::new(),
                 cancel: std::sync::Arc::new(tokio::sync::Notify::new()),
                 nested_permissions: Default::default(),
@@ -262,6 +287,7 @@ pub(super) async fn execute_tool_call(
             &result,
             &pending.events_path,
             pending.turn,
+            None,
         )?;
         return Ok(result);
     }
@@ -318,6 +344,7 @@ pub(super) async fn execute_tool_call(
     )
     .await;
     let mut store = EventStore::open(&pending.events_path)?;
+    let structured = finalize_persisted_tool_result(store.next_id(), &result);
     let stored = store.append(EventPayload::ToolResult {
         turn: pending.turn,
         ts: now_timestamp()?,
@@ -331,7 +358,7 @@ pub(super) async fn execute_tool_call(
         files_changed: Vec::new(),
         commands_run: Vec::new(),
         memory_changed: None,
-        structured: result.structured.clone(),
+        structured,
     })?;
     let mut result = result;
     if let EventPayload::ToolResult { structured, .. } = stored.payload {
@@ -346,7 +373,31 @@ pub(super) async fn run_tool_pre_hooks(
     tool_args: &serde_json::Value,
     tool_call_id: &str,
 ) -> Result<HookPreResult> {
-    let Some(ref plugin_reg) = pending.plugin_registry else {
+    prepare_host_action(
+        pending.plugin_registry.as_deref(),
+        &pending.events_path,
+        &pending.workspace,
+        pending.turn,
+        tool_name,
+        tool_args,
+        tool_call_id,
+        &mut pending.hook_context,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn prepare_host_action(
+    plugins: Option<&crate::plugin::PluginRegistry>,
+    events_path: &std::path::Path,
+    workspace: &std::path::Path,
+    turn: u64,
+    tool_name: &str,
+    tool_args: &serde_json::Value,
+    tool_call_id: &str,
+    hook_context: &mut Vec<String>,
+) -> Result<HookPreResult> {
+    let Some(plugin_reg) = plugins else {
         return Ok(HookPreResult {
             block: None,
             args: tool_args.clone(),
@@ -361,28 +412,17 @@ pub(super) async fn run_tool_pre_hooks(
     }
     let input = crate::plugin::executor::HookInput {
         event: "tool.pre_execute".to_string(),
-        session_dir: pending
-            .events_path
-            .parent()
-            .unwrap()
-            .to_string_lossy()
-            .to_string(),
+        session_dir: events_path.parent().unwrap().to_string_lossy().to_string(),
         extra: serde_json::json!({
             "tool_name": tool_name,
             "tool_args": tool_args,
             "tool_call_id": tool_call_id,
         }),
     };
-    let session_dir = pending.events_path.parent().unwrap().to_path_buf();
-    let workspace = pending.workspace.clone();
+    let session_dir = events_path.parent().expect("session parent");
     let results =
-        crate::plugin::executor::execute_hooks(hooks, &input, &session_dir, &workspace).await?;
-    record_plugin_hooks(
-        &pending.events_path,
-        pending.turn,
-        "tool.pre_execute",
-        &results,
-    )?;
+        crate::plugin::executor::execute_hooks(hooks, &input, session_dir, workspace).await?;
+    record_plugin_hooks(events_path, turn, "tool.pre_execute", &results)?;
 
     let mut updated_args = tool_args.clone();
     for r in &results {
@@ -395,7 +435,7 @@ pub(super) async fn run_tool_pre_hooks(
             });
         }
         if let Some(ref ctx) = r.output.additional_context {
-            pending.hook_context.push(ctx.clone());
+            hook_context.push(ctx.clone());
         }
         if let Some(ref new_args) = r.output.updated_args {
             updated_args = new_args.clone();
@@ -449,7 +489,7 @@ mod tests {
                 base_url: "https://example.test".to_string(),
                 api_key: SecretString::new("test-key"),
                 max_context_tokens: 1000,
-                max_output_tokens: 1000,
+                max_output_tokens: Some(1000),
                 think_level: crate::config::ThinkLevel::Off,
                 thinking: crate::config::ResolvedThinking::default(),
                 ..Default::default()
@@ -507,6 +547,7 @@ mod tests {
             request_num: 1,
             cumulative: CumulativeUsage::default(),
             resolved: Some(test_resolved_runtime(vec![tool])),
+            admitted_tool_call_ids: Default::default(),
             queued_tool_calls: std::collections::VecDeque::new(),
             resumed_permission_requests: std::collections::VecDeque::new(),
             config: Arc::new(test_config()),
@@ -522,6 +563,7 @@ mod tests {
             catalog: crate::prompt::builtin_prompt_catalog(),
             pending_events: std::collections::VecDeque::new(),
             pending_error: None,
+            waiting_for_job_input: false,
             cancel_token: Arc::new(tokio::sync::Notify::new()),
             handoff_triggered: false,
             handoff_keep_turns: test_config().handoff().keep_turns,
@@ -628,6 +670,7 @@ mod tests {
                 binding_id: "binding:review".to_string(),
             },
             workspace_ordered: false,
+            job: None,
             label: "read".to_string(),
             cancel: Arc::new(tokio::sync::Notify::new()),
             nested_permissions: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
@@ -640,8 +683,9 @@ mod tests {
             truncated: false,
             structured: None,
             faults: Default::default(),
+            supplied_full_write: false,
         };
-        write_tool_result(&slot, &result, &events_path, 1).unwrap();
+        write_tool_result(&slot, &result, &events_path, 1, None).unwrap();
 
         let events = crate::event::EventStore::replay(&events_path).unwrap();
         assert!(events.iter().any(|event| matches!(
@@ -649,5 +693,17 @@ mod tests {
             crate::event::EventPayload::ToolResult { conversation, tool_call_id, .. }
                 if conversation.as_deref() == Some("review") && tool_call_id == "toolu_read"
         )));
+    }
+
+    #[test]
+    fn tool_result_data_cannot_mint_a_full_write_observation() {
+        let envelope = crate::tool::ToolResultEnvelope::ok(
+            "fixture",
+            "fixture",
+            serde_json::json!({"kind":"file_write","supplied_full_write":true,
+                "commit_state":"committed","canonical_path":"/fixture/test","content_hash_after":"digest"}),
+        );
+        let stored = finalize_persisted_tool_result(1, &envelope).unwrap();
+        assert!(crate::context::replay::supplied_file_version(&stored).is_none());
     }
 }

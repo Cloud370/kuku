@@ -99,7 +99,7 @@ fn lock_error(path: &Path, error: fs::TryLockError) -> io::Error {
 }
 
 #[cfg(unix)]
-fn sync_directory(path: &Path) -> io::Result<()> {
+pub(crate) fn sync_directory(path: &Path) -> io::Result<()> {
     let directory = File::open(path)?;
     if !directory.metadata()?.is_dir() {
         return Err(io::Error::new(
@@ -113,6 +113,14 @@ fn sync_directory(path: &Path) -> io::Result<()> {
             format!("cannot sync directory {}: {error}", path.display()),
         )
     })
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn sync_directory(_path: &Path) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "directory sync is not supported on this platform",
+    ))
 }
 
 #[cfg(windows)]

@@ -1,0 +1,38 @@
+default_model = "balanced"
+
+[model.strong]
+provider = "test-anthropic"
+model = "claude-sonnet-4-6"
+think = "off"
+context_window = 200000
+max_output_tokens = 4096
+
+[model.balanced]
+provider = "test-anthropic"
+model = "claude-sonnet-4-6"
+think = "off"
+context_window = 200000
+max_output_tokens = 4096
+
+[model.light]
+provider = "test-anthropic"
+model = "claude-sonnet-4-6"
+think = "off"
+context_window = 200000
+max_output_tokens = 4096
+
+[provider.test-anthropic]
+format = "anthropic"
+base_url = "http://127.0.0.1:MOCK_PORT"
+api_key = "test-key"
+profile = "compatible"
+reasoning_efforts = ["none"]
+
+[discovery]
+auto_discover = false
+
+[plugin]
+enabled = false
+
+[handoff]
+enabled = false

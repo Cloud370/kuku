@@ -1,8 +1,11 @@
+//! HTTP access to the kuku Session runtime.
+
 pub mod config_watcher;
 pub mod error_mapping;
 pub mod routes;
 pub mod run_manager;
 pub mod server_args;
+pub mod service;
 pub mod wire;
 
 use std::net::SocketAddr;
@@ -10,92 +13,34 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use axum::extract::{ConnectInfo, State};
-use axum::http::{header, StatusCode};
-use axum::middleware::{self, Next};
-use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
-use axum::{Json, Router};
-use serde_json::json;
+use axum::Router;
 use tokio::sync::Mutex;
-use tower_http::cors::CorsLayer;
-use tower_http::limit::RequestBodyLimitLayer;
-use tower_http::trace::TraceLayer;
 
-use run_manager::RunManager;
+use crate::run_manager::RunManager;
+
+/// Build version shared by the server and packaged clients.
+pub const BUILD_VERSION: &str = env!("KUKU_VERSION");
 
 /// Shared host resources and authorization supplied to HTTP handlers.
 pub struct AppState {
+    /// Executor responsible for active and recently observed Sessions.
     pub run_manager: Mutex<RunManager>,
+    /// Configuration read and resolved on the server.
     pub config: Arc<ArcSwap<kuku::config::Config>>,
+    /// Token required by Session routes.
     pub password: Option<String>,
+    /// User data directory containing the Sessions.
     pub kuku_home: PathBuf,
     /// Authority consulted before exact tool actions are dispatched.
     pub authorizer: Arc<dyn kuku::permission::ToolAuthorizer>,
 }
 
-fn is_loopback(addr: &SocketAddr) -> bool {
-    addr.ip().is_loopback()
-}
-
-async fn auth_middleware(
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    State(state): State<Arc<AppState>>,
-    request: axum::http::Request<axum::body::Body>,
-    next: Next,
-) -> Response {
-    if request.uri().path() == "/health" {
-        return next.run(request).await;
-    }
-
-    if is_loopback(&addr) {
-        return next.run(request).await;
-    }
-
-    if let Some(ref expected) = state.password {
-        if let Some(auth_header) = request.headers().get(header::AUTHORIZATION) {
-            if let Ok(auth_str) = auth_header.to_str() {
-                if auth_str == format!("Bearer {expected}") {
-                    return next.run(request).await;
-                }
-            }
-        }
-    }
-
-    (
-        StatusCode::OK,
-        Json(json!({"ok": false, "code": "auth_required", "message": "password required"})),
-    )
-        .into_response()
-}
-
+/// Build the authenticated HTTP API around an embedding host's resources.
 pub fn build_app(state: Arc<AppState>) -> Router {
-    Router::new()
-        .route("/health", get(routes::health::health))
-        .route("/sessions/{id}/events", get(routes::events::events))
-        .route("/sessions", get(routes::sessions::list))
-        .route(
-            "/sessions/{id}/conversations",
-            get(routes::sessions::conversations),
-        )
-        .route("/sessions/{id}", delete(routes::sessions::delete))
-        .route("/runs", post(routes::runs::create_run))
-        .route("/runs/{id}", delete(routes::runs::cancel_run))
-        .route("/runs/{id}/responses", post(routes::responses::respond))
-        .route(
-            "/sessions/{id}/responses",
-            post(routes::responses::respond_session),
-        )
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            auth_middleware,
-        ))
-        .layer(TraceLayer::new_for_http())
-        .layer(CorsLayer::permissive())
-        .layer(RequestBodyLimitLayer::new(10 * 1024 * 1024))
-        .with_state(state)
+    service::app(state)
 }
 
+/// Start an embedded HTTP service on a free loopback port.
 pub async fn start_server(
     config: kuku::config::Config,
     password: Option<String>,
@@ -118,22 +63,8 @@ pub async fn start_server(
     let addr = listener.local_addr().unwrap();
 
     let handle = tokio::spawn(async move {
-        axum::serve(
-            listener,
-            app.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .await
-        .unwrap();
+        axum::serve(listener, app).await.unwrap();
     });
 
     (addr, handle)
-}
-
-pub async fn shutdown_signal(state: Arc<AppState>) {
-    let _ = tokio::signal::ctrl_c().await;
-    tracing::info!("shutting down");
-
-    if let Err(error) = state.run_manager.lock().await.close_all().await {
-        tracing::error!(%error, "session cleanup failed");
-    }
 }

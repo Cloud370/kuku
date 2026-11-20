@@ -1,12 +1,12 @@
 use kuku::agent::registry::AgentRegistry;
 use kuku::prompt::builtin_prompt_catalog;
 
-use crate::cli_args::{AgentsArgs, AgentsSubcommand};
+use crate::cli_args::{AgentsArgs, AgentsSubcommand, ConnectionArgs};
 use crate::display::util::truncate;
 
-fn build_registry() -> Result<AgentRegistry, Box<dyn std::error::Error>> {
-    let workspace = kuku::session::current_workspace()?;
-    let config_path = kuku::session::kuku_home()?.join("config.toml");
+fn build_registry(target: &ConnectionArgs) -> Result<AgentRegistry, Box<dyn std::error::Error>> {
+    let workspace = target.workspace()?;
+    let config_path = super::config_path(target)?;
     let discovery_config = kuku::config::load_config(&config_path)
         .ok()
         .and_then(|f| f.discovery)
@@ -18,8 +18,8 @@ fn build_registry() -> Result<AgentRegistry, Box<dyn std::error::Error>> {
     Ok(registry)
 }
 
-pub fn run(args: AgentsArgs) -> Result<(), Box<dyn std::error::Error>> {
-    let registry = build_registry()?;
+pub fn run(args: AgentsArgs, target: &ConnectionArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let registry = build_registry(target)?;
 
     match args.cmd {
         None | Some(AgentsSubcommand::List) => {

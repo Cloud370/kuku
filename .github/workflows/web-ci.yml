@@ -1,7 +1,15 @@
 name: WebUI CI
 on:
   push:
-    paths: ["apps/web/**"]
+    branches: [main]
+    paths:
+      - "apps/web/**"
+      - ".github/workflows/web-ci.yml"
+  pull_request:
+    branches: [main, feat/interactive-clients]
+    paths:
+      - "apps/web/**"
+      - ".github/workflows/web-ci.yml"
 
 concurrency:
   group: webui-${{ github.ref }}

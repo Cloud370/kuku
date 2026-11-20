@@ -1,7 +1,6 @@
 import { Panel, Group, Separator } from "react-resizable-panels";
 import { useUIStore } from "@/stores/ui";
 import { Header } from "./Header";
-import { LeftSidebar } from "./LeftSidebar";
 
 const horizSep =
   "group flex items-center justify-center w-[6px] shrink-0 hover:bg-[var(--color-accent-muted)] transition-colors";
@@ -12,6 +11,7 @@ export type MainLayoutProps = {
   sessionTitle?: string;
   sessionStatus?: "running" | "waiting" | "completed" | "idle";
   children?: React.ReactNode;
+  leftPanel?: React.ReactNode;
   rightPanel?: React.ReactNode;
 };
 
@@ -19,6 +19,7 @@ export function MainLayout({
   sessionTitle,
   sessionStatus,
   children,
+  leftPanel,
   rightPanel,
 }: MainLayoutProps) {
   const layoutMode = useUIStore((s) => s.layoutMode);
@@ -28,7 +29,7 @@ export function MainLayout({
   const showRight = layoutMode === "three-column";
 
   return (
-    <div className="h-screen flex flex-col overflow-hidden bg-[var(--color-surface)]">
+    <div className="h-full flex flex-col overflow-hidden bg-[var(--color-surface)]">
       <Header
         sessionTitle={sessionTitle}
         sessionStatus={sessionStatus}
@@ -40,7 +41,7 @@ export function MainLayout({
           {showLeft ? (
             <>
               <Panel defaultSize={22} minSize="180px" maxSize="400px">
-                <LeftSidebar />
+                {leftPanel}
               </Panel>
               <Separator className={horizSep}>
                 <div className={horizLine} />

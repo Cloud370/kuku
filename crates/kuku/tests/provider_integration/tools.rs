@@ -327,10 +327,14 @@ async fn each_slot_read_file_persists_its_own_read_event_id() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn read_file_snapshot_allows_following_edit_file() {
+async fn read_file_range_disambiguates_a_following_edit() {
     let env = TestEnv::new();
     let server = MockServer::start();
-    std::fs::write(env.workspace.path().join("README.md"), "alpha\nbeta\n").unwrap();
+    std::fs::write(
+        env.workspace.path().join("README.md"),
+        "alpha\nbeta\nbeta\n",
+    )
+    .unwrap();
 
     let read_mock = server.mock(|when, then| {
         context_conditions(when, "read then edit")
@@ -344,7 +348,7 @@ async fn read_file_snapshot_allows_following_edit_file() {
                 "role": "assistant",
                 "content": [
                     {"type": "text", "text": "I will read the file first."},
-                    {"type": "tool_use", "id": "toolu_read", "name": "read_file", "input": {"path": "README.md"}}
+                    {"type": "tool_use", "id": "toolu_read", "name": "read_file", "input": {"path": "README.md", "offset": 2, "limit": 1}}
                 ],
                 "stop_reason": "tool_use",
                 "usage": {"input_tokens": 5, "output_tokens": 6}
@@ -408,28 +412,27 @@ async fn read_file_snapshot_allows_following_edit_file() {
     assert_eq!(read_event.1["path"], "README.md");
     assert_eq!(read_event.1["read_event_id"], read_event.0);
     assert!(read_event.1["read_event_id"].as_u64().unwrap() > 0);
+    assert_eq!(false, read_event.1["is_full_file_snapshot"]);
     assert!(events.iter().any(|event| matches!(
         &event.payload,
         EventPayload::ToolResult { status, structured: Some(structured), .. }
             if status == "ok" && structured["kind"] == "file_edit"
     )));
-    assert!(!events.iter().any(|event| matches!(
-        &event.payload,
-        EventPayload::ToolResult { status, model_content, .. }
-            if status == "error"
-                && model_content.contains("prior successful read_file snapshot")
-    )));
     assert_eq!(
-        std::fs::read_to_string(env.workspace.path().join("README.md")).unwrap(),
-        "alpha\ngamma\n"
+        "alpha\ngamma\nbeta\n",
+        std::fs::read_to_string(env.workspace.path().join("README.md")).unwrap()
     );
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn same_batch_read_file_then_edit_file_succeeds() {
+async fn same_batch_read_file_range_disambiguates_edit() {
     let env = TestEnv::new();
     let server = MockServer::start();
-    std::fs::write(env.workspace.path().join("README.md"), "alpha\nbeta\n").unwrap();
+    std::fs::write(
+        env.workspace.path().join("README.md"),
+        "alpha\nbeta\nbeta\n",
+    )
+    .unwrap();
 
     let tool_mock = server.mock(|when, then| {
         context_conditions(when, "read then edit same batch")
@@ -443,7 +446,7 @@ async fn same_batch_read_file_then_edit_file_succeeds() {
                 "role": "assistant",
                 "content": [
                     {"type": "text", "text": "I will read and then edit the file."},
-                    {"type": "tool_use", "id": "toolu_read", "name": "read_file", "input": {"path": "README.md"}},
+                    {"type": "tool_use", "id": "toolu_read", "name": "read_file", "input": {"path": "README.md", "offset": 3, "limit": 1}},
                     {"type": "tool_use", "id": "toolu_edit", "name": "edit_file", "input": {"path": "README.md", "old_text": "beta", "new_text": "gamma", "brief": "rename beta"}}
                 ],
                 "stop_reason": "tool_use",
@@ -475,8 +478,8 @@ async fn same_batch_read_file_then_edit_file_succeeds() {
     final_mock.assert();
     assert_eq!(output.text, "Same-batch edit complete.");
     assert_eq!(
-        std::fs::read_to_string(env.workspace.path().join("README.md")).unwrap(),
-        "alpha\ngamma\n"
+        "alpha\nbeta\ngamma\n",
+        std::fs::read_to_string(env.workspace.path().join("README.md")).unwrap()
     );
 
     let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
@@ -484,12 +487,6 @@ async fn same_batch_read_file_then_edit_file_succeeds() {
         &event.payload,
         EventPayload::ToolResult { status, structured: Some(structured), .. }
             if status == "ok" && structured["kind"] == "file_edit"
-    )));
-    assert!(!events.iter().any(|event| matches!(
-        &event.payload,
-        EventPayload::ToolResult { status, model_content, .. }
-            if status == "error"
-                && model_content.contains("prior successful read_file snapshot")
     )));
 }
 
@@ -510,7 +507,7 @@ async fn can_allow_run_command_once_via_run_decide() {
                 "role": "assistant",
                 "content": [
                     {"type": "text", "text": "I will run a command."},
-                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"command": "cargo test --version", "timeout": 60, "brief": "check test version"}}
+                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"program": "cargo", "args": ["test", "--version"], "cwd": ".", "timeout": 60, "brief": "check test version"}}
                 ],
                 "stop_reason": "tool_use",
                 "usage": {"input_tokens": 5, "output_tokens": 6}
@@ -584,7 +581,7 @@ async fn project_scope_allow_persists_to_policy_file_and_applies_on_next_run() {
                 "role": "assistant",
                 "content": [
                     {"type": "text", "text": "I will run a command."},
-                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"command": "cargo test", "timeout": 60, "brief": "run tests"}}
+                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"program": "cargo", "args": ["test"], "cwd": ".", "timeout": 60, "brief": "run tests"}}
                 ],
                 "stop_reason": "tool_use",
                 "usage": {"input_tokens": 5, "output_tokens": 6}
@@ -634,7 +631,7 @@ async fn project_scope_allow_persists_to_policy_file_and_applies_on_next_run() {
     )
     .unwrap();
     let policy_text = std::fs::read_to_string(&policy_path).unwrap();
-    assert!(policy_text.contains("run_command(cargo test)"));
+    assert!(policy_text.contains(&format!("run_command({})", request.candidate)));
 
     // Second run — permission auto-allowed from persisted policy.
     let server2 = MockServer::start();
@@ -651,7 +648,7 @@ async fn project_scope_allow_persists_to_policy_file_and_applies_on_next_run() {
                 "role": "assistant",
                 "content": [
                     {"type": "text", "text": "I will run a command again."},
-                    {"type": "tool_use", "id": "toolu_cmd_2", "name": "run_command", "input": {"command": "cargo test", "timeout": 60, "brief": "run tests"}}
+                    {"type": "tool_use", "id": "toolu_cmd_2", "name": "run_command", "input": {"program": "cargo", "args": ["test"], "cwd": ".", "timeout": 60, "brief": "run tests"}}
                 ],
                 "stop_reason": "tool_use",
                 "usage": {"input_tokens": 5, "output_tokens": 6}
@@ -701,7 +698,7 @@ async fn records_denied_run_command_and_continues() {
                 "role": "assistant",
                 "content": [
                     {"type": "text", "text": "I will run a command."},
-                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"command": "cargo test", "timeout": 60, "brief": "run tests"}}
+                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"program": "cargo", "args": ["test"], "cwd": ".", "timeout": 60, "brief": "run tests"}}
                 ],
                 "stop_reason": "tool_use",
                 "usage": {"input_tokens": 5, "output_tokens": 6}

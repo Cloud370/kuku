@@ -6,6 +6,66 @@ use serde::{Deserialize, Serialize};
 use crate::config::Config;
 use crate::permission::{ToolAuthorizer, TrustedLocal};
 
+/// Durable status of a command or workspace script transferred to a Session Job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobStatus {
+    /// The original execution is still in progress.
+    Running,
+    /// The execution reported success.
+    Completed,
+    /// The execution reported a terminal failure or could not proceed.
+    Failed,
+    /// The execution acknowledged cancellation and cleanup.
+    Cancelled,
+    /// A terminal outcome or cleanup could not be confirmed.
+    Interrupted,
+}
+
+/// Observed terminal facts for the original execution.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobResult {
+    /// Final tool result status.
+    pub status: String,
+    /// Short result summary.
+    pub summary: String,
+    /// Typed tool facts, including original retained output references where available.
+    pub structured: Option<serde_json::Value>,
+    /// Whether the tool omitted part of its model-visible result.
+    pub truncated: bool,
+    /// Whether capture failed to publish its expected retained output.
+    pub output_persistence_failed: bool,
+    /// Whether cleanup of owned resources could not be confirmed.
+    pub cleanup_incomplete: bool,
+}
+
+/// Session-scoped handle and status for an execution's background lifetime.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobSnapshot {
+    /// Stable Job identifier.
+    pub id: String,
+    /// Address of the Agent that owns the Job.
+    pub agent: String,
+    /// Turn where the original tool call was dispatched.
+    pub turn: u64,
+    /// Identity of the original tool call.
+    pub tool_call_id: String,
+    /// Tool that owns the execution.
+    pub tool: String,
+    /// Current durable Job status.
+    pub status: JobStatus,
+    /// Short description of the running Job or its terminal result.
+    pub summary: String,
+    /// Retained output identity for a native command, available after capture is finalized.
+    pub output_id: Option<String>,
+    /// Durable cursor of the original tool result that registered the Job.
+    pub started_at: u64,
+    /// Durable cursor of the terminal Job event.
+    pub finished_at: Option<u64>,
+    /// Terminal facts loaded by a targeted lookup or cancellation.
+    pub result: Option<JobResult>,
+}
+
 /// Configuration and resource ownership for opening a persistent session.
 #[derive(Debug, Clone)]
 pub struct SessionOptions {
@@ -21,6 +81,8 @@ pub struct SessionOptions {
     pub prompts_dir: Option<PathBuf>,
     /// Session resource limits.
     pub limits: RuntimeLimits,
+    /// Capacity shared by disposable script workers on this host.
+    pub workspace_host: crate::WorkspaceExecutionHost,
     /// Host authority consulted before every tool dispatch.
     pub authorizer: Arc<dyn ToolAuthorizer>,
     /// Optional host model transport; preparation and dispatch limits remain owned by the SDK.
@@ -43,6 +105,7 @@ impl SessionOptions {
             config,
             prompts_dir: None,
             limits: RuntimeLimits::default(),
+            workspace_host: crate::WorkspaceExecutionHost::default(),
             authorizer: Arc::new(TrustedLocal),
             model_adapter: None,
             tools: Vec::new(),
@@ -53,6 +116,9 @@ impl SessionOptions {
 /// Hard bounds for input, model execution, tools, and observations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeLimits {
+    /// Limits applied to each embedded workspace script.
+    #[serde(default)]
+    pub workspace_script: crate::WorkspaceScriptLimits,
     /// Maximum agents retained by this session.
     pub max_agents: usize,
     /// Maximum delivered inputs waiting for one agent.
@@ -65,14 +131,27 @@ pub struct RuntimeLimits {
     pub max_model_requests: usize,
     /// Optional total model attempts shared by all agents and turns until this runtime closes.
     pub max_requests_per_open: Option<u64>,
+    /// Whether to retry transient provider failures before the first stream output.
+    #[serde(default = "default_provider_retry")]
+    pub retry_transient_provider_errors: bool,
     /// Optional host output-token ceiling applied to every agent's resolved request.
     pub max_output_tokens_per_request: Option<u32>,
-    /// Maximum logical model requests in one turn, including recovery requests.
-    pub max_steps_per_turn: u64,
     /// Maximum simultaneous tools within one agent's step.
     pub max_tools_per_agent: usize,
+    /// Foreground wait in milliseconds before a top-level command or script becomes a Job.
+    #[serde(default = "default_job_foreground_wait_ms")]
+    pub job_foreground_wait_ms: u64,
     /// Maximum retained bytes for one command or host-tool output.
     pub max_output_bytes: u64,
+    /// Maximum total physical bytes retained in this session, including capture framing.
+    #[serde(default = "default_retained_output_bytes")]
+    pub max_retained_output_bytes: u64,
+    /// Minimum age, in seconds, before unreferenced ordinary output can be reclaimed.
+    #[serde(default = "default_output_retention_secs")]
+    pub output_retention_secs: u64,
+    /// Maximum number of active named bindings across the session's agents.
+    #[serde(default = "default_named_values")]
+    pub max_named_values: usize,
     /// Maximum bytes in the first model-visible retained-output preview.
     pub max_preview_bytes: usize,
     /// Maximum transient observations retained for slow subscribers.
@@ -82,20 +161,45 @@ pub struct RuntimeLimits {
 impl Default for RuntimeLimits {
     fn default() -> Self {
         Self {
+            workspace_script: crate::WorkspaceScriptLimits::default(),
             max_agents: 64,
             max_pending_inputs: 128,
             max_input_bytes: 65_536,
             max_request_bytes: 512 * 1024,
             max_model_requests: 4,
             max_requests_per_open: None,
+            retry_transient_provider_errors: default_provider_retry(),
             max_output_tokens_per_request: None,
-            max_steps_per_turn: 20,
             max_tools_per_agent: 8,
+            job_foreground_wait_ms: default_job_foreground_wait_ms(),
             max_output_bytes: 8 * 1024 * 1024,
+            max_retained_output_bytes: default_retained_output_bytes(),
+            output_retention_secs: default_output_retention_secs(),
+            max_named_values: default_named_values(),
             max_preview_bytes: 16 * 1024,
             observation_capacity: 128,
         }
     }
+}
+
+fn default_provider_retry() -> bool {
+    true
+}
+
+fn default_job_foreground_wait_ms() -> u64 {
+    10_000
+}
+
+fn default_retained_output_bytes() -> u64 {
+    128 * 1024 * 1024
+}
+
+fn default_output_retention_secs() -> u64 {
+    24 * 60 * 60
+}
+
+fn default_named_values() -> usize {
+    64
 }
 
 /// Agent-local behavior and explicit model selection.
@@ -142,6 +246,15 @@ pub enum InputSource {
     External(String),
 }
 
+impl InputSource {
+    pub(crate) fn agent_address(&self) -> Option<&str> {
+        match self {
+            Self::Agent(address) => Some(address),
+            Self::Host(_) | Self::External(_) => None,
+        }
+    }
+}
+
 /// Whether delivery also requests advancement of an idle recipient.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -151,6 +264,23 @@ pub enum Activation {
     Wake,
     /// Persist the input for explicit advancement by the host.
     Enqueue,
+}
+
+/// The earliest execution boundary at which a delivered input may be accepted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputTiming {
+    /// Join the next model step in the current turn, or the next turn when idle.
+    #[default]
+    NextStep,
+    /// Wait for the next turn, even when the current turn has more steps.
+    NextTurn,
+}
+
+impl InputTiming {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// Idempotent delivery to one stable address within a session.
@@ -168,6 +298,12 @@ pub struct Input {
     pub activation: Activation,
     /// Optional external work or message association.
     pub correlation: Option<String>,
+    /// Earliest safe boundary for acceptance.
+    #[serde(default, skip_serializing_if = "InputTiming::is_default")]
+    pub timing: InputTiming,
+    /// Native skill requested for the model step that accepts this input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bootstrap_skill: Option<String>,
 }
 
 impl Input {
@@ -184,6 +320,8 @@ impl Input {
             text: text.into(),
             activation: Activation::Wake,
             correlation: None,
+            timing: InputTiming::NextStep,
+            bootstrap_skill: None,
         }
     }
 }
@@ -197,6 +335,36 @@ pub struct Receipt {
     pub event_id: u64,
     /// Target agent address.
     pub agent: String,
+}
+
+/// Durable state of a delivered input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputStatus {
+    /// The input can still be withdrawn before acceptance.
+    Queued,
+    /// The input crossed an execution boundary.
+    Accepted,
+    /// The input was withdrawn before execution accepted it.
+    Withdrawn,
+}
+
+/// A delivered input awaiting acceptance and its original receipt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingInput {
+    /// Durable delivery acknowledgement.
+    pub receipt: Receipt,
+    /// Original input and requested timing.
+    pub input: Input,
+}
+
+/// The durable outcome of attempting to withdraw one delivered input.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Withdrawal {
+    /// Durable acknowledgement of the withdrawal command.
+    pub receipt: Receipt,
+    /// Actual state of the referenced input at the time of this command.
+    pub status: InputStatus,
 }
 
 /// Current execution state reconstructed from committed session facts.
@@ -215,7 +383,7 @@ pub enum AgentStatus {
     Interrupted,
 }
 
-/// Cumulative token usage reported by completed model requests.
+/// Cumulative token usage and the latest request measurement for one agent.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UsageTotals {
     /// Sum of reported total input tokens, including cached input.
@@ -230,6 +398,102 @@ pub struct UsageTotals {
     pub model_requests: u64,
     /// Responses missing either input or output usage, so reported totals may be partial.
     pub unreported_requests: u64,
+    /// Requests that reported their total input tokens.
+    #[serde(default)]
+    pub input_reported_requests: u64,
+    /// Requests that reported their total output tokens.
+    #[serde(default)]
+    pub output_reported_requests: u64,
+    /// Total input tokens from requests reporting both input and cache reads.
+    #[serde(default)]
+    pub cache_measured_input_tokens: u64,
+    /// Cache-read input tokens from those same requests.
+    #[serde(default)]
+    pub cache_measured_read_tokens: u64,
+    /// Output tokens summed from requests with a known output count and positive duration.
+    #[serde(default)]
+    pub measured_output_tokens: u64,
+    /// Total microseconds spent on the requests counted in measured output tokens.
+    #[serde(default)]
+    pub measured_elapsed_us: u64,
+    /// Provider measurement for the most recently prepared request, once available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_request: Option<ModelUsageSample>,
+}
+
+impl UsageTotals {
+    /// Return whether every counted request reported its input tokens.
+    pub fn input_tokens_complete(&self) -> bool {
+        self.complete(self.input_tokens, self.input_reported_requests)
+    }
+
+    /// Return whether every counted request reported its output tokens.
+    pub fn output_tokens_complete(&self) -> bool {
+        self.complete(self.output_tokens, self.output_reported_requests)
+    }
+
+    /// Return the latest reported input as a percentage of that request's context window.
+    pub fn context_percent(&self) -> Option<f64> {
+        let latest = self.latest_request.as_ref()?;
+        let window = latest.context_window_tokens.filter(|window| *window > 0)?;
+        Some(latest.input_tokens? as f64 / f64::from(window) * 100.0)
+    }
+
+    /// Return the token-weighted cache-read percentage over requests with paired counts.
+    pub fn cache_hit_percent(&self) -> Option<f64> {
+        let input = self.cache_measured_input_tokens;
+        let read = self.cache_measured_read_tokens;
+        (input > 0 && read <= input).then(|| read as f64 / input as f64 * 100.0)
+    }
+
+    /// Return the latest provider output tokens per second from dispatch to stream completion.
+    pub fn output_tokens_per_second(&self) -> Option<f64> {
+        let latest = self.latest_request.as_ref()?;
+        output_rate(latest.output_tokens?, latest.elapsed_us?)
+    }
+
+    /// Return total measured output tokens divided by total measured request duration.
+    pub fn average_output_tokens_per_second(&self) -> Option<f64> {
+        output_rate(self.measured_output_tokens, self.measured_elapsed_us)
+    }
+
+    fn complete(&self, tokens: Option<u64>, reported: u64) -> bool {
+        self.model_requests > 0
+            && tokens.is_some()
+            && (reported == self.model_requests || self.unreported_requests == 0)
+    }
+}
+
+fn output_rate(output_tokens: u64, elapsed_us: u64) -> Option<f64> {
+    (elapsed_us > 0).then(|| output_tokens as f64 * 1_000_000.0 / elapsed_us as f64)
+}
+
+/// Provider usage and timing bound to one prepared model request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelUsageSample {
+    /// Total input tokens in this request, including cached input.
+    pub input_tokens: Option<u64>,
+    /// Total output tokens reported by the provider for this request.
+    pub output_tokens: Option<u64>,
+    /// Configured context window bound to this request at preparation.
+    pub context_window_tokens: Option<u32>,
+    /// Microseconds from dispatch of the serving attempt to its terminal stream marker.
+    pub elapsed_us: Option<u64>,
+}
+
+/// Statistics for one completed or interrupted Agent Turn.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TurnSummary {
+    /// Wall-clock milliseconds from first admission to terminal settlement, if recorded.
+    pub elapsed_ms: Option<u64>,
+    /// Total input tokens when all attempts reported them.
+    pub input_tokens: Option<u64>,
+    /// Total output tokens when all attempts reported them.
+    pub output_tokens: Option<u64>,
+    /// Token-weighted cache-read percentage over attempts with paired counts.
+    pub cache_hit_percent: Option<f64>,
+    /// Number of committed tool calls, including calls waiting for authorization.
+    pub tool_calls: u64,
 }
 
 /// Queryable state of an agent without consuming its output.
@@ -239,12 +503,30 @@ pub struct AgentSnapshot {
     pub address: String,
     /// The agent's current local configuration.
     pub config: AgentConfig,
+    /// Configuration bound to the current execution, until the next safe boundary applies changes.
+    #[serde(default)]
+    pub active_config: Option<AgentConfig>,
     /// Current execution state.
     pub status: AgentStatus,
     /// Number of delivered inputs awaiting acceptance.
     pub pending_inputs: usize,
+    /// Bounded excerpt of the most recent admitted task input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admitted_task: Option<String>,
+    /// Bounded excerpt of the most recent task input still queued.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queued_task: Option<String>,
     /// Latest turn number, when any work was accepted.
     pub turn: Option<u64>,
+    /// Unix time in milliseconds at the latest Turn's first admission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_started_at_ms: Option<u64>,
+    /// Final wall time for the latest Turn, present only after terminal settlement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_elapsed_ms: Option<u64>,
+    /// Durable identity of the observed execution, including a pending wait or cleanup.
+    #[serde(default)]
+    pub execution_id: Option<u64>,
     /// Last durable assistant response, independent of task success.
     pub last_output: Option<String>,
     /// Last execution failure, if any.
@@ -254,7 +536,21 @@ pub struct AgentSnapshot {
     /// Pending question requiring a matching host reply.
     pub question: Option<QuestionRequest>,
     /// Cumulative reported usage.
+    #[serde(default)]
     pub usage: UsageTotals,
+}
+
+/// Consistent session state and journal cursor for a selected agent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentView {
+    /// Selected agent's current state.
+    pub snapshot: AgentSnapshot,
+    /// Retained agent states in stable address order.
+    pub agents: Vec<AgentSnapshot>,
+    /// Latest committed event covered by this view.
+    pub cursor: u64,
+    /// Selected agent's retractable deliveries in receipt order.
+    pub pending_inputs: Vec<PendingInput>,
 }
 
 /// Durable request for selected information at an agent's safe waiting boundary.

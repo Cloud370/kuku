@@ -18,6 +18,7 @@ path = "src/bin/kuku-server.rs"
 
 [dependencies]
 kuku = { workspace = true }
+kuku-client = { path = "../kuku-client" }
 axum = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
 tower-http = { workspace = true }
@@ -28,10 +29,12 @@ serde_json = { workspace = true }
 arc-swap = { workspace = true }
 clap = { workspace = true }
 tokio-stream = { workspace = true }
-home = { workspace = true }
+getrandom = "0.4"
+sha2 = "0.10"
+subtle = "2"
+tempfile = "3"
 
 [dev-dependencies]
 kuku = { workspace = true, features = ["test_support"] }
 httpmock = "0.7"
-wreq = { version = "6.0.0-rc.28", features = ["json", "stream"] }
-tempfile = "3"
+wreq = { version = "6.0.0-rc.28", features = ["json", "query", "stream"] }

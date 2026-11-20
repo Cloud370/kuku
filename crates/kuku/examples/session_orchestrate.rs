@@ -35,6 +35,9 @@ impl Settings {
         let mut config =
             kuku::config::load_config(&PathBuf::from(required(args, "config")?))?.resolve()?;
         let max_context_tokens = number(args, "max-context-tokens", 131_072_u32)?;
+        if max_context_tokens == 0 {
+            return Err("--max-context-tokens must be positive".into());
+        }
         let max_output_tokens = number(args, "max-output-tokens", 32_768_u32)?;
         for tier in config.tiers.values_mut() {
             tier.context_window = tier.context_window.min(max_context_tokens);
@@ -49,9 +52,10 @@ impl Settings {
         options.session_id = args.get("session-id").cloned();
         options.prompts_dir = args.get("prompts-dir").map(PathBuf::from);
         options.limits.max_agents = 2;
-        options.limits.max_steps_per_turn = number(args, "max-steps", 8_u64)?;
         options.limits.max_requests_per_open = Some(number(args, "max-requests", 16_u64)?);
-        options.limits.max_request_bytes = usize::try_from(max_context_tokens)?;
+        options.limits.retry_transient_provider_errors = false;
+        options.limits.max_request_bytes =
+            number(args, "max-request-bytes", options.limits.max_request_bytes)?;
         let mut reviewer = selection(args, REVIEWER, max_output_tokens);
         reviewer.instructions = Some(std::fs::read_to_string(required(
             args,
@@ -108,7 +112,7 @@ impl Observed {
         while let Some(observation) = observer.try_next()? {
             match observation {
                 Observation::Committed(_) => self.committed += 1,
-                Observation::Live { .. } => self.transient += 1,
+                Observation::Live { .. } | Observation::ReplyPreview { .. } => self.transient += 1,
                 Observation::Lagged { skipped } => self.lagged += skipped,
             }
         }
@@ -144,7 +148,7 @@ async fn main() {
 
 pub(crate) async fn execute(args: BTreeMap<String, String>) -> Result<bool, AnyError> {
     if args.contains_key("help") {
-        println!("session_orchestrate --workspace DIR --prompt-file FILE --review-prompt-file FILE --continue-prompt-file FILE --config FILE --data-dir DIR --output FILE [--session-id ID --command-id KEY --writer-connection NAME --writer-tier TIER --writer-model MODEL --writer-reasoning-effort VALUE --writer-service-tier VALUE --reviewer-connection NAME --reviewer-tier TIER --reviewer-model MODEL --reviewer-reasoning-effort VALUE --reviewer-service-tier VALUE --timer-ms 250 --max-steps 8 --max-requests 16 --max-output-tokens 32768 --max-context-tokens 131072 --timeout 300]");
+        println!("session_orchestrate --workspace DIR --prompt-file FILE --review-prompt-file FILE --continue-prompt-file FILE --config FILE --data-dir DIR --output FILE [--session-id ID --command-id KEY --writer-connection NAME --writer-tier TIER --writer-model MODEL --writer-reasoning-effort VALUE --writer-service-tier VALUE --reviewer-connection NAME --reviewer-tier TIER --reviewer-model MODEL --reviewer-reasoning-effort VALUE --reviewer-service-tier VALUE --timer-ms 250 --max-requests 16 --max-output-tokens 32768 --max-context-tokens 131072 --max-request-bytes BYTES --timeout 300]");
         return Ok(true);
     }
     let mut settings = Settings::load(&args)?;
@@ -386,7 +390,7 @@ fn report(
     }
     let limits = &settings.options.limits;
     Ok(
-        json!({"session_id":session.id(),"agent":session.agent(WRITER).ok(),"agents":agents,"events_path":session.events_path(),"last_event_id":last_event_id,"facts":primary.facts,"provider_settings":primary.provider_settings,"provider_reports":primary.provider_reports,"command_outputs":primary.command_outputs,"other_agent_evidence":evidence,"orchestration":orchestration,"limits":{"max_agents":limits.max_agents,"max_steps":limits.max_steps_per_turn,"max_requests_per_open":limits.max_requests_per_open,"max_opens":2,"max_output_tokens":settings.max_output_tokens,"max_context_tokens":settings.max_context_tokens,"max_request_bytes":limits.max_request_bytes,"automatic_retries":0},"elapsed_ms":started.elapsed().as_millis(),"cleanup":{"closed":closed,"persisted_snapshots_match":persisted_matches},"runtime_completed":completed && persisted_matches,"error":error}),
+        json!({"session_id":session.id(),"agent":session.agent(WRITER).ok(),"agents":agents,"events_path":session.events_path(),"last_event_id":last_event_id,"facts":primary.facts,"provider_settings":primary.provider_settings,"provider_reports":primary.provider_reports,"command_outputs":primary.command_outputs,"other_agent_evidence":evidence,"orchestration":orchestration,"limits":{"max_agents":limits.max_agents,"max_requests_per_open":limits.max_requests_per_open,"max_opens":2,"max_output_tokens":settings.max_output_tokens,"max_context_tokens":settings.max_context_tokens,"max_request_bytes":limits.max_request_bytes,"automatic_retries":0},"elapsed_ms":started.elapsed().as_millis(),"cleanup":{"closed":closed,"persisted_snapshots_match":persisted_matches},"runtime_completed":completed && persisted_matches,"error":error}),
     )
 }
 
@@ -514,10 +518,10 @@ pub(crate) fn arguments(
                     | "command-id"
                     | "prompts-dir"
                     | "timer-ms"
-                    | "max-steps"
                     | "max-requests"
                     | "max-output-tokens"
                     | "max-context-tokens"
+                    | "max-request-bytes"
                     | "timeout"
             )
         {

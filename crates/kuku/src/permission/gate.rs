@@ -1,4 +1,40 @@
+use std::borrow::Cow;
+use std::path::Path;
+
 use crate::event::{EventPayload, StoredEvent};
+use crate::execution::CommandInvocation;
+
+const GUARDED_COMMANDS: &[(&str, &str)] = &[
+    ("git reset --hard", "git reset --hard discards local work"),
+    ("git clean -f", "git clean deletes untracked files"),
+    ("rm -rf", "recursive force delete is destructive"),
+    ("rm -fr", "recursive force delete is destructive"),
+    ("rmdir /s /q", "recursive force delete is destructive"),
+    ("del /s", "recursive delete is destructive"),
+    (
+        "remove-item -recurse -force",
+        "recursive force delete is destructive",
+    ),
+    (
+        "cargo publish",
+        "publish affects external package registries",
+    ),
+    ("npm publish", "publish affects external package registries"),
+    (
+        "pnpm publish",
+        "publish affects external package registries",
+    ),
+    (
+        "yarn publish",
+        "publish affects external package registries",
+    ),
+    ("bun publish", "publish affects external package registries"),
+    ("npm run deploy", "deploy affects external systems"),
+    ("pnpm deploy", "deploy affects external systems"),
+    ("yarn deploy", "deploy affects external systems"),
+    ("make deploy", "deploy affects external systems"),
+    ("cargo release", "release affects external systems"),
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// A permission grant scoped to the current session.
@@ -98,7 +134,7 @@ pub fn decide_tool_call(
 
     if session_grants
         .iter()
-        .any(|grant| grant.tool == tool && pattern_matches(&grant.pattern, candidate))
+        .any(|grant| grant.tool == tool && pattern_matches(tool, &grant.pattern, candidate))
     {
         return GateDecision {
             kind: GateDecisionKind::Allow,
@@ -168,9 +204,81 @@ fn is_hard_guarded_path(candidate: &str) -> bool {
 }
 
 fn is_hard_guarded_command(candidate: &str) -> bool {
-    normalized_command_segments(candidate)
+    #[derive(serde::Deserialize)]
+    struct Candidate {
+        invocation: CommandInvocation,
+    }
+
+    if candidate.starts_with('{') {
+        if let Ok(candidate) = serde_json::from_str::<Candidate>(candidate) {
+            return blocked_command_reason(&candidate.invocation).is_some();
+        }
+    }
+    shell_guard_reason(candidate).is_some()
+}
+
+pub(crate) fn blocked_command_reason(invocation: &CommandInvocation) -> Option<&'static str> {
+    match invocation {
+        CommandInvocation::Program { program, args } => native_guard_reason(program, args),
+        CommandInvocation::Shell { command, .. } => shell_guard_reason(command),
+    }
+}
+
+fn native_guard_reason(program: &str, args: &[String]) -> Option<&'static str> {
+    let program = command_name(program)?;
+    let (program, args) = if program == "sudo" {
+        let (program, args) = args.split_first()?;
+        (command_name(program)?, args)
+    } else {
+        (program, args)
+    };
+    for (rule, reason) in GUARDED_COMMANDS {
+        let mut parts = rule.split_whitespace().peekable();
+        let mut args = args.iter();
+        if parts.next() != Some(program.as_str()) {
+            continue;
+        }
+        while let Some(part) = parts.next() {
+            let Some(arg) = args.next() else {
+                break;
+            };
+            if parts.peek().is_none() && arg.to_ascii_lowercase().starts_with(part) {
+                return Some(reason);
+            }
+            if !arg.eq_ignore_ascii_case(part) {
+                break;
+            }
+        }
+    }
+    let flags: &[&str] = match program.as_str() {
+        "sh" | "bash" | "zsh" => &["-c", "-lc", "-cl"],
+        "cmd" => &["/c", "/k"],
+        "powershell" | "pwsh" => &["-command", "-c"],
+        _ => return None,
+    };
+    let command = args
+        .iter()
+        .position(|arg| flags.iter().any(|flag| arg.eq_ignore_ascii_case(flag)))?;
+    shell_guard_reason(args.get(command + 1)?)
+}
+
+fn command_name(program: &str) -> Option<String> {
+    let name = Path::new(program)
+        .file_name()?
+        .to_str()?
+        .to_ascii_lowercase();
+    Some(name.strip_suffix(".exe").unwrap_or(&name).to_string())
+}
+
+fn shell_guard_reason(command: &str) -> Option<&'static str> {
+    normalized_command_segments(command)
         .into_iter()
-        .any(|segment| is_dangerous_command_segment(&segment))
+        .find_map(|segment| {
+            GUARDED_COMMANDS
+                .iter()
+                .find(|(prefix, _)| segment.starts_with(prefix))
+                .map(|(_, reason)| *reason)
+        })
 }
 
 #[allow(clippy::collapsible_str_replace)]
@@ -219,32 +327,12 @@ fn unwrap_shell_wrapper(segment: &str) -> Vec<String> {
     vec![segment.to_string()]
 }
 
-fn is_dangerous_command_segment(segment: &str) -> bool {
-    [
-        "git reset --hard",
-        "git clean -f",
-        "rm -rf",
-        "rm -fr",
-        "cargo publish",
-        "npm publish",
-        "pnpm publish",
-        "yarn publish",
-        "bun publish",
-        "npm run deploy",
-        "pnpm deploy",
-        "yarn deploy",
-        "make deploy",
-        "cargo release",
-        "rmdir /s /q",
-        "del /s",
-        "remove-item -recurse -force",
-    ]
-    .iter()
-    .any(|prefix| segment.starts_with(prefix))
-}
-
-fn pattern_matches(pattern: &str, candidate: &str) -> bool {
-    let candidate = crate::util::path::normalize_path_sep(candidate);
+fn pattern_matches(tool: &str, pattern: &str, candidate: &str) -> bool {
+    let candidate = if tool == "run_command" {
+        Cow::Borrowed(candidate)
+    } else {
+        Cow::Owned(crate::util::path::normalize_path_sep(candidate))
+    };
     if let Some(prefix) = pattern.strip_suffix("/**") {
         return candidate == prefix || candidate.starts_with(&format!("{prefix}/"));
     }
@@ -260,6 +348,44 @@ mod tests {
 
     fn empty_policy() -> crate::permission::PermissionPolicy {
         crate::permission::parse_policy("# policy\n\n## allow\n\n## deny\n").unwrap()
+    }
+
+    #[test]
+    fn command_candidates_keep_native_argument_boundaries_and_shell_identity() {
+        use crate::tool::builtin::run_command::command_permission_candidate;
+
+        let native =
+            serde_json::json!({"program":"printf","args":["text & rm -rf literal"],"cwd":"."});
+        let shell =
+            serde_json::json!({"shell":"sh","command":"printf text & rm -rf literal","cwd":"."});
+        assert!(!is_hard_guarded_command(&command_permission_candidate(
+            &native
+        )));
+        assert!(is_hard_guarded_command(&command_permission_candidate(
+            &shell
+        )));
+        let candidate = |args| command_permission_candidate(&args);
+        let granted = candidate(serde_json::json!({"program":"name","args":["one two"],"cwd":"."}));
+        let grants = [SessionGrant {
+            tool: "run_command".into(),
+            pattern: granted.clone(),
+        }];
+        for request in [
+            serde_json::json!({"program":"name","args":["one","two"],"cwd":"."}),
+            serde_json::json!({"program":"name","args":["one two"],"cwd":"subdir"}),
+        ] {
+            let decision = decide_tool_call(
+                "run_command",
+                "command",
+                &candidate(request),
+                &empty_policy(),
+                &grants,
+            );
+            assert_eq!(GateDecisionKind::Ask, decision.kind);
+        }
+        let decision =
+            decide_tool_call("run_command", "command", &granted, &empty_policy(), &grants);
+        assert_eq!(GateDecisionKind::Allow, decision.kind);
     }
 
     #[test]

@@ -1,72 +1,106 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
+import type { SubmitEvent, ReactNode } from "react";
+import { ApiError, errorMessage, setAccessToken } from "@/api/client";
 import { useHealth } from "@/queries/health";
-import { useUIStore } from "@/stores/ui";
 import { Button } from "@/components/ui/Button";
+import { Input } from "@/components/ui/Input";
 
-function LoadingScreen() {
-  return (
-    <div className="flex flex-col items-center justify-center min-h-screen gap-4">
-      <div
-        className="w-8 h-8 border-2 border-[var(--color-border)] border-t-[var(--color-accent)] rounded-full animate-spin"
-        role="status"
-      />
-      <p className="text-[var(--color-text-muted)] font-mono text-[var(--text-sm)]">
-        Connecting to kuku...
-      </p>
-    </div>
-  );
-}
+export function ConnectionGate({ children }: { children: ReactNode }) {
+  const { data, error, isFetching, refetch } = useHealth();
+  const [token, setToken] = useState("");
+  if (data && !error && !data.mismatch) return <>{children}</>;
 
-function ErrorScreen({
-  onRetry,
-  isRefetching,
-  onSkip,
-}: {
-  onRetry: () => void;
-  isRefetching: boolean;
-  onSkip: () => void;
-}) {
-  return (
-    <div className="flex flex-col items-center justify-center min-h-screen gap-4">
-      <div className="text-3xl select-none">&#9888;</div>
-      <p className="text-[var(--color-text-primary)] text-[var(--text-lg)] font-medium">
-        Cannot connect to kuku server
-      </p>
-      <p className="text-[var(--color-text-muted)] text-[var(--text-sm)]">
-        Is kuku-server running on localhost?
-      </p>
-      <div className="flex gap-2">
-        <Button variant="secondary" size="sm" onClick={onRetry} disabled={isRefetching}>
-          {isRefetching ? "Retrying..." : "Retry"}
-        </Button>
-        <Button variant="ghost" size="sm" onClick={onSkip}>
-          Skip
+  if (data?.mismatch) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center gap-4 px-6 text-center">
+        <h1 className="text-lg font-medium">Incompatible server protocol</h1>
+        <p role="alert" className="text-sm">
+          {data.mismatch}
+        </p>
+        {data.draining && (
+          <p role="status" className="text-sm">
+            Server restart is in progress.
+          </p>
+        )}
+        {data.busy.length > 0 && <p className="text-sm">Working Agents · {data.busy.join(", ")}</p>}
+        {data.instance_id && (
+          <p className="text-sm">
+            Use <code>kuku server restart</code>, then reopen with <code>kuku web</code>.
+          </p>
+        )}
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => {
+            void refetch();
+          }}
+          disabled={isFetching}
+        >
+          Refresh status
         </Button>
       </div>
+    );
+  }
+
+  const authRequired = error instanceof ApiError && error.status === 401;
+  function authenticate(event: SubmitEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!token.trim()) return;
+    setAccessToken(token.trim());
+    setToken("");
+    void refetch();
+  }
+
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center gap-4 px-6 text-center">
+      {error ? (
+        <>
+          <h1 className="text-lg font-medium">
+            {authRequired ? "Connect to kuku" : "Cannot connect to kuku"}
+          </h1>
+          <p role="alert" className="max-w-xl text-sm text-[var(--color-text-muted)]">
+            {errorMessage(error)}
+          </p>
+          {authRequired && (
+            <>
+              <p className="text-sm text-[var(--color-text-muted)]">
+                Open <code>kuku web</code> for local browser access.
+              </p>
+              {window.isSecureContext && (
+                <form className="flex gap-2" onSubmit={authenticate}>
+                  <Input
+                    aria-label="Server access token"
+                    placeholder="Server access token"
+                    type="password"
+                    autoComplete="off"
+                    value={token}
+                    onChange={(event) => {
+                      setToken(event.target.value);
+                    }}
+                  />
+                  <Button type="submit" disabled={isFetching || !token.trim()}>
+                    Connect
+                  </Button>
+                </form>
+              )}
+            </>
+          )}
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => {
+              void refetch();
+            }}
+            disabled={isFetching}
+          >
+            {isFetching ? "Connecting…" : "Retry connection"}
+          </Button>
+        </>
+      ) : (
+        <p role="status" className="text-sm text-[var(--color-text-muted)]">
+          Connecting to kuku…
+        </p>
+      )}
     </div>
   );
-}
-
-export function ConnectionGate({ children }: { children: React.ReactNode }) {
-  const { data, isLoading, isError, refetch, isRefetching } = useHealth();
-  const [skipped, setSkipped] = useState(false);
-  const workspace = useUIStore((s) => s.workspace);
-  const setWorkspace = useUIStore((s) => s.setWorkspace);
-
-  useEffect(() => {
-    if (data?.workspace && !workspace) {
-      setWorkspace(data.workspace);
-    }
-  }, [data?.workspace, workspace, setWorkspace]);
-
-  if (isLoading && !skipped) return <LoadingScreen />;
-  if (isError && !skipped)
-    return (
-      <ErrorScreen
-        onRetry={() => { void refetch(); }}
-        isRefetching={isRefetching}
-        onSkip={() => { setSkipped(true); }}
-      />
-    );
-  return <>{children}</>;
 }

@@ -101,6 +101,40 @@ fn appends_events_with_monotonic_ids() {
 }
 
 #[test]
+fn reverse_pages_cross_checkpoints_and_ignore_an_uncommitted_tail() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("events.jsonl");
+    let mut journal = Vec::new();
+    for id in 1..=640 {
+        let content = if id % 143 == 0 {
+            "大".repeat(4000)
+        } else {
+            "work".repeat(10)
+        };
+        let event = serde_json::json!({"id":id,"kind":"fixture.progress","content":content});
+        serde_json::to_writer(&mut journal, &event).unwrap();
+        journal.extend(b"\r\n");
+    }
+    journal.extend(b"\n{\"id\":641");
+    std::fs::write(&path, journal).unwrap();
+    let page_ids = |before, limit| {
+        EventStore::read_page_before(&path, before, limit)
+            .unwrap()
+            .into_iter()
+            .map(|event| event.id)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(640, EventStore::read_head(&path).unwrap());
+    assert_eq!(vec![638, 639, 640], page_ids(None, 3));
+    assert_eq!(vec![141, 142, 143, 144, 145], page_ids(Some(146), 5));
+    assert_eq!(vec![1, 2, 3], page_ids(Some(4), 100));
+    assert!(page_ids(Some(1), 100).is_empty());
+    let _writer = EventStore::open(&path).unwrap();
+    assert_eq!(vec![126, 127, 128, 129], page_ids(Some(130), 4));
+    assert_eq!(vec![639, 640], page_ids(Some(u64::MAX), 2));
+}
+
+#[test]
 fn ignores_incomplete_trailing_line_on_replay() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("events.jsonl");

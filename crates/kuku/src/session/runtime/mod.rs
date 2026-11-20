@@ -1,11 +1,28 @@
 //! Session-owned execution, durable input delivery, and resumable observations.
 
+mod boundary;
+mod controls;
+mod creation;
 mod driver;
+mod jobs;
 mod observe;
 mod receipts;
 mod record;
+mod retention;
 mod selection;
+mod turns;
 mod types;
+mod usage;
+mod values;
+mod workspace_host;
+
+pub(crate) use workspace_host::WorkspaceWorkerPermit;
+pub use workspace_host::{WorkspaceExecutionHost, WorkspaceExecutionMetrics};
+
+pub(crate) use jobs::JobRequest;
+pub(crate) use retention::{command_output_id, OutputReservation};
+pub(crate) use selection::resolve_agent_model;
+pub(crate) use values::OutputSelector;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -14,22 +31,28 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::{broadcast, watch, Semaphore};
 use tokio::task::JoinHandle;
 
-use crate::event::{EventPayload, EventStore, StoredEvent};
-use crate::query::UiEvent;
+use crate::event::{EventStore, StoredEvent};
+use crate::execution::OutputReference;
 use crate::{Error, Result};
 
 pub use crate::tool::builtin::run_command::output::{
     OutputChunk, OutputRead, OutputSegment, OutputStream,
 };
-pub use observe::{Observation, SessionObserver};
+pub use observe::{Observation, ReplyPreview, ReplyPreviews, SessionObserver};
+pub use turns::TurnIndex;
 pub use types::{
-    Activation, AgentConfig, AgentSnapshot, AgentStatus, Input, InputSource, QuestionRequest,
-    Receipt, RuntimeLimits, SessionOptions, UsageTotals,
+    Activation, AgentConfig, AgentSnapshot, AgentStatus, AgentView, Input, InputSource,
+    InputStatus, InputTiming, JobResult, JobSnapshot, JobStatus, ModelUsageSample, PendingInput,
+    QuestionRequest, Receipt, RuntimeLimits, SessionOptions, TurnSummary, UsageTotals, Withdrawal,
+};
+pub use values::{
+    NamedValue, NamedValueKind, NamedValueSource, MAX_INPUT_VALUES, MAX_VALUE_NAME_BYTES,
 };
 
-use record::{fingerprint, timestamp, validate_address, validate_key, Record, State};
+use record::{fingerprint, validate_address, validate_key, Command, Record, State};
 
-type CleanupOutcome = Option<std::result::Result<(), String>>;
+type WorkerOutcome = std::result::Result<(), String>;
+type CleanupOutcome = Option<WorkerOutcome>;
 
 pub(crate) struct SessionInner {
     id: String,
@@ -37,9 +60,12 @@ pub(crate) struct SessionInner {
     events_path: PathBuf,
     writer: Mutex<Option<EventStore>>,
     state: Mutex<State>,
+    value_writes: tokio::sync::Mutex<()>,
     workers: Mutex<HashMap<u64, Worker>>,
+    worker_outcomes: Mutex<HashMap<String, (u64, WorkerOutcome)>>,
+    job_workers: Mutex<HashMap<String, jobs::JobWorker>>,
     settlement_failure: OnceLock<String>,
-    live: broadcast::Sender<(String, UiEvent)>,
+    live: broadcast::Sender<observe::LiveObservation>,
     model_capacity: Arc<Semaphore>,
     tool_adapters: Arc<std::collections::BTreeMap<String, crate::adapter::RegisteredTool>>,
     model_request_budget: Option<Arc<std::sync::atomic::AtomicU64>>,
@@ -97,7 +123,14 @@ impl std::fmt::Debug for Session {
 
 impl Session {
     /// Acquire the session writer and reconstruct committed facts without automatically running agents.
-    pub async fn open(mut options: SessionOptions) -> Result<Self> {
+    pub async fn open(options: SessionOptions) -> Result<Self> {
+        Self::open_runtime(options, None)
+    }
+
+    fn open_runtime(
+        mut options: SessionOptions,
+        creation: Option<(Command, &AgentConfig)>,
+    ) -> Result<Self> {
         validate_limits(&options.limits)?;
         let tool_adapters = Arc::new(selection::register_tools(&options)?);
         options.workspace = std::fs::canonicalize(&options.workspace)
@@ -110,52 +143,53 @@ impl Session {
             .unwrap_or_else(super::new_session_id);
         super::validate_session_id(&id)?;
         let events_path = super::session_events_path(&options.data_dir, &options.workspace, &id)?;
+        if let Some((_, config)) = &creation {
+            if EventStore::read_head(&events_path)? == 0 {
+                selection::validate_initial_model(&options, config)?;
+            }
+        }
         let lease = SessionLease::acquire(events_path.clone())?;
         let mut writer = EventStore::open(&events_path)?;
-        let mut state = State::default();
-        let mut cursor = 0;
-        loop {
-            let events = writer.read_after(cursor, 128)?;
-            if events.is_empty() {
-                break;
-            }
-            for event in events {
-                cursor = event.id;
-                if let Some(record) = Record::from_event(&event)? {
-                    state.reduce(event.id, record)?;
-                }
-            }
+        let output_dir = retention::output_dir(&events_path)?;
+        let mut state = State {
+            outputs: retention::OutputStore::recover(&output_dir)?,
+            ..State::default()
+        };
+        let mut job_replay = jobs::JobReplay::default();
+        writer.visit(|event| reduce_event(&mut state, &mut job_replay, event))?;
+        creation::prepare_journal(
+            &mut writer,
+            &mut state,
+            &id,
+            creation.map(|(command, _)| command),
+            options.prompts_dir.as_deref(),
+        )?;
+        if let Some(claim) = &state.creation {
+            options.prompts_dir = claim.prompts_dir.clone();
         }
-        if cursor == 0 {
-            let ts = timestamp()?;
-            writer.append(EventPayload::SessionCreated {
-                ts: ts.clone(),
-                schema_version: 3,
-                session_id: id.clone(),
-                created_at: ts,
-                kuku_version: env!("CARGO_PKG_VERSION").into(),
-            })?;
-        }
-        for agent in state.agents.values_mut() {
-            if agent.snapshot.status == AgentStatus::Running {
-                agent.snapshot.status = AgentStatus::Interrupted;
-                agent.snapshot.last_error = Some("execution interrupted before a durable settlement; explicitly advance after reconciling side effects".into());
-            }
-        }
+        state.mark_interrupted();
+        state.outputs.collect(
+            &output_dir,
+            options.limits.output_retention_secs,
+            &state.values.pinned_outputs(),
+        )?;
         let (live, _) = broadcast::channel(options.limits.observation_capacity);
         let model_capacity = Arc::new(Semaphore::new(options.limits.max_model_requests));
         let model_request_budget = options
             .limits
             .max_requests_per_open
             .map(|limit| Arc::new(std::sync::atomic::AtomicU64::new(limit)));
-        Ok(Self {
+        let session = Self {
             inner: Arc::new(SessionInner {
                 id,
                 options,
                 events_path,
                 writer: Mutex::new(Some(writer)),
                 state: Mutex::new(state),
+                value_writes: tokio::sync::Mutex::new(()),
                 workers: Mutex::new(HashMap::new()),
+                worker_outcomes: Mutex::new(HashMap::new()),
+                job_workers: Mutex::new(HashMap::new()),
                 settlement_failure: OnceLock::new(),
                 live,
                 model_capacity,
@@ -164,7 +198,13 @@ impl Session {
                 lease: Mutex::new(Some(lease)),
                 close_result: Mutex::new(None),
             }),
-        })
+        };
+        session.recover_jobs()?;
+        Ok(session)
+    }
+
+    pub(crate) fn workspace_execution_host(&self) -> WorkspaceExecutionHost {
+        self.inner.options.workspace_host.clone()
     }
 
     /// Return the stable identity used when reopening this session.
@@ -245,147 +285,263 @@ impl Session {
 
     /// Persist delivery before acknowledging it and optionally wake an idle recipient.
     pub fn send(&self, input: Input) -> Result<Receipt> {
-        validate_key(&input.command_id)?;
-        validate_address(&input.target)?;
-        if input.text.len() > self.inner.options.limits.max_input_bytes {
+        self.send_input(input, None, &[])
+    }
+
+    /// Deliver exact retained references to the recipient with the input's durable receipt.
+    pub fn send_with_values(&self, input: Input, values: &[OutputReference]) -> Result<Receipt> {
+        self.send_input(input, None, values)
+    }
+
+    /// Commit a configuration and input together, using the input correlation to identify the configuration intent.
+    pub fn send_configured(&self, input: Input, config: AgentConfig) -> Result<Receipt> {
+        self.send_configured_with_values(input, config, &[])
+    }
+
+    /// Commit configuration, input and retained reference grants in one delivery.
+    pub fn send_configured_with_values(
+        &self,
+        input: Input,
+        config: AgentConfig,
+        values: &[OutputReference],
+    ) -> Result<Receipt> {
+        if input.correlation.as_deref().is_none_or(str::is_empty) {
+            return Err(Error::InvalidArgument(
+                "configured delivery requires an input correlation for its configuration intent"
+                    .into(),
+            ));
+        }
+        self.send_input(input, Some(config), values)
+    }
+
+    fn send_input(
+        &self,
+        input: Input,
+        config: Option<AgentConfig>,
+        values: &[OutputReference],
+    ) -> Result<Receipt> {
+        let digest = receipts::input_fingerprint_with_values(&input, values)?;
+        if boundary::input_model_text(&input.text, values).len()
+            > self.inner.options.limits.max_input_bytes
+        {
             return Err(Error::InvalidArgument(
                 "input exceeds the configured byte limit".into(),
             ));
         }
-        let identity = match &input.source {
-            InputSource::Host(identity)
-            | InputSource::Agent(identity)
-            | InputSource::External(identity) => identity,
-        };
-        if identity.len() > 256
-            || input
-                .correlation
-                .as_ref()
-                .is_some_and(|value| value.len() > 256)
-        {
-            return Err(Error::InvalidArgument(
-                "input source or correlation exceeds 256 bytes".into(),
-            ));
-        }
-        let digest = receipts::input_fingerprint(&input)?;
         let target = input.target.clone();
         let wake = input.activation == Activation::Wake;
-        let receipt = {
-            let mut state = self.inner.state.lock().unwrap();
-            ensure_open(&state)?;
-            if let Some(receipt) = state.retry(&input.command_id, &digest)? {
-                drop(state);
-                if wake {
-                    self.schedule(&target)?;
-                }
-                return Ok(receipt);
+        let mut state = self.inner.state.lock().unwrap();
+        ensure_open(&state)?;
+        if let Some(receipt) = state.retry(&input.command_id, &digest)? {
+            if wake {
+                self.activate_delivery(&mut state, &target, &receipt)?;
             }
-            if state.agent_mut(&target)?.inbox.len() >= self.inner.options.limits.max_pending_inputs
-            {
-                return Err(Error::InvalidArgument(format!(
-                    "agent '{target}' inbox limit reached"
-                )));
-            }
-            let key = input.command_id.clone();
-            self.commit(
-                &mut state,
-                Record::InputDelivered {
-                    fingerprint: digest,
-                    input,
-                },
-            )?;
-            state.commands[&key].1.clone()
-        };
+            return Ok(receipt);
+        }
+        if state.agent(&target)?.submitted_inputs() >= self.inner.options.limits.max_pending_inputs
+        {
+            return Err(Error::InvalidArgument(format!(
+                "agent '{target}' inbox limit reached"
+            )));
+        }
+        self.validate_input_values(&state, &input, values)?;
+        let config = config
+            .map(|config| {
+                let config = self.resolve_defaults(&target, config)?;
+                self.validate_config(&config)?;
+                Ok::<_, Error>(config)
+            })
+            .transpose()?;
+        if input.bootstrap_skill.is_some()
+            && config
+                .as_ref()
+                .unwrap_or(&state.agent(&target)?.snapshot.config)
+                .no_skills
+        {
+            return Err(Error::InvalidArgument(format!(
+                "skills are disabled for agent '{target}'"
+            )));
+        }
+        let key = input.command_id.clone();
+        self.commit(
+            &mut state,
+            Record::InputDelivered {
+                fingerprint: digest,
+                input,
+                config,
+                values: values.to_vec(),
+            },
+        )?;
+        let receipt = state.commands[&key].1.clone();
         if wake {
-            self.schedule(&target)?;
+            self.activate_delivery(&mut state, &target, &receipt)?;
         }
         Ok(receipt)
     }
 
-    /// Explicitly authorize advancement of pending or interrupted work.
-    pub fn advance(&self, address: &str) -> Result<()> {
-        {
-            let mut state = self.inner.state.lock().unwrap();
-            ensure_open(&state)?;
-            let status = state.agent_mut(address)?.snapshot.status;
-            if status == AgentStatus::Stopped && state.agent_mut(address)?.active_epoch.is_some() {
-                return Err(Error::InvalidArgument(format!(
-                    "agent '{address}' cleanup is still in progress"
-                )));
-            }
-            if matches!(status, AgentStatus::Stopped | AgentStatus::Interrupted) {
-                self.commit(
-                    &mut state,
-                    Record::AgentResumed {
-                        address: address.into(),
-                    },
-                )?;
-            }
+    fn activate_delivery(&self, state: &mut State, address: &str, receipt: &Receipt) -> Result<()> {
+        if state.input_status(address, &receipt.command_id)? != InputStatus::Queued {
+            return Ok(());
         }
-        self.schedule(address)
+        let agent = state.agent(address)?;
+        if agent.snapshot.status == AgentStatus::Stopped
+            && agent.active_epoch.is_none()
+            && agent.stopped_at.is_none_or(|stop| receipt.event_id > stop)
+            && agent.inbox.iter().any(|entry| {
+                entry.receipt.event_id == receipt.event_id
+                    && matches!(entry.input.source, InputSource::Host(_))
+            })
+        {
+            self.resume(state, address, None)?;
+        }
+        self.schedule_locked(state, address)
     }
 
     /// Return an agent's derived state without affecting execution or observations.
     pub fn agent(&self, address: &str) -> Result<AgentSnapshot> {
-        let state = self.inner.state.lock().unwrap();
-        state
-            .agents
+        self.inner.state.lock().unwrap().snapshot(address)
+    }
+
+    /// Wait for the active worker, or the latest retained worker when no epoch is active.
+    ///
+    /// A worker's execution or cleanup error is returned even after its state has settled. Its
+    /// latest outcome remains available after worker pruning. If there is no active epoch, no
+    /// retained worker, and no recorded outcome, the current snapshot is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the agent does not exist, an active worker is missing or ends without
+    /// publishing a result, a worker reports an execution or cleanup failure, or a worker does
+    /// not finish within 30 seconds. A wait timeout is returned as [`Error::AgentWaitTimeout`].
+    pub async fn wait_for_agent(&self, address: &str) -> Result<AgentSnapshot> {
+        self.wait_for_agent_with_timeout(address, std::time::Duration::from_secs(30))
+            .await
+    }
+
+    pub(crate) async fn wait_for_agent_with_timeout(
+        &self,
+        address: &str,
+        timeout: std::time::Duration,
+    ) -> Result<AgentSnapshot> {
+        let (snapshot, active_epoch, worker) = {
+            let state = self.inner.state.lock().unwrap();
+            let agent = state.agent(address)?;
+            let active_epoch = agent.active_epoch;
+            let workers = self.inner.workers.lock().unwrap();
+            let worker = match active_epoch {
+                Some(epoch) => workers
+                    .get(&epoch)
+                    .filter(|worker| worker.address == address)
+                    .map(|worker| (epoch, worker.done.clone())),
+                None => workers
+                    .iter()
+                    .filter(|(_, worker)| worker.address == address)
+                    .max_by_key(|(epoch, _)| *epoch)
+                    .map(|(epoch, worker)| (*epoch, worker.done.clone())),
+            };
+            (state.snapshot(address)?, active_epoch, worker)
+        };
+        let completed = self
+            .inner
+            .worker_outcomes
+            .lock()
+            .unwrap()
             .get(address)
-            .map(|agent| agent.snapshot.clone())
-            .ok_or_else(|| {
-                Error::InvalidArgument(format!("agent '{address}' does not exist in this session"))
-            })
+            .cloned();
+        let outcome = match active_epoch {
+            Some(epoch) => {
+                if let Some((completed_epoch, outcome)) = completed {
+                    if completed_epoch == epoch {
+                        outcome
+                    } else {
+                        self.wait_for_worker(epoch, worker, timeout).await?
+                    }
+                } else {
+                    self.wait_for_worker(epoch, worker, timeout).await?
+                }
+            }
+            None => match (worker, completed) {
+                (Some((worker_epoch, _)), Some((completed_epoch, outcome)))
+                    if completed_epoch >= worker_epoch =>
+                {
+                    outcome
+                }
+                (Some((worker_epoch, done)), _) => {
+                    self.wait_for_worker(worker_epoch, Some((worker_epoch, done)), timeout)
+                        .await?
+                }
+                (None, Some((_, outcome))) => outcome,
+                (None, None) => return Ok(snapshot),
+            },
+        };
+        outcome.map_err(Error::InvalidEventStream)?;
+        self.agent(address)
+    }
+
+    async fn wait_for_worker(
+        &self,
+        epoch: u64,
+        worker: Option<(u64, watch::Receiver<CleanupOutcome>)>,
+        timeout: std::time::Duration,
+    ) -> Result<WorkerOutcome> {
+        let Some((worker_epoch, mut done)) =
+            worker.filter(|(worker_epoch, _)| *worker_epoch == epoch)
+        else {
+            return Err(Error::InvalidEventStream(
+                "running agent has no active worker".into(),
+            ));
+        };
+        debug_assert_eq!(worker_epoch, epoch);
+        tokio::time::timeout(timeout, async {
+            loop {
+                if let Some(outcome) = done.borrow().clone() {
+                    return Ok(outcome);
+                }
+                done.changed().await.map_err(|_| {
+                    Error::InvalidEventStream(
+                        "agent worker ended without publishing a completion result".into(),
+                    )
+                })?;
+            }
+        })
+        .await
+        .map_err(|_| Error::AgentWaitTimeout)?
+    }
+
+    pub(crate) fn record_worker_outcome(&self, address: &str, epoch: u64, outcome: WorkerOutcome) {
+        let mut outcomes = self.inner.worker_outcomes.lock().unwrap();
+        if outcomes
+            .get(address)
+            .is_none_or(|(previous_epoch, _)| epoch > *previous_epoch)
+        {
+            outcomes.insert(address.into(), (epoch, outcome));
+        }
     }
 
     /// Return all retained agents in stable address order.
     pub fn agents(&self) -> Vec<AgentSnapshot> {
-        self.inner
-            .state
-            .lock()
-            .unwrap()
-            .agents
-            .values()
-            .map(|agent| agent.snapshot.clone())
-            .collect()
+        self.inner.state.lock().unwrap().snapshots()
     }
 
     /// Reconstruct retained agent snapshots without opening model or runtime resources.
     pub fn read_agents(events_path: &Path) -> Result<Vec<AgentSnapshot>> {
-        let mut state = State::default();
-        let mut cursor = 0;
-        loop {
-            let page = EventStore::read_page(events_path, cursor, 128)?;
-            if page.is_empty() {
-                break;
-            }
-            for event in page {
-                cursor = event.id;
-                if let Some(record) = Record::from_event(&event)? {
-                    state.reduce(event.id, record)?;
-                }
-            }
-        }
-        Ok(state
-            .agents
-            .into_values()
-            .map(|mut agent| {
-                if agent.snapshot.status == AgentStatus::Running {
-                    agent.snapshot.status = AgentStatus::Interrupted;
-                }
-                agent.snapshot
-            })
-            .collect())
+        let (state, _) = load_state(events_path)?;
+        Ok(state.snapshots())
     }
 
-    /// Read retained command output by bounded range, search, or incremental cursor.
+    /// Read retained output as a trusted host by bounded range, search, or incremental cursor.
     pub fn read_output(&self, output_id: &str, request: &OutputRead) -> Result<OutputChunk> {
-        Ok(crate::tool::builtin::run_command::output::read_output(
-            &self
-                .inner
-                .events_path
-                .parent()
-                .expect("events path has session parent")
-                .join("outputs"),
+        Self::read_saved_output(&self.inner.events_path, output_id, request)
+    }
+
+    /// Read saved output without opening model or runtime resources.
+    pub fn read_saved_output(
+        events_path: &Path,
+        output_id: &str,
+        request: &OutputRead,
+    ) -> Result<OutputChunk> {
+        Ok(crate::tool::builtin::run_command::output::read_open_output(
+            retention::open_retained_output(&retention::output_dir(events_path)?, output_id)?,
             output_id,
             request.clone(),
         )?)
@@ -400,94 +556,19 @@ impl Session {
         }
     }
 
+    /// Read a bounded chronological page strictly before a cursor, or the latest page.
+    pub fn events_before(&self, before: Option<u64>, limit: usize) -> Result<Vec<StoredEvent>> {
+        EventStore::read_page_before(&self.inner.events_path, before, limit)
+    }
+
     /// Subscribe with a durable cursor and a bounded transient streaming channel.
     pub fn observe(&self, after: u64) -> SessionObserver {
-        SessionObserver::new(self.clone(), after)
+        SessionObserver::new(self.clone(), after, None)
     }
 
-    /// Stop the selected agent, clean up its active work, and retain pending inputs.
-    pub async fn cancel(&self, address: &str) -> Result<()> {
-        let (done, mut failure) = {
-            let mut state = self.inner.state.lock().unwrap();
-            ensure_open(&state)?;
-            let agent = state.agent_mut(address)?;
-            let permission = if agent.active_epoch.is_none() {
-                agent.snapshot.permission.clone()
-            } else {
-                None
-            };
-            let mut failure = permission
-                .as_ref()
-                .and_then(|request| self.cancel_waiting_action(request).err());
-            if let Err(error) = self.commit(
-                &mut state,
-                Record::AgentStopped {
-                    address: address.into(),
-                },
-            ) {
-                failure.get_or_insert(error);
-                state.agent_mut(address)?.snapshot.status = AgentStatus::Stopped;
-            }
-            let epoch = state.agent_mut(address)?.active_epoch;
-            let workers = self.inner.workers.lock().unwrap();
-            let done = epoch.and_then(|epoch| workers.get(&epoch)).map(|worker| {
-                let _ = worker.cancel.send(true);
-                worker.done.clone()
-            });
-            (done, failure)
-        };
-        if let Some(mut done) = done {
-            loop {
-                if let Some(result) = done.borrow().clone() {
-                    if let Err(error) = result {
-                        failure.get_or_insert(Error::InvalidEventStream(error));
-                    }
-                    break;
-                }
-                done.changed().await.map_err(|_| {
-                    Error::InvalidEventStream(format!(
-                        "agent '{address}' cleanup task ended without a result"
-                    ))
-                })?;
-            }
-        }
-        if let Some(error) = failure {
-            return Err(error);
-        }
-        if let Some(message) = self
-            .inner
-            .state
-            .lock()
-            .unwrap()
-            .cleanup_failures
-            .get(address)
-        {
-            return Err(Error::InvalidEventStream(message.clone()));
-        }
-        Ok(())
-    }
-
-    fn cancel_waiting_action(&self, request: &crate::query::PermissionRequest) -> Result<()> {
-        let mut writer = self.inner.writer.lock().unwrap();
-        let writer = writer
-            .as_mut()
-            .ok_or_else(|| Error::InvalidArgument("session resources are closed".into()))?;
-        writer.append(EventPayload::ToolResult {
-            turn: request.turn,
-            ts: timestamp()?,
-            conversation: Some(request.conversation.as_str().into()),
-            tool_call_id: request.tool_call_id.clone(),
-            status: "cancelled".into(),
-            summary: "pending action cancelled before dispatch".into(),
-            model_content: "pending action cancelled before dispatch".into(),
-            truncated: false,
-            files_read: Vec::new(),
-            files_changed: Vec::new(),
-            commands_run: Vec::new(),
-            memory_changed: None,
-            structured: Some(serde_json::json!({"kind":"cancelled"})),
-        })?;
-        Ok(())
+    /// Follow the Session with the selected Agent's current reply prefix, if it is streaming.
+    pub fn observe_agent(&self, after: u64, address: &str) -> SessionObserver {
+        SessionObserver::new(self.clone(), after, Some(address.to_owned()))
     }
 
     /// Reply once to the exact pending authorization and resume its bound action.
@@ -498,40 +579,42 @@ impl Session {
         request_id: &str,
         allow: bool,
     ) -> Result<Receipt> {
-        validate_key(command_id)?;
         let digest = receipts::permission_fingerprint(command_id, address, request_id, allow)?;
-        let receipt = {
-            let mut state = self.inner.state.lock().unwrap();
-            ensure_open(&state)?;
-            if let Some(receipt) = state.retry(command_id, &digest)? {
-                drop(state);
-                self.schedule(address)?;
-                return Ok(receipt);
-            }
-            let agent = state.agent_mut(address)?;
-            if agent.snapshot.status != AgentStatus::Waiting
-                || agent
-                    .snapshot
-                    .permission
-                    .as_ref()
-                    .is_none_or(|pending| pending.id != request_id)
+        let mut state = self.inner.state.lock().unwrap();
+        ensure_open(&state)?;
+        if let Some(receipt) = state.retry(command_id, &digest)? {
+            if state
+                .agent(address)?
+                .permission_reply
+                .as_ref()
+                .is_some_and(|(pending, _)| pending == request_id)
             {
-                return Err(Error::PermissionRequestNotPending(request_id.into()));
+                self.schedule_locked(&mut state, address)?;
             }
-            self.commit(
-                &mut state,
-                Record::PermissionReplied {
-                    command_id: command_id.into(),
-                    fingerprint: digest,
-                    address: address.into(),
-                    request_id: request_id.into(),
-                    allow,
-                },
-            )?;
-            state.commands[command_id].1.clone()
-        };
-        self.schedule(address)?;
-        Ok(receipt)
+            return Ok(receipt);
+        }
+        let agent = state.agent(address)?;
+        if agent.snapshot.status != AgentStatus::Waiting
+            || agent
+                .snapshot
+                .permission
+                .as_ref()
+                .is_none_or(|pending| pending.id != request_id)
+        {
+            return Err(Error::PermissionRequestNotPending(request_id.into()));
+        }
+        self.commit(
+            &mut state,
+            Record::PermissionReplied {
+                command_id: command_id.into(),
+                fingerprint: digest,
+                address: address.into(),
+                request_id: request_id.into(),
+                allow,
+            },
+        )?;
+        self.schedule_locked(&mut state, address)?;
+        Ok(state.commands[command_id].1.clone())
     }
 
     /// Deliver a reply only to the matching still-pending question.
@@ -542,7 +625,6 @@ impl Session {
         request_id: &str,
         text: impl Into<String>,
     ) -> Result<Receipt> {
-        validate_key(command_id)?;
         let text = text.into();
         if text.len() > self.inner.options.limits.max_input_bytes {
             return Err(Error::InvalidArgument(
@@ -550,61 +632,60 @@ impl Session {
             ));
         }
         let digest = receipts::question_fingerprint(command_id, address, request_id, &text)?;
-        let receipt = {
-            let mut state = self.inner.state.lock().unwrap();
-            ensure_open(&state)?;
-            if let Some(receipt) = state.retry(command_id, &digest)? {
-                drop(state);
-                self.schedule(address)?;
-                return Ok(receipt);
-            }
-            let agent = state.agent_mut(address)?;
-            if agent
-                .snapshot
-                .question
-                .as_ref()
-                .is_none_or(|question| question.id != request_id)
-            {
-                return Err(Error::InvalidArgument(format!(
-                    "question '{request_id}' is no longer pending for agent '{address}'"
-                )));
-            }
-            if agent.inbox.len() >= self.inner.options.limits.max_pending_inputs {
-                return Err(Error::InvalidArgument(format!(
-                    "agent '{address}' inbox limit reached"
-                )));
-            }
-            let mut input = Input::new(command_id, address, text);
-            input.correlation = Some(request_id.into());
-            self.commit(
-                &mut state,
-                Record::QuestionReplied {
-                    fingerprint: digest,
-                    request_id: request_id.into(),
-                    input,
-                },
-            )?;
-            state.commands[command_id].1.clone()
-        };
-        self.schedule(address)?;
-        Ok(receipt)
+        let mut state = self.inner.state.lock().unwrap();
+        ensure_open(&state)?;
+        if let Some(receipt) = state.retry(command_id, &digest)? {
+            self.activate_delivery(&mut state, address, &receipt)?;
+            return Ok(receipt);
+        }
+        let agent = state.agent(address)?;
+        if !matches!(
+            agent.snapshot.status,
+            AgentStatus::Running | AgentStatus::Waiting
+        ) || agent
+            .snapshot
+            .question
+            .as_ref()
+            .is_none_or(|question| question.id != request_id)
+        {
+            return Err(Error::QuestionRequestNotPending(request_id.into()));
+        }
+        if agent.submitted_inputs() >= self.inner.options.limits.max_pending_inputs {
+            return Err(Error::InvalidArgument(format!(
+                "agent '{address}' inbox limit reached"
+            )));
+        }
+        let mut input = Input::new(command_id, address, text);
+        input.correlation = Some(request_id.into());
+        input.timing = InputTiming::NextTurn;
+        self.commit(
+            &mut state,
+            Record::QuestionReplied {
+                fingerprint: digest,
+                request_id: request_id.into(),
+                input,
+            },
+        )?;
+        self.schedule_locked(&mut state, address)?;
+        Ok(state.commands[command_id].1.clone())
     }
 
     pub(crate) fn request_question(
         &self,
         address: &str,
+        execution: u64,
         turn: u64,
         tool_call_id: &str,
         text: &str,
     ) -> Result<QuestionRequest> {
         let mut state = self.inner.state.lock().unwrap();
-        ensure_open(&state)?;
+        let agent = self.executing_agent(&state, address, execution)?;
         if text.is_empty() || text.len() > self.inner.options.limits.max_input_bytes {
             return Err(Error::InvalidArgument(
                 "question must be nonempty and within the input byte limit".into(),
             ));
         }
-        if state.agent_mut(address)?.snapshot.question.is_some() {
+        if agent.snapshot.question.is_some() {
             return Err(Error::InvalidArgument(format!(
                 "agent '{address}' already has a pending question"
             )));
@@ -657,8 +738,12 @@ impl Session {
 
     async fn finish_close(&self) -> std::result::Result<(), String> {
         let workers = std::mem::take(&mut *self.inner.workers.lock().unwrap());
+        let jobs = std::mem::take(&mut *self.inner.job_workers.lock().unwrap());
         for worker in workers.values() {
             let _ = worker.cancel.send(true);
+        }
+        for job in jobs.values() {
+            job.cancel.notify_one();
         }
         let mut failure = None;
         for (_, worker) in workers {
@@ -675,6 +760,20 @@ impl Session {
                 }
             }
         }
+        for (id, job) in jobs {
+            match job.join.await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    failure.get_or_insert(error);
+                }
+                Err(error) => {
+                    failure.get_or_insert(Error::InvalidEventStream(format!(
+                        "job '{id}' close failed: {error}"
+                    )));
+                }
+            }
+        }
+        let _values = self.inner.value_writes.lock().await;
         let mut state = self.inner.state.lock().unwrap();
         if let Some(message) = state.cleanup_failures.values().next() {
             failure.get_or_insert_with(|| Error::InvalidEventStream(message.clone()));
@@ -684,6 +783,7 @@ impl Session {
         }
         state.closed = true;
         if let Some(writer) = self.inner.writer.lock().unwrap().take() {
+            state.closed_cursor = writer.last_id();
             writer.changed().notify_waiters();
         }
         self.inner.lease.lock().unwrap().take();
@@ -713,6 +813,7 @@ impl Session {
             .as_mut()
             .ok_or_else(|| Error::InvalidArgument("session resources are closed".into()))?;
         let event = writer.append(record.payload()?)?;
+        state.turns.observe(&event, Some(&record));
         state.reduce(event.id, record)?;
         Ok(event.id)
     }
@@ -727,7 +828,39 @@ fn ensure_open(state: &State) -> Result<()> {
     Ok(())
 }
 
+fn load_state(events_path: &Path) -> Result<(State, u64)> {
+    replay_state(events_path, State::default())
+}
+
+fn replay_state(events_path: &Path, mut state: State) -> Result<(State, u64)> {
+    let mut job_replay = jobs::JobReplay::default();
+    let cursor = EventStore::visit_path(events_path, |event| {
+        reduce_event(&mut state, &mut job_replay, event)
+    })?;
+    state.mark_interrupted();
+    Ok((state, cursor))
+}
+
+fn reduce_event(
+    state: &mut State,
+    job_replay: &mut jobs::JobReplay,
+    event: StoredEvent,
+) -> Result<()> {
+    let record = Record::from_event(&event)?;
+    state.turns.observe(&event, record.as_ref());
+    if let Some(record) = record {
+        state.reduce(event.id, record)?;
+    }
+    job_replay.observe(state, &event)?;
+    state.outputs.observe_dispatch(&event.payload);
+    usage::reduce_model_fact(state, &event.payload)
+}
+
 fn validate_limits(limits: &RuntimeLimits) -> Result<()> {
+    limits
+        .workspace_script
+        .validate()
+        .map_err(Error::InvalidArgument)?;
     if limits.max_requests_per_open == Some(0) || limits.max_output_tokens_per_request == Some(0) {
         return Err(Error::InvalidArgument(
             "optional model request and output-token limits must be positive".into(),
@@ -747,12 +880,12 @@ fn validate_limits(limits: &RuntimeLimits) -> Result<()> {
         || limits.max_input_bytes > 262_144
         || limits.max_model_requests == 0
         || limits.max_model_requests > 256
-        || limits.max_steps_per_turn == 0
-        || limits.max_steps_per_turn > 1024
         || limits.max_tools_per_agent == 0
         || limits.max_tools_per_agent > 128
         || limits.max_output_bytes < 4096
         || limits.max_output_bytes > 1024 * 1024 * 1024
+        || limits.max_retained_output_bytes < 4096
+        || limits.max_named_values > 4096
         || limits.max_preview_bytes == 0
         || limits.max_preview_bytes > 65_536
         || limits.observation_capacity == 0

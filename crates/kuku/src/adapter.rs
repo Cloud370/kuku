@@ -208,14 +208,50 @@ pub struct AgentSelection {
     pub model: String,
     /// Configured context window; serialized request bytes have an additional hard limit.
     pub context_window_tokens: u32,
-    /// Effective output-token maximum.
-    pub max_output_tokens: u32,
+    /// Configured output limit sent with the request, if any.
+    pub max_output_tokens: Option<u32>,
     /// Requested and effective reasoning/service settings.
     pub settings: ProviderSettings,
     /// Declared provider capabilities.
     pub capabilities: ProviderCapabilities,
     /// Final tool selection after preset and explicit overrides.
     pub tools: Vec<crate::context::ToolSchema>,
+}
+
+/// Effective model settings available to a host before creating an Agent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelSelection {
+    /// Selected named connection.
+    pub connection: String,
+    /// Selected wire protocol.
+    pub protocol: ProviderFormat,
+    /// Selected model identifier.
+    pub model: String,
+    /// Configured context window; requests have a separate serialized byte limit.
+    pub context_window_tokens: u32,
+    /// Configured output limit sent with the request, if any.
+    pub max_output_tokens: Option<u32>,
+    /// Requested and effective reasoning and service settings.
+    pub settings: ProviderSettings,
+    /// Declared capabilities of the selected route.
+    pub capabilities: ProviderCapabilities,
+}
+
+/// Inspect model settings available locally without dispatching work or resolving credentials.
+pub fn inspect_model(
+    config: &crate::config::Config,
+    selection: &crate::session::AgentConfig,
+) -> Result<ModelSelection> {
+    let resolved = crate::session::runtime::resolve_agent_model(config, selection, None)?;
+    Ok(ModelSelection {
+        connection: resolved.connection_name,
+        protocol: protocol(resolved.kind),
+        model: resolved.model,
+        context_window_tokens: resolved.max_context_tokens,
+        max_output_tokens: resolved.max_output_tokens,
+        settings: resolved.settings,
+        capabilities: resolved.capabilities,
+    })
 }
 
 #[derive(Debug, Clone)]

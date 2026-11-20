@@ -24,25 +24,38 @@ pub fn load_config(path: &Path) -> Result<ConfigFile> {
     }
     let text = std::fs::read_to_string(path)
         .map_err(|error| Error::ConfigLoad(format!("cannot read config file {path:?}: {error}")))?;
-    parse_config_file(&text)
+    parse_config_text(&text)
 }
 
-pub(crate) fn parse_config_file(raw: &str) -> Result<ConfigFile> {
+/// Parse config TOML text using the SDK's environment-reference expansion semantics.
+pub fn parse_config_text(raw: &str) -> Result<ConfigFile> {
+    parse_config_text_with_env(raw, |name| std::env::var(name))
+}
+
+/// Parse config TOML text using the supplied environment-variable lookup.
+pub fn parse_config_text_with_env(
+    raw: &str,
+    environment: impl Fn(&str) -> std::result::Result<String, std::env::VarError>,
+) -> Result<ConfigFile> {
     let mut value = toml::from_str::<toml::Value>(raw)
         .map_err(|error| Error::ConfigLoad(format!("invalid config: {error}")))?;
-    resolve_env_refs(&mut value, "")?;
+    resolve_env_refs(&mut value, "", &environment)?;
     value
         .try_into()
         .map_err(|error| Error::ConfigLoad(format!("invalid config: {error}")))
 }
 
-fn resolve_env_refs(value: &mut toml::Value, path: &str) -> Result<()> {
+fn resolve_env_refs(
+    value: &mut toml::Value,
+    path: &str,
+    environment: &impl Fn(&str) -> std::result::Result<String, std::env::VarError>,
+) -> Result<()> {
     match value {
         toml::Value::String(raw) if should_resolve_env_ref(path, raw) => {
             let env_name = raw
                 .strip_prefix('$')
                 .expect("should_resolve_env_ref checked prefix");
-            *raw = std::env::var(env_name).map_err(|_| {
+            *raw = environment(env_name).map_err(|_| {
                 Error::ConfigLoad(format!(
                     "env var '{env_name}' referenced by {} is not set",
                     display_path(path)
@@ -57,7 +70,7 @@ fn resolve_env_refs(value: &mut toml::Value, path: &str) -> Result<()> {
                 } else {
                     format!("{path}[{index}]")
                 };
-                resolve_env_refs(item, &item_path)?;
+                resolve_env_refs(item, &item_path, environment)?;
             }
             Ok(())
         }
@@ -68,7 +81,7 @@ fn resolve_env_refs(value: &mut toml::Value, path: &str) -> Result<()> {
                 } else {
                     format!("{path}.{key}")
                 };
-                resolve_env_refs(item, &item_path)?;
+                resolve_env_refs(item, &item_path, environment)?;
             }
             Ok(())
         }
@@ -113,7 +126,7 @@ impl ConfigFile {
                     reasoning_effort: entry.reasoning_effort.clone(),
                     service_tier: entry.service_tier.clone(),
                     context_window: entry.context_window.unwrap_or(200000),
-                    max_output_tokens: entry.max_output_tokens.unwrap_or(48000),
+                    max_output_tokens: entry.max_output_tokens,
                     purpose: entry.purpose.clone().unwrap_or_else(|| name.clone()),
                 },
             );
@@ -122,7 +135,15 @@ impl ConfigFile {
         let mut providers = BTreeMap::new();
         for (name, entry) in &self.provider {
             let api_key_raw = entry.api_key.trim();
-            let api_key = if let Some(env_name) = api_key_raw.strip_prefix('$') {
+            let api_key = if let Some(file_path) = api_key_raw.strip_prefix("file:") {
+                let path = std::path::PathBuf::from(file_path);
+                if !path.is_absolute() {
+                    return Err(Error::ConfigLoad(format!(
+                        "provider '{name}': file api_key must use an absolute path"
+                    )));
+                }
+                ApiKey::File(path)
+            } else if let Some(env_name) = api_key_raw.strip_prefix('$') {
                 ApiKey::Env(env_name.to_string())
             } else {
                 ApiKey::Plaintext(api_key_raw.to_string())
@@ -261,6 +282,13 @@ impl ConfigFile {
                     )));
                 }
             }
+            if let Some(file_path) = api_key.strip_prefix("file:") {
+                if !Path::new(file_path).is_absolute() {
+                    return Err(Error::ConfigLoad(format!(
+                        "provider '{name}': file api_key must use an absolute path"
+                    )));
+                }
+            }
         }
         Ok(())
     }
@@ -293,6 +321,9 @@ impl ApiKey {
             ApiKey::Env(name) => std::env::var(name).map_err(|_| {
                 Error::ConfigLoad(format!("env var '{name}' referenced by api_key is not set"))
             }),
+            ApiKey::File(path) => crate::util::read_private_key(path).map_err(|_| {
+                Error::ConfigLoad("stored credential file is unavailable or unsafe".into())
+            }),
             ApiKey::Plaintext(key) => Ok(key.clone()),
         }
     }
@@ -305,4 +336,32 @@ pub fn show_redacted(path: &Path) -> Result<String> {
     let config_file = load_config(path)?;
     let config = config_file.resolve()?;
     Ok(config.redacted_display())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::parse_config_text_with_env;
+
+    #[test]
+    fn parse_config_text_uses_the_supplied_environment_lookup() {
+        let raw = r#"
+default_model = "balanced"
+model = { balanced = { provider = "anthropic", model = "fixture-model" } }
+provider = { anthropic = { format = "anthropic", base_url = "https://api.anthropic.com", api_key = "fixture-key" } }
+[discovery]
+extra_user_paths = ["$KUKU_HOME"]
+"#;
+        let parsed = parse_config_text_with_env(raw, |name| {
+            assert_eq!("KUKU_HOME", name);
+            Ok("service-data".into())
+        })
+        .unwrap();
+
+        assert_eq!(
+            vec![PathBuf::from("service-data")],
+            parsed.discovery.unwrap().extra_user_paths
+        );
+    }
 }

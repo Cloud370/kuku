@@ -1,4 +1,5 @@
 use std::fmt;
+use std::path::PathBuf;
 
 use crate::config::{ApiKey, ProviderOptions, ProviderProfile};
 use crate::context::CanonicalMessage;
@@ -78,7 +79,7 @@ pub(crate) struct ResolvedProvider {
     pub(crate) base_url: String,
     pub(crate) api_key: SecretString,
     pub(crate) max_context_tokens: u32,
-    pub(crate) max_output_tokens: u32,
+    pub(crate) max_output_tokens: Option<u32>,
     pub(crate) think_level: crate::config::ThinkLevel,
     pub(crate) thinking: crate::config::ResolvedThinking,
     pub(crate) options: ProviderOptions,
@@ -95,7 +96,7 @@ impl Default for ResolvedProvider {
             base_url: "http://localhost".into(),
             api_key: SecretString::new(""),
             max_context_tokens: 200_000,
-            max_output_tokens: 4096,
+            max_output_tokens: None,
             think_level: crate::config::ThinkLevel::Off,
             thinking: Default::default(),
             options: Default::default(),
@@ -105,12 +106,12 @@ impl Default for ResolvedProvider {
     }
 }
 
-/// Requested and effective native settings for one resolved model connection.
+/// Requested and effective settings for one resolved model connection.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ProviderSettings {
-    /// Reasoning requested by the caller or configured tier.
+    /// Native reasoning or portable thinking requested by the caller or tier.
     pub requested_reasoning_effort: Option<String>,
-    /// Reasoning value actually encoded into the request.
+    /// Effective native reasoning value, absent when the wire request omits it.
     pub reasoning_effort: Option<String>,
     /// Service tier requested independently of reasoning.
     pub requested_service_tier: Option<String>,
@@ -118,7 +119,7 @@ pub struct ProviderSettings {
     pub service_tier: Option<String>,
 }
 
-/// Native settings declared for the configured endpoint and model.
+/// Capabilities declared for the configured endpoint and model.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ProviderCapabilities {
     /// Endpoint family that interprets these settings.
@@ -134,6 +135,7 @@ pub(crate) struct ProviderCorrelation {
     pub(crate) session_id: String,
     pub(crate) agent_address: String,
     pub(crate) connection_name: String,
+    pub(crate) workspace: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -182,13 +184,22 @@ pub(crate) struct CanonicalPromptInput {
     pub(crate) parts: Vec<CanonicalMessage>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ProviderUsage {
     /// Total input tokens, including cached input when reported.
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
     pub cache_read_input_tokens: Option<u64>,
     pub cache_creation_input_tokens: Option<u64>,
+}
+
+impl ProviderUsage {
+    pub(crate) fn cache_input_counts(&self) -> Option<(u64, u64)> {
+        let input = self.input_tokens?;
+        let read = self.cache_read_input_tokens?;
+        let written = self.cache_creation_input_tokens.unwrap_or(0);
+        (read.checked_add(written)? <= input).then_some((read, input))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -202,13 +213,60 @@ pub(crate) struct ProviderToolCall {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderFailureKind {
     Authentication,
+    PermissionDenied,
+    QuotaExhausted,
     RateLimited,
+    Timeout,
     ContextTooLarge,
     InvalidRequest,
+    InvalidResponse,
     ProviderUnavailable,
     Transport,
     Internal,
     Unknown,
+}
+
+impl ProviderFailureKind {
+    pub(crate) fn as_event_kind(self) -> &'static str {
+        match self {
+            Self::Authentication => "authentication",
+            Self::PermissionDenied => "permission_denied",
+            Self::QuotaExhausted => "quota_exhausted",
+            Self::ContextTooLarge => "context_too_large",
+            Self::InvalidRequest => "invalid_request",
+            Self::RateLimited => "rate_limited",
+            Self::Timeout => "timeout",
+            Self::ProviderUnavailable => "provider_unavailable",
+            Self::Transport => "transport",
+            Self::Internal => "internal",
+            Self::Unknown => "unknown",
+            Self::InvalidResponse => "invalid_response",
+        }
+    }
+
+    pub(crate) fn is_retryable(self) -> bool {
+        matches!(
+            self,
+            Self::RateLimited | Self::Timeout | Self::ProviderUnavailable | Self::Transport
+        )
+    }
+
+    pub(crate) fn safe_retry_message(self) -> &'static str {
+        match self {
+            Self::Authentication => "provider authentication failed; check configured credentials",
+            Self::PermissionDenied => "provider access denied; check provider permissions",
+            Self::QuotaExhausted => "provider quota exhausted; check billing or quota",
+            Self::RateLimited => "provider rate limited",
+            Self::Timeout => "provider request timed out",
+            Self::ContextTooLarge => "provider context limit exceeded; reduce request context",
+            Self::InvalidRequest => "provider rejected the request; check request parameters",
+            Self::InvalidResponse => "provider returned an invalid response",
+            Self::ProviderUnavailable => "provider unavailable",
+            Self::Transport => "provider transport failed",
+            Self::Internal => "internal provider error",
+            Self::Unknown => "unknown provider error",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -217,5 +275,6 @@ pub(crate) struct ProviderFailure {
     pub(crate) message: String,
     pub(crate) status: Option<u16>,
     pub(crate) provider_request_id: Option<String>,
+    pub(crate) retry_after: Option<std::time::Duration>,
     pub(crate) retryable: bool,
 }

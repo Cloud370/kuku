@@ -346,6 +346,7 @@ mod tests {
                 conversation: conversation.into(),
                 turn,
                 reason: "cancelled".into(),
+                stop_event_id: None,
             },
         )
     }
@@ -374,8 +375,8 @@ mod tests {
                 reason: crate::event::ModelStopReason::Length,
                 attempt: 1,
                 max_attempts: 1,
-                failed_max_output_tokens: 32,
-                retry_max_output_tokens: 32,
+                failed_max_output_tokens: Some(32),
+                retry_max_output_tokens: Some(32),
                 output_tokens_total: None,
                 discarded_tool_calls: 0,
                 notice: "notice".into(),

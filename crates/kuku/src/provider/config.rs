@@ -15,6 +15,7 @@ pub(crate) struct ResolveConfigInput {
     pub(crate) base_url: Option<String>,
     pub(crate) api_key: Option<String>,
     pub(crate) max_output_tokens: Option<u32>,
+    pub(crate) max_output_tokens_per_request: Option<u32>,
     pub(crate) reasoning_effort: Option<String>,
     pub(crate) service_tier: Option<String>,
     pub(crate) config: Option<Config>,
@@ -72,35 +73,53 @@ pub(crate) fn resolve_config(input: ResolveConfigInput) -> Result<ResolvedProvid
         .unwrap_or_default();
     let capabilities = resolve_capabilities(&base_url, &model, kind, &options);
     let settings_tier = tier.filter(|tier| input.tier.is_some() || tier.provider == name);
+    let think = settings_tier.map(|tier| tier.think);
     let native_reasoning = input
         .reasoning_effort
         .clone()
         .or_else(|| settings_tier.and_then(|tier| tier.reasoning_effort.clone()));
-    let requested_reasoning = native_reasoning
-        .clone()
-        .or_else(|| settings_tier.map(|tier| tier.think.as_str().to_string()));
-    let effective_reasoning = native_reasoning.or_else(|| {
-        settings_tier.map(|tier| {
-            match (tier.think, capabilities.profile) {
-                (ThinkLevel::Off, _) => "none",
-                (ThinkLevel::Medium, crate::config::ProviderProfile::DeepSeek) => "high",
-                (level, _) => level.as_str(),
-            }
-            .to_string()
-        })
-    });
     let requested_service = input
         .service_tier
         .clone()
         .or_else(|| settings_tier.and_then(|tier| tier.service_tier.clone()));
-    let mut settings =
-        resolve_settings(&name, &capabilities, effective_reasoning, requested_service)?;
-    settings.requested_reasoning_effort = requested_reasoning;
+    let settings = resolve_settings(
+        &name,
+        &capabilities,
+        native_reasoning,
+        think,
+        requested_service,
+    )?;
     if options.routing.is_some()
         && capabilities.profile != crate::config::ProviderProfile::OpenRouter
     {
         return Err(Error::MissingProviderConfig(format!(
             "connection '{name}': routing options require an OpenRouter profile"
+        )));
+    }
+    let requires_output_limit = kind == ProviderKind::Anthropic
+        && !matches!(
+            capabilities.profile,
+            crate::config::ProviderProfile::DeepSeek | crate::config::ProviderProfile::OpenRouter
+        );
+    let output_tier = if requires_output_limit {
+        tier
+    } else {
+        settings_tier
+    };
+    let max_output_tokens = input
+        .max_output_tokens
+        .or_else(|| output_tier.and_then(|tier| tier.max_output_tokens))
+        .into_iter()
+        .chain(input.max_output_tokens_per_request)
+        .min();
+    if max_output_tokens == Some(0) {
+        return Err(Error::InvalidArgument(
+            "max_output_tokens must be positive".into(),
+        ));
+    }
+    if max_output_tokens.is_none() && requires_output_limit {
+        return Err(Error::MissingProviderConfig(format!(
+            "connection '{name}': Anthropic Messages requires max_tokens. Set max_output_tokens for model '{model}' on the tier or request, or provide a host output limit."
         )));
     }
     Ok(ResolvedProvider {
@@ -110,13 +129,8 @@ pub(crate) fn resolve_config(input: ResolveConfigInput) -> Result<ResolvedProvid
         base_url,
         api_key,
         max_context_tokens: tier.map(|tier| tier.context_window).unwrap_or(200_000),
-        max_output_tokens: input
-            .max_output_tokens
-            .or_else(|| tier.map(|tier| tier.max_output_tokens))
-            .unwrap_or(48_000),
-        think_level: settings_tier
-            .map(|tier| tier.think)
-            .unwrap_or(ThinkLevel::Off),
+        max_output_tokens,
+        think_level: think.unwrap_or(ThinkLevel::Off),
         thinking: Default::default(),
         options,
         settings,
@@ -140,7 +154,14 @@ fn select_connection<'a>(
 ) -> Result<(String, Option<&'a CfgProvider>)> {
     if let Some(name) = &input.connection {
         let connection = cfg.and_then(|cfg| cfg.provider(name)).ok_or_else(|| {
-            Error::MissingProviderConfig(format!("connection '{name}' not found in config"))
+            let message = if cfg.is_some_and(|cfg| cfg.tier(name).is_some()) {
+                format!(
+                    "connection '{name}' not found in config. '{name}' is a configured model tier. Set tier={name:?} and omit connection to use that tier's provider."
+                )
+            } else {
+                format!("connection '{name}' not found in config")
+            };
+            Error::MissingProviderConfig(message)
         })?;
         return Ok((name.clone(), Some(connection)));
     }

@@ -17,10 +17,12 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
 futures-core = { workspace = true }
 tokio-stream = { workspace = true }
-time = { version = "0.3", default-features = false, features = ["std", "formatting", "local-offset"] }
+time = { version = "0.3", default-features = false, features = ["std", "formatting", "local-offset", "parsing"] }
 wreq = { version = "6.0.0-rc.28", default-features = false, features = ["json", "stream"] }
 wreq-util = { version = "3.0.0-rc.11", features = ["emulation"] }
+httpdate = "1"
 sha2 = "0.10"
+base64 = "0.22"
 regex = "1"
 readability = { version = "0.3", default-features = false }
 htmd = "0.5"
@@ -30,9 +32,19 @@ toml = "0.8"
 toml_edit = "0.25"
 tempfile = "3"
 fslock = "0.2"
+rquickjs = { version = "=0.14.0", default-features = false, features = ["std"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+tokio = { workspace = true, features = ["signal"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_ToolHelp", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Memory", "Win32_System_SystemInformation", "Win32_System_SystemServices", "Win32_System_Threading"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Console"] }
 
 [features]
 default = []

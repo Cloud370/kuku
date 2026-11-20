@@ -43,6 +43,7 @@ export type DiffViewerProps = {
 
 export function DiffViewer({ lines = exampleDiff }: DiffViewerProps) {
   const [mode, setMode] = useState<"unified" | "split">("unified");
+  if (lines.length === 0) return <p className="p-3 text-xs text-[var(--color-text-muted)]">No saved diff.</p>;
 
   return (
     <div className="h-full flex flex-col">

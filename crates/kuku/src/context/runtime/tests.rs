@@ -1,11 +1,41 @@
 use super::{
-    project_source, read_agent_events, read_frozen_catalog, ContextCursor, MAX_CACHED_READS,
-    MAX_SELECTION_BYTES_FACTOR,
+    project_source, read_agent_events, read_frozen_catalog, ContextCursor,
+    MAX_CACHED_FILE_SNAPSHOTS, MAX_SELECTION_BYTES_FACTOR,
 };
-use crate::context::{CanonicalMessage, MessageBlock};
+use crate::context::{CanonicalMessage, MessageBlock, ToolResult};
 use crate::conversation::address::ConversationAddress;
 use crate::event::{EventPayload, EventStore, StoredEvent};
 use serde_json::json;
+
+fn rendered_provider_body(
+    history: Vec<CanonicalMessage>,
+    prelude_messages: Vec<CanonicalMessage>,
+    handoff_summary: Option<String>,
+) -> serde_json::Value {
+    let catalog = crate::prompt::builtin_prompt_catalog();
+    let request = crate::provider::types::ProviderRequest {
+        assembly: crate::context::ContextAssembly {
+            system_prompt: String::new(),
+            prelude_messages,
+            history,
+            tools: Vec::new(),
+            prompt_asset_sources: Vec::new(),
+            project_instruction_sources: Vec::new(),
+            memory_sources: Vec::new(),
+            runtime_context: None,
+            handoff_summary,
+        },
+        catalog: &catalog,
+        current_input: crate::provider::types::CanonicalPromptInput { parts: Vec::new() },
+        model: "fixture".into(),
+        max_output_tokens: Some(128),
+        temperature: None,
+        stream: true,
+        think_level: crate::config::ThinkLevel::Off,
+        thinking: Default::default(),
+    };
+    crate::provider::openai_compat::render_body(&request)
+}
 
 #[test]
 fn tool_result_projection_keeps_the_wire_view_in_every_protocol() {
@@ -108,6 +138,371 @@ fn tool_result_projection_keeps_the_wire_view_in_every_protocol() {
             );
         }
     }
+}
+
+#[test]
+fn rewind_prunes_persisted_admissions_by_canonical_replay_provenance_after_reopen() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("events.jsonl");
+    let mut writer = EventStore::open(&path).unwrap();
+    writer
+        .append(EventPayload::TurnStarted {
+            turn: 1,
+            ts: "t".into(),
+            conversation: "main".into(),
+        })
+        .unwrap();
+    let catalog = crate::prompt::builtin_prompt_catalog();
+    let segment = writer
+        .append(EventPayload::Unknown(json!({
+            "kind":"runtime.context_segment", "agent":"main", "signature":"fixture",
+            "configuration":1, "handoff":0, "system_prompt":"system", "prelude":[],
+            "tools":[], "catalog":catalog, "connection":"", "protocol":"", "model":"",
+            "endpoint":"", "behavior":"", "identity_slot":1, "workspace":""
+        })))
+        .unwrap()
+        .id;
+    writer
+        .append(EventPayload::Unknown(json!({
+            "kind":"runtime.step_prepared", "agent":"main", "segment":segment,
+            "context_head":0, "source_head":0
+        })))
+        .unwrap();
+    writer
+        .append(EventPayload::ModelResponse {
+            conversation: Some("main".into()),
+            turn: 1,
+            ts: "t".into(),
+            request_id: "first".into(),
+            text: "earlier assistant".into(),
+            thinking: None,
+            stop_reason: None,
+            input_tokens_total: None,
+            output_tokens_total: None,
+        })
+        .unwrap();
+    let tool_call = writer
+        .append(EventPayload::ToolCall {
+            conversation: Some("main".into()),
+            turn: 1,
+            ts: "t".into(),
+            tool_call_id: "tool-1".into(),
+            request_id: "first".into(),
+            index: 0,
+            tool: "file_read".into(),
+            args: json!({}),
+        })
+        .unwrap()
+        .id;
+    let tool_result = writer
+        .append(EventPayload::ToolResult {
+            conversation: Some("main".into()),
+            turn: 1,
+            ts: "t".into(),
+            tool_call_id: "tool-1".into(),
+            status: "ok".into(),
+            summary: "earlier tool result".into(),
+            model_content: "earlier tool result".into(),
+            truncated: false,
+            files_read: Vec::new(),
+            files_changed: Vec::new(),
+            commands_run: Vec::new(),
+            memory_changed: None,
+            structured: None,
+        })
+        .unwrap()
+        .id;
+    let steering = writer
+        .append(EventPayload::MessageUser {
+            conversation: "main".into(),
+            turn: 1,
+            ts: "t".into(),
+            text: "steering input".into(),
+            from: None,
+            via_tool_call_id: None,
+        })
+        .unwrap()
+        .id;
+    let later_answer = writer
+        .append(EventPayload::ModelResponse {
+            conversation: Some("main".into()),
+            turn: 1,
+            ts: "t".into(),
+            request_id: "second".into(),
+            text: "later answer".into(),
+            thinking: None,
+            stop_reason: None,
+            input_tokens_total: None,
+            output_tokens_total: None,
+        })
+        .unwrap()
+        .id;
+
+    let mut cursor = ContextCursor::default();
+    cursor.refresh(&path, "main", 1024 * 1024).unwrap();
+    let admissions = cursor.history(&ConversationAddress::MAIN);
+    assert_eq!(4, admissions.len());
+
+    let source_head = later_answer;
+    for (ordinal, admitted) in admissions.iter().enumerate() {
+        writer
+            .append(EventPayload::Unknown(json!({
+                "kind":"runtime.context_admitted", "agent":"main", "segment":segment,
+                "ordinal":ordinal, "turn":admitted.turn, "origin":admitted.origin,
+                "source_head":source_head, "admitted_at":admitted.admitted_at,
+                "message":admitted.message.clone()
+            })))
+            .unwrap();
+    }
+    writer
+        .append(EventPayload::Unknown(json!({
+            "kind":"runtime.step_prepared", "agent":"main", "segment":segment,
+            "context_head":admissions.len(), "source_head":source_head
+        })))
+        .unwrap();
+    cursor.refresh(&path, "main", 1024 * 1024).unwrap();
+    assert_eq!(4, cursor.admitted.len());
+
+    writer
+        .append(EventPayload::Unknown(json!({
+            "kind":"runtime.operation",
+            "record":{"operation":"message_rewind","address":"main","target_event_id":steering}
+        })))
+        .unwrap();
+    cursor.refresh(&path, "main", 1024 * 1024).unwrap();
+    drop(writer);
+
+    let assert_provider_body = |cursor: &ContextCursor| {
+        let history = cursor.history(&ConversationAddress::MAIN);
+        let body = serde_json::to_string(&rendered_provider_body(
+            history
+                .iter()
+                .map(|admitted| admitted.message.clone())
+                .collect(),
+            cursor
+                .segment
+                .as_ref()
+                .map(|segment| segment.prelude.clone())
+                .unwrap_or_default(),
+            None,
+        ))
+        .unwrap();
+        assert_eq!(2, history.len());
+        assert_eq!(
+            vec![tool_call, tool_result],
+            history
+                .iter()
+                .map(|item| item.admitted_at)
+                .collect::<Vec<_>>()
+        );
+        assert!(body.contains("earlier assistant"));
+        assert!(body.contains("earlier tool result"));
+        assert!(!body.contains("steering input"));
+        assert!(!body.contains("later answer"));
+    };
+    assert_provider_body(&cursor);
+    assert_eq!(
+        vec![tool_call, tool_result, steering, later_answer],
+        admissions
+            .iter()
+            .map(|item| item.admitted_at)
+            .collect::<Vec<_>>()
+    );
+
+    let mut reopened = ContextCursor::default();
+    reopened.refresh(&path, "main", 1024 * 1024).unwrap();
+    assert_provider_body(&reopened);
+}
+
+#[test]
+fn reopened_cursor_drops_rewound_handoff_summary_and_frozen_prelude() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("events.jsonl");
+    let mut writer = EventStore::open(&path).unwrap();
+    writer
+        .append(EventPayload::TurnStarted {
+            turn: 1,
+            ts: "t".into(),
+            conversation: "main".into(),
+        })
+        .unwrap();
+    let catalog = crate::prompt::builtin_prompt_catalog();
+    let prelude =
+        CanonicalMessage::assistant(vec![MessageBlock::Text("removed handoff prelude".into())]);
+    let segment = writer
+        .append(EventPayload::Unknown(json!({
+            "kind":"runtime.context_segment", "agent":"main", "signature":"old",
+            "configuration":1, "handoff":2, "system_prompt":"system", "prelude":[prelude],
+            "tools":[], "catalog":catalog, "connection":"", "protocol":"", "model":"",
+            "endpoint":"", "behavior":"", "identity_slot":1, "workspace":""
+        })))
+        .unwrap()
+        .id;
+    writer
+        .append(EventPayload::Unknown(json!({
+            "kind":"runtime.step_prepared", "agent":"main", "segment":segment,
+            "context_head":0, "source_head":0
+        })))
+        .unwrap();
+    writer
+        .append(EventPayload::Handoff {
+            turn: 1,
+            ts: "t".into(),
+            request_id: "handoff".into(),
+            summary: "removed handoff summary".into(),
+            keep_turns: 1,
+        })
+        .unwrap();
+    writer
+        .append(EventPayload::Unknown(json!({
+            "kind":"runtime.operation",
+            "record":{"operation":"message_rewind","address":"main","target_event_id":1}
+        })))
+        .unwrap();
+
+    let mut reopened = ContextCursor::default();
+    reopened.refresh(&path, "main", 1024 * 1024).unwrap();
+    let events = EventStore::replay(&path).unwrap();
+    let (handoff, history) =
+        super::super::replay::rebuild_history_for_provider(&events, &ConversationAddress::MAIN);
+
+    assert!(reopened.segment.is_none());
+    assert!(reopened.handoff.is_none());
+    let handoff = handoff.or_else(|| {
+        reopened
+            .handoff
+            .as_ref()
+            .and_then(|event| match &event.payload {
+                EventPayload::Handoff { summary, .. } => Some(summary.clone()),
+                _ => None,
+            })
+    });
+    let body = serde_json::to_string(&rendered_provider_body(
+        history,
+        reopened
+            .segment
+            .as_ref()
+            .map(|segment| segment.prelude.clone())
+            .unwrap_or_default(),
+        handoff,
+    ))
+    .unwrap();
+    assert!(!body.contains("removed handoff"));
+}
+
+#[test]
+fn reopened_cursor_preserves_handoff_summary_before_rewind_target() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("events.jsonl");
+    let mut writer = EventStore::open(&path).unwrap();
+    writer
+        .append(EventPayload::TurnStarted {
+            turn: 1,
+            ts: "t".into(),
+            conversation: "main".into(),
+        })
+        .unwrap();
+    let catalog = crate::prompt::builtin_prompt_catalog();
+    let frozen_summary = CanonicalMessage::assistant(vec![MessageBlock::Text(
+        "surviving turn-one summary".into(),
+    )]);
+    let segment = writer
+        .append(EventPayload::Unknown(json!({
+            "kind":"runtime.context_segment", "agent":"main", "signature":"old",
+            "configuration":1, "handoff":4, "system_prompt":"system", "prelude":[frozen_summary],
+            "tools":[], "catalog":catalog, "connection":"", "protocol":"", "model":"",
+            "endpoint":"", "behavior":"", "identity_slot":1, "workspace":""
+        })))
+        .unwrap()
+        .id;
+    writer
+        .append(EventPayload::Unknown(json!({
+            "kind":"runtime.step_prepared", "agent":"main", "segment":segment,
+            "context_head":0, "source_head":0
+        })))
+        .unwrap();
+    let handoff = writer
+        .append(EventPayload::Handoff {
+            turn: 1,
+            ts: "t".into(),
+            request_id: "handoff".into(),
+            summary: "surviving handoff summary".into(),
+            keep_turns: 1,
+        })
+        .unwrap();
+    assert_eq!(4, handoff.id);
+    writer
+        .append(EventPayload::TurnStarted {
+            turn: 2,
+            ts: "t".into(),
+            conversation: "main".into(),
+        })
+        .unwrap();
+    let target = writer
+        .append(EventPayload::MessageUser {
+            conversation: "main".into(),
+            turn: 2,
+            ts: "t".into(),
+            text: "rewound second-turn input".into(),
+            from: None,
+            via_tool_call_id: None,
+        })
+        .unwrap()
+        .id;
+    writer
+        .append(EventPayload::ModelResponse {
+            conversation: Some("main".into()),
+            turn: 2,
+            ts: "t".into(),
+            request_id: "later".into(),
+            text: "rewound second-turn answer".into(),
+            thinking: None,
+            stop_reason: None,
+            input_tokens_total: None,
+            output_tokens_total: None,
+        })
+        .unwrap();
+    writer
+        .append(EventPayload::Unknown(json!({
+            "kind":"runtime.operation",
+            "record":{"operation":"message_rewind","address":"main","target_event_id":target}
+        })))
+        .unwrap();
+    drop(writer);
+
+    let mut reopened = ContextCursor::default();
+    reopened.refresh(&path, "main", 1024 * 1024).unwrap();
+    let handoff_summary = reopened
+        .handoff
+        .as_ref()
+        .and_then(|event| match &event.payload {
+            EventPayload::Handoff { summary, .. } => Some(summary.clone()),
+            _ => None,
+        });
+    let history = reopened.history(&ConversationAddress::MAIN);
+    let body = serde_json::to_string(&rendered_provider_body(
+        history
+            .iter()
+            .map(|admitted| admitted.message.clone())
+            .collect(),
+        reopened
+            .segment
+            .as_ref()
+            .map(|segment| segment.prelude.clone())
+            .unwrap_or_default(),
+        handoff_summary,
+    ))
+    .unwrap();
+
+    assert_eq!(Some(4), reopened.handoff.as_ref().map(|event| event.id));
+    assert_eq!(
+        Some(segment),
+        reopened.segment.as_ref().map(|segment| segment.id)
+    );
+    assert!(body.contains("surviving turn-one summary"));
+    assert!(body.contains("surviving handoff summary"));
+    assert!(!body.contains("rewound second-turn input"));
+    assert!(!body.contains("rewound second-turn answer"));
 }
 
 #[test]
@@ -377,7 +772,7 @@ fn startup_keeps_request_counters_and_pending_arguments_without_response_bodies(
             request_id: "req_3".into(),
             index: 0,
             tool: "run_command".into(),
-            args: json!({"command":"echo exact"}),
+            args: json!({"program":"echo","args":["exact"],"cwd":".","timeout":5}),
         })
         .unwrap();
     writer
@@ -408,7 +803,7 @@ fn startup_keeps_request_counters_and_pending_arguments_without_response_bodies(
     )));
     assert!(events.iter().any(|event| matches!(&event.payload,
         EventPayload::ToolCall { conversation: Some(agent), args, .. }
-        if agent == "reviewer" && args["command"] == "echo exact"
+        if agent == "reviewer" && args["program"] == "echo" && args["args"] == json!(["exact"])
     )));
 }
 
@@ -435,7 +830,7 @@ fn startup_read_snapshots_follow_both_byte_and_recent_access_limits() {
             })
             .collect::<Vec<_>>()
     };
-    assert_eq!(MAX_CACHED_READS, snapshots(&generous).len());
+    assert_eq!(MAX_CACHED_FILE_SNAPSHOTS, snapshots(&generous).len());
     append_read(&mut writer, 131, 127, true);
     append_read(&mut writer, 132, 130, false);
     let bounded = read_agent_events(&path, "main", 4096).unwrap();
@@ -444,4 +839,93 @@ fn startup_read_snapshots_follow_both_byte_and_recent_access_limits() {
     assert!(paths.contains(&"/fixture/127.txt".into()));
     assert!(paths.contains(&"/fixture/130.txt".into()));
     assert!(!paths.contains(&"/fixture/128.txt".into()));
+}
+
+#[test]
+fn startup_keeps_only_write_confirmations_in_the_prepared_context() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("events.jsonl");
+    let mut writer = EventStore::open(&path).unwrap();
+    append_read(&mut writer, 1, 0, false);
+    let turn = 1;
+    let mut source_head = 0;
+    for file in ["forgotten", "retained", "unconfirmed"] {
+        source_head = writer.append(EventPayload::ToolResult {
+            ts: String::new(), conversation: Some("main".into()), turn, tool_call_id: file.into(),
+            status: "ok".into(), summary: "written".into(), model_content: "confirmation".into(), truncated: false,
+            files_read: vec![], files_changed: vec![], commands_run: vec![], memory_changed: None,
+            structured: Some(json!({"kind":"file_write","canonical_path":file,"commit_state":"committed",
+                "supplied_full_write":true,"content_hash_after":"written","raw_text_after":"x".repeat(16_384)})),
+        }).unwrap().id;
+    }
+    let start_segment = |writer: &mut EventStore| {
+        writer
+            .append(EventPayload::Unknown(json!({
+                "kind":"runtime.context_segment", "agent":"main"
+            })))
+            .unwrap()
+            .id
+    };
+    let admit = |writer: &mut EventStore, segment: u64, files: &[&str]| {
+        let blocks = files
+            .iter()
+            .map(|file| {
+                MessageBlock::ToolResult(ToolResult {
+                    tool_call_id: (*file).into(),
+                    status: "ok".into(),
+                    summary: "written".into(),
+                    model_content: "confirmation".into(),
+                    structured: None,
+                    truncated: false,
+                })
+            })
+            .collect();
+        writer
+            .append(EventPayload::Unknown(json!({
+                "kind":"runtime.context_admitted", "agent":"main", "segment":segment,
+                "ordinal":0, "turn":turn, "origin":"tool_results", "source_head":source_head,
+                "message": CanonicalMessage::user(blocks),
+            })))
+            .unwrap();
+    };
+    let prepare = |writer: &mut EventStore, segment: u64| {
+        writer
+            .append(EventPayload::Unknown(json!({
+                "kind":"runtime.step_prepared", "agent":"main", "segment":segment,
+                "context_head":1, "source_head":source_head,
+            })))
+            .unwrap();
+    };
+    let paths = || -> Vec<String> {
+        let events = read_agent_events(&path, "main", 4096).unwrap();
+        assert!(events.iter().any(|event| matches!(&event.payload,
+            EventPayload::ToolResult { structured: Some(value), .. } if value["kind"] == "file_content"
+        )));
+        events
+            .into_iter()
+            .filter_map(|event| {
+                let EventPayload::ToolResult {
+                    structured: Some(value),
+                    ..
+                } = event.payload
+                else {
+                    return None;
+                };
+                let (path, _) = super::super::replay::supplied_file_version(&value)?;
+                assert!(value.get("raw_text_after").is_none());
+                Some(path.to_owned())
+            })
+            .collect()
+    };
+    let segment = start_segment(&mut writer);
+    admit(&mut writer, segment, &["forgotten", "retained"]);
+    assert!(paths().is_empty());
+    prepare(&mut writer, segment);
+    assert_eq!(["forgotten", "retained"], paths().as_slice());
+
+    let successor = start_segment(&mut writer);
+    admit(&mut writer, successor, &["retained"]);
+    assert_eq!(["forgotten", "retained"], paths().as_slice());
+    prepare(&mut writer, successor);
+    assert_eq!(["retained"], paths().as_slice());
 }

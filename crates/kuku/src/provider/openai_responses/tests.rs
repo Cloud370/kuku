@@ -24,7 +24,7 @@ fn done_after_response_terminal_preserves_the_original_outcome() {
             None,
         ),
     ] {
-        let mut parser = OpenAiResponsesSseParser::new();
+        let mut parser = OpenAiResponsesSseParser::new(false);
         let chunks = parser
             .feed(&format!(
                 "event: {event}\ndata: {}",
@@ -58,6 +58,29 @@ fn done_after_response_terminal_preserves_the_original_outcome() {
 }
 
 #[test]
+fn failed_response_emits_rate_limit_before_usage_metadata() {
+    let mut parser = OpenAiResponsesSseParser::new(false);
+    let chunks = parser
+        .feed(concat!(
+            "event: response.failed\n",
+            r#"data: {"type":"response.failed","response":{"id":"failed_with_usage","status":"failed","usage":{"input_tokens":12,"output_tokens":0},"error":{"code":"rate_limit_error","message":"retry later"}}}"#
+        ))
+        .unwrap();
+
+    assert!(matches!(
+        chunks.first(),
+        Some(ProviderChunk::ServerError { code, .. }) if code == "rate_limit_error"
+    ));
+    assert!(chunks.iter().any(|chunk| matches!(
+        chunk,
+        ProviderChunk::StreamUsage {
+            input_tokens: Some(12),
+            ..
+        }
+    )));
+}
+
+#[test]
 fn done_without_a_response_terminal_event_does_not_complete_the_stream() {
     for event in [
         concat!(
@@ -69,7 +92,7 @@ fn done_without_a_response_terminal_event_does_not_complete_the_stream() {
             r#"data: {"code":"server_error","message":"failed"}"#
         ),
     ] {
-        let mut parser = OpenAiResponsesSseParser::new();
+        let mut parser = OpenAiResponsesSseParser::new(false);
         let chunks = parser.feed(event).unwrap();
         assert!(!chunks.iter().any(|chunk| matches!(
             chunk,
@@ -81,14 +104,14 @@ fn done_without_a_response_terminal_event_does_not_complete_the_stream() {
             error.message
         );
     }
-    let mut parser = OpenAiResponsesSseParser::new();
+    let mut parser = OpenAiResponsesSseParser::new(false);
     assert!(parser.feed("data: [DONE]").is_err());
     assert!(parser.finish().is_err());
 }
 
 #[test]
 fn completed_usage_reports_cached_input_tokens() {
-    let mut parser = OpenAiResponsesSseParser::new();
+    let mut parser = OpenAiResponsesSseParser::new(false);
     let frame = concat!(
         "event: response.completed\n",
         r#"data: {"type":"response.completed","response":{"id":"resp_usage","status":"completed","usage":{"input_tokens":120,"input_tokens_details":{"cached_tokens":70},"output_tokens":30,"output_tokens_details":{"reasoning_tokens":12}}}}"#,
@@ -112,8 +135,8 @@ fn completed_usage_reports_cached_input_tokens() {
 }
 
 #[test]
-fn reasoning_text_delta_emits_thinking() {
-    let mut parser = OpenAiResponsesSseParser::new();
+fn raw_reasoning_emits_only_activity_and_provider_summary_remains_separate() {
+    let mut parser = OpenAiResponsesSseParser::new(false);
     let frame = concat!(
         "event: response.reasoning_text.delta\n",
         r#"data: {"type":"response.reasoning_text.delta","item_id":"rs_123","output_index":0,"content_index":0,"delta":"considering"}"#,
@@ -121,15 +144,32 @@ fn reasoning_text_delta_emits_thinking() {
 
     let chunks = parser.feed(frame).unwrap();
 
-    assert!(chunks.iter().any(|chunk| matches!(
-        chunk,
-        ProviderChunk::ThinkingDelta { text } if text == "considering"
-    )));
+    assert!(matches!(chunks.as_slice(), [ProviderChunk::Reasoning]));
+    let public = OpenAiResponsesSseParser::new(true).feed(frame).unwrap();
+    assert!(
+        matches!(public.as_slice(), [ProviderChunk::ThinkingDelta { text }] if text == "considering")
+    );
+    let summary = parser.feed(concat!(
+        "event: response.reasoning_summary_text.delta\n",
+        r#"data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_123","output_index":0,"summary_index":0,"delta":"Published summary"}"#,
+    )).unwrap();
+    assert!(
+        matches!(summary.as_slice(), [ProviderChunk::ThinkingDelta { text }] if text == "Published summary")
+    );
+}
+
+#[test]
+fn a_provider_refusal_is_visible_assistant_text() {
+    let mut parser = OpenAiResponsesSseParser::new(false);
+    let refusal = parser.feed(r#"data: {"type":"response.refusal.delta","item_id":"message","output_index":0,"content_index":0,"delta":"I can’t do that."}"#).unwrap();
+    assert!(
+        matches!(refusal.as_slice(), [ProviderChunk::TextDelta { text }] if text == "I can’t do that.")
+    );
 }
 
 #[test]
 fn incomplete_response_is_terminal_and_preserves_usage() {
-    let mut parser = OpenAiResponsesSseParser::new();
+    let mut parser = OpenAiResponsesSseParser::new(false);
     let frame = concat!(
         "event: response.incomplete\n",
         r#"data: {"type":"response.incomplete","response":{"id":"resp_incomplete","status":"incomplete","incomplete_details":{"reason":"max_tokens"},"usage":{"input_tokens":120,"input_tokens_details":{"cached_tokens":70},"output_tokens":30}}}"#,
@@ -158,7 +198,7 @@ fn incomplete_response_is_terminal_and_preserves_usage() {
 
 #[test]
 fn incomplete_response_without_reason_is_explicitly_incomplete() {
-    let mut parser = OpenAiResponsesSseParser::new();
+    let mut parser = OpenAiResponsesSseParser::new(false);
     let frame = concat!(
         "event: response.incomplete\n",
         r#"data: {"type":"response.incomplete","response":{"id":"resp_incomplete","status":"incomplete","usage":{"input_tokens":1,"output_tokens":2}}}"#,
@@ -173,8 +213,25 @@ fn incomplete_response_without_reason_is_explicitly_incomplete() {
 }
 
 #[test]
+fn truncated_stream_failure_is_invalid_response_and_not_retryable() {
+    let mut parser = OpenAiResponsesSseParser::new(false);
+    parser
+        .feed(concat!(
+            "event: response.created\n",
+            r#"data: {"response":{"id":"pending","status":"in_progress"}}"#
+        ))
+        .unwrap();
+    let failure = parser.finish().unwrap_err();
+    assert_eq!(
+        crate::provider::types::ProviderFailureKind::InvalidResponse,
+        failure.kind
+    );
+    assert!(!failure.retryable);
+}
+
+#[test]
 fn completed_response_with_matching_function_call_is_tool_use() {
-    let mut parser = OpenAiResponsesSseParser::new();
+    let mut parser = OpenAiResponsesSseParser::new(false);
     parser
         .feed(concat!(
             "event: response.output_item.added\n",
@@ -203,7 +260,7 @@ fn completed_response_with_matching_function_call_is_tool_use() {
 
 #[test]
 fn function_call_done_emits_typed_tool_completion() {
-    let mut parser = OpenAiResponsesSseParser::new();
+    let mut parser = OpenAiResponsesSseParser::new(false);
     parser
         .feed(concat!(
             "event: response.output_item.added\n",
@@ -229,7 +286,7 @@ fn function_call_done_emits_typed_tool_completion() {
 
 #[test]
 fn completed_response_with_missing_call_marker_item_is_invalid() {
-    let mut parser = OpenAiResponsesSseParser::new();
+    let mut parser = OpenAiResponsesSseParser::new(false);
     parser
         .feed(concat!(
             "event: response.output_item.added\n",
@@ -258,7 +315,7 @@ fn completed_response_with_missing_call_marker_item_is_invalid() {
 
 #[test]
 fn completed_response_with_mismatched_call_marker_is_invalid() {
-    let mut parser = OpenAiResponsesSseParser::new();
+    let mut parser = OpenAiResponsesSseParser::new(false);
     parser
         .feed(concat!(
             "event: response.output_item.added\n",
@@ -287,7 +344,7 @@ fn completed_response_with_mismatched_call_marker_is_invalid() {
 
 #[test]
 fn authoritative_done_arguments_are_emitted_once_without_deltas() {
-    let mut parser = OpenAiResponsesSseParser::new();
+    let mut parser = OpenAiResponsesSseParser::new(false);
     parser.feed(concat!(
         "event: response.output_item.added\n",
         r#"data: {"output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"write_file"}}"#,
@@ -320,7 +377,7 @@ fn authoritative_done_arguments_are_emitted_once_without_deltas() {
 
 #[test]
 fn done_item_arguments_are_authoritative_without_deltas() {
-    let mut parser = OpenAiResponsesSseParser::new();
+    let mut parser = OpenAiResponsesSseParser::new(false);
     parser
         .feed(concat!(
             "event: response.output_item.added\n",
@@ -364,7 +421,7 @@ fn done_item_arguments_are_authoritative_without_deltas() {
 
 #[test]
 fn done_item_and_top_level_arguments_must_match() {
-    let mut parser = OpenAiResponsesSseParser::new();
+    let mut parser = OpenAiResponsesSseParser::new(false);
     parser
         .feed(concat!(
             "event: response.output_item.added\n",
@@ -397,7 +454,7 @@ fn done_item_identity_mismatch_is_invalid() {
         ("call_id", "call_other"),
         ("name", "other_tool"),
     ] {
-        let mut parser = OpenAiResponsesSseParser::new();
+        let mut parser = OpenAiResponsesSseParser::new(false);
         parser
             .feed(concat!(
                 "event: response.output_item.added\n",
@@ -430,7 +487,7 @@ fn done_item_identity_mismatch_is_invalid() {
 
 #[test]
 fn terminal_item_identity_mismatch_is_invalid() {
-    let mut parser = OpenAiResponsesSseParser::new();
+    let mut parser = OpenAiResponsesSseParser::new(false);
     parser
         .feed(concat!(
             "event: response.output_item.added\n",
@@ -458,7 +515,7 @@ fn terminal_item_identity_mismatch_is_invalid() {
 
 #[test]
 fn function_item_identity_cannot_be_reused_across_indices() {
-    let mut parser = OpenAiResponsesSseParser::new();
+    let mut parser = OpenAiResponsesSseParser::new(false);
     parser
         .feed(concat!(
             "event: response.output_item.added\n",
@@ -502,7 +559,7 @@ fn mismatched_argument_representations_are_invalid() {
     ];
 
     for (delta, done, item_arguments, output_arguments) in cases {
-        let mut parser = OpenAiResponsesSseParser::new();
+        let mut parser = OpenAiResponsesSseParser::new(false);
         parser.feed(concat!(
             "event: response.output_item.added\n",
             r#"data: {"output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"write_file"}}"#,
@@ -529,7 +586,7 @@ fn missing_done_or_terminal_arguments_are_invalid() {
     let cases = [(None, Some("{}")), (Some("{}"), None)];
 
     for (done_arguments, terminal_arguments) in cases {
-        let mut parser = OpenAiResponsesSseParser::new();
+        let mut parser = OpenAiResponsesSseParser::new(false);
         parser.feed(concat!(
             "event: response.output_item.added\n",
             r#"data: {"output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"read_file"}}"#,
@@ -557,7 +614,7 @@ fn missing_done_or_terminal_arguments_are_invalid() {
 
 #[test]
 fn output_index_reused_across_item_types_is_invalid() {
-    let mut parser = OpenAiResponsesSseParser::new();
+    let mut parser = OpenAiResponsesSseParser::new(false);
     parser
         .feed(concat!(
             "event: response.output_item.added\n",
@@ -589,7 +646,7 @@ fn output_index_reused_across_item_types_is_invalid() {
 #[test]
 fn missing_or_malformed_tool_output_index_is_invalid() {
     for output_index in ["null", "\"zero\""] {
-        let mut parser = OpenAiResponsesSseParser::new();
+        let mut parser = OpenAiResponsesSseParser::new(false);
         parser.feed(&format!(
             "event: response.output_item.added\ndata: {{\"output_index\":{output_index},\"item\":{{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"read_file\"}}}}"
         )).unwrap();
@@ -605,7 +662,7 @@ fn missing_or_malformed_tool_output_index_is_invalid() {
 
 #[test]
 fn failed_response_is_terminal_and_preserves_error_details() {
-    let mut parser = OpenAiResponsesSseParser::new();
+    let mut parser = OpenAiResponsesSseParser::new(false);
     let frame = concat!(
         "event: response.failed\n",
         r#"data: {"type":"response.failed","response":{"id":"resp_failed","status":"failed","error":{"code":"server_error","message":"generation failed"}}}"#,
@@ -623,7 +680,7 @@ fn failed_response_is_terminal_and_preserves_error_details() {
 
 #[test]
 fn error_event_preserves_top_level_error_details() {
-    let mut parser = OpenAiResponsesSseParser::new();
+    let mut parser = OpenAiResponsesSseParser::new(false);
     let frame = concat!(
         "event: error\n",
         r#"data: {"type":"error","code":"server_error","message":"stream failed","param":null}"#,
@@ -641,7 +698,7 @@ fn error_event_preserves_top_level_error_details() {
 
 #[test]
 fn truncated_stream_does_not_emit_stream_end() {
-    let mut parser = OpenAiResponsesSseParser::new();
+    let mut parser = OpenAiResponsesSseParser::new(false);
     let mut chunks = parser
         .feed(
         "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_truncated\",\"status\":\"in_progress\"}}",
@@ -659,4 +716,26 @@ fn truncated_stream_does_not_emit_stream_end() {
     assert!(!chunks
         .iter()
         .any(|chunk| matches!(chunk, ProviderChunk::StreamEnd)));
+}
+
+#[test]
+fn final_summary_supplies_missing_text_once_and_excludes_encrypted_content() {
+    let mut parser = OpenAiResponsesSseParser::new(false);
+    let item = json!({"type":"reasoning","id":"rs_a","encrypted_content":"opaque","summary":[
+        {"type":"summary_text","text":"Check totals."},{"type":"summary_text","text":"Compare dates."}
+    ]});
+    let mut summary = String::new();
+    for value in [
+        json!({"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":0,"delta":"Check "}),
+        json!({"type":"response.reasoning_summary_text.done","output_index":0,"summary_index":0,"text":"Check totals."}),
+        json!({"type":"response.output_item.done","output_index":0,"item":item}),
+        json!({"type":"response.completed","response":{"status":"completed","output":[item]}}),
+    ] {
+        for chunk in parser.feed(&format!("data: {value}")).unwrap() {
+            if let ProviderChunk::ThinkingDelta { text } = chunk {
+                summary.push_str(&text);
+            }
+        }
+    }
+    assert_eq!(summary, "Check totals.\n\nCompare dates.");
 }

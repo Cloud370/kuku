@@ -7,13 +7,32 @@ const CHANGE_LINE_BUDGET: usize = 384;
 const LOADED_LINE_BUDGET: usize = 384;
 const PREVIEW_LINE_BUDGET: usize = 320;
 
+#[cfg(test)]
 pub fn render_skill_catalog(
     registry: &SkillRegistry,
     loaded_skill_names: &[String],
     changes: Option<&SkillChanges>,
 ) -> Option<String> {
-    let change_line = changes.and_then(render_skill_changes);
-    let loaded_line = render_loaded_skills(loaded_skill_names);
+    render_skill_catalog_state(registry, loaded_skill_names, changes, true)
+}
+
+pub fn render_static_skill_catalog(registry: &SkillRegistry) -> Option<String> {
+    render_skill_catalog_state(registry, &[], None, false)
+}
+
+pub(crate) fn render_skill_change_notice(changes: &SkillChanges) -> Option<String> {
+    render_skill_changes(changes)
+}
+
+fn render_skill_catalog_state(
+    registry: &SkillRegistry,
+    loaded_skill_names: &[String],
+    changes: Option<&SkillChanges>,
+    include_runtime_state: bool,
+) -> Option<String> {
+    let change_line = include_runtime_state
+        .then(|| changes.and_then(render_skill_changes))
+        .flatten();
     let total_line = format!("Available skills: {} total", registry.len());
     let hint_lines = [HINT_LIST_SKILLS.to_string(), HINT_SEARCH_SKILLS.to_string()];
 
@@ -21,7 +40,9 @@ pub fn render_skill_catalog(
     if let Some(change_line) = change_line {
         header_lines.push(change_line);
     }
-    header_lines.push(loaded_line);
+    if include_runtime_state {
+        header_lines.push(render_loaded_skills(loaded_skill_names));
+    }
     header_lines.push(total_line);
 
     let preview_candidates = registry
@@ -258,6 +279,50 @@ mod tests {
         assert!(catalog.contains("Use list_skills to browse available skills."));
         assert!(catalog.contains("Use search_skills to find skills by task or workflow."));
         assert!(catalog.len() <= 2048);
+    }
+
+    #[test]
+    fn static_catalog_omits_loaded_and_change_state() {
+        let registry = crate::skill::registry::SkillRegistry::builder()
+            .with_definition(skill_definition("tdd", "Write tests first"))
+            .build();
+
+        let catalog = render_static_skill_catalog(&registry).expect("should render");
+
+        assert!(catalog.contains("Available skills: 1 total"));
+        assert!(catalog.contains("tdd - Write tests first"));
+        assert!(!catalog.contains("Loaded:"));
+        assert!(!catalog.contains("Changed:"));
+    }
+
+    #[test]
+    fn dynamic_catalog_keeps_skill_change_state() {
+        let registry = crate::skill::registry::SkillRegistry::builder()
+            .with_definition(skill_definition("existing", "Existing skill"))
+            .build();
+        let changes = SkillChanges {
+            added: vec!["new".into()],
+            updated: vec!["existing".into()],
+            removed: vec!["old".into()],
+        };
+        let catalog = render_skill_catalog(&registry, &[], Some(&changes)).unwrap();
+
+        assert!(catalog.contains("Changed: +new, ~existing, -old"));
+        assert_eq!(
+            render_skill_change_notice(&changes).as_deref(),
+            Some("Changed: +new, ~existing, -old")
+        );
+    }
+
+    #[test]
+    fn skill_change_notice_is_absent_without_changes() {
+        let changes = SkillChanges {
+            added: Vec::new(),
+            updated: Vec::new(),
+            removed: Vec::new(),
+        };
+
+        assert_eq!(render_skill_change_notice(&changes), None);
     }
 
     #[test]

@@ -55,6 +55,6 @@ impl ConfigWatcher {
 
 impl Drop for ConfigWatcher {
     fn drop(&mut self) {
-        self.cancel.notify_waiters();
+        self.cancel.notify_one();
     }
 }

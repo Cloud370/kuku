@@ -16,6 +16,7 @@ use super::types::{EventPayload, StoredEvent};
 
 mod codec;
 mod reader;
+mod reverse;
 
 use codec::serialize_record;
 use reader::EventReader;
@@ -89,6 +90,8 @@ struct Writer {
     committed_len: u64,
     last_id: u64,
     poison: Option<String>,
+    #[cfg(test)]
+    fail_next_write: bool,
 }
 
 struct LockedJournal {
@@ -150,6 +153,8 @@ impl Writer {
             committed_len,
             last_id,
             poison: None,
+            #[cfg(test)]
+            fail_next_write: false,
         })
     }
 
@@ -165,12 +170,25 @@ impl Writer {
     }
 
     fn commit(&mut self, path: &Path, event_id: u64, record: &[u8]) -> Result<()> {
+        #[cfg(test)]
+        let injected_failure = if self.fail_next_write {
+            self.fail_next_write = false;
+            Some(io::Error::other("injected event journal write failure"))
+        } else {
+            None
+        };
+        #[cfg(not(test))]
+        let injected_failure: Option<io::Error> = None;
         let file = &mut self.journal.as_mut().unwrap().file;
-        if let Err(error) = file
-            .seek(SeekFrom::Start(self.committed_len))
-            .and_then(|_| file.write_all(record))
-            .and_then(|()| fs_sync::sync_file(file))
-        {
+        let result = injected_failure.map_or_else(
+            || {
+                file.seek(SeekFrom::Start(self.committed_len))
+                    .and_then(|_| file.write_all(record))
+                    .and_then(|()| fs_sync::sync_file(file))
+            },
+            Err,
+        );
+        if let Err(error) = result {
             self.poison = Some(error.to_string());
             return Err(io::Error::new(
                 error.kind(),
@@ -200,6 +218,29 @@ impl Writer {
         read_all(file.take(self.committed_len), path)
     }
 
+    #[cfg(feature = "test_support")]
+    fn committed_bytes(&mut self, path: &Path) -> Result<Vec<u8>> {
+        self.ensure_healthy(path)?;
+        let file = &mut self.journal.as_mut().unwrap().file;
+        let position = file.stream_position()?;
+        let result = (|| -> io::Result<Vec<u8>> {
+            file.seek(SeekFrom::Start(0))?;
+            let mut bytes = Vec::new();
+            (&mut *file)
+                .take(self.committed_len)
+                .read_to_end(&mut bytes)?;
+            if bytes.len() as u64 != self.committed_len {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "committed journal prefix was truncated",
+                ));
+            }
+            Ok(bytes)
+        })();
+        file.seek(SeekFrom::Start(position))?;
+        Ok(result?)
+    }
+
     fn read_after(&mut self, path: &Path, after: u64, limit: usize) -> Result<Vec<StoredEvent>> {
         self.ensure_healthy(path)?;
         if limit == 0 || after >= self.last_id {
@@ -214,6 +255,34 @@ impl Writer {
         file.seek(SeekFrom::Start(start))?;
         let file = file.take(self.committed_len - start);
         read_page_from(file, path, start, after, limit)
+    }
+
+    fn read_before(
+        &mut self,
+        path: &Path,
+        before: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<StoredEvent>> {
+        self.ensure_healthy(path)?;
+        let checkpoint = before.and_then(|id| {
+            self.index
+                .get(self.index.partition_point(|entry| entry.id < id))
+        });
+        let end = checkpoint.map_or(self.committed_len, |entry| entry.offset);
+        reverse::read_before(
+            &mut self.journal.as_mut().unwrap().file,
+            path,
+            end,
+            before,
+            limit,
+        )
+    }
+
+    fn visit(&mut self, path: &Path, visit: impl FnMut(StoredEvent) -> Result<()>) -> Result<u64> {
+        self.ensure_healthy(path)?;
+        let file = &mut self.journal.as_mut().unwrap().file;
+        file.seek(SeekFrom::Start(0))?;
+        visit_events(file.take(self.committed_len), path, visit)
     }
 }
 
@@ -286,6 +355,11 @@ impl EventStore {
         Ok(event)
     }
 
+    #[cfg(test)]
+    pub(crate) fn fail_next_write_for_test(&self) {
+        self.inner.writer.lock().unwrap().fail_next_write = true;
+    }
+
     /// Read committed events after an ID, capped at 256 records and a 1 MiB page target.
     pub fn read_after(&self, after: u64, limit: usize) -> Result<Vec<StoredEvent>> {
         self.inner
@@ -315,6 +389,43 @@ impl EventStore {
         read_page_from(&journal.file, &path, 0, after, limit)
     }
 
+    /// Read a bounded chronological page before a cursor, or the latest page when omitted.
+    pub fn read_page_before(
+        path: impl AsRef<Path>,
+        before: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<StoredEvent>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let Some(path) = existing_path(path.as_ref())? else {
+            return Ok(Vec::new());
+        };
+        let stores = registry().lock().unwrap();
+        if let Some(inner) = find_active_store(&stores, &path) {
+            drop(stores);
+            return inner
+                .writer
+                .lock()
+                .unwrap()
+                .read_before(&path, before, limit);
+        }
+        let _file_lock = acquire_file_lock(&path)?;
+        let mut journal = LockedJournal::reader(&path)?;
+        let mut end = journal.file.metadata()?.len();
+        if let Some(before) = before {
+            end = reverse::find_page_end(&mut journal.file, &path, end, before)?;
+        }
+        reverse::read_before(&mut journal.file, &path, end, before, limit)
+    }
+
+    /// Read the last committed event ID without opening or repairing the writer.
+    pub fn read_head(path: impl AsRef<Path>) -> Result<u64> {
+        Ok(Self::read_page_before(path, None, 1)?
+            .first()
+            .map_or(0, |event| event.id))
+    }
+
     /// Return the last durably committed event ID, or zero for an empty store.
     pub fn last_id(&self) -> u64 {
         self.inner.writer.lock().unwrap().last_id
@@ -335,6 +446,46 @@ impl EventStore {
         let _file_lock = acquire_file_lock(&path)?;
         let journal = LockedJournal::reader(&path)?;
         read_all(&journal.file, &path)
+    }
+
+    #[cfg(feature = "test_support")]
+    pub(crate) fn read_active_journal_for_test(path: &Path) -> Result<Vec<u8>> {
+        let path = fs::canonicalize(path)?;
+        let stores = registry().lock().unwrap();
+        let inner = find_active_store(&stores, &path).ok_or_else(|| {
+            Error::InvalidArgument(format!(
+                "event store {} has no active writer",
+                path.display()
+            ))
+        })?;
+        drop(stores);
+        let mut writer = inner.writer.lock().unwrap();
+        writer.committed_bytes(&path)
+    }
+
+    pub(crate) fn visit(&self, visit: impl FnMut(StoredEvent) -> Result<()>) -> Result<u64> {
+        self.inner
+            .writer
+            .lock()
+            .unwrap()
+            .visit(&self.inner.path, visit)
+    }
+
+    pub(crate) fn visit_path(
+        path: &Path,
+        visit: impl FnMut(StoredEvent) -> Result<()>,
+    ) -> Result<u64> {
+        let Some(path) = existing_path(path)? else {
+            return Ok(0);
+        };
+        let stores = registry().lock().unwrap();
+        if let Some(inner) = find_active_store(&stores, &path) {
+            drop(stores);
+            return inner.writer.lock().unwrap().visit(&path, visit);
+        }
+        let _file_lock = acquire_file_lock(&path)?;
+        let journal = LockedJournal::reader(&path)?;
+        visit_events(&journal.file, &path, visit)
     }
 
     pub(crate) fn next_id(&self) -> u64 {
@@ -371,6 +522,14 @@ fn canonical_store_path(path: &Path) -> Result<PathBuf> {
             let parent = path.parent().unwrap();
             Ok(fs::canonicalize(parent)?.join(path.file_name().unwrap()))
         }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn existing_path(path: &Path) -> Result<Option<PathBuf>> {
+    match fs::canonicalize(path) {
+        Ok(path) => Ok(Some(path)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.into()),
     }
 }
@@ -420,6 +579,20 @@ fn read_all(file: impl Read, path: &Path) -> Result<Vec<StoredEvent>> {
         events.push(record.event);
     }
     Ok(events)
+}
+
+fn visit_events(
+    file: impl Read,
+    path: &Path,
+    mut visit: impl FnMut(StoredEvent) -> Result<()>,
+) -> Result<u64> {
+    let mut reader = EventReader::new(BufReader::new(file), path, 0);
+    let mut head = 0;
+    while let Some(record) = reader.next()? {
+        head = record.event.id;
+        visit(record.event)?;
+    }
+    Ok(head)
 }
 
 fn read_page_from(

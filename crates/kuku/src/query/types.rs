@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -52,11 +52,15 @@ pub struct Query {
     pub(crate) tool_adapters:
         Arc<std::collections::BTreeMap<String, crate::adapter::RegisteredTool>>,
     pub(crate) input_source: crate::session::InputSource,
+    pub(crate) input_skills: Vec<String>,
     pub(crate) runtime_limits: crate::session::RuntimeLimits,
     pub(crate) model_capacity: Option<Arc<tokio::sync::Semaphore>>,
     pub(crate) runtime: Option<std::sync::Weak<crate::session::runtime::SessionInner>>,
+    pub(crate) runtime_execution: Option<u64>,
     pub(crate) turn_override: Option<u64>,
     pub(crate) events_path_override: Option<PathBuf>,
+    pub(crate) skip_user_message: bool,
+    pub(crate) resume_input_turn: Option<u64>,
     pub(crate) model_request_budget: Option<Arc<std::sync::atomic::AtomicU64>>,
 }
 
@@ -182,6 +186,18 @@ pub struct ModelRecoveryInfo {
     pub max_attempts: u8,
 }
 
+/// Activity observed in the current model response stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelPhase {
+    /// The provider has emitted reasoning activity.
+    Thinking,
+    /// Visible response text is arriving.
+    Streaming,
+    /// The provider is preparing a tool call.
+    ToolArguments,
+}
+
 /// Host-facing runtime event stream.
 ///
 /// This enum is non-exhaustive; hosts must keep a fallback arm when matching it.
@@ -193,6 +209,9 @@ pub enum UiEvent {
     },
     ThinkingDelta {
         text: String,
+    },
+    ModelProgress {
+        phase: ModelPhase,
     },
     ToolStart {
         id: String,
@@ -267,6 +286,7 @@ pub(crate) struct ExecSlot {
     pub(crate) workspace_ordered: bool,
     pub(crate) label: String,
     pub(crate) cancel: Arc<tokio::sync::Notify>,
+    pub(super) job: Option<Box<super::job_slots::ForegroundJob>>,
     pub(crate) nested_permissions:
         Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<PermissionChoice>>>>,
 }
@@ -284,8 +304,10 @@ impl std::fmt::Debug for ExecSlot {
 
 #[derive(Debug)]
 pub(crate) enum SlotEvent {
+    WorkspacePermission(Box<super::workspace_script::AwaitingAction>),
     Output(ToolEvent),
     Done(crate::tool::ToolResultEnvelope),
+    JobWaitDone(crate::tool::ToolResultEnvelope),
 }
 
 #[derive(Debug)]
@@ -353,6 +375,7 @@ pub(super) struct PendingRun {
     pub(super) request_num: u64,
     pub(super) cumulative: CumulativeUsage,
     pub(super) resolved: Option<ResolvedRuntime>,
+    pub(super) admitted_tool_call_ids: HashSet<String>,
     pub(super) queued_tool_calls: VecDeque<QueuedToolCall>,
     pub(super) resumed_permission_requests: VecDeque<PermissionRequest>,
     pub(super) config: Arc<Config>,
@@ -368,6 +391,7 @@ pub(super) struct PendingRun {
     pub(super) catalog: crate::prompt::PromptCatalog,
     pub(super) pending_events: std::collections::VecDeque<UiEvent>,
     pub(super) pending_error: Option<Error>,
+    pub(super) waiting_for_job_input: bool,
     pub(super) cancel_token: Arc<tokio::sync::Notify>,
     pub(super) handoff_triggered: bool,
     pub(super) handoff_keep_turns: usize,
@@ -492,8 +516,12 @@ pub(super) struct StreamingChunkState {
     pub(super) request_id: String,
     pub(super) stream:
         Pin<Box<dyn Stream<Item = std::result::Result<ProviderChunk, ProviderFailure>> + Send>>,
+    pub(super) provider_attempt: u8,
+    pub(super) stream_failure: Option<ProviderFailure>,
     pub(super) accumulated_text: String,
     pub(super) accumulated_thinking: String,
+    pub(super) model_phase: Option<ModelPhase>,
+    pub(super) provider_replay: Vec<crate::event::EventPayload>,
     pub(super) stop_reason: Option<crate::event::ModelStopReason>,
     pub(super) tool_calls: Vec<ProviderToolCall>,
     pub(super) tool_arg_buffers: Vec<(u64, String)>,
@@ -503,10 +531,22 @@ pub(super) struct StreamingChunkState {
     pub(super) stream_ended: bool,
     pub(super) provider_request_id: Option<String>,
     pub(super) usage: Option<crate::provider::types::ProviderUsage>,
+    pub(super) request_timing: Option<RequestTiming>,
     pub(super) lead_events: Vec<UiEvent>,
     pub(super) handoff_detector: Option<HandoffDetector>,
     pub(super) thinking_start: Option<std::time::Instant>,
     pub(super) thinking_duration_ms: u64,
+}
+
+pub(super) struct RequestTiming {
+    pub(super) started: std::time::Instant,
+    pub(super) elapsed_us: Option<u64>,
+}
+
+impl StreamingChunkState {
+    pub(super) fn model_progress(&mut self, phase: ModelPhase) -> Option<UiEvent> {
+        (self.model_phase.replace(phase) != Some(phase)).then_some(UiEvent::ModelProgress { phase })
+    }
 }
 
 use super::handoff::HandoffDetector;
@@ -539,6 +579,7 @@ impl std::fmt::Debug for StreamingChunkState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StreamingChunkState")
             .field("request_id", &self.request_id)
+            .field("provider_attempt", &self.provider_attempt)
             .field("accumulated_text", &self.accumulated_text)
             .field("stop_reason", &self.stop_reason)
             .field("tool_calls", &self.tool_calls)
@@ -586,11 +627,15 @@ impl Query {
             model_adapter: None,
             tool_adapters: Arc::new(std::collections::BTreeMap::new()),
             input_source: crate::session::InputSource::Host("local".into()),
+            input_skills: Vec::new(),
             runtime_limits: crate::session::RuntimeLimits::default(),
             model_capacity: None,
             runtime: None,
+            runtime_execution: None,
             turn_override: None,
             events_path_override: None,
+            skip_user_message: false,
+            resume_input_turn: None,
             model_request_budget: None,
         }
     }

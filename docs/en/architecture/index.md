@@ -9,6 +9,7 @@ Use this section for maintainer-facing design: crate boundaries, host structure,
 - [Overview](overview.md)
 - [Host Apps](host-apps.md)
 - [Interactive clients — server, Rust TUI and WebUI](interactive-clients.md) — proposed client contract, delivery order and terminal testing
+- [Workspace execution and Session variables](workspace-execution.md) — portable scripts, host facts, named data and adoption criteria
 - [Prompt Assembly](prompt-assembly.md)
 - [Module Contracts](module-contracts.md)
 - [Extension Runtime](extension-runtime.md)

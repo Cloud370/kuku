@@ -28,9 +28,7 @@ fn options(server: &MockServer, workspace: &Path, data: &Path) -> SessionOptions
     tier.think = kuku::config::ThinkLevel::Off;
     config.handoff.enabled = false;
     config.plugin.enabled = false;
-    let mut options = SessionOptions::new(workspace, data, config);
-    options.limits.max_steps_per_turn = 4;
-    options
+    SessionOptions::new(workspace, data, config)
 }
 
 fn request_body(request: &HttpMockRequest) -> Value {
@@ -219,9 +217,9 @@ async fn one_tool_batch_retains_success_denial_and_real_failure() {
         |request| tool_count(request) == 0,
         response(json!({"tool_calls":[
             tool("missing", "read_file", json!({"path":"missing.txt"})),
-            tool("denied", "run_command", json!({"command":"echo denied > denied.txt","timeout":5,"brief":"must not dispatch"})),
+            tool("denied", "run_command", json!({"shell":if cfg!(windows) {"cmd"} else {"sh"},"cwd":".","command":"echo denied > denied.txt","timeout":5,"brief":"must not dispatch"})),
             tool("find", "find_files", json!({"path":".","pattern":"seed.txt"})),
-            tool("write", "run_command", json!({"command":"echo allowed > allowed.txt","timeout":5,"brief":"independent allowed work"}))
+            tool("write", "run_command", json!({"shell":if cfg!(windows) {"cmd"} else {"sh"},"cwd":".","command":"echo allowed > allowed.txt","timeout":5,"brief":"independent allowed work"}))
         ]}), "tool_calls"),
     ).await;
     let continuation = fixture(
@@ -255,6 +253,136 @@ async fn one_tool_batch_retains_success_denial_and_real_failure() {
     assert_batch_facts(&EventStore::replay(session.events_path()).unwrap());
     first.assert_hits_async(1).await;
     continuation.assert_hits_async(1).await;
+}
+
+#[tokio::test]
+async fn create_agent_uses_default_routing_and_rejects_invalid_tool_configuration() {
+    let server = MockServer::start_async().await;
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let first = fixture(
+        &server,
+        |request| {
+            let body = request_body(request);
+            let create = body["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tool| tool["function"]["name"] == "create_agent")
+                .expect("create_agent tool definition");
+            let schema = &create["function"]["parameters"];
+            let properties = &schema["properties"];
+            let context = body["messages"].to_string();
+            tool_count(request) == 0
+                && schema["required"] == json!(["address"])
+                && properties["tier"]["description"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("<kuku_models>"))
+                && properties.as_object().unwrap().len() == 6
+                && properties["tools"]["description"].as_str().is_some_and(|text| text.contains("empty array means no tools"))
+                && context.contains("<kuku_models>")
+                && context.contains("balanced")
+                && context.contains("Omit tier to use the default model")
+                && context.contains("collect its reply with list_agents")
+        },
+        response(
+            json!({"tool_calls":[
+                tool("default", "create_agent", json!({
+                    "address":"reviewer","instructions":"Review code for defects.",
+                    "tier":"","preset":"","workspace":"","tools":["read_file","send_message"]
+                })),
+                tool("wrong-route", "create_agent", json!({"address":"second-reviewer","connection":"balanced"})),
+                tool("conflicting-tools", "create_agent", json!({
+                    "address":"blocked-reviewer","no_agents":true,"tools":["read_file","send_message"]
+                })),
+                tool("denied", "create_agent", json!({"address":"unauthorized-reviewer","tier":""})),
+                tool("invalid-address", "create_agent", json!({"address":"review/team","tier":""}))
+            ]}),
+            "tool_calls",
+        ),
+    )
+    .await;
+    let corrected = fixture(
+        &server,
+        |request| {
+            let body = request_body(request);
+            let messages = body["messages"].as_array().unwrap();
+            let content = |call_id: &str| {
+                messages
+                    .iter()
+                    .find(|message| message["role"] == "tool" && message["tool_call_id"] == call_id)
+                    .and_then(|message| message["content"].as_str())
+                    .unwrap_or_default()
+            };
+            tool_count(request) == 5
+                && content("wrong-route").contains("unknown field `connection`")
+                && content("conflicting-tools").contains("unknown field `no_agents`")
+                && content("invalid-address").contains("must be flat")
+                && content("denied").contains("not dispatched")
+        },
+        response(
+            json!({"tool_calls":[tool("correct-route", "create_agent", json!({"address":"second-reviewer","tier":"balanced"}))]}),
+            "tool_calls",
+        ),
+    )
+    .await;
+    let last = fixture(
+        &server,
+        |request| tool_count(request) == 6,
+        response(json!({"content":"Reviewers configured."}), "stop"),
+    )
+    .await;
+    let mut options = options(&server, workspace.path(), data.path());
+    options.authorizer = Arc::new(BatchPolicy);
+    let parent_provider = options.config.providers["openai"].clone();
+    options
+        .config
+        .providers
+        .insert("parent-route".into(), parent_provider);
+    let session = Session::open(options).await.unwrap();
+    session
+        .create_agent(
+            "create",
+            "main",
+            AgentConfig {
+                connection: Some("parent-route".into()),
+                model: Some("parent-override".into()),
+                ..AgentConfig::default()
+            },
+        )
+        .unwrap();
+    session
+        .send(Input::new("input", "main", "Configure two reviewers"))
+        .unwrap();
+    let state = idle(&session).await;
+    assert_eq!(
+        Some("Reviewers configured."),
+        state.last_output.as_deref(),
+        "{:?}",
+        state.last_error
+    );
+    let parent = session.agent_selection("main").unwrap();
+    assert_eq!("parent-override", parent.model);
+    assert_eq!("parent-route", parent.connection);
+    for address in ["reviewer", "second-reviewer"] {
+        let selected = session.agent_selection(address).unwrap();
+        assert_eq!("session-contract", selected.model);
+        assert_eq!("openai", selected.connection);
+    }
+    let reviewer = session.agent("reviewer").unwrap();
+    assert_eq!(None, reviewer.config.max_output_tokens);
+    assert!(!reviewer.config.no_agents);
+    assert_eq!(
+        Some(vec!["read_file".into(), "send_message".into()]),
+        reviewer.config.tools
+    );
+    assert!(session.agent("blocked-reviewer").is_err());
+    assert!(session.agent("unauthorized-reviewer").is_err());
+    assert!(session.agent("review/team").is_err());
+    session.close().await.unwrap();
+    first.assert_hits_async(1).await;
+    corrected.assert_hits_async(1).await;
+    last.assert_hits_async(1).await;
 }
 
 fn streaming_response() -> (String, String) {
@@ -299,7 +427,7 @@ fn assert_slow_observer_catches_up(observer: &mut SessionObserver, journal: &[St
     while let Some(observation) = observer.try_next().unwrap() {
         match observation {
             Observation::Committed(event) => committed.push(event.id),
-            Observation::Live { .. } => retained += 1,
+            Observation::Live { .. } | Observation::ReplyPreview { .. } => retained += 1,
             Observation::Lagged { skipped: count } => skipped += count,
         }
     }
@@ -344,7 +472,7 @@ async fn lagged_observer_is_bounded_and_reconnects_after_unobserved_execution() 
     let server = MockServer::start_async().await;
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
-    let first = fixture(&server, |request| tool_count(request) == 0, response(json!({"tool_calls":[tool("first", "run_command", json!({"command":"echo first > first.txt","timeout":5,"brief":"first unobserved write"}))]}), "tool_calls")).await;
+    let first = fixture(&server, |request| tool_count(request) == 0, response(json!({"tool_calls":[tool("first", "run_command", json!({"shell":if cfg!(windows) {"cmd"} else {"sh"},"cwd":".","command":"echo first > first.txt","timeout":5,"brief":"first unobserved write"}))]}), "tool_calls")).await;
     let (stream, text) = streaming_response();
     let burst = fixture(
         &server,
@@ -352,7 +480,7 @@ async fn lagged_observer_is_bounded_and_reconnects_after_unobserved_execution() 
         stream,
     )
     .await;
-    let second = fixture(&server, |request| tool_count(request) == 1 && second_round(request), response(json!({"tool_calls":[tool("second", "run_command", json!({"command":"echo second > second.txt","timeout":5,"brief":"write with all observers dropped"}))]}), "tool_calls")).await;
+    let second = fixture(&server, |request| tool_count(request) == 1 && second_round(request), response(json!({"tool_calls":[tool("second", "run_command", json!({"shell":if cfg!(windows) {"cmd"} else {"sh"},"cwd":".","command":"echo second > second.txt","timeout":5,"brief":"write with all observers dropped"}))]}), "tool_calls")).await;
     let last = fixture(
         &server,
         |request| tool_count(request) == 2,

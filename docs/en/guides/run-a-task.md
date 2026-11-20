@@ -22,13 +22,15 @@ Exact flags are in [CLI](../reference/cli.md).
 
 ## Use Interactive Mode
 
-For back-and-forth work, start the interactive CLI:
+From the workspace, start the full-screen terminal client:
 
 ```bash
 kuku
 ```
 
-Then enter prompts one Turn at a time. The interactive host reopens the same Session between inputs.
+Enter a prompt and press Enter to send it. If the Agent is busy, it accepts the follow-up at its next safe request boundary, or starts a new Turn if the current Turn settles first. Alt+Enter queues your message for the following Turn. Shift+Enter or Ctrl+J inserts a new line.
+
+Use `/new` to start a draft for a fresh Session or `/resume` to reopen a Session in the current workspace. Use `/agents` to choose the next recipient. Press Esc in the conversation to interrupt the selected execution and keep your draft. In a menu, Esc closes the menu. A terminal window can disconnect while the server continues its work. [Terminal commands](../reference/cli.md#terminal-interface)
 
 ## Continue Existing Work
 

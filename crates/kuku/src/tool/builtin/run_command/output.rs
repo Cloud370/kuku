@@ -1,9 +1,16 @@
+use std::borrow::Cow;
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+
+use crate::execution::ReportedTests;
+
+use super::encoding::display_text;
+use super::reports::ReportCollector;
 
 const HEADER_BYTES: usize = 4096;
 const MAGIC: &[u8; 8] = b"KUKUOUT1";
@@ -13,10 +20,11 @@ const MAX_READ_BYTES: usize = super::RUN_COMMAND_MAX_CHARS;
 const DEFAULT_READ_BYTES: usize = 16 * 1024;
 const MAX_READ_SEGMENTS: usize = 4096;
 const MAX_SEARCH_BYTES: usize = 4096;
-const MAX_OUTPUT_BYTES: u64 = 1024 * 1024 * 1024;
+pub(crate) const MAX_OUTPUT_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_SUMMARY_LINES: usize = 6;
 const MAX_SUMMARY_LINE_BYTES: usize = 192;
 const MAX_PENDING_LINE_BYTES: usize = 1024;
+pub(crate) const OUTPUT_DRAFT_SUFFIX: &str = ".output-draft";
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct OutputLimits {
@@ -90,8 +98,18 @@ pub struct OutputSegment {
     pub offset: u64,
     /// The number of retained raw bytes represented by this segment.
     pub bytes: usize,
-    /// The segment decoded as UTF-8 with replacement for invalid bytes.
+    /// The readable command output with terminal color codes removed.
     pub text: String,
+    /// Original bytes when the display text differs from the captured bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_bytes: Option<Vec<u8>>,
+}
+
+impl OutputSegment {
+    /// Return the original bytes represented by this segment.
+    pub fn as_bytes(&self) -> &[u8] {
+        self.raw_bytes.as_deref().unwrap_or(self.text.as_bytes())
+    }
 }
 
 /// Returns a bounded output view with continuation and capture status.
@@ -144,6 +162,7 @@ pub(crate) struct OutputWriter {
     metadata: CaptureMetadata,
     stdout: StreamSummary,
     stderr: StreamSummary,
+    reports: Option<ReportCollector>,
 }
 
 impl OutputWriter {
@@ -152,33 +171,41 @@ impl OutputWriter {
         output_id: &str,
         limits: OutputLimits,
     ) -> io::Result<Self> {
-        if !(HEADER_BYTES as u64..=MAX_OUTPUT_BYTES).contains(&limits.max_output_bytes) {
-            return Err(invalid_output(
-                "output quota must be between 4096 bytes and 1 GiB",
-            ));
-        }
-        if limits.max_preview_bytes > MAX_READ_BYTES {
-            return Err(invalid_output("output preview must be at most 80000 bytes"));
-        }
-        let path = output_path(output_dir, output_id)?;
-        crate::util::fs_sync::create_dir_all(output_dir)?;
-        let mut file = tokio::fs::File::from_std(
-            crate::util::fs_sync::write_options()
-                .create_new(true)
-                .open(&path)?,
-        );
-        let metadata = CaptureMetadata::default();
-        file.write_all(&encode_header(&metadata)?).await?;
-        file.flush().await?;
-        Ok(Self {
-            file,
-            path,
-            file_bytes: HEADER_BYTES as u64,
-            quota: limits.max_output_bytes,
-            metadata,
-            stdout: StreamSummary::default(),
-            stderr: StreamSummary::default(),
-        })
+        let path = Self::prepare(output_dir, output_id, limits)?;
+        let file = crate::util::fs_sync::write_options()
+            .create_new(true)
+            .open(&path)?;
+        Self::initialize(file, path, limits).await
+    }
+
+    pub(crate) async fn create_staged(
+        output_dir: &Path,
+        output_id: &str,
+        limits: OutputLimits,
+    ) -> io::Result<(Self, OutputDraft)> {
+        let destination = Self::prepare(output_dir, output_id, limits)?;
+        let (file, path) = tempfile::Builder::new()
+            .prefix(output_id)
+            .rand_bytes(0)
+            .suffix(OUTPUT_DRAFT_SUFFIX)
+            .make_in(output_dir, |path| {
+                crate::util::fs_sync::write_options()
+                    .create_new(true)
+                    .open(path)
+            })?
+            .into_parts();
+        let writer = Self::initialize(file, path.to_path_buf(), limits).await?;
+        Ok((writer, OutputDraft { path, destination }))
+    }
+
+    pub(super) async fn create_command(
+        output_dir: &Path,
+        output_id: &str,
+        limits: OutputLimits,
+    ) -> io::Result<Self> {
+        let mut writer = Self::create(output_dir, output_id, limits).await?;
+        writer.reports = Some(ReportCollector::default());
+        Ok(writer)
     }
 
     pub(crate) async fn write(&mut self, stream: OutputStream, bytes: &[u8]) -> io::Result<()> {
@@ -186,7 +213,7 @@ impl OutputWriter {
             OutputStream::Stdout => &mut self.stdout,
             OutputStream::Stderr => &mut self.stderr,
         };
-        summary.observe(bytes, &mut self.metadata.summary);
+        summary.observe(bytes, &mut self.metadata.summary, &mut self.reports);
         let remaining = self.quota.saturating_sub(self.file_bytes);
         let kept = bytes
             .len()
@@ -205,9 +232,30 @@ impl OutputWriter {
         Ok(())
     }
 
-    pub(crate) async fn finish(mut self, cleanup_incomplete: bool) -> io::Result<CaptureMetadata> {
-        self.stdout.finish(&mut self.metadata.summary);
-        self.stderr.finish(&mut self.metadata.summary);
+    pub(crate) async fn finish(self, cleanup_incomplete: bool) -> io::Result<CaptureMetadata> {
+        self.finish_command(cleanup_incomplete)
+            .await
+            .map(|(metadata, _)| metadata)
+    }
+
+    pub(crate) fn quota_truncated(&self) -> bool {
+        self.metadata.quota_truncated
+    }
+
+    pub(crate) async fn close(self) {
+        drop(self.file.into_std().await);
+    }
+
+    pub(super) async fn finish_command(
+        mut self,
+        cleanup_incomplete: bool,
+    ) -> io::Result<(CaptureMetadata, Vec<ReportedTests>)> {
+        if !cleanup_incomplete {
+            self.stdout
+                .finish(&mut self.metadata.summary, &mut self.reports);
+            self.stderr
+                .finish(&mut self.metadata.summary, &mut self.reports);
+        }
         self.metadata.stdout_bytes = self.stdout.bytes;
         self.metadata.stderr_bytes = self.stderr.bytes;
         self.metadata.stdout_lines = self.stdout.line_count();
@@ -221,7 +269,57 @@ impl OutputWriter {
         let file = self.file.into_std().await;
         crate::util::fs_sync::sync_file(&file)?;
         crate::util::fs_sync::sync_parent(&self.path)?;
-        Ok(self.metadata)
+        let reports = self
+            .reports
+            .map(ReportCollector::finish)
+            .unwrap_or_default();
+        Ok((self.metadata, reports))
+    }
+
+    fn prepare(output_dir: &Path, output_id: &str, limits: OutputLimits) -> io::Result<PathBuf> {
+        if !(HEADER_BYTES as u64..=MAX_OUTPUT_BYTES).contains(&limits.max_output_bytes) {
+            return Err(invalid_output(
+                "output quota must be between 4096 bytes and 1 GiB",
+            ));
+        }
+        if limits.max_preview_bytes > MAX_READ_BYTES {
+            return Err(invalid_output("output preview must be at most 80000 bytes"));
+        }
+        let path = output_path(output_dir, output_id)?;
+        crate::util::fs_sync::create_dir_all(output_dir)?;
+        Ok(path)
+    }
+
+    async fn initialize(file: fs::File, path: PathBuf, limits: OutputLimits) -> io::Result<Self> {
+        let mut file = tokio::fs::File::from_std(file);
+        let metadata = CaptureMetadata::default();
+        file.write_all(&encode_header(&metadata)?).await?;
+        file.flush().await?;
+        Ok(Self {
+            file,
+            path,
+            file_bytes: HEADER_BYTES as u64,
+            quota: limits.max_output_bytes,
+            metadata,
+            stdout: StreamSummary::default(),
+            stderr: StreamSummary::default(),
+            reports: None,
+        })
+    }
+}
+
+pub(crate) struct OutputDraft {
+    path: tempfile::TempPath,
+    destination: PathBuf,
+}
+
+impl OutputDraft {
+    pub(crate) fn publish(self) -> io::Result<()> {
+        crate::util::fs_sync::rename(&self.path, &self.destination)
+    }
+
+    pub(crate) fn discard(self) -> io::Result<()> {
+        self.path.close()
     }
 }
 
@@ -235,13 +333,18 @@ struct StreamSummary {
 }
 
 impl StreamSummary {
-    fn observe(&mut self, bytes: &[u8], summary: &mut Vec<String>) {
+    fn observe(
+        &mut self,
+        bytes: &[u8],
+        summary: &mut Vec<String>,
+        reports: &mut Option<ReportCollector>,
+    ) {
         self.bytes = self.bytes.saturating_add(bytes.len() as u64);
         for &byte in bytes {
             self.last_newline = byte == b'\n';
             if self.last_newline {
                 self.newlines = self.newlines.saturating_add(1);
-                self.finish(summary);
+                self.finish(summary, reports);
             } else if self.pending.len() < MAX_PENDING_LINE_BYTES {
                 self.pending.push(byte);
             } else {
@@ -250,9 +353,14 @@ impl StreamSummary {
         }
     }
 
-    fn finish(&mut self, summary: &mut Vec<String>) {
-        let text = String::from_utf8_lossy(&self.pending);
+    fn finish(&mut self, summary: &mut Vec<String>, reports: &mut Option<ReportCollector>) {
+        let (text, lossy) = display_text(&self.pending, true, !self.long_line);
         let text = text.trim();
+        if !self.long_line && !lossy {
+            if let Some(reports) = reports {
+                reports.observe(text);
+            }
+        }
         if !self.long_line && is_summary_line(text) {
             let mut line = text
                 .chars()
@@ -281,7 +389,29 @@ pub(crate) fn read_output(
     request: OutputRead,
 ) -> io::Result<OutputChunk> {
     validate_read(&request)?;
-    let mut file = fs::File::open(output_path(output_dir, output_id)?)?;
+    read_open_output(open_output(output_dir, output_id)?, output_id, request)
+}
+
+pub(crate) fn open_output(output_dir: &Path, output_id: &str) -> io::Result<fs::File> {
+    fs::File::open(output_path(output_dir, output_id)?)
+}
+
+pub(crate) fn capture_metadata(output_dir: &Path, output_id: &str) -> io::Result<CaptureMetadata> {
+    decode_header(&mut open_output(output_dir, output_id)?)
+}
+
+pub(crate) fn framed_bytes(payload: u64) -> u64 {
+    (HEADER_BYTES as u64)
+        .saturating_add(payload)
+        .saturating_add(payload.div_ceil(MAX_FRAME_BYTES as u64) * FRAME_HEADER_BYTES as u64)
+}
+
+pub(crate) fn read_open_output(
+    mut file: fs::File,
+    output_id: &str,
+    request: OutputRead,
+) -> io::Result<OutputChunk> {
+    validate_read(&request)?;
     let metadata = decode_header(&mut file)?;
     let mut window = OutputWindow::default();
     let mut logical_offset = 0;
@@ -290,13 +420,21 @@ pub(crate) fn read_output(
         let Some((stream, frame_bytes)) = read_frame_header(&mut file, &metadata)? else {
             break;
         };
-        if file.stream_position()? + frame_bytes as u64 > file_bytes {
+        let payload = file.stream_position()?;
+        if payload + frame_bytes as u64 > file_bytes {
             if metadata.complete {
                 return Err(invalid_output("output frame exceeds file length"));
             }
             break;
         }
-        window.read_frame(&mut file, stream, logical_offset, frame_bytes, &request)?;
+        window.read_frame(
+            &mut file,
+            stream,
+            logical_offset,
+            frame_bytes,
+            payload,
+            &request,
+        )?;
         logical_offset += frame_bytes as u64;
     }
     if metadata.complete && logical_offset != metadata.stored_bytes {
@@ -304,13 +442,44 @@ pub(crate) fn read_output(
             "output length disagrees with committed metadata",
         ));
     }
-    render_chunk(output_id, request, metadata, window, logical_offset)
+    render_chunk(
+        output_id,
+        request,
+        metadata,
+        window,
+        logical_offset,
+        &mut file,
+    )
 }
 
 #[derive(Default)]
 struct OutputWindow {
     bytes: Vec<u8>,
-    spans: Vec<(OutputStream, u64, usize, usize)>,
+    spans: Vec<OutputSpan>,
+    last_file_byte: [Option<u64>; 2],
+    stream_ends: [u64; 2],
+}
+
+struct OutputSpan {
+    stream: OutputStream,
+    offset: u64,
+    range: Range<usize>,
+    preceding_file_byte: Option<u64>,
+}
+
+impl OutputSpan {
+    fn starts_line(&self, file: &mut fs::File, bytes: &[u8]) -> io::Result<bool> {
+        let Some(position) = self.preceding_file_byte else {
+            return Ok(true);
+        };
+        if !cfg!(windows) || std::str::from_utf8(bytes).is_ok() {
+            return Ok(false);
+        }
+        let mut previous = [0];
+        file.seek(SeekFrom::Start(position))?;
+        file.read_exact(&mut previous)?;
+        Ok(previous[0] == b'\n')
+    }
 }
 
 impl OutputWindow {
@@ -320,6 +489,7 @@ impl OutputWindow {
         stream: OutputStream,
         frame_offset: u64,
         frame_bytes: usize,
+        payload: u64,
         request: &OutputRead,
     ) -> io::Result<()> {
         let skip = request
@@ -332,26 +502,28 @@ impl OutputWindow {
         } else {
             0
         };
+        let slot = stream as usize;
+        let preceding = self.last_file_byte[slot];
+        self.last_file_byte[slot] = Some(payload + frame_bytes as u64 - 1);
+        self.stream_ends[slot] = frame_offset + frame_bytes as u64;
         file.seek(SeekFrom::Current(skip as i64))?;
         if keep > 0 {
             let start = self.bytes.len();
             self.bytes.resize(start + keep, 0);
             file.read_exact(&mut self.bytes[start..])?;
-            if let Some((previous_stream, previous_offset, previous_start, previous_end)) =
-                self.spans.last_mut()
-            {
-                if *previous_stream == stream
-                    && *previous_offset + (*previous_end - *previous_start) as u64
-                        == frame_offset + skip as u64
-                {
-                    *previous_end = start + keep;
-                } else {
-                    self.spans
-                        .push((stream, frame_offset + skip as u64, start, start + keep));
-                }
+            if let Some(previous) = self.spans.last_mut().filter(|span| span.stream == stream) {
+                previous.range.end = start + keep;
             } else {
-                self.spans
-                    .push((stream, frame_offset + skip as u64, start, start + keep));
+                self.spans.push(OutputSpan {
+                    stream,
+                    offset: frame_offset + skip as u64,
+                    range: start..start + keep,
+                    preceding_file_byte: if skip == 0 {
+                        preceding
+                    } else {
+                        Some(payload + skip as u64 - 1)
+                    },
+                });
             }
         }
         file.seek(SeekFrom::Current((frame_bytes - skip - keep) as i64))?;
@@ -359,7 +531,12 @@ impl OutputWindow {
     }
 }
 
-fn output_path(output_dir: &Path, output_id: &str) -> io::Result<PathBuf> {
+pub(crate) fn output_path(output_dir: &Path, output_id: &str) -> io::Result<PathBuf> {
+    validate_output_id(output_id)?;
+    Ok(output_dir.join(format!("{output_id}.output")))
+}
+
+pub(crate) fn validate_output_id(output_id: &str) -> io::Result<()> {
     if output_id.is_empty()
         || output_id.len() > 128
         || !output_id
@@ -370,7 +547,7 @@ fn output_path(output_dir: &Path, output_id: &str) -> io::Result<PathBuf> {
             "output id must contain 1-128 ASCII letters, digits, '-' or '_'",
         ));
     }
-    Ok(output_dir.join(format!("{output_id}.output")))
+    Ok(())
 }
 
 fn encode_header(metadata: &CaptureMetadata) -> io::Result<[u8; HEADER_BYTES]> {
@@ -440,6 +617,7 @@ fn render_chunk(
     metadata: CaptureMetadata,
     window: OutputWindow,
     total_bytes: u64,
+    file: &mut fs::File,
 ) -> io::Result<OutputChunk> {
     let mut next_offset = request.offset.saturating_add(window.bytes.len() as u64);
     let ranges = match &request.search {
@@ -459,18 +637,30 @@ fn render_chunk(
     let mut ranges = ranges.into_iter().peekable();
     let mut segments = Vec::new();
     let mut lossy_utf8 = false;
-    for (stream, offset, start, end) in window.spans {
-        while ranges.peek().is_some_and(|range| range.end <= start) {
+    let complete = metadata.complete && !metadata.quota_truncated && !metadata.cleanup_incomplete;
+    for span in window.spans {
+        while ranges
+            .peek()
+            .is_some_and(|range| range.end <= span.range.start)
+        {
             ranges.next();
         }
-        if ranges.peek().is_some_and(|range| range.start < end) {
-            let bytes = &window.bytes[start..end];
-            lossy_utf8 |= std::str::from_utf8(bytes).is_err();
+        if ranges
+            .peek()
+            .is_some_and(|range| range.start < span.range.end)
+        {
+            let bytes = &window.bytes[span.range.clone()];
+            let ends_stream = complete
+                && span.offset + bytes.len() as u64 == window.stream_ends[span.stream as usize];
+            let (text, lossy) = display_text(bytes, span.starts_line(file, bytes)?, ends_stream);
+            let raw_bytes = matches!(text, Cow::Owned(_)).then(|| bytes.to_vec());
+            lossy_utf8 |= lossy;
             segments.push(OutputSegment {
-                stream,
-                offset,
+                stream: span.stream,
+                offset: span.offset,
                 bytes: bytes.len(),
-                text: String::from_utf8_lossy(bytes).into_owned(),
+                text: text.into_owned(),
+                raw_bytes,
             });
         }
     }
@@ -674,13 +864,26 @@ mod tests {
             .write(OutputStream::Stdout, &bytes[2..])
             .await
             .unwrap();
+        let invalid = b"\xff\0\r";
+        writer.write(OutputStream::Stderr, invalid).await.unwrap();
         writer.finish(false).await.unwrap();
-        let chunk = read_output(dir.path(), "unicode", request(0, 100)).unwrap();
+        let chunk = read_output(dir.path(), "unicode", request(0, bytes.len())).unwrap();
         assert_eq!("你好", text(&chunk));
         assert!(!chunk.lossy_utf8);
+        assert!(chunk.segments[0].raw_bytes.is_none());
         let partial = read_output(dir.path(), "unicode", request(1, 2)).unwrap();
         assert!(partial.lossy_utf8);
         assert_eq!(3, partial.next_offset);
+        assert_eq!(&bytes[1..3], partial.segments[0].as_bytes());
+        let rest = read_output(dir.path(), "unicode", request(partial.next_offset, 100)).unwrap();
+        assert_eq!(&bytes[3..], rest.segments[0].as_bytes());
+        assert_eq!(invalid.as_slice(), rest.segments[1].as_bytes());
+        let wire = serde_json::to_value(&rest).unwrap();
+        assert!(wire["segments"][0].get("raw_bytes").is_none());
+        assert_eq!(
+            serde_json::json!([255, 0, 13]),
+            wire["segments"][1]["raw_bytes"]
+        );
     }
 
     #[tokio::test]

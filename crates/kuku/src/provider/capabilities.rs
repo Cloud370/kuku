@@ -1,4 +1,4 @@
-use crate::config::{ProviderOptions, ProviderProfile};
+use crate::config::{ProviderOptions, ProviderProfile, ThinkLevel};
 use crate::error::{Error, Result};
 
 use super::types::{ProviderCapabilities, ProviderKind, ProviderSettings};
@@ -63,16 +63,25 @@ pub(crate) fn resolve_capabilities(
 pub(crate) fn resolve_settings(
     connection: &str,
     capabilities: &ProviderCapabilities,
-    reasoning: Option<String>,
+    native_reasoning: Option<String>,
+    think: Option<ThinkLevel>,
     service: Option<String>,
 ) -> Result<ProviderSettings> {
-    let effective_reasoning = reasoning.as_deref();
-    validate_choice(
-        connection,
-        "reasoning_effort",
-        effective_reasoning,
-        &capabilities.reasoning_efforts,
-    )?;
+    let (requested_reasoning_effort, reasoning_effort) = match native_reasoning {
+        Some(effort) => {
+            validate_choice(
+                connection,
+                "reasoning_effort",
+                Some(&effort),
+                &capabilities.reasoning_efforts,
+            )?;
+            (Some(effort.clone()), Some(effort))
+        }
+        None => (
+            think.map(|level| level.as_str().to_string()),
+            think.and_then(|level| portable_reasoning(level, capabilities)),
+        ),
+    };
     validate_choice(
         connection,
         "service_tier",
@@ -80,11 +89,24 @@ pub(crate) fn resolve_settings(
         &capabilities.service_tiers,
     )?;
     Ok(ProviderSettings {
-        requested_reasoning_effort: reasoning.clone(),
-        reasoning_effort: effective_reasoning.map(str::to_string),
+        requested_reasoning_effort,
+        reasoning_effort,
         requested_service_tier: service.clone(),
         service_tier: service,
     })
+}
+
+fn portable_reasoning(level: ThinkLevel, capabilities: &ProviderCapabilities) -> Option<String> {
+    let effort = match level {
+        ThinkLevel::Off => "none",
+        ThinkLevel::Medium if capabilities.profile == ProviderProfile::DeepSeek => "high",
+        ThinkLevel::Low | ThinkLevel::Medium | ThinkLevel::High => level.as_str(),
+    };
+    capabilities
+        .reasoning_efforts
+        .iter()
+        .find(|candidate| *candidate == effort)
+        .cloned()
 }
 
 fn detect_profile(base_url: &str) -> ProviderProfile {

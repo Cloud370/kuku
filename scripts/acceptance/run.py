@@ -3,8 +3,10 @@
 
 import argparse
 import contextlib
+import csv
 import datetime
 import hashlib
+import io
 import json
 import math
 import os
@@ -16,12 +18,15 @@ import signal
 import ssl
 import subprocess
 import sys
+import tarfile
+import tempfile
 import threading
 import time
 import uuid
+import zipfile
 
-from evidence import inspect_sdk
-from metrics import ProcessSampler
+from benchmark_resources import ResourceSampler, include_final_process_usage
+from evidence import FailureSummary, inspect_sdk
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -169,7 +174,8 @@ def redact(text, secrets=()):
     return text
 
 
-def capture(command, directory, label, timeout=900, env=None, secrets=(), cwd=ROOT, on_start=None):
+def capture(command, directory, label, timeout=900, env=None, secrets=(), cwd=ROOT, on_start=None,
+            retain_failures=False):
     directory.mkdir(parents=True, exist_ok=True)
     start = time.monotonic()
     flags = {"start_new_session": True} if os.name != "nt" else {
@@ -181,6 +187,7 @@ def capture(command, directory, label, timeout=900, env=None, secrets=(), cwd=RO
     tail = bytearray()
     total = 0
     digest = hashlib.sha256()
+    failures = FailureSummary() if retain_failures else None
 
     def drain():
         nonlocal total
@@ -193,6 +200,8 @@ def capture(command, directory, label, timeout=900, env=None, secrets=(), cwd=RO
                 break
             total += len(chunk)
             digest.update(chunk)
+            if failures is not None:
+                failures.feed(chunk)
             tail.extend(chunk)
             del tail[:-LOG_BYTES]
 
@@ -226,19 +235,23 @@ def capture(command, directory, label, timeout=900, env=None, secrets=(), cwd=RO
                 if raw_tail.startswith(secret[-length:]):
                     raw_tail = "[REDACTED]" + raw_tail[length:]
                     break
-    output = redact(raw_tail, secrets).encode()[-LOG_BYTES:].decode("utf-8", errors="ignore")
+    rendered = redact(raw_tail, secrets).encode("utf-8")
+    output = rendered[-LOG_BYTES:].decode("utf-8", errors="ignore").encode("utf-8")
     path = directory / f"{label}.log"
-    path.write_text(output, encoding="utf-8")
+    path.write_bytes(output)
     result = {
         "command": [redact(str(arg), secrets) for arg in command],
         "exit_code": process.returncode, "timed_out": timed_out,
         "seconds": round(time.monotonic() - start, 4),
         "log": str(path), "output_bytes": total,
-        "retained_bytes": len(output.encode()), "truncated": total > LOG_BYTES,
+        "retained_bytes": path.stat().st_size,
+        "truncated": total > LOG_BYTES or len(rendered) > LOG_BYTES,
         "output_sha256": digest.hexdigest(),
     }
     if reader.is_alive():
         result["capture_incomplete"] = True
+    if failures is not None:
+        result.update(failures.write(directory, label, lambda text: redact(text, secrets)))
     return result
 
 
@@ -280,40 +293,21 @@ def command_environment(secrets=None):
     return env
 
 
-def manifest_case(case_id):
+def manifest_case(case_id, suite="legacy"):
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    if suite != "legacy":
+        selection = manifest["suites"][suite]
+        available = {case["id"]: case for case in manifest["cases"] + selection["additional_cases"]}
+        manifest = {"source": selection["source"], "cases": [available[name] for name in selection["case_ids"]]}
     case = next((case for case in manifest["cases"] if case["id"] == case_id), None)
     if case is None:
-        raise ValueError("unknown benchmark case")
+        raise ValueError(f"unknown benchmark case for {suite}: {case_id}")
     return manifest, case
 
 
-def prepare_source(manifest, directory):
-    source = ROOT / "benchmarks" / "sources" / "terminal-bench-2"
-    revision = manifest["source"]["revision"]
-    with locked(source.parent / "terminal-bench-2.lock"):
-        existing = (source / ".git").exists()
-        if not existing:
-            require_success(capture(["git", "clone", "--filter=blob:none", "--no-checkout",
-                                     manifest["source"]["repository"], str(source)],
-                                    directory, "source-clone", timeout=600))
-        if existing and subprocess.check_output(["git", "-C", str(source), "status", "--porcelain"]):
-            raise ValueError("benchmark source is modified; preserve and inspect it before continuing")
-        present = subprocess.run(["git", "-C", str(source), "cat-file", "-e", revision],
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if present.returncode:
-            require_success(capture(["git", "-C", str(source), "fetch", "--depth", "1", "origin", revision],
-                                    directory, "source-fetch", timeout=600))
-        require_success(capture(["git", "-C", str(source), "sparse-checkout", "init", "--cone"],
-                                directory, "source-sparse-init"))
-        require_success(capture(["git", "-C", str(source), "sparse-checkout", "set",
-                                 *[case["id"] for case in manifest["cases"]]],
-                                directory, "source-sparse-set", timeout=600))
-        require_success(capture(["git", "-C", str(source), "checkout", "--detach", revision],
-                                directory, "source-checkout", timeout=600))
-        if subprocess.check_output(["git", "-C", str(source), "status", "--porcelain"]):
-            raise ValueError("benchmark source is modified; preserve and inspect it before continuing")
-    return source
+def prepare_source(manifest, directory, case=None):
+    from benchmark_source import prepare_source as checkout
+    return checkout(ROOT, manifest, directory, case)
 
 
 def bundle_binary(binary, directory):
@@ -422,58 +416,7 @@ def attempt_passed(mode, execution, verification, value, summary):
         summary.get(field) == 0 for field in ("failed", "skipped", "pending", "other"))
 
 
-class ResourceSampler:
-    def __init__(self, container):
-        self.container = container
-        self.stopped = threading.Event()
-        self.thread = threading.Thread(target=self.sample, daemon=True)
-        self.data = {"container_scope": "sdk_and_tools", "container_samples": 0,
-                     "sdk_process_samples": 0, "sdk_peak_rss_kib": None,
-                     "sdk_peak_rss_high_water_kib": None, "sdk_cpu_seconds": None,
-                     "sdk_threads_max": None, "container_snapshots": []}
-
-    def start(self):
-        self.thread.start()
-
-    def finish(self):
-        self.stopped.set()
-        self.thread.join(timeout=20)
-        self.data["capture_incomplete"] = self.thread.is_alive()
-        return self.data
-
-    def sample(self):
-        while not self.stopped.is_set():
-            try:
-                proc = subprocess.run([
-                    "docker", "exec", self.container, "sh", "-c",
-                    'p=$(cat /logs/agent/sdk.pid 2>/dev/null) || exit; '
-                    'cat "/proc/$p/status" "/proc/$p/stat" 2>/dev/null',
-                ], capture_output=True, text=True, timeout=5)
-                if proc.returncode == 0:
-                    self.data["sdk_process_samples"] += 1
-                    for field, key in (("VmRSS", "sdk_peak_rss_kib"), ("VmHWM", "sdk_peak_rss_high_water_kib"),
-                                       ("Threads", "sdk_threads_max")):
-                        match = re.search(rf"^{field}:\s+(\d+)", proc.stdout, re.MULTILINE)
-                        if match:
-                            self.data[key] = max(self.data[key] or 0, int(match[1]))
-                    stat = proc.stdout.splitlines()[-1].rsplit(")", 1)[-1].split()
-                    if len(stat) > 12:
-                        self.data["sdk_cpu_seconds"] = round(
-                            (int(stat[11]) + int(stat[12])) / os.sysconf("SC_CLK_TCK"), 4)
-                stats = subprocess.run(["docker", "stats", "--no-stream", "--format", "{{json .}}", self.container],
-                                       capture_output=True, text=True, timeout=5)
-                if stats.returncode == 0 and stats.stdout.strip():
-                    snapshot = json.loads(stats.stdout)
-                    self.data["container_samples"] += 1
-                    self.data["container_snapshots"].append({key: snapshot.get(key) for key in
-                                                           ("CPUPerc", "MemUsage", "PIDs", "BlockIO")})
-                    self.data["container_snapshots"] = self.data["container_snapshots"][-8:]
-            except (OSError, ValueError, subprocess.TimeoutExpired):
-                self.data["sampling_errors"] = self.data.get("sampling_errors", 0) + 1
-            self.stopped.wait(1)
-
-
-def benchmark_attempt(args, case, source, image, directory, mode, secrets):
+def benchmark_attempt(args, case, source, image, directory, mode, secrets, *, sdk_timeout_sec=None, on_sdk_finished=None):
     attempt = directory / mode
     logs = attempt / "logs"
     (logs / "verifier").mkdir(parents=True)
@@ -521,12 +464,16 @@ def benchmark_attempt(args, case, source, image, directory, mode, secrets):
                 record["execution"] = capture([
                     "docker", "exec", container, "sh", "-c",
                     'printf "%s\\n" "$$" > /logs/agent/sdk.pid; exec "$@"', "sh", *sdk_command,
-                ], attempt, "sdk", timeout=case["timeout_sec"], secrets=secrets.values())
+                ], attempt, "sdk", timeout=sdk_timeout_sec or case["timeout_sec"], secrets=secrets.values())
             finally:
+                if on_sdk_finished is not None:
+                    on_sdk_finished()
                 record["resources"] = sampler.finish()
             record["sdk_result"] = str(logs / "agent" / "result.json")
+            include_final_process_usage(record["resources"], Path(record["sdk_result"]))
             record["sdk_evidence"] = inspect_sdk(Path(record["sdk_result"]), data_dir, args.connection,
-                                                  "/kuku/data", record["session_id"], args.require_streaming)
+                                                  "/kuku/data", record["session_id"], args.require_streaming,
+                                                  require_fixed_limits=args.suite == "legacy", require_output_limit=True)
         else:
             record["execution"] = {"exit_code": 0, "scope": "untouched environment; no Agent or oracle"}
         if record["execution"].get("timed_out"):
@@ -566,25 +513,40 @@ def benchmark_attempt(args, case, source, image, directory, mode, secrets):
 
 
 def run_benchmark(args, directory, record, secrets):
-    manifest, case = manifest_case(args.case)
-    source = prepare_source(manifest, directory) / case["id"]
-    record["benchmark"] = {"source": manifest["source"], "case": case,
-                           "task_files_sha256": file_hashes(source)}
-    image = f"kuku-acceptance/{case['id']}:{manifest['source']['revision'][:12]}"
-    require_success(capture(["docker", "build", "--force-rm", "--tag", image, str(source / "environment")],
+    manifest, case = manifest_case(args.case, args.suite)
+    spec = manifest["source"]
+    source = prepare_source(manifest, directory, case) / spec.get("task_root", "") / case["id"]
+    frontier = args.suite == "frontier"
+    image = f"kuku-acceptance/{case['id']}:{spec['revision'][:12]}"
+    record["benchmark"] = {"suite": args.suite, "source": spec, "case": case,
+                           "task_files_sha256": file_hashes(source), "image_tag": image}
+    image_id_file = directory / "image-id.txt"
+    build = ["docker", "build", "--force-rm", "--tag", image]
+    if frontier:
+        build += ["--iidfile", str(image_id_file)]
+    require_success(capture([*build, str(source / "environment")],
                             directory, "image-build", timeout=600))
-    inspected = require_success(capture(["docker", "image", "inspect", "--format", "{{.Id}}", image],
+    inspected = require_success(capture(["docker", "image", "inspect", "--format", "{{.Id}}",
+                                         image_id_file.read_text().strip() if frontier else image],
                                         directory, "image-inspect"))
-    record["benchmark"]["image_id"] = Path(inspected["log"]).read_text().strip()
-    modes = ("negative", "oracle") if args.mode == "preflight" else ("live",)
-    record["attempts"] = [benchmark_attempt(args, case, source, image, directory, mode, secrets)
-                          for mode in modes]
+    image_id = record["benchmark"]["image_id"] = Path(inspected["log"]).read_text().strip()
+    if frontier and args.mode == "live":
+        from frontier import run_live
+        args.agent_timeout_sec = args.agent_timeout_sec or case["timeout_sec"]
+        record["attempts"] = [run_live(args, case, source, image_id, directory, secrets)]
+    else:
+        modes = ("live",) if args.mode == "live" else ("negative",)
+        if not frontier and args.mode == "preflight":
+            modes += ("oracle",)
+        record["attempts"] = [benchmark_attempt(args, case, source, image_id if frontier else image,
+                                                 directory, mode, secrets) for mode in modes]
     record["passed"] = all(attempt["passed"] for attempt in record["attempts"])
 
 
 def selected_commands(group):
-    contract = ["cargo", "test", "-p", "kuku", "-p", "kuku-cli", "-p", "kuku-server",
-                "--features", "kuku/test_support"]
+    contract = ["cargo", "test", "--workspace", "--no-fail-fast", "--timings", "--features", "kuku/test_support"]
+    if os.name == "nt":
+        contract += ["--", "--test-threads=1"]
     if group == "contract":
         return [contract]
     if group == "protocol":
@@ -597,44 +559,212 @@ def selected_commands(group):
             contract]
 
 
-def run_metrics(args, directory, record):
-    if not sys.platform.startswith("linux"):
-        raise ValueError("process resource sampling currently requires Linux /proc")
-    command = ["cargo", "build", "-p", "kuku", "--example", "resource_probe", "--features", "test_support"]
-    if args.profile == "release":
-        command.append("--release")
-    record["build"] = require_success(capture(command, directory, "build", timeout=1800, env=command_environment()))
-    record["build"]["target_dir"] = str(ROOT / "target")
-    record["build"]["profile"] = args.profile
-    record["sources"] = [config_record(path) for path in
-                          (ROOT / "crates/kuku/examples/resource_probe.rs", Path(__file__).with_name("metrics.py"),
-                           ROOT / "crates/kuku/tests/common/mod.rs")]
-    binary = ROOT / "target" / args.profile / "examples" / "resource_probe"
-    record["binary"] = config_record(binary)
-    phase_file, result_file = directory / "phase.json", directory / "caller.json"
-    command = [str(binary), "--workspace", str(directory / "workspace"), "--data-dir", str(directory / "session-data"),
-               "--phase-file", str(phase_file), "--output", str(result_file),
-               "--idle-agents", str(args.idle_agents), "--appends", str(args.appends),
-               "--concurrent-agents", str(args.concurrent_agents), "--output-bytes", str(args.output_bytes),
-               "--output-quota", str(args.output_quota)]
-    sampler = ProcessSampler(phase_file)
+def extract_release_binary(archive, binary):
+    with contextlib.ExitStack() as stack:
+        if archive.name.endswith(".tar.gz"):
+            package = stack.enter_context(tarfile.open(archive, "r:gz"))
+            members = [member for member in package.getmembers() if member.name == binary.name and member.isfile()]
+            if len(members) != 1:
+                raise ValueError(f"Expected one regular {binary.name} at the release archive root")
+            source = stack.enter_context(package.extractfile(members[0]))
+        elif archive.suffix == ".zip":
+            package = stack.enter_context(zipfile.ZipFile(archive))
+            members = [entry for entry in package.infolist() if entry.filename == binary.name]
+            if len(members) != 1:
+                raise ValueError(f"Expected one {binary.name} at the release archive root")
+            source = stack.enter_context(package.open(members[0]))
+        else:
+            raise ValueError("Release archive must be a .tar.gz or .zip")
+        with binary.open("xb") as handle:
+            shutil.copyfileobj(source, handle)
+    binary.chmod(0o755)
+
+
+def pty_build(log):
+    for line in reversed(Path(log).read_text(encoding="utf-8").splitlines()):
+        try:
+            message = json.loads(line)
+        except ValueError:
+            continue
+        if message.get("reason") == "compiler-artifact" and message.get("executable"):
+            target = message["target"]
+            if target["name"] == "interactive_pty" and "test" in target["kind"]:
+                return message
+    raise ValueError("Cargo did not report the compiled native PTY test helper")
+
+
+def pty_artifact(log):
+    return Path(pty_build(log)["executable"])
+
+
+def verify_desktop_report(report, record):
+    if report.stat().st_size > LOG_BYTES:
+        raise ValueError("The desktop result exceeds the evidence limit")
+    result = json.loads(report.read_text(encoding="utf-8"))
+    if result.get("passed") is not True or result.get("binary_sha256") != record["binary"]["sha256"]:
+        raise RuntimeError("The desktop evidence did not verify the installed binary")
+
+
+def run_linux_desktop(binary, bridge, scratch, evidence, record, checked):
+    from interactive_fixture import CONFIG
+
+    image_file = scratch / "desktop-image"
+    desktop = Path(__file__).with_name("desktop")
+    checked(["docker", "build", "--iidfile", str(image_file), str(desktop)], "desktop-image")
+    image = image_file.read_text(encoding="utf-8").strip()
+    if not re.fullmatch(r"sha256:[a-f0-9]{64}", image):
+        raise ValueError("Docker did not report the desktop image ID")
+    record["desktop_image"] = image
+
+    cidfile = scratch / "desktop-container"
+    command = ["docker", "create", "--cidfile", str(cidfile), "--init", "--network", "none", "--read-only",
+               "--user", f"{os.getuid()}:{os.getgid()}", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+               "--pids-limit", "256", "--memory", "1g", "--cpus", "2", "--log-driver", "none",
+               "--tmpfs", "/tmp:rw,nosuid,nodev,size=256m,mode=1777"]
+    for source, target in ((binary, "/test/kuku"), (bridge, "/test/bridge"),
+                           (Path(__file__).with_name("interactive_fixture.py"), "/test/interactive_fixture.py"),
+                           (CONFIG, "/test/fixtures/config.toml"), (evidence, "/evidence")):
+        options = ["type=bind", f"source={source.resolve()}", f"target={target}"]
+        if source != evidence:
+            options.append("readonly")
+        mount = io.StringIO()
+        csv.writer(mount, lineterminator="").writerow(options)
+        command.extend(["--mount", mount.getvalue()])
     try:
-        record["execution"] = capture(command, directory, "caller", timeout=180,
-                                       env=command_environment(), on_start=sampler.start)
+        checked([*command, image], "desktop-container", timeout=30)
+        container = cidfile.read_text(encoding="utf-8").strip()
+        checked(["docker", "start", "--attach", container], "installed-desktop", timeout=180)
     finally:
-        record["resources"] = sampler.finish()
-    caller = json.loads(result_file.read_text())
-    record["caller_result"] = str(result_file)
-    record["measurements"] = caller.get("measurements")
-    record["passed"] = (caller.get("passed") is True and record["execution"]["exit_code"] == 0
-                        and not record["execution"]["timed_out"] and not record["execution"].get("capture_incomplete")
-                        and not record["resources"]["capture_incomplete"])
-    record["missing_measurements"] = [key for key in ("context_prepare_us", "request_prepare_us")
-                                      if caller.get("measurements", {}).get(key) is None]
-    for phase in ("idle_agents", "large_output", "concurrent_agents"):
-        if not record["resources"]["sampled_phases"].get(phase, {}).get("samples"):
-            record["missing_measurements"].append("process_samples_" + phase)
-    record["measurements_complete"] = not record["missing_measurements"]
+        if cidfile.is_file():
+            container = cidfile.read_text(encoding="utf-8").strip()
+            if container:
+                checked(["docker", "rm", "--force", container], "desktop-cleanup", timeout=30)
+
+
+def run_desktop(args, binary, bridge, scratch, directory, record, checked):
+    evidence = directory / "desktop"
+    evidence.mkdir()
+    report = evidence / "result.json"
+    try:
+        if os.name == "nt":
+            script = Path(__file__).with_name("desktop") / "windows.py"
+            checked([sys.executable, str(script), "--binary", str(binary), "--bridge", str(bridge),
+                     "--directory", str(scratch / "desktop"), "--evidence", str(evidence),
+                     "--windows-terminal", str(args.windows_terminal.resolve())],
+                    "installed-desktop", timeout=180, cwd=scratch)
+        else:
+            run_linux_desktop(binary, bridge, scratch, evidence, record, checked)
+        verify_desktop_report(report, record)
+    finally:
+        if report.is_file():
+            record["desktop_result"] = str(report)
+
+
+def run_interactive(args, directory, record):
+    from interactive_fixture import EXE, scratch_directory
+
+    record["desktop"] = args.desktop
+    if args.windows_terminal and (not args.desktop or os.name != "nt"):
+        raise ValueError("--windows-terminal requires --desktop on a dedicated Windows test desktop")
+    if args.desktop and os.name == "nt":
+        from desktop.windows_setup import require_active_desktop
+
+        if args.windows_terminal is None:
+            raise ValueError("Select the WindowsTerminal.exe of the dedicated test desktop with --windows-terminal")
+        require_active_desktop()
+    elif args.desktop and (sys.platform != "linux" or not shutil.which("docker")):
+        raise ValueError("Desktop interactive acceptance requires Linux and Docker")
+    if args.live and (not args.archive or not args.secrets or not args.ledger):
+        raise ValueError("Live interactive acceptance requires --archive, --secrets and --ledger")
+    if args.intent and (not args.secrets or not args.ledger or not args.revision or not (args.archive or args.binary) or args.browser):
+        raise ValueError("--intent requires --archive or --binary, --secrets, --ledger and --revision, without --browser")
+    if not args.intent and any((args.intent_model, args.intent_effort, args.intent_upstream,
+                                args.intent_max_requests != 36, args.intent_max_output_tokens != 2048)):
+        raise ValueError("Select --intent to set its model, reasoning effort, or upstream endpoint")
+    if args.upgrade_from and (not args.archive or args.live or args.intent):
+        raise ValueError("--upgrade-from requires a controlled run with --archive")
+    scratch = (args.scratch_base or Path(tempfile.gettempdir())).resolve()
+    if scratch.is_relative_to(ROOT):
+        raise ValueError("Interactive acceptance needs a scratch directory outside the source tree")
+    scratch.mkdir(parents=True, exist_ok=True)
+    record["browser"] = args.browser or args.live
+    record["native_pty"] = "conpty" if os.name == "nt" else "unix-pty"
+    record["checks"] = []
+
+    def checked(command, label, *, timeout=1800, cwd=ROOT):
+        result = capture(command, directory, label, timeout=timeout, env=command_environment(), cwd=cwd)
+        record["checks"].append(result)
+        return require_success(result)
+
+    def build_bridge():
+        compiled = checked(["cargo", "test", "--locked", "--timings", "--workspace", "--features", "kuku/test_support",
+                            "--test", "interactive_pty",
+                            "--no-run", "--message-format=json"], "native-pty-build")
+        artifact = pty_build(compiled["log"])
+        record["bridge_build"] = {key: artifact[key] for key in ("features", "profile", "fresh")}
+        return Path(artifact["executable"])
+
+    with scratch_directory(scratch, record, prefix="kuku-interactive-") as scratch_dir:
+        if args.live or args.intent:
+            from interactive_intent import run_selected_live
+
+            bridge = args.intent_bridge.resolve() if args.intent and args.intent_bridge else build_bridge()
+            run_selected_live(args, directory, record, scratch_dir, bridge, checked)
+            return
+        prefix = scratch_dir / "install"
+        binary = prefix / "bin" / f"kuku{EXE}"
+        if args.archive or args.binary:
+            binary.parent.mkdir(parents=True)
+            if args.archive:
+                record["input"] = {"type": "release_archive", **config_record(args.archive)}
+                extract_release_binary(args.archive, binary)
+            else:
+                record["input"] = {"type": "installed_binary", **config_record(args.binary)}
+                shutil.copy2(args.binary, binary)
+        else:
+            record["input"] = {"type": "source_install", "features": ["embedded-web-assets"],
+                               "profile": "release", "target_dir": str(ROOT / "target")}
+            web = ROOT / "apps" / "web"
+            npm = "npm.cmd" if os.name == "nt" else "npm"
+            checked([npm, "ci"], "web-dependencies", cwd=web)
+            checked([npm, "run", "build"], "web-assets", cwd=web)
+            checked(["cargo", "install", "--locked", "--timings", "--path", "apps/kuku", "--features",
+                     "embedded-web-assets", "--root", str(prefix)], "source-install")
+        record["binary"] = config_record(binary)
+
+        version = checked([str(binary), "--version"], "installed-version", timeout=30, cwd=scratch_dir)
+        record["binary"]["version"] = Path(version["log"]).read_text(encoding="utf-8").strip()
+        bridge_source = build_bridge()
+        bridge = scratch_dir / f"interactive_pty{EXE}"
+        shutil.copy2(bridge_source, bridge)
+        record["bridge"] = config_record(bridge)
+        command = [sys.executable, str(Path(__file__).with_name("interactive.py")), "--binary", str(binary),
+                   "--bridge", str(bridge), "--directory", str(scratch_dir / "test")]
+        if args.upgrade_from:
+            record["upgrade_from"] = config_record(args.upgrade_from)
+            command.extend(["--upgrade", str(args.upgrade_from.resolve()), str(args.archive.resolve())])
+        if args.browser:
+            command.append("--browser")
+        try:
+            checked(command, "installed-interactive", timeout=420, cwd=scratch_dir)
+        finally:
+            lifecycle = {}
+            for case, name in (("settings", "first-run"), ("defaults", "model-default"),
+                               ("defaults", "model-default-failure"),
+                               ("keyboard-queue", "keyboard-queue-withdrawal"),
+                               ("rewind", "readonly-rewind"), ("rewind", "readonly-rewind-failure"),
+                               ("rewind-history", "rewind-history"),
+                               ("auth-repair", "auth-repair")):
+                source = scratch_dir / "test" / case / f"{name}.json"
+                if source.is_file():
+                    destination = directory / f"{name}.json"
+                    shutil.copy2(source, destination)
+                    lifecycle[name] = str(destination)
+            if lifecycle:
+                record["lifecycle"] = lifecycle
+            if args.desktop:
+                run_desktop(args, binary, bridge, scratch_dir, directory, record, checked)
+    record["passed"] = True
 
 
 def parser():
@@ -644,6 +774,44 @@ def parser():
     sub = root.add_subparsers(dest="group", required=True)
     for group in ("contract", "protocol", "integration", "list"):
         sub.add_parser(group)
+    interactive = sub.add_parser("interactive", help="accept an installed kuku with a local provider and a native PTY")
+    product = interactive.add_mutually_exclusive_group()
+    product.add_argument("--binary", type=Path, help="copy a previously installed binary to the test prefix")
+    product.add_argument("--archive", type=Path, help="extract the platform release .tar.gz or .zip")
+    interactive.add_argument("--upgrade-from", type=Path, help="replace a previous package during an active tool")
+    interactive.add_argument("--scratch-base", type=Path, help="temporary installation and workspaces outside the checkout")
+    interactive.add_argument("--browser", action="store_true", help="also exercise the embedded WebUI with Playwright Chromium")
+    scenario = interactive.add_mutually_exclusive_group()
+    scenario.add_argument("--desktop", action="store_true", help="also exercise an isolated Linux or Windows graphical terminal")
+    scenario.add_argument("--live", action="store_true", help="run the budgeted release-archive and real-model handoff")
+    scenario.add_argument("--intent", choices=("deepseek", "openrouter"), help="run budgeted native reply, edit, and first-delegation checks")
+    interactive.add_argument("--intent-case", choices=("all", "delivery", "delegation"), default="all")
+    interactive.add_argument("--intent-bridge", type=Path, help="reuse a built native PTY helper with --intent")
+    interactive.add_argument("--intent-model", help="selected provider model for --intent")
+    interactive.add_argument("--intent-effort", help="explicit native reasoning effort for --intent (default: low)")
+    interactive.add_argument("--intent-upstream", help="exact OpenRouter endpoint tag for --intent")
+    interactive.add_argument("--intent-max-requests", type=int, default=36)
+    interactive.add_argument("--intent-max-output-tokens", type=int, default=2048)
+    interactive.add_argument("--revision", help="expected installed source revision for --intent")
+    interactive.add_argument("--windows-terminal", type=Path, help="existing WindowsTerminal.exe in a dedicated test desktop")
+    interactive.add_argument("--secrets", type=Path, help="explicit credentials file for budgeted interactive checks")
+    interactive.add_argument("--ledger", type=Path, help="existing budget ledger for the selected API service")
+    workspace = sub.add_parser("workspace", help="verify native log analysis and named report recovery through the SDK or installed TUI")
+    workspace_product = workspace.add_mutually_exclusive_group(required=True)
+    workspace_product.add_argument("--sdk", type=Path, help="built kuku session_task example")
+    workspace_product.add_argument("--binary", type=Path, help="install a copy of the selected kuku binary")
+    workspace_product.add_argument("--archive", type=Path, help="install the selected platform release .tar.gz or .zip")
+    workspace.add_argument("--bridge", type=Path, help="reuse a built native PTY and log fixture")
+    workspace.add_argument("--scratch-base", type=Path, help="temporary workspaces outside the source tree")
+    workspace.add_argument("--handoff-only", action="store_true", help="with --sdk, verify the named report handoff to a reviewer")
+    workspace.add_argument("--provider", choices=("deepseek", "openrouter"), help="explicitly select a paid service; default is a fixed local provider")
+    workspace.add_argument("--model", help="explicit provider model slug")
+    workspace.add_argument("--effort", help="native reasoning effort for a paid provider (default: high)")
+    workspace.add_argument("--upstream", help="exact upstream endpoint tag (OpenRouter default: openai)")
+    workspace.add_argument("--max-requests", type=int, default=12, help="total bounded upstream requests including retries")
+    workspace.add_argument("--max-output-tokens", type=int, default=8192)
+    workspace.add_argument("--secrets", type=Path, help="explicit KUKU_TEST_ credentials file for paid runs")
+    workspace.add_argument("--ledger", type=Path, help="existing budget ledger for the selected API service")
     metrics = sub.add_parser("metrics", help="build an isolated public SDK caller and measure local fixed-provider workloads")
     metrics.add_argument("--profile", choices=("debug", "release"), default="debug")
     metrics.add_argument("--idle-agents", type=int, default=32)
@@ -651,6 +819,12 @@ def parser():
     metrics.add_argument("--concurrent-agents", type=int, default=2)
     metrics.add_argument("--output-bytes", type=int, default=4 * 1024 * 1024)
     metrics.add_argument("--output-quota", type=int, default=1024 * 1024)
+    metrics.add_argument("--repeated-tasks", type=int, default=6)
+    metrics.add_argument("--script-workers", type=int, default=2)
+    metrics.add_argument("--script-host-operations", type=int, default=4)
+    metrics.add_argument("--pressure-rounds", type=int, default=1, help="repeat shared-host stress and idle recovery in the same caller")
+    metrics.add_argument("--cpu-count", type=int, help="limit the caller and its descendants to this many available CPUs on Linux")
+    metrics.add_argument("--address-space-mib", type=int, help="apply a per-process Linux address-space bound to the caller and descendants")
     inspect = sub.add_parser("inspect", help="check existing durable SDK evidence without model requests")
     inspect.add_argument("--sdk-result", type=Path, required=True)
     inspect.add_argument("--session-data", type=Path, required=True)
@@ -682,12 +856,8 @@ def parser():
             paid.add_argument("--connection")
             paid.add_argument("command", nargs=argparse.REMAINDER, help="public SDK/CLI caller after --")
         else:
-            paid.add_argument("--case", required=True)
-            paid.add_argument("--mode", choices=("preflight", "live"), default="preflight")
-            paid.add_argument("--sdk-binary", type=Path)
-            paid.add_argument("--config", type=Path)
-            paid.add_argument("--connection")
-            paid.add_argument("sdk_args", nargs=argparse.REMAINDER, help="additional bounded session_task args after --")
+            from benchmark_source import add_benchmark_arguments
+            add_benchmark_arguments(paid)
     return root
 
 
@@ -710,9 +880,18 @@ def main():
                           "remaining_usd": round(data["limit_usd"] - budget.committed(data), 9)}, indent=2))
         return 0
     paid = args.group == "live" or (args.group == "benchmark" and args.mode == "live")
+    metered = paid and args.group == "benchmark" and args.suite == "frontier"
     secrets = {}
     if paid:
-        if args.reserve_usd is None or not args.reservation_reason:
+        if metered:
+            if not args.sdk_binary or args.config or args.connection or args.sdk_args:
+                raise ValueError("Frontier live requires --sdk-binary and generates its own config and connection")
+            if args.reserve_usd is not None or args.reservation_reason:
+                raise ValueError("Frontier live uses --case-cap-usd for its host-metered budget")
+            limits = (args.case_cap_usd, args.max_output_tokens, args.max_requests, args.agent_timeout_sec)
+            if any(limit is not None and limit <= 0 for limit in limits):
+                raise ValueError("Frontier live limits must be positive")
+        elif args.reserve_usd is None or not args.reservation_reason:
             raise ValueError("paid calls need --reserve-usd and --reservation-reason before execution")
         secrets = load_secrets(args.secrets)
         if not secrets:
@@ -720,20 +899,28 @@ def main():
     run_id = args.run_id or datetime.datetime.now().strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:8]
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,100}", run_id):
         raise ValueError("run id must be a short filename component")
+    args.run_id = run_id
     directory = args.output.resolve() / run_id
     directory.mkdir(parents=True, exist_ok=False)
     record = {"schema_version": 1, "run_id": run_id, "group": args.group, "started_at": now(),
-              "tree": tree_state(), "paid": paid, "passed": False,
+              "tree": tree_state(), "paid": paid or (args.group == "interactive" and bool(args.live or args.intent))
+              or (args.group == "workspace" and bool(args.provider)), "passed": False,
               "selector_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
               "manifest_sha256": hashlib.sha256(MANIFEST.read_bytes()).hexdigest()}
     reserved = False
     try:
-        if paid:
-            record["config"] = config_record(args.config)
+        if paid and not metered:
             if args.group == "benchmark":
                 if not args.sdk_binary or not args.config or not args.connection:
                     raise ValueError("live benchmark requires --sdk-binary, --config and --connection")
                 args.sdk_args = args.sdk_args[1:] if args.sdk_args[:1] == ["--"] else args.sdk_args
+                if "--max-requests" not in args.sdk_args:
+                    args.sdk_args.extend(["--max-requests", "12"])
+                if "--max-output-tokens" not in args.sdk_args:
+                    args.sdk_args.extend(["--max-output-tokens", "32768"])
+                if "--no-provider-retry" not in args.sdk_args:
+                    args.sdk_args.append("--no-provider-retry")
+            record["config"] = config_record(args.config)
             Budget(args.ledger).reserve(run_id, args.reserve_usd, args.reservation_reason)
             reserved = True
             record["budget"] = {"ledger": str(args.ledger), "reserved_usd": args.reserve_usd,
@@ -741,7 +928,15 @@ def main():
         if args.group == "benchmark":
             run_benchmark(args, directory, record, secrets)
         elif args.group == "metrics":
+            from metrics import run_metrics
+
             run_metrics(args, directory, record)
+        elif args.group == "interactive":
+            run_interactive(args, directory, record)
+        elif args.group == "workspace":
+            from workspace import run_workspace
+
+            run_workspace(args, directory, record)
         elif args.group == "inspect":
             record["sdk_evidence"] = inspect_sdk(args.sdk_result.resolve(), args.session_data.resolve(),
                                                   args.connection, args.container_data, require_streaming=args.require_streaming)
@@ -754,7 +949,8 @@ def main():
             record["checks"] = []
             for index, command in enumerate(commands):
                 check = capture(command, directory, f"check-{index + 1}", timeout=1800,
-                                env=env, secrets=secrets.values())
+                                env=env, secrets=secrets.values(),
+                                retain_failures=not paid and "--no-fail-fast" in command)
                 record["checks"].append(check)
                 if check["exit_code"] != 0 or check["timed_out"] or check.get("capture_incomplete"):
                     break
@@ -763,11 +959,11 @@ def main():
                 for check in record["checks"])
             if paid:
                 record["sdk_evidence"] = inspect_sdk(args.sdk_result.resolve(), args.session_data.resolve(), args.connection,
-                                                      require_streaming=args.require_streaming)
+                                                      require_streaming=args.require_streaming, require_fixed_limits=True)
                 record["passed"] = record["passed"] and record["sdk_evidence"]["passed"]
-    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
-        record["error"] = redact(str(error), secrets.values())
-        record["failure_kind"] = "infrastructure"
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, tarfile.TarError, zipfile.BadZipFile) as error:
+        record.update(passed=False, error=redact(str(error), secrets.values()))
+        record.setdefault("failure_kind", "infrastructure")
     finally:
         if reserved:
             try:

@@ -99,16 +99,16 @@ fn full_config_round_trip() {
     assert_eq!(strong.model, "claude-sonnet-4-6");
     assert_eq!(strong.think, ThinkLevel::High);
     assert_eq!(strong.context_window, 200_000);
-    assert_eq!(strong.max_output_tokens, 64_000);
+    assert_eq!(Some(64_000), strong.max_output_tokens);
     assert_eq!(strong.purpose, "deep reasoning");
 
     let balanced = cfg.tier("balanced").unwrap();
     assert_eq!(balanced.think, ThinkLevel::Medium);
-    assert_eq!(balanced.max_output_tokens, 48_000);
+    assert_eq!(Some(48_000), balanced.max_output_tokens);
 
     let light = cfg.tier("light").unwrap();
     assert_eq!(light.think, ThinkLevel::Off);
-    assert_eq!(light.max_output_tokens, 32_000);
+    assert_eq!(Some(32_000), light.max_output_tokens);
 
     assert_eq!(
         cfg.provider("anthropic").unwrap().format.as_str(),
@@ -118,6 +118,28 @@ fn full_config_round_trip() {
     let display = cfg.redacted_display();
     assert!(!display.contains("sk-ant-123"));
     assert!(display.contains("<redacted>"));
+    assert!(display.contains("max_output_tokens = 48000"));
+}
+
+#[test]
+fn generated_messages_presets_supply_the_required_output_limit() {
+    let cfg = config_from_toml(kuku::config::generate_default());
+    for (tier, limit) in [
+        ("strong", 128_000),
+        ("balanced", 128_000),
+        ("light", 64_000),
+    ] {
+        let selection = kuku::adapter::inspect_model(
+            &cfg,
+            &kuku::AgentConfig {
+                tier: Some(tier.into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(Some(limit), cfg.tier(tier).unwrap().max_output_tokens);
+        assert_eq!(Some(limit), selection.max_output_tokens);
+    }
 }
 
 #[test]

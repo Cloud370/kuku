@@ -7,6 +7,7 @@ pub(super) fn validate_tool_calls(
     argument_buffers: Vec<(u64, String)>,
     completions: Vec<u64>,
     stream_invalid: bool,
+    admitted_tool_call_ids: &HashSet<String>,
 ) -> std::result::Result<Vec<ProviderToolCall>, ToolResponseError> {
     if stream_invalid {
         return Err(ToolResponseError::InvalidLifecycle);
@@ -24,7 +25,7 @@ pub(super) fn validate_tool_calls(
         if tool_call.name.trim().is_empty() {
             return Err(ToolResponseError::EmptyName);
         }
-        if !ids.insert(&tool_call.id) {
+        if admitted_tool_call_ids.contains(&tool_call.id) || !ids.insert(&tool_call.id) {
             return Err(ToolResponseError::DuplicateId);
         }
         if !indices.insert(tool_call.index) {

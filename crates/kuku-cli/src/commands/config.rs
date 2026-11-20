@@ -1,21 +1,22 @@
+use kuku::adapter::inspect_model;
 use kuku::config::{load_config, set_value, show_redacted};
-use kuku::session::kuku_home;
+use kuku::session::AgentConfig;
+use kuku::Error;
 
-use crate::cli_args::{ConfigArgs, ConfigSubcommand, PolicySubcommand};
+use crate::cli_args::{ConfigArgs, ConfigSubcommand, ConnectionArgs, PolicySubcommand};
 
 /// Show or manage configuration: `kuku config [show|validate|set|policy]`
-pub async fn run(args: ConfigArgs) -> Result<(), Box<dyn std::error::Error>> {
-    let path = if let Some(p) = &args.config {
-        std::path::PathBuf::from(p)
-    } else {
-        kuku_home()?.join("config.toml")
-    };
+pub async fn run(
+    args: ConfigArgs,
+    target: &ConnectionArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = super::config_path(target)?;
 
     match args.cmd {
         None | Some(ConfigSubcommand::Show) => {
             if !path.exists() {
                 eprintln!("error: config file not found: {}", path.display());
-                eprintln!("hint: run `kuku init` to initialize");
+                eprintln!("hint: run `kuku init` to open interactive settings");
                 std::process::exit(1);
             }
             let output = show_redacted(&path)?;
@@ -25,18 +26,25 @@ pub async fn run(args: ConfigArgs) -> Result<(), Box<dyn std::error::Error>> {
         Some(ConfigSubcommand::Validate) => {
             if !path.exists() {
                 eprintln!("error: config file not found: {}", path.display());
-                eprintln!("hint: run `kuku init` to initialize");
+                eprintln!("hint: run `kuku init` to open interactive settings");
                 std::process::exit(1);
             }
-            let file = load_config(&path)?;
-            file.resolve()?;
+            let config = load_config(&path)?.resolve()?;
+            for tier in config.tiers.keys() {
+                let selection = AgentConfig {
+                    tier: Some(tier.clone()),
+                    ..AgentConfig::default()
+                };
+                inspect_model(&config, &selection)
+                    .map_err(|error| Error::ConfigLoad(format!("tier '{tier}': {error}")))?;
+            }
             println!("Config is valid.");
             Ok(())
         }
         Some(ConfigSubcommand::Set { key, value }) => {
             if !path.exists() {
                 eprintln!("error: config file not found: {}", path.display());
-                eprintln!("hint: run `kuku init` to initialize");
+                eprintln!("hint: run `kuku init` to open interactive settings");
                 std::process::exit(1);
             }
             set_value(&path, &key, &value)?;

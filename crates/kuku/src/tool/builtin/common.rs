@@ -1,16 +1,28 @@
-use std::ffi::OsString;
 use std::fs;
-use std::io::Write;
+use std::io;
 use std::path::{Component, Path, PathBuf};
 
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
-use crate::event::{EventPayload, StoredEvent};
-use crate::tool::{ToolErrorReason, ToolResultEnvelope};
+use crate::tool::ToolResultEnvelope;
+pub(super) use crate::util::path::is_default_excluded_dir;
 use crate::util::path::{is_blocked_relative_path, normalize_path_sep};
 
-// ---------- Types ----------
+mod file_io;
+mod snapshot;
+
+pub(crate) use file_io::{
+    content_hash, ensure_active, file_read_error, file_version, format_content_hash,
+    mutation_preview, publish_file, read_file_as_utf8, remove_observed_file, write_atomically,
+    FileCancellation, StableFile,
+};
+#[cfg(test)]
+use snapshot::find_write_snapshot;
+pub(super) use snapshot::{
+    expected_version, find_covering_read, require_version, snapshot_stale_error,
+    text_match_offsets, WriteEvidence, WriteSnapshotLookup,
+};
+pub(crate) use snapshot::{ExecutorObservation, ExecutorObservationSource};
 
 pub(super) struct ResolvedPath {
     pub(super) workspace: PathBuf,
@@ -18,129 +30,199 @@ pub(super) struct ResolvedPath {
     pub(super) relative: String,
 }
 
-pub(super) struct ReadSnapshot {
-    pub(super) event_id: u64,
-    pub(super) start_line: usize,
-    pub(super) line_count: usize,
-    pub(super) is_full_file_snapshot: bool,
+pub(crate) fn prepare_workspace_path(
+    tool: &str,
+    args: &Value,
+    workspace: &Path,
+) -> Result<Option<PathBuf>, ToolResultEnvelope> {
+    let optional_path = args.get("path").and_then(Value::as_str);
+    let resolved = match tool {
+        "find_files" | "search_text" => resolve_path(workspace, optional_path.unwrap_or(".")),
+        "read_file" | "edit_file" => resolve_path(workspace, required_path(tool, args)?),
+        "write_file" => resolve_write_path(workspace, required_path(tool, args)?),
+        "stat_file" => resolve_stat_path(workspace, required_path(tool, args)?),
+        "remove_file" => resolve_remove_path(workspace, required_path(tool, args)?),
+        _ => return Ok(None),
+    }?;
+    Ok(Some(resolved.path))
 }
 
-pub(super) struct WriteSnapshot {
-    pub(super) event_id: u64,
-    pub(super) content_hash: String,
+pub(super) fn required_path<'a>(
+    tool: &str,
+    args: &'a Value,
+) -> Result<&'a str, ToolResultEnvelope> {
+    args.get("path").and_then(Value::as_str).ok_or_else(|| {
+        ToolResultEnvelope::error("failed: missing path", format!("{tool} requires path"))
+    })
 }
-
-pub(super) enum WriteSnapshotLookup {
-    Found(WriteSnapshot),
-    Rejected(ToolErrorReason),
-}
-
-// ---------- Path resolution ----------
 
 pub(super) fn resolve_path(
     workspace: &Path,
     path: &str,
 ) -> Result<ResolvedPath, ToolResultEnvelope> {
-    let workspace = workspace.canonicalize().map_err(|_| {
-        ToolResultEnvelope::error(
-            "failed: workspace not found",
-            "workspace path does not exist",
-        )
-    })?;
-    let candidate = Path::new(path);
-    let joined = if candidate.is_absolute() {
-        candidate.to_path_buf()
-    } else {
-        workspace.join(candidate)
-    };
-    let resolved = joined.canonicalize().map_err(|_| {
-        ToolResultEnvelope::error(
-            format!("failed: path not found: {path}"),
-            format!("path does not exist: {path}"),
-        )
-    })?;
-
-    if !resolved.starts_with(&workspace) {
-        return Err(ToolResultEnvelope::blocked(
-            format!("blocked: path outside workspace: {path}"),
-            format!("path is outside the workspace: {path}"),
-        ));
-    }
-
-    let relative = relative_path(&resolved, &workspace);
-    if is_blocked_relative_path(&relative) {
-        return Err(ToolResultEnvelope::blocked(
-            format!("blocked: path is not readable: {relative}"),
-            format!("path is blocked by read guard: {relative}"),
-        ));
-    }
-
-    Ok(ResolvedPath {
-        workspace,
-        path: resolved,
-        relative,
-    })
+    let (workspace, joined) = workspace_path(workspace, path)?;
+    let resolved = joined
+        .canonicalize()
+        .map_err(|error| path_error(path, error))?;
+    checked_resolved_path(workspace, resolved, path)
 }
 
 pub(super) fn resolve_write_path(
     workspace: &Path,
     path: &str,
 ) -> Result<ResolvedPath, ToolResultEnvelope> {
-    match resolve_path(workspace, path) {
-        Ok(existing) => return Ok(existing),
-        Err(result) if result.status == "blocked" => return Err(result),
-        Err(_) => {}
+    let resolved = resolve_stat_path(workspace, path)?;
+    if resolved.path != resolved.workspace && !resolved.path.parent().is_some_and(Path::is_dir) {
+        return Err(ToolResultEnvelope::error(
+            format!("failed: parent path not found: {path}"),
+            format!("parent directory does not exist: {path}"),
+        ));
     }
+    Ok(resolved)
+}
 
+pub(super) fn resolve_stat_path(
+    workspace: &Path,
+    path: &str,
+) -> Result<ResolvedPath, ToolResultEnvelope> {
+    let (workspace, joined) = workspace_path(workspace, path)?;
+    let resolved = match joined.canonicalize() {
+        Ok(resolved) => resolved,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            if let Some(parent) = joined
+                .parent()
+                .and_then(|parent| parent.canonicalize().ok())
+            {
+                if !parent.starts_with(&workspace) {
+                    return Err(outside_workspace(path));
+                }
+            }
+            resolve_missing_path(&normalize_existing_components(joined), path)?
+        }
+        Err(error) => return Err(path_error(path, error)),
+    };
+    checked_resolved_path(workspace, resolved, path)
+}
+
+pub(super) fn resolve_remove_path(
+    workspace: &Path,
+    path: &str,
+) -> Result<ResolvedPath, ToolResultEnvelope> {
+    let (workspace, joined) = workspace_path(workspace, path)?;
+    let metadata = fs::symlink_metadata(&joined).map_err(|error| path_error(path, error))?;
+    if metadata.is_symlink() {
+        return Err(ToolResultEnvelope::blocked(
+            format!("blocked: symbolic link: {path}"),
+            "remove_file requires the regular file's own path",
+        ));
+    }
+    let resolved = joined
+        .canonicalize()
+        .map_err(|error| path_error(path, error))?;
+    checked_resolved_path(workspace, resolved, path)
+}
+
+fn workspace_path(workspace: &Path, path: &str) -> Result<(PathBuf, PathBuf), ToolResultEnvelope> {
     let workspace = workspace.canonicalize().map_err(|_| {
         ToolResultEnvelope::error(
             "failed: workspace not found",
             "workspace path does not exist",
         )
     })?;
-    let candidate = Path::new(path);
-    let joined = normalize_existing_components(if candidate.is_absolute() {
-        candidate.to_path_buf()
-    } else {
-        workspace.join(candidate)
-    });
-    let Some(parent) = joined.parent() else {
-        return Err(ToolResultEnvelope::error(
-            format!("failed: missing parent for {path}"),
-            format!("path has no parent directory: {path}"),
-        ));
-    };
-    let parent = parent.canonicalize().map_err(|_| {
-        ToolResultEnvelope::error(
-            format!("failed: parent path not found: {path}"),
-            format!("parent directory does not exist: {path}"),
-        )
-    })?;
-    if !parent.starts_with(&workspace) {
-        return Err(ToolResultEnvelope::blocked(
-            format!("blocked: path outside workspace: {path}"),
-            format!("path is outside the workspace: {path}"),
-        ));
+    let joined = workspace.join(path);
+    let lexical = normalize_existing_components(joined.clone());
+    if let Ok(relative) = lexical.strip_prefix(&workspace) {
+        guard_relative(&relative.to_string_lossy())?;
     }
-    let file_name = joined.file_name().ok_or_else(|| {
-        ToolResultEnvelope::error(
-            format!("failed: missing file name: {path}"),
-            format!("path has no file name: {path}"),
-        )
-    })?;
-    let resolved = parent.join(file_name);
+    Ok((workspace, joined))
+}
+
+fn resolve_missing_path(path: &Path, requested: &str) -> Result<PathBuf, ToolResultEnvelope> {
+    for ancestor in path.ancestors() {
+        match ancestor.canonicalize() {
+            Ok(canonical) => {
+                let suffix = path.strip_prefix(ancestor).unwrap();
+                return Ok(if suffix.as_os_str().is_empty() {
+                    canonical
+                } else {
+                    canonical.join(suffix)
+                });
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                if fs::symlink_metadata(ancestor).is_ok() {
+                    return Err(path_error(requested, error));
+                }
+            }
+            Err(error) => return Err(path_error(requested, error)),
+        }
+    }
+    Err(ToolResultEnvelope::error(
+        format!("failed: path not found: {requested}"),
+        format!("path does not exist: {requested}"),
+    ))
+}
+
+fn checked_resolved_path(
+    workspace: PathBuf,
+    resolved: PathBuf,
+    requested: &str,
+) -> Result<ResolvedPath, ToolResultEnvelope> {
+    if !resolved.starts_with(&workspace) {
+        return Err(outside_workspace(requested));
+    }
     let relative = relative_path(&resolved, &workspace);
-    if is_blocked_relative_path(&relative) {
-        return Err(ToolResultEnvelope::blocked(
-            format!("blocked: path is not writable: {relative}"),
-            format!("path is blocked by write guard: {relative}"),
-        ));
-    }
+    guard_relative(&relative)?;
     Ok(ResolvedPath {
         workspace,
         path: resolved,
         relative,
     })
+}
+
+fn guard_relative(relative: &str) -> Result<(), ToolResultEnvelope> {
+    if workspace_path_blocked(relative) {
+        return Err(ToolResultEnvelope::blocked(
+            format!("blocked: path is protected: {relative}"),
+            format!("path is blocked by workspace guard: {relative}"),
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn workspace_path_blocked(relative: &str) -> bool {
+    #[cfg(windows)]
+    let relative = &relative.to_ascii_lowercase();
+    is_blocked_relative_path(relative)
+}
+
+pub(super) fn verify_directory(path: &Path) -> io::Result<()> {
+    if path.canonicalize()? != path {
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "directory target changed while it was being scanned",
+        ));
+    }
+    Ok(())
+}
+
+fn outside_workspace(path: &str) -> ToolResultEnvelope {
+    ToolResultEnvelope::blocked(
+        format!("blocked: path outside workspace: {path}"),
+        format!("path is outside the workspace: {path}"),
+    )
+}
+
+fn path_error(path: &str, error: io::Error) -> ToolResultEnvelope {
+    if error.kind() == io::ErrorKind::NotFound {
+        return ToolResultEnvelope::error(
+            format!("failed: path not found: {path}"),
+            format!("path does not exist: {path}"),
+        );
+    }
+    ToolResultEnvelope::error(
+        format!("failed: {error}"),
+        format!("cannot resolve path {path}: {error}"),
+    )
 }
 
 pub(crate) fn normalize_existing_components(path: PathBuf) -> PathBuf {
@@ -164,81 +246,6 @@ pub(super) fn relative_path(path: &Path, workspace: &Path) -> String {
         .replace('\\', "/")
 }
 
-pub(super) fn is_default_excluded_dir(name: &str) -> bool {
-    matches!(
-        name,
-        ".git" | "target" | "node_modules" | "__pycache__" | ".venv" | "venv" | "dist" | "build"
-    )
-}
-
-// ---------- File I/O helpers ----------
-
-pub(super) fn read_file_as_utf8(path: &Path) -> Result<(String, Vec<u8>), ToolResultEnvelope> {
-    let bytes = fs::read(path).map_err(|error| {
-        ToolResultEnvelope::error(
-            format!("failed: {error}"),
-            format!("error reading file: {}", path.display()),
-        )
-    })?;
-    let content = String::from_utf8(bytes.clone()).map_err(|_| {
-        ToolResultEnvelope::error(
-            format!("failed: file is not valid UTF-8: {}", path.display()),
-            format!("file is not valid UTF-8: {}", path.display()),
-        )
-    })?;
-    Ok((content, bytes))
-}
-
-pub(super) fn require_brief(tool_name: &str, args: &Value) -> Result<String, ToolResultEnvelope> {
-    let Some(brief) = args.get("brief").and_then(Value::as_str) else {
-        return Err(ToolResultEnvelope::error(
-            "failed: missing brief",
-            format!("{tool_name} requires brief"),
-        ));
-    };
-    if brief.trim().is_empty() {
-        return Err(ToolResultEnvelope::error(
-            "failed: brief is empty",
-            "brief must not be empty",
-        ));
-    }
-    Ok(brief.to_string())
-}
-
-// ---------- Content helpers ----------
-
-pub(crate) fn content_hash(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    format!("sha256:{digest:x}")
-}
-
-pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let parent = path.parent().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "path has no parent directory",
-        )
-    })?;
-    let mut builder = tempfile::Builder::new();
-    let prefix = temp_file_prefix(path);
-    builder.prefix(&prefix);
-    let mut temp_file = builder.tempfile_in(parent)?;
-    temp_file.write_all(bytes)?;
-    temp_file.flush()?;
-    crate::util::fs_sync::sync_file(temp_file.as_file())?;
-    let temporary = temp_file.into_temp_path();
-    crate::util::fs_sync::rename(&temporary, path)
-}
-
-fn temp_file_prefix(path: &Path) -> OsString {
-    let mut prefix = path
-        .file_name()
-        .map(|name| name.to_os_string())
-        .unwrap_or_else(|| OsString::from("kuku"));
-    prefix.push(".");
-    prefix
-}
-
 // ---------- String helpers ----------
 
 pub(super) fn join_bounded_strings(
@@ -246,19 +253,9 @@ pub(super) fn join_bounded_strings(
     max_chars: usize,
     truncation_message: &str,
 ) -> (String, bool) {
-    let mut model_content = String::new();
-    let mut truncated = false;
-    for line in lines {
-        let next_len = model_content.len() + line.len() + usize::from(!model_content.is_empty());
-        if next_len > max_chars {
-            truncated = true;
-            break;
-        }
-        if !model_content.is_empty() {
-            model_content.push('\n');
-        }
-        model_content.push_str(line);
-    }
+    let visible = bounded_lines(lines, max_chars);
+    let mut model_content = visible.join("\n");
+    let truncated = visible.len() < lines.len();
     if truncated {
         if !model_content.is_empty() {
             model_content.push('\n');
@@ -266,6 +263,19 @@ pub(super) fn join_bounded_strings(
         model_content.push_str(truncation_message);
     }
     (model_content, truncated)
+}
+
+pub(super) fn bounded_lines(lines: &[String], max_bytes: usize) -> &[String] {
+    let mut bytes = 0;
+    let count = lines
+        .iter()
+        .enumerate()
+        .take_while(|(index, line)| {
+            bytes += line.len() + usize::from(*index != 0);
+            bytes <= max_bytes
+        })
+        .count();
+    &lines[..count]
 }
 
 pub(super) fn plural(count: usize) -> &'static str {
@@ -347,168 +357,13 @@ pub(super) fn requested_line_count(
     limit.map_or(available, |limit| limit.min(available))
 }
 
-// ---------- Snapshot finders ----------
-
-pub(super) fn find_covering_read(
-    events: &[StoredEvent],
-    conversation: &crate::conversation::address::ConversationAddress,
-    canonical_path: &Path,
-    content_hash: &str,
-    start_line: usize,
-    line_count: usize,
-) -> Option<ReadSnapshot> {
-    let canonical_path = canonical_path.to_string_lossy();
-    crate::context::replay::effective_snapshot_events(events, conversation)
-        .into_iter()
-        .rev()
-        .find_map(|event| {
-            let EventPayload::ToolResult {
-                status,
-                structured: Some(structured),
-                ..
-            } = &event.payload
-            else {
-                return None;
-            };
-            if status != "ok"
-                || structured["kind"] != "file_content"
-                || structured["cached"] == true
-            {
-                return None;
-            }
-            if structured["canonical_path"].as_str()? != canonical_path
-                || structured["content_hash"].as_str()? != content_hash
-            {
-                return None;
-            }
-            let snapshot = ReadSnapshot {
-                event_id: structured["read_event_id"].as_u64().unwrap_or(event.id),
-                start_line: structured["start_line"].as_u64()? as usize,
-                line_count: structured["line_count"].as_u64()? as usize,
-                is_full_file_snapshot: structured["is_full_file_snapshot"]
-                    .as_bool()
-                    .unwrap_or(false),
-            };
-            if snapshot.covers(start_line, line_count) {
-                Some(snapshot)
-            } else {
-                None
-            }
-        })
-}
-
-impl ReadSnapshot {
-    fn covers(&self, start_line: usize, line_count: usize) -> bool {
-        self.is_full_file_snapshot
-            || (self.start_line == start_line && self.line_count == line_count)
-    }
-}
-
-pub(super) fn find_write_snapshot(
-    events: &[StoredEvent],
-    conversation: &crate::conversation::address::ConversationAddress,
-    canonical_path: &Path,
-    require_full_file: bool,
-    required_text: Option<&str>,
-    current_content_hash: Option<&str>,
-) -> WriteSnapshotLookup {
-    let canonical_path = canonical_path.to_string_lossy();
-    let mut saw_path_snapshot = false;
-    let mut stale_snapshot = None;
-    for event in crate::context::replay::effective_snapshot_events(events, conversation)
-        .into_iter()
-        .rev()
-    {
-        let EventPayload::ToolResult {
-            status,
-            structured: Some(structured),
-            ..
-        } = &event.payload
-        else {
-            continue;
-        };
-        if status != "ok" || structured["kind"] != "file_content" || structured["cached"] == true {
-            continue;
-        }
-        if structured["canonical_path"].as_str() != Some(canonical_path.as_ref()) {
-            continue;
-        }
-        let Some(content_hash) = structured["content_hash"].as_str() else {
-            continue;
-        };
-        saw_path_snapshot = true;
-        let is_full_file_snapshot = structured["is_full_file_snapshot"]
-            .as_bool()
-            .unwrap_or(false);
-        if require_full_file && !is_full_file_snapshot {
-            continue;
-        }
-        if !is_full_file_snapshot
-            && required_text.is_some_and(|text| {
-                !visible_snapshot_raw_text(structured)
-                    .is_some_and(|raw_text| !text_match_offsets(raw_text, text).is_empty())
-            })
-        {
-            continue;
-        }
-        let snapshot = WriteSnapshot {
-            event_id: structured["read_event_id"].as_u64().unwrap_or(event.id),
-            content_hash: content_hash.to_string(),
-        };
-        if current_content_hash.is_none_or(|current_hash| current_hash == content_hash) {
-            return WriteSnapshotLookup::Found(snapshot);
-        }
-        if stale_snapshot.is_none() {
-            stale_snapshot = Some(snapshot);
-        }
-    }
-    if let Some(snapshot) = stale_snapshot {
-        return WriteSnapshotLookup::Found(snapshot);
-    }
-    if require_full_file {
-        WriteSnapshotLookup::Rejected(ToolErrorReason::FullSnapshotRequired)
-    } else if saw_path_snapshot && required_text.is_some() {
-        WriteSnapshotLookup::Rejected(ToolErrorReason::OldTextNotVisible)
-    } else {
-        WriteSnapshotLookup::Rejected(ToolErrorReason::SnapshotRequired)
-    }
-}
-
-pub(super) fn text_match_offsets(content: &str, text: &str) -> Vec<usize> {
-    let content_bytes = content.as_bytes();
-    let text_bytes = text.as_bytes();
-    content
-        .match_indices(text)
-        .map(|(offset, _)| offset)
-        .filter(|offset| {
-            text_bytes.iter().enumerate().all(|(text_offset, byte)| {
-                if *byte != b'\n' || (text_offset > 0 && text_bytes[text_offset - 1] == b'\r') {
-                    return true;
-                }
-                let content_offset = offset + text_offset;
-                content_offset == 0 || content_bytes[content_offset - 1] != b'\r'
-            })
-        })
-        .collect()
-}
-
-fn visible_snapshot_raw_text(structured: &Value) -> Option<&str> {
-    let raw_text = structured["raw_text"].as_str()?;
-    let line_count = structured["line_count"].as_u64()? as usize;
-    let visible_len = raw_text
-        .split_inclusive('\n')
-        .take(line_count)
-        .map(str::len)
-        .sum();
-    raw_text.get(..visible_len)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::conversation::address::ConversationAddress;
-    use crate::event::RollbackScope;
+    use crate::event::{EventPayload, RollbackScope, StoredEvent};
     use crate::tool::builtin::test_helpers::stored_read_event;
+    use snapshot::WriteSnapshot;
 
     fn find_write_snapshot(
         events: &[StoredEvent],
@@ -523,6 +378,7 @@ mod tests {
             require_full_file,
             required_text,
             None,
+            true,
         ) {
             WriteSnapshotLookup::Found(snapshot) => Some(snapshot),
             WriteSnapshotLookup::Rejected(_) => None,
@@ -681,6 +537,7 @@ mod tests {
             false,
             Some("alpha"),
             Some(&current_hash),
+            true,
         );
 
         let WriteSnapshotLookup::Found(snapshot) = result else {
@@ -787,5 +644,46 @@ mod tests {
                 .unwrap();
 
         assert_eq!(snapshot.event_id, 2);
+    }
+
+    #[test]
+    fn executor_observation_is_not_model_visible_edit_evidence() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observed.txt");
+        std::fs::write(&path, "alpha\n").unwrap();
+        let path = path.canonicalize().unwrap();
+        let mut read = snapshot_event(1, 1, None, &path);
+        if let EventPayload::ToolResult {
+            structured: Some(structured),
+            ..
+        } = &mut read.payload
+        {
+            structured["read_by"] = "executor".into();
+        }
+
+        assert!(find_write_snapshot(&[read], &path, false, Some("alpha")).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn authorized_target_resolves_in_workspace_aliases_and_rejects_escape() {
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let original = workspace.path().join("original.txt");
+        std::fs::write(&original, b"original").unwrap();
+        std::os::unix::fs::symlink(&original, workspace.path().join("alias.txt")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), workspace.path().join("outside")).unwrap();
+
+        let alias = serde_json::json!({"path":"alias.txt"});
+        let prepared = prepare_workspace_path("read_file", &alias, workspace.path()).unwrap();
+        assert_eq!(Some(original.canonicalize().unwrap()), prepared);
+        let rejected = prepare_workspace_path("remove_file", &alias, workspace.path()).unwrap_err();
+        assert_eq!("blocked", rejected.status);
+
+        for tool in ["stat_file", "write_file"] {
+            let outside = serde_json::json!({"path":"outside/uncreated/deeper.txt"});
+            let result = prepare_workspace_path(tool, &outside, workspace.path()).unwrap_err();
+            assert_eq!("blocked", result.status);
+        }
     }
 }

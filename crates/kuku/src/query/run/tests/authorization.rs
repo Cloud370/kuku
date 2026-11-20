@@ -2,6 +2,11 @@ use super::{
     assert_blocked_tool_result, make_queued_run, make_skill_queued_run, write_blocking_pre_hook,
     PendingPermission, PermissionChoice, PermissionRequest, RunState, UiEvent,
 };
+use crate::tool::builtin::run_command::command_permission_candidate;
+
+fn queued_command_candidate() -> String {
+    command_permission_candidate(&serde_json::json!({"program":"printf","args":["hi"],"cwd":"."}))
+}
 
 #[tokio::test]
 async fn queued_deny_persists_blocked_tool_result() {
@@ -9,7 +14,10 @@ async fn queued_deny_persists_blocked_tool_result() {
     let events_path = dir.path().join("events.jsonl");
     std::fs::write(
         dir.path().join("policy.md"),
-        "# policy\n\n## allow\n\n## deny\n- run_command(printf hi)\n",
+        format!(
+            "# policy\n\n## allow\n\n## deny\n- run_command({})\n",
+            queued_command_candidate()
+        ),
     )
     .unwrap();
     let mut run = make_queued_run(events_path.clone(), dir.path());
@@ -28,7 +36,10 @@ async fn queued_pre_hook_block_persists_blocked_tool_result() {
     let events_path = dir.path().join("events.jsonl");
     std::fs::write(
         dir.path().join("policy.md"),
-        "# policy\n\n## allow\n- run_command(printf hi)\n\n## deny\n",
+        format!(
+            "# policy\n\n## allow\n- run_command({})\n\n## deny\n",
+            queued_command_candidate()
+        ),
     )
     .unwrap();
     let pkg_dir = dir.path().join(".kuku").join("packages").join("test-hook");
@@ -103,7 +114,7 @@ async fn decide_pre_hook_block_persists_blocked_tool_result() {
                     tool: "run_command".to_string(),
                     risk: "command".to_string(),
                     summary: "print hi".to_string(),
-                    candidate: "printf hi".to_string(),
+                    candidate: queued_command_candidate(),
                     source: "default_ask".to_string(),
                 },
                 pending: *pending,
