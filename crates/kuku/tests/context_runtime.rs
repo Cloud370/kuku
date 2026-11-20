@@ -425,7 +425,15 @@ async fn unconfirmed_runtime_suffix_can_be_replaced_before_a_retried_preparation
     let server = MockServer::start_async().await;
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
+    let prompts = tempfile::tempdir().unwrap();
+    std::fs::create_dir(prompts.path().join("runtime")).unwrap();
+    std::fs::write(
+        prompts.path().join("runtime/current-date.md"),
+        "FIXED_RUNTIME_DATE",
+    )
+    .unwrap();
     let (mut original, path) = options(&server, workspace.path(), data.path());
+    original.prompts_dir = Some(prompts.path().into());
     let model = server
         .mock_async(|when, then| {
             when.method(POST)
@@ -455,7 +463,7 @@ async fn unconfirmed_runtime_suffix_can_be_replaced_before_a_retried_preparation
     let segment = prepared[0]["segment"].as_u64().unwrap();
     let initial_turn = prepared[0]["turn"].as_u64().unwrap();
     session.close().await.unwrap();
-    {
+    let unconfirmed_source_head = {
         let mut writer = EventStore::open(&events_path).unwrap();
         let turn = writer
             .append(EventPayload::Unknown(
@@ -501,7 +509,8 @@ async fn unconfirmed_runtime_suffix_can_be_replaced_before_a_retried_preparation
             writer.append(EventPayload::Unknown(json!({"kind":"runtime.context_admitted", "agent":"main", "segment":segment,
                 "ordinal":ordinal, "origin":origin, "turn":turn, "source_head":source_head, "message":message}))).unwrap();
         }
-    }
+        source_head
+    };
     let session = Session::open(original.clone()).await.unwrap();
     assert_eq!(
         AgentStatus::Interrupted,
@@ -509,24 +518,81 @@ async fn unconfirmed_runtime_suffix_can_be_replaced_before_a_retried_preparation
     );
     session.advance("main").unwrap();
     idle(&session, "main").await;
+    let retry_events = session.events(0, 256).unwrap();
+    let admissions = facts(&retry_events, "runtime.context_admitted", "main");
+    let preparations = facts(&retry_events, "runtime.step_prepared", "main");
+    assert_eq!(2, preparations.len());
+    let retried = &preparations[1];
+    assert_eq!(segment, retried["segment"]);
+    assert_eq!(2, retried["prefix_context_head"]);
+    assert_eq!(4, retried["context_head"]);
+    assert_eq!(3, retried["current_input"]);
+    let retried_source_head = retried["source_head"].as_u64().unwrap();
+    assert!(retried_source_head > unconfirmed_source_head);
+    for ordinal in [2, 3] {
+        let versions = admissions
+            .iter()
+            .filter(|value| value["segment"] == segment && value["ordinal"] == ordinal)
+            .collect::<Vec<_>>();
+        assert_eq!(2, versions.len(), "ordinal {ordinal}");
+        assert_eq!(versions[0]["message"], versions[1]["message"]);
+        assert_eq!(unconfirmed_source_head, versions[0]["source_head"]);
+        assert_eq!(retried_source_head, versions[1]["source_head"]);
+    }
+    let abandoned_sources: Vec<_> = admissions
+        .iter()
+        .filter(|value| value["segment"] == segment && value["ordinal"] == 4)
+        .map(|value| value["source_head"].as_u64().unwrap())
+        .collect();
+    assert_eq!(vec![unconfirmed_source_head], abandoned_sources);
     session.close().await.unwrap();
     let session = Session::open(original).await.unwrap();
     session
         .send(Input::new("after-retry", "main", "after-retry"))
         .unwrap();
     idle(&session, "main").await;
+    let reopened_events = session.events(0, 256).unwrap();
+    let reopened_preparations = facts(&reopened_events, "runtime.step_prepared", "main");
+    assert_eq!(3, reopened_preparations.len());
+    let reopened = &reopened_preparations[2];
+    assert_eq!(segment, reopened["segment"]);
+    assert_eq!(4, reopened["prefix_context_head"]);
+    assert_eq!(6, reopened["context_head"]);
+    let reopened_admissions = facts(&reopened_events, "runtime.context_admitted", "main");
+    let replacement = reopened_admissions
+        .iter()
+        .find(|value| {
+            value["segment"] == segment
+                && value["ordinal"] == 4
+                && value["source_head"] == reopened["source_head"]
+        })
+        .unwrap();
+    assert_eq!("response", replacement["origin"]);
+    assert_eq!(
+        serde_json::to_value(CanonicalMessage::assistant(vec![MessageBlock::Text(
+            "done".into()
+        )]))
+        .unwrap(),
+        replacement["message"]
+    );
     session.close().await.unwrap();
     model.assert_hits_async(3).await;
     let bodies = common::take_http_requests(&path);
     assert_eq!(
-        1,
-        bodies[1]["messages"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|message| message.to_string().contains("retry-input"))
-            .count()
+        bodies[0]["messages"].as_array().unwrap().len() + 2,
+        bodies[1]["messages"].as_array().unwrap().len()
     );
+    for body in &bodies[1..] {
+        assert_eq!(
+            1,
+            body["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|message| message["role"] == "user" && message["content"] == "retry-input")
+                .count()
+        );
+    }
     assert!(bodies[2]["messages"]
         .as_array()
         .unwrap()
