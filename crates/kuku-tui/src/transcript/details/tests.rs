@@ -2,6 +2,7 @@ use kuku_client::{HistoryEntry, HistoryPage};
 use serde_json::{json, Value};
 
 use super::super::{AnchorLine, HistoryRequest, Transcript, TranscriptView};
+use super::DetailKind;
 
 #[derive(Default)]
 struct Journal(Vec<HistoryEntry>);
@@ -141,6 +142,40 @@ fn mixed_twenty_four_tools_compact_by_operation_and_remain_individually_inspecta
     assert!(transcript.toggle_detail(&group));
     let compact_again = text(&transcript.project(90, 64));
     assert_eq!(rendered, compact_again);
+}
+
+#[test]
+fn first_tool_message_opens_its_details_instead_of_its_group_heading() {
+    let mut journal = Journal::default();
+    journal.read(7, "main", "first.txt");
+    journal.read(7, "main", "second.txt");
+    let mut transcript = journal.load();
+    transcript.project(90, 40);
+
+    let group = transcript
+        .visible_detail_choices()
+        .into_iter()
+        .find(|(key, _, _)| key.kind == DetailKind::Group)
+        .map(|(key, _, _)| key)
+        .expect("group heading is visible");
+    let first_tool = transcript
+        .message_entries("main")
+        .into_iter()
+        .find(|entry| entry.detail.contains("first.txt"))
+        .expect("first tool message is available");
+    let action = transcript
+        .message_info(&first_tool.id, "main")
+        .unwrap()
+        .expandable
+        .expect("tool details are available");
+
+    assert_eq!(group.record, action.record);
+    assert_eq!(DetailKind::Tool, action.kind);
+    assert!(transcript.toggle_detail(&action));
+    let detail = text(&transcript.project(90, 40));
+    assert!(detail.contains("Requested arguments"));
+    assert!(detail.contains("\"offset\":2"));
+    assert!(detail.contains("contents for first.txt"));
 }
 
 #[test]
