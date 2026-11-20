@@ -167,7 +167,7 @@ Tier 名称使用 `--tier`。`--model` 选择精确模型标识，`--connection`
 
 使用 `--command-id` 重试同一输入时，返回原始持久回执和当前 Agent 状态。如果首次发送丢失了响应，客户端会为这条未确认命令保留生成的 Session ID。取得回执后，后续重试使用返回的 ID 作为 `--session`。重放时，`--json` 和 `--stream-json` 返回 `event: "acknowledged"`、`replayed: true`、`receipt` 和 `state`。新工作或配置使用新的命令标识。
 
-`--json` 输出最终 `type: "session"` 对象，含 `event`、`session_id`、`agent`、`status`、`turns`、`response`、`error`、`config`、`usage`、`permission`、`question` 和 `duration_ms`。`--stream-json` 另含瞬时进度和持久回执信息。慢观察者可能丢失瞬时增量。最终响应来自已提交状态。Provider 用量及未知值遵循 [Session SDK](../how-it-works/sessions.md) 约定。
+`--json` 输出最终 `type: "session"` 对象，含 `event`、`session_id`、`agent`、`status`、`turns`、`response`、`error`、`config`、`usage`、`permission`、`question` 和 `duration_ms`。`--stream-json` 另含瞬时进度和持久回执信息。子 Agent 查询因输出上限重试时，`--stream-json` 会输出 `type: "model_recovery"` 行，包含 conversation、turn、失败／重试请求 ID、原因和尝试次数。慢观察者可能丢失瞬时增量。最终响应来自已提交状态。Provider 用量及未知值遵循 [Session SDK](../how-it-works/sessions.md) 约定。
 
 Prompt 首项为合法 `/skill-name` 时，CLI 加载对应 Skill，将余下文本作为用户输入。`/tmp/foo` 等路径保持普通输入。`--no-skills` 关闭此快捷方式及默认 Skill 工具。
 

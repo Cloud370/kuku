@@ -10,7 +10,7 @@ import re
 import sys
 from urllib.parse import urlencode, urlsplit
 
-from interactive_lifecycle import lifecycle_cases
+from interactive_lifecycle import lifecycle_cases, verify_restored_tool
 from interactive_rendering import (
     check_agent_reading_position,
     named_output_cards,
@@ -20,7 +20,7 @@ from interactive_rendering import (
 )
 from interactive_fixture import (
     DenseTranscript, InstalledClient, MarkdownDocument, TOOL_BRIEF, TOOL_OUTPUT, eventually, http_fixture, install,
-    delegate_reviewer, json_response, local_request,
+    delegate_reviewer, json_response, local_request, run_cases,
 )
 
 
@@ -52,7 +52,7 @@ def installed_upgrade(client, previous, current):
     assert deferred["service"]["version"] == original_version
     client.assert_current_service(original)
     client.release_tool(workspace)
-    client.provider.next("upgrade-gated-tool").text(output)
+    client.completed_tool(workspace, "upgrade-gated-tool").text(output)
     eventually("old service to complete the tool", lambda: client.snapshot(workspace, session)["last_output"] == output)
     eventually("old service to become idle", lambda: not client.status()["busy"])
     client.verify_tool(workspace)
@@ -207,25 +207,30 @@ def two_workspaces_and_disconnect(client):
 
     client.assert_current_service(original)
     client.release_tool(workspace)
-    client.provider.next(tool_id).text(final)
+    completed = client.completed_tool(workspace, tool_id)
+    completed.text(final)
     eventually("tool and response to commit without a client",
                lambda: client.snapshot(workspace, session)["last_output"] == final)
     client.verify_tool(workspace)
+    query = urlencode({"workspace": workspace, "agent": "main"})
+    history = client.request("GET", f"/sessions/{session}/history?{query}").as_json()["entries"]
+    tool_history = [entry for entry in history if entry.get("tool_call_id") == tool_id]
+    calls = [entry for entry in tool_history if entry["type"] == "tool_call"]
+    results = [entry for entry in tool_history if entry["type"] == "tool_result"]
+    assert len(calls) == len(results) == 1 and results[0]["status"] == "ok", tool_history
+    assert calls[0]["args"]["brief"] == TOOL_BRIEF, tool_history
+    if completed.completed_job is None:
+        assert TOOL_OUTPUT in results[0]["model_content"], tool_history
     with client.terminal(workspace) as reopened:
         reopened.resume(prompt)
         screen = reopened.expect(final)["screen"]
-        assert screen.count(final) == 1, "Restored terminal must show one durable response"
-        assert screen.count(TOOL_BRIEF) == 1 and "╰─ ok" in screen, "Restored terminal must show one tool result"
+        assert screen.count(final) == 1, (
+            f"Restored terminal must show one durable response (count={screen.count(final)})\n{screen}"
+        )
         compact = reopened.expect("TPS")["screen"].splitlines()[-1]
         assert "main" in compact and "Context" in compact and "Cache hit" not in compact, compact
         assert not re.search(r"\d(?:[.\d]*[KMB])? (?:in|out)\b", compact), compact
-        details = reopened.expect(TOOL_BRIEF)["screen"]
-        assert "--gated-tool" in details and TOOL_OUTPUT in details
-        reopened.press("\x0f")
-        collapsed = reopened.expect("Ctrl+O show")["screen"]
-        assert "Saved output" not in collapsed and "--gated-tool" not in collapsed
-        reopened.press("\x0f")
-        reopened.expect(TOOL_BRIEF, also=(TOOL_OUTPUT,))
+        verify_restored_tool(reopened, completed.completed_job, tool_history)
         reopened.exit_cleanly()
     client.assert_current_service(original)
     client.provider.assert_idle(duration=0.2)
@@ -434,8 +439,10 @@ def wait_restart_and_recover_crash(client, workspace, session, title):
         client.provider.next(question_prompt).tool("ask_user", "waiting-fixture", question=question)
         terminal.expect(question)
         terminal.exit_cleanly()
-    waiting = client.snapshot(workspace, session)
-    assert waiting["status"] == "waiting"
+    waiting = eventually("the pending question to settle before restart", lambda: (
+        snapshot if (snapshot := client.snapshot(workspace, session))["status"] == "waiting" else None
+    ))
+    assert waiting["question"]["text"] == question
     request_id = waiting["question"]["id"]
     original = client.connection()
     client.cli(workspace, "server", "restart")
@@ -473,6 +480,7 @@ def wait_restart_and_recover_crash(client, workspace, session, title):
 def remote_authorization_and_script_json(client, workspace):
     stdout, stderr = client.cli(workspace, success=False)
     assert "kuku run" in stdout + stderr, "Non-interactive help must identify the script command"
+    client.cli(workspace, "server", "restart")
     connection = client.connection()
     address = f"http://{connection['address']}"
     assert client.request("GET", f"/sessions?{urlencode({'workspace': workspace})}",
@@ -537,6 +545,7 @@ def recover_from_provider_failure(client):
 
 def lost_first_receipt(client):
     workspace = client.workspace("work-receipt")
+    client.cli(workspace, "server", "restart")
     connection = client.connection()
     command_id, prompt = "first-receipt-id", "send once despite missing first receipt"
     committed = []
@@ -560,7 +569,7 @@ def lost_first_receipt(client):
             eventually("durable receipt that is lost to the client", lambda: committed)
             client.gated_tool(workspace, call, "lost-ack-fixture-tool")
             client.release_tool(workspace)
-            client.provider.next("lost-ack-fixture-tool").text("first receipt executed once")
+            client.completed_tool(workspace, "lost-ack-fixture-tool").text("first receipt executed once")
             client.finish(process, success=False)
         session = client.session(workspace)
         eventually("committed result before client relaunch",
@@ -930,29 +939,41 @@ def main():
     options.binary = options.binary.resolve()
     options.bridge = options.bridge.resolve()
     options.directory = options.directory.resolve()
-    with InstalledClient(options.binary, options.bridge, options.directory) as client:
-        if options.named_output:
-            named_output_cards(client)
-            return
-        if options.upgrade:
-            installed_upgrade(client, *options.upgrade)
-        workspace, session, title = two_workspaces_and_disconnect(client)
-        fast_markdown_stream(client)
-        configure_statusline(client)
-        preserve_draft_after_interrupt(client)
-        editable_multiline_paste(client)
-        lifecycle_cases(options.binary, options.bridge, options.directory)
-        rendering_cases(options.binary, options.bridge, options.directory)
-        wait_restart_and_recover_crash(client, workspace, session, title)
-        remote_authorization_and_script_json(client, client.workspace("work-script"))
-        recover_from_provider_failure(client)
-        lost_first_receipt(client)
-        delegated_agent_cards(client)
-        dense_transcript(client)
-        markdown_document(client)
-        if options.browser:
+    def native(name, operation):
+        with InstalledClient(options.binary, options.bridge, options.directory / name) as client:
+            operation(client)
+
+    if options.named_output:
+        native("named-output", named_output_cards)
+        return
+    if options.upgrade:
+        native("upgrade", lambda client: installed_upgrade(client, *options.upgrade))
+    cases = [(name, lambda name=name, operation=operation: native(name, operation))
+             for name, operation in (
+                 ("service-lifecycle", lambda client: wait_restart_and_recover_crash(
+                     client, *two_workspaces_and_disconnect(client))),
+                 ("fast-stream", fast_markdown_stream),
+                 ("statusline", configure_statusline),
+                 ("interrupt", preserve_draft_after_interrupt),
+                 ("paste", editable_multiline_paste),
+                 ("remote-and-script", lambda client: remote_authorization_and_script_json(
+                     client, client.workspace("work-script"))),
+                 ("provider-failure", recover_from_provider_failure),
+                 ("lost-receipt", lost_first_receipt),
+                 ("agent-cards", delegated_agent_cards),
+                 ("dense-transcript", dense_transcript),
+                 ("markdown", markdown_document),
+             )]
+    cases.extend([
+        ("settings-and-history", lambda: lifecycle_cases(options.binary, options.bridge, options.directory)),
+        ("rendering", lambda: rendering_cases(options.binary, options.bridge, options.directory)),
+    ])
+    if options.browser:
+        def browser():
             from interactive_browser import browser_handoff
-            browser_handoff(client)
+            native("browser", browser_handoff)
+        cases.append(("browser", browser))
+    run_cases(cases)
 
 
 if __name__ == "__main__":

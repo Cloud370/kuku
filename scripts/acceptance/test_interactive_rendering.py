@@ -1,7 +1,11 @@
+import contextlib
+import io
+import json
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
-from interactive_fixture import Terminal
+from interactive import wait_restart_and_recover_crash
+from interactive_fixture import InstalledClient, ProviderCall, Terminal, TOOL_OUTPUT, run_cases
 from interactive_rendering import (
     click_queued_input,
     has_selected_queued_input,
@@ -11,6 +15,140 @@ from interactive_rendering import (
     queued_input_click_position,
     rendered_running_transcript,
 )
+
+
+class AcceptanceCaseTests(unittest.TestCase):
+    def test_failed_case_does_not_hide_later_cases_or_turn_into_success(self):
+        calls = []
+
+        def failure():
+            calls.append("failed")
+            raise ValueError("original failure")
+
+        with patch("sys.stderr") as stderr, self.assertRaisesRegex(AssertionError, "failed case"):
+            run_cases([
+                ("failed case", failure),
+                ("later case", lambda: calls.append("later")),
+            ])
+
+        self.assertEqual(["failed", "later"], calls)
+        self.assertIn("original failure", "".join(str(call) for call in stderr.write.call_args_list))
+
+    def test_failed_frame_survives_later_output_and_nested_case_collection(self):
+        frame = "original frame\n" + "终端内容\n" * 100
+        output = io.StringIO()
+
+        def failure():
+            raise AssertionError(frame)
+
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+            with self.assertRaises(AssertionError) as error:
+                run_cases([
+                    ("nested", lambda: run_cases([("restore", failure)])),
+                    ("later", lambda: print("later output" * 10000)),
+                ])
+            print(error.exception)
+
+        self.assertIn(frame, output.getvalue().encode()[-65536:].decode())
+        self.assertIn("nested", str(error.exception))
+        self.assertIn("restore", str(error.exception))
+
+    def test_failure_details_are_bounded_without_losing_failed_case_names(self):
+        def failure():
+            raise ValueError("界" * 10000)
+
+        with patch("sys.stderr"), patch("sys.stdout"), self.assertRaises(AssertionError) as error:
+            run_cases([("first", failure), ("second", failure)])
+
+        message = str(error.exception)
+        self.assertIn("first, second", message)
+        self.assertIn("retained byte limit", message)
+        self.assertNotIn("\ufffd", message)
+        self.assertLess(len(message.encode()), 17000)
+
+
+class ProviderToolResultTests(unittest.TestCase):
+    def call(self, result):
+        body = json.dumps({"messages": [{"role": "user", "content": [result]}]})
+        return ProviderCall(body, None, 1)
+
+    def test_success_requires_the_exact_tool_result_and_output(self):
+        call = self.call({"type": "tool_result", "tool_use_id": "fixture", "content": "proof"})
+        self.assertIs(call, call.expect_tool_output("fixture", "proof"))
+        with self.assertRaisesRegex(AssertionError, "Expected one tool result"):
+            call.expect_tool_output("other", "proof")
+        with self.assertRaisesRegex(AssertionError, "did not return"):
+            call.expect_tool_output("fixture", "missing")
+
+    def test_error_cannot_be_reported_as_success_even_when_output_is_present(self):
+        call = self.call({"type": "tool_result", "tool_use_id": "fixture", "is_error": True,
+                          "content": "proof followed by capture failure"})
+        with self.assertRaisesRegex(AssertionError, "Tool fixture failed"):
+            call.expect_tool_output("fixture", "proof")
+
+    def job_client(self, exit_code=0):
+        client = object.__new__(InstalledClient)
+        handle = self.call({"type": "tool_result", "tool_use_id": "fixture",
+                            "content": json.dumps({"kind": "job", "job_id": "job-1"})})
+        handle.tool = Mock()
+        waited = self.call({"type": "tool_result", "tool_use_id": "fixture-wait", "content": TOOL_OUTPUT})
+        client.provider = Mock()
+        client.provider.next.side_effect = [handle, waited]
+        client.session = Mock(return_value="session")
+        client.request = Mock()
+        client.request.return_value.as_json.return_value = {
+            "id": "job-1", "tool_call_id": "fixture", "status": "completed",
+            "result": {"status": "ok", "structured": {"exit_code": exit_code,
+                "capture_complete": True, "cleanup_incomplete": False, "output_preview": TOOL_OUTPUT}},
+        }
+        return client, handle, waited
+
+    def test_background_handle_requires_wait_and_successful_durable_command_facts(self):
+        client, handle, waited = self.job_client()
+        self.assertIs(waited, client.completed_tool("workspace", "fixture"))
+        handle.tool.assert_called_once_with("wait_job", "fixture-wait", job_id="job-1")
+        self.assertEqual("job-1", waited.completed_job["id"])
+
+    def test_background_output_marker_cannot_hide_a_failed_command(self):
+        client, _, _ = self.job_client(exit_code=1)
+        with self.assertRaises(AssertionError):
+            client.completed_tool("workspace", "fixture")
+
+
+class PendingQuestionRestartTests(unittest.TestCase):
+    def test_visible_question_waits_for_settlement_before_restart(self):
+        client = MagicMock()
+        question = {"id": "pending-question", "text": "Which durable answer should I use?"}
+        client.snapshot.side_effect = [
+            {"status": "running", "question": question},
+            {"status": "waiting", "question": question},
+        ]
+
+        class RestartObserved(Exception):
+            pass
+
+        def restart(*args):
+            self.assertEqual(2, client.snapshot.call_count)
+            raise RestartObserved
+
+        client.cli.side_effect = restart
+        with self.assertRaises(RestartObserved):
+            wait_restart_and_recover_crash(client, "workspace", "session", "title")
+
+        client.cli.assert_called_once_with("workspace", "server", "restart")
+        client.provider.next.assert_called_once_with("persist a pending question")
+
+    def test_unsettled_question_times_out_without_restarting_or_resubmitting(self):
+        client = MagicMock()
+        client.snapshot.return_value = {"status": "running", "question": None}
+        with (
+            patch("interactive_fixture.time.monotonic", side_effect=[0, 31]),
+            self.assertRaisesRegex(AssertionError, "pending question to settle"),
+        ):
+            wait_restart_and_recover_crash(client, "workspace", "session", "title")
+
+        client.cli.assert_not_called()
+        client.provider.next.assert_called_once_with("persist a pending question")
 
 
 class MixedTableScrollTests(unittest.TestCase):

@@ -4,7 +4,7 @@
 
 ## 选择验证范围
 
-按改动行为选择检查。持续维护的选择入口使用 Python 3.10+，将有界证据写入已忽略的 `benchmarks/acceptance/` 目录：
+按改动行为选择检查。每项不变量只保留一处主要覆盖：重试上限与退避交给已有虚拟时钟 provider 测试，Session 测试负责中断与显式恢复，不再用另一份真实等待退避的集成测试重复完整组合。持续维护的选择入口使用 Python 3.10+，将有界证据写入已忽略的 `benchmarks/acceptance/` 目录：
 
 ```bash
 python3 scripts/acceptance/run.py contract
@@ -12,7 +12,17 @@ python3 scripts/acceptance/run.py protocol
 python3 scripts/acceptance/run.py integration
 ```
 
-`contract` 启用 `kuku/test_support`，运行 workspace 测试，包含受 feature 控制的运行时套件、共享客户端和 TUI 测试。`protocol` 选择 provider 适配、配置、错误、集成、追踪及缓存通知固定输入，无需付费请求。`integration` 依次执行只读格式检查、启用测试 feature 的 workspace／all-target Clippy 和 `contract`。CI 在 Linux、macOS 和 Windows 运行相同的契约测试与安装终端场景，保留有界证据。Web CI 另运行安装浏览器场景。真实模型调用和 Linux benchmark 容器需要在本地明确选择。
+`contract` 启用 `kuku/test_support`，运行 workspace 测试，包含受 feature 控制的运行时套件、共享客户端和 TUI 测试。某个测试程序失败后会继续运行其余测试程序，任一测试失败仍返回失败。`protocol` 选择 provider 适配、配置、错误、集成、追踪及缓存通知固定输入，无需付费请求。`integration` 依次执行只读格式检查、启用测试 feature 的 workspace／all-target Clippy 和 `contract`。草稿 PR 与 main 推送只运行一套 Linux workspace 契约与 Python 工具检查，加上格式检查和 Clippy。进入评审的 PR 与手动触发的 CI 执行 Linux、macOS、Windows 三平台契约及 Python 工具检查，并运行安装终端、Windows 桌面与 Linux 浏览器交接验收，保留有界证据。浏览器交接复用 Linux 已安装程序，不再由另一个 workflow 重复构建。真实模型调用和 Linux benchmark 容器需要在本地明确选择。
+
+契约测试采集保留原有 64 KiB 输出尾部和完整输出 hash。独立失败摘要在 16 KiB UTF-8 字节范围内保留失败测试名、panic 位置与少量上下文，以及 Cargo 失败 target。`failure_summary.truncated` 标记遗漏内容；失败仍由子进程退出状态判定。
+
+契约测试、release 安装和 PTY 构建通过 Cargo 原生 `--timings` 在 `target/cargo-timings/` 生成报告。CI 将其保存为 `build-timings-<os>` artifact，以便分别评估编译与测试执行时间。判断耗时变化是否来自源码前，先比较缓存状态、feature 与 profile。
+
+两个 workflow 都支持目标为 `main` 或 `feat/interactive-clients` 的 PR，以及 main 推送。WebUI 检查的路径范围限于 `apps/web/**` 和自身 workflow，Rust 改动不再触发重复的安装浏览器构建。PR 检查统一使用 GitHub 的 merge-ref。记录实际 commit/tree，只有 tree 相同才复用源分支证据。同一 PR 的旧运行会被取消。Python 工具检查失败不会阻止 Rust 契约与安装验收作业收集各自结果。失败后保留 Rust 依赖缓存；Cargo 仍校验构建指纹。PTY helper 共享契约测试的 workspace/`kuku/test_support` feature 解析，并记录编译身份。
+
+手动 CI 默认 `platform=all`。排查单个平台时可选 `linux`、`macos` 或 `windows`；运行标题标明所选范围，不同平台的运行不会互相取消。单平台运行只提供定向证据，不能替代合并前的完整门禁。
+
+草稿 PR 通过不代表安装验收通过。合并前，将 PR 转为待评审或为目标版本以 `platform=all` 手动触发 CI，并要求完整矩阵通过。完整验收保留带嵌入 Web 资源的真实 release 安装；选择 Windows 桌面检查时必须完成桌面准备。独立安装场景使用隔离服务，单个场景失败后继续其余场景，保留原始错误并让整体返回失败。现有每条命令的超时界限保持不变。每个场景打印耗时，最多 16 KiB 的失败详情在最后一个场景之后再次输出，避免后续输出挤掉失败终端画面。受控模型只有核实工具结果后才能回复成功，模拟成功消息本身不能证明工具成功。命令可能在前台完成，也可能返回 Job 句柄；固定模型通过 `wait_job` 等待并核对持久化命令事实后才能报告成功。安装恢复场景还会明确等到自动转为 Job，再通过正常历史滚动检查重开的启动卡片和完成通知。需要执行持续活跃的测试会保持模型请求，完成相关断言后再释放响应，不依赖固定响应延迟。
 
 选择入口将 `CARGO_TARGET_DIR` 固定为当前 checkout 的 `target/`，不改变宿主环境。每个 worktree 使用独立 target，即使串行构建也不共享：workspace 产物可能错误复用另一源码树的缓存。本地 target 可以使用第三方依赖缓存作为种子，但首次构建前先执行一次 `cargo clean --target-dir target -p kuku -p kuku-cli -p kuku-server -p kuku-client -p kuku-tui -p kuku-app` 清除 workspace 产物。记录提交／工作树、target 目录、feature、profile 和二进制 hash；共享 target 构建的冻结二进制本身不能证明对应的源码版本。
 
@@ -21,7 +31,7 @@ python3 scripts/acceptance/run.py integration
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --features kuku/test_support -- -D warnings
-cargo test --workspace --features kuku/test_support
+cargo test --workspace --no-fail-fast --features kuku/test_support
 ```
 
 相关写入者停止修改后，先格式化修改的 Rust 范围，再运行只读格式检查。编辑中可用 `cargo check` 快速反馈。不因随后要提交或推送就重复通过的检查；代码、配置或集成变化使证据失效时再补测。纯文档改动使用下方的文档检查。
@@ -60,7 +70,7 @@ python3 scripts/acceptance/run.py interactive --desktop --archive PATH_TO_WINDOW
 
 要复测安装包升级，提供两个包含不同可执行文件、均支持持久 Session 的平台归档。选择入口在工具运行期间调用平台安装器替换程序，验证重启被推迟、原工具仅执行一次，以及新服务能恢复同一 Session。
 
-终端场景在 Linux 和 macOS 通过 Unix PTY 驱动安装好的 `kuku`，在 Windows 使用 ConPTY。用带内嵌资源的二进制和 `--browser` 选项可加入 Chromium 场景。按 [Web CI](../../../.github/workflows/web-ci.yml) 安装 Playwright Python 包和 Chromium。场景使用可控的本地模型端点，实际运行客户端和服务，无需模型凭据或付费请求。各层需要验证的行为见[交互客户端计划](../architecture/interactive-clients.md#开发时如何测试)。场景通过原生终端操作 Ctrl+C 和菜单补全，分别保持模型请求与工具处于运行中以核对显示状态，并在服务断开时检查连接指示。本地模型端点报告已知的输入、缓存读取和输出 token 数，供安装后的终端核对上下文占用、累计 token 和缓存命中率，并检查实测 TPS、Agent 地址与工作目录。
+终端场景在 Linux 和 macOS 通过 Unix PTY 驱动安装好的 `kuku`，在 Windows 使用 ConPTY。公共终端模拟器在 DEC 同步刷新期间保留上一帧，提交后才提供新帧；[协议测试](../../../apps/kuku/tests/terminal_state.rs)覆盖分片更新、调整大小和光标报告。用带内嵌资源的二进制和 `--browser` 选项可加入 Chromium 场景。按 [CI 浏览器准备步骤](../../../.github/workflows/ci.yml) 安装 Playwright Python 包和 Chromium。场景使用可控的本地模型端点，实际运行客户端和服务，无需模型凭据或付费请求。各层需要验证的行为见[交互客户端计划](../architecture/interactive-clients.md#开发时如何测试)。场景通过原生终端操作 Ctrl+C 和菜单补全，分别保持模型请求与工具处于运行中以核对显示状态，并在服务断开时检查连接指示。本地模型端点报告已知的输入、缓存读取和输出 token 数，供安装后的终端核对上下文占用、累计 token 和缓存命中率，并检查实测 TPS、Agent 地址与工作目录。
 
 维护中的生命周期场景从缺失凭据修复走到首个已认证回复，保存默认模型并检查新建和重开 Session 实际使用的模型，以及用键盘 ↑/Delete 撤回精确排队输入，同时保留其草稿和另一条排队输入。场景也会重开只读回退内容并核对下一次 provider 请求不含被排除的内容，跨过最近 48 条已提交消息选择精确回退目标，并用受控的 401 验证遮蔽凭据更新和安全服务重启。认证修复场景确认只有显式 Continue 才会用替换凭据重试保留的原输入，且仅重试一次。键盘覆盖与现有鼠标撤回检查并存。
 

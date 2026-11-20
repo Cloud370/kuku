@@ -11,10 +11,7 @@ use super::{
     SAVE_SCOPE,
 };
 
-use crate::local_settings::{
-    active_config_path, ensure_same_service, require_local, same_service, ServiceIdentity,
-    LOCAL_SERVICE_CHANGED,
-};
+use crate::local_settings::require_local;
 
 const CONFIG: &str = r#"# retained comment
 default_model = "light"
@@ -235,49 +232,11 @@ fn client_environment_does_not_override_the_service_validated_tier_or_expand_raw
 }
 
 #[test]
-fn active_config_path_local_gate_and_service_change_are_checked() {
-    let temp = tempfile::tempdir().unwrap();
-    let active_path = temp
-        .path()
-        .join("service")
-        .join("custom")
-        .join("config.toml");
-    let requested_path = temp
-        .path()
-        .join("service")
-        .join("default")
-        .join("config.toml");
-    let active = active_path.to_str().unwrap();
-    assert_eq!(
-        active_config_path(false, &requested_path, Some(active)).unwrap(),
-        active_path
-    );
-    assert!(active_config_path(true, &requested_path, Some(active)).is_err());
-    assert!(active_config_path(false, &requested_path, Some("relative.toml")).is_err());
+fn default_save_requires_a_managed_local_connection() {
     assert!(require_local(true, false, true).is_err());
     assert!(require_local(false, true, true).is_err());
     assert!(require_local(false, false, false).is_err());
     assert!(require_local(false, false, true).is_ok());
-
-    let expected = ServiceIdentity {
-        endpoint: "local".into(),
-        instance_id: "one".into(),
-        pid: 2,
-        data_dir: temp.path().join("data").display().to_string(),
-        config_path: temp.path().join("config.toml"),
-    };
-    let mut changed = expected.clone();
-    changed.instance_id = "two".into();
-    assert!(!same_service(&expected, &changed));
-    changed = expected.clone();
-    changed.config_path = temp.path().join("other.toml");
-    assert!(!same_service(&expected, &changed));
-    assert_eq!(
-        Err(LOCAL_SERVICE_CHANGED.to_owned()),
-        ensure_same_service(&expected, &changed)
-    );
-    assert!(same_service(&expected, &expected));
-    assert!(ensure_same_service(&expected, &expected).is_ok());
 }
 
 #[tokio::test]

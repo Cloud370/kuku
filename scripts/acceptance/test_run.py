@@ -249,6 +249,81 @@ class AcceptanceTests(unittest.TestCase):
         self.assertTrue(result["timed_out"])
         self.assertLess(time.monotonic() - start, 10)
 
+    def test_log_preserves_newline_bytes_after_utf8_replacement_and_redaction(self):
+        payload = "first\n\u7b2c\u4e8c\u884c\r\n".encode() + b"\xff\nprivate-test-key\n"
+        program = "import sys;sys.stdout.buffer.write(" + repr(payload) + ")"
+        result = ACCEPTANCE.capture([sys.executable, "-c", program], self.directory, "newlines",
+                                    secrets=("private-test-key",))
+        raw = Path(result["log"]).read_bytes()
+        self.assertEqual(raw, "first\n\u7b2c\u4e8c\u884c\r\n\ufffd\n[REDACTED]\n".encode())
+        self.assertEqual(result["retained_bytes"], len(raw))
+        self.assertEqual(result["output_sha256"], hashlib.sha256(payload).hexdigest())
+        self.assertEqual(result["exit_code"], 0)
+        first, last = b"first\nsecond\r\n", b"\xff\nx\n"
+        count = (ACCEPTANCE.LOG_BYTES - len(first) - len(last)) // 3
+        payload = first + "\u754c".encode() * count + last
+        program = ("import sys;sys.stdout.buffer.write(" + repr(first)
+                   + "+b'\\xe7\\x95\\x8c'*" + str(count) + "+" + repr(last) + ")")
+        result = ACCEPTANCE.capture([sys.executable, "-c", program], self.directory, "boundary",
+                                    secrets=("x",))
+        raw = Path(result["log"]).read_bytes()
+        self.assertLessEqual(len(payload), ACCEPTANCE.LOG_BYTES)
+        self.assertEqual(len(raw), ACCEPTANCE.LOG_BYTES)
+        self.assertEqual(result["retained_bytes"], len(raw))
+        self.assertTrue(result["truncated"])
+        self.assertIn("\ufffd\n[REDACTED]\n", raw.decode("utf-8"))
+        self.assertNotIn(b"\r\r\n", raw)
+        self.assertEqual(result["output_sha256"], hashlib.sha256(payload).hexdigest())
+
+    def test_contract_summary_keeps_early_failures_after_later_output(self):
+        first = (b"test first::broken ... \x1b[31mFAILED\x1b[0m\n"
+                 b"thread 'first::broken' panicked at fixture.rs:17:5:\nprivate-test-token\n")
+        last = b"test last::broken ... FAILED\nerror: 2 targets failed:\n    `--test first`\n    `--test last`\n"
+        payload = first + b"later success\n" * 20000 + last
+        program = ("import sys;sys.stdout.buffer.write(" + repr(first)
+                   + "+b'later success\\n'*20000+" + repr(last) + ");sys.exit(101)")
+        result = ACCEPTANCE.capture([sys.executable, "-c", program], self.directory, "contract",
+                                    secrets=("private-test-token",), retain_failures=True)
+        tail = Path(result["log"]).read_text()
+        summary = result["failure_summary"]
+        text = Path(summary["log"]).read_text()
+        self.assertEqual(result["exit_code"], 101)
+        self.assertNotIn("first::broken", tail)
+        for expected in ("first::broken", "fixture.rs:17:5", "last::broken", "`--test first`", "`--test last`"):
+            self.assertIn(expected, text)
+        self.assertIn("[REDACTED]", text)
+        self.assertNotIn("private-test-token", text)
+        self.assertFalse(summary["truncated"])
+        self.assertEqual(result["output_sha256"], hashlib.sha256(payload).hexdigest())
+        self.assertEqual(result["output_bytes"], len(payload))
+        self.assertEqual(result["retained_bytes"], Path(result["log"]).stat().st_size)
+        self.assertLessEqual(Path(result["log"]).stat().st_size, ACCEPTANCE.LOG_BYTES)
+        self.assertLessEqual(Path(summary["log"]).stat().st_size, ACCEPTANCE.FailureSummary.LIMIT)
+        success = ACCEPTANCE.capture([sys.executable, "-c", "print('all passed')"], self.directory,
+                                     "contract", retain_failures=True)
+        self.assertEqual(success["exit_code"], 0)
+        self.assertIsNone(success["failure_summary"]["log"])
+        self.assertFalse(Path(summary["log"]).exists())
+
+    def test_failure_summary_bounds_utf8_and_overlong_unterminated_lines(self):
+        summary = ACCEPTANCE.FailureSummary()
+        for _ in range(100):
+            summary.feed(b"x" * 8192)
+            self.assertLessEqual(len(summary.partial), summary.LINE_LIMIT)
+        summary.feed(b"\ntest resumed ... FAILED\n")
+        for _ in range(100):
+            summary.feed(("test " + "\u9519\u8bef" * 300 + " ... FAILED\n").encode())
+            summary.feed(("thread 'broken' panicked at fixture.rs:1:1:\n" + "\u9519\u8bef" * 300 + "\n").encode())
+        result = summary.write(self.directory, "bounded",
+                               lambda text: ACCEPTANCE.redact(text, ("\u8bef",)))["failure_summary"]
+        raw = Path(result["log"]).read_bytes()
+        self.assertTrue(result["truncated"])
+        self.assertIn("test resumed", raw.decode("utf-8"))
+        self.assertNotIn("\u8bef", raw.decode("utf-8"))
+        self.assertEqual(result["retained_bytes"], len(raw))
+        self.assertLessEqual(len(raw), result["limit_bytes"])
+        self.assertLessEqual(len(summary.summaries) + len(summary.details), 2 * summary.capacity)
+
     @unittest.skipIf(os.name == "nt", "POSIX process-group orphan cleanup")
     def test_capture_cleans_a_child_holding_an_exited_parents_pipe(self):
         program = ("import subprocess,sys;subprocess.Popen([sys.executable,'-c',"
@@ -403,15 +478,51 @@ class AcceptanceTests(unittest.TestCase):
     def test_contract_selects_feature_gated_tests(self):
         command = ACCEPTANCE.selected_commands("contract")[0]
         self.assertIn("--workspace", command)
+        self.assertIn("--no-fail-fast", command)
         self.assertIn("kuku/test_support", command)
+        self.assertEqual(ACCEPTANCE.selected_commands("integration")[-1], command)
         for suite in ACCEPTANCE.PROTOCOL_TESTS:
             self.assertIn(suite, ACCEPTANCE.selected_commands("protocol")[0])
+
+    def test_contract_failure_is_not_hidden_after_all_test_targets_run(self):
+        args = ["run.py", "--output", str(self.directory), "--run-id", "failed-contract", "contract"]
+        failed = {"exit_code": 101, "timed_out": False}
+        with mock.patch.object(sys, "argv", args), \
+                mock.patch.object(ACCEPTANCE, "tree_state", return_value={}), \
+                mock.patch.object(ACCEPTANCE, "capture", return_value=failed) as capture, \
+                mock.patch("builtins.print"):
+            self.assertEqual(ACCEPTANCE.main(), 1)
+        self.assertIn("--no-fail-fast", capture.call_args.args[0])
+        self.assertEqual(capture.call_args.kwargs["timeout"], 1800)
+        self.assertTrue(capture.call_args.kwargs["retain_failures"])
+        report = json.loads((self.directory / "failed-contract" / "result.json").read_text())
+        self.assertFalse(report["passed"])
+        self.assertEqual(report["checks"], [failed])
 
     def test_cargo_checks_cannot_inherit_another_worktrees_target_directory(self):
         with mock.patch.dict(os.environ, {"CARGO_TARGET_DIR": "/shared-target"}):
             env = ACCEPTANCE.command_environment()
             self.assertEqual(env["CARGO_TARGET_DIR"], str(ACCEPTANCE.ROOT / "target"))
             self.assertEqual(os.environ["CARGO_TARGET_DIR"], "/shared-target")
+
+    def test_workspace_cargo_output_preserves_the_native_helper_identity(self):
+        profile = {"opt_level": "0", "debuginfo": 2, "test": True}
+        helper = {"reason": "compiler-artifact", "executable": "/build/native-helper",
+                  "target": {"name": "interactive_pty", "kind": ["test"]},
+                  "profile": profile, "features": ["default"], "fresh": True}
+        application = {"reason": "compiler-artifact", "executable": "/build/kuku",
+                       "target": {"name": "kuku", "kind": ["bin"]}}
+        log = self.directory / "cargo.log"
+        log.write_text("\n".join(json.dumps(item) for item in (helper, application)))
+        self.assertEqual(ACCEPTANCE.pty_artifact(log), Path(helper["executable"]))
+        self.assertEqual(ACCEPTANCE.pty_build(log), helper)
+
+    def test_cargo_binary_cannot_be_used_as_the_native_helper(self):
+        log = self.directory / "cargo.log"
+        log.write_text(json.dumps({"reason": "compiler-artifact", "executable": "/build/decoy",
+                                  "target": {"name": "interactive_pty", "kind": ["bin"]}}))
+        with self.assertRaisesRegex(ValueError, "native PTY test helper"):
+            ACCEPTANCE.pty_artifact(log)
 
     def test_release_archives_only_extract_the_binary(self):
         source = self.directory / "source"

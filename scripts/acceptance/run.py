@@ -26,7 +26,7 @@ import uuid
 import zipfile
 
 from benchmark_resources import ResourceSampler, include_final_process_usage
-from evidence import inspect_sdk
+from evidence import FailureSummary, inspect_sdk
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -174,7 +174,8 @@ def redact(text, secrets=()):
     return text
 
 
-def capture(command, directory, label, timeout=900, env=None, secrets=(), cwd=ROOT, on_start=None):
+def capture(command, directory, label, timeout=900, env=None, secrets=(), cwd=ROOT, on_start=None,
+            retain_failures=False):
     directory.mkdir(parents=True, exist_ok=True)
     start = time.monotonic()
     flags = {"start_new_session": True} if os.name != "nt" else {
@@ -186,6 +187,7 @@ def capture(command, directory, label, timeout=900, env=None, secrets=(), cwd=RO
     tail = bytearray()
     total = 0
     digest = hashlib.sha256()
+    failures = FailureSummary() if retain_failures else None
 
     def drain():
         nonlocal total
@@ -198,6 +200,8 @@ def capture(command, directory, label, timeout=900, env=None, secrets=(), cwd=RO
                 break
             total += len(chunk)
             digest.update(chunk)
+            if failures is not None:
+                failures.feed(chunk)
             tail.extend(chunk)
             del tail[:-LOG_BYTES]
 
@@ -231,19 +235,23 @@ def capture(command, directory, label, timeout=900, env=None, secrets=(), cwd=RO
                 if raw_tail.startswith(secret[-length:]):
                     raw_tail = "[REDACTED]" + raw_tail[length:]
                     break
-    output = redact(raw_tail, secrets).encode()[-LOG_BYTES:].decode("utf-8", errors="ignore")
+    rendered = redact(raw_tail, secrets).encode("utf-8")
+    output = rendered[-LOG_BYTES:].decode("utf-8", errors="ignore").encode("utf-8")
     path = directory / f"{label}.log"
-    path.write_text(output, encoding="utf-8")
+    path.write_bytes(output)
     result = {
         "command": [redact(str(arg), secrets) for arg in command],
         "exit_code": process.returncode, "timed_out": timed_out,
         "seconds": round(time.monotonic() - start, 4),
         "log": str(path), "output_bytes": total,
-        "retained_bytes": len(output.encode()), "truncated": total > LOG_BYTES,
+        "retained_bytes": path.stat().st_size,
+        "truncated": total > LOG_BYTES or len(rendered) > LOG_BYTES,
         "output_sha256": digest.hexdigest(),
     }
     if reader.is_alive():
         result["capture_incomplete"] = True
+    if failures is not None:
+        result.update(failures.write(directory, label, lambda text: redact(text, secrets)))
     return result
 
 
@@ -536,7 +544,7 @@ def run_benchmark(args, directory, record, secrets):
 
 
 def selected_commands(group):
-    contract = ["cargo", "test", "--workspace", "--features", "kuku/test_support"]
+    contract = ["cargo", "test", "--workspace", "--no-fail-fast", "--timings", "--features", "kuku/test_support"]
     if group == "contract":
         return [contract]
     if group == "protocol":
@@ -570,7 +578,7 @@ def extract_release_binary(archive, binary):
     binary.chmod(0o755)
 
 
-def pty_artifact(log):
+def pty_build(log):
     for line in reversed(Path(log).read_text(encoding="utf-8").splitlines()):
         try:
             message = json.loads(line)
@@ -579,8 +587,12 @@ def pty_artifact(log):
         if message.get("reason") == "compiler-artifact" and message.get("executable"):
             target = message["target"]
             if target["name"] == "interactive_pty" and "test" in target["kind"]:
-                return Path(message["executable"])
+                return message
     raise ValueError("Cargo did not report the compiled native PTY test helper")
+
+
+def pty_artifact(log):
+    return Path(pty_build(log)["executable"])
 
 
 def verify_desktop_report(report, record):
@@ -683,9 +695,12 @@ def run_interactive(args, directory, record):
         return require_success(result)
 
     def build_bridge():
-        compiled = checked(["cargo", "test", "--locked", "-p", "kuku-app", "--test", "interactive_pty",
+        compiled = checked(["cargo", "test", "--locked", "--timings", "--workspace", "--features", "kuku/test_support",
+                            "--test", "interactive_pty",
                             "--no-run", "--message-format=json"], "native-pty-build")
-        return pty_artifact(compiled["log"])
+        artifact = pty_build(compiled["log"])
+        record["bridge_build"] = {key: artifact[key] for key in ("features", "profile", "fresh")}
+        return Path(artifact["executable"])
 
     with scratch_directory(scratch, record, prefix="kuku-interactive-") as scratch_dir:
         if args.live or args.intent:
@@ -711,7 +726,7 @@ def run_interactive(args, directory, record):
             npm = "npm.cmd" if os.name == "nt" else "npm"
             checked([npm, "ci"], "web-dependencies", cwd=web)
             checked([npm, "run", "build"], "web-assets", cwd=web)
-            checked(["cargo", "install", "--locked", "--path", "apps/kuku", "--features",
+            checked(["cargo", "install", "--locked", "--timings", "--path", "apps/kuku", "--features",
                      "embedded-web-assets", "--root", str(prefix)], "source-install")
         record["binary"] = config_record(binary)
 
@@ -932,7 +947,8 @@ def main():
             record["checks"] = []
             for index, command in enumerate(commands):
                 check = capture(command, directory, f"check-{index + 1}", timeout=1800,
-                                env=env, secrets=secrets.values())
+                                env=env, secrets=secrets.values(),
+                                retain_failures=not paid and "--no-fail-fast" in command)
                 record["checks"].append(check)
                 if check["exit_code"] != 0 or check["timed_out"] or check.get("capture_incomplete"):
                     break

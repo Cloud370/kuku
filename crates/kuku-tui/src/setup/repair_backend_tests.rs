@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use httpmock::prelude::{MockServer, GET};
 use kuku::config::{generate_default, load_config, ApiKey};
+use kuku_client::local::ServiceIdentity;
 use kuku_client::{
     AgentProgress, AgentSelection, AgentStatus, Connection, ConnectionOptions, RetryFailureKind,
     RetryMetadata, RetryPhase, RetrySource, Snapshot,
@@ -13,11 +14,10 @@ use toml_edit::{value, DocumentMut};
 
 use super::super::config::{save_credential, Settings};
 use super::{
-    authentication_failure, prepare, verify_config_route, verify_failure, verify_restarted_service,
-    verify_route, CredentialRepairApplied, CredentialRepairPlan, FailedRoute,
+    authentication_failure, prepare, verify_config_route, verify_failure, verify_route,
+    verify_saved_config, CredentialRepairApplied, CredentialRepairPlan, FailedRoute,
     PreparedCredentialRepair, SavedCredentialRepair,
 };
-use crate::local_settings::ServiceIdentity;
 
 fn snapshot() -> Snapshot {
     let mut snapshot: Snapshot = serde_json::from_value(json!({
@@ -305,28 +305,23 @@ fn busy_service_keeps_the_saved_state_and_requires_an_explicit_restart_action() 
 }
 
 #[test]
-fn restart_confirmation_uses_the_returned_instance_even_when_its_endpoint_changes() {
+fn a_changed_saved_config_is_not_reported_as_applied() {
     let directory = tempfile::tempdir().unwrap();
     let config_path = directory.path().join("config.toml");
     fs::write(&config_path, "saved configuration").unwrap();
-    let before = ServiceIdentity {
-        endpoint: "http://127.0.0.1:1111".into(),
-        instance_id: "before".into(),
-        pid: 1,
-        data_dir: directory.path().to_string_lossy().into_owned(),
-        config_path,
-    };
     let saved = SavedCredentialRepair {
         config_sha256: format!("{:x}", Sha256::digest(b"saved configuration")),
-        service: before.clone(),
+        service: ServiceIdentity {
+            endpoint: "http://127.0.0.1:1111".into(),
+            instance_id: "observed".into(),
+            pid: 1,
+            data_dir: directory.path().to_string_lossy().into_owned(),
+            config_path: config_path.clone(),
+        },
     };
-    let mut after = before;
-    after.endpoint = "http://127.0.0.1:2222".into();
-    assert!(verify_restarted_service(&saved, &after).is_err());
-    after.instance_id = "after".into();
-    assert!(verify_restarted_service(&saved, &after).is_ok());
-    after.config_path = directory.path().join("another.toml");
-    assert!(verify_restarted_service(&saved, &after).is_err());
+    assert!(verify_saved_config(&saved).is_ok());
+    fs::write(&config_path, "edited by another client").unwrap();
+    assert!(verify_saved_config(&saved).is_err());
 }
 
 #[test]

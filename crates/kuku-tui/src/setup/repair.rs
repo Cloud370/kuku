@@ -120,6 +120,13 @@ impl CredentialRepair {
                 self.stage = Stage::SavedNotApplied;
                 false
             }
+            Ok(CredentialRepairApplied::SavedTargetChanged(problem)) => {
+                self.plan = None;
+                self.saved = None;
+                self.problem = Some(problem);
+                self.stage = Stage::SavedNotApplied;
+                false
+            }
             Err(problem) => {
                 self.problem = Some(problem);
                 self.stage = Stage::Input;
@@ -217,7 +224,7 @@ impl CredentialRepair {
                 }
                 Stage::SavedNotApplied => {
                     let Some(saved) = self.saved.clone() else {
-                        return CredentialRepairAction::None;
+                        return CredentialRepairAction::Close;
                     };
                     self.stage = Stage::Restarting;
                     CredentialRepairAction::Restart(saved)
@@ -292,7 +299,8 @@ impl CredentialRepair {
             Stage::Input => "Paste a new key; every character is masked.\nSaved locally as plaintext, not encrypted. Only this connection's credential will change.",
             Stage::Confirm => "Save credentials and restart local service\n\nThe current Session, Agent, draft and input remain. Other active work can defer restart. No model request will be made.",
             Stage::Saving => "Saving credentials and restarting the local service…\nNo request is being retried.",
-            Stage::SavedNotApplied => "Credentials saved; service not restarted\n\nRestart local service when its other work has finished. The saved credential is not confirmed as applied.",
+            Stage::SavedNotApplied if self.saved.is_some() => "Credentials saved; service not restarted\n\nRestart local service when its other work has finished. The saved credential is not confirmed as applied.",
+            Stage::SavedNotApplied => "Credentials saved; service needs checking\n\nReturn to the Session, press Ctrl+R to reconnect, and inspect the active local service before reopening credential repair. No request was retried.",
             Stage::Restarting => "Restarting the local service…\nNo request is being retried.",
             Stage::Reconnecting => "Credentials saved and local service restarted.\nReconnecting to the same Session…",
             Stage::ReconnectFailed => "Local service restarted; reconnect before retrying.\n\nEnter reconnects. Esc returns without sending a request.",
@@ -320,7 +328,10 @@ impl CredentialRepair {
         let footer = match self.stage {
             Stage::Input => "Enter reviews · Ctrl+A clears · Esc cancels without saving",
             Stage::Confirm => "Enter saves and restarts · Esc cancels without saving",
-            Stage::SavedNotApplied => "Enter restarts local service · Esc returns without retrying",
+            Stage::SavedNotApplied if self.saved.is_some() => {
+                "Enter restarts local service · Esc returns without retrying"
+            }
+            Stage::SavedNotApplied => "Enter / Esc returns to Session · Ctrl+R reconnects there",
             Stage::Saving | Stage::Restarting | Stage::Reconnecting => {
                 "Waiting for the local service · No retry sent"
             }
@@ -450,6 +461,44 @@ mod tests {
             CredentialRepairAction::Reconnect
         ));
         assert_eq!(Stage::Reconnecting, state.stage);
+    }
+
+    #[test]
+    fn a_changed_restart_target_returns_to_the_session_without_reusing_the_intent() {
+        for code in [KeyCode::Enter, KeyCode::Esc] {
+            let mut app = App::new(std::env::current_dir().unwrap(), None);
+            app.pane_mut().draft.set_text("preserved draft".into());
+            app.effects.clear();
+            let mut repair = state(&app);
+            repair.stage = Stage::Saving;
+            assert!(
+                !repair.saved(Ok(CredentialRepairApplied::SavedTargetChanged(
+                    "The local service changed before restart.".into(),
+                )))
+            );
+            assert_eq!(Stage::SavedNotApplied, repair.stage);
+            assert!(repair.saved.is_none());
+            let mut terminal = Terminal::new(TestBackend::new(96, 24)).unwrap();
+            terminal.draw(|frame| repair.render(frame)).unwrap();
+            let screen = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            assert!(screen.contains("Ctrl+R"));
+            assert!(!screen.contains("Enter restarts"));
+            assert!(!screen.contains("other work has finished"));
+            app.credential_repair = Some(Box::new(repair));
+            app.event(
+                Event::Key(KeyEvent::new(code, KeyModifiers::NONE)),
+                terminal.backend().buffer(),
+            );
+            assert!(app.credential_repair.is_none());
+            assert_eq!("preserved draft", app.pane().draft.text());
+            assert!(app.effects.is_empty());
+        }
     }
 
     #[test]

@@ -30,7 +30,8 @@ const DETACHED_PROBE_ENV: &str = "KUKU_TEST_DETACHED_COMMAND";
 
 #[tokio::test]
 async fn windows_system_interpreters_are_found_without_path_entries() {
-    let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+    let mut fixture = tokio::process::Command::new(std::env::current_exe().unwrap());
+    fixture
         .env("PATH", "")
         .args([
             "--ignored",
@@ -38,8 +39,10 @@ async fn windows_system_interpreters_are_found_without_path_entries() {
             "tool::builtin::run_command::windows_tests::system_shell_fixture",
             "--nocapture",
         ])
-        .output()
+        .kill_on_drop(true);
+    let output = timeout(Duration::from_secs(30), fixture.output())
         .await
+        .unwrap()
         .unwrap();
     assert!(
         output.status.success(),
@@ -72,14 +75,8 @@ async fn system_shell_fixture() {
     .await;
     assert_eq!("ok", result.status, "{result:?}");
     assert!(result.model_content.contains("system cmd"));
-    if shells.contains(&serde_json::json!("powershell")) {
-        let result = run_command(
-            &serde_json::json!({"shell":"powershell","command":"Write-Output 'system PowerShell'","cwd":".","timeout":5}),
-            dir.path(), None, None,
-        ).await;
-        assert_eq!("ok", result.status, "{result:?}");
-        assert!(result.model_content.contains("system PowerShell"));
-    }
+    assert!(shells.contains(&serde_json::json!("powershell")));
+    windows_large_output_is_bounded_and_reopens_without_event_consumers().await;
 }
 
 #[tokio::test]
@@ -491,7 +488,6 @@ async fn windows_dropped_command_future_stops_children_and_grandchildren() {
     tree.assert_descendants_exited().await;
 }
 
-#[tokio::test]
 async fn windows_large_output_is_bounded_and_reopens_without_event_consumers() {
     let dir = workspace();
     let outputs = dir.path().join("outputs");
@@ -500,7 +496,7 @@ async fn windows_large_output_is_bounded_and_reopens_without_event_consumers() {
         &serde_json::json!({"shell":"powershell","cwd":".","command":"[Console]::Out.Write('x' * 2097152); [Console]::Error.Write('e' * 4096)","timeout":10,"brief":"verify bounded Windows output"}),
         dir.path(), Some(tx), None, &outputs, "large", OutputLimits { max_output_bytes: 8192, max_preview_bytes: 1024 },
     )).await.unwrap();
-    assert_eq!("ok", result.status);
+    assert_eq!("ok", result.status, "{result:?}");
     assert!(result.truncated);
     assert!(result.model_content.len() <= 1024);
     let facts = result.structured.unwrap();

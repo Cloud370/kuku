@@ -2,17 +2,15 @@ mod common;
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::Duration;
 
-use axum::routing::{get, post};
+use axum::routing::get;
 use axum::Router;
+use common::mock_provider::{tool_response, ControlledProvider};
 use kuku::session::{AgentStatus, Session, SessionOptions};
 use kuku_server::server_args::ServerArgs;
 use serde_json::{json, Value};
 use sha2::Digest;
-use tokio::net::TcpListener;
-use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use wreq::{Method, RequestBuilder};
 
@@ -256,33 +254,8 @@ async fn model_default_plan_is_authenticated_hash_bound_and_has_no_path_input() 
 
 #[tokio::test]
 async fn restart_defers_during_execution_and_releases_a_durable_wait() {
-    let provider_release = Arc::new(Notify::new());
-    let reached = Arc::new(Notify::new());
-    let provider = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let config = common::mock_provider::make_test_config(provider.local_addr().unwrap().port());
-    let provider_router = Router::new().route(
-        "/v1/messages",
-        post({
-            let gate = provider_release.clone();
-            let reached = reached.clone();
-            move || async move {
-                reached.notify_one();
-                gate.notified().await;
-                (
-                    [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
-                    common::mock_provider::anthropic_sse_response(json!({
-                        "id":"ask","type":"message","role":"assistant",
-                        "content":[{"type":"tool_use","id":"ask-name","name":"ask_user",
-                            "input":{"question":"Which name?"}}],
-                        "stop_reason":"tool_use","usage":{"input_tokens":5,"output_tokens":6}
-                    })),
-                )
-            }
-        }),
-    );
-    let provider_task = tokio::spawn(async move {
-        axum::serve(provider, provider_router).await.unwrap();
-    });
+    let mut provider = ControlledProvider::start().await;
+    let config = common::mock_provider::make_test_config(provider.port());
     let home = tempfile::tempdir().unwrap();
     let workspace = tempfile::tempdir().unwrap();
     let canonical = workspace.path().canonicalize().unwrap();
@@ -303,9 +276,7 @@ async fn restart_defers_during_execution_and_releases_a_durable_wait() {
     let status = response.status();
     let response: Value = response.json().await.unwrap();
     assert_eq!(200, status, "{response}");
-    tokio::time::timeout(READY_TIMEOUT, reached.notified())
-        .await
-        .unwrap();
+    let call = provider.next().await;
 
     let reply = daemon
         .native(Method::POST, "/service/restart")
@@ -320,7 +291,11 @@ async fn restart_defers_during_execution_and_releases_a_durable_wait() {
         .unwrap()
         .starts_with("restart-wait/main/"));
     assert!(!daemon.task.is_finished());
-    provider_release.notify_one();
+    call.reply(tool_response(
+        "ask_user",
+        "ask-name",
+        json!({"question":"Which name?"}),
+    ));
 
     let home = home.path().canonicalize().unwrap();
     let log = kuku::session::session_events_path(&home, &canonical, "restart-wait").unwrap();
@@ -359,7 +334,7 @@ async fn restart_defers_during_execution_and_releases_a_durable_wait() {
     assert_eq!(AgentStatus::Waiting, agent.status);
     assert_eq!("Which name?", agent.question.unwrap().text);
     reopened.close().await.unwrap();
-    provider_task.abort();
+    provider.assert_idle();
 }
 
 fn args(home: &Path) -> ServerArgs {

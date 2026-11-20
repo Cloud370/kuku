@@ -29,6 +29,8 @@
 | `Session::read_agents(events_path)` | 不创建运行资源的离线恢复快照 |
 | `Session::read_view(events_path, address)` / `Session::read_receipt(events_path, command_id)` | 从关闭的 Session 读取 Agent 视图或命令回执 |
 
+较低层的 `Query` `Run` 通过 non-exhaustive 的 `UiEvent` 和 `ToolEvent` 枚举提供宿主事件；两者匹配时都应保留兜底分支。两个枚举都包含 `ModelRequest` 和 `ModelRecovery` 变体；`ModelRequest` 携带请求 ID 和序号，`ModelRecovery` 携带失败／重试请求 ID 与有界重试信息。行为说明见 [Agent 执行循环](../how-it-works/agent-loop.md)。
+
 `SessionOptions::new(workspace, data_dir, config)` 接收具名 provider 配置；可增加 Prompt 资源、限额与宿主 `ToolAuthorizer`。`AgentConfig` 选择 Preset、Tier、具名连接、模型、思考、服务、输出 token、指令、目录和原生 Skill 默认值。连接选择独立于协议。显式 model 覆盖所选 Tier 的模型，保留其余默认值。`AgentConfig.tools` 覆盖 Preset 的最终工具选择；只读 Preset 不会自动增加协作工具。Preset 的指令、Tier 和工具默认值在创建或配置 Agent 时解析并保存；后续修改 Preset 文件不会改变这些已保留默认值。生命周期与回执语义见 [Sessions](../how-it-works/sessions.md)。
 
 `Input.timing` 区分默认的 `InputTiming::NextStep` 和 `InputTiming::NextTurn`。`AgentSnapshot.execution_id` 标识本次执行。`Observation::Live` 包含来源 Agent、执行标识、Turn 和发布该进度时最新的已提交游标。用 `agent_view` 取得与所选 Agent 状态对应的游标，从那里开始观察。

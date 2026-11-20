@@ -11,7 +11,7 @@ use std::time::Duration;
 use axum::body::{Body, Bytes};
 use axum::routing::post;
 use axum::Router;
-use common::mock_provider::{self, text_response, tool_response};
+use common::mock_provider::{self, text_response, tool_response, ControlledProvider};
 use common::TestServer;
 use httpmock::Method;
 use kuku::event::{EventPayload, EventStore};
@@ -347,29 +347,8 @@ async fn activity_snapshot(server: &TestServer, session: &str, agent: &str) -> V
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_observer_disconnect_leaves_exactly_one_durable_tool_result() {
-    let mock = mock_provider::start_mock_provider().await;
-    let call = mock.mock(|when, then| {
-        when.method(Method::POST)
-            .path("/v1/messages")
-            .matches(|request| !request_contains_tool_result(request));
-        then.status(200)
-            .delay(Duration::from_millis(300))
-            .body(tool_response(
-                "write_file",
-                "write-proof",
-                json!({
-                    "path":"proof.txt","content":"persisted\n","brief":"write proof"
-                }),
-            ));
-    });
-    let continuation = mock.mock(|when, then| {
-        when.method(Method::POST)
-            .path("/v1/messages")
-            .matches(request_contains_tool_result)
-            .body_contains("write-proof");
-        then.status(200).body(text_response("Proof committed."));
-    });
-    let server = TestServer::start(mock_provider::make_test_config(mock.port())).await;
+    let mut provider = ControlledProvider::start().await;
+    let server = TestServer::start(mock_provider::make_test_config(provider.port())).await;
     let id = "durable-result";
     server
         .submit(
@@ -377,6 +356,7 @@ async fn an_observer_disconnect_leaves_exactly_one_durable_tool_result() {
             json!({"type":"send","command_id":"command","text":"write proof","create":{}}),
         )
         .await;
+    let call = provider.next().await;
     let first = server.snapshot(id, "main").await;
     let cursor = first["cursor"].as_u64().unwrap();
     let observer = server
@@ -391,6 +371,24 @@ async fn an_observer_disconnect_leaves_exactly_one_durable_tool_result() {
     assert_eq!(200, observer.status());
     assert_eq!("application/x-ndjson", observer.headers()["content-type"]);
     drop(observer);
+    call.reply(tool_response(
+        "write_file",
+        "write-proof",
+        json!({
+            "path":"proof.txt","content":"persisted\n","brief":"write proof"
+        }),
+    ));
+    let continuation = provider.next().await;
+    let result = continuation.request["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|message| message["content"].as_array())
+        .flatten()
+        .find(|block| block["type"] == "tool_result" && block["tool_use_id"] == "write-proof")
+        .expect("Committed write_file result is missing");
+    assert_ne!(true, result["is_error"], "{result}");
+    continuation.reply(text_response("Proof committed."));
 
     let end = server
         .wait_for_snapshot(id, "main", |snapshot| {
@@ -435,8 +433,7 @@ async fn an_observer_disconnect_leaves_exactly_one_durable_tool_result() {
     .await
     .unwrap();
     assert_eq!(1, results);
-    call.assert_hits(1);
-    continuation.assert_hits(1);
+    provider.assert_idle();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
