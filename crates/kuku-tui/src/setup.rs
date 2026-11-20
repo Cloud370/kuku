@@ -14,7 +14,7 @@ pub(crate) use repair_backend::{
     save as save_credential_repair,
 };
 pub(crate) use repair_backend::{
-    authentication_failure, CredentialRepairApplied, CredentialRepairPlan, CredentialRepairRequest,
+    CredentialRepairApplied, CredentialRepairPlan, CredentialRepairRequest,
     PreparedCredentialRepair, SavedCredentialRepair,
 };
 

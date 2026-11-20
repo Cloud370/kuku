@@ -6,8 +6,8 @@ use kuku::config::ProviderFormat;
 use kuku::event::EventPayload;
 use kuku_client::local::RestartOutcome;
 use kuku_client::{
-    AgentProgress, AgentStatus, Connection, ConnectionOptions, RetryFailureKind, RetrySource,
-    Snapshot, Target,
+    AgentProgress, AgentStatus, Connection, ConnectionOptions, RetryFailureKind, RetryMetadata,
+    RetrySource, Snapshot, Target,
 };
 use sha2::{Digest, Sha256};
 use url::Url;
@@ -64,27 +64,32 @@ pub(crate) enum CredentialRepairApplied {
 }
 
 pub(crate) fn authentication_failure(snapshot: &Snapshot) -> Option<CredentialRepairRequest> {
-    if snapshot.agent.status != AgentStatus::Interrupted || snapshot.cleaning_up {
-        return None;
-    }
     let AgentProgress::RetryStopped { retry } = snapshot.progress.as_ref()? else {
         return None;
     };
-    if retry.source != RetrySource::Provider
-        || retry.failed_kind != Some(RetryFailureKind::Authentication)
-        || retry.will_retry != Some(false)
-    {
-        return None;
+    CredentialRepairRequest::from_retry(snapshot, retry)
+}
+
+impl CredentialRepairRequest {
+    pub(crate) fn from_retry(snapshot: &Snapshot, retry: &RetryMetadata) -> Option<Self> {
+        if snapshot.agent.status != AgentStatus::Interrupted
+            || snapshot.cleaning_up
+            || retry.source != RetrySource::Provider
+            || retry.failed_kind != Some(RetryFailureKind::Authentication)
+            || retry.will_retry != Some(false)
+        {
+            return None;
+        }
+        Some(Self {
+            target: Target {
+                workspace: snapshot.workspace.clone(),
+                session_id: snapshot.session_id.clone(),
+                agent: snapshot.agent.address.clone(),
+            },
+            turn: snapshot.agent.turn?,
+            request_id: retry.request_id.clone()?,
+        })
     }
-    Some(CredentialRepairRequest {
-        target: Target {
-            workspace: snapshot.workspace.clone(),
-            session_id: snapshot.session_id.clone(),
-            agent: snapshot.agent.address.clone(),
-        },
-        turn: snapshot.agent.turn?,
-        request_id: retry.request_id.clone()?,
-    })
 }
 
 pub(crate) async fn prepare(
