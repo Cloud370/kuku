@@ -10,6 +10,7 @@ mod wait_support;
 
 #[cfg(unix)]
 use std::sync::Arc;
+#[cfg(unix)]
 use std::time::Duration;
 
 use httpmock::prelude::{HttpMockRequest, MockServer, POST};
