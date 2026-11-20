@@ -34,7 +34,7 @@ async fn settled_with_stage_timeout(
         Ok(snapshot) => snapshot,
         Err(error) => panic!(
             "agent wait failed during {stage}: {}; {}",
-            limited(&error.to_string(), 512),
+            error_kind(&error),
             execution_wait_diagnostics(session, address)
         ),
     }
@@ -83,11 +83,11 @@ fn execution_wait_diagnostics(session: &Session, address: &str) -> String {
         .or_else(|_| session.agent(address));
     let snapshot = match agent {
         Ok(agent) => format!(
-            "status={:?}, turn={:?}, execution_id={:?}, pending_inputs={}, model_requests={}, last_error={:?}",
+            "status={:?}, turn={:?}, execution_id={:?}, pending_inputs={}, model_requests={}, last_error_present={}",
             agent.status, agent.turn, agent.execution_id, agent.pending_inputs,
-            agent.usage.model_requests, agent.last_error.as_deref().map(|error| limited(error, 512))
+            agent.usage.model_requests, agent.last_error.is_some()
         ),
-        Err(error) => format!("unavailable: {}", limited(&error.to_string(), 512)),
+        Err(error) => format!("unavailable: {}", error_kind(&error)),
     };
     let mut phase = "unknown";
     let mut recent = VecDeque::new();
@@ -105,7 +105,7 @@ fn execution_wait_diagnostics(session: &Session, address: &str) -> String {
             }
             None
         }
-        Err(error) => Some(limited(&error.to_string(), 512)),
+        Err(error) => Some(error_kind(&error)),
     };
     format!(
         "last recorded execution phase: {phase}; cursor={cursor:?}; agent: {snapshot}; recent committed event markers: {recent:?}; journal read error: {journal_error:?}"
@@ -137,16 +137,29 @@ fn execution_marker(event: &StoredEvent) -> String {
             format!("{}:{kind} stop={stop_reason:?}", event.id)
         }
         EventPayload::ModelError {
-            kind: error_kind,
-            message,
-            ..
-        } => format!(
-            "{}:{kind} kind={} message={}",
-            event.id,
-            limited(error_kind, 64),
-            limited(message, 128)
-        ),
+            kind: error_kind, ..
+        } => format!("{}:{kind} kind={}", event.id, limited(error_kind, 64)),
         _ => format!("{}:{kind}", event.id),
+    }
+}
+
+fn error_kind(error: &kuku::Error) -> String {
+    match error {
+        kuku::Error::Io(error) => {
+            format!("Io(kind={:?}, os={:?})", error.kind(), error.raw_os_error())
+        }
+        kuku::Error::Json(error) => format!("Json({:?})", error.classify()),
+        kuku::Error::AgentWaitTimeout => "AgentWaitTimeout".into(),
+        kuku::Error::InvalidArgument(_) => "InvalidArgument".into(),
+        kuku::Error::InvalidEventStream(message) => match message.as_str() {
+            "running agent has no active worker" => "InvalidEventStream(MissingWorker)".into(),
+            "agent worker ended without publishing a completion result" => {
+                "InvalidEventStream(MissingWorkerCompletion)".into()
+            }
+            _ => "InvalidEventStream".into(),
+        },
+        kuku::Error::Provider { kind, .. } => format!("Provider({kind:?})"),
+        _ => "Other".into(),
     }
 }
 
@@ -222,13 +235,17 @@ mod tests {
         ModelStream,
     };
 
-    use super::{settled_with_stage_timeout, Duration, ModelStopReason, Session};
+    use super::{
+        error_kind, execution_wait_diagnostics, settled_with_stage_timeout, Duration,
+        ModelStopReason, Session,
+    };
 
     #[derive(Debug, Default)]
     struct GatedModel {
         started: Notify,
         release: Notify,
         calls: AtomicUsize,
+        failure: Option<String>,
     }
 
     impl ModelAdapter for GatedModel {
@@ -237,6 +254,9 @@ mod tests {
                 self.calls.fetch_add(1, Ordering::SeqCst);
                 self.started.notify_one();
                 self.release.notified().await;
+                if let Some(failure) = &self.failure {
+                    return Err(kuku::Error::InvalidEventStream(failure.clone()));
+                }
                 Ok(Box::pin(tokio_stream::iter([
                     Ok(ModelEvent::StreamStart {
                         request_id: "held-provider".into(),
@@ -306,5 +326,55 @@ mod tests {
         assert_eq!(Some("released"), completed.last_output.as_deref());
         assert_eq!(1, completed.usage.model_requests);
         assert_eq!(1, model.calls.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn diagnostics_keep_error_kinds_without_freeform_payloads() {
+        const SENTINEL: &str = "private-provider-response-sentinel";
+        let server = httpmock::MockServer::start_async().await;
+        let workspace = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let model = Arc::new(GatedModel {
+            failure: Some(SENTINEL.into()),
+            ..GatedModel::default()
+        });
+        let mut options = super::super::options(&server, workspace.path(), data.path());
+        options.model_adapter = Some(model.clone());
+        let session = Session::open(options).await.unwrap();
+        session
+            .create_agent("create", "main", AgentConfig::default())
+            .unwrap();
+        session
+            .send(Input::new("input", "main", "fail the provider"))
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), model.started.notified())
+            .await
+            .unwrap();
+        model.release.notify_one();
+        let completed =
+            tokio::time::timeout(Duration::from_secs(2), session.wait_for_agent("main"))
+                .await
+                .unwrap()
+                .unwrap();
+        let diagnostics = execution_wait_diagnostics(&session, "main");
+        session.close().await.unwrap();
+
+        assert_eq!(AgentStatus::Interrupted, completed.status);
+        assert!(completed.last_error.as_deref().unwrap().contains(SENTINEL));
+        assert!(
+            diagnostics.contains("last_error_present=true"),
+            "{diagnostics}"
+        );
+        assert!(diagnostics.contains("model.error kind="), "{diagnostics}");
+        assert!(!diagnostics.contains(SENTINEL), "{diagnostics}");
+        let typed = error_kind(&kuku::Error::InvalidEventStream(SENTINEL.into()));
+        assert_eq!("InvalidEventStream", typed);
+        assert!(!typed.contains(SENTINEL));
+        assert_eq!(
+            "InvalidEventStream(MissingWorkerCompletion)",
+            error_kind(&kuku::Error::InvalidEventStream(
+                "agent worker ended without publishing a completion result".into()
+            ))
+        );
     }
 }
