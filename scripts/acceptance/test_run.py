@@ -483,6 +483,11 @@ class AcceptanceTests(unittest.TestCase):
         self.assertEqual(ACCEPTANCE.selected_commands("integration")[-1], command)
         for suite in ACCEPTANCE.PROTOCOL_TESTS:
             self.assertIn(suite, ACCEPTANCE.selected_commands("protocol")[0])
+        with mock.patch.object(ACCEPTANCE.os, "name", "nt"):
+            self.assertEqual(ACCEPTANCE.selected_commands("contract")[0][-2:],
+                             ["--", "--test-threads=1"])
+        with mock.patch.object(ACCEPTANCE.os, "name", "posix"):
+            self.assertNotIn("--test-threads=1", ACCEPTANCE.selected_commands("contract")[0])
 
     def test_contract_failure_is_not_hidden_after_all_test_targets_run(self):
         args = ["run.py", "--output", str(self.directory), "--run-id", "failed-contract", "contract"]

@@ -67,7 +67,7 @@ async fn system_shell_fixture() {
     assert!(shells.contains(&serde_json::json!("cmd")));
     let dir = workspace();
     let result = run_command(
-        &serde_json::json!({"shell":"cmd","command":"echo system cmd","cwd":".","timeout":5}),
+        &serde_json::json!({"shell":"cmd","command":"echo system cmd","cwd":".","timeout":CHILD_START_TIMEOUT.as_secs()}),
         dir.path(),
         None,
         None,
@@ -123,7 +123,7 @@ async fn detached_command_fixture() {
         &serde_json::json!({
             "program":"./console-fixture.exe",
             "args":["--ignored","--exact","tool::builtin::run_command::windows_tests::command_console_fixture","--nocapture"],
-            "cwd":".","timeout":10,"brief":"observe the background command console"
+            "cwd":".","timeout":CHILD_START_TIMEOUT.as_secs(),"brief":"observe the background command console"
         }),
         dir.path(),
         None,
@@ -358,7 +358,7 @@ exit 7
 "#;
     let output_dir = path.join("outputs");
     let result = run_command_with_output(
-        &serde_json::json!({"shell":"powershell","command":command,"cwd":".","timeout":10,"brief":"write a marker with PowerShell"}),
+        &serde_json::json!({"shell":"powershell","command":command,"cwd":".","timeout":CHILD_START_TIMEOUT.as_secs(),"brief":"write a marker with PowerShell"}),
         &path,
         None,
         None,
@@ -402,7 +402,7 @@ exit 7
 async fn windows_powershell_bare_dash_is_evaluated_as_script_text() {
     let dir = workspace();
     let result = run_command(
-        &serde_json::json!({"shell":"powershell","command":"-","cwd":".","timeout":5}),
+        &serde_json::json!({"shell":"powershell","command":"-","cwd":".","timeout":CHILD_START_TIMEOUT.as_secs()}),
         dir.path(),
         None,
         None,
@@ -423,7 +423,7 @@ async fn windows_shell_runs_a_quoted_executable_and_the_next_command() {
     .unwrap();
     let command = r#"".\quoted executable.exe" --list --exact "tool::builtin::run_command::windows_tests::command_tree_fixture" && type "workspace marker.txt""#;
     let result = run_command(
-        &serde_json::json!({"shell":"cmd","command":command,"cwd":".","timeout":10,"brief":"list a test and read a marker"}),
+        &serde_json::json!({"shell":"cmd","command":command,"cwd":".","timeout":CHILD_START_TIMEOUT.as_secs(),"brief":"list a test and read a marker"}),
         dir.path(),
         None,
         None,
@@ -469,8 +469,11 @@ async fn windows_cancellation_stops_children_and_grandchildren() {
 
 #[tokio::test]
 async fn windows_timeout_stops_children_and_grandchildren() {
-    let mut tree = RunningTree::start(5).await;
-    let result = tree.result(Duration::from_secs(8)).await;
+    let mut tree = RunningTree::start(20).await;
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(20)).await;
+    tokio::time::resume();
+    let result = tree.result(PROCESS_EXIT_TIMEOUT).await;
     assert_eq!("error", result.status);
     assert_eq!(true, result.structured.unwrap()["timed_out"]);
     tree.assert_descendants_exited().await;
@@ -493,7 +496,7 @@ async fn windows_large_output_is_bounded_and_reopens_without_event_consumers() {
     let outputs = dir.path().join("outputs");
     let (tx, _rx) = mpsc::channel::<CommandEvent>(1);
     let result = timeout(Duration::from_secs(15), run_command_with_output(
-        &serde_json::json!({"shell":"powershell","cwd":".","command":"[Console]::Out.Write('x' * 2097152); [Console]::Error.Write('e' * 4096)","timeout":10,"brief":"verify bounded Windows output"}),
+        &serde_json::json!({"shell":"powershell","cwd":".","command":"[Console]::Out.Write('x' * 2097152); [Console]::Error.Write('e' * 4096)","timeout":CHILD_START_TIMEOUT.as_secs(),"brief":"verify bounded Windows output"}),
         dir.path(), Some(tx), None, &outputs, "large", OutputLimits { max_output_bytes: 8192, max_preview_bytes: 1024 },
     )).await.unwrap();
     assert_eq!("ok", result.status, "{result:?}");
@@ -529,11 +532,11 @@ async fn windows_batch_execution_requires_an_explicit_cmd_interpreter() {
         b"@echo off\r\necho batch launched\r\nexit /b 4\r\n",
     )
     .unwrap();
-    let native = serde_json::json!({"program":"./fixture.cmd","args":[],"cwd":".","timeout":5});
+    let native = serde_json::json!({"program":"./fixture.cmd","args":[],"cwd":".","timeout":CHILD_START_TIMEOUT.as_secs()});
     let rejected = run_command(&native, dir.path(), None, None).await;
     assert_eq!("error", rejected.status);
     assert!(rejected.model_content.contains("shell='cmd'"));
-    let shell = serde_json::json!({"shell":"cmd","command":"fixture.cmd","cwd":".","timeout":5});
+    let shell = serde_json::json!({"shell":"cmd","command":"fixture.cmd","cwd":".","timeout":CHILD_START_TIMEOUT.as_secs()});
     let explicit = run_command(&shell, dir.path(), None, None).await;
     assert_eq!("ok", explicit.status, "{explicit:?}");
     assert_eq!(4, explicit.structured.unwrap()["exit_code"]);
