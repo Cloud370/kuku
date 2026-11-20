@@ -1,7 +1,9 @@
 use crate::app::App;
 use crate::jobs::Job;
 use crate::menu::{Choice, ChoiceKind, MessageAction, PickerKind};
-use crate::transcript::{DetailKey, MessageId, MessageInfo, MessageKind, SelectedMessage};
+use crate::transcript::{
+    DetailKey, MessageId, MessageInfo, MessageKind, RewindGroupAction, SelectedMessage,
+};
 
 impl App {
     pub(crate) fn open_messages_picker(&mut self) {
@@ -26,7 +28,7 @@ impl App {
             .pane()
             .transcript
             .message_entries(&selection.target.agent);
-        let choices: Vec<_> = entries
+        let mut choices: Vec<_> = entries
             .into_iter()
             .map(|entry| {
                 Choice::new(
@@ -39,8 +41,53 @@ impl App {
                 )
             })
             .collect();
+        let rewind_groups = self.pane().transcript.rewind_group_choices();
+        if !rewind_groups.is_empty() {
+            choices.push(Choice::new(
+                "Rewound · read-only",
+                "Excluded from model context",
+                ChoiceKind::RewindSection,
+            ));
+            for group in rewind_groups {
+                let summary = group.summary.clone();
+                let detail = group.label.clone();
+                let rewind_event_id = group.rewind_event_id;
+                let make_group_choice = |label, action| {
+                    Choice::new(
+                        label,
+                        detail.clone(),
+                        ChoiceKind::RewindGroup {
+                            selection: selection.clone(),
+                            rewind_event_id,
+                            action,
+                        },
+                    )
+                };
+                let action_label = if group.expanded {
+                    "Collapse group"
+                } else {
+                    "Expand group"
+                };
+                choices.push(make_group_choice(
+                    format!("{action_label} · {summary}"),
+                    RewindGroupAction::Toggle,
+                ));
+                if group.can_retry {
+                    choices.push(make_group_choice(
+                        format!("Retry · {summary}"),
+                        RewindGroupAction::Retry,
+                    ));
+                } else if group.can_load_more {
+                    choices.push(make_group_choice(
+                        format!("Load earlier · {summary}"),
+                        RewindGroupAction::More,
+                    ));
+                }
+            }
+        }
         let picker = self.picker(PickerKind::Messages, choices);
-        picker.header = "Loaded active transcript only · older history is not loaded".into();
+        picker.clamp_selection();
+        picker.header = "Active messages · older history is not loaded".into();
         if let Some(previous) = previous {
             if let Some(index) = picker
                 .visible_choices()

@@ -464,6 +464,14 @@ impl App {
             ChoiceKind::MessageAction { message, action } => {
                 self.execute_message_action(message, action)
             }
+            ChoiceKind::RewindSection => {}
+            ChoiceKind::RewindGroup {
+                selection,
+                rewind_event_id,
+                action,
+            } => {
+                self.activate_selected_readonly_rewind_group(selection, rewind_event_id, action);
+            }
             ChoiceKind::Pending(id) => self.open_pending_item(&id),
             ChoiceKind::PendingRetry(id) => self.pending_retry(&id),
             ChoiceKind::PendingCheck(id) => self.pending_check(&id),
@@ -867,11 +875,14 @@ fn move_cursor(editor: &mut Editor, key: KeyEvent, width: usize, multiline: bool
 }
 
 #[cfg(test)]
+#[path = "interaction/message_tests.rs"]
+mod message_tests;
+#[cfg(test)]
 mod rewound_copy_tests;
 #[cfg(test)]
 mod rewound_focus_tests;
 #[cfg(test)]
-#[path = "interaction/message_tests.rs"]
-mod message_tests;
+#[path = "interaction/rewound_picker_tests.rs"]
+mod rewound_picker_tests;
 #[cfg(test)]
 mod tests;

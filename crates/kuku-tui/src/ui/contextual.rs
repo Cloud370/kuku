@@ -53,6 +53,15 @@ fn action_label(control: &ContextControl) -> &'static str {
 }
 
 pub(super) fn focused_hint(app: &App, width: usize) -> Option<Vec<Line<'static>>> {
+    if app.pane().transcript.focused_rewind_group().is_some() {
+        return Some(vec![
+            Line::styled(shorten("Rewound · read-only", width), focused_row()),
+            Line::styled(
+                shorten("↑↓/PgUp/PgDn browse · Esc input", width),
+                Style::new().fg(MUTED),
+            ),
+        ]);
+    }
     if !app.pane().contextual_focus.active {
         return None;
     }

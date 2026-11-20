@@ -45,7 +45,9 @@ impl App {
     }
 
     pub(crate) fn focus_composer(&mut self) {
-        self.pane_mut().keyboard_focus = KeyboardFocus::Composer;
+        let pane = self.pane_mut();
+        pane.keyboard_focus = KeyboardFocus::Composer;
+        pane.transcript.set_focused_rewind_group(None);
     }
 
     pub(crate) fn focus_history(&mut self) {

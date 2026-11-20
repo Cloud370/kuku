@@ -4,8 +4,9 @@ use kuku_client::Target;
 use ratatui::layout::{Position, Rect};
 
 use crate::editor::Editor;
+use crate::jobs::Selection;
 use crate::keys::Shortcut;
-use crate::transcript::{DetailKey, SelectedMessage};
+use crate::transcript::{DetailKey, RewindGroupAction, SelectedMessage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CommandMenu {
@@ -94,6 +95,12 @@ pub(crate) enum ChoiceKind {
         message: SelectedMessage,
         action: MessageAction,
     },
+    RewindSection,
+    RewindGroup {
+        selection: Selection,
+        rewind_event_id: u64,
+        action: RewindGroupAction,
+    },
     Pending(String),
     PendingRetry(String),
     PendingCheck(String),
@@ -128,6 +135,7 @@ impl ChoiceKind {
                 | Self::RewindMessage { .. }
                 | Self::MessageEntry(_)
                 | Self::MessageAction { .. }
+                | Self::RewindGroup { .. }
                 | Self::Pending(_)
                 | Self::PendingOpen { .. }
                 | Self::Detail { .. }
@@ -327,24 +335,69 @@ impl Picker {
     }
 
     pub(crate) fn move_by(&mut self, amount: isize) {
-        self.selected = self.selected.saturating_add_signed(amount);
-        self.clamp_selection();
+        let choices = self.visible_choices();
+        if choices.is_empty() {
+            self.selected = 0;
+            return;
+        }
+        let direction = amount.signum();
+        let mut selected = self.selected.min(choices.len() - 1) as isize;
+        for _ in 0..amount.unsigned_abs().min(choices.len()) {
+            let mut candidate = selected.saturating_add(direction);
+            while candidate >= 0 && candidate < choices.len() as isize {
+                if Self::selectable(choices[candidate as usize]) {
+                    selected = candidate;
+                    break;
+                }
+                candidate = candidate.saturating_add(direction);
+            }
+        }
+        self.selected = selected as usize;
+        self.invalidate_rows();
     }
 
     pub(crate) fn cycle_by(&mut self, amount: isize) {
-        let count = self.visible_choices().len();
-        if count == 0 {
+        let choices = self.visible_choices();
+        let selectable: Vec<_> = choices
+            .iter()
+            .enumerate()
+            .filter_map(|(index, choice)| Self::selectable(choice).then_some(index))
+            .collect();
+        if selectable.is_empty() {
             return;
         }
-        self.selected = (self.selected as isize + amount).rem_euclid(count as isize) as usize;
+        let position = selectable
+            .iter()
+            .position(|index| *index == self.selected)
+            .unwrap_or(0) as isize;
+        let count = selectable.len() as isize;
+        let next = (position + amount.rem_euclid(count)).rem_euclid(count) as usize;
+        self.selected = selectable[next];
         self.invalidate_rows();
     }
 
     pub(crate) fn clamp_selection(&mut self) {
         self.invalidate_rows();
-        self.selected = self
-            .selected
-            .min(self.visible_choices().len().saturating_sub(1));
+        let choices = self.visible_choices();
+        if choices.is_empty() {
+            self.selected = 0;
+            return;
+        }
+        let selected = self.selected.min(choices.len() - 1);
+        let selected = if !Self::selectable(choices[selected]) {
+            (selected + 1..choices.len())
+                .find(|index| Self::selectable(choices[*index]))
+                .or_else(|| {
+                    (0..selected)
+                        .rev()
+                        .find(|index| Self::selectable(choices[*index]))
+                })
+                .unwrap_or(0)
+        } else {
+            selected
+        };
+        drop(choices);
+        self.selected = selected;
     }
 
     pub(crate) fn choice_count(&self) -> usize {
@@ -384,7 +437,12 @@ impl Picker {
     pub(crate) fn selected_choice(&self) -> Option<ChoiceKind> {
         self.visible_choices()
             .get(self.selected)
+            .filter(|choice| Self::selectable(choice))
             .map(|choice| choice.kind.clone())
+    }
+
+    fn selectable(choice: &Choice) -> bool {
+        !matches!(&choice.kind, ChoiceKind::RewindSection)
     }
 
     pub(crate) fn set_rows(&mut self, area: Rect, indices: Range<usize>, row_height: u16) {
@@ -413,6 +471,9 @@ impl Picker {
             return None;
         }
         let choice = &self.visible_choices().get(hit.index)?.kind;
+        if matches!(choice, ChoiceKind::RewindSection) {
+            return None;
+        }
         let opened = choice.opens_on_click().then(|| choice.clone());
         self.selected = hit.index;
         opened

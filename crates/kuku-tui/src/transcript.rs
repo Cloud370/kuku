@@ -119,6 +119,7 @@ pub(crate) struct Transcript {
     detail_items: Details,
     visible_links: Vec<(usize, LinkDestination)>,
     visible_rewind_actions: Vec<(usize, u64, RewindGroupAction)>,
+    focused_rewind_group: Option<u64>,
     readonly_epoch: u64,
 }
 
@@ -126,6 +127,7 @@ impl Transcript {
     pub(crate) fn replace_recent(&mut self, page: HistoryPage) {
         self.readonly_epoch = self.readonly_epoch.wrapping_add(1);
         self.reset_pending_rewind_group_pages();
+        self.focused_rewind_group = None;
         self.reply_position = None;
         if let Some(reading) = &mut self.reading {
             let previous = self
@@ -149,6 +151,7 @@ impl Transcript {
         self.readonly_epoch = self.readonly_epoch.wrapping_add(1);
         self.reply_position = None;
         self.notes = None;
+        self.focused_rewind_group = None;
         if let Some(reading) = self.reading.take() {
             self.restore = reading.restore_at();
         }
@@ -224,12 +227,25 @@ impl Transcript {
     pub(crate) fn show_latest(&mut self) {
         self.reply_position = None;
         self.notes = None;
+        self.focused_rewind_group = None;
         self.reading = None;
         self.restore = None;
     }
 
     pub(crate) fn reading_anchor(&self) -> Option<&Anchor> {
         self.reading.as_ref().map(|reading| &reading.anchor)
+    }
+
+    pub(crate) fn set_focused_rewind_group(&mut self, rewind_event_id: Option<u64>) {
+        self.focused_rewind_group = rewind_event_id;
+    }
+
+    pub(crate) fn focused_rewind_group(&self) -> Option<u64> {
+        let rewind_event_id = self.focused_rewind_group?;
+        self.rewind_group_choices()
+            .iter()
+            .any(|group| group.rewind_event_id == rewind_event_id && group.expanded)
+            .then_some(rewind_event_id)
     }
 
     pub(crate) fn is_reading(&self) -> bool {
@@ -320,7 +336,6 @@ impl Transcript {
         }
         None
     }
-
 }
 
 pub(crate) struct TranscriptView {

@@ -31,6 +31,16 @@ impl App {
                 self.escape_armed_at = None;
                 return;
             }
+            if self.modal.is_none() && self.pane().transcript.focused_rewind_group().is_some() {
+                self.deactivate_context_focus();
+                self.focus_composer();
+                self.escape_armed_at = None;
+                return;
+            }
+            let messages_picker = matches!(
+                &self.modal,
+                Some(Modal::Picker(picker)) if matches!(picker.kind, PickerKind::Messages)
+            );
             if let Some(modal) = self.modal.take() {
                 let close_picker = !matches!(&modal, Modal::Help);
                 if let Modal::Prompt(prompt) = modal {
@@ -40,6 +50,10 @@ impl App {
                 }
                 if close_picker {
                     self.effects.push(Job::ClosePicker);
+                }
+                if messages_picker {
+                    self.deactivate_context_focus();
+                    self.focus_composer();
                 }
                 self.rewind_restore_files = false;
                 self.escape_armed_at = None;

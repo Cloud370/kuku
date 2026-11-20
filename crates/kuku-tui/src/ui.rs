@@ -10,7 +10,7 @@ use crate::app::{App, Modal};
 use crate::editor::{Editor, EditorView};
 use crate::keys::Shortcut;
 use crate::markup::{render_literal, wrap};
-use crate::menu::{Picker, PickerKind, Prompt, PromptKind};
+use crate::menu::{ChoiceKind, Picker, PickerKind, Prompt, PromptKind};
 use crate::output::OutputViewer;
 use crate::text::{shorten, single_line};
 use crate::theme::{
@@ -689,8 +689,15 @@ fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (us
     let last = (first + count).min(options.len());
     let mut lines = Vec::new();
     for (index, choice) in options.iter().enumerate().skip(first).take(count) {
-        let active = index == picker.selected;
-        let style = if active { focused_row() } else { panel() };
+        let section = matches!(&choice.kind, ChoiceKind::RewindSection);
+        let active = index == picker.selected && !section;
+        let style = if active {
+            focused_row()
+        } else if section {
+            emphasis(MUTED)
+        } else {
+            panel()
+        };
         let prefix = if active { "› " } else { "  " };
         let label = single_line(&choice.label);
         let detail = single_line(&choice.detail);

@@ -686,7 +686,10 @@ fn waiting_request_is_explicit_and_escape_preserves_message_draft() {
         .effects
         .iter()
         .any(|effect| matches!(effect, Job::Save(_))));
-    key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
+    let control_count = app.contextual_controls().len();
+    for _ in 0..control_count {
+        key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
+    }
     event(&mut app, Event::Paste("workspace tests".into()));
     key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     let action = app

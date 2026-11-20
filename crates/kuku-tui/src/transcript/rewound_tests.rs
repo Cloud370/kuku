@@ -3,9 +3,7 @@ use std::collections::VecDeque;
 use kuku_client::{HistoryEntry, HistoryKind, HistoryPage, RewindGroup, RewindGroupPage};
 use serde_json::json;
 
-use super::{
-    Anchor, AnchorLine, HistoryRequest, Key, MessageId, RewindGroupAction, Transcript,
-};
+use super::{Anchor, AnchorLine, HistoryRequest, Key, MessageId, RewindGroupAction, Transcript};
 
 fn rows(transcript: &mut Transcript) -> Vec<String> {
     transcript
@@ -68,7 +66,11 @@ fn rewind_group_expands_in_place_without_entering_active_transcript_state() {
     });
     assert_eq!(3, transcript.recent.records.len());
     assert_eq!(
-        vec![MessageId::Event(9), MessageId::Event(8), MessageId::Event(1)],
+        vec![
+            MessageId::Event(9),
+            MessageId::Event(8),
+            MessageId::Event(1)
+        ],
         active_message_ids(&transcript)
     );
     assert_eq!(
@@ -192,7 +194,11 @@ fn rewind_group_expands_in_place_without_entering_active_transcript_state() {
     assert!(!expanded.contains("hidden thinking"));
     assert_eq!(3, transcript.recent.records.len());
     assert_eq!(
-        vec![MessageId::Event(9), MessageId::Event(8), MessageId::Event(1)],
+        vec![
+            MessageId::Event(9),
+            MessageId::Event(8),
+            MessageId::Event(1)
+        ],
         active_message_ids(&transcript)
     );
     assert_eq!(
@@ -224,7 +230,11 @@ fn rewind_group_expands_in_place_without_entering_active_transcript_state() {
     assert_eq!(&anchored_header, collapsed_header);
     assert!(!rows(&mut transcript).join("\n").contains("hidden prompt"));
     assert_eq!(
-        vec![MessageId::Event(9), MessageId::Event(8), MessageId::Event(1)],
+        vec![
+            MessageId::Event(9),
+            MessageId::Event(8),
+            MessageId::Event(1)
+        ],
         active_message_ids(&transcript)
     );
 }

@@ -7,6 +7,9 @@ use ratatui::Terminal;
 
 use crate::app::App;
 use crate::jobs::{Job, Update};
+use crate::transcript::RewindGroupAction;
+
+use super::rewound_picker_tests::{choose_group_action, open_messages_with_f2};
 
 fn connected_app() -> App {
     let workspace = PathBuf::from("/workspace");
@@ -53,8 +56,8 @@ fn expanding_rewind_group_focuses_history_and_escape_restores_multiline_draft() 
     let draft = app.pane().draft.text().to_owned();
     let cursor = app.pane().draft.cursor();
 
-    assert!(app.toggle_readonly_rewind_group(50));
-    press(&mut app, KeyCode::Enter);
+    open_messages_with_f2(&mut app);
+    choose_group_action(&mut app, RewindGroupAction::Toggle);
     let request = app
         .effects
         .iter()
@@ -96,8 +99,8 @@ fn expanding_rewind_group_focuses_history_and_escape_restores_multiline_draft() 
     assert_eq!(cursor, app.pane().draft.cursor());
     assert!(app.effects.is_empty());
 
-    assert!(app.toggle_readonly_rewind_group(50));
-    press(&mut app, KeyCode::Enter);
+    open_messages_with_f2(&mut app);
+    choose_group_action(&mut app, RewindGroupAction::Toggle);
     assert!(
         app.composer_focused(),
         "collapsing should not steal composer focus"
