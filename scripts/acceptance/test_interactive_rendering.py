@@ -1,8 +1,11 @@
+import contextlib
+import io
+import json
 import unittest
 from unittest.mock import MagicMock, Mock, patch
 
 from interactive import wait_restart_and_recover_crash
-from interactive_fixture import Terminal, run_cases
+from interactive_fixture import ProviderCall, Terminal, run_cases
 from interactive_rendering import (
     click_queued_input,
     has_selected_queued_input,
@@ -30,6 +33,58 @@ class AcceptanceCaseTests(unittest.TestCase):
 
         self.assertEqual(["failed", "later"], calls)
         self.assertIn("original failure", "".join(str(call) for call in stderr.write.call_args_list))
+
+    def test_failed_frame_survives_later_output_and_nested_case_collection(self):
+        frame = "original frame\n" + "终端内容\n" * 100
+        output = io.StringIO()
+
+        def failure():
+            raise AssertionError(frame)
+
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+            with self.assertRaises(AssertionError) as error:
+                run_cases([
+                    ("nested", lambda: run_cases([("restore", failure)])),
+                    ("later", lambda: print("later output" * 10000)),
+                ])
+            print(error.exception)
+
+        self.assertIn(frame, output.getvalue().encode()[-65536:].decode())
+        self.assertIn("nested", str(error.exception))
+        self.assertIn("restore", str(error.exception))
+
+    def test_failure_details_are_bounded_without_losing_failed_case_names(self):
+        def failure():
+            raise ValueError("界" * 10000)
+
+        with patch("sys.stderr"), patch("sys.stdout"), self.assertRaises(AssertionError) as error:
+            run_cases([("first", failure), ("second", failure)])
+
+        message = str(error.exception)
+        self.assertIn("first, second", message)
+        self.assertIn("retained byte limit", message)
+        self.assertNotIn("\ufffd", message)
+        self.assertLess(len(message.encode()), 17000)
+
+
+class ProviderToolResultTests(unittest.TestCase):
+    def call(self, result):
+        body = json.dumps({"messages": [{"role": "user", "content": [result]}]})
+        return ProviderCall(body, None, 1)
+
+    def test_success_requires_the_exact_tool_result_and_output(self):
+        call = self.call({"type": "tool_result", "tool_use_id": "fixture", "content": "proof"})
+        self.assertIs(call, call.expect_tool_output("fixture", "proof"))
+        with self.assertRaisesRegex(AssertionError, "Expected one tool result"):
+            call.expect_tool_output("other", "proof")
+        with self.assertRaisesRegex(AssertionError, "did not return"):
+            call.expect_tool_output("fixture", "missing")
+
+    def test_error_cannot_be_reported_as_success_even_when_output_is_present(self):
+        call = self.call({"type": "tool_result", "tool_use_id": "fixture", "is_error": True,
+                          "content": "proof followed by capture failure"})
+        with self.assertRaisesRegex(AssertionError, "Tool fixture failed"):
+            call.expect_tool_output("fixture", "proof")
 
 
 class PendingQuestionRestartTests(unittest.TestCase):

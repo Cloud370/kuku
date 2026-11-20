@@ -21,6 +21,8 @@ import time
 import traceback
 from urllib.parse import quote, urlencode, urlsplit
 
+from evidence import FailureSummary
+
 
 CONFIG = Path(__file__).resolve().with_name("fixtures") / "config.toml"
 TIMEOUT = 30
@@ -73,15 +75,25 @@ def eventually(description, probe, timeout=TIMEOUT):
 
 def run_cases(cases):
     failed = []
+    details = bytearray()
     for name, operation in cases:
+        started = time.monotonic()
         try:
             operation()
-        except Exception as error:
-            failed.append(f"{name}: {type(error).__name__}: {str(error)[:400]}")
+        except Exception:
+            failed.append(name)
+            context = f"\n{name}:\n{traceback.format_exc()}".encode("utf-8")
+            remaining = FailureSummary.LIMIT - len(details)
+            details.extend(context[:remaining])
             print(f"Acceptance case failed: {name}", file=sys.stderr, flush=True)
             traceback.print_exc()
+        finally:
+            print(f"Acceptance case finished: {name} ({time.monotonic() - started:.3f}s)", flush=True)
     if failed:
-        raise AssertionError(f"Acceptance cases failed: {', '.join(failed)}")
+        context = details.decode("utf-8", errors="ignore")
+        if len(details) == FailureSummary.LIMIT:
+            context += "\n[Failure details reached the retained byte limit]"
+        raise AssertionError(f"Acceptance cases failed: {', '.join(failed)}\n{context}")
 
 
 @dataclass(frozen=True)
@@ -174,6 +186,20 @@ class ProviderCall:
     def expect(self, text):
         assert text in json.dumps(self.request["messages"], ensure_ascii=False), (
             f"Provider request missing fixture message or tool ID {text!r}"
+        )
+        return self
+
+    def expect_tool_output(self, call_id, output):
+        results = [
+            block for message in self.request["messages"]
+            if isinstance(message.get("content"), list) for block in message["content"]
+            if block.get("type") == "tool_result" and block.get("tool_use_id") == call_id
+        ]
+        assert len(results) == 1, f"Expected one tool result for {call_id}, got {len(results)}"
+        result = results[0]
+        assert not result.get("is_error", False), f"Tool {call_id} failed: {result}"
+        assert output in json.dumps(result["content"], ensure_ascii=False), (
+            f"Tool {call_id} did not return {output!r}: {result}"
         )
         return self
 

@@ -3,7 +3,7 @@ mod common;
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::mock_provider::{self, text_response};
+use common::mock_provider::{self, text_response, ControlledProvider};
 use common::TestServer;
 use httpmock::Method;
 use kuku::event::{EventPayload, EventStore};
@@ -268,14 +268,8 @@ async fn replay_only_refuses_an_uncommitted_send_without_creating_a_session() {
 
 #[tokio::test]
 async fn busy_delivery_is_durable_and_rejects_conflicting_payload_recipient_timing_and_config() {
-    let mock = mock_provider::start_mock_provider().await;
-    let delayed = mock.mock(|when, then| {
-        when.method(Method::POST).path("/v1/messages");
-        then.status(200)
-            .delay(Duration::from_millis(900))
-            .body(text_response("ready"));
-    });
-    let server = TestServer::start(mock_provider::make_test_config(mock.port())).await;
+    let mut provider = ControlledProvider::start().await;
+    let server = TestServer::start(mock_provider::make_test_config(provider.port())).await;
     *server.state.run_manager.lock().await = kuku_server::run_manager::RunManager::new(1);
     let id = "busy-deliveries";
     server
@@ -289,6 +283,7 @@ async fn busy_delivery_is_durable_and_rejects_conflicting_payload_recipient_timi
             snapshot["agent"]["status"] == "running"
         })
         .await;
+    let held = provider.next().await;
     let queued_payload = json!({"type":"send","command_id":"queued","text":"keep for later","timing":"next_turn","config_patch":{"no_agents":true}});
     let delivery = server.submit(id, queued_payload.clone()).await;
     assert_eq!("queued", delivery["status"]);
@@ -317,6 +312,7 @@ async fn busy_delivery_is_durable_and_rejects_conflicting_payload_recipient_timi
     );
     let slots = server.state.run_manager.lock().await.active_run_ids();
     assert_eq!(1, slots.len());
+    held.reply(text_response("ready"));
     server
         .wait_for_snapshot(id, "main", |snapshot| snapshot["agent"]["status"] == "idle")
         .await;
@@ -328,7 +324,7 @@ async fn busy_delivery_is_durable_and_rejects_conflicting_payload_recipient_timi
         .await;
     assert_eq!("accepted", accepted["status"]);
     assert_eq!(2, operations(&server, id, "input_delivered"));
-    delayed.assert_hits(1);
+    provider.assert_idle();
 }
 
 #[tokio::test]
@@ -491,14 +487,8 @@ async fn queued_replacement_replays_and_observes_exact_delivery_ids_after_restar
 
 #[tokio::test]
 async fn a_late_stop_cannot_cancel_a_replacement_execution() {
-    let mock = mock_provider::start_mock_provider().await;
-    mock.mock(|when, then| {
-        when.method(Method::POST).path("/v1/messages");
-        then.status(200)
-            .delay(Duration::from_millis(500))
-            .body(text_response("replacement finished"));
-    });
-    let server = TestServer::start(mock_provider::make_test_config(mock.port())).await;
+    let mut provider = ControlledProvider::start().await;
+    let server = TestServer::start(mock_provider::make_test_config(provider.port())).await;
     let id = "cancel-exact-execution";
     server
         .submit(
@@ -506,6 +496,7 @@ async fn a_late_stop_cannot_cancel_a_replacement_execution() {
             json!({"type":"send","command_id":"first","text":"first work","create":{}}),
         )
         .await;
+    let first = provider.next().await;
     let snapshot = server.snapshot(id, "main").await;
     let previous = snapshot["agent"]["execution_id"].as_u64().unwrap();
     let stop = json!({"type":"cancel","command_id":"old-stop","execution_id":previous});
@@ -516,6 +507,8 @@ async fn a_late_stop_cannot_cancel_a_replacement_execution() {
             json!({"type":"send","command_id":"new","text":"replacement work"}),
         )
         .await;
+    let replacement = provider.next().await;
+    drop(first);
     let current = server.snapshot(id, "main").await;
     assert_ne!(previous, current["agent"]["execution_id"].as_u64().unwrap());
     let (status, stale) = server
@@ -528,6 +521,7 @@ async fn a_late_stop_cannot_cancel_a_replacement_execution() {
     assert_eq!("execution_not_active", stale["code"]);
     let replayed = server.submit(id, stop).await;
     assert_eq!(cancelled["receipt"], replayed["receipt"]);
+    replacement.reply(text_response("replacement finished"));
     server
         .wait_for_snapshot(id, "main", |snapshot| {
             snapshot["agent"]["last_output"] == "replacement finished"

@@ -52,7 +52,7 @@ def installed_upgrade(client, previous, current):
     assert deferred["service"]["version"] == original_version
     client.assert_current_service(original)
     client.release_tool(workspace)
-    client.provider.next("upgrade-gated-tool").text(output)
+    client.provider.next("upgrade-gated-tool").expect_tool_output("upgrade-gated-tool", TOOL_OUTPUT).text(output)
     eventually("old service to complete the tool", lambda: client.snapshot(workspace, session)["last_output"] == output)
     eventually("old service to become idle", lambda: not client.status()["busy"])
     client.verify_tool(workspace)
@@ -207,10 +207,17 @@ def two_workspaces_and_disconnect(client):
 
     client.assert_current_service(original)
     client.release_tool(workspace)
-    client.provider.next(tool_id).text(final)
+    client.provider.next(tool_id).expect_tool_output(tool_id, TOOL_OUTPUT).text(final)
     eventually("tool and response to commit without a client",
                lambda: client.snapshot(workspace, session)["last_output"] == final)
     client.verify_tool(workspace)
+    query = urlencode({"workspace": workspace, "agent": "main"})
+    history = client.request("GET", f"/sessions/{session}/history?{query}").as_json()["entries"]
+    tool_history = [entry for entry in history if entry.get("tool_call_id") == tool_id]
+    calls = [entry for entry in tool_history if entry["type"] == "tool_call"]
+    results = [entry for entry in tool_history if entry["type"] == "tool_result"]
+    assert len(calls) == len(results) == 1 and results[0]["status"] == "ok", tool_history
+    assert calls[0]["args"]["brief"] == TOOL_BRIEF and TOOL_OUTPUT in results[0]["model_content"], tool_history
     with client.terminal(workspace) as reopened:
         reopened.resume(prompt)
         screen = reopened.expect(final)["screen"]
@@ -219,7 +226,7 @@ def two_workspaces_and_disconnect(client):
         )
         assert screen.count(TOOL_BRIEF) == 1 and "╰─ ok" in screen, (
             f"Restored terminal must show one tool result (cards={screen.count(TOOL_BRIEF)}, "
-            f"ok={'╰─ ok' in screen})\n{screen}"
+            f"ok={'╰─ ok' in screen})\n{screen}\nCommitted tool: {json.dumps(tool_history)}"
         )
         compact = reopened.expect("TPS")["screen"].splitlines()[-1]
         assert "main" in compact and "Context" in compact and "Cache hit" not in compact, compact
@@ -569,7 +576,7 @@ def lost_first_receipt(client):
             eventually("durable receipt that is lost to the client", lambda: committed)
             client.gated_tool(workspace, call, "lost-ack-fixture-tool")
             client.release_tool(workspace)
-            client.provider.next("lost-ack-fixture-tool").text("first receipt executed once")
+            client.provider.next("lost-ack-fixture-tool").expect_tool_output("lost-ack-fixture-tool", TOOL_OUTPUT).text("first receipt executed once")
             client.finish(process, success=False)
         session = client.session(workspace)
         eventually("committed result before client relaunch",

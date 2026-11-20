@@ -1,5 +1,91 @@
-use httpmock::prelude::*;
-use httpmock::MockServer;
+use std::time::Duration;
+
+use axum::http::StatusCode;
+use axum::routing::post;
+use axum::{Json, Router};
+use httpmock::{Method::POST, MockServer};
+use serde_json::Value;
+use tokio::sync::{mpsc, oneshot};
+use tokio::task::JoinHandle;
+
+pub(crate) struct ControlledProvider {
+    port: u16,
+    calls: mpsc::Receiver<ProviderCall>,
+    task: JoinHandle<()>,
+}
+
+impl ControlledProvider {
+    pub(crate) async fn start() -> Self {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (calls, receiver) = mpsc::channel(8);
+        let app = Router::new().route(
+            "/v1/messages",
+            post(move |Json(request): Json<Value>| {
+                let calls = calls.clone();
+                async move {
+                    let (response, reply) = oneshot::channel();
+                    calls
+                        .send(ProviderCall { request, response })
+                        .await
+                        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+                    reply
+                        .await
+                        .map(|body| {
+                            (
+                                [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                                body,
+                            )
+                        })
+                        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)
+                }
+            }),
+        );
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        Self {
+            port,
+            calls: receiver,
+            task,
+        }
+    }
+
+    pub(crate) fn port(&self) -> u16 {
+        self.port
+    }
+
+    pub(crate) async fn next(&mut self) -> ProviderCall {
+        tokio::time::timeout(Duration::from_secs(10), self.calls.recv())
+            .await
+            .expect("Provider request did not arrive")
+            .expect("Provider request channel closed")
+    }
+
+    pub(crate) fn assert_idle(&mut self) {
+        assert!(
+            matches!(self.calls.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
+            "Unexpected provider request"
+        );
+    }
+}
+
+impl Drop for ControlledProvider {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+pub(crate) struct ProviderCall {
+    pub(crate) request: Value,
+    response: oneshot::Sender<String>,
+}
+
+impl ProviderCall {
+    pub(crate) fn reply(self, body: String) {
+        self.response
+            .send(body)
+            .expect("Provider call was already cancelled");
+    }
+}
 
 pub async fn start_mock_provider() -> MockServer {
     MockServer::start_async().await
