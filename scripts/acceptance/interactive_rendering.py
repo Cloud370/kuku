@@ -162,9 +162,9 @@ def event(name, **fields):
 
 def operate_on_assistant(terminal, screen, marker, action):
     terminal.click_text(screen, "Messages" if "Messages" in screen else "Msg")
-    picker = terminal.expect("Loaded active transcript only")["screen"]
+    picker = terminal.expect("Active messages")["screen"]
     lines = picker.splitlines()
-    header = next(index for index, line in enumerate(lines) if "Loaded active transcript only" in line)
+    header = next(index for index, line in enumerate(lines) if "Active messages" in line)
     choices = lines[header + 1:]
     rows = [
         (index, line) for index, line in enumerate(choices)
