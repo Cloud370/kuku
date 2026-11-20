@@ -38,6 +38,8 @@ fn private_key(directory: &Path, contents: &[u8]) -> std::path::PathBuf {
     let mut file = tempfile::NamedTempFile::new_in(credentials).unwrap();
     file.write_all(contents).unwrap();
     file.as_file().sync_all().unwrap();
+    #[cfg(windows)]
+    crate::util::set_config_temp_security(None, file.path(), file.as_file()).unwrap();
     let (_, path) = file.keep().unwrap();
     path
 }
@@ -64,7 +66,11 @@ fn file_key_reference_rejects_relative_paths_and_has_no_environment_fallback() {
     config_with_key(&config_path, "file:relative/key");
     assert!(load_config(&config_path).unwrap().resolve().is_err());
 
-    config_with_key(&config_path, "file:/missing/fixture-key");
+    let missing_key_path = directory.path().join("missing-fixture-key");
+    config_with_key(
+        &config_path,
+        &format!("file:{}", missing_key_path.display()),
+    );
     let api_key = load_config(&config_path)
         .unwrap()
         .resolve()

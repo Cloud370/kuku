@@ -9,7 +9,7 @@ on:
       - "LICENSE"
       - ".gitignore"
   pull_request:
-    branches: [main]
+    branches: [main, feat/interactive-clients]
     paths-ignore:
       - "docs/**"
       - "*.md"
