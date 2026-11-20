@@ -743,7 +743,7 @@ def dense_transcript(client, reference=False):
                 terminal,
                 read_while,
                 32,
-                (scenario.activity_composition, scenario.draft),
+                (TOOL_BRIEF, scenario.draft),
             )
         except AssertionError as error:
             raise AssertionError(
