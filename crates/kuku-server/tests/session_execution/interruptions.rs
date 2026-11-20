@@ -49,7 +49,7 @@ async fn cancelling_preserves_only_visible_text_once_and_keeps_it_out_of_the_nex
     };
     let request = json!({"type":"send","command_id":"work","agent":"reviewer","text":"write the first reply"});
     server.submit(id, request).await;
-    let (_, send) = next_request(&mut requests).await;
+    let (_, send) = next_request(&server, id, &mut requests).await;
     seek_frame(
         &mut observe,
         &mut buffer,
@@ -192,7 +192,7 @@ async fn cancelling_preserves_only_visible_text_once_and_keeps_it_out_of_the_nex
         .contains(private_reason));
 
     server.submit(id, json!({"type":"send","command_id":"fresh","agent":"reviewer","text":"start a new reply"})).await;
-    let (request, next) = next_request(&mut requests).await;
+    let (request, next) = next_request(&server, id, &mut requests).await;
     assert!(!request.contains('界'));
     assert!(!request.contains(private_reason));
     next.send(format!("{message_start}{}", thinking(0)))
@@ -232,11 +232,20 @@ async fn cancelling_preserves_only_visible_text_once_and_keeps_it_out_of_the_nex
 
 type StagedRequest = (String, mpsc::Sender<String>);
 
-async fn next_request(requests: &mut mpsc::Receiver<StagedRequest>) -> StagedRequest {
-    tokio::time::timeout(Duration::from_secs(5), requests.recv())
-        .await
-        .expect("provider did not receive a request")
-        .unwrap()
+async fn next_request(
+    server: &TestServer,
+    id: &str,
+    requests: &mut mpsc::Receiver<StagedRequest>,
+) -> StagedRequest {
+    let request = tokio::time::timeout_at(server.deadline, requests.recv()).await;
+    assert!(
+        request.is_ok(),
+        "provider did not receive a request; snapshot: {:?}",
+        tokio::time::timeout(Duration::from_secs(1), server.snapshot(id, "reviewer"))
+            .await
+            .map(|snapshot| super::common::snapshot_summary(&snapshot))
+    );
+    request.unwrap().expect("provider request channel closed")
 }
 
 async fn interruptible_provider() -> (

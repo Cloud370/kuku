@@ -18,6 +18,8 @@ pub struct TestServer {
     pub workspace: tempfile::TempDir,
     pub home: tempfile::TempDir,
     pub state: Arc<kuku_server::AppState>,
+    pub deadline: tokio::time::Instant,
+    client: wreq::Client,
     handle: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -71,6 +73,8 @@ impl TestServer {
             workspace,
             home,
             state,
+            deadline: tokio::time::Instant::now() + Duration::from_secs(30),
+            client: wreq::Client::builder().no_proxy().build().unwrap(),
             handle: Some(handle),
         }
     }
@@ -105,7 +109,9 @@ impl TestServer {
     }
 
     pub fn request(&self, method: wreq::Method, path: &str) -> wreq::RequestBuilder {
-        let request = wreq::Client::new().request(method, format!("{}{path}", self.base_url));
+        let request = self
+            .client
+            .request(method, format!("{}{path}", self.base_url));
         match &self.state.password {
             Some(password) => request.bearer_auth(password),
             None => request,
@@ -170,7 +176,7 @@ impl TestServer {
         ready: impl Fn(&Value) -> bool,
     ) -> Value {
         let mut last_snapshot = None;
-        let result = tokio::time::timeout(Duration::from_secs(10), async {
+        let result = tokio::time::timeout_at(self.deadline, async {
             loop {
                 let snapshot = self.snapshot(id, agent).await;
                 if ready(&snapshot) {
@@ -182,7 +188,8 @@ impl TestServer {
         })
         .await;
         result.unwrap_or_else(|_| {
-            panic!("Session '{id}', Agent '{agent}' did not reach the expected state; last snapshot: {last_snapshot:?}")
+            let summary = last_snapshot.as_ref().map(snapshot_summary);
+            panic!("Session '{id}', Agent '{agent}' did not reach the expected state before the fixture deadline; last snapshot: {summary:?}")
         })
     }
 
@@ -204,6 +211,19 @@ async fn listen(state: Arc<kuku_server::AppState>) -> (SocketAddr, tokio::task::
         .unwrap();
     });
     (addr, handle)
+}
+
+pub fn snapshot_summary(snapshot: &Value) -> Value {
+    let agent = &snapshot["agent"];
+    json!({
+        "cursor": snapshot["cursor"],
+        "status": agent["status"],
+        "execution_id": agent["execution_id"],
+        "turn": agent["turn"],
+        "pending_inputs": agent["pending_inputs"],
+        "phase": snapshot["progress"]["phase"],
+        "error": agent["last_error"].as_str().map(|error| error.chars().take(512).collect::<String>()),
+    })
 }
 
 #[derive(Debug)]

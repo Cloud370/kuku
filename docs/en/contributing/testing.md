@@ -4,7 +4,7 @@ This page owns verification entrypoints, live-test configuration, and evidence r
 
 ## Verification selection
 
-Match checks to the changed behavior. Keep one owner for each invariant: retry limits and backoff belong to the existing virtual-clock provider tests, while Session tests cover interruption and explicit recovery. Do not duplicate their full combination by waiting through real backoff in another integration test. The maintained selector uses Python 3.10+ and writes bounded evidence under the ignored `benchmarks/acceptance/` directory:
+Match checks to the changed behavior. Server fixtures reuse one local HTTP client and a shared case deadline for readiness waits; per-step startup times are not performance assertions. Failure snapshots retain only bounded execution state, excluding configuration and long transcript text. Keep one owner for each invariant: retry limits and backoff belong to the existing virtual-clock provider tests, while Session tests cover interruption and explicit recovery. Do not duplicate their full combination by waiting through real backoff in another integration test. The maintained selector uses Python 3.10+ and writes bounded evidence under the ignored `benchmarks/acceptance/` directory:
 
 ```bash
 python3 scripts/acceptance/run.py contract

@@ -490,7 +490,7 @@ async fn jobs_are_scoped_cancellable_and_readable_after_server_restart() {
 
     let get = wreq::Method::GET;
     let delete = wreq::Method::DELETE;
-    let job = tokio::time::timeout(Duration::from_secs(10), async {
+    let job = tokio::time::timeout_at(server.deadline, async {
         loop {
             let (status, response) =
                 job_request(&server, get.clone(), id, "jobs", "reviewer").await;
@@ -503,8 +503,15 @@ async fn jobs_are_scoped_cancellable_and_readable_after_server_restart() {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
-    .await
-    .expect("the background fixture should start");
+    .await;
+    assert!(
+        job.is_ok(),
+        "the background fixture did not start; snapshot: {:?}",
+        tokio::time::timeout(Duration::from_secs(1), server.snapshot(id, "reviewer"))
+            .await
+            .map(|snapshot| common::snapshot_summary(&snapshot))
+    );
+    let job = job.unwrap();
     let job_id = job["id"].as_str().unwrap();
     let path = format!("jobs/{job_id}");
     assert_eq!("running", job["status"]);
@@ -534,8 +541,8 @@ async fn jobs_are_scoped_cancellable_and_readable_after_server_restart() {
         assert_eq!("job_not_found", response["code"]);
     }
 
-    let (status, cancelled) = tokio::time::timeout(
-        Duration::from_secs(5),
+    let (status, cancelled) = tokio::time::timeout_at(
+        server.deadline,
         job_request(&server, delete.clone(), id, &path, "reviewer"),
     )
     .await
@@ -658,7 +665,7 @@ async fn a_later_steer_reaches_the_current_turn_after_a_real_tool_boundary() {
             json!({"type":"send","command_id":"initial","text":"wait for test signal","create":{}}),
         )
         .await;
-    let started = tokio::time::timeout(Duration::from_secs(6), async {
+    let started = tokio::time::timeout_at(server.deadline, async {
         while !server.workspace.path().join("tool-attempts.txt").is_file() {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
@@ -668,7 +675,7 @@ async fn a_later_steer_reaches_the_current_turn_after_a_real_tool_boundary() {
         let snapshot = server.snapshot(id, "main").await;
         panic!(
             "the command fixture did not reach its file gate: {}",
-            snapshot["agent"]
+            common::snapshot_summary(&snapshot)
         );
     }
     server.submit(id, json!({"type":"create_agent","command_id":"second-observer","agent":"observer","config":{}})).await;
@@ -719,7 +726,7 @@ async fn a_later_steer_reaches_the_current_turn_after_a_real_tool_boundary() {
         .await
         .unwrap()
         .bytes_stream();
-    let dispatch = tokio::time::timeout(Duration::from_secs(3), async {
+    let dispatch = tokio::time::timeout_at(server.deadline, async {
         let mut buffer = Vec::new();
         loop {
             let item = common::stream::next_json_line(&mut observer, &mut buffer, "dispatch").await;

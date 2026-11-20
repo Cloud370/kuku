@@ -280,11 +280,13 @@ async fn stop_racing_a_model_response_counts_only_calls_committed_before_it() {
     let server = TestServer::start_deferred(mock_provider::make_test_config(port)).await;
     let id = "stop-tool-commit-race";
     send(&server, id).await;
-    let admission = tokio::time::timeout(Duration::from_secs(5), received).await;
+    let admission = tokio::time::timeout_at(server.deadline, received).await;
     assert!(
         matches!(admission, Ok(Ok(()))),
         "model fixture was not reached: {admission:?}; snapshot: {:?}",
-        tokio::time::timeout(Duration::from_secs(1), server.snapshot(id, "main")).await
+        tokio::time::timeout(Duration::from_secs(1), server.snapshot(id, "main"))
+            .await
+            .map(|snapshot| common::snapshot_summary(&snapshot))
     );
     let running = server.snapshot(id, "main").await;
     let agent = &running["agent"];
