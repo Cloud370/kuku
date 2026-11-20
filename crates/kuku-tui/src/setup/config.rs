@@ -1,11 +1,11 @@
-use std::fs::{self, File};
+use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use kuku::config::{generate_default, load_config, parse_config_text, ApiKey, Config, ConfigFile};
 use kuku::util::{is_valid_private_key, private_directory, sync_private_file};
 use kuku_client::ConnectionOptions;
-use tempfile::{Builder, NamedTempFile};
+use tempfile::Builder;
 use toml_edit::{value, DocumentMut, InlineTable, Item, Table, Value};
 
 use super::state::{valid_env_name, valid_stored_key, SetupState};
@@ -578,100 +578,13 @@ fn write_config(
     bytes: &[u8],
     before_compare: impl FnOnce(),
 ) -> io::Result<()> {
-    let parent = settings
-        .config_path
-        .parent()
-        .ok_or_else(|| invalid_config("configuration path has no parent directory"))?;
-    fs::create_dir_all(parent)
-        .map_err(|_| invalid_config("cannot create configuration directory"))?;
-    let canonical_path = canonical_config_path(&settings.config_path)?;
-    let mut lock_path = canonical_path.as_os_str().to_os_string();
-    lock_path.push(".lock");
-    let mut lock = fslock::LockFile::open(&PathBuf::from(lock_path))
-        .map_err(|_| invalid_config("cannot lock configuration for update"))?;
-    lock.lock()
-        .map_err(|_| invalid_config("cannot lock configuration for update"))?;
-    let mut before_compare = Some(before_compare);
-    if let Some(original) = &settings.original_bytes {
-        before_compare.take().expect("single concurrency hook")();
-        let metadata = fs::symlink_metadata(&settings.config_path)
-            .map_err(|_| invalid_config("configuration changed while settings were open"))?;
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
-            return Err(invalid_config(
-                "configuration changed while settings were open",
-            ));
-        }
-        let current = fs::read(&settings.config_path)
-            .map_err(|_| invalid_config("configuration changed while settings were open"))?;
-        if current != *original {
-            return Err(invalid_config(
-                "configuration changed while settings were open; reopen settings",
-            ));
-        }
-        let mut temporary = NamedTempFile::new_in(parent)
-            .map_err(|_| invalid_config("cannot stage the updated configuration"))?;
-        if let Some(permissions) = &settings.original_permissions {
-            temporary
-                .as_file()
-                .set_permissions(permissions.clone())
-                .map_err(|_| invalid_config("cannot preserve configuration permissions"))?;
-        }
-        secure_config_temp(settings, &temporary)?;
-        temporary
-            .write_all(bytes)
-            .and_then(|()| temporary.as_file().sync_all())
-            .map_err(|_| invalid_config("cannot write the updated configuration"))?;
-        temporary
-            .persist(&settings.config_path)
-            .map_err(|_| invalid_config("cannot publish the updated configuration"))?;
-    } else {
-        before_compare.take().expect("single concurrency hook")();
-        let mut temporary = NamedTempFile::new_in(parent)
-            .map_err(|_| invalid_config("cannot stage the new configuration"))?;
-        secure_config_temp(settings, &temporary)?;
-        temporary
-            .write_all(bytes)
-            .and_then(|()| temporary.as_file().sync_all())
-            .map_err(|_| invalid_config("cannot write the new configuration"))?;
-        temporary
-            .persist_noclobber(&settings.config_path)
-            .map_err(|_| invalid_config("configuration already exists; it was not overwritten"))?;
-    }
-    if let Ok(directory) = File::open(parent) {
-        let _ = directory.sync_all();
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn secure_config_temp(settings: &Settings, temporary: &NamedTempFile) -> io::Result<()> {
-    kuku::util::set_config_temp_security(
-        settings.existing.then_some(settings.config_path.as_path()),
-        temporary.path(),
-        temporary.as_file(),
+    crate::config_file::publish_config(
+        &settings.config_path,
+        settings.original_bytes.as_deref(),
+        settings.original_permissions.as_ref(),
+        bytes,
+        before_compare,
     )
-    .map_err(|_| invalid_config("cannot secure configuration file before writing"))
-}
-
-#[cfg(not(windows))]
-fn secure_config_temp(_settings: &Settings, _temporary: &NamedTempFile) -> io::Result<()> {
-    Ok(())
-}
-
-fn canonical_config_path(path: &Path) -> io::Result<PathBuf> {
-    match fs::canonicalize(path) {
-        Ok(path) => Ok(path),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            let parent = path
-                .parent()
-                .ok_or_else(|| invalid_config("configuration path has no parent directory"))?;
-            let name = path
-                .file_name()
-                .ok_or_else(|| invalid_config("configuration path has no file name"))?;
-            Ok(fs::canonicalize(parent)?.join(name))
-        }
-        Err(error) => Err(error),
-    }
 }
 
 fn unsafe_storage() -> io::Error {

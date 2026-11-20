@@ -48,7 +48,7 @@ HTTP 服务默认读取所选数据目录下的 `config.toml`，也可通过 `--
 | `max_output_tokens` | 正整数，可省略 | 此 tier 的单次生成上限。供应商把推理 token 计入输出时，上限也包含推理 |
 | `purpose` | string | 面向人的 tier 摘要 |
 
-默认 tier 为 `strong`、`balanced` 和 `light`。
+默认 tier 为 `strong`、`balanced` 和 `light`。TUI 中显式的 **Set current model as default** 操作会复用匹配的 tier；没有匹配项时才创建或覆盖一个普通的 `user-default` tier。`user-default` 没有特殊解析优先级，和其他 tier 一样由 `default_model` 选择。
 
 Chat 和 Responses 省略 `max_output_tokens` 时使用上游默认值。Anthropic 原生 Messages 要求数值，内置 Sonnet 和 Haiku 预设在 TOML 中提供。自定义 Messages 连接可从 tier、Agent 或宿主获得所需数值。旧配置中显式设置的限额继续在对应 tier 生效。单次响应还受剩余上下文约束。
 

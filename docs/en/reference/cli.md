@@ -64,7 +64,7 @@ Put options before the prompt in `kuku run`, because it consumes the remaining w
 | `/jobs` | List the selected Agent's background jobs with their IDs and states. Select a running job to cancel it or a finished job to read any saved output. |
 | `/jobs cancel <id>` | Cancel the specified background job for the selected Agent and report its resulting state. |
 | `/pending` | Check, retry or discard an unconfirmed submission. |
-| `/model`, `/thinking` | Select model or reasoning settings for the selected Agent. |
+| `/model`, `/thinking` | Choose a route or reasoning setting for the selected Agent's Session. Model and thinking choices are session-only; **Set current model as default** separately saves the resolved connection/model to config without changing the current Session. |
 | `/statusline` | Open **Status line settings** to preview, select, reorder and save footer fields. |
 | Ctrl+O | Expand or collapse visible transcript previews, including tool groups and Agent cards. |
 | `/details` or click a transcript item | Open a tool group to see its calls. Open an individual call for the target, arguments and available output or error. In **Transcript details**, search visible items and press Enter to toggle the selected item. |

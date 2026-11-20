@@ -427,6 +427,7 @@ fn double_escape_opens_rewind_picker_and_confirmation_is_cancelable_and_opt_in()
             turn: 4,
             text: "original prompt".into(),
         },
+        0,
     );
     assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
         if matches!(prompt.kind, PromptKind::RewindMessage { event_id: 17, .. })
@@ -455,6 +456,7 @@ fn rewind_confirmation_commits_an_unsent_action_without_sending_the_draft() {
             turn: 6,
             text: "restore me as a draft".into(),
         },
+        0,
     );
     press(&mut app, KeyCode::Char(' '));
     press(&mut app, KeyCode::Enter);
@@ -479,6 +481,7 @@ fn rewind_ack_restores_unsent_text_but_never_replaces_a_changed_draft() {
             turn: 8,
             text: "original text".into(),
         },
+        0,
     );
     press(&mut app, KeyCode::Enter);
     let Some(Job::Save(command)) = app.effects.iter().find(|job| matches!(job, Job::Save(_)))
@@ -512,6 +515,7 @@ fn rewind_ack_restores_unsent_text_but_never_replaces_a_changed_draft() {
             turn: 9,
             text: "recoverable original".into(),
         },
+        0,
     );
     press(&mut edited, KeyCode::Enter);
     let Some(Job::Save(command)) = edited
@@ -555,6 +559,7 @@ fn rewind_confirmation_render_shows_file_scope_without_an_editor() {
             turn: 2,
             text: "selected prompt".into(),
         },
+        0,
     );
     let mut terminal = Terminal::new(TestBackend::new(92, 26)).unwrap();
     let frame = terminal

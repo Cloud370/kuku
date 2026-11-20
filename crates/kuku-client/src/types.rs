@@ -124,6 +124,17 @@ pub enum Action {
     },
 }
 
+/// A service-validated plan for setting a resolved model route as the default.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelDefaultPlan {
+    /// Existing tier to select as default, or `user-default` for a fallback edit.
+    pub tier: String,
+    /// Whether the client must create or replace the ordinary `user-default` tier.
+    pub overwrite_user_default: bool,
+    /// SHA-256 of the exact active configuration bytes validated by the service.
+    pub config_sha256: String,
+}
+
 /// A durable receipt and its command's currently known disposition.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Acknowledgement {

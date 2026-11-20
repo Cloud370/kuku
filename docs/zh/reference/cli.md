@@ -64,7 +64,7 @@
 | `/jobs` | 列出所选 Agent 的后台任务及其 ID 和状态。选中运行中的任务可取消，选中已结束的任务可读取已有的保留输出。 |
 | `/jobs cancel <id>` | 取消所选 Agent 的指定后台任务，并显示任务最终状态。 |
 | `/pending` | 检查、重试或丢弃未确认的提交。 |
-| `/model`、`/thinking` | 为所选 Agent 选择模型或思考设置。 |
+| `/model`、`/thinking` | 为所选 Agent 的 Session 选择模型线路或思考设置。模型和思考选项仅作用于 Session；单独选择 **Set current model as default** 可将已解析的连接和模型保存到配置，且不改变当前 Session。 |
 | `/statusline` | 打开 **Status line settings**，预览、选择、排序并保存状态栏字段。 |
 | Ctrl+O | 一起展开或收起可见的对话预览，包括工具组和 Agent 卡片。 |
 | `/details` 或点击对话条目 | 打开工具组查看组内调用，打开单次调用可查看目标、参数以及已有输出或错误。在 **Transcript details** 中搜索可见条目，按 Enter 切换选中条目的展开状态。 |

@@ -11,8 +11,8 @@ use crate::local::{LocalError, LocalService, SESSION_PROTOCOL_VERSION};
 use crate::subscription::SubscriptionScope;
 use crate::{
     Acknowledgement, AgentConfig, AgentSummary, ApiError, Command, EventPage, HistoryPage,
-    JobSnapshot, NamedValue, NamedValueSource, OutputChunk, SessionSummary, Snapshot, Subscription,
-    Target,
+    JobSnapshot, ModelDefaultPlan, NamedValue, NamedValueSource, OutputChunk, SessionSummary,
+    Snapshot, Subscription, Target,
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -179,6 +179,31 @@ impl Client {
     /// Query published versions without requiring Session protocol compatibility.
     pub async fn health(&self) -> Result<Health, Error> {
         self.get(["health"], &()).await
+    }
+
+    /// Ask the authenticated managed service to validate a model-default plan against its active config.
+    pub async fn model_default_plan(
+        &self,
+        connection: &str,
+        model: &str,
+        config_sha256: &str,
+    ) -> Result<ModelDefaultPlan, Error> {
+        #[derive(Serialize)]
+        struct Query<'a> {
+            connection: &'a str,
+            model: &'a str,
+            config_sha256: &'a str,
+        }
+
+        self.get(
+            ["service", "model-default-plan"],
+            &Query {
+                connection,
+                model,
+                config_sha256,
+            },
+        )
+        .await
     }
 
     /// Check Session protocol compatibility before issuing data-plane commands.
@@ -695,5 +720,79 @@ fn optional<T>(result: Result<T, Error>, missing_code: &str) -> Result<Option<T>
         Ok(value) => Ok(Some(value)),
         Err(error) if error.code() == Some(missing_code) => Ok(None),
         Err(error) => Err(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use axum::extract::{Query, State};
+    use axum::http::{header, HeaderMap};
+    use axum::routing::get;
+    use axum::{Json, Router};
+    use serde::Deserialize;
+    use tokio::sync::Mutex;
+
+    use super::*;
+
+    #[derive(Debug, Deserialize, PartialEq, Eq)]
+    struct PlanQuery {
+        connection: String,
+        model: String,
+        config_sha256: String,
+    }
+
+    type CapturedPlan = Arc<Mutex<Option<(String, PlanQuery)>>>;
+
+    async fn receive_plan(
+        State(captured): State<CapturedPlan>,
+        headers: HeaderMap,
+        Query(query): Query<PlanQuery>,
+    ) -> Json<ModelDefaultPlan> {
+        let authorization = headers
+            .get(header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_owned();
+        *captured.lock().await = Some((authorization, query));
+        Json(ModelDefaultPlan {
+            tier: "service-tier".into(),
+            overwrite_user_default: false,
+            config_sha256: "a".repeat(64),
+        })
+    }
+
+    #[tokio::test]
+    async fn model_default_plan_sends_authenticated_query_and_decodes_response() {
+        let captured = Arc::new(Mutex::new(None));
+        let app = Router::new()
+            .route("/service/model-default-plan", get(receive_plan))
+            .with_state(Arc::clone(&captured));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = Client::remote(&format!("http://{address}"), "local-token").unwrap();
+        let plan = client
+            .model_default_plan("my connection", "model/id", &"a".repeat(64))
+            .await
+            .unwrap();
+        assert_eq!("service-tier", plan.tier);
+        assert!(!plan.overwrite_user_default);
+        assert_eq!("a".repeat(64), plan.config_sha256);
+        assert_eq!(
+            Some((
+                "Bearer local-token".to_owned(),
+                PlanQuery {
+                    connection: "my connection".into(),
+                    model: "model/id".into(),
+                    config_sha256: "a".repeat(64),
+                }
+            )),
+            captured.lock().await.take()
+        );
+        server.abort();
     }
 }

@@ -2,6 +2,7 @@
 
 mod access;
 mod discovery;
+mod model_default;
 
 use std::error::Error;
 use std::fs;
@@ -204,6 +205,7 @@ fn router(service: Arc<ServiceState>, web: Option<Router>) -> Router {
         .layer(middleware::from_fn_with_state(service.clone(), admit));
     let protected = Router::new()
         .route("/service/status", get(status))
+        .route("/service/model-default-plan", get(model_default::plan))
         .route("/service/restart", post(restart))
         .route("/service/browser-ticket", post(access::issue))
         .with_state(service.clone())

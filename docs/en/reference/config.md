@@ -48,7 +48,7 @@ Required and optional fields:
 | `max_output_tokens` | positive integer, optional | Generation ceiling for this tier, including reasoning tokens when the provider counts them as output |
 | `purpose` | string | Human-readable tier summary |
 
-Default tiers are `strong`, `balanced`, and `light`.
+Default tiers are `strong`, `balanced`, and `light`. The TUI's explicit **Set current model as default** action reuses a matching tier or creates/overwrites one ordinary `user-default` tier when none matches. `user-default` has no special resolver priority; `default_model` selects it like any other tier.
 
 On Chat and Responses, omit `max_output_tokens` to use the upstream default. Native Anthropic Messages requires a numeric value. The bundled Sonnet and Haiku presets set it in TOML. A custom Messages connection can take its value from its tier, the Agent or the host. Existing numeric settings continue to apply to their tier. The available context can further limit each response.
 
