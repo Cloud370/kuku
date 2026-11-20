@@ -78,7 +78,7 @@ pub(super) fn file_state_at(
             && value["cached"] == false
             && value["is_full_file_snapshot"].as_bool().unwrap_or(false)
         {
-            if let Some(content) = value["raw_text_after"].as_str() {
+            if let Some(content) = value["raw_text"].as_str() {
                 return FileStateAt::Exists(content.to_owned());
             }
         }
