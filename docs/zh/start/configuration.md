@@ -41,6 +41,14 @@ $KUKU_HOME/config.toml
 
 其他字符串设置也可以在 `config.toml` 中使用 `$ENV_VAR_NAME`。例如，`base_url = "$KUKU_ANTHROPIC_BASE_URL"` 会在加载配置时解析。
 
+### 认证失败后的恢复
+
+终端中的 provider 认证失败后，用 F2 选择 **Repair credentials** 并按 Enter。修复绑定实际失败的连接和模型。在受管本地服务中，在遮蔽输入框里输入替换密钥，按 Enter 检查，再确认 **Save credentials and restart local service** 应用变更。只修改该 provider 的 `api_key`，保留当前模型选择和其他配置。密钥使用与首次设置相同的私有文件存储，不进入主输入框或日志；保存不代表认证已经验证。
+
+其他执行让服务保持忙碌时，**Credentials saved; service not restarted** 页面允许稍后重试安全重启。终端区分“已保存”和“已应用到当前 Session”，不会自动重试失败请求。确认使用同一配置的新服务实例启动后，终端恢复原 Session、Agent 和草稿。再通过 Continue 或界面中的恢复动作，明确重试保留的原输入，不必重新发送一份。
+
+远程或使用 token 的连接须在服务端修复凭据，必要时安全重启，再重连并继续；终端不会为这类连接写入本地凭据。
+
 ## 模型档
 
 默认安装定义了三个 tier：

@@ -62,6 +62,8 @@ python3 scripts/acceptance/run.py interactive --desktop --archive PATH_TO_WINDOW
 
 终端场景在 Linux 和 macOS 通过 Unix PTY 驱动安装好的 `kuku`，在 Windows 使用 ConPTY。用带内嵌资源的二进制和 `--browser` 选项可加入 Chromium 场景。按 [Web CI](../../../.github/workflows/web-ci.yml) 安装 Playwright Python 包和 Chromium。场景使用可控的本地模型端点，实际运行客户端和服务，无需模型凭据或付费请求。各层需要验证的行为见[交互客户端计划](../architecture/interactive-clients.md#开发时如何测试)。场景通过原生终端操作 Ctrl+C 和菜单补全，分别保持模型请求与工具处于运行中以核对显示状态，并在服务断开时检查连接指示。本地模型端点报告已知的输入、缓存读取和输出 token 数，供安装后的终端核对上下文占用、累计 token 和缓存命中率，并检查实测 TPS、Agent 地址与工作目录。
 
+维护中的生命周期场景从缺失凭据修复走到首个已认证回复，保存默认模型并检查新建和重开 Session 实际使用的模型，以及用键盘 ↑/Delete 撤回精确排队输入，同时保留其草稿和另一条排队输入。场景也会重开只读回退内容并核对下一次 provider 请求不含被排除的内容，跨过最近 48 条已提交消息选择精确回退目标，并用受控的 401 验证遮蔽凭据更新和安全服务重启。认证修复场景确认只有显式 Continue 才会用替换凭据重试保留的原输入，且仅重试一次。键盘覆盖与现有鼠标撤回检查并存。
+
 对照终端布局时，为两个版本使用同一套固定输入和窗口网格尺寸。安装场景检查 `/statusline` 的预览、保存、重开和恢复默认，并验证带着未发送草稿在多个工作中的 Agent 之间切换。工具密集对话在同一轮至少执行 20 次调用，包括成功操作、缺失文件和等待释放的命令。场景在工具运行和代码围栏未闭合时分别捕获宽窄终端画面，再核对完成的中文报告、保留的工具事实和未发送草稿。有界 `installed-interactive.log` 保存终端画面和检查结果。[终端场景](../../../scripts/acceptance/interactive.py)
 
 在装有 Docker 的 Linux 上用 `--desktop` 加入 Xfce Terminal 和 IBus 拼音场景。选择入口使用 Ubuntu 软件包构建镜像，并在仅有回环网络的隔离 Xvfb 会话中运行。场景通过图形界面验证中文组字、可编辑的多行粘贴、**Messages → Copy** 和终端字体缩放。首次构建时 Docker 需要访问 Ubuntu 镜像和软件仓库。安装后的可执行文件和选择入口的原生测试 helper 都须能在镜像中运行。`desktop/result.json` 记录包版本、终端网格尺寸、提交与复制的固定文本及有界截图的 hash。
