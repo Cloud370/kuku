@@ -43,9 +43,11 @@ fn original_message_events(session: &Session) -> usize {
         .events(0, 256)
         .unwrap()
         .iter()
-        .filter(|event| matches!(&event.payload,
-            EventPayload::MessageUser { text, .. } if text == "permission resume input"
-        ))
+        .filter(|event| {
+            matches!(&event.payload,
+                EventPayload::MessageUser { text, .. } if text == "permission resume input"
+            )
+        })
         .count()
 }
 
@@ -100,7 +102,12 @@ async fn resume_with_permission_reply(allow: bool) {
 
     session.advance("main").unwrap();
     let waiting = settled(&session, "main").await;
-    assert_eq!(AgentStatus::Waiting, waiting.status, "{:?}", waiting.last_error);
+    assert_eq!(
+        AgentStatus::Waiting,
+        waiting.status,
+        "{:?}",
+        waiting.last_error
+    );
     let permission = waiting.permission.unwrap();
     action.assert_hits_async(1).await;
     action.delete_async().await;

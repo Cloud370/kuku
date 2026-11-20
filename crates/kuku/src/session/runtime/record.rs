@@ -109,6 +109,8 @@ pub(super) enum Record {
     InputsAccepted {
         address: String,
         input_ids: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        message_input_ids: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn: Option<u64>,
     },
@@ -445,6 +447,7 @@ impl State {
             Record::InputsAccepted {
                 address,
                 input_ids,
+                message_input_ids,
                 turn,
             } => {
                 let admitted_turn = turn.unwrap_or(event_id);
@@ -467,7 +470,11 @@ impl State {
                             ))
                         })?;
                     let mut input = agent.inbox.remove(index).expect("input position exists");
-                    input.accepted_turn.get_or_insert(admitted_turn);
+                    if message_input_ids.contains(&id) {
+                        input.accepted_turn = Some(admitted_turn);
+                    } else {
+                        input.accepted_turn.get_or_insert(admitted_turn);
+                    }
                     if !agent.question_replies.remove(&id) {
                         if let Some(preview) = task_preview(&input.input.text) {
                             agent.snapshot.admitted_task = Some(preview);

@@ -1,8 +1,10 @@
 #[path = "session_runtime/authorization.rs"]
 mod authorization;
+mod common;
 #[path = "session_runtime/permission_resume.rs"]
 mod permission_resume;
-mod common;
+#[path = "session_runtime/unpersisted_resume.rs"]
+mod unpersisted_resume;
 
 #[cfg(unix)]
 use std::sync::Arc;
