@@ -112,9 +112,12 @@ def persistent_model_default(client):
         terminal.expect("New session", state="Ready")
         terminal.press("/model\r")
         models = terminal.expect("Tier · light", also=(chosen,))["screen"]
-        terminal.click_text(models, "Tier · light")
+        initial_models = models
+        tier_click = terminal.click_text(models, "Tier · light")
+        tier_selected = terminal.expect("› Tier · light", also=(chosen,))["screen"]
         terminal.press("\r")
-        terminal.expect(chosen)
+        tier_return = terminal.expect("New session", state="Ready", also=(chosen,),
+                                      absent=("Model route",))["screen"]
         terminal.submit(prompt)
         call = client.provider.next(prompt)
         assert call.request["model"] == chosen, call.request["model"]
@@ -122,11 +125,40 @@ def persistent_model_default(client):
         terminal.expect("The Session model is selected.", state="Finished")
         session = client.session(workspace)
         before = client.snapshot(workspace, session)["config"]
-        terminal.press("/model\r")
-        models = terminal.expect("Set current model as default")["screen"]
-        terminal.click_text(models, "Set current model as default")
-        confirmation = terminal.expect("Save as default", also=(chosen, "new sessions"))["screen"]
-        terminal.press("\x1b[A\r")
+        config_before_default = config_path.read_text()
+
+        def open_default_confirmation():
+            terminal.press("/model\r")
+            models = terminal.expect("Model route", also=(
+                "Set current model as default", "Tier · light", chosen,
+            ))["screen"]
+            clicked = terminal.click_text(models, "Set current model as default")
+            try:
+                confirmation = terminal.expect("Save as default", also=(chosen, "new sessions"))["screen"]
+            except AssertionError:
+                (client.directory / "model-default-failure.json").write_text(json.dumps({
+                    "initial_models_screen": initial_models, "tier_click": tier_click,
+                    "screen_after_tier_enter": tier_return, "models_before_default_click": models,
+                    "default_click": clicked, "last_screen": terminal.request("screen")["screen"],
+                    "session_config_before": before,
+                    "session_config_after": client.snapshot(workspace, session)["config"],
+                    "saved_default_is_light": 'default_model = "light"' in config_path.read_text(),
+                }, ensure_ascii=False, indent=2), encoding="utf-8")
+                raise
+            return models, clicked, confirmation
+
+        cancel_models, default_click, _ = open_default_confirmation()
+        cancel_selected = terminal.expect("› Cancel", also=("Save as default", chosen))["screen"]
+        terminal.press("\r")
+        cancel_return = terminal.expect("The Session model is selected.", state="Finished",
+                                       absent=("Save as default", "Model route"))["screen"]
+        assert config_path.read_text() == config_before_default
+        assert client.snapshot(workspace, session)["config"] == before
+        models, save_click, confirmation = open_default_confirmation()
+        terminal.expect("› Cancel", also=(chosen, "new sessions"))
+        terminal.press("\x1b[A")
+        save_selected = terminal.expect("› Save as default", also=(chosen, "new sessions"))["screen"]
+        terminal.press("\r")
         terminal.expect("Saved as default")
         assert client.snapshot(workspace, session)["config"] == before
         terminal.exit_cleanly()
@@ -154,6 +186,12 @@ def persistent_model_default(client):
         terminal.exit_cleanly()
     client.provider.assert_idle()
     (client.directory / "model-default.json").write_text(json.dumps({
+        "initial_models_screen": initial_models, "tier_click": tier_click,
+        "selected_tier_screen": tier_selected,
+        "screen_after_tier_enter": tier_return, "models_before_default_click": cancel_models,
+        "models_before_save_click": models, "default_click": default_click, "save_click": save_click,
+        "cancel_selected_screen": cancel_selected, "cancel_return_screen": cancel_return,
+        "cancel_preserved_config": True, "save_selected_screen": save_selected,
         "confirmation_screen": confirmation,
         "unchanged_session_config": before,
         "new_session_model": created.request["model"],

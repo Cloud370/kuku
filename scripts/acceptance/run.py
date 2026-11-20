@@ -733,6 +733,7 @@ def run_interactive(args, directory, record):
         finally:
             lifecycle = {}
             for case, name in (("settings", "first-run"), ("defaults", "model-default"),
+                               ("defaults", "model-default-failure"),
                                ("keyboard-queue", "keyboard-queue-withdrawal"),
                                ("rewind", "readonly-rewind"), ("rewind", "readonly-rewind-failure"),
                                ("rewind-history", "rewind-history"),

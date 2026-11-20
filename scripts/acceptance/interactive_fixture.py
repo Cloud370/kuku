@@ -557,6 +557,7 @@ class Terminal:
         prefix = line[:line.index(text)]
         column = len(prefix) + 1 + cell_offset
         self.press(f"\x1b[<0;{column};{row}M\x1b[<0;{column};{row}m")
+        return {"row": row, "column": column}
 
     def type(self, text):
         self.press(text)
@@ -572,7 +573,7 @@ class Terminal:
         self.expect(title)
         self.press("\r")
 
-    def expect(self, text, state=None, *, also=(), rows=None):
+    def expect(self, text, state=None, *, also=(), absent=(), rows=None):
         viewport = {}
         required = (text, *also) if state is None else (text, state, *also)
 
@@ -581,10 +582,11 @@ class Terminal:
             screen = viewport["screen"]
             if rows is not None and screen.count("\n") + 1 != rows:
                 return None
-            return viewport if all(item in screen for item in required) else None
+            return viewport if (all(item in screen for item in required)
+                                and not any(item in screen for item in absent)) else None
 
         try:
-            return eventually(f"terminal text {required!r} at {rows or 'any'} rows", contains_text)
+            return eventually(f"terminal text {required!r}, absent {absent!r}, at {rows or 'any'} rows", contains_text)
         except AssertionError as error:
             raise AssertionError(f"{error}\nLast terminal screen:\n{viewport.get('screen', '')}") from error
 
