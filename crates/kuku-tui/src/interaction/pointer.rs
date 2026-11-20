@@ -18,6 +18,9 @@ impl App {
             Some(MouseAction::Click(ClickTarget::Detail(key))) => {
                 self.toggle_transcript_detail(&key);
             }
+            Some(MouseAction::Click(ClickTarget::RewindGroup { id, action })) => {
+                self.activate_readonly_rewind_group(id, action);
+            }
             Some(MouseAction::Click(ClickTarget::Picker(hit))) => {
                 if let Some(Modal::Picker(picker)) = &mut self.modal {
                     if let Some(choice) = picker.click(hit) {
@@ -28,7 +31,6 @@ impl App {
                 }
             }
             Some(MouseAction::Click(ClickTarget::Agent(target))) => self.select_agent(target),
-            Some(MouseAction::Click(ClickTarget::QueueInput(id))) => self.focus_queue_input(id),
             Some(MouseAction::Click(ClickTarget::Request { target, request_id })) => {
                 self.focus_context_control(ContextControl::Request { target, request_id });
             }
@@ -49,6 +51,8 @@ impl App {
                     self.problem(error.to_string());
                 }
             }
+            Some(MouseAction::Click(ClickTarget::QueueInput(id))) => self.focus_queue_input(id),
+            Some(MouseAction::Click(ClickTarget::Messages)) => self.open_messages_picker(),
             Some(MouseAction::Click(ClickTarget::Transcript)) => self.scroll(0),
             Some(MouseAction::Click(ClickTarget::Composer)) => {
                 let area = self.composer_area;
@@ -85,6 +89,12 @@ impl App {
                     .find(|hit| hit.area.contains(position))
                 {
                     Some(ClickTarget::Contextual(hit.control.clone()))
+                } else if self
+                    .text_selection
+                    .messages_area()
+                    .is_some_and(|area| area.contains(position))
+                {
+                    Some(ClickTarget::Messages)
                 } else if self.reading_area.contains(position)
                     && self.pane().transcript.is_reading()
                 {
@@ -124,6 +134,11 @@ impl App {
                     self.text_selection
                         .transcript_cell(mouse)
                         .map(|(row, column)| {
+                            if let Some((id, action)) =
+                                self.pane().transcript.rewind_group_action_at(row)
+                            {
+                                return ClickTarget::RewindGroup { id, action };
+                            }
                             if let Some(url) = self.pane().transcript.markdown_link_at(row, column)
                             {
                                 return ClickTarget::Link(url.to_owned());

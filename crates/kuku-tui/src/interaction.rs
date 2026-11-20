@@ -14,13 +14,16 @@ use crate::keys::{AgentDirection, Shortcut};
 use crate::menu::{Choice, ChoiceKind, CommandMenu, Picker, PickerKind, Prompt, PromptKind};
 use crate::output::OutputViewer;
 use crate::text::{shorten, single_line, TAB};
-use crate::transcript::{ReplySource, ToolView};
+use crate::transcript::ToolView;
 
 mod contextual;
 mod inline;
 mod input;
+mod messages;
+mod picker;
 mod pointer;
 mod rewind;
+mod rewound;
 
 const MOUSE_SCROLL_LINES: isize = 3;
 
@@ -206,63 +209,6 @@ impl App {
             _ if editing => {
                 let width = self.editor_width;
                 edit(&mut self.pane_mut().draft, key, width, true);
-            }
-            _ => {}
-        }
-    }
-
-    fn picker_key(&mut self, key: KeyEvent) {
-        let page = self.modal_page as isize;
-        let details_page = self.modal_info_rows.max(1) as isize;
-        let Some(Modal::Picker(picker)) = &mut self.modal else {
-            return;
-        };
-        match key {
-            key if Shortcut::ENTER.matches(key) => {
-                if let Some(choice) = picker.selected_choice() {
-                    let kind = picker.kind.clone();
-                    let ticket = picker.ticket.id;
-                    self.choose(kind, choice, ticket);
-                }
-            }
-            key if Shortcut::TAB.matches(key) && picker.kind.completes_text() => {
-                match (&picker.kind, picker.selected_choice()) {
-                    (PickerKind::Commands, Some(ChoiceKind::Command(command))) => {
-                        let completed = format!("/{}", command.name());
-                        if picker.query.text() != completed {
-                            picker.query.set_text(completed);
-                            picker.selected = 0;
-                            self.search(false);
-                        }
-                    }
-                    (PickerKind::Commands, Some(choice @ ChoiceKind::Skill(_)))
-                    | (PickerKind::Paths(_), Some(choice @ ChoiceKind::Path(_))) => {
-                        let kind = picker.kind.clone();
-                        let ticket = picker.ticket.id;
-                        self.choose(kind, choice, ticket);
-                    }
-                    _ => {}
-                }
-            }
-            key if Shortcut::UP.matches(key) => picker.move_by(-1),
-            key if Shortcut::DOWN.matches(key) => picker.move_by(1),
-            key if Shortcut::PAGE_UP.matches(key)
-                && matches!(picker.kind, PickerKind::Server | PickerKind::ModelDefault) =>
-            {
-                picker.header_top = picker.header_top.saturating_add_signed(-details_page);
-            }
-            key if Shortcut::PAGE_DOWN.matches(key)
-                && matches!(picker.kind, PickerKind::Server | PickerKind::ModelDefault) =>
-            {
-                picker.header_top = picker.header_top.saturating_add_signed(details_page);
-            }
-            key if Shortcut::PAGE_UP.matches(key) => picker.move_by(-page),
-            key if Shortcut::PAGE_DOWN.matches(key) => picker.move_by(page),
-            _ if picker.kind.searchable()
-                && edit(&mut picker.query, key, self.modal_editor_width, false) =>
-            {
-                picker.selected = 0;
-                self.search(false);
             }
             _ => {}
         }
@@ -518,6 +464,18 @@ impl App {
                     editor: Editor::default(),
                 }));
             }
+            ChoiceKind::MessageEntry(message) => self.open_message_actions(message),
+            ChoiceKind::MessageAction { message, action } => {
+                self.execute_message_action(message, action)
+            }
+            ChoiceKind::RewindSection => {}
+            ChoiceKind::RewindGroup {
+                selection,
+                rewind_event_id,
+                action,
+            } => {
+                self.activate_selected_readonly_rewind_group(selection, rewind_event_id, action);
+            }
             ChoiceKind::Pending(id) => self.open_pending_item(&id),
             ChoiceKind::PendingRetry(id) => self.pending_retry(&id),
             ChoiceKind::PendingCheck(id) => self.pending_check(&id),
@@ -525,12 +483,7 @@ impl App {
             ChoiceKind::PendingOpen { target, exists } => self.pending_open(target, exists),
             ChoiceKind::RestoreRejected(id) => self.restore_rejected(&id),
             ChoiceKind::Reconnect => self.reconnect(),
-            ChoiceKind::Detail(key) => {
-                if !self.toggle_transcript_detail(&key) {
-                    self.problem("These details are no longer available");
-                }
-            }
-            ChoiceKind::Tool(tool) => self.show_output(tool),
+            ChoiceKind::Detail { key, message } => self.toggle_detail_choice(key, message),
             ChoiceKind::Restart => self.restart(),
         }
     }
@@ -551,18 +504,6 @@ impl App {
             }
             CommandMenu::Thinking => self.open_thinking(),
             CommandMenu::StatusLine => self.open_statusline(),
-            CommandMenu::Copy => self.copy_reply(),
-            CommandMenu::Source => {
-                let showing_source = self.pane_mut().transcript.toggle_source();
-                self.confirmation(if showing_source {
-                    "Markdown source · /source for preview"
-                } else {
-                    "Markdown preview"
-                });
-            }
-            CommandMenu::Notes => self.read_latest_notes(),
-            CommandMenu::Details => self.open_details(),
-            CommandMenu::Tools => self.open_tools(),
             CommandMenu::Server => self.open_server(),
             CommandMenu::Web if self.require_service() => {
                 self.effects.push(Job::Web(
@@ -648,27 +589,6 @@ impl App {
         config
     }
 
-    fn copy_reply(&mut self) {
-        self.pane_mut().pending_reply_copy = None;
-        let pane = self.pane();
-        let source = pane.transcript.last_reply().or_else(|| {
-            pane.snapshot
-                .as_ref()
-                .and_then(|snapshot| snapshot.agent.last_output.as_deref())
-                .map(ReplySource::Local)
-        });
-        match source {
-            Some(ReplySource::Local(text)) => self.copy_text(text.to_owned()),
-            Some(ReplySource::History(id)) => {
-                if self.require_service() {
-                    self.pane_mut().pending_reply_copy = Some(id);
-                    self.effects.push(Job::ReplySource(self.selection(), id));
-                }
-            }
-            None => self.problem("No assistant reply to copy"),
-        }
-    }
-
     pub(crate) fn copied_reply(
         &mut self,
         selection: Selection,
@@ -678,10 +598,21 @@ impl App {
         if selection != self.selection() || self.pane().pending_reply_copy != Some(id) {
             return;
         }
+        if self.pane().pending_selected_reply_copy == Some(id)
+            && !self
+                .pane()
+                .transcript
+                .has_assistant_message(id, &self.active.agent)
+        {
+            self.pane_mut().pending_reply_copy = None;
+            self.pane_mut().pending_selected_reply_copy = None;
+            return;
+        }
         match result {
             Ok(text) => self.copy_text(text),
             Err(error) => {
                 self.pane_mut().pending_reply_copy = None;
+                self.pane_mut().pending_selected_reply_copy = None;
                 self.problem(format!("Copy reply · {error}"));
             }
         }
@@ -689,41 +620,8 @@ impl App {
 
     fn copy_text(&mut self, text: String) {
         self.pane_mut().pending_reply_copy = None;
+        self.pane_mut().pending_selected_reply_copy = None;
         self.effects.push(Job::Copy(text));
-    }
-
-    fn open_tools(&mut self) {
-        let tools = self
-            .pane()
-            .transcript
-            .tools()
-            .into_iter()
-            .map(|tool| {
-                let name = if tool.name.is_empty() {
-                    "Tool"
-                } else {
-                    &tool.name
-                };
-                let detail = if tool.output_id.is_some() {
-                    format!("Saved output · {}", tool.summary)
-                } else {
-                    tool.summary.clone()
-                };
-                Choice::new(name, detail, ChoiceKind::Tool(tool.clone()))
-            })
-            .collect();
-        self.picker(PickerKind::Tools, tools);
-    }
-
-    fn open_details(&mut self) {
-        let choices = self
-            .pane()
-            .transcript
-            .visible_detail_choices()
-            .into_iter()
-            .map(|(key, label, summary)| Choice::new(label, summary, ChoiceKind::Detail(key)))
-            .collect();
-        self.picker(PickerKind::Details, choices);
     }
 
     fn show_output(&mut self, tool: ToolView) {
@@ -982,5 +880,15 @@ fn move_cursor(editor: &mut Editor, key: KeyEvent, width: usize, multiline: bool
     }
 }
 
+#[cfg(test)]
+#[path = "interaction/message_tests.rs"]
+mod message_tests;
+#[cfg(test)]
+mod rewound_copy_tests;
+#[cfg(test)]
+mod rewound_focus_tests;
+#[cfg(test)]
+#[path = "interaction/rewound_picker_tests.rs"]
+mod rewound_picker_tests;
 #[cfg(test)]
 mod tests;

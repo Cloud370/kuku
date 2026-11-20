@@ -279,3 +279,290 @@ async fn file_completion_exposes_only_visible_workspace_relative_paths() {
         .unwrap();
     assert_eq!(400, response.status());
 }
+
+fn write_rewind_group_events(
+    server: &TestServer,
+    session_id: &str,
+) -> (u64, u64, u64, u64, u64, u64, u64) {
+    let mut store = EventStore::open(server.events_path(session_id)).unwrap();
+    store
+        .append(EventPayload::SessionCreated {
+            ts: "2026-06-10T00:00:00Z".into(),
+            schema_version: 1,
+            session_id: session_id.into(),
+            created_at: "2026-06-10T00:00:00Z".into(),
+            kuku_version: "test".into(),
+        })
+        .unwrap();
+    store
+        .append(EventPayload::ConversationOpened {
+            ts: "2026-06-10T00:00:01Z".into(),
+            conversation: "main".into(),
+        })
+        .unwrap();
+    store
+        .append(EventPayload::ConversationOpened {
+            ts: "2026-06-10T00:00:02Z".into(),
+            conversation: "reviewer".into(),
+        })
+        .unwrap();
+    let old_target = append_group_user(&mut store, "main", 101, "old prompt");
+    append_group_response(&mut store, 101, "old reply");
+    let first_target = append_group_user(&mut store, "main", 102, "first rewind prompt");
+    append_group_response(&mut store, 102, "first rewind reply");
+    let first_rewind = append_group_rewind(&mut store, "main", first_target);
+    let reviewer_target = append_group_user(&mut store, "reviewer", 201, "reviewer prompt");
+    append_group_response(&mut store, 201, "reviewer reply");
+    append_group_user(&mut store, "main", 103, "later prompt");
+    let later_rewind = append_group_rewind(&mut store, "main", old_target);
+    let reviewer_rewind = append_group_rewind(&mut store, "reviewer", reviewer_target);
+    (
+        old_target,
+        first_target,
+        first_rewind,
+        later_rewind,
+        reviewer_target,
+        reviewer_rewind,
+        store.last_id(),
+    )
+}
+
+fn append_group_user(store: &mut EventStore, agent: &str, turn: u64, text: &str) -> u64 {
+    let id = store.last_id() + 1;
+    store
+        .append(EventPayload::MessageUser {
+            ts: "2026-06-10T00:00:03Z".into(),
+            conversation: agent.into(),
+            turn,
+            text: text.into(),
+            from: None,
+            via_tool_call_id: None,
+        })
+        .unwrap();
+    id
+}
+
+fn append_group_response(store: &mut EventStore, turn: u64, text: &str) -> u64 {
+    let id = store.last_id() + 1;
+    store
+        .append(EventPayload::ModelResponse {
+            conversation: None,
+            ts: "2026-06-10T00:00:04Z".into(),
+            turn,
+            request_id: format!("request-{turn}"),
+            text: text.into(),
+            thinking: None,
+            input_tokens_total: None,
+            output_tokens_total: None,
+            stop_reason: None,
+        })
+        .unwrap();
+    id
+}
+
+fn append_group_rewind(store: &mut EventStore, agent: &str, target_event_id: u64) -> u64 {
+    let id = store.last_id() + 1;
+    store
+        .append(EventPayload::Unknown(serde_json::json!({
+            "kind": "runtime.operation",
+            "agent": agent,
+            "record": {
+                "operation": "message_rewind",
+                "address": agent,
+                "target_event_id": target_event_id,
+            }
+        })))
+        .unwrap();
+    id
+}
+
+#[tokio::test]
+async fn rewind_history_pages_keep_active_history_filtered_and_groups_owned_once() {
+    let mock = mock_provider::start_mock_provider().await;
+    let server = TestServer::start(mock_provider::make_test_config(mock.port())).await;
+    let id = "rewind-groups";
+    let (old_target, first_target, first_rewind, later_rewind, reviewer_target, reviewer_rewind, _) =
+        write_rewind_group_events(&server, id);
+    let journal_path = server.events_path(id);
+    let original_head = EventStore::read_head(&journal_path).unwrap();
+
+    let newest: serde_json::Value = server
+        .session_request(id, "history", &[("agent", "main"), ("limit", "1")])
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(0, newest["entries"].as_array().unwrap().len());
+    assert_eq!(1, newest["rewind_groups"].as_array().unwrap().len());
+    assert_eq!(first_rewind, newest["rewind_groups"][0]["rewind_event_id"]);
+    assert_eq!(first_target, newest["rewind_groups"][0]["target_event_id"]);
+    assert_eq!(2, newest["rewind_groups"][0]["entry_count"]);
+
+    let before = newest["next_before"].as_u64().unwrap().to_string();
+    let older: serde_json::Value = server
+        .session_request(
+            id,
+            "history",
+            &[("agent", "main"), ("before", &before), ("limit", "1")],
+        )
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(0, older["entries"].as_array().unwrap().len());
+    assert_eq!(1, older["rewind_groups"].as_array().unwrap().len());
+    assert_eq!(later_rewind, older["rewind_groups"][0]["rewind_event_id"]);
+    assert_eq!(old_target, older["rewind_groups"][0]["target_event_id"]);
+    assert_eq!(3, older["rewind_groups"][0]["entry_count"]);
+    let exhausted_cursor = older["next_before"].as_u64().unwrap().to_string();
+    let exhausted: serde_json::Value = server
+        .session_request(
+            id,
+            "history",
+            &[
+                ("agent", "main"),
+                ("before", &exhausted_cursor),
+                ("limit", "1"),
+            ],
+        )
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(exhausted["rewind_groups"].as_array().unwrap().is_empty());
+    assert!(exhausted["next_before"].is_null());
+
+    let first_page: serde_json::Value = server
+        .session_request(
+            id,
+            &format!("history/rewinds/{first_rewind}"),
+            &[("agent", "main"), ("limit", "1")],
+        )
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!("first rewind reply", first_page["entries"][0]["text"]);
+    assert_eq!("main", first_page["entries"][0]["agent"]);
+    let page_before = first_page["next_before"].as_u64().unwrap().to_string();
+    let second_page: serde_json::Value = server
+        .session_request(
+            id,
+            &format!("history/rewinds/{first_rewind}"),
+            &[("agent", "main"), ("before", &page_before), ("limit", "1")],
+        )
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!("first rewind prompt", second_page["entries"][0]["text"]);
+    assert!(second_page["next_before"].is_null());
+
+    let later_group: serde_json::Value = server
+        .session_request(
+            id,
+            &format!("history/rewinds/{later_rewind}"),
+            &[("agent", "main"), ("limit", "8")],
+        )
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let later_texts = later_group["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|entry| entry["text"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ["old prompt", "old reply", "later prompt"],
+        later_texts.as_slice()
+    );
+    assert!(!later_texts.contains(&"first rewind prompt"));
+    assert!(!later_texts.contains(&"first rewind reply"));
+
+    let wrong_agent = server
+        .session_request(
+            id,
+            &format!("history/rewinds/{first_rewind}"),
+            &[("agent", "reviewer")],
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(404, wrong_agent.status());
+
+    let reviewer_history: serde_json::Value = server
+        .session_request(id, "history", &[("agent", "reviewer")])
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(reviewer_history["entries"].as_array().unwrap().is_empty());
+    assert_eq!(
+        reviewer_target,
+        reviewer_history["rewind_groups"][0]["target_event_id"]
+    );
+    assert_eq!(2, reviewer_history["rewind_groups"][0]["entry_count"]);
+    let reviewer_group: serde_json::Value = server
+        .session_request(
+            id,
+            &format!("history/rewinds/{reviewer_rewind}"),
+            &[("agent", "reviewer"), ("limit", "8")],
+        )
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let reviewer_texts = reviewer_group["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|entry| entry["text"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ["reviewer prompt", "reviewer reply"],
+        reviewer_texts.as_slice()
+    );
+    assert_eq!(original_head, EventStore::read_head(&journal_path).unwrap());
+}
+
+#[tokio::test]
+async fn rewind_group_history_rejects_a_single_entry_over_the_response_byte_cap() {
+    let mock = mock_provider::start_mock_provider().await;
+    let server = TestServer::start(mock_provider::make_test_config(mock.port())).await;
+    let id = "rewind-group-byte-cap";
+    write_rewind_group_events(&server, id);
+    let mut store = EventStore::open(server.events_path(id)).unwrap();
+    let oversized_text = "x".repeat(1_048_200);
+    let target = append_group_user(&mut store, "main", 301, &oversized_text);
+    let rewind = append_group_rewind(&mut store, "main", target);
+
+    let response = server
+        .session_request(
+            id,
+            &format!("history/rewinds/{rewind}"),
+            &[("agent", "main")],
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(413, response.status());
+    assert!(response.bytes().await.unwrap().len() < 4096);
+}

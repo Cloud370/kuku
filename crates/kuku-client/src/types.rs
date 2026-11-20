@@ -478,7 +478,34 @@ pub enum HistoryKind {
 pub struct HistoryPage {
     /// Entries within the requested Session boundary.
     pub entries: Vec<HistoryEntry>,
+    /// Read-only summaries of rewound ranges anchored at their original user messages.
+    #[serde(default)]
+    pub rewind_groups: Vec<RewindGroup>,
     /// Exclusive `before` cursor for the previous page, when available.
+    pub next_before: Option<u64>,
+}
+
+/// A read-only history group created by a committed message rewind.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RewindGroup {
+    /// Event identity of the committed rewind operation.
+    pub rewind_event_id: u64,
+    /// Original user-message event used to position this group in the timeline.
+    pub target_event_id: u64,
+    /// Agent whose events were rewound.
+    pub agent: String,
+    /// Display turn number of the selected user message, when available.
+    pub turn_number: Option<u64>,
+    /// Number of displayable entries available when this page was built.
+    pub entry_count: usize,
+}
+
+/// One bounded page of displayable entries inside a read-only rewind group.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct RewindGroupPage {
+    /// Entries belonging to this group in ascending event order.
+    pub entries: Vec<HistoryEntry>,
+    /// Exclusive cursor for the next older group page, when available.
     pub next_before: Option<u64>,
 }
 

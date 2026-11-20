@@ -1,4 +1,4 @@
-use crossterm::event::{KeyCode, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyModifiers};
 use kuku_client::{
     Acknowledgement, Action, HistoryPage, Input, InputSource, InputStatus, InputTiming,
     QueuedInput, Receipt,
@@ -7,10 +7,10 @@ use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 use serde_json::json;
 
-use super::*;
-use crate::app::KeyboardFocus;
+use super::{app, click, event, key, render, saved_input, screen, snapshot};
+use crate::app::{App, KeyboardFocus, Modal};
 use crate::jobs::Update;
-use crate::menu::PromptKind;
+use crate::menu::{PickerKind, PromptKind};
 
 fn queued_state(app: &App, count: usize) -> Box<kuku_client::Snapshot> {
     let mut state = snapshot(app, "running", json!(null), json!(null));
@@ -41,6 +41,7 @@ fn load(app: &mut App, state: Box<kuku_client::Snapshot>) {
         state,
         HistoryPage {
             entries: vec![],
+            rewind_groups: Vec::new(),
             next_before: None,
         },
     ));
@@ -304,7 +305,20 @@ fn request_card_is_visible_without_focus_and_question_answer_is_scoped_and_stale
         app.pane().contextual_focus.cursor,
         Some(crate::contextual::ContextControl::Restart { .. })
     ));
-    key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
+    for _ in 0..5 {
+        if matches!(&app.modal, Some(Modal::Prompt(prompt))
+            if matches!(&prompt.kind, PromptKind::Question { request_id, .. } if request_id == "q-1"))
+        {
+            break;
+        }
+        if matches!(&app.modal, Some(Modal::Picker(picker))
+            if matches!(picker.kind, PickerKind::Messages))
+        {
+            key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        } else {
+            key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
+        }
+    }
     assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
         if matches!(&prompt.kind, PromptKind::Question { request_id, .. } if request_id == "q-1")
             && prompt.editor.text() == "answer draft"));

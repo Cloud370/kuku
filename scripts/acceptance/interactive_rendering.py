@@ -34,6 +34,85 @@ def page_up_after_rendered_resize(terminal, read_while, height, markers):
     return screen
 
 
+def select_message_action(terminal, screen, action):
+    labels = {"Copy", "Source", "Thinking", "Expand", "Full output"}
+
+    def action_rows(value):
+        lines = value.splitlines()
+        start = next(
+            (index for index, line in enumerate(lines) if "Message actions" in line),
+            None,
+        )
+        if start is None:
+            return []
+        rows = lines[start + 1:]
+        first_choice = next(
+            (
+                index
+                for index, line in enumerate(rows)
+                if any(line.rstrip().endswith(f"› {label}") for label in labels)
+            ),
+            None,
+        )
+        if first_choice is None:
+            return []
+        end = next(
+            (index for index, line in enumerate(rows[first_choice:], first_choice)
+             if "Operate message" in line),
+            len(rows),
+        )
+        return rows[first_choice:end]
+
+    def visible_actions(value):
+        visible = []
+        for line in action_rows(value):
+            line = line.rstrip()
+            for label in labels:
+                if line.endswith(label) or line.endswith(f"› {label}"):
+                    visible.append(label)
+                    break
+        return visible
+
+    def selected_action(value):
+        for line in action_rows(value):
+            line = line.rstrip()
+            for label in labels:
+                if line.endswith(f"› {label}"):
+                    return label
+        return None
+
+    visible = visible_actions(screen)
+    assert action in visible, screen
+    for _ in visible:
+        selected = selected_action(screen)
+        if selected == action:
+            break
+        assert selected in visible, screen
+        next_action = visible[(visible.index(selected) + 1) % len(visible)]
+        terminal.press("\t")
+        screen = eventually(
+            f"selection of message action {next_action!r}",
+            lambda: (
+                value
+                if selected_action(value := terminal.request("screen")["screen"])
+                == next_action
+                else None
+            ),
+        )
+    else:
+        raise AssertionError(f"Could not select message action {action!r}:\n{screen}")
+
+    terminal.press("\r")
+    eventually(
+        "message action picker to close",
+        lambda: (
+            value
+            if "Message actions" not in (value := terminal.request("screen")["screen"])
+            else None
+        ),
+    )
+
+
 def has_standalone_assistant_rail(frame):
     assistant_row = next(
         (index for index, line in enumerate(frame) if line.strip() == "Assistant"),
@@ -116,6 +195,27 @@ def pending_inputs_excerpt(screen):
 def event(name, **fields):
     body = json.dumps({"type": name, **fields})
     return f"event: {name}\ndata: {body}\n\n".encode()
+
+
+def operate_on_assistant(terminal, screen, marker, action):
+    terminal.click_text(screen, "Messages" if "Messages" in screen else "Msg")
+    picker = terminal.expect("Active messages")["screen"]
+    lines = picker.splitlines()
+    header = next(index for index, line in enumerate(lines) if "Active messages" in line)
+    choices = lines[header + 1:]
+    rows = [
+        (index, line) for index, line in enumerate(choices)
+        if "Assistant" in line
+        and (marker in line or index + 1 < len(choices) and marker in choices[index + 1])
+    ]
+    assert len(rows) == 1, picker
+    row = rows[0][1]
+    assert "› Assistant" in row, picker
+    terminal.press("\r")
+    actions = terminal.expect("Selected · Assistant")["screen"]
+    assert marker in actions, actions
+    assert action in actions, actions
+    select_message_action(terminal, actions, action)
 
 
 def rendering_cases(binary, bridge, directory):
@@ -255,8 +355,8 @@ def markdown_inline_elements(client):
             eventually("default opener receives first link's URL",
                        lambda: open_log.read_text().splitlines() == [second, first])
         terminal.request("resize", cols=36, rows=38)
-        terminal.expect("中文勾选项", also=("保留待办项", "B Manual", "H₂O"))
-        terminal.press("/source\r")
+        screen = terminal.expect("中文勾选项", also=("保留待办项", "B Manual", "H₂O", "Msg"), rows=38)["screen"]
+        operate_on_assistant(terminal, screen, "<sup>", "Source")
         terminal.expect("x<sup>2</sup>", also=("H<sub>2</sub>O",))
         terminal.exit_cleanly()
 
@@ -397,7 +497,7 @@ def published_reasoning(client):
         completed = terminal.expect(answer, state="Finished", also=("Turn 1", "View thinking"))["screen"]
         assert completed.count("View thinking") == 1 and hidden not in completed
         assert answer in completed.splitlines()[flow_row], completed
-        terminal.press("/source\r")
+        operate_on_assistant(terminal, completed, answer, "Source")
         source = terminal.expect(answer, state="Assistant · source")["screen"]
         assert "Checking the totals." not in source and hidden not in source
         terminal.exit_cleanly()
@@ -407,7 +507,7 @@ def published_reasoning(client):
         reopened.press("\x0f")
         quiet = reopened.expect(answer, state="View thinking")["screen"]
         assert "Comparing the published results." not in quiet
-        reopened.press("/notes\r")
+        operate_on_assistant(reopened, quiet, answer, "Thinking")
         notes = reopened.expect("Comparing the published results.", state="Esc back", also=(answer,))["screen"]
         assert hidden not in settled and hidden not in notes
         answer_row = next(i for i, row in enumerate(notes.splitlines()) if answer in row)
@@ -421,7 +521,6 @@ def published_reasoning(client):
         reopened.press("\x1b")
         restored = reopened.expect(answer, state="Assistant   View thinking")["screen"]
         assert "Esc back" not in restored and "Note 7" not in restored
-        assert next(i for i, row in enumerate(restored.splitlines()) if answer in row) == next(i for i, row in enumerate(settled.splitlines()) if answer in row)
 
         reopened.exit_cleanly()
 

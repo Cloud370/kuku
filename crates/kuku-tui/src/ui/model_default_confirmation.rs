@@ -5,14 +5,16 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
-use super::{
-    picker_line, MODEL_DEFAULT_CONFIRMATION_MIN_HEIGHT, MODEL_DEFAULT_CONFIRMATION_MIN_WIDTH,
-};
 use crate::markup::{render_literal, wrap};
 use crate::menu::{Choice, ChoiceKind, Picker};
 use crate::model_default::SAVE_SCOPE;
 use crate::text::shorten;
 use crate::theme::{focused_row, panel, ERROR, MUTED};
+
+use super::picker_line;
+
+const MODEL_DEFAULT_CONFIRMATION_MIN_WIDTH: u16 = 60;
+const MODEL_DEFAULT_CONFIRMATION_MIN_HEIGHT: u16 = 20;
 
 pub(super) fn wrap_scope(width: usize) -> Option<Vec<Line<'static>>> {
     let style = Style::default().fg(MUTED);
@@ -36,8 +38,7 @@ pub(super) fn wrap_scope(width: usize) -> Option<Vec<Line<'static>>> {
     }
     Some(lines)
 }
-
-pub(super) fn render(
+pub(super) fn render_model_default_confirmation(
     frame: &mut Frame<'_>,
     inner: Rect,
     picker: &mut Picker,

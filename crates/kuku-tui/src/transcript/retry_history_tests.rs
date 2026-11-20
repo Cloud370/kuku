@@ -356,6 +356,7 @@ fn paged_retry_with_missing_execution_matches_live_error_and_interruption() {
                 error_entry(9, 2, "req_1", "Fixture connection closed"),
                 interruption_entry(10, 2, None, "transport"),
             ],
+            rewind_groups: Vec::new(),
             next_before: Some(8),
         },
     );
@@ -372,6 +373,7 @@ fn paged_retry_with_missing_execution_matches_live_error_and_interruption() {
         request,
         HistoryPage {
             entries: vec![retry_entry(8, 2, "req_1", retry_message, "attempt_limit")],
+            rewind_groups: Vec::new(),
             next_before: None,
         },
     );
@@ -494,6 +496,7 @@ fn correlated_provider_interruption_renders_one_error_block_after_page_load() {
                         error_entry(9, 2, "req_1", "Fixture connection closed"),
                         interruption_entry(10, 2, None, "transport"),
                     ],
+                    rewind_groups: Vec::new(),
                     next_before: None,
                 },
             );
@@ -548,6 +551,7 @@ fn legacy_model_error_and_provider_interruption_are_correlated_on_page_load() {
                 error_entry(9, 2, "req_1", "Fixture connection closed"),
                 interruption_entry(10, 2, None, "transport"),
             ],
+            rewind_groups: Vec::new(),
             next_before: None,
         },
     );
@@ -576,6 +580,7 @@ fn phase_less_retry_does_not_block_legacy_terminal_error_correlation() {
                 error_entry(9, 2, "req_1", "Fixture connection closed"),
                 interruption_entry(10, 2, None, "transport"),
             ],
+            rewind_groups: Vec::new(),
             next_before: None,
         },
     );

@@ -31,7 +31,7 @@ REPLY = f"**复制检查**\n\n```text\na\u0301  👩‍💻\n```\n终端回显\n
 SCREENSHOT_LIMIT = 1024 * 1024
 CLIPBOARD_TEXT_LIMIT = 1024 * 1024
 CF_UNICODETEXT, GMEM_MOVEABLE, HWND_MESSAGE = 13, 0x0002, -3
-VK_BACK, VK_RETURN, VK_SHIFT, VK_CONTROL, VK_SPACE = 0x08, 0x0D, 0x10, 0x11, 0x20
+VK_BACK, VK_RETURN, VK_SHIFT, VK_CONTROL, VK_SPACE, VK_TAB, VK_F2 = 0x08, 0x0D, 0x10, 0x11, 0x20, 0x09, 0x71
 VK_LWIN, VK_NUMPAD_PLUS, VK_OEM_SLASH = 0x5B, 0x6B, 0xBF
 VK_LEFT_BUTTON, VK_ALT, VK_RWIN = 0x01, 0x12, 0x5C
 MOUSE_MOVE, MOUSE_LEFT_DOWN, MOUSE_LEFT_UP = 0x01, 0x02, 0x04
@@ -421,6 +421,14 @@ def check_mouse_selection(desktop, checks, reply_frame):
     eventually("the exact dragged text in the Windows clipboard after release", copied_text, timeout=8)
 
 
+def copy_selected_message(desktop, contextual_controls_before_messages=1):
+    desktop.press(VK_F2)
+    for _ in range(contextual_controls_before_messages):
+        desktop.press(VK_TAB)
+    for _ in range(3):
+        desktop.press(VK_RETURN)
+
+
 def dense_layout(client, desktop, workspace, grid):
     original = grid()
 
@@ -442,9 +450,7 @@ def dense_layout(client, desktop, workspace, grid):
 
     def copy_reply(expected):
         desktop.press(VK_CONTROL, ord("C"))
-        desktop.press(VK_OEM_SLASH)
-        desktop.spell("copy")
-        desktop.press(VK_RETURN)
+        copy_selected_message(desktop)
         eventually("the complete Chinese report in the Windows clipboard",
                    lambda: desktop.clipboard.read() == expected, timeout=12)
 
@@ -474,11 +480,9 @@ def exercise(client, desktop, workspace, state, checks):
 
     desktop.focus()
     desktop.clipboard.write("previous isolated clipboard value")
-    desktop.press(VK_OEM_SLASH)
-    desktop.spell("copy")
-    desktop.press(VK_RETURN)
+    copy_selected_message(desktop)
     eventually("the exact response in the Windows clipboard", lambda: desktop.clipboard.read() == REPLY, timeout=12)
-    checks["copy"] = {"command": "/copy", "clipboard_utf8_sha256": hashlib.sha256(REPLY.encode()).hexdigest()}
+    checks["copy"] = {"command": "F2 Messages → Copy", "clipboard_utf8_sha256": hashlib.sha256(REPLY.encode()).hexdigest()}
     name = "01-reply-copied"
     reply_frame = wait_for_selection_frame(desktop, name, "stable Windows Terminal reply selection markers",
                                            lambda image, _: selection_pixels(image))

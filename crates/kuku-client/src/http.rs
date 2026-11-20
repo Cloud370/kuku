@@ -11,7 +11,7 @@ use crate::local::{LocalError, LocalService, SESSION_PROTOCOL_VERSION};
 use crate::subscription::SubscriptionScope;
 use crate::{
     Acknowledgement, AgentSummary, ApiError, Command, EventPage, HistoryPage, ModelDefaultPlan,
-    OutputChunk, SessionSummary, Snapshot, Subscription, Target,
+    OutputChunk, RewindGroupPage, SessionSummary, Snapshot, Subscription, Target,
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -392,6 +392,40 @@ impl Client {
         .await
     }
 
+    /// Read a bounded page of displayable entries in one committed rewind group.
+    pub async fn rewind_group_history(
+        &self,
+        target: &Target,
+        rewind_event_id: u64,
+        before: Option<u64>,
+        limit: usize,
+    ) -> Result<RewindGroupPage, Error> {
+        #[derive(Serialize)]
+        struct Query<'a> {
+            workspace: &'a Path,
+            agent: &'a str,
+            before: Option<u64>,
+            limit: usize,
+        }
+        let rewind_id = rewind_event_id.to_string();
+        self.get(
+            [
+                "sessions",
+                &target.session_id,
+                "history",
+                "rewinds",
+                &rewind_id,
+            ],
+            &Query {
+                workspace: &target.workspace,
+                agent: &target.agent,
+                before,
+                limit,
+            },
+        )
+        .await
+    }
+
     /// Create a reconnectable observation scoped to one Agent and committed cursor.
     pub fn subscribe(&self, target: &Target, after: u64) -> Subscription {
         Subscription::new(self.clone(), target, SubscriptionScope::Agent, after)
@@ -651,7 +685,7 @@ mod tests {
     use serde::Deserialize;
     use tokio::sync::Mutex;
 
-    use super::*;
+    use super::{Client, ModelDefaultPlan};
 
     #[derive(Debug, Deserialize, PartialEq, Eq)]
     struct PlanQuery {

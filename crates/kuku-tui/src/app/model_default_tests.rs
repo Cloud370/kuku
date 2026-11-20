@@ -8,7 +8,10 @@ use kuku_client::{
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
-use super::*;
+use super::{App, Modal, PendingDefaultSave, PendingStage};
+use crate::jobs::Job;
+use crate::menu::PickerKind;
+use crate::model_default::ResolvedModel;
 
 fn model() -> ModelSelection {
     ModelSelection {

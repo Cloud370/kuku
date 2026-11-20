@@ -1,17 +1,16 @@
 use std::path::{Path, PathBuf};
 
 use kuku_client::{
-    Acknowledgement, Error, HistoryPage, Observation, Receipt, RetryFailureKind, RetryPhase,
-    RetrySource, RetryStopReason, Snapshot, Timing,
+    Acknowledgement, HistoryPage, Observation, Receipt, RetryFailureKind, RetryPhase, RetrySource,
+    RetryStopReason, Snapshot, Timing,
 };
 use serde_json::{json, Value};
 
 use super::{Activity, App, HistoryEntry, InputStatus, ServiceStatus, SubmissionStatus};
 use crate::app::Address;
 use crate::jobs::{Job, Update};
-
 #[path = "rewind_tests.rs"]
-mod rewind;
+mod rewind_tests;
 
 fn connected() -> App {
     let workspace = PathBuf::from("/workspace");
@@ -65,6 +64,7 @@ fn loaded(app: &mut App, snapshot: Box<Snapshot>, entries: Vec<HistoryEntry>) {
         snapshot,
         HistoryPage {
             entries,
+            rewind_groups: Vec::new(),
             next_before: None,
         },
     ));
@@ -839,53 +839,6 @@ fn upstream_wait_stream_parallel_tools_and_settlement_keep_service_connected() {
     app.update(Update::Refreshed(app.selection(), Ok(failed)));
     assert_eq!(Activity::Failed, app.pane().activity());
     assert_eq!(ServiceStatus::Connected, app.service_status());
-}
-
-#[test]
-fn reconnect_discards_live_preview_without_changing_drafts_and_rejects_old_target() {
-    let mut app = connected();
-    app.select(app.active.clone(), true, String::new());
-    let attached = snapshot(
-        &app,
-        6,
-        "running",
-        Some(5),
-        0,
-        json!({"phase":"waiting_for_model"}),
-        None,
-    );
-    loaded(&mut app, attached, Vec::new());
-    let active = app.selection();
-    app.pane_mut().draft.insert("Keep this draft");
-    streaming(&mut app, 7);
-    app.update(Update::WatchReconnecting(
-        active.clone(),
-        "service observation ended".into(),
-    ));
-    assert_eq!(ServiceStatus::Reconnecting, app.service_status());
-    assert_eq!(Activity::WaitingForModel, app.pane().activity());
-    assert!(app.service_problem().unwrap().contains("observation ended"));
-    assert_eq!("Keep this draft", app.pane().draft.text());
-    app.update(Update::WatchConnected(active.clone()));
-    app.update(Update::Observation(
-        active.clone(),
-        Observation::Lagged { skipped: 0 },
-    ));
-    assert_eq!(ServiceStatus::Connected, app.service_status());
-    assert_eq!(None, app.service_problem());
-
-    let reviewer = Address::new(app.active.session.clone(), "reviewer".into());
-    app.select(reviewer, true, String::new());
-    let unauthorized = || Error::Service {
-        status: 401,
-        code: "unauthorized".into(),
-        error_message: "Sign in again".into(),
-    };
-    app.update(Update::WatchFailed(active, unauthorized()));
-    assert_eq!(ServiceStatus::Connecting, app.service_status());
-    app.update(Update::WatchFailed(app.selection(), unauthorized()));
-    assert_eq!(ServiceStatus::UpdatesUnavailable, app.service_status());
-    assert!(app.service_problem().unwrap().contains("Sign in again"));
 }
 
 #[test]

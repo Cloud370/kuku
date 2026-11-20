@@ -5,7 +5,6 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 
-use crate::keys::Shortcut;
 use crate::markup::{render_literal, wrap_bounded, LinkDestination};
 use crate::text::{cap, shorten, single_line};
 use crate::theme::{ACCENT, MIN_TRANSCRIPT_INDENT_WIDTH, MUTED, TRANSCRIPT_INDENT, WARNING};
@@ -15,13 +14,15 @@ mod body;
 mod details;
 mod history;
 mod message;
+mod messages;
 mod notes;
 mod preview;
-mod reply;
+mod render;
 mod retry;
 mod rewind;
 mod row;
 use row::Row;
+mod rewound;
 mod tool;
 mod turn_summary;
 mod window;
@@ -29,14 +30,16 @@ mod window;
 use self::agent::AgentCards;
 use self::body::Body;
 pub(crate) use self::details::DetailKey;
-use self::details::{DetailRecord, Details, VisibleDetail};
+use self::details::{DetailRecord, Details};
 use self::message::{paint_card, render_assistant_source, render_record, render_user};
-use self::reply::LatestReply;
-pub(crate) use self::reply::ReplySource;
+pub(crate) use self::messages::{MessageId, MessageInfo, MessageKind, SelectedMessage};
+use self::rewound::RewindGroupState;
+pub(crate) use self::rewound::{RewindGroupAction, RewindGroupChoice, RewindGroupRequest};
 use self::tool::Tool;
-use self::window::{Layout, RenderCache, TurnHeading, Window};
+use self::window::{Layout, RenderCache, Window};
 
 pub(crate) const HISTORY_PAGE: usize = 48;
+pub(crate) const REWIND_GROUP_PAGE: usize = 12;
 const MAX_RECORDS: usize = HISTORY_PAGE * 3;
 const MAX_LIVE_RECORDS: usize = 32;
 const MAX_BODY_BYTES: usize = 64 * 1024;
@@ -48,6 +51,7 @@ const DISPLAY_LIMIT_NOTICE: &str = "\n… Display limit reached";
 enum Key {
     Event(u64),
     Preview(u64),
+    RewindGroup(u64),
     Tool { turn: Option<u64>, id: String },
 }
 
@@ -61,6 +65,7 @@ pub(crate) struct Anchor {
 enum AnchorLine {
     Turn,
     Group(usize),
+    RewindEntry { event_id: u64, line: usize },
     Body(usize),
 }
 
@@ -98,13 +103,14 @@ enum ToolDetails {
 enum AssistantView {
     #[default]
     Preview,
+    #[cfg(test)]
     Source,
+    MessageSource(u64),
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct Transcript {
     recent: Window,
-    latest_reply: LatestReply,
     reading: Option<Reading>,
     restore: Option<(u64, Anchor)>,
     details: ToolDetails,
@@ -115,10 +121,16 @@ pub(crate) struct Transcript {
     agent_cards: AgentCards,
     detail_items: Details,
     visible_links: Vec<(usize, LinkDestination)>,
+    visible_rewind_actions: Vec<(usize, u64, RewindGroupAction)>,
+    focused_rewind_group: Option<u64>,
+    readonly_epoch: u64,
 }
 
 impl Transcript {
     pub(crate) fn replace_recent(&mut self, page: HistoryPage) {
+        self.readonly_epoch = self.readonly_epoch.wrapping_add(1);
+        self.reset_pending_rewind_group_pages();
+        self.focused_rewind_group = None;
         self.reply_position = None;
         if let Some(reading) = &mut self.reading {
             let previous = self
@@ -132,21 +144,24 @@ impl Transcript {
                 .last()
                 .is_some_and(|entry| previous.is_some_and(|previous| entry.id > previous));
         }
-        self.latest_reply.observe_page(&page);
         self.recent = Window::from_page(page);
         self.current_execution = None;
         self.detail_items.visible.clear();
+        self.visible_rewind_actions.clear();
     }
 
     pub(crate) fn suspend(&mut self) {
+        self.readonly_epoch = self.readonly_epoch.wrapping_add(1);
         self.reply_position = None;
         self.notes = None;
+        self.focused_rewind_group = None;
         if let Some(reading) = self.reading.take() {
             self.restore = reading.restore_at();
         }
         self.recent = Window::default();
         self.current_execution = None;
         self.detail_items.visible.clear();
+        self.visible_rewind_actions.clear();
     }
 
     pub(crate) fn restore_request(&self) -> Option<HistoryRequest> {
@@ -156,7 +171,6 @@ impl Transcript {
     }
 
     pub(crate) fn apply(&mut self, entry: HistoryEntry, execution: Option<u64>) {
-        self.latest_reply.observe(&entry);
         let entry_turn = entry.turn;
         let error_position = (entry.kind == HistoryKind::Error).then_some((entry.id, entry_turn));
         let interrupted_execution = retry::interruption_execution(&entry);
@@ -228,12 +242,25 @@ impl Transcript {
     pub(crate) fn show_latest(&mut self) {
         self.reply_position = None;
         self.notes = None;
+        self.focused_rewind_group = None;
         self.reading = None;
         self.restore = None;
     }
 
     pub(crate) fn reading_anchor(&self) -> Option<&Anchor> {
         self.reading.as_ref().map(|reading| &reading.anchor)
+    }
+
+    pub(crate) fn set_focused_rewind_group(&mut self, rewind_event_id: Option<u64>) {
+        self.focused_rewind_group = rewind_event_id;
+    }
+
+    pub(crate) fn focused_rewind_group(&self) -> Option<u64> {
+        let rewind_event_id = self.focused_rewind_group?;
+        self.rewind_group_choices()
+            .iter()
+            .any(|group| group.rewind_event_id == rewind_event_id && group.expanded)
+            .then_some(rewind_event_id)
     }
 
     pub(crate) fn is_reading(&self) -> bool {
@@ -270,40 +297,6 @@ impl Transcript {
         expanded
     }
 
-    pub(crate) fn toggle_source(&mut self) -> bool {
-        self.assistant_view = match self.assistant_view {
-            AssistantView::Preview => AssistantView::Source,
-            AssistantView::Source => AssistantView::Preview,
-        };
-        self.assistant_view == AssistantView::Source
-    }
-
-    pub(crate) fn last_reply(&self) -> Option<ReplySource<'_>> {
-        self.latest_reply.source(&self.recent.records)
-    }
-
-    pub(crate) fn tools(&self) -> Vec<ToolView> {
-        let window = self
-            .reading
-            .as_ref()
-            .map_or(&self.recent, |reading| &reading.window);
-        window
-            .records
-            .iter()
-            .rev()
-            .filter_map(|record| match &record.body {
-                Body::Tool(tool) => Some(tool.view()),
-                Body::User { .. }
-                | Body::Assistant(_)
-                | Body::Interrupted(_)
-                | Body::Notice(..)
-                | Body::ModelError { .. }
-                | Body::Retry { .. }
-                | Body::TurnSummary => None,
-            })
-            .collect()
-    }
-
     pub(crate) fn scroll(
         &mut self,
         amount: isize,
@@ -319,7 +312,9 @@ impl Transcript {
             items: &self.detail_items,
         };
         if self.reading.is_none() {
-            if amount > 0 || self.recent.records.is_empty() {
+            if amount > 0
+                || (self.recent.records.is_empty() && self.recent.rewind_groups.is_empty())
+            {
                 return None;
             }
             let mut window = self.recent.clone();
@@ -356,152 +351,6 @@ impl Transcript {
         }
         None
     }
-
-    pub(crate) fn project(&mut self, width: usize, height: usize) -> TranscriptView {
-        self.link_recent_agent_cards();
-        self.keep_first_reply_line(width, height);
-        let layout = Layout {
-            width,
-            tools: self.details,
-            assistant: self.assistant_view,
-            agents: &self.agent_cards,
-            items: &self.detail_items,
-        };
-        let (window, start, following) = if let Some(reading) = &mut self.reading {
-            let start = reading.window.position_of(&reading.anchor, layout);
-            (&mut reading.window, start, false)
-        } else {
-            let rows = self.recent.row_count(layout);
-            (&mut self.recent, rows.saturating_sub(height), true)
-        };
-        let limit = height.saturating_add(usize::from(self.notes.is_some()));
-        let mut lines = Vec::with_capacity(limit);
-        let mut row_insets = Vec::with_capacity(height);
-        self.visible_links.clear();
-        let mut visible = Vec::new();
-        let mut thinking_row = None;
-        let mut skip = start;
-        for block in window.blocks(layout) {
-            if lines.len() == limit {
-                break;
-            }
-            if skip == 0 && block.height() == 0 {
-                if let Some(detail @ DetailRecord::Reasoning(_)) = block.detail {
-                    let row = lines.len();
-                    visible.push(VisibleDetail::record(row..row, block.key, detail, false));
-                }
-                continue;
-            }
-            if skip >= block.height() {
-                skip -= block.height();
-                continue;
-            }
-            if let Some(turn) = block.heading {
-                if skip == 0 {
-                    lines.push(message::render_turn(turn, width, block.user_header));
-                    row_insets.push(0);
-                }
-                skip = skip.saturating_sub(1);
-            }
-            if let Some(group) = block.group {
-                let first = lines.len();
-                let title_visible = skip == 0;
-                for row in group.rows.iter().skip(skip).take(limit - first) {
-                    lines.push(row.line.clone());
-                    row_insets.push(row.inset);
-                }
-                skip = skip.saturating_sub(group.rows.len());
-                let end = lines.len()
-                    - usize::from(lines.last().is_some_and(|line| line.spans.is_empty()));
-                if first < end {
-                    visible.push(VisibleDetail::group(
-                        first..end,
-                        block.key,
-                        group,
-                        title_visible,
-                    ));
-                }
-            }
-            let first = lines.len();
-            for row in block.rows.iter().skip(skip).take(limit - lines.len()) {
-                self.visible_links
-                    .extend(row.links.iter().cloned().map(|link| (lines.len(), link)));
-                lines.push(row.line.clone());
-                row_insets.push(row.inset);
-            }
-            if following && block.thinking && skip <= 1 && first + 1 - skip < lines.len() {
-                thinking_row = Some(first + 1 - skip);
-            }
-            if let Some(detail) = block.detail {
-                let last = lines.len()
-                    - usize::from(
-                        lines.len() > first
-                            && lines.last().is_some_and(|line| line.spans.is_empty()),
-                    );
-                let last = if let DetailRecord::Reasoning(_) = detail {
-                    last.min(first + usize::from(skip == 0))
-                } else {
-                    last
-                };
-                if last > first
-                    || (matches!(detail, DetailRecord::Reasoning(_))
-                        && block.rows.is_empty()
-                        && first < height)
-                {
-                    visible.push(VisibleDetail::record(
-                        first..last,
-                        block.key,
-                        detail,
-                        skip == 0 && !block.grouped,
-                    ));
-                }
-            }
-            skip = 0;
-        }
-        if thinking_row.is_some() && self.reply_position.is_none() {
-            if let (Some(execution), Some(top)) =
-                (self.current_execution, window.anchor_at(start, layout))
-            {
-                self.reply_position = Some(preview::ReplyPosition {
-                    key: Key::Preview(execution),
-                    top,
-                });
-            }
-        }
-        self.detail_items.visible = visible;
-        let tool_hint = (!self.detail_items.visible.is_empty()).then(|| {
-            if self.detail_items.only_reasoning() {
-                return "/details".to_owned();
-            }
-            let action = if self.details_can_expand() {
-                "show"
-            } else {
-                "hide"
-            };
-            format!("{} {action} · /details", Shortcut::DETAILS.label)
-        });
-        let mut view = TranscriptView {
-            thinking_row,
-            lines,
-            row_insets,
-            following,
-            tool_hint,
-        };
-        if let Some(notes) = &mut self.notes {
-            let origin = self.detail_items.rows_for(&notes.key);
-            notes.paint(&mut view, origin, width, height);
-        }
-        view
-    }
-
-    fn details_can_expand(&self) -> bool {
-        self.details == ToolDetails::Collapsed
-            || self.detail_items.has_collapsed_detail()
-            || self
-                .detail_items
-                .agent_keys()
-                .any(|key| !self.agent_cards.is_open(key))
-    }
 }
 
 pub(crate) struct TranscriptView {
@@ -520,6 +369,7 @@ pub(crate) struct ToolView {
     pub(crate) details: String,
     pub(crate) diff: String,
     pub(crate) output_id: Option<String>,
+    pub(crate) inline_output_complete: bool,
 }
 
 #[derive(Debug)]
@@ -533,30 +383,24 @@ struct Reading {
 
 impl Reading {
     fn restore_at(self) -> Option<(u64, Anchor)> {
-        let index = self
-            .window
-            .records
+        let positions = self.window.positions();
+        let index = positions
             .iter()
-            .position(|record| record.key == self.anchor.key)?;
-        let before = self
-            .window
-            .records
+            .position(|(_, key)| key == &self.anchor.key)?;
+        let before = positions
             .iter()
             .skip(index)
             .take(HISTORY_PAGE / 2)
-            .filter_map(|record| record.position)
+            .map(|(position, _)| *position)
             .next_back();
         if let Some(before) = before {
             Some((before.saturating_add(1), self.anchor))
         } else {
-            let record = self.window.records[..index]
-                .iter()
-                .rev()
-                .find(|record| record.position.is_some())?;
+            let (position, key) = positions[..index].last()?;
             Some((
-                record.position?.saturating_add(1),
+                position.saturating_add(1),
                 Anchor {
-                    key: record.key.clone(),
+                    key: key.clone(),
                     line: AnchorLine::Body(0),
                 },
             ))
@@ -747,9 +591,15 @@ impl Record {
             agents,
             items,
         } = layout;
-        let source_body = match (assistant, &self.body) {
-            (AssistantView::Source, Body::Assistant(text)) => Some((text, false)),
-            (AssistantView::Source, Body::Interrupted(text)) => Some((text, true)),
+        let source_selected = match assistant {
+            #[cfg(test)]
+            AssistantView::Source => true,
+            AssistantView::MessageSource(id) => self.key == Key::Event(id),
+            AssistantView::Preview => false,
+        };
+        let source_body = match (source_selected, &self.body) {
+            (true, Body::Assistant(text)) => Some((text, false)),
+            (true, Body::Interrupted(text)) => Some((text, true)),
             _ => None,
         };
         if let Some((text, interrupted)) = source_body {
@@ -923,5 +773,7 @@ fn append_bounded(out: &mut String, text: &str, limit: usize) -> bool {
 
 #[cfg(test)]
 mod retry_history_tests;
+#[cfg(test)]
+mod rewound_tests;
 #[cfg(test)]
 mod tests;

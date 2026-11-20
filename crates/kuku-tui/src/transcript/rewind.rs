@@ -1,15 +1,17 @@
-use super::reply::LatestReply;
 use super::{Body, Key, Transcript, Window};
 
 impl Transcript {
     pub(crate) fn invalidate_after_rewind(&mut self) {
+        self.readonly_epoch = self.readonly_epoch.wrapping_add(1);
+        self.reset_pending_rewind_group_pages();
         self.reply_position = None;
         self.reading = None;
         self.restore = None;
-        self.latest_reply = LatestReply::default();
         self.recent = Window::default();
         self.current_execution = None;
         self.detail_items.visible.clear();
+        self.visible_rewind_actions.clear();
+        self.focused_rewind_group = None;
     }
 
     pub(crate) fn rewind_messages(&self, agent: &str) -> Vec<(u64, u64, String)> {

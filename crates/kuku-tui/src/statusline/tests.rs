@@ -51,6 +51,7 @@ fn load_agent(app: &mut App, status: &str, queued: usize, question: Value, usage
         Box::new(snapshot),
         HistoryPage {
             entries: Vec::new(),
+            rewind_groups: Vec::new(),
             next_before: None,
         },
     ));

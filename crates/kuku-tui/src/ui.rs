@@ -10,7 +10,7 @@ use crate::app::{App, Modal};
 use crate::editor::{Editor, EditorView};
 use crate::keys::Shortcut;
 use crate::markup::{render_literal, wrap};
-use crate::menu::{Picker, PickerKind, Prompt, PromptKind};
+use crate::menu::{ChoiceKind, Picker, PickerKind, Prompt, PromptKind};
 use crate::output::OutputViewer;
 use crate::text::{shorten, single_line};
 use crate::theme::{
@@ -30,8 +30,6 @@ pub(crate) use activity::{ActivityClock, ActivityFrame};
 const MAX_BANNER_ROWS: u16 = 5;
 const MIN_TRANSCRIPT_ROWS: u16 = 2;
 const MIN_ACTIVITY_WIDTH: u16 = 8;
-const MODEL_DEFAULT_CONFIRMATION_MIN_WIDTH: u16 = 60;
-const MODEL_DEFAULT_CONFIRMATION_MIN_HEIGHT: u16 = 20;
 const FOOTER_SPACE_HEIGHT: u16 = 16;
 const COMPOSER_SPACE_HEIGHT: u16 = 20;
 const COMPOSER_SPACE_WIDTH: usize = 42;
@@ -401,6 +399,7 @@ fn render_transcript(
     activity: &ActivityFrame,
 ) -> Vec<u16> {
     if area.is_empty() {
+        app.text_selection.set_messages_area(None);
         app.transcript_area = (usize::from(area.width).max(1), 1);
         return Vec::new();
     }
@@ -428,19 +427,21 @@ fn render_transcript(
         };
     }
     if view.lines.is_empty() && !app.pane().exists {
+        app.text_selection.set_messages_area(None);
         header::render_welcome(frame, area, app, show_service_problem);
         return Vec::new();
     }
     if view.lines.is_empty() && height > 0 {
         view.lines = header::empty_notice(app, width, show_service_problem);
     }
-    header::render_session(
+    let messages_area = header::render_session(
         frame,
         header,
         app,
         view.following,
         view.tool_hint.as_deref(),
     );
+    app.text_selection.set_messages_area(messages_area);
     for (row, line) in view.lines.iter().take(height).enumerate() {
         if line.style.bg.is_some() {
             let area = Rect::new(body.x, body.y + row as u16, body.width, 1);
@@ -657,7 +658,7 @@ fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (us
         && !picker.loading
         && picker.problem.is_none()
     {
-        return model_default_confirmation::render(frame, inner, picker);
+        return model_default_confirmation::render_model_default_confirmation(frame, inner, picker);
     }
     let width = usize::from(inner.width);
     let search_rows = u16::from(picker.kind.searchable() && inner.height >= 3);
@@ -710,8 +711,15 @@ fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (us
     let last = (first + count).min(options.len());
     let mut lines = Vec::new();
     for (index, choice) in options.iter().enumerate().skip(first).take(count) {
-        let active = index == picker.selected;
-        let style = if active { focused_row() } else { panel() };
+        let section = matches!(&choice.kind, ChoiceKind::RewindSection);
+        let active = index == picker.selected && !section;
+        let style = if active {
+            focused_row()
+        } else if section {
+            emphasis(MUTED)
+        } else {
+            panel()
+        };
         let prefix = if active { "› " } else { "  " };
         let label = single_line(&choice.label);
         let detail = single_line(&choice.detail);
@@ -752,6 +760,15 @@ fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (us
             shorten(&single_line(error), width),
             Style::default().fg(ERROR),
         )
+    } else if let Some(help) = match picker.kind {
+        PickerKind::Messages => Some("Operate message · ↑↓ Select · Enter Actions · Esc Close"),
+        PickerKind::MessageActions => {
+            Some("Operate message · ←→/Tab Select · Enter Run · Esc Back")
+        }
+        PickerKind::Rewind => Some("Rewind · ↑↓ Select · Enter Rewind · Esc Close"),
+        _ => None,
+    } {
+        Line::styled(shorten(help, width), Style::new().fg(MUTED))
     } else if width < 32 {
         Line::styled(
             shorten("↑↓ Select · Enter · Esc", width),

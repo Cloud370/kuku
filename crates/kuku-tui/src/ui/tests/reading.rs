@@ -13,6 +13,7 @@ fn load_snapshot(app: &mut App, status: &str) {
         state,
         HistoryPage {
             entries: Vec::new(),
+            rewind_groups: Vec::new(),
             next_before: None,
         },
     ));

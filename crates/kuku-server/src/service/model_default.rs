@@ -181,7 +181,13 @@ fn no_store(mut response: Response) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::sync::Arc;
+
+    use axum::extract::{Query, State};
+    use axum::http::{header, StatusCode};
+    use sha2::{Digest, Sha256};
+
+    use super::{plan, resolve_plan, ModelDefaultPlanRequest, PlanFailure, ServiceState};
 
     const CONFIG: &str = r#"
 default_model = "balanced"

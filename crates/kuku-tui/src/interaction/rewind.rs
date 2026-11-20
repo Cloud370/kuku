@@ -44,6 +44,15 @@ impl App {
             self.focus_composer();
             return;
         }
+        if self.pane().keyboard_focus == crate::app::KeyboardFocus::Transcript
+            && self.pane().transcript.is_reading()
+            && !self.pane().draft.text().is_empty()
+        {
+            self.escape_armed_at = None;
+            self.deactivate_context_focus();
+            self.focus_composer();
+            return;
+        }
         if !self.pane().draft.text().is_empty() {
             self.escape_armed_at = None;
             return;

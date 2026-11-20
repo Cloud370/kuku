@@ -43,6 +43,7 @@ pub(crate) enum ContextControl {
     Restart {
         endpoint: Option<String>,
     },
+    Messages,
 }
 
 impl ContextControl {

@@ -6,7 +6,7 @@ use kuku_client::local::{RestartOutcome, SESSION_PROTOCOL_VERSION};
 use kuku_client::{
     Acknowledgement, AgentConfig, Client, Command, Connection, ConnectionOptions, Error,
     HistoryKind, HistoryPage, ModelCatalog, ModelSelection, Observation, OutputChunk,
-    SessionStatus, Snapshot, SubscriptionUpdate, Target,
+    RewindGroupPage, SessionStatus, Snapshot, SubscriptionUpdate, Target,
 };
 use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinSet};
@@ -14,7 +14,7 @@ use tokio::task::{AbortHandle, JoinSet};
 use crate::menu::{Choice, ChoiceKind, Ticket};
 use crate::model_default::{self, PreparedDefaultSave, ResolvedModel};
 use crate::output::OUTPUT_PAGE_BYTES;
-use crate::transcript::{HistoryRequest, HISTORY_PAGE};
+use crate::transcript::{HistoryRequest, RewindGroupRequest, HISTORY_PAGE, REWIND_GROUP_PAGE};
 
 const UPDATE_CAPACITY: usize = 64;
 const SEARCH_DELAY: Duration = Duration::from_millis(70);
@@ -42,6 +42,7 @@ pub(crate) enum Job {
     Refresh(Selection),
     RefreshProgress(Selection),
     History(Selection, HistoryRequest),
+    RewindGroupHistory(Selection, RewindGroupRequest),
     Find(Ticket, Search),
     ClosePicker,
     PrepareDefault {
@@ -80,6 +81,11 @@ pub(crate) enum Update {
     Observation(Selection, Observation),
     Refreshed(Selection, Result<Box<Snapshot>, Error>),
     History(Selection, HistoryRequest, Result<HistoryPage, Error>),
+    RewindGroupHistory(
+        Selection,
+        RewindGroupRequest,
+        Result<RewindGroupPage, Error>,
+    ),
     Found(Ticket, Result<(Vec<Choice>, String), Error>),
     PreparedDefault(u64, Selection, Result<PreparedDefaultSave, String>),
     SavedDefault(u64, Selection, Result<(), String>),
@@ -266,6 +272,17 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
                 .history(&selection.target, request.before_option(), HISTORY_PAGE)
                 .await;
             Update::History(selection, request, result)
+        }
+        Job::RewindGroupHistory(selection, request) => {
+            let result = client
+                .rewind_group_history(
+                    &selection.target,
+                    request.rewind_event_id,
+                    request.before,
+                    REWIND_GROUP_PAGE,
+                )
+                .await;
+            Update::RewindGroupHistory(selection, request, result)
         }
         Job::Save(command) => {
             let save = command.clone();

@@ -51,6 +51,7 @@ impl App {
                 });
             }
         }
+        controls.push(ContextControl::Messages);
         controls
     }
 

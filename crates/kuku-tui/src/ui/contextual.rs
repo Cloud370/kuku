@@ -29,6 +29,7 @@ pub(super) fn label(control: &ContextControl) -> String {
             format!("F2 Reconnect · {} · Enter", Shortcut::RECONNECT.label)
         }
         ContextControl::Restart { .. } => "F2 Restart · Enter".into(),
+        ContextControl::Messages => "F2 Messages · Enter".into(),
     }
 }
 
@@ -47,10 +48,20 @@ fn action_label(control: &ContextControl) -> &'static str {
         ContextControl::PreviousAgent { .. } => "Previous Agent",
         ContextControl::Reconnect { .. } => "Reconnect",
         ContextControl::Restart { .. } => "Restart",
+        ContextControl::Messages => "Messages",
     }
 }
 
 pub(super) fn focused_hint(app: &App, width: usize) -> Option<Vec<Line<'static>>> {
+    if app.pane().transcript.focused_rewind_group().is_some() {
+        return Some(vec![
+            Line::styled(shorten("Rewound · read-only", width), focused_row()),
+            Line::styled(
+                shorten("↑↓/PgUp/PgDn browse · Esc input", width),
+                Style::new().fg(MUTED),
+            ),
+        ]);
+    }
     if !app.pane().contextual_focus.active {
         return None;
     }

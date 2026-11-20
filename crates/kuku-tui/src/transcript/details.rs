@@ -11,7 +11,10 @@ use crate::theme::{emphasis, ACCENT, MUTED, SUCCESS};
 
 use super::agent::{AgentCard, AgentCards};
 use super::tool::{style_card, tool_title, Tool};
-use super::{body_inset, render_rows, Key, Record, Row, ToolDetails, Transcript, MAX_RECORDS};
+use super::{
+    body_inset, render_rows, Key, Record, RewindGroupAction, RewindGroupChoice, Row, ToolDetails,
+    Transcript, MAX_RECORDS,
+};
 
 const INSPECTIONS: [(&str, &str, &str); 5] = [
     ("read_file", "file read", "file reads"),
@@ -29,6 +32,26 @@ pub(crate) struct DetailKey {
 }
 
 impl DetailKey {
+    pub(crate) fn rewind_group_action(&self) -> Option<(u64, RewindGroupAction)> {
+        let Key::RewindGroup(id) = &self.record else {
+            return None;
+        };
+        let action = match self.kind {
+            DetailKind::RewindGroup => RewindGroupAction::Toggle,
+            DetailKind::RewindGroupRetry => RewindGroupAction::Retry,
+            DetailKind::RewindGroupMore => RewindGroupAction::More,
+            _ => return None,
+        };
+        Some((*id, action))
+    }
+
+    fn message_action(kind: DetailKind, record: &Key) -> Self {
+        Self {
+            kind,
+            record: record.clone(),
+        }
+    }
+
     pub(super) fn settle(&mut self, preview: &Key, settled: &Key) {
         if self.record == *preview {
             self.record = settled.clone();
@@ -41,6 +64,9 @@ enum DetailKind {
     Agent,
     Group,
     Reasoning,
+    RewindGroup,
+    RewindGroupMore,
+    RewindGroupRetry,
     Tool,
 }
 
@@ -204,6 +230,37 @@ pub(super) enum DetailRecord<'a> {
 }
 
 impl Transcript {
+    pub(super) fn message_action_keys(
+        &self,
+        record: &Record,
+    ) -> (Option<DetailKey>, Option<DetailKey>) {
+        let thinking = (!record.reasoning_preview.is_empty())
+            .then(|| DetailKey::message_action(DetailKind::Reasoning, &record.key));
+        let tool_message = matches!(&record.body, super::Body::Tool(_));
+        let expandable = self
+            .detail_items
+            .visible
+            .iter()
+            .find(|item| {
+                item.key.record == record.key
+                    && item.key.kind != DetailKind::Reasoning
+                    && (!tool_message || item.key.kind != DetailKind::Group)
+            })
+            .map(|item| item.key.clone())
+            .or_else(|| match &record.body {
+                super::Body::Tool(tool) => Some(DetailKey::message_action(
+                    if tool.agent_card().is_some() {
+                        DetailKind::Agent
+                    } else {
+                        DetailKind::Tool
+                    },
+                    &record.key,
+                )),
+                _ => None,
+            });
+        (thinking, expandable)
+    }
+
     pub(crate) fn markdown_link_at(&self, row: usize, column: usize) -> Option<&str> {
         let row = match &self.notes {
             Some(notes) if notes.hit(row) => return None,
@@ -254,14 +311,44 @@ impl Transcript {
     }
 
     pub(crate) fn visible_detail_choices(&self) -> Vec<(DetailKey, String, String)> {
-        self.detail_items
+        let mut choices = self
+            .detail_items
             .visible
             .iter()
             .rev()
             .map(|item| (item.key.clone(), item.label.clone(), item.summary.clone()))
-            .collect()
+            .collect::<Vec<_>>();
+        let rewind_groups: Vec<RewindGroupChoice> = self.rewind_group_choices();
+        for group in rewind_groups.into_iter().rev() {
+            let action = if group.expanded { "Collapse" } else { "Expand" };
+            let key = Key::RewindGroup(group.rewind_event_id);
+            choices.push((
+                DetailKey {
+                    kind: DetailKind::RewindGroup,
+                    record: key.clone(),
+                },
+                format!("{action} · {}", group.label),
+                format!("Agent {} · {}", group.agent, group.summary),
+            ));
+            let action = if group.can_retry {
+                Some((DetailKind::RewindGroupRetry, "Retry loading"))
+            } else if group.can_load_more {
+                Some((DetailKind::RewindGroupMore, "Load earlier"))
+            } else {
+                None
+            };
+            if let Some((kind, label)) = action {
+                choices.push((
+                    DetailKey { kind, record: key },
+                    format!("{label} · {}", group.label),
+                    format!("Agent {} · {}", group.agent, group.summary),
+                ));
+            }
+        }
+        choices
     }
 
+    #[cfg(test)]
     pub(crate) fn latest_notes(&self) -> Option<DetailKey> {
         self.detail_items
             .visible
@@ -342,27 +429,50 @@ impl Transcript {
     }
 
     pub(crate) fn toggle_detail(&mut self, key: &DetailKey) -> bool {
-        let window = self
+        let in_window = self
             .reading
             .as_ref()
-            .map_or(&self.recent, |reading| &reading.window);
+            .map_or(&self.recent, |reading| &reading.window)
+            .contains(&key.record);
         match key.kind {
-            DetailKind::Agent => self.toggle_agent_record(&key.record),
-            DetailKind::Tool if window.contains(&key.record) => {
-                if let Some(index) = self
-                    .detail_items
-                    .inspections
-                    .iter()
-                    .position(|opened| opened == &key.record)
-                {
-                    self.detail_items.inspections.remove(index);
+            DetailKind::Agent => {
+                let group_was_collapsed = self.open_containing_group(&key.record);
+                if group_was_collapsed && self.agent_cards.is_open(&key.record) {
+                    true
                 } else {
-                    remember(&mut self.detail_items.inspections, &key.record);
+                    self.toggle_agent_record(&key.record)
+                }
+            }
+            DetailKind::Tool if in_window => {
+                let group_was_collapsed = self.open_containing_group(&key.record);
+                if group_was_collapsed {
+                    if !self.detail_items.inspections.contains(&key.record) {
+                        remember(&mut self.detail_items.inspections, &key.record);
+                    }
+                } else {
+                    if let Some(index) = self
+                        .detail_items
+                        .inspections
+                        .iter()
+                        .position(|opened| opened == &key.record)
+                    {
+                        self.detail_items.inspections.remove(index);
+                    } else {
+                        remember(&mut self.detail_items.inspections, &key.record);
+                    }
                 }
                 true
             }
-            DetailKind::Tool | DetailKind::Reasoning => false,
+            DetailKind::Tool
+            | DetailKind::Reasoning
+            | DetailKind::RewindGroup
+            | DetailKind::RewindGroupMore
+            | DetailKind::RewindGroupRetry => false,
             DetailKind::Group => {
+                let window = self
+                    .reading
+                    .as_ref()
+                    .map_or(&self.recent, |reading| &reading.window);
                 let Some(span) = groups(&window.records).into_iter().find(|span| {
                     window.records[span.range.clone()]
                         .iter()
@@ -395,6 +505,32 @@ impl Transcript {
                 true
             }
         }
+    }
+
+    fn open_containing_group(&mut self, key: &Key) -> bool {
+        let group_to_open = {
+            let window = self
+                .reading
+                .as_ref()
+                .map_or(&self.recent, |reading| &reading.window);
+            groups(&window.records)
+                .into_iter()
+                .find(|span| {
+                    window.records[span.range.clone()]
+                        .iter()
+                        .any(|record| record.key == *key)
+                })
+                .and_then(|span| {
+                    let records = &window.records[span.range];
+                    (!self.detail_items.group_open(records))
+                        .then(|| DetailKey::message_action(DetailKind::Group, &records[0].key))
+                })
+        };
+        let group_was_collapsed = group_to_open.is_some();
+        if let Some(group_key) = group_to_open {
+            self.toggle_detail(&group_key);
+        }
+        group_was_collapsed
     }
 
     pub(super) fn toggle_group_details(&mut self, open: bool) {

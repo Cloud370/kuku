@@ -1,6 +1,6 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 use kuku_client::Error;
-use kuku_client::{Action, HistoryPage, Input, QueuedInput, Receipt, Timing};
+use kuku_client::{Action, HistoryPage, Input, QueuedInput, Receipt, RewindGroup, Timing};
 use serde_json::json;
 
 use super::{app, click, key, render, screen};
@@ -12,6 +12,7 @@ use crate::menu::PickerKind;
 use crate::statusline::StatusLine;
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
+use unicode_width::UnicodeWidthStr;
 
 fn load_snapshot(app: &mut crate::app::App, status: &str, with_input: bool) {
     let mut snapshot = super::snapshot(app, status, json!(null), json!(null));
@@ -31,10 +32,49 @@ fn load_snapshot(app: &mut crate::app::App, status: &str, with_input: bool) {
         snapshot,
         HistoryPage {
             entries: Vec::new(),
+            rewind_groups: Vec::new(),
             next_before: None,
         },
     ));
     app.effects.clear();
+}
+
+#[test]
+fn focused_rewind_hint_uses_the_narrow_footer() {
+    let mut app = super::app();
+    app.pane_mut().transcript.replace_recent(HistoryPage {
+        entries: Vec::new(),
+        rewind_groups: vec![RewindGroup {
+            rewind_event_id: 50,
+            target_event_id: 0,
+            agent: "main".into(),
+            turn_number: Some(1),
+            entry_count: 2,
+        }],
+        next_before: None,
+    });
+    app.pane_mut()
+        .transcript
+        .toggle_rewind_group(50)
+        .expect("group expansion request");
+    app.pane_mut().transcript.set_focused_rewind_group(Some(50));
+
+    let width = 36;
+    let hint = crate::ui::contextual::focused_hint(&app, width).expect("rewind hint");
+    let lines: Vec<_> = hint
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect();
+    assert!(lines[0].contains("Rewound · read-only"));
+    assert!(lines[1].contains("browse") && lines[1].contains("Esc"));
+    assert!(lines
+        .iter()
+        .all(|line| UnicodeWidthStr::width(line.as_str()) <= width));
 }
 
 fn pending_send(app: &mut crate::app::App) -> kuku_client::Command {

@@ -340,6 +340,7 @@ mod tests {
             Box::new(state),
             HistoryPage {
                 entries: histories,
+                rewind_groups: Vec::new(),
                 next_before: None,
             },
         ));

@@ -26,6 +26,7 @@ fn composer_animates_only_observed_work_and_keeps_feedback_in_place() {
         snapshot(&app, "running", json!(null), json!(null)),
         HistoryPage {
             entries: Vec::new(),
+            rewind_groups: Vec::new(),
             next_before: None,
         },
     ));
@@ -77,6 +78,7 @@ fn attached_activity_keeps_recipient_clock_and_draft_fixed_across_phases() {
         current,
         HistoryPage {
             entries: Vec::new(),
+            rewind_groups: Vec::new(),
             next_before: None,
         },
     ));
@@ -211,6 +213,7 @@ fn retry_warning_keeps_stop_action_visible_with_narrow_unicode_text() {
         current,
         HistoryPage {
             entries: Vec::new(),
+            rewind_groups: Vec::new(),
             next_before: None,
         },
     ));
@@ -235,6 +238,7 @@ fn stopped_execution_notice_is_rendered_above_the_composer() {
         snapshot(&app, "running", json!(null), json!(null)),
         HistoryPage {
             entries: Vec::new(),
+            rewind_groups: Vec::new(),
             next_before: None,
         },
     ));
@@ -298,6 +302,7 @@ fn stopped_retry_footer_does_not_repeat_transcript_details() {
         current,
         HistoryPage {
             entries: Vec::new(),
+            rewind_groups: Vec::new(),
             next_before: None,
         },
     ));

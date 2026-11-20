@@ -196,6 +196,7 @@ mod tests {
                 details: String::new(),
                 diff: String::new(),
                 output_id: Some("saved".into()),
+                inline_output_complete: false,
             },
         );
         viewer.apply(output(0, "first page", true));

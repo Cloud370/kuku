@@ -39,6 +39,7 @@ impl Transcript {
                 for record in page.entries.into_iter().filter_map(Record::from_entry) {
                     reading.window.insert(record);
                 }
+                reading.window.add_rewind_groups(page.rewind_groups);
                 if let Some(request) = reading.window.trim_back() {
                     reading.newer.push_front(request);
                     reading.newer.truncate(MAX_BACKTRACK_PAGES);
@@ -54,6 +55,11 @@ impl Transcript {
                 {
                     reading.window.insert(record);
                 }
+                reading.window.add_rewind_groups(
+                    page.rewind_groups
+                        .into_iter()
+                        .filter(|group| group.target_event_id >= first),
+                );
                 reading.window.trim_front();
             }
             HistoryRequest::Older(_)

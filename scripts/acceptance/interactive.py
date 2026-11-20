@@ -12,6 +12,7 @@ from urllib.parse import urlencode, urlsplit
 
 from interactive_rendering import (
     check_agent_reading_position,
+    operate_on_assistant,
     page_up_after_rendered_resize,
     rendering_cases,
 )
@@ -133,6 +134,7 @@ def two_workspaces_and_disconnect(client):
             client.provider.assert_idle()
 
             right.request("resize", rows=32, cols=180)
+            right.expect("New session", state="Ready", rows=32)
             right.submit("right workspace check")
             client.provider.next("right workspace check").tool(
                 "write_file", "write-right-marker", path="right-marker.txt",
@@ -664,16 +666,19 @@ def delegated_agent_cards(client):
         reopened.press("/")
         reopened.expect("Actions and Skills")
         reopened.press("\x1b")
-        reopened.press("/details\r")
-        reopened.expect("Transcript details")
-        reopened.press("reviewer")
-
-        choices = reopened.expect("› Agent reviewer", state=task)["screen"]
-        screens.append(("Searching the delegation card", choices))
-        reopened.press("\r")
+        eventually(
+            "actions picker to close",
+            lambda: (
+                screen
+                if "Actions and Skills"
+                not in (screen := reopened.request("screen")["screen"])
+                else None
+            ),
+        )
+        reopened.press("\x0f")
         restored = reopened.expect("Latest Agent reply", state="Requested instructions")["screen"]
         assert conclusion in restored and "Live Agent reply" not in restored, restored
-        screens.append(("Restored completed Agent card", restored))
+        screens.append(("Expanded completed Agent card", restored))
         check_agent_reading_position(client, reopened)
         reopened.exit_cleanly()
     client.provider.assert_idle()
@@ -840,10 +845,8 @@ def markdown_document(client, document=None, reference=False):
         assert not any(marker in screen for marker in (outer, document.fence, "```python")), screen
 
     def toggle_source(terminal):
-        terminal.expect("Enter steer", state="Finished")
-        terminal.press("/")
-        terminal.expect("Actions and Skills")
-        terminal.press("source\r")
+        screen = terminal.expect("Enter steer", state="Finished")["screen"]
+        operate_on_assistant(terminal, screen, document.intro, "Source")
 
     with client.terminal(workspace) as terminal:
         terminal.request("resize", rows=128, cols=140)

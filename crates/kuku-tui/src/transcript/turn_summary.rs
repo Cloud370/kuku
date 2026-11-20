@@ -127,7 +127,7 @@ mod tests {
     use kuku_client::{HistoryEntry, HistoryPage};
     use serde_json::{json, Value};
 
-    use super::super::{HistoryRequest, ReplySource, Transcript};
+    use super::super::{HistoryRequest, Transcript};
 
     fn entry(id: u64, turn: u64, mut value: Value) -> HistoryEntry {
         value["id"] = json!(id);
@@ -160,7 +160,6 @@ mod tests {
             "Turn 1   1m 05s · 12.5K in · 800 out · Cache 75.5% · 2 tools",
             transcript.turn_dock(90).unwrap().to_string()
         );
-        assert_eq!(Some(ReplySource::Local(source)), transcript.last_reply());
         let narrow = transcript.turn_dock(18).unwrap();
         assert!(narrow.width() <= 18 && narrow.to_string().contains("1m 05s"));
     }
@@ -188,7 +187,6 @@ mod tests {
             "Turn 2   1 tool",
             transcript.turn_dock(64).unwrap().to_string()
         );
-        assert_eq!(Some(ReplySource::Local(previous)), transcript.last_reply());
         assert!(transcript.toggle_source());
         let raw = rows(&mut transcript, 64);
         assert!(raw.iter().any(|line| line == "## Partial result"));
@@ -206,7 +204,7 @@ mod tests {
                 entry(8, 2, json!({"type":"assistant","text":"Second reply"})),
                 entry(9, 2, json!({"type":"turn_summary","turn_summary":{"elapsed_ms":8000,"tool_calls":3}})),
             ],
-            next_before: Some(8),
+            rewind_groups: Vec::new(), next_before: Some(8),
         });
         assert_eq!(
             Some(HistoryRequest::Older(8)),
@@ -224,6 +222,7 @@ mod tests {
                         json!({"type":"turn_summary","turn_summary":{"tool_calls":0}}),
                     ),
                 ],
+                rewind_groups: Vec::new(),
                 next_before: None,
             },
         );

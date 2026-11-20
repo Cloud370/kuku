@@ -4,8 +4,9 @@ use kuku_client::Target;
 use ratatui::layout::{Position, Rect};
 
 use crate::editor::Editor;
+use crate::jobs::Selection;
 use crate::keys::Shortcut;
-use crate::transcript::{DetailKey, ToolView};
+use crate::transcript::{DetailKey, RewindGroupAction, SelectedMessage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CommandMenu {
@@ -15,11 +16,6 @@ pub(crate) enum CommandMenu {
     Model,
     Thinking,
     StatusLine,
-    Copy,
-    Source,
-    Notes,
-    Details,
-    Tools,
     Server,
     Web,
     Quit,
@@ -33,11 +29,6 @@ impl CommandMenu {
         Self::Model,
         Self::Thinking,
         Self::StatusLine,
-        Self::Copy,
-        Self::Source,
-        Self::Notes,
-        Self::Details,
-        Self::Tools,
         Self::Server,
         Self::Web,
         Self::Quit,
@@ -51,11 +42,6 @@ impl CommandMenu {
             Self::Model => "model",
             Self::Thinking => "thinking",
             Self::StatusLine => "statusline",
-            Self::Copy => "copy",
-            Self::Source => "source",
-            Self::Notes => "notes",
-            Self::Details => "details",
-            Self::Tools => "tools",
             Self::Server => "server",
             Self::Web => "web",
             Self::Quit => "quit",
@@ -70,19 +56,6 @@ impl CommandMenu {
             Self::Model => ("Choose a configured model route", Some(Shortcut::MODEL)),
             Self::Thinking => ("Choose the model's reasoning setting", None),
             Self::StatusLine => ("Choose and reorder status line fields", None),
-            Self::Copy => ("Copy the latest reply", None),
-            Self::Source => (
-                "Switch between Markdown preview and source for this Agent",
-                None,
-            ),
-            Self::Notes => ("Read thinking in the conversation", None),
-            Self::Details => {
-                return format!(
-                    "Inspect visible tools and Agent cards · {} toggles previews",
-                    Shortcut::DETAILS.label
-                );
-            }
-            Self::Tools => ("Browse tools and saved output", None),
             Self::Server => ("Inspect the connected service", None),
             Self::Web => ("Open this target in the browser", None),
             Self::Quit => ("Leave the terminal", None),
@@ -120,6 +93,17 @@ pub(crate) enum ChoiceKind {
         turn: u64,
         text: String,
     },
+    MessageEntry(SelectedMessage),
+    MessageAction {
+        message: SelectedMessage,
+        action: MessageAction,
+    },
+    RewindSection,
+    RewindGroup {
+        selection: Selection,
+        rewind_event_id: u64,
+        action: RewindGroupAction,
+    },
     Pending(String),
     PendingRetry(String),
     PendingCheck(String),
@@ -129,8 +113,10 @@ pub(crate) enum ChoiceKind {
         exists: bool,
     },
     RestoreRejected(String),
-    Detail(DetailKey),
-    Tool(ToolView),
+    Detail {
+        key: DetailKey,
+        message: Option<SelectedMessage>,
+    },
     Restart,
 }
 
@@ -144,10 +130,6 @@ impl ChoiceKind {
                     | CommandMenu::Model
                     | CommandMenu::Thinking
                     | CommandMenu::StatusLine
-                    | CommandMenu::Notes
-                    | CommandMenu::Source
-                    | CommandMenu::Details
-                    | CommandMenu::Tools
                     | CommandMenu::Server
             ) | Self::Session { .. }
                 | Self::Agent { .. }
@@ -157,11 +139,34 @@ impl ChoiceKind {
                 | Self::ConfirmModelDefault
                 | Self::CancelModelDefault
                 | Self::RewindMessage { .. }
+                | Self::MessageEntry(_)
+                | Self::MessageAction { .. }
+                | Self::RewindGroup { .. }
                 | Self::Pending(_)
                 | Self::PendingOpen { .. }
-                | Self::Detail(_)
-                | Self::Tool(_)
+                | Self::Detail { .. }
         )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MessageAction {
+    Copy,
+    Source,
+    Thinking,
+    Expand,
+    FullOutput,
+}
+
+impl MessageAction {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Copy => "Copy",
+            Self::Source => "Source",
+            Self::Thinking => "Thinking",
+            Self::Expand => "Expand",
+            Self::FullOutput => "Full output",
+        }
     }
 }
 
@@ -221,10 +226,10 @@ pub(crate) enum PickerKind {
     Thinking,
     Pending,
     PendingItem,
-    Details,
-    Tools,
     Server,
     Rewind,
+    Messages,
+    MessageActions,
 }
 
 impl PickerKind {
@@ -239,23 +244,17 @@ impl PickerKind {
             Self::Thinking => "Thinking",
             Self::Pending => "Unconfirmed commands",
             Self::PendingItem => "Recover command",
-            Self::Details => "Transcript details",
-            Self::Tools => "Tool details and saved output",
             Self::Server => "Service status",
             Self::Rewind => "Rewind to message",
+            Self::Messages => "Operate on message",
+            Self::MessageActions => "Message actions",
         }
     }
 
     pub(crate) fn searchable(&self) -> bool {
         matches!(
             self,
-            Self::Commands
-                | Self::Paths(_)
-                | Self::Sessions
-                | Self::Agents
-                | Self::Models
-                | Self::Details
-                | Self::Tools
+            Self::Commands | Self::Paths(_) | Self::Sessions | Self::Agents | Self::Models
         )
     }
 
@@ -344,15 +343,69 @@ impl Picker {
     }
 
     pub(crate) fn move_by(&mut self, amount: isize) {
-        self.selected = self.selected.saturating_add_signed(amount);
-        self.clamp_selection();
+        let choices = self.visible_choices();
+        if choices.is_empty() {
+            self.selected = 0;
+            return;
+        }
+        let direction = amount.signum();
+        let mut selected = self.selected.min(choices.len() - 1) as isize;
+        for _ in 0..amount.unsigned_abs().min(choices.len()) {
+            let mut candidate = selected.saturating_add(direction);
+            while candidate >= 0 && candidate < choices.len() as isize {
+                if Self::selectable(choices[candidate as usize]) {
+                    selected = candidate;
+                    break;
+                }
+                candidate = candidate.saturating_add(direction);
+            }
+        }
+        self.selected = selected as usize;
+        self.invalidate_rows();
+    }
+
+    pub(crate) fn cycle_by(&mut self, amount: isize) {
+        let choices = self.visible_choices();
+        let selectable: Vec<_> = choices
+            .iter()
+            .enumerate()
+            .filter_map(|(index, choice)| Self::selectable(choice).then_some(index))
+            .collect();
+        if selectable.is_empty() {
+            return;
+        }
+        let position = selectable
+            .iter()
+            .position(|index| *index == self.selected)
+            .unwrap_or(0) as isize;
+        let count = selectable.len() as isize;
+        let next = (position + amount.rem_euclid(count)).rem_euclid(count) as usize;
+        self.selected = selectable[next];
+        self.invalidate_rows();
     }
 
     pub(crate) fn clamp_selection(&mut self) {
         self.invalidate_rows();
-        self.selected = self
-            .selected
-            .min(self.visible_choices().len().saturating_sub(1));
+        let choices = self.visible_choices();
+        if choices.is_empty() {
+            self.selected = 0;
+            return;
+        }
+        let selected = self.selected.min(choices.len() - 1);
+        let selected = if !Self::selectable(choices[selected]) {
+            (selected + 1..choices.len())
+                .find(|index| Self::selectable(choices[*index]))
+                .or_else(|| {
+                    (0..selected)
+                        .rev()
+                        .find(|index| Self::selectable(choices[*index]))
+                })
+                .unwrap_or(0)
+        } else {
+            selected
+        };
+        drop(choices);
+        self.selected = selected;
     }
 
     pub(crate) fn choice_count(&self) -> usize {
@@ -392,7 +445,12 @@ impl Picker {
     pub(crate) fn selected_choice(&self) -> Option<ChoiceKind> {
         self.visible_choices()
             .get(self.selected)
+            .filter(|choice| Self::selectable(choice))
             .map(|choice| choice.kind.clone())
+    }
+
+    fn selectable(choice: &Choice) -> bool {
+        !matches!(&choice.kind, ChoiceKind::RewindSection)
     }
 
     pub(crate) fn set_rows(&mut self, area: Rect, indices: Range<usize>, row_height: u16) {
@@ -421,6 +479,9 @@ impl Picker {
             return None;
         }
         let choice = &self.visible_choices().get(hit.index)?.kind;
+        if matches!(choice, ChoiceKind::RewindSection) {
+            return None;
+        }
         let opened = choice.opens_on_click().then(|| choice.clone());
         self.selected = hit.index;
         opened
@@ -484,6 +545,6 @@ mod tests {
         for retained in ["/new", "/resume", "/server", "/quit"] {
             assert!(labels.contains(&retained));
         }
-        assert_eq!(14, choices.len());
+        assert_eq!(9, choices.len());
     }
 }

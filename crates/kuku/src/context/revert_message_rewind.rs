@@ -38,6 +38,17 @@ pub(super) fn event_owner<'a>(
         .map(String::as_str)
 }
 
+/// Resolve event ownership using explicit Agent addresses and legacy turn ownership.
+pub fn event_owners(events: &[StoredEvent]) -> HashMap<u64, String> {
+    let turn_owners = event_turn_owners(events);
+    events
+        .iter()
+        .filter_map(|event| {
+            event_owner(event, &turn_owners).map(|owner| (event.id, owner.to_owned()))
+        })
+        .collect()
+}
+
 pub(super) fn is_created_file_write(event: &StoredEvent) -> bool {
     matches!(
         &event.payload,

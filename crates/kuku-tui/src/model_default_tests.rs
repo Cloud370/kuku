@@ -2,7 +2,15 @@ use std::fs;
 use std::sync::{Arc, Barrier};
 use std::thread;
 
-use super::*;
+use kuku_client::ConnectionOptions;
+use sha2::Digest;
+use toml_edit::{DocumentMut, Item};
+
+use super::{
+    active_config_path, edited_config, ensure_same_service, prepare, require_local, same_service,
+    same_service_endpoint, test_plan, update_user_default, ModelDefaultPlan, ResolvedModel,
+    ServiceIdentity, LOCAL_SERVICE_CHANGED, SAVE_SCOPE,
+};
 
 const CONFIG: &str = r#"# retained comment
 default_model = "light"

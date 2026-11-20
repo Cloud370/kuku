@@ -119,6 +119,7 @@ impl App {
             ContextControl::PreviousAgent { .. } => self.back_to_agent(),
             ContextControl::Reconnect { .. } => self.reconnect(),
             ContextControl::Restart { .. } => self.restart(),
+            ContextControl::Messages => self.open_messages_picker(),
         }
     }
 }
@@ -209,5 +210,42 @@ mod tests {
             app.pane().contextual_focus.cursor,
             Some(ContextControl::Reconnect { .. })
         ));
+    }
+
+    #[test]
+    fn messages_is_reachable_from_f2_chain_and_preserves_draft() {
+        use crate::app::Modal;
+        use crate::menu::PickerKind;
+
+        let mut app = crate::interaction::tests::connected_app();
+        app.pane_mut().draft.insert("unsent draft");
+        let controls = app.contextual_controls();
+        app.key(KeyEvent::new(
+            crossterm::event::KeyCode::F(2),
+            KeyModifiers::NONE,
+        ));
+        assert!(app.pane().contextual_focus.active);
+        for _ in 0..controls.len() {
+            if app.pane().contextual_focus.cursor.as_ref() == Some(&ContextControl::Messages) {
+                break;
+            }
+            app.key(KeyEvent::new(
+                crossterm::event::KeyCode::Tab,
+                KeyModifiers::NONE,
+            ));
+        }
+        assert_eq!(
+            Some(&ContextControl::Messages),
+            app.pane().contextual_focus.cursor.as_ref()
+        );
+        app.key(KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            KeyModifiers::NONE,
+        ));
+        assert!(matches!(
+            &app.modal,
+            Some(Modal::Picker(picker)) if matches!(picker.kind, PickerKind::Messages)
+        ));
+        assert_eq!("unsent draft", app.pane().draft.text());
     }
 }
