@@ -33,6 +33,13 @@ pub(super) fn press(app: &mut App, code: KeyCode) {
     app.key(KeyEvent::new(code, KeyModifiers::NONE));
 }
 
+fn picker_ticket(app: &App) -> u64 {
+    match &app.modal {
+        Some(Modal::Picker(picker)) => picker.ticket.id,
+        _ => panic!("picker expected"),
+    }
+}
+
 pub(super) fn insert_message(
     app: &mut App,
     id: u64,
@@ -647,7 +654,7 @@ fn double_escape_opens_rewind_picker_and_confirmation_is_cancelable_and_opt_in()
     press(&mut app, KeyCode::Esc);
     assert!(matches!(&app.modal, Some(Modal::Picker(picker))
         if matches!(picker.kind, PickerKind::Rewind)
-            && picker.header.contains("Loaded history only")));
+            && picker.header.contains("All earlier messages loaded")));
     app.choose(
         PickerKind::Rewind,
         ChoiceKind::RewindMessage {
@@ -655,7 +662,7 @@ fn double_escape_opens_rewind_picker_and_confirmation_is_cancelable_and_opt_in()
             turn: 4,
             text: "original prompt".into(),
         },
-        0,
+        picker_ticket(&app),
     );
     assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
         if matches!(prompt.kind, PromptKind::RewindMessage { event_id: 17, .. })
@@ -684,7 +691,7 @@ fn rewind_confirmation_commits_an_unsent_action_without_sending_the_draft() {
             turn: 6,
             text: "restore me as a draft".into(),
         },
-        0,
+        picker_ticket(&app),
     );
     press(&mut app, KeyCode::Char(' '));
     press(&mut app, KeyCode::Enter);
@@ -709,7 +716,7 @@ fn rewind_ack_restores_unsent_text_but_never_replaces_a_changed_draft() {
             turn: 8,
             text: "original text".into(),
         },
-        0,
+        picker_ticket(&app),
     );
     press(&mut app, KeyCode::Enter);
     let Some(Job::Save(command)) = app.effects.iter().find(|job| matches!(job, Job::Save(_)))
@@ -743,7 +750,7 @@ fn rewind_ack_restores_unsent_text_but_never_replaces_a_changed_draft() {
             turn: 9,
             text: "recoverable original".into(),
         },
-        0,
+        picker_ticket(&edited),
     );
     press(&mut edited, KeyCode::Enter);
     let Some(Job::Save(command)) = edited
@@ -780,6 +787,7 @@ fn rewind_ack_restores_unsent_text_but_never_replaces_a_changed_draft() {
 #[test]
 fn rewind_confirmation_render_shows_file_scope_without_an_editor() {
     let mut app = connected_app();
+    app.open_rewind_picker();
     app.choose(
         PickerKind::Rewind,
         ChoiceKind::RewindMessage {
@@ -787,7 +795,7 @@ fn rewind_confirmation_render_shows_file_scope_without_an_editor() {
             turn: 2,
             text: "selected prompt".into(),
         },
-        0,
+        picker_ticket(&app),
     );
     let mut terminal = Terminal::new(TestBackend::new(92, 26)).unwrap();
     let frame = terminal

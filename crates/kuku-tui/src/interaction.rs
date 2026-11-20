@@ -87,6 +87,9 @@ impl App {
     }
     fn wheel(&mut self, mouse: MouseEvent, amount: isize) {
         self.text_selection.cancel_drag();
+        if self.move_rewind_selection(amount) {
+            return;
+        }
         match &mut self.modal {
             Some(Modal::Help) => {}
             Some(Modal::Output(viewer)) => {
@@ -414,6 +417,9 @@ impl App {
     }
 
     fn choose(&mut self, picker: PickerKind, choice: ChoiceKind, ticket: u64) {
+        if matches!(picker, PickerKind::Rewind) && !self.rewind_picker_current(ticket) {
+            return;
+        }
         self.modal = None;
         self.effects.push(Job::ClosePicker);
         match choice {
@@ -901,6 +907,8 @@ fn move_cursor(editor: &mut Editor, key: KeyEvent, width: usize, multiline: bool
 #[cfg(test)]
 #[path = "interaction/message_tests.rs"]
 mod message_tests;
+#[cfg(test)]
+mod rewind_history_tests;
 #[cfg(test)]
 mod rewound_copy_tests;
 #[cfg(test)]

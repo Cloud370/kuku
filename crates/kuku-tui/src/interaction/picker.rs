@@ -7,6 +7,9 @@ use crate::menu::{ChoiceKind, PickerKind};
 
 impl App {
     pub(super) fn picker_key(&mut self, key: KeyEvent) {
+        if self.rewind_picker_key(key) {
+            return;
+        }
         let page = self.modal_page as isize;
         let details_page = self.modal_info_rows.max(1) as isize;
         let Some(Modal::Picker(picker)) = &mut self.modal else {

@@ -1,8 +1,9 @@
 use std::time::{Duration, Instant};
 
+use crossterm::event::KeyEvent;
+
 use crate::app::App;
-use crate::menu::{Choice, ChoiceKind, PickerKind};
-use crate::text::{shorten, single_line};
+use crate::keys::Shortcut;
 
 pub(super) fn rewind_instructions(text: &str, restore_files: bool) -> String {
     format!(
@@ -70,23 +71,18 @@ impl App {
         }
     }
 
-    fn open_rewind_picker(&mut self) {
-        let messages = self.pane().transcript.rewind_messages(&self.active.agent);
-        let choices = messages
-            .into_iter()
-            .map(|(event_id, turn, text)| {
-                Choice::new(
-                    format!("Turn {turn}"),
-                    shorten(&single_line(&text), 96),
-                    ChoiceKind::RewindMessage {
-                        event_id,
-                        turn,
-                        text,
-                    },
-                )
-            })
-            .collect();
-        let picker = self.picker(PickerKind::Rewind, choices);
-        picker.header = "Loaded history only · older messages are not loaded".into();
+    pub(super) fn rewind_picker_key(&mut self, key: KeyEvent) -> bool {
+        let amount = if Shortcut::UP.matches(key) {
+            -1
+        } else if Shortcut::DOWN.matches(key) {
+            1
+        } else if Shortcut::PAGE_UP.matches(key) {
+            -(self.modal_page.max(1) as isize)
+        } else if Shortcut::PAGE_DOWN.matches(key) {
+            self.modal_page.max(1) as isize
+        } else {
+            return false;
+        };
+        self.move_rewind_selection(amount)
     }
 }

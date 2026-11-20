@@ -567,6 +567,9 @@ impl App {
             Update::History(selection, request, result) => {
                 self.apply_history_update(selection, request, result);
             }
+            Update::RewindHistory(selection, ticket, before, result) => {
+                self.apply_rewind_history_update(selection, ticket, before, result);
+            }
             Update::RewindGroupHistory(selection, request, result) => {
                 self.apply_rewind_group_history_update(selection, request, result);
             }

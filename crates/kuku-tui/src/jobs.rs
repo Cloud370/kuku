@@ -53,6 +53,7 @@ pub(crate) enum Job {
     Refresh(Selection),
     RefreshProgress(Selection),
     History(Selection, HistoryRequest),
+    RewindHistory(Selection, Ticket, u64),
     RewindGroupHistory(Selection, RewindGroupRequest),
     Find(Ticket, Search),
     ClosePicker,
@@ -94,6 +95,7 @@ pub(crate) enum Update {
     Observation(Selection, Observation),
     Refreshed(Selection, Result<Box<Snapshot>, Error>),
     History(Selection, HistoryRequest, Result<HistoryPage, Error>),
+    RewindHistory(Selection, Ticket, u64, Result<HistoryPage, Error>),
     RewindGroupHistory(
         Selection,
         RewindGroupRequest,
@@ -190,6 +192,12 @@ impl Jobs {
                 }));
             }
             Job::ClosePicker => Self::abort(&mut self.finder),
+            history @ Job::RewindHistory(..) => {
+                Self::abort(&mut self.finder);
+                if let Some(connection) = self.connection.clone() {
+                    self.finder = Some(self.spawn(run_connected(history, connection)));
+                }
+            }
             Job::PrepareDefault {
                 ticket,
                 selection,
@@ -287,6 +295,12 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
                 .history(&selection.target, request.before_option(), HISTORY_PAGE)
                 .await;
             Update::History(selection, request, result)
+        }
+        Job::RewindHistory(selection, ticket, before) => {
+            let result = client
+                .history(&selection.target, Some(before), HISTORY_PAGE)
+                .await;
+            Update::RewindHistory(selection, ticket, before, result)
         }
         Job::RewindGroupHistory(selection, request) => {
             let result = client

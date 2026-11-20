@@ -337,6 +337,7 @@ pub(crate) struct Picker {
     pub(crate) selected: usize,
     pub(crate) header_top: usize,
     pub(crate) ticket: Ticket,
+    pub(crate) rewind_history: Option<RewindHistory>,
     local: Vec<Choice>,
     remote: Vec<Choice>,
     rows: Option<PickerRows>,
@@ -354,6 +355,7 @@ impl Picker {
             selected: 0,
             header_top: 0,
             ticket: Ticket { id, revision: 0 },
+            rewind_history: None,
             local,
             remote: Vec::new(),
             rows: None,
@@ -538,6 +540,13 @@ impl Picker {
         self.rows = None;
         self.row_revision = self.row_revision.wrapping_add(1);
     }
+}
+
+#[derive(Debug)]
+pub(crate) struct RewindHistory {
+    pub(crate) selection: Selection,
+    pub(crate) next_before: Option<u64>,
+    pub(crate) pending_before: Option<u64>,
 }
 
 #[derive(Debug)]
