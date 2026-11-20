@@ -236,11 +236,16 @@ impl Transcript {
     ) -> (Option<DetailKey>, Option<DetailKey>) {
         let thinking = (!record.reasoning_preview.is_empty())
             .then(|| DetailKey::message_action(DetailKind::Reasoning, &record.key));
+        let tool_message = matches!(&record.body, super::Body::Tool(_));
         let expandable = self
             .detail_items
             .visible
             .iter()
-            .find(|item| item.key.record == record.key && item.key.kind != DetailKind::Reasoning)
+            .find(|item| {
+                item.key.record == record.key
+                    && item.key.kind != DetailKind::Reasoning
+                    && (!tool_message || item.key.kind != DetailKind::Group)
+            })
             .map(|item| item.key.clone())
             .or_else(|| match &record.body {
                 super::Body::Tool(tool) => Some(DetailKey::message_action(
