@@ -21,6 +21,9 @@ pub enum Error {
     #[error("invalid event stream: {0}")]
     InvalidEventStream(String),
 
+    #[error("agent wait timed out")]
+    AgentWaitTimeout,
+
     #[error("invalid session id: {0}")]
     InvalidSessionId(String),
 
@@ -120,6 +123,7 @@ impl Error {
             Error::MissingHomeDirectory
             | Error::InvalidKukuHome(_)
             | Error::InvalidEventStream(_)
+            | Error::AgentWaitTimeout
             | Error::InvalidSessionId(_)
             | Error::InvalidWorkspacePath(_) => "internal",
             Error::Provider { kind, .. } => match kind {
