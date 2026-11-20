@@ -60,7 +60,7 @@
 | 草稿为空时按 ↑，或点击 Pending inputs 中可见的可编辑排队行 | 在内联队列中选中该条输入。按 ↑/↓ 移动，Enter 编辑，Delete 撤回；空闲或 Waiting 时按 Esc 返回输入框，Running 或清理时按 Esc 会打断。 |
 | 编辑器外按 F2 | 按顺序循环可见控件：请求、继续或停止、待确认投递恢复、上一个 Agent、服务操作，最后是 Messages。F2 或点击问题卡片会直接打开答复编辑器；Esc 按请求 ID 保存未提交答案，并保留主草稿。F2 或点击权限卡片会聚焦请求，供用户明确选择。Enter 执行已聚焦控件；点击其他有副作用的控件只聚焦。Running 或清理时 Esc 无论焦点为何都会打断；否则退出焦点。Ctrl+R 仍会重连。 |
 | 权限请求卡片 | 用 ←/→ 或点击明确选择 **Deny** 或 **Allow once**，再按 Enter。键盘拒绝路径是 F2、←、Enter。Waiting 时 Esc 离开焦点，不作答也不打断。 |
-| `/model`、`/thinking` | 为所选 Agent 选择模型或思考设置。 |
+| `/model`、`/thinking` | 为所选 Agent 的 Session 选择模型线路或思考设置。模型和思考选项仅作用于 Session；单独选择 **Set current model as default** 可将已解析的连接和模型保存到配置，且不改变当前 Session。 |
 | `/statusline` | 打开 **Status line settings**，预览、选择、排序并保存状态栏字段。 |
 | 对话标题栏中的 **Messages**（窄窗口显示为 **Msg**） | 浏览当前 Agent 已加载对话中的用户、助手和工具条目。按 Enter 查看该条目可用的操作；按 Tab 或 ←/→ 选择操作，按 Enter 执行，按 Esc 返回条目列表且保留草稿。Full output 会打开已保存结果，或在没有保存结果时打开完整的内联结果。只读的回退历史组不是消息操作目标。 |
 | Ctrl+O | 一起展开或收起可见的对话预览，包括工具组和 Agent 卡片。 |

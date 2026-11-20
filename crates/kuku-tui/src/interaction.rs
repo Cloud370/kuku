@@ -47,6 +47,7 @@ impl App {
             Event::FocusLost => self.text_selection.cancel_drag(),
             Event::Resize(_, _) | Event::FocusGained | Event::Key(_) => {}
         }
+        self.clear_model_default_if_closed();
     }
 
     pub(crate) fn sync_pending_picker(&mut self) {
@@ -94,7 +95,7 @@ impl App {
                 }
             }
             Some(Modal::Picker(picker)) => {
-                if matches!(picker.kind, PickerKind::Server) {
+                if matches!(picker.kind, PickerKind::Server | PickerKind::ModelDefault) {
                     picker.header_top = picker.header_top.saturating_add_signed(amount);
                 } else {
                     picker.move_by(amount);
@@ -388,7 +389,7 @@ impl App {
         }));
     }
 
-    fn choose(&mut self, picker: PickerKind, choice: ChoiceKind) {
+    fn choose(&mut self, picker: PickerKind, choice: ChoiceKind, ticket: u64) {
         self.modal = None;
         self.effects.push(Job::ClosePicker);
         match choice {
@@ -437,6 +438,9 @@ impl App {
                     "Enter the model ID for this connection",
                 );
             }
+            ChoiceKind::SetCurrentModelAsDefault => self.prepare_model_default(),
+            ChoiceKind::ConfirmModelDefault => self.confirm_model_default(ticket),
+            ChoiceKind::CancelModelDefault => self.cancel_model_default(ticket),
             ChoiceKind::Thinking(effort) => {
                 let mut config = self.pane().config().clone();
                 config.reasoning_effort = effort;
@@ -484,7 +488,9 @@ impl App {
             }
             CommandMenu::Agents => self.open_agents(),
             CommandMenu::Model => {
-                self.picker(PickerKind::Models, Vec::new());
+                self.clear_model_default_if_closed();
+                let save_default = self.model_default_choice();
+                self.picker(PickerKind::Models, vec![save_default]);
                 self.search(true);
             }
             CommandMenu::Thinking => self.open_thinking(),

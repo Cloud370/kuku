@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 mod activity;
 mod contextual;
+mod model_default;
 mod reading;
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -96,6 +97,20 @@ fn cell(buffer: &Buffer, symbol: &str) -> (u16, u16) {
         .position(|cell| cell.symbol() == symbol)
         .unwrap_or_else(|| panic!("missing screen symbol {symbol:?}"));
     buffer.pos_of(index)
+}
+
+fn text_position(buffer: &Buffer, text: &str) -> (u16, u16) {
+    let area = buffer.area;
+    for row in area.top()..area.bottom() {
+        let line = (area.left()..area.right())
+            .map(|column| buffer[(column, row)].symbol())
+            .collect::<String>();
+        if let Some(byte_index) = line.find(text) {
+            let column = UnicodeWidthStr::width(&line[..byte_index]);
+            return (area.left() + column as u16, row);
+        }
+    }
+    panic!("missing rendered text {text:?}");
 }
 
 #[test]
@@ -304,7 +319,7 @@ fn blank_welcome_scales_down_and_active_session_uses_one_branded_row() {
         } else {
             assert!(rows[4].contains("/resume opens a saved session"));
             assert!(rows[5].contains("Workspace: /workspace"));
-            assert!(rows[6].contains("/model is session-only; config.toml sets defaults."));
+            assert!(rows[6].contains("/model: Set current model as default to persist the route."));
         }
     }
 

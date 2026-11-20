@@ -23,6 +23,7 @@ mod activity;
 mod contextual;
 mod delivery;
 mod header;
+mod model_default_confirmation;
 
 pub(crate) use activity::{ActivityClock, ActivityFrame};
 
@@ -653,6 +654,12 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Rect
 }
 
 fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (usize, usize, usize) {
+    if matches!(picker.kind, PickerKind::ModelDefault)
+        && !picker.loading
+        && picker.problem.is_none()
+    {
+        return model_default_confirmation::render(frame, inner, picker);
+    }
     let width = usize::from(inner.width);
     let search_rows = u16::from(picker.kind.searchable() && inner.height >= 3);
     let search_gap = u16::from(search_rows > 0 && inner.height >= 10);
