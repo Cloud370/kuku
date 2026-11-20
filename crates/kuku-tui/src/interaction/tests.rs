@@ -221,12 +221,18 @@ fn escape_from_history_focus_returns_to_composer_with_multiline_draft() {
 
     press(&mut app, KeyCode::PageUp);
     assert!(app.pane().transcript.is_reading());
-    assert_eq!(crate::app::KeyboardFocus::Transcript, app.pane().keyboard_focus);
+    assert_eq!(
+        crate::app::KeyboardFocus::Transcript,
+        app.pane().keyboard_focus
+    );
     assert!(!app.composer_focused());
 
     press(&mut app, KeyCode::Esc);
     assert!(app.composer_focused());
-    assert_eq!(crate::app::KeyboardFocus::Composer, app.pane().keyboard_focus);
+    assert_eq!(
+        crate::app::KeyboardFocus::Composer,
+        app.pane().keyboard_focus
+    );
     assert_eq!(draft, app.pane().draft.text());
     assert_eq!(cursor, app.pane().draft.cursor());
     assert_eq!(None, app.escape_armed_at);
