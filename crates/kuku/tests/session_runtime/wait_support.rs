@@ -78,9 +78,7 @@ async fn wait_for_agent_with_timeout(
 fn execution_wait_diagnostics(session: &Session, address: &str) -> String {
     let view = session.agent_view(address);
     let cursor = view.as_ref().ok().map(|view| view.cursor);
-    let agent = view
-        .map(|view| view.snapshot)
-        .or_else(|_| session.agent(address));
+    let agent = view.map(|view| view.snapshot);
     let snapshot = match agent {
         Ok(agent) => format!(
             "status={:?}, turn={:?}, execution_id={:?}, pending_inputs={}, model_requests={}, last_error_present={}",

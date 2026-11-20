@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import MagicMock, Mock, patch
 
 from interactive import wait_restart_and_recover_crash
-from interactive_fixture import Terminal
+from interactive_fixture import Terminal, run_cases
 from interactive_rendering import (
     click_queued_input,
     has_selected_queued_input,
@@ -12,6 +12,24 @@ from interactive_rendering import (
     queued_input_click_position,
     rendered_running_transcript,
 )
+
+
+class AcceptanceCaseTests(unittest.TestCase):
+    def test_failed_case_does_not_hide_later_cases_or_turn_into_success(self):
+        calls = []
+
+        def failure():
+            calls.append("failed")
+            raise ValueError("original failure")
+
+        with patch("sys.stderr") as stderr, self.assertRaisesRegex(AssertionError, "failed case"):
+            run_cases([
+                ("failed case", failure),
+                ("later case", lambda: calls.append("later")),
+            ])
+
+        self.assertEqual(["failed", "later"], calls)
+        self.assertIn("original failure", "".join(str(call) for call in stderr.write.call_args_list))
 
 
 class PendingQuestionRestartTests(unittest.TestCase):

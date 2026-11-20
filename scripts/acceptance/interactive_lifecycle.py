@@ -5,21 +5,25 @@ import json
 import re
 from urllib.parse import urlencode
 
-from interactive_fixture import InstalledClient, eventually, json_response
+from interactive_fixture import InstalledClient, eventually, json_response, run_cases
 from interactive_rendering import has_selected_queued_input
 
 
 def lifecycle_cases(binary, bridge, directory):
-    first_run_credential_repair(binary, bridge, directory / "settings")
-    with InstalledClient(binary, bridge, directory / "defaults") as client:
-        persistent_model_default(client)
-    with InstalledClient(binary, bridge, directory / "keyboard-queue") as client:
-        keyboard_queue_withdrawal(client)
-    with InstalledClient(binary, bridge, directory / "rewind") as client:
-        readonly_rewind(client)
-    with InstalledClient(binary, bridge, directory / "rewind-history") as client:
-        paginated_rewind(client)
-    runtime_credential_repair(binary, bridge, directory / "auth-repair")
+    def configured(name, operation):
+        with InstalledClient(binary, bridge, directory / name) as client:
+            operation(client)
+
+    cases = [("first-run", lambda: first_run_credential_repair(binary, bridge, directory / "settings"))]
+    cases.extend((name, lambda name=name, operation=operation: configured(name, operation))
+                 for name, operation in (
+                     ("defaults", persistent_model_default),
+                     ("keyboard-queue", keyboard_queue_withdrawal),
+                     ("rewind", readonly_rewind),
+                     ("rewind-history", paginated_rewind),
+                 ))
+    cases.append(("auth-repair", lambda: runtime_credential_repair(binary, bridge, directory / "auth-repair")))
+    run_cases(cases)
 
 
 def focus_action(terminal, action):

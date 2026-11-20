@@ -20,7 +20,7 @@ from interactive_rendering import (
 )
 from interactive_fixture import (
     DenseTranscript, InstalledClient, MarkdownDocument, TOOL_BRIEF, TOOL_OUTPUT, eventually, http_fixture, install,
-    delegate_reviewer, json_response, local_request,
+    delegate_reviewer, json_response, local_request, run_cases,
 )
 
 
@@ -475,6 +475,7 @@ def wait_restart_and_recover_crash(client, workspace, session, title):
 def remote_authorization_and_script_json(client, workspace):
     stdout, stderr = client.cli(workspace, success=False)
     assert "kuku run" in stdout + stderr, "Non-interactive help must identify the script command"
+    client.cli(workspace, "server", "restart")
     connection = client.connection()
     address = f"http://{connection['address']}"
     assert client.request("GET", f"/sessions?{urlencode({'workspace': workspace})}",
@@ -539,6 +540,7 @@ def recover_from_provider_failure(client):
 
 def lost_first_receipt(client):
     workspace = client.workspace("work-receipt")
+    client.cli(workspace, "server", "restart")
     connection = client.connection()
     command_id, prompt = "first-receipt-id", "send once despite missing first receipt"
     committed = []
@@ -932,29 +934,41 @@ def main():
     options.binary = options.binary.resolve()
     options.bridge = options.bridge.resolve()
     options.directory = options.directory.resolve()
-    with InstalledClient(options.binary, options.bridge, options.directory) as client:
-        if options.named_output:
-            named_output_cards(client)
-            return
-        if options.upgrade:
-            installed_upgrade(client, *options.upgrade)
-        workspace, session, title = two_workspaces_and_disconnect(client)
-        fast_markdown_stream(client)
-        configure_statusline(client)
-        preserve_draft_after_interrupt(client)
-        editable_multiline_paste(client)
-        lifecycle_cases(options.binary, options.bridge, options.directory)
-        rendering_cases(options.binary, options.bridge, options.directory)
-        wait_restart_and_recover_crash(client, workspace, session, title)
-        remote_authorization_and_script_json(client, client.workspace("work-script"))
-        recover_from_provider_failure(client)
-        lost_first_receipt(client)
-        delegated_agent_cards(client)
-        dense_transcript(client)
-        markdown_document(client)
-        if options.browser:
+    def native(name, operation):
+        with InstalledClient(options.binary, options.bridge, options.directory / name) as client:
+            operation(client)
+
+    if options.named_output:
+        native("named-output", named_output_cards)
+        return
+    if options.upgrade:
+        native("upgrade", lambda client: installed_upgrade(client, *options.upgrade))
+    cases = [(name, lambda name=name, operation=operation: native(name, operation))
+             for name, operation in (
+                 ("service-lifecycle", lambda client: wait_restart_and_recover_crash(
+                     client, *two_workspaces_and_disconnect(client))),
+                 ("fast-stream", fast_markdown_stream),
+                 ("statusline", configure_statusline),
+                 ("interrupt", preserve_draft_after_interrupt),
+                 ("paste", editable_multiline_paste),
+                 ("remote-and-script", lambda client: remote_authorization_and_script_json(
+                     client, client.workspace("work-script"))),
+                 ("provider-failure", recover_from_provider_failure),
+                 ("lost-receipt", lost_first_receipt),
+                 ("agent-cards", delegated_agent_cards),
+                 ("dense-transcript", dense_transcript),
+                 ("markdown", markdown_document),
+             )]
+    cases.extend([
+        ("settings-and-history", lambda: lifecycle_cases(options.binary, options.bridge, options.directory)),
+        ("rendering", lambda: rendering_cases(options.binary, options.bridge, options.directory)),
+    ])
+    if options.browser:
+        def browser():
             from interactive_browser import browser_handoff
-            browser_handoff(client)
+            native("browser", browser_handoff)
+        cases.append(("browser", browser))
+    run_cases(cases)
 
 
 if __name__ == "__main__":

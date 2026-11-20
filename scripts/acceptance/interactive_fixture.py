@@ -18,6 +18,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 from urllib.parse import quote, urlencode, urlsplit
 
 
@@ -68,6 +69,19 @@ def eventually(description, probe, timeout=TIMEOUT):
         if time.monotonic() >= deadline:
             raise AssertionError(f"Timed out waiting for {description}")
         time.sleep(0.04)
+
+
+def run_cases(cases):
+    failed = []
+    for name, operation in cases:
+        try:
+            operation()
+        except Exception as error:
+            failed.append(f"{name}: {type(error).__name__}: {str(error)[:400]}")
+            print(f"Acceptance case failed: {name}", file=sys.stderr, flush=True)
+            traceback.print_exc()
+    if failed:
+        raise AssertionError(f"Acceptance cases failed: {', '.join(failed)}")
 
 
 @dataclass(frozen=True)

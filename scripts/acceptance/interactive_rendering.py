@@ -8,7 +8,7 @@ import sys
 from unittest.mock import patch
 from urllib.parse import urlencode
 
-from interactive_fixture import InstalledClient, Response, StreamPause, eventually
+from interactive_fixture import InstalledClient, Response, StreamPause, eventually, run_cases
 
 RUNNING_STATUS_ROWS_FROM_BOTTOM = 6
 
@@ -225,23 +225,26 @@ def operate_on_assistant(terminal, screen, marker, action):
 
 
 def rendering_cases(binary, bridge, directory):
-    with InstalledClient(binary, bridge, directory / "delegation") as client:
-        targeted_delegation(client)
-        file_change_cards(client)
-        markdown_inline_elements(client)
-        named_output_cards(client)
-        if os.name == "nt":
-            windows_diagnostic(client)
-            for shell in ("powershell.exe", "pwsh.exe"):
-                if shutil.which(shell):
-                    windows_command_encoding(client, shell)
-    with InstalledClient(binary, bridge, directory / "reasoning") as client:
-        config = client.home / "config.toml"
-        config.write_text(config.read_text().replace('profile = "compatible"', 'profile = "anthropic"')
-                          .replace('think = "off"', 'think = "low"')
-                          .replace('reasoning_efforts = ["none"]', 'reasoning_efforts = ["none", "low"]'))
-        published_reasoning(client)
-        scroll_mixed_table(client)
+    def configured(name, operation, reasoning=False):
+        with InstalledClient(binary, bridge, directory / name) as client:
+            if reasoning:
+                config = client.home / "config.toml"
+                config.write_text(config.read_text().replace('profile = "compatible"', 'profile = "anthropic"')
+                                  .replace('think = "off"', 'think = "low"')
+                                  .replace('reasoning_efforts = ["none"]', 'reasoning_efforts = ["none", "low"]'))
+            operation(client)
+
+    operations = [("delegation", targeted_delegation), ("file-cards", file_change_cards),
+                  ("inline", markdown_inline_elements), ("named-output", named_output_cards)]
+    if os.name == "nt":
+        operations.append(("windows-diagnostic", windows_diagnostic))
+        operations.extend((shell, lambda client, shell=shell: windows_command_encoding(client, shell))
+                          for shell in ("powershell.exe", "pwsh.exe") if shutil.which(shell))
+    cases = [(name, lambda name=name, operation=operation: configured(name, operation))
+             for name, operation in operations]
+    cases.extend((name, lambda name=name, operation=operation: configured(name, operation, True))
+                 for name, operation in (("reasoning", published_reasoning), ("mixed-table", scroll_mixed_table)))
+    run_cases(cases)
 
 
 def targeted_delegation(client):

@@ -12,11 +12,13 @@ python3 scripts/acceptance/run.py protocol
 python3 scripts/acceptance/run.py integration
 ```
 
-`contract` 启用 `kuku/test_support`，运行 workspace 测试，包含受 feature 控制的运行时套件、共享客户端和 TUI 测试。某个测试程序失败后会继续运行其余测试程序，任一测试失败仍返回失败。`protocol` 选择 provider 适配、配置、错误、集成、追踪及缓存通知固定输入，无需付费请求。`integration` 依次执行只读格式检查、启用测试 feature 的 workspace／all-target Clippy 和 `contract`。CI 在 Linux、macOS 和 Windows 运行相同的契约测试与安装终端场景，保留有界证据。Web CI 另运行安装浏览器场景。真实模型调用和 Linux benchmark 容器需要在本地明确选择。
+`contract` 启用 `kuku/test_support`，运行 workspace 测试，包含受 feature 控制的运行时套件、共享客户端和 TUI 测试。某个测试程序失败后会继续运行其余测试程序，任一测试失败仍返回失败。`protocol` 选择 provider 适配、配置、错误、集成、追踪及缓存通知固定输入，无需付费请求。`integration` 依次执行只读格式检查、启用测试 feature 的 workspace／all-target Clippy 和 `contract`。CI 在 Linux、macOS 和 Windows 的独立作业中运行相同的契约测试与 Python 工具检查。草稿 PR 运行这些检查、格式检查和 Clippy；进入评审的 PR、main 推送以及手动触发的 CI 额外运行安装终端验收、Windows 桌面验收与 Linux 浏览器交接，并保留有界证据。浏览器交接复用 Linux 已安装程序，不再由另一个 workflow 重复构建。真实模型调用和 Linux benchmark 容器需要在本地明确选择。
 
 契约测试采集保留原有 64 KiB 输出尾部和完整输出 hash。独立失败摘要在 16 KiB UTF-8 字节范围内保留失败测试名、panic 位置与少量上下文，以及 Cargo 失败 target。`failure_summary.truncated` 标记遗漏内容；失败仍由子进程退出状态判定。
 
-在各 workflow 的路径过滤条件满足时，两个 CI workflow 都运行目标为 `main` 或 `feat/interactive-clients` 的 PR，以及推送到 `main` 的提交。核心 CI checkout PR 源分支 head；WebUI CI 保留 GitHub 的 PR merge-ref checkout。记录实际提交／工作树，只有 tree 相同时才复用源 head 的证据。其他分支的推送需要通过 PR 触发 WebUI 检查。同一 PR 的新运行会取消旧运行。矩阵 job 在 checkout 后立即检查 Python 工具，再准备 Rust、Node 和缓存。Rust 缓存在失败后保留依赖并报告精确命中；Cargo 仍验证构建指纹，所有已选择的检查照常运行。PTY helper 使用与契约测试相同的 workspace／`kuku/test_support` feature 解析，记录编译器报告的 feature、profile 和缓存复用状态。从源码安装时，受测应用仍为嵌入 Web 资源的 release 构建。
+两个 workflow 都支持目标为 `main` 或 `feat/interactive-clients` 的 PR，以及 main 推送。WebUI 检查的路径范围限于 `apps/web/**` 和自身 workflow，Rust 改动不再触发重复的安装浏览器构建。PR 检查统一使用 GitHub 的 merge-ref。记录实际 commit/tree，只有 tree 相同才复用源分支证据。同一 PR 的旧运行会被取消。Python 工具检查失败不会阻止 Rust 契约与安装验收作业收集各自结果。失败后保留 Rust 依赖缓存；Cargo 仍校验构建指纹。PTY helper 共享契约测试的 workspace/`kuku/test_support` feature 解析，并记录编译身份。
+
+草稿 PR 通过不代表安装验收通过。合并前，将 PR 转为待评审或为目标版本手动触发完整 CI，并要求完整矩阵通过。完整验收保留带嵌入 Web 资源的真实 release 安装；选择 Windows 桌面检查时必须完成桌面准备。独立安装场景使用隔离服务，单个场景失败后继续其余场景，保留原始错误并让整体返回失败。现有每条命令的超时界限保持不变。
 
 选择入口将 `CARGO_TARGET_DIR` 固定为当前 checkout 的 `target/`，不改变宿主环境。每个 worktree 使用独立 target，即使串行构建也不共享：workspace 产物可能错误复用另一源码树的缓存。本地 target 可以使用第三方依赖缓存作为种子，但首次构建前先执行一次 `cargo clean --target-dir target -p kuku -p kuku-cli -p kuku-server -p kuku-client -p kuku-tui -p kuku-app` 清除 workspace 产物。记录提交／工作树、target 目录、feature、profile 和二进制 hash；共享 target 构建的冻结二进制本身不能证明对应的源码版本。
 
