@@ -38,6 +38,7 @@ async fn settled_with_stage_timeout(
     }
 }
 
+#[cfg(unix)]
 pub(super) async fn wait_for_agent_during(
     session: &Session,
     address: &str,

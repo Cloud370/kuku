@@ -20,9 +20,9 @@ use kuku::event::EventPayload;
 #[cfg(unix)]
 use kuku::permission::{AuthorizationDecision, ToolAuthorization, ToolAuthorizer};
 use kuku::{Activation, AgentConfig, AgentStatus, Input, OutputRead, Session, SessionOptions};
-use wait_support::{
-    settled, settled_during, settled_with_output, settled_with_timeout, wait_for_agent_during,
-};
+#[cfg(unix)]
+use wait_support::wait_for_agent_during;
+use wait_support::{settled, settled_during, settled_with_output, settled_with_timeout};
 
 fn options(
     server: &MockServer,
