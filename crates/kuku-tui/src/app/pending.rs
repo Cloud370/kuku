@@ -966,7 +966,11 @@ impl App {
                     self.refresh_rewind_history();
                 }
             }
-            Action::Advance => self.message("Continue request received"),
+            Action::Advance => {
+                if active && !self.notice.as_ref().is_some_and(|notice| notice.error) {
+                    self.confirmation("Continue request received");
+                }
+            }
             Action::Cancel { execution_id } => {
                 if let Some(pane) = self.panes.get_mut(&address) {
                     pane.finish_interrupt(execution_id);

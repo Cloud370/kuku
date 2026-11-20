@@ -57,7 +57,11 @@ pub(super) fn focused_hint(app: &App, width: usize) -> Option<Vec<Line<'static>>
         return Some(vec![
             Line::styled(shorten("Rewound · read-only", width), focused_row()),
             Line::styled(
-                shorten("↑↓/PgUp/PgDn browse · Esc input", width),
+                key_hint(
+                    "↑↓/PgUp/PgDn browse · Esc input",
+                    "Esc input · ↑↓ browse",
+                    width,
+                ),
                 Style::new().fg(MUTED),
             ),
         ]);
@@ -72,13 +76,13 @@ pub(super) fn focused_hint(app: &App, width: usize) -> Option<Vec<Line<'static>>
         .as_ref()
         .map_or("Context action", action_label);
     let escape = if app.escape_interrupts_running() {
-        "Enter act · Esc stop"
+        key_hint("Enter act · Esc stop", "Esc stop · Enter", width)
     } else {
-        "Enter act · Esc back"
+        key_hint("Enter act · Esc back", "Esc back · Enter", width)
     };
     Some(vec![
         Line::styled(shorten(&format!("▶ {action}"), width), focused_row()),
-        Line::styled(shorten(escape, width), Style::new().fg(MUTED)),
+        Line::styled(escape, Style::new().fg(MUTED)),
     ])
 }
 
@@ -153,5 +157,13 @@ pub(super) fn render_service(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             Rect::new(x, area.y, width, area.height),
         );
         x = x.saturating_add(width).saturating_add(1);
+    }
+}
+
+fn key_hint(full: &str, compact: &str, width: usize) -> String {
+    if UnicodeWidthStr::width(full) <= width {
+        full.to_owned()
+    } else {
+        shorten(compact, width)
     }
 }
