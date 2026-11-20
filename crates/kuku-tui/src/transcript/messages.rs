@@ -22,7 +22,7 @@ impl MessageId {
                 turn: *turn,
                 call_id: id.clone(),
             }),
-            _ => None,
+            super::Key::Preview(_) | super::Key::RewindGroup(_) => None,
         }
     }
 
@@ -106,7 +106,10 @@ impl Transcript {
                         };
                         (label, detail)
                     }
-                    Body::Notice(..) | Body::TurnSummary => return None,
+                    Body::Notice(..)
+                    | Body::ModelError { .. }
+                    | Body::Retry { .. }
+                    | Body::TurnSummary => return None,
                 };
                 let turn = record
                     .turn_number
@@ -146,7 +149,9 @@ impl Transcript {
                 };
                 (MessageKind::Tool, text, Some(view), false)
             }
-            Body::Notice(..) | Body::TurnSummary => return None,
+            Body::Notice(..) | Body::ModelError { .. } | Body::Retry { .. } | Body::TurnSummary => {
+                return None
+            }
         };
         let (thinking, expandable) = self.message_action_keys(record);
         Some(MessageInfo {
@@ -251,6 +256,8 @@ impl Transcript {
                 | Body::Assistant(_)
                 | Body::Interrupted(_)
                 | Body::Notice(..)
+                | Body::ModelError { .. }
+                | Body::Retry { .. }
                 | Body::TurnSummary => None,
             })
             .collect()

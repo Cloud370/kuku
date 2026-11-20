@@ -649,7 +649,7 @@ fn find_file_state_at(events: &[StoredEvent], canonical_path: &str, at_pos: usiz
                 && s["canonical_path"].as_str() == Some(canonical_path)
                 && s["is_full_file_snapshot"].as_bool().unwrap_or(false)
             {
-                if let Some(text) = s["raw_text_after"].as_str() {
+                if let Some(text) = s["raw_text"].as_str() {
                     return FileStateAt::Exists(text.to_string());
                 }
             }
