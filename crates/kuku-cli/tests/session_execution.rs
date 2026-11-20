@@ -165,14 +165,11 @@ async fn stop_managed(home: &Path) {
             .await
             .unwrap();
         assert_eq!(wreq::StatusCode::ACCEPTED, response.status());
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while service.status().await.unwrap().is_some() {
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .expect("fixture should release its local service");
     }
+    tokio::time::timeout(std::time::Duration::from_secs(5), service.wait_for_exit())
+        .await
+        .expect("fixture should release its local service lease")
+        .expect("fixture should inspect its local service lease");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -331,7 +331,10 @@ impl LocalService {
         }
     }
 
-    async fn wait_for_exit(&self) -> Result<(), LocalError> {
+    /// Wait until this data directory's managed-service instance lease is released.
+    ///
+    /// This does not request shutdown or guarantee that the operating-system process has exited.
+    pub async fn wait_for_exit(&self) -> Result<(), LocalError> {
         let directory = self.service_directory();
         let start = Instant::now();
         while instance_locked(&directory)? {
@@ -792,6 +795,44 @@ mod tests {
                 json!({"code":"service_busy","message":"fixture remains running","busy":["fixture work"]}),
             ),
         )
+    }
+
+    #[tokio::test]
+    async fn shutdown_wait_requires_lease_release_after_transport_reset() {
+        let mut fixture = ManagedFixture::new().await;
+        fixture.server.abort();
+        let _ = (&mut fixture.server).await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        fixture.address = listener.local_addr().unwrap();
+        fixture.publish('a', fixture.service.config_path());
+        let reset = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            socket.set_zero_linger().unwrap();
+            socket.readable().await.unwrap();
+            drop(socket);
+        });
+        let failure = match fixture.service.status().await {
+            Err(error) => error,
+            Ok(_) => panic!("reset endpoint unexpectedly answered status"),
+        };
+        reset.await.unwrap();
+        assert!(
+            matches!(&failure, LocalError::Transport(error) if error.is_request() && !error.is_connect()),
+            "{failure}"
+        );
+
+        let waiting = fixture.service.wait_for_exit();
+        tokio::pin!(waiting);
+        poll_fn(|context| {
+            assert!(waiting.as_mut().poll(context).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        drop(fixture.lease.take());
+        tokio::time::timeout(std::time::Duration::from_secs(2), waiting)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test]
