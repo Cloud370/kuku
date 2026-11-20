@@ -67,7 +67,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: ${{ fromJSON((github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.draft)) && '["ubuntu-latest"]' || '["ubuntu-latest","macos-latest","windows-latest"]') }}
     steps:
       - uses: actions/checkout@v7
       - run: python3 -m unittest discover -s scripts/acceptance -p "test_*.py"
@@ -76,13 +76,13 @@ jobs:
     name: Contract (${{ matrix.terminal }})
     needs: fmt
     env:
-      FULL_ACCEPTANCE: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+      FULL_ACCEPTANCE: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && !github.event.pull_request.draft) }}
     strategy:
       fail-fast: false
       matrix:
         include: >-
           ${{ fromJSON(
-            inputs.platform == 'linux' && '[{"os":"ubuntu-latest","terminal":"Linux PTY"}]' ||
+            (inputs.platform == 'linux' || github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.draft)) && '[{"os":"ubuntu-latest","terminal":"Linux PTY"}]' ||
             inputs.platform == 'macos' && '[{"os":"macos-latest","terminal":"macOS PTY"}]' ||
             inputs.platform == 'windows' && '[{"os":"windows-latest","terminal":"Windows ConPTY"}]' ||
             '[{"os":"ubuntu-latest","terminal":"Linux PTY"},{"os":"macos-latest","terminal":"macOS PTY"},{"os":"windows-latest","terminal":"Windows ConPTY"}]'

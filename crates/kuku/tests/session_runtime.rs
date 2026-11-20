@@ -22,7 +22,7 @@ use kuku::permission::{AuthorizationDecision, ToolAuthorization, ToolAuthorizer}
 use kuku::{Activation, AgentConfig, AgentStatus, Input, OutputRead, Session, SessionOptions};
 #[cfg(unix)]
 use wait_support::wait_for_agent_during;
-use wait_support::{settled, settled_during, settled_with_output, settled_with_timeout};
+use wait_support::{settled, settled_during, settled_with_output};
 
 fn options(
     server: &MockServer,
@@ -361,33 +361,27 @@ async fn receipts_are_durable_idempotent_and_enqueue_requires_explicit_advance()
 
 #[tokio::test]
 async fn settled_provider_failure_allows_close_and_explicit_advance_after_reopen() {
-    retry_interrupted_input(true, 400, 1, true, 0, false).await;
+    retry_interrupted_input(true, 400, true, 0, false).await;
 }
 
 #[tokio::test]
 async fn repeated_provider_failure_and_reopen_keeps_one_original_user_message() {
-    retry_interrupted_input(true, 400, 1, true, 1, false).await;
+    retry_interrupted_input(true, 400, true, 1, false).await;
 }
 
 #[tokio::test]
 async fn queued_input_joins_restored_accepted_input_without_duplication() {
-    retry_interrupted_input(true, 400, 1, true, 0, true).await;
+    retry_interrupted_input(true, 400, true, 0, true).await;
 }
 
 #[tokio::test]
 async fn successful_explicit_retry_after_rate_limiting_can_close_the_same_session() {
-    retry_interrupted_input(false, 429, 1, false, 0, false).await;
-}
-
-#[tokio::test]
-async fn exhausted_provider_retries_can_continue_without_duplicating_input() {
-    retry_interrupted_input(false, 429, 6, true, 0, false).await;
+    retry_interrupted_input(false, 429, false, 0, false).await;
 }
 
 async fn retry_interrupted_input(
     reopen: bool,
     status: u16,
-    failed_attempts: usize,
     automatic_retries: bool,
     continued_failures: usize,
     queue_new_input: bool,
@@ -412,11 +406,7 @@ async fn retry_interrupted_input(
     session
         .send(Input::new("input", "main", "retain this accepted work"))
         .unwrap();
-    let failed = if automatic_retries && status == 429 {
-        settled_with_timeout(&session, "main", Duration::from_secs(90)).await
-    } else {
-        settled(&session, "main").await
-    };
+    let failed = settled(&session, "main").await;
     assert_eq!(AgentStatus::Interrupted, failed.status);
     assert!(
         failed
@@ -426,8 +416,8 @@ async fn retry_interrupted_input(
         "{failed:?}"
     );
     assert!(session.active_executions().is_empty());
-    assert_eq!(failed_attempts as u64, failed.usage.model_requests);
-    assert_eq!(failed_attempts as u64, failed.usage.unreported_requests);
+    assert_eq!(1, failed.usage.model_requests);
+    assert_eq!(1, failed.usage.unreported_requests);
     assert_eq!(None, failed.usage.input_tokens);
     assert_eq!(0, failed.pending_inputs);
     assert_eq!(
@@ -501,9 +491,7 @@ async fn retry_interrupted_input(
             .unwrap();
         assert_eq!(1, session.agent("main").unwrap().pending_inputs);
     }
-    failure
-        .assert_hits_async(failed_attempts + continued_failures)
-        .await;
+    failure.assert_hits_async(1 + continued_failures).await;
     failure.delete_async().await;
     let success_matcher: fn(&HttpMockRequest) -> bool = if queue_new_input {
         request_has_original_and_queued_input_once

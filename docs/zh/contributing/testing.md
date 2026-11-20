@@ -4,7 +4,7 @@
 
 ## 选择验证范围
 
-按改动行为选择检查。持续维护的选择入口使用 Python 3.10+，将有界证据写入已忽略的 `benchmarks/acceptance/` 目录：
+按改动行为选择检查。每项不变量只保留一处主要覆盖：重试上限与退避交给已有虚拟时钟 provider 测试，Session 测试负责中断与显式恢复，不再用另一份真实等待退避的集成测试重复完整组合。持续维护的选择入口使用 Python 3.10+，将有界证据写入已忽略的 `benchmarks/acceptance/` 目录：
 
 ```bash
 python3 scripts/acceptance/run.py contract
@@ -12,7 +12,7 @@ python3 scripts/acceptance/run.py protocol
 python3 scripts/acceptance/run.py integration
 ```
 
-`contract` 启用 `kuku/test_support`，运行 workspace 测试，包含受 feature 控制的运行时套件、共享客户端和 TUI 测试。某个测试程序失败后会继续运行其余测试程序，任一测试失败仍返回失败。`protocol` 选择 provider 适配、配置、错误、集成、追踪及缓存通知固定输入，无需付费请求。`integration` 依次执行只读格式检查、启用测试 feature 的 workspace／all-target Clippy 和 `contract`。CI 在 Linux、macOS 和 Windows 的独立作业中运行相同的契约测试与 Python 工具检查。草稿 PR 运行这些检查、格式检查和 Clippy；进入评审的 PR、main 推送以及手动触发的 CI 额外运行安装终端验收、Windows 桌面验收与 Linux 浏览器交接，并保留有界证据。浏览器交接复用 Linux 已安装程序，不再由另一个 workflow 重复构建。真实模型调用和 Linux benchmark 容器需要在本地明确选择。
+`contract` 启用 `kuku/test_support`，运行 workspace 测试，包含受 feature 控制的运行时套件、共享客户端和 TUI 测试。某个测试程序失败后会继续运行其余测试程序，任一测试失败仍返回失败。`protocol` 选择 provider 适配、配置、错误、集成、追踪及缓存通知固定输入，无需付费请求。`integration` 依次执行只读格式检查、启用测试 feature 的 workspace／all-target Clippy 和 `contract`。草稿 PR 与 main 推送只运行一套 Linux workspace 契约与 Python 工具检查，加上格式检查和 Clippy。进入评审的 PR 与手动触发的 CI 执行 Linux、macOS、Windows 三平台契约及 Python 工具检查，并运行安装终端、Windows 桌面与 Linux 浏览器交接验收，保留有界证据。浏览器交接复用 Linux 已安装程序，不再由另一个 workflow 重复构建。真实模型调用和 Linux benchmark 容器需要在本地明确选择。
 
 契约测试采集保留原有 64 KiB 输出尾部和完整输出 hash。独立失败摘要在 16 KiB UTF-8 字节范围内保留失败测试名、panic 位置与少量上下文，以及 Cargo 失败 target。`failure_summary.truncated` 标记遗漏内容；失败仍由子进程退出状态判定。
 

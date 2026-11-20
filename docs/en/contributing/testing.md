@@ -4,7 +4,7 @@ This page owns verification entrypoints, live-test configuration, and evidence r
 
 ## Verification selection
 
-Match checks to the changed behavior. The maintained selector uses Python 3.10+ and writes bounded evidence under the ignored `benchmarks/acceptance/` directory:
+Match checks to the changed behavior. Keep one owner for each invariant: retry limits and backoff belong to the existing virtual-clock provider tests, while Session tests cover interruption and explicit recovery. Do not duplicate their full combination by waiting through real backoff in another integration test. The maintained selector uses Python 3.10+ and writes bounded evidence under the ignored `benchmarks/acceptance/` directory:
 
 ```bash
 python3 scripts/acceptance/run.py contract
@@ -12,7 +12,7 @@ python3 scripts/acceptance/run.py protocol
 python3 scripts/acceptance/run.py integration
 ```
 
-`contract` runs the workspace tests with `kuku/test_support` enabled, including the gated runtime, shared client and TUI suites. It continues the remaining test binaries after a test failure and returns failure if any tests fail. `protocol` selects the provider adapter/configuration/error, integration, trace, and cache-notice fixtures without making paid requests. `integration` runs the read-only format check, workspace/all-target Clippy with the test feature, and `contract`. CI runs the same contract and Python tooling checks on Linux, macOS, and Windows in independent jobs. Draft PRs run these checks, formatting and Clippy. Ready-for-review PRs, main pushes and manual CI dispatches additionally run installed-terminal acceptance, Windows desktop acceptance and the Linux browser handoff, retaining bounded evidence. The browser handoff reuses the Linux installed application instead of rebuilding it in a second workflow. Live model calls and Linux benchmark containers require explicit local selection.
+`contract` runs the workspace tests with `kuku/test_support` enabled, including the gated runtime, shared client and TUI suites. It continues the remaining test binaries after a test failure and returns failure if any tests fail. `protocol` selects the provider adapter/configuration/error, integration, trace, and cache-notice fixtures without making paid requests. `integration` runs the read-only format check, workspace/all-target Clippy with the test feature, and `contract`. Draft PRs and main pushes run one Linux workspace contract and Python tooling selection, formatting and Clippy. Ready-for-review PRs and manual CI dispatches run the contract and Python tooling checks on Linux, macOS and Windows, plus installed-terminal acceptance, Windows desktop acceptance and the Linux browser handoff, retaining bounded evidence. The browser handoff reuses the Linux installed application instead of rebuilding it in a second workflow. Live model calls and Linux benchmark containers require explicit local selection.
 
 Contract captures keep the original 64 KiB output tail and full-output hash. A separate failure summary retains failed test names, panic locations with limited context, and Cargo target failures within 16 KiB of UTF-8 output. `failure_summary.truncated` reports omitted content; the subprocess exit status still determines failure.
 
