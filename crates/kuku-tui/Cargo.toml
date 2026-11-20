@@ -21,6 +21,7 @@ pulldown-cmark = { version = "0.13", default-features = false }
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = "0.10"
 syntect = { version = "5.3", default-features = false, features = ["default-syntaxes", "regex-fancy"] }
 tempfile = "3"
 time = { version = "0.3", default-features = false, features = ["std", "parsing"] }
@@ -30,6 +31,9 @@ toml_edit = "0.22"
 unicode-segmentation = "1.12"
 unicode-width = "0.2"
 url = "2"
+
+[dev-dependencies]
+kuku-server = { path = "../kuku-server" }
 
 [target.'cfg(windows)'.dependencies]
 termina = "0.4"

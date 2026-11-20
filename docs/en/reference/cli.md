@@ -57,10 +57,13 @@ Put options before the prompt in `kuku run`, because it consumes the remaining w
 | `/new`, `/resume` | Open a blank draft or find a retained Session. |
 | Alt+← or Alt+→ | Switch directly to the previous or next Agent. The order wraps and starts with `main`, followed by the other addresses in sorted order. |
 | `/agents` | Search the Session's Agents, switch recipients, or create an Agent. The selector shows activity, pending requests and queue counts, with `Admitted` and `Queued` task excerpts when available. |
+| `/back` | Return to the last Agent you viewed in this Session. Repeat to switch between the last two. Agent switching keeps each draft and reading position. |
+| `/continue` | Explicitly resume work for the selected Agent. |
 | Empty draft + ↑, or click an editable Pending inputs row | Select that exact queued input inline. Up/Down changes selection; Enter edits it; Delete withdraws it; Esc returns to the composer unless work is Running or cleaning up, when Esc interrupts. |
 | F2 outside editors | Cycle visible controls in order: request, Continue or Stop, pending-delivery recovery, Previous Agent, then service actions. F2 or click opens a question's answer editor; Esc saves its unsent answer by request ID and preserves the main draft. F2 or click focuses a permission request. Enter activates focused controls; clicks on other side-effect controls only focus them. Esc interrupts Running/cleanup work regardless of focus; otherwise it dismisses focus. Ctrl+R reconnects. |
 | Permission request card | Choose **Deny** or **Allow once** with Left/Right or a click, then press Enter. F2, Left, Enter is the keyboard Deny path. While Waiting, Esc leaves focus without answering or interrupting. |
-| `/model`, `/thinking` | Select model or reasoning settings for the selected Agent. |
+| `/pending` | Check, retry or discard an unconfirmed submission. |
+| `/model`, `/thinking` | Choose a route or reasoning setting for the selected Agent's Session. Model and thinking choices are session-only; **Set current model as default** separately saves the resolved connection/model to config without changing the current Session. |
 | `/statusline` | Open **Status line settings** to preview, select, reorder and save footer fields. |
 | Ctrl+O | Expand or collapse visible transcript previews, including tool groups and Agent cards. |
 | `/details` or click a transcript item | Open a tool group to see its calls. Open an individual call for the target, arguments and available output or error. In **Transcript details**, search visible items and press Enter to toggle the selected item. |
@@ -70,7 +73,7 @@ Put options before the prompt in `kuku run`, because it consumes the remaining w
 | Mouse wheel, Page Up, Page Down | Scroll the transcript. |
 | Ctrl+End or Alt+↑ while reading history | Return to the latest output and resume following. |
 | ↑, ↓ in the editor | Move within a multiline draft and scroll the transcript at its boundaries. Ctrl+↑ and Ctrl+↓ recall sent prompts and restore the draft. In queue focus, Up/Down moves between editable queued inputs. |
-| `/server` | Inspect the connected service and its controls. F2 cycles to reconnect or managed-local restart when available; Ctrl+R still reconnects directly. |
+| `/server`, `/reconnect`, `/restart` | Inspect the connected service, reconnect, or restart the managed local service. F2 cycles to reconnect or managed-local restart when available; Ctrl+R still reconnects directly. |
 | Arrow keys, Tab, Enter in a menu | Move the highlight, complete editable text, or activate the selected action, respectively. |
 | `/web`, `/quit` | Open the conversation in the browser or leave the terminal client. |
 

@@ -45,6 +45,7 @@ impl App {
             Event::FocusLost => self.text_selection.cancel_drag(),
             Event::Resize(_, _) | Event::FocusGained | Event::Key(_) => {}
         }
+        self.clear_model_default_if_closed();
     }
 
     pub(crate) fn sync_pending_picker(&mut self) {
@@ -92,7 +93,7 @@ impl App {
                 }
             }
             Some(Modal::Picker(picker)) => {
-                if matches!(picker.kind, PickerKind::Server) {
+                if matches!(picker.kind, PickerKind::Server | PickerKind::ModelDefault) {
                     picker.header_top = picker.header_top.saturating_add_signed(amount);
                 } else {
                     picker.move_by(amount);
@@ -220,7 +221,8 @@ impl App {
             key if Shortcut::ENTER.matches(key) => {
                 if let Some(choice) = picker.selected_choice() {
                     let kind = picker.kind.clone();
-                    self.choose(kind, choice);
+                    let ticket = picker.ticket.id;
+                    self.choose(kind, choice, ticket);
                 }
             }
             key if Shortcut::TAB.matches(key) && picker.kind.completes_text() => {
@@ -236,18 +238,21 @@ impl App {
                     (PickerKind::Commands, Some(choice @ ChoiceKind::Skill(_)))
                     | (PickerKind::Paths(_), Some(choice @ ChoiceKind::Path(_))) => {
                         let kind = picker.kind.clone();
-                        self.choose(kind, choice);
+                        let ticket = picker.ticket.id;
+                        self.choose(kind, choice, ticket);
                     }
                     _ => {}
                 }
             }
             key if Shortcut::UP.matches(key) => picker.move_by(-1),
             key if Shortcut::DOWN.matches(key) => picker.move_by(1),
-            key if Shortcut::PAGE_UP.matches(key) && matches!(picker.kind, PickerKind::Server) => {
+            key if Shortcut::PAGE_UP.matches(key)
+                && matches!(picker.kind, PickerKind::Server | PickerKind::ModelDefault) =>
+            {
                 picker.header_top = picker.header_top.saturating_add_signed(-details_page);
             }
             key if Shortcut::PAGE_DOWN.matches(key)
-                && matches!(picker.kind, PickerKind::Server) =>
+                && matches!(picker.kind, PickerKind::Server | PickerKind::ModelDefault) =>
             {
                 picker.header_top = picker.header_top.saturating_add_signed(details_page);
             }
@@ -439,7 +444,7 @@ impl App {
         }));
     }
 
-    fn choose(&mut self, picker: PickerKind, choice: ChoiceKind) {
+    fn choose(&mut self, picker: PickerKind, choice: ChoiceKind, ticket: u64) {
         self.modal = None;
         self.effects.push(Job::ClosePicker);
         match choice {
@@ -488,6 +493,9 @@ impl App {
                     "Enter the model ID for this connection",
                 );
             }
+            ChoiceKind::SetCurrentModelAsDefault => self.prepare_model_default(),
+            ChoiceKind::ConfirmModelDefault => self.confirm_model_default(ticket),
+            ChoiceKind::CancelModelDefault => self.cancel_model_default(ticket),
             ChoiceKind::Thinking(effort) => {
                 let mut config = self.pane().config().clone();
                 config.reasoning_effort = effort;
@@ -536,7 +544,9 @@ impl App {
             }
             CommandMenu::Agents => self.open_agents(),
             CommandMenu::Model => {
-                self.picker(PickerKind::Models, Vec::new());
+                self.clear_model_default_if_closed();
+                let save_default = self.model_default_choice();
+                self.picker(PickerKind::Models, vec![save_default]);
                 self.search(true);
             }
             CommandMenu::Thinking => self.open_thinking(),

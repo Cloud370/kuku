@@ -18,11 +18,13 @@ use crate::output::OutputViewer;
 use crate::selection::TextSelection;
 use crate::statusline::StatusLineEditor;
 use crate::transcript::{HistoryRequest, Transcript};
+use model_default::PendingDefaultSave;
 
 mod activity;
 pub(crate) mod agents;
 mod contextual;
 mod delivery;
+mod model_default;
 mod navigation;
 mod notice;
 mod pending;
@@ -329,6 +331,8 @@ pub(crate) struct App {
     generation: u64,
     next_modal: u64,
     model_version: u64,
+    pending_model_default: Option<PendingDefaultSave>,
+    saving_model_default: Option<(u64, Selection)>,
     checking: VecDeque<String>,
     outstanding_checks: usize,
     quit_after_save: bool,
@@ -386,6 +390,8 @@ impl App {
             generation: 0,
             next_modal: 0,
             model_version: 0,
+            pending_model_default: None,
+            saving_model_default: None,
             checking: VecDeque::new(),
             outstanding_checks: 0,
             quit_after_save: false,
@@ -451,29 +457,6 @@ impl App {
 
     pub(crate) fn new_draft(&mut self) {
         self.select(Address::main(new_id()), false, String::new());
-    }
-
-    pub(crate) fn configure(&mut self, config: AgentConfig) {
-        if self.pane().exists {
-            let target = self.target(&self.active);
-            if self.pending.values().any(|item| {
-                item.command.target == target
-                    && matches!(item.command.action, Action::Configure { .. })
-                    && !matches!(item.stage, PendingStage::Rejected(_))
-            }) {
-                self.problem("Wait for the previous settings change to be resolved");
-                return;
-            }
-            self.issue(
-                self.active.clone(),
-                Action::Configure {
-                    config: Box::new(config),
-                },
-            );
-        } else {
-            self.pane_mut().initial_config = config;
-            self.preview_model();
-        }
     }
 
     pub(crate) fn interrupt(&mut self) {
@@ -601,6 +584,12 @@ impl App {
                     }
                 }
             }
+            Update::PreparedDefault(ticket, selection, result) => {
+                self.prepared_model_default(ticket, selection, result)
+            }
+            Update::SavedDefault(ticket, selection, result) => {
+                self.saved_model_default(ticket, selection, result)
+            }
             Update::Saved(command, result) => self.saved(command, result),
             Update::Sent(id, result) => match result {
                 Ok(ack) => self.acknowledged(&id, ack),
@@ -612,18 +601,7 @@ impl App {
                 Ok(commands) => self.recover_pending(commands),
                 Err(error) => self.problem(format!("Client storage · {error} · Ctrl+R to recheck")),
             },
-            Update::DefaultModel(version, result)
-                if version == self.model_version && !self.pane().exists =>
-            {
-                match result {
-                    Ok(model) => {
-                        let pane = self.pane_mut();
-                        pane.initial_model = Some(model);
-                        pane.model_problem = None;
-                    }
-                    Err(error) => self.pane_mut().model_problem = Some(error.to_string()),
-                }
-            }
+            Update::DefaultModel(version, result) => self.default_model_updated(version, result),
             Update::Output(selection, id, result) if selection == self.selection() => {
                 if let Some(Modal::Output(viewer)) = &mut self.modal {
                     if viewer.id == id {
@@ -657,7 +635,6 @@ impl App {
             | Update::Observation(..)
             | Update::Refreshed(..)
             | Update::History(..)
-            | Update::DefaultModel(..)
             | Update::Output(..) => {}
         }
         self.sync_pending_picker();
@@ -746,14 +723,6 @@ impl App {
                 old.snapshot = None;
                 old.initial_model = None;
             }
-        }
-    }
-
-    fn preview_model(&mut self) {
-        if self.require_service() {
-            self.model_version = self.model_version.wrapping_add(1);
-            let config = self.pane().initial_config.clone();
-            self.effects.push(Job::Model(config, self.model_version));
         }
     }
 

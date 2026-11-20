@@ -10,7 +10,7 @@ use crate::app::{App, Modal};
 use crate::editor::{Editor, EditorView};
 use crate::keys::Shortcut;
 use crate::markup::{render_literal, wrap};
-use crate::menu::{Picker, PickerKind, Prompt, PromptKind};
+use crate::menu::{Choice, ChoiceKind, Picker, PickerKind, Prompt, PromptKind};
 use crate::output::OutputViewer;
 use crate::text::{shorten, single_line};
 use crate::theme::{
@@ -23,12 +23,15 @@ mod activity;
 mod contextual;
 mod delivery;
 mod header;
+mod model_default_confirmation;
 
 pub(crate) use activity::{ActivityClock, ActivityFrame};
 
 const MAX_BANNER_ROWS: u16 = 5;
 const MIN_TRANSCRIPT_ROWS: u16 = 2;
 const MIN_ACTIVITY_WIDTH: u16 = 8;
+const MODEL_DEFAULT_CONFIRMATION_MIN_WIDTH: u16 = 60;
+const MODEL_DEFAULT_CONFIRMATION_MIN_HEIGHT: u16 = 20;
 const FOOTER_SPACE_HEIGHT: u16 = 16;
 const COMPOSER_SPACE_HEIGHT: u16 = 20;
 const COMPOSER_SPACE_WIDTH: usize = 42;
@@ -650,6 +653,12 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Rect
 }
 
 fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (usize, usize, usize) {
+    if matches!(picker.kind, PickerKind::ModelDefault)
+        && !picker.loading
+        && picker.problem.is_none()
+    {
+        return model_default_confirmation::render(frame, inner, picker);
+    }
     let width = usize::from(inner.width);
     let search_rows = u16::from(picker.kind.searchable() && inner.height >= 3);
     let search_gap = u16::from(search_rows > 0 && inner.height >= 10);

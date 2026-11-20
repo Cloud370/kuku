@@ -111,6 +111,9 @@ pub(crate) enum ChoiceKind {
     Tier(String),
     Connection(String),
     Reconnect,
+    SetCurrentModelAsDefault,
+    ConfirmModelDefault,
+    CancelModelDefault,
     Thinking(Option<String>),
     RewindMessage {
         event_id: u64,
@@ -150,6 +153,9 @@ impl ChoiceKind {
                 | Self::Agent { .. }
                 | Self::CreateAgent
                 | Self::Connection(_)
+                | Self::SetCurrentModelAsDefault
+                | Self::ConfirmModelDefault
+                | Self::CancelModelDefault
                 | Self::RewindMessage { .. }
                 | Self::Pending(_)
                 | Self::PendingOpen { .. }
@@ -211,6 +217,7 @@ pub(crate) enum PickerKind {
     Sessions,
     Agents,
     Models,
+    ModelDefault,
     Thinking,
     Pending,
     PendingItem,
@@ -228,6 +235,7 @@ impl PickerKind {
             Self::Sessions => "Resume session",
             Self::Agents => "Switch Agent",
             Self::Models => "Model route",
+            Self::ModelDefault => "Set current model as default",
             Self::Thinking => "Thinking",
             Self::Pending => "Unconfirmed commands",
             Self::PendingItem => "Recover command",
