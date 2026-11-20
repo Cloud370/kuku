@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use kuku::config::ProviderFormat;
 use kuku::event::EventPayload;
-use kuku_client::local::{LocalError, RestartOutcome};
+use kuku_client::local::{LocalError, RestartOutcome, ServiceIdentity};
 use kuku_client::{
     AgentProgress, AgentStatus, Connection, ConnectionOptions, RetryFailureKind, RetryMetadata,
     RetrySource, Snapshot, Target,
@@ -12,9 +12,7 @@ use kuku_client::{
 use sha2::{Digest, Sha256};
 use url::Url;
 
-use crate::local_settings::{
-    active_service, ensure_same_service, service_identity, ServiceIdentity,
-};
+use crate::local_settings::{active_service, ensure_same_service};
 
 use super::config::{save_credential, Settings};
 
@@ -62,11 +60,6 @@ pub(crate) enum CredentialRepairApplied {
     Applied,
     SavedNotApplied(SavedCredentialRepair, String),
     SavedTargetChanged(String),
-}
-
-enum RestartFailure {
-    TargetChanged(String),
-    Retryable(String),
 }
 
 pub(crate) fn authentication_failure(snapshot: &Snapshot) -> Option<CredentialRepairRequest> {
@@ -129,10 +122,6 @@ pub(crate) async fn prepare(
         return Err("Private credential storage is unavailable for this connection. Correct the service configuration on its host and restart it before retrying.".into());
     }
     verify_config_route(&settings, &route)?;
-    let current = active_service(options, Some(connection))
-        .await
-        .map_err(|_| CHANGED)?;
-    ensure_same_service(&service, &current).map_err(|_| CHANGED)?;
     Ok(PreparedCredentialRepair::Local(Arc::new(
         CredentialRepairPlan {
             config_path: service.config_path.clone(),
@@ -162,7 +151,6 @@ pub(crate) async fn save(
         .map_err(|_| CHANGED)?;
     verify_failure(&snapshot, &plan.request)?;
     verify_route(&snapshot, &plan.route)?;
-    verify_config_route(&plan.settings, &plan.route)?;
     let service = plan.service.clone();
     let config_sha256 = tokio::task::spawn_blocking(move || {
         save_credential(&plan.settings, &plan.route.connection, &key)
@@ -172,7 +160,6 @@ pub(crate) async fn save(
     .map_err(|_| SAVE_FAILED)?;
     Ok(apply(
         options,
-        Some(connection),
         SavedCredentialRepair {
             config_sha256,
             service,
@@ -183,78 +170,31 @@ pub(crate) async fn save(
 
 pub(crate) async fn apply(
     options: &ConnectionOptions,
-    connection: Option<&Connection>,
     saved: SavedCredentialRepair,
 ) -> CredentialRepairApplied {
-    match restart(options, connection, &saved).await {
-        Ok(()) => CredentialRepairApplied::Applied,
-        Err(RestartFailure::TargetChanged(reason)) => {
-            CredentialRepairApplied::SavedTargetChanged(format!("{SAVED_NOT_APPLIED}\n{reason}"))
+    let changed =
+        || CredentialRepairApplied::SavedTargetChanged(format!("{SAVED_NOT_APPLIED}\n{CHANGED}"));
+    if verify_saved_config(&saved).is_err() {
+        return changed();
+    }
+    let Ok(local) = options.local_service() else {
+        return changed();
+    };
+    let reason = match local.restart_if_current(&saved.service).await {
+        Ok(RestartOutcome::Restarted(_)) => {
+            return if verify_saved_config(&saved).is_ok() {
+                CredentialRepairApplied::Applied
+            } else {
+                changed()
+            };
         }
-        Err(RestartFailure::Retryable(reason)) => CredentialRepairApplied::SavedNotApplied(
-            saved,
-            format!("{SAVED_NOT_APPLIED}\n{reason}"),
-        ),
-    }
-}
-
-async fn restart(
-    options: &ConnectionOptions,
-    connection: Option<&Connection>,
-    saved: &SavedCredentialRepair,
-) -> Result<(), RestartFailure> {
-    let current = active_service(options, connection)
-        .await
-        .map_err(|_| RestartFailure::TargetChanged(CHANGED.into()))?;
-    ensure_same_service(&saved.service, &current)
-        .map_err(|_| RestartFailure::TargetChanged(CHANGED.into()))?;
-    verify_saved_config(saved).map_err(RestartFailure::TargetChanged)?;
-    let local = options
-        .local_service()
-        .map_err(|_| RestartFailure::TargetChanged(CHANGED.into()))?;
-    let expected = local
-        .status()
-        .await
-        .map_err(|_| RestartFailure::TargetChanged(CHANGED.into()))?
-        .ok_or_else(|| RestartFailure::TargetChanged(CHANGED.into()))?;
-    let expected_identity = service_identity(options, &expected)
-        .map_err(|_| RestartFailure::TargetChanged(CHANGED.into()))?;
-    ensure_same_service(&saved.service, &expected_identity)
-        .map_err(|_| RestartFailure::TargetChanged(CHANGED.into()))?;
-    let restarted =
-        match local
-            .restart_if_current(&expected)
-            .await
-            .map_err(|error| match error {
-                LocalError::ServiceChanged => RestartFailure::TargetChanged(
-                    "The local service changed before restart. Its replacement was not stopped or restarted.".into(),
-                ),
-                _ => RestartFailure::Retryable("Restart failed; use the local service restart action when it is idle.".into()),
-            })?
-        {
-            RestartOutcome::Deferred(_) => return Err(RestartFailure::Retryable(
-                "Other work is still active. Finish it, then choose Restart local service here."
-                    .into(),
-            )),
-            RestartOutcome::Restarted(connection) => {
-                service_identity(options, &connection)
-                    .map_err(|_| RestartFailure::TargetChanged(CHANGED.into()))?
-            }
-        };
-    verify_restarted_service(saved, &restarted).map_err(RestartFailure::TargetChanged)
-}
-
-fn verify_restarted_service(
-    saved: &SavedCredentialRepair,
-    restarted: &ServiceIdentity,
-) -> Result<(), String> {
-    if restarted.config_path != saved.service.config_path
-        || restarted.data_dir != saved.service.data_dir
-        || restarted.instance_id == saved.service.instance_id
-    {
-        return Err(CHANGED.into());
-    }
-    verify_saved_config(saved)
+        Ok(RestartOutcome::Deferred(_)) => {
+            "Other work is still active. Finish it, then choose Restart local service here."
+        }
+        Err(LocalError::ServiceChanged) => return changed(),
+        Err(_) => "Restart failed; use the local service restart action when it is idle.",
+    };
+    CredentialRepairApplied::SavedNotApplied(saved, format!("{SAVED_NOT_APPLIED}\n{reason}"))
 }
 
 fn verify_saved_config(saved: &SavedCredentialRepair) -> Result<(), String> {

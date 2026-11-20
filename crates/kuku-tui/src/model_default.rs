@@ -1,13 +1,12 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use kuku_client::local::ServiceIdentity;
 use kuku_client::{Connection, ConnectionOptions, ModelDefaultPlan};
 use sha2::{Digest, Sha256};
 use toml_edit::{value, DocumentMut, InlineTable, Item, Table, Value};
 
-use crate::local_settings::{
-    active_service, ensure_same_service, ServiceIdentity, LOCAL_SERVICE_REQUIRED,
-};
+use crate::local_settings::{active_service, ensure_same_service, LOCAL_SERVICE_REQUIRED};
 
 const CONFIG_UNAVAILABLE: &str = "Cannot read the active config; reopen /model and try again.";
 const CONFIG_INVALID: &str = "The active config is invalid; no changes were made.";
@@ -70,9 +69,6 @@ pub(crate) async fn prepare(
             Some("model_default_unusable") => ROUTE_UNUSABLE.to_owned(),
             _ => CONFIG_INVALID.to_owned(),
         })?;
-    if server_plan.config_sha256 != config_sha256 {
-        return Err(CONFIG_CHANGED.into());
-    }
     let bytes = original_bytes.clone();
     let route_for_edit = route.clone();
     let (tier, updated_bytes) =
@@ -179,12 +175,13 @@ fn update_user_default(document: &mut DocumentMut, route: &ResolvedModel) -> Res
 pub(crate) fn test_plan(route: ResolvedModel) -> PreparedDefaultSave {
     let directory = tempfile::tempdir().unwrap();
     let config_path = directory.path().join("config.toml");
+    let file = fs::File::create(&config_path).unwrap();
     PreparedDefaultSave {
         route,
         tier: "balanced".into(),
         config_path: config_path.clone(),
         original_bytes: Vec::new(),
-        original_permissions: fs::metadata("Cargo.toml").unwrap().permissions(),
+        original_permissions: file.metadata().unwrap().permissions(),
         updated_bytes: Vec::new(),
         service: ServiceIdentity {
             endpoint: "http://127.0.0.1:1".into(),

@@ -300,17 +300,11 @@ impl Jobs {
                 saved,
             } => {
                 let options = self.options.clone();
-                let connection = self.connection.clone();
                 self.spawn(async move {
                     Update::SavedCredentialRepair(
                         ticket,
                         selection,
-                        Ok(crate::setup::apply_credential_repair(
-                            &options,
-                            connection.as_ref(),
-                            saved,
-                        )
-                        .await),
+                        Ok(crate::setup::apply_credential_repair(&options, saved).await),
                     )
                 });
             }

@@ -53,6 +53,21 @@ pub struct ServiceStatus {
     pub draining: bool,
 }
 
+/// Stable identity and configuration of an authenticated managed service.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceIdentity {
+    /// Loopback HTTP endpoint observed for this instance.
+    pub endpoint: String,
+    /// Unique identity assigned when the service starts.
+    pub instance_id: String,
+    /// Process ID of this instance.
+    pub pid: u32,
+    /// Canonical managed data directory.
+    pub data_dir: String,
+    /// Canonical configuration file used by this instance.
+    pub config_path: PathBuf,
+}
+
 /// Failure to identify, contact or manage a local service.
 #[derive(Debug, thiserror::Error)]
 pub enum LocalError {
@@ -242,21 +257,21 @@ impl LocalService {
     /// Restart only the observed instance, failing before stopping or launching a replacement if it changed.
     pub async fn restart_if_current(
         &self,
-        expected: &LocalConnection,
+        expected: &ServiceIdentity,
     ) -> Result<RestartOutcome, LocalError> {
         self.restart_expected(Some(expected)).await
     }
 
     async fn restart_expected(
         &self,
-        expected: Option<&LocalConnection>,
+        expected: Option<&ServiceIdentity>,
     ) -> Result<RestartOutcome, LocalError> {
         let _launcher = self.acquire_launcher().await?;
         let current = self.wait_for_live_instance().await?;
         if expected.is_some_and(|expected| {
             current
                 .as_ref()
-                .is_none_or(|current| !expected.same_instance(current))
+                .is_none_or(|current| current.identity() != *expected)
         }) {
             return Err(LocalError::ServiceChanged);
         }
@@ -399,13 +414,15 @@ impl LocalConnection {
         &self.status
     }
 
-    fn same_instance(&self, other: &Self) -> bool {
-        self.address == other.address
-            && self.token == other.token
-            && self.config_path == other.config_path
-            && self.status.instance_id == other.status.instance_id
-            && self.status.pid == other.status.pid
-            && self.status.data_dir == other.status.data_dir
+    /// Return the stable identity verified during authenticated discovery.
+    pub fn identity(&self) -> ServiceIdentity {
+        ServiceIdentity {
+            endpoint: self.endpoint.clone(),
+            instance_id: self.status.instance_id.clone().unwrap(),
+            pid: self.status.pid.unwrap(),
+            data_dir: self.status.data_dir.clone().unwrap(),
+            config_path: self.config_path.clone(),
+        }
     }
 }
 
@@ -843,7 +860,8 @@ mod tests {
             fslock::LockFile::open(&fixture.service.service_directory().join("launcher.lock"))
                 .unwrap();
         launcher.lock().unwrap();
-        let mut restart = Box::pin(fixture.service.restart_if_current(&observed));
+        let expected = observed.identity();
+        let mut restart = Box::pin(fixture.service.restart_if_current(&expected));
         poll_fn(|context| {
             assert!(restart.as_mut().poll(context).is_pending());
             Poll::Ready(())
@@ -876,7 +894,10 @@ mod tests {
         let observed = fixture.service.status().await.unwrap().unwrap();
         fixture.lease.take();
         assert!(matches!(
-            fixture.service.restart_if_current(&observed).await,
+            fixture
+                .service
+                .restart_if_current(&observed.identity())
+                .await,
             Err(LocalError::ServiceChanged)
         ));
         assert!(fixture.state.restarts.lock().unwrap().is_empty());
@@ -888,7 +909,7 @@ mod tests {
         let observed = fixture.service.status().await.unwrap().unwrap();
         fixture.state.status.lock().unwrap().busy = vec!["new work".into()];
         assert!(
-            matches!(fixture.service.restart_if_current(&observed).await, Ok(super::RestartOutcome::Deferred(status)) if status.busy == ["fixture work"])
+            matches!(fixture.service.restart_if_current(&observed.identity()).await, Ok(super::RestartOutcome::Deferred(status)) if status.busy == ["fixture work"])
         );
         assert_eq!(1, fixture.state.restarts.lock().unwrap().len());
     }
