@@ -536,7 +536,7 @@ def run_benchmark(args, directory, record, secrets):
 
 
 def selected_commands(group):
-    contract = ["cargo", "test", "--workspace", "--features", "kuku/test_support"]
+    contract = ["cargo", "test", "--workspace", "--no-fail-fast", "--features", "kuku/test_support"]
     if group == "contract":
         return [contract]
     if group == "protocol":

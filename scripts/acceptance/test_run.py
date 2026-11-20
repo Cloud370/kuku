@@ -403,9 +403,25 @@ class AcceptanceTests(unittest.TestCase):
     def test_contract_selects_feature_gated_tests(self):
         command = ACCEPTANCE.selected_commands("contract")[0]
         self.assertIn("--workspace", command)
+        self.assertIn("--no-fail-fast", command)
         self.assertIn("kuku/test_support", command)
+        self.assertEqual(ACCEPTANCE.selected_commands("integration")[-1], command)
         for suite in ACCEPTANCE.PROTOCOL_TESTS:
             self.assertIn(suite, ACCEPTANCE.selected_commands("protocol")[0])
+
+    def test_contract_failure_is_not_hidden_after_all_test_targets_run(self):
+        args = ["run.py", "--output", str(self.directory), "--run-id", "failed-contract", "contract"]
+        failed = {"exit_code": 101, "timed_out": False}
+        with mock.patch.object(sys, "argv", args), \
+                mock.patch.object(ACCEPTANCE, "tree_state", return_value={}), \
+                mock.patch.object(ACCEPTANCE, "capture", return_value=failed) as capture, \
+                mock.patch("builtins.print"):
+            self.assertEqual(ACCEPTANCE.main(), 1)
+        self.assertIn("--no-fail-fast", capture.call_args.args[0])
+        self.assertEqual(capture.call_args.kwargs["timeout"], 1800)
+        report = json.loads((self.directory / "failed-contract" / "result.json").read_text())
+        self.assertFalse(report["passed"])
+        self.assertEqual(report["checks"], [failed])
 
     def test_cargo_checks_cannot_inherit_another_worktrees_target_directory(self):
         with mock.patch.dict(os.environ, {"CARGO_TARGET_DIR": "/shared-target"}):
