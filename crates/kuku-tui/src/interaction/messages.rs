@@ -155,11 +155,7 @@ impl App {
                 },
             ));
         }
-        if info
-            .tool
-            .as_ref()
-            .is_some_and(|tool| tool.has_full_output())
-        {
+        if !info.outputs.is_empty() {
             choices.push(Choice::new(
                 MessageAction::FullOutput.label(),
                 "Open the complete tool output",
@@ -229,11 +225,11 @@ impl App {
                 self.toggle_detail_choice(key, Some(message));
             }
             MessageAction::FullOutput => {
-                let Some(tool) = info.tool.filter(|tool| tool.has_full_output()) else {
+                if info.outputs.is_empty() {
                     self.problem("Complete output for this tool is no longer available");
                     return;
-                };
-                self.show_output(tool);
+                }
+                self.show_outputs(info.outputs);
             }
             MessageAction::Source => {
                 self.problem("Source is only available for assistant messages");

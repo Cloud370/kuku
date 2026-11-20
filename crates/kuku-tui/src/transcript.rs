@@ -13,6 +13,7 @@ mod agent;
 mod body;
 mod details;
 mod history;
+mod job;
 mod message;
 mod messages;
 mod notes;
@@ -31,18 +32,20 @@ use self::agent::AgentCards;
 use self::body::Body;
 pub(crate) use self::details::DetailKey;
 use self::details::{DetailRecord, Details};
+use self::job::job_notice;
 use self::message::{paint_card, render_assistant_source, render_record, render_user};
 pub(crate) use self::messages::{MessageId, MessageInfo, MessageKind, SelectedMessage};
 use self::rewound::RewindGroupState;
 pub(crate) use self::rewound::{RewindGroupAction, RewindGroupChoice, RewindGroupRequest};
 use self::tool::Tool;
+pub(crate) use self::tool::ToolView;
 use self::window::{Layout, RenderCache, Window};
 
 pub(crate) const HISTORY_PAGE: usize = 48;
 pub(crate) const REWIND_GROUP_PAGE: usize = 12;
-const MAX_RECORDS: usize = HISTORY_PAGE * 3;
+pub(crate) const MAX_RECORDS: usize = HISTORY_PAGE * 3;
 const MAX_LIVE_RECORDS: usize = 32;
-const MAX_BODY_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_BODY_BYTES: usize = 64 * 1024;
 const MAX_BACKTRACK_PAGES: usize = 128;
 const MAX_VISUAL_ROWS: usize = 768;
 const DISPLAY_LIMIT_NOTICE: &str = "\n… Display limit reached";
@@ -361,17 +364,6 @@ pub(crate) struct TranscriptView {
     pub(crate) tool_hint: Option<String>,
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct ToolView {
-    pub(crate) name: String,
-    pub(crate) summary: String,
-    pub(crate) invocation: String,
-    pub(crate) details: String,
-    pub(crate) diff: String,
-    pub(crate) output_id: Option<String>,
-    pub(crate) inline_output_complete: bool,
-}
-
 #[derive(Debug)]
 struct Reading {
     window: Window,
@@ -484,6 +476,7 @@ impl Record {
                 }
                 Body::Tool(Box::new(Tool::from_entry(&entry)))
             }
+            HistoryKind::JobFinished => job_notice(&entry),
             HistoryKind::Question => Body::Notice("Question", text, WARNING),
             HistoryKind::Permission => Body::Notice("Permission", text, WARNING),
             HistoryKind::QuestionReply => Body::Notice("Answer", text, ACCENT),

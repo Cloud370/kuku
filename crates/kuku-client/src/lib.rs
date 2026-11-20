@@ -12,11 +12,19 @@ pub use connection::{Connection, ConnectionOptions};
 pub use http::{Client, Error, Health};
 pub use kuku::adapter::ModelSelection;
 pub use kuku::event::StoredEvent;
+pub use kuku::execution::{
+    CommandExecutionFacts, CommandInvocation, CommandResultKind, CommandShell, CommandStdin,
+    CommandTermination, FileCommitState, FileMutationFacts, FileMutationKind, OutputReference,
+    ReportedTests, TestReportFormat,
+};
 pub use kuku::query::ModelPhase;
 pub use kuku::{
     AgentConfig, AgentSelection, AgentSnapshot, AgentStatus, Input, InputSource, InputStatus,
-    InputTiming, OutputChunk, OutputSegment, OutputStream, PendingInput as QueuedInput,
-    PermissionRequest, QuestionRequest, Receipt, TurnSummary, UsageTotals,
+    InputTiming, JobResult, JobSnapshot, JobStatus, NamedValue, NamedValueKind, NamedValueSource,
+    OutputChunk, OutputSegment, OutputStream, PendingInput as QueuedInput, PermissionRequest,
+    QuestionRequest, Receipt, TurnSummary, UsageTotals, WorkspaceScriptActionFacts,
+    WorkspaceScriptActionStatus, WorkspaceScriptFacts, WorkspaceScriptOperation,
+    WorkspaceScriptResultKind, MAX_INPUT_VALUES, MAX_VALUE_NAME_BYTES,
 };
 pub use pending::PendingStore;
 pub use subscription::{InputDelivery, Observation, Subscription, SubscriptionUpdate};

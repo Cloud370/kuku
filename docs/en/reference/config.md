@@ -45,10 +45,12 @@ Required and optional fields:
 | `reasoning_effort` | string | Native reasoning value; overrides `think` |
 | `service_tier` | string | Native service option, independent of reasoning |
 | `context_window` | integer | Max input tokens |
-| `max_output_tokens` | integer | Max output tokens |
+| `max_output_tokens` | positive integer, optional | Generation ceiling for this tier, including reasoning tokens when the provider counts them as output |
 | `purpose` | string | Human-readable tier summary |
 
 Default tiers are `strong`, `balanced`, and `light`. The TUI's explicit **Set current model as default** action reuses a matching tier or creates/overwrites one ordinary `user-default` tier when none matches. `user-default` has no special resolver priority; `default_model` selects it like any other tier.
+
+On Chat and Responses, omit `max_output_tokens` to use the upstream default. Native Anthropic Messages requires a numeric value. The bundled Sonnet and Haiku presets set it in TOML. A custom Messages connection can take its value from its tier, the Agent or the host. Existing numeric settings continue to apply to their tier. The available context can further limit each response.
 
 ## `provider.<name>`
 
@@ -62,8 +64,11 @@ Default tiers are `strong`, `balanced`, and `light`. The TUI's explicit **Set cu
 | `reasoning_efforts` | string[] | Override the declared native reasoning values for this connection's models |
 | `service_tiers` | string[] | Override the declared native service values for this connection's models |
 | `routing` | table | OpenRouter upstream routing options |
+| `prompt_cache_scope` | `workspace`\|`session`\|`off` | Responses prompt-cache key scope; defaults to `workspace` |
 
 For the built-in `openai` connection, `base_url` is `https://api.openai.com/v1`. The Responses adapter appends `/responses`. For a gateway, use the API base supplied by its operator. [OpenAI Responses API](https://developers.openai.com/api/reference/resources/responses/methods/create)
+
+`prompt_cache_scope` only affects Responses requests. `workspace` hashes the normalized absolute workspace identity with the connection, endpoint and model, so Agents and Sessions in that workspace can share a key without sending the path. `session` derives a separate key from the same Session, Agent address and connection identity as transport correlation, adding the endpoint and model to isolate routes. `off` omits `prompt_cache_key`. If correlation context is unavailable, the adapter omits the key. None of these settings changes the transport correlation or OpenRouter `session_id`.
 
 The SDK selects a connection by its configured name. Multiple connections may use the same `format`; selecting a protocol alone never picks the first matching connection. Explicit model settings override the selected tier. Choosing another connection does not carry native settings from an unrelated default tier; an explicitly selected tier still supplies its defaults and incompatible choices fail.
 

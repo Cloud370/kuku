@@ -144,11 +144,26 @@ pub struct SessionObserver {
     cursor: u64,
     page: VecDeque<StoredEvent>,
     live: broadcast::Receiver<LiveObservation>,
-    preview_agent: Option<String>,
-    preview: Option<Observation>,
+    preview_scope: PreviewScope,
+    previews: VecDeque<Observation>,
+}
+
+enum PreviewScope {
+    None,
+    Selected(String),
+    WithActivity(String),
 }
 
 impl Session {
+    /// Follow the selected Agent's complete reply preview and bounded prefixes from active peers.
+    pub fn observe_agent_with_activity(&self, after: u64, address: &str) -> SessionObserver {
+        SessionObserver::with_scope(
+            self.clone(),
+            after,
+            PreviewScope::WithActivity(address.to_owned()),
+        )
+    }
+
     /// Return the one-based display number for a committed Agent Turn identity.
     pub fn turn_number(&self, address: &str, turn: u64) -> Option<u64> {
         self.inner.state.lock().unwrap().turns.number(address, turn)
@@ -370,7 +385,7 @@ impl SessionObserver {
             self.cursor = event.id;
             return Ok(Some(Observation::Committed(Box::new(event))));
         }
-        if let Some(preview) = self.preview.take() {
+        if let Some(preview) = self.previews.pop_front() {
             return Ok(Some(preview));
         }
         match self.live.try_recv() {
@@ -409,7 +424,7 @@ impl SessionObserver {
             if !self.page.is_empty() {
                 continue;
             }
-            if let Some(preview) = self.preview.take() {
+            if let Some(preview) = self.previews.pop_front() {
                 return Ok(Some(preview));
             }
             if self.session.inner.state.lock().unwrap().closed {
@@ -430,40 +445,67 @@ impl SessionObserver {
     }
 
     pub(super) fn new(session: Session, cursor: u64, preview_agent: Option<String>) -> Self {
-        let (live, preview) = Self::attach(&session, preview_agent.as_deref());
+        let scope = preview_agent.map_or(PreviewScope::None, PreviewScope::Selected);
+        Self::with_scope(session, cursor, scope)
+    }
+
+    fn with_scope(session: Session, cursor: u64, preview_scope: PreviewScope) -> Self {
+        let (live, previews) = Self::attach(&session, &preview_scope);
         Self {
             session,
             cursor,
             page: VecDeque::new(),
             live,
-            preview_agent,
-            preview,
+            preview_scope,
+            previews,
         }
     }
 
     fn reattach(&mut self) {
-        if self.preview_agent.is_some() {
-            (self.live, self.preview) = Self::attach(&self.session, self.preview_agent.as_deref());
+        if !matches!(self.preview_scope, PreviewScope::None) {
+            (self.live, self.previews) = Self::attach(&self.session, &self.preview_scope);
         }
     }
 
     fn attach(
         session: &Session,
-        address: Option<&str>,
-    ) -> (broadcast::Receiver<LiveObservation>, Option<Observation>) {
-        let Some(address) = address else {
-            return (session.inner.live.subscribe(), None);
+        scope: &PreviewScope,
+    ) -> (broadcast::Receiver<LiveObservation>, VecDeque<Observation>) {
+        let (address, include_peers) = match scope {
+            PreviewScope::None => return (session.inner.live.subscribe(), VecDeque::new()),
+            PreviewScope::Selected(address) => (address, false),
+            PreviewScope::WithActivity(address) => (address, true),
         };
         let state = session.inner.state.lock().unwrap();
         let live = session.inner.live.subscribe();
-        let preview = reply_preview(&state, address).and_then(|reply| {
-            Some(Observation::ReplyPreview {
-                agent: address.into(),
-                after: session.current_cursor().ok()?,
+        let mut previews = VecDeque::new();
+        let Ok(after) = session.current_cursor() else {
+            return (live, previews);
+        };
+        if let Some(reply) = reply_preview(&state, address) {
+            previews.push_back(Observation::ReplyPreview {
+                agent: address.clone(),
+                after,
                 reply: Box::new(reply.clone()),
-            })
-        });
-        (live, preview)
+            });
+        }
+        if include_peers {
+            previews.extend(
+                state
+                    .agents
+                    .keys()
+                    .filter(|peer| *peer != address)
+                    .filter_map(|peer| {
+                        let reply = reply_preview(&state, peer)?;
+                        Some(Observation::ReplyPreview {
+                            agent: peer.clone(),
+                            after,
+                            reply: Box::new(reply.excerpt()),
+                        })
+                    }),
+            );
+        }
+        (live, previews)
     }
 }
 
@@ -503,6 +545,7 @@ mod tests {
                 Record::InputsAccepted {
                     address: address.to_owned(),
                     input_ids: vec![format!("send-{id}")],
+                    message_input_ids: Vec::new(),
                     turn,
                 }
                 .payload()

@@ -234,9 +234,12 @@ pub(super) fn reduce_model_fact(state: &mut State, payload: &EventPayload) -> Re
                 .and_then(|window| u32::try_from(window).ok()),
             usage,
         ),
-        "runtime.model_retry" => {
-            ledger.retry(request, value["attempt"].as_u64().unwrap_or(2), usage)
-        }
+        "runtime.model_retry" => match value.get("phase").and_then(Value::as_str) {
+            None | Some("started") => {
+                ledger.retry(request, value["attempt"].as_u64().unwrap_or(2), usage)
+            }
+            _ => Ok(()),
+        },
         "runtime.model_usage" => {
             let report = serde_json::from_value::<Option<ProviderUsage>>(value["usage"].clone())?
                 .unwrap_or_default();
@@ -329,6 +332,7 @@ mod tests {
                 Record::InputsAccepted {
                     address: address.into(),
                     input_ids: Vec::new(),
+                    message_input_ids: Vec::new(),
                     turn: None,
                 }
                 .payload()
@@ -412,6 +416,62 @@ mod tests {
         assert_eq!(
             before,
             Session::read_view(&path, "main").unwrap().snapshot.usage
+        );
+    }
+
+    #[test]
+    fn retry_usage_counts_started_and_legacy_events_but_not_waiting_or_stopped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        let mut store = EventStore::open(&path).unwrap();
+        create_agent(&mut store, "main");
+        let turn = begin_turn(&mut store, "main");
+        model_fact(
+            &mut store,
+            "main",
+            turn,
+            "req_1",
+            json!({"kind":"runtime.step_prepared"}),
+        );
+        for phase in ["waiting", "stopped"] {
+            model_fact(
+                &mut store,
+                "main",
+                turn,
+                "req_1",
+                json!({"kind":"runtime.model_retry","phase":phase,"attempt":2}),
+            );
+        }
+        assert_eq!(
+            1,
+            Session::read_view(&path, "main")
+                .unwrap()
+                .snapshot
+                .usage
+                .model_requests
+        );
+
+        model_fact(
+            &mut store,
+            "main",
+            turn,
+            "req_1",
+            json!({"kind":"runtime.model_retry","phase":"started","attempt":2}),
+        );
+        model_fact(
+            &mut store,
+            "main",
+            turn,
+            "req_1",
+            json!({"kind":"runtime.model_retry","attempt":3}),
+        );
+        assert_eq!(
+            3,
+            Session::read_view(&path, "main")
+                .unwrap()
+                .snapshot
+                .usage
+                .model_requests
         );
     }
 

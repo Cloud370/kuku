@@ -1,6 +1,10 @@
 use super::{Body, Key, Transcript, Window};
 
 impl Transcript {
+    pub(crate) fn rewind_before(&self) -> Option<u64> {
+        self.recent.older
+    }
+
     pub(crate) fn invalidate_after_rewind(&mut self) {
         self.readonly_epoch = self.readonly_epoch.wrapping_add(1);
         self.reset_pending_rewind_group_pages();

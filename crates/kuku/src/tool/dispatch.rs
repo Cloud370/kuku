@@ -5,10 +5,92 @@ use serde_json::Value;
 #[cfg(test)]
 use sha2::{Digest, Sha256};
 
-#[cfg(test)]
-use crate::event::EventPayload;
-use crate::event::StoredEvent;
+use crate::event::{EventPayload, StoredEvent};
 use crate::tool::{builtin, ToolResultEnvelope};
+
+pub(crate) fn is_workspace_file(name: &str) -> bool {
+    matches!(
+        name,
+        "find_files"
+            | "read_file"
+            | "search_text"
+            | "stat_file"
+            | "write_file"
+            | "edit_file"
+            | "remove_file"
+    )
+}
+
+// NOTE: Direct dispatch and cancellable slots use the same action and event identity.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn dispatch_workspace_file(
+    name: &str,
+    args: &Value,
+    workspace: &Path,
+    conversation: &crate::conversation::address::ConversationAddress,
+    prior_events: &[StoredEvent],
+    result_event_id: u64,
+    tool_call_id: Option<&str>,
+    cancelled: &builtin::common::FileCancellation<'_>,
+) -> Option<ToolResultEnvelope> {
+    if matches!(name, "edit_file" | "write_file" | "remove_file")
+        && has_denied_permission(prior_events, tool_call_id)
+    {
+        return Some(permission_denied(name));
+    }
+    let mut result = match name {
+        "find_files" => builtin::find_files(args, workspace, cancelled),
+        "read_file" => builtin::read_file(
+            args,
+            workspace,
+            conversation,
+            prior_events,
+            result_event_id,
+            cancelled,
+        ),
+        "search_text" => builtin::search_text(args, workspace, cancelled),
+        "stat_file" => builtin::stat_file(args, workspace, cancelled),
+        "edit_file" => builtin::edit_file(args, workspace, conversation, prior_events, cancelled),
+        "write_file" => builtin::write_file(args, workspace, conversation, prior_events, cancelled),
+        "remove_file" => {
+            builtin::remove_file(args, workspace, conversation, prior_events, cancelled)
+        }
+        _ => return None,
+    };
+    if name == "write_file" && result.status == "ok" {
+        result.supplied_full_write =
+            supplied_write_content(prior_events, conversation, tool_call_id)
+                .is_some_and(|content| args["content"].as_str() == Some(content));
+    }
+    Some(result)
+}
+
+fn supplied_write_content<'a>(
+    events: &'a [StoredEvent],
+    actor: &crate::conversation::address::ConversationAddress,
+    call_id: Option<&str>,
+) -> Option<&'a str> {
+    let call_id = call_id?;
+    let (tool, args) = events.iter().rev().find_map(|event| match &event.payload {
+        EventPayload::ToolCall {
+            tool,
+            tool_call_id,
+            conversation,
+            args,
+            ..
+        } if tool_call_id == call_id
+            && conversation.as_deref().unwrap_or("main") == actor.as_str() =>
+        {
+            Some((tool, args))
+        }
+        _ => None,
+    })?;
+    if tool == "write_file" {
+        args["content"].as_str()
+    } else {
+        None
+    }
+}
 
 // Dispatch is the single entry point bridging tool registry, config, and event path;
 // splitting would add indirection without reducing cross-cutting complexity.
@@ -26,30 +108,29 @@ pub(crate) async fn dispatch(
     catalog: &crate::prompt::PromptCatalog,
     events_path: &Path,
 ) -> ToolResultEnvelope {
+    if let Some(result) = dispatch_workspace_file(
+        name,
+        args,
+        workspace,
+        conversation,
+        prior_events,
+        result_event_id,
+        tool_call_id,
+        &|| false,
+    ) {
+        return result;
+    }
     match name {
         "agent" => ToolResultEnvelope::error(
             "agent tool must be executed via agent runtime".to_string(),
             "the agent tool can only be invoked through the normal agent loop".to_string(),
         ),
-        "find_files" => builtin::find_files(args, workspace),
-        "read_file" => {
-            builtin::read_file(args, workspace, conversation, prior_events, result_event_id)
-        }
-        "search_text" => builtin::search_text(args, workspace),
-        "fetch_url" => builtin::fetch_url(args, workspace).await,
         "fetch_web" => builtin::fetch_web(args, workspace, config, catalog).await,
-        "edit_file" | "write_file" | "remember_memory" | "forget_memory" | "run_command"
+        "remember_memory" | "forget_memory" | "run_command"
             if has_denied_permission(prior_events, tool_call_id) =>
         {
-            ToolResultEnvelope::blocked(
-                format!("blocked by permission: {name} requires a permission gate"),
-                format!(
-                    "{name} was not executed because the permission gate denied this tool call"
-                ),
-            )
+            permission_denied(name)
         }
-        "edit_file" => builtin::edit_file(args, workspace, conversation, prior_events),
-        "write_file" => builtin::write_file(args, workspace, conversation, prior_events),
         "remember_memory" => builtin::remember_memory_with_home(args, workspace, kuku_home),
         "forget_memory" => builtin::forget_memory_with_home(args, workspace, kuku_home),
         "run_command" => builtin::run_command(args, workspace, None, None).await,
@@ -59,6 +140,13 @@ pub(crate) async fn dispatch(
             format!("unknown tool: {name}"),
         ),
     }
+}
+
+fn permission_denied(name: &str) -> ToolResultEnvelope {
+    ToolResultEnvelope::blocked(
+        format!("blocked by permission: {name} requires a permission gate"),
+        format!("{name} was not executed because the permission gate denied this tool call"),
+    )
 }
 
 fn has_denied_permission(events: &[StoredEvent], tool_call_id: Option<&str>) -> bool {
@@ -154,6 +242,41 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_host_rewrite_of_the_content_does_not_grant_full_write_evidence() {
+        let workspace = tempfile::tempdir().unwrap();
+        let call = StoredEvent {
+            id: 1,
+            payload: EventPayload::ToolCall {
+                turn: 1,
+                ts: "2026-05-14T00:00:00Z".into(),
+                conversation: Some("main".into()),
+                tool_call_id: "write".into(),
+                request_id: "request".into(),
+                index: 0,
+                tool: "write_file".into(),
+                args: serde_json::json!({"path":"out.txt","content":"agent text"}),
+            },
+        };
+        let result = dispatch_workspace_file(
+            "write_file",
+            &serde_json::json!({"path":"out.txt","content":"host text"}),
+            workspace.path(),
+            &crate::conversation::address::ConversationAddress::MAIN,
+            &[call],
+            2,
+            Some("write"),
+            &|| false,
+        )
+        .unwrap();
+        assert_eq!("ok", result.status);
+        assert!(!result.supplied_full_write);
+        assert_eq!(
+            "host text",
+            std::fs::read_to_string(workspace.path().join("out.txt")).unwrap()
+        );
+    }
+
     fn denied_event(tool_call_id: &str) -> StoredEvent {
         StoredEvent {
             id: 99,
@@ -226,7 +349,7 @@ mod tests {
         let denied = denied_event("tool_command");
         let gated = dispatch(
             "run_command",
-            &serde_json::json!({"command": "cargo test", "timeout": 1, "brief": "run tests"}),
+            &serde_json::json!({"program": "cargo", "args": ["test"], "cwd": ".", "timeout": 1, "brief": "run tests"}),
             dir.path(),
             dir.path(),
             &[denied],

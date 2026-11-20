@@ -75,6 +75,79 @@ fn focused_rewind_hint_uses_the_narrow_footer() {
     assert!(lines
         .iter()
         .all(|line| UnicodeWidthStr::width(line.as_str()) <= width));
+    for columns in [32, 33] {
+        let view = screen(&mut app, columns, 20);
+        assert!(view.contains("Esc input"), "{columns} columns:\n{view}");
+    }
+}
+
+#[test]
+fn continue_confirmation_is_transient_and_does_not_replace_an_error() {
+    let mut app = app();
+    for preserve_error in [false, true] {
+        if preserve_error {
+            app.problem("Persistent request error");
+        }
+        app.issue(app.active.clone(), Action::Advance);
+        let command = super::saved_input(&app);
+        app.update(Update::Sent(
+            command.command_id.clone(),
+            Ok(super::queued_receipt(&command, 80)),
+        ));
+        let notice = app.notice.as_ref().expect("continue feedback");
+        if preserve_error {
+            assert_eq!("Persistent request error", notice.text);
+            assert!(notice.error && !notice.transient());
+        } else {
+            assert_eq!("Continue request received", notice.text);
+            assert!(notice.transient() && notice.deadline().is_some());
+            key(&mut app, KeyCode::Left, KeyModifiers::NONE);
+            assert!(app.notice.is_none());
+        }
+    }
+}
+
+#[test]
+fn contextual_escape_hints_remain_complete_at_32_and_33_columns() {
+    for (status, expected) in [("running", "Esc stop"), ("idle", "Esc back")] {
+        let mut app = app();
+        load_snapshot(&mut app, status, false);
+        let control = app
+            .contextual_controls()
+            .into_iter()
+            .find(|control| {
+                if status == "running" {
+                    matches!(control, ContextControl::Interrupt { .. })
+                } else {
+                    matches!(control, ContextControl::Restart { .. })
+                }
+            })
+            .unwrap();
+        app.focus_context_control(control);
+        for columns in [32, 33] {
+            let view = screen(&mut app, columns, 20);
+            assert!(view.contains(expected), "{columns} columns:\n{view}");
+            assert!(app.pane().contextual_focus.active);
+        }
+    }
+}
+
+#[test]
+fn continue_receipt_for_a_previous_agent_keeps_the_current_feedback() {
+    let mut app = app();
+    app.issue(app.active.clone(), Action::Advance);
+    let command = super::saved_input(&app);
+    app.select(
+        crate::app::Address::new(app.active.session.clone(), "reviewer".into()),
+        true,
+        "Reviewer".into(),
+    );
+    app.confirmation("Current Agent feedback");
+    app.update(Update::Sent(
+        command.command_id.clone(),
+        Ok(super::queued_receipt(&command, 80)),
+    ));
+    assert_eq!("Current Agent feedback", app.notice.as_ref().unwrap().text);
 }
 
 fn pending_send(app: &mut crate::app::App) -> kuku_client::Command {

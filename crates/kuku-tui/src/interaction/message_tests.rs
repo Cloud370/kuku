@@ -285,6 +285,58 @@ fn tool_actions_expand_the_selected_call_and_open_saved_or_complete_inline_outpu
 }
 
 #[test]
+fn script_message_selects_retained_action_output_and_saves_its_reference() {
+    let mut app = connected_app();
+    app.pane_mut().transcript.apply(
+        serde_json::from_value(json!({
+            "id":78,"agent":"main","turn":7,"type":"tool_result",
+            "tool":"workspace_script","tool_call_id":"script-outputs","status":"ok",
+            "summary":"Script completed","model_content":"Bounded script summary","truncated":true,
+            "structured":{
+                "kind":"workspace_script_result","value":null,
+                "timed_out":false,"cleanup_incomplete":false,"not_dispatched":0,"actions":[
+                    {"id":"first","tool":"finish_output","status":"ok","summary":"First output","truncated":false,
+                     "result":{"output_ref":{"id":"first-output","offset":0,"bytes":11}}},
+                    {"id":"second","tool":"finish_output","status":"ok","summary":"Second output","truncated":false,
+                     "result":{"output_ref":{"id":"second-output","offset":0,"bytes":12}}},
+                    {"id":"same-output","tool":"finish_output","status":"ok","summary":"Second output repeated","truncated":false,
+                     "result":{"output_ref":{"id":"second-output","offset":0,"bytes":12}}}
+                ]
+            }
+        }))
+        .unwrap(),
+        None,
+    );
+    app.paste("preserved draft");
+    open_message_actions(
+        &mut app,
+        MessageId::Tool {
+            turn: Some(7),
+            call_id: "script-outputs".into(),
+        },
+    );
+    choose_message_action(&mut app, MessageAction::FullOutput);
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+        if matches!(picker.kind, PickerKind::Tools) && picker.visible_choices().len() == 2));
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(&app.modal, Some(Modal::Output(viewer))
+        if viewer.tool.output_id.as_deref() == Some("second-output")));
+    assert!(app.effects.iter().any(|effect| matches!(effect,
+        Job::Output(target, _, id, 0) if target == &app.selection() && id == "second-output")));
+    press(&mut app, KeyCode::Char('s'));
+    app.paste("script-result");
+    press(&mut app, KeyCode::Enter);
+    assert!(
+        matches!(app.effects.last(), Some(Job::SaveValue(target, save))
+        if target == &app.selection()
+            && save.name == "script-result"
+            && save.source == kuku_client::NamedValueSource::Output("second-output".into()))
+    );
+    assert_eq!("preserved draft", app.pane().draft.text());
+}
+
+#[test]
 fn remediation_expand_opens_a_nonfirst_tool_in_a_collapsed_group() {
     let mut app = connected_app();
     for event in [

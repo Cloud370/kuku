@@ -138,6 +138,7 @@ fn event_details(payload: &EventPayload, verbose: bool) -> String {
         } => {
             let path_or_cmd = args
                 .get("path")
+                .or_else(|| args.get("program"))
                 .or_else(|| args.get("command"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");

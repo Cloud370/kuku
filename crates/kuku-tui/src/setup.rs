@@ -1,10 +1,22 @@
 mod config;
+mod repair;
+mod repair_backend;
 mod state;
 mod ui;
 
 use std::io::{self, IsTerminal};
 
 use kuku_client::ConnectionOptions;
+
+pub(crate) use repair::{CredentialRepair, CredentialRepairAction};
+pub(crate) use repair_backend::{
+    apply as apply_credential_repair, prepare as prepare_credential_repair,
+    save as save_credential_repair,
+};
+pub(crate) use repair_backend::{
+    CredentialRepairApplied, CredentialRepairPlan, CredentialRepairRequest,
+    PreparedCredentialRepair, SavedCredentialRepair,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SetupMode {

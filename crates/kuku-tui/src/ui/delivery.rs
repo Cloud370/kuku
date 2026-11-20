@@ -48,10 +48,7 @@ pub(super) fn lines(app: &App, width: usize, limit: u16) -> DeliveryView {
         .into_iter()
         .find(|control| matches!(control, ContextControl::PendingRecovery { .. }));
     if rows.is_empty() {
-        let stale = selected_id.is_some_and(|id| {
-            !app.queued_for_edit()
-                .any(|entry| entry.receipt.command_id == id)
-        });
+        let stale = selected_id.is_some_and(|id| !app.queue_input_available(id));
         let (line, recovery_range) = if let Some(control) = recovery.as_ref() {
             recovery_title("Unconfirmed send", width, app, control)
         } else {
@@ -70,11 +67,8 @@ pub(super) fn lines(app: &App, width: usize, limit: u16) -> DeliveryView {
             recovery_range,
         };
     }
-    let stale_without_row = selected_id.is_some_and(|id| {
-        !app.queued_for_edit()
-            .any(|entry| entry.receipt.command_id == id)
-            && !rows.iter().any(|row| row.id == id)
-    });
+    let stale_without_row = selected_id
+        .is_some_and(|id| !app.queue_input_available(id) && !rows.iter().any(|row| row.id == id));
     if limit == 1 {
         if stale_without_row {
             return DeliveryView {
@@ -90,14 +84,8 @@ pub(super) fn lines(app: &App, width: usize, limit: u16) -> DeliveryView {
             .and_then(|id| rows.iter().position(|row| row.id == id))
             .unwrap_or(rows.len() - 1);
         let selected = Some(rows[index].id.as_str()) == selected_id;
-        let stale = selected
-            && !app
-                .queued_for_edit()
-                .any(|entry| entry.receipt.command_id == rows[index].id);
-        let hits = if app
-            .queued_for_edit()
-            .any(|entry| entry.receipt.command_id == rows[index].id)
-        {
+        let stale = selected && !app.queue_input_available(&rows[index].id);
+        let hits = if app.queue_input_available(&rows[index].id) {
             vec![(0..1, rows[index].id.clone())]
         } else {
             Vec::new()
@@ -127,7 +115,7 @@ pub(super) fn lines(app: &App, width: usize, limit: u16) -> DeliveryView {
             rows.len()
         ));
     }
-    if app.queued_for_edit().next().is_some() {
+    if app.has_queued_input() {
         title.push_str(&format!(
             " · {} select · Enter edit · Del withdraw",
             Shortcut::UP.label
@@ -142,16 +130,10 @@ pub(super) fn lines(app: &App, width: usize, limit: u16) -> DeliveryView {
     let per_message = ((limit - 1) / visible).min(MAX_MESSAGE_ROWS);
     for row in shown {
         let selected = Some(row.id.as_str()) == selected_id;
-        let stale = selected
-            && !app
-                .queued_for_edit()
-                .any(|entry| entry.receipt.command_id == row.id);
+        let stale = selected && !app.queue_input_available(&row.id);
         let first = lines.len();
         lines.extend(message(row, width, per_message, selected, stale));
-        if app
-            .queued_for_edit()
-            .any(|entry| entry.receipt.command_id == row.id)
-        {
+        if app.queue_input_available(&row.id) {
             hits.push((first as u16..lines.len() as u16, row.id.clone()));
         }
     }

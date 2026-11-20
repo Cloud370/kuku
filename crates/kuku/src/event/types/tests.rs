@@ -41,8 +41,8 @@ fn model_recovery_round_trips_prompt_provenance_and_zero_usage() {
             reason: ModelStopReason::Length,
             attempt: 1,
             max_attempts: 1,
-            failed_max_output_tokens: 32_768,
-            retry_max_output_tokens: 32_768,
+            failed_max_output_tokens: Some(32_768),
+            retry_max_output_tokens: Some(32_768),
             output_tokens_total: Some(0),
             discarded_tool_calls: 2,
             notice: "notice".to_string(),
@@ -54,6 +54,8 @@ fn model_recovery_round_trips_prompt_provenance_and_zero_usage() {
     let json = serde_json::to_value(&event).unwrap();
     assert_eq!(json["kind"], "model.recovery");
     assert_eq!(json["output_tokens_total"], 0);
+    assert_eq!(32_768, json["failed_max_output_tokens"]);
+    assert_eq!(32_768, json["retry_max_output_tokens"]);
     assert_eq!(event, serde_json::from_value(json).unwrap());
 }
 

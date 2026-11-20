@@ -446,7 +446,7 @@ impl OpenAiResponsesSseParser {
             };
         }
         let data: Value = serde_json::from_str(&frame.data).map_err(|_| {
-            super::prepare::invalid_request("provider emitted malformed JSON event")
+            super::prepare::invalid_response("provider emitted malformed JSON event")
         })?;
 
         let event_type = frame
@@ -740,9 +740,6 @@ impl OpenAiResponsesSseParser {
                 self.chunks.push(ProviderChunk::StreamEnd);
             }
             "response.failed" | "error" => {
-                if let Some(response) = data.get("response") {
-                    self.push_usage(response)?;
-                }
                 let error = if event_type == "error" {
                     Some(&data)
                 } else {
@@ -750,8 +747,12 @@ impl OpenAiResponsesSseParser {
                         .and_then(|response| response.get("error"))
                 };
                 let code = error
-                    .and_then(|value| value.get("code").or_else(|| value.get("type")))
-                    .and_then(Value::as_str)
+                    .and_then(|value| {
+                        super::error::select_provider_error_code(
+                            value.get("code").and_then(Value::as_str),
+                            value.get("type").and_then(Value::as_str),
+                        )
+                    })
                     .unwrap_or(event_type)
                     .to_string();
                 let message = error
@@ -761,6 +762,9 @@ impl OpenAiResponsesSseParser {
                     .to_string();
                 self.chunks
                     .push(ProviderChunk::ServerError { code, message });
+                if let Some(response) = data.get("response") {
+                    self.push_usage(response)?;
+                }
                 self.terminal_event = Some(if event_type == "response.failed" {
                     ResponseTerminalEvent::Failed
                 } else {
@@ -954,11 +958,12 @@ impl OpenAiResponsesSseParser {
         }
 
         Err(ProviderFailure {
-            kind: crate::provider::types::ProviderFailureKind::Transport,
+            kind: crate::provider::types::ProviderFailureKind::InvalidResponse,
             message: TRUNCATED_STREAM_MESSAGE.to_string(),
             status: None,
             provider_request_id: None,
-            retryable: true,
+            retry_after: None,
+            retryable: false,
         })
     }
 

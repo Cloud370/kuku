@@ -1,4 +1,4 @@
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::transcript::Transcript;
 
@@ -28,6 +28,79 @@ fn remediation_truncated_edit_preview_is_not_full_inline_output() {
 }
 
 #[test]
+fn command_invocations_display_literal_arguments_and_an_explicit_interpreter() {
+    assert_eq!(
+        r#"fixture ["","has space","雪&\"quote"]"#,
+        super::command::invocation(
+            &json!({"program":"fixture","args":["","has space","雪&\"quote"]})
+        ),
+    );
+    assert_eq!(
+        "cmd · echo first & echo second",
+        super::command::invocation(&json!({"shell":"cmd","command":"echo first & echo second"})),
+    );
+}
+
+#[test]
+fn script_card_reports_completed_effects_and_unknown_actions_from_host_facts() {
+    let mut transcript = Transcript::default();
+    transcript.apply(
+        serde_json::from_value(json!({
+            "id":1, "agent":"main", "turn":1, "type":"tool_result",
+            "tool_call_id":"script", "status":"ok", "summary":"Everything passed",
+            "model_content":"All effects were applied",
+            "structured":{
+                "kind":"workspace_script_result", "value":{"verified":true},
+                "timed_out":false,"cleanup_incomplete":true,"not_dispatched":1,
+                "actions":[
+                    {"id":"write","tool":"write_file","status":"ok","summary":"written","truncated":false,
+                     "result":{"kind":"file_write","path":"report.txt","canonical_path":"/workspace/report.txt",
+                               "commit_state":"committed","content_hash_before":null,"content_hash_after":"now","bytes_written":14}},
+                    {"id":"append","tool":"append_output","status":"unknown","summary":"","truncated":false,"result":null},
+                    {"id":"read","tool":"read_output","status":"ok","summary":"Output read","truncated":false,
+                     "result":{"pages":5}},
+                    {"id":"report","tool":"finish_output","status":"ok","summary":"report retained","truncated":false,
+                     "result":{"output_ref":{"id":"retained-report","offset":0,"bytes":14}}}
+                ]
+            }
+        })).unwrap(),
+        None,
+    );
+    let rendered = transcript
+        .project(100, 28)
+        .lines
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    for evidence in [
+        "Workspace script · partial",
+        "7/9 host actions completed",
+        "1 file change",
+        "Wrote report.txt",
+        "effects unknown",
+        "stopped before dispatch",
+    ] {
+        assert!(rendered.contains(evidence), "{evidence}\n{rendered}");
+    }
+    assert!(!rendered.contains("Everything passed"));
+    let message = transcript
+        .message_info(
+            &crate::transcript::MessageId::Tool {
+                turn: Some(1),
+                call_id: "script".into(),
+            },
+            "main",
+        )
+        .unwrap();
+    assert_eq!(2, message.outputs.len());
+    assert_eq!(
+        Some("retained-report"),
+        message.outputs[1].output_id.as_deref()
+    );
+}
+
+#[test]
 fn late_live_output_does_not_change_a_full_preview() {
     let mut tool = Tool::default();
     let first = json!({"type":"tool_output", "event":{"stdout":"中".repeat(MAX_DETAIL_BYTES)}});
@@ -43,16 +116,21 @@ fn late_live_output_does_not_change_a_full_preview() {
 fn command_preview_keeps_stdout_and_warnings_without_the_model_output_reference() {
     let mut transcript = Transcript::default();
     let marker = "Output: saved-run (42 captured bytes; read by merged byte offset).";
-    let warning = "Capture quota reached; further bytes were drained and discarded.";
-    let raw = format!(
-        "stdout:\nOutput: from the process\r\n系统\r\n64-bit\r\nstderr:\ntry fewer inputs\n\n\n{marker} {warning}"
-    );
+    let warning = "Capture truncated at the byte limit";
+    let preview =
+        "stdout:\nOutput: from the process\r\n系统\r\n64-bit\r\nstderr:\ntry fewer inputs\n";
+    let raw = format!("{preview}\n\n{marker} An unrelated model-facing note.");
+    let mut facts = command_facts("check", "saved-run", 42, preview);
+    facts["termination"] = json!("timed_out");
+    facts["exit_code"] = Value::Null;
+    facts["quota_truncated"] = json!(true);
+    facts["capture_complete"] = json!(false);
     transcript.apply(
         serde_json::from_value(json!({
             "id": 1, "agent": "main", "turn": 1, "type": "tool_result", "tool": "run_command",
             "tool_call_id": "cmd", "status": "error", "summary": "command timed out; output truncated",
             "model_content": raw,
-            "structured": {"kind": "command_result", "command": "check", "output_ref": {"id": "saved-run", "bytes": 42}}
+            "structured": facts
         })).unwrap(),
         None,
     );
@@ -66,14 +144,17 @@ fn command_preview_keeps_stdout_and_warnings_without_the_model_output_reference(
         .join("\n");
     assert!(
         rendered.contains("╭─ Run command")
-            && rendered.contains("╰─ error")
+            && rendered.contains("╰─ timed out")
             && !rendered.contains("╭─ check")
     );
     assert!(rendered.contains("command timed out; output truncated"));
     assert!(rendered.contains("stdout:\nOutput: from the process"));
-    assert!(rendered.contains(&format!(
-        "stderr:\ntry fewer inputs\n{warning}\nSaved output"
-    )));
+    assert!(
+        rendered.contains(&format!(
+            "stderr:\ntry fewer inputs\nSaved output\n{warning}"
+        )),
+        "{rendered}"
+    );
     assert!(rendered.contains("系统\n") && rendered.contains("64-bit"));
     assert!(!rendered.contains('␍'));
     assert!(!rendered.contains(marker));
@@ -272,13 +353,13 @@ fn short_command_results_show_stdout_without_capture_metadata_or_a_trailing_carr
     let mut transcript = Transcript::default();
     transcript.apply(serde_json::from_value(json!({
         "id":0,"agent":"main","turn":1,"type":"tool_call","tool":"run_command","tool_call_id":"cmd",
-        "args":{"command":"check-file","brief":"Verify file removal"}
+        "args":{"program":"check-file","args":[],"cwd":".","timeout":5,"brief":"Verify file removal"}
     })).unwrap(),None);
     let raw = "stdout:\nGONE\r\n\n\nOutput: saved (6 captured bytes; read by merged byte offset).";
     transcript.apply(serde_json::from_value(json!({
         "id":1,"agent":"main","turn":1,"type":"tool_result","tool":"run_command","tool_call_id":"cmd",
         "status":"ok","summary":"command exited 0 in 180ms, stdout 1 lines, stderr 0 lines","model_content":raw,
-        "structured":{"kind":"command_result","command":"check-file","exit_code":0,"output_ref":{"id":"saved","bytes":6}}
+        "structured":command_facts("check-file","saved",6,"GONE\r\n")
     })).unwrap(),None);
     let view = transcript.project(80, 16);
     let screen = view
@@ -309,4 +390,39 @@ fn short_command_results_show_stdout_without_capture_metadata_or_a_trailing_carr
         !screen.contains("stdout") && !screen.contains("Saved output") && !screen.contains('␍')
     );
     assert_eq!(transcript.tools()[0].details, raw);
+}
+
+fn command_facts(program: &str, id: &str, bytes: u64, preview: &str) -> Value {
+    json!({
+        "kind":"command_result",
+        "invocation":{"mode":"program","program":program,"args":[]},
+        "cwd":"/workspace",
+        "stdin":"null",
+        "termination":"exited",
+        "started":true,
+        "exit_code":0,
+        "signal":null,
+        "start_error":null,
+        "duration_ms":180,
+        "stdout_lines":1,
+        "stderr_lines":0,
+        "stdout_bytes":bytes,
+        "stderr_bytes":0,
+        "timed_out":false,
+        "cancelled":false,
+        "output_id":id,
+        "output_ref":{"id":id,"offset":0,"bytes":bytes},
+        "capture_complete":true,
+        "quota_truncated":false,
+        "cleanup_incomplete":false,
+        "output_filtered":false,
+        "preview_truncated":false,
+        "lossy_utf8":false,
+        "dropped_events":0,
+        "summary_lines":[],
+        "reported_tests":[],
+        "side_effects_observed":false,
+        "output_preview":preview,
+        "output_preview_truncated":false
+    })
 }

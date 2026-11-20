@@ -73,6 +73,10 @@ kuku events <session-id> --agent review
 - 使用 `--after <id> --limit <n> --json` 读取有界持久页，默认上限为 100 条。
 - Session 位于其他位置时，检查命令接受 `--workspace` 和 `--data-dir`。
 
+## 保存和复用值
+
+要在首次模型请求前保存长文本，可在终端打开 `/save`，粘贴后为文本命名。要保留命令日志，可用 `/tools` 打开其捕获，在查看器中按 S。使用 `/resume` 重开 Session 后，可用 `/values` 读取保存值，或将保存的引用附到下一次输入。见[终端命令](../reference/cli.md#终端界面)。
+
 ## 删除 Session
 
 ```bash

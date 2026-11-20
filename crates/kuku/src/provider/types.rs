@@ -1,4 +1,5 @@
 use std::fmt;
+use std::path::PathBuf;
 
 use crate::config::{ApiKey, ProviderOptions, ProviderProfile};
 use crate::context::CanonicalMessage;
@@ -78,7 +79,7 @@ pub(crate) struct ResolvedProvider {
     pub(crate) base_url: String,
     pub(crate) api_key: SecretString,
     pub(crate) max_context_tokens: u32,
-    pub(crate) max_output_tokens: u32,
+    pub(crate) max_output_tokens: Option<u32>,
     pub(crate) think_level: crate::config::ThinkLevel,
     pub(crate) thinking: crate::config::ResolvedThinking,
     pub(crate) options: ProviderOptions,
@@ -95,7 +96,7 @@ impl Default for ResolvedProvider {
             base_url: "http://localhost".into(),
             api_key: SecretString::new(""),
             max_context_tokens: 200_000,
-            max_output_tokens: 4096,
+            max_output_tokens: None,
             think_level: crate::config::ThinkLevel::Off,
             thinking: Default::default(),
             options: Default::default(),
@@ -118,7 +119,7 @@ pub struct ProviderSettings {
     pub service_tier: Option<String>,
 }
 
-/// Native settings declared for the configured endpoint and model.
+/// Capabilities declared for the configured endpoint and model.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ProviderCapabilities {
     /// Endpoint family that interprets these settings.
@@ -134,6 +135,7 @@ pub(crate) struct ProviderCorrelation {
     pub(crate) session_id: String,
     pub(crate) agent_address: String,
     pub(crate) connection_name: String,
+    pub(crate) workspace: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -211,13 +213,60 @@ pub(crate) struct ProviderToolCall {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderFailureKind {
     Authentication,
+    PermissionDenied,
+    QuotaExhausted,
     RateLimited,
+    Timeout,
     ContextTooLarge,
     InvalidRequest,
+    InvalidResponse,
     ProviderUnavailable,
     Transport,
     Internal,
     Unknown,
+}
+
+impl ProviderFailureKind {
+    pub(crate) fn as_event_kind(self) -> &'static str {
+        match self {
+            Self::Authentication => "authentication",
+            Self::PermissionDenied => "permission_denied",
+            Self::QuotaExhausted => "quota_exhausted",
+            Self::ContextTooLarge => "context_too_large",
+            Self::InvalidRequest => "invalid_request",
+            Self::RateLimited => "rate_limited",
+            Self::Timeout => "timeout",
+            Self::ProviderUnavailable => "provider_unavailable",
+            Self::Transport => "transport",
+            Self::Internal => "internal",
+            Self::Unknown => "unknown",
+            Self::InvalidResponse => "invalid_response",
+        }
+    }
+
+    pub(crate) fn is_retryable(self) -> bool {
+        matches!(
+            self,
+            Self::RateLimited | Self::Timeout | Self::ProviderUnavailable | Self::Transport
+        )
+    }
+
+    pub(crate) fn safe_retry_message(self) -> &'static str {
+        match self {
+            Self::Authentication => "provider authentication failed; check configured credentials",
+            Self::PermissionDenied => "provider access denied; check provider permissions",
+            Self::QuotaExhausted => "provider quota exhausted; check billing or quota",
+            Self::RateLimited => "provider rate limited",
+            Self::Timeout => "provider request timed out",
+            Self::ContextTooLarge => "provider context limit exceeded; reduce request context",
+            Self::InvalidRequest => "provider rejected the request; check request parameters",
+            Self::InvalidResponse => "provider returned an invalid response",
+            Self::ProviderUnavailable => "provider unavailable",
+            Self::Transport => "provider transport failed",
+            Self::Internal => "internal provider error",
+            Self::Unknown => "unknown provider error",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -226,5 +275,6 @@ pub(crate) struct ProviderFailure {
     pub(crate) message: String,
     pub(crate) status: Option<u16>,
     pub(crate) provider_request_id: Option<String>,
+    pub(crate) retry_after: Option<std::time::Duration>,
     pub(crate) retryable: bool,
 }

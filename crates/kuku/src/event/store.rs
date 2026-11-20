@@ -90,6 +90,8 @@ struct Writer {
     committed_len: u64,
     last_id: u64,
     poison: Option<String>,
+    #[cfg(test)]
+    fail_next_write: bool,
 }
 
 struct LockedJournal {
@@ -151,6 +153,8 @@ impl Writer {
             committed_len,
             last_id,
             poison: None,
+            #[cfg(test)]
+            fail_next_write: false,
         })
     }
 
@@ -166,12 +170,25 @@ impl Writer {
     }
 
     fn commit(&mut self, path: &Path, event_id: u64, record: &[u8]) -> Result<()> {
+        #[cfg(test)]
+        let injected_failure = if self.fail_next_write {
+            self.fail_next_write = false;
+            Some(io::Error::other("injected event journal write failure"))
+        } else {
+            None
+        };
+        #[cfg(not(test))]
+        let injected_failure: Option<io::Error> = None;
         let file = &mut self.journal.as_mut().unwrap().file;
-        if let Err(error) = file
-            .seek(SeekFrom::Start(self.committed_len))
-            .and_then(|_| file.write_all(record))
-            .and_then(|()| fs_sync::sync_file(file))
-        {
+        let result = injected_failure.map_or_else(
+            || {
+                file.seek(SeekFrom::Start(self.committed_len))
+                    .and_then(|_| file.write_all(record))
+                    .and_then(|()| fs_sync::sync_file(file))
+            },
+            Err,
+        );
+        if let Err(error) = result {
             self.poison = Some(error.to_string());
             return Err(io::Error::new(
                 error.kind(),
@@ -199,6 +216,29 @@ impl Writer {
         let file = &mut self.journal.as_mut().unwrap().file;
         file.seek(SeekFrom::Start(0))?;
         read_all(file.take(self.committed_len), path)
+    }
+
+    #[cfg(feature = "test_support")]
+    fn committed_bytes(&mut self, path: &Path) -> Result<Vec<u8>> {
+        self.ensure_healthy(path)?;
+        let file = &mut self.journal.as_mut().unwrap().file;
+        let position = file.stream_position()?;
+        let result = (|| -> io::Result<Vec<u8>> {
+            file.seek(SeekFrom::Start(0))?;
+            let mut bytes = Vec::new();
+            (&mut *file)
+                .take(self.committed_len)
+                .read_to_end(&mut bytes)?;
+            if bytes.len() as u64 != self.committed_len {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "committed journal prefix was truncated",
+                ));
+            }
+            Ok(bytes)
+        })();
+        file.seek(SeekFrom::Start(position))?;
+        Ok(result?)
     }
 
     fn read_after(&mut self, path: &Path, after: u64, limit: usize) -> Result<Vec<StoredEvent>> {
@@ -315,6 +355,11 @@ impl EventStore {
         Ok(event)
     }
 
+    #[cfg(test)]
+    pub(crate) fn fail_next_write_for_test(&self) {
+        self.inner.writer.lock().unwrap().fail_next_write = true;
+    }
+
     /// Read committed events after an ID, capped at 256 records and a 1 MiB page target.
     pub fn read_after(&self, after: u64, limit: usize) -> Result<Vec<StoredEvent>> {
         self.inner
@@ -401,6 +446,21 @@ impl EventStore {
         let _file_lock = acquire_file_lock(&path)?;
         let journal = LockedJournal::reader(&path)?;
         read_all(&journal.file, &path)
+    }
+
+    #[cfg(feature = "test_support")]
+    pub(crate) fn read_active_journal_for_test(path: &Path) -> Result<Vec<u8>> {
+        let path = fs::canonicalize(path)?;
+        let stores = registry().lock().unwrap();
+        let inner = find_active_store(&stores, &path).ok_or_else(|| {
+            Error::InvalidArgument(format!(
+                "event store {} has no active writer",
+                path.display()
+            ))
+        })?;
+        drop(stores);
+        let mut writer = inner.writer.lock().unwrap();
+        writer.committed_bytes(&path)
     }
 
     pub(crate) fn visit(&self, visit: impl FnMut(StoredEvent) -> Result<()>) -> Result<u64> {

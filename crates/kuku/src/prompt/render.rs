@@ -1,4 +1,7 @@
+use regex::Regex;
+
 use crate::error::{Error, Result};
+use crate::prompt::PromptCatalog;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProjectContextInput {
@@ -34,6 +37,50 @@ pub(crate) fn render_project_context(
     );
     rendered = rendered.replace("{{model_tiers_rendered}}", &input.model_tiers_rendered);
     Ok(rendered)
+}
+
+pub(crate) fn render_runtime_date(catalog: &PromptCatalog, current_date: &str) -> Result<String> {
+    let builtin =
+        (!catalog.runtime.contains_key("current-date")).then(crate::prompt::builtin_prompt_catalog);
+    let template = catalog
+        .runtime
+        .get("current-date")
+        .or_else(|| {
+            builtin
+                .as_ref()
+                .and_then(|catalog| catalog.runtime.get("current-date"))
+        })
+        .ok_or_else(|| Error::PromptRender("missing current-date runtime template".into()))?;
+    validate_placeholders(&template.text, &["current_date"])?;
+    Ok(template.text.replace("{{current_date}}", current_date))
+}
+
+pub(crate) fn project_policy_has_date(text: &str, template: &str, current_date: &str) -> bool {
+    if !template.contains("{{current_date}}") {
+        return false;
+    }
+    let mut pattern = String::from(r"\A");
+    let mut rest = template;
+    while let Some((literal, placeholder)) = rest.split_once("{{") {
+        pattern.push_str(&regex::escape(literal));
+        let Some((name, tail)) = placeholder.split_once("}}") else {
+            return false;
+        };
+        match name {
+            "current_date" => pattern.push_str(&regex::escape(current_date)),
+            "workspace_root"
+            | "platform"
+            | "project_instructions_rendered"
+            | "model_tiers_rendered" => {
+                pattern.push_str("(?s:.*?)");
+            }
+            _ => return false,
+        }
+        rest = tail;
+    }
+    pattern.push_str(&regex::escape(rest));
+    pattern.push_str(r"\z");
+    Regex::new(&pattern).is_ok_and(|pattern| pattern.is_match(text))
 }
 
 fn validate_placeholders(template: &str, known: &[&str]) -> Result<()> {
@@ -85,5 +132,49 @@ mod tests {
         };
         let error = render_project_context("{{missing_key}}", &input).unwrap_err();
         assert!(error.to_string().contains("missing_key"));
+    }
+
+    #[test]
+    fn renders_current_date_from_the_runtime_asset() {
+        let rendered =
+            render_runtime_date(&crate::prompt::builtin_prompt_catalog(), "2026-05-18").unwrap();
+        assert!(rendered.contains("Current date: 2026-05-18"));
+        assert!(rendered.starts_with("<kuku_runtime_date>"));
+    }
+
+    #[test]
+    fn rejects_unknown_runtime_date_placeholders() {
+        let mut catalog = crate::prompt::builtin_prompt_catalog();
+        catalog.runtime.get_mut("current-date").unwrap().text = "{{timezone}}".into();
+
+        let error = render_runtime_date(&catalog, "2026-05-18").unwrap_err();
+
+        assert!(error.to_string().contains("timezone"));
+    }
+
+    #[test]
+    fn project_date_matches_the_rendered_template_not_incidental_dates() {
+        let template =
+            "Project policy\n- Date: {{current_date}}\n{{project_instructions_rendered}}";
+        assert!(project_policy_has_date(
+            "Project policy\n- Date: 2026-05-19\nfirst note\nsecond note",
+            template,
+            "2026-05-19"
+        ));
+        for text in [
+            "Project policy\n- Date: 2026-05-18\nnotes dated 2026-05-19",
+            "memory recorded on 2026-05-19",
+            "Project policy\n- Date: 2026-05-19",
+            "- Date: 2026-05-19",
+            "",
+        ] {
+            assert!(!project_policy_has_date(text, template, "2026-05-19"));
+        }
+        assert!(!project_policy_has_date("2026-05-19", "", "2026-05-19"));
+        assert!(!project_policy_has_date(
+            "2026-05-19",
+            "{{broken {{current_date}}",
+            "2026-05-19"
+        ));
     }
 }

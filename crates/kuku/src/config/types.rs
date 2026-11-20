@@ -271,7 +271,8 @@ pub struct TierConfig {
     pub reasoning_effort: Option<String>,
     pub service_tier: Option<String>,
     pub context_window: u32,
-    pub max_output_tokens: u32,
+    /// Optional ceiling for one model response.
+    pub max_output_tokens: Option<u32>,
     pub purpose: String,
 }
 
@@ -418,7 +419,9 @@ impl Config {
             out.push_str(&format!("model = \"{}\"\n", tier.model));
             out.push_str(&format!("think = \"{}\"\n", tier.think.as_str()));
             out.push_str(&format!("context_window = {}\n", tier.context_window));
-            out.push_str(&format!("max_output_tokens = {}\n", tier.max_output_tokens));
+            if let Some(max_output_tokens) = tier.max_output_tokens {
+                out.push_str(&format!("max_output_tokens = {max_output_tokens}\n"));
+            }
             if !tier.purpose.is_empty() && tier.purpose != *name {
                 out.push_str(&format!("purpose = \"{}\"\n", tier.purpose));
             }

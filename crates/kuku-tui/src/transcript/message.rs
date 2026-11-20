@@ -66,6 +66,7 @@ pub(super) fn render_assistant_source(text: &str, width: usize, interrupted: boo
     } else {
         ("Assistant · source", "Source", MUTED)
     };
+    let inset = super::body_inset(width);
     render_record(
         if width >= title.width() {
             title
@@ -75,7 +76,7 @@ pub(super) fn render_assistant_source(text: &str, width: usize, interrupted: boo
         color,
         render_literal(text, Style::default()),
         width,
-        0,
+        inset,
     )
 }
 

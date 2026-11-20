@@ -5,14 +5,14 @@ use std::time::{Duration, Instant};
 
 use kuku_client::{
     new_id, Action, AgentConfig, AgentStatus, Error, HistoryKind, HistoryPage, ModelSelection,
-    Snapshot, Target, UsageTotals,
+    OutputReference, Snapshot, Target, UsageTotals,
 };
 use ratatui::layout::Rect;
 
 use crate::config::StatusLineSettings;
 use crate::contextual::{ContextFocus, ContextHit};
 use crate::editor::Editor;
-use crate::jobs::{Job, Restarted, Selection, Update};
+use crate::jobs::{job_status_label, Job, Restarted, Selection, Update};
 use crate::menu::{Picker, Prompt};
 use crate::output::OutputViewer;
 use crate::selection::TextSelection;
@@ -22,6 +22,8 @@ use model_default::PendingDefaultSave;
 
 mod activity;
 pub(crate) mod agents;
+mod auth_repair;
+mod background_jobs;
 mod contextual;
 mod delivery;
 mod history;
@@ -32,12 +34,14 @@ mod pending;
 mod reading;
 mod rewind;
 mod timing;
+mod values;
 
 pub(crate) use activity::{Activity, ServiceStatus, SubmissionStatus};
 use activity::{ExecutionProgress, Watch};
 use agents::AgentActivities;
-use delivery::Deliveries;
-pub(crate) use delivery::DeliveryRow;
+pub(crate) use background_jobs::JobCommand;
+use delivery::{Deliveries, PendingQueueAction};
+pub(crate) use delivery::{DeliveryRow, QueueAction};
 use navigation::AgentNavigation;
 pub(crate) use notice::Notice;
 pub(crate) use pending::{PendingItem, PendingStage};
@@ -120,6 +124,8 @@ pub(crate) struct Pane {
     pub(crate) model_problem: Option<String>,
     pub(crate) opening: bool,
     pub(crate) sending: bool,
+    pub(crate) value_attachments: Vec<(String, OutputReference)>,
+    pub(crate) value_saving: bool,
     creation_rejected: bool,
     stopping: Option<u64>,
     watch: Watch,
@@ -305,6 +311,7 @@ pub(crate) struct App {
     pub(crate) workspace: PathBuf,
     pub(crate) endpoint: Option<String>,
     pub(crate) remote: bool,
+    pub(crate) credential_repair: Option<Box<crate::setup::CredentialRepair>>,
     pub(crate) connection_problem: Option<String>,
     pub(crate) connecting: bool,
     pub(crate) restarting: bool,
@@ -335,6 +342,7 @@ pub(crate) struct App {
     model_version: u64,
     pending_model_default: Option<PendingDefaultSave>,
     saving_model_default: Option<(u64, Selection)>,
+    pending_queue_action: Option<PendingQueueAction>,
     checking: VecDeque<String>,
     outstanding_checks: usize,
     quit_after_save: bool,
@@ -389,11 +397,13 @@ impl App {
             modal_info_rows: 4,
             quit: false,
             effects: vec![Job::Connect],
+            credential_repair: None,
             generation: 0,
             next_modal: 0,
             model_version: 0,
             pending_model_default: None,
             saving_model_default: None,
+            pending_queue_action: None,
             checking: VecDeque::new(),
             outstanding_checks: 0,
             quit_after_save: false,
@@ -478,6 +488,7 @@ impl App {
             .pending
             .values()
             .any(|item| matches!(item.stage, PendingStage::Saving))
+            || self.panes.values().any(|pane| pane.value_saving)
         {
             self.quit_after_save = true;
             self.message("Saving pending input before leaving…");
@@ -532,8 +543,14 @@ impl App {
             Update::Connected {
                 endpoint,
                 workspace,
-            } => self.connected(endpoint, workspace),
-            Update::ConnectFailed(error) => self.connect_failed(error),
+            } => {
+                self.connected(endpoint, workspace);
+                self.credential_repair_connected();
+            }
+            Update::ConnectFailed(error) => {
+                self.connect_failed(error);
+                self.credential_repair_connect_failed();
+            }
             Update::Loaded(selection, snapshot, page) if selection == self.selection() => {
                 self.loaded(snapshot, page)
             }
@@ -559,6 +576,12 @@ impl App {
             Update::History(selection, request, result) => {
                 self.apply_history_update(selection, request, result);
             }
+            Update::RewindHistory(selection, ticket, before, result) => {
+                self.apply_rewind_history_update(selection, ticket, before, result);
+            }
+            Update::RewindSource(selection, ticket, event_id, result) => {
+                self.apply_rewind_source_update(selection, ticket, event_id, result);
+            }
             Update::RewindGroupHistory(selection, request, result) => {
                 self.apply_rewind_group_history_update(selection, request, result);
             }
@@ -575,6 +598,12 @@ impl App {
                     }
                 }
             }
+            Update::PreparedCredentialRepair(ticket, selection, result) => {
+                self.credential_repair_prepared(ticket, selection, result)
+            }
+            Update::SavedCredentialRepair(ticket, selection, result) => {
+                self.credential_repair_saved(ticket, selection, result)
+            }
             Update::PreparedDefault(ticket, selection, result) => {
                 self.prepared_model_default(ticket, selection, result)
             }
@@ -582,6 +611,17 @@ impl App {
                 self.saved_model_default(ticket, selection, result)
             }
             Update::Saved(command, result) => self.saved(command, result),
+            Update::ValueSaved(selection, text, result) => {
+                self.value_saved(selection, text, result)
+            }
+            Update::BackgroundJobCancelled(selection, result) if selection == self.selection() => {
+                match result {
+                    Ok(job) => {
+                        self.confirmation(format!("{} · {}", job.id, job_status_label(job.status)))
+                    }
+                    Err(error) => self.problem(format!("Cancel background job · {error}")),
+                }
+            }
             Update::Sent(id, result) => match result {
                 Ok(ack) => self.acknowledged(&id, ack),
                 Err(error) => self.command_failed(&id, error, false),
@@ -625,10 +665,12 @@ impl App {
             | Update::WatchFailed(..)
             | Update::Observation(..)
             | Update::Refreshed(..)
+            | Update::BackgroundJobCancelled(..)
             | Update::Output(..) => {}
         }
         self.sync_pending_picker();
         self.sync_agent_picker();
+        self.resume_queue_action();
     }
 
     fn target(&self, address: &Address) -> Target {

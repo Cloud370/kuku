@@ -10,6 +10,7 @@ use crate::transcript::ToolView;
 pub(crate) const OUTPUT_PAGE_BYTES: usize = 4 * 1024;
 const MAX_PREVIOUS_OFFSETS: usize = 128;
 const RETAINED_INVOCATION_ROWS: usize = 2;
+const RETAINED_EVIDENCE_ROWS: usize = 8;
 
 #[derive(Debug)]
 pub(crate) struct OutputViewer {
@@ -110,6 +111,14 @@ impl OutputViewer {
         if !self.tool.summary.is_empty() {
             lines.extend(render_literal(&self.tool.summary, Style::default()));
         }
+        if first_page && !self.tool.evidence.is_empty() {
+            let evidence = render_literal(&self.tool.evidence, Style::default().fg(MUTED));
+            if self.tool.output_id.is_some() {
+                lines.extend(wrap_bounded(evidence, width, RETAINED_EVIDENCE_ROWS));
+            } else {
+                lines.extend(evidence);
+            }
+        }
         if let Some(chunk) = &self.chunk {
             for segment in &chunk.segments {
                 let color = match segment.stream {
@@ -144,9 +153,14 @@ impl OutputViewer {
             return Line::styled(crate::text::single_line(error), Style::default().fg(ERROR));
         }
         let Some(chunk) = &self.chunk else {
+            let name = if self.tool.output_id.is_some() {
+                "S Name · "
+            } else {
+                ""
+            };
             return Line::styled(
                 format!(
-                    "{}/{} Scroll · {} Close",
+                    "{name}{}/{} Scroll · {} Close",
                     Shortcut::PAGE_UP.label,
                     Shortcut::PAGE_DOWN.label,
                     Shortcut::ESCAPE.label,
@@ -154,21 +168,25 @@ impl OutputViewer {
                 Style::default().fg(MUTED),
             );
         };
-        let state = if chunk.cleanup_incomplete {
-            " · cleanup incomplete"
-        } else if chunk.capture_truncated {
-            " · capture truncated"
+        let mut state = String::new();
+        if chunk.capture_truncated {
+            state.push_str(" · capture truncated");
+        }
+        if chunk.cleanup_incomplete {
+            state.push_str(" · cleanup incomplete");
         } else if !chunk.complete {
-            " · capturing"
-        } else {
-            ""
-        };
+            state.push_str(" · capturing");
+        }
+        if chunk.lossy_utf8 {
+            state.push_str(" · decoding replaced bytes");
+        }
         Line::styled(
             format!(
-                "{}–{} / {} bytes{state} · {}/{} · {} Refresh · {}",
+                "{}–{} / {} bytes{state} · {} Name · {}/{} · {} Refresh · {}",
                 chunk.offset,
                 chunk.next_offset,
                 chunk.total_bytes,
+                Shortcut::NAME_OUTPUT.label,
                 Shortcut::PAGE_UP.label,
                 Shortcut::PAGE_DOWN.label,
                 Shortcut::REFRESH_OUTPUT.label,
@@ -196,6 +214,7 @@ mod tests {
                 details: String::new(),
                 diff: String::new(),
                 output_id: Some("saved".into()),
+                evidence: String::new(),
                 inline_output_complete: false,
             },
         );

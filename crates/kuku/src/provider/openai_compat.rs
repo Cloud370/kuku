@@ -276,15 +276,16 @@ impl OpenAiCompatSseParser {
         }
 
         let data: Value = serde_json::from_str(data_str).map_err(|_| {
-            super::prepare::invalid_request("provider emitted malformed JSON event")
+            super::prepare::invalid_response("provider emitted malformed JSON event")
         })?;
 
         if let Some(err) = data.get("error") {
-            let code = err
-                .get("type")
-                .and_then(Value::as_str)
-                .unwrap_or("server_error")
-                .to_string();
+            let code = super::error::select_provider_error_code(
+                err.get("code").and_then(Value::as_str),
+                err.get("type").and_then(Value::as_str),
+            )
+            .unwrap_or("server_error")
+            .to_string();
             let message = err
                 .get("message")
                 .and_then(Value::as_str)
@@ -546,11 +547,12 @@ impl OpenAiCompatSseParser {
         }
 
         Err(ProviderFailure {
-            kind: crate::provider::types::ProviderFailureKind::Transport,
+            kind: crate::provider::types::ProviderFailureKind::InvalidResponse,
             message: TRUNCATED_STREAM_MESSAGE.to_string(),
             status: None,
             provider_request_id: None,
-            retryable: true,
+            retry_after: None,
+            retryable: false,
         })
     }
 
@@ -770,9 +772,30 @@ mod tests {
     }
 
     #[test]
-    fn usage_on_completion_chunk_is_emitted() {
+    fn feed_error_uses_code_only_and_prefers_permanent_type() {
+        for (frame, expected) in [
+            (
+                r#"data: {"error":{"code":"insufficient_quota","message":"quota"}}"#,
+                "insufficient_quota",
+            ),
+            (
+                r#"data: {"error":{"code":"rate_limit_exceeded","type":"insufficient_quota","message":"quota"}}"#,
+                "insufficient_quota",
+            ),
+        ] {
+            let mut parser = OpenAiCompatSseParser::new(false);
+            let chunks = parser.feed(frame).unwrap();
+            assert!(matches!(
+                chunks.as_slice(),
+                [ProviderChunk::ServerError { code, .. }] if code == expected
+            ));
+        }
+    }
+
+    #[test]
+    fn usage_on_completion_chunk_emits_cache_read_and_write_counts() {
         let mut parser = OpenAiCompatSseParser::new(false);
-        let frame = r#"data: {"id":"chatcmpl_usage","choices":[{"index":0,"delta":{"content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":88,"completion_tokens":18,"total_tokens":106,"prompt_tokens_details":{"cached_tokens":34}}}"#;
+        let frame = r#"data: {"id":"chatcmpl_usage","choices":[{"index":0,"delta":{"content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":88,"completion_tokens":18,"total_tokens":106,"prompt_tokens_details":{"cached_tokens":34,"cache_write_tokens":12}}}"#;
 
         let chunks = parser.feed(frame).unwrap();
 
@@ -782,7 +805,7 @@ mod tests {
                 input_tokens: Some(88),
                 output_tokens: Some(18),
                 cache_read_input_tokens: Some(34),
-                cache_creation_input_tokens: None
+                cache_creation_input_tokens: Some(12)
             }
         )));
     }
@@ -864,5 +887,11 @@ mod tests {
         assert!(!chunks
             .iter()
             .any(|chunk| matches!(chunk, ProviderChunk::StreamEnd)));
+        let failure = parser.finish().unwrap_err();
+        assert_eq!(
+            crate::provider::types::ProviderFailureKind::InvalidResponse,
+            failure.kind
+        );
+        assert!(!failure.retryable);
     }
 }

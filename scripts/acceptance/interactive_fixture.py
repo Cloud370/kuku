@@ -8,14 +8,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from itertools import count
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import queue
 import re
-import shlex
 import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from urllib.parse import quote, urlencode, urlsplit
@@ -28,6 +28,36 @@ TERMINAL_COLS = 140
 TOOL_BRIEF = "Run installed acceptance fixture"
 TOOL_OUTPUT = "fixture-tool-output-42"
 EXE = ".exe" if os.name == "nt" else ""
+
+
+def cleanup_path(path):
+    if not isinstance(path, PureWindowsPath):
+        return path
+    absolute = str(path)
+    if absolute.startswith("\\\\?\\"):
+        return absolute
+    if absolute.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + absolute[2:]
+    return "\\\\?\\" + absolute
+
+
+@contextlib.contextmanager
+def scratch_directory(base, report, *, prefix):
+    scratch = Path(tempfile.mkdtemp(prefix=prefix, dir=base)).resolve()
+    failed = False
+    try:
+        yield scratch
+    except BaseException:
+        failed = True
+        raise
+    finally:
+        try:
+            shutil.rmtree(cleanup_path(scratch))
+        except OSError as error:
+            report["scratch_cleanup_error"] = f"{error.__class__.__name__}: {error}"
+            report["scratch_path"] = str(scratch)
+            if not failed:
+                raise
 
 
 def eventually(description, probe, timeout=TIMEOUT):
@@ -181,8 +211,8 @@ class ProviderCall:
     def text(self, text, *, usage=None):
         self.reply([{"type": "text", "text": text}], usage)
 
-    def tool(self, name, call_id, **inputs):
-        self.reply([{"type": "tool_use", "id": call_id, "name": name, "input": inputs}])
+    def tool(self, tool_name, call_id, **inputs):
+        self.reply([{"type": "tool_use", "id": call_id, "name": tool_name, "input": inputs}])
 
     def fail(self):
         self.response.put_nowait(json_response({
@@ -527,6 +557,7 @@ class Terminal:
         prefix = line[:line.index(text)]
         column = len(prefix) + 1 + cell_offset
         self.press(f"\x1b[<0;{column};{row}M\x1b[<0;{column};{row}m")
+        return {"row": row, "column": column}
 
     def type(self, text):
         self.press(text)
@@ -542,7 +573,7 @@ class Terminal:
         self.expect(title)
         self.press("\r")
 
-    def expect(self, text, state=None, *, also=(), rows=None):
+    def expect(self, text, state=None, *, also=(), absent=(), rows=None):
         viewport = {}
         required = (text, *also) if state is None else (text, state, *also)
 
@@ -551,10 +582,11 @@ class Terminal:
             screen = viewport["screen"]
             if rows is not None and screen.count("\n") + 1 != rows:
                 return None
-            return viewport if all(item in screen for item in required) else None
+            return viewport if (all(item in screen for item in required)
+                                and not any(item in screen for item in absent)) else None
 
         try:
-            return eventually(f"terminal text {required!r} at {rows or 'any'} rows", contains_text)
+            return eventually(f"terminal text {required!r}, absent {absent!r}, at {rows or 'any'} rows", contains_text)
         except AssertionError as error:
             raise AssertionError(f"{error}\nLast terminal screen:\n{viewport.get('screen', '')}") from error
 
@@ -707,12 +739,11 @@ class InstalledClient:
         if executable is None:
             fixture = workspace / f"fixture-command{EXE}"
             shutil.copy2(self.bridge, fixture)
-            command = fixture.name if os.name == "nt" else f"./{fixture.name}"
+            program = f"./{fixture.name}"
         else:
-            assert os.name != "nt", "Use the workspace-local fixture executable on Windows"
-            command = shlex.quote(str(executable))
+            program = str(executable)
         self.tool_workspaces.append(workspace)
-        call.tool("run_command", call_id, command=f"{command} --gated-tool", timeout=95, brief=TOOL_BRIEF)
+        call.tool("run_command", call_id, program=program, args=["--gated-tool"], cwd=".", timeout=95, brief=TOOL_BRIEF)
         eventually("gated tool dispatch", lambda: (workspace / "tool-attempts.txt").exists())
 
     @staticmethod

@@ -19,7 +19,7 @@ def rendered_running_transcript(screen, height, markers):
     return (
         len(rows) == height
         and status_row >= 0
-        and "To main · Running tools" in rows[status_row]
+        and "To main · Running" in rows[status_row]
         and all(marker in screen for marker in markers)
     )
 
@@ -197,7 +197,7 @@ def event(name, **fields):
     return f"event: {name}\ndata: {body}\n\n".encode()
 
 
-def operate_on_assistant(terminal, screen, marker, action):
+def operate_on_message(terminal, screen, role, marker, action):
     terminal.click_text(screen, "Messages" if "Messages" in screen else "Msg")
     picker = terminal.expect("Active messages")["screen"]
     lines = picker.splitlines()
@@ -205,17 +205,23 @@ def operate_on_assistant(terminal, screen, marker, action):
     choices = lines[header + 1:]
     rows = [
         (index, line) for index, line in enumerate(choices)
-        if "Assistant" in line
-        and (marker in line or index + 1 < len(choices) and marker in choices[index + 1])
+        if role in line
+        and (not marker or marker in line or index + 1 < len(choices) and marker in choices[index + 1])
     ]
     assert len(rows) == 1, picker
-    row = rows[0][1]
-    assert "› Assistant" in row, picker
-    terminal.press("\r")
-    actions = terminal.expect("Selected · Assistant")["screen"]
-    assert marker in actions, actions
+    index, _ = rows[0]
+    column = terminal.cols // 2 + 1
+    row_number = header + index + 2
+    terminal.press(f"\x1b[<0;{column};{row_number}M\x1b[<0;{column};{row_number}m")
+    actions = terminal.expect(f"Selected · {role}")["screen"]
+    if marker:
+        assert marker in actions, actions
     assert action in actions, actions
     select_message_action(terminal, actions, action)
+
+
+def operate_on_assistant(terminal, screen, marker, action):
+    operate_on_message(terminal, screen, "Assistant", marker, action)
 
 
 def rendering_cases(binary, bridge, directory):
@@ -223,6 +229,7 @@ def rendering_cases(binary, bridge, directory):
         targeted_delegation(client)
         file_change_cards(client)
         markdown_inline_elements(client)
+        named_output_cards(client)
         if os.name == "nt":
             windows_diagnostic(client)
             for shell in ("powershell.exe", "pwsh.exe"):
@@ -271,7 +278,7 @@ def targeted_delegation(client):
         terminal.expect("Received the delegated document.", state="3 tools")
         for columns in (44, 100, 174):
             terminal.request("resize", cols=columns, rows=34)
-            def aligned():
+            def nested_borders():
                 screen = terminal.request("screen")["screen"]
                 rows = [next((r for r in screen.splitlines() if title in r and "╮" in r), "")
                         for title in ("╭─ Agent writer", "╭─ python")]
@@ -279,9 +286,15 @@ def targeted_delegation(client):
                     return False
                 agent, code = rows
                 gutter = 1 if columns < 72 else 2 if columns < 110 else 3
-                return all(row.index("╭") == gutter and row.index("╮") == columns - gutter - 1 for row in (agent, code))
+                transcript_width = columns - 2 * gutter
+                body_inset = 2
+                right_padding = 2 if transcript_width < 80 else 3
+                right_edge = columns - gutter - 1
+                return (agent.index("╭") == gutter and agent.index("╮") == right_edge
+                        and code.index("╭") == gutter + body_inset
+                        and code.index("╮") == right_edge - right_padding)
             try:
-                eventually(f"Agent and code borders align at {columns} columns", aligned)
+                eventually(f"Agent and nested code borders match layout at {columns} columns", nested_borders)
             except AssertionError as error:
                 raise AssertionError(terminal.request("screen")["screen"]) from error
             action = "Open →" if columns == 44 else "Open agent →"
@@ -361,12 +374,128 @@ def markdown_inline_elements(client):
         terminal.exit_cleanly()
 
 
+def named_output_cards(client):
+    workspace = client.workspace("work-named-output")
+    pasted = "Checks to retain\n第一行: status recorded"
+    log = "retained-screen-proof"
+    prompt = "Capture one replay diagnostic"
+    with client.terminal(workspace) as terminal:
+        terminal.request("resize", rows=42, cols=108)
+        terminal.expect("Ready")
+        terminal.press("/save\r")
+        terminal.expect("Save pasted text")
+        terminal.press(f"\x1b[200~{pasted}\x1b[201~")
+        terminal.expect("status recorded")
+        terminal.press("\r")
+        terminal.expect("Name saved value")
+        terminal.press("checks\r")
+        terminal.expect("Saved checks")
+        client.provider.assert_idle(0.2)
+
+        terminal.submit(prompt)
+        call = client.provider.next(prompt)
+        assert "status recorded" not in json.dumps(call.request)
+        shell = "cmd" if os.name == "nt" else "sh"
+        command = f"echo {log}&&exit /b 7" if os.name == "nt" else f"printf '%s\\n' {log}; exit 7"
+        call.tool("run_command", "capture-log", shell=shell, command=command, cwd=".", timeout=5,
+                  brief="Capture replay output")
+        after_command = client.provider.next("capture-log")
+        session = client.session(workspace)
+        query = urlencode({"workspace": workspace, "agent": "main"})
+        entries = client.request("GET", f"/sessions/{session}/history?{query}").as_json()["entries"]
+        result = next(entry["structured"] for entry in entries
+                      if entry["type"] == "tool_result" and entry["tool_call_id"] == "capture-log")
+        assert result["termination"] == "exited" and result["exit_code"] == 7, result
+        assert result["capture_complete"] and not result["output_preview_truncated"], result
+        reference = result["output_ref"]
+        page_range = f"0–{reference['bytes']} / {reference['bytes']} bytes"
+        after_command.tool(
+            "workspace_script", "summarize-log",
+            code=f"""const chunk = await workspace.read_output({{id: {json.dumps(reference['id'])}}});
+await workspace.write_file({{path: "summary.txt", content: chunk.result.segments[0].text}});
+await workspace.run_command({{shell: {json.dumps(shell)}, command: {json.dumps(command)}, cwd: ".", timeout: 5}});
+await workspace.run_command({{program: "kuku-deliberately-missing-fixture"}});""",
+        )
+        client.provider.next("summarize-log").text("Replay inspected.")
+        display = terminal.expect("Replay inspected.", also=(
+            "exit 7", "Workspace script · partial", "1 file change", "Wrote summary.txt", "program missing",
+        ))["screen"]
+        assert (workspace / "summary.txt").read_text(encoding="utf-8") == log + "\n"
+        operate_on_message(terminal, display, "Tool · run_command", None, "Full output")
+        terminal.expect(log, state="S Name", also=(page_range,))
+        terminal.press("\x1b")
+        display = terminal.expect("Replay inspected.")["screen"]
+        operate_on_message(terminal, display, "Tool · workspace_script", None, "Full output")
+        outputs = terminal.expect("Outputs for selected message")["screen"]
+        terminal.click_text(outputs, "Script action 3 · Run command")
+        terminal.expect(log, state="S Name", also=(page_range,))
+        entries = client.request("GET", f"/sessions/{session}/history?{query}").as_json()["entries"]
+        script_result = next(entry["structured"] for entry in entries
+                             if entry["type"] == "tool_result" and entry["tool_call_id"] == "summarize-log")
+        reference = script_result["actions"][2]["result"]["output_ref"]
+        assert reference["id"] != result["output_ref"]["id"], script_result
+        terminal.press("s")
+        terminal.expect("Name saved value")
+        terminal.press("baseline\r")
+        terminal.expect("Saved baseline")
+        terminal.exit_cleanly()
+
+    before = client.connection()["instance_id"]
+    client.cli(workspace, "server", "restart")
+    assert before != client.connection()["instance_id"]
+    values = client.request("GET", f"/sessions/{session}/values?{query}").as_json()["values"]
+    assert [(value["name"], value["kind"]) for value in values] == [
+        ("baseline", "output"), ("checks", "text"),
+    ], values
+    assert values[0]["reference"] == reference, values
+
+    with client.terminal(workspace) as terminal:
+        terminal.request("resize", rows=38, cols=105)
+        terminal.resume(prompt)
+        terminal.expect("Replay inspected.")
+        terminal.press("/values\r")
+        terminal.expect("baseline", state="Saved values", also=("checks",))
+        terminal.press("baseline\r")
+        terminal.expect("Attach to draft", also=("Read saved value",))
+        terminal.press("\x1b[B\r")
+        restored = terminal.expect(log, state="baseline", also=(page_range,))["screen"]
+        terminal.press("\x1b")
+        eventually("closing the saved output viewer", lambda: (
+            "Enter steer" in (screen := terminal.request("screen")["screen"])
+            and page_range not in screen and "S Name" not in screen
+        ))
+        terminal.press("/values\r")
+        terminal.expect("baseline", state="Saved values")
+        terminal.press("baseline\r")
+        terminal.expect("Attach to draft")
+        terminal.press("\r")
+        attached = terminal.expect("Attached · baseline")["screen"]
+        terminal.submit("Read the attached replay output")
+        call = client.provider.next("Read the attached replay output")
+        assert reference["id"] in json.dumps(call.request["messages"][-1]), call.request["messages"][-1]
+        call.tool("read_output", "read-baseline", id=reference["id"])
+        recalled = client.provider.next("read-baseline")
+        recalled.expect(log)
+        recalled.text("Verified the saved replay output.")
+        terminal.expect("Verified the saved replay output.", state="Finished")
+        terminal.exit_cleanly()
+    client.provider.assert_idle()
+    evidence = {
+        "session": session, "values": values, "command_exit": result["exit_code"],
+        "partial_script_screen": display, "reopened_output_screen": restored, "attached_screen": attached,
+    }
+    (client.directory / "named-output.json").write_text(
+        json.dumps(evidence, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    print("Named output round trip: " + json.dumps(evidence, ensure_ascii=False))
+
+
 def windows_diagnostic(client):
     import ctypes
 
     workspace = client.workspace("work-command-diagnostic")
     command = "dir /b kuku-absent-38c207b6.txt"
-    reference = subprocess.run(["cmd.exe", "/d", "/c", command], cwd=workspace, capture_output=True)
+    reference = subprocess.run(["cmd.exe", "/d", "/s", "/c", command], cwd=workspace, capture_output=True)
     assert reference.returncode == 1 and reference.stderr and not reference.stdout
     try:
         diagnostic = reference.stderr.decode("utf-8").strip()
@@ -377,8 +506,10 @@ def windows_diagnostic(client):
         prompt = "Check for a missing example."
         terminal.submit(prompt)
         request = client.provider.next(prompt)
-        assert "Windows cmd.exe /S /C" in json.dumps(request.request)
-        request.tool("run_command", "missing-example", command=command, timeout=5, brief="Check for missing example")
+        schema = next(tool["input_schema"] for tool in request.request["tools"] if tool["name"] == "run_command")
+        assert "cmd" in schema["properties"]["shell"]["enum"], schema
+        request.tool("run_command", "missing-example", shell="cmd", command=command, cwd=".",
+                     timeout=5, brief="Check for missing example")
         result = client.provider.next("missing-example")
         assert diagnostic in json.dumps(result.request, ensure_ascii=False)
         result.text("Check complete.")
@@ -405,15 +536,16 @@ def windows_command_encoding(client, shell):
         "[Console]::OpenStandardError().Write($bytes, 0, $bytes.Length)\n",
         encoding="utf-8-sig",
     )
-    command = f"{shell} -NoProfile -NonInteractive -ExecutionPolicy Bypass -File output.ps1"
-    reference = subprocess.run(command, cwd=workspace, capture_output=True,
+    args = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "output.ps1"]
+    reference = subprocess.run([shell, *args], cwd=workspace, capture_output=True,
                                creationflags=subprocess.CREATE_NO_WINDOW, check=True)
     stdout = reference.stdout.decode("oem").strip()
     stderr = reference.stderr.splitlines()[0].decode("oem").removeprefix("\x1b[31;1m").removesuffix("\x1b[0m")
     with client.terminal(workspace) as terminal:
         terminal.expect("Ready")
         terminal.submit("Check shell output")
-        client.provider.next().tool("run_command", "encoding", command=command, timeout=15, brief="Check shell output")
+        client.provider.next().tool("run_command", "encoding", program=shell, args=args, cwd=".",
+                                    timeout=15, brief="Check shell output")
         result = client.provider.next("encoding")
         content = json.dumps(result.request["messages"], ensure_ascii=False)
         assert all(line in content for line in (stdout, stderr, "utf8 中文")), content

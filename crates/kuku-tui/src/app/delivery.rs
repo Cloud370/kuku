@@ -5,14 +5,28 @@ use kuku_client::{
     Snapshot, Timing,
 };
 
+use crate::jobs::Selection;
 use crate::menu::PromptKind;
 use crate::text::cap;
 
-use super::{Address, App, Modal, PendingStage, SubmissionStatus};
+use super::{Address, App, KeyboardFocus, Modal, PendingStage, SnapshotRefresh, SubmissionStatus};
 
 const MAX_PREVIEW_BYTES: usize = 8 * 1024;
 const MAX_SETTLED: usize = 256;
 const MAX_TERMINAL_ROWS: usize = 3;
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum QueueAction {
+    Edit,
+    Withdraw,
+}
+
+pub(super) struct PendingQueueAction {
+    selection: Selection,
+    input_id: String,
+    draft_revision: u64,
+    action: QueueAction,
+}
 
 #[derive(Debug)]
 pub(crate) struct DeliveryRow {
@@ -256,6 +270,88 @@ pub(super) fn ordinary_input(entry: &QueuedInput) -> bool {
 }
 
 impl App {
+    pub(crate) fn queue_input_ids(&self) -> impl DoubleEndedIterator<Item = &str> {
+        self.pane()
+            .deliveries
+            .rows()
+            .iter()
+            .filter(|row| {
+                row.status == SubmissionStatus::Queued && self.queue_input_available(&row.id)
+            })
+            .map(|row| row.id.as_str())
+    }
+
+    pub(crate) fn queue_input_available(&self, id: &str) -> bool {
+        self.queued_for_edit()
+            .any(|entry| entry.receipt.command_id == id)
+            || self.pending_queue_receipt(id).is_some()
+    }
+
+    pub(crate) fn cancel_queue_action(&mut self) {
+        self.pending_queue_action = None;
+    }
+
+    pub(crate) fn request_queue_action(&mut self, id: String, action: QueueAction) {
+        self.pending_queue_action = None;
+        if self.queue_mutation_pending(&id) {
+            self.problem("A change to this queued input is already pending");
+            return;
+        }
+        if self
+            .queued_for_edit()
+            .any(|entry| entry.receipt.command_id == id)
+        {
+            match action {
+                QueueAction::Edit => self.edit_queued(id),
+                QueueAction::Withdraw => self.withdraw_queued(id),
+            }
+            return;
+        }
+        if let Some(receipt) = self.pending_queue_receipt(&id) {
+            self.pending_queue_action = Some(PendingQueueAction {
+                selection: self.selection(),
+                input_id: id,
+                draft_revision: self.pane().draft_revision,
+                action,
+            });
+            self.confirmation("Reading queued input…");
+            self.request_refresh(SnapshotRefresh::AfterCommit(receipt));
+        } else {
+            self.focus_composer();
+            self.pane_mut().selected_queue_input = None;
+            self.problem("Selected input is no longer queued");
+        }
+    }
+
+    pub(super) fn resume_queue_action(&mut self) {
+        let Some(pending) = self.pending_queue_action.take() else {
+            return;
+        };
+        if pending.selection != self.selection()
+            || pending.draft_revision != self.pane().draft_revision
+            || self.pane().keyboard_focus != KeyboardFocus::Queue
+            || self.pane().selected_queue_input.as_deref() != Some(pending.input_id.as_str())
+            || self.modal.is_some()
+            || !self.available()
+            || self.quit
+        {
+            return;
+        }
+        if self.pending_queue_receipt(&pending.input_id).is_some()
+            && !self
+                .queued_for_edit()
+                .any(|entry| entry.receipt.command_id == pending.input_id)
+        {
+            self.pending_queue_action = Some(pending);
+            return;
+        }
+        self.request_queue_action(pending.input_id, pending.action);
+    }
+
+    pub(crate) fn has_queued_input(&self) -> bool {
+        self.queue_input_ids().next().is_some()
+    }
+
     pub(crate) fn queued_for_edit(&self) -> impl Iterator<Item = &QueuedInput> {
         let pane = self.pane();
         pane.snapshot
@@ -382,5 +478,15 @@ impl App {
             SubmissionStatus::from_pending(&item.stage),
             replacement,
         );
+    }
+
+    fn pending_queue_receipt(&self, id: &str) -> Option<u64> {
+        let deliveries = &self.pane().deliveries;
+        deliveries
+            .rows()
+            .iter()
+            .find(|row| row.id == id && row.status == SubmissionStatus::Queued)?
+            .receipt
+            .filter(|receipt| *receipt > deliveries.snapshot_cursor)
     }
 }

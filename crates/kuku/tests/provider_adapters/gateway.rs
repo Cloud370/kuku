@@ -1,8 +1,8 @@
-#[path = "../common/mod.rs"]
-mod common;
+use super::common;
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use httpmock::prelude::{HttpMockRequest, MockServer, POST};
@@ -34,9 +34,51 @@ fn options(
     tier.think = ThinkLevel::Off;
     config.handoff.enabled = false;
     config.plugin.enabled = false;
+    SessionOptions::new(workspace, data, config)
+}
+
+fn anthropic_retry_options(server: &MockServer, workspace: &Path, data: &Path) -> SessionOptions {
+    anthropic_session_options(
+        server,
+        workspace,
+        data,
+        "/retry-body-identical",
+        ProviderProfile::Anthropic,
+        None,
+    )
+}
+
+fn anthropic_session_options(
+    server: &MockServer,
+    workspace: &Path,
+    data: &Path,
+    base_path: &str,
+    profile: ProviderProfile,
+    session_id: Option<&str>,
+) -> SessionOptions {
+    let mut config = common::test_config();
+    let provider = config.providers.get_mut("anthropic").unwrap();
+    provider.base_url = server.url(base_path);
+    provider.options.profile = profile;
+    config.handoff.enabled = false;
+    config.plugin.enabled = false;
     let mut options = SessionOptions::new(workspace, data, config);
-    options.limits.max_steps_per_turn = 2;
+    options.session_id = session_id.map(str::to_owned);
     options
+}
+
+fn retry_request_bodies() -> &'static Mutex<Vec<Vec<u8>>> {
+    static BODIES: OnceLock<Mutex<Vec<Vec<u8>>>> = OnceLock::new();
+    BODIES.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn capture_retry_request_body(request: &HttpMockRequest) -> bool {
+    if let Some(body) = &request.body {
+        retry_request_bodies().lock().unwrap().push(body.clone());
+        true
+    } else {
+        false
+    }
 }
 
 fn body(request: &HttpMockRequest) -> Value {
@@ -112,7 +154,7 @@ fn chat_continuation(request: &HttpMockRequest) -> bool {
     calls.len() == 1
         && calls[0]["id"] == "gateway_2"
         && calls[0]["function"]["name"] == "run_command"
-        && calls[0]["function"]["arguments"].as_str().and_then(|args| serde_json::from_str::<Value>(args).ok()).is_some_and(|args| args["command"] == "ls -la && echo \"---\" && sha256sum seed.txt && echo \"---\" && xxd seed.txt | head -5" && args["timeout"] == 30)
+        && calls[0]["function"]["arguments"].as_str().and_then(|args| serde_json::from_str::<Value>(args).ok()).is_some_and(|args| args["shell"] == "sh" && args["cwd"] == "." && args["command"] == "ls -la && echo \"---\" && sha256sum seed.txt && echo \"---\" && xxd seed.txt | head -5" && args["timeout"] == 30)
         && results.len() == 1
         && results[0]["tool_call_id"] == "gateway_2"
         && results[0]["content"].as_str().is_some_and(|output| output.contains("seed.txt") && output.contains("gateway seed con"))
@@ -162,6 +204,18 @@ async fn settle(session: &Session) -> AgentSnapshot {
     })
     .await
     .expect("gateway fixture did not settle through the public Session")
+}
+
+fn provider_replay_value(events: &[StoredEvent]) -> Value {
+    events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::Unknown(value) if value["kind"] == "runtime.provider_replay" => {
+                Some(value["value"].clone())
+            }
+            _ => None,
+        })
+        .expect("provider replay event should be durable")
 }
 
 fn assert_tools(events: &[StoredEvent], expected: &[(&str, &str)]) {
@@ -256,6 +310,440 @@ async fn recorded_openrouter_responses_done_dispatches_both_tools_and_continues(
     assert!(events.iter().any(|event| matches!(&event.payload, EventPayload::Unknown(value) if value["kind"] == "runtime.provider_report" && value["report"]["cost_usd"] == 0.000157636)));
     first.assert_hits_async(1).await;
     second.assert_hits_async(1).await;
+}
+
+#[tokio::test]
+async fn transient_provider_retry_sends_identical_request_body_bytes() {
+    retry_request_bodies().lock().unwrap().clear();
+    let server = MockServer::start_async().await;
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let first = server
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path("/retry-body-identical/v1/messages")
+                .matches(capture_retry_request_body);
+            then.status(503).body("temporarily unavailable");
+        })
+        .await;
+    let session = Session::open(anthropic_retry_options(
+        &server,
+        workspace.path(),
+        data.path(),
+    ))
+    .await
+    .unwrap();
+    session
+        .create_agent("create", "main", AgentConfig::default())
+        .unwrap();
+    session
+        .send(Input::new("retry_once", "main", "retry this model request"))
+        .unwrap();
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while first.hits_async().await == 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("initial provider request was not observed");
+    first.assert_hits_async(1).await;
+    first.delete_async().await;
+
+    let retry = server
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path("/retry-body-identical/v1/messages")
+                .matches(capture_retry_request_body);
+            then.status(200).body(common::anthropic_sse_response(json!({
+                "id": "retry_success",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type":"text","text":"retry succeeded"}],
+                "stop_reason": "end_turn"
+            })));
+        })
+        .await;
+
+    let snapshot = settle(&session).await;
+    assert_eq!(
+        AgentStatus::Idle,
+        snapshot.status,
+        "{:?}",
+        snapshot.last_error
+    );
+    assert_eq!(None, snapshot.last_error);
+    assert_eq!(Some("retry succeeded"), snapshot.last_output.as_deref());
+    retry.assert_hits_async(1).await;
+    session.close().await.unwrap();
+
+    let bodies = std::mem::take(&mut *retry_request_bodies().lock().unwrap());
+    assert_eq!(2, bodies.len());
+    assert_eq!(bodies[0], bodies[1]);
+
+    let events = EventStore::replay(session.events_path()).unwrap();
+    assert!(events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::Unknown(value) if value["kind"] == "runtime.model_retry"
+    )));
+}
+
+#[tokio::test]
+async fn native_unsigned_thinking_only_turn_reopens_without_replaying_thinking() {
+    let server = MockServer::start_async().await;
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let session_id = "native_thinking_only_reopen";
+    let base_path = "/native-thinking-only-reopen";
+    let endpoint = format!("{base_path}/v1/messages");
+    let first = server
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path(endpoint.as_str())
+                .body_contains("native thinking-only seed")
+                .matches(common::capture_http_request);
+            then.status(200).body(common::anthropic_sse_response(json!({
+                "id": "thinking_only",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type":"thinking","thinking":"private reasoning"}],
+                "stop_reason": "end_turn"
+            })));
+        })
+        .await;
+    let followup = server
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path(endpoint.as_str())
+                .body_contains("followup after empty native replay")
+                .matches(common::capture_http_request);
+            then.status(200).body(common::anthropic_sse_response(json!({
+                "id": "after_thinking_only",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type":"text","text":"follow-up accepted"}],
+                "stop_reason": "end_turn"
+            })));
+        })
+        .await;
+
+    let session = Session::open(anthropic_session_options(
+        &server,
+        workspace.path(),
+        data.path(),
+        base_path,
+        ProviderProfile::Anthropic,
+        Some(session_id),
+    ))
+    .await
+    .unwrap();
+    session
+        .create_agent("create", "main", AgentConfig::default())
+        .unwrap();
+    session
+        .send(Input::new(
+            "thinking_only_seed",
+            "main",
+            "native thinking-only seed",
+        ))
+        .unwrap();
+    let first_snapshot = settle(&session).await;
+    assert_eq!(AgentStatus::Idle, first_snapshot.status);
+    assert_eq!(None, first_snapshot.last_error);
+    first.assert_hits_async(1).await;
+    first.delete_async().await;
+    let events_path = session.events_path().to_path_buf();
+    session.close().await.unwrap();
+    let history_before_reopen = std::fs::read(&events_path).unwrap();
+
+    let reopened = Session::open(anthropic_session_options(
+        &server,
+        workspace.path(),
+        data.path(),
+        base_path,
+        ProviderProfile::Anthropic,
+        Some(session_id),
+    ))
+    .await
+    .unwrap();
+    reopened
+        .send(Input::new(
+            "after_thinking_only",
+            "main",
+            "followup after empty native replay",
+        ))
+        .unwrap();
+    let reopened_snapshot = settle(&reopened).await;
+    assert_eq!(
+        AgentStatus::Idle,
+        reopened_snapshot.status,
+        "{:?}",
+        reopened_snapshot.last_error
+    );
+    assert_eq!(None, reopened_snapshot.last_error);
+    assert_eq!(
+        Some("follow-up accepted"),
+        reopened_snapshot.last_output.as_deref()
+    );
+    followup.assert_hits_async(1).await;
+    reopened.close().await.unwrap();
+
+    let history_after_reopen = std::fs::read(&events_path).unwrap();
+    assert!(history_after_reopen.starts_with(&history_before_reopen));
+    let bodies = common::take_http_requests(&endpoint);
+    assert_eq!(2, bodies.len());
+    assert!(bodies[1]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|message| {
+            message["content"]
+                .as_array()
+                .is_none_or(|content| content.iter().all(|block| block["type"] != "thinking"))
+        }));
+    let events = EventStore::replay(&events_path).unwrap();
+    assert_eq!(
+        json!({"role":"assistant","content":[]}),
+        provider_replay_value(&events)
+    );
+}
+
+#[tokio::test]
+async fn reopened_native_session_rejects_passive_compatible_profile_change() {
+    let server = MockServer::start_async().await;
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let session_id = "native_to_compatible_reopen";
+    let base_path = "/native-to-compatible-reopen";
+    let endpoint = format!("{base_path}/v1/messages");
+    let first = server
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path(endpoint.as_str())
+                .body_contains("native profile seed")
+                .matches(common::capture_http_request);
+            then.status(200).body(common::anthropic_sse_response(json!({
+                "id": "native_unsigned",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type":"thinking","thinking":"private native reasoning"},
+                    {"type":"text","text":"native answer"}
+                ],
+                "stop_reason": "end_turn"
+            })));
+        })
+        .await;
+    let second = server
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path(endpoint.as_str())
+                .body_contains("compatible profile follow-up")
+                .matches(common::capture_http_request);
+            then.status(200).body(common::anthropic_sse_response(json!({
+                "id": "compatible_followup",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type":"text","text":"compatible answer"}],
+                "stop_reason": "end_turn"
+            })));
+        })
+        .await;
+
+    let session = Session::open(anthropic_session_options(
+        &server,
+        workspace.path(),
+        data.path(),
+        base_path,
+        ProviderProfile::Anthropic,
+        Some(session_id),
+    ))
+    .await
+    .unwrap();
+    session
+        .create_agent("create", "main", AgentConfig::default())
+        .unwrap();
+    session
+        .send(Input::new("native_seed", "main", "native profile seed"))
+        .unwrap();
+    let snapshot = settle(&session).await;
+    assert_eq!(
+        AgentStatus::Idle,
+        snapshot.status,
+        "{:?}",
+        snapshot.last_error
+    );
+    assert_eq!(Some("native answer"), snapshot.last_output.as_deref());
+    first.assert_hits_async(1).await;
+    first.delete_async().await;
+    let events_path = session.events_path().to_path_buf();
+    let replay_before_flip = provider_replay_value(&EventStore::replay(&events_path).unwrap());
+    assert_eq!(
+        json!({"role":"assistant","content":[{"type":"text","text":"native answer"}]}),
+        replay_before_flip
+    );
+    session.close().await.unwrap();
+    let history_before_flip = std::fs::read(&events_path).unwrap();
+
+    let reopened = Session::open(anthropic_session_options(
+        &server,
+        workspace.path(),
+        data.path(),
+        base_path,
+        ProviderProfile::Compatible,
+        Some(session_id),
+    ))
+    .await
+    .unwrap();
+    reopened
+        .send(Input::new(
+            "compatible_followup",
+            "main",
+            "compatible profile follow-up",
+        ))
+        .unwrap();
+    let reopened_snapshot = settle(&reopened).await;
+    assert_eq!(AgentStatus::Interrupted, reopened_snapshot.status);
+    assert!(reopened_snapshot
+        .last_error
+        .as_deref()
+        .is_some_and(|error| { error.contains("frozen provider route or capabilities") }));
+    second.assert_hits_async(0).await;
+    reopened.close().await.unwrap();
+
+    let history_after_flip = std::fs::read(&events_path).unwrap();
+    assert!(history_after_flip.starts_with(&history_before_flip));
+    let events_after_flip = EventStore::replay(&events_path).unwrap();
+    assert_eq!(
+        replay_before_flip,
+        provider_replay_value(&events_after_flip)
+    );
+    let bodies = common::take_http_requests(&endpoint);
+    assert_eq!(1, bodies.len());
+}
+
+#[tokio::test]
+async fn reopened_compatible_session_rejects_passive_native_profile_change() {
+    let server = MockServer::start_async().await;
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let session_id = "compatible_to_native_reopen";
+    let base_path = "/compatible-to-native-reopen";
+    let endpoint = format!("{base_path}/v1/messages");
+    let first = server
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path(endpoint.as_str())
+                .body_contains("compatible profile seed")
+                .matches(common::capture_http_request);
+            then.status(200).body(common::anthropic_sse_response(json!({
+                "id": "compatible_unsigned",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type":"thinking","thinking":"compatible private reasoning"},
+                    {"type":"text","text":"compatible answer"}
+                ],
+                "stop_reason": "end_turn"
+            })));
+        })
+        .await;
+    let should_not_dispatch = server
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path(endpoint.as_str())
+                .body_contains("native profile follow-up")
+                .matches(common::capture_http_request);
+            then.status(200).body(common::anthropic_sse_response(json!({
+                "id": "unexpected_native_dispatch",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type":"text","text":"should not dispatch"}],
+                "stop_reason": "end_turn"
+            })));
+        })
+        .await;
+
+    let session = Session::open(anthropic_session_options(
+        &server,
+        workspace.path(),
+        data.path(),
+        base_path,
+        ProviderProfile::Compatible,
+        Some(session_id),
+    ))
+    .await
+    .unwrap();
+    session
+        .create_agent("create", "main", AgentConfig::default())
+        .unwrap();
+    session
+        .send(Input::new(
+            "compatible_seed",
+            "main",
+            "compatible profile seed",
+        ))
+        .unwrap();
+    let snapshot = settle(&session).await;
+    assert_eq!(
+        AgentStatus::Idle,
+        snapshot.status,
+        "{:?}",
+        snapshot.last_error
+    );
+    first.assert_hits_async(1).await;
+    first.delete_async().await;
+    let events_path = session.events_path().to_path_buf();
+    let replay_before_flip = provider_replay_value(&EventStore::replay(&events_path).unwrap());
+    assert_eq!(
+        json!([
+            {"type":"thinking","thinking":"compatible private reasoning"},
+            {"type":"text","text":"compatible answer"}
+        ]),
+        replay_before_flip["content"]
+    );
+    session.close().await.unwrap();
+    let history_before_flip = std::fs::read(&events_path).unwrap();
+
+    let reopened = Session::open(anthropic_session_options(
+        &server,
+        workspace.path(),
+        data.path(),
+        base_path,
+        ProviderProfile::Anthropic,
+        Some(session_id),
+    ))
+    .await
+    .unwrap();
+    reopened
+        .send(Input::new(
+            "native_followup",
+            "main",
+            "native profile follow-up",
+        ))
+        .unwrap();
+    let reopened_snapshot = settle(&reopened).await;
+    assert_eq!(AgentStatus::Interrupted, reopened_snapshot.status);
+    assert!(
+        reopened_snapshot
+            .last_error
+            .as_deref()
+            .is_some_and(|error| { error.contains("frozen provider route or capabilities") }),
+        "unexpected error: {:?}",
+        reopened_snapshot.last_error
+    );
+    should_not_dispatch.assert_hits_async(0).await;
+    reopened.close().await.unwrap();
+
+    let history_after_flip = std::fs::read(&events_path).unwrap();
+    assert!(history_after_flip.starts_with(&history_before_flip));
+    let events_after_flip = EventStore::replay(&events_path).unwrap();
+    assert_eq!(
+        replay_before_flip,
+        provider_replay_value(&events_after_flip)
+    );
+    let bodies = common::take_http_requests(&endpoint);
+    assert_eq!(1, bodies.len());
 }
 
 #[cfg(target_os = "linux")]

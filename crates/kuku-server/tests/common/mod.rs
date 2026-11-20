@@ -169,18 +169,20 @@ impl TestServer {
         agent: &str,
         ready: impl Fn(&Value) -> bool,
     ) -> Value {
-        tokio::time::timeout(Duration::from_secs(10), async {
+        let mut last_snapshot = None;
+        let result = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 let snapshot = self.snapshot(id, agent).await;
                 if ready(&snapshot) {
                     return snapshot;
                 }
+                last_snapshot = Some(snapshot);
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
-        .await
-        .unwrap_or_else(|_| {
-            panic!("Session '{id}', Agent '{agent}' did not reach the expected state")
+        .await;
+        result.unwrap_or_else(|_| {
+            panic!("Session '{id}', Agent '{agent}' did not reach the expected state; last snapshot: {last_snapshot:?}")
         })
     }
 

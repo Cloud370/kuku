@@ -6,6 +6,66 @@ use serde::{Deserialize, Serialize};
 use crate::config::Config;
 use crate::permission::{ToolAuthorizer, TrustedLocal};
 
+/// Durable status of a command or workspace script transferred to a Session Job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobStatus {
+    /// The original execution is still in progress.
+    Running,
+    /// The execution reported success.
+    Completed,
+    /// The execution reported a terminal failure or could not proceed.
+    Failed,
+    /// The execution acknowledged cancellation and cleanup.
+    Cancelled,
+    /// A terminal outcome or cleanup could not be confirmed.
+    Interrupted,
+}
+
+/// Observed terminal facts for the original execution.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobResult {
+    /// Final tool result status.
+    pub status: String,
+    /// Short result summary.
+    pub summary: String,
+    /// Typed tool facts, including original retained output references where available.
+    pub structured: Option<serde_json::Value>,
+    /// Whether the tool omitted part of its model-visible result.
+    pub truncated: bool,
+    /// Whether capture failed to publish its expected retained output.
+    pub output_persistence_failed: bool,
+    /// Whether cleanup of owned resources could not be confirmed.
+    pub cleanup_incomplete: bool,
+}
+
+/// Session-scoped handle and status for an execution's background lifetime.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobSnapshot {
+    /// Stable Job identifier.
+    pub id: String,
+    /// Address of the Agent that owns the Job.
+    pub agent: String,
+    /// Turn where the original tool call was dispatched.
+    pub turn: u64,
+    /// Identity of the original tool call.
+    pub tool_call_id: String,
+    /// Tool that owns the execution.
+    pub tool: String,
+    /// Current durable Job status.
+    pub status: JobStatus,
+    /// Short description of the running Job or its terminal result.
+    pub summary: String,
+    /// Retained output identity for a native command, available after capture is finalized.
+    pub output_id: Option<String>,
+    /// Durable cursor of the original tool result that registered the Job.
+    pub started_at: u64,
+    /// Durable cursor of the terminal Job event.
+    pub finished_at: Option<u64>,
+    /// Terminal facts loaded by a targeted lookup or cancellation.
+    pub result: Option<JobResult>,
+}
+
 /// Configuration and resource ownership for opening a persistent session.
 #[derive(Debug, Clone)]
 pub struct SessionOptions {
@@ -21,6 +81,8 @@ pub struct SessionOptions {
     pub prompts_dir: Option<PathBuf>,
     /// Session resource limits.
     pub limits: RuntimeLimits,
+    /// Capacity shared by disposable script workers on this host.
+    pub workspace_host: crate::WorkspaceExecutionHost,
     /// Host authority consulted before every tool dispatch.
     pub authorizer: Arc<dyn ToolAuthorizer>,
     /// Optional host model transport; preparation and dispatch limits remain owned by the SDK.
@@ -43,6 +105,7 @@ impl SessionOptions {
             config,
             prompts_dir: None,
             limits: RuntimeLimits::default(),
+            workspace_host: crate::WorkspaceExecutionHost::default(),
             authorizer: Arc::new(TrustedLocal),
             model_adapter: None,
             tools: Vec::new(),
@@ -53,6 +116,9 @@ impl SessionOptions {
 /// Hard bounds for input, model execution, tools, and observations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeLimits {
+    /// Limits applied to each embedded workspace script.
+    #[serde(default)]
+    pub workspace_script: crate::WorkspaceScriptLimits,
     /// Maximum agents retained by this session.
     pub max_agents: usize,
     /// Maximum delivered inputs waiting for one agent.
@@ -65,17 +131,27 @@ pub struct RuntimeLimits {
     pub max_model_requests: usize,
     /// Optional total model attempts shared by all agents and turns until this runtime closes.
     pub max_requests_per_open: Option<u64>,
-    /// Whether to retry a transient provider failure before a stream starts, at most once per step.
+    /// Whether to retry transient provider failures before the first stream output.
     #[serde(default = "default_provider_retry")]
     pub retry_transient_provider_errors: bool,
     /// Optional host output-token ceiling applied to every agent's resolved request.
     pub max_output_tokens_per_request: Option<u32>,
-    /// Maximum logical model requests in one turn, including recovery requests.
-    pub max_steps_per_turn: u64,
     /// Maximum simultaneous tools within one agent's step.
     pub max_tools_per_agent: usize,
+    /// Foreground wait in milliseconds before a top-level command or script becomes a Job.
+    #[serde(default = "default_job_foreground_wait_ms")]
+    pub job_foreground_wait_ms: u64,
     /// Maximum retained bytes for one command or host-tool output.
     pub max_output_bytes: u64,
+    /// Maximum total physical bytes retained in this session, including capture framing.
+    #[serde(default = "default_retained_output_bytes")]
+    pub max_retained_output_bytes: u64,
+    /// Minimum age, in seconds, before unreferenced ordinary output can be reclaimed.
+    #[serde(default = "default_output_retention_secs")]
+    pub output_retention_secs: u64,
+    /// Maximum number of active named bindings across the session's agents.
+    #[serde(default = "default_named_values")]
+    pub max_named_values: usize,
     /// Maximum bytes in the first model-visible retained-output preview.
     pub max_preview_bytes: usize,
     /// Maximum transient observations retained for slow subscribers.
@@ -85,6 +161,7 @@ pub struct RuntimeLimits {
 impl Default for RuntimeLimits {
     fn default() -> Self {
         Self {
+            workspace_script: crate::WorkspaceScriptLimits::default(),
             max_agents: 64,
             max_pending_inputs: 128,
             max_input_bytes: 65_536,
@@ -93,9 +170,12 @@ impl Default for RuntimeLimits {
             max_requests_per_open: None,
             retry_transient_provider_errors: default_provider_retry(),
             max_output_tokens_per_request: None,
-            max_steps_per_turn: 20,
             max_tools_per_agent: 8,
+            job_foreground_wait_ms: default_job_foreground_wait_ms(),
             max_output_bytes: 8 * 1024 * 1024,
+            max_retained_output_bytes: default_retained_output_bytes(),
+            output_retention_secs: default_output_retention_secs(),
+            max_named_values: default_named_values(),
             max_preview_bytes: 16 * 1024,
             observation_capacity: 128,
         }
@@ -104,6 +184,22 @@ impl Default for RuntimeLimits {
 
 fn default_provider_retry() -> bool {
     true
+}
+
+fn default_job_foreground_wait_ms() -> u64 {
+    10_000
+}
+
+fn default_retained_output_bytes() -> u64 {
+    128 * 1024 * 1024
+}
+
+fn default_output_retention_secs() -> u64 {
+    24 * 60 * 60
+}
+
+fn default_named_values() -> usize {
+    64
 }
 
 /// Agent-local behavior and explicit model selection.

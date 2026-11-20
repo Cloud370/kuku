@@ -101,10 +101,14 @@ fn mixed_twenty_four_tools_compact_by_operation_and_remain_individually_inspecta
         );
     }
     for command in ["check-one", "check-two", "check-three"] {
-        journal.tool("run_command", json!({"command":command}), json!({"status":"ok","summary":"exited","structured":{"exit_code":0,"command":command}}));
+        journal.tool(
+            "run_command",
+            json!({"program":command,"args":[],"cwd":".","timeout":5}),
+            json!({"status":"ok","summary":"exited","structured":{"exit_code":0}}),
+        );
     }
-    journal.tool("run_command", json!({"command":"check-failed"}), json!({"status":"ok","summary":"check failed","model_content":"actual diagnostic","structured":{"exit_code":23}}));
-    journal.tool("run_command", json!({"command":"check-warning"}), json!({"status":"ok","summary":"captured stderr","model_content":"actual warning","structured":{"exit_code":0,"stderr_lines":1}}));
+    journal.tool("run_command", json!({"program":"check-failed","args":[],"cwd":".","timeout":5}), json!({"status":"ok","summary":"check failed","model_content":"actual diagnostic","structured":{"exit_code":23}}));
+    journal.tool("run_command", json!({"program":"check-warning","args":[],"cwd":".","timeout":5}), json!({"status":"ok","summary":"captured stderr","model_content":"actual warning","structured":{"exit_code":0,"stderr_lines":1}}));
     journal.tool("read_file", json!({"path":"missing.txt"}), json!({"status":"error","summary":"File is missing","model_content":"No such file: missing.txt"}));
     journal.tool(
         "ask_user",
@@ -116,7 +120,7 @@ fn mixed_twenty_four_tools_compact_by_operation_and_remain_individually_inspecta
         "main",
         json!({"type":"permission","text":"Confirm the next operation"}),
     );
-    journal.push(7, "main", json!({"type":"tool_call","tool":"run_command","tool_call_id":"active","args":{"command":"checking now"}}));
+    journal.push(7, "main", json!({"type":"tool_call","tool":"run_command","tool_call_id":"active","args":{"program":"check-now","args":[],"cwd":".","timeout":5}}));
     journal.push(7, "main", json!({"type":"tool_call","tool":"read_file","tool_call_id":"requested","args":{"path":"queued.txt"}}));
     let mut transcript = journal.load();
     transcript.live(
@@ -758,7 +762,7 @@ fn a_reply_burst_preserves_the_first_answer_line_after_thinking() {
         &json!({"type":"text","content":reply}),
     );
     let view = transcript.project(58, 9);
-    assert_eq!(view.lines[row].to_string(), "Paragraph 1");
+    assert_eq!(view.lines[row].to_string().trim_start(), "Paragraph 1");
     assert!(transcript.is_reading());
     assert_eq!(transcript.history_hint(), None);
     transcript.scroll(1, 58, 9);

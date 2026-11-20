@@ -45,6 +45,10 @@ pub(crate) fn render_at(
     app: &mut App,
     activity_frame: ActivityFrame,
 ) -> bool {
+    if let Some(repair) = &mut app.credential_repair {
+        repair.render(frame);
+        return false;
+    }
     let outer = frame.area();
     app.contextual_hits.clear();
     if outer.is_empty() {
@@ -99,7 +103,7 @@ pub(crate) fn render_at(
     } else {
         content_width.saturating_sub(7)
     };
-    let reading = reading_line(app, hint_limit);
+    let reading = contextual::reading_line(app, hint_limit);
     let hint_width = reading.as_ref().map_or(0, Line::width);
     let stats_width = content_width.saturating_sub(hint_width + usize::from(hint_width > 0));
     let dock = reading
@@ -306,15 +310,23 @@ pub(crate) fn render_at(
         }
     }
     if let Some(draft) = draft {
-        let placeholder = app.pane().draft.text().is_empty().then(|| {
-            shorten(
-                &format!(
+        let pane = app.pane();
+        let placeholder = pane.draft.text().is_empty().then(|| {
+            let hint = if pane.value_attachments.is_empty() {
+                format!(
                     "Enter steer · {} next Turn · / actions · {} help · F2 controls · Esc Esc Rewind",
                     Shortcut::NEXT_TURN.label,
                     Shortcut::ACTIONS.label
-                ),
-                content_width,
-            )
+                )
+            } else {
+                format!(
+                    "Enter steer · {} next Turn · / actions · {} help · F2 controls · Esc Esc Rewind · {} sends attached values",
+                    Shortcut::NEXT_TURN.label,
+                    Shortcut::ACTIONS.label,
+                    Shortcut::ENTER.label
+                )
+            };
+            shorten(&hint, content_width)
         });
         render_editor_view(frame, inner, draft, focused, placeholder.as_deref());
     }
@@ -357,38 +369,6 @@ pub(crate) fn render_at(
         modal_area.is_none().then_some((transcript, row_insets)),
     );
     activity_visible
-}
-
-fn reading_line(app: &App, width: usize) -> Option<Line<'static>> {
-    let unseen = app.pane().transcript.history_hint()?;
-    let back = Shortcut::READING_BACK.label;
-    let focus = if app.composer_focused() {
-        "Editing"
-    } else {
-        "↑↓ scroll"
-    };
-    let content = if unseen { " · New content" } else { "" };
-    let normal = format!("Reading history · {focus} · Jump to latest ({back}){content}");
-    let compact = if unseen {
-        format!("New · {back}")
-    } else {
-        format!("History · {back}")
-    };
-    let text = if normal.width() <= width {
-        normal
-    } else if compact.width() <= width {
-        compact
-    } else {
-        back.to_owned()
-    };
-    let mut line = Line::styled(shorten(&text, width), Style::new().fg(MUTED));
-    if let Some(rest) = text.strip_prefix("Reading history") {
-        line = Line::from(vec![
-            Span::styled("Reading history", emphasis(ACCENT)),
-            Span::styled(rest.to_owned(), Style::new().fg(MUTED)),
-        ]);
-    }
-    Some(line)
 }
 
 fn render_transcript(
@@ -497,6 +477,17 @@ fn banner(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
         }
     }
     lines.extend(waiting(app, width));
+    if !pane.value_attachments.is_empty() {
+        let names: Vec<_> = pane
+            .value_attachments
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+        lines.push(Line::styled(
+            shorten(&format!("Attached · {} · /values", names.join(", ")), width),
+            Style::new().fg(ACCENT),
+        ));
+    }
     if let Some(problem) = app.service_problem() {
         lines.extend(
             problem
@@ -628,7 +619,9 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Rect
                 PromptKind::Agent | PromptKind::Model { .. } => SHORT_PROMPT_HEIGHT,
                 PromptKind::Question { .. }
                 | PromptKind::QueuedInput { .. }
-                | PromptKind::RewindMessage { .. } => PICKER_HEIGHT,
+                | PromptKind::RewindMessage { .. }
+                | PromptKind::SavePaste => PICKER_HEIGHT,
+                PromptKind::SaveValue { .. } => SHORT_PROMPT_HEIGHT,
             };
             let area = popup(area, PICKER_WIDTH, height);
             let inner = render_popup(frame, area, &prompt.title);

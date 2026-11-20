@@ -437,6 +437,14 @@ fn entry_text(entry: &HistoryEntry) -> Option<String> {
                 .and_then(|value| value.as_str())
                 .unwrap_or(text)
         ),
+        HistoryKind::JobFinished => format!(
+            "Status · Background job · {}",
+            entry
+                .details
+                .get("summary")
+                .and_then(|value| value.as_str())
+                .unwrap_or(text)
+        ),
         HistoryKind::Question => format!("Status · Question · {text}"),
         HistoryKind::Permission => format!("Status · Permission · {text}"),
         HistoryKind::QuestionReply => format!("Status · Answer · {text}"),

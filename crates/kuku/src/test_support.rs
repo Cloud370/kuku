@@ -1,13 +1,94 @@
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Barrier, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
 const TOOL_OUTPUT: &str = "fixture-tool-output-42";
+
+/// Read exact committed journal bytes through an existing in-process writer.
+pub fn read_active_journal(path: &Path) -> crate::Result<Vec<u8>> {
+    crate::event::EventStore::read_active_journal_for_test(path)
+}
+
+struct RuntimeBoundaryPauseState {
+    events_path: PathBuf,
+    reached: Barrier,
+    release: Barrier,
+}
+
+static RUNTIME_BOUNDARY_PAUSE: OnceLock<Mutex<Option<Arc<RuntimeBoundaryPauseState>>>> =
+    OnceLock::new();
+
+/// Coordinate a test-only pause after a runtime turn applies its configuration boundary.
+pub struct RuntimeBoundaryPause {
+    state: Arc<RuntimeBoundaryPauseState>,
+}
+
+impl RuntimeBoundaryPause {
+    /// Pause the next runtime boundary for the specified session event store.
+    pub fn install(events_path: &Path) -> Self {
+        let state = Arc::new(RuntimeBoundaryPauseState {
+            events_path: events_path.to_path_buf(),
+            reached: Barrier::new(2),
+            release: Barrier::new(2),
+        });
+        let slot = RUNTIME_BOUNDARY_PAUSE.get_or_init(|| Mutex::new(None));
+        let mut current = slot.lock().unwrap();
+        assert!(
+            current.is_none(),
+            "runtime boundary pause already installed"
+        );
+        *current = Some(state.clone());
+        Self { state }
+    }
+
+    /// Wait for the worker to apply its runtime configuration.
+    pub fn wait_until_reached(&self) {
+        self.state.reached.wait();
+    }
+
+    /// Allow the worker to prepare its context snapshot.
+    pub fn release(&self) {
+        self.state.release.wait();
+    }
+}
+
+impl Drop for RuntimeBoundaryPause {
+    fn drop(&mut self) {
+        if let Some(slot) = RUNTIME_BOUNDARY_PAUSE.get() {
+            let mut current = slot.lock().unwrap();
+            if current
+                .as_ref()
+                .is_some_and(|state| Arc::ptr_eq(state, &self.state))
+            {
+                *current = None;
+            }
+        }
+    }
+}
+
+pub(crate) fn wait_after_runtime_boundary(events_path: &Path) {
+    let state = RUNTIME_BOUNDARY_PAUSE.get().and_then(|slot| {
+        let mut current = slot.lock().unwrap();
+        if current
+            .as_ref()
+            .is_some_and(|state| state.events_path == events_path)
+        {
+            current.take()
+        } else {
+            None
+        }
+    });
+    if let Some(state) = state {
+        state.reached.wait();
+        state.release.wait();
+    }
+}
 
 /// Run the native command fixture until its host creates the release file.
 pub fn run_gated_tool(timeout: Duration) -> io::Result<()> {
@@ -73,6 +154,28 @@ pub fn anthropic_sse_response(msg: Value) -> String {
                 sse.push_str(&format!(
                     "event: content_block_delta\ndata: {}\n\n",
                     serde_json::json!({"type":"content_block_delta","index":i,"delta":{"type":"text_delta","text":text}})
+                ));
+            }
+            sse.push_str(&format!(
+                "event: content_block_stop\ndata: {}\n\n",
+                serde_json::json!({"type":"content_block_stop","index":i})
+            ));
+        } else if btype == "thinking" {
+            let thinking = block.get("thinking").and_then(Value::as_str).unwrap_or("");
+            sse.push_str(&format!(
+                "event: content_block_start\ndata: {}\n\n",
+                serde_json::json!({"type":"content_block_start","index":i,"content_block":{"type":"thinking","thinking":""}})
+            ));
+            if !thinking.is_empty() {
+                sse.push_str(&format!(
+                    "event: content_block_delta\ndata: {}\n\n",
+                    serde_json::json!({"type":"content_block_delta","index":i,"delta":{"type":"thinking_delta","thinking":thinking}})
+                ));
+            }
+            if let Some(signature) = block.get("signature").and_then(Value::as_str) {
+                sse.push_str(&format!(
+                    "event: content_block_delta\ndata: {}\n\n",
+                    serde_json::json!({"type":"content_block_delta","index":i,"delta":{"type":"signature_delta","signature":signature}})
                 ));
             }
             sse.push_str(&format!(

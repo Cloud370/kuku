@@ -14,6 +14,7 @@ use crate::theme::{emphasis, focused_row, ACCENT, MUTED};
 pub(super) fn label(control: &ContextControl) -> String {
     match control {
         ContextControl::Request { .. } => "F2 Request".into(),
+        ContextControl::RepairCredentials { .. } => "F2 Repair credentials · Enter".into(),
         ContextControl::Continue { .. } => "F2 Continue · Enter".into(),
         ContextControl::Interrupt { .. } => "F2 Stop · Enter".into(),
         control @ ContextControl::PendingRecovery { .. } => {
@@ -36,6 +37,7 @@ pub(super) fn label(control: &ContextControl) -> String {
 fn action_label(control: &ContextControl) -> &'static str {
     match control {
         ContextControl::Request { .. } => "Request",
+        ContextControl::RepairCredentials { .. } => "Repair credentials",
         ContextControl::Continue { .. } => "Continue",
         ContextControl::Interrupt { .. } => "Stop",
         control @ ContextControl::PendingRecovery { .. } => {
@@ -52,12 +54,48 @@ fn action_label(control: &ContextControl) -> &'static str {
     }
 }
 
+pub(super) fn reading_line(app: &App, width: usize) -> Option<Line<'static>> {
+    let unseen = app.pane().transcript.history_hint()?;
+    let back = Shortcut::READING_BACK.label;
+    let focus = if app.composer_focused() {
+        "Editing"
+    } else {
+        "↑↓ scroll"
+    };
+    let content = if unseen { " · New content" } else { "" };
+    let normal = format!("Reading history · {focus} · Jump to latest ({back}){content}");
+    let compact = if unseen {
+        format!("New · {back}")
+    } else {
+        format!("History · {back}")
+    };
+    let text = if normal.width() <= width {
+        normal
+    } else if compact.width() <= width {
+        compact
+    } else {
+        back.to_owned()
+    };
+    let mut line = Line::styled(shorten(&text, width), Style::new().fg(MUTED));
+    if let Some(rest) = text.strip_prefix("Reading history") {
+        line = Line::from(vec![
+            Span::styled("Reading history", emphasis(ACCENT)),
+            Span::styled(rest.to_owned(), Style::new().fg(MUTED)),
+        ]);
+    }
+    Some(line)
+}
+
 pub(super) fn focused_hint(app: &App, width: usize) -> Option<Vec<Line<'static>>> {
     if app.pane().transcript.focused_rewind_group().is_some() {
         return Some(vec![
             Line::styled(shorten("Rewound · read-only", width), focused_row()),
             Line::styled(
-                shorten("↑↓/PgUp/PgDn browse · Esc input", width),
+                key_hint(
+                    "↑↓/PgUp/PgDn browse · Esc input",
+                    "Esc input · ↑↓ browse",
+                    width,
+                ),
                 Style::new().fg(MUTED),
             ),
         ]);
@@ -72,13 +110,13 @@ pub(super) fn focused_hint(app: &App, width: usize) -> Option<Vec<Line<'static>>
         .as_ref()
         .map_or("Context action", action_label);
     let escape = if app.escape_interrupts_running() {
-        "Enter act · Esc stop"
+        key_hint("Enter act · Esc stop", "Esc stop · Enter", width)
     } else {
-        "Enter act · Esc back"
+        key_hint("Enter act · Esc back", "Esc back · Enter", width)
     };
     Some(vec![
         Line::styled(shorten(&format!("▶ {action}"), width), focused_row()),
-        Line::styled(shorten(escape, width), Style::new().fg(MUTED)),
+        Line::styled(escape, Style::new().fg(MUTED)),
     ])
 }
 
@@ -153,5 +191,13 @@ pub(super) fn render_service(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             Rect::new(x, area.y, width, area.height),
         );
         x = x.saturating_add(width).saturating_add(1);
+    }
+}
+
+fn key_hint(full: &str, compact: &str, width: usize) -> String {
+    if UnicodeWidthStr::width(full) <= width {
+        full.to_owned()
+    } else {
+        shorten(compact, width)
     }
 }

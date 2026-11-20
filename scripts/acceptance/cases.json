@@ -35,5 +35,32 @@
       "artifacts": ["/app/regex.txt"],
       "timeout_sec": 900
     }
-  ]
+  ],
+  "suites": {
+    "frontier": {
+      "source": {
+        "name": "Terminal-Bench 2.1",
+        "repository": "https://github.com/harbor-framework/terminal-bench-2-1.git",
+        "revision": "7131e4375048a0e408a8fb404b5f499d726b695b",
+        "format": "https://docs.harborframework.com/tasks/overview",
+        "task_root": "tasks",
+        "cache_key": "terminal-bench-2-1"
+      },
+      "case_ids": [
+        "log-summary-date-ranges",
+        "cancel-async-tasks",
+        "regex-log",
+        "large-scale-text-editing"
+      ],
+      "additional_cases": [
+        {
+          "id": "large-scale-text-editing",
+          "role": "large-file editing with a checked Vim macro script",
+          "workspace": "/app",
+          "artifacts": ["/app/apply_macros.vim"],
+          "timeout_sec": 1200
+        }
+      ]
+    }
+  }
 }

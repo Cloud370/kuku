@@ -68,6 +68,7 @@ pub(super) struct ObserveQuery {
 #[derive(Deserialize)]
 pub(super) struct OutputQuery {
     workspace: PathBuf,
+    agent: Option<String>,
     offset: Option<u64>,
     max_bytes: Option<usize>,
     search: Option<String>,
@@ -217,7 +218,11 @@ pub(super) async fn output(
     if let Some(max_bytes) = query.max_bytes {
         read.limit = max_bytes;
     }
-    let output = Session::read_saved_output(&target.path, &output_id, &read)?;
+    let agent = query.agent.as_deref().unwrap_or("main");
+    let output = match manager(&state).await.open_session(&target.path) {
+        Some(session) => session.read_agent_output(agent, &output_id, &read)?,
+        None => Session::read_saved_agent_output(&target.path, agent, &output_id, &read)?,
+    };
     Ok(Json(json!({"ok":true,"output":output})))
 }
 
@@ -383,7 +388,7 @@ async fn follow(
         if let Some(session) = manager.open_session(&target.path) {
             let turns = TurnLookup::Live(session.clone());
             let mut observer = match agent.filter(|_| include_agent_activity) {
-                Some(address) => session.observe_agent(after, address),
+                Some(address) => session.observe_agent_with_activity(after, address),
                 None => session.observe(after),
             };
             loop {

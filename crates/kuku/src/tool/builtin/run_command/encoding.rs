@@ -6,7 +6,7 @@ use regex::bytes::Regex;
 static COLOR_CODES: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\x1b\[[0-9;:]*m").expect("valid ANSI color pattern"));
 
-pub(super) fn display_text(
+pub(crate) fn display_text(
     bytes: &[u8],
     starts_line: bool,
     ends_stream: bool,

@@ -4,6 +4,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::context::ToolSchema;
+use crate::execution::CommandShell;
 
 use super::builtin;
 
@@ -18,6 +19,14 @@ pub(crate) struct ToolDefinition {
 }
 
 pub(crate) fn builtin_registry(agent_enabled: bool, skills_enabled: bool) -> Vec<ToolDefinition> {
+    registry(agent_enabled, skills_enabled, false)
+}
+
+pub(crate) fn session_registry(skills_enabled: bool) -> Vec<ToolDefinition> {
+    registry(false, skills_enabled, true)
+}
+
+fn registry(agent_enabled: bool, skills_enabled: bool, session: bool) -> Vec<ToolDefinition> {
     let mut tools = vec![
         tool(
             "find_files",
@@ -71,15 +80,31 @@ pub(crate) fn builtin_registry(agent_enabled: bool, skills_enabled: bool) -> Vec
             "read",
         ),
         tool(
+            "stat_file",
+            "Check whether a workspace path is a file, directory, special entry or missing. Use version=true to calculate the SHA-256 version of a file.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path within the workspace."},
+                    "version": {"type": "boolean", "description": "Compute content_hash for regular files. Defaults to false."}
+                },
+                "required": ["path"]
+            }),
+            true,
+            1_000,
+            "read",
+        ),
+        tool(
             "edit_file",
-            "Make a precise replacement in an existing file. The file must have been read in the current session before editing.",
+            "Replace exact text in a file. Include enough surrounding text to identify one occurrence. A unique match needs no preliminary read.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "File path relative to the workspace."},
                     "old_text": {"type": "string", "description": "Exact text to replace."},
                     "new_text": {"type": "string", "description": "Replacement text."},
-                    "replace_all": {"type": "boolean", "description": "Replace all occurrences. Defaults to false."},
+                    "replace_all": {"type": "boolean", "description": "Replace all occurrences of the text. Requires a full read or your own confirmed full write of the current version. Defaults to false."},
+                    "expected_version": {"type": "string", "description": "Optional content_hash of the version to edit."},
                     "brief": {"type": "string", "description": "What this edit does, in 3-5 words."}
                 },
                 "required": ["path", "old_text", "new_text"]
@@ -90,18 +115,35 @@ pub(crate) fn builtin_registry(agent_enabled: bool, skills_enabled: bool) -> Vec
         ),
         tool(
             "write_file",
-            "Write a complete file. Creates new files or overwrites existing files after a full prior read snapshot.",
+            "Write a complete file. Overwrite an existing file after a full read or your own confirmed full write of the same version.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "File path relative to the workspace."},
                     "content": {"type": "string", "description": "Complete file content."},
+                    "expected_version": {"type": "string", "description": "Optional content_hash of the version to overwrite."},
                     "brief": {"type": "string", "description": "What this file is for, in 3-5 words."}
                 },
                 "required": ["path", "content"]
             }),
             false,
             20_000,
+            "edit",
+        ),
+        tool(
+            "remove_file",
+            "Remove one regular workspace file using an expected version or a full prior read of its current version. Use the file's own path.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path of the regular file inside the workspace."},
+                    "expected_version": {"type": "string", "description": "Optional content_hash from stat_file(version=true) or read_file."},
+                    "brief": {"type": "string", "description": "Why this file is being removed, in 3-5 words."}
+                },
+                "required": ["path"]
+            }),
+            false,
+            1_000,
             "edit",
         ),
         tool(
@@ -135,29 +177,10 @@ pub(crate) fn builtin_registry(agent_enabled: bool, skills_enabled: bool) -> Vec
             20_000,
             "edit",
         ),
-        tool(
-            "run_command",
-            if cfg!(windows) {
-                "Run a command in the workspace using Windows cmd.exe /S /C. Use cmd syntax, or explicitly invoke PowerShell for PowerShell syntax. timeout is required in seconds."
-            } else {
-                "Run a command in the workspace using sh -c (POSIX shell syntax). timeout is required in seconds."
-            },
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "command": {"type": "string", "description": "The command string to execute."},
-                    "timeout": {"type": "integer", "description": "Timeout in seconds."},
-                    "brief": {"type": "string", "description": "What this command does, in 3-5 words."}
-                },
-                "required": ["command", "timeout"]
-            }),
-            false,
-            80_000,
-            "command",
-        ),
+        run_command_definition(&builtin::run_command::available_shells(), session),
         tool(
             "fetch_url",
-            "Download a URL to a temp directory and return metadata (status, content_type, size).",
+            "Download an HTTP(S) response and return its metadata. In a Session, use read_output with the returned output ID to read its body. Standalone queries receive a temporary file path.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -221,6 +244,67 @@ pub(crate) fn to_tool_schemas(registry: &[ToolDefinition]) -> Vec<ToolSchema> {
         .collect()
 }
 
+pub(crate) fn run_command_definition(shells: &[CommandShell], session: bool) -> ToolDefinition {
+    let mut description = "Run a command in the Agent workspace.".to_string();
+    let mut schema = serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "program": {"type": "string", "description": "Executable name or path. Prefix a path relative to cwd with './'."},
+            "args": {"type": "array", "items": {"type": "string"}, "default": [], "description": "Literal arguments to program."},
+            "cwd": {"type": "string", "default": ".", "description": "Optional absolute or workspace-relative working directory."},
+            "timeout": {"type": "integer", "minimum": 1, "maximum": u32::MAX, "description": "Optional execution deadline in seconds. Omit to run until completion or cancellation."},
+            "brief": {"type": "string", "description": "Optional short description of the action."}
+        },
+        "required": ["program"]
+    });
+    if !shells.is_empty() {
+        let platform_shell = if cfg!(windows) {
+            CommandShell::Powershell
+        } else {
+            CommandShell::Sh
+        };
+        let mut command_fields = vec!["command"];
+        schema["properties"]["shell"] = serde_json::json!({
+            "type": "string", "enum": shells, "description": "Interpreter for command text."
+        });
+        if shells.contains(&platform_shell) {
+            let default = serde_json::json!(platform_shell);
+            description.push_str(&format!(
+                r#" Example: {{"command":"git status"}} runs in {default}."#
+            ));
+            schema["properties"]["shell"]["default"] = default;
+        } else {
+            description.push_str(" For shell syntax, supply command and a listed shell.");
+            command_fields.push("shell");
+        }
+        if shells.contains(&CommandShell::Cmd) {
+            description.push_str(" Use shell='cmd' for .bat or .cmd files.");
+        }
+        schema["properties"]["command"] = serde_json::json!({
+            "type": "string", "description": "Original shell text evaluated by the selected interpreter."
+        });
+        schema.as_object_mut().unwrap().remove("required");
+        schema["oneOf"] = serde_json::json!([
+            {"required": ["program"], "not": {"anyOf": [{"required": ["shell"]}, {"required": ["command"]}]}},
+            {"required": command_fields, "not": {"required": ["program"]}, "properties": {"args": {"maxItems": 0}}}
+        ]);
+    }
+    description.push_str(r#" For literal arguments use {"program":"git","args":["status"]}. Prefix a workspace-relative program with './'. Reports the exit code, a stdout/stderr preview and the retained output ID."#);
+    if session {
+        schema["properties"]["background"] = serde_json::json!({"type":"boolean","description":"Return a Job handle immediately to continue independent work."});
+        description.push_str(" Read more with read_output({id: output_id}). Slow calls return a Job handle and deliver completion automatically. Set background:true to continue independent work immediately.");
+    }
+    tool(
+        "run_command",
+        &description,
+        schema,
+        false,
+        80_000,
+        "command",
+    )
+}
+
 fn tool(
     name: &str,
     description: &str,
@@ -241,7 +325,56 @@ fn tool(
 
 #[cfg(test)]
 mod tests {
-    use super::{builtin_registry, registry_hash, tool_names};
+    use super::{builtin_registry, registry_hash, run_command_definition, tool_names};
+    use crate::execution::CommandShell;
+    use crate::tool::builtin::run_command::{command_permission_candidate, prepare_command_args};
+    use serde_json::json;
+
+    #[test]
+    fn literal_command_defaults_authorize_the_same_invocation_and_only_sessions_accept_background()
+    {
+        let workspace = tempfile::tempdir().unwrap();
+        let minimal = json!({"program":"git"});
+        let mut resolved = minimal.clone();
+        let standalone = run_command_definition(&[], false);
+        prepare_command_args(&mut resolved, workspace.path(), &standalone).unwrap();
+        assert_eq!(resolved["args"], json!([]));
+        assert!(resolved.get("timeout").is_none());
+        assert_eq!(
+            command_permission_candidate(&minimal),
+            command_permission_candidate(&json!({"program":"git","args":[],"cwd":"."}))
+        );
+        let mut background = json!({"program":"git","background":true});
+        assert!(prepare_command_args(&mut background, workspace.path(), &standalone).is_err());
+        let session = run_command_definition(&[], true);
+        assert!(prepare_command_args(&mut background, workspace.path(), &session).is_ok());
+        background["background"] = json!("yes");
+        assert!(prepare_command_args(&mut background, workspace.path(), &session).is_err());
+    }
+
+    #[test]
+    fn shell_text_requires_a_listed_interpreter_when_the_platform_default_is_absent() {
+        let workspace = tempfile::tempdir().unwrap();
+        let definition = run_command_definition(&[CommandShell::Bash], false);
+        let schema = &definition.input_schema;
+        assert!(schema["properties"]["shell"].get("default").is_none());
+        assert_eq!(schema["oneOf"][1]["required"], json!(["command", "shell"]));
+        let mut args = json!({"command":"echo ready", "cwd":".", "timeout":5});
+        assert!(prepare_command_args(&mut args, workspace.path(), &definition).is_err());
+        args["shell"] = json!("bash");
+        assert!(prepare_command_args(&mut args, workspace.path(), &definition).is_ok());
+        for conflict in [
+            json!({"args":["-c", "other"]}),
+            json!({"program":"other","args":[]}),
+        ] {
+            let mut mixed = args.clone();
+            mixed
+                .as_object_mut()
+                .unwrap()
+                .extend(conflict.as_object().unwrap().clone());
+            assert!(prepare_command_args(&mut mixed, workspace.path(), &definition).is_err());
+        }
+    }
 
     #[test]
     fn builtin_registry_matches_documented_public_tool_surface() {
@@ -253,8 +386,10 @@ mod tests {
                 "find_files",
                 "read_file",
                 "search_text",
+                "stat_file",
                 "edit_file",
                 "write_file",
+                "remove_file",
                 "remember_memory",
                 "forget_memory",
                 "run_command",
@@ -291,7 +426,7 @@ mod tests {
         let registry = builtin_registry(true, false);
         let names = tool_names(&registry);
         assert!(names.contains(&"agent".to_string()));
-        assert_eq!(names.len(), 12);
+        assert_eq!(builtin_registry(false, false).len() + 1, names.len());
         assert_eq!(names.last().unwrap(), "agent");
     }
 
@@ -300,7 +435,6 @@ mod tests {
         let registry = builtin_registry(false, false);
         let names = tool_names(&registry);
         assert!(!names.contains(&"agent".to_string()));
-        assert_eq!(names.len(), 11);
     }
 
     #[test]
@@ -310,7 +444,7 @@ mod tests {
         assert!(names.contains(&"use_skill".to_string()));
         assert!(names.contains(&"list_skills".to_string()));
         assert!(names.contains(&"search_skills".to_string()));
-        assert_eq!(names.len(), 14);
+        assert_eq!(builtin_registry(false, false).len() + 3, names.len());
         assert_eq!(names.last().unwrap(), "use_skill");
     }
 

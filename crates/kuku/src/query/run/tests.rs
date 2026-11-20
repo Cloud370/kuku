@@ -5,12 +5,12 @@ mod streaming;
 
 use super::{
     PendingPermission, PendingRun, PendingStep, PermissionChoice, QueuedToolCall, Run, RunState,
-    SlotEvent, StreamingChunkState, UiEvent,
+    StreamingChunkState, UiEvent,
 };
 use crate::event::{EventPayload, EventStore};
 use crate::provider::types::{ProviderKind, ProviderToolCall, ResolvedProvider, SecretString};
 use crate::query::types::{
-    CumulativeUsage, ExecSlot, PermissionRequest, ResolvedRuntime, ToolKind,
+    CumulativeUsage, ExecSlot, PermissionRequest, ResolvedRuntime, SlotEvent, ToolKind,
 };
 
 fn test_config() -> crate::config::Config {
@@ -63,6 +63,7 @@ pub(super) fn make_test_pending(
         request_num: 1,
         cumulative: CumulativeUsage::default(),
         resolved: None,
+        admitted_tool_call_ids: Default::default(),
         queued_tool_calls: std::collections::VecDeque::new(),
         resumed_permission_requests: std::collections::VecDeque::new(),
         config: std::sync::Arc::new(test_config()),
@@ -77,6 +78,7 @@ pub(super) fn make_test_pending(
         tool_registry_override: None,
         pending_events: std::collections::VecDeque::new(),
         pending_error: None,
+        waiting_for_job_input: false,
         catalog: crate::prompt::builtin_prompt_catalog(),
         cancel_token,
         handoff_triggered: false,
@@ -107,6 +109,8 @@ fn tool_stream_state(
         conversation: crate::conversation::address::ConversationAddress::MAIN,
         request_id: "req_tool_stream".to_string(),
         stream: Box::pin(tokio_stream::iter(chunks.into_iter().map(Ok))),
+        provider_attempt: 1,
+        stream_failure: None,
         accumulated_text: String::new(),
         accumulated_thinking: String::new(),
         model_phase: None,
@@ -200,7 +204,7 @@ fn make_waiting_run(
         tool_call: ProviderToolCall {
             id: queued_tool_call_id.to_string(),
             name: "run_command".to_string(),
-            args: serde_json::json!({"command": "printf hi", "timeout": 60, "brief": "print hi"}),
+            args: serde_json::json!({"program": "printf", "args": ["hi"], "cwd": ".", "timeout": 60, "brief": "print hi"}),
             index: 0,
         },
         display_summary: "print hi".to_string(),
@@ -220,7 +224,9 @@ fn make_waiting_run(
                 tool: "run_command".to_string(),
                 risk: "command".to_string(),
                 summary: "print hi".to_string(),
-                candidate: "printf hi".to_string(),
+                candidate: crate::tool::builtin::run_command::command_permission_candidate(
+                    &serde_json::json!({"program":"printf","args":["hi"],"cwd":"."}),
+                ),
                 source: "default_ask".to_string(),
             },
         })),
@@ -241,7 +247,7 @@ fn test_resolved_runtime() -> ResolvedRuntime {
             base_url: "https://example.test".to_string(),
             api_key: SecretString::new("test-key"),
             max_context_tokens: 1000,
-            max_output_tokens: 1000,
+            max_output_tokens: Some(1000),
             think_level: crate::config::ThinkLevel::Off,
             thinking: crate::config::ResolvedThinking::default(),
             ..Default::default()
@@ -419,7 +425,7 @@ fn make_queued_run(events_path: std::path::PathBuf, dir: &std::path::Path) -> Ru
         tool_call: ProviderToolCall {
             id: "tool_queued".to_string(),
             name: "run_command".to_string(),
-            args: serde_json::json!({"command": "printf hi", "timeout": 60, "brief": "print hi"}),
+            args: serde_json::json!({"program": "printf", "args": ["hi"], "cwd": ".", "timeout": 60, "brief": "print hi"}),
             index: 0,
         },
         display_summary: "print hi".to_string(),

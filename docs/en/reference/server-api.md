@@ -29,12 +29,17 @@ Authenticated clients send `Authorization: Bearer TOKEN`, including on loopback.
 | `GET` | `/sessions/{id}/observe` | Follow committed entries and transient progress after a cursor |
 | `GET` | `/sessions/{id}/events` | Page through raw committed facts |
 | `GET` | `/sessions/{id}/outputs/{output_id}` | Read bounded retained tool output |
+| `GET` | `/sessions/{id}/jobs` | List the selected Agent's background Jobs |
+| `GET` | `/sessions/{id}/jobs/{job_id}` | Inspect a Job and its available result |
+| `DELETE` | `/sessions/{id}/jobs/{job_id}` | Cancel a Job and return its terminal status |
+| `GET` | `/sessions/{id}/values` | List the selected Agent's named values |
+| `PUT` | `/sessions/{id}/values/{name}` | Bind a named value or explicitly replace its source |
 | `GET` | `/models` | Configured model catalog |
 | `GET` | `/models/resolve` | Resolve effective settings for a proposed Agent configuration |
 | `GET` | `/workspaces` | List workspaces |
 | `GET` | `/workspaces/resolve`, `/workspaces/files`, `/workspaces/skills` | Resolve a server path or discover workspace files and Skills |
 
-The status response includes the build and protocol versions, `instance_id`, `pid`, effective `data_dir` and `config_path`, `draining`, and `busy`. For a managed restart, `202` acknowledges that writers have been released and the process is stopping. `409` with `service_busy` includes the active work in `busy`. The managed client starts the replacement after the previous process releases its service lease.
+The status response includes the build and protocol versions, `instance_id`, `pid`, effective `data_dir` and `config_path`, `draining`, and `busy`. For a managed restart, `202` acknowledges that writers have been released and the process is stopping. `409` with `service_busy` includes active work such as running Jobs in `busy`. The managed client starts the replacement after the previous process releases its service lease.
 
 `GET /service/model-default-plan` is available only on a managed service with an active config file. It requires the usual bearer authentication and loopback/origin checks, returns `Cache-Control: no-store`, and accepts only the query fields `connection`, `model`, and `config_sha256`. The service reads its active config file and validates the requested route in the service process environment. `config_sha256` must match the exact bytes held by the client. The response contains only `tier`, `overwrite_user_default`, and `config_sha256`; it neither writes the file nor resolves credentials or sends a model request. The client remains responsible for the local, guarded config edit. A changed config, unusable route, unmanaged service, or unavailable config is rejected with a generic error.
 
@@ -58,7 +63,7 @@ Use `create: {}` for the configured default settings. Supply initial model setti
 
 | Command `type` | Additional fields | Effect |
 |---|---|---|
-| `send` | `text`, optional `timing`, optional `create` | Durable delivery. The default `steer` allows the next safe model-request boundary. `next_turn` waits for the next Turn. |
+| `send` | `text`, optional `timing`, `create`, and `values` | Durable delivery. The default `steer` allows the next safe model-request boundary. `next_turn` waits for the next Turn. |
 | `create_agent` | `config` | Create the addressed Agent with independent context. |
 | `configure` | `config` | Change model or defaults at a safe boundary. |
 | `reply_question` | `request_id`, `text` | Answer the exact pending question. |
@@ -119,7 +124,23 @@ To answer `ask_user` or a deferred tool authorization, use the request ID from t
 
 `/events?workspace=...&after=0&limit=100` returns `events` and `next_after`. The raw event page is for auditing. Each record has an `id` and `payload`. An optional `agent` filter applies within the scanned page, and `next_after` advances even if that page has no matches. See [Session events](events.md) for the journal schema.
 
-Read a known tool output by its ID in `/outputs/{output_id}`, passing the workspace and optional `offset` and `max_bytes`. Use `search` for a literal match within the range. The response wraps the chunk in `output`. Pass `output.next_offset` to continue when `output.has_more` is true. [Retained output](tools.md)
+Read a known tool output by its ID in `/outputs/{output_id}`, passing `workspace` and optionally `agent` (default `main`), `offset` and `max_bytes`. The Agent must own or have received the output. Use `search` for a literal match within the range. The response wraps the chunk in `output`. Pass `output.next_offset` to continue when `output.has_more` is true. [Retained output](tools.md)
+
+## Background Jobs
+
+All Job routes require `workspace` and `agent` query parameters. `GET /sessions/{id}/jobs` returns `{ "jobs": [...] }` with metadata for the Agent's recent Jobs and all running Jobs. A Job lookup returns the snapshot directly, including the terminal `result` when available. Use `output_id`, when present, to read the retained command output through the output endpoint. An unknown Job ID or a Job belonging to another Agent returns `404` with `job_not_found`.
+
+`DELETE /sessions/{id}/jobs/{job_id}` waits for the targeted execution to settle and returns the resulting snapshot. Repeating the request for a terminal Job returns its existing result. Both GET routes can read a closed Session without opening it. A DELETE for an unsettled Job in a Session that this server has not opened returns `409` with `job_not_active`.
+
+The owning Agent's history and observation stream include a `job_finished` entry with `job_id`, `status`, `summary`, the original `turn` and any `output_id`. This entry can arrive after its Turn settles.
+
+## Named values
+
+`GET /sessions/{id}/values?workspace=...&agent=...` returns `{ "values": [...] }`. Each item contains `name`, `kind`, and `reference` (`id`, `offset`, `bytes`). Read its payload through the output endpoint with the same Agent.
+
+`PUT /sessions/{id}/values/{name}` takes a JSON body with `workspace`, `agent`, `source`, and optional `replace` (default `false`). The source object carries `kind` and `value`. Supported kinds are `text` for a UTF-8 string, `json` for a JSON value, `bytes` for an array of byte values, and `output` for an existing output ID. For a new Session, pass `create` with the initial `main` Agent configuration to save before the first input. The response contains the saved value metadata.
+
+On `send` to an existing Agent, `values` can carry the selected `reference` objects. The command binds those exact references to the submitted input. [Named Session values](tools.md#named-session-values)
 
 ## Discover models and workspaces
 

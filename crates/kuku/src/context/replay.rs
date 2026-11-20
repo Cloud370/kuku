@@ -5,7 +5,9 @@ use crate::conversation::address::ConversationAddress;
 
 use super::message::{CanonicalMessage, MessageBlock, ToolResult, ToolUse};
 use super::revert::filter_rolled_back_events;
-use crate::event::{EventPayload, StoredEvent};
+use crate::event::{EventPayload, ModelStopReason, StoredEvent};
+
+pub(crate) const SUPPLIED_FULL_WRITE: &str = "supplied_full_write";
 
 struct PendingToolCall {
     index: u64,
@@ -30,6 +32,7 @@ struct ResponseGroup {
     tool_calls: BTreeMap<String, PendingToolCall>,
     tool_results: BTreeMap<String, ToolResult>,
     replay: Vec<MessageBlock>,
+    suppress_thinking: bool,
 }
 
 /// Reconstruct conversation history messages from a session's stored events.
@@ -70,7 +73,8 @@ pub(crate) fn effective_snapshot_events<'a>(
     conversation: &ConversationAddress,
 ) -> Vec<&'a StoredEvent> {
     let filtered = filter_rolled_back_events(events);
-    let suppressed_turns = if is_session_runtime(events) {
+    let session_runtime = is_session_runtime(events);
+    let suppressed_turns = if session_runtime {
         HashSet::new()
     } else {
         suppressed_turns(&filtered, conversation)
@@ -88,7 +92,23 @@ pub(crate) fn effective_snapshot_events<'a>(
         handoff_start_index(&filtered, index, keep_turns, conversation)
     });
 
-    filtered[start_idx..]
+    let effective = &filtered[start_idx..];
+    let latest_response = if session_runtime {
+        None
+    } else {
+        effective
+            .iter()
+            .rfind(|event| {
+                matches!(&event.payload, EventPayload::ModelResponse {
+                turn,
+                stop_reason: None | Some(ModelStopReason::EndTurn | ModelStopReason::ToolUse),
+                ..
+            } if !suppressed_turns.contains(turn))
+                    && event_belongs_to_history_conversation(&event.payload, conversation)
+            })
+            .map(|event| event.id)
+    };
+    effective
         .iter()
         .copied()
         .filter(|event| {
@@ -105,11 +125,25 @@ pub(crate) fn effective_snapshot_events<'a>(
                     structured: Some(structured),
                     ..
                 } if status == "ok"
-                    && structured["kind"] == "file_content"
-                    && structured["cached"] != true
+                    && ((structured["kind"] == "file_content" && structured["cached"] != true)
+                        || ((session_runtime || latest_response.is_some_and(|id| event.id < id))
+                            && supplied_file_version(structured).is_some()))
             )
         })
         .collect()
+}
+
+pub(crate) fn supplied_file_version(structured: &serde_json::Value) -> Option<(&str, &str)> {
+    if structured[SUPPLIED_FULL_WRITE] != true
+        || structured["kind"] != "file_write"
+        || structured["commit_state"] != "committed"
+    {
+        return None;
+    }
+    Some((
+        structured["canonical_path"].as_str()?,
+        structured["content_hash_after"].as_str()?,
+    ))
 }
 
 fn rebuild_history_internal(
@@ -208,10 +242,18 @@ fn rebuild_history_internal(
                 current_group.request_id = Some(request_id.into());
                 current_group.assistant_source_event_id = Some(event.id);
                 if let Ok(protocol) = serde_json::from_value(value["protocol"].clone()) {
-                    current_group.replay.push(MessageBlock::ProviderReplay {
-                        protocol,
-                        value: value["value"].clone(),
-                    });
+                    let replay = value["value"].clone();
+                    if protocol == crate::config::ProviderFormat::Anthropic
+                        && replay["role"] == "assistant"
+                        && replay["content"].as_array().is_some_and(Vec::is_empty)
+                    {
+                        current_group.suppress_thinking = true;
+                    } else {
+                        current_group.replay.push(MessageBlock::ProviderReplay {
+                            protocol,
+                            value: replay,
+                        });
+                    }
                 }
             }
             EventPayload::MessageUser {
@@ -636,7 +678,9 @@ fn flush_group(messages: &mut Vec<(CanonicalMessage, u64)>, group: &mut Response
 
     let mut assistant_blocks = Vec::new();
     assistant_blocks.append(&mut group.replay);
-    if let Some(thinking) = group.thinking.take().filter(|t| !t.is_empty()) {
+    if group.suppress_thinking {
+        group.thinking = None;
+    } else if let Some(thinking) = group.thinking.take().filter(|t| !t.is_empty()) {
         assistant_blocks.push(MessageBlock::Thinking(thinking));
     }
     if let Some(text) = group.text.take().filter(|text| !text.is_empty()) {
@@ -681,6 +725,7 @@ fn flush_group(messages: &mut Vec<(CanonicalMessage, u64)>, group: &mut Response
     group.request_id = None;
     group.assistant_source_event_id = None;
     group.tool_result_source_event_id = None;
+    group.suppress_thinking = false;
 }
 
 fn cancelled_tool_result(tool_call_id: &str) -> ToolResult {

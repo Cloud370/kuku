@@ -1,32 +1,42 @@
 use std::io;
 use std::path::Path;
-use std::process::Stdio;
+use std::process::{ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio::process::{Child, Command};
+use tokio::process::Child;
 use tokio::sync::{mpsc, Notify};
 use tokio::time::{sleep_until, timeout, Duration, Instant as TokioInstant};
 
+use crate::execution::CommandTermination;
+use crate::permission::gate::blocked_command_reason;
 use crate::tool::ToolResultEnvelope;
 
 use output::{read_output, OutputLimits, OutputRead, OutputStream, OutputWriter};
 use process::ProcessTree;
 use render::render_command_result;
+use request::{run_command_request, CommandRequest};
 
-mod encoding;
+pub(crate) use request::{command_permission_candidate, prepare_command_args};
+pub(crate) use shell::available_shells;
+
+pub(crate) mod encoding;
+#[cfg(unix)]
+mod native;
 pub(crate) mod output;
 mod process;
 mod render;
+mod reports;
+mod request;
+mod shell;
 
 #[cfg(all(test, windows))]
 mod windows_tests;
 
 const RUN_COMMAND_MAX_CHARS: usize = 80_000;
-const RUN_COMMAND_TIMEOUT_CAP_SECONDS: u64 = 600;
 const READ_BUFFER_BYTES: usize = 8192;
 const CLEANUP_TIMEOUT: Duration = Duration::from_secs(1);
 static OUTPUT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -37,18 +47,27 @@ pub(crate) enum CommandEvent {
     Stderr(String),
 }
 
-struct CommandRequest {
-    command: String,
-    timeout_seconds: u64,
-}
-
 #[derive(Default)]
 struct CommandOutcome {
-    exit_code: Option<i32>,
+    exit_status: Option<ExitStatus>,
+    started: bool,
+    start_error: Option<(CommandTermination, String)>,
     timed_out: bool,
     cancelled: bool,
     cleanup_incomplete: bool,
     dropped_events: u64,
+}
+
+enum CommandView {
+    Model,
+    Script { host_bytes: usize },
+}
+
+struct CommandCapture<'a> {
+    dir: &'a Path,
+    id: &'a str,
+    limits: OutputLimits,
+    view: CommandView,
 }
 
 pub(crate) async fn run_command(
@@ -57,6 +76,11 @@ pub(crate) async fn run_command(
     event_tx: Option<mpsc::Sender<CommandEvent>>,
     cancel: Option<Arc<Notify>>,
 ) -> ToolResultEnvelope {
+    let definition = crate::tool::registry::run_command_definition(&available_shells(), false);
+    let mut args = args.clone();
+    if let Err(result) = prepare_command_args(&mut args, workspace, &definition) {
+        return result;
+    }
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -64,7 +88,7 @@ pub(crate) async fn run_command(
     let sequence = OUTPUT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let output_id = format!("command-{}-{timestamp}-{sequence}", std::process::id());
     run_command_with_output(
-        args,
+        &args,
         workspace,
         event_tx,
         cancel,
@@ -84,32 +108,70 @@ pub(crate) async fn run_command_with_output(
     output_id: &str,
     limits: OutputLimits,
 ) -> ToolResultEnvelope {
+    run_command_to(
+        args,
+        workspace,
+        event_tx,
+        cancel,
+        CommandCapture {
+            dir: output_dir,
+            id: output_id,
+            limits,
+            view: CommandView::Model,
+        },
+    )
+    .await
+}
+
+pub(crate) async fn run_command_for_script(
+    args: &Value,
+    workspace: &Path,
+    cancel: Arc<Notify>,
+    output_dir: &Path,
+    output_id: &str,
+    limits: OutputLimits,
+    host_bytes: usize,
+) -> ToolResultEnvelope {
+    run_command_to(
+        args,
+        workspace,
+        None,
+        Some(cancel),
+        CommandCapture {
+            dir: output_dir,
+            id: output_id,
+            limits,
+            view: CommandView::Script { host_bytes },
+        },
+    )
+    .await
+}
+
+async fn run_command_to(
+    args: &Value,
+    workspace: &Path,
+    event_tx: Option<mpsc::Sender<CommandEvent>>,
+    cancel: Option<Arc<Notify>>,
+    output: CommandCapture<'_>,
+) -> ToolResultEnvelope {
     let cancel = cancel.unwrap_or_else(|| Arc::new(Notify::new()));
     let cancelled = cancel.notified();
     tokio::pin!(cancelled);
     cancelled.as_mut().enable();
-    let request = match run_command_request(args) {
+    let request = match run_command_request(args, workspace) {
         Ok(request) => request,
         Err(result) => return result,
     };
-    if let Some(reason) = blocked_command_reason(&request.command) {
+    if let Some(reason) = blocked_command_reason(&request.invocation) {
         return ToolResultEnvelope::blocked(
             format!("blocked by command hard guard: {reason}"),
             format!("blocked by command hard guard: {reason}"),
         );
     }
-    let workspace = match workspace.canonicalize() {
-        Ok(path) => path,
-        Err(_) => {
-            return ToolResultEnvelope::error(
-                "failed: workspace not found",
-                "workspace path does not exist",
-            )
-        }
-    };
     let started = Instant::now();
-    let mut output = match OutputWriter::create(output_dir, output_id, limits).await {
-        Ok(output) => output,
+    let mut writer = match OutputWriter::create_command(output.dir, output.id, output.limits).await
+    {
+        Ok(writer) => writer,
         Err(error) => {
             return ToolResultEnvelope::error(
                 format!("failed: output create: {error}"),
@@ -130,53 +192,61 @@ pub(crate) async fn run_command_with_output(
             ..CommandOutcome::default()
         }
     } else {
-        match execute_command(
-            &request,
-            &workspace,
-            &mut output,
-            event_tx,
-            cancelled.as_mut(),
-        )
-        .await
-        {
+        match execute_command(&request, &mut writer, event_tx, cancelled.as_mut()).await {
             Ok(outcome) => outcome,
             Err(result) => return result,
         }
     };
-    let metadata = match output.finish(outcome.cleanup_incomplete).await {
-        Ok(metadata) => metadata,
+    let capture = match writer.finish_command(outcome.cleanup_incomplete).await {
+        Ok(result) => result,
         Err(error) => return output_error("sync", error, outcome.cleanup_incomplete),
     };
-    render_command_result(
-        &request,
-        outcome,
-        metadata,
-        started.elapsed(),
-        output_dir,
-        output_id,
-        limits,
-    )
+    render_command_result(&request, outcome, capture, started.elapsed(), output)
 }
 
 async fn execute_command(
     request: &CommandRequest,
-    workspace: &Path,
     output: &mut OutputWriter,
     event_tx: Option<mpsc::Sender<CommandEvent>>,
     cancelled: std::pin::Pin<&mut tokio::sync::futures::Notified<'_>>,
 ) -> Result<CommandOutcome, ToolResultEnvelope> {
-    let mut command = shell_command(&request.command);
-    command
-        .current_dir(workspace)
+    let mut prepared = match request.command() {
+        Ok(command) => command,
+        Err(error) => {
+            let termination = if error.kind() == io::ErrorKind::NotFound {
+                CommandTermination::ProgramMissing
+            } else {
+                CommandTermination::StartFailed
+            };
+            return Ok(CommandOutcome {
+                start_error: Some((termination, error.to_string())),
+                ..CommandOutcome::default()
+            });
+        }
+    };
+    prepared
+        .command
+        .current_dir(&request.cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let (mut child, mut tree) = ProcessTree::spawn(&mut command).map_err(|error| {
-        ToolResultEnvelope::error(
-            format!("failed: command execution: {error}"),
-            format!("command could not start: {error}"),
-        )
-    })?;
+    let (mut child, mut tree) = match ProcessTree::spawn(&mut prepared.command) {
+        Ok(process) => process,
+        Err(error) => {
+            let termination = if error.kind() == io::ErrorKind::NotFound
+                && request.cwd.is_dir()
+                && !prepared.executable_exists(&request.cwd)
+            {
+                CommandTermination::ProgramMissing
+            } else {
+                CommandTermination::StartFailed
+            };
+            return Ok(CommandOutcome {
+                start_error: Some((termination, error.to_string())),
+                ..CommandOutcome::default()
+            });
+        }
+    };
     let mut capture =
         capture_command(&mut child, &mut tree, request, output, &event_tx, cancelled).await;
     if child.id().is_some() {
@@ -191,7 +261,7 @@ async fn execute_command(
             .map_err(cleanup_error)?;
         stop.map_err(cleanup_error)?;
         if let Ok(outcome) = &mut capture {
-            outcome.exit_code = status.code();
+            outcome.exit_status = Some(status);
         }
     }
     capture
@@ -209,10 +279,15 @@ async fn capture_command(
     let mut stderr = child.stderr.take();
     let mut stdout_buf = [0; READ_BUFFER_BYTES];
     let mut stderr_buf = [0; READ_BUFFER_BYTES];
-    let mut outcome = CommandOutcome::default();
+    let mut outcome = CommandOutcome {
+        started: true,
+        ..CommandOutcome::default()
+    };
     let mut exited = false;
     let mut stopping = false;
-    let deadline = TokioInstant::now() + Duration::from_secs(request.timeout_seconds);
+    let deadline = request
+        .timeout_seconds
+        .map(|seconds| TokioInstant::now() + Duration::from_secs(u64::from(seconds)));
     let mut cleanup_deadline = None;
     while !exited || stdout.is_some() || stderr.is_some() {
         tokio::select! {
@@ -222,14 +297,14 @@ async fn capture_command(
                 tree.request_stop(child).map_err(cleanup_error)?;
                 cleanup_deadline = Some(TokioInstant::now() + CLEANUP_TIMEOUT);
             }
-            _ = sleep_until(deadline), if !stopping && !exited => {
+            _ = wait_deadline(deadline), if !stopping && !exited => {
                 outcome.timed_out = true;
                 stopping = true;
                 tree.request_stop(child).map_err(cleanup_error)?;
                 cleanup_deadline = Some(TokioInstant::now() + CLEANUP_TIMEOUT);
             }
             status = tree.wait(child), if !exited => {
-                outcome.exit_code = status.map_err(cleanup_error)?.code();
+                outcome.exit_status = Some(status.map_err(cleanup_error)?);
                 exited = true;
                 cleanup_deadline = Some(TokioInstant::now() + CLEANUP_TIMEOUT);
             }
@@ -247,10 +322,10 @@ async fn capture_command(
                     outcome.dropped_events += emit_event(event_tx, OutputStream::Stderr, &stderr_buf[..bytes]);
                 }
             }
-            _ = wait_cleanup(cleanup_deadline), if cleanup_deadline.is_some() => {
+            _ = wait_deadline(cleanup_deadline), if cleanup_deadline.is_some() => {
                 if !exited {
                     if let Some(status) = tree.try_wait(child).map_err(cleanup_error)? {
-                        outcome.exit_code = status.code();
+                        outcome.exit_status = Some(status);
                         exited = true;
                         cleanup_deadline = Some(TokioInstant::now() + CLEANUP_TIMEOUT);
                         continue;
@@ -274,7 +349,7 @@ async fn read_stream<P: AsyncRead + Unpin>(
     }
 }
 
-async fn wait_cleanup(deadline: Option<TokioInstant>) {
+async fn wait_deadline(deadline: Option<TokioInstant>) {
     match deadline {
         Some(deadline) => sleep_until(deadline).await,
         None => std::future::pending().await,
@@ -314,138 +389,6 @@ fn output_error(operation: &str, error: io::Error, cleanup_incomplete: bool) -> 
         "error",
         cleanup_incomplete,
     )
-}
-
-fn run_command_request(args: &Value) -> Result<CommandRequest, ToolResultEnvelope> {
-    let Some(command) = args.get("command").and_then(Value::as_str) else {
-        return Err(ToolResultEnvelope::error(
-            "failed: missing command",
-            "run_command requires command",
-        ));
-    };
-    if command.trim().is_empty() {
-        return Err(ToolResultEnvelope::error(
-            "failed: command is empty",
-            "command must not be empty",
-        ));
-    }
-    let Some(timeout_seconds) = args.get("timeout").and_then(Value::as_u64) else {
-        return Err(ToolResultEnvelope::error(
-            "failed: missing timeout",
-            "run_command requires timeout in seconds",
-        ));
-    };
-    if timeout_seconds == 0 {
-        return Err(ToolResultEnvelope::error(
-            "failed: timeout must be >= 1",
-            "timeout must be >= 1",
-        ));
-    }
-    if timeout_seconds > RUN_COMMAND_TIMEOUT_CAP_SECONDS {
-        return Err(ToolResultEnvelope::error(
-            format!("failed: timeout must be <= {RUN_COMMAND_TIMEOUT_CAP_SECONDS}"),
-            format!("timeout must be <= {RUN_COMMAND_TIMEOUT_CAP_SECONDS}"),
-        ));
-    }
-
-    Ok(CommandRequest {
-        command: command.to_string(),
-        timeout_seconds,
-    })
-}
-
-fn blocked_command_reason(command: &str) -> Option<&'static str> {
-    let normalized = command
-        .to_ascii_lowercase()
-        .replace("&&", "\x00")
-        .replace("||", "\n")
-        .replace(['&', ';', '\x00'], "\n");
-    for segment in normalized_command_segments(&normalized) {
-        for (prefix, reason) in [
-            ("git reset --hard", "git reset --hard discards local work"),
-            ("git clean -f", "git clean deletes untracked files"),
-            ("rm -rf", "recursive force delete is destructive"),
-            ("rm -fr", "recursive force delete is destructive"),
-            ("rmdir /s /q", "recursive force delete is destructive"),
-            ("del /s", "recursive delete is destructive"),
-            (
-                "remove-item -recurse -force",
-                "recursive force delete is destructive",
-            ),
-            (
-                "cargo publish",
-                "publish affects external package registries",
-            ),
-            ("npm publish", "publish affects external package registries"),
-            (
-                "pnpm publish",
-                "publish affects external package registries",
-            ),
-            (
-                "yarn publish",
-                "publish affects external package registries",
-            ),
-            ("bun publish", "publish affects external package registries"),
-            ("npm run deploy", "deploy affects external systems"),
-            ("pnpm deploy", "deploy affects external systems"),
-            ("yarn deploy", "deploy affects external systems"),
-            ("make deploy", "deploy affects external systems"),
-            ("cargo release", "release affects external systems"),
-        ] {
-            if segment.starts_with(prefix) {
-                return Some(reason);
-            }
-        }
-    }
-    None
-}
-
-fn normalized_command_segments(command: &str) -> Vec<String> {
-    command
-        .lines()
-        .map(str::trim)
-        .filter(|segment| !segment.is_empty())
-        .map(|segment| segment.strip_prefix("sudo ").unwrap_or(segment).trim())
-        .flat_map(unwrap_shell_wrapper)
-        .collect()
-}
-
-fn unwrap_shell_wrapper(segment: &str) -> Vec<String> {
-    for prefix in [
-        "sh -c ",
-        "bash -lc ",
-        "zsh -lc ",
-        "cmd /c ",
-        "powershell -command ",
-        "pwsh -command ",
-    ] {
-        if let Some(rest) = segment.strip_prefix(prefix) {
-            let rest = rest.trim().trim_matches('"').trim_matches('\'');
-            return rest
-                .lines()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(|value| value.strip_prefix("sudo ").unwrap_or(value).trim())
-                .map(ToString::to_string)
-                .collect();
-        }
-    }
-    vec![segment.to_string()]
-}
-
-#[cfg(windows)]
-fn shell_command(command: &str) -> Command {
-    let mut child = Command::new("cmd");
-    // NOTE: /S strips the enclosing quotes before cmd parses the original command text.
-    child.args(["/S", "/C"]).raw_arg(format!("\"{command}\""));
-    child
-}
-
-#[cfg(not(windows))]
-fn shell_command(command: &str) -> Command {
-    let mut child = Command::new("sh");
-    child.arg("-c").arg(command);
-    child
 }
 
 #[cfg(test)]

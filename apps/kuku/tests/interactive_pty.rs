@@ -77,11 +77,36 @@ fn main() -> Result<(), Box<dyn Error>> {
         print!("{}", kuku::test_support::anthropic_sse_response(message));
         return Ok(());
     }
+    if binary == "--workspace-log" {
+        workspace_log()?;
+        std::process::exit(7);
+    }
     #[cfg(windows)]
     if binary == "--check-console" {
         return check_windows_console(args.next().ok_or("missing kuku binary")?, args);
     }
     host_terminal(binary, args)
+}
+
+fn workspace_log() -> io::Result<()> {
+    let mut output = io::BufWriter::new(io::stdout().lock());
+    for line in 1..=8193 {
+        let (level, code, component) = match line {
+            23 | 7103 => ("ERROR", "E_SCHEMA", "入口"),
+            3119 => ("ERROR", "E_DISK", "store"),
+            8193 => ("ERROR", "E_TIMEOUT", "worker"),
+            _ => ("INFO", "OK", "worker"),
+        };
+        writeln!(
+            output,
+            "{{\"line\":{line},\"level\":\"{level}\",\"code\":\"{code}\",\"component\":\"{component}\",\"message\":\"Processed input and recorded its delivery outcome\"}}"
+        )?;
+    }
+    output.flush()?;
+    writeln!(
+        io::stderr().lock(),
+        "fixture replay completed with rejected records"
+    )
 }
 
 fn host_terminal(

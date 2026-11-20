@@ -12,13 +12,12 @@ use crate::editor::Editor;
 use crate::jobs::{Job, Search, Selection};
 use crate::keys::{AgentDirection, Shortcut};
 use crate::menu::{Choice, ChoiceKind, CommandMenu, Picker, PickerKind, Prompt, PromptKind};
-use crate::output::OutputViewer;
 use crate::text::{shorten, single_line, TAB};
-use crate::transcript::ToolView;
 
 mod contextual;
 mod inline;
 mod input;
+mod inspect;
 mod messages;
 mod picker;
 mod pointer;
@@ -29,6 +28,10 @@ const MOUSE_SCROLL_LINES: isize = 3;
 
 impl App {
     pub(crate) fn event(&mut self, event: Event, screen: &Buffer) {
+        if self.credential_repair.is_some() {
+            self.credential_repair_input(event);
+            return;
+        }
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => self.key(key),
             Event::Paste(text) => self.paste(&text),
@@ -88,6 +91,9 @@ impl App {
     }
     fn wheel(&mut self, mouse: MouseEvent, amount: isize) {
         self.text_selection.cancel_drag();
+        if self.move_rewind_selection(amount) {
+            return;
+        }
         match &mut self.modal {
             Some(Modal::Help) => {}
             Some(Modal::Output(viewer)) => {
@@ -146,7 +152,10 @@ impl App {
         let editing = self.composer_focused();
         match key {
             key if Shortcut::CLEAR.matches(key) => {
-                if self.pane_mut().draft.take_text().is_empty() && key.kind == KeyEventKind::Press {
+                let pane = self.pane_mut();
+                let empty = pane.draft.take_text().is_empty() && pane.value_attachments.is_empty();
+                pane.value_attachments.clear();
+                if empty && key.kind == KeyEventKind::Press {
                     self.exit();
                 }
             }
@@ -156,10 +165,10 @@ impl App {
             key if Shortcut::REPLY.matches(key) => self.focus_request(),
             key if Shortcut::ESCAPE.matches(key) => self.rewind_escape(),
             key if editing && Shortcut::NEXT_TURN.matches(key) => self.send(Timing::NextTurn),
-            key if editing && Shortcut::ENTER.matches(key) => self.send(Timing::Steer),
+            key if editing && Shortcut::ENTER.matches(key) => self.submit_composer(),
             key if Shortcut::UP.matches(key)
                 && self.pane().draft.text().is_empty()
-                && self.queued_for_edit().next().is_some() =>
+                && self.has_queued_input() =>
             {
                 self.focus_queued()
             }
@@ -238,7 +247,20 @@ impl App {
                 self.rewind_message(event_id, text, restore_files);
                 return;
             }
-            if prompt.editor.text().trim().is_empty() {
+            let empty = if matches!(prompt.kind, PromptKind::SavePaste) {
+                prompt.editor.text().is_empty()
+            } else {
+                prompt.editor.text().trim().is_empty()
+            };
+            if empty {
+                return;
+            }
+            if let PromptKind::SaveValue { output_id } = &prompt.kind {
+                let output_id = output_id.clone();
+                let name = prompt.editor.text().to_owned();
+                if self.save_value(&name, output_id) {
+                    self.modal = None;
+                }
                 return;
             }
             if let PromptKind::QueuedInput { input_command_id } = &prompt.kind {
@@ -288,6 +310,8 @@ impl App {
                         );
                     }
                 }
+                PromptKind::SavePaste => self.name_paste(content.to_owned()),
+                PromptKind::SaveValue { .. } => unreachable!("saved value handled above"),
                 PromptKind::QueuedInput { .. } => unreachable!("queued input edited above"),
                 PromptKind::RewindMessage { .. } => unreachable!("rewind confirmed above"),
             }
@@ -309,6 +333,12 @@ impl App {
         let Some(Modal::Output(viewer)) = &mut self.modal else {
             return;
         };
+        if Shortcut::NAME_OUTPUT.matches(key) {
+            if let Some(id) = viewer.tool.output_id.clone() {
+                self.prompt_value_name(Some(id));
+            }
+            return;
+        }
         let page = viewer.page_size() as isize;
         let offset = match key {
             key if Shortcut::PAGE_UP.matches(key) => viewer.scroll(-page),
@@ -391,6 +421,13 @@ impl App {
     }
 
     fn choose(&mut self, picker: PickerKind, choice: ChoiceKind, ticket: u64) {
+        if matches!(picker, PickerKind::Rewind) && !self.rewind_picker_current(ticket) {
+            return;
+        }
+        if let ChoiceKind::RewindMessage { event_id, turn, .. } = &choice {
+            self.load_rewind_source(ticket, *event_id, *turn);
+            return;
+        }
         self.modal = None;
         self.effects.push(Job::ClosePicker);
         match choice {
@@ -447,22 +484,8 @@ impl App {
                 config.reasoning_effort = effort;
                 self.configure(config);
             }
-            ChoiceKind::RewindMessage {
-                event_id,
-                turn,
-                text,
-            } => {
-                self.rewind_restore_files = false;
-                self.modal = Some(Modal::Prompt(Prompt {
-                    kind: PromptKind::RewindMessage {
-                        event_id,
-                        text: text.clone(),
-                    },
-                    title: format!("Rewind to message · Turn {turn}"),
-                    instructions: rewind_instructions(&text, false),
-                    instructions_top: 0,
-                    editor: Editor::default(),
-                }));
+            ChoiceKind::RewindMessage { .. } => {
+                unreachable!("rewind messages load their source before confirmation")
             }
             ChoiceKind::MessageEntry(message) => self.open_message_actions(message),
             ChoiceKind::MessageAction { message, action } => {
@@ -484,6 +507,13 @@ impl App {
             ChoiceKind::RestoreRejected(id) => self.restore_rejected(&id),
             ChoiceKind::Reconnect => self.reconnect(),
             ChoiceKind::Detail { key, message } => self.toggle_detail_choice(key, message),
+            ChoiceKind::Tool(tool) => self.show_output(tool),
+            ChoiceKind::BackgroundJob(job) => self.open_background_job(*job),
+            ChoiceKind::CancelBackground(id) => self.cancel_background_job(id),
+            ChoiceKind::Value(value) => self.open_value(value),
+            ChoiceKind::AttachValue(value) => self.attach_value(value),
+            ChoiceKind::ReadValue(value) => self.read_value(value),
+            ChoiceKind::ClearValues => self.clear_values(),
             ChoiceKind::Restart => self.restart(),
         }
     }
@@ -496,6 +526,7 @@ impl App {
                 self.search(true);
             }
             CommandMenu::Agents => self.open_agents(),
+            CommandMenu::Jobs => self.open_jobs(),
             CommandMenu::Model => {
                 self.clear_model_default_if_closed();
                 let save_default = self.model_default_choice();
@@ -504,6 +535,8 @@ impl App {
             }
             CommandMenu::Thinking => self.open_thinking(),
             CommandMenu::StatusLine => self.open_statusline(),
+            CommandMenu::Save => self.open_value_save(),
+            CommandMenu::Values => self.open_values(),
             CommandMenu::Server => self.open_server(),
             CommandMenu::Web if self.require_service() => {
                 self.effects.push(Job::Web(
@@ -622,21 +655,6 @@ impl App {
         self.pane_mut().pending_reply_copy = None;
         self.pane_mut().pending_selected_reply_copy = None;
         self.effects.push(Job::Copy(text));
-    }
-
-    fn show_output(&mut self, tool: ToolView) {
-        let id = self.modal_id();
-        self.modal = Some(Modal::Output(Box::new(OutputViewer::new(id, tool))));
-        self.read_output(0);
-    }
-
-    fn read_output(&mut self, offset: u64) {
-        if let Some(Modal::Output(viewer)) = &self.modal {
-            if let Some(id) = &viewer.tool.output_id {
-                self.effects
-                    .push(Job::Output(self.selection(), viewer.id, id.clone(), offset));
-            }
-        }
     }
 
     fn open_server(&mut self) {
@@ -883,6 +901,8 @@ fn move_cursor(editor: &mut Editor, key: KeyEvent, width: usize, multiline: bool
 #[cfg(test)]
 #[path = "interaction/message_tests.rs"]
 mod message_tests;
+#[cfg(test)]
+mod rewind_history_tests;
 #[cfg(test)]
 mod rewound_copy_tests;
 #[cfg(test)]

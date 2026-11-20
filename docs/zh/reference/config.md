@@ -45,10 +45,12 @@ HTTP 服务默认读取所选数据目录下的 `config.toml`，也可通过 `--
 | `reasoning_effort` | string | 原生思考值，覆盖 `think` |
 | `service_tier` | string | 独立于思考设置的原生服务选项 |
 | `context_window` | integer | 最大输入 token 数 |
-| `max_output_tokens` | integer | 最大输出 token 数 |
+| `max_output_tokens` | 正整数，可省略 | 此 tier 的单次生成上限。供应商把推理 token 计入输出时，上限也包含推理 |
 | `purpose` | string | 面向人的 tier 摘要 |
 
 默认 tier 为 `strong`、`balanced` 和 `light`。TUI 中显式的 **Set current model as default** 操作会复用匹配的 tier；没有匹配项时才创建或覆盖一个普通的 `user-default` tier。`user-default` 没有特殊解析优先级，和其他 tier 一样由 `default_model` 选择。
+
+Chat 和 Responses 省略 `max_output_tokens` 时使用上游默认值。Anthropic 原生 Messages 要求数值，内置 Sonnet 和 Haiku 预设在 TOML 中提供。自定义 Messages 连接可从 tier、Agent 或宿主获得所需数值。旧配置中显式设置的限额继续在对应 tier 生效。单次响应还受剩余上下文约束。
 
 ## `provider.<name>`
 
@@ -62,10 +64,13 @@ HTTP 服务默认读取所选数据目录下的 `config.toml`，也可通过 `--
 | `reasoning_efforts` | string[] | 覆盖该连接模型已声明的原生思考值 |
 | `service_tiers` | string[] | 覆盖该连接模型已声明的原生服务值 |
 | `routing` | table | OpenRouter 上游路由选项 |
+| `prompt_cache_scope` | `workspace`\|`session`\|`off` | Responses 提示缓存键范围，默认为 `workspace` |
 
 `api_key = "$NAME"` 只选择该环境变量。`api_key = "file:/absolute/path"` 只选择该文件；不接受相对文件引用，在请求时校验并读取文件，且两个来源之间不会自动回退。`file:` 是路径引用，不是 URL。`kuku config show` 只显示引用，不读取密钥。设置流程保存的密钥以未加密明文形式保存在 `<data-dir>/credentials/` 下的私有文件中；该目录必须位于工作区外。Unix 权限和 Windows ACL 要求见[文件布局](file-layout.md)。已有密钥文件不会自动删除。
 
 内置 `openai` 连接的 `base_url` 是 `https://api.openai.com/v1`，Responses 适配器会在末尾加上 `/responses`。使用网关时，填写该网关提供的 API 基础地址。[OpenAI Responses API](https://developers.openai.com/api/reference/resources/responses/methods/create)
+
+`prompt_cache_scope` 只影响 Responses 请求。`workspace` 将规范化的绝对工作区身份与连接、端点和模型一起哈希，因此同一工作区中的 Agent 和 Session 可以共享缓存键，同时不会发送工作区路径。`session` 使用与传输关联相同的 Session、Agent 地址和连接身份派生独立键，并纳入端点和模型以隔离路由。`off` 不发送 `prompt_cache_key`。缺少关联上下文时，适配器不会生成缓存键。这些设置都不会改变传输关联或 OpenRouter 的 `session_id`。
 
 SDK 按配置名称选择连接。多个连接可以使用同一个 `format`；单独选择协议不会选择第一条匹配连接。显式模型设置覆盖选中的 tier。选择其他连接不会携带无关默认 tier 的原生设置；显式选择的 tier 仍提供默认值，不兼容的选择会失败。
 

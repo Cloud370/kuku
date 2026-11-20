@@ -1,5 +1,8 @@
 use crate::conversation::address::ConversationAddress;
 
+const CONTEXT_OUTPUT_RESERVE_TOKENS: u32 = 8_192;
+const CONTEXT_MARGIN_TOKENS: u32 = 2_048;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum NoticeKind {
     ContextDrift {
@@ -84,23 +87,19 @@ pub(crate) struct ContextHeadroom {
 
 pub(crate) fn compute_context_headroom(
     max_context_tokens: u32,
-    reserved_output_tokens: Option<u32>,
+    max_output_tokens: Option<u32>,
     estimated_input_tokens: Option<u32>,
 ) -> ContextHeadroom {
-    let reserved_output_tokens = reserved_output_tokens.unwrap_or(8_192);
-    let reserved_margin_tokens = 2_048;
-    let remaining_input_tokens = estimated_input_tokens.map(|used| {
-        max_context_tokens
-            .saturating_sub(reserved_output_tokens)
-            .saturating_sub(reserved_margin_tokens)
-            .saturating_sub(used)
-    });
+    let reserved_output_tokens = max_output_tokens
+        .unwrap_or(CONTEXT_OUTPUT_RESERVE_TOKENS)
+        .min(CONTEXT_OUTPUT_RESERVE_TOKENS);
     let budget = max_context_tokens
         .saturating_sub(reserved_output_tokens)
-        .saturating_sub(reserved_margin_tokens);
+        .saturating_sub(CONTEXT_MARGIN_TOKENS);
+    let remaining_input_tokens = estimated_input_tokens.map(|used| budget.saturating_sub(used));
     let tier = match remaining_input_tokens {
-        Some(remaining) if remaining < budget / 3 => ContextBudgetTier::Tight,
-        Some(remaining) if remaining < budget * 2 / 3 => ContextBudgetTier::Normal,
+        Some(remaining) if budget == 0 || remaining < budget / 3 => ContextBudgetTier::Tight,
+        Some(remaining) if remaining < budget - budget.div_ceil(3) => ContextBudgetTier::Normal,
         Some(_) => ContextBudgetTier::Roomy,
         None => ContextBudgetTier::Normal,
     };
@@ -108,7 +107,7 @@ pub(crate) fn compute_context_headroom(
     ContextHeadroom {
         max_context_tokens,
         reserved_output_tokens,
-        reserved_margin_tokens,
+        reserved_margin_tokens: CONTEXT_MARGIN_TOKENS,
         estimated_input_tokens,
         remaining_input_tokens,
         tier,
@@ -155,5 +154,27 @@ mod tests {
     fn headroom_maps_large_remaining_budget_to_roomy() {
         let headroom = compute_context_headroom(200_000, Some(8_000), Some(20_000));
         assert_eq!(headroom.tier, ContextBudgetTier::Roomy);
+    }
+
+    #[test]
+    fn headroom_uses_the_smaller_output_cap_on_a_short_context() {
+        let headroom = compute_context_headroom(10_000, Some(1_024), Some(128));
+        assert_eq!(1_024, headroom.reserved_output_tokens);
+        assert_eq!(Some(6_800), headroom.remaining_input_tokens);
+    }
+
+    #[test]
+    fn headroom_reserves_the_planning_budget_for_large_or_undeclared_output() {
+        let default = compute_context_headroom(200_000, None, Some(20_000));
+        let large = compute_context_headroom(200_000, Some(393_216), Some(20_000));
+        assert_eq!(default, large);
+        assert_eq!(Some(169_760), large.remaining_input_tokens);
+    }
+
+    #[test]
+    fn headroom_maps_an_exhausted_context_with_known_usage_to_tight() {
+        let headroom = compute_context_headroom(10_000, None, Some(128));
+        assert_eq!(Some(0), headroom.remaining_input_tokens);
+        assert_eq!(ContextBudgetTier::Tight, headroom.tier);
     }
 }

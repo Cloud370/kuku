@@ -157,6 +157,7 @@ async fn compatible_model_preview_and_first_send_leave_undeclared_reasoning_unse
     assert_eq!(200, response.status());
     let selection = response.json::<Value>().await.unwrap()["selection"].clone();
     assert_eq!("claude-haiku-4-5-20251001", selection["model"]);
+    assert_eq!(48_000, selection["max_output_tokens"]);
     assert_eq!("compatible", selection["capabilities"]["profile"]);
     assert_eq!(json!([]), selection["capabilities"]["reasoning_efforts"]);
     assert_eq!("off", selection["settings"]["requested_reasoning_effort"]);

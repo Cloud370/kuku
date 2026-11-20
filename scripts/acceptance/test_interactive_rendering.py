@@ -178,6 +178,12 @@ class TranscriptResizeSynchronizationTests(unittest.TestCase):
         self.assertFalse(rendered_running_transcript(stale, 32, markers))
         self.assertTrue(rendered_running_transcript(resized, 32, markers))
 
+        background = resized.replace("Running tools", "Running")
+        self.assertTrue(rendered_running_transcript(background, 32, markers))
+        self.assertFalse(rendered_running_transcript(
+            background.replace("Running", "Finished"), 32, markers
+        ))
+
         class DelayedResizeTerminal:
             def __init__(self):
                 self.screen = stale

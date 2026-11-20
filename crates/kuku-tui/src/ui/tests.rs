@@ -812,6 +812,7 @@ fn mouse_drag_copies_sanitized_text_from_tool_output_popup() {
             details: "before\u{001b}[2J\nExit".into(),
             diff: String::new(),
             output_id: None,
+            evidence: String::new(),
             inline_output_complete: false,
         },
     ))));

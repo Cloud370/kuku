@@ -60,6 +60,16 @@ impl Transcript {
                 skip = skip.saturating_sub(group.rows.len());
                 continue;
             }
+            if block.turn_gap {
+                if skip == 0 {
+                    lines.push(ratatui::text::Line::default());
+                    row_insets.push(0);
+                }
+                skip = skip.saturating_sub(1);
+                if lines.len() == limit {
+                    break;
+                }
+            }
             if let Some(turn) = block.heading {
                 if skip == 0 {
                     lines.push(message::render_turn(turn, width, block.user_header));

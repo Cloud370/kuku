@@ -41,6 +41,14 @@ Set the environment for the server process. If you change a key in your terminal
 
 For other string settings, you can also use `$ENV_VAR_NAME` in `config.toml`. For example, `base_url = "$KUKU_ANTHROPIC_BASE_URL"` resolves during config load.
 
+### Recover an authentication failure
+
+After a provider authentication failure in the terminal, choose **Repair credentials** with F2, then Enter. The repair is bound to that failed connection and model. On a managed local service, enter the replacement key in the masked editor and press Enter to review it. Confirm **Save credentials and restart local service** to apply the change. Only that provider's `api_key` changes; the current model choice and other configuration stay in place. The key uses the same private file storage as setup and is never copied to the composer or logs. Saving does not validate the key.
+
+If another execution keeps the service busy, **Credentials saved; service not restarted** lets you retry the safe restart later. The terminal distinguishes saved credentials from credentials applied to the current Session; it does not retry the failed request. After restart is confirmed for the same config and a new service instance, the terminal restores the same Session, Agent and draft. Use Continue or the shown recovery action to retry the retained original input explicitly, without submitting it again.
+
+For remote or token-authenticated connections, repair credentials on the server and restart it safely when required, then reconnect and continue. The terminal does not write local credentials for those connections.
+
 ## Model Tiers
 
 The default install defines three tiers:

@@ -62,9 +62,11 @@ To test a package upgrade, provide two platform archives with different executab
 
 The terminal scenarios drive an installed `kuku` on Linux and macOS through a Unix PTY, and on Windows through ConPTY. Use `--browser` with an asset-enabled binary to add the Chromium scenario. Install the Playwright Python package and its Chromium browser as configured in the [Web CI job](../../../.github/workflows/web-ci.yml). The scenarios use a controlled local model endpoint and exercise real clients and the real service without provider credentials or paid requests. The [interactive client plan](../architecture/interactive-clients.md#testing-during-development) lists the behaviors to verify at each layer. It drives Ctrl+C and menu completion through the terminal, holds a model request and a tool open to inspect their distinct states, and checks the connection indicator when the service disconnects. A controlled provider reports input, cache reads and output so the installed terminal can be checked against a known context percentage, cumulative usage and cache hit rate, alongside measured throughput and the selected Agent and directory.
 
+The maintained lifecycle scenarios repair a missing credential through the first authenticated reply, save a model default and inspect the actual model used by new and reopened Sessions, and withdraw an exact queued input with keyboard Up/Delete while preserving its draft and another queued input. They also reopen read-only rewound content and verify that it is absent from the next provider request, select an exact rewind target beyond the latest 48 committed messages, and recover from a controlled 401 through a masked credential update and safe service restart. The latter verifies that only an explicit Continue retries the retained input, once, using the replacement credential. Keyboard coverage complements the existing pointer withdrawal checks.
+
 For terminal layout comparisons, use the same fixture inputs and grid sizes for both builds. The installed scenario checks `/statusline` preview, saving, reopening and defaults, and exercises navigation among working Agents with unsent drafts. The dense transcript fixture uses at least 20 calls in one Turn, including successful operations, a missing file and a gated command. It captures wide and narrow terminal grids during tool execution and an open code fence, then verifies the completed Chinese report, retained tool facts and the unsent draft. Read the bounded `installed-interactive.log` for the terminal frames and checks. [Terminal scenarios](../../../scripts/acceptance/interactive.py)
 
-Use `--desktop` on Linux with Docker to add the Xfce Terminal and IBus Pinyin scenario. The selector builds the desktop image from Ubuntu packages and runs it in an isolated Xvfb session with only loopback networking. It drives Chinese composition, editable multiline paste, `/copy`, and terminal font zoom through the GUI. On a cold build, Docker needs access to the Ubuntu image and package repositories. The installed executable and the selector's native test helper must run in the image. `desktop/result.json` records package versions, terminal grid sizes, submitted and copied fixture text, and hashes for the bounded screenshots.
+Use `--desktop` on Linux with Docker to add the Xfce Terminal and IBus Pinyin scenario. The selector builds the desktop image from Ubuntu packages and runs it in an isolated Xvfb session with only loopback networking. It drives Chinese composition, editable multiline paste, **Messages → Copy**, and terminal font zoom through the GUI. On a cold build, Docker needs access to the Ubuntu image and package repositories. The installed executable and the selector's native test helper must run in the image. `desktop/result.json` records package versions, terminal grid sizes, submitted and copied fixture text, and hashes for the bounded screenshots.
 
 The desktop scenario reuses the dense transcript fixture to capture wide and narrow views and verify copying the report's source text. Keep those screenshots with `desktop/result.json`, alongside the action menu, model selector and status line editor captures when collected. [Desktop scenarios](../../../scripts/acceptance/desktop)
 
@@ -78,18 +80,44 @@ python3 scripts/acceptance/run.py --run-id LIVE_RUN_ID interactive --archive PAT
 
 `live-result.json` records the actual route and requests alongside the task result. The scenario checks the real project edit and test output, switching Agents, client replacement during a running tool, and handoff among the terminal, browser and script client. [Live scenario](../../../scripts/acceptance/interactive_live.py)
 
-Use `--intent deepseek` or `--intent openrouter` to check real model actions through the native terminal. The cases verify visible reply wording, exact file contents across turns, and independent delegation on the default route. The delegation case checks that the first creation request succeeds and that main receives the child's result before showing it. `--intent-case delivery` or `--intent-case delegation` runs one part of the suite.
+Use `--intent deepseek` or `--intent openrouter` to check real model actions through the native terminal. The cases verify visible reply wording, exact file contents across turns, and independent delegation. The delegation case checks that the first creation request succeeds and that main receives the child's result before showing it. `--intent-case delivery` or `--intent-case delegation` runs one part of the suite.
 
 ```bash
 python3 scripts/acceptance/run.py --run-id INTENT_RUN_ID interactive \
   --intent openrouter --intent-case delegation --binary PATH_TO_BINARY \
+  --intent-model openai/gpt-6.1-terra --intent-effort high --intent-upstream openai \
   --revision EXPECTED_GIT_COMMIT --scratch-base PATH_OUTSIDE_CHECKOUT \
   --secrets PATH_TO_CREDENTIAL_FILE --ledger PATH_TO_AUTHORIZED_LEDGER
 ```
 
-The selection accepts `--archive` in place of `--binary` and checks the installed binary's revision before reserving budget. It uses direct DeepSeek Flash or OpenRouter pinned to the OpenAI standard upstream for `openai/gpt-6-luna`. The runner enforces the recorded request and output limits, including retries. `intent/result.json` records the case checks, terminal captures, and usage. It verifies OpenRouter's reported upstream route and cost against generation receipts. Settle the reservation using the [budget ledger](#credentials-and-run-artifacts) after reviewing the result. [Intent scenarios](../../../scripts/acceptance/interactive_intent.py)
+The selection accepts `--archive` in place of `--binary` and checks the installed binary's revision before reserving budget. Its defaults are `deepseek-flash` for direct DeepSeek, `openai/gpt-6-luna` through the `openai` endpoint for OpenRouter, and `low` reasoning effort. Use `--intent-model` and `--intent-effort` to override the model and requested effort, and `--intent-upstream` to choose the exact OpenRouter endpoint tag. The runner enforces request and output limits, including retries. `intent/result.json` records case checks, terminal captures, and usage. The intent suite requires confirmation of the route. With OpenRouter it checks the reported model, upstream provider, and available cost against generation receipts. Settle the reservation using the selected ledger after reviewing the result. [Intent scenarios](../../../scripts/acceptance/interactive_intent.py) · [Credentials and run artifacts](#credentials-and-run-artifacts)
 
 Record deterministic checks, platform execution and hands-on experience separately. For hands-on release evidence, install the candidate outside the checkout, use a configured provider to read a file, make an edit and run a check, then verify the changed files, diff and tool results. Resume the same Session in the browser and another terminal. Record Linux and Windows Terminal IME, paste, copy and resize checks along with any macOS coverage. Follow the live-call requirements below for provider evidence and mark any unavailable coverage as unverified.
+
+## Workspace execution acceptance
+
+Use `workspace` to exercise the same large-log task through the public SDK example or an installed terminal client. It runs a native log fixture, checks the exact generated report and observed command facts, then reopens the Session and verifies that a named value can reproduce the report without rerunning the fixture. The product runs with an isolated `PATH`. Python drives acceptance from outside the product process. [Workspace scenario](../../../scripts/acceptance/workspace.py)
+
+```bash
+cargo build --locked -p kuku --example session_task
+python3 scripts/acceptance/run.py workspace --sdk target/debug/examples/session_task
+python3 scripts/acceptance/run.py workspace --binary PATH_TO_BINARY
+```
+
+Use a `.exe` path for the Windows build. `--archive` tests a local release archive in place of `--binary`. The selector builds the native fixture unless `--bridge` supplies an existing build. Add `--scratch-base` to select a scratch directory outside the source tree. With `--sdk`, add `--handoff-only` to seed a named report and verify that an independent reviewer reads the shared reference and reports its findings.
+
+The default uses a local deterministic provider. For live workspace acceptance, run direct DeepSeek `deepseek-flash` at `high` and cross-check OpenRouter `openai/gpt-6.1-terra` at `high` through `openai`. These are the defaults when selecting the corresponding `--provider`. Pass the matching `--secrets` and `--ledger` for each service. The following commands record each selection explicitly through the public SDK caller.
+
+```bash
+python3 scripts/acceptance/run.py --run-id WORKSPACE_DEEPSEEK_RUN workspace \
+  --sdk target/debug/examples/session_task --provider deepseek --model deepseek-flash \
+  --effort high --secrets PATH_TO_CREDENTIAL_FILE --ledger PATH_TO_DEEPSEEK_LEDGER
+python3 scripts/acceptance/run.py --run-id WORKSPACE_OPENROUTER_RUN workspace \
+  --sdk target/debug/examples/session_task --provider openrouter --model openai/gpt-6.1-terra \
+  --effort high --upstream openai --secrets PATH_TO_CREDENTIAL_FILE --ledger PATH_TO_OPENROUTER_LEDGER
+```
+
+`workspace/result.json` records task checks, accounting, the model and reasoning effort sent, and route evidence. The `workspace` selector allows `upstream_confirmed: null` when confirmation is unavailable. If OpenRouter returns no generation receipt, report the requested endpoint pin and keep the actual upstream unknown. Report the reasoning effort as requested unless the provider reports it. A confirmed route mismatch fails the run. [Credentials and run artifacts](#credentials-and-run-artifacts)
 
 ## Test ownership and evidence
 
@@ -124,18 +152,68 @@ When the caller reports `streaming`, the inspector validates its counters, first
 
 While the SDK runs, the selector samples SDK RSS/high-water RSS, CPU time and thread count separately from aggregate container CPU, memory, processes and I/O. Samples and output logs are bounded. Unsampled values stay `null`; do not attribute whole-container measurements to the SDK. The focused resource caller below measures the other lifecycle boundaries.
 
+## FrontierHarness public sample
+
+The `frontier` suite pins four tasks from FrontierHarness Eval v1.1.0 in the [case manifest](../../../scripts/acceptance/cases.json). They cover log aggregation, async cancellation, regular expressions and large-file Vim editing. Each task uses the upstream prompt, image build context and grader. On Linux with Git, Docker, Python 3.10+ and the repository's Rust toolchain, first check that an empty submission fails the original grader. This step requires network access for build and grader dependencies and uses no model credits. [Dataset provenance](https://hub.harborframework.com/datasets/frontier-harness-eval/frontier-harness-eval)
+
+```sh
+cargo build --locked -p kuku --example session_task
+python3 scripts/acceptance/run.py --run-id smoke-regex benchmark \
+  --suite frontier --case regex-log --mode preflight
+```
+
+For live runs, place `KUKU_TEST_OPENROUTER_API_KEY=...` in a private file outside the repository. A host-side meter holds the upstream key and caps each case against a shared USD ledger. The example reserves up to $0.75 per case and pins OpenRouter to DeepSeek's own endpoint for `deepseek/deepseek-v4.1-flash-1017` at `max` effort. Choose the total before the first run, reuse its ledger for repeats and use a fresh run ID for each attempt. The example passes an explicit 131,072-token allowance to reproduce the historical cohort. Omit `--max-output-tokens` to use the fixed route’s declared completion capacity. If the route reports no capacity, supply an explicit value. The meter checks that one worst-case request fits the dollar budget before reserving funds. The per-case dollar cap and task timeout bound the default run. To reproduce a historical request-limited cohort, add its recorded `--max-requests` value. Token ceilings bound generation and only actual usage or explicitly identified conservative estimates contribute to settled spend.
+
+```sh
+ledger="$PWD/benchmarks/acceptance/frontier-budget.json"
+keys="$HOME/.config/kuku/frontier.env"
+python3 scripts/acceptance/run.py budget init --ledger "$ledger" \
+  --authorization local-frontier-sample --limit-usd 3
+printf '%s\n' log-summary-date-ranges cancel-async-tasks regex-log large-scale-text-editing | \
+  xargs -P 4 -I '{}' python3 scripts/acceptance/run.py --run-id 'sample-{}' benchmark \
+    --suite frontier --case '{}' --mode live --provider openrouter --upstream deepseek \
+    --max-output-tokens 131072 --case-cap-usd 0.75 \
+    --sdk-binary target/debug/examples/session_task --ledger "$ledger" --secrets "$keys"
+```
+
+If account data policy excludes the requested provider, use a separately named trial with a compatible pinned endpoint such as `--upstream baseten`. Record the route change alongside the result. OpenRouter may report cost in the completed stream before the generation receipt becomes available. Add `--refresh-receipts "$keys"` to the report command below to fetch available generation receipts for those attempts. The report reuses verified receipts offline and counts each charge once.
+
+Download the official snapshot and generate a shareable report. Supply each case's attempts in chronological order, including every failure. Each local result separates the upstream reward, SDK completion, model cost and verifier duration. Pi's official figures use the same model version and include four trials per task, audited scoring, Runta and Baseten. For cache comparisons use the recorded service provider and observed cached input divided by observed total input, with coverage and the initial request identified. Private session files, credentials and raw request payloads stay out of the public report. [Official results](https://frontierharness.org/live/) · [OpenRouter routing](https://openrouter.ai/docs/guides/routing/provider-selection)
+
+```sh
+mkdir -p benchmarks/acceptance/public
+curl -fsSL https://frontierharness.org/api/live -o benchmarks/acceptance/public/live.json
+python3 scripts/acceptance/frontier_report.py --official-live benchmarks/acceptance/public/live.json \
+  --attempt log-summary-date-ranges benchmarks/acceptance/sample-log-summary-date-ranges \
+  --attempt cancel-async-tasks benchmarks/acceptance/sample-cancel-async-tasks \
+  --attempt regex-log benchmarks/acceptance/sample-regex-log \
+  --attempt large-scale-text-editing benchmarks/acceptance/sample-large-scale-text-editing \
+  --output benchmarks/acceptance/public/results.json
+```
+
+The SDK samples its own Linux `getrusage(RUSAGE_SELF)` immediately before writing its result, including process peak RSS, CPU time and filesystem block input/output counts. The parent sampler estimates mean RSS by time-weighting adjacent SDK samples and reports its observed window. The last Linux `/proc/PID/io` reading can include waited-for children. It distinguishes logical characters and system calls from storage bytes. Container-wide snapshots include the tool processes. Verifier time and resources are outside the SDK sampling window. The meter distinguishes its time to the first content-bearing stream delta from native provider metrics and reports denominators for TPS and cache comparisons.
+
+The [sample results and session findings](../../../scripts/acceptance/results/frontier-sample.md) include the exploratory attempts and the shared-protocol rerun.
+
 ## Resource measurements
 
 ```bash
 python3 scripts/acceptance/run.py metrics
 python3 scripts/acceptance/run.py metrics --profile release
+python3 scripts/acceptance/run.py metrics --profile release --cpu-count 1 --address-space-mib 512
 ```
 
 This local selection builds [`resource_probe.rs`](../../../crates/kuku/examples/resource_probe.rs) in the checkout's isolated target and runs its public `Session` calls against the existing fixed SSE/configuration helpers. It never loads paid credentials or the spend ledger. Defaults are 32 idle Agents, 64 real queued-input appends, five close/reopen cycles, a 4 MiB command output with a 1 MiB retention quota, and two independently advancing Agents. The child emitting output reuses the caller binary; it does not introduce another SDK executor.
 
 `caller.json` records workload sizes, sample arrays and units, nearest-rank append/reopen percentiles, initial Session-open time, output bytes/quota/read bounds, concurrency and durable paths. It reports SDK `context_prepare_us` and `request_prepare_us` only when those actual preparation facts exist; input-to-completion latency is a separate measurement and cannot substitute for them. Initial open and reopen do not flush the operating-system filesystem cache.
 
-Linux `/proc` sampling separates the SDK caller process from its tool descendants. The in-process fixed provider is included in the caller footprint, with its baseline recorded separately. CPU is in seconds and RSS in KiB; missing I/O counters or unsampled phases stay unknown. Logical retained-output and event-file bytes are recorded independently. The run includes build profile, target directory, binary/source hashes, process limits and cleanup result. `measurements_complete` and `missing_measurements` distinguish a successful local task from missing measurements; keep conditions fixed before comparing runs. The Rust caller remains portable, while this process sampler currently requires Linux.
+The workspace workload compares the same native log processed in bounded pages by the public SDK reader and the embedded script. It records first and repeated script latency, worker counts and the process samples at peak load and after the task. Two Sessions share one `WorkspaceExecutionHost` while starting more scripts than the worker budget. The retention checks track disk growth, reclaim ordinary captures and verify that a named baseline survives reopen and attempts to exceed quota. Defaults are six repeated tasks, two script workers, and four concurrent script host operations. Set `--repeated-tasks`, `--script-workers`, or `--script-host-operations` to vary the workload.
+
+Linux `/proc` and Windows process APIs sample the SDK caller and its tool descendants separately. The in-process fixed provider is included in the caller footprint, with its baseline recorded separately. CPU is in seconds and RSS in KiB. Unsampled phases and unavailable counters stay unknown. Logical retained-output and event-file bytes are recorded independently. The run includes build profile, target directory, binary/source hashes, process limits and cleanup result. `measurements_complete` and `missing_measurements` distinguish local task success from missing measurements.
+
+On Linux, `--cpu-count` applies CPU affinity to the caller and descendants. `--address-space-mib` limits each process's virtual address space. The Rust caller is portable. Process sampling in this selector is currently available on Linux and Windows.
+
+Use `--pressure-rounds 3` to compare several peak and idle phases in one caller. On Linux, the selector also records the anonymous and file-backed memory reported by `/proc/<pid>/smaps_rollup` when available.
 
 ## Live protocol acceptance
 
@@ -192,11 +270,12 @@ The caller explicitly loads the file without echoing it or enabling shell tracin
 
 Record the user-authorized request/spend scope, model/settings, output limits, timeout, and retry policy before paid tests. Enforce the applicable limits, including retries. Configuration limits are not fresh authorization to repeat a completed test allowance. Do not infer credentials from the coding Agent's model or silently increase reasoning/budget after a failure.
 
-`benchmarks/acceptance/budget.json` is the single local cost ledger for this rewrite. Initialize it once against the user's task authorization; do not recreate it to reset spending:
+Use the ledger authorized for the selected API service. When DeepSeek and OpenRouter have separate authorizations, use separate ledgers. `benchmarks/acceptance/budget.json` is the default for generic budget commands. Select the applicable file explicitly when working with separate ledgers. Initialize a ledger once against the authorized scope and preserve its spending history.
 
 ```bash
-python3 scripts/acceptance/run.py budget init --authorization TASK_AUTHORIZATION --limit-usd 5 --opening-spent-usd 0
-python3 scripts/acceptance/run.py budget show
+python3 scripts/acceptance/run.py budget init --ledger PATH_TO_LEDGER \
+  --authorization TASK_AUTHORIZATION --limit-usd 5 --opening-spent-usd 0
+python3 scripts/acceptance/run.py budget show --ledger PATH_TO_LEDGER
 ```
 
 Both `live` and `benchmark --mode live` require `--reserve-usd` and `--reservation-reason`. Before launching a paid process the selector hashes `--config` without copying its potentially inline credentials, then locks the ledger and reserves a conservative upper bound covering maximum requests, input/output tokens, provider prices, and all retries. Its `live` command requires `--sdk-result` and `--session-data` and runs the supplied public SDK/CLI caller after `--`, with credentials loaded explicitly from `--secrets`; it is not an HTTP connectivity probe. The caller must enforce the request/token/retry bounds used in the reservation. A price cap or ledger reservation alone does not bound a model loop; output limits remain an explicit caller choice rather than being reduced to fit a reservation.

@@ -58,6 +58,7 @@ pub(super) fn register_tools(options: &SessionOptions) -> Result<BTreeMap<String
 pub(crate) fn resolve_agent_model(
     host_config: &crate::config::Config,
     config: &AgentConfig,
+    max_output_tokens_per_request: Option<u32>,
 ) -> Result<ResolvedProvider> {
     resolve_config(ResolveConfigInput {
         connection: config.connection.clone(),
@@ -66,6 +67,7 @@ pub(crate) fn resolve_agent_model(
         reasoning_effort: config.reasoning_effort.clone(),
         service_tier: config.service_tier.clone(),
         max_output_tokens: config.max_output_tokens,
+        max_output_tokens_per_request,
         config: Some(host_config.clone()),
         ..Default::default()
     })
@@ -73,17 +75,22 @@ pub(crate) fn resolve_agent_model(
 
 pub(super) fn validate_initial_model(options: &SessionOptions, config: &AgentConfig) -> Result<()> {
     let config = resolve_defaults(options, config.clone(), || Ok(None))?;
-    resolve_agent_model(&options.config, &config).map(|_| ())
+    resolve_agent_model(
+        &options.config,
+        &config,
+        options.limits.max_output_tokens_per_request,
+    )
+    .map(|_| ())
 }
 
 impl Session {
-    /// Inspect effective model settings and final tools without dispatching work.
+    /// Inspect model settings available locally and final tools without dispatching work.
     pub fn agent_selection(&self, address: &str) -> Result<AgentSelection> {
         let agent = self.agent(address)?;
         self.selection_for_config(address, agent.active_config.unwrap_or(agent.config))
     }
 
-    /// Inspect the exact configuration from an Agent snapshot without dispatching work.
+    /// Inspect model settings available locally from an Agent snapshot without dispatching work.
     pub fn selection_for_config(
         &self,
         address: &str,
@@ -118,7 +125,7 @@ impl Session {
         let disabled_collaboration_tool = |name: &str| {
             config.no_agents && matches!(name, "create_agent" | "send_message" | "list_agents")
         };
-        let available = crate::tool::builtin_registry(false, !config.no_skills)
+        let available = crate::tool::registry::session_registry(!config.no_skills)
             .into_iter()
             .chain(crate::query::runtime_tool_definitions())
             .chain(
@@ -130,33 +137,36 @@ impl Session {
             .filter(|tool| !matches!(tool.name.as_str(), "agent" | "fetch_web"))
             .filter(|tool| !disabled_collaboration_tool(tool.name.as_str()))
             .collect::<Vec<_>>();
-        let Some(selected) = &config.tools else {
-            return Ok(available);
+        let mut selected_tools = if let Some(selected) = &config.tools {
+            for name in selected {
+                if disabled_collaboration_tool(name) {
+                    return Err(Error::InvalidArgument(format!(
+                        "no_agents disables '{name}'. Set no_agents to false or remove '{name}' from tools."
+                    )));
+                }
+                if !available.iter().any(|tool| tool.name == *name) {
+                    return Err(Error::InvalidArgument(format!(
+                        "selected tool '{name}' is not available"
+                    )));
+                }
+            }
+            available
+                .into_iter()
+                .filter(|tool| selected.contains(&tool.name))
+                .collect()
+        } else {
+            available
         };
-        for name in selected {
-            if disabled_collaboration_tool(name) {
-                return Err(Error::InvalidArgument(format!(
-                    "no_agents disables '{name}'. Set no_agents to false or remove '{name}' from tools."
-                )));
-            }
-            if !available.iter().any(|tool| tool.name == *name) {
-                return Err(Error::InvalidArgument(format!(
-                    "selected tool '{name}' is not available"
-                )));
-            }
-        }
-        Ok(available
-            .into_iter()
-            .filter(|tool| selected.contains(&tool.name))
-            .collect())
+        crate::tool::workspace_script::describe_selected_tools(&mut selected_tools);
+        Ok(selected_tools)
     }
 
     pub(super) fn resolve_model(&self, config: &AgentConfig) -> Result<ResolvedProvider> {
-        let mut resolved = resolve_agent_model(&self.inner.options.config, config)?;
-        if let Some(limit) = self.inner.options.limits.max_output_tokens_per_request {
-            resolved.max_output_tokens = resolved.max_output_tokens.min(limit);
-        }
-        Ok(resolved)
+        resolve_agent_model(
+            &self.inner.options.config,
+            config,
+            self.inner.options.limits.max_output_tokens_per_request,
+        )
     }
 
     pub(super) fn validate_config(&self, config: &AgentConfig) -> Result<()> {

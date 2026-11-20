@@ -19,7 +19,7 @@ fn model() -> ModelSelection {
         protocol: kuku::config::ProviderFormat::OpenAiResponses,
         model: "balanced-model".into(),
         context_window_tokens: 0,
-        max_output_tokens: 0,
+        max_output_tokens: None,
         settings: Default::default(),
         capabilities: Default::default(),
     }
@@ -31,7 +31,7 @@ fn selection(connection: &str, model: &str) -> AgentSelection {
         protocol: kuku::config::ProviderFormat::OpenAiResponses,
         model: model.into(),
         context_window_tokens: 16_000,
-        max_output_tokens: 1_000,
+        max_output_tokens: Some(1_000),
         settings: Default::default(),
         capabilities: Default::default(),
         tools: Vec::new(),

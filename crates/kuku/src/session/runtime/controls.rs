@@ -1,8 +1,9 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::event::{EventPayload, EventStore, StoredEvent};
 use crate::{Error, Result};
 
+use super::jobs::await_job_cleanup;
 use super::record::{
     fingerprint, timestamp, validate_address, validate_key, AgentState, Command,
     InterruptedExecution, Record, State,
@@ -257,13 +258,20 @@ impl Session {
             .and_then(|agent| {
                 agent
                     .queued_message_position(input_command_id)
-                    .map(|index| &agent.inbox[index].input)
+                    .map(|index| &agent.inbox[index])
             })
             .ok_or_else(|| Error::InputNotQueued(input_command_id.into()))?;
-        if &old.source != source {
+        if &old.input.source != source {
             return Err(Error::InvalidArgument(format!(
                 "input '{input_command_id}' belongs to a different source"
             )));
+        }
+        if super::boundary::input_model_text(text, &old.values).len()
+            > self.inner.options.limits.max_input_bytes
+        {
+            return Err(Error::InvalidArgument(
+                "replacement text and references exceed the configured byte limit".into(),
+            ));
         }
         self.commit(
             &mut state,
@@ -310,6 +318,7 @@ impl Session {
         let mut cursor = turn;
         let mut open = BTreeSet::new();
         let mut dispatched = BTreeSet::new();
+        let mut suspended = BTreeMap::new();
         let mut started = false;
         let mut terminal = false;
         let mut stop_event_id = None;
@@ -343,6 +352,7 @@ impl Session {
                         && conversation.as_deref().is_none_or(|agent| agent == address) =>
                     {
                         open.remove(&tool_call_id);
+                        suspended.remove(&tool_call_id);
                     }
                     EventPayload::Unknown(value)
                         if value["kind"] == "runtime.tool_dispatched"
@@ -350,7 +360,18 @@ impl Session {
                             && value["agent"] == address =>
                     {
                         if let Some(id) = value["tool_call_id"].as_str() {
+                            suspended.remove(id);
                             dispatched.insert(id.to_owned());
+                        }
+                    }
+                    EventPayload::Unknown(mut value)
+                        if value["kind"] == "workspace.deferred"
+                            && value["turn"] == turn
+                            && value["agent"] == address =>
+                    {
+                        if let Some(id) = value["tool_call_id"].as_str().map(str::to_owned) {
+                            dispatched.remove(&id);
+                            suspended.insert(id, value["continuation"].take());
                         }
                     }
                     EventPayload::TurnStarted {
@@ -379,7 +400,13 @@ impl Session {
         }
         let mut writer = EventStore::open(self.events_path())?;
         for id in open.difference(&dispatched) {
-            writer.append(cancelled_tool_result(address, turn, id)?)?;
+            let result = match suspended.remove(id) {
+                Some(continuation) => crate::query::cancelled_deferred_script(continuation)?,
+                None => crate::tool::ToolResultEnvelope::cancelled(
+                    "pending action cancelled before dispatch",
+                ),
+            };
+            writer.append(cancelled_tool_result(address, turn, id, result)?)?;
         }
         if let Some(id) = open.intersection(&dispatched).next() {
             return Err(Error::InterruptedOpenTool(format!("agent '{address}' tool call '{id}' from turn {turn} has no confirmed result after cancellation")));
@@ -419,7 +446,7 @@ impl Session {
         address: &str,
         expected: Option<(Command, u64)>,
     ) -> Result<Option<Receipt>> {
-        let (done, failure, receipt) = {
+        let (done, jobs, failure, receipt) = {
             let mut state = self.inner.state.lock().unwrap();
             ensure_open(&state)?;
             if let Some((command, execution)) = &expected {
@@ -477,6 +504,11 @@ impl Session {
             let failed_cleanup =
                 waiting_turn.and_then(|turn| self.settle_cancelled_turn(address, turn).err());
             let failure = stopped.or(failed_cleanup);
+            let jobs = if key.is_none() {
+                self.cancel_owned_jobs(address)
+            } else {
+                Vec::new()
+            };
             let workers = self.inner.workers.lock().unwrap();
             let done = epoch.and_then(|epoch| workers.get(&epoch)).map(|worker| {
                 let _ = worker.cancel.send(true);
@@ -485,9 +517,12 @@ impl Session {
             let receipt = key
                 .and_then(|key| state.commands.get(&key))
                 .map(|(_, receipt)| receipt.clone());
-            (done, failure, receipt)
+            (done, jobs, failure, receipt)
         };
-        let cleanup = self.await_cleanup(address, done).await;
+        let mut cleanup = self.await_cleanup(address, done).await;
+        for job in jobs {
+            cleanup = cleanup.and(await_job_cleanup(job).await);
+        }
         if let Some(error) = failure {
             return Err(error);
         }
@@ -618,9 +653,12 @@ fn commit_with_file_revert<T>(
     }
 }
 
-fn cancelled_tool_result(address: &str, turn: u64, id: &str) -> Result<EventPayload> {
-    let result =
-        crate::tool::ToolResultEnvelope::cancelled("pending action cancelled before dispatch");
+fn cancelled_tool_result(
+    address: &str,
+    turn: u64,
+    id: &str,
+    result: crate::tool::ToolResultEnvelope,
+) -> Result<EventPayload> {
     Ok(EventPayload::ToolResult {
         turn,
         ts: timestamp()?,
@@ -736,7 +774,7 @@ mod rewind_guard_tests {
                 },
             )
             .unwrap();
-        let make_delivery = |id: &str, text: &str| QueuedDelivery {
+        let make_delivery = |id: &str, text: &str, accepted_turn: Option<u64>| QueuedDelivery {
             queued_at: 1,
             receipt: Receipt {
                 command_id: id.into(),
@@ -744,10 +782,12 @@ mod rewind_guard_tests {
                 agent: "main".into(),
             },
             input: crate::session::runtime::Input::new(id, "main", text),
+            values: Vec::new(),
+            accepted_turn,
         };
         state.agents.get_mut("main").unwrap().accepted = vec![
-            make_delivery("rewound", "rewound prompt"),
-            make_delivery("unrelated", "keep this input"),
+            make_delivery("rewound", "rewound prompt", Some(1)),
+            make_delivery("unrelated", "keep this input", Some(1)),
         ];
         state
             .reduce(
@@ -794,13 +834,14 @@ mod rewind_guard_tests {
             .get_mut("main")
             .unwrap()
             .inbox
-            .push_back(make_delivery("new", "new prompt"));
+            .push_back(make_delivery("new", "new prompt", None));
         state
             .reduce(
                 4,
                 Record::InputsAccepted {
                     address: "main".into(),
                     input_ids: vec!["new".into()],
+                    message_input_ids: Vec::new(),
                     turn: Some(2),
                 },
             )
@@ -818,6 +859,7 @@ mod rewind_guard_tests {
         let accepted = Record::InputsAccepted {
             address: "main".into(),
             input_ids: vec!["rewound".into()],
+            message_input_ids: vec!["rewound".into()],
             turn: Some(1),
         };
         let events = vec![
@@ -840,7 +882,7 @@ mod rewind_guard_tests {
         let removed = rewind_input_ids(&events, "main", 2);
         assert_eq!(BTreeSet::from(["rewound".into()]), removed);
 
-        let make_delivery = |id: &str| QueuedDelivery {
+        let make_delivery = |id: &str, accepted_turn: Option<u64>| QueuedDelivery {
             queued_at: 3,
             receipt: Receipt {
                 command_id: id.into(),
@@ -848,10 +890,12 @@ mod rewind_guard_tests {
                 agent: "main".into(),
             },
             input: crate::session::runtime::Input::new(id, "main", "same prompt"),
+            values: Vec::new(),
+            accepted_turn,
         };
         let mut agent = idle_agent();
-        agent.accepted.push(make_delivery("rewound"));
-        agent.inbox.push_back(make_delivery("unrelated"));
+        agent.accepted.push(make_delivery("rewound", Some(1)));
+        agent.inbox.push_back(make_delivery("unrelated", None));
         assert!(rewind_blocked_except(&agent, &removed));
         assert_eq!("unrelated", agent.inbox.front().unwrap().input.command_id);
     }

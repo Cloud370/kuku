@@ -1,19 +1,32 @@
 use std::path::Path;
 
+use serde::Serialize;
 use serde_json::Value;
 
+use crate::conversation::address::ConversationAddress;
 use crate::event::StoredEvent;
 use crate::tool::ToolResultEnvelope;
 
 use super::common::{
-    content_hash, find_covering_read, join_bounded_strings, optional_positive_usize,
-    read_file_as_utf8, requested_line_count, resolve_path,
+    file_read_error, find_covering_read, optional_positive_usize, requested_line_count,
+    required_path, resolve_path, ExecutorObservation, ExecutorObservationSource, FileCancellation,
 };
 
-const READ_FILE_MAX_CHARS: usize = 80_000;
+mod scan;
 
-struct ReadRequest {
-    path: String,
+const READ_FILE_MAX_CHARS: usize = 80_000;
+const READ_TRUNCATION: &str =
+    "(Results are truncated. Use offset and limit to read a smaller range.)";
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ReadBy {
+    Model,
+    Executor,
+}
+
+struct ReadRequest<'a> {
+    path: &'a str,
     offset: usize,
     limit: Option<usize>,
 }
@@ -21,152 +34,149 @@ struct ReadRequest {
 pub(crate) fn read_file(
     args: &Value,
     workspace: &Path,
-    conversation: &crate::conversation::address::ConversationAddress,
+    conversation: &ConversationAddress,
     prior_events: &[StoredEvent],
     read_event_id: u64,
+    cancelled: &FileCancellation<'_>,
 ) -> ToolResultEnvelope {
+    read_file_impl(
+        args,
+        workspace,
+        ReadBy::Model,
+        READ_FILE_MAX_CHARS,
+        Some((prior_events, conversation, read_event_id)),
+        cancelled,
+    )
+    .0
+}
+
+pub(crate) fn read_file_for_executor(
+    args: &Value,
+    workspace: &Path,
+    max_bytes: usize,
+    cancelled: &FileCancellation<'_>,
+) -> (ToolResultEnvelope, Option<ExecutorObservation>) {
+    read_file_impl(
+        args,
+        workspace,
+        ReadBy::Executor,
+        max_bytes,
+        None,
+        cancelled,
+    )
+}
+
+fn read_file_impl(
+    args: &Value,
+    workspace: &Path,
+    read_by: ReadBy,
+    max_bytes: usize,
+    model_history: Option<(&[StoredEvent], &ConversationAddress, u64)>,
+    cancelled: &FileCancellation<'_>,
+) -> (ToolResultEnvelope, Option<ExecutorObservation>) {
     let request = match read_request(args) {
         Ok(request) => request,
-        Err(result) => return result,
+        Err(result) => return (result, None),
     };
-    let resolved = match resolve_path(workspace, &request.path) {
+    let resolved = match resolve_path(workspace, request.path) {
         Ok(resolved) => resolved,
-        Err(result) => return result,
+        Err(result) => return (result, None),
     };
-    if !resolved.path.is_file() {
-        return ToolResultEnvelope::error(
-            format!("failed: not a file: {}", request.path),
-            format!("path is not a file: {}", request.path),
-        );
-    }
-
-    let (content, bytes) = match read_file_as_utf8(&resolved.path) {
-        Ok(result) => result,
-        Err(err) => return err,
-    };
-
-    let hash = content_hash(&bytes);
-    let lines = content.split_inclusive('\n').collect::<Vec<_>>();
-    let total_lines = lines.len();
-    let requested_line_count = requested_line_count(request.offset, request.limit, total_lines);
-
-    let start_index = request.offset.saturating_sub(1).min(total_lines);
-    let end_index = request.limit.map_or(total_lines, |limit| {
-        start_index.saturating_add(limit).min(total_lines)
-    });
-    let (raw_text, model_content, line_count, truncated) =
-        render_read_file_view(&lines, start_index, end_index);
-    let is_full_file_snapshot = request.offset == 1 && line_count == total_lines && !truncated;
-
-    if requested_line_count > 0 {
-        if let Some(prior) = find_covering_read(
-            prior_events,
-            conversation,
-            &resolved.path,
-            &hash,
-            request.offset,
-            requested_line_count,
-        ) {
-            let summary = format!(
-                "already read {}; unchanged since event {}",
-                resolved.relative, prior.event_id
-            );
-            let structured = serde_json::json!({
-                "kind": "file_content",
-                "path": resolved.relative,
-                "canonical_path": resolved.path.to_string_lossy(),
-                "content_hash": hash,
-                "raw_text": raw_text,
-                "size_bytes": bytes.len(),
-                "read_event_id": read_event_id,
-                "prior_read_event_id": prior.event_id,
-                "start_line": request.offset,
-                "line_count": line_count,
-                "total_lines": total_lines,
-                "line_numbered": true,
-                "is_full_file_snapshot": is_full_file_snapshot,
-                "cached": true,
-            });
-            return if truncated {
-                ToolResultEnvelope::ok_truncated(summary, model_content, structured)
-            } else {
-                ToolResultEnvelope::ok(summary, model_content, structured)
-            };
+    let mut view = match scan::scan(&resolved.path, &request, read_by, max_bytes, cancelled) {
+        Ok(view) => view,
+        Err(error) => {
+            return (file_read_error(Path::new(&resolved.relative), error), None);
         }
-    }
-
-    let summary = read_summary(
-        &resolved.relative,
-        request.offset,
-        line_count,
-        total_lines,
-        truncated,
+    };
+    let requested = requested_line_count(request.offset, request.limit, view.total_lines);
+    let prior = model_history
+        .filter(|_| requested != 0)
+        .and_then(|(events, conversation, _)| {
+            find_covering_read(
+                events,
+                conversation,
+                &resolved.path,
+                &view.content_hash,
+                request.offset,
+                requested,
+            )
+        });
+    let summary = prior.as_ref().map_or_else(
+        || {
+            read_summary(
+                &resolved.relative,
+                request.offset,
+                view.line_count,
+                view.total_lines,
+                view.truncated,
+            )
+        },
+        |read| {
+            format!(
+                "already read {}; unchanged since event {}",
+                resolved.relative, read.event_id
+            )
+        },
     );
-    let structured = serde_json::json!({
+    let is_full_file_snapshot =
+        request.offset == 1 && view.line_count == view.total_lines && !view.truncated;
+    let end_byte = view.start_byte + view.raw_text.len();
+    let mut structured = serde_json::json!({
         "kind": "file_content",
         "path": resolved.relative,
         "canonical_path": resolved.path.to_string_lossy(),
-        "content_hash": hash,
-        "raw_text": raw_text,
-        "size_bytes": bytes.len(),
-        "read_event_id": read_event_id,
+        "content_hash": view.content_hash,
+        "raw_text": view.raw_text,
+        "size_bytes": view.size_bytes,
+        "read_by": read_by,
+        "start_byte": view.start_byte,
+        "end_byte": end_byte,
         "start_line": request.offset,
-        "line_count": line_count,
-        "total_lines": total_lines,
-        "line_numbered": true,
+        "line_count": view.line_count,
+        "total_lines": view.total_lines,
+        "line_numbered": matches!(read_by, ReadBy::Model),
         "is_full_file_snapshot": is_full_file_snapshot,
-        "cached": false,
+        "cached": prior.is_some(),
     });
-
-    if truncated {
-        ToolResultEnvelope::ok_truncated(summary, model_content, structured)
-    } else {
-        ToolResultEnvelope::ok(summary, model_content, structured)
+    if let Some((_, _, event_id)) = model_history {
+        structured["read_event_id"] = event_id.into();
     }
+    if let Some(prior) = prior {
+        structured["prior_read_event_id"] = prior.event_id.into();
+    }
+    let observation = if matches!(read_by, ReadBy::Executor) {
+        view.model_content = summary.clone();
+        Some(ExecutorObservation {
+            canonical_path: resolved.path,
+            content_hash: view.content_hash,
+            range: view.start_byte..end_byte,
+            size_bytes: view.size_bytes,
+            complete: is_full_file_snapshot,
+            source: ExecutorObservationSource::Read,
+        })
+    } else {
+        if view.truncated {
+            if !view.model_content.is_empty() {
+                view.model_content.push('\n');
+            }
+            view.model_content.push_str(READ_TRUNCATION);
+        }
+        None
+    };
+    let result = if view.truncated {
+        ToolResultEnvelope::ok_truncated(summary, view.model_content, structured)
+    } else {
+        ToolResultEnvelope::ok(summary, view.model_content, structured)
+    };
+    (result, observation)
 }
 
-fn read_request(args: &Value) -> Result<ReadRequest, ToolResultEnvelope> {
-    let Some(path) = args.get("path").and_then(Value::as_str) else {
-        return Err(ToolResultEnvelope::error(
-            "failed: missing path",
-            "read_file requires path",
-        ));
-    };
+fn read_request(args: &Value) -> Result<ReadRequest<'_>, ToolResultEnvelope> {
     Ok(ReadRequest {
-        path: path.to_string(),
+        path: required_path("read_file", args)?,
         offset: optional_positive_usize(args, "offset")?.unwrap_or(1),
         limit: optional_positive_usize(args, "limit")?,
     })
-}
-
-fn render_read_file_view(
-    lines: &[&str],
-    start_index: usize,
-    end_index: usize,
-) -> (String, String, usize, bool) {
-    let mut rendered = Vec::new();
-    for (index, line) in lines[start_index..end_index].iter().enumerate() {
-        let line_number = start_index + index + 1;
-        rendered.push(format!(
-            "{line_number}\t{}",
-            line.trim_end_matches(['\r', '\n'])
-        ));
-    }
-    let (model_content, truncated) = join_bounded_strings(
-        &rendered,
-        READ_FILE_MAX_CHARS,
-        "(Results are truncated. Use offset and limit to read a smaller range.)",
-    );
-    let line_count = if truncated {
-        model_content
-            .lines()
-            .filter(|line| !line.starts_with("(Results are truncated."))
-            .count()
-    } else {
-        rendered.len()
-    };
-    let raw_text = lines[start_index..start_index + line_count].concat();
-    (raw_text, model_content, line_count, truncated)
 }
 
 fn read_summary(
@@ -180,6 +190,9 @@ fn read_summary(
         return format!("read {path}, 0 lines of 0");
     }
     if line_count == 0 {
+        if truncated {
+            return format!("read {path}, line {offset} exceeds the result byte limit");
+        }
         return format!("read {path}, no lines at offset {offset} of {total_lines}");
     }
     let end_line = offset + line_count - 1;
@@ -208,6 +221,7 @@ mod tests {
             &crate::conversation::address::ConversationAddress::MAIN,
             prior_events,
             read_event_id,
+            &|| false,
         )
     }
 
@@ -439,6 +453,52 @@ mod tests {
     }
 
     #[test]
+    fn executor_read_preserves_raw_lines_and_offsets_across_utf8_buffer_boundaries() {
+        let dir = workspace();
+        let prefix = format!("{}中\n", "x".repeat(65_535));
+        let content = format!("{prefix}第二行\r\n第三行\n最后");
+        std::fs::write(dir.path().join("README.md"), &content).unwrap();
+
+        let (result, observation) = read_file_for_executor(
+            &serde_json::json!({"path":"README.md","offset":2}),
+            dir.path(),
+            "第二行\r\n第三行\n".len(),
+            &|| false,
+        );
+
+        assert!(result.truncated);
+        let read = observation.unwrap();
+        let raw = "第二行\r\n第三行\n";
+        assert_eq!(prefix.len()..prefix.len() + raw.len(), read.range);
+        assert_eq!(content_hash(content.as_bytes()), read.content_hash);
+        assert_eq!(content.len(), read.size_bytes);
+        assert!(!read.complete);
+        let data = result.structured.unwrap();
+        assert_eq!(raw, data["raw_text"]);
+        assert_eq!(2, data["line_count"]);
+        assert_eq!(4, data["total_lines"]);
+        assert_eq!("executor", data["read_by"]);
+        assert_eq!(false, data["line_numbered"]);
+    }
+
+    #[test]
+    fn executor_read_rejects_invalid_utf8_outside_the_requested_lines() {
+        let dir = workspace();
+        std::fs::write(dir.path().join("README.md"), b"first\n\xff").unwrap();
+
+        let (result, observation) = read_file_for_executor(
+            &serde_json::json!({"path":"README.md","limit":1}),
+            dir.path(),
+            80,
+            &|| false,
+        );
+
+        assert_eq!("error", result.status);
+        assert!(observation.is_none());
+        assert!(result.model_content.contains("not valid UTF-8"));
+    }
+
+    #[test]
     fn read_cache_is_scoped_to_active_conversation() {
         let dir = workspace();
         let content = "first\nsecond\n";
@@ -464,6 +524,7 @@ mod tests {
             &crate::conversation::address::ConversationAddress::MAIN,
             std::slice::from_ref(&review_read),
             18,
+            &|| false,
         );
         let review_result = super::read_file(
             &serde_json::json!({"path": "README.md"}),
@@ -471,6 +532,7 @@ mod tests {
             &crate::conversation::address::ConversationAddress::parse("review").unwrap(),
             &[review_read],
             19,
+            &|| false,
         );
 
         assert_eq!(main_result.structured.unwrap()["cached"], false);

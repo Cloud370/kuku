@@ -13,8 +13,23 @@ use super::provider::types::{
 };
 use super::{current_input, sample_assembly, test_catalog};
 
+#[path = "../common/mod.rs"]
+mod common;
+
 #[path = "gateway.rs"]
 mod gateway;
+
+#[path = "retry.rs"]
+mod retry;
+
+#[path = "session_context_snapshot.rs"]
+mod session_context_snapshot;
+
+#[path = "legacy_context_snapshot.rs"]
+mod legacy_context_snapshot;
+
+#[path = "concurrent_context_snapshot.rs"]
+mod concurrent_context_snapshot;
 
 #[tokio::test]
 async fn three_protocols_preserve_tool_batches_native_replay_and_multiturn_prefixes() {
@@ -92,6 +107,7 @@ async fn three_protocols_preserve_tool_batches_native_replay_and_multiturn_prefi
             session_id: "fixed-session".into(),
             agent_address: "main".into(),
             connection_name: "fixture".into(),
+            workspace: std::path::PathBuf::from("."),
         };
         let first =
             super::provider::prepare_provider_request(&config, &request, Some(&correlation))

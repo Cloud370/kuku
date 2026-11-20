@@ -8,7 +8,13 @@ const MAX_CHECKING: usize = 4;
 
 impl App {
     pub(crate) fn send(&mut self, timing: Timing) {
-        if self.pane().draft.text().trim().is_empty() || !self.require_service() {
+        let empty =
+            self.pane().draft.text().trim().is_empty() && self.pane().value_attachments.is_empty();
+        if empty || !self.require_service() {
+            return;
+        }
+        if self.pane().value_saving {
+            self.problem("Wait for the current save");
             return;
         }
         if self.pane().sending {
@@ -36,12 +42,14 @@ impl App {
             .filter(|skill| !skill.is_empty())
             .map(str::to_owned);
         let create = (!pane.exists).then(|| Box::new(pane.initial_config.clone()));
+        let values = pane.take_values();
         pane.sending = true;
         self.issue(
             active,
             Action::Send {
                 text,
                 timing,
+                values,
                 create,
                 create_agent_if_missing: false,
                 config_patch: None,
@@ -601,13 +609,20 @@ impl App {
             return;
         };
         let target = item.command.target;
-        if let Action::Send { text, create, .. } = item.command.action {
+        if let Action::Send {
+            text,
+            create,
+            values,
+            ..
+        } = item.command.action
+        {
             let address = Address::from_target(&target);
             self.select(address, create.is_none(), String::new());
             let pane = self.pane_mut();
             if create.is_some() {
                 pane.creation_rejected = true;
             }
+            pane.restore_values(values);
             self.append_to_draft(&text);
             self.message("Restored rejected text to draft");
         }
@@ -769,11 +784,18 @@ impl App {
             if let Action::Cancel { execution_id } = item.command.action {
                 pane.finish_interrupt(execution_id);
             }
-            if let Action::Send { text, create, .. } = &item.command.action {
+            if let Action::Send {
+                text,
+                create,
+                values,
+                ..
+            } = &item.command.action
+            {
                 pane.sending = false;
                 pane.creation_rejected |= rejected && create.is_some();
                 if clear && pane.draft.text().is_empty() {
                     pane.draft.set_text(text.clone());
+                    pane.restore_values(values.clone());
                     restored = true;
                 }
             }
@@ -944,7 +966,11 @@ impl App {
                     self.refresh_rewind_history();
                 }
             }
-            Action::Advance => self.message("Continue request received"),
+            Action::Advance => {
+                if active && !self.notice.as_ref().is_some_and(|notice| notice.error) {
+                    self.confirmation("Continue request received");
+                }
+            }
             Action::Cancel { execution_id } => {
                 if let Some(pane) = self.panes.get_mut(&address) {
                     pane.finish_interrupt(execution_id);

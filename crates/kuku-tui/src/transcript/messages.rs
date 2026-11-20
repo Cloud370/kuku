@@ -64,7 +64,7 @@ pub(crate) struct MessageInfo {
     pub(crate) fetch_source: bool,
     pub(crate) thinking: Option<DetailKey>,
     pub(crate) expandable: Option<DetailKey>,
-    pub(crate) tool: Option<ToolView>,
+    pub(crate) outputs: Vec<ToolView>,
 }
 
 impl Transcript {
@@ -131,15 +131,15 @@ impl Transcript {
         let record = window.records.iter().find(|record| {
             record.key == key && record.owner.as_deref() == Some(agent) && record.visible()
         })?;
-        let (kind, copy_text, tool, fetch_source) = match &record.body {
-            Body::User { text, .. } => (MessageKind::User, text.clone(), None, false),
+        let (kind, copy_text, outputs, fetch_source) = match &record.body {
+            Body::User { text, .. } => (MessageKind::User, text.clone(), Vec::new(), false),
             Body::Assistant(text) => (
                 MessageKind::Assistant,
                 text.clone(),
-                None,
+                Vec::new(),
                 text.ends_with(DISPLAY_LIMIT_NOTICE),
             ),
-            Body::Interrupted(text) => (MessageKind::Assistant, text.clone(), None, false),
+            Body::Interrupted(text) => (MessageKind::Assistant, text.clone(), Vec::new(), false),
             Body::Tool(tool) => {
                 let view = tool.view();
                 let text = if view.details.is_empty() {
@@ -147,7 +147,11 @@ impl Transcript {
                 } else {
                     view.details.clone()
                 };
-                (MessageKind::Tool, text, Some(view), false)
+                let mut outputs = tool.output_views();
+                if view.has_full_output() {
+                    outputs.insert(0, view);
+                }
+                (MessageKind::Tool, text, outputs, false)
             }
             Body::Notice(..) | Body::ModelError { .. } | Body::Retry { .. } | Body::TurnSummary => {
                 return None
@@ -160,7 +164,7 @@ impl Transcript {
             copy_text,
             thinking,
             expandable,
-            tool,
+            outputs,
         })
     }
 

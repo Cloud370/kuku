@@ -10,8 +10,10 @@ import re
 import sys
 from urllib.parse import urlencode, urlsplit
 
+from interactive_lifecycle import lifecycle_cases
 from interactive_rendering import (
     check_agent_reading_position,
+    named_output_cards,
     operate_on_assistant,
     page_up_after_rendered_resize,
     rendering_cases,
@@ -516,7 +518,11 @@ def recover_from_provider_failure(client):
     recovery = "recover explicitly from provider failure"
     with client.terminal(workspace) as terminal:
         terminal.resume(prompt)
-        terminal.expect("Interrupted")
+        terminal.expect(
+            "Automatic retry stopped; see transcript for details.",
+            state="Interrupted",
+            also=("No automatic retry", "HTTP 400"),
+        )
         terminal.submit(recovery)
         eventually("recovery input to queue before explicit continuation",
                    lambda: client.snapshot(workspace, session)["pending_inputs"] == 1)
@@ -716,7 +722,7 @@ def dense_transcript(client, reference=False):
     def running_view(screen, height):
         rows = screen.split("\n")
         return len(rows) == height and (
-            "Running tools" in rows[-1] or any("To main · Running tools" in row for row in rows[-8:])
+            "Running tools" in rows[-1] or any("To main · Running" in row for row in rows[-8:])
         )
 
     def measure_tools(terminal):
@@ -737,7 +743,7 @@ def dense_transcript(client, reference=False):
                 terminal,
                 read_while,
                 32,
-                (scenario.activity_composition, scenario.draft),
+                (TOOL_BRIEF, scenario.draft),
             )
         except AssertionError as error:
             raise AssertionError(
@@ -780,7 +786,7 @@ def dense_transcript(client, reference=False):
 
         terminal.click_text(restored, "Read file · error")
         error = terminal.expect("Requested arguments")["screen"]
-        assert f"path does not exist: {scenario.missing}" in error and "Running tools" in error and scenario.draft in error, error
+        assert f"path does not exist: {scenario.missing}" in error and "To main · Running" in error and scenario.draft in error, error
         screens.append(("Independent failed call with its exact error", error))
         terminal.click_text(error, "Read file · error")
         terminal.press("\x1b[1;5F")
@@ -919,8 +925,15 @@ def main():
     parser.add_argument("--directory", required=True, type=Path)
     parser.add_argument("--browser", action="store_true")
     parser.add_argument("--upgrade", nargs=2, type=Path, metavar=("OLD_ARCHIVE", "NEW_ARCHIVE"))
+    parser.add_argument("--named-output", action="store_true", help="exercise keyboard naming and reopening")
     options = parser.parse_args()
+    options.binary = options.binary.resolve()
+    options.bridge = options.bridge.resolve()
+    options.directory = options.directory.resolve()
     with InstalledClient(options.binary, options.bridge, options.directory) as client:
+        if options.named_output:
+            named_output_cards(client)
+            return
         if options.upgrade:
             installed_upgrade(client, *options.upgrade)
         workspace, session, title = two_workspaces_and_disconnect(client)
@@ -928,6 +941,7 @@ def main():
         configure_statusline(client)
         preserve_draft_after_interrupt(client)
         editable_multiline_paste(client)
+        lifecycle_cases(options.binary, options.bridge, options.directory)
         rendering_cases(options.binary, options.bridge, options.directory)
         wait_restart_and_recover_crash(client, workspace, session, title)
         remote_authorization_and_script_json(client, client.workspace("work-script"))

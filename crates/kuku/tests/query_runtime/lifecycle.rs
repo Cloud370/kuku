@@ -284,8 +284,10 @@ async fn run_without_config_fails_before_writing_events() {
 async fn builder_only_provider_config_starts_without_file_config() {
     let env = TestEnv::new();
     let server = MockServer::start();
-    server.mock(|when, then| {
-        when.method(httpmock::Method::POST).path("/v1/messages");
+    let request = server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/messages")
+            .body_contains(r#""max_tokens":1024"#);
         then.status(200)
             .body(anthropic_sse_response(serde_json::json!({
                 "id": "msg_builder_only",
@@ -302,6 +304,7 @@ async fn builder_only_provider_config_starts_without_file_config() {
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
+        .max_output_tokens(1024)
         .session("s_builder_only")
         .start()
         .await
@@ -317,6 +320,7 @@ async fn builder_only_provider_config_starts_without_file_config() {
     }
 
     assert!(saw_done, "expected done event");
+    request.assert();
     let events = EventStore::replay(env.events_path("s_builder_only")).unwrap();
     assert!(!events.is_empty());
 }

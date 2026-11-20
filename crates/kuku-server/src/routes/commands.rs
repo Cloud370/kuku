@@ -89,6 +89,7 @@ fn validate_command(workspace: &FsPath, command: &mut Command) -> Result<Option<
     match command {
         Command::Send {
             text,
+            values,
             create,
             config_patch,
             create_agent_if_missing,
@@ -101,7 +102,7 @@ fn validate_command(workspace: &FsPath, command: &mut Command) -> Result<Option<
                     .as_ref()
                     .or(config_patch.as_ref())
                     .is_some_and(|config| config.bootstrap_skill.is_some());
-            if (text.trim().is_empty() && !bootstrap)
+            if (text.trim().is_empty() && !bootstrap && values.is_empty())
                 || text.len() > kuku::RuntimeLimits::default().max_input_bytes
             {
                 return Err(ApiError::invalid(
@@ -109,9 +110,9 @@ fn validate_command(workspace: &FsPath, command: &mut Command) -> Result<Option<
                 ));
             }
             if let Some(config) = create {
-                if config_patch.is_some() || *create_agent_if_missing {
+                if config_patch.is_some() || *create_agent_if_missing || !values.is_empty() {
                     return Err(ApiError::invalid(
-                        "initial creation accepts only its initial Agent configuration",
+                        "initial creation accepts its initial Agent configuration and no retained Session values",
                     ));
                 }
                 validate_agent_workspace(workspace, config)?;
@@ -153,7 +154,7 @@ fn validate_command(workspace: &FsPath, command: &mut Command) -> Result<Option<
     Ok(None)
 }
 
-fn validate_agent_workspace(workspace: &FsPath, config: &mut AgentConfig) -> Result<()> {
+pub(super) fn validate_agent_workspace(workspace: &FsPath, config: &mut AgentConfig) -> Result<()> {
     if let Some(requested) = config.workspace.as_mut() {
         let absolute = workspace.join(&*requested);
         let resolved = super::workspaces::resolve_workspace(&absolute)?;

@@ -2,7 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use kuku_client::{Action, Target};
 use ratatui::style::Style;
 
-use crate::app::{App, KeyboardFocus, PendingStage};
+use crate::app::{App, KeyboardFocus, PendingStage, QueueAction};
 use crate::keys::Shortcut;
 use crate::markup::{render_literal, wrap_bounded};
 use crate::text::single_line;
@@ -17,11 +17,9 @@ impl App {
     }
 
     pub(crate) fn focus_queued(&mut self) {
-        if let Some(id) = self
-            .queued_for_edit()
-            .last()
-            .map(|entry| entry.receipt.command_id.clone())
-        {
+        let id = self.queue_input_ids().next_back().map(str::to_owned);
+        if let Some(id) = id {
+            self.cancel_queue_action();
             let pane = self.pane_mut();
             pane.selected_queue_input = Some(id);
             pane.keyboard_focus = KeyboardFocus::Queue;
@@ -29,10 +27,8 @@ impl App {
     }
 
     pub(crate) fn focus_queue_input(&mut self, id: String) {
-        if self
-            .queued_for_edit()
-            .any(|entry| entry.receipt.command_id == id)
-        {
+        if self.queue_input_available(&id) {
+            self.cancel_queue_action();
             let pane = self.pane_mut();
             pane.selected_queue_input = Some(id);
             pane.keyboard_focus = KeyboardFocus::Queue;
@@ -104,10 +100,11 @@ impl App {
             return true;
         }
         if Shortcut::UP.matches(key) || Shortcut::DOWN.matches(key) {
+            self.cancel_queue_action();
             let direction = if Shortcut::UP.matches(key) { -1 } else { 1 };
             let ids = self
-                .queued_for_edit()
-                .map(|entry| entry.receipt.command_id.clone())
+                .queue_input_ids()
+                .map(str::to_owned)
                 .collect::<Vec<_>>();
             let current = self.pane().selected_queue_input.as_ref();
             let next = current
@@ -128,25 +125,12 @@ impl App {
                 self.pane_mut().keyboard_focus = KeyboardFocus::Composer;
                 return true;
             };
-            if !self
-                .queued_for_edit()
-                .any(|entry| entry.receipt.command_id == id)
-            {
-                let pane = self.pane_mut();
-                pane.keyboard_focus = KeyboardFocus::Composer;
-                pane.selected_queue_input = None;
-                self.problem("Selected input is no longer queued");
-                return true;
-            }
-            if self.queue_mutation_pending(&id) {
-                self.problem("A change to this queued input is already pending");
-                return true;
-            }
-            if Shortcut::ENTER.matches(key) {
-                self.edit_queued(id);
+            let action = if Shortcut::ENTER.matches(key) {
+                QueueAction::Edit
             } else {
-                self.withdraw_queued(id);
-            }
+                QueueAction::Withdraw
+            };
+            self.request_queue_action(id, action);
             return true;
         }
         false

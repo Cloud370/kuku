@@ -230,7 +230,7 @@ async fn call_secondary_llm(
         catalog,
         current_input: crate::provider::types::CanonicalPromptInput { parts: vec![] },
         model: resolved.model.clone(),
-        max_output_tokens: Some(resolved.max_output_tokens),
+        max_output_tokens: resolved.max_output_tokens,
         temperature: None,
         stream: true,
         think_level: resolved.think_level,

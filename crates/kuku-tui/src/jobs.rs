@@ -5,8 +5,9 @@ use std::time::Duration;
 use kuku_client::local::{RestartOutcome, SESSION_PROTOCOL_VERSION};
 use kuku_client::{
     Acknowledgement, AgentConfig, Client, Command, Connection, ConnectionOptions, Error,
-    HistoryKind, HistoryPage, ModelCatalog, ModelSelection, Observation, OutputChunk,
-    RewindGroupPage, SessionStatus, Snapshot, SubscriptionUpdate, Target,
+    HistoryKind, HistoryPage, JobSnapshot, JobStatus, ModelCatalog, ModelSelection, NamedValue,
+    NamedValueKind, NamedValueSource, Observation, OutputChunk, RewindGroupPage, SessionStatus,
+    Snapshot, SubscriptionUpdate, Target,
 };
 use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinSet};
@@ -14,6 +15,11 @@ use tokio::task::{AbortHandle, JoinSet};
 use crate::menu::{Choice, ChoiceKind, Ticket};
 use crate::model_default::{self, PreparedDefaultSave, ResolvedModel};
 use crate::output::OUTPUT_PAGE_BYTES;
+use crate::setup::{
+    CredentialRepairApplied, CredentialRepairPlan, CredentialRepairRequest,
+    PreparedCredentialRepair, SavedCredentialRepair,
+};
+use crate::text::single_line;
 use crate::transcript::{HistoryRequest, RewindGroupRequest, HISTORY_PAGE, REWIND_GROUP_PAGE};
 
 const UPDATE_CAPACITY: usize = 64;
@@ -32,16 +38,43 @@ pub(crate) enum Search {
     Paths(String),
     Sessions(String),
     Models,
+    Values(Target),
+    Jobs(Target),
     Server,
 }
 
+pub(crate) struct ValueSave {
+    pub(crate) name: String,
+    pub(crate) source: NamedValueSource,
+    pub(crate) replace: bool,
+    pub(crate) create: Option<AgentConfig>,
+}
+
 pub(crate) enum Job {
+    PrepareCredentialRepair {
+        ticket: u64,
+        selection: Selection,
+        request: CredentialRepairRequest,
+    },
+    SaveCredentialRepair {
+        ticket: u64,
+        selection: Selection,
+        plan: std::sync::Arc<CredentialRepairPlan>,
+        key: String,
+    },
+    RestartCredentialRepair {
+        ticket: u64,
+        selection: Selection,
+        saved: SavedCredentialRepair,
+    },
     Connect,
     Observe(Selection),
     StopObserving,
     Refresh(Selection),
     RefreshProgress(Selection),
     History(Selection, HistoryRequest),
+    RewindHistory(Selection, Ticket, u64),
+    RewindSource(Selection, Ticket, u64),
     RewindGroupHistory(Selection, RewindGroupRequest),
     Find(Ticket, Search),
     ClosePicker,
@@ -56,6 +89,8 @@ pub(crate) enum Job {
         plan: PreparedDefaultSave,
     },
     Save(Command),
+    SaveValue(Selection, Box<ValueSave>),
+    CancelBackground(Selection, String),
     Send(Command),
     Check(Command),
     Discard(Command),
@@ -69,6 +104,8 @@ pub(crate) enum Job {
 }
 
 pub(crate) enum Update {
+    PreparedCredentialRepair(u64, Selection, Result<PreparedCredentialRepair, String>),
+    SavedCredentialRepair(u64, Selection, Result<CredentialRepairApplied, String>),
     Connected {
         endpoint: String,
         workspace: PathBuf,
@@ -81,6 +118,8 @@ pub(crate) enum Update {
     Observation(Selection, Observation),
     Refreshed(Selection, Result<Box<Snapshot>, Error>),
     History(Selection, HistoryRequest, Result<HistoryPage, Error>),
+    RewindHistory(Selection, Ticket, u64, Result<HistoryPage, Error>),
+    RewindSource(Selection, Ticket, u64, Result<String, Error>),
     RewindGroupHistory(
         Selection,
         RewindGroupRequest,
@@ -90,6 +129,8 @@ pub(crate) enum Update {
     PreparedDefault(u64, Selection, Result<PreparedDefaultSave, String>),
     SavedDefault(u64, Selection, Result<(), String>),
     Saved(Command, Result<(), Error>),
+    ValueSaved(Selection, Option<String>, Result<NamedValue, Error>),
+    BackgroundJobCancelled(Selection, Result<JobSnapshot, Error>),
     Sent(String, Result<Acknowledgement, Error>),
     Checked(String, Result<Option<Acknowledgement>, Error>),
     Discarded(String, Result<(), Error>),
@@ -175,6 +216,12 @@ impl Jobs {
                 }));
             }
             Job::ClosePicker => Self::abort(&mut self.finder),
+            history @ (Job::RewindHistory(..) | Job::RewindSource(..)) => {
+                Self::abort(&mut self.finder);
+                if let Some(connection) = self.connection.clone() {
+                    self.finder = Some(self.spawn(run_connected(history, connection)));
+                }
+            }
             Job::PrepareDefault {
                 ticket,
                 selection,
@@ -202,6 +249,68 @@ impl Jobs {
                         ticket,
                         selection,
                         model_default::save(&options, connection.as_ref(), plan).await,
+                    )
+                });
+            }
+            Job::PrepareCredentialRepair {
+                ticket,
+                selection,
+                request,
+            } => {
+                let options = self.options.clone();
+                let connection = self.connection.clone();
+                self.spawn(async move {
+                    Update::PreparedCredentialRepair(
+                        ticket,
+                        selection,
+                        crate::setup::prepare_credential_repair(
+                            &options,
+                            connection.as_ref(),
+                            request,
+                        )
+                        .await,
+                    )
+                });
+            }
+            Job::SaveCredentialRepair {
+                ticket,
+                selection,
+                plan,
+                key,
+            } => {
+                let options = self.options.clone();
+                let connection = self.connection.clone();
+                self.spawn(async move {
+                    Update::SavedCredentialRepair(
+                        ticket,
+                        selection,
+                        crate::setup::save_credential_repair(
+                            &options,
+                            connection.as_ref(),
+                            plan,
+                            key,
+                        )
+                        .await,
+                    )
+                });
+            }
+            Job::RestartCredentialRepair {
+                ticket,
+                selection,
+                saved,
+            } => {
+                let options = self.options.clone();
+                let connection = self.connection.clone();
+                self.spawn(async move {
+                    Update::SavedCredentialRepair(
+                        ticket,
+                        selection,
+                        Ok(crate::setup::apply_credential_repair(
+                            &options,
+                            connection.as_ref(),
+                            saved,
+                        )
+                        .await),
                     )
                 });
             }
@@ -273,6 +382,16 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
                 .await;
             Update::History(selection, request, result)
         }
+        Job::RewindHistory(selection, ticket, before) => {
+            let result = client
+                .history(&selection.target, Some(before), HISTORY_PAGE)
+                .await;
+            Update::RewindHistory(selection, ticket, before, result)
+        }
+        Job::RewindSource(selection, ticket, event_id) => {
+            let result = history_text(client, &selection.target, event_id, HistoryKind::User).await;
+            Update::RewindSource(selection, ticket, event_id, result)
+        }
         Job::RewindGroupHistory(selection, request) => {
             let result = client
                 .rewind_group_history(
@@ -288,6 +407,27 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
             let save = command.clone();
             let result = tokio::task::spawn_blocking(move || connection.pending.save(&save)).await;
             Update::Saved(command, disk_result(result))
+        }
+        Job::SaveValue(selection, save) => {
+            let result = client
+                .save_named_value(
+                    &selection.target,
+                    &save.name,
+                    &save.source,
+                    save.replace,
+                    save.create.as_ref(),
+                )
+                .await;
+            let text = if let NamedValueSource::Text(text) = save.source {
+                Some(text)
+            } else {
+                None
+            };
+            Update::ValueSaved(selection, text, result)
+        }
+        Job::CancelBackground(selection, id) => {
+            let result = client.cancel_job(&selection.target, &id).await;
+            Update::BackgroundJobCancelled(selection, result)
         }
         Job::Send(command) => {
             let result = connection.pending.submit_saved(client, &command).await;
@@ -327,10 +467,13 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
         }
         Job::Web(target) => Update::Web(web(&connection, target.as_ref()).await),
         Job::ReplySource(selection, id) => {
-            let result = history_reply(client, &selection.target, id).await;
+            let result = history_text(client, &selection.target, id, HistoryKind::Assistant).await;
             Update::ReplySource(selection, id, result)
         }
-        Job::Connect
+        Job::PrepareCredentialRepair { .. }
+        | Job::SaveCredentialRepair { .. }
+        | Job::RestartCredentialRepair { .. }
+        | Job::Connect
         | Job::Observe(_)
         | Job::StopObserving
         | Job::Find(_, _)
@@ -340,17 +483,29 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
     }
 }
 
-async fn history_reply(client: &Client, target: &Target, id: u64) -> Result<String, Error> {
-    client
+async fn history_text(
+    client: &Client,
+    target: &Target,
+    id: u64,
+    kind: HistoryKind,
+) -> Result<String, Error> {
+    let page = client
         .history(target, Some(id.saturating_add(1)), 1)
-        .await?
-        .entries
+        .await?;
+    history_entry_text(page, target, id, kind)
+}
+
+fn history_entry_text(
+    page: HistoryPage,
+    target: &Target,
+    id: u64,
+    kind: HistoryKind,
+) -> Result<String, Error> {
+    page.entries
         .into_iter()
-        .find(|entry| {
-            entry.id == id && entry.kind == HistoryKind::Assistant && entry.agent == target.agent
-        })
+        .find(|entry| entry.id == id && entry.kind == kind && entry.agent == target.agent)
         .and_then(|entry| entry.text)
-        .ok_or_else(|| Error::Protocol("the assistant reply is missing from history".into()))
+        .ok_or_else(|| Error::Protocol("the selected message is missing from history".into()))
 }
 
 async fn watch(client: Client, selection: Selection, sender: mpsc::Sender<Message>) {
@@ -504,9 +659,72 @@ async fn find(
                 .collect()
         }
         Search::Models => return Ok(model_choices(client.models().await?)),
+        Search::Values(target) => {
+            let choices: Vec<_> = client
+                .named_values(&target)
+                .await?
+                .into_iter()
+                .map(value_choice)
+                .collect();
+            let header = if choices.is_empty() {
+                "No saved values · /save to name pasted text".into()
+            } else {
+                String::new()
+            };
+            return Ok((choices, header));
+        }
+        Search::Jobs(target) => {
+            let choices: Vec<_> = client
+                .jobs(&target)
+                .await?
+                .into_iter()
+                .map(|job| {
+                    Choice::new(
+                        job.id.clone(),
+                        format!(
+                            "{} · {} · {}",
+                            job_status_label(job.status),
+                            job.tool,
+                            single_line(&job.summary)
+                        ),
+                        ChoiceKind::BackgroundJob(Box::new(job)),
+                    )
+                })
+                .collect();
+            let header = if choices.is_empty() {
+                "No background jobs for this Agent"
+            } else {
+                "Select a job to see available actions"
+            };
+            return Ok((choices, header.into()));
+        }
         Search::Server => unreachable!("handled above"),
     };
     Ok((choices, String::new()))
+}
+
+fn value_choice(value: NamedValue) -> Choice {
+    let kind = match value.kind {
+        NamedValueKind::Text => "Text",
+        NamedValueKind::Json => "JSON",
+        NamedValueKind::Bytes => "Bytes",
+        NamedValueKind::Output => "Saved output",
+    };
+    Choice::new(
+        value.name.clone(),
+        format!("{kind} · {} bytes", value.reference.bytes),
+        ChoiceKind::Value(value),
+    )
+}
+
+pub(crate) fn job_status_label(status: JobStatus) -> &'static str {
+    match status {
+        JobStatus::Running => "Running",
+        JobStatus::Completed => "Completed",
+        JobStatus::Failed => "Failed",
+        JobStatus::Cancelled => "Cancelled",
+        JobStatus::Interrupted => "Interrupted",
+    }
 }
 
 fn model_choices(catalog: ModelCatalog) -> (Vec<Choice>, String) {
@@ -610,4 +828,69 @@ async fn web(connection: &Connection, target: Option<&Target>) -> Result<(), Err
 
 fn disk_result<T>(result: Result<Result<T, Error>, tokio::task::JoinError>) -> Result<T, Error> {
     result.map_err(|error| std::io::Error::other(format!("client storage task: {error}")))?
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use kuku_client::{HistoryEntry, HistoryKind, HistoryPage, Target};
+
+    use super::history_entry_text;
+
+    #[test]
+    fn message_source_requires_the_exact_event_agent_and_role_and_keeps_the_full_text() {
+        let target = Target {
+            workspace: PathBuf::from("workspace"),
+            session_id: "session".into(),
+            agent: "main".into(),
+        };
+        let text = "x".repeat(crate::transcript::MAX_BODY_BYTES + 17);
+        let entry = HistoryEntry {
+            id: 17,
+            agent: "main".into(),
+            turn: Some(1),
+            kind: HistoryKind::User,
+            text: Some(text.clone()),
+            turn_summary: None,
+            details: Default::default(),
+        };
+        let page = |entry| HistoryPage {
+            entries: vec![entry],
+            rewind_groups: Vec::new(),
+            next_before: None,
+        };
+        assert_eq!(
+            text,
+            history_entry_text(page(entry.clone()), &target, 17, HistoryKind::User).unwrap()
+        );
+        for invalid in [
+            HistoryEntry {
+                id: 16,
+                ..entry.clone()
+            },
+            HistoryEntry {
+                agent: "reviewer".into(),
+                ..entry.clone()
+            },
+            HistoryEntry {
+                kind: HistoryKind::Assistant,
+                ..entry.clone()
+            },
+            HistoryEntry {
+                text: None,
+                ..entry.clone()
+            },
+        ] {
+            assert!(history_entry_text(page(invalid), &target, 17, HistoryKind::User).is_err());
+        }
+        let assistant = HistoryEntry {
+            kind: HistoryKind::Assistant,
+            ..entry
+        };
+        assert_eq!(
+            text,
+            history_entry_text(page(assistant), &target, 17, HistoryKind::Assistant).unwrap()
+        );
+    }
 }

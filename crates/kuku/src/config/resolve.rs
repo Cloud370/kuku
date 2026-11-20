@@ -126,7 +126,7 @@ impl ConfigFile {
                     reasoning_effort: entry.reasoning_effort.clone(),
                     service_tier: entry.service_tier.clone(),
                     context_window: entry.context_window.unwrap_or(200000),
-                    max_output_tokens: entry.max_output_tokens.unwrap_or(48000),
+                    max_output_tokens: entry.max_output_tokens,
                     purpose: entry.purpose.clone().unwrap_or_else(|| name.clone()),
                 },
             );

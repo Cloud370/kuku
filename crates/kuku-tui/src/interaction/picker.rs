@@ -1,11 +1,15 @@
 use crossterm::event::{KeyCode, KeyEvent};
 
-use crate::app::{App, Modal};
+use crate::app::{App, JobCommand, Modal};
+use crate::jobs::Job;
 use crate::keys::Shortcut;
 use crate::menu::{ChoiceKind, PickerKind};
 
 impl App {
     pub(super) fn picker_key(&mut self, key: KeyEvent) {
+        if self.rewind_picker_key(key) {
+            return;
+        }
         let page = self.modal_page as isize;
         let details_page = self.modal_info_rows.max(1) as isize;
         let Some(Modal::Picker(picker)) = &mut self.modal else {
@@ -26,6 +30,18 @@ impl App {
         }
         match key {
             key if Shortcut::ENTER.matches(key) => {
+                if matches!(picker.kind, PickerKind::Commands) {
+                    if let Some(command) = JobCommand::parse(picker.query.text()) {
+                        if matches!(command, JobCommand::Invalid) {
+                            picker.problem = Some("Use /jobs or /jobs cancel <id>".into());
+                            return;
+                        }
+                        self.modal = None;
+                        self.effects.push(Job::ClosePicker);
+                        self.run_job_command(command);
+                        return;
+                    }
+                }
                 if let Some(choice) = picker.selected_choice() {
                     let kind = picker.kind.clone();
                     let ticket = picker.ticket.id;

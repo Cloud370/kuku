@@ -18,7 +18,7 @@
     "ok": true,
     "entries": [
       {"id": 8, "agent": "main", "turn": 1, "type": "user", "text": "Inspect the workspace", "from": null},
-      {"id": 15, "agent": "main", "turn": 1, "type": "tool_call", "tool": "run_command", "tool_call_id": "tool-1", "args": {"command": "pwd"}},
+      {"id": 15, "agent": "main", "turn": 1, "type": "tool_call", "tool": "run_command", "tool_call_id": "tool-1", "args": {"program": "pwd", "args": [], "cwd": ".", "timeout": 5}},
       {"id": 18, "agent": "main", "turn": 1, "type": "tool_result", "tool_call_id": "tool-1", "status": "ok", "summary": "command exited", "output_id": "out-1", "model_content": "/work/kuku", "structured": {"kind": "command_result", "exit_code": 0, "output_id": "out-1"}}
     ],
     "next_before": null

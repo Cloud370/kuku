@@ -10,8 +10,9 @@ use wreq::{Method, RequestBuilder, Response};
 use crate::local::{LocalError, LocalService, SESSION_PROTOCOL_VERSION};
 use crate::subscription::SubscriptionScope;
 use crate::{
-    Acknowledgement, AgentSummary, ApiError, Command, EventPage, HistoryPage, ModelDefaultPlan,
-    OutputChunk, RewindGroupPage, SessionSummary, Snapshot, Subscription, Target,
+    Acknowledgement, AgentConfig, AgentSummary, ApiError, Command, EventPage, HistoryPage,
+    JobSnapshot, ModelDefaultPlan, NamedValue, NamedValueSource, OutputChunk, RewindGroupPage,
+    SessionSummary, Snapshot, Subscription, Target,
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -310,6 +311,39 @@ impl Client {
         Ok(response.agents)
     }
 
+    /// List background Jobs owned by the selected Agent.
+    pub async fn jobs(&self, target: &Target) -> Result<Vec<JobSnapshot>, Error> {
+        #[derive(Deserialize)]
+        struct Jobs {
+            jobs: Vec<JobSnapshot>,
+        }
+        let response: Jobs = self
+            .get(
+                ["sessions", &target.session_id, "jobs"],
+                &TargetQuery::new(target),
+            )
+            .await?;
+        Ok(response.jobs)
+    }
+
+    /// Get the current state and any terminal outcome of one background Job.
+    pub async fn job(&self, target: &Target, job_id: &str) -> Result<JobSnapshot, Error> {
+        self.get(
+            ["sessions", &target.session_id, "jobs", job_id],
+            &TargetQuery::new(target),
+        )
+        .await
+    }
+
+    /// Cancel one background Job and return the state observed after cleanup.
+    pub async fn cancel_job(&self, target: &Target, job_id: &str) -> Result<JobSnapshot, Error> {
+        let request = self.request(
+            Method::DELETE,
+            ["sessions", &target.session_id, "jobs", job_id],
+        );
+        self.json(request.query(&TargetQuery::new(target))).await
+    }
+
     /// List available Sessions, optionally filtered by workspace or text.
     pub async fn sessions(
         &self,
@@ -470,6 +504,7 @@ impl Client {
         #[derive(Serialize)]
         struct Query<'a> {
             workspace: &'a Path,
+            agent: &'a str,
             offset: u64,
             max_bytes: usize,
             search: Option<&'a str>,
@@ -483,6 +518,7 @@ impl Client {
                 ["sessions", &target.session_id, "outputs", output_id],
                 &Query {
                     workspace: &target.workspace,
+                    agent: &target.agent,
                     offset,
                     max_bytes,
                     search,
@@ -490,6 +526,53 @@ impl Client {
             )
             .await?;
         Ok(response.output)
+    }
+
+    /// List the names and immutable references retained by the selected Agent.
+    pub async fn named_values(&self, target: &Target) -> Result<Vec<NamedValue>, Error> {
+        #[derive(Deserialize)]
+        struct Values {
+            values: Vec<NamedValue>,
+        }
+        let result: Values = self
+            .get(
+                ["sessions", &target.session_id, "values"],
+                &TargetQuery::new(target),
+            )
+            .await?;
+        Ok(result.values)
+    }
+
+    /// Save text, data, or an existing output under a Session name.
+    pub async fn save_named_value(
+        &self,
+        target: &Target,
+        name: &str,
+        source: &NamedValueSource,
+        replace: bool,
+        create: Option<&AgentConfig>,
+    ) -> Result<NamedValue, Error> {
+        #[derive(Serialize)]
+        struct SaveValue<'a> {
+            #[serde(flatten)]
+            target: TargetQuery<'a>,
+            source: &'a NamedValueSource,
+            replace: bool,
+            create: Option<&'a AgentConfig>,
+        }
+        self.json(
+            self.request(
+                Method::PUT,
+                ["sessions", &target.session_id, "values", name],
+            )
+            .json(&SaveValue {
+                target: TargetQuery::new(target),
+                source,
+                replace,
+                create,
+            }),
+        )
+        .await
     }
 
     /// Build a same-origin browser link for the selected workspace and conversation.

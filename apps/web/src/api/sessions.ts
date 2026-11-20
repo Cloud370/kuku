@@ -286,6 +286,7 @@ export async function fetchOutput(
 ) {
   const params = new URLSearchParams({
     workspace: target.workspace,
+    agent: target.agent,
     offset: String(offset),
     max_bytes: String(16 * 1024),
   });

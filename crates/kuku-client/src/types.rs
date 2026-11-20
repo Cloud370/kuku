@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
+use serde::{de, Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 use crate::{
     AgentConfig, AgentSelection, AgentSnapshot, AgentStatus, InputStatus, ModelPhase,
-    PermissionRequest, QuestionRequest, QueuedInput, Receipt, StoredEvent,
+    OutputReference, PermissionRequest, QuestionRequest, QueuedInput, Receipt, StoredEvent,
 };
 
 /// The exact server-side workspace, Session, and Agent selected by a caller.
@@ -51,6 +51,9 @@ pub enum Action {
         text: String,
         /// The boundary where the Agent may accept the input.
         timing: Timing,
+        /// Exact saved output references attached to the input.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        values: Vec<OutputReference>,
         /// Optional Skill instructions selected for this input's acceptance boundary.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bootstrap_skill: Option<String>,
@@ -452,6 +455,8 @@ pub enum HistoryKind {
     ToolCall,
     /// Durable outcome of a tool invocation.
     ToolResult,
+    /// Durable terminal outcome of a background Job.
+    JobFinished,
     /// Persisted question request.
     Question,
     /// Persisted authorization request.
@@ -513,9 +518,40 @@ pub struct RewindGroupPage {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct EventPage {
     /// Persisted SDK event records.
+    #[serde(deserialize_with = "deserialize_ledger_events")]
     pub events: Vec<StoredEvent>,
     /// Exclusive cursor for the next page, including scanned events excluded by filters.
     pub next_after: u64,
+}
+
+fn deserialize_ledger_events<'de, D>(deserializer: D) -> Result<Vec<StoredEvent>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    struct EventEnvelope {
+        id: u64,
+        payload: Value,
+    }
+
+    Vec::<EventEnvelope>::deserialize(deserializer)?
+        .into_iter()
+        .map(|event| {
+            let Value::Object(mut payload) = event.payload else {
+                return Err(de::Error::custom("ledger event payload must be an object"));
+            };
+            if payload
+                .get("id")
+                .is_some_and(|id| id.as_u64() != Some(event.id))
+            {
+                return Err(de::Error::custom(
+                    "ledger event identity differs from its envelope",
+                ));
+            }
+            payload.insert("id".into(), Value::from(event.id));
+            serde_json::from_value(Value::Object(payload)).map_err(de::Error::custom)
+        })
+        .collect()
 }
 
 /// The overall state visible in session listings.

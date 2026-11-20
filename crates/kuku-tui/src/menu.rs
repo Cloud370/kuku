@@ -1,21 +1,24 @@
 use std::ops::Range;
 
-use kuku_client::Target;
+use kuku_client::{JobSnapshot, NamedValue, Target};
 use ratatui::layout::{Position, Rect};
 
 use crate::editor::Editor;
 use crate::jobs::Selection;
 use crate::keys::Shortcut;
-use crate::transcript::{DetailKey, RewindGroupAction, SelectedMessage};
+use crate::transcript::{DetailKey, RewindGroupAction, SelectedMessage, ToolView};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CommandMenu {
     New,
     Resume,
     Agents,
+    Jobs,
     Model,
     Thinking,
     StatusLine,
+    Save,
+    Values,
     Server,
     Web,
     Quit,
@@ -26,9 +29,12 @@ impl CommandMenu {
         Self::New,
         Self::Resume,
         Self::Agents,
+        Self::Jobs,
         Self::Model,
         Self::Thinking,
         Self::StatusLine,
+        Self::Save,
+        Self::Values,
         Self::Server,
         Self::Web,
         Self::Quit,
@@ -39,9 +45,12 @@ impl CommandMenu {
             Self::New => "new",
             Self::Resume => "resume",
             Self::Agents => "agents",
+            Self::Jobs => "jobs",
             Self::Model => "model",
             Self::Thinking => "thinking",
             Self::StatusLine => "statusline",
+            Self::Save => "save",
+            Self::Values => "values",
             Self::Server => "server",
             Self::Web => "web",
             Self::Quit => "quit",
@@ -53,9 +62,12 @@ impl CommandMenu {
             Self::New => ("Open a fresh draft", None),
             Self::Resume => ("Find a conversation in this workspace", None),
             Self::Agents => ("Choose or create an Agent in this Session", None),
+            Self::Jobs => ("List background jobs · /jobs cancel <id>", None),
             Self::Model => ("Choose a configured model route", Some(Shortcut::MODEL)),
             Self::Thinking => ("Choose the model's reasoning setting", None),
             Self::StatusLine => ("Choose and reorder status line fields", None),
+            Self::Save => ("Name pasted text or the current draft", None),
+            Self::Values => ("Browse and attach saved values", None),
             Self::Server => ("Inspect the connected service", None),
             Self::Web => ("Open this target in the browser", None),
             Self::Quit => ("Leave the terminal", None),
@@ -117,6 +129,13 @@ pub(crate) enum ChoiceKind {
         key: DetailKey,
         message: Option<SelectedMessage>,
     },
+    Tool(ToolView),
+    BackgroundJob(Box<JobSnapshot>),
+    CancelBackground(String),
+    Value(NamedValue),
+    AttachValue(NamedValue),
+    ReadValue(NamedValue),
+    ClearValues,
     Restart,
 }
 
@@ -127,9 +146,12 @@ impl ChoiceKind {
             Self::Command(
                 CommandMenu::Resume
                     | CommandMenu::Agents
+                    | CommandMenu::Jobs
                     | CommandMenu::Model
                     | CommandMenu::Thinking
                     | CommandMenu::StatusLine
+                    | CommandMenu::Save
+                    | CommandMenu::Values
                     | CommandMenu::Server
             ) | Self::Session { .. }
                 | Self::Agent { .. }
@@ -145,6 +167,11 @@ impl ChoiceKind {
                 | Self::Pending(_)
                 | Self::PendingOpen { .. }
                 | Self::Detail { .. }
+                | Self::Tool(_)
+                | Self::BackgroundJob(_)
+                | Self::Value(_)
+                | Self::AttachValue(_)
+                | Self::ReadValue(_)
         )
     }
 }
@@ -226,6 +253,11 @@ pub(crate) enum PickerKind {
     Thinking,
     Pending,
     PendingItem,
+    Tools,
+    Jobs,
+    JobActions,
+    Values,
+    ValueActions,
     Server,
     Rewind,
     Messages,
@@ -244,6 +276,11 @@ impl PickerKind {
             Self::Thinking => "Thinking",
             Self::Pending => "Unconfirmed commands",
             Self::PendingItem => "Recover command",
+            Self::Tools => "Saved outputs",
+            Self::Jobs => "Background jobs",
+            Self::JobActions => "Background job",
+            Self::Values => "Saved values",
+            Self::ValueActions => "Saved value",
             Self::Server => "Service status",
             Self::Rewind => "Rewind to message",
             Self::Messages => "Operate on message",
@@ -254,7 +291,14 @@ impl PickerKind {
     pub(crate) fn searchable(&self) -> bool {
         matches!(
             self,
-            Self::Commands | Self::Paths(_) | Self::Sessions | Self::Agents | Self::Models
+            Self::Commands
+                | Self::Paths(_)
+                | Self::Sessions
+                | Self::Agents
+                | Self::Models
+                | Self::Tools
+                | Self::Jobs
+                | Self::Values
         )
     }
 
@@ -293,6 +337,7 @@ pub(crate) struct Picker {
     pub(crate) selected: usize,
     pub(crate) header_top: usize,
     pub(crate) ticket: Ticket,
+    pub(crate) rewind_history: Option<RewindHistory>,
     local: Vec<Choice>,
     remote: Vec<Choice>,
     rows: Option<PickerRows>,
@@ -310,6 +355,7 @@ impl Picker {
             selected: 0,
             header_top: 0,
             ticket: Ticket { id, revision: 0 },
+            rewind_history: None,
             local,
             remote: Vec::new(),
             rows: None,
@@ -427,7 +473,10 @@ impl Picker {
             .iter()
             .filter(|choice| choice.matches(&query))
             .chain(self.remote.iter().filter(|choice| {
-                !matches!(self.kind, PickerKind::Models) || choice.matches(&query)
+                !matches!(
+                    self.kind,
+                    PickerKind::Models | PickerKind::Values | PickerKind::Jobs
+                ) || choice.matches(&query)
             }))
             .collect();
         if matches!(self.kind, PickerKind::Commands | PickerKind::Agents) && !query.is_empty() {
@@ -494,17 +543,37 @@ impl Picker {
 }
 
 #[derive(Debug)]
+pub(crate) struct RewindHistory {
+    pub(crate) selection: Selection,
+    pub(crate) next_before: Option<u64>,
+    pub(crate) load: RewindLoad,
+    pub(crate) window_limited: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RewindLoad {
+    Idle,
+    Page(u64),
+    Source { event_id: u64, turn: u64 },
+}
+
+#[derive(Debug)]
 pub(crate) enum PromptKind {
     Agent,
     Model { connection: String },
     Question { request_id: String, target: Target },
     QueuedInput { input_command_id: String },
     RewindMessage { event_id: u64, text: String },
+    SavePaste,
+    SaveValue { output_id: Option<String> },
 }
 
 impl PromptKind {
     pub(crate) fn multiline(&self) -> bool {
-        matches!(self, Self::Question { .. } | Self::QueuedInput { .. })
+        matches!(
+            self,
+            Self::Question { .. } | Self::QueuedInput { .. } | Self::SavePaste
+        )
     }
 }
 
@@ -545,6 +614,6 @@ mod tests {
         for retained in ["/new", "/resume", "/server", "/quit"] {
             assert!(labels.contains(&retained));
         }
-        assert_eq!(9, choices.len());
+        assert_eq!(12, choices.len());
     }
 }

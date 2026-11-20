@@ -107,6 +107,11 @@ pub(super) fn reduce_lifecycle(events: &[StoredEvent]) -> LifecycleState {
                             ConversationAddress::parse(value).unwrap_or(ConversationAddress::MAIN)
                         })
                         .unwrap_or(ConversationAddress::MAIN);
+                    if source == "workspace_script" {
+                        lifecycle.was_dispatched = false;
+                        lifecycle.permission_allowed = false;
+                        lifecycle.permission_denied = false;
+                    }
                     lifecycle.permission_request = Some(PermissionRequest {
                         id: tool_call_id.clone(),
                         conversation,

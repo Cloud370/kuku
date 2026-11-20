@@ -1,16 +1,19 @@
-use std::collections::HashMap;
+use std::cmp::Reverse;
+use std::collections::HashSet;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use regex::Regex;
+use serde::Serialize;
 use serde_json::Value;
 
 use crate::tool::ToolResultEnvelope;
 
-use crate::util::path::is_blocked_relative_path;
-
 use super::common::{
-    glob_match, is_default_excluded_dir, join_bounded_strings, relative_path, resolve_path,
+    ensure_active, file_read_error, glob_match, is_default_excluded_dir, join_bounded_strings,
+    read_file_as_utf8, relative_path, resolve_path, verify_directory, workspace_path_blocked,
+    FileCancellation,
 };
 
 const SEARCH_TEXT_MAX_CHARS: usize = 80_000;
@@ -21,13 +24,77 @@ struct CollectedFile {
     relative: String,
 }
 
+#[derive(Serialize)]
 struct SearchMatch {
     path: String,
     line_number: usize,
-    line: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    line: Option<String>,
+    line_truncated: bool,
 }
 
-pub(crate) fn search_text(args: &Value, workspace: &Path) -> ToolResultEnvelope {
+struct SearchPage {
+    offset: usize,
+    limit: usize,
+    total: usize,
+    bytes: usize,
+    matches: Vec<SearchMatch>,
+}
+
+impl SearchPage {
+    fn new(offset: usize, limit: usize) -> Self {
+        Self {
+            offset,
+            limit,
+            total: 0,
+            bytes: 0,
+            matches: Vec::new(),
+        }
+    }
+
+    fn scan(
+        &mut self,
+        path: &str,
+        content: &str,
+        regex: &Regex,
+        include_line: bool,
+        cancelled: &FileCancellation<'_>,
+    ) -> io::Result<()> {
+        let mut full = self.bytes >= SEARCH_TEXT_MAX_CHARS;
+        for (index, source) in content.lines().enumerate() {
+            ensure_active(cancelled)?;
+            if !regex.is_match(source) {
+                continue;
+            }
+            self.total += 1;
+            if full || self.total <= self.offset || self.matches.len() >= self.limit {
+                continue;
+            }
+            let line = include_line.then(|| trim_search_line(source));
+            let row_bytes = path.len() + line.as_ref().map_or(0, String::len) + 64;
+            if row_bytes > SEARCH_TEXT_MAX_CHARS - self.bytes {
+                self.bytes = SEARCH_TEXT_MAX_CHARS;
+                full = true;
+                continue;
+            }
+            let line_truncated = line.as_ref().is_some_and(|line| line.as_str() != source);
+            self.matches.push(SearchMatch {
+                path: path.to_owned(),
+                line_number: index + 1,
+                line,
+                line_truncated,
+            });
+            self.bytes += row_bytes;
+        }
+        Ok(())
+    }
+}
+
+pub(crate) fn search_text(
+    args: &Value,
+    workspace: &Path,
+    cancelled: &FileCancellation<'_>,
+) -> ToolResultEnvelope {
     let Some(pattern) = args.get("pattern").and_then(Value::as_str) else {
         return ToolResultEnvelope::error(
             "failed: missing pattern",
@@ -68,72 +135,62 @@ pub(crate) fn search_text(args: &Value, workspace: &Path) -> ToolResultEnvelope 
         include,
         &mut files,
         &mut blocked_file_count,
+        cancelled,
     ) {
-        return ToolResultEnvelope::error(
-            format!("failed: {error}"),
-            format!("error reading search path: {path}"),
-        );
+        return file_read_error(Path::new(path), error);
     }
     if view == "lines" {
-        files.sort_by(|left, right| {
-            let left_mtime = fs::metadata(&left.absolute).and_then(|m| m.modified()).ok();
-            let right_mtime = fs::metadata(&right.absolute)
-                .and_then(|m| m.modified())
-                .ok();
-            right_mtime.cmp(&left_mtime)
+        files.sort_by_cached_key(|file| {
+            let modified = if cancelled() {
+                None
+            } else {
+                fs::metadata(&file.absolute).and_then(|m| m.modified()).ok()
+            };
+            (Reverse(modified), file.relative.clone())
         });
     } else {
         files.sort_by(|left, right| left.relative.cmp(&right.relative));
     }
 
-    let mut matches = Vec::new();
-    let mut file_lines: HashMap<String, Vec<String>> = HashMap::new();
+    let mut page = SearchPage::new(offset, limit);
+    let mut preview = ContextPreview::default();
     let mut skipped_file_count = 0_usize;
     let mut searched_file_count = 0_usize;
     for file in &files {
-        let bytes = match fs::read(&file.absolute) {
-            Ok(bytes) => bytes,
+        let content = match read_file_as_utf8(&file.absolute, cancelled) {
+            Ok(content) => content,
+            Err(result) if result.status == "cancelled" => return result,
             Err(_) => {
                 skipped_file_count += 1;
                 continue;
             }
         };
-        let Ok(content) = String::from_utf8(bytes) else {
-            skipped_file_count += 1;
-            continue;
-        };
         searched_file_count += 1;
+        let previous_count = page.matches.len();
+        if let Err(error) = page.scan(&file.relative, &content, &regex, view == "lines", cancelled)
+        {
+            return file_read_error(Path::new(path), error);
+        }
         if context > 0 && view == "lines" {
-            let lines: Vec<String> = content.lines().map(String::from).collect();
-            for (index, line) in lines.iter().enumerate() {
-                if regex.is_match(line) {
-                    matches.push(SearchMatch {
-                        path: file.relative.clone(),
-                        line_number: index + 1,
-                        line: trim_search_line(line),
-                    });
-                }
-            }
-            file_lines.insert(file.relative.clone(), lines);
-        } else {
-            for (index, line) in content.lines().enumerate() {
-                if regex.is_match(line) {
-                    matches.push(SearchMatch {
-                        path: file.relative.clone(),
-                        line_number: index + 1,
-                        line: trim_search_line(line),
-                    });
-                }
+            if let Err(error) = preview.extend(
+                &file.relative,
+                &content,
+                &page.matches[previous_count..],
+                context,
+                cancelled,
+            ) {
+                return file_read_error(Path::new(path), error);
             }
         }
     }
 
-    let total_match_count = matches.len();
-    let sliced: Vec<_> = matches.into_iter().skip(offset).take(limit).collect();
-    let has_more = offset + sliced.len() < total_match_count;
+    let total_match_count = page.total;
+    let sliced = page.matches;
+    let next_offset = offset.saturating_add(sliced.len());
+    let has_more = next_offset < total_match_count;
 
     let model_lines = if view == "lines" && context > 0 {
-        render_lines_with_context(&sliced, &file_lines, context)
+        preview.rows
     } else {
         render_search_lines(view, &sliced)
     };
@@ -142,14 +199,21 @@ pub(crate) fn search_text(args: &Value, workspace: &Path) -> ToolResultEnvelope 
             "Showing {} of {} matches. Use offset={} to see more.",
             sliced.len(),
             total_match_count,
-            offset + limit,
+            next_offset,
         )
     } else {
         "(Results are truncated. Use a narrower path/include pattern or view=files/count.)"
             .to_string()
     };
-    let (model_content, truncated) =
+    let (mut model_content, truncated) =
         join_bounded_strings(&model_lines, SEARCH_TEXT_MAX_CHARS, &truncation_message);
+    if !truncated && (preview.truncated || has_more) {
+        if !model_content.is_empty() {
+            model_content.push('\n');
+        }
+        model_content.push_str(&truncation_message);
+    }
+    let truncated = truncated || preview.truncated;
     let file_count = unique_match_file_count(&sliced);
     let summary = if has_more {
         format!(
@@ -189,6 +253,8 @@ pub(crate) fn search_text(args: &Value, workspace: &Path) -> ToolResultEnvelope 
         "offset": offset,
         "limit": limit,
         "has_more": has_more,
+        "next_offset": has_more.then_some(next_offset),
+        "matches": sliced,
     });
 
     if truncated || has_more {
@@ -204,9 +270,11 @@ fn collect_search_files(
     include: Option<&str>,
     files: &mut Vec<CollectedFile>,
     blocked_file_count: &mut usize,
-) -> std::io::Result<()> {
+    cancelled: &FileCancellation<'_>,
+) -> io::Result<()> {
+    ensure_active(cancelled)?;
     let relative = relative_path(root, workspace);
-    if is_blocked_relative_path(&relative) {
+    if workspace_path_blocked(&relative) {
         *blocked_file_count += 1;
         return Ok(());
     }
@@ -215,13 +283,15 @@ fn collect_search_files(
         return Ok(());
     }
 
+    verify_directory(root)?;
     for entry in fs::read_dir(root)? {
+        ensure_active(cancelled)?;
         let entry = entry?;
         let file_type = entry.file_type()?;
         let path = entry.path();
         let relative = relative_path(&path, workspace);
 
-        if is_blocked_relative_path(&relative) {
+        if workspace_path_blocked(&relative) {
             *blocked_file_count += 1;
             continue;
         }
@@ -230,7 +300,14 @@ fn collect_search_files(
             if is_default_excluded_dir(&file_name.to_string_lossy()) {
                 continue;
             }
-            collect_search_files(&path, workspace, include, files, blocked_file_count)?;
+            collect_search_files(
+                &path,
+                workspace,
+                include,
+                files,
+                blocked_file_count,
+                cancelled,
+            )?;
         } else if file_type.is_file() {
             push_search_file(&path, workspace, include, files, blocked_file_count);
         }
@@ -247,7 +324,7 @@ fn push_search_file(
     blocked_file_count: &mut usize,
 ) {
     let relative = relative_path(path, workspace);
-    if is_blocked_relative_path(&relative) {
+    if workspace_path_blocked(&relative) {
         *blocked_file_count += 1;
         return;
     }
@@ -264,7 +341,14 @@ fn render_search_lines(view: &str, matches: &[SearchMatch]) -> Vec<String> {
     match view {
         "lines" => matches
             .iter()
-            .map(|match_| format!("{}:{}: {}", match_.path, match_.line_number, match_.line))
+            .map(|match_| {
+                format!(
+                    "{}:{}: {}",
+                    match_.path,
+                    match_.line_number,
+                    match_.line.as_deref().unwrap_or_default()
+                )
+            })
             .collect(),
         "count" => {
             let mut counts = Vec::<(String, usize)>::new();
@@ -292,46 +376,72 @@ fn render_search_lines(view: &str, matches: &[SearchMatch]) -> Vec<String> {
     }
 }
 
-fn render_lines_with_context(
-    matches: &[SearchMatch],
-    file_lines: &HashMap<String, Vec<String>>,
-    context: usize,
-) -> Vec<String> {
-    let mut output = Vec::new();
-    let mut prev_end: Option<(String, usize)> = None;
+#[derive(Default)]
+struct ContextPreview {
+    rows: Vec<String>,
+    bytes: usize,
+    truncated: bool,
+}
 
-    for m in matches {
-        let lines = match file_lines.get(&m.path) {
-            Some(l) => l,
-            None => {
-                output.push(format!("{}:{}: {}", m.path, m.line_number, m.line));
+impl ContextPreview {
+    fn extend(
+        &mut self,
+        path: &str,
+        content: &str,
+        matches: &[SearchMatch],
+        context: usize,
+        cancelled: &FileCancellation<'_>,
+    ) -> io::Result<()> {
+        if matches.is_empty() || self.truncated {
+            return Ok(());
+        }
+        let start = matches[0].line_number.saturating_sub(context).max(1);
+        let end = matches[matches.len() - 1]
+            .line_number
+            .saturating_add(context);
+        let mut upcoming = matches.iter().map(|hit| hit.line_number).peekable();
+        let mut preceding = None;
+        let mut last_rendered = 0;
+        for (index, line) in content.lines().enumerate().take(end) {
+            ensure_active(cancelled)?;
+            let number = index + 1;
+            if number < start {
                 continue;
             }
-        };
-
-        let start = m.line_number.saturating_sub(context).max(1);
-        let end = (m.line_number + context).min(lines.len());
-
-        if let Some((ref prev_path, prev_end_line)) = prev_end {
-            if prev_path != &m.path || start > prev_end_line + 1 {
-                output.push("--".to_string());
+            let matching = upcoming.peek() == Some(&number);
+            if matching {
+                preceding = upcoming.next();
             }
-        }
-
-        for line_num in start..=end {
-            let idx = line_num - 1;
-            let content = lines.get(idx).map(|s| s.as_str()).unwrap_or("");
-            if line_num == m.line_number {
-                output.push(format!("{}:{}: {}", m.path, line_num, content));
-            } else {
-                output.push(format!("{}:{}- {}", m.path, line_num, content));
+            let close = upcoming.peek().is_some_and(|next| next - number <= context)
+                || preceding.is_some_and(|prior| number - prior <= context);
+            if !close {
+                continue;
             }
+            if !self.rows.is_empty() && (last_rendered == 0 || last_rendered + 1 < number) {
+                self.push("--".to_owned());
+            }
+            let marker = if matching { ':' } else { '-' };
+            self.push(format!(
+                "{path}:{number}{marker} {}",
+                trim_search_line(line)
+            ));
+            if self.truncated {
+                break;
+            }
+            last_rendered = number;
         }
-
-        prev_end = Some((m.path.clone(), end));
+        Ok(())
     }
 
-    output
+    fn push(&mut self, row: String) {
+        let next = self.bytes + row.len() + usize::from(!self.rows.is_empty());
+        if next > SEARCH_TEXT_MAX_CHARS {
+            self.truncated = true;
+        } else if !self.truncated {
+            self.rows.push(row);
+            self.bytes = next;
+        }
+    }
 }
 
 fn trim_search_line(line: &str) -> String {
@@ -346,19 +456,40 @@ fn trim_search_line(line: &str) -> String {
 }
 
 fn unique_match_file_count(matches: &[SearchMatch]) -> usize {
-    let mut paths = Vec::<&str>::new();
-    for match_ in matches {
-        if !paths.contains(&match_.path.as_str()) {
-            paths.push(&match_.path);
-        }
-    }
-    paths.len()
+    matches
+        .iter()
+        .map(|hit| hit.path.as_str())
+        .collect::<HashSet<_>>()
+        .len()
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::super::test_helpers::workspace;
     use super::*;
+
+    fn search_text(args: &Value, workspace: &Path) -> ToolResultEnvelope {
+        super::search_text(args, workspace, &|| false)
+    }
+
+    #[test]
+    fn search_stops_during_input_scan_without_returning_a_complete_page() {
+        let dir = workspace();
+        let path = dir.path().join("large.txt");
+        std::fs::write(path, "a long fixture line with no matches\n".repeat(10_000)).unwrap();
+        let checks = AtomicUsize::new(0);
+        let stop = || checks.fetch_add(1, Ordering::Relaxed) >= 4;
+        let result = super::search_text(
+            &serde_json::json!({"path":"large.txt","pattern":"missing pattern"}),
+            dir.path(),
+            &stop,
+        );
+
+        assert_eq!("cancelled", result.status);
+        assert_eq!(5, checks.load(Ordering::Relaxed));
+    }
 
     #[test]
     fn search_text_supports_files_lines_and_count_views() {
@@ -386,6 +517,11 @@ mod tests {
             lines.model_content.lines().collect::<Vec<_>>(),
             vec!["docs/tools.md:2: TODO docs", "docs/tools.md:3: TODO again"]
         );
+        let structured = lines.structured.unwrap();
+        let first = &structured["matches"][0];
+        assert_eq!("docs/tools.md", first["path"]);
+        assert_eq!(2, first["line_number"]);
+        assert_eq!("TODO docs", first["line"]);
 
         let count = search_text(
             &serde_json::json!({"pattern": "TODO", "view": "count"}),

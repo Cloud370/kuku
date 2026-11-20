@@ -1,8 +1,8 @@
 use super::{
-    project_source, read_agent_events, read_frozen_catalog, ContextCursor, MAX_CACHED_READS,
-    MAX_SELECTION_BYTES_FACTOR,
+    project_source, read_agent_events, read_frozen_catalog, ContextCursor,
+    MAX_CACHED_FILE_SNAPSHOTS, MAX_SELECTION_BYTES_FACTOR,
 };
-use crate::context::{CanonicalMessage, MessageBlock};
+use crate::context::{CanonicalMessage, MessageBlock, ToolResult};
 use crate::conversation::address::ConversationAddress;
 use crate::event::{EventPayload, EventStore, StoredEvent};
 use serde_json::json;
@@ -772,7 +772,7 @@ fn startup_keeps_request_counters_and_pending_arguments_without_response_bodies(
             request_id: "req_3".into(),
             index: 0,
             tool: "run_command".into(),
-            args: json!({"command":"echo exact"}),
+            args: json!({"program":"echo","args":["exact"],"cwd":".","timeout":5}),
         })
         .unwrap();
     writer
@@ -803,7 +803,7 @@ fn startup_keeps_request_counters_and_pending_arguments_without_response_bodies(
     )));
     assert!(events.iter().any(|event| matches!(&event.payload,
         EventPayload::ToolCall { conversation: Some(agent), args, .. }
-        if agent == "reviewer" && args["command"] == "echo exact"
+        if agent == "reviewer" && args["program"] == "echo" && args["args"] == json!(["exact"])
     )));
 }
 
@@ -830,7 +830,7 @@ fn startup_read_snapshots_follow_both_byte_and_recent_access_limits() {
             })
             .collect::<Vec<_>>()
     };
-    assert_eq!(MAX_CACHED_READS, snapshots(&generous).len());
+    assert_eq!(MAX_CACHED_FILE_SNAPSHOTS, snapshots(&generous).len());
     append_read(&mut writer, 131, 127, true);
     append_read(&mut writer, 132, 130, false);
     let bounded = read_agent_events(&path, "main", 4096).unwrap();
@@ -839,4 +839,93 @@ fn startup_read_snapshots_follow_both_byte_and_recent_access_limits() {
     assert!(paths.contains(&"/fixture/127.txt".into()));
     assert!(paths.contains(&"/fixture/130.txt".into()));
     assert!(!paths.contains(&"/fixture/128.txt".into()));
+}
+
+#[test]
+fn startup_keeps_only_write_confirmations_in_the_prepared_context() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("events.jsonl");
+    let mut writer = EventStore::open(&path).unwrap();
+    append_read(&mut writer, 1, 0, false);
+    let turn = 1;
+    let mut source_head = 0;
+    for file in ["forgotten", "retained", "unconfirmed"] {
+        source_head = writer.append(EventPayload::ToolResult {
+            ts: String::new(), conversation: Some("main".into()), turn, tool_call_id: file.into(),
+            status: "ok".into(), summary: "written".into(), model_content: "confirmation".into(), truncated: false,
+            files_read: vec![], files_changed: vec![], commands_run: vec![], memory_changed: None,
+            structured: Some(json!({"kind":"file_write","canonical_path":file,"commit_state":"committed",
+                "supplied_full_write":true,"content_hash_after":"written","raw_text_after":"x".repeat(16_384)})),
+        }).unwrap().id;
+    }
+    let start_segment = |writer: &mut EventStore| {
+        writer
+            .append(EventPayload::Unknown(json!({
+                "kind":"runtime.context_segment", "agent":"main"
+            })))
+            .unwrap()
+            .id
+    };
+    let admit = |writer: &mut EventStore, segment: u64, files: &[&str]| {
+        let blocks = files
+            .iter()
+            .map(|file| {
+                MessageBlock::ToolResult(ToolResult {
+                    tool_call_id: (*file).into(),
+                    status: "ok".into(),
+                    summary: "written".into(),
+                    model_content: "confirmation".into(),
+                    structured: None,
+                    truncated: false,
+                })
+            })
+            .collect();
+        writer
+            .append(EventPayload::Unknown(json!({
+                "kind":"runtime.context_admitted", "agent":"main", "segment":segment,
+                "ordinal":0, "turn":turn, "origin":"tool_results", "source_head":source_head,
+                "message": CanonicalMessage::user(blocks),
+            })))
+            .unwrap();
+    };
+    let prepare = |writer: &mut EventStore, segment: u64| {
+        writer
+            .append(EventPayload::Unknown(json!({
+                "kind":"runtime.step_prepared", "agent":"main", "segment":segment,
+                "context_head":1, "source_head":source_head,
+            })))
+            .unwrap();
+    };
+    let paths = || -> Vec<String> {
+        let events = read_agent_events(&path, "main", 4096).unwrap();
+        assert!(events.iter().any(|event| matches!(&event.payload,
+            EventPayload::ToolResult { structured: Some(value), .. } if value["kind"] == "file_content"
+        )));
+        events
+            .into_iter()
+            .filter_map(|event| {
+                let EventPayload::ToolResult {
+                    structured: Some(value),
+                    ..
+                } = event.payload
+                else {
+                    return None;
+                };
+                let (path, _) = super::super::replay::supplied_file_version(&value)?;
+                assert!(value.get("raw_text_after").is_none());
+                Some(path.to_owned())
+            })
+            .collect()
+    };
+    let segment = start_segment(&mut writer);
+    admit(&mut writer, segment, &["forgotten", "retained"]);
+    assert!(paths().is_empty());
+    prepare(&mut writer, segment);
+    assert_eq!(["forgotten", "retained"], paths().as_slice());
+
+    let successor = start_segment(&mut writer);
+    admit(&mut writer, successor, &["retained"]);
+    assert_eq!(["forgotten", "retained"], paths().as_slice());
+    prepare(&mut writer, successor);
+    assert_eq!(["retained"], paths().as_slice());
 }

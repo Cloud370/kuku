@@ -7,8 +7,8 @@ use common::{anthropic_sse_response, openai_sse_response, test_config, TestEnv};
 use httpmock::prelude::{HttpMockRequest, MockServer, Regex, POST};
 use httpmock::When;
 use kuku::agent::registry::AgentRegistry;
-use kuku::config::ApiKey;
-use kuku::event::{EventPayload, EventStore};
+use kuku::config::{ApiKey, ProviderProfile};
+use kuku::event::{EventPayload, EventStore, ModelStopReason};
 use kuku::prompt::builtin_prompt_catalog;
 use kuku::query::Run;
 use kuku::{query, Error, Provider, UiEvent};
@@ -178,6 +178,29 @@ fn anthro(query_text: &str, server: &MockServer) -> query::Query {
         .provider(Provider::Anthropic)
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
+        .api_key("test-key")
+        .config(config)
+}
+
+fn anthro_profile(
+    query_text: &str,
+    server: &MockServer,
+    base_path: &str,
+    profile: ProviderProfile,
+) -> query::Query {
+    let mut config = test_config();
+    let provider = config
+        .providers
+        .get_mut("anthropic")
+        .expect("test config has anthropic provider");
+    provider.options.profile = profile;
+    provider.base_url = server.url(base_path);
+    provider.api_key = ApiKey::Plaintext("test-key".to_string());
+
+    query(query_text)
+        .provider(Provider::Anthropic)
+        .model("claude-sonnet-4-6")
+        .base_url(server.url(base_path))
         .api_key("test-key")
         .config(config)
 }

@@ -3,13 +3,17 @@ use std::path::PathBuf;
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-use kuku_client::{Acknowledgement, Action, HistoryEntry, HistoryKind, Receipt};
+use kuku_client::{
+    Acknowledgement, Action, HistoryEntry, HistoryKind, Input, InputSource, InputStatus,
+    InputTiming, JobSnapshot, JobStatus, NamedValue, NamedValueKind, NamedValueSource,
+    OutputReference, Receipt, Timing,
+};
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::Terminal;
 use serde_json::json;
 
-use crate::app::{App, Modal};
+use crate::app::{App, KeyboardFocus, Modal};
 use crate::jobs::{Job, Search, Update};
 use crate::menu::{Choice, ChoiceKind, MessageAction, PickerKind, PromptKind};
 use crate::transcript::MessageId;
@@ -27,6 +31,33 @@ pub(super) fn connected_app() -> App {
 
 pub(super) fn press(app: &mut App, code: KeyCode) {
     app.key(KeyEvent::new(code, KeyModifiers::NONE));
+}
+
+fn picker_ticket(app: &App) -> u64 {
+    match &app.modal {
+        Some(Modal::Picker(picker)) => picker.ticket.id,
+        _ => panic!("picker expected"),
+    }
+}
+
+fn finish_rewind_source(app: &mut App, event_id: u64, text: &str) {
+    let (selection, ticket) = app
+        .effects
+        .iter()
+        .rev()
+        .find_map(|job| match job {
+            Job::RewindSource(selection, ticket, id) if *id == event_id => {
+                Some((selection.clone(), *ticket))
+            }
+            _ => None,
+        })
+        .expect("selected message source is requested");
+    app.update(Update::RewindSource(
+        selection,
+        ticket,
+        event_id,
+        Ok(text.into()),
+    ));
 }
 
 pub(super) fn insert_message(
@@ -126,6 +157,244 @@ pub(super) fn click_screen(app: &mut App, buffer: &Buffer, point: (u16, u16)) {
             buffer,
         );
     }
+}
+
+#[test]
+fn jobs_picker_lists_ids_and_cancels_the_selected_job() {
+    let mut app = connected_app();
+    app.pane_mut().exists = true;
+    press(&mut app, KeyCode::Char('/'));
+    app.paste("jobs");
+    press(&mut app, KeyCode::Enter);
+    let Some(Job::Find(ticket, Search::Jobs(target))) = app.effects.pop() else {
+        panic!("jobs picker should query the selected Agent");
+    };
+    assert_eq!(target, app.selection().target);
+    let mut job: JobSnapshot = serde_json::from_value(json!({
+        "id": "job-1", "agent": "main", "turn": 1, "tool_call_id": "call-1",
+        "tool": "run_command", "status": "running", "summary": "Run tests", "started_at": 6,
+    }))
+    .unwrap();
+    app.update(Update::Found(
+        ticket,
+        Ok((
+            vec![Choice::new(
+                "job-1",
+                "Running",
+                ChoiceKind::BackgroundJob(Box::new(job.clone())),
+            )],
+            String::new(),
+        )),
+    ));
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+        if matches!(picker.kind, PickerKind::Jobs)
+            && picker.visible_choices()[0].label == "job-1"
+            && picker.visible_choices()[0].detail == "Running"));
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+        if matches!(picker.kind, PickerKind::JobActions)
+            && picker.visible_choices()[0].label == "Cancel job"));
+    press(&mut app, KeyCode::Enter);
+    assert!(
+        matches!(app.effects.last(), Some(Job::CancelBackground(selection, id))
+        if selection.target == target && id == "job-1")
+    );
+    job.status = JobStatus::Cancelled;
+    app.update(Update::BackgroundJobCancelled(app.selection(), Ok(job)));
+    assert!(matches!(&app.notice, Some(notice) if notice.text == "job-1 · Cancelled"));
+}
+
+#[test]
+fn slash_jobs_cancel_works_typed_or_pasted_without_submitting_a_turn() {
+    let mut app = connected_app();
+    app.pane_mut().exists = true;
+    let selection = app.selection();
+    press(&mut app, KeyCode::Char('/'));
+    app.paste("jobs cancel job-7");
+    press(&mut app, KeyCode::Enter);
+    assert!(
+        matches!(app.effects.last(), Some(Job::CancelBackground(target, id))
+        if target == &selection && id == "job-7")
+    );
+
+    app.effects.clear();
+    app.paste("/jobs cancel job-8");
+    press(&mut app, KeyCode::Enter);
+    assert!(
+        matches!(app.effects.as_slice(), [Job::CancelBackground(target, id)]
+        if target == &selection && id == "job-8")
+    );
+    assert!(app.pane().draft.text().is_empty());
+}
+
+#[test]
+fn naming_a_paste_before_any_prompt_saves_text_and_attaches_the_exact_reference() {
+    let mut app = connected_app();
+    press(&mut app, KeyCode::Char('/'));
+    app.paste("save");
+    press(&mut app, KeyCode::Enter);
+    assert!(
+        matches!(&app.modal, Some(Modal::Prompt(prompt)) if matches!(prompt.kind, PromptKind::SavePaste))
+    );
+
+    let input = "preserve these\n中文 values";
+    app.paste(input);
+    press(&mut app, KeyCode::Enter);
+    app.paste("baseline");
+    press(&mut app, KeyCode::Enter);
+    let mut jobs = std::mem::take(&mut app.effects);
+    let Some(Job::SaveValue(selection, save)) = jobs.pop() else {
+        panic!("the paste needs a value save");
+    };
+    assert!(!jobs.iter().any(|job| matches!(job, Job::Save(_))));
+    assert_eq!("baseline", save.name);
+    assert_eq!(NamedValueSource::Text(input.into()), save.source);
+    assert!(save.create.is_some());
+    assert_eq!(input, app.pane().draft.text());
+
+    let reference = OutputReference {
+        id: "saved-paste".into(),
+        offset: 0,
+        bytes: input.len() as u64,
+    };
+    let value = NamedValue {
+        name: save.name,
+        kind: NamedValueKind::Text,
+        reference: reference.clone(),
+    };
+    app.update(Update::ValueSaved(
+        selection,
+        Some(input.into()),
+        Ok(value.clone()),
+    ));
+    assert!(app.pane().exists);
+    assert!(app.pane().draft.text().is_empty());
+
+    app.open_value(value);
+    press(&mut app, KeyCode::Enter);
+    app.paste("Review the attached facts");
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(app.effects.last(), Some(Job::Save(command))
+        if matches!(&command.action, Action::Send { text, create: None, values, .. }
+            if text == "Review the attached facts" && *values == [reference])));
+}
+
+fn queued_receipt_before_snapshot(text: &str) -> (App, Box<kuku_client::Snapshot>) {
+    let mut app = connected_app();
+    app.pane_mut().exists = true;
+    app.paste(text);
+    app.send(Timing::NextTurn);
+    let Some(Job::Save(command)) = app.effects.pop() else {
+        panic!("queued input should be locally pending");
+    };
+    let receipt = Receipt {
+        agent: command.target.agent,
+        command_id: command.command_id.clone(),
+        event_id: 7,
+    };
+    app.update(Update::Sent(
+        command.command_id.clone(),
+        Ok(Acknowledgement {
+            receipt: receipt.clone(),
+            status: Some(InputStatus::Queued),
+            replayed: false,
+            warnings: Vec::new(),
+        }),
+    ));
+    let mut input = Input::new(command.command_id, "main", text);
+    input.source = InputSource::Host("http".into());
+    input.timing = InputTiming::NextTurn;
+    let snapshot = serde_json::from_value(json!({
+        "session_id":app.active.session,"workspace":app.workspace,"cursor":7,
+        "agent":{"address":"main","status":"running","config":{},"pending_inputs":1,
+                 "usage":{"model_requests":0,"unreported_requests":0}},
+        "agents":[],
+        "pending":[{"receipt":receipt,"input":input}]
+    }))
+    .unwrap();
+    (app, Box::new(snapshot))
+}
+
+#[test]
+fn queued_input_edit_waits_for_complete_text_in_the_receipt_snapshot() {
+    let text = format!("{} complete queued input", "x".repeat(10_000));
+    let (mut app, snapshot) = queued_receipt_before_snapshot(&text);
+    let input_id = snapshot.pending[0].receipt.command_id.clone();
+    let mut terminal = Terminal::new(TestBackend::new(92, 26)).unwrap();
+    draw(&mut app, &mut terminal);
+    assert!(app.delivery_hits.iter().any(|(_, id)| id == &input_id));
+    press(&mut app, KeyCode::Up);
+    assert!(matches!(app.pane().keyboard_focus, KeyboardFocus::Queue));
+    assert!(!app.pane().deliveries.rows()[0]
+        .text
+        .contains("complete queued input"));
+    press(&mut app, KeyCode::Enter);
+    assert!(app.modal.is_none());
+    assert!(app.effects.iter().any(|job| matches!(job, Job::Refresh(_))));
+    app.update(Update::Refreshed(app.selection(), Ok(snapshot)));
+    assert_eq!(
+        Some(input_id.as_str()),
+        app.pane().selected_queue_input.as_deref()
+    );
+    assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
+        if matches!(prompt.kind, PromptKind::QueuedInput { .. }) && prompt.editor.text() == text));
+}
+
+#[test]
+fn deferred_queued_input_actions_do_not_survive_cancel_draft_edits_or_target_changes() {
+    enum Invalidation {
+        Escape,
+        Draft,
+        Target,
+        Consumed,
+    }
+    for invalidation in [
+        Invalidation::Escape,
+        Invalidation::Draft,
+        Invalidation::Target,
+        Invalidation::Consumed,
+    ] {
+        let (mut app, mut snapshot) = queued_receipt_before_snapshot("queued text");
+        let mut selection = app.selection();
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Enter);
+        app.effects.clear();
+        match invalidation {
+            Invalidation::Escape => press(&mut app, KeyCode::Esc),
+            Invalidation::Draft => app.paste("new independent draft"),
+            Invalidation::Target => {
+                let original = app.active.clone();
+                let address =
+                    crate::app::Address::new(app.active.session.clone(), "reviewer".into());
+                app.select(address, true, "Reviewer".into());
+                app.select(original, true, "Main".into());
+                selection = app.selection();
+            }
+            Invalidation::Consumed => {
+                snapshot.cursor += 1;
+                snapshot.pending.clear();
+                snapshot.agent.pending_inputs = 0;
+            }
+        }
+        app.update(Update::Refreshed(selection, Ok(snapshot)));
+        assert!(app.modal.is_none());
+        assert!(!app.effects.iter().any(|job| matches!(job, Job::Save(_))));
+        if matches!(invalidation, Invalidation::Draft) {
+            assert_eq!("new independent draft", app.pane().draft.text());
+        }
+    }
+}
+
+#[test]
+fn deferred_queued_withdrawal_uses_the_refreshed_input_identity() {
+    let (mut app, snapshot) = queued_receipt_before_snapshot("queued text");
+    let id = snapshot.pending[0].receipt.command_id.clone();
+    press(&mut app, KeyCode::Up);
+    press(&mut app, KeyCode::Delete);
+    app.effects.clear();
+    app.update(Update::Refreshed(app.selection(), Ok(snapshot)));
+    assert!(app.effects.iter().any(|job| matches!(job, Job::Save(command)
+        if matches!(&command.action, Action::Withdraw { input_command_id } if input_command_id == &id))));
 }
 
 #[test]
@@ -405,7 +674,7 @@ fn double_escape_opens_rewind_picker_and_confirmation_is_cancelable_and_opt_in()
     press(&mut app, KeyCode::Esc);
     assert!(matches!(&app.modal, Some(Modal::Picker(picker))
         if matches!(picker.kind, PickerKind::Rewind)
-            && picker.header.contains("Loaded history only")));
+            && picker.header.contains("All earlier messages loaded")));
     app.choose(
         PickerKind::Rewind,
         ChoiceKind::RewindMessage {
@@ -413,8 +682,9 @@ fn double_escape_opens_rewind_picker_and_confirmation_is_cancelable_and_opt_in()
             turn: 4,
             text: "original prompt".into(),
         },
-        0,
+        picker_ticket(&app),
     );
+    finish_rewind_source(&mut app, 17, "original prompt");
     assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
         if matches!(prompt.kind, PromptKind::RewindMessage { event_id: 17, .. })
             && prompt.instructions.contains("[ ] Restore recorded file changes")));
@@ -442,8 +712,9 @@ fn rewind_confirmation_commits_an_unsent_action_without_sending_the_draft() {
             turn: 6,
             text: "restore me as a draft".into(),
         },
-        0,
+        picker_ticket(&app),
     );
+    finish_rewind_source(&mut app, 23, "restore me as a draft");
     press(&mut app, KeyCode::Char(' '));
     press(&mut app, KeyCode::Enter);
     assert!(app.pane().draft.text().is_empty());
@@ -467,8 +738,9 @@ fn rewind_ack_restores_unsent_text_but_never_replaces_a_changed_draft() {
             turn: 8,
             text: "original text".into(),
         },
-        0,
+        picker_ticket(&app),
     );
+    finish_rewind_source(&mut app, 31, "original text");
     press(&mut app, KeyCode::Enter);
     let Some(Job::Save(command)) = app.effects.iter().find(|job| matches!(job, Job::Save(_)))
     else {
@@ -501,8 +773,9 @@ fn rewind_ack_restores_unsent_text_but_never_replaces_a_changed_draft() {
             turn: 9,
             text: "recoverable original".into(),
         },
-        0,
+        picker_ticket(&edited),
     );
+    finish_rewind_source(&mut edited, 41, "recoverable original");
     press(&mut edited, KeyCode::Enter);
     let Some(Job::Save(command)) = edited
         .effects
@@ -538,6 +811,7 @@ fn rewind_ack_restores_unsent_text_but_never_replaces_a_changed_draft() {
 #[test]
 fn rewind_confirmation_render_shows_file_scope_without_an_editor() {
     let mut app = connected_app();
+    app.open_rewind_picker();
     app.choose(
         PickerKind::Rewind,
         ChoiceKind::RewindMessage {
@@ -545,8 +819,9 @@ fn rewind_confirmation_render_shows_file_scope_without_an_editor() {
             turn: 2,
             text: "selected prompt".into(),
         },
-        0,
+        picker_ticket(&app),
     );
+    finish_rewind_source(&mut app, 99, "selected prompt");
     let mut terminal = Terminal::new(TestBackend::new(92, 26)).unwrap();
     let frame = terminal
         .draw(|frame| crate::ui::render(frame, &mut app))
