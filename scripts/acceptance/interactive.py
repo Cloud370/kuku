@@ -510,7 +510,11 @@ def recover_from_provider_failure(client):
     recovery = "recover explicitly from provider failure"
     with client.terminal(workspace) as terminal:
         terminal.resume(prompt)
-        terminal.expect("/continue", state="Interrupted")
+        terminal.expect(
+            "Automatic retry stopped; see transcript for details.",
+            state="Interrupted",
+            also=("No automatic retry", "HTTP 400"),
+        )
         terminal.submit(recovery)
         eventually("recovery input to queue before explicit continuation",
                    lambda: client.snapshot(workspace, session)["pending_inputs"] == 1)
