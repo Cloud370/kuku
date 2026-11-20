@@ -429,29 +429,22 @@ impl Transcript {
     }
 
     pub(crate) fn toggle_detail(&mut self, key: &DetailKey) -> bool {
-        let window = self
+        let in_window = self
             .reading
             .as_ref()
-            .map_or(&self.recent, |reading| &reading.window);
+            .map_or(&self.recent, |reading| &reading.window)
+            .contains(&key.record);
         match key.kind {
-            DetailKind::Agent => self.toggle_agent_record(&key.record),
-            DetailKind::Tool if window.contains(&key.record) => {
-                let group_to_open = groups(&window.records)
-                    .into_iter()
-                    .find(|span| {
-                        window.records[span.range.clone()]
-                            .iter()
-                            .any(|record| record.key == key.record)
-                    })
-                    .and_then(|span| {
-                        let records = &window.records[span.range];
-                        (!self.detail_items.group_open(records))
-                            .then(|| DetailKey::message_action(DetailKind::Group, &records[0].key))
-                    });
-                let group_was_collapsed = group_to_open.is_some();
-                if let Some(group_key) = group_to_open {
-                    self.toggle_detail(&group_key);
+            DetailKind::Agent => {
+                let group_was_collapsed = self.open_containing_group(&key.record);
+                if group_was_collapsed && self.agent_cards.is_open(&key.record) {
+                    true
+                } else {
+                    self.toggle_agent_record(&key.record)
                 }
+            }
+            DetailKind::Tool if in_window => {
+                let group_was_collapsed = self.open_containing_group(&key.record);
                 if group_was_collapsed {
                     if !self.detail_items.inspections.contains(&key.record) {
                         remember(&mut self.detail_items.inspections, &key.record);
@@ -476,6 +469,10 @@ impl Transcript {
             | DetailKind::RewindGroupMore
             | DetailKind::RewindGroupRetry => false,
             DetailKind::Group => {
+                let window = self
+                    .reading
+                    .as_ref()
+                    .map_or(&self.recent, |reading| &reading.window);
                 let Some(span) = groups(&window.records).into_iter().find(|span| {
                     window.records[span.range.clone()]
                         .iter()
@@ -508,6 +505,32 @@ impl Transcript {
                 true
             }
         }
+    }
+
+    fn open_containing_group(&mut self, key: &Key) -> bool {
+        let group_to_open = {
+            let window = self
+                .reading
+                .as_ref()
+                .map_or(&self.recent, |reading| &reading.window);
+            groups(&window.records)
+                .into_iter()
+                .find(|span| {
+                    window.records[span.range.clone()]
+                        .iter()
+                        .any(|record| record.key == *key)
+                })
+                .and_then(|span| {
+                    let records = &window.records[span.range];
+                    (!self.detail_items.group_open(records))
+                        .then(|| DetailKey::message_action(DetailKind::Group, &records[0].key))
+                })
+        };
+        let group_was_collapsed = group_to_open.is_some();
+        if let Some(group_key) = group_to_open {
+            self.toggle_detail(&group_key);
+        }
+        group_was_collapsed
     }
 
     pub(super) fn toggle_group_details(&mut self, open: bool) {
