@@ -249,6 +249,54 @@ class AcceptanceTests(unittest.TestCase):
         self.assertTrue(result["timed_out"])
         self.assertLess(time.monotonic() - start, 10)
 
+    def test_contract_summary_keeps_early_failures_after_later_output(self):
+        first = (b"test first::broken ... \x1b[31mFAILED\x1b[0m\n"
+                 b"thread 'first::broken' panicked at fixture.rs:17:5:\nprivate-test-token\n")
+        last = b"test last::broken ... FAILED\nerror: 2 targets failed:\n    `--test first`\n    `--test last`\n"
+        payload = first + b"later success\n" * 20000 + last
+        program = ("import sys;sys.stdout.buffer.write(" + repr(first)
+                   + "+b'later success\\n'*20000+" + repr(last) + ");sys.exit(101)")
+        result = ACCEPTANCE.capture([sys.executable, "-c", program], self.directory, "contract",
+                                    secrets=("private-test-token",), retain_failures=True)
+        tail = Path(result["log"]).read_text()
+        summary = result["failure_summary"]
+        text = Path(summary["log"]).read_text()
+        self.assertEqual(result["exit_code"], 101)
+        self.assertNotIn("first::broken", tail)
+        for expected in ("first::broken", "fixture.rs:17:5", "last::broken", "`--test first`", "`--test last`"):
+            self.assertIn(expected, text)
+        self.assertIn("[REDACTED]", text)
+        self.assertNotIn("private-test-token", text)
+        self.assertFalse(summary["truncated"])
+        self.assertEqual(result["output_sha256"], hashlib.sha256(payload).hexdigest())
+        self.assertEqual(result["output_bytes"], len(payload))
+        self.assertLessEqual(Path(result["log"]).stat().st_size, ACCEPTANCE.LOG_BYTES)
+        self.assertLessEqual(Path(summary["log"]).stat().st_size, ACCEPTANCE.FailureSummary.LIMIT)
+        success = ACCEPTANCE.capture([sys.executable, "-c", "print('all passed')"], self.directory,
+                                     "contract", retain_failures=True)
+        self.assertEqual(success["exit_code"], 0)
+        self.assertIsNone(success["failure_summary"]["log"])
+        self.assertFalse(Path(summary["log"]).exists())
+
+    def test_failure_summary_bounds_utf8_and_overlong_unterminated_lines(self):
+        summary = ACCEPTANCE.FailureSummary()
+        for _ in range(100):
+            summary.feed(b"x" * 8192)
+            self.assertLessEqual(len(summary.partial), summary.LINE_LIMIT)
+        summary.feed(b"\ntest resumed ... FAILED\n")
+        for _ in range(100):
+            summary.feed(("test " + "\u9519\u8bef" * 300 + " ... FAILED\n").encode())
+            summary.feed(("thread 'broken' panicked at fixture.rs:1:1:\n" + "\u9519\u8bef" * 300 + "\n").encode())
+        result = summary.write(self.directory, "bounded",
+                               lambda text: ACCEPTANCE.redact(text, ("\u8bef",)))["failure_summary"]
+        raw = Path(result["log"]).read_bytes()
+        self.assertTrue(result["truncated"])
+        self.assertIn("test resumed", raw.decode("utf-8"))
+        self.assertNotIn("\u8bef", raw.decode("utf-8"))
+        self.assertEqual(result["retained_bytes"], len(raw))
+        self.assertLessEqual(len(raw), result["limit_bytes"])
+        self.assertLessEqual(len(summary.summaries) + len(summary.details), 2 * summary.capacity)
+
     @unittest.skipIf(os.name == "nt", "POSIX process-group orphan cleanup")
     def test_capture_cleans_a_child_holding_an_exited_parents_pipe(self):
         program = ("import subprocess,sys;subprocess.Popen([sys.executable,'-c',"
@@ -419,6 +467,7 @@ class AcceptanceTests(unittest.TestCase):
             self.assertEqual(ACCEPTANCE.main(), 1)
         self.assertIn("--no-fail-fast", capture.call_args.args[0])
         self.assertEqual(capture.call_args.kwargs["timeout"], 1800)
+        self.assertTrue(capture.call_args.kwargs["retain_failures"])
         report = json.loads((self.directory / "failed-contract" / "result.json").read_text())
         self.assertFalse(report["passed"])
         self.assertEqual(report["checks"], [failed])

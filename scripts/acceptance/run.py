@@ -26,7 +26,7 @@ import uuid
 import zipfile
 
 from benchmark_resources import ResourceSampler, include_final_process_usage
-from evidence import inspect_sdk
+from evidence import FailureSummary, inspect_sdk
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -174,7 +174,8 @@ def redact(text, secrets=()):
     return text
 
 
-def capture(command, directory, label, timeout=900, env=None, secrets=(), cwd=ROOT, on_start=None):
+def capture(command, directory, label, timeout=900, env=None, secrets=(), cwd=ROOT, on_start=None,
+            retain_failures=False):
     directory.mkdir(parents=True, exist_ok=True)
     start = time.monotonic()
     flags = {"start_new_session": True} if os.name != "nt" else {
@@ -186,6 +187,7 @@ def capture(command, directory, label, timeout=900, env=None, secrets=(), cwd=RO
     tail = bytearray()
     total = 0
     digest = hashlib.sha256()
+    failures = FailureSummary() if retain_failures else None
 
     def drain():
         nonlocal total
@@ -198,6 +200,8 @@ def capture(command, directory, label, timeout=900, env=None, secrets=(), cwd=RO
                 break
             total += len(chunk)
             digest.update(chunk)
+            if failures is not None:
+                failures.feed(chunk)
             tail.extend(chunk)
             del tail[:-LOG_BYTES]
 
@@ -244,6 +248,8 @@ def capture(command, directory, label, timeout=900, env=None, secrets=(), cwd=RO
     }
     if reader.is_alive():
         result["capture_incomplete"] = True
+    if failures is not None:
+        result.update(failures.write(directory, label, lambda text: redact(text, secrets)))
     return result
 
 
@@ -939,7 +945,8 @@ def main():
             record["checks"] = []
             for index, command in enumerate(commands):
                 check = capture(command, directory, f"check-{index + 1}", timeout=1800,
-                                env=env, secrets=secrets.values())
+                                env=env, secrets=secrets.values(),
+                                retain_failures=not paid and "--no-fail-fast" in command)
                 record["checks"].append(check)
                 if check["exit_code"] != 0 or check["timed_out"] or check.get("capture_incomplete"):
                     break

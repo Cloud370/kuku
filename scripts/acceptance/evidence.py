@@ -1,4 +1,4 @@
-"""Bounded, read-only checks of session_task reports against durable SDK facts."""
+"""Bounded evidence capture and read-only checks against durable SDK facts."""
 
 from collections import Counter
 import hashlib
@@ -13,6 +13,84 @@ RESULT_VIEW_FIELDS = ("tool_call_id", "status", "summary", "model_content", "tru
 STREAM_COUNTERS = ("model_text_chunks", "model_thinking_chunks", "tool_output_chunks", "model_text_bytes",
                    "model_thinking_bytes", "tool_output_bytes", "model_request_events", "committed_events", "lagged_updates")
 MAX_STAGED_TOOL_BLOCKS = 16_384
+
+
+class FailureSummary:
+    LIMIT = 16_384
+    LINE_LIMIT = 4096
+    HEADERS = (b"Test failure summaries\n", b"\nPanic locations and bounded context\n")
+
+    def __init__(self):
+        self.partial = b""
+        self.skipping_line = False
+        self.summaries = bytearray()
+        self.details = bytearray()
+        self.capacity = (self.LIMIT - sum(map(len, self.HEADERS))) // 2
+        self.context = 0
+        self.target_list = False
+        self.truncated = False
+
+    def feed(self, chunk):
+        if self.skipping_line:
+            end = chunk.find(b"\n")
+            if end < 0:
+                return
+            chunk = chunk[end + 1:]
+            self.skipping_line = False
+        pending = self.partial + chunk
+        lines = pending.split(b"\n")
+        self.partial = lines.pop()
+        for line in lines:
+            if len(line) <= self.LINE_LIMIT:
+                self.line(line.rstrip(b"\r"))
+            else:
+                self.truncated = True
+        if len(self.partial) > self.LINE_LIMIT:
+            self.partial = b""
+            self.skipping_line = True
+            self.truncated = True
+
+    def append(self, target, line):
+        if len(target) + len(line) + 1 <= self.capacity:
+            target.extend(line + b"\n")
+        else:
+            self.truncated = True
+
+    def line(self, line):
+        line = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", line)
+        marker = (line.startswith(b"test ") and b"... FAILED" in line
+                  or line.startswith((b"test result: FAILED", b"error:", b"error[")))
+        if marker or self.target_list and line.startswith(b"    "):
+            self.append(self.summaries, line)
+        if line.startswith(b"error:") and b"target" in line and b"failed" in line:
+            self.target_list = True
+        elif line.strip() and not line.startswith(b"    "):
+            self.target_list = False
+        if line.startswith(b"thread ") and b" panicked at " in line:
+            self.append(self.details, line)
+            self.context = 3
+        elif self.context:
+            self.append(self.details, line)
+            self.context -= 1
+
+    def write(self, directory, label, redact):
+        if self.partial:
+            self.line(self.partial.rstrip(b"\r"))
+            self.partial = b""
+        output = b""
+        if self.summaries or self.details:
+            raw = self.HEADERS[0] + self.summaries + self.HEADERS[1] + self.details
+            output = redact(raw.decode("utf-8", errors="replace")).encode()
+            self.truncated |= len(output) > self.LIMIT
+            output = output[:self.LIMIT].decode("utf-8", errors="ignore").encode()
+        path = directory / f"{label}-failures.log"
+        if output:
+            path.write_bytes(output)
+        else:
+            path.unlink(missing_ok=True)
+        return {"failure_summary": {"log": str(path) if output else None,
+                                    "retained_bytes": len(output), "limit_bytes": self.LIMIT,
+                                    "truncated": self.truncated}}
 
 
 def require(condition, message):
