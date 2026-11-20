@@ -20,7 +20,9 @@ python3 scripts/acceptance/run.py integration
 
 两个 workflow 都支持目标为 `main` 或 `feat/interactive-clients` 的 PR，以及 main 推送。WebUI 检查的路径范围限于 `apps/web/**` 和自身 workflow，Rust 改动不再触发重复的安装浏览器构建。PR 检查统一使用 GitHub 的 merge-ref。记录实际 commit/tree，只有 tree 相同才复用源分支证据。同一 PR 的旧运行会被取消。Python 工具检查失败不会阻止 Rust 契约与安装验收作业收集各自结果。失败后保留 Rust 依赖缓存；Cargo 仍校验构建指纹。PTY helper 共享契约测试的 workspace/`kuku/test_support` feature 解析，并记录编译身份。
 
-草稿 PR 通过不代表安装验收通过。合并前，将 PR 转为待评审或为目标版本手动触发完整 CI，并要求完整矩阵通过。完整验收保留带嵌入 Web 资源的真实 release 安装；选择 Windows 桌面检查时必须完成桌面准备。独立安装场景使用隔离服务，单个场景失败后继续其余场景，保留原始错误并让整体返回失败。现有每条命令的超时界限保持不变。
+手动 CI 默认 `platform=all`。排查单个平台时可选 `linux`、`macos` 或 `windows`；运行标题标明所选范围，不同平台的运行不会互相取消。单平台运行只提供定向证据，不能替代合并前的完整门禁。
+
+草稿 PR 通过不代表安装验收通过。合并前，将 PR 转为待评审或为目标版本以 `platform=all` 手动触发 CI，并要求完整矩阵通过。完整验收保留带嵌入 Web 资源的真实 release 安装；选择 Windows 桌面检查时必须完成桌面准备。独立安装场景使用隔离服务，单个场景失败后继续其余场景，保留原始错误并让整体返回失败。现有每条命令的超时界限保持不变。
 
 选择入口将 `CARGO_TARGET_DIR` 固定为当前 checkout 的 `target/`，不改变宿主环境。每个 worktree 使用独立 target，即使串行构建也不共享：workspace 产物可能错误复用另一源码树的缓存。本地 target 可以使用第三方依赖缓存作为种子，但首次构建前先执行一次 `cargo clean --target-dir target -p kuku -p kuku-cli -p kuku-server -p kuku-client -p kuku-tui -p kuku-app` 清除 workspace 产物。记录提交／工作树、target 目录、feature、profile 和二进制 hash；共享 target 构建的冻结二进制本身不能证明对应的源码版本。
 

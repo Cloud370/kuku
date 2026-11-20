@@ -1,4 +1,5 @@
 name: CI
+run-name: CI · ${{ github.event_name == 'workflow_dispatch' && inputs.platform || 'all' }}
 
 on:
   push:
@@ -9,6 +10,12 @@ on:
       - "LICENSE"
       - ".gitignore"
   workflow_dispatch:
+    inputs:
+      platform:
+        description: Platform to verify (all is required for merge acceptance)
+        type: choice
+        default: all
+        options: [all, linux, macos, windows]
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     branches: [main, feat/interactive-clients]
@@ -22,7 +29,7 @@ env:
   CARGO_TERM_COLOR: always
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && inputs.platform || 'all' }}
   cancel-in-progress: true
 
 jobs:
@@ -73,13 +80,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            terminal: Linux PTY
-          - os: macos-latest
-            terminal: macOS PTY
-          - os: windows-latest
-            terminal: Windows ConPTY
+        include: >-
+          ${{ fromJSON(
+            inputs.platform == 'linux' && '[{"os":"ubuntu-latest","terminal":"Linux PTY"}]' ||
+            inputs.platform == 'macos' && '[{"os":"macos-latest","terminal":"macOS PTY"}]' ||
+            inputs.platform == 'windows' && '[{"os":"windows-latest","terminal":"Windows ConPTY"}]' ||
+            '[{"os":"ubuntu-latest","terminal":"Linux PTY"},{"os":"macos-latest","terminal":"macOS PTY"},{"os":"windows-latest","terminal":"Windows ConPTY"}]'
+          ) }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
