@@ -529,26 +529,28 @@ fn save_with_lookup(
             .tiers
             .get(&settings.default_tier)
             .ok_or_else(|| invalid_config("the selected default tier cannot be edited"))?;
-        let provider_changed = original_route.provider != provider_name;
-        let model_changed = original_route.model != model;
-        let provider_is_reference = model_entry
-            .get("provider")
-            .and_then(Item::as_str)
-            .is_some_and(|value| value.starts_with('$'));
-        let model_is_reference = model_entry
-            .get("model")
-            .and_then(Item::as_str)
-            .is_some_and(|value| value.starts_with('$'));
-        if provider_changed || !provider_is_reference {
-            model_entry.insert("provider", value(provider_name.as_str()));
-        }
-        if model_changed || !model_is_reference {
-            model_entry.insert("model", value(model.as_str()));
-        }
-        let route_changed = provider_changed || model_changed;
+        let route_changed =
+            original_route.provider != provider_name || original_route.model != model;
         if route_changed {
+            model_entry.insert("provider", value(provider_name.as_str()));
+            model_entry.insert("model", value(model.as_str()));
             model_entry.remove("reasoning_effort");
             model_entry.remove("service_tier");
+        } else {
+            let provider_is_reference = model_entry
+                .get("provider")
+                .and_then(Item::as_str)
+                .is_some_and(|value| value.starts_with('$'));
+            let model_is_reference = model_entry
+                .get("model")
+                .and_then(Item::as_str)
+                .is_some_and(|value| value.starts_with('$'));
+            if !provider_is_reference {
+                model_entry.insert("provider", value(provider_name.as_str()));
+            }
+            if !model_is_reference {
+                model_entry.insert("model", value(model.as_str()));
+            }
         }
     } else {
         return Err(invalid_config("the selected default tier cannot be edited"));
