@@ -1,8 +1,8 @@
-use kuku_client::{new_id, Action, Command};
+use kuku_client::{new_id, Action, Command, Error};
 
 use super::{App, PendingItem, PendingStage, RewindDraft};
-use crate::jobs::Job;
-use crate::menu::{Choice, ChoiceKind, PickerKind, RewindHistory};
+use crate::jobs::{Job, Selection};
+use crate::menu::{Choice, ChoiceKind, PickerKind, RewindHistory, RewindLoad, Ticket};
 use crate::text::{shorten, single_line};
 use crate::transcript::{HistoryRequest, MAX_BODY_BYTES, MAX_RECORDS};
 
@@ -30,7 +30,7 @@ impl App {
         picker.rewind_history = Some(RewindHistory {
             selection,
             next_before,
-            pending_before: None,
+            load: RewindLoad::Idle,
             window_limited,
         });
         picker.selected = picker.choice_count().saturating_sub(1);
@@ -70,11 +70,83 @@ impl App {
         let Some(super::Modal::Picker(picker)) = &mut self.modal else {
             return true;
         };
+        if picker
+            .rewind_history
+            .as_ref()
+            .is_some_and(|history| matches!(history.load, RewindLoad::Source { .. }))
+        {
+            return true;
+        }
         picker.move_by(amount);
         if amount < 0 && picker.selected == 0 {
             self.load_rewind_history();
         }
         true
+    }
+
+    pub(crate) fn load_rewind_source(&mut self, ticket: u64, event_id: u64, turn: u64) {
+        if !self.rewind_picker_current(ticket) || !self.require_service() {
+            return;
+        }
+        let Some(super::Modal::Picker(picker)) = &mut self.modal else {
+            return;
+        };
+        let Some(history) = &mut picker.rewind_history else {
+            return;
+        };
+        let source = RewindLoad::Source { event_id, turn };
+        if history.load == source {
+            return;
+        }
+        history.load = source;
+        let selection = history.selection.clone();
+        let selected = picker.selected;
+        let ticket = picker.begin_search();
+        picker.selected = selected;
+        picker.header = "Loading original message… · Esc cancels".into();
+        self.effects
+            .push(Job::RewindSource(selection, ticket, event_id));
+    }
+
+    pub(super) fn apply_rewind_source_update(
+        &mut self,
+        selection: Selection,
+        ticket: Ticket,
+        event_id: u64,
+        result: Result<String, Error>,
+    ) {
+        if selection != self.selection() {
+            return;
+        }
+        let Some(super::Modal::Picker(picker)) = &mut self.modal else {
+            return;
+        };
+        if picker.ticket != ticket {
+            return;
+        }
+        let Some(history) = &mut picker.rewind_history else {
+            return;
+        };
+        let RewindLoad::Source {
+            event_id: expected,
+            turn,
+        } = history.load
+        else {
+            return;
+        };
+        if history.selection != selection || expected != event_id {
+            return;
+        }
+        history.load = RewindLoad::Idle;
+        picker.loading = false;
+        match result {
+            Ok(text) => self.confirm_rewind_message(event_id, turn, text),
+            Err(error) => {
+                picker.header =
+                    rewind_history_header(history.next_before, false, history.window_limited);
+                picker.problem = Some(format!("Message · {error} · Enter retries"));
+            }
+        }
     }
 
     pub(crate) fn refresh_rewind_history(&mut self) {
@@ -145,13 +217,13 @@ impl App {
         let Some(history) = &mut picker.rewind_history else {
             return;
         };
-        if history.pending_before.is_some() {
+        if history.load != RewindLoad::Idle {
             return;
         }
         let Some(before) = history.next_before else {
             return;
         };
-        history.pending_before = Some(before);
+        history.load = RewindLoad::Page(before);
         let selection = history.selection.clone();
         let window_limited = history.window_limited;
         let ticket = picker.begin_search();

@@ -546,8 +546,15 @@ impl Picker {
 pub(crate) struct RewindHistory {
     pub(crate) selection: Selection,
     pub(crate) next_before: Option<u64>,
-    pub(crate) pending_before: Option<u64>,
+    pub(crate) load: RewindLoad,
     pub(crate) window_limited: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RewindLoad {
+    Idle,
+    Page(u64),
+    Source { event_id: u64, turn: u64 },
 }
 
 #[derive(Debug)]

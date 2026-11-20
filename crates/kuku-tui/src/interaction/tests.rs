@@ -40,6 +40,26 @@ fn picker_ticket(app: &App) -> u64 {
     }
 }
 
+fn finish_rewind_source(app: &mut App, event_id: u64, text: &str) {
+    let (selection, ticket) = app
+        .effects
+        .iter()
+        .rev()
+        .find_map(|job| match job {
+            Job::RewindSource(selection, ticket, id) if *id == event_id => {
+                Some((selection.clone(), *ticket))
+            }
+            _ => None,
+        })
+        .expect("selected message source is requested");
+    app.update(Update::RewindSource(
+        selection,
+        ticket,
+        event_id,
+        Ok(text.into()),
+    ));
+}
+
 pub(super) fn insert_message(
     app: &mut App,
     id: u64,
@@ -664,6 +684,7 @@ fn double_escape_opens_rewind_picker_and_confirmation_is_cancelable_and_opt_in()
         },
         picker_ticket(&app),
     );
+    finish_rewind_source(&mut app, 17, "original prompt");
     assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
         if matches!(prompt.kind, PromptKind::RewindMessage { event_id: 17, .. })
             && prompt.instructions.contains("[ ] Restore recorded file changes")));
@@ -693,6 +714,7 @@ fn rewind_confirmation_commits_an_unsent_action_without_sending_the_draft() {
         },
         picker_ticket(&app),
     );
+    finish_rewind_source(&mut app, 23, "restore me as a draft");
     press(&mut app, KeyCode::Char(' '));
     press(&mut app, KeyCode::Enter);
     assert!(app.pane().draft.text().is_empty());
@@ -718,6 +740,7 @@ fn rewind_ack_restores_unsent_text_but_never_replaces_a_changed_draft() {
         },
         picker_ticket(&app),
     );
+    finish_rewind_source(&mut app, 31, "original text");
     press(&mut app, KeyCode::Enter);
     let Some(Job::Save(command)) = app.effects.iter().find(|job| matches!(job, Job::Save(_)))
     else {
@@ -752,6 +775,7 @@ fn rewind_ack_restores_unsent_text_but_never_replaces_a_changed_draft() {
         },
         picker_ticket(&edited),
     );
+    finish_rewind_source(&mut edited, 41, "recoverable original");
     press(&mut edited, KeyCode::Enter);
     let Some(Job::Save(command)) = edited
         .effects
@@ -797,6 +821,7 @@ fn rewind_confirmation_render_shows_file_scope_without_an_editor() {
         },
         picker_ticket(&app),
     );
+    finish_rewind_source(&mut app, 99, "selected prompt");
     let mut terminal = Terminal::new(TestBackend::new(92, 26)).unwrap();
     let frame = terminal
         .draw(|frame| crate::ui::render(frame, &mut app))

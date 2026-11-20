@@ -74,6 +74,7 @@ pub(crate) enum Job {
     RefreshProgress(Selection),
     History(Selection, HistoryRequest),
     RewindHistory(Selection, Ticket, u64),
+    RewindSource(Selection, Ticket, u64),
     RewindGroupHistory(Selection, RewindGroupRequest),
     Find(Ticket, Search),
     ClosePicker,
@@ -118,6 +119,7 @@ pub(crate) enum Update {
     Refreshed(Selection, Result<Box<Snapshot>, Error>),
     History(Selection, HistoryRequest, Result<HistoryPage, Error>),
     RewindHistory(Selection, Ticket, u64, Result<HistoryPage, Error>),
+    RewindSource(Selection, Ticket, u64, Result<String, Error>),
     RewindGroupHistory(
         Selection,
         RewindGroupRequest,
@@ -214,7 +216,7 @@ impl Jobs {
                 }));
             }
             Job::ClosePicker => Self::abort(&mut self.finder),
-            history @ Job::RewindHistory(..) => {
+            history @ (Job::RewindHistory(..) | Job::RewindSource(..)) => {
                 Self::abort(&mut self.finder);
                 if let Some(connection) = self.connection.clone() {
                     self.finder = Some(self.spawn(run_connected(history, connection)));
@@ -386,6 +388,10 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
                 .await;
             Update::RewindHistory(selection, ticket, before, result)
         }
+        Job::RewindSource(selection, ticket, event_id) => {
+            let result = history_text(client, &selection.target, event_id, HistoryKind::User).await;
+            Update::RewindSource(selection, ticket, event_id, result)
+        }
         Job::RewindGroupHistory(selection, request) => {
             let result = client
                 .rewind_group_history(
@@ -461,7 +467,7 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
         }
         Job::Web(target) => Update::Web(web(&connection, target.as_ref()).await),
         Job::ReplySource(selection, id) => {
-            let result = history_reply(client, &selection.target, id).await;
+            let result = history_text(client, &selection.target, id, HistoryKind::Assistant).await;
             Update::ReplySource(selection, id, result)
         }
         Job::PrepareCredentialRepair { .. }
@@ -477,17 +483,29 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
     }
 }
 
-async fn history_reply(client: &Client, target: &Target, id: u64) -> Result<String, Error> {
-    client
+async fn history_text(
+    client: &Client,
+    target: &Target,
+    id: u64,
+    kind: HistoryKind,
+) -> Result<String, Error> {
+    let page = client
         .history(target, Some(id.saturating_add(1)), 1)
-        .await?
-        .entries
+        .await?;
+    history_entry_text(page, target, id, kind)
+}
+
+fn history_entry_text(
+    page: HistoryPage,
+    target: &Target,
+    id: u64,
+    kind: HistoryKind,
+) -> Result<String, Error> {
+    page.entries
         .into_iter()
-        .find(|entry| {
-            entry.id == id && entry.kind == HistoryKind::Assistant && entry.agent == target.agent
-        })
+        .find(|entry| entry.id == id && entry.kind == kind && entry.agent == target.agent)
         .and_then(|entry| entry.text)
-        .ok_or_else(|| Error::Protocol("the assistant reply is missing from history".into()))
+        .ok_or_else(|| Error::Protocol("the selected message is missing from history".into()))
 }
 
 async fn watch(client: Client, selection: Selection, sender: mpsc::Sender<Message>) {
@@ -810,4 +828,69 @@ async fn web(connection: &Connection, target: Option<&Target>) -> Result<(), Err
 
 fn disk_result<T>(result: Result<Result<T, Error>, tokio::task::JoinError>) -> Result<T, Error> {
     result.map_err(|error| std::io::Error::other(format!("client storage task: {error}")))?
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use kuku_client::{HistoryEntry, HistoryKind, HistoryPage, Target};
+
+    use super::history_entry_text;
+
+    #[test]
+    fn message_source_requires_the_exact_event_agent_and_role_and_keeps_the_full_text() {
+        let target = Target {
+            workspace: PathBuf::from("workspace"),
+            session_id: "session".into(),
+            agent: "main".into(),
+        };
+        let text = "x".repeat(crate::transcript::MAX_BODY_BYTES + 17);
+        let entry = HistoryEntry {
+            id: 17,
+            agent: "main".into(),
+            turn: Some(1),
+            kind: HistoryKind::User,
+            text: Some(text.clone()),
+            turn_summary: None,
+            details: Default::default(),
+        };
+        let page = |entry| HistoryPage {
+            entries: vec![entry],
+            rewind_groups: Vec::new(),
+            next_before: None,
+        };
+        assert_eq!(
+            text,
+            history_entry_text(page(entry.clone()), &target, 17, HistoryKind::User).unwrap()
+        );
+        for invalid in [
+            HistoryEntry {
+                id: 16,
+                ..entry.clone()
+            },
+            HistoryEntry {
+                agent: "reviewer".into(),
+                ..entry.clone()
+            },
+            HistoryEntry {
+                kind: HistoryKind::Assistant,
+                ..entry.clone()
+            },
+            HistoryEntry {
+                text: None,
+                ..entry.clone()
+            },
+        ] {
+            assert!(history_entry_text(page(invalid), &target, 17, HistoryKind::User).is_err());
+        }
+        let assistant = HistoryEntry {
+            kind: HistoryKind::Assistant,
+            ..entry
+        };
+        assert_eq!(
+            text,
+            history_entry_text(page(assistant), &target, 17, HistoryKind::Assistant).unwrap()
+        );
+    }
 }

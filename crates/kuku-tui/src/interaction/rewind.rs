@@ -2,8 +2,11 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::KeyEvent;
 
-use crate::app::App;
+use crate::app::{App, Modal};
+use crate::editor::Editor;
+use crate::jobs::Job;
 use crate::keys::Shortcut;
+use crate::menu::{Prompt, PromptKind};
 
 pub(super) fn rewind_instructions(text: &str, restore_files: bool) -> String {
     format!(
@@ -14,6 +17,21 @@ pub(super) fn rewind_instructions(text: &str, restore_files: bool) -> String {
 }
 
 impl App {
+    pub(crate) fn confirm_rewind_message(&mut self, event_id: u64, turn: u64, text: String) {
+        self.effects.push(Job::ClosePicker);
+        self.rewind_restore_files = false;
+        self.modal = Some(Modal::Prompt(Prompt {
+            kind: PromptKind::RewindMessage {
+                event_id,
+                text: text.clone(),
+            },
+            title: format!("Rewind to message · Turn {turn}"),
+            instructions: rewind_instructions(&text, false),
+            instructions_top: 0,
+            editor: Editor::default(),
+        }));
+    }
+
     pub(crate) fn escape_interrupts_running(&self) -> bool {
         self.pane().snapshot.as_ref().is_some_and(|snapshot| {
             snapshot.cleaning_up || snapshot.agent.status == kuku_client::AgentStatus::Running

@@ -84,6 +84,29 @@ fn reply(app: &mut App, request: (Selection, Ticket, u64), result: Result<Histor
     ));
 }
 
+fn source_request(app: &mut App) -> (Selection, Ticket, u64) {
+    let requests: Vec<_> = std::mem::take(&mut app.effects)
+        .into_iter()
+        .filter_map(|job| match job {
+            Job::RewindSource(selection, ticket, event_id) => Some((selection, ticket, event_id)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(1, requests.len(), "one original-message request is issued");
+    requests.into_iter().next().unwrap()
+}
+
+fn source_reply(app: &mut App, request: (Selection, Ticket, u64), result: Result<String, Error>) {
+    app.update(Update::RewindSource(
+        request.0, request.1, request.2, result,
+    ));
+}
+
+fn finish_source(app: &mut App, text: &str) {
+    let request = source_request(app);
+    source_reply(app, request, Ok(text.into()));
+}
+
 fn top(app: &mut App) {
     press(app, KeyCode::PageUp);
 }
@@ -204,6 +227,7 @@ fn an_empty_current_user_page_still_loads_the_previous_committed_message() {
     reply(&mut app, first, Ok(page(&[80], None)));
     assert_eq!(80, selected(&app));
     press(&mut app, KeyCode::Enter);
+    finish_source(&mut app, "message 80");
     assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
         if matches!(prompt.kind, PromptKind::RewindMessage { event_id: 80, .. })));
 }
@@ -253,6 +277,7 @@ fn a_bounded_message_window_keeps_the_selection_and_can_reach_the_oldest_page() 
         .header
         .contains("reopen rewind for recent messages"));
     press(&mut app, KeyCode::Enter);
+    finish_source(&mut app, "message 1");
     assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
         if matches!(prompt.kind, PromptKind::RewindMessage { event_id: 1, .. })));
     press(&mut app, KeyCode::Esc);
@@ -300,6 +325,7 @@ fn a_bounded_text_window_preserves_full_bodies_and_still_loads_earlier_messages(
     assert_eq!(before, selected(&app));
     assert!(app.effects.is_empty());
     press(&mut app, KeyCode::Enter);
+    finish_source(&mut app, &oldest_body);
     assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
         if matches!(&prompt.kind, PromptKind::RewindMessage { event_id, text }
             if *event_id == before && text == &oldest_body)));
@@ -482,6 +508,7 @@ fn an_older_loaded_message_enters_confirmation_and_commits_its_exact_event() {
     top(&mut app);
     assert_eq!(1, selected(&app));
     press(&mut app, KeyCode::Enter);
+    finish_source(&mut app, "message 1");
     assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
         if matches!(&prompt.kind, PromptKind::RewindMessage { event_id: 1, text } if text == "message 1")
             && prompt.title.contains("Turn 1")
@@ -491,4 +518,124 @@ fn an_older_loaded_message_enters_confirmation_and_commits_its_exact_event() {
     assert!(app.effects.iter().any(|job| matches!(job, Job::Save(command)
         if matches!(&command.action, Action::RewindMessage { target_event_id: 1, text, restore_files: false } if text == "message 1"))));
     assert!(!app.effects.iter().any(|job| matches!(job, Job::Send(_))));
+}
+
+#[test]
+fn a_current_display_preview_loads_the_original_before_confirming_and_saving() {
+    let full = format!(
+        "begin original\n{}\nEND ORIGINAL",
+        "文".repeat(MAX_BODY_BYTES)
+    );
+    let mut original = entry(17);
+    original.text = Some(full.clone());
+    let mut app = connected_app();
+    app.pane_mut().transcript.replace_recent(HistoryPage {
+        entries: vec![original],
+        rewind_groups: Vec::new(),
+        next_before: None,
+    });
+    app.open_rewind_picker();
+    assert!(message_text(&app, 17).len() < full.len());
+    press(&mut app, KeyCode::Enter);
+    for _ in 0..5 {
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Up);
+    }
+    assert!(picker(&app).loading);
+    assert!(render(&mut app).contains("Loading original message"));
+    assert!(app.pending.is_empty());
+    let request = source_request(&mut app);
+    assert_eq!(17, request.2);
+    source_reply(&mut app, request, Ok(full.clone()));
+    assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
+        if matches!(&prompt.kind, PromptKind::RewindMessage { event_id: 17, text } if text == &full)));
+    assert!(app.pending.is_empty());
+    press(&mut app, KeyCode::Enter);
+    assert!(app.effects.iter().any(|job| matches!(job, Job::Save(command)
+        if matches!(&command.action, Action::RewindMessage { target_event_id: 17, text, restore_files: false } if text == &full))));
+}
+
+#[test]
+fn source_escape_and_reopened_retry_preserve_drafts_and_ignore_old_results() {
+    let mut app = app();
+    app.pane_mut().draft.set_text("keep\nthis draft".into());
+    app.pane_mut().draft.left();
+    let draft = app.pane().draft.text().to_owned();
+    let cursor = app.pane().draft.cursor();
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(102, selected(&app));
+    let first = source_request(&mut app);
+    press(&mut app, KeyCode::Esc);
+    source_reply(&mut app, first.clone(), Ok("ignored old source".into()));
+    assert!(app.modal.is_none());
+    assert_eq!(draft, app.pane().draft.text());
+    assert_eq!(cursor, app.pane().draft.cursor());
+    app.effects.clear();
+    app.open_rewind_picker();
+    press(&mut app, KeyCode::Enter);
+    let current = source_request(&mut app);
+    source_reply(&mut app, first, Err(Error::Protocol("stale error".into())));
+    assert!(picker(&app).loading);
+    source_reply(
+        &mut app,
+        current.clone(),
+        Err(Error::Protocol("source temporarily unavailable".into())),
+    );
+    assert!(!picker(&app).loading);
+    assert_eq!(102, selected(&app));
+    assert!(picker(&app)
+        .problem
+        .as_ref()
+        .unwrap()
+        .contains("Enter retries"));
+    press(&mut app, KeyCode::Enter);
+    let retry = source_request(&mut app);
+    assert_ne!(current.1, retry.1);
+    source_reply(&mut app, current, Ok("stale retry source".into()));
+    assert!(picker(&app).loading);
+    source_reply(&mut app, retry, Ok("message 102".into()));
+    assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
+        if matches!(&prompt.kind, PromptKind::RewindMessage { text, .. } if text == "message 102")));
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(draft, app.pane().draft.text());
+    assert_eq!(cursor, app.pane().draft.cursor());
+    assert!(app.pending.is_empty());
+}
+
+#[test]
+fn original_source_supersedes_page_reads_and_requires_the_current_event() {
+    let mut app = app();
+    top(&mut app);
+    let page_request = request(&mut app);
+    press(&mut app, KeyCode::Enter);
+    let source = source_request(&mut app);
+    assert_eq!(100, source.2);
+    reply(&mut app, page_request, Ok(page(&[1], None)));
+    assert!(picker(&app).loading);
+    let mut wrong_event = source.clone();
+    wrong_event.2 = 99;
+    source_reply(&mut app, wrong_event, Ok("wrong event".into()));
+    assert!(picker(&app).loading);
+    source_reply(&mut app, source, Ok("message 100".into()));
+    assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
+        if matches!(prompt.kind, PromptKind::RewindMessage { event_id: 100, .. })));
+}
+
+#[test]
+fn original_source_from_a_previous_agent_cannot_open_confirmation() {
+    let mut app = app();
+    press(&mut app, KeyCode::Enter);
+    let source = source_request(&mut app);
+    app.select(
+        Address::new(app.active.session.clone(), "reviewer".into()),
+        true,
+        String::new(),
+    );
+    app.effects.clear();
+    source_reply(&mut app, source, Ok("old agent source".into()));
+    assert!(matches!(&app.modal, Some(Modal::Picker(_))));
+    press(&mut app, KeyCode::Enter);
+    assert!(app.modal.is_none());
+    assert!(app.pending.is_empty());
+    assert!(!app.effects.iter().any(|job| matches!(job, Job::Save(_))));
 }

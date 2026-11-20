@@ -424,6 +424,10 @@ impl App {
         if matches!(picker, PickerKind::Rewind) && !self.rewind_picker_current(ticket) {
             return;
         }
+        if let ChoiceKind::RewindMessage { event_id, turn, .. } = &choice {
+            self.load_rewind_source(ticket, *event_id, *turn);
+            return;
+        }
         self.modal = None;
         self.effects.push(Job::ClosePicker);
         match choice {
@@ -480,22 +484,8 @@ impl App {
                 config.reasoning_effort = effort;
                 self.configure(config);
             }
-            ChoiceKind::RewindMessage {
-                event_id,
-                turn,
-                text,
-            } => {
-                self.rewind_restore_files = false;
-                self.modal = Some(Modal::Prompt(Prompt {
-                    kind: PromptKind::RewindMessage {
-                        event_id,
-                        text: text.clone(),
-                    },
-                    title: format!("Rewind to message · Turn {turn}"),
-                    instructions: rewind_instructions(&text, false),
-                    instructions_top: 0,
-                    editor: Editor::default(),
-                }));
+            ChoiceKind::RewindMessage { .. } => {
+                unreachable!("rewind messages load their source before confirmation")
             }
             ChoiceKind::MessageEntry(message) => self.open_message_actions(message),
             ChoiceKind::MessageAction { message, action } => {

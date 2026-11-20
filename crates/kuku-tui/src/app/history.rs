@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use kuku_client::{Error, HistoryPage, RewindGroupPage};
 
 use crate::jobs::{Job, Selection};
-use crate::menu::{ChoiceKind, Ticket};
+use crate::menu::{ChoiceKind, RewindLoad, Ticket};
 use crate::transcript::{HistoryRequest, RewindGroupRequest};
 
 use super::rewind::{bound_rewind_choices, rewind_choice, rewind_history_header, RewindWindow};
@@ -29,10 +29,10 @@ impl App {
         let Some(history) = &mut picker.rewind_history else {
             return;
         };
-        if history.selection != selection || history.pending_before != Some(before) {
+        if history.selection != selection || history.load != RewindLoad::Page(before) {
             return;
         }
-        history.pending_before = None;
+        history.load = RewindLoad::Idle;
         picker.loading = false;
         match result {
             Ok(page) if page.next_before.is_none_or(|next| next < before) => {
