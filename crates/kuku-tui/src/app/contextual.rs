@@ -27,6 +27,9 @@ impl App {
                 });
             }
         }
+        if let Some(request) = self.credential_failure() {
+            controls.push(ContextControl::RepairCredentials { request });
+        }
         if let Some(control) = self.run_control() {
             controls.push(control);
         }

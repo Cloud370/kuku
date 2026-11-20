@@ -45,6 +45,10 @@ pub(crate) fn render_at(
     app: &mut App,
     activity_frame: ActivityFrame,
 ) -> bool {
+    if let Some(repair) = &mut app.credential_repair {
+        repair.render(frame);
+        return false;
+    }
     let outer = frame.area();
     app.contextual_hits.clear();
     if outer.is_empty() {

@@ -1895,6 +1895,7 @@ dependencies = [
  "crossterm",
  "fslock",
  "futures-util",
+ "httpmock",
  "kuku",
  "kuku-client",
  "kuku-server",

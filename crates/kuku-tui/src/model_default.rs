@@ -4,11 +4,11 @@ use std::path::{Path, PathBuf};
 use kuku_client::{Connection, ConnectionOptions, ModelDefaultPlan};
 use sha2::{Digest, Sha256};
 use toml_edit::{value, DocumentMut, InlineTable, Item, Table, Value};
-use url::Url;
 
-const LOCAL_SERVICE_REQUIRED: &str = "Set current model as default requires the active local service; reopen /model on a local connection.";
-const LOCAL_SERVICE_CHANGED: &str =
-    "The local service or config changed; reopen /model before saving.";
+use crate::local_settings::{
+    active_service, ensure_same_service, ServiceIdentity, LOCAL_SERVICE_REQUIRED,
+};
+
 const CONFIG_UNAVAILABLE: &str = "Cannot read the active config; reopen /model and try again.";
 const CONFIG_INVALID: &str = "The active config is invalid; no changes were made.";
 const ROUTE_UNUSABLE: &str = "The active service cannot use this model route as a default.";
@@ -20,15 +20,6 @@ pub(crate) const SAVE_SCOPE: &str = "Applies to new sessions and sessions withou
 pub(crate) struct ResolvedModel {
     pub(crate) connection: String,
     pub(crate) model: String,
-}
-
-#[derive(Clone, PartialEq, Eq)]
-struct ServiceIdentity {
-    endpoint: String,
-    instance_id: String,
-    pid: u32,
-    data_dir: String,
-    config_path: PathBuf,
 }
 
 pub(crate) struct PreparedDefaultSave {
@@ -182,108 +173,6 @@ fn update_user_default(document: &mut DocumentMut, route: &ResolvedModel) -> Res
     tier.insert("model", value(route.model.as_str()));
     tier.insert("purpose", value("Saved by /model"));
     Ok(())
-}
-
-async fn active_service(
-    options: &ConnectionOptions,
-    connection: Option<&Connection>,
-) -> Result<ServiceIdentity, String> {
-    let connection = connection.ok_or_else(|| LOCAL_SERVICE_REQUIRED.to_owned())?;
-    require_local(
-        options.remote.is_some(),
-        options.token.is_some(),
-        connection.local.is_some(),
-    )?;
-    let service = options
-        .local_service()
-        .map_err(|_| LOCAL_SERVICE_REQUIRED.to_owned())?;
-    let active = service
-        .status()
-        .await
-        .map_err(|_| LOCAL_SERVICE_CHANGED.to_owned())?
-        .ok_or_else(|| LOCAL_SERVICE_CHANGED.to_owned())?;
-    if !same_service_endpoint(connection.client.endpoint(), active.endpoint()) {
-        return Err(LOCAL_SERVICE_CHANGED.into());
-    }
-    let status = active.status();
-    let config_path = active_config_path(
-        options.config.is_some(),
-        service.config_path(),
-        status.config_path.as_deref(),
-    )?;
-    Ok(ServiceIdentity {
-        endpoint: active.endpoint().to_owned(),
-        instance_id: status
-            .instance_id
-            .clone()
-            .ok_or_else(|| LOCAL_SERVICE_CHANGED.to_owned())?,
-        pid: status.pid.ok_or_else(|| LOCAL_SERVICE_CHANGED.to_owned())?,
-        data_dir: status
-            .data_dir
-            .clone()
-            .ok_or_else(|| LOCAL_SERVICE_CHANGED.to_owned())?,
-        config_path,
-    })
-}
-
-fn same_service_endpoint(client_endpoint: &str, active_endpoint: &str) -> bool {
-    let (Some(client), Some(active)) = (
-        service_endpoint_url(client_endpoint),
-        service_endpoint_url(active_endpoint),
-    ) else {
-        return false;
-    };
-    client == active
-}
-
-fn service_endpoint_url(endpoint: &str) -> Option<Url> {
-    let endpoint = Url::parse(endpoint).ok()?;
-    if !matches!(endpoint.scheme(), "http" | "https")
-        || endpoint.host_str().is_none()
-        || !endpoint.username().is_empty()
-        || endpoint.password().is_some()
-        || endpoint.query().is_some()
-        || endpoint.fragment().is_some()
-    {
-        return None;
-    }
-    Some(endpoint)
-}
-
-fn active_config_path(
-    explicit_config: bool,
-    requested_path: &Path,
-    active_path: Option<&str>,
-) -> Result<PathBuf, String> {
-    let active_path = active_path.ok_or_else(|| LOCAL_SERVICE_CHANGED.to_owned())?;
-    let active_path = PathBuf::from(active_path);
-    if !active_path.is_absolute() || (explicit_config && requested_path != active_path.as_path()) {
-        return Err(LOCAL_SERVICE_CHANGED.into());
-    }
-    Ok(active_path)
-}
-
-fn require_local(remote: bool, token: bool, connected_local: bool) -> Result<(), String> {
-    if remote || token || !connected_local {
-        Err(LOCAL_SERVICE_REQUIRED.into())
-    } else {
-        Ok(())
-    }
-}
-
-fn same_service(expected: &ServiceIdentity, current: &ServiceIdentity) -> bool {
-    expected == current
-}
-
-fn ensure_same_service(
-    expected: &ServiceIdentity,
-    current: &ServiceIdentity,
-) -> Result<(), String> {
-    if same_service(expected, current) {
-        Ok(())
-    } else {
-        Err(LOCAL_SERVICE_CHANGED.into())
-    }
 }
 
 #[cfg(test)]

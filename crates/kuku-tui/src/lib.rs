@@ -13,6 +13,7 @@ mod editor;
 mod interaction;
 mod jobs;
 mod keys;
+mod local_settings;
 mod markup;
 mod menu;
 mod model_default;

@@ -7,9 +7,13 @@ use sha2::Digest;
 use toml_edit::{DocumentMut, Item};
 
 use super::{
-    active_config_path, edited_config, ensure_same_service, prepare, require_local, same_service,
-    same_service_endpoint, test_plan, update_user_default, ModelDefaultPlan, ResolvedModel,
-    ServiceIdentity, LOCAL_SERVICE_CHANGED, SAVE_SCOPE,
+    edited_config, prepare, test_plan, update_user_default, ModelDefaultPlan, ResolvedModel,
+    SAVE_SCOPE,
+};
+
+use crate::local_settings::{
+    active_config_path, ensure_same_service, require_local, same_service, ServiceIdentity,
+    LOCAL_SERVICE_CHANGED,
 };
 
 const CONFIG: &str = r#"# retained comment
@@ -282,6 +286,8 @@ async fn prepare_uses_normalized_managed_endpoint_and_rejects_other_origin_or_pa
 
     use kuku_client::Client;
     use kuku_server::server_args::ServerArgs;
+
+    use crate::local_settings::same_service_endpoint;
 
     const CONFIG: &str = r#"
 default_model = "balanced"

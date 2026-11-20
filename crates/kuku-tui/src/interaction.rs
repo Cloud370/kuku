@@ -28,6 +28,10 @@ const MOUSE_SCROLL_LINES: isize = 3;
 
 impl App {
     pub(crate) fn event(&mut self, event: Event, screen: &Buffer) {
+        if self.credential_repair.is_some() {
+            self.credential_repair_input(event);
+            return;
+        }
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => self.key(key),
             Event::Paste(text) => self.paste(&text),

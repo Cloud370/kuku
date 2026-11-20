@@ -83,7 +83,7 @@ impl Settings {
         }
     }
 
-    fn load_with_status(
+    pub(super) fn load_with_status(
         options: ConnectionOptions,
         active_config: Option<PathBuf>,
         environment: EnvironmentLookup<'_>,
@@ -405,6 +405,39 @@ fn load_document(
 
 pub(super) fn save(settings: &Settings, state: &SetupState) -> io::Result<()> {
     save_with_hook(settings, state, || {})
+}
+
+pub(super) fn save_credential(
+    settings: &Settings,
+    connection: &str,
+    key: &str,
+) -> io::Result<String> {
+    use sha2::{Digest, Sha256};
+
+    let key = valid_stored_key(key)
+        .map_err(|_| invalid_config("stored keys must be a non-empty single line"))?;
+    let mut staged = stage_key(settings, &key)?;
+    let mut document = settings.document.clone();
+    let provider = document
+        .get_mut("provider")
+        .and_then(Item::as_table_like_mut)
+        .and_then(|providers| providers.get_mut(connection))
+        .and_then(Item::as_table_like_mut)
+        .ok_or_else(|| invalid_config("the failed connection is no longer configured"))?;
+    let path = staged
+        .path()
+        .to_str()
+        .ok_or_else(|| invalid_config("credential path is not valid UTF-8"))?;
+    provider.insert("api_key", value(format!("file:{path}")));
+    let output = document.to_string();
+    let environment = |name: &str| std::env::var(name);
+    parse_service_config(&output, &settings.data_dir, &environment)
+        .map_err(|_| invalid_config("the edited configuration is invalid"))?
+        .resolve()
+        .map_err(|_| invalid_config("the edited configuration is invalid"))?;
+    write_config(settings, output.as_bytes(), || {})?;
+    staged.keep = true;
+    Ok(format!("{:x}", Sha256::digest(output.as_bytes())))
 }
 
 fn save_with_hook(

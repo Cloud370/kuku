@@ -22,6 +22,7 @@ use model_default::PendingDefaultSave;
 
 mod activity;
 pub(crate) mod agents;
+mod auth_repair;
 mod background_jobs;
 mod contextual;
 mod delivery;
@@ -310,6 +311,7 @@ pub(crate) struct App {
     pub(crate) workspace: PathBuf,
     pub(crate) endpoint: Option<String>,
     pub(crate) remote: bool,
+    pub(crate) credential_repair: Option<Box<crate::setup::CredentialRepair>>,
     pub(crate) connection_problem: Option<String>,
     pub(crate) connecting: bool,
     pub(crate) restarting: bool,
@@ -395,6 +397,7 @@ impl App {
             modal_info_rows: 4,
             quit: false,
             effects: vec![Job::Connect],
+            credential_repair: None,
             generation: 0,
             next_modal: 0,
             model_version: 0,
@@ -540,8 +543,14 @@ impl App {
             Update::Connected {
                 endpoint,
                 workspace,
-            } => self.connected(endpoint, workspace),
-            Update::ConnectFailed(error) => self.connect_failed(error),
+            } => {
+                self.connected(endpoint, workspace);
+                self.credential_repair_connected();
+            }
+            Update::ConnectFailed(error) => {
+                self.connect_failed(error);
+                self.credential_repair_connect_failed();
+            }
             Update::Loaded(selection, snapshot, page) if selection == self.selection() => {
                 self.loaded(snapshot, page)
             }
@@ -585,6 +594,12 @@ impl App {
                         }
                     }
                 }
+            }
+            Update::PreparedCredentialRepair(ticket, selection, result) => {
+                self.credential_repair_prepared(ticket, selection, result)
+            }
+            Update::SavedCredentialRepair(ticket, selection, result) => {
+                self.credential_repair_saved(ticket, selection, result)
             }
             Update::PreparedDefault(ticket, selection, result) => {
                 self.prepared_model_default(ticket, selection, result)

@@ -55,7 +55,7 @@ pub(super) fn run(
     }
 }
 
-fn usable(width: u16, height: u16) -> bool {
+pub(super) fn usable(width: u16, height: u16) -> bool {
     width >= MIN_WIDTH && height >= MIN_HEIGHT
 }
 
@@ -464,7 +464,7 @@ fn field(frame: &mut Frame<'_>, area: Rect, row: &mut u16, editor: &mut Editor) 
     }
 }
 
-fn masked_field(frame: &mut Frame<'_>, area: Rect, row: &mut u16, editor: &Editor) {
+pub(super) fn masked_field(frame: &mut Frame<'_>, area: Rect, row: &mut u16, editor: &Editor) {
     let mut masked = Editor::default();
     masked.set_text("•".repeat(editor.text().chars().count()));
     field(frame, area, row, &mut masked);

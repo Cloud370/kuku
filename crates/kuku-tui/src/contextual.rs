@@ -22,6 +22,9 @@ pub(crate) enum ContextControl {
         target: Target,
         request_id: String,
     },
+    RepairCredentials {
+        request: crate::setup::CredentialRepairRequest,
+    },
     Continue {
         target: Target,
         execution_id: Option<u64>,

@@ -14,6 +14,7 @@ use crate::theme::{emphasis, focused_row, ACCENT, MUTED};
 pub(super) fn label(control: &ContextControl) -> String {
     match control {
         ContextControl::Request { .. } => "F2 Request".into(),
+        ContextControl::RepairCredentials { .. } => "F2 Repair credentials · Enter".into(),
         ContextControl::Continue { .. } => "F2 Continue · Enter".into(),
         ContextControl::Interrupt { .. } => "F2 Stop · Enter".into(),
         control @ ContextControl::PendingRecovery { .. } => {
@@ -36,6 +37,7 @@ pub(super) fn label(control: &ContextControl) -> String {
 fn action_label(control: &ContextControl) -> &'static str {
     match control {
         ContextControl::Request { .. } => "Request",
+        ContextControl::RepairCredentials { .. } => "Repair credentials",
         ContextControl::Continue { .. } => "Continue",
         ContextControl::Interrupt { .. } => "Stop",
         control @ ContextControl::PendingRecovery { .. } => {

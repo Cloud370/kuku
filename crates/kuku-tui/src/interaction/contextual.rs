@@ -109,6 +109,7 @@ impl App {
             ContextControl::Request { target, request_id } => {
                 self.focus_request_id(target, request_id);
             }
+            ContextControl::RepairCredentials { request } => self.open_credential_repair(request),
             ContextControl::Continue { .. } => {
                 self.issue(self.active.clone(), Action::Advance);
             }

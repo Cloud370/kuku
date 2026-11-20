@@ -15,6 +15,10 @@ use tokio::task::{AbortHandle, JoinSet};
 use crate::menu::{Choice, ChoiceKind, Ticket};
 use crate::model_default::{self, PreparedDefaultSave, ResolvedModel};
 use crate::output::OUTPUT_PAGE_BYTES;
+use crate::setup::{
+    CredentialRepairApplied, CredentialRepairPlan, CredentialRepairRequest,
+    PreparedCredentialRepair, SavedCredentialRepair,
+};
 use crate::text::single_line;
 use crate::transcript::{HistoryRequest, RewindGroupRequest, HISTORY_PAGE, REWIND_GROUP_PAGE};
 
@@ -47,6 +51,22 @@ pub(crate) struct ValueSave {
 }
 
 pub(crate) enum Job {
+    PrepareCredentialRepair {
+        ticket: u64,
+        selection: Selection,
+        request: CredentialRepairRequest,
+    },
+    SaveCredentialRepair {
+        ticket: u64,
+        selection: Selection,
+        plan: std::sync::Arc<CredentialRepairPlan>,
+        key: String,
+    },
+    RestartCredentialRepair {
+        ticket: u64,
+        selection: Selection,
+        saved: SavedCredentialRepair,
+    },
     Connect,
     Observe(Selection),
     StopObserving,
@@ -83,6 +103,8 @@ pub(crate) enum Job {
 }
 
 pub(crate) enum Update {
+    PreparedCredentialRepair(u64, Selection, Result<PreparedCredentialRepair, String>),
+    SavedCredentialRepair(u64, Selection, Result<CredentialRepairApplied, String>),
     Connected {
         endpoint: String,
         workspace: PathBuf,
@@ -225,6 +247,68 @@ impl Jobs {
                         ticket,
                         selection,
                         model_default::save(&options, connection.as_ref(), plan).await,
+                    )
+                });
+            }
+            Job::PrepareCredentialRepair {
+                ticket,
+                selection,
+                request,
+            } => {
+                let options = self.options.clone();
+                let connection = self.connection.clone();
+                self.spawn(async move {
+                    Update::PreparedCredentialRepair(
+                        ticket,
+                        selection,
+                        crate::setup::prepare_credential_repair(
+                            &options,
+                            connection.as_ref(),
+                            request,
+                        )
+                        .await,
+                    )
+                });
+            }
+            Job::SaveCredentialRepair {
+                ticket,
+                selection,
+                plan,
+                key,
+            } => {
+                let options = self.options.clone();
+                let connection = self.connection.clone();
+                self.spawn(async move {
+                    Update::SavedCredentialRepair(
+                        ticket,
+                        selection,
+                        crate::setup::save_credential_repair(
+                            &options,
+                            connection.as_ref(),
+                            plan,
+                            key,
+                        )
+                        .await,
+                    )
+                });
+            }
+            Job::RestartCredentialRepair {
+                ticket,
+                selection,
+                saved,
+            } => {
+                let options = self.options.clone();
+                let connection = self.connection.clone();
+                self.spawn(async move {
+                    Update::SavedCredentialRepair(
+                        ticket,
+                        selection,
+                        Ok(crate::setup::apply_credential_repair(
+                            &options,
+                            connection.as_ref(),
+                            saved,
+                        )
+                        .await),
                     )
                 });
             }
@@ -380,7 +464,10 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
             let result = history_reply(client, &selection.target, id).await;
             Update::ReplySource(selection, id, result)
         }
-        Job::Connect
+        Job::PrepareCredentialRepair { .. }
+        | Job::SaveCredentialRepair { .. }
+        | Job::RestartCredentialRepair { .. }
+        | Job::Connect
         | Job::Observe(_)
         | Job::StopObserving
         | Job::Find(_, _)
