@@ -57,12 +57,9 @@
 | `/new`、`/resume` | 打开空白草稿或查找已有 Session。 |
 | Alt+← 或 Alt+→ | 直接切到上一个或下一个 Agent。`main` 排第一，其余按地址排序，到达首尾时循环。 |
 | `/agents` | 搜索 Session 中的 Agent、切换接收者或新建 Agent。列表显示活动、待决请求和排队数量，并在有摘录时分别标注 `Admitted` 和 `Queued` 任务。 |
-| `/back` | 返回同一 Session 中刚才查看的 Agent。重复操作可在最近查看的两个 Agent 之间切换。切换时会保留各自的草稿和阅读位置。 |
-| `/continue` | 显式继续所选 Agent 的工作。 |
 | 草稿为空时按 ↑，或点击 Pending inputs 中可见的可编辑排队行 | 在内联队列中选中该条输入。按 ↑/↓ 移动，Enter 编辑，Delete 撤回；空闲或 Waiting 时按 Esc 返回输入框，Running 或清理时按 Esc 会打断。 |
 | 编辑器外按 F2 | 按顺序循环可见控件：请求、继续或停止、待确认投递恢复、上一个 Agent，然后是服务操作。F2 或点击问题卡片会直接打开答复编辑器；Esc 按请求 ID 保存未提交答案，并保留主草稿。F2 或点击权限卡片会聚焦请求，供用户明确选择。Enter 执行已聚焦控件；点击其他有副作用的控件只聚焦。Running 或清理时 Esc 无论焦点为何都会打断；否则退出焦点。Ctrl+R 仍会重连。 |
 | 权限请求卡片 | 用 ←/→ 或点击明确选择 **Deny** 或 **Allow once**，再按 Enter。键盘拒绝路径是 F2、←、Enter。Waiting 时 Esc 离开焦点，不作答也不打断。 |
-| `/pending` | 检查、重试或丢弃未确认的提交。 |
 | `/model`、`/thinking` | 为所选 Agent 的 Session 选择模型线路或思考设置。模型和思考选项仅作用于 Session；单独选择 **Set current model as default** 可将已解析的连接和模型保存到配置，且不改变当前 Session。 |
 | `/statusline` | 打开 **Status line settings**，预览、选择、排序并保存状态栏字段。 |
 | Ctrl+O | 一起展开或收起可见的对话预览，包括工具组和 Agent 卡片。 |
@@ -73,7 +70,7 @@
 | 鼠标滚轮、Page Up、Page Down | 滚动对话。 |
 | Ctrl+End，或阅读历史时按 Alt+↑ | 回到最新输出并恢复跟随。 |
 | 编辑区的 ↑、↓ | 在多行草稿内移动，到边缘后滚动对话。Ctrl+↑ 和 Ctrl+↓ 浏览已发送的提示词并返回草稿；队列焦点下则在可编辑的排队输入间移动。 |
-| `/server`、`/reconnect`、`/restart` | 检查所连服务、重新连接，或重启受管本地服务。可用时，F2 循环到重连或受管本地重启；Ctrl+R 仍可直接重连。 |
+| `/server` | 检查所连服务及其控件。可用时，F2 循环到重连或受管本地重启；Ctrl+R 仍可直接重连。 |
 | 菜单中的方向键、Tab、Enter | 方向键移动高亮项，Tab 补全可编辑文本，Enter 执行选中的动作。 |
 | `/web`、`/quit` | 在浏览器中打开对话或退出终端客户端。 |
 
