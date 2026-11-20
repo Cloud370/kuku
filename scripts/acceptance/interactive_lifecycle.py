@@ -3,13 +3,18 @@
 import json
 from urllib.parse import urlencode
 
-from interactive_fixture import InstalledClient
+from interactive_fixture import InstalledClient, eventually
+from interactive_rendering import has_selected_queued_input
 
 
 def lifecycle_cases(binary, bridge, directory):
     first_run_credential_repair(binary, bridge, directory / "settings")
     with InstalledClient(binary, bridge, directory / "defaults") as client:
         persistent_model_default(client)
+    with InstalledClient(binary, bridge, directory / "keyboard-queue") as client:
+        keyboard_queue_withdrawal(client)
+    with InstalledClient(binary, bridge, directory / "rewind") as client:
+        readonly_rewind(client)
 
 
 def first_run_credential_repair(binary, bridge, directory):
@@ -169,6 +174,7 @@ def readonly_rewind(client):
         assert kept_reply in context
         assert discarded_prompt not in context and discarded_reply not in context
         continued.text("Continued from the active context only.")
+        terminal.press("\x1b[1;5F")
         terminal.expect("Continued from the active context only.", state="Finished")
         terminal.exit_cleanly()
     client.cli(workspace, "server", "restart")
@@ -192,3 +198,65 @@ def readonly_rewind(client):
         "discarded_content_in_next_request": discarded_reply in context,
     }, ensure_ascii=False, indent=2), encoding="utf-8")
     print("Rewound history stayed readable after restart and was absent from the next provider context.")
+
+
+def keyboard_queue_withdrawal(client):
+    workspace = client.workspace("work-keyboard-queue")
+    prompt = "Hold a reply while queued inputs are reviewed"
+    kept = "Keep this exact queued instruction"
+    withdrawn = "Withdraw this exact queued instruction"
+    draft = "independent draft survives queue processing"
+    with client.terminal(workspace) as terminal:
+        terminal.expect("New session", state="Ready")
+        terminal.submit(prompt)
+        response = client.provider.next(prompt)
+        with response.streaming_text("Keyboard queue check in progress", "\n\nKeyboard queue check finished"):
+            terminal.expect("Keyboard queue check in progress", state="Streaming")
+            for text in (kept, withdrawn):
+                terminal.type(text)
+                terminal.press("\x1b\r")
+                terminal.expect(text, state="Queued · next Turn")
+            session = client.session(workspace)
+            query = urlencode({"workspace": workspace, "agent": "main"})
+
+            def pending_inputs():
+                return client.request("GET", f"/sessions/{session}/snapshot?{query}").as_json()["pending"]
+
+            pending = eventually("both exact queued inputs", lambda: (
+                value if len(value := pending_inputs()) == 2 else None
+            ))
+            ids = {entry["input"]["text"]: entry["receipt"]["command_id"] for entry in pending}
+            assert set(ids) == {kept, withdrawn}, pending
+            terminal.press("\x1b[A")
+
+            def selected_input():
+                value = terminal.request("screen")["screen"]
+                return value if has_selected_queued_input(value, withdrawn) else None
+
+            selected = eventually("Up to select the newest exact queued input", selected_input)
+            terminal.press("\x1b[3~")
+            restored = terminal.expect(withdrawn, state="Draft", also=(kept, "Input withdrawn"))["screen"]
+            def remaining_input():
+                value = pending_inputs()
+                return value if [entry["receipt"]["command_id"] for entry in value] == [ids[kept]] else None
+
+            remaining = eventually("keyboard withdrawal to leave the other input queued", remaining_input)
+            composer = restored[restored.index("To main"):]
+            assert withdrawn in composer, restored
+            terminal.press("\x03")
+            terminal.type(draft)
+        continued = client.provider.next(kept)
+        messages = json.dumps(continued.request["messages"])
+        assert messages.count(kept) == 1 and withdrawn not in messages
+        continued.text("The remaining queued instruction ran once.")
+        terminal.expect("The remaining queued instruction ran once.", state="Finished", also=(draft,))
+        terminal.press("\x03")
+        terminal.exit_cleanly()
+    client.provider.assert_idle()
+    (client.directory / "keyboard-queue-withdrawal.json").write_text(json.dumps({
+        "session": session, "queued_ids": ids, "remaining": remaining,
+        "selected_screen": selected, "restored_draft_screen": restored,
+        "kept_input_occurrences_in_request": messages.count(kept),
+        "withdrawn_input_in_request": withdrawn in messages,
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    print("Keyboard Up/Delete withdrew the exact input, restored its draft and kept the other input queued.")
