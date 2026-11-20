@@ -89,7 +89,8 @@ class FailureSummary:
         else:
             path.unlink(missing_ok=True)
         return {"failure_summary": {"log": str(path) if output else None,
-                                    "retained_bytes": len(output), "limit_bytes": self.LIMIT,
+                                    "retained_bytes": path.stat().st_size if output else 0,
+                                    "limit_bytes": self.LIMIT,
                                     "truncated": self.truncated}}
 
 

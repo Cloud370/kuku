@@ -249,6 +249,32 @@ class AcceptanceTests(unittest.TestCase):
         self.assertTrue(result["timed_out"])
         self.assertLess(time.monotonic() - start, 10)
 
+    def test_log_preserves_newline_bytes_after_utf8_replacement_and_redaction(self):
+        payload = "first\n\u7b2c\u4e8c\u884c\r\n".encode() + b"\xff\nprivate-test-key\n"
+        program = "import sys;sys.stdout.buffer.write(" + repr(payload) + ")"
+        result = ACCEPTANCE.capture([sys.executable, "-c", program], self.directory, "newlines",
+                                    secrets=("private-test-key",))
+        raw = Path(result["log"]).read_bytes()
+        self.assertEqual(raw, "first\n\u7b2c\u4e8c\u884c\r\n\ufffd\n[REDACTED]\n".encode())
+        self.assertEqual(result["retained_bytes"], len(raw))
+        self.assertEqual(result["output_sha256"], hashlib.sha256(payload).hexdigest())
+        self.assertEqual(result["exit_code"], 0)
+        first, last = b"first\nsecond\r\n", b"\xff\nx\n"
+        count = (ACCEPTANCE.LOG_BYTES - len(first) - len(last)) // 3
+        payload = first + "\u754c".encode() * count + last
+        program = ("import sys;sys.stdout.buffer.write(" + repr(first)
+                   + "+b'\\xe7\\x95\\x8c'*" + str(count) + "+" + repr(last) + ")")
+        result = ACCEPTANCE.capture([sys.executable, "-c", program], self.directory, "boundary",
+                                    secrets=("x",))
+        raw = Path(result["log"]).read_bytes()
+        self.assertLessEqual(len(payload), ACCEPTANCE.LOG_BYTES)
+        self.assertEqual(len(raw), ACCEPTANCE.LOG_BYTES)
+        self.assertEqual(result["retained_bytes"], len(raw))
+        self.assertTrue(result["truncated"])
+        self.assertIn("\ufffd\n[REDACTED]\n", raw.decode("utf-8"))
+        self.assertNotIn(b"\r\r\n", raw)
+        self.assertEqual(result["output_sha256"], hashlib.sha256(payload).hexdigest())
+
     def test_contract_summary_keeps_early_failures_after_later_output(self):
         first = (b"test first::broken ... \x1b[31mFAILED\x1b[0m\n"
                  b"thread 'first::broken' panicked at fixture.rs:17:5:\nprivate-test-token\n")
@@ -270,6 +296,7 @@ class AcceptanceTests(unittest.TestCase):
         self.assertFalse(summary["truncated"])
         self.assertEqual(result["output_sha256"], hashlib.sha256(payload).hexdigest())
         self.assertEqual(result["output_bytes"], len(payload))
+        self.assertEqual(result["retained_bytes"], Path(result["log"]).stat().st_size)
         self.assertLessEqual(Path(result["log"]).stat().st_size, ACCEPTANCE.LOG_BYTES)
         self.assertLessEqual(Path(summary["log"]).stat().st_size, ACCEPTANCE.FailureSummary.LIMIT)
         success = ACCEPTANCE.capture([sys.executable, "-c", "print('all passed')"], self.directory,

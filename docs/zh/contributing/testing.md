@@ -16,7 +16,7 @@ python3 scripts/acceptance/run.py integration
 
 契约测试采集保留原有 64 KiB 输出尾部和完整输出 hash。独立失败摘要在 16 KiB UTF-8 字节范围内保留失败测试名、panic 位置与少量上下文，以及 Cargo 失败 target。`failure_summary.truncated` 标记遗漏内容；失败仍由子进程退出状态判定。
 
-在各 workflow 的路径过滤条件满足时，两个 CI workflow 都运行目标为 `main` 或 `feat/interactive-clients` 的 PR，以及推送到 `main` 的提交。核心 CI checkout PR 源分支 head；WebUI CI 保留 GitHub 的 PR merge-ref checkout。记录实际提交／工作树，只有 tree 相同时才复用源 head 的证据。其他分支的推送需要通过 PR 触发 WebUI 检查。同一 PR 的新运行会取消旧运行。Rust 缓存在失败后保留依赖并报告精确命中；Cargo 仍验证构建指纹，所有已选择的检查照常运行。PTY helper 使用与契约测试相同的 workspace／`kuku/test_support` feature 解析，记录编译器报告的 feature、profile 和缓存复用状态。从源码安装时，受测应用仍为嵌入 Web 资源的 release 构建。
+在各 workflow 的路径过滤条件满足时，两个 CI workflow 都运行目标为 `main` 或 `feat/interactive-clients` 的 PR，以及推送到 `main` 的提交。核心 CI checkout PR 源分支 head；WebUI CI 保留 GitHub 的 PR merge-ref checkout。记录实际提交／工作树，只有 tree 相同时才复用源 head 的证据。其他分支的推送需要通过 PR 触发 WebUI 检查。同一 PR 的新运行会取消旧运行。矩阵 job 在 checkout 后立即检查 Python 工具，再准备 Rust、Node 和缓存。Rust 缓存在失败后保留依赖并报告精确命中；Cargo 仍验证构建指纹，所有已选择的检查照常运行。PTY helper 使用与契约测试相同的 workspace／`kuku/test_support` feature 解析，记录编译器报告的 feature、profile 和缓存复用状态。从源码安装时，受测应用仍为嵌入 Web 资源的 release 构建。
 
 选择入口将 `CARGO_TARGET_DIR` 固定为当前 checkout 的 `target/`，不改变宿主环境。每个 worktree 使用独立 target，即使串行构建也不共享：workspace 产物可能错误复用另一源码树的缓存。本地 target 可以使用第三方依赖缓存作为种子，但首次构建前先执行一次 `cargo clean --target-dir target -p kuku -p kuku-cli -p kuku-server -p kuku-client -p kuku-tui -p kuku-app` 清除 workspace 产物。记录提交／工作树、target 目录、feature、profile 和二进制 hash；共享 target 构建的冻结二进制本身不能证明对应的源码版本。
 

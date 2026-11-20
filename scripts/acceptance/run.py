@@ -235,15 +235,17 @@ def capture(command, directory, label, timeout=900, env=None, secrets=(), cwd=RO
                 if raw_tail.startswith(secret[-length:]):
                     raw_tail = "[REDACTED]" + raw_tail[length:]
                     break
-    output = redact(raw_tail, secrets).encode()[-LOG_BYTES:].decode("utf-8", errors="ignore")
+    rendered = redact(raw_tail, secrets).encode("utf-8")
+    output = rendered[-LOG_BYTES:].decode("utf-8", errors="ignore").encode("utf-8")
     path = directory / f"{label}.log"
-    path.write_text(output, encoding="utf-8")
+    path.write_bytes(output)
     result = {
         "command": [redact(str(arg), secrets) for arg in command],
         "exit_code": process.returncode, "timed_out": timed_out,
         "seconds": round(time.monotonic() - start, 4),
         "log": str(path), "output_bytes": total,
-        "retained_bytes": len(output.encode()), "truncated": total > LOG_BYTES,
+        "retained_bytes": path.stat().st_size,
+        "truncated": total > LOG_BYTES or len(rendered) > LOG_BYTES,
         "output_sha256": digest.hexdigest(),
     }
     if reader.is_alive():
