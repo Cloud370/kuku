@@ -7,9 +7,9 @@ use kuku::util::private_directory;
 use kuku_client::ConnectionOptions;
 use toml_edit::{value, DocumentMut};
 
-use super::{save, save_with_hook, stage_key_with_sync, Settings};
+use super::{save, save_with_hook, save_with_lookup, stage_key_with_sync, Settings};
 use crate::setup::state::SetupState;
-use crate::setup::CredentialSource;
+use crate::setup::{should_offer_setup, CredentialSource};
 
 const INLINE_CONFIG: &str = r#"
 default_model = "balanced"
@@ -27,6 +27,248 @@ fn options(root: &std::path::Path, config: Option<std::path::PathBuf>) -> Connec
         config,
         ..ConnectionOptions::default()
     }
+}
+
+fn select_environment(state: &mut SetupState) {
+    state.credential_source = CredentialSource::Environment;
+}
+
+#[tokio::test]
+async fn missing_default_file_credential_reopens_with_current_route_and_preserves_config() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("custom.toml");
+    let missing_key = directory.path().join("missing.credential");
+    let mut document: DocumentMut = INLINE_CONFIG.parse().unwrap();
+    document["provider"]["anthropic"]["api_key"] = value(format!("file:{}", missing_key.display()));
+    let original = document.to_string();
+    fs::write(&config, &original).unwrap();
+
+    let settings = Settings::load_for_first_run(options(directory.path(), Some(config.clone())))
+        .await
+        .unwrap()
+        .unwrap();
+    let state = SetupState::new(&settings);
+
+    assert_eq!("balanced", settings.default_tier);
+    assert!(!settings.default_route_credential_available());
+    assert!(should_offer_setup(
+        Ok(false),
+        settings.existing,
+        settings.default_route_credential_available()
+    ));
+    assert!(matches!(
+        state.choice(),
+        crate::setup::ConnectionChoice::Existing(name) if name == "anthropic"
+    ));
+    assert_eq!("balanced-model", state.model.text());
+    assert_eq!(original, fs::read_to_string(config).unwrap());
+}
+
+async fn assert_first_run_uses_managed_data_dir(caller_home_name: Option<&str>) {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("custom.toml");
+    let missing_key = directory.path().join("missing.credential");
+    let caller_home = caller_home_name.map(|name| directory.path().join(name));
+    let mut document: DocumentMut = INLINE_CONFIG.parse().unwrap();
+    document["provider"]["anthropic"]["api_key"] = value(format!("file:{}", missing_key.display()));
+    let original = format!("{document}\n[discovery]\nextra_user_paths = [\"$KUKU_HOME\"]\n");
+    fs::write(&config, original).unwrap();
+    let environment = |name: &str| match name {
+        "KUKU_HOME" => match &caller_home {
+            Some(path) => Ok(path.to_string_lossy().into_owned()),
+            None => Err(std::env::VarError::NotPresent),
+        },
+        _ => std::env::var(name),
+    };
+
+    let settings = Settings::load_for_first_run_with_lookup(
+        options(directory.path(), Some(config.clone())),
+        &environment,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+
+    assert_eq!(
+        vec![settings.data_dir.clone()],
+        settings.raw.discovery.as_ref().unwrap().extra_user_paths
+    );
+    if let Some(caller_home) = &caller_home {
+        assert_ne!(
+            vec![caller_home.clone()],
+            settings.raw.discovery.as_ref().unwrap().extra_user_paths
+        );
+    }
+    assert!(!settings.default_route_credential_available());
+    let mut state = SetupState::new(&settings);
+    state.credential_source = CredentialSource::StoredKey;
+    state
+        .stored_key
+        .set_text("fixture-only-not-a-real-key".into());
+    save_with_lookup(&settings, &state, &environment, || {}).unwrap();
+    assert!(fs::read_to_string(config)
+        .unwrap()
+        .contains("extra_user_paths = [\"$KUKU_HOME\"]"));
+}
+
+#[tokio::test]
+async fn first_run_uses_managed_data_dir_for_kuku_home_references() {
+    assert_first_run_uses_managed_data_dir(None).await;
+}
+
+#[tokio::test]
+async fn first_run_overrides_set_caller_kuku_home_with_managed_data_dir() {
+    assert_first_run_uses_managed_data_dir(Some("caller-home")).await;
+}
+
+#[tokio::test]
+async fn default_route_credential_check_ignores_unrelated_provider_and_empty_values() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("custom.toml");
+    fs::write(&config, INLINE_CONFIG).unwrap();
+    let settings = Settings::load(options(directory.path(), Some(config)))
+        .await
+        .unwrap();
+    let mut resolved = Vec::new();
+
+    assert!(
+        !settings.default_route_credential_available_with(|key| match key {
+            ApiKey::Env(name) => {
+                resolved.push(name.clone());
+                None
+            }
+            _ => unreachable!(),
+        })
+    );
+    assert_eq!(vec!["ANTHROPIC_API_KEY"], resolved);
+    assert!(!settings.default_route_credential_available_with(|_| Some(String::new())));
+    assert!(!settings.default_route_credential_available_with(|_| Some("  ".into())));
+    assert!(should_offer_setup(
+        Ok(false),
+        true,
+        settings.default_route_credential_available_with(|_| Some(String::new()))
+    ));
+    assert!(settings.default_route_credential_available_with(|_| {
+        Some("fixture-only-not-a-real-key".into())
+    }));
+    assert!(should_offer_setup(Ok(false), true, false));
+}
+
+#[tokio::test]
+async fn valid_plaintext_default_route_skips_repair_even_when_other_provider_key_is_missing() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("custom.toml");
+    let mut document: DocumentMut = INLINE_CONFIG.parse().unwrap();
+    document["provider"]["anthropic"]["api_key"] = value("fixture-only-not-a-real-key");
+    fs::write(&config, document.to_string()).unwrap();
+
+    assert!(
+        Settings::load_for_first_run(options(directory.path(), Some(config)))
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn valid_private_file_default_route_skips_first_run_repair() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("custom.toml");
+    let options = options(directory.path(), Some(config.clone()));
+    let settings = Settings::load(options.clone()).await.unwrap();
+    let mut staged =
+        stage_key_with_sync(&settings, "fixture-only-not-a-real-key", |_, _| Ok(())).unwrap();
+    let key_path = staged.path().to_owned();
+    staged.keep = true;
+
+    let mut document: DocumentMut = generate_default().parse().unwrap();
+    document["provider"]["anthropic"]["api_key"] = value(format!("file:{}", key_path.display()));
+    fs::write(&config, document.to_string()).unwrap();
+
+    assert!(Settings::load_for_first_run(options)
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn credential_repair_keeps_unrelated_config_and_never_writes_key_text() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("custom.toml");
+    let missing_key = directory.path().join("missing.credential");
+    let mut document: DocumentMut = INLINE_CONFIG.parse().unwrap();
+    document["provider"]["anthropic"]["api_key"] = value(format!("file:{}", missing_key.display()));
+    fs::write(&config, document.to_string()).unwrap();
+
+    let settings = Settings::load(options(directory.path(), Some(config.clone())))
+        .await
+        .unwrap();
+    let mut state = SetupState::new(&settings);
+    let key = "fixture-only-not-a-real-key";
+    state.credential_source = CredentialSource::StoredKey;
+    state.stored_key.set_text(key.into());
+    save(&settings, &state).unwrap();
+
+    let output = fs::read_to_string(&config).unwrap();
+    assert!(!output.contains(key));
+    assert!(output.contains("unrelated_root = \"keep\""));
+    assert!(output.contains("api_key = \"$OPENAI_API_KEY\""));
+    assert!(output.contains("service_tier = \"flex\""));
+    let parsed = load_config(&config).unwrap();
+    let api_key = &parsed.provider["anthropic"].api_key;
+    let path = std::path::Path::new(api_key.strip_prefix("file:").unwrap());
+    assert!(path.starts_with(&settings.credentials_dir));
+    assert!(kuku::util::is_valid_private_key(path));
+}
+
+#[tokio::test]
+async fn invalid_existing_config_is_not_replaced_by_first_run_setup() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("invalid.toml");
+    let original = b"[model\ninvalid";
+    fs::write(&config, original).unwrap();
+
+    assert!(
+        Settings::load_for_first_run(options(directory.path(), Some(config.clone())))
+            .await
+            .is_err()
+    );
+    assert_eq!(original, fs::read(config).unwrap().as_slice());
+}
+
+#[test]
+fn credential_source_defaults_are_deterministic_without_environment_mutation() {
+    let environment = ApiKey::Env("FIXTURE_API_KEY".into());
+    let file = ApiKey::File(std::path::PathBuf::from("fixture.credential"));
+    let plaintext = ApiKey::Plaintext("fixture-only-not-a-real-key".into());
+    assert_eq!(
+        CredentialSource::StoredKey,
+        super::preferred_source(Some(&environment), false, true)
+    );
+    assert_eq!(
+        CredentialSource::Environment,
+        super::preferred_source(Some(&environment), true, true)
+    );
+    assert_eq!(
+        CredentialSource::StoredKey,
+        super::preferred_source(None, false, true)
+    );
+    assert_eq!(
+        CredentialSource::Environment,
+        super::preferred_source(None, true, true)
+    );
+    assert_eq!(
+        CredentialSource::Environment,
+        super::preferred_source(Some(&environment), false, false)
+    );
+    assert_eq!(
+        CredentialSource::StoredKey,
+        super::preferred_source(Some(&plaintext), false, false)
+    );
+    assert_eq!(
+        CredentialSource::StoredKey,
+        super::preferred_source(Some(&file), false, false)
+    );
 }
 
 #[tokio::test]
@@ -49,6 +291,7 @@ async fn existing_settings_preserve_comments_providers_tiers_and_connection_opti
         .await
         .unwrap();
     let mut state = SetupState::new(&settings);
+    select_environment(&mut state);
     assert!(
         matches!(state.choice(), crate::setup::ConnectionChoice::Existing(name) if name == "anthropic")
     );
@@ -98,7 +341,8 @@ async fn saving_uses_sdk_environment_expansion_and_preserves_references() {
     let settings = Settings::load(options(directory.path(), Some(config.clone())))
         .await
         .unwrap();
-    let state = SetupState::new(&settings);
+    let mut state = SetupState::new(&settings);
+    select_environment(&mut state);
     save(&settings, &state).unwrap();
 
     let output = fs::read_to_string(&config).unwrap();
@@ -134,7 +378,8 @@ async fn prefill_uses_normalized_custom_default_route_and_preserves_options() {
     let settings = Settings::load(options(directory.path(), Some(config.clone())))
         .await
         .unwrap();
-    let state = SetupState::new(&settings);
+    let mut state = SetupState::new(&settings);
+    select_environment(&mut state);
     assert_eq!("preferred", settings.default_tier);
     assert!(matches!(
         state.choice(),
@@ -160,6 +405,7 @@ async fn settings_edit_inline_model_and_provider_tables() {
         .await
         .unwrap();
     let mut state = SetupState::new(&settings);
+    select_environment(&mut state);
     state.environment.set_text("MIGRATED_API_KEY".into());
     save(&settings, &state).unwrap();
 
@@ -192,6 +438,7 @@ async fn preset_save_adds_an_inline_provider_without_overwriting_existing() {
         .await
         .unwrap();
     let mut state = SetupState::new(&settings);
+    select_environment(&mut state);
     let preset = crate::setup::ProviderPreset::OpenAi;
     state.selected = state
         .choices
@@ -221,6 +468,7 @@ async fn new_configuration_keeps_the_three_default_tiers() {
         .await
         .unwrap();
     let mut state = SetupState::new(&settings);
+    select_environment(&mut state);
     state.model.set_text("fixture-model".into());
     save(&settings, &state).unwrap();
 
@@ -239,6 +487,7 @@ async fn all_provider_presets_generate_parseable_configs() {
             .await
             .unwrap();
         let mut state = SetupState::new(&settings);
+        select_environment(&mut state);
         state.selected = state
             .choices
             .iter()
@@ -373,6 +622,7 @@ async fn route_changes_clear_explicit_route_options_but_credential_edits_do_not(
         .await
         .unwrap();
     let mut state = SetupState::new(&settings);
+    select_environment(&mut state);
     state.environment.set_text("NEW_API_KEY".into());
     save(&settings, &state).unwrap();
     let after_credentials: DocumentMut = fs::read_to_string(&config).unwrap().parse().unwrap();
@@ -387,6 +637,7 @@ async fn route_changes_clear_explicit_route_options_but_credential_edits_do_not(
         .await
         .unwrap();
     let mut state = SetupState::new(&settings);
+    select_environment(&mut state);
     state.model.set_text("changed-route-model".into());
     save(&settings, &state).unwrap();
     let after_route: DocumentMut = fs::read_to_string(config).unwrap().parse().unwrap();
@@ -396,6 +647,151 @@ async fn route_changes_clear_explicit_route_options_but_credential_edits_do_not(
     assert!(after_route["model"]["balanced"]
         .get("service_tier")
         .is_none());
+}
+
+#[tokio::test]
+async fn credential_repair_preserves_unchanged_route_environment_references() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("custom.toml");
+    let missing_key = directory.path().join("missing.credential");
+    let mut document: DocumentMut = INLINE_CONFIG.parse().unwrap();
+    document["model"]["balanced"]["provider"] = value("$ROUTE_PROVIDER");
+    document["model"]["balanced"]["model"] = value("$ROUTE_MODEL");
+    document["provider"]["anthropic"]["api_key"] = value(format!("file:{}", missing_key.display()));
+    let original = format!("{document}\n[discovery]\nextra_user_paths = [\"$KUKU_HOME\"]\n");
+    fs::write(&config, original).unwrap();
+    let environment = |name: &str| match name {
+        "ROUTE_PROVIDER" => Ok("anthropic".into()),
+        "ROUTE_MODEL" => Ok("model-from-environment".into()),
+        "KUKU_HOME" => Err(std::env::VarError::NotPresent),
+        _ => std::env::var(name),
+    };
+    let settings = Settings::load_for_first_run_with_lookup(
+        options(directory.path(), Some(config.clone())),
+        &environment,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let mut state = SetupState::new(&settings);
+    state.credential_source = CredentialSource::StoredKey;
+    state
+        .stored_key
+        .set_text("fixture-only-not-a-real-key".into());
+
+    save_with_lookup(&settings, &state, &environment, || {}).unwrap();
+    let credential_only: DocumentMut = fs::read_to_string(&config).unwrap().parse().unwrap();
+    assert_eq!(
+        "$ROUTE_PROVIDER",
+        credential_only["model"]["balanced"]["provider"]
+            .as_str()
+            .unwrap()
+    );
+    assert_eq!(
+        "$ROUTE_MODEL",
+        credential_only["model"]["balanced"]["model"]
+            .as_str()
+            .unwrap()
+    );
+    assert_eq!(
+        "low",
+        credential_only["model"]["balanced"]["reasoning_effort"]
+            .as_str()
+            .unwrap()
+    );
+    assert_eq!(
+        "flex",
+        credential_only["model"]["balanced"]["service_tier"]
+            .as_str()
+            .unwrap()
+    );
+
+    let settings = Settings::load_with_lookup(
+        options(directory.path(), Some(config.clone())),
+        &environment,
+    )
+    .await
+    .unwrap();
+    let mut state = SetupState::new(&settings);
+    state.model.set_text("intentional-new-model".into());
+    save_with_lookup(&settings, &state, &environment, || {}).unwrap();
+    let route_changed: DocumentMut = fs::read_to_string(config).unwrap().parse().unwrap();
+    assert_eq!(
+        "anthropic",
+        route_changed["model"]["balanced"]["provider"]
+            .as_str()
+            .unwrap()
+    );
+    assert_eq!(
+        "intentional-new-model",
+        route_changed["model"]["balanced"]["model"]
+            .as_str()
+            .unwrap()
+    );
+    assert!(route_changed["model"]["balanced"]
+        .get("reasoning_effort")
+        .is_none());
+    assert!(route_changed["model"]["balanced"]
+        .get("service_tier")
+        .is_none());
+}
+
+#[tokio::test]
+async fn intentional_route_change_pins_selected_route_across_environment_divergence() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("custom.toml");
+    let missing_key = directory.path().join("missing.credential");
+    let mut document: DocumentMut = INLINE_CONFIG.parse().unwrap();
+    document["model"]["balanced"]["provider"] = value("$ROUTE_PROVIDER");
+    document["model"]["balanced"]["model"] = value("$ROUTE_MODEL");
+    document["provider"]["anthropic"]["api_key"] = value(format!("file:{}", missing_key.display()));
+    let original = format!("{document}\n[discovery]\nextra_user_paths = [\"$KUKU_HOME\"]\n");
+    fs::write(&config, original).unwrap();
+    let caller_environment = |name: &str| match name {
+        "ROUTE_PROVIDER" => Ok("anthropic".into()),
+        "ROUTE_MODEL" => Ok("caller-model".into()),
+        _ => Err(std::env::VarError::NotPresent),
+    };
+    let service_environment = |name: &str| match name {
+        "ROUTE_PROVIDER" => Ok("openai".into()),
+        "ROUTE_MODEL" => Ok("service-model".into()),
+        _ => Err(std::env::VarError::NotPresent),
+    };
+    let settings = Settings::load_for_first_run_with_lookup(
+        options(directory.path(), Some(config.clone())),
+        &caller_environment,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let mut state = SetupState::new(&settings);
+    state.model.set_text("selected-model".into());
+    state.credential_source = CredentialSource::StoredKey;
+    state
+        .stored_key
+        .set_text("fixture-only-not-a-real-key".into());
+
+    save_with_lookup(&settings, &state, &caller_environment, || {}).unwrap();
+
+    let written: DocumentMut = fs::read_to_string(&config).unwrap().parse().unwrap();
+    assert_eq!(
+        "anthropic",
+        written["model"]["balanced"]["provider"].as_str().unwrap()
+    );
+    assert_eq!(
+        "selected-model",
+        written["model"]["balanced"]["model"].as_str().unwrap()
+    );
+
+    let service_settings = Settings::load_with_lookup(
+        options(directory.path(), Some(config)),
+        &service_environment,
+    )
+    .await
+    .unwrap();
+    let service_route = service_settings.resolved.tiers.get("balanced").unwrap();
+    assert_eq!("anthropic", service_route.provider);
+    assert_eq!("selected-model", service_route.model);
 }
 
 #[tokio::test]
@@ -469,8 +865,10 @@ async fn simultaneous_settings_saves_allow_only_one_writer() {
         .await
         .unwrap();
     let mut first_state = SetupState::new(&first_settings);
+    select_environment(&mut first_state);
     first_state.model.set_text("writer-one-model".into());
     let mut second_state = SetupState::new(&second_settings);
+    select_environment(&mut second_state);
     second_state.model.set_text("writer-two-model".into());
     let barrier = Arc::new(Barrier::new(2));
 

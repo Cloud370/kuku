@@ -202,9 +202,23 @@ fn render_step(
                 "Step 3/5 · Credential source",
                 ACCENT,
             );
+            let environment_status = if state.environment_set() {
+                "detected"
+            } else {
+                "not detected"
+            };
             for (source, label) in [
-                (CredentialSource::Environment, "Environment variable"),
-                (CredentialSource::StoredKey, "Stored key"),
+                (
+                    CredentialSource::Environment,
+                    format!(
+                        "Environment · {environment_status} · {}",
+                        state.environment.text().trim()
+                    ),
+                ),
+                (
+                    CredentialSource::StoredKey,
+                    "Paste API key (save locally)".into(),
+                ),
             ] {
                 let selected = source == state.credential_source;
                 let marker = if selected { "› " } else { "  " };
@@ -220,6 +234,13 @@ fn render_step(
                     Line::styled(format!("{marker}{label}"), style),
                 );
             }
+            line(
+                frame,
+                area,
+                &mut row,
+                "Presence only; credential not authenticated.",
+                MUTED,
+            );
             if !settings.can_store_key() {
                 line(frame, area, &mut row, settings.storage_problem(), WARNING);
             }
@@ -309,9 +330,9 @@ fn render_step(
                         MUTED,
                     );
                     let status = if state.environment_set() {
-                        "Variable is set."
+                        "Variable is set; credential not validated."
                     } else {
-                        "Variable is missing; save and exit is still available."
+                        "Variable not detected; set it in the launch shell."
                     };
                     line(
                         frame,
@@ -360,6 +381,24 @@ fn render_step(
                 "Setup makes no model request.",
                 MUTED,
             );
+            if mode == SetupMode::FirstRun && !state.credential_ready() {
+                let guidance = if settings.can_store_key() {
+                    "Choose Paste API key to repair this credential."
+                } else {
+                    "Storage unavailable; set the variable before launch."
+                };
+                line(
+                    frame,
+                    area,
+                    &mut row,
+                    guidance,
+                    if settings.can_store_key() {
+                        MUTED
+                    } else {
+                        WARNING
+                    },
+                );
+            }
             for (index, action) in state.review_choices(mode).iter().enumerate() {
                 let marker = if index == state.review_selection {
                     "› "

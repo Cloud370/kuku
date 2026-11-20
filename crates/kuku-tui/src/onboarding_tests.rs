@@ -2,7 +2,7 @@ use std::fs;
 
 use kuku_client::ConnectionOptions;
 
-use super::should_offer_setup;
+use crate::setup::should_offer_setup;
 
 #[test]
 fn live_service_with_custom_config_skips_missing_default_config() {
@@ -18,7 +18,7 @@ fn live_service_with_custom_config_skips_missing_default_config() {
     assert!(!candidate.exists());
     assert!(active_config.exists());
 
-    assert!(!should_offer_setup(Ok(true), true));
+    assert!(!should_offer_setup(Ok(true), false, false));
 }
 
 #[tokio::test]
@@ -37,14 +37,16 @@ async fn stale_discovery_without_a_live_service_still_allows_setup() {
 
     let live_service = service.status().await.unwrap().is_some();
     assert!(!live_service);
-    assert!(should_offer_setup(Ok(live_service), true));
+    assert!(should_offer_setup(Ok(live_service), false, false));
 }
 
 #[tokio::test]
 async fn existing_config_and_remote_or_token_options_skip_first_run_setup() {
     let directory = tempfile::tempdir().unwrap();
     let config = directory.path().join("existing.toml");
-    fs::write(&config, kuku::config::generate_default()).unwrap();
+    let contents = kuku::config::generate_default()
+        .replace("$ANTHROPIC_API_KEY", "fixture-only-not-a-real-key");
+    fs::write(&config, contents).unwrap();
     let options = ConnectionOptions {
         data_dir: Some(directory.path().join("data")),
         config: Some(config.clone()),
@@ -77,5 +79,14 @@ async fn existing_config_and_remote_or_token_options_skip_first_run_setup() {
 
 #[test]
 fn status_errors_do_not_offer_setup() {
-    assert!(!should_offer_setup(Err(()), true));
+    assert!(!should_offer_setup(Err(()), false, false));
+}
+
+#[test]
+fn first_run_gate_reopens_only_for_missing_config_or_default_credentials() {
+    assert!(should_offer_setup(Ok(false), false, false));
+    assert!(should_offer_setup(Ok(false), true, false));
+    assert!(!should_offer_setup(Ok(false), true, true));
+    assert!(!should_offer_setup(Ok(true), false, false));
+    assert!(!should_offer_setup(Err(()), false, false));
 }
