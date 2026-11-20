@@ -60,31 +60,52 @@ fn model_default_confirmation_shows_scope_and_actions_at_60x20_and_normal_size()
 
 #[test]
 fn model_default_confirmation_scrolls_long_paths_without_hiding_scope_or_actions() {
-    let directory = tempfile::tempdir().unwrap();
-    let mut config_path = directory.path().to_path_buf();
-    for index in 0..24 {
-        config_path.push(format!("config-segment-{index:02}"));
-    }
-    config_path.push("final-config.toml");
-    let header = format!(
-        "Connection/model: openai/gpt-4\nConfig: {}\nDefault tier: balanced",
-        config_path.display()
-    );
-    let mut app = model_default_confirmation(header);
-    let first_page = normalized_screen(&screen(&mut app, 60, 20));
-    assert!(compact_screen(&first_page).contains(&compact_screen(SAVE_SCOPE)));
-    assert!(first_page.contains("Save as default"));
-    assert!(first_page.contains("Cancel"));
+    let mut saw_wrapped_filename = false;
+    let mut saw_unwrapped_filename = false;
+    for temp_component_length in 0..=60 {
+        let mut config_path = format!(
+            "/var/folders/zz/zyxvpxvq6csfxvn_n00000000000000/T/{}",
+            "x".repeat(temp_component_length)
+        );
+        for index in 0..24 {
+            config_path.push_str(&format!("/config-segment-{index:02}"));
+        }
+        config_path.push_str("/final-config.toml");
+        let header = format!(
+            "Connection/model: openai/gpt-4\nConfig: {config_path}\nDefault tier: balanced"
+        );
+        let mut app = model_default_confirmation(header);
+        let first_page = normalized_screen(&screen(&mut app, 60, 20));
+        assert!(compact_screen(&first_page).contains(&compact_screen(SAVE_SCOPE)));
+        assert!(first_page.contains("Save as default"));
+        assert!(first_page.contains("Cancel"));
 
-    app.event(
-        Event::Key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE)),
-        &Buffer::empty(Rect::new(0, 0, 60, 20)),
+        app.event(
+            Event::Key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE)),
+            &Buffer::empty(Rect::new(0, 0, 60, 20)),
+        );
+        let last_page = normalized_screen(&screen(&mut app, 60, 20));
+        assert!(
+            compact_screen(&last_page).contains("final-config.toml"),
+            "prefix component length {temp_component_length}:\n{last_page}"
+        );
+        if last_page.contains("final-config.toml") {
+            saw_unwrapped_filename = true;
+        } else {
+            saw_wrapped_filename = true;
+        }
+        assert!(compact_screen(&last_page).contains(&compact_screen(SAVE_SCOPE)));
+        assert!(last_page.contains("Save as default"));
+        assert!(last_page.contains("Cancel"));
+    }
+    assert!(
+        saw_wrapped_filename,
+        "prefix sweep should wrap within the filename"
     );
-    let last_page = normalized_screen(&screen(&mut app, 60, 20));
-    assert!(last_page.contains("final-config.toml"));
-    assert!(compact_screen(&last_page).contains(&compact_screen(SAVE_SCOPE)));
-    assert!(last_page.contains("Save as default"));
-    assert!(last_page.contains("Cancel"));
+    assert!(
+        saw_unwrapped_filename,
+        "prefix sweep should include an unwrapped filename"
+    );
 }
 
 #[test]
