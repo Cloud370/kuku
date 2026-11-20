@@ -1,6 +1,7 @@
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
+from interactive_fixture import Terminal
 from interactive_rendering import (
     click_queued_input,
     has_selected_queued_input,
@@ -35,6 +36,28 @@ class MixedTableScrollTests(unittest.TestCase):
 
 
 class QueuedInputFocusTests(unittest.TestCase):
+    def test_terminal_tracks_resize_dimensions_in_screen_snapshots(self):
+        with (
+            patch("interactive_fixture.subprocess.Popen"),
+            patch("interactive_fixture.threading.Thread"),
+        ):
+            terminal = Terminal("bridge", "binary", "workspace", {})
+
+        self.assertEqual((32, 140), (terminal.rows, terminal.cols))
+        terminal.receive = Mock(side_effect=[
+            {"rows": 40, "cols": 120},
+            {"screen": "full screen frame"},
+        ])
+
+        terminal.request("resize", rows=40, cols=120)
+        snapshot = terminal.request("screen")
+
+        self.assertEqual(
+            {"screen": "full screen frame", "rows": 40, "cols": 120},
+            snapshot,
+        )
+        self.assertEqual(2, terminal.receive.call_count)
+
     def test_click_queued_input_returns_and_sends_target_coordinates(self):
         screen = "\n".join([
             "Pending inputs · ↑ select · Enter edit · Del withdraw",
