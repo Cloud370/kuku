@@ -159,7 +159,17 @@ impl Session {
             .map(|entry| entry.input.source.clone())
             .unwrap_or_else(|| InputSource::Host("local".into()));
         let (text, skip_user_message, resume_input_turn) = if reply.is_some() {
-            (input_text(&inputs), false, None)
+            let resume_input_turn = inputs
+                .last()
+                .and_then(|entry| entry.accepted_turn)
+                .or(turn);
+            let text = if let Some(source_turn) = resume_input_turn {
+                last_user_message_text(self.events_path(), address, source_turn)?
+                    .unwrap_or_else(|| input_text(&inputs))
+            } else {
+                input_text(&inputs)
+            };
+            (text, true, resume_input_turn)
         } else {
             let mut queued = Vec::new();
             for entry in &inputs {
