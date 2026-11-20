@@ -24,7 +24,7 @@ $KUKU_HOME/config.toml
 
 首次创建配置时，仍会初始化 `strong`、`balanced` 和 `light` 三个默认 tier。编辑已有配置只修改选中的默认 tier 和实际更改的连接字段；注释、自定义 endpoint、provider options、其他 provider 和 tier 都会保留。已有内联密钥不会显示，只在显式保存时迁移到私有存储。已位于当前服务凭据目录中的文件引用在输入留空时会保留；其他有效的私有文件引用只在显式保存时迁移到当前数据目录，原文件不会删除。格式错误的配置不会被覆盖。取消或返回不会保存配置或密钥文件。
 
-生成的配置以 `balanced` 为默认 tier，并将所选 provider 和模型用于 `strong`、`balanced`、`light` 三个 tier。编辑 `config.toml` 或运行 `kuku config set` 可以修改持久默认值和各个 tier。在 TUI 中，`/model` 只修改所选 Agent 当前 Session 的配置，不会改变已保存的配置默认值。
+生成的配置以 `balanced` 为默认 tier，并将所选 provider 和模型用于 `strong`、`balanced`、`light` 三个 tier。编辑 `config.toml` 或运行 `kuku config set` 可以修改持久默认值和各个 tier。在 TUI 中，普通的 `/model` 和 `/thinking` 选项只作用于所选 Agent 的 Session。若要持久保存已解析的连接和模型，请选择 **Set current model as default**，并确认配置路径和 tier。只有没有现有 tier 匹配时才会写入名为 `user-default` 的普通 tier；不会创建新的优先级，也不会改变当前 Session。保存的默认值适用于新建 Session 和没有单独选择模型的 Session；重新打开未显式指定模型的 Session 时可能会使用更新后的默认值。
 
 ## 设置模型连接
 

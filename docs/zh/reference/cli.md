@@ -62,7 +62,7 @@
 | 草稿为空时按 ↑，或点击 Pending inputs 中可见的可编辑排队行 | 在内联队列中选中该条输入。按 ↑/↓ 移动，Enter 编辑，Delete 撤回，Esc 返回输入框。 |
 | F2 或点击待决请求卡片 | 聚焦所选 Agent 的问题或权限请求。Enter 打开问题编辑器；权限请求必须先用 ←/→ 或点击明确选择 **Deny** 或 **Allow once**，再按 Enter。Esc 离开卡片，不回答也不打断执行。 |
 | `/pending` | 检查、重试或丢弃未确认的提交。 |
-| `/model`、`/thinking` | 为所选 Agent 选择模型或思考设置。 |
+| `/model`、`/thinking` | 为所选 Agent 的 Session 选择模型线路或思考设置。模型和思考选项仅作用于 Session；单独选择 **Set current model as default** 可将已解析的连接和模型保存到配置，且不改变当前 Session。 |
 | `/statusline` | 打开 **Status line settings**，预览、选择、排序并保存状态栏字段。 |
 | Ctrl+O | 一起展开或收起可见的对话预览，包括工具组和 Agent 卡片。 |
 | `/details` 或点击对话条目 | 打开工具组查看组内调用，打开单次调用可查看目标、参数以及已有输出或错误。在 **Transcript details** 中搜索可见条目，按 Enter 切换选中条目的展开状态。 |

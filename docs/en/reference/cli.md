@@ -62,7 +62,7 @@ Put options before the prompt in `kuku run`, because it consumes the remaining w
 | Empty draft + ↑, or click an editable Pending inputs row | Select that exact queued input inline. Up/Down changes selection; Enter edits it; Delete withdraws it; Esc returns to the composer. |
 | F2 or click a pending request card | Focus the selected Agent's question or permission request. Enter opens the question editor. For permission, choose **Deny** or **Allow once** with Left/Right or a click, then press Enter. Esc leaves the card without answering or interrupting. |
 | `/pending` | Check, retry or discard an unconfirmed submission. |
-| `/model`, `/thinking` | Select model or reasoning settings for the selected Agent. |
+| `/model`, `/thinking` | Choose a route or reasoning setting for the selected Agent's Session. Model and thinking choices are session-only; **Set current model as default** separately saves the resolved connection/model to config without changing the current Session. |
 | `/statusline` | Open **Status line settings** to preview, select, reorder and save footer fields. |
 | Ctrl+O | Expand or collapse visible transcript previews, including tool groups and Agent cards. |
 | `/details` or click a transcript item | Open a tool group to see its calls. Open an individual call for the target, arguments and available output or error. In **Transcript details**, search visible items and press Enter to toggle the selected item. |

@@ -175,7 +175,7 @@ fn welcome_actions(width: usize, rows: usize, workspace: &str) -> Vec<Line<'stat
     if width >= 70 && rows.saturating_sub(actions.len()) >= 2 {
         actions.push(Line::styled(shorten_middle(workspace, width), muted));
         actions.push(Line::styled(
-            "/model is session-only; config.toml sets defaults.",
+            "/model: Set current model as default to persist the route.",
             muted,
         ));
     }

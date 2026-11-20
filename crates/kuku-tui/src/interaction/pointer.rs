@@ -17,7 +17,8 @@ impl App {
                 if let Some(Modal::Picker(picker)) = &mut self.modal {
                     if let Some(choice) = picker.click(hit) {
                         let kind = picker.kind.clone();
-                        self.choose(kind, choice);
+                        let ticket = picker.ticket.id;
+                        self.choose(kind, choice, ticket);
                     }
                 }
             }
