@@ -248,7 +248,7 @@ impl App {
                     && matches!(item.command.action, Action::Configure { .. })
                     && !matches!(item.stage, PendingStage::Rejected(_))
             }) {
-                self.problem("Check the previous settings change in /pending");
+                self.problem("Wait for the previous settings change to be resolved");
                 return;
             }
             self.issue(

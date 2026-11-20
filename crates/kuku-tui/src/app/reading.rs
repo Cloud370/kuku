@@ -17,8 +17,10 @@ pub(crate) enum KeyboardFocus {
 impl App {
     pub(crate) fn composer_focused(&self) -> bool {
         let pane = self.pane();
-        pane.keyboard_focus == KeyboardFocus::Composer
-            || pane.keyboard_focus == KeyboardFocus::Transcript && !pane.transcript.is_reading()
+        !pane.contextual_focus.active
+            && (pane.keyboard_focus == KeyboardFocus::Composer
+                || pane.keyboard_focus == KeyboardFocus::Transcript
+                    && !pane.transcript.is_reading())
     }
 
     pub(crate) fn toggle_transcript_detail(&mut self, key: &crate::transcript::DetailKey) -> bool {

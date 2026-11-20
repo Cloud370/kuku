@@ -16,6 +16,7 @@ use crate::output::OutputViewer;
 use crate::text::{shorten, single_line, TAB};
 use crate::transcript::{ReplySource, ToolView};
 
+mod contextual;
 mod inline;
 mod input;
 mod pointer;
@@ -74,6 +75,14 @@ impl App {
             pane.focused_request = None;
         }
     }
+    fn save_question_draft(&mut self, target: &Target, request_id: &str, editor: Editor) {
+        let address = Address::new(target.session_id.clone(), target.agent.clone());
+        if let Some(pane) = self.panes.get_mut(&address) {
+            pane.question_drafts.insert(request_id.to_owned(), editor);
+            pane.keyboard_focus = crate::app::KeyboardFocus::Composer;
+            pane.focused_request = None;
+        }
+    }
     fn wheel(&mut self, mouse: MouseEvent, amount: isize) {
         self.text_selection.cancel_drag();
         match &mut self.modal {
@@ -108,6 +117,13 @@ impl App {
     }
 
     fn composer_key(&mut self, key: KeyEvent) {
+        if self.contextual_key(key) {
+            return;
+        }
+        if Shortcut::RECONNECT.matches(key) {
+            self.reconnect();
+            return;
+        }
         if self.inline_key(key) {
             return;
         }
@@ -157,7 +173,6 @@ impl App {
                     self.scroll(direction);
                 }
             }
-            key if Shortcut::RECONNECT.matches(key) => self.reconnect(),
             key if Shortcut::MODEL.matches(key) => self.perform(CommandMenu::Model),
             key if Shortcut::DETAILS.matches(key) => {
                 let expanded = self.pane_mut().transcript.toggle_details();
@@ -396,7 +411,7 @@ impl App {
                         PickerKind::Sessions | PickerKind::Paths(_) | PickerKind::Models
                     )
                 {
-                    picker.problem = Some("Service unavailable · /reconnect".into());
+                    picker.problem = Some("Service unavailable · Ctrl+R to reconnect".into());
                 }
                 return;
             }
@@ -509,6 +524,7 @@ impl App {
             ChoiceKind::PendingDiscard(id) => self.pending_discard(&id),
             ChoiceKind::PendingOpen { target, exists } => self.pending_open(target, exists),
             ChoiceKind::RestoreRejected(id) => self.restore_rejected(&id),
+            ChoiceKind::Reconnect => self.reconnect(),
             ChoiceKind::Detail(key) => {
                 if !self.toggle_transcript_detail(&key) {
                     self.problem("These details are no longer available");
@@ -527,16 +543,6 @@ impl App {
                 self.search(true);
             }
             CommandMenu::Agents => self.open_agents(),
-            CommandMenu::Back => self.back_to_agent(),
-            CommandMenu::Advance => {
-                if self.pane().exists {
-                    self.issue(self.active.clone(), Action::Advance);
-                }
-            }
-            CommandMenu::Interrupt => self.interrupt(),
-            CommandMenu::Pending => {
-                self.picker(PickerKind::Pending, self.pending_choices());
-            }
             CommandMenu::Model => {
                 self.clear_model_default_if_closed();
                 let save_default = self.model_default_choice();
@@ -558,8 +564,6 @@ impl App {
             CommandMenu::Details => self.open_details(),
             CommandMenu::Tools => self.open_tools(),
             CommandMenu::Server => self.open_server(),
-            CommandMenu::Reconnect => self.reconnect(),
-            CommandMenu::Restart => self.restart(),
             CommandMenu::Web if self.require_service() => {
                 self.effects.push(Job::Web(
                     self.pane().exists.then(|| self.selection().target),
@@ -586,13 +590,22 @@ impl App {
             self.problem("No request is waiting for this Agent");
             return;
         };
-        let kind = PromptKind::Question {
-            request_id: request.id.clone(),
-            target: self.selection().target,
-        };
+        let request_id = request.id.clone();
+        let target = self.selection().target;
         let title = format!("Answer {}", request.agent);
         let instructions = request.text.clone();
-        self.prompt(kind, title, instructions);
+        let editor = self
+            .pane_mut()
+            .question_drafts
+            .remove(&request_id)
+            .unwrap_or_default();
+        self.modal = Some(Modal::Prompt(Prompt {
+            kind: PromptKind::Question { request_id, target },
+            title,
+            instructions,
+            instructions_top: 0,
+            editor,
+        }));
     }
 
     fn open_thinking(&mut self) {
@@ -732,7 +745,7 @@ impl App {
         let mut actions = vec![Choice::new(
             "Reconnect",
             "Check the connection again",
-            ChoiceKind::Command(CommandMenu::Reconnect),
+            ChoiceKind::Reconnect,
         )];
         if !self.remote {
             actions.push(Choice::new(

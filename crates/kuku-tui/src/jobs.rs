@@ -419,7 +419,7 @@ async fn find(
     if matches!(query, Search::Server) {
         return Ok((Vec::new(), service_status(options, connection).await?));
     }
-    let connection = connection.ok_or_else(|| Error::Options("Connect with /reconnect".into()))?;
+    let connection = connection.ok_or_else(|| Error::Options("Reconnect with Ctrl+R".into()))?;
     let client = &connection.client;
     let workspace = &connection.workspace;
     let choices = match query {

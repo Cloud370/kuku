@@ -10,7 +10,7 @@ use crate::app::{App, Modal};
 use crate::editor::{Editor, EditorView};
 use crate::keys::Shortcut;
 use crate::markup::{render_literal, wrap};
-use crate::menu::{Choice, ChoiceKind, Picker, PickerKind, Prompt, PromptKind};
+use crate::menu::{Picker, PickerKind, Prompt, PromptKind};
 use crate::output::OutputViewer;
 use crate::text::{shorten, single_line};
 use crate::theme::{
@@ -20,6 +20,7 @@ use crate::theme::{
 };
 
 mod activity;
+mod contextual;
 mod delivery;
 mod header;
 mod model_default_confirmation;
@@ -47,6 +48,7 @@ pub(crate) fn render_at(
     activity_frame: ActivityFrame,
 ) -> bool {
     let outer = frame.area();
+    app.contextual_hits.clear();
     if outer.is_empty() {
         app.text_selection.clear();
         app.delivery_area = Rect::ZERO;
@@ -54,6 +56,7 @@ pub(crate) fn render_at(
         app.request_area = Rect::ZERO;
         app.request_hit = None;
         app.permission_choice_areas = [Rect::ZERO; 2];
+        app.contextual_hits.clear();
         app.reading_area = Rect::ZERO;
         app.composer_area = Rect::ZERO;
         return false;
@@ -66,7 +69,9 @@ pub(crate) fn render_at(
         area.height,
         activity_frame.agent_activity(app),
     );
-    let status_height = footer.len() as u16;
+    let focused_hint = contextual::focused_hint(app, width);
+    let service_row = contextual::service_row(&footer, app);
+    let status_height = focused_hint.as_ref().map_or(footer.len() as u16, |_| 2);
     let status_gap = u16::from(status_height > 0 && area.height >= FOOTER_SPACE_HEIGHT);
     let below_editor = status_height + status_gap;
     let chrome_rows = if area.height > 3 {
@@ -204,6 +209,25 @@ pub(crate) fn render_at(
     }
     frame.render_widget(Paragraph::new(request.lines), request_area);
     frame.render_widget(Paragraph::new(deliveries.lines), delivery_area);
+    if let (Some(range), Some(control)) = (
+        deliveries.recovery_range,
+        app.contextual_controls().into_iter().find(|control| {
+            matches!(
+                control,
+                crate::contextual::ContextControl::PendingRecovery { .. }
+            )
+        }),
+    ) {
+        app.contextual_hits.push(crate::contextual::ContextHit {
+            area: Rect::new(
+                delivery_area.x.saturating_add(range.start),
+                delivery_area.y,
+                range.end.saturating_sub(range.start),
+                1,
+            ),
+            control,
+        });
+    }
     app.request_area = request_area;
     let request_id = app.pane().snapshot.as_ref().and_then(|snapshot| {
         snapshot
@@ -253,14 +277,41 @@ pub(crate) fn render_at(
         } else {
             activity_frame.still()
         };
-        let line = activity::render_heading(app, usize::from(heading.width), state);
-        frame.render_widget(Paragraph::new(line), heading);
+        let run_control = app.contextual_controls().into_iter().find(|control| {
+            matches!(
+                control,
+                crate::contextual::ContextControl::Continue { .. }
+                    | crate::contextual::ContextControl::Interrupt { .. }
+            )
+        });
+        if let Some(control) = run_control.filter(|_| heading.width >= 48) {
+            let chip_width = u16::try_from(contextual::label(&control).width())
+                .unwrap_or(u16::MAX)
+                .min(heading.width);
+            let gap = u16::from(chip_width < heading.width);
+            let left = Rect {
+                width: heading.width.saturating_sub(chip_width + gap),
+                ..heading
+            };
+            let chip = Rect::new(
+                heading.x + left.width + gap,
+                heading.y,
+                chip_width,
+                heading.height,
+            );
+            let line = activity::render_heading(app, usize::from(left.width), state);
+            frame.render_widget(Paragraph::new(line), left);
+            contextual::render_chip(frame, app, &control, chip);
+        } else {
+            let line = activity::render_heading(app, usize::from(heading.width), state);
+            frame.render_widget(Paragraph::new(line), heading);
+        }
     }
     if let Some(draft) = draft {
         let placeholder = app.pane().draft.text().is_empty().then(|| {
             shorten(
                 &format!(
-                    "Enter steer · {} next Turn · Esc Esc Rewind · / actions · {} help",
+                    "Enter steer · {} next Turn · / actions · {} help · F2 controls · Esc Esc Rewind",
                     Shortcut::NEXT_TURN.label,
                     Shortcut::ACTIONS.label
                 ),
@@ -269,13 +320,33 @@ pub(crate) fn render_at(
         });
         render_editor_view(frame, inner, draft, focused, placeholder.as_deref());
     }
-    frame.render_widget(Paragraph::new(footer), status);
+    if let Some(lines) = focused_hint {
+        frame.render_widget(Paragraph::new(lines), status);
+    } else {
+        frame.render_widget(Paragraph::new(footer), status);
+        if let Some((row, used_width)) = service_row {
+            let start = used_width.saturating_add(2).min(status.width);
+            contextual::render_service(
+                frame,
+                app,
+                Rect::new(
+                    status.x.saturating_add(start),
+                    status
+                        .y
+                        .saturating_add(u16::try_from(row).unwrap_or(u16::MAX)),
+                    status.width.saturating_sub(start),
+                    1,
+                ),
+            );
+        }
+    }
     let main_areas = [
         transcript,
         banner_area,
         request_area,
         delivery_area,
         reading_area,
+        heading,
         inner,
         status,
     ];
@@ -454,10 +525,7 @@ fn banner(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
         if let Some(snapshot) = &pane.snapshot {
             if let Some(error) = &snapshot.agent.last_error {
                 let recovery = if snapshot.agent.status == AgentStatus::Interrupted {
-                    format!(
-                        "Interrupted · /continue after reviewing tool effects · {}",
-                        single_line(error)
-                    )
+                    format!("Interrupted · review tool effects · {}", single_line(error))
                 } else {
                     format!("Execution failed · {}", single_line(error))
                 };
@@ -524,7 +592,7 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Rect
             let lines = [
                 "Enter       Send or steer",
                 "Alt+Enter   Send on the next turn",
-                "Esc         Close or interrupt",
+                "Esc         Close/back; stop active work",
                 "↑ / ↓       Edit draft; select queued input",
                 "Delete      Withdraw selected queued input",
                 "F2          Focus a pending request",
@@ -589,7 +657,7 @@ fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (us
         && !picker.loading
         && picker.problem.is_none()
     {
-        return render_model_default_confirmation(frame, inner, picker);
+        return model_default_confirmation::render(frame, inner, picker);
     }
     let width = usize::from(inner.width);
     let search_rows = u16::from(picker.kind.searchable() && inner.height >= 3);
@@ -711,123 +779,6 @@ fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (us
     };
     frame.render_widget(Paragraph::new(footer_text), footer);
     (usize::from(field.width).max(1), count, header_rows)
-}
-
-fn render_model_default_confirmation(
-    frame: &mut Frame<'_>,
-    inner: Rect,
-    picker: &mut Picker,
-) -> (usize, usize, usize) {
-    let width = usize::from(inner.width);
-    let details = wrap(
-        render_literal(&picker.header, Style::default().fg(MUTED)),
-        width,
-    );
-    let scope = model_default_confirmation::wrap_scope(width);
-    let available_rows = usize::from(inner.height);
-    let terminal_area = frame.area();
-    let can_confirm = terminal_area.width >= MODEL_DEFAULT_CONFIRMATION_MIN_WIDTH
-        && terminal_area.height >= MODEL_DEFAULT_CONFIRMATION_MIN_HEIGHT
-        && width >= 32
-        && scope
-            .as_ref()
-            .is_some_and(|scope| available_rows >= scope.len().saturating_add(6));
-    let scope = scope.unwrap_or_default();
-    let save = Choice::new(
-        "Save as default",
-        "Write the confirmed config change",
-        ChoiceKind::ConfirmModelDefault,
-    );
-    let cancel = Choice::new(
-        "Cancel",
-        "No files are changed",
-        ChoiceKind::CancelModelDefault,
-    );
-    let has_only_cancel = picker.choice_count() == 1
-        && matches!(
-            picker.selected_choice(),
-            Some(ChoiceKind::CancelModelDefault)
-        );
-    if can_confirm && picker.choice_count() != 2 {
-        picker.set_local(vec![save, cancel]);
-        if has_only_cancel {
-            picker.selected = 1;
-        }
-    } else if !can_confirm && !has_only_cancel {
-        picker.set_local(vec![cancel]);
-        picker.selected = 0;
-    }
-
-    let scope_rows = if can_confirm { scope.len() } else { 0 };
-    let choice_rows = if can_confirm { 2 } else { 1 };
-    let info_rows = if can_confirm {
-        available_rows.saturating_sub(scope_rows + choice_rows + 1)
-    } else {
-        available_rows.saturating_sub(choice_rows + 1).min(2)
-    };
-    let gap_rows = available_rows.saturating_sub(info_rows + scope_rows + choice_rows + 1);
-    let [information, scope_area, _gap, choices_area, footer] = Layout::vertical([
-        Constraint::Length(info_rows as u16),
-        Constraint::Length(scope_rows as u16),
-        Constraint::Length(gap_rows as u16),
-        Constraint::Length(choice_rows as u16),
-        Constraint::Length(1),
-    ])
-    .areas(inner);
-
-    let display_details = if can_confirm {
-        details
-    } else {
-        wrap(
-            render_literal(
-                "Too small to review; resize to enable Save.",
-                Style::default().fg(ERROR),
-            ),
-            width,
-        )
-    };
-    let detail_rows = display_details.len().min(info_rows);
-    picker.header_top = picker
-        .header_top
-        .min(display_details.len().saturating_sub(detail_rows));
-    frame.render_widget(
-        Paragraph::new(
-            display_details
-                .into_iter()
-                .skip(picker.header_top)
-                .take(detail_rows)
-                .collect::<Vec<_>>(),
-        ),
-        information,
-    );
-    frame.render_widget(Paragraph::new(scope), scope_area);
-    let options = picker.visible_choices();
-    let mut rows = Vec::new();
-    for (index, choice) in options.iter().enumerate().take(2) {
-        let active = index == picker.selected;
-        let style = if active { focused_row() } else { panel() };
-        rows.push(picker_line(
-            &format!("{}{}", if active { "› " } else { "  " }, choice.label),
-            width,
-            active,
-            style,
-        ));
-    }
-    frame.render_widget(Paragraph::new(rows), choices_area);
-    picker.set_rows(choices_area, 0..options.len().min(2), 1);
-    let footer_text = if can_confirm {
-        "PgUp/PgDn details · ↑↓ select · Enter confirm · Esc cancel"
-    } else {
-        "Resize to review before saving · Esc cancel"
-    };
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            shorten(footer_text, width),
-            Style::default().fg(MUTED),
-        )),
-        footer,
-    );
-    (width.max(1), 2, info_rows)
 }
 
 fn picker_line(text: &str, width: usize, selected: bool, style: Style) -> Line<'static> {

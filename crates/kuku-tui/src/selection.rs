@@ -2,6 +2,7 @@ use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::buffer::{Buffer, CellWidth};
 use ratatui::layout::{Position, Rect};
 
+use crate::contextual::ContextControl;
 use crate::menu::PickerHit;
 use crate::theme;
 use crate::transcript::DetailKey;
@@ -13,6 +14,7 @@ pub(crate) enum ClickTarget {
     Link(String),
     Picker(PickerHit),
     QueueInput(String),
+    Contextual(ContextControl),
     Request {
         target: kuku_client::Target,
         request_id: String,

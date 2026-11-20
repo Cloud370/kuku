@@ -116,7 +116,11 @@ fn inline_queue_click_scroll_and_edit_keep_the_selected_identity() {
     assert_eq!("independent draft", app.pane().draft.text());
     key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
     assert_eq!(KeyboardFocus::Composer, app.pane().keyboard_focus);
-    assert!(app.effects.is_empty());
+    assert!(app.effects.iter().any(|job| matches!(job,
+        crate::jobs::Job::Save(command)
+            if matches!(command.action, Action::Cancel { execution_id: 49 })
+    )));
+    app.effects.clear();
     app.focus_queue_input(selected_id);
 
     key(&mut app, KeyCode::Up, KeyModifiers::NONE);
@@ -287,24 +291,71 @@ fn request_card_is_visible_without_focus_and_question_answer_is_scoped_and_stale
     click(&mut app, buffer, point);
     assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
         if matches!(&prompt.kind, PromptKind::Question { request_id, .. } if request_id == "q-1")));
+    if let Some(Modal::Prompt(prompt)) = &mut app.modal {
+        prompt.editor.set_text("answer draft".into());
+    }
     key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
     assert_eq!(KeyboardFocus::Composer, app.pane().keyboard_focus);
     assert_eq!("my independent draft", app.pane().draft.text());
     app.effects.clear();
-
+    key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
+    assert!(app.modal.is_none());
+    assert!(matches!(
+        app.pane().contextual_focus.cursor,
+        Some(crate::contextual::ContextControl::Restart { .. })
+    ));
     key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
     assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
-        if matches!(&prompt.kind, PromptKind::Question { request_id, .. } if request_id == "q-1")));
+        if matches!(&prompt.kind, PromptKind::Question { request_id, .. } if request_id == "q-1")
+            && prompt.editor.text() == "answer draft"));
+    key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
+    assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
+        if prompt.editor.text() == "answer draft"));
     if let Some(Modal::Prompt(prompt)) = &mut app.modal {
-        prompt.editor.set_text("workspace tests".into());
+        assert_eq!("answer draft", prompt.editor.text());
     }
-    let stale_state = snapshot(&app, "waiting", json!(null), json!(null));
+    let replacement_question = json!({
+        "id":"q-2", "agent":"main", "turn":2,
+        "tool_call_id":"tool-2", "text":"What should run instead?"
+    });
+    let stale_state = snapshot(&app, "waiting", replacement_question, json!(null));
     app.pane_mut().snapshot = Some(stale_state);
     key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     assert!(app.effects.is_empty());
     assert!(app.modal.is_none());
     assert_eq!("my independent draft", app.pane().draft.text());
     assert_eq!(KeyboardFocus::Composer, app.pane().keyboard_focus);
+}
+
+#[test]
+fn reconnect_shortcut_survives_permission_request_focus_without_answering_it() {
+    let mut app = app();
+    let permission = json!({
+        "id":"p-reconnect", "conversation":"main", "turn":1,
+        "tool_call_id":"tool-reconnect", "tool":"write_file", "risk":"high",
+        "summary":"Change app.rs", "candidate":"diff", "source":"tool"
+    });
+    let permission_state = snapshot(&app, "waiting", json!(null), permission);
+    load(&mut app, permission_state);
+    key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
+    assert_eq!(KeyboardFocus::Request, app.pane().keyboard_focus);
+    key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    assert!(matches!(
+        app.pane().contextual_focus.cursor,
+        Some(crate::contextual::ContextControl::Restart { .. })
+    ));
+    key(&mut app, KeyCode::BackTab, KeyModifiers::SHIFT);
+    assert_eq!(KeyboardFocus::Request, app.pane().keyboard_focus);
+    app.effects.clear();
+    key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
+    assert!(app
+        .effects
+        .iter()
+        .any(|effect| matches!(effect, crate::jobs::Job::Connect)));
+    assert!(!app.effects.iter().any(|effect| matches!(effect,
+        crate::jobs::Job::Save(command)
+            if matches!(command.action, Action::ReplyPermission { .. })
+    )));
 }
 
 #[test]
@@ -410,6 +461,14 @@ fn permission_card_requires_an_explicit_choice_and_stale_requests_do_not_reply()
     assert!(app.effects.is_empty());
 
     let mut deny = super::app();
+    let mut waiting = super::app();
+    let waiting_state = snapshot(&waiting, "waiting", json!(null), permission.clone());
+    load(&mut waiting, waiting_state);
+    waiting.effects.clear();
+    key(&mut waiting, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(waiting.effects.is_empty());
+    assert!(waiting.escape_armed_at.is_none());
+
     let deny_state = snapshot(&deny, "waiting", json!(null), permission.clone());
     load(&mut deny, deny_state);
     key(&mut deny, KeyCode::F(2), KeyModifiers::NONE);
@@ -519,6 +578,7 @@ fn help_overlay_is_inert_on_mouse_and_fits_narrow_terminals() {
     key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
     let regular = screen(&mut app, 90, 24);
     assert!(regular.contains("Keyboard shortcuts") && regular.contains("Alt+Enter"));
+    assert!(regular.contains("Close/back; stop active work"));
     assert!(!regular.contains("/queue"));
     let mut terminal = Terminal::new(TestBackend::new(90, 24)).unwrap();
     let buffer = terminal

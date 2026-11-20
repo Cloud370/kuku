@@ -10,7 +10,7 @@ use crate::app::{App, Modal};
 use crate::jobs::{Job, Search, Update};
 use crate::menu::{Choice, ChoiceKind, PickerKind, PromptKind};
 
-fn connected_app() -> App {
+pub(super) fn connected_app() -> App {
     let workspace = PathBuf::from("/workspace");
     let mut app = App::new(workspace.clone(), None);
     app.update(Update::Connected {

@@ -12,10 +12,6 @@ pub(crate) enum CommandMenu {
     New,
     Resume,
     Agents,
-    Back,
-    Advance,
-    Interrupt,
-    Pending,
     Model,
     Thinking,
     StatusLine,
@@ -25,8 +21,6 @@ pub(crate) enum CommandMenu {
     Details,
     Tools,
     Server,
-    Reconnect,
-    Restart,
     Web,
     Quit,
 }
@@ -36,10 +30,6 @@ impl CommandMenu {
         Self::New,
         Self::Resume,
         Self::Agents,
-        Self::Back,
-        Self::Advance,
-        Self::Interrupt,
-        Self::Pending,
         Self::Model,
         Self::Thinking,
         Self::StatusLine,
@@ -49,8 +39,6 @@ impl CommandMenu {
         Self::Details,
         Self::Tools,
         Self::Server,
-        Self::Reconnect,
-        Self::Restart,
         Self::Web,
         Self::Quit,
     ];
@@ -60,10 +48,6 @@ impl CommandMenu {
             Self::New => "new",
             Self::Resume => "resume",
             Self::Agents => "agents",
-            Self::Back => "back",
-            Self::Advance => "continue",
-            Self::Interrupt => "interrupt",
-            Self::Pending => "pending",
             Self::Model => "model",
             Self::Thinking => "thinking",
             Self::StatusLine => "statusline",
@@ -73,8 +57,6 @@ impl CommandMenu {
             Self::Details => "details",
             Self::Tools => "tools",
             Self::Server => "server",
-            Self::Reconnect => "reconnect",
-            Self::Restart => "restart",
             Self::Web => "web",
             Self::Quit => "quit",
         }
@@ -85,10 +67,6 @@ impl CommandMenu {
             Self::New => ("Open a fresh draft", None),
             Self::Resume => ("Find a conversation in this workspace", None),
             Self::Agents => ("Choose or create an Agent in this Session", None),
-            Self::Back => ("Return to the previous Agent in this Session", None),
-            Self::Advance => ("Continue queued work", None),
-            Self::Interrupt => ("Interrupt this execution", Some(Shortcut::ESCAPE)),
-            Self::Pending => ("Check, retry or discard unconfirmed commands", None),
             Self::Model => ("Choose a configured model route", Some(Shortcut::MODEL)),
             Self::Thinking => ("Choose the model's reasoning setting", None),
             Self::StatusLine => ("Choose and reorder status line fields", None),
@@ -106,11 +84,6 @@ impl CommandMenu {
             }
             Self::Tools => ("Browse tools and saved output", None),
             Self::Server => ("Inspect the connected service", None),
-            Self::Reconnect => (
-                "Reconnect and check unconfirmed commands",
-                Some(Shortcut::RECONNECT),
-            ),
-            Self::Restart => ("Restart the managed local service", None),
             Self::Web => ("Open this target in the browser", None),
             Self::Quit => ("Leave the terminal", None),
         };
@@ -137,6 +110,7 @@ pub(crate) enum ChoiceKind {
     CreateAgent,
     Tier(String),
     Connection(String),
+    Reconnect,
     SetCurrentModelAsDefault,
     ConfirmModelDefault,
     CancelModelDefault,
@@ -167,8 +141,6 @@ impl ChoiceKind {
             Self::Command(
                 CommandMenu::Resume
                     | CommandMenu::Agents
-                    | CommandMenu::Back
-                    | CommandMenu::Pending
                     | CommandMenu::Model
                     | CommandMenu::Thinking
                     | CommandMenu::StatusLine
@@ -486,35 +458,32 @@ pub(crate) struct Prompt {
 
 #[cfg(test)]
 mod tests {
-    use super::{Choice, ChoiceKind, CommandMenu, Picker, PickerKind};
+    use super::Choice;
 
     #[test]
-    fn slash_command_names_rank_before_description_matches() {
-        let mut picker = Picker::new(PickerKind::Commands, 0, Choice::commands());
-        for query in ["/pend", "/pending"] {
-            picker.query.set_text(query.into());
-            picker.selected = 0;
-            assert_eq!("/pending", picker.visible_choices()[0].label);
-            assert!(matches!(
-                picker.selected_choice(),
-                Some(ChoiceKind::Command(CommandMenu::Pending))
-            ));
-        }
-    }
-
-    #[test]
-    fn action_picker_omits_inline_queue_and_reply_controls_only() {
+    fn action_picker_omits_contextual_and_inline_controls() {
         let choices = Choice::commands();
         let labels = choices
             .iter()
             .map(|choice| choice.label.as_str())
             .collect::<Vec<_>>();
-        for omitted in ["/queue", "/queued", "/withdraw", "/reply"] {
+        for omitted in [
+            "/back",
+            "/continue",
+            "/interrupt",
+            "/pending",
+            "/reconnect",
+            "/restart",
+            "/queue",
+            "/queued",
+            "/withdraw",
+            "/reply",
+        ] {
             assert!(!labels.contains(&omitted));
         }
-        for retained in ["/new", "/resume", "/continue", "/pending", "/quit"] {
+        for retained in ["/new", "/resume", "/server", "/quit"] {
             assert!(labels.contains(&retained));
         }
-        assert_eq!(20, choices.len());
+        assert_eq!(14, choices.len());
     }
 }

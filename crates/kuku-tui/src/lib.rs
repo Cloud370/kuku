@@ -8,6 +8,7 @@ mod app;
 mod browser;
 mod config;
 mod config_file;
+mod contextual;
 mod editor;
 mod interaction;
 mod jobs;
