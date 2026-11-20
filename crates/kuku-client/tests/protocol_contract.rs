@@ -8,16 +8,88 @@ use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use kuku::event::EventPayload;
 use kuku_client::{
-    Acknowledgement, Action, AgentProgress, ApiError, Client, Command, HistoryKind, HistoryPage,
-    InputDelivery, InputStatus, JobStatus, Observation, PendingStore, RetryFailureKind, RetryPhase,
-    RetryStopReason, SubscriptionUpdate, Target, Timing,
+    Acknowledgement, Action, AgentProgress, ApiError, Client, Command, EventPage, HistoryKind,
+    HistoryPage, InputDelivery, InputStatus, JobStatus, Observation, PendingStore,
+    RetryFailureKind, RetryPhase, RetryStopReason, SubscriptionUpdate, Target, Timing,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 const PROTOCOL: &str =
     include_str!("../../kuku-server/tests/common/fixtures/interactive-protocol.json");
+
+#[tokio::test]
+async fn ledger_events_decode_known_and_unknown_payloads_from_the_server_envelope() {
+    #[derive(Deserialize)]
+    struct LedgerQuery {
+        workspace: PathBuf,
+        agent: String,
+        after: u64,
+        limit: usize,
+    }
+
+    async fn events(Path(session): Path<String>, Query(query): Query<LedgerQuery>) -> Json<Value> {
+        assert_eq!(target().session_id, session);
+        assert_eq!(target().workspace, query.workspace);
+        assert_eq!("main", query.agent);
+        assert_eq!(8, query.after);
+        assert_eq!(2, query.limit);
+        Json(json!({"events":[
+            {"id":9,"payload":EventPayload::MessageUser {
+                ts:"2026-11-20T00:00:00Z".into(),conversation:"main".into(),turn:7,
+                text:"retained input".into(),from:None,via_tool_call_id:None,
+            }},
+            {"id":10,"payload":EventPayload::Unknown(json!({
+                "id":10,"kind":"runtime.step_prepared","agent":"main","turn":7,
+                "request_id":"request-7","segment":6,"connection":"actual-provider",
+                "model":"actual-model",
+            }))}
+        ],"next_after":12}))
+    }
+
+    let (client, _server) = start(Router::new().route("/sessions/{id}/events", get(events))).await;
+    let target = target();
+    let page = client
+        .events(
+            &target.workspace,
+            &target.session_id,
+            Some(&target.agent),
+            8,
+            2,
+        )
+        .await
+        .unwrap();
+    assert_eq!(12, page.next_after);
+    assert_eq!(9, page.events[0].id);
+    assert!(
+        matches!(&page.events[0].payload, EventPayload::MessageUser {text, turn:7, ..}
+        if text == "retained input")
+    );
+    assert_eq!(10, page.events[1].id);
+    let EventPayload::Unknown(record) = &page.events[1].payload else {
+        panic!("runtime event stays unknown to the SDK codec");
+    };
+    assert_eq!("runtime.step_prepared", record["kind"]);
+    assert_eq!("request-7", record["request_id"]);
+    assert_eq!(6, record["segment"]);
+    assert_eq!(10, record["id"]);
+}
+
+#[test]
+fn ledger_events_reject_non_wire_shapes_and_conflicting_event_ids() {
+    for event in [
+        json!({"id":9,"kind":"runtime.step_prepared"}),
+        json!({"id":9,"payload":{"id":10,"kind":"runtime.step_prepared"}}),
+        json!({"id":9,"payload":"not an event"}),
+    ] {
+        assert!(serde_json::from_value::<EventPage>(json!({
+            "events":[event],"next_after":9
+        }))
+        .is_err());
+    }
+}
 
 #[tokio::test]
 async fn background_job_requests_use_the_selected_workspace_and_agent() {

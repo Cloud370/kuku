@@ -197,10 +197,10 @@ async fn remote_and_token_connections_read_the_failed_route_without_writing_loca
         .mock_async(|when, then| {
             when.method(GET).path("/sessions/session/events").query_param("after", "6");
             then.status(200).json_body(json!({"events":[
-            {"id":9,"kind":"runtime.step_prepared","agent":"main","turn":7,
-             "request_id":"req-1","connection":"older-failed-route","model":"older-model","segment":7},
-            {"id":10,"kind":"runtime.step_prepared","agent":"main","turn":7,
-             "request_id":"req-1","connection":"actual-failed-provider","model":"actual-model","segment":8}
+            {"id":9,"payload":{"id":9,"kind":"runtime.step_prepared","agent":"main","turn":7,
+             "request_id":"req-1","connection":"older-failed-route","model":"older-model","segment":7}},
+            {"id":10,"payload":{"id":10,"kind":"runtime.step_prepared","agent":"main","turn":7,
+             "request_id":"req-1","connection":"actual-failed-provider","model":"actual-model","segment":8}}
         ],"next_after":20}));
         })
         .await;
@@ -210,9 +210,9 @@ async fn remote_and_token_connections_read_the_failed_route_without_writing_loca
                 .path("/sessions/session/events")
                 .query_param("after", "7");
             then.status(200).json_body(json!({"events":[
-            {"id":8,"kind":"runtime.context_segment","agent":"main",
+            {"id":8,"payload":{"id":8,"kind":"runtime.context_segment","agent":"main",
              "connection":"actual-failed-provider","model":"actual-model",
-             "protocol":"anthropic","endpoint":"https://api.anthropic.com"}
+             "protocol":"anthropic","endpoint":"https://api.anthropic.com"}}
         ],"next_after":8}));
         })
         .await;

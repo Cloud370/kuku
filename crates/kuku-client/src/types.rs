@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
+use serde::{de, Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 use crate::{
@@ -518,9 +518,40 @@ pub struct RewindGroupPage {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct EventPage {
     /// Persisted SDK event records.
+    #[serde(deserialize_with = "deserialize_ledger_events")]
     pub events: Vec<StoredEvent>,
     /// Exclusive cursor for the next page, including scanned events excluded by filters.
     pub next_after: u64,
+}
+
+fn deserialize_ledger_events<'de, D>(deserializer: D) -> Result<Vec<StoredEvent>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    struct EventEnvelope {
+        id: u64,
+        payload: Value,
+    }
+
+    Vec::<EventEnvelope>::deserialize(deserializer)?
+        .into_iter()
+        .map(|event| {
+            let Value::Object(mut payload) = event.payload else {
+                return Err(de::Error::custom("ledger event payload must be an object"));
+            };
+            if payload
+                .get("id")
+                .is_some_and(|id| id.as_u64() != Some(event.id))
+            {
+                return Err(de::Error::custom(
+                    "ledger event identity differs from its envelope",
+                ));
+            }
+            payload.insert("id".into(), Value::from(event.id));
+            serde_json::from_value(Value::Object(payload)).map_err(de::Error::custom)
+        })
+        .collect()
 }
 
 /// The overall state visible in session listings.
