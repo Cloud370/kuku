@@ -113,7 +113,7 @@ reasoning_efforts = ["none"]
 }
 
 fn invoke(workspace: &Path, home: &Path, config: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_kuku-cli"))
+    let mut output = Command::new(env!("CARGO_BIN_EXE_kuku-cli"))
         .current_dir(workspace)
         .env("KUKU_HOME", home)
         .arg("run")
@@ -121,9 +121,49 @@ fn invoke(workspace: &Path, home: &Path, config: &Path, args: &[&str]) -> Output
         .arg(config)
         .args(args)
         .output()
-        .unwrap()
+        .unwrap();
+    if !output.status.success() {
+        output.stderr.extend_from_slice(
+            format!(
+                "\nCLI invocation: {args:?}\nFixture sessions: {:?}\n",
+                fixture_sessions(workspace, home)
+            )
+            .as_bytes(),
+        );
+    }
+    output
 }
 
+fn fixture_sessions(workspace: &Path, home: &Path) -> kuku::Result<Value> {
+    let sessions = kuku::session::list_sessions(home, Some(workspace))?;
+    let mut records = Vec::new();
+    for session in sessions.into_iter().take(4) {
+        let path = kuku::session::session_events_path(home, workspace, &session.session_id)?;
+        let events = kuku::event::EventStore::replay(&path)?;
+        let tail: Vec<_> = events
+            .iter()
+            .rev()
+            .take(8)
+            .map(|event| {
+                let operation = match &event.payload {
+                    kuku::event::EventPayload::Unknown(value) => {
+                        value["record"]["operation"].clone()
+                    }
+                    _ => Value::Null,
+                };
+                json!({"id":event.id,"kind":event.payload.kind_name(),"operation":operation})
+            })
+            .collect();
+        let agents: Vec<_> = Session::read_agents(&path)?
+            .into_iter()
+            .map(|agent| json!({"agent":agent.address,"status":agent.status}))
+            .collect();
+        records.push(json!({"session":session.session_id,"agents":agents,"latest_events":tail}));
+    }
+    Ok(json!(records))
+}
+
+#[track_caller]
 fn result(output: &Output) -> Value {
     assert!(
         output.status.success(),
