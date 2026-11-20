@@ -64,18 +64,20 @@ async fn missing_default_file_credential_reopens_with_current_route_and_preserve
     assert_eq!(original, fs::read_to_string(config).unwrap());
 }
 
-#[tokio::test]
-async fn first_run_uses_managed_data_dir_for_kuku_home_references() {
+async fn assert_first_run_uses_managed_data_dir(caller_home_name: Option<&str>) {
     let directory = tempfile::tempdir().unwrap();
     let config = directory.path().join("custom.toml");
     let missing_key = directory.path().join("missing.credential");
-    let data_dir = directory.path().join("service-data");
+    let caller_home = caller_home_name.map(|name| directory.path().join(name));
     let mut document: DocumentMut = INLINE_CONFIG.parse().unwrap();
     document["provider"]["anthropic"]["api_key"] = value(format!("file:{}", missing_key.display()));
     let original = format!("{document}\n[discovery]\nextra_user_paths = [\"$KUKU_HOME\"]\n");
     fs::write(&config, original).unwrap();
     let environment = |name: &str| match name {
-        "KUKU_HOME" => Err(std::env::VarError::NotPresent),
+        "KUKU_HOME" => match &caller_home {
+            Some(path) => Ok(path.to_string_lossy().into_owned()),
+            None => Err(std::env::VarError::NotPresent),
+        },
         _ => std::env::var(name),
     };
 
@@ -88,9 +90,15 @@ async fn first_run_uses_managed_data_dir_for_kuku_home_references() {
     .unwrap();
 
     assert_eq!(
-        vec![data_dir.clone()],
+        vec![settings.data_dir.clone()],
         settings.raw.discovery.as_ref().unwrap().extra_user_paths
     );
+    if let Some(caller_home) = &caller_home {
+        assert_ne!(
+            vec![caller_home.clone()],
+            settings.raw.discovery.as_ref().unwrap().extra_user_paths
+        );
+    }
     assert!(!settings.default_route_credential_available());
     let mut state = SetupState::new(&settings);
     state.credential_source = CredentialSource::StoredKey;
@@ -101,6 +109,16 @@ async fn first_run_uses_managed_data_dir_for_kuku_home_references() {
     assert!(fs::read_to_string(config)
         .unwrap()
         .contains("extra_user_paths = [\"$KUKU_HOME\"]"));
+}
+
+#[tokio::test]
+async fn first_run_uses_managed_data_dir_for_kuku_home_references() {
+    assert_first_run_uses_managed_data_dir(None).await;
+}
+
+#[tokio::test]
+async fn first_run_overrides_set_caller_kuku_home_with_managed_data_dir() {
+    assert_first_run_uses_managed_data_dir(Some("caller-home")).await;
 }
 
 #[tokio::test]
