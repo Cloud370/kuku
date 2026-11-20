@@ -70,10 +70,10 @@ impl App {
         }
         let can_continue = match snapshot.agent.status {
             AgentStatus::Interrupted => true,
-            AgentStatus::Stopped => {
+            AgentStatus::Idle | AgentStatus::Stopped => {
                 snapshot.agent.pending_inputs > 0 && !snapshot.pending.is_empty()
             }
-            AgentStatus::Idle | AgentStatus::Running | AgentStatus::Waiting => false,
+            AgentStatus::Running | AgentStatus::Waiting => false,
         };
         if snapshot.cleaning_up || !can_continue {
             return None;
