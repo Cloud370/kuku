@@ -1,21 +1,23 @@
 use std::collections::VecDeque;
 
 use kuku_client::{HistoryEntry, HistoryKind, HistoryPage, TurnSummary};
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 
 use crate::keys::Shortcut;
 use crate::markup::{render_literal, wrap_bounded, LinkDestination};
 use crate::text::{cap, shorten, single_line};
-use crate::theme::{ACCENT, ERROR, MIN_TRANSCRIPT_INDENT_WIDTH, MUTED, TRANSCRIPT_INDENT, WARNING};
+use crate::theme::{ACCENT, MIN_TRANSCRIPT_INDENT_WIDTH, MUTED, TRANSCRIPT_INDENT, WARNING};
 
 mod agent;
+mod body;
 mod details;
 mod message;
 mod notes;
 mod preview;
 mod reply;
+mod retry;
 mod rewind;
 mod row;
 use row::Row;
@@ -24,13 +26,14 @@ mod turn_summary;
 mod window;
 
 use self::agent::AgentCards;
+use self::body::Body;
 pub(crate) use self::details::DetailKey;
 use self::details::{DetailRecord, Details, VisibleDetail};
 use self::message::{paint_card, render_assistant_source, render_record, render_user};
 use self::reply::LatestReply;
 pub(crate) use self::reply::ReplySource;
 use self::tool::Tool;
-use self::window::{Layout, TurnHeading, Window};
+use self::window::{Layout, RenderCache, TurnHeading, Window};
 
 pub(crate) const HISTORY_PAGE: usize = 48;
 const MAX_RECORDS: usize = HISTORY_PAGE * 3;
@@ -163,12 +166,24 @@ impl Transcript {
 
     pub(crate) fn apply(&mut self, entry: HistoryEntry, execution: Option<u64>) {
         self.latest_reply.observe(&entry);
+        let entry_turn = entry.turn;
+        let error_position = (entry.kind == HistoryKind::Error).then_some((entry.id, entry_turn));
+        let interrupted_execution = retry::interruption_execution(&entry);
         let previous_preview = if entry.kind == HistoryKind::Assistant {
             execution.or(self.current_execution)
         } else {
-            interruption_execution(&entry)
+            interrupted_execution
         };
-        let record = Record::from_entry(entry);
+        let mut record = Record::from_entry(entry);
+        if let (Some(record), Some(execution)) = (&mut record, execution) {
+            record.execution_id.get_or_insert(execution);
+        }
+        self.recent
+            .preserve_interrupted_reply(&mut record, interrupted_execution, entry_turn);
+        if let (Some((event, turn)), Some(execution)) = (error_position, self.current_execution) {
+            self.recent
+                .position_preview_before(&Key::Preview(execution), event, turn);
+        }
         if let Some(execution) = previous_preview {
             let key = Key::Preview(execution);
             self.settle_reply_position(&key, record.as_ref());
@@ -291,6 +306,8 @@ impl Transcript {
                 | Body::Assistant(_)
                 | Body::Interrupted(_)
                 | Body::Notice(..)
+                | Body::ModelError { .. }
+                | Body::Retry { .. }
                 | Body::TurnSummary => None,
             })
             .collect()
@@ -646,33 +663,14 @@ struct Record {
     turn: Option<u64>,
     turn_number: Option<u64>,
     owner: Option<String>,
+    execution_id: Option<u64>,
     position: Option<u64>,
+    before_event: Option<u64>,
     body: Body,
+    suppress_interruption: bool,
     reasoning_preview: String,
     turn_summary: Option<TurnSummary>,
     rendered: RenderCache,
-}
-
-impl Clone for Record {
-    fn clone(&self) -> Self {
-        Self {
-            key: self.key.clone(),
-            turn: self.turn,
-            turn_number: self.turn_number,
-            owner: self.owner.clone(),
-            position: self.position,
-            body: self.body.clone(),
-            reasoning_preview: self.reasoning_preview.clone(),
-            turn_summary: self.turn_summary.clone(),
-            rendered: RenderCache::default(),
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-struct RenderCache {
-    preview: Option<(PreviewLayout, Vec<Row>)>,
-    source: Option<(usize, Vec<Row>)>,
 }
 
 impl Record {
@@ -686,6 +684,7 @@ impl Record {
                 .and_then(Value::as_str),
             MAX_BODY_BYTES,
         );
+        let execution_id = entry.details.get("execution_id").and_then(Value::as_u64);
         let body = match entry.kind {
             HistoryKind::User => Body::User {
                 sender: entry
@@ -719,7 +718,7 @@ impl Record {
                 };
                 Body::Notice("Decision", decision.to_owned(), ACCENT)
             }
-            HistoryKind::Status if interruption_execution(&entry).is_some() => {
+            HistoryKind::Status if retry::interruption_execution(&entry).is_some() => {
                 if entry.details.get("truncated").and_then(Value::as_bool) == Some(true)
                     && !text.ends_with(DISPLAY_LIMIT_NOTICE)
                 {
@@ -734,30 +733,8 @@ impl Record {
                     Body::Notice("Execution stopped", text, MUTED)
                 }
             }
-            HistoryKind::Error => {
-                let code = entry.details.get("code").and_then(Value::as_str);
-                let title = crate::retry_notice::model_error_title(code);
-                let hint = crate::retry_notice::model_error_hint(code);
-                let notice = if text.is_empty() {
-                    format!("Next step: {hint}")
-                } else {
-                    format!("{text}\n\nNext step: {hint}")
-                };
-                Body::Notice(title, notice, ERROR)
-            }
-            HistoryKind::Retry => {
-                let retry = entry
-                    .details
-                    .get("retry")
-                    .cloned()
-                    .and_then(|value| serde_json::from_value(value).ok())
-                    .unwrap_or_default();
-                Body::Notice(
-                    "Retry history",
-                    crate::retry_notice::history_text(&retry),
-                    WARNING,
-                )
-            }
+            HistoryKind::Error => retry::error_body(&entry, text),
+            HistoryKind::Retry => retry::retry_body(&entry),
             HistoryKind::TurnSummary if entry.turn_summary.is_some() => Body::TurnSummary,
             HistoryKind::TurnSummary => return None,
             HistoryKind::Other => return None,
@@ -767,8 +744,11 @@ impl Record {
             turn: entry.turn,
             turn_number: entry.details.get("turn_number").and_then(Value::as_u64),
             owner: (!entry.agent.is_empty()).then_some(entry.agent),
+            execution_id,
             position: Some(entry.id),
+            before_event: None,
             body,
+            suppress_interruption: false,
             reasoning_preview,
             turn_summary: entry.turn_summary,
             rendered: RenderCache::default(),
@@ -780,6 +760,7 @@ impl Record {
         if self.owner.is_none() {
             self.owner = record.owner;
         }
+        self.execution_id = self.execution_id.or(record.execution_id);
         if self.turn_summary.is_none() && record.turn_summary.is_some() {
             self.turn_summary = record.turn_summary;
             self.rendered = RenderCache::default();
@@ -802,8 +783,9 @@ impl Record {
     }
 
     fn visible(&self) -> bool {
-        matches!((&self.key,&self.body), (Key::Preview(_), Body::Assistant(text)) if text.is_empty())
-            || !matches!(&self.body, Body::Assistant(text) if text.trim().is_empty() && self.reasoning_preview.is_empty())
+        !self.suppress_interruption
+            && (matches!((&self.key,&self.body), (Key::Preview(_), Body::Assistant(text)) if text.is_empty())
+                || !matches!(&self.body, Body::Assistant(text) if text.trim().is_empty() && self.reasoning_preview.is_empty()))
     }
 
     fn tool(&self) -> Option<&Tool> {
@@ -813,11 +795,18 @@ impl Record {
             | Body::Assistant(_)
             | Body::Interrupted(_)
             | Body::Notice(..)
+            | Body::ModelError { .. }
+            | Body::Retry { .. }
             | Body::TurnSummary => None,
         }
     }
 
-    fn render(&mut self, layout: Layout<'_>) -> (&Key, &[Row], Option<DetailRecord<'_>>) {
+    fn render(
+        &mut self,
+        layout: Layout<'_>,
+        retry_heading: bool,
+        retry_end: bool,
+    ) -> (&Key, &[Row], Option<DetailRecord<'_>>) {
         let Layout {
             width,
             tools: details,
@@ -855,6 +844,8 @@ impl Record {
             | Body::Assistant(_)
             | Body::Interrupted(_)
             | Body::Notice(..)
+            | Body::ModelError { .. }
+            | Body::Retry { .. }
             | Body::TurnSummary => (None, ToolDetails::Expanded, None),
         };
         let cache_key = PreviewLayout {
@@ -862,6 +853,8 @@ impl Record {
             mode,
             in_timeline: details == ToolDetails::GroupMember,
             agent_revision: facts.map_or(0, |facts| facts.paint_revision),
+            retry_heading,
+            retry_end,
         };
         if self
             .rendered
@@ -905,6 +898,10 @@ impl Record {
                     width,
                     0,
                 ),
+                Body::ModelError { .. } | Body::Retry { .. } => {
+                    retry::render(&self.body, width, retry_heading, retry_end)
+                        .expect("retry history or error body")
+                }
                 Body::TurnSummary => Vec::new(),
                 Body::Tool(tool) => card.as_ref().map_or_else(
                     || tool.render(width, mode),
@@ -935,28 +932,8 @@ struct PreviewLayout {
     mode: ToolDetails,
     in_timeline: bool,
     agent_revision: u64,
-}
-
-#[derive(Debug, Clone)]
-enum Body {
-    User {
-        sender: Option<String>,
-        text: String,
-    },
-    Assistant(String),
-    Interrupted(String),
-    Notice(&'static str, String, Color),
-    TurnSummary,
-    Tool(Box<Tool>),
-}
-
-fn interruption_execution(entry: &HistoryEntry) -> Option<u64> {
-    if entry.kind == HistoryKind::Status
-        && entry.details.get("status").and_then(Value::as_str) == Some("interrupted")
-    {
-        return entry.details.get("execution_id")?.as_u64();
-    }
-    None
+    retry_heading: bool,
+    retry_end: bool,
 }
 
 fn body_inset(width: usize) -> u16 {
@@ -1011,5 +988,7 @@ fn append_bounded(out: &mut String, text: &str, limit: usize) -> bool {
     true
 }
 
+#[cfg(test)]
+mod retry_history_tests;
 #[cfg(test)]
 mod tests;
