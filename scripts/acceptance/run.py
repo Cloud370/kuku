@@ -544,7 +544,7 @@ def run_benchmark(args, directory, record, secrets):
 
 
 def selected_commands(group):
-    contract = ["cargo", "test", "--workspace", "--no-fail-fast", "--features", "kuku/test_support"]
+    contract = ["cargo", "test", "--workspace", "--no-fail-fast", "--timings", "--features", "kuku/test_support"]
     if group == "contract":
         return [contract]
     if group == "protocol":
@@ -695,7 +695,7 @@ def run_interactive(args, directory, record):
         return require_success(result)
 
     def build_bridge():
-        compiled = checked(["cargo", "test", "--locked", "--workspace", "--features", "kuku/test_support",
+        compiled = checked(["cargo", "test", "--locked", "--timings", "--workspace", "--features", "kuku/test_support",
                             "--test", "interactive_pty",
                             "--no-run", "--message-format=json"], "native-pty-build")
         artifact = pty_build(compiled["log"])
@@ -726,7 +726,7 @@ def run_interactive(args, directory, record):
             npm = "npm.cmd" if os.name == "nt" else "npm"
             checked([npm, "ci"], "web-dependencies", cwd=web)
             checked([npm, "run", "build"], "web-assets", cwd=web)
-            checked(["cargo", "install", "--locked", "--path", "apps/kuku", "--features",
+            checked(["cargo", "install", "--locked", "--timings", "--path", "apps/kuku", "--features",
                      "embedded-web-assets", "--root", str(prefix)], "source-install")
         record["binary"] = config_record(binary)
 

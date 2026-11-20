@@ -16,6 +16,8 @@ python3 scripts/acceptance/run.py integration
 
 契约测试采集保留原有 64 KiB 输出尾部和完整输出 hash。独立失败摘要在 16 KiB UTF-8 字节范围内保留失败测试名、panic 位置与少量上下文，以及 Cargo 失败 target。`failure_summary.truncated` 标记遗漏内容；失败仍由子进程退出状态判定。
 
+契约测试、release 安装和 PTY 构建通过 Cargo 原生 `--timings` 在 `target/cargo-timings/` 生成报告。CI 将其保存为 `build-timings-<os>` artifact，以便分别评估编译与测试执行时间。判断耗时变化是否来自源码前，先比较缓存状态、feature 与 profile。
+
 两个 workflow 都支持目标为 `main` 或 `feat/interactive-clients` 的 PR，以及 main 推送。WebUI 检查的路径范围限于 `apps/web/**` 和自身 workflow，Rust 改动不再触发重复的安装浏览器构建。PR 检查统一使用 GitHub 的 merge-ref。记录实际 commit/tree，只有 tree 相同才复用源分支证据。同一 PR 的旧运行会被取消。Python 工具检查失败不会阻止 Rust 契约与安装验收作业收集各自结果。失败后保留 Rust 依赖缓存；Cargo 仍校验构建指纹。PTY helper 共享契约测试的 workspace/`kuku/test_support` feature 解析，并记录编译身份。
 
 草稿 PR 通过不代表安装验收通过。合并前，将 PR 转为待评审或为目标版本手动触发完整 CI，并要求完整矩阵通过。完整验收保留带嵌入 Web 资源的真实 release 安装；选择 Windows 桌面检查时必须完成桌面准备。独立安装场景使用隔离服务，单个场景失败后继续其余场景，保留原始错误并让整体返回失败。现有每条命令的超时界限保持不变。

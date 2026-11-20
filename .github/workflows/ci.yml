@@ -142,3 +142,10 @@ jobs:
             benchmarks/acceptance/ci-interactive
             benchmarks/acceptance/windows-terminal-preflight.json
           if-no-files-found: ignore
+      - name: Upload Cargo build timings
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-timings-${{ matrix.os }}
+          path: target/cargo-timings/*.html
+          if-no-files-found: ignore
