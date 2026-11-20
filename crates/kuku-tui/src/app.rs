@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use kuku_client::{
     new_id, Action, AgentConfig, AgentStatus, Command, Error, HistoryKind, HistoryPage,
-    ModelSelection, OutputReference, Snapshot, Target, Timing, UsageTotals,
+    ModelSelection, OutputReference, Snapshot, Target, UsageTotals,
 };
 use ratatui::layout::Rect;
 
@@ -23,6 +23,7 @@ pub(crate) mod agents;
 mod background_jobs;
 mod delivery;
 mod navigation;
+mod notice;
 mod pending;
 mod reading;
 mod timing;
@@ -35,6 +36,7 @@ pub(crate) use background_jobs::JobCommand;
 use delivery::Deliveries;
 pub(crate) use delivery::DeliveryRow;
 use navigation::AgentNavigation;
+pub(crate) use notice::Notice;
 pub(crate) use pending::{PendingItem, PendingStage};
 pub(crate) use reading::KeyboardFocus;
 pub(crate) use timing::TurnTiming;
@@ -125,6 +127,7 @@ pub(crate) struct Pane {
     latest_reply_cursor: u64,
     retired_execution_floor: u64,
     execution: Option<u64>,
+    latest_execution_started: Option<u64>,
     refresh_due: Option<SnapshotRefresh>,
     refresh_in_flight: bool,
     cleanup_at: Option<Instant>,
@@ -230,14 +233,15 @@ impl Pane {
         ))
     }
 
-    fn set_snapshot(&mut self, snapshot: Box<Snapshot>) {
+    fn set_snapshot(&mut self, snapshot: Box<Snapshot>) -> Option<u64> {
         if self
             .snapshot
             .as_ref()
             .is_some_and(|current| current.cursor > snapshot.cursor)
         {
-            return;
+            return None;
         }
+        let mut execution_started = None;
         if snapshot.cursor >= self.last_event {
             let execution = snapshot.execution_id();
             if execution != self.execution {
@@ -246,6 +250,13 @@ impl Pane {
                     execution.map_or(snapshot.cursor, |execution| execution.saturating_sub(1)),
                 );
                 self.execution = execution;
+            }
+            if let Some(execution) = execution {
+                self.latest_execution_started = Some(
+                    self.latest_execution_started
+                        .map_or(execution, |latest| latest.max(execution)),
+                );
+                execution_started = Some(execution);
             }
         }
         if self
@@ -265,6 +276,7 @@ impl Pane {
             .then(|| Instant::now() + CLEANUP_REFRESH);
         self.deliveries.snapshot(&snapshot);
         self.snapshot = Some(snapshot);
+        execution_started
     }
 }
 
@@ -280,19 +292,6 @@ pub(crate) enum Modal {
     Prompt(Prompt),
     Output(Box<OutputViewer>),
     StatusLineEditor(StatusLineEditor),
-}
-
-#[derive(Debug)]
-pub(crate) struct Notice {
-    pub(crate) text: String,
-    pub(crate) error: bool,
-    expires_at: Option<Instant>,
-}
-
-impl Notice {
-    pub(crate) fn transient(&self) -> bool {
-        self.expires_at.is_some()
-    }
 }
 
 pub(crate) struct App {
@@ -435,30 +434,6 @@ impl App {
         self.next_modal
     }
 
-    pub(crate) fn message(&mut self, text: impl Into<String>) {
-        self.notice = Some(Notice {
-            text: text.into(),
-            error: false,
-            expires_at: None,
-        });
-    }
-
-    pub(crate) fn confirmation(&mut self, text: impl Into<String>) {
-        self.notice = Some(Notice {
-            text: text.into(),
-            error: false,
-            expires_at: Some(Instant::now() + Duration::from_secs(4)),
-        });
-    }
-
-    pub(crate) fn problem(&mut self, text: impl Into<String>) {
-        self.notice = Some(Notice {
-            text: text.into(),
-            error: true,
-            expires_at: None,
-        });
-    }
-
     pub(crate) fn require_service(&mut self) -> bool {
         if self.available() {
             true
@@ -474,79 +449,6 @@ impl App {
 
     pub(crate) fn new_draft(&mut self) {
         self.select(Address::main(new_id()), false, String::new());
-    }
-
-    pub(crate) fn send(&mut self, timing: Timing) {
-        let empty =
-            self.pane().draft.text().trim().is_empty() && self.pane().value_attachments.is_empty();
-        if empty || !self.require_service() {
-            return;
-        }
-        if self.pane().value_saving {
-            self.problem("Wait for the current save");
-            return;
-        }
-        if self.pane().sending {
-            self.problem("Wait for the current submission's receipt · /pending");
-            return;
-        }
-        let target = self.target(&self.active);
-        if self.pending.values().any(|item| {
-            item.command.target == target
-                && matches!(item.command.action, Action::Send { .. })
-                && !matches!(item.stage, PendingStage::Rejected(_))
-        }) {
-            self.problem("Check the previous send in /pending · draft kept");
-            return;
-        }
-        if self.pane().creation_rejected && !self.pane().exists {
-            self.renew_draft_identity();
-        }
-        let active = self.active.clone();
-        let pane = self.pane_mut();
-        let text = pane.draft.take_text();
-        let bootstrap_skill = text
-            .strip_prefix("/skill:")
-            .and_then(|skill| skill.split(char::is_whitespace).next())
-            .filter(|skill| !skill.is_empty())
-            .map(str::to_owned);
-        let create = (!pane.exists).then(|| Box::new(pane.initial_config.clone()));
-        let values = pane.take_values();
-        pane.sending = true;
-        self.issue(
-            active,
-            Action::Send {
-                text,
-                timing,
-                values,
-                create,
-                create_agent_if_missing: false,
-                config_patch: None,
-                prompts_dir: None,
-                bootstrap_skill,
-            },
-        );
-    }
-
-    pub(crate) fn issue(&mut self, address: Address, action: Action) {
-        if !self.require_service() {
-            return;
-        }
-        let command = Command {
-            target: self.target(&address),
-            command_id: new_id(),
-            action,
-        };
-        self.pending.insert(
-            command.command_id.clone(),
-            PendingItem {
-                command: command.clone(),
-                stage: PendingStage::Saving,
-                origin: Some(self.generation),
-            },
-        );
-        self.update_pending_delivery(&command.command_id);
-        self.effects.push(Job::Save(command));
     }
 
     pub(crate) fn refresh_rewind_history(&mut self) {
@@ -671,7 +573,7 @@ impl App {
     pub(crate) fn next_deadline(&self) -> Option<Instant> {
         self.notice
             .as_ref()
-            .and_then(|notice| notice.expires_at)
+            .and_then(Notice::deadline)
             .into_iter()
             .chain(self.pane().cleanup_at)
             .min()
@@ -681,7 +583,7 @@ impl App {
         let expired = self
             .notice
             .as_ref()
-            .and_then(|n| n.expires_at)
+            .and_then(Notice::deadline)
             .is_some_and(|at| at <= Instant::now());
         if expired {
             self.notice = None;
@@ -927,7 +829,7 @@ impl App {
     }
 
     fn loaded(&mut self, mut snapshot: Box<Snapshot>, page: HistoryPage) {
-        let active = &self.active;
+        let active = self.active.clone();
         if snapshot.session_id != active.session
             || snapshot.agent.address != active.agent
             || snapshot.workspace != self.workspace
@@ -968,7 +870,7 @@ impl App {
                 && snapshot.execution_id() == Some(reply.execution_id)
                 && snapshot.agent.turn == Some(reply.turn)
         });
-        pane.set_snapshot(snapshot);
+        let execution_started = pane.set_snapshot(snapshot);
         pane.progress = progress;
         pane.transcript.replace_recent(page);
         if let Some(reply) = reply {
@@ -979,6 +881,9 @@ impl App {
                 pane.history_in_flight = Some(request);
                 self.effects.push(Job::History(self.selection(), request));
             }
+        }
+        if let Some(execution_id) = execution_started {
+            self.clear_execution_notice_on_start(&active, execution_id);
         }
     }
 
@@ -1022,23 +927,30 @@ impl App {
     }
 
     fn refreshed(&mut self, result: Result<Box<Snapshot>, Error>) {
+        let active = self.active.clone();
         if matches!(self.pane().watch, Watch::Connected | Watch::Connecting) {
             if let Ok(snapshot) = &result {
-                self.related_agents.snapshot(snapshot, &self.active.agent);
+                self.related_agents.snapshot(snapshot, &active.agent);
             }
         }
         let pane = self.pane_mut();
         pane.refresh_in_flight = false;
         let refresh_due = pane.refresh_due.take();
-        match result {
+        let execution_started = match result {
             Ok(mut snapshot) => {
                 snapshot.reply_preview = None;
-                pane.set_snapshot(snapshot);
+                pane.set_snapshot(snapshot)
             }
-            Err(error) => self.problem(format!("Agent state · {error} · /reconnect")),
-        }
+            Err(error) => {
+                self.problem(format!("Agent state · {error} · /reconnect"));
+                None
+            }
+        };
         if let Some(refresh) = refresh_due {
             self.request_refresh(refresh);
+        }
+        if let Some(execution_id) = execution_started {
+            self.clear_execution_notice_on_start(&active, execution_id);
         }
     }
 }

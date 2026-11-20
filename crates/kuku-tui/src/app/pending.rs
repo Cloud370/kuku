@@ -1,10 +1,85 @@
-use kuku_client::{Acknowledgement, Action, Command, Error, InputStatus, Target};
+use kuku_client::{new_id, Acknowledgement, Action, Command, Error, InputStatus, Target, Timing};
 
 use crate::jobs::Job;
 
 use super::{Address, App, RewindDraft, SubmissionStatus};
 
 const MAX_CHECKING: usize = 4;
+
+impl App {
+    pub(crate) fn send(&mut self, timing: Timing) {
+        let empty =
+            self.pane().draft.text().trim().is_empty() && self.pane().value_attachments.is_empty();
+        if empty || !self.require_service() {
+            return;
+        }
+        if self.pane().value_saving {
+            self.problem("Wait for the current save");
+            return;
+        }
+        if self.pane().sending {
+            self.problem("Wait for the current submission's receipt · /pending");
+            return;
+        }
+        let target = self.target(&self.active);
+        if self.pending.values().any(|item| {
+            item.command.target == target
+                && matches!(item.command.action, Action::Send { .. })
+                && !matches!(item.stage, PendingStage::Rejected(_))
+        }) {
+            self.problem("Check the previous send in /pending · draft kept");
+            return;
+        }
+        if self.pane().creation_rejected && !self.pane().exists {
+            self.renew_draft_identity();
+        }
+        let active = self.active.clone();
+        let pane = self.pane_mut();
+        let text = pane.draft.take_text();
+        let bootstrap_skill = text
+            .strip_prefix("/skill:")
+            .and_then(|skill| skill.split(char::is_whitespace).next())
+            .filter(|skill| !skill.is_empty())
+            .map(str::to_owned);
+        let create = (!pane.exists).then(|| Box::new(pane.initial_config.clone()));
+        let values = pane.take_values();
+        pane.sending = true;
+        self.issue(
+            active,
+            Action::Send {
+                text,
+                timing,
+                values,
+                create,
+                create_agent_if_missing: false,
+                config_patch: None,
+                prompts_dir: None,
+                bootstrap_skill,
+            },
+        );
+    }
+
+    pub(crate) fn issue(&mut self, address: Address, action: Action) {
+        if !self.require_service() {
+            return;
+        }
+        let command = Command {
+            target: self.target(&address),
+            command_id: new_id(),
+            action,
+        };
+        self.pending.insert(
+            command.command_id.clone(),
+            PendingItem {
+                command: command.clone(),
+                stage: PendingStage::Saving,
+                origin: Some(self.generation),
+            },
+        );
+        self.update_pending_delivery(&command.command_id);
+        self.effects.push(Job::Save(command));
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct PendingItem {
@@ -18,7 +93,8 @@ mod tests {
     use std::path::PathBuf;
 
     use kuku_client::{
-        Acknowledgement, Action, AgentConfig, Error, HistoryPage, InputStatus, Receipt, Timing,
+        Acknowledgement, Action, AgentConfig, Command, Error, HistoryPage, InputStatus, Receipt,
+        Snapshot, Timing,
     };
     use serde_json::json;
 
@@ -34,6 +110,70 @@ mod tests {
         });
         app.effects.clear();
         app
+    }
+
+    fn execution_started(app: &mut App, execution_id: u64) {
+        app.update(Update::Observation(
+            app.selection(),
+            serde_json::from_value(json!({
+                "type":"committed","id":execution_id,"agent":"main",
+                "kind":"runtime.operation","operation":"execution_started",
+            }))
+            .unwrap(),
+        ));
+    }
+
+    fn saved_interrupt(app: &mut App) -> Command {
+        app.interrupt();
+        let Some(Job::Save(command)) = app.effects.pop() else {
+            panic!("interrupt must save the selected execution identity");
+        };
+        command
+    }
+
+    fn acknowledge_interrupt(app: &mut App, command: Command, event_id: u64) {
+        app.update(Update::Sent(
+            command.command_id.clone(),
+            Ok(Acknowledgement {
+                receipt: Receipt {
+                    command_id: command.command_id,
+                    event_id,
+                    agent: "main".into(),
+                },
+                replayed: false,
+                status: None,
+                warnings: vec![],
+            }),
+        ));
+    }
+
+    fn state_snapshot(
+        app: &App,
+        cursor: u64,
+        status: &str,
+        execution: Option<u64>,
+    ) -> Box<Snapshot> {
+        Box::new(
+            serde_json::from_value(json!({
+                "session_id":app.active.session,
+                "workspace":app.workspace,
+                "cursor":cursor,
+                "agents":[],
+                "pending":[],
+                "progress":null,
+                "agent":{
+                    "address":app.active.agent,
+                    "status":status,
+                    "turn":5,
+                    "pending_inputs":0,
+                    "execution_id":execution,
+                    "last_error":null,
+                    "config":{},
+                    "usage":{"model_requests":0,"unreported_requests":0},
+                }
+            }))
+            .unwrap(),
+        )
     }
 
     #[test]
@@ -80,6 +220,78 @@ mod tests {
             Err(Error::Io(std::io::Error::other("client connection closed"))),
         ));
         assert_eq!(Activity::Running, app.pane().activity());
+    }
+
+    #[test]
+    fn stopped_notice_clears_on_execution_start_not_submission_and_preserves_other_notices() {
+        let mut app = connected();
+        execution_started(&mut app, 5);
+        let cancel = saved_interrupt(&mut app);
+        assert!(matches!(&cancel.action, Action::Cancel { execution_id: 5 }));
+        acknowledge_interrupt(&mut app, cancel, 7);
+        assert_eq!(
+            Some("Execution stopped · draft kept"),
+            app.notice.as_ref().map(|notice| notice.text.as_str())
+        );
+
+        app.pane_mut().draft.insert("Next turn");
+        app.send(Timing::NextTurn);
+        assert_eq!(
+            Some("Execution stopped · draft kept"),
+            app.notice.as_ref().map(|notice| notice.text.as_str())
+        );
+
+        execution_started(&mut app, 12);
+        assert!(app.notice.is_none());
+
+        app.problem("Unrelated persistent problem");
+        execution_started(&mut app, 20);
+        assert_eq!(
+            Some("Unrelated persistent problem"),
+            app.notice.as_ref().map(|notice| notice.text.as_str())
+        );
+        assert!(app.notice.as_ref().is_some_and(|notice| notice.error));
+    }
+
+    #[test]
+    fn refreshed_active_execution_clears_the_stopped_notice() {
+        let mut app = connected();
+        execution_started(&mut app, 5);
+        let cancel = saved_interrupt(&mut app);
+        acknowledge_interrupt(&mut app, cancel, 7);
+        assert!(app.notice.is_some());
+
+        app.update(Update::Refreshed(
+            app.selection(),
+            Ok(state_snapshot(&app, 12, "running", Some(12))),
+        ));
+        assert!(app.notice.is_none());
+
+        app.update(Update::Refreshed(
+            app.selection(),
+            Ok(state_snapshot(&app, 14, "idle", None)),
+        ));
+        assert!(app.notice.is_none());
+    }
+
+    #[test]
+    fn late_cancel_receipt_after_newer_snapshots_cannot_restore_stopped_notice() {
+        let mut app = connected();
+        execution_started(&mut app, 5);
+        let cancel = saved_interrupt(&mut app);
+
+        app.update(Update::Refreshed(
+            app.selection(),
+            Ok(state_snapshot(&app, 12, "running", Some(12))),
+        ));
+        app.update(Update::Refreshed(
+            app.selection(),
+            Ok(state_snapshot(&app, 14, "idle", None)),
+        ));
+        acknowledge_interrupt(&mut app, cancel, 7);
+
+        assert!(app.notice.is_none());
+        assert_eq!(None, app.pane().execution());
     }
 
     #[test]
@@ -754,11 +966,12 @@ impl App {
                 if let Some(pane) = self.panes.get_mut(&address) {
                     pane.finish_interrupt(execution_id);
                     if active
+                        && pane.latest_execution_started == Some(execution_id)
                         && pane
                             .execution()
                             .is_none_or(|current| current == execution_id)
                     {
-                        self.message("Execution stopped · draft kept");
+                        self.stopped_execution_notice(address.clone(), execution_id);
                     }
                 }
             }
