@@ -498,11 +498,16 @@ async fn active_download_is_unreadable_and_cancelled_draft_stays_unavailable_aft
         .tools(&[("fetch", "fetch_url", json!({"url":url}))]);
     tokio::time::timeout(WAIT, async {
         loop {
+            // NOTE: Windows directory entries can retain stale lengths while the writer is open.
             let has_payload = fs::read_dir(outputs(&session))
                 .into_iter()
                 .flatten()
                 .filter_map(Result::ok)
-                .any(|entry| entry.metadata().is_ok_and(|metadata| metadata.len() > 4096));
+                .any(|entry| {
+                    fs::File::open(entry.path())
+                        .and_then(|file| file.metadata())
+                        .is_ok_and(|metadata| metadata.len() > 4096)
+                });
             if has_payload {
                 break;
             }
@@ -518,7 +523,7 @@ async fn active_download_is_unreadable_and_cancelled_draft_stays_unavailable_aft
         Session::open(options.clone()).await,
         Err(Error::SessionLocked { .. })
     ));
-    assert!(fs::metadata(&draft).unwrap().len() > 4096);
+    assert!(fs::File::open(&draft).unwrap().metadata().unwrap().len() > 4096);
 
     session.cancel("main").await.unwrap();
     let (status, _, facts) = tool_result(&session, "fetch");
