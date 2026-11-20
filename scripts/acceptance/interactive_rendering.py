@@ -84,10 +84,13 @@ def click_queued_input(terminal, screen, text):
     return row, column
 
 
-def queued_input_click_context(row, column):
+def queued_input_click_context(row, column, screen_snapshot):
     return (
         f"Queued input target row: {row}\n"
-        f"Mouse click coordinates (column, row; 1-based): ({column}, {row})"
+        f"Mouse click coordinates (column, row; 1-based): ({column}, {row})\n"
+        f"Terminal size: {screen_snapshot['rows']} rows × {screen_snapshot['cols']} columns\n"
+        "Full screen used to compute click coordinates:\n"
+        f"{screen_snapshot['screen']}"
     )
 
 
@@ -468,13 +471,16 @@ def check_agent_reading_position(client, terminal):
                 return True
         return False
 
-    def eventually_screen(description, predicate):
+    def eventually_screen(description, predicate, *, return_snapshot=False):
         last_screen = ""
 
         def find_screen():
             nonlocal last_screen
-            last_screen = terminal.request("screen")["screen"]
-            return last_screen if predicate(last_screen) else None
+            snapshot = terminal.request("screen")
+            last_screen = snapshot["screen"]
+            if not predicate(last_screen):
+                return None
+            return snapshot if return_snapshot else last_screen
 
         try:
             return eventually(description, find_screen)
@@ -499,12 +505,15 @@ def check_agent_reading_position(client, terminal):
         terminal.type(discarded)
         terminal.press("\x1b\r")
         terminal.expect(discarded, state="Queued · next Turn")
-        screen = terminal.request("screen")["screen"]
+        screen_snapshot = terminal.request("screen")
+        screen = screen_snapshot["screen"]
         if not queued_row_contains(screen, discarded):
-            screen = eventually_screen(
+            screen_snapshot = eventually_screen(
                 "discarded input to remain queued in its delivery row",
                 lambda frame: queued_row_contains(frame, discarded),
+                return_snapshot=True,
             )
+            screen = screen_snapshot["screen"]
         click_row, click_column = click_queued_input(terminal, screen, discarded)
         try:
             eventually_screen(
@@ -513,7 +522,7 @@ def check_agent_reading_position(client, terminal):
             )
         except AssertionError as error:
             raise AssertionError(
-                f"{error}\n{queued_input_click_context(click_row, click_column)}"
+                f"{error}\n{queued_input_click_context(click_row, click_column, screen_snapshot)}"
             ) from error
         terminal.press("\x1b[3~")
 
