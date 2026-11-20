@@ -10,7 +10,11 @@ import re
 import sys
 from urllib.parse import urlencode, urlsplit
 
-from interactive_rendering import check_agent_reading_position, rendering_cases
+from interactive_rendering import (
+    check_agent_reading_position,
+    page_up_after_rendered_resize,
+    rendering_cases,
+)
 from interactive_fixture import (
     DenseTranscript, InstalledClient, MarkdownDocument, TOOL_BRIEF, TOOL_OUTPUT, eventually, http_fixture, install,
     delegate_reviewer, json_response, local_request,
@@ -722,8 +726,19 @@ def dense_transcript(client, reference=False):
         assert last >= headings[-1], screen
         return {"summary_rows": len(headings), "tool_rows": last - headings[0] + 1}
 
-    def inspect_tools(terminal, before_page_up):
-        terminal.press("\x1b[5~")
+    def inspect_tools(terminal, before_resize):
+        try:
+            before_page_up = page_up_after_rendered_resize(
+                terminal,
+                read_while,
+                32,
+                (scenario.activity_composition, scenario.draft),
+            )
+        except AssertionError as error:
+            raise AssertionError(
+                f"{error}\n36-row running-tools screen before resize to 32:\n{before_resize}"
+            ) from error
+        screens.append(("32-row running-tools screen before PageUp", before_page_up))
         try:
             collapsed = read_while(terminal, lambda value: running_view(value, 32)
                                    and scenario.activity_group in value and "Reading history" in value,
@@ -781,20 +796,7 @@ def dense_transcript(client, reference=False):
             if not reference:
                 assert all(text in wide for text in (scenario.activity_group, scenario.activity_composition, *scenario.file_cards)), wide
                 terminal.request("resize", rows=32, cols=140)
-                try:
-                    before_page_up = read_while(
-                        terminal,
-                        lambda value: running_view(value, 32)
-                        and scenario.missing in value
-                        and scenario.draft in value,
-                        "the 32-row running-tools screen before PageUp",
-                    )
-                except AssertionError as error:
-                    raise AssertionError(
-                        f"{error}\n36-row running-tools screen before resize to 32:\n{wide}"
-                    ) from error
-                screens.append(("32-row running-tools screen before PageUp", before_page_up))
-                inspect_tools(terminal, before_page_up)
+                inspect_tools(terminal, wide)
             terminal.request("resize", rows=26, cols=74)
             narrow = read_while(terminal, lambda value: running_view(value, 26) and scenario.missing in value
                                 and scenario.draft in value,

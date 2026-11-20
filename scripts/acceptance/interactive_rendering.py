@@ -10,6 +10,29 @@ from urllib.parse import urlencode
 
 from interactive_fixture import InstalledClient, Response, StreamPause, eventually
 
+RUNNING_STATUS_ROWS_FROM_BOTTOM = 6
+
+
+def rendered_running_transcript(screen, height, markers):
+    rows = screen.splitlines()
+    status_row = height - RUNNING_STATUS_ROWS_FROM_BOTTOM
+    return (
+        len(rows) == height
+        and status_row >= 0
+        and "To main · Running tools" in rows[status_row]
+        and all(marker in screen for marker in markers)
+    )
+
+
+def page_up_after_rendered_resize(terminal, read_while, height, markers):
+    screen = read_while(
+        terminal,
+        lambda value: rendered_running_transcript(value, height, markers),
+        f"the rendered {height}-row running transcript before PageUp",
+    )
+    terminal.press("\x1b[5~")
+    return screen
+
 
 def has_standalone_assistant_rail(frame):
     assistant_row = next(
