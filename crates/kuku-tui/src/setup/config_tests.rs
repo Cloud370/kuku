@@ -906,6 +906,10 @@ async fn staged_key_is_removed_when_publication_sync_fails() {
         |path, directory_created| {
             assert_eq!(path.parent(), Some(settings.credentials_dir.as_path()));
             assert!(path.is_file());
+            assert!(
+                kuku::util::is_valid_private_key(path),
+                "staged credentials must be private before publication sync"
+            );
             assert!(directory_created);
             Err(io::Error::other("fixture sync failure"))
         },
@@ -916,6 +920,7 @@ async fn staged_key_is_removed_when_publication_sync_fails() {
     assert!(error
         .to_string()
         .contains("cannot sync private credential storage"));
+    assert!(!error.to_string().contains("fixture-only-not-a-real-key"));
     assert_eq!(0, fs::read_dir(&settings.credentials_dir).unwrap().count());
 }
 

@@ -702,6 +702,9 @@ fn stage_key_with_sync(
         .suffix(".credential")
         .tempfile_in(&settings.credentials_dir)
         .map_err(|_| invalid_config("cannot create a private credential file"))?;
+    #[cfg(windows)]
+    kuku::util::set_config_temp_security(None, file.path(), file.as_file())
+        .map_err(|_| invalid_config("cannot secure the private credential file"))?;
     file.write_all(key.as_bytes())
         .and_then(|()| file.as_file().sync_all())
         .map_err(|_| invalid_config("cannot save the private credential file"))?;
