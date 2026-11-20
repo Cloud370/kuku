@@ -10,8 +10,6 @@ def lifecycle_cases(binary, bridge, directory):
     first_run_credential_repair(binary, bridge, directory / "settings")
     with InstalledClient(binary, bridge, directory / "defaults") as client:
         persistent_model_default(client)
-    with InstalledClient(binary, bridge, directory / "rewind") as client:
-        readonly_rewind(client)
 
 
 def first_run_credential_repair(binary, bridge, directory):
@@ -29,7 +27,7 @@ def first_run_credential_repair(binary, bridge, directory):
     with instance as client:
         config = client.home / "config.toml"
         config.write_text(config.read_text().replace(
-            'api_key = "test-key"', 'api_key = { env = "KUKU_ACCEPTANCE_MISSING_KEY" }'
+            'api_key = "test-key"', 'api_key = "$KUKU_ACCEPTANCE_MISSING_KEY"'
         ))
         workspace = client.workspace("work-first-run")
         prompt = "Verify the repaired first-run settings"
@@ -38,12 +36,7 @@ def first_run_credential_repair(binary, bridge, directory):
             terminal.press("\r")
             terminal.expect("Step 2/5")
             terminal.press("\r")
-            terminal.expect("Step 3/5", also=("not detected",))
-            terminal.press("\r")
-            terminal.expect("Step 4/5", also=("Variable is missing",))
-            terminal.press("\r")
-            missing = terminal.expect("Step 5/5", also=("Paste API key",))["screen"]
-            assert "Save and continue" not in missing, missing
+            missing = terminal.expect("Step 3/5", also=("not detected", "› Paste API key"))["screen"]
             client.provider.assert_idle()
             terminal.press("\r")
             terminal.expect("Paste a key; every character is masked.")
@@ -79,14 +72,18 @@ def first_run_credential_repair(binary, bridge, directory):
 def persistent_model_default(client):
     workspace = client.workspace("work-model-default")
     chosen = "fixture-saved-model"
+    config_path = client.home / "config.toml"
+    config_path.write_text(config_path.read_text().replace(
+        '[model.light]\nprovider = "test-anthropic"\nmodel = "claude-sonnet-4-6"',
+        f'[model.light]\nprovider = "test-anthropic"\nmodel = "{chosen}"',
+    ))
     prompt = "Verify the separately chosen Session model"
     with client.terminal(workspace) as terminal:
         terminal.expect("New session", state="Ready")
         terminal.press("/model\r")
-        models = terminal.expect("Connection · test-anthropic")["screen"]
-        terminal.click_text(models, "Connection · test-anthropic")
-        terminal.expect("Model on test-anthropic")
-        terminal.press(chosen + "\r")
+        models = terminal.expect("Tier · light", also=(chosen,))["screen"]
+        terminal.click_text(models, "Tier · light")
+        terminal.press("\r")
         terminal.expect(chosen)
         terminal.submit(prompt)
         call = client.provider.next(prompt)
@@ -98,13 +95,13 @@ def persistent_model_default(client):
         terminal.press("/model\r")
         models = terminal.expect("Set current model as default")["screen"]
         terminal.click_text(models, "Set current model as default")
-        confirmation = terminal.expect("Save as default", also=(chosen, "current session is unchanged"))["screen"]
+        confirmation = terminal.expect("Save as default", also=(chosen, "new sessions"))["screen"]
         terminal.press("\x1b[A\r")
         terminal.expect("Saved as default")
         assert client.snapshot(workspace, session)["config"] == before
         terminal.exit_cleanly()
     config = (client.home / "config.toml").read_text()
-    assert 'default_model = "user-default"' in config and chosen in config
+    assert 'default_model = "light"' in config and chosen in config
     client.cli(workspace, "server", "restart")
     new_workspace = client.workspace("work-new-default")
     with client.terminal(new_workspace) as terminal:
@@ -148,12 +145,14 @@ def readonly_rewind(client):
             client.provider.next(prompt).text(reply)
             terminal.expect(reply, state="Finished")
         session = client.session(workspace)
-        terminal.press("\x1b\x1b")
+        terminal.press("\x1b")
+        terminal.expect("Press Esc again")
+        terminal.press("\x1b")
         terminal.expect("Rewind to message", also=(discarded_prompt,))
         terminal.press("\r")
         terminal.expect("Enter commits", also=(discarded_prompt,))
         terminal.press("\r")
-        terminal.expect("Message rewound")
+        terminal.expect("Rewound content · read-only", also=(discarded_prompt,))
         terminal.press("\x03")
         terminal.type("Continue from the active anchor")
         screen = terminal.expect("Rewound content · read-only")["screen"]

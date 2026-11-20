@@ -209,8 +209,10 @@ def operate_on_message(terminal, screen, role, marker, action):
         and (not marker or marker in line or index + 1 < len(choices) and marker in choices[index + 1])
     ]
     assert len(rows) == 1, picker
-    row = rows[0][1]
-    terminal.click_text(picker, row.strip().removeprefix("› "))
+    index, _ = rows[0]
+    column = terminal.cols // 2 + 1
+    row_number = header + index + 2
+    terminal.press(f"\x1b[<0;{column};{row_number}M\x1b[<0;{column};{row_number}m")
     actions = terminal.expect(f"Selected · {role}")["screen"]
     if marker:
         assert marker in actions, actions
