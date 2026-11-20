@@ -402,8 +402,17 @@ impl Session {
         self.inner.state.lock().unwrap().snapshot(address)
     }
 
-    /// Wait for an agent's latest worker and surface its execution or cleanup error.
-    /// Return the current snapshot immediately when the agent has no worker outcome.
+    /// Wait for the active worker, or the latest retained worker when no epoch is active.
+    ///
+    /// A worker's execution or cleanup error is returned even after its state has settled. Its
+    /// latest outcome remains available after worker pruning. If there is no active epoch, no
+    /// retained worker, and no recorded outcome, the current snapshot is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the agent does not exist, an active worker is missing or ends without
+    /// publishing a result, a worker reports an execution or cleanup failure, or a worker does
+    /// not finish within 30 seconds.
     pub async fn wait_for_agent(&self, address: &str) -> Result<AgentSnapshot> {
         let (snapshot, active_epoch, worker) = {
             let state = self.inner.state.lock().unwrap();

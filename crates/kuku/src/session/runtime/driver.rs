@@ -786,6 +786,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn wait_for_agent_uses_newer_success_instead_of_stale_worker_failure() {
+        let (_directory, session, epoch) = running_session().await;
+        {
+            let mut state = session.inner.state.lock().unwrap();
+            session
+                .commit(
+                    &mut state,
+                    Record::TurnSettled {
+                        address: "main".into(),
+                        status: AgentStatus::Idle,
+                        output: None,
+                        error: None,
+                        turn: None,
+                        usage: Default::default(),
+                    },
+                )
+                .unwrap();
+            state.agent_mut("main").unwrap().active_epoch = None;
+        }
+        session.record_worker_outcome("main", epoch - 1, Err("stale worker failure".into()));
+        let (cancel, _) = watch::channel(false);
+        let (complete, done) = watch::channel(Some(Ok(())));
+        drop(complete);
+        let join = tokio::spawn(async { Ok::<(), Error>(()) });
+        session.inner.workers.lock().unwrap().insert(
+            epoch,
+            Worker {
+                address: "main".into(),
+                cancel,
+                done,
+                join,
+            },
+        );
+
+        let snapshot = session.wait_for_agent("main").await.unwrap();
+        assert_eq!(AgentStatus::Idle, snapshot.status);
+
+        session.record_worker_outcome("main", epoch, Ok(()));
+        session.record_worker_outcome("main", epoch - 1, Err("late stale failure".into()));
+        let worker = session
+            .inner
+            .workers
+            .lock()
+            .unwrap()
+            .remove(&epoch)
+            .unwrap();
+        let _ = worker.join.await;
+
+        let snapshot = session.wait_for_agent("main").await.unwrap();
+        assert_eq!(AgentStatus::Idle, snapshot.status);
+        session.close().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn poisoned_writer_failure_reaches_waiter_through_production_worker() {
         let directory = tempfile::tempdir().unwrap();
         let started = Arc::new(Notify::new());
