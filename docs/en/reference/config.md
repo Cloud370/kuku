@@ -48,7 +48,7 @@ Required and optional fields:
 | `max_output_tokens` | integer | Max output tokens |
 | `purpose` | string | Human-readable tier summary |
 
-Default tiers are `strong`, `balanced`, and `light`.
+Default tiers are `strong`, `balanced`, and `light`. The TUI's explicit **Set current model as default** action reuses a matching tier or creates/overwrites one ordinary `user-default` tier when none matches. `user-default` has no special resolver priority; `default_model` selects it like any other tier.
 
 ## `provider.<name>`
 

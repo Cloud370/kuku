@@ -48,7 +48,7 @@ HTTP 服务默认读取所选数据目录下的 `config.toml`，也可通过 `--
 | `max_output_tokens` | integer | 最大输出 token 数 |
 | `purpose` | string | 面向人的 tier 摘要 |
 
-默认 tier 为 `strong`、`balanced` 和 `light`。
+默认 tier 为 `strong`、`balanced` 和 `light`。TUI 中显式的 **Set current model as default** 操作会复用匹配的 tier；没有匹配项时才创建或覆盖一个普通的 `user-default` tier。`user-default` 没有特殊解析优先级，和其他 tier 一样由 `default_model` 选择。
 
 ## `provider.<name>`
 
