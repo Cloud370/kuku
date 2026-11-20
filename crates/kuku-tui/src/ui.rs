@@ -658,7 +658,7 @@ fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (us
         && !picker.loading
         && picker.problem.is_none()
     {
-        return model_default_confirmation::render(frame, inner, picker);
+        return model_default_confirmation::render_model_default_confirmation(frame, inner, picker);
     }
     let width = usize::from(inner.width);
     let search_rows = u16::from(picker.kind.searchable() && inner.height >= 3);
