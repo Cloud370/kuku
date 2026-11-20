@@ -103,7 +103,7 @@ pub(crate) fn render_at(
     } else {
         content_width.saturating_sub(7)
     };
-    let reading = reading_line(app, hint_limit);
+    let reading = contextual::reading_line(app, hint_limit);
     let hint_width = reading.as_ref().map_or(0, Line::width);
     let stats_width = content_width.saturating_sub(hint_width + usize::from(hint_width > 0));
     let dock = reading
@@ -369,38 +369,6 @@ pub(crate) fn render_at(
         modal_area.is_none().then_some((transcript, row_insets)),
     );
     activity_visible
-}
-
-fn reading_line(app: &App, width: usize) -> Option<Line<'static>> {
-    let unseen = app.pane().transcript.history_hint()?;
-    let back = Shortcut::READING_BACK.label;
-    let focus = if app.composer_focused() {
-        "Editing"
-    } else {
-        "↑↓ scroll"
-    };
-    let content = if unseen { " · New content" } else { "" };
-    let normal = format!("Reading history · {focus} · Jump to latest ({back}){content}");
-    let compact = if unseen {
-        format!("New · {back}")
-    } else {
-        format!("History · {back}")
-    };
-    let text = if normal.width() <= width {
-        normal
-    } else if compact.width() <= width {
-        compact
-    } else {
-        back.to_owned()
-    };
-    let mut line = Line::styled(shorten(&text, width), Style::new().fg(MUTED));
-    if let Some(rest) = text.strip_prefix("Reading history") {
-        line = Line::from(vec![
-            Span::styled("Reading history", emphasis(ACCENT)),
-            Span::styled(rest.to_owned(), Style::new().fg(MUTED)),
-        ]);
-    }
-    Some(line)
 }
 
 fn render_transcript(
