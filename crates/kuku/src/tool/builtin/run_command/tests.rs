@@ -770,59 +770,90 @@ fn process_is_running(pid: u32) -> bool {
 }
 
 #[cfg(target_os = "linux")]
+fn process_tree_args(command: &str, timeout: u32, native: bool) -> serde_json::Value {
+    if native {
+        serde_json::json!({"program":"/bin/sh","args":["-c",command],"cwd":".","timeout":timeout})
+    } else {
+        serde_json::json!({"shell":shell_name(),"command":command,"cwd":".","timeout":timeout})
+    }
+}
+
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn cancelling_a_command_stops_its_descendant_process() {
-    let dir = workspace();
-    let marker = dir.path().join("child.pid");
-    let cancel = Arc::new(Notify::new());
-    let worker_cancel = cancel.clone();
-    let worker_dir = dir.path().to_path_buf();
-    let worker = tokio::spawn(async move {
-        run_command(&serde_json::json!({"shell": shell_name(), "cwd": ".", "command": "sleep 30 & echo $! > child.pid; wait", "timeout": 20, "brief": "cancel tree"}), &worker_dir, None, Some(worker_cancel)).await
-    });
-    let pid = wait_for_pid(&marker).await;
-    assert!(process_is_running(pid));
-    cancel.notify_waiters();
-    let result = timeout(Duration::from_secs(3), worker)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!("cancelled", result.status);
-    assert!(
-        !process_is_running(pid),
-        "cancelled command left descendant {pid} running"
-    );
+    for native in [false, true] {
+        let dir = workspace();
+        let marker = dir.path().join("child.pid");
+        let cancel = Arc::new(Notify::new());
+        let worker_cancel = cancel.clone();
+        let worker_dir = dir.path().to_path_buf();
+        let worker = tokio::spawn(async move {
+            run_command(
+                &process_tree_args("sleep 30 & echo $! > child.pid; wait", 20, native),
+                &worker_dir,
+                None,
+                Some(worker_cancel),
+            )
+            .await
+        });
+        let pid = wait_for_pid(&marker).await;
+        assert!(process_is_running(pid));
+        cancel.notify_waiters();
+        let result = timeout(Duration::from_secs(3), worker)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!("cancelled", result.status);
+        assert!(
+            !process_is_running(pid),
+            "cancelled command left descendant {pid} running"
+        );
+    }
 }
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn timeout_stops_descendants_and_dropping_the_command_future_does_too() {
-    let dir = workspace();
-    let worker_dir = dir.path().to_path_buf();
-    let worker = tokio::spawn(async move {
-        run_command(&serde_json::json!({"shell": shell_name(), "cwd": ".", "command": "sleep 30 & echo $! > timeout.pid; wait", "timeout": 1, "brief": "timeout tree"}), &worker_dir, None, None).await
-    });
-    let pid = wait_for_pid(&dir.path().join("timeout.pid")).await;
-    let result = timeout(Duration::from_secs(3), worker)
+    for native in [false, true] {
+        let dir = workspace();
+        let worker_dir = dir.path().to_path_buf();
+        let worker = tokio::spawn(async move {
+            run_command(
+                &process_tree_args("sleep 30 & echo $! > timeout.pid; wait", 1, native),
+                &worker_dir,
+                None,
+                None,
+            )
+            .await
+        });
+        let pid = wait_for_pid(&dir.path().join("timeout.pid")).await;
+        let result = timeout(Duration::from_secs(3), worker)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(true, result.structured.unwrap()["timed_out"]);
+        assert!(!process_is_running(pid));
+        let worker_dir = dir.path().to_path_buf();
+        let worker = tokio::spawn(async move {
+            run_command(
+                &process_tree_args("sleep 30 & echo $! > dropped.pid; wait", 20, native),
+                &worker_dir,
+                None,
+                None,
+            )
+            .await
+        });
+        let pid = wait_for_pid(&dir.path().join("dropped.pid")).await;
+        worker.abort();
+        assert!(worker.await.unwrap_err().is_cancelled());
+        timeout(Duration::from_secs(2), async {
+            while process_is_running(pid) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
         .await
-        .unwrap()
         .unwrap();
-    assert_eq!(true, result.structured.unwrap()["timed_out"]);
-    assert!(!process_is_running(pid));
-    let worker_dir = dir.path().to_path_buf();
-    let worker = tokio::spawn(async move {
-        run_command(&serde_json::json!({"shell": shell_name(), "cwd": ".", "command": "sleep 30 & echo $! > dropped.pid; wait", "timeout": 20, "brief": "drop tree"}), &worker_dir, None, None).await
-    });
-    let pid = wait_for_pid(&dir.path().join("dropped.pid")).await;
-    worker.abort();
-    assert!(worker.await.unwrap_err().is_cancelled());
-    timeout(Duration::from_secs(2), async {
-        while process_is_running(pid) {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap();
+    }
 }
 
 #[cfg(target_os = "linux")]

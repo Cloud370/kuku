@@ -166,7 +166,7 @@ fn is_executable(path: &Path) -> bool {
 }
 
 #[cfg(unix)]
-fn default_path() -> OsString {
+pub(super) fn default_path() -> OsString {
     let mut path = [0u8; 256];
     // NOTE: confstr writes at most the supplied byte capacity and includes the terminating NUL in its length.
     let length = unsafe { libc::confstr(libc::_CS_PATH, path.as_mut_ptr().cast(), path.len()) };

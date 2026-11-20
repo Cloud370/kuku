@@ -1,4 +1,5 @@
 use std::ffi::OsStr;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
@@ -9,6 +10,19 @@ use crate::tool::{ToolDefinition, ToolResultEnvelope};
 
 use super::shell::shell_command;
 
+pub(super) struct PreparedCommand {
+    pub(super) command: Command,
+    executable_paths: Vec<PathBuf>,
+}
+
+impl PreparedCommand {
+    pub(super) fn executable_exists(&self, cwd: &Path) -> bool {
+        self.executable_paths
+            .iter()
+            .any(|path| cwd.join(path).exists())
+    }
+}
+
 pub(super) struct CommandRequest {
     pub(super) invocation: CommandInvocation,
     pub(super) cwd: PathBuf,
@@ -16,7 +30,7 @@ pub(super) struct CommandRequest {
 }
 
 impl CommandRequest {
-    pub(super) fn command(&self) -> Result<Command, String> {
+    pub(super) fn command(&self) -> io::Result<PreparedCommand> {
         match &self.invocation {
             CommandInvocation::Program { program, args } => {
                 let program = if Path::new(program).file_name() == Some(OsStr::new(program)) {
@@ -26,10 +40,28 @@ impl CommandRequest {
                 };
                 let mut command = Command::new(program);
                 command.args(args);
-                Ok(command)
+                #[cfg(unix)]
+                let executable_paths = super::native::configure(&mut command)?;
+                #[cfg(not(unix))]
+                let executable_paths = vec![PathBuf::from(command.as_std().get_program())];
+                Ok(PreparedCommand {
+                    command,
+                    executable_paths,
+                })
             }
-            CommandInvocation::Shell { shell, command } => shell_command(*shell, command)
-                .ok_or_else(|| format!("selected interpreter {shell:?} was not found")),
+            CommandInvocation::Shell { shell, command } => {
+                let command = shell_command(*shell, command).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::NotFound,
+                        format!("selected interpreter {shell:?} was not found"),
+                    )
+                })?;
+                let executable_paths = vec![PathBuf::from(command.as_std().get_program())];
+                Ok(PreparedCommand {
+                    command,
+                    executable_paths,
+                })
+            }
         }
     }
 }

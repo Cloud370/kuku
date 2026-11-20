@@ -24,6 +24,8 @@ pub(crate) use request::{command_permission_candidate, prepare_command_args};
 pub(crate) use shell::available_shells;
 
 pub(crate) mod encoding;
+#[cfg(unix)]
+mod native;
 pub(crate) mod output;
 mod process;
 mod render;
@@ -208,28 +210,32 @@ async fn execute_command(
     event_tx: Option<mpsc::Sender<CommandEvent>>,
     cancelled: std::pin::Pin<&mut tokio::sync::futures::Notified<'_>>,
 ) -> Result<CommandOutcome, ToolResultEnvelope> {
-    let mut command = match request.command() {
+    let mut prepared = match request.command() {
         Ok(command) => command,
         Err(error) => {
+            let termination = if error.kind() == io::ErrorKind::NotFound {
+                CommandTermination::ProgramMissing
+            } else {
+                CommandTermination::StartFailed
+            };
             return Ok(CommandOutcome {
-                start_error: Some((CommandTermination::ProgramMissing, error)),
+                start_error: Some((termination, error.to_string())),
                 ..CommandOutcome::default()
-            })
+            });
         }
     };
-    command
+    prepared
+        .command
         .current_dir(&request.cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let (mut child, mut tree) = match ProcessTree::spawn(&mut command) {
+    let (mut child, mut tree) = match ProcessTree::spawn(&mut prepared.command) {
         Ok(process) => process,
         Err(error) => {
-            let executable = Path::new(command.as_std().get_program());
-            let executable_exists = executable.is_absolute() && executable.exists();
             let termination = if error.kind() == io::ErrorKind::NotFound
                 && request.cwd.is_dir()
-                && !executable_exists
+                && !prepared.executable_exists(&request.cwd)
             {
                 CommandTermination::ProgramMissing
             } else {
