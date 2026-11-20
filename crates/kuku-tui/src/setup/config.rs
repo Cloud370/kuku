@@ -524,13 +524,28 @@ fn save_with_lookup(
         .and_then(|table| table.get_mut(&settings.default_tier))
         .and_then(Item::as_table_like_mut)
     {
-        let route_changed = settings
+        let original_route = settings
             .resolved
             .tiers
             .get(&settings.default_tier)
-            .is_none_or(|entry| entry.provider != provider_name || entry.model != model);
-        model_entry.insert("provider", value(provider_name.as_str()));
-        model_entry.insert("model", value(model.as_str()));
+            .ok_or_else(|| invalid_config("the selected default tier cannot be edited"))?;
+        let provider_changed = original_route.provider != provider_name;
+        let model_changed = original_route.model != model;
+        let provider_is_reference = model_entry
+            .get("provider")
+            .and_then(Item::as_str)
+            .is_some_and(|value| value.starts_with('$'));
+        let model_is_reference = model_entry
+            .get("model")
+            .and_then(Item::as_str)
+            .is_some_and(|value| value.starts_with('$'));
+        if provider_changed || !provider_is_reference {
+            model_entry.insert("provider", value(provider_name.as_str()));
+        }
+        if model_changed || !model_is_reference {
+            model_entry.insert("model", value(model.as_str()));
+        }
+        let route_changed = provider_changed || model_changed;
         if route_changed {
             model_entry.remove("reasoning_effort");
             model_entry.remove("service_tier");

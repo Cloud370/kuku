@@ -632,6 +632,93 @@ async fn route_changes_clear_explicit_route_options_but_credential_edits_do_not(
 }
 
 #[tokio::test]
+async fn credential_repair_preserves_unchanged_route_environment_references() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("custom.toml");
+    let missing_key = directory.path().join("missing.credential");
+    let mut document: DocumentMut = INLINE_CONFIG.parse().unwrap();
+    document["model"]["balanced"]["provider"] = value("$ROUTE_PROVIDER");
+    document["model"]["balanced"]["model"] = value("$ROUTE_MODEL");
+    document["provider"]["anthropic"]["api_key"] = value(format!("file:{}", missing_key.display()));
+    let original = format!("{document}\n[discovery]\nextra_user_paths = [\"$KUKU_HOME\"]\n");
+    fs::write(&config, original).unwrap();
+    let environment = |name: &str| match name {
+        "ROUTE_PROVIDER" => Ok("anthropic".into()),
+        "ROUTE_MODEL" => Ok("model-from-environment".into()),
+        "KUKU_HOME" => Err(std::env::VarError::NotPresent),
+        _ => std::env::var(name),
+    };
+    let settings = Settings::load_for_first_run_with_lookup(
+        options(directory.path(), Some(config.clone())),
+        &environment,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let mut state = SetupState::new(&settings);
+    state.credential_source = CredentialSource::StoredKey;
+    state
+        .stored_key
+        .set_text("fixture-only-not-a-real-key".into());
+
+    save_with_lookup(&settings, &state, &environment, || {}).unwrap();
+    let credential_only: DocumentMut = fs::read_to_string(&config).unwrap().parse().unwrap();
+    assert_eq!(
+        "$ROUTE_PROVIDER",
+        credential_only["model"]["balanced"]["provider"]
+            .as_str()
+            .unwrap()
+    );
+    assert_eq!(
+        "$ROUTE_MODEL",
+        credential_only["model"]["balanced"]["model"]
+            .as_str()
+            .unwrap()
+    );
+    assert_eq!(
+        "low",
+        credential_only["model"]["balanced"]["reasoning_effort"]
+            .as_str()
+            .unwrap()
+    );
+    assert_eq!(
+        "flex",
+        credential_only["model"]["balanced"]["service_tier"]
+            .as_str()
+            .unwrap()
+    );
+
+    let settings = Settings::load_with_lookup(
+        options(directory.path(), Some(config.clone())),
+        &environment,
+    )
+    .await
+    .unwrap();
+    let mut state = SetupState::new(&settings);
+    state.model.set_text("intentional-new-model".into());
+    save_with_lookup(&settings, &state, &environment, || {}).unwrap();
+    let route_changed: DocumentMut = fs::read_to_string(config).unwrap().parse().unwrap();
+    assert_eq!(
+        "$ROUTE_PROVIDER",
+        route_changed["model"]["balanced"]["provider"]
+            .as_str()
+            .unwrap()
+    );
+    assert_eq!(
+        "intentional-new-model",
+        route_changed["model"]["balanced"]["model"]
+            .as_str()
+            .unwrap()
+    );
+    assert!(route_changed["model"]["balanced"]
+        .get("reasoning_effort")
+        .is_none());
+    assert!(route_changed["model"]["balanced"]
+        .get("service_tier")
+        .is_none());
+}
+
+#[tokio::test]
 async fn stored_keys_are_referenced_by_path_not_written_to_config() {
     let directory = tempfile::tempdir().unwrap();
     let config = directory.path().join("custom.toml");
