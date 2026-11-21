@@ -6,6 +6,8 @@ use crate::context::ToolSchema;
 use crate::session::InputSource;
 use crate::Result;
 
+use super::{decide_tool_call, GateDecisionKind, GateSource, PermissionPolicy};
+
 /// Final action and trusted provenance presented to an embedding host.
 #[derive(Debug, Clone)]
 pub struct ToolAuthorization {
@@ -51,4 +53,43 @@ impl ToolAuthorizer for TrustedLocal {
     fn authorize(&self, _action: &ToolAuthorization) -> Result<AuthorizationDecision> {
         Ok(AuthorizationDecision::Allow)
     }
+}
+
+pub(crate) enum ActionAuthorization {
+    Allow,
+    Deny {
+        source: &'static str,
+        reason: &'static str,
+    },
+    Defer,
+}
+
+pub(crate) fn authorize_action(
+    policy: &PermissionPolicy,
+    risk: &str,
+    candidate: &str,
+    authority: &dyn ToolAuthorizer,
+    action: &ToolAuthorization,
+) -> Result<ActionAuthorization> {
+    let gate = decide_tool_call(&action.tool.name, risk, candidate, policy, &[]);
+    if gate.kind == GateDecisionKind::Deny {
+        let source = match gate.source {
+            GateSource::HardGuard => "hard_guard",
+            _ => "project_policy",
+        };
+        return Ok(ActionAuthorization::Deny {
+            source,
+            reason: gate
+                .denial_reason
+                .unwrap_or("authorization denied this action"),
+        });
+    }
+    Ok(match authority.authorize(action)? {
+        AuthorizationDecision::Allow => ActionAuthorization::Allow,
+        AuthorizationDecision::Defer => ActionAuthorization::Defer,
+        AuthorizationDecision::Deny => ActionAuthorization::Deny {
+            source: "host",
+            reason: "the host denied this action",
+        },
+    })
 }

@@ -260,6 +260,69 @@ async fn one_tool_batch_retains_success_denial_and_real_failure() {
 }
 
 #[tokio::test]
+async fn command_guard_reason_reaches_direct_calls_and_scripts_without_raw_arguments() {
+    let server = MockServer::start_async().await;
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let marker = workspace.path().join("authorization-marker.txt");
+    std::fs::write(&marker, "keep").unwrap();
+    let args = json!({"program":"rm", "args":["-rf","authorization-marker.txt"]});
+    let first = fixture(
+        &server,
+        |request| tool_count(request) == 0,
+        response(
+            json!({"tool_calls":[
+                tool("direct", "run_command", args.clone()),
+                tool("script", "run_js", json!({"code":format!("return await tools.run_command({args});")}))
+            ]}),
+            "tool_calls",
+        ),
+    )
+    .await;
+    let continuation = fixture(
+        &server,
+        |request| {
+            let body = request_body(request);
+            let results: Vec<_> = body["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|message| message["role"] == "tool")
+                .collect();
+            results.len() == 2
+                && results.iter().all(|message| {
+                    message["content"].as_str().is_some_and(|content| {
+                        content.contains("recursive force delete is destructive")
+                            && !content.contains("authorization-marker.txt")
+                    })
+                })
+        },
+        response(json!({"content":"guard explained"}), "stop"),
+    )
+    .await;
+    let session = Session::open(options(&server, workspace.path(), data.path()))
+        .await
+        .unwrap();
+    session
+        .create_agent("create", "main", AgentConfig::default())
+        .unwrap();
+    session
+        .send(Input::new("input", "main", "check the guard response"))
+        .unwrap();
+    assert_eq!(
+        Some("guard explained"),
+        idle(&session).await.last_output.as_deref()
+    );
+    assert_eq!("keep", std::fs::read_to_string(marker).unwrap());
+    session.close().await.unwrap();
+    let events = EventStore::replay(session.events_path()).unwrap();
+    assert!(events.iter().any(|event| matches!(&event.payload, EventPayload::PermissionDeny { tool_call_id, source, .. } if tool_call_id == "direct" && source == "hard_guard")));
+    assert!(events.iter().any(|event| matches!(&event.payload, EventPayload::Unknown(value) if value["kind"] == "workspace.action" && value["status"] == "blocked" && value["facts"]["source"] == "hard_guard")));
+    first.assert_hits_async(1).await;
+    continuation.assert_hits_async(1).await;
+}
+
+#[tokio::test]
 async fn create_agent_uses_default_routing_and_rejects_invalid_tool_configuration() {
     let server = MockServer::start_async().await;
     let workspace = tempfile::tempdir().unwrap();

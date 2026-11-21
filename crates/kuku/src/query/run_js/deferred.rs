@@ -235,13 +235,19 @@ impl Continuation {
             &policy,
             &[],
         );
-        if checked != action.args
-            || candidate != action.candidate
-            || guard.kind == GateDecisionKind::Deny
-        {
+        if checked != action.args || candidate != action.candidate {
             return Ok(ToolResultEnvelope::blocked(
-                "prepared target or permission changed",
+                "prepared target changed",
                 "the saved operation was not dispatched",
+            ));
+        }
+        if guard.kind == GateDecisionKind::Deny {
+            let reason = guard
+                .denial_reason
+                .unwrap_or("authorization denied this action");
+            return Ok(ToolResultEnvelope::blocked(
+                reason,
+                format!("The saved operation was not dispatched because {reason}."),
             ));
         }
         let capacity = host.actions.session.workspace_execution_host().operations();

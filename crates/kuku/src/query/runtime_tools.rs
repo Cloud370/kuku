@@ -5,7 +5,7 @@ pub(crate) mod values;
 
 use crate::context::ToolSchema;
 use crate::event::{EventPayload, EventStore};
-use crate::permission::{AuthorizationDecision, GateDecisionKind};
+use crate::permission::{authorize_action, ActionAuthorization};
 use crate::tool::builtin::common::{changed_file_target, prepare_file_target};
 use crate::tool::{ToolDefinition, ToolResultEnvelope};
 use crate::{Error, Result};
@@ -92,9 +92,9 @@ pub(super) async fn advance(
         workspace,
     };
     let policy = crate::permission::load_project_policy(&pending.policy_path)?;
-    let decision = match authorize(
+    let decision = match authorize_action(
         &policy,
-        &definition,
+        &definition.risk,
         &candidate,
         pending
             .query
@@ -116,7 +116,7 @@ pub(super) async fn advance(
         }
     };
     match decision {
-        AuthorizationDecision::Defer => {
+        ActionAuthorization::Defer => {
             if active > 0 {
                 pending.queued_tool_calls.push_front(queued);
                 return Ok(PendingStep::Pending {
@@ -148,13 +148,13 @@ pub(super) async fn advance(
                 request,
             })))
         }
-        AuthorizationDecision::Deny => {
+        ActionAuthorization::Deny { source, reason } => {
             append_permission_decision(
                 &pending.events_path,
                 pending.turn,
                 &queued.tool_call.id,
                 PermissionChoice::Deny,
-                "host",
+                source,
                 &candidate,
             )?;
             pending.record_tool_denied(&queued.tool_call.name);
@@ -162,12 +162,12 @@ pub(super) async fn advance(
                 pending,
                 queued,
                 ToolResultEnvelope::blocked(
-                    "host denied tool action",
-                    "the action was not dispatched",
+                    reason,
+                    format!("The action was not dispatched because {reason}."),
                 ),
             )
         }
-        AuthorizationDecision::Allow => {
+        ActionAuthorization::Allow => {
             append_permission_decision(
                 &pending.events_path,
                 pending.turn,
@@ -881,26 +881,6 @@ fn finish_inline_event(
         slot: None,
         event: Some(event),
     })
-}
-
-pub(super) fn authorize(
-    policy: &crate::permission::PermissionPolicy,
-    definition: &ToolDefinition,
-    candidate: &str,
-    authority: &dyn crate::permission::ToolAuthorizer,
-    action: &crate::permission::ToolAuthorization,
-) -> Result<AuthorizationDecision> {
-    let guard = crate::permission::decide_tool_call(
-        &definition.name,
-        &definition.risk,
-        candidate,
-        policy,
-        &[],
-    );
-    if guard.kind == GateDecisionKind::Deny {
-        return Ok(AuthorizationDecision::Deny);
-    }
-    authority.authorize(action)
 }
 
 pub(super) fn schema(definition: &ToolDefinition) -> ToolSchema {

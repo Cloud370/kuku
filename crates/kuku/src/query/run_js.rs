@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{oneshot, Notify};
 
 use crate::event::{EventPayload, EventStore};
-use crate::permission::{AuthorizationDecision, ToolAuthorization, ToolAuthorizer};
+use crate::permission::{authorize_action, ActionAuthorization, ToolAuthorization, ToolAuthorizer};
 use crate::tool::builtin::common::{changed_file_target, prepare_file_target, ExecutorObservation};
 use crate::tool::run_js::{
     self, ScriptCall, ScriptExecution, ScriptFuture, ScriptHost, ScriptOperation, WorkspaceActions,
@@ -249,9 +249,9 @@ impl WorkspaceHost {
             workspace,
         };
         let policy = crate::permission::load_project_policy(&self.policy_path)?;
-        let decision = super::runtime_tools::authorize(
+        let decision = authorize_action(
             &policy,
-            definition,
+            &definition.risk,
             &candidate,
             self.authority.as_ref(),
             &action,
@@ -266,8 +266,8 @@ impl WorkspaceHost {
         }
         let mutating = !definition.read_only;
         match decision {
-            AuthorizationDecision::Allow => {}
-            AuthorizationDecision::Deny => {
+            ActionAuthorization::Allow => {}
+            ActionAuthorization::Deny { source, reason } => {
                 let target = args
                     .get("path")
                     .or(args.get("id"))
@@ -278,14 +278,14 @@ impl WorkspaceHost {
                     name,
                     target,
                     "blocked",
-                    json!({"reason":"host denied workspace action"}),
+                    json!({"source":source, "reason":reason}),
                 )?;
                 return Ok(ToolResultEnvelope::blocked(
-                    "host denied workspace action",
-                    format!("{name} was not dispatched"),
+                    reason,
+                    format!("{name} was not dispatched because {reason}."),
                 ));
             }
-            AuthorizationDecision::Defer
+            ActionAuthorization::Defer
                 if matches!(
                     call.op,
                     ScriptOperation::CreateOutput
@@ -306,7 +306,7 @@ impl WorkspaceHost {
                     reason,
                 ));
             }
-            AuthorizationDecision::Defer => {
+            ActionAuthorization::Defer => {
                 let mut waiting = self.deferred.lock().unwrap();
                 if waiting.is_some() {
                     return Ok(ToolResultEnvelope::cancelled(
