@@ -378,7 +378,7 @@ fn short_command_results_show_stdout_without_capture_metadata_or_a_trailing_carr
     assert!(lines[heading + 2].starts_with("│  check-file"));
     assert_eq!(lines[heading + 3].trim_matches('│').trim(), "GONE");
     assert!(lines[heading + 4].trim_matches('│').trim().is_empty());
-    assert!(lines[heading + 5].starts_with("╰─ ok · exit 0"));
+    assert!(lines[heading + 5].starts_with("╰─ ok · exit 0 · 180ms"));
     let key = transcript.detail_at(heading).unwrap().clone();
     assert!(transcript.toggle_detail(&key));
     let inspected = transcript.project(80, 24);
@@ -390,6 +390,24 @@ fn short_command_results_show_stdout_without_capture_metadata_or_a_trailing_carr
         !screen.contains("stdout") && !screen.contains("Saved output") && !screen.contains('␍')
     );
     assert_eq!(transcript.tools()[0].details, raw);
+}
+
+#[test]
+fn shell_card_distinguishes_stderr_from_the_outer_exit_status() {
+    let mut transcript = Transcript::default();
+    let mut facts = command_facts("sh", "saved", 0, "stderr:\ncheck failed");
+    facts["invocation"] = json!({"mode":"shell","shell":"sh","command":"check; echo done"});
+    facts["duration_ms"] = json!(5_900);
+    facts["stderr_bytes"] = json!(12);
+    facts["stderr_lines"] = json!(1);
+    transcript.apply(serde_json::from_value(json!({
+        "id":1,"agent":"main","turn":1,"type":"tool_result","tool":"run_command","tool_call_id":"cmd",
+        "status":"ok","summary":"shell exited 0","model_content":"check failed","structured":facts
+    })).unwrap(),None);
+    let view = transcript.project(80, 16);
+    assert!(view.lines.iter().any(|line| line
+        .to_string()
+        .contains("ok · shell exit 0 · stderr · 5.9s")));
 }
 
 fn command_facts(program: &str, id: &str, bytes: u64, preview: &str) -> Value {

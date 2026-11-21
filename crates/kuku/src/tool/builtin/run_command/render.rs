@@ -6,8 +6,8 @@ use std::time::Duration;
 use serde_json::json;
 
 use crate::execution::{
-    CommandExecutionFacts, CommandResultKind, CommandStdin, CommandTermination, OutputReference,
-    ReportedTests,
+    CommandExecutionFacts, CommandInvocation, CommandResultKind, CommandStdin, CommandTermination,
+    OutputReference, ReportedTests,
 };
 use crate::tool::ToolResultEnvelope;
 
@@ -165,41 +165,43 @@ fn render_model(
     let output_preview_truncated =
         show_end || chunk.has_more || output_preview.len() > output_preview_limit;
     truncate_utf8(&mut output_preview, output_preview_limit);
-    let mut model_content = if filtered {
+    let body = if filtered {
         format!(
-            "{}\n\nBuild/test summary (selected lines):\n{}",
-            summary,
+            "\n\nBuild/test summary (selected lines):\n{}",
             report_evidence(&metadata.summary, &facts.reported_tests)
         )
     } else if show_end {
         let source = if show_stderr { "stderr" } else { "output" };
-        format!("{summary}\n\nEnd of captured {source}:\n{raw_preview}")
+        format!("\n\nEnd of captured {source}:\n{raw_preview}")
     } else {
         let text = if raw_preview.is_empty() {
             "(command produced no output)"
         } else {
             raw_preview
         };
-        format!("{summary}\n\n{text}")
+        format!("\n\n{text}")
     };
-    let preview_truncated = !filtered && (show_end || chunk.has_more);
-    let reference = render_reference(output.id, metadata, filtered, chunk.lossy_utf8);
-    let content_truncated = model_content.len() + reference.len() > output.limits.max_preview_bytes;
-    let truncated = !facts.capture_complete || preview_truncated || content_truncated;
-    if truncated {
-        summary.push_str(", output truncated");
+    if !facts.capture_complete {
+        summary.push_str(", capture incomplete");
     }
-    let suffix = if truncated {
-        format!("\n\n(Command output truncated.){reference}")
-    } else {
-        reference
-    };
-    fit_content(&mut model_content, &suffix, output.limits.max_preview_bytes);
+    let reference = render_reference(output.id, metadata, filtered, chunk.lossy_utf8);
+    let preview_truncated = (!filtered && (show_end || chunk.has_more))
+        || summary.len() + body.len() + reference.len() > output.limits.max_preview_bytes;
+    if preview_truncated {
+        summary.push_str(", preview truncated");
+    }
+    let truncated = !facts.capture_complete || preview_truncated;
+    let mut model_content = format!("{summary}{body}");
+    fit_content(
+        &mut model_content,
+        &reference,
+        output.limits.max_preview_bytes,
+    );
     facts.lossy_utf8 = chunk.lossy_utf8
         && (output_preview.contains(char::REPLACEMENT_CHARACTER)
             || (!filtered && model_content.contains(char::REPLACEMENT_CHARACTER)));
     facts.output_filtered = filtered;
-    facts.preview_truncated = preview_truncated || content_truncated;
+    facts.preview_truncated = preview_truncated;
     facts.output_preview = output_preview;
     facts.output_preview_truncated = output_preview_truncated;
     ToolResultEnvelope::command(status, summary, model_content, truncated, facts)
@@ -281,8 +283,12 @@ fn outcome_summary(request: &CommandRequest, outcome: &CommandOutcome, duration_
     } else if let Some(signal) = exit_signal(outcome.exit_status) {
         format!("command terminated by signal {signal} in {duration_ms}ms")
     } else {
+        let process = match &request.invocation {
+            CommandInvocation::Program { .. } => "command",
+            CommandInvocation::Shell { .. } => "shell",
+        };
         format!(
-            "command exited {} in {duration_ms}ms",
+            "{process} exited {} in {duration_ms}ms",
             outcome
                 .exit_status
                 .and_then(|status| status.code())

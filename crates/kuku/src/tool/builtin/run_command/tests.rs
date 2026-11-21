@@ -73,7 +73,7 @@ async fn run_command_captures_stdout_from_workspace() {
     .await;
 
     assert_eq!(result.status, "ok", "{result:?}");
-    assert!(result.summary.contains("command exited 0"));
+    assert!(result.summary.contains("shell exited 0"));
     assert!(result.model_content.contains("stdout:"));
     assert!(result.model_content.contains("workspace marker"));
     let structured = result.structured.unwrap();
@@ -98,7 +98,7 @@ async fn run_command_treats_nonzero_exit_as_command_evidence() {
     .await;
 
     assert_eq!(result.status, "ok", "{result:?}");
-    assert!(result.summary.contains("command exited 7"));
+    assert!(result.summary.contains("shell exited 7"));
     assert!(result.model_content.contains("stderr:"));
     assert!(result.model_content.contains("bad"));
     assert_eq!(result.structured.as_ref().unwrap()["exit_code"], 7);
@@ -147,7 +147,7 @@ async fn run_command_reports_timeout_as_tool_error() {
     assert_eq!(result.structured.as_ref().unwrap()["timed_out"], true);
     assert!(result.truncated);
     assert!(result.model_content.len() <= RUN_COMMAND_MAX_CHARS);
-    assert!(result.model_content.contains("Command output truncated"));
+    assert!(result.summary.contains("preview truncated"));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -686,6 +686,9 @@ async fn long_failed_command_shows_final_diagnostic_within_preview_bound() {
     );
     assert!(facts.output_preview.contains(diagnostic));
     assert!(facts.preview_truncated);
+    assert!(result.model_content.starts_with(&result.summary));
+    assert!(result.summary.contains("preview truncated"));
+    assert!(!result.summary.contains("capture incomplete"));
     assert!(result.model_content.len() <= 512);
 }
 

@@ -282,7 +282,7 @@ pub(crate) fn run_command_definition(shells: &[CommandShell], session: bool) -> 
             description.push_str(" Use shell='cmd' for .bat or .cmd files.");
         }
         schema["properties"]["command"] = serde_json::json!({
-            "type": "string", "description": "Original shell text evaluated by the selected interpreter."
+            "type": "string", "description": "Shell text evaluated by the selected interpreter. The result reports the outer shell's exit code."
         });
         schema.as_object_mut().unwrap().remove("required");
         schema["oneOf"] = serde_json::json!([

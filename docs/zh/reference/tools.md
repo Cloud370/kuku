@@ -83,7 +83,9 @@
 
 省略 `timeout` 时不设置命令截止时间。命令和脚本共用 [Session Job](#session-job) 行为。
 
-进程正常退出后，工具状态可以为 `ok`，同时 `exit_code` 为非零值。检查结构化事实中的 `termination`、`exit_code` 和 `capture_complete`。即使捕获完整，预览也可能截断。失败命令的完整捕获超过预览上限时，优先显示识别到的构建或测试摘要，否则显示 stderr 末尾。stderr 为空时，显示 stdout 末尾。程序缺失、启动失败、超时和取消有不同的终止原因。识别出的 Rust 测试和 pytest 摘要会提供程序报告的统计与有界证据。排查失败或读取超出预览的内容时，将保留的 `output_ref.id` 传给 `read_output`。[SDK 执行事实](sdk.md#工作区执行)
+进程正常退出后，工具状态可以为 `ok`，同时 `exit_code` 为非零值。Shell 调用报告外层 Shell 的退出码。串接命令或使用管道时，保留每项必要检查的失败状态。命令卡片显示用时，并单独标记 stderr。检查结构化事实中的 `termination`、`exit_code` 和 `capture_complete`。
+
+Session 的默认预览上限为 8 KiB，包含摘要和保留输出引用。即使捕获完整，预览也可能截断。失败命令的完整捕获超过预览上限时，优先显示识别到的构建或测试摘要，否则显示 stderr 末尾。stderr 为空时，显示 stdout 末尾。程序缺失、启动失败、超时和取消有不同的终止原因。识别出的 Rust 测试和 pytest 摘要会提供程序报告的统计与有界证据。排查失败或读取超出预览的内容时，将保留的 `output_ref.id` 传给 `read_output`。[SDK 执行事实](sdk.md#工作区执行)
 
 ## Session Job
 

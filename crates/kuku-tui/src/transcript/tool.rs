@@ -651,14 +651,19 @@ impl Tool {
         let status = shorten(&single_line(status), 24);
         let mut status = status;
         if let Some(outcome) = self.state.outcome() {
+            let command = outcome.command_preview.as_deref();
             if let Some(exit) = outcome.exit_code {
-                status.push_str(&format!(" · exit {exit}"));
-            } else if let Some(signal) = outcome
-                .command_preview
-                .as_ref()
-                .and_then(|command| command.signal())
-            {
+                let label = command.map_or("exit", command::CommandPreview::exit_label);
+                status.push_str(&format!(" · {label} {exit}"));
+            } else if let Some(signal) = command.and_then(command::CommandPreview::signal) {
                 status.push_str(&format!(" · signal {signal}"));
+            }
+            if let Some(command) = command {
+                if command.has_stderr() {
+                    status.push_str(" · stderr");
+                }
+                status.push_str(" · ");
+                status.push_str(&command.elapsed());
             }
         }
         (status, color)

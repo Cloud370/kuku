@@ -190,7 +190,7 @@ impl Default for RuntimeLimits {
             max_retained_output_bytes: default_retained_output_bytes(),
             output_retention_secs: default_output_retention_secs(),
             max_named_values: default_named_values(),
-            max_preview_bytes: 16 * 1024,
+            max_preview_bytes: 8 * 1024,
             observation_capacity: 128,
         }
     }
