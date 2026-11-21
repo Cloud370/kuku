@@ -450,6 +450,15 @@ fn render_review_warnings(
     state: &SetupState,
     mode: SetupMode,
 ) {
+    if state.text_only_route(settings) {
+        line(
+            frame,
+            area,
+            row,
+            "Text only · For tools, choose Settings → API type → Responses",
+            WARNING,
+        );
+    }
     if let super::ConnectionChoice::Existing(name) = state.choice() {
         if state.connection(settings).is_ok_and(|connection| {
             settings.resolved.provider(name).is_some_and(|previous| {

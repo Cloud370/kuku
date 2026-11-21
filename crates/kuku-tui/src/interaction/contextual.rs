@@ -94,7 +94,7 @@ impl App {
         self.focus_context_control(controls[index].clone())
     }
 
-    fn activate_context_control(&mut self) {
+    pub(super) fn activate_context_control(&mut self) {
         let Some(control) = self.pane().contextual_focus.cursor.clone() else {
             self.deactivate_context_focus();
             return;
@@ -119,6 +119,9 @@ impl App {
             }
             ContextControl::PreviousAgent { .. } => self.back_to_agent(),
             ContextControl::Reconnect { .. } => self.reconnect(),
+            ContextControl::CacheWarning { since_turn } => {
+                self.pane_mut().dismissed_cache_warning = Some(since_turn);
+            }
             ContextControl::Messages => self.open_messages_picker(),
         }
     }
@@ -128,6 +131,69 @@ impl App {
 mod tests {
     use super::{ContextControl, KeyEvent};
     use crossterm::event::KeyModifiers;
+
+    #[test]
+    fn dismissing_low_cache_does_not_send_the_draft_or_hide_a_new_episode() {
+        let mut app = crate::interaction::tests::connected_app();
+        app.pane_mut().draft.insert("unsent");
+        let warning = kuku::session::runtime::CacheWarning {
+            since_turn: 4,
+            latest_percent: 0,
+            read_tokens: 370,
+            input_tokens: 2000,
+        };
+        app.pane_mut().snapshot = Some(Box::new(serde_json::from_value(serde_json::json!({
+            "session_id":"fixture", "workspace":"/workspace", "cursor":4, "agents":[], "pending":[],
+            "agent":{"address":"main", "config":kuku_client::AgentConfig::default(), "status":"idle",
+                "pending_inputs":0, "cache_warning":warning}
+        })).unwrap()));
+        assert!(app.focus_context_control(ContextControl::CacheWarning { since_turn: 4 }));
+        assert!(app.contextual_key(KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            KeyModifiers::NONE
+        )));
+        assert!(app.cache_warning().is_none());
+        assert_eq!("unsent", app.pane().draft.text());
+        app.pane_mut()
+            .snapshot
+            .as_mut()
+            .unwrap()
+            .agent
+            .cache_warning = Some(kuku::session::runtime::CacheWarning {
+            since_turn: 8,
+            ..warning
+        });
+        assert_eq!(8, app.cache_warning().unwrap().since_turn);
+        assert!(app.focus_context_control(ContextControl::CacheWarning { since_turn: 8 }));
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(99, 24)).unwrap();
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+        let hit = app
+            .contextual_hits
+            .iter()
+            .find(|hit| hit.control == ContextControl::CacheWarning { since_turn: 8 })
+            .unwrap()
+            .area;
+        use crossterm::event::{Event, MouseButton, MouseEvent, MouseEventKind};
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            app.event(
+                Event::Mouse(MouseEvent {
+                    kind,
+                    column: hit.x,
+                    row: hit.y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                terminal.backend().buffer(),
+            );
+        }
+        assert!(app.cache_warning().is_none());
+        assert_eq!("unsent", app.pane().draft.text());
+    }
 
     #[test]
     fn context_focus_keeps_the_cursor_when_escape_returns_to_composer() {

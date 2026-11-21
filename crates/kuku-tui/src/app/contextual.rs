@@ -5,6 +5,12 @@ use crate::contextual::{ContextControl, PendingCommandIdentity, PendingCommandKi
 use super::{Activity, App, PendingStage, ServiceStatus};
 
 impl App {
+    pub(crate) fn cache_warning(&self) -> Option<&kuku::session::runtime::CacheWarning> {
+        let pane = self.pane();
+        let warning = pane.snapshot.as_ref()?.agent.cache_warning.as_ref()?;
+        (pane.dismissed_cache_warning != Some(warning.since_turn)).then_some(warning)
+    }
+
     pub(crate) fn contextual_controls(&self) -> Vec<ContextControl> {
         let mut controls = Vec::new();
         if let Some(snapshot) = &self.pane().snapshot {
@@ -50,6 +56,11 @@ impl App {
         {
             controls.push(ContextControl::Reconnect {
                 endpoint: self.endpoint.clone(),
+            });
+        }
+        if let Some(warning) = self.cache_warning() {
+            controls.push(ContextControl::CacheWarning {
+                since_turn: warning.since_turn,
             });
         }
         controls.push(ContextControl::Messages);

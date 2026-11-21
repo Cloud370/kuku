@@ -65,6 +65,37 @@ async fn response(stream: &mut TcpStream, body: &str) {
 }
 
 #[tokio::test]
+async fn tool_trial_requires_a_structured_call_and_a_reply_to_the_tool_result() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut config = connection(
+        format!("http://{}/v1", listener.local_addr().unwrap()),
+        ProviderProxy::Direct,
+    );
+    config.format = ProviderFormat::OpenAiResponses;
+    let server = tokio::spawn(async move {
+        let (mut first, _) = listener.accept().await.unwrap();
+        let (headers, body) = read_request_with_body(&mut first).await;
+        assert!(headers.starts_with("POST /v1/responses "));
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!("kuku_setup_check", body["tools"][0]["name"]);
+        response(&mut first, r#"{"output":[{"type":"function_call","call_id":"call_setup","name":"kuku_setup_check","arguments":"{}"}]}"#).await;
+        let (mut next, _) = listener.accept().await.unwrap();
+        let (_, body) = read_request_with_body(&mut next).await;
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        let last = body["input"].as_array().unwrap().last().unwrap();
+        assert_eq!("function_call_output", last["type"]);
+        assert_eq!("call_setup", last["call_id"]);
+        let answer = &last["output"];
+        response(&mut next, &serde_json::json!({"output":[{"type":"message","content":[{"type":"output_text","text":answer}]}]}).to_string()).await;
+    });
+    let observed = trial_model(&config, "fixture", ModelTrial::Tools { service_tier: None })
+        .await
+        .unwrap();
+    assert_eq!(Some(true), observed.tool_round_trip);
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn model_trial_times_out_after_thirty_seconds() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}/v1", listener.local_addr().unwrap());

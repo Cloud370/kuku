@@ -91,6 +91,72 @@ impl Models {
 }
 
 impl SetupState {
+    pub(super) fn test_tools(&mut self, settings: &Settings) {
+        if self.text_only_route(settings) {
+            self.problem = Some("For tools, choose API type → Responses.".into());
+            return;
+        }
+        let checks = self
+            .planned_trials(settings)
+            .into_iter()
+            .filter_map(|probe| {
+                let Probe::Trial {
+                    connection,
+                    model,
+                    check: ModelTrial::Text { service_tier, .. },
+                } = probe
+                else {
+                    return None;
+                };
+                Some(Probe::Trial {
+                    connection,
+                    model,
+                    check: ModelTrial::Tools { service_tier },
+                })
+            })
+            .collect();
+        self.trials.append(checks);
+        self.probe_repaint_at = Some(std::time::Instant::now());
+        self.step = SetupStep::TrialResults;
+        self.models.cursor = 0;
+        self.problem = None;
+    }
+    pub(super) fn text_only_route(&self, settings: &Settings) -> bool {
+        self.protocol == ProviderFormat::OpenAiChat
+            && self.connection(settings).ok().is_some_and(|connection| {
+                self.primary_model().is_some_and(|model| {
+                    kuku::adapter::setup_requires_responses_for_tools(&connection, &model)
+                })
+            })
+    }
+
+    pub(super) fn try_responses_route(&mut self, settings: &Settings) {
+        if !self.text_only_route(settings) {
+            return;
+        }
+        if let (_, Some(address)) = self.address_parts() {
+            let Ok(mut url) = url::Url::parse(&address) else {
+                return;
+            };
+            let Some(base) = url
+                .path()
+                .trim_end_matches('/')
+                .strip_suffix("/chat/completions")
+            else {
+                self.open_protocol_picker(true);
+                return;
+            };
+            url.set_path(&format!("{base}/responses"));
+            self.address.set_text(url.into());
+        }
+        self.protocol = ProviderFormat::OpenAiResponses;
+        self.protocol_fixed = true;
+        if let Some(discovered) = &mut self.models.discovered_from {
+            discovered.format = self.protocol;
+        }
+        self.problem = None;
+        self.review_models(settings);
+    }
     pub(super) fn route_name<'a>(&'a self, settings: &'a Settings) -> Option<&'a str> {
         match &self.intent {
             SetupIntent::Edit(name) => Some(name),
@@ -491,7 +557,12 @@ impl SetupState {
 
     pub(super) fn choose_protocol(&mut self, key: KeyEvent, settings: &Settings) {
         if key.code == KeyCode::Enter {
-            self.protocol = PROTOCOLS[self.models.cursor];
+            let format = PROTOCOLS[self.models.cursor];
+            if format == ProviderFormat::OpenAiResponses && self.text_only_route(settings) {
+                self.try_responses_route(settings);
+                return;
+            }
+            self.protocol = format;
             self.protocol_fixed = true;
             if let Some(discovered) = &mut self.models.discovered_from {
                 discovered.format = self.protocol;

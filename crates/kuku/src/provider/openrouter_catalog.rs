@@ -8,6 +8,8 @@ use url::Url;
 use crate::config::{resolve_request_url, OpenRouterRouting, ProviderConfig, TokenRates};
 use crate::{Error, Result};
 
+use super::capabilities::normalized_tier;
+
 /// An advertised quote for one OpenRouter route. Rates are in USD per million tokens.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RouteQuote {
@@ -18,6 +20,32 @@ pub struct RouteQuote {
     pub rates: TokenRates,
 }
 
+fn same_endpoint(tag: &str, endpoint: &str) -> bool {
+    tag == endpoint
+        || match (tag.rsplit_once('/'), endpoint.rsplit_once('/')) {
+            (Some((tag_base, "fast")), Some((endpoint_base, "priority")))
+            | (Some((tag_base, "priority")), Some((endpoint_base, "fast"))) => {
+                tag_base == endpoint_base
+            }
+            _ => false,
+        }
+}
+
+fn endpoint_matches(tag: &str, endpoint: &str) -> bool {
+    same_endpoint(tag, endpoint)
+        || tag
+            .strip_prefix(endpoint)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+fn allowed_by_only(quote: &RouteQuote, routing: &OpenRouterRouting) -> bool {
+    routing.only.is_empty()
+        || routing
+            .only
+            .iter()
+            .any(|endpoint| endpoint_matches(&quote.tag, endpoint))
+}
+
 pub(super) fn service_tiers(
     quotes: &[RouteQuote],
     routing: Option<&OpenRouterRouting>,
@@ -25,29 +53,19 @@ pub(super) fn service_tiers(
     if quotes.is_empty() {
         return None;
     }
-    let matches = |tag: &str, endpoint: &str| {
-        tag == endpoint
-            || tag
-                .strip_prefix(endpoint)
-                .is_some_and(|suffix| suffix.starts_with('/'))
-    };
     let mut values: Vec<_> = quotes
         .iter()
         .filter(|quote| {
             routing.is_none_or(|routing| {
-                (routing.only.is_empty() || routing.only.iter().any(|tag| matches(&quote.tag, tag)))
+                allowed_by_only(quote, routing)
                     && (routing.allow_fallbacks != Some(false)
                         || routing
                             .order
                             .first()
-                            .is_none_or(|tag| matches(&quote.tag, tag)))
+                            .is_none_or(|tag| endpoint_matches(&quote.tag, tag)))
             })
         })
-        .map(|quote| match quote.service_tier.as_deref() {
-            None | Some("standard") => "default",
-            Some("fast") => "priority",
-            Some(value) => value,
-        })
+        .map(|quote| normalized_tier(quote.service_tier.as_deref()))
         .map(str::to_owned)
         .collect();
     values.sort_unstable();
@@ -62,32 +80,34 @@ pub fn route_quote_for_display<'a>(
     routing: Option<&OpenRouterRouting>,
     service_tier: Option<&str>,
 ) -> Option<&'a RouteQuote> {
-    let eligible = |quote: &&RouteQuote| quote.service_tier.as_deref() == service_tier;
+    let allowed =
+        |quote: &&RouteQuote| routing.is_none_or(|routing| allowed_by_only(quote, routing));
+    let eligible = |quote: &&RouteQuote| {
+        normalized_tier(quote.service_tier.as_deref()) == normalized_tier(service_tier)
+    };
+    let quotes = quotes.iter().filter(allowed);
     if let Some(preferred) =
         routing.and_then(|routing| routing.order.first().or_else(|| routing.only.first()))
     {
         if service_tier.is_none() && preferred.contains('/') {
-            if let Some(exact) = quotes.iter().find(|quote| quote.tag == *preferred) {
+            if let Some(exact) = quotes
+                .clone()
+                .find(|quote| same_endpoint(&quote.tag, preferred))
+            {
                 return Some(exact);
             }
         }
-        let exact = quotes
-            .iter()
+        return quotes
+            .clone()
             .filter(eligible)
-            .find(|quote| quote.tag == *preferred);
-        return exact.or_else(|| {
-            quotes.iter().filter(eligible).find(|quote| {
-                quote
-                    .tag
-                    .strip_prefix(preferred)
-                    .is_some_and(|suffix| suffix.starts_with('/'))
-            })
-        });
+            .find(|quote| quote.tag == *preferred)
+            .or_else(|| {
+                quotes
+                    .filter(eligible)
+                    .find(|quote| endpoint_matches(&quote.tag, preferred))
+            });
     }
-    quotes
-        .iter()
-        .filter(eligible)
-        .find(|quote| quote.author_route)
+    quotes.filter(eligible).find(|quote| quote.author_route)
 }
 
 /// Resolve OpenRouter's public rate endpoint without using the connection credential.
@@ -250,6 +270,10 @@ mod tests {
         let results = parse_quotes(&anthropic, "anthropic/claude-opus-5.5").unwrap();
         assert!(results[0].author_route && results[1].author_route && !results[2].author_route);
         assert_eq!(Some(4.0), results[0].rates.input);
+        assert_eq!(
+            route_quote_for_display(&results, None, None),
+            route_quote_for_display(&results, None, Some("default")),
+        );
         assert_eq!(Some(8.0), results[0].rates.cache_write_1h);
         assert_eq!("anthropic/fast", results[1].tag);
         assert_eq!(Some(8.0), results[1].rates.input);
@@ -261,7 +285,7 @@ mod tests {
                 .tag
         );
         let pinned = OpenRouterRouting {
-            only: vec!["anthropic/fast".into()],
+            only: vec!["anthropic/priority".into()],
             ..OpenRouterRouting::default()
         };
         assert_eq!(
@@ -278,6 +302,14 @@ mod tests {
                 .unwrap()
                 .tag
         );
+        for tier in ["priority", "fast"] {
+            assert_eq!(
+                "anthropic/fast",
+                route_quote_for_display(&results, Some(&pinned), Some(tier))
+                    .unwrap()
+                    .tag
+            );
+        }
         let google = json!({"data": {"id": "google/gemini-4-neon", "endpoints": [
             {"tag":"google-vertex/global","provider_name":"Google","pricing":{"prompt":"0.000003"}},
             {"tag":"google-ai-studio/flex","provider_name":"Google AI Studio","service_tier":"flex","pricing":{"prompt":"0.0000015"}}

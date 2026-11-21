@@ -21,6 +21,7 @@ pub(crate) mod transport;
 mod trial;
 pub(crate) mod types;
 
+pub use capabilities::setup_requires_responses_for_tools;
 pub use cost::RequestCost;
 pub use discovery::{
     discover_models, model_list_targets, setup_model_list_targets, DiscoveredModel, ModelListTarget,

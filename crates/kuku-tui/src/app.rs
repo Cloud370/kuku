@@ -112,6 +112,7 @@ pub(crate) struct Pane {
     pub(crate) deliveries: Deliveries,
     pub(crate) keyboard_focus: KeyboardFocus,
     pub(crate) contextual_focus: ContextFocus,
+    pub(crate) dismissed_cache_warning: Option<u64>,
     pub(crate) selected_queue_input: Option<String>,
     pub(crate) focused_request: Option<String>,
     pub(crate) permission_choice: Option<bool>,

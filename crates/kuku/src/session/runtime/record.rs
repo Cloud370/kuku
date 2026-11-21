@@ -337,6 +337,7 @@ impl State {
                             turn: None,
                             turn_started_at_ms: None,
                             turn_elapsed_ms: None,
+                            cache_warning: None,
                             execution_id: None,
                             last_output: None,
                             last_error: None,

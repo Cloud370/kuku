@@ -35,6 +35,7 @@ fn check_label(probe: &Probe) -> String {
             } => format!("Text · {effort}"),
             ModelTrial::Text { .. } => "Text reply".into(),
             ModelTrial::ImageInput { .. } => "Image input".into(),
+            ModelTrial::Tools { .. } => "Tools".into(),
         },
     }
 }
@@ -377,9 +378,9 @@ pub(super) fn cost_summary(batch: &ProbeBatch) -> Option<String> {
         ) {
             continue;
         }
-        let cost = match &row.progress {
-            ProbeProgress::Finished(_, Ok(ProbeResult::Trial(trial))) => &trial.cost,
-            ProbeProgress::Finished(_, Ok(ProbeResult::ApiType(evidence))) => &evidence.trial.cost,
+        let trial = match &row.progress {
+            ProbeProgress::Finished(_, Ok(ProbeResult::Trial(trial))) => trial.as_ref(),
+            ProbeProgress::Finished(_, Ok(ProbeResult::ApiType(evidence))) => &evidence.trial,
             ProbeProgress::Finished(
                 _,
                 Ok(ProbeResult::Thinking(
@@ -388,21 +389,23 @@ pub(super) fn cost_summary(batch: &ProbeBatch) -> Option<String> {
                         trial: Some(trial), ..
                     },
                 )),
-            ) => &trial.cost,
+            ) => trial.as_ref(),
             ProbeProgress::Finished(_, Err(_)) | ProbeProgress::Canceled { sent: true } => {
                 unknown += 1;
                 continue;
             }
             _ => continue,
         };
-        match cost {
-            RequestCost::Reported { .. } => {
-                *reported.get_or_insert(0.0) += cost.usd().unwrap_or_default()
+        for cost in std::iter::once(&trial.cost).chain(trial.continuation_cost.as_ref()) {
+            match cost {
+                RequestCost::Reported { .. } => {
+                    *reported.get_or_insert(0.0) += cost.usd().unwrap_or_default()
+                }
+                RequestCost::Estimated { .. } => {
+                    *estimated.get_or_insert(0.0) += cost.usd().unwrap_or_default()
+                }
+                RequestCost::Unknown => unknown += 1,
             }
-            RequestCost::Estimated { .. } => {
-                *estimated.get_or_insert(0.0) += cost.usd().unwrap_or_default()
-            }
-            RequestCost::Unknown => unknown += 1,
         }
     }
     let mut parts = Vec::new();
@@ -536,6 +539,13 @@ fn probe_detail(
                 }
             }
             Ok(ProbeResult::Trial(trial)) => {
+                if let Some(verified) = trial.tool_round_trip {
+                    return if verified {
+                        ("✓", "Tool call and reply verified".into(), SUCCESS)
+                    } else {
+                        ("!", "Tools not verified".into(), WARNING)
+                    };
+                }
                 let detail = match trial.image_match {
                     Some(true) => "Verified".into(),
                     Some(false) => {

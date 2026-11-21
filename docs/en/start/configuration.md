@@ -28,6 +28,10 @@ Choose a custom connection, saved connection, or preset. Enter the provider URL,
 
 Models stay in the order returned by the provider, including filtered search results. Type to search, use the arrows to move, and press Enter to select one. Space marks models for a multi-selection, and Enter accepts the marked set. Choose a default when creating a configuration with several models. Selecting models starts tests in the background. The review screen shows the request address, model progress, and test status. Open **View requests** during testing or **Model tests** afterward to see individual requests. Open **Settings** to change thinking, output, model capabilities, or costs. Set optional token rates from **Costs** and add **Request cost** to the terminal status line to see monetary totals. [Proxy and pricing configuration](../reference/config.md#providername)
 
+Choose **Settings → Test tools** to check a synthetic tool call and its reply on the selected route. A working text reply alone does not establish tool support. On a text-only Chat route that requires Responses for tools, choose **Settings → API type → Responses** to test the new route before saving.
+
+The Turn summary highlights cache reads below 50% after the first two comparable Turns on the current route. Two consecutive low Turns raise a yellow status-line notice. Open it with the mouse or F2 and select **Dismiss**. A new route or context starts a new baseline.
+
 In a Session, open `/model` or press Ctrl+L. **Add model or connection** and **Edit** open the shared form. An existing connection can be reused with its saved credential. **Use in this Session** changes the selected Agent. **Set as default** saves the route for new Sessions. [Terminal thinking controls](../reference/cli.md#slash-commands) · [Config reference](../reference/config.md)
 
 ## Provider Setup

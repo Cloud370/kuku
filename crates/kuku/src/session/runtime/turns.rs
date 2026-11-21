@@ -8,13 +8,17 @@ use crate::event::{EventPayload, EventStore, StoredEvent};
 use crate::Result;
 
 use super::record::Record;
-use super::{AgentSnapshot, TurnSummary, UsageTotals};
+use super::{AgentSnapshot, CacheWarning, TurnSummary, UsageTotals};
+
+mod cache;
+use cache::{CacheHistory, TurnCache};
 
 /// Per-Agent Turn numbering and terminal statistics derived from committed facts.
 #[derive(Debug, Default)]
 pub struct TurnIndex {
     by_agent: HashMap<String, Vec<IndexedTurn>>,
     summaries: HashMap<u64, (u64, TurnSummary)>,
+    cache: HashMap<String, CacheHistory>,
 }
 
 #[derive(Debug)]
@@ -23,6 +27,7 @@ struct IndexedTurn {
     start: Option<u64>,
     tool_calls: u64,
     end: Option<TurnEnd>,
+    cache: TurnCache,
 }
 
 #[derive(Debug)]
@@ -74,6 +79,10 @@ impl TurnIndex {
     }
 
     pub(super) fn time_snapshot(&self, snapshot: &mut AgentSnapshot) {
+        snapshot.cache_warning = self
+            .cache
+            .get(&snapshot.address)
+            .and_then(CacheHistory::warning);
         let Some((_, turn)) = snapshot
             .turn
             .and_then(|id| self.indexed(&snapshot.address, id))
@@ -102,6 +111,7 @@ impl TurnIndex {
                         start: event_ms(event),
                         tool_calls: 0,
                         end: None,
+                        cache: TurnCache::default(),
                     });
             }
             Some(Record::TurnSettled {
@@ -122,6 +132,9 @@ impl TurnIndex {
                 }
             }
             None => {
+                if let EventPayload::Unknown(value) = &event.payload {
+                    self.observe_cache(value);
+                }
                 if let EventPayload::ToolCall {
                     conversation, turn, ..
                 } = &event.payload
@@ -138,6 +151,27 @@ impl TurnIndex {
                 }
             }
             _ => {}
+        }
+    }
+
+    fn observe_cache(&mut self, value: &serde_json::Value) {
+        if value["kind"] != "runtime.step_prepared" {
+            return;
+        }
+        let (Some(address), Some(id)) = (value["agent"].as_str(), value["turn"].as_u64()) else {
+            return;
+        };
+        let Some(turn) = self
+            .by_agent
+            .get_mut(address)
+            .and_then(|turns| turns.last_mut())
+            .filter(|turn| turn.id == id && turn.end.is_none())
+        else {
+            return;
+        };
+        turn.cache.prepare(value);
+        if let Some(history) = self.cache.get_mut(address) {
+            history.observe_prefix(&turn.cache);
         }
     }
 
@@ -165,6 +199,7 @@ impl TurnIndex {
         if known.end.is_some() {
             return;
         }
+        let cache = std::mem::take(&mut known.cache);
         let summary = TurnSummary {
             elapsed_ms: known
                 .start
@@ -174,6 +209,12 @@ impl TurnIndex {
                 .output_tokens
                 .filter(|_| usage.output_tokens_complete()),
             cache_hit_percent: usage.cache_hit_percent(),
+            low_cache_hit: !explicit_stop
+                && self
+                    .cache
+                    .entry(address.to_owned())
+                    .or_default()
+                    .finish(turn, cache, usage),
             tool_calls: known.tool_calls,
         };
         known.end = Some(TurnEnd {
@@ -295,5 +336,71 @@ mod tests {
         assert_eq!(None, summary.input_tokens);
         assert_eq!(None, summary.output_tokens);
         assert_eq!(Some(20.0), summary.cache_hit_percent);
+    }
+
+    #[test]
+    fn cache_warnings_replay_per_agent_and_reset_when_the_prefix_changes() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("events.jsonl");
+        let mut store = EventStore::open(&path).unwrap();
+        let mut settled = Vec::new();
+        let mut last_warning = None;
+        for (index, (segment, read)) in [
+            (1, Some(0)),
+            (1, Some(820)),
+            (1, Some(370)),
+            (1, Some(0)),
+            (1, Some(900)),
+            (1, None),
+            (1, Some(400)),
+            (1, Some(200)),
+            (2, Some(0)),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let second = index as u8 + 1;
+            let turn = accept(&mut store, second, "main", None);
+            store
+                .append(EventPayload::Unknown(json!({
+                    "kind":"runtime.step_prepared", "agent":"main", "turn":turn, "segment":segment,
+                    "prefix_hash":"fixed system", "request_id": format!("request-{turn}"),
+                })))
+                .unwrap();
+            let usage = UsageTotals {
+                cache_measured_input_tokens: u64::from(read.is_some()) * 1000,
+                cache_measured_read_tokens: read.unwrap_or_default(),
+                ..UsageTotals::default()
+            };
+            settled.push(finish(&mut store, second, "main", turn, usage));
+            let (replayed, _) = TurnIndex::read(&path).unwrap();
+            let warning = replayed.cache["main"].warning();
+            if index == 3 {
+                let witness = warning.as_ref().unwrap();
+                assert_eq!(
+                    (0, 370, 2000),
+                    (
+                        witness.latest_percent,
+                        witness.read_tokens,
+                        witness.input_tokens
+                    )
+                );
+                last_warning = Some(witness.since_turn);
+            } else if index == 7 {
+                assert_ne!(last_warning, Some(warning.unwrap().since_turn));
+            } else {
+                assert!(warning.is_none());
+            }
+            assert!(!replayed.cache.contains_key("reviewer"));
+        }
+        let (index, _) = TurnIndex::read(&path).unwrap();
+        let flags: Vec<_> = settled
+            .iter()
+            .map(|id| index.summary_at(*id).unwrap().1.low_cache_hit)
+            .collect();
+        assert_eq!(
+            flags,
+            [false, false, true, true, false, false, true, true, false]
+        );
     }
 }
