@@ -306,12 +306,7 @@ impl Session {
     }
 
     pub(crate) fn active_jobs(&self, agent: &str) -> usize {
-        let state = self.inner.state.lock().unwrap();
-        state
-            .jobs
-            .agents
-            .get(agent)
-            .map_or(0, |jobs| jobs.running.len())
+        self.inner.state.lock().unwrap().jobs.running_count(agent)
     }
 
     pub(crate) fn append_job_wait_result(&self, payload: EventPayload) -> Result<StoredEvent> {
@@ -581,9 +576,16 @@ impl Session {
             "Job {} ({}): {}. {}",
             job.id, job.tool, result.status, result.summary
         );
-        if !model_content.is_empty() {
+        let body = model_content
+            .strip_prefix(result.summary.as_str())
+            .and_then(|rest| {
+                rest.strip_prefix('\n')
+                    .or_else(|| rest.is_empty().then_some(rest))
+            })
+            .unwrap_or(model_content);
+        if !body.is_empty() {
             text.push('\n');
-            text.push_str(model_content);
+            text.push_str(body);
         }
         let limit = self
             .inner
@@ -594,7 +596,7 @@ impl Session {
         text.truncate(text.floor_char_boundary(limit.min(text.len())));
         Input {
             command_id: format!("{JOB_DELIVERY_PREFIX}{}", job.id),
-            source: InputSource::External("session_job".into()),
+            source: InputSource::session_job(),
             target: job.agent.clone(),
             text,
             activation: Activation::Wake,
@@ -624,6 +626,10 @@ impl Session {
 }
 
 impl JobIndex {
+    pub(super) fn running_count(&self, agent: &str) -> usize {
+        self.agents.get(agent).map_or(0, |jobs| jobs.running.len())
+    }
+
     fn register(&mut self, event: &StoredEvent) -> Result<()> {
         let EventPayload::ToolResult {
             turn,

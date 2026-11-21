@@ -201,6 +201,7 @@ pub enum EventPayload {
         text: String,
         from: Option<String>,
         via_tool_call_id: Option<String>,
+        job_delivery: bool,
     },
     MessageAssistant {
         ts: String,
@@ -488,6 +489,10 @@ impl EventPayload {
                 text: string_field(object, "text")?,
                 from: optional_string_field(object, "from"),
                 via_tool_call_id: optional_string_field(object, "via_tool_call_id"),
+                job_delivery: object
+                    .get("job_delivery")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
             }),
             "message.assistant" => Some(Self::MessageAssistant {
                 ts: string_field(object, "ts")?,
@@ -603,6 +608,7 @@ impl EventPayload {
                 conversation,
                 from,
                 via_tool_call_id,
+                job_delivery,
             } => {
                 let mut map = Map::new();
                 map.insert("id".into(), Value::from(id));
@@ -619,6 +625,9 @@ impl EventPayload {
                         "via_tool_call_id".into(),
                         Value::from(via_tool_call_id.clone()),
                     );
+                }
+                if *job_delivery {
+                    map.insert("job_delivery".into(), Value::Bool(true));
                 }
                 Ok(Value::Object(map))
             }

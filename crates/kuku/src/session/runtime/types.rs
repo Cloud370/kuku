@@ -264,6 +264,25 @@ pub enum InputSource {
 }
 
 impl InputSource {
+    const SESSION_JOB: &str = "session_job";
+
+    pub(super) fn session_job() -> Self {
+        Self::External(Self::SESSION_JOB.into())
+    }
+
+    pub(crate) fn is_job_delivery(&self) -> bool {
+        matches!(self, Self::External(source) if source == Self::SESSION_JOB)
+    }
+
+    pub(crate) fn message_text(&self, text: String) -> String {
+        if self.is_job_delivery() {
+            let text = text.replace('&', "&amp;").replace('<', "&lt;");
+            format!("<kuku_job_result>\n{text}\n</kuku_job_result>")
+        } else {
+            text
+        }
+    }
+
     pub(crate) fn agent_address(&self) -> Option<&str> {
         match self {
             Self::Agent(address) => Some(address),
@@ -561,6 +580,9 @@ pub struct AgentSnapshot {
     pub status: AgentStatus,
     /// Number of delivered inputs awaiting acceptance.
     pub pending_inputs: usize,
+    /// Number of background Jobs still running for this Agent.
+    #[serde(default)]
+    pub running_jobs: usize,
     /// Bounded excerpt of the most recent admitted task input.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub admitted_task: Option<String>,

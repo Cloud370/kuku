@@ -24,6 +24,7 @@ fn message_user(turn: u64, text: &str) -> EventPayload {
         text: text.into(),
         from: None,
         via_tool_call_id: None,
+        job_delivery: false,
     }
 }
 
@@ -151,6 +152,7 @@ fn query_session_turn_filtering() {
                 text: "first turn".into(),
                 from: None,
                 via_tool_call_id: None,
+                job_delivery: false,
             },
             EventPayload::TurnCompleted {
                 turn: 1,
@@ -164,6 +166,7 @@ fn query_session_turn_filtering() {
                 text: "second turn".into(),
                 from: None,
                 via_tool_call_id: None,
+                job_delivery: false,
             },
             EventPayload::TurnCompleted {
                 turn: 2,
@@ -236,6 +239,7 @@ fn query_session_skip_rolled_back_filters_events() {
                 text: "original".into(),
                 from: None,
                 via_tool_call_id: None,
+                job_delivery: false,
             },
             EventPayload::TurnCompleted {
                 turn: 1,
@@ -254,6 +258,7 @@ fn query_session_skip_rolled_back_filters_events() {
                 text: "rolled back".into(),
                 from: None,
                 via_tool_call_id: None,
+                job_delivery: false,
             },
             EventPayload::TurnCompleted {
                 turn: 2,
@@ -287,6 +292,7 @@ fn query_session_skip_rolled_back_false_returns_all() {
                 text: "original".into(),
                 from: None,
                 via_tool_call_id: None,
+                job_delivery: false,
             },
             EventPayload::TurnCompleted {
                 turn: 1,
@@ -305,6 +311,7 @@ fn query_session_skip_rolled_back_false_returns_all() {
                 text: "rolled back".into(),
                 from: None,
                 via_tool_call_id: None,
+                job_delivery: false,
             },
             EventPayload::TurnCompleted {
                 turn: 2,
@@ -433,6 +440,7 @@ fn query_session_turn_filtering_respects_skip_rolled_back_stream() {
                 text: "first".into(),
                 from: None,
                 via_tool_call_id: None,
+                job_delivery: false,
             },
             EventPayload::TurnCompleted {
                 turn: 1,
@@ -451,6 +459,7 @@ fn query_session_turn_filtering_respects_skip_rolled_back_stream() {
                 text: "second active".into(),
                 from: None,
                 via_tool_call_id: None,
+                job_delivery: false,
             },
             EventPayload::TurnCompleted {
                 turn: 2,
@@ -469,6 +478,7 @@ fn query_session_turn_filtering_respects_skip_rolled_back_stream() {
                 text: "third rolled back".into(),
                 from: None,
                 via_tool_call_id: None,
+                job_delivery: false,
             },
             EventPayload::TurnCompleted {
                 turn: 3,
@@ -507,6 +517,7 @@ fn query_session_filters_single_conversation() {
                 text: "review text".into(),
                 from: Some("main".into()),
                 via_tool_call_id: None,
+                job_delivery: false,
             },
             EventPayload::ConversationOpened {
                 ts: ts("t"),
@@ -519,6 +530,7 @@ fn query_session_filters_single_conversation() {
                 text: "explore text".into(),
                 from: Some("main".into()),
                 via_tool_call_id: None,
+                job_delivery: false,
             },
         ],
     );

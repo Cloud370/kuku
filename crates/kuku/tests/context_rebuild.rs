@@ -62,6 +62,7 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
             text: "inspect".to_string(),
             from: None,
             via_tool_call_id: None,
+            job_delivery: false,
         })
         .unwrap();
     store
@@ -339,6 +340,7 @@ fn rebuilds_multi_group_tool_history_at_crate_boundary() {
             text: "inspect".to_string(),
             from: None,
             via_tool_call_id: None,
+            job_delivery: false,
         })
         .unwrap();
     store
@@ -486,6 +488,7 @@ fn restores_frozen_prelude_from_fact_event() {
                 text: "inspect".to_string(),
                 from: None,
                 via_tool_call_id: None,
+                job_delivery: false,
             },
         },
     ];
@@ -607,6 +610,7 @@ fn rebuild_history_replays_non_main_scoped_tool_result() {
                 text: "inspect".to_string(),
                 from: Some("main".to_string()),
                 via_tool_call_id: Some("toolu_agent_review".to_string()),
+                job_delivery: false,
             },
         },
         kuku::event::StoredEvent {
@@ -691,6 +695,7 @@ fn rebuild_history_ignores_context_source_facts_and_respects_handoff_cutoff() {
                 text: "old".to_string(),
                 from: None,
                 via_tool_call_id: None,
+                job_delivery: false,
             },
         },
         kuku::event::StoredEvent {
@@ -726,6 +731,7 @@ fn rebuild_history_ignores_context_source_facts_and_respects_handoff_cutoff() {
                 text: "new".to_string(),
                 from: None,
                 via_tool_call_id: None,
+                job_delivery: false,
             },
         },
         kuku::event::StoredEvent {

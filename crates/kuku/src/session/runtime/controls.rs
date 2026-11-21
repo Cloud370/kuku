@@ -72,6 +72,7 @@ impl Session {
             conversation,
             turn,
             text,
+            job_delivery: false,
             ..
         } = &target.payload
         else {
@@ -409,7 +410,9 @@ impl Session {
             writer.append(cancelled_tool_result(address, turn, id, result)?)?;
         }
         if let Some(id) = open.intersection(&dispatched).next() {
-            return Err(Error::InterruptedOpenTool(format!("agent '{address}' tool call '{id}' from turn {turn} has no confirmed result after cancellation")));
+            return Err(Error::InterruptedOpenTool(format!(
+                "agent '{address}' tool call '{id}' from turn {turn} has no confirmed result after cancellation"
+            )));
         }
         if started && !terminal {
             writer.append(EventPayload::TurnCancelled {
@@ -876,6 +879,7 @@ mod rewind_guard_tests {
                     text: "same prompt".into(),
                     from: None,
                     via_tool_call_id: None,
+                    job_delivery: false,
                 },
             },
         ];

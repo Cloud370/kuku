@@ -266,6 +266,7 @@ impl AgentState {
             .iter()
             .rev()
             .filter(|entry| !self.question_replies.contains(&entry.input.command_id))
+            .filter(|entry| !entry.input.source.is_job_delivery())
             .find_map(|entry| task_preview(&entry.input.text));
     }
 
@@ -332,6 +333,7 @@ impl State {
                             active_config: None,
                             status: AgentStatus::Idle,
                             pending_inputs: 0,
+                            running_jobs: 0,
                             admitted_task: None,
                             queued_task: None,
                             turn: None,
@@ -536,7 +538,8 @@ impl State {
                     } else {
                         input.accepted_turn.get_or_insert(admitted_turn);
                     }
-                    if !agent.question_replies.remove(&id) {
+                    let question_reply = agent.question_replies.remove(&id);
+                    if !question_reply && !input.input.source.is_job_delivery() {
                         if let Some(preview) = task_preview(&input.input.text) {
                             agent.snapshot.admitted_task = Some(preview);
                         }
@@ -772,6 +775,7 @@ impl State {
     fn timed_snapshot(&self, current: &AgentSnapshot) -> AgentSnapshot {
         let mut snapshot = current.clone();
         self.turns.time_snapshot(&mut snapshot);
+        snapshot.running_jobs = self.jobs.running_count(&snapshot.address);
         snapshot
     }
 
@@ -888,7 +892,9 @@ pub(super) fn validate_address(address: &str) -> Result<()> {
             .bytes()
             .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_'))
     {
-        return Err(Error::InvalidArgument(format!("agent address '{address}' must be flat and contain 1..=64 lowercase ASCII letters, digits, '-' or '_'")));
+        return Err(Error::InvalidArgument(format!(
+            "agent address '{address}' must be flat and contain 1..=64 lowercase ASCII letters, digits, '-' or '_'"
+        )));
     }
     Ok(())
 }

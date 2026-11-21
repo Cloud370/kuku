@@ -314,6 +314,7 @@ fn event_filter_excludes_main_facts_from_non_main_conversation() {
                 text: "review message".into(),
                 from: None,
                 via_tool_call_id: None,
+                job_delivery: false,
             },
         },
         kuku::event::StoredEvent {

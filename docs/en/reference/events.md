@@ -16,7 +16,7 @@ The CLI writes one JSON record per line to stdout and the next cursor to stderr.
 |---|---|
 | `session.created`, `conversation.opened` | Session metadata and the opening of an Agent's conversation stream. |
 | `runtime.operation` | `record.operation` selects the state change. Examples include `session_claimed`, `agent_created`, `agent_configured`, `input_delivered`, `inputs_accepted`, `input_withdrawal` and `turn_settled`. `execution_started`, `agent_stopped` and `agent_resumed` track targeted execution control. Pending requests and their replies are also Session operations. |
-| `turn.started`, `message.user`, `model.response`, `model.error` | Input and provider outcomes for a Turn; model responses retain their normalized terminal state. `turn.completed`, `turn.interrupted` and `turn.cancelled` describe terminal outcomes. |
+| `turn.started`, `message.user`, `model.response`, `model.error` | Input and provider outcomes for a Turn. A `message.user` with `job_delivery: true` carries background execution feedback. Model responses retain their normalized terminal state. `turn.completed`, `turn.interrupted` and `turn.cancelled` describe terminal outcomes. |
 | `model.recovery` | A one-time output-limit retry for a direct `Query` or child-Agent query, with the failed and retry request IDs and recovery-notice provenance. |
 | `runtime.context_segment`, `runtime.context_admitted`, `runtime.step_prepared` | Static context, newly admitted messages and the prepared Step confirming their bounds. `body_hash` identifies the encoded request. |
 | `runtime.provider_report`, `runtime.model_usage`, `runtime.provider_replay` | Provider-reported metadata, token counters or protocol-native continuation data when available. |

@@ -488,6 +488,7 @@ async fn unconfirmed_runtime_suffix_can_be_replaced_before_a_retried_preparation
                 text: "retry-input".into(),
                 from: None,
                 via_tool_call_id: None,
+                job_delivery: false,
             })
             .unwrap()
             .id;

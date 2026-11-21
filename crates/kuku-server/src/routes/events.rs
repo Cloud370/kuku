@@ -505,6 +505,7 @@ mod tests {
                 text: text.into(),
                 from: None,
                 via_tool_call_id: None,
+                job_delivery: false,
             },
         }
     }

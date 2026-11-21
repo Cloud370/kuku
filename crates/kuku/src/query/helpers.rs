@@ -231,6 +231,7 @@ pub(super) fn append_message_user_with_sender(
     text: &str,
     from: Option<&str>,
     via_tool_call_id: Option<&str>,
+    source: &crate::session::InputSource,
 ) -> Result<()> {
     append_event(
         events_path,
@@ -238,9 +239,10 @@ pub(super) fn append_message_user_with_sender(
             turn,
             ts: now_timestamp()?,
             conversation: conversation.as_str().to_string(),
-            text: text.to_string(),
+            text: source.message_text(text.to_owned()),
             from: from.map(str::to_owned),
             via_tool_call_id: via_tool_call_id.map(ToOwned::to_owned),
+            job_delivery: source.is_job_delivery(),
         },
     )
 }

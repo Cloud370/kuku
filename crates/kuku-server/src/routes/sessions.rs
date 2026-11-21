@@ -510,6 +510,7 @@ mod retry_progress_tests {
             active_config: None,
             status: AgentStatus::Interrupted,
             pending_inputs: 0,
+            running_jobs: 0,
             admitted_task: None,
             queued_task: None,
             turn: Some(3),

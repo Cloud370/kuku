@@ -31,9 +31,14 @@ impl App {
                 &job.id,
                 ChoiceKind::CancelBackground(job.id.clone()),
             ));
-        } else if let Some(output_id) = job.output_id {
+        }
+        if let Some(output_id) = job.output_id {
             choices.push(Choice::new(
-                "Read saved output",
+                if job.status == JobStatus::Running {
+                    "Read output"
+                } else {
+                    "Read saved output"
+                },
                 &job.id,
                 ChoiceKind::Tool(ToolView {
                     name: job.id.clone(),

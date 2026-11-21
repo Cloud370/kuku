@@ -438,6 +438,7 @@ async fn same_script_keeps_one_command_capture_across_foreground_and_automatic_j
     let id = job_id(&receipt);
     let started = slow_session.job(AGENT, id).unwrap();
     assert_eq!(JobStatus::Running, started.status);
+    assert_eq!(1, slow_session.agent(AGENT).unwrap().running_jobs);
     assert_eq!(start_cursor, started.started_at);
     assert_eq!(CALL, started.tool_call_id);
     assert!(started.result.is_none() && !slow.workspace.join("completed.txt").exists());
@@ -480,6 +481,27 @@ async fn same_script_keeps_one_command_capture_across_foreground_and_automatic_j
     .await;
     slow_end.assert_hits_async(2).await;
     let delivered = wire_requests("/job-slow");
+    let wake = delivered
+        .iter()
+        .find_map(|body| {
+            body["messages"].as_array()?.iter().find_map(|message| {
+                message["content"]
+                    .as_str()
+                    .filter(|text| text.starts_with("<kuku_job_result>"))
+            })
+        })
+        .expect("the Job result should reach the model as marked feedback");
+    assert!(wake.ends_with("</kuku_job_result>"));
+    assert!(wake.contains(&format!("Job {id} (")));
+    let agent = slow_session.agent(AGENT).unwrap();
+    assert_eq!(0, agent.running_jobs);
+    assert_eq!(Some(STEERING), agent.admitted_task.as_deref());
+    let job_input = slow_session.events(0, 512).unwrap().into_iter().find(|event| matches!(
+        &event.payload, EventPayload::MessageUser { job_delivery: true, text, .. } if text == wake
+    )).expect("the durable event should identify the Job delivery");
+    assert!(slow_session
+        .rewind_message("rewind-job", AGENT, job_input.id, wake, false)
+        .is_err());
     assert_eq!(
         1,
         delivered
