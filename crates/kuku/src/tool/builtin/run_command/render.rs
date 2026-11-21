@@ -6,12 +6,13 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::execution::{
-    CommandExecutionFacts, CommandInvocation, CommandResultKind, CommandStdin, CommandTermination,
-    OutputReference, ReportedTests,
+    CommandExecutionFacts, CommandInvocation, CommandOutputSummary, CommandResultKind,
+    CommandStdin, CommandTermination, OutputReference, ReportedTests,
 };
 use crate::tool::ToolResultEnvelope;
 
-use super::output::{read_stderr, CaptureMetadata, OutputChunk, OutputSegment};
+use super::output::{read_stderr, CaptureMetadata, FinishedCapture, OutputChunk, OutputSegment};
+use super::summary::Summary;
 use super::{
     output_error, read_output, CommandCapture, CommandOutcome, CommandRequest, CommandView,
     ModelOutputAccess, OutputRead, OutputStream,
@@ -26,11 +27,15 @@ const SHAPE_FIELD_BYTES: usize = 24;
 pub(super) fn render_command_result(
     request: &CommandRequest,
     outcome: CommandOutcome,
-    capture: (CaptureMetadata, Vec<ReportedTests>),
+    capture: FinishedCapture,
     duration: Duration,
     output: CommandCapture<'_>,
 ) -> ToolResultEnvelope {
-    let (metadata, reports) = capture;
+    let FinishedCapture {
+        metadata,
+        reports,
+        summary: rule,
+    } = capture;
     let duration_ms = duration.as_millis().min(u64::MAX as u128) as u64;
     let summary = format!(
         "{}, stdout {} lines, stderr {} lines",
@@ -81,6 +86,7 @@ pub(super) fn render_command_result(
         quota_truncated: metadata.quota_truncated,
         cleanup_incomplete: metadata.cleanup_incomplete,
         output_filtered: false,
+        output_summary: None,
         preview_truncated: false,
         lossy_utf8: false,
         output_preview: String::new(),
@@ -92,7 +98,7 @@ pub(super) fn render_command_result(
     };
     match output.view {
         CommandView::Model(access) => {
-            render_model(status, summary, facts, &metadata, output, access)
+            render_model(status, summary, facts, &metadata, output, access, rule)
         }
         CommandView::Script { host_bytes } => {
             render_script(status, summary, facts, output, host_bytes)
@@ -107,6 +113,7 @@ fn render_model(
     metadata: &CaptureMetadata,
     output: CommandCapture<'_>,
     access: ModelOutputAccess,
+    rule: Option<Summary>,
 ) -> ToolResultEnvelope {
     let output_preview_limit = output
         .limits
@@ -117,6 +124,26 @@ fn render_model(
     let abbreviated = access != ModelOutputAccess::Unavailable
         && (metadata.stored_bytes > output_preview_limit as u64
             || facts.stdout_lines.saturating_add(facts.stderr_lines) > SHORT_OUTPUT_LINES);
+    if abbreviated {
+        if let Some(rule) = rule {
+            if let Some((preview, content)) = render_rule(
+                &summary,
+                &rule,
+                output.id,
+                metadata,
+                output_preview_limit,
+                access,
+            ) {
+                summary.push_str(", summarized output");
+                facts.output_filtered = true;
+                facts.output_summary = Some(rule.source);
+                facts.preview_truncated = true;
+                facts.output_preview = preview;
+                facts.output_preview_truncated = true;
+                return ToolResultEnvelope::command(status, summary, content, true, facts);
+            }
+        }
+    }
     let filtered = (abbreviated || access == ModelOutputAccess::Unavailable)
         && (!metadata.summary.is_empty() || !facts.reported_tests.is_empty());
     let show_end = failed
@@ -236,6 +263,30 @@ fn render_model(
     facts.output_preview = output_preview;
     facts.output_preview_truncated = output_preview_truncated;
     ToolResultEnvelope::command(status, summary, model_content, truncated, facts)
+}
+
+fn render_rule(
+    outcome: &str,
+    summary: &Summary,
+    id: &str,
+    capture: &CaptureMetadata,
+    limit: usize,
+    access: ModelOutputAccess,
+) -> Option<(String, String)> {
+    let CommandOutputSummary::Rule { rule, ranges } = &summary.source;
+    let first = ranges.first()?;
+    let preview = format!("Output summary ({rule}, selected lines):\n{}", summary.text);
+    let start = first.offset;
+    let bytes = first.end_offset.checked_sub(start)?.min(4096);
+    let mut content = format!(
+        "{outcome}, summarized output\n\n{preview}\n\nFor the first selected range, call read_output({{id:{id:?}, offset:{start}, limit:{bytes}}})."
+    );
+    if access == ModelOutputAccess::Script {
+        content.push_str(" To locate a literal in the full capture, call tools.search_output({id, text}) in run_js.");
+    }
+    content.push_str(&render_reference(id, capture, false, false));
+    (content.len() <= limit && (content.len() as u64) < capture.stored_bytes)
+        .then_some((preview, content))
 }
 
 fn append_output_shape(

@@ -33,6 +33,7 @@ mod render;
 mod reports;
 mod request;
 mod shell;
+mod summary;
 
 #[cfg(all(test, windows))]
 mod windows_tests;
@@ -198,18 +199,24 @@ pub(crate) async fn run_command_to(
         );
     }
     let started = Instant::now();
-    let mut writer = match OutputWriter::create_command(output.dir, output.id, output.limits).await
-    {
-        Ok(writer) => writer,
-        Err(error) => {
-            return ToolResultEnvelope::error(
-                format!("failed: output create: {error}"),
-                format!(
+    let collector = match output.view {
+        CommandView::Model(ModelOutputAccess::Read | ModelOutputAccess::Script) => {
+            summary::Collector::new(&request.invocation)
+        }
+        _ => None,
+    };
+    let mut writer =
+        match OutputWriter::create_command(output.dir, output.id, output.limits, collector).await {
+            Ok(writer) => writer,
+            Err(error) => {
+                return ToolResultEnvelope::error(
+                    format!("failed: output create: {error}"),
+                    format!(
                     "command output create failed: {error}; no output reference was acknowledged"
                 ),
-            )
-        }
-    };
+                )
+            }
+        };
     let already_cancelled = tokio::select! {
         biased;
         _ = cancelled.as_mut() => true,
@@ -226,7 +233,15 @@ pub(crate) async fn run_command_to(
             Err(result) => return result,
         }
     };
-    let capture = match writer.finish_command(outcome.cleanup_incomplete).await {
+    let exit_code = if outcome.cancelled || outcome.timed_out {
+        None
+    } else {
+        outcome.exit_status.and_then(|status| status.code())
+    };
+    let capture = match writer
+        .finish_command(outcome.cleanup_incomplete, exit_code)
+        .await
+    {
         Ok(result) => result,
         Err(error) => return output_error("sync", error, outcome.cleanup_incomplete),
     };

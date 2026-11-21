@@ -74,6 +74,32 @@ pub struct OutputReference {
     pub bytes: u64,
 }
 
+/// The command pipe that supplied retained bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputStream {
+    Stdout,
+    Stderr,
+}
+
+/// A merged-coordinate span. Read only the indicated stream within the span.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandOutputRange {
+    pub stream: OutputStream,
+    pub offset: u64,
+    pub end_offset: u64,
+}
+
+/// The retained evidence used by a bounded command output view.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CommandOutputSummary {
+    Rule {
+        rule: String,
+        ranges: Vec<CommandOutputRange>,
+    },
+}
+
 /// Recognized format of a test program's own result report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -170,6 +196,9 @@ pub struct CommandExecutionFacts {
     pub cleanup_incomplete: bool,
     /// Whether the initial model evidence selected recognized report lines.
     pub output_filtered: bool,
+    /// Rule and source ranges used for a specialized view, when selected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_summary: Option<CommandOutputSummary>,
     /// Whether the initial model evidence omitted output due to its byte bound.
     pub preview_truncated: bool,
     /// Bounded decoded excerpt of the observed stdout and stderr.

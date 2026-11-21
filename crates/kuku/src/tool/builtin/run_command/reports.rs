@@ -93,7 +93,7 @@ impl ReportCollector {
     }
 }
 
-fn rust_report(line: &str) -> Option<ReportedTests> {
+pub(super) fn rust_report(line: &str) -> Option<ReportedTests> {
     if !line.starts_with("test result: ") {
         return None;
     }

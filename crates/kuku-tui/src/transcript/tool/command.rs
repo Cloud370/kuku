@@ -120,7 +120,9 @@ impl CommandPreview {
         if self.facts.cleanup_incomplete {
             notes.push("Process or pipe cleanup incomplete");
         }
-        if self.facts.output_preview_truncated {
+        if self.facts.output_summary.is_some() {
+            notes.push("Raw output retained");
+        } else if self.facts.output_preview_truncated {
             notes.push("Output preview truncated");
         }
         if self.facts.lossy_utf8 {

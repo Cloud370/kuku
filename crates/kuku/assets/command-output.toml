@@ -1,0 +1,35 @@
+schema_version = 1
+
+[filters.cargo-humans]
+description = "Cargo build, check, clippy, and libtest human output"
+match_command = '^cargo(?: \+[^ ]+)? (?:build|check|clippy|test)(?: |$)'
+strip_ansi = true
+strip_lines_matching = [
+  '^\s*(Compiling|Checking|Downloaded|Downloading|Updating|Fresh)\s+\S',
+  '^test .+ \.\.\. (ok|ignored(?:, .*)?)$',
+]
+head_lines = 16
+tail_lines = 12
+max_lines = 30
+
+[[tests.cargo-humans]]
+name = "Compiler location and progress"
+input = """
+    Checking sample v0.1.0
+\u001B[1merror[E0308]\u001B[0m: mismatched types
+ --> src/lib.rs:1:1
+"""
+expected = """
+error[E0308]: mismatched types
+ --> src/lib.rs:1:1"""
+
+[[tests.cargo-humans]]
+name = "Failing test and report"
+input = """
+test reads ... ok
+test validates ... FAILED
+test result: FAILED. 1 passed; 1 failed; 0 ignored
+"""
+expected = """
+test validates ... FAILED
+test result: FAILED. 1 passed; 1 failed; 0 ignored"""

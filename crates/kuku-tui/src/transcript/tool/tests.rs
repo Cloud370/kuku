@@ -407,6 +407,57 @@ fn shell_card_distinguishes_stderr_from_the_outer_exit_status() {
         .contains("ok · shell exit 0 · stderr · 5.9s")));
 }
 
+#[test]
+fn command_card_labels_selected_evidence_and_exposes_its_capture() {
+    let mut transcript = Transcript::default();
+    let preview = "Output summary (cargo-humans, selected lines):\nerror[E0308]: mismatched types";
+    let mut facts = command_facts("cargo", "saved", 4000, preview);
+    facts["invocation"]["args"] = json!(["check"]);
+    facts["output_summary"] = json!({
+        "kind":"rule", "rule":"cargo-humans",
+        "ranges":[{"stream":"stderr","offset":3600,"end_offset":3720}]
+    });
+    facts["output_preview_truncated"] = json!(true);
+    facts["output_filtered"] = json!(true);
+    facts["exit_code"] = json!(101);
+    transcript.apply(
+        serde_json::from_value(json!({
+            "id":1, "agent":"main", "turn":1, "type":"tool_result",
+            "tool":"run_command", "tool_call_id":"cargo-check", "status":"ok",
+            "summary":"command exited 101, summarized output", "model_content":preview,
+            "structured":facts
+        }))
+        .unwrap(),
+        None,
+    );
+    let rendered = transcript
+        .project(90, 22)
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains("error[E0308]: mismatched types"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("Output summary (cargo-humans"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("Raw output retained"), "{rendered}");
+    let message = transcript
+        .message_info(
+            &crate::transcript::MessageId::Tool {
+                turn: Some(1),
+                call_id: "cargo-check".into(),
+            },
+            "main",
+        )
+        .unwrap();
+    assert_eq!(message.outputs[0].output_id.as_deref(), Some("saved"));
+}
+
 fn command_facts(program: &str, id: &str, bytes: u64, preview: &str) -> Value {
     json!({
         "kind":"command_result",
