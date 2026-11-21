@@ -11,6 +11,7 @@ use crate::execution::{
 };
 use crate::tool::ToolResultEnvelope;
 
+use super::encoding::display_text;
 use super::output::{read_stderr, CaptureMetadata, FinishedCapture, OutputChunk, OutputSegment};
 use super::summary::Summary;
 use super::{
@@ -304,22 +305,37 @@ fn append_output_shape(
             continue;
         }
         body.push_str(&format!("\n{label}: {bytes} observed bytes"));
-        if !chunk.lossy_utf8 {
-            if let Some(segment) = chunk
-                .segments
-                .iter()
-                .find(|segment| segment.stream == stream)
-            {
-                let (description, json_lines) =
-                    output_shape(&segment.text, segment.bytes as u64 == bytes);
-                body.push_str(". ");
-                body.push_str(&description);
-                if json_lines && access == ModelOutputAccess::Script {
-                    body.push_str(&format!("\nFor {label} records in run_js, iterate tools.output_lines({{id, stream:{label:?}}}). Check line.truncated and line.lossy_utf8 before JSON.parse(line.text)."));
-                }
+        if let Some((description, json_lines)) =
+            stream_shape(chunk, stream, bytes, facts.capture_complete)
+        {
+            body.push_str(". ");
+            body.push_str(&description);
+            if json_lines && access == ModelOutputAccess::Script {
+                body.push_str(&format!("\nFor {label} records in run_js, iterate tools.output_lines({{id, stream:{label:?}}}). Check line.truncated and line.lossy_utf8 before JSON.parse(line.text)."));
             }
         }
     }
+}
+
+fn stream_shape(
+    chunk: &OutputChunk,
+    stream: OutputStream,
+    observed_bytes: u64,
+    capture_complete: bool,
+) -> Option<(String, bool)> {
+    let bytes: Vec<_> = chunk
+        .segments
+        .iter()
+        .filter(|segment| segment.stream == stream)
+        .flat_map(|segment| segment.as_bytes().iter().copied())
+        .collect();
+    let complete = capture_complete && bytes.len() as u64 == observed_bytes;
+    let prefix = match std::str::from_utf8(&bytes) {
+        Err(error) if !complete && error.error_len().is_none() => &bytes[..error.valid_up_to()],
+        _ => &bytes[..],
+    };
+    let (text, lossy) = display_text(prefix, true, complete);
+    (!lossy && !text.is_empty()).then(|| output_shape(&text, complete))
 }
 
 fn output_shape(prefix: &str, complete: bool) -> (String, bool) {
@@ -355,12 +371,15 @@ fn output_shape(prefix: &str, complete: bool) -> (String, bool) {
             false,
         );
     }
-    let end = first.floor_char_boundary(first.len().min(SHAPE_SAMPLE_BYTES));
-    let suffix = if end < first.len() { "…" } else { "" };
+    let samples = [first, second].map(|line| {
+        let end = line.floor_char_boundary(line.len().min(SHAPE_SAMPLE_BYTES / 2));
+        let suffix = if end < line.len() { "…" } else { "" };
+        format!("{}{suffix}", &line[..end])
+    });
     (
         format!(
-            "multiline text, first nonblank line {}{suffix}",
-            json!(&first[..end])
+            "multiline text, first two nonblank lines {}",
+            json!(samples)
         ),
         false,
     )
@@ -571,4 +590,62 @@ fn fit_content(content: &mut String, suffix: &str, limit: usize) {
 
 fn truncate_utf8(content: &mut String, limit: usize) {
     content.truncate(content.floor_char_boundary(limit.min(content.len())));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::output::{OutputLimits, OutputWriter};
+    use super::{output_shape, read_output, stream_shape, OutputRead, OutputStream};
+
+    #[tokio::test]
+    async fn output_shape_rejoins_streams_before_decoding_and_sampling() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut writer = OutputWriter::create(directory.path(), "mixed", OutputLimits::default())
+            .await
+            .unwrap();
+        let leading = b"\x1b[32m{\"name\":\"\xe4";
+        let trailing = b"\xbd\xa0\"}\x1b[0m\n{\"name\":\"second\"}\n\xe4\xb8\xad";
+        let diagnostic = b"\xff\x01\n";
+        writer.write(OutputStream::Stdout, leading).await.unwrap();
+        writer
+            .write(OutputStream::Stderr, diagnostic)
+            .await
+            .unwrap();
+        writer.write(OutputStream::Stdout, trailing).await.unwrap();
+        writer.finish(false).await.unwrap();
+        let stdout_bytes = leading.len() + trailing.len();
+        let output = read_output(
+            directory.path(),
+            "mixed",
+            OutputRead {
+                limit: stdout_bytes + diagnostic.len() - 2,
+                ..OutputRead::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            Some((
+                "first two lines are JSON objects, 1 fields, sample keys [\"name\"]".into(),
+                true,
+            )),
+            stream_shape(&output, OutputStream::Stdout, stdout_bytes as u64, true),
+        );
+        assert_eq!(
+            None,
+            stream_shape(&output, OutputStream::Stderr, diagnostic.len() as u64, true),
+        );
+    }
+
+    #[test]
+    fn multiline_shape_samples_two_complete_lines() {
+        assert_eq!(
+            (
+                r#"multiline text, first two nonblank lines ["project/","project/src/lib.rs"]"#
+                    .into(),
+                false,
+            ),
+            output_shape("project/\n\nproject/src/lib.rs\nproject/src/partial", false),
+        );
+    }
 }
