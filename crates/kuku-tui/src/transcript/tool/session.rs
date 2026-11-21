@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::text::{cap, shorten, single_line};
+use crate::text::{cap, service_tier_label, shorten, single_line};
 
 const MAX_SCAN_BYTES: usize = 32 * 1024;
 const MAX_LABEL_BYTES: usize = 200;
@@ -89,8 +89,32 @@ fn listing(agents: &[Value]) -> Option<Observation> {
         1 => "1 agent".to_owned(),
         count => format!("{count} agents"),
     };
+    let service = if let [entry] = agents {
+        match (
+            entry["last_request"]["requested_service_tier"].as_str(),
+            entry["last_request"]["reported_service_tier"].as_str(),
+        ) {
+            (Some(requested), Some(reported))
+                if !matches!(requested, "auto" | "default" | "standard") =>
+            {
+                let requested = service_tier_label(Some(requested));
+                let reported = service_tier_label(Some(reported));
+                if requested == reported {
+                    Some(reported)
+                } else {
+                    Some(format!("Requested {requested} · Reported {reported}"))
+                }
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
     let unshown = agents.len() - shown.len();
     let mut detail = shown.into_iter().map(AgentFact::label).collect::<Vec<_>>();
+    if let Some(service) = service {
+        detail.push(service);
+    }
     if unshown > 0 {
         detail.push(format!("+{unshown} more"));
     }

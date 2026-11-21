@@ -281,8 +281,9 @@ def targeted_delegation(client):
                     if isinstance(block, dict) and block.get("tool_use_id") == "collect")
         content = tool["content"]
         reply, = json.loads(content if isinstance(content, str) else content[0]["text"])
-        assert reply == {"address": "writer", "status": "idle", "last_output": result}, reply
-        timeline = terminal.expect("Timeline · 3 calls · 1 status check")["screen"]
+        assert reply == {"address": "writer", "status": "idle", "last_output": result,
+                         "last_request": {"model": child.request["model"]}}, reply
+        timeline = terminal.expect("Timeline · 3 calls", also=("Finished · Proof of delivery",))["screen"]
         terminal.click_text(timeline, "Timeline")
         checked = terminal.expect("Agent check · writer (Idle, reply available)")["screen"]
         target_column = lambda screen: next(row.index("writer") for row in screen.splitlines() if "Agent check · writer" in row)

@@ -277,7 +277,6 @@ fn collapsed_delegation_expand_reopens_group_without_closing_agent_inspection() 
     let action = delegation_action(&transcript, "create_agent");
 
     assert!(transcript.toggle_detail(&group));
-    assert!(transcript.toggle_detail(&action));
     assert!(!text(&transcript.project(82, 44)).contains("Requested instructions"));
     assert!(transcript.toggle_detail(&action));
     assert!(text(&transcript.project(82, 44)).contains("Requested instructions"));
@@ -407,9 +406,8 @@ fn delegation_groups_only_its_own_checks_and_keeps_the_result_separate_from_hist
     let summary = text(&compact);
     for label in [
         "╭─ Agent writer",
-        "Finished",
-        "Reply  Report ready",
-        "Timeline · 4 calls · 2 status checks",
+        "Finished · Report ready",
+        "Timeline · 4 calls",
         "other (Idle)",
         "writer (Waiting)",
         "Assistant   View thinking",
@@ -438,8 +436,10 @@ fn delegation_groups_only_its_own_checks_and_keeps_the_result_separate_from_hist
             .contains(r#""writer","status":"running""#),
         "{inspected}"
     );
-    assert!(opened.contains("Agent writer · Created"));
-    assert!(opened.contains("Agent writer · Input delivered"));
+    assert!(opened.contains("▸ Created"));
+    assert!(opened.contains("▸ Input delivered"));
+    assert!(!opened.contains("Requested instructions") && !opened.contains("Draft the report"));
+    assert_eq!(1, opened.matches("Report ready").count());
     assert!(opened.contains("View thinking") && !opened.contains("Planning the next step"));
     assert!(transcript.toggle_detail(&key));
     assert_eq!(summary, text(&transcript.project(82, 44)));

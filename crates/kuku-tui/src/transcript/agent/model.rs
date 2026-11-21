@@ -14,16 +14,15 @@ pub(in crate::transcript) struct AgentModel {
 
 impl super::AgentCard<'_> {
     pub(super) fn model_label(&self, width: usize) -> Option<Line<'static>> {
-        let preset = self
-            .model
-            .and_then(|model| model.preset.as_deref())
-            .or(self.preset);
-        let label = match (preset, self.model) {
-            (Some(preset), _) => format!("Preset · {}", single_line(preset)),
-            (None, Some(model)) => format!(
-                "Thinking · {}",
-                effort_label(model.reasoning_effort.as_deref())
-            ),
+        let label = match (self.model, self.preset) {
+            (Some(model), _) => match &model.preset {
+                Some(preset) => format!("Preset · {}", single_line(preset)),
+                None => format!(
+                    "Thinking · {}",
+                    effort_label(model.reasoning_effort.as_deref())
+                ),
+            },
+            (None, Some(preset)) => format!("Preset requested · {}", single_line(preset)),
             (None, None) => return None,
         };
         let label = if let Some(tier) = self

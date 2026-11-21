@@ -472,13 +472,6 @@ impl Transcript {
                 let open = !self.detail_items.group_open(records);
                 if open {
                     remember(&mut self.detail_items.groups, &key.record);
-                    self.agent_cards.set_details(
-                        true,
-                        records
-                            .iter()
-                            .filter(|r| r.tool().and_then(Tool::agent_card).is_some())
-                            .map(|r| &r.key),
-                    );
                 } else {
                     self.detail_items
                         .groups
