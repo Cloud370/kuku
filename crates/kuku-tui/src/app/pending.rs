@@ -866,6 +866,10 @@ impl App {
                 }
             }
             Action::Configure { config } => {
+                let route_changed = self
+                    .panes
+                    .get(&address)
+                    .is_some_and(|pane| pane.model_route_changed(&config));
                 if let Some(pane) = self.panes.get_mut(&address) {
                     if pane
                         .snapshot
@@ -875,7 +879,9 @@ impl App {
                         pane.config_receipt = Some((ack.receipt.event_id, config));
                     }
                 }
-                self.message("Settings saved for the next safe model boundary");
+                if active && route_changed {
+                    self.message("Model route set for the next safe model boundary");
+                }
             }
             Action::ReplyPermission { .. } | Action::ReplyQuestion { .. } => {
                 self.confirmation("Reply received")

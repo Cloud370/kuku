@@ -29,7 +29,7 @@ fn spacious_composer_and_picker_use_responsive_insets() {
     let (x, y) = cell(frame.buffer, "›");
     assert_ne!(frame.buffer[(x, y)].bg, frame.buffer[(x - 1, y)].bg);
     assert!(!frame.buffer[(x, y)].modifier.contains(Modifier::DIM));
-    assert!(frame.buffer[(0, 0)].modifier.contains(Modifier::DIM));
+    assert!(!frame.buffer[(0, 0)].modifier.contains(Modifier::DIM));
 }
 
 #[test]

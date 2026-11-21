@@ -20,6 +20,7 @@ use crate::theme::{
 };
 
 mod activity;
+mod composer_panel;
 mod contextual;
 mod delivery;
 mod header;
@@ -57,6 +58,7 @@ pub(crate) fn render_at(
     app.contextual_hits.clear();
     if outer.is_empty() {
         app.text_selection.clear();
+        app.modal_selection.clear();
         app.delivery_area = Rect::ZERO;
         app.delivery_hits.clear();
         app.request_area = Rect::ZERO;
@@ -151,7 +153,7 @@ pub(crate) fn render_at(
         .saturating_sub(editor_height + above_editor + below_editor + MIN_TRANSCRIPT_ROWS)
         .min(MAX_BANNER_ROWS);
     let banner = banner(app, width, usize::from(banner_rows));
-    let [transcript, banner_area, gap, request_area, delivery_area, editor, _status_gap, status] =
+    let [transcript, banner_area, gap, request_area, delivery_area, editor, status_gap_area, status] =
         Layout::vertical([
             Constraint::Min(0),
             Constraint::Length(banner.len() as u16),
@@ -364,14 +366,24 @@ pub(crate) fn render_at(
         inner,
         status,
     ];
-    let modal_area = render_modal(frame, outer, app);
-    app.text_selection.render(
-        frame.buffer_mut(),
-        modal_area
-            .as_ref()
-            .map_or(&main_areas[..], std::slice::from_ref),
-        modal_area.is_none().then_some((transcript, row_insets)),
-    );
+    let anchored = app.modal.as_ref().is_some_and(Modal::composer_anchored);
+    if anchored || app.modal.is_none() {
+        app.text_selection.render(
+            frame.buffer_mut(),
+            &main_areas,
+            Some((transcript, row_insets)),
+        );
+    }
+    let modal_area = if anchored {
+        composer_panel::render(frame, editor, composer_content.x, app)
+    } else {
+        render_modal(frame, outer, app)
+    };
+    if let Some(area) = modal_area {
+        app.modal_selection
+            .render(frame.buffer_mut(), &[area], None);
+    }
+    composer_panel::render_alias_hint(frame, status_gap_area, editor, composer_content.x, app);
     activity_visible
 }
 
@@ -508,12 +520,9 @@ fn banner(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
             ),
             emphasis(WARNING),
         ));
-    } else if let Some(next) = pane.next_model_label() {
+    } else if let Some(next) = pane.next_model_label(width) {
         lines.push(Line::styled(
-            shorten(
-                &format!("Next model request · {}", single_line(&next)),
-                width,
-            ),
+            shorten(&next, width),
             Style::default().fg(ACCENT),
         ));
     }
@@ -582,29 +591,10 @@ fn waiting(app: &App, width: usize) -> Vec<Line<'static>> {
 
 fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Rect> {
     Some(match app.modal.as_mut()? {
-        Modal::Help => {
-            let area = popup(area, 52, 14);
-            let inner = render_popup(frame, area, "Keyboard shortcuts");
-            let lines = [
-                "Enter       Send or steer",
-                "Alt+Enter   Send on the next turn",
-                "Esc         Close/back; stop active work",
-                "↑ / ↓       Edit draft; select queued input",
-                "Delete      Withdraw selected queued input",
-                "F2          Focus a pending request",
-                "Ctrl+P/F1   Show this help",
-                "/           Search actions and Skills",
-                "Esc         Close help",
-            ];
-            frame.render_widget(
-                Paragraph::new(lines.join("\n")).style(Style::new().fg(MUTED)),
-                inner,
-            );
-            inner
-        }
+        Modal::Help => composer_panel::render_help(frame, area),
         Modal::Picker(picker) => {
             let height = match picker.kind {
-                PickerKind::Models | PickerKind::Thinking | PickerKind::Agents => {
+                PickerKind::Models | PickerKind::Agents => {
                     let rows = picker.choice_count().clamp(4, 8) as u16;
                     9 + rows * 2
                 }
@@ -647,6 +637,7 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Rect
             editor.render(frame, inner);
             inner
         }
+        Modal::ExitConfirmation => unreachable!("exit confirmation is anchored to the composer"),
     })
 }
 

@@ -50,40 +50,51 @@ Put options before the prompt in `kuku run`, because it consumes the remaining w
 | Enter | Send the draft. A busy Agent accepts it at the next safe model-request boundary, or in the next Turn if the current Turn settles first. |
 | Alt+Enter | Queue the draft for the next Turn. |
 | Shift+Enter or Ctrl+J | Insert a newline in the draft. |
-| Esc | Close a modal, saving an unsent question answer by request ID while preserving the main draft. Interrupt Running or cleanup work even with contextual, queue or request focus; otherwise dismiss that focus. In an idle empty composer, press Esc twice to open message rewind. |
+| Esc | Close a panel or dialog, or go back one step in a confirmation. Closing a question editor saves the answer draft by request ID. On the main screen, interrupt Running or cleanup work even with contextual, queue or request focus. In an idle empty composer, press Esc twice to open message rewind. |
 | Ctrl+P or F1 | Show read-only shortcut help. The draft is preserved; Enter and clicks do not run actions from help. |
-| `/` in an empty composer | Search available actions and Skills. Choosing a Skill inserts an editable `/skill:NAME` prefix for the next send. |
+| `/` in an empty composer, or after Ctrl+P | Search actions and Skills in a list above the composer. Choosing a Skill inserts an editable `/skill:NAME` prefix for the next send. |
 | `@` or Tab | Complete workspace-relative paths as draft text. |
-| `/new`, `/resume` | Open a blank draft or find a retained Session. |
 | Alt+← or Alt+→ | Switch directly to the previous or next Agent. The order wraps and starts with `main`, followed by the other addresses in sorted order. |
-| `/agents` | Search the Session's Agents, switch recipients, or create an Agent. The selector shows activity, pending requests and queue counts, with `Admitted` and `Queued` task excerpts when available. |
 | Empty draft + ↑, or click an editable Pending inputs row | Select that exact queued input inline. Up/Down changes selection; Enter edits it; Delete withdraws it; Esc returns to the composer unless work is Running or cleaning up, when Esc interrupts. |
 | F2 outside editors | Cycle visible controls in order: request, authentication repair when available, Continue or Stop, pending-delivery recovery, Previous Agent, service actions, then Messages. F2 or click opens a question's answer editor; Esc saves its unsent answer by request ID and preserves the main draft. F2 or click focuses a permission request. Enter activates focused controls; clicks on other side-effect controls only focus them. Esc interrupts Running/cleanup work regardless of focus; otherwise it dismisses that focus. Ctrl+R reconnects. |
 | Permission request card | Choose **Deny** or **Allow once** with Left/Right or a click, then press Enter. F2, Left, Enter is the keyboard Deny path. While Waiting, Esc leaves focus without answering or interrupting. |
-| `/jobs` | List the selected Agent's background jobs with their IDs and states. Select a running job to cancel it or a finished job to read any saved output. |
-| `/jobs cancel <id>` | Cancel the specified background job for the selected Agent and report its resulting state. |
-| `/model`, `/thinking` | Choose, add, or edit models and manage thinking. Session changes and persistent defaults are separate actions. |
+| Ctrl+T | Cycle the selected model's supported thinking levels for this Agent at the next safe request boundary. Keep the draft and reading position. |
 | Authentication repair | After a matching authentication failure, **Repair credentials** can update the failed managed-local connection and explicitly restart its service. Remote connections show server-side guidance. [Recovery steps](../start/configuration.md#recover-an-authentication-failure). |
-| `/statusline` | Open **Status line settings** to preview, select, reorder and save footer fields. |
 | **Messages** (or **Msg** in a narrow header) | Browse user, assistant and tool entries in the active Agent's loaded transcript. Enter opens only the actions available for that entry; Tab or ←/→ selects an action, Enter runs it, and Esc returns to the message list without changing the composer draft. Full output opens a saved result or a complete inline result when no saved output exists. For scripts with multiple outputs, choose the individual action to inspect. Read-only rewind history groups are not message-action targets. |
 | Ctrl+O | Expand or collapse visible transcript previews, including tool groups and Agent cards. |
-| `/save` | Name pasted text or the current draft before sending it. Open the action from Ctrl+P while editing a draft. |
-| `/values` | Browse the selected Agent's saved values. Select a value and choose **Read saved value** or **Attach to draft**. |
 | S in the tool output viewer | Name the selected retained output. Enter `NAME --replace` at the naming prompt to update an existing name. |
 | Left-button drag | Highlight visible text and copy the selected range to the clipboard on release. |
 | Mouse wheel, Page Up, Page Down | Scroll the transcript. |
 | Ctrl+End or Alt+↑ while reading history | Return to the latest output and resume following. |
 | ↑, ↓ in the editor | Move within a multiline draft and scroll the transcript at its boundaries. Ctrl+↑ and Ctrl+↓ recall sent prompts and restore the draft. In queue focus, Up/Down moves between editable queued inputs. |
-| `/server` | Inspect the kuku service. Ctrl+R reconnects. |
-| `/restart` | Confirm a managed local service restart. Active work defers it. Open Ctrl+P then `/` to keep a draft while choosing the command. |
 | Arrow keys, Tab, Enter in a menu | Move the highlight, complete editable text, or activate the selected action, respectively. |
-| `/web`, `/quit` | Open the conversation in the browser or leave the terminal client. |
+| `exit` or `quit` | With only that lowercase word, optional surrounding spaces, and no attachments, Enter or Alt+Enter opens **Exit kuku?** beside the draft. Press Y to exit or Esc to keep editing. |
 
 In a selection dialog, click a row to highlight it. A click can switch the viewed Agent or Session, open a model ID editor, or show transcript details and retained output. The Messages header button opens the entry selector, where clicking an entry opens its actions and clicking an action runs it. Applying a tier or reasoning setting, deciding an authorization, withdrawing an input or restarting still requires Enter.
 
 In an idle empty composer, press Esc twice to choose a user message to rewind. At the earliest displayed message, Up or Page Up loads earlier history without losing the selected message. The selector shows loading or retry feedback. Its bounded window discards newer unselected messages when full; reopen rewind to return to recent messages. Enter reads the original text before opening confirmation for that exact message. If reading fails, Enter retries. Esc cancels without changing the draft or history. See [message rewind](../how-it-works/sessions.md#message-rewind) for the effect of confirmation and optional recorded-file restoration.
 
 Continue acknowledgements appear briefly and do not replace an existing error. Narrow focused-control hints keep the Esc action visible.
+
+### Slash commands
+
+Search by the command or any alias. The list shows the canonical spelling. Tab completes that spelling and retains arguments. Choosing a row or submitting a complete slash command runs the same action. The first directly submitted alias for each action displays its canonical spelling beside the composer. `/reload` is reserved for configuration reload.
+
+| Command | Aliases | Behavior |
+|---|---|---|
+| `/new` | `/new-session` | Open a blank draft and keep the prior Session available. |
+| `/resume` | `/sessions` | Find a retained Session in the workspace. |
+| `/agents` | `/agent` | Search the Session's Agents, switch recipients or create an Agent. The selector shows activity, pending requests, queue counts and task excerpts when available. |
+| `/jobs` | `/job` | List the selected Agent's background jobs and their states. Select a job to cancel it or read saved output. Use `/jobs cancel <id>` to cancel by ID. |
+| `/model` | `/models` | Choose, add or edit model routes. Ctrl+L opens the same selector. |
+| `/thinking` | `/think`, `/effort` | Show the inherited model default and supported levels. A check marks the current selection. Enter applies the highlighted level to this Agent. **Use default** clears its override. On a writable local model route, press D on a level then Enter to save it as the model default while retaining explicit Agent overrides. |
+| `/statusline` | `/status-line` | Open **Status line settings** to preview, select, reorder and save footer fields. |
+| `/save` | `/save-value` | Name pasted text or the current draft before sending it. |
+| `/values` | `/value`, `/saved-values` | Browse saved values. Select one to read it or attach it to the draft. |
+| `/server` | `/service` | Inspect the connected service. Ctrl+R reconnects. |
+| `/restart` | `/restart-service` | Confirm a managed local service restart. Active work defers it. |
+| `/web` | `/browser` | Open the conversation in the browser. |
+| `/quit` | `/exit`, `/q` | Leave the terminal client. Accepted work continues on the service. |
 
 ### Reading the transcript
 
@@ -115,7 +126,7 @@ Thinking appears at the start of the assistant’s answer. The transcript types 
 
 ### Status and usage
 
-An empty Session opens with the kuku title. On a spacious terminal, the session label and first actions align beneath the name. Once work starts, the Session header contracts to one line. The default status bar leads with the effective model and shows connection state, the selected Agent and its workspace. At phone widths, the workspace and usage move to a second row. Very short terminals keep a single row to leave room for your draft. Click a character in a draft to move the caret there, including on wrapped lines. Elapsed time appears directly beside the current activity.
+An empty Session opens with the kuku title. On a spacious terminal, the session label and first actions align beneath the name. Once work starts, the Session header contracts to one line. The default status bar leads with the effective model and its resolved thinking level, for example `gemini-4-neon · High`. `Default` means the provider chooses the level and the actual value is unknown. Pending changes appear under **Next model request**. The footer also shows connection state, the selected Agent and its workspace. At phone widths, the workspace and usage move to a second row. Very short terminals keep a single row to leave room for your draft. Click a character in a draft to move the caret there, including on wrapped lines. Elapsed time appears directly beside the current activity.
 
 Above the input, an activity mark and label show the selected Agent's state. The mark animates during active work and stays still when ready or finished. The display smooths brief phase changes and shows errors and requests for attention immediately. During work the Turn timer updates each second and keeps its start time across phases and Agent switches. The completed duration appears in the Turn summary. An input receipt clears once the Agent settles the Turn. Use `/statusline` to add the optional `execution` field to the footer. The composer shows its `To <agent>` recipient above the draft and grows as you type. `Draft` describes local text, while `Awaiting receipt`, `Input queued` and `Input accepted` describe submitted text.
 

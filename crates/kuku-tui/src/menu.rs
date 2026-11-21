@@ -5,83 +5,11 @@ use ratatui::layout::{Position, Rect};
 
 use crate::editor::Editor;
 use crate::jobs::Selection;
-use crate::keys::Shortcut;
 use crate::transcript::{DetailKey, RewindGroupAction, SelectedMessage, ToolView};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CommandMenu {
-    New,
-    Resume,
-    Agents,
-    Jobs,
-    Model,
-    Thinking,
-    StatusLine,
-    Save,
-    Values,
-    Server,
-    Restart,
-    Web,
-    Quit,
-}
+mod commands;
 
-impl CommandMenu {
-    pub(crate) const ALL: &[Self] = &[
-        Self::New,
-        Self::Resume,
-        Self::Agents,
-        Self::Jobs,
-        Self::Model,
-        Self::Thinking,
-        Self::StatusLine,
-        Self::Save,
-        Self::Values,
-        Self::Server,
-        Self::Restart,
-        Self::Web,
-        Self::Quit,
-    ];
-
-    pub(crate) fn name(self) -> &'static str {
-        match self {
-            Self::New => "new",
-            Self::Resume => "resume",
-            Self::Agents => "agents",
-            Self::Jobs => "jobs",
-            Self::Model => "model",
-            Self::Thinking => "thinking",
-            Self::StatusLine => "statusline",
-            Self::Save => "save",
-            Self::Values => "values",
-            Self::Server => "server",
-            Self::Restart => "restart",
-            Self::Web => "web",
-            Self::Quit => "quit",
-        }
-    }
-
-    fn description(self) -> String {
-        let (description, shortcut) = match self {
-            Self::New => ("Open a fresh draft", None),
-            Self::Resume => ("Find a conversation in this workspace", None),
-            Self::Agents => ("Choose or create an Agent in this Session", None),
-            Self::Jobs => ("List background jobs · /jobs cancel <id>", None),
-            Self::Model => ("Choose a configured model route", Some(Shortcut::MODEL)),
-            Self::Thinking => ("Choose the model's reasoning setting", None),
-            Self::StatusLine => ("Choose and reorder status line fields", None),
-            Self::Save => ("Name pasted text or the current draft", None),
-            Self::Values => ("Browse and attach saved values", None),
-            Self::Server => ("Inspect the connected service", None),
-            Self::Restart => ("Confirm restart of the managed local kuku service", None),
-            Self::Web => ("Open this target in the browser", None),
-            Self::Quit => ("Leave the terminal", None),
-        };
-        match shortcut {
-            Some(shortcut) => format!("{description} · {}", shortcut.label),
-            None => description.to_owned(),
-        }
-    }
-}
+pub(crate) use commands::{CommandInput, CommandMenu};
 
 #[derive(Debug, Clone)]
 pub(crate) enum ChoiceKind {
@@ -323,6 +251,10 @@ impl PickerKind {
     pub(crate) fn completes_text(&self) -> bool {
         matches!(self, Self::Commands | Self::Paths(_))
     }
+
+    pub(crate) fn composer_anchored(&self) -> bool {
+        matches!(self, Self::Commands | Self::Thinking)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -356,10 +288,12 @@ pub(crate) struct Picker {
     pub(crate) header_top: usize,
     pub(crate) ticket: Ticket,
     pub(crate) rewind_history: Option<RewindHistory>,
+    pub(crate) thinking: Option<Box<crate::app::ThinkingPicker>>,
     local: Vec<Choice>,
     remote: Vec<Choice>,
     rows: Option<PickerRows>,
     row_revision: u64,
+    top: usize,
 }
 
 impl Picker {
@@ -374,10 +308,12 @@ impl Picker {
             header_top: 0,
             ticket: Ticket { id, revision: 0 },
             rewind_history: None,
+            thinking: None,
             local,
             remote: Vec::new(),
             rows: None,
             row_revision: 0,
+            top: 0,
         }
     }
 
@@ -477,32 +413,38 @@ impl Picker {
     }
 
     pub(crate) fn visible_choices(&self) -> Vec<&Choice> {
-        let query = self
-            .query
-            .text()
-            .trim()
-            .trim_start_matches(match self.kind {
-                PickerKind::Commands => '/',
-                _ => '\0',
-            })
-            .to_lowercase();
+        let query = self.query.text().trim().to_lowercase();
+        let command_query =
+            (self.kind == PickerKind::Commands).then(|| CommandInput::query(&query));
+        let query = command_query.map_or(query.as_str(), |input| input.text());
+        let exact_command = command_query.and_then(CommandInput::command);
         let mut choices: Vec<_> = self
             .local
             .iter()
-            .filter(|choice| choice.matches(&query))
+            .filter(|choice| match (&choice.kind, command_query) {
+                (ChoiceKind::Command(command), Some(input)) => exact_command.map_or_else(
+                    || command.starts_with(input.name) || choice.matches(query),
+                    |exact| exact == *command,
+                ),
+                _ => choice.matches(query),
+            })
             .chain(self.remote.iter().filter(|choice| {
                 !matches!(
                     self.kind,
                     PickerKind::Models | PickerKind::Values | PickerKind::Jobs
-                ) || choice.matches(&query)
+                ) || choice.matches(query)
             }))
             .collect();
         if matches!(self.kind, PickerKind::Commands | PickerKind::Agents) && !query.is_empty() {
             choices.sort_by_key(|choice| match choice.kind {
-                ChoiceKind::Command(command) if command.name() == query => 0,
-                ChoiceKind::Command(command) if command.name().starts_with(&query) => 1,
+                ChoiceKind::Command(command) if Some(command) == exact_command => 0,
+                ChoiceKind::Command(command)
+                    if command_query.is_some_and(|input| command.starts_with(input.name)) =>
+                {
+                    1
+                }
                 ChoiceKind::Agent { ref target } if target.agent == query => 0,
-                ChoiceKind::Agent { ref target } if target.agent.starts_with(&query) => 1,
+                ChoiceKind::Agent { ref target } if target.agent.starts_with(query) => 1,
                 _ => 2,
             });
         }
@@ -526,6 +468,16 @@ impl Picker {
             indices,
             row_height,
         });
+    }
+
+    pub(crate) fn composer_rows(&mut self, count: usize, len: usize) -> Range<usize> {
+        let selected = self.selected.min(len.saturating_sub(1));
+        self.top = self
+            .top
+            .min(len.saturating_sub(count))
+            .max(selected.saturating_add(1).saturating_sub(count))
+            .min(selected);
+        self.top..(self.top + count).min(len)
     }
 
     pub(crate) fn hit(&self, point: Position) -> Option<PickerHit> {
@@ -605,7 +557,7 @@ pub(crate) struct Prompt {
 
 #[cfg(test)]
 mod tests {
-    use super::Choice;
+    use super::{Choice, CommandInput, Picker, PickerKind};
 
     #[test]
     fn action_picker_omits_contextual_and_inline_controls() {
@@ -632,5 +584,37 @@ mod tests {
             assert!(labels.contains(&retained));
         }
         assert_eq!(13, choices.len());
+    }
+
+    #[test]
+    fn aliases_find_exactly_one_canonical_action() {
+        let mut picker = Picker::new(PickerKind::Commands, 1, Choice::commands());
+        for (alias, canonical) in [
+            ("new-session", "/new"),
+            ("sessions", "/resume"),
+            ("agent", "/agents"),
+            ("job", "/jobs"),
+            ("models", "/model"),
+            ("think", "/thinking"),
+            ("effort", "/thinking"),
+            ("status-line", "/statusline"),
+            ("save-value", "/save"),
+            ("value", "/values"),
+            ("saved-values", "/values"),
+            ("service", "/server"),
+            ("restart-service", "/restart"),
+            ("browser", "/web"),
+            ("exit", "/quit"),
+            ("q", "/quit"),
+        ] {
+            let spelling = format!("/{alias}");
+            picker.query.set_text(spelling.clone());
+            let results = picker.visible_choices();
+            assert_eq!(1, results.len(), "{alias}");
+            assert_eq!(canonical, results[0].label);
+            let input = CommandInput::draft(&spelling).unwrap();
+            assert_eq!(canonical, input.complete(input.command().unwrap()));
+        }
+        assert!(CommandInput::draft("/reload").unwrap().command().is_none());
     }
 }

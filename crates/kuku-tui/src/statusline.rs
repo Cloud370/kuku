@@ -7,7 +7,8 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{Activity, App, ServiceStatus, SubmissionStatus};
 use crate::text::{
-    compact_token_count, shorten, shorten_middle, single_line, single_line_path, tail_start,
+    compact_token_count, effort_label, shorten, shorten_middle, single_line, single_line_path,
+    tail_start, with_suffix,
 };
 use crate::theme::{emphasis, ERROR, EXECUTION, MODEL, MUTED, USAGE, WARNING};
 
@@ -257,7 +258,7 @@ impl Field {
             ),
             Self::Model => {
                 let pane = app.pane();
-                let (id, route) = match pane.effective_model_identity() {
+                let (id, route, effort) = match pane.effective_model_identity() {
                     Some((id, connection, effort)) => {
                         let id = single_line(id);
                         let route = custom.then(|| {
@@ -269,7 +270,7 @@ impl Field {
                                 None => format!("{id} ({connection})"),
                             }
                         });
-                        (id, route)
+                        (id, route, Some(effort_label(effort)))
                     }
                     None => {
                         let label = pane.effective_model_label().unwrap_or_else(|| {
@@ -279,10 +280,10 @@ impl Field {
                                 "Model pending".into()
                             }
                         });
-                        (single_line(&label), None)
+                        (single_line(&label), None, None)
                     }
                 };
-                Segment::model(id, route)
+                Segment::model(id, route, effort)
             }
             Self::Context => Segment::measurement(
                 app.pane()
@@ -374,7 +375,11 @@ enum SegmentText {
     Labels(Vec<String>),
     Details(String),
     Workspace(String),
-    Model { id: String, route: Option<String> },
+    Model {
+        id: String,
+        route: Option<String>,
+        effort: Option<String>,
+    },
 }
 
 struct Segment {
@@ -384,9 +389,9 @@ struct Segment {
 }
 
 impl Segment {
-    fn model(id: String, route: Option<String>) -> Self {
+    fn model(id: String, route: Option<String>, effort: Option<String>) -> Self {
         Self {
-            text: SegmentText::Model { id, route },
+            text: SegmentText::Model { id, route, effort },
             style: Style::default().fg(MODEL),
             priority: Priority::Model,
         }
@@ -450,10 +455,14 @@ impl Segment {
     fn compact_width(&self, row_width: usize) -> usize {
         match &self.text {
             SegmentText::Labels(labels) => labels[0].width(),
-            SegmentText::Model { id, .. } => id
-                .width()
-                .min(COMPACT_MODEL_WIDTH)
-                .min((row_width / 3).max(1)),
+            SegmentText::Model { id, effort, .. } => {
+                let effort_width = effort
+                    .as_ref()
+                    .map_or(0, |effort| SEPARATOR.width() + effort.width());
+                (id.width() + effort_width)
+                    .min(COMPACT_MODEL_WIDTH)
+                    .min((row_width / 3).max(effort_width + 1))
+            }
             SegmentText::Details(text) | SegmentText::Workspace(text) => {
                 text.width().min(COMPACT_DETAILS_WIDTH)
             }
@@ -469,11 +478,14 @@ impl Segment {
                 .cloned()
                 .unwrap_or_else(|| shorten(&labels[0], width)),
             SegmentText::Details(text) => shorten_middle(text, width),
-            SegmentText::Model { id, route } => route
+            SegmentText::Model { id, route, effort } => route
                 .as_ref()
                 .filter(|route| route.width() <= width)
                 .cloned()
-                .unwrap_or_else(|| shorten_middle(id, width)),
+                .unwrap_or_else(|| match effort {
+                    Some(effort) => with_suffix(id, effort, width),
+                    None => shorten_middle(id, width),
+                }),
             SegmentText::Workspace(text) => {
                 if text.width() <= width {
                     text.clone()

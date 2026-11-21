@@ -11,9 +11,10 @@ use crate::app::{Address, App, Modal, PendingItem, PendingStage};
 use crate::editor::Editor;
 use crate::jobs::{Job, Search, Selection};
 use crate::keys::{AgentDirection, Shortcut};
-use crate::menu::{Choice, ChoiceKind, CommandMenu, Picker, PickerKind, Prompt, PromptKind};
+use crate::menu::{Choice, ChoiceKind, Picker, PickerKind, Prompt, PromptKind};
 use crate::text::{shorten, single_line, TAB};
 
+mod commands;
 mod contextual;
 mod inline;
 mod input;
@@ -23,6 +24,7 @@ mod picker;
 mod pointer;
 mod rewind;
 mod rewound;
+mod thinking;
 
 const MOUSE_SCROLL_LINES: isize = 3;
 
@@ -52,7 +54,10 @@ impl App {
                 },
             ) => self.wheel(mouse, MOUSE_SCROLL_LINES),
             Event::Mouse(mouse) => self.pointer(mouse, screen),
-            Event::FocusLost => self.text_selection.cancel_drag(),
+            Event::FocusLost => {
+                self.text_selection.cancel_drag();
+                self.modal_selection.cancel_drag();
+            }
             Event::Resize(_, _) | Event::FocusGained | Event::Key(_) => {}
         }
         self.clear_model_default_if_closed();
@@ -94,12 +99,16 @@ impl App {
         }
     }
     fn wheel(&mut self, mouse: MouseEvent, amount: isize) {
-        self.text_selection.cancel_drag();
+        if self.modal.is_some() {
+            self.modal_selection.cancel_drag();
+        } else {
+            self.text_selection.cancel_drag();
+        }
         if self.move_rewind_selection(amount) {
             return;
         }
         match &mut self.modal {
-            Some(Modal::Help) => {}
+            Some(Modal::Help | Modal::ExitConfirmation) => {}
             Some(Modal::Output(viewer)) => {
                 if let Some(offset) = viewer.scroll(amount) {
                     self.read_output(offset);
@@ -108,7 +117,11 @@ impl App {
             Some(Modal::Picker(picker)) => {
                 if matches!(picker.kind, PickerKind::Server | PickerKind::ModelDefault) {
                     picker.header_top = picker.header_top.saturating_add_signed(amount);
-                } else {
+                } else if !picker
+                    .thinking
+                    .as_ref()
+                    .is_some_and(|thinking| thinking.confirm.is_some())
+                {
                     picker.move_by(amount);
                 }
             }
@@ -130,6 +143,18 @@ impl App {
     }
 
     fn composer_key(&mut self, key: KeyEvent) {
+        if Shortcut::ACTIONS.matches(key) || Shortcut::ACTIONS_ALIAS.matches(key) {
+            self.show_shortcut_help();
+            return;
+        }
+        if Shortcut::CYCLE_THINKING.matches(key) {
+            self.cycle_thinking();
+            return;
+        }
+        if self.opens_command_menu(key) {
+            self.command_menu();
+            return;
+        }
         if self.contextual_key(key) {
             return;
         }
@@ -163,13 +188,12 @@ impl App {
                     self.exit();
                 }
             }
-            key if Shortcut::ACTIONS.matches(key) || Shortcut::ACTIONS_ALIAS.matches(key) => {
-                self.show_shortcut_help()
-            }
             key if Shortcut::REPLY.matches(key) => self.focus_request(),
             key if Shortcut::ESCAPE.matches(key) => self.rewind_escape(),
-            key if editing && Shortcut::NEXT_TURN.matches(key) => self.send(Timing::NextTurn),
-            key if editing && Shortcut::ENTER.matches(key) => self.submit_composer(),
+            key if editing && Shortcut::NEXT_TURN.matches(key) => {
+                self.submit_composer(Timing::NextTurn)
+            }
+            key if editing && Shortcut::ENTER.matches(key) => self.submit_composer(Timing::Steer),
             key if Shortcut::UP.matches(key)
                 && self.pane().draft.text().is_empty()
                 && self.has_queued_input() =>
@@ -189,7 +213,7 @@ impl App {
                     self.scroll(direction);
                 }
             }
-            key if Shortcut::MODEL.matches(key) => self.perform(CommandMenu::Model),
+            key if Shortcut::MODEL.matches(key) => self.open_models(),
             key if Shortcut::DETAILS.matches(key) => {
                 let expanded = self.pane_mut().transcript.toggle_details();
                 self.confirmation(if expanded {
@@ -197,12 +221,6 @@ impl App {
                 } else {
                     "Details collapsed"
                 });
-            }
-            key if key.code == KeyCode::Char('/')
-                && is_text(key)
-                && self.pane().draft.text().is_empty() =>
-            {
-                self.command_menu()
             }
             key if key.code == KeyCode::Char('@')
                 && is_text(key)
@@ -351,14 +369,8 @@ impl App {
         }
     }
 
-    fn command_menu(&mut self) {
-        self.picker(PickerKind::Commands, Choice::commands()).header = format!(
-            "Editor · {} Clear or exit · {}/{} New line",
-            Shortcut::CLEAR.label,
-            Shortcut::NEW_LINE.label,
-            Shortcut::CONTROL_NEW_LINE.label,
-        );
-        self.search(true);
+    fn opens_command_menu(&self, key: KeyEvent) -> bool {
+        key.code == KeyCode::Char('/') && is_text(key) && self.pane().draft.text().is_empty()
     }
 
     fn show_shortcut_help(&mut self) {
@@ -426,10 +438,18 @@ impl App {
             self.load_rewind_source(ticket, *event_id, *turn);
             return;
         }
-        self.modal = None;
-        self.effects.push(Job::ClosePicker);
+        if let ChoiceKind::Command(command) = choice {
+            self.run_picker_command(command);
+            return;
+        }
+        if let ChoiceKind::Thinking(effort) = choice {
+            self.apply_thinking_choice(effort);
+            self.close_picker();
+            return;
+        }
+        self.close_picker();
         match choice {
-            ChoiceKind::Command(command) => self.perform(command),
+            ChoiceKind::Command(_) => unreachable!("commands use the picker query"),
             ChoiceKind::Skill(skill) => {
                 let editor = &mut self.pane_mut().draft;
                 let insertion = format!("/skill:{skill} ");
@@ -476,11 +496,7 @@ impl App {
             ChoiceKind::SetCurrentModelAsDefault => self.prepare_model_default(),
             ChoiceKind::ConfirmModelDefault => self.confirm_model_default(ticket),
             ChoiceKind::CancelModelDefault => self.cancel_model_default(ticket),
-            ChoiceKind::Thinking(effort) => {
-                let mut config = self.pane().config().clone();
-                config.reasoning_effort = effort;
-                self.configure(config);
-            }
+            ChoiceKind::Thinking(_) => unreachable!("thinking uses the checked model route"),
             ChoiceKind::RewindMessage { .. } => {
                 unreachable!("rewind messages load their source before confirmation")
             }
@@ -515,30 +531,10 @@ impl App {
         }
     }
 
-    fn perform(&mut self, command: CommandMenu) {
-        match command {
-            CommandMenu::New => self.new_draft(),
-            CommandMenu::Resume => {
-                self.picker(PickerKind::Sessions, self.unsent_drafts());
-                self.search(true);
-            }
-            CommandMenu::Agents => self.open_agents(),
-            CommandMenu::Jobs => self.open_jobs(),
-            CommandMenu::Model => self.open_models(),
-            CommandMenu::Thinking => self.open_thinking(),
-            CommandMenu::StatusLine => self.open_statusline(),
-            CommandMenu::Save => self.open_value_save(),
-            CommandMenu::Values => self.open_values(),
-            CommandMenu::Server => self.open_server(),
-            CommandMenu::Restart => self.open_restart(),
-            CommandMenu::Web if self.require_service() => {
-                self.effects.push(Job::Web(
-                    self.pane().exists.then(|| self.selection().target),
-                ));
-            }
-            CommandMenu::Web => {}
-            CommandMenu::Quit => self.exit(),
-        }
+    fn close_picker(&mut self) {
+        self.modal = None;
+        self.modal_selection.clear();
+        self.effects.push(Job::ClosePicker);
     }
 
     fn open_paths(&mut self, range: Range<usize>, query: String) {
@@ -573,69 +569,6 @@ impl App {
             instructions_top: 0,
             editor,
         }));
-    }
-
-    fn open_thinking(&mut self) {
-        let pane = self.pane();
-        if pane.waiting_for_configuration() {
-            self.message("Waiting for the service to report the changed route");
-            return;
-        }
-        let Some((settings, capabilities)) = pane.reasoning() else {
-            self.problem("Select a resolved model with /model to see its reasoning settings");
-            return;
-        };
-        let mut choices = vec![Choice::new(
-            "Use route default in this Session",
-            "Clear the Session override",
-            ChoiceKind::Thinking(None),
-        )];
-        let route = self.resolved_model_route().ok();
-        let default = kuku::config::ThinkLevel::ProviderDefault.as_str();
-        for effort in std::iter::once(default).chain(capabilities.selectable_reasoning_efforts()) {
-            let label = match effort {
-                "provider-default" => "Provider default",
-                _ => effort,
-            };
-            let wire = if effort == default {
-                "Omit effort".into()
-            } else {
-                format!("Send {effort}")
-            };
-            choices.push(Choice::new(
-                format!("{label} · this Session"),
-                wire.clone(),
-                ChoiceKind::Thinking(Some(effort.into())),
-            ));
-            if !self.remote {
-                if let Some(route) = &route {
-                    let change = crate::setup::SavedModelSetting::Thinking {
-                        tier: pane.config().tier.clone(),
-                        connection: route.connection.clone(),
-                        model: route.model.clone(),
-                        effort: effort.into(),
-                    };
-                    choices.push(Choice::new(
-                        format!("{label} · save model default"),
-                        wire,
-                        ChoiceKind::ConfirmModelSetting(change),
-                    ));
-                }
-            }
-        }
-        let label = pane.effective_model_label().unwrap_or_default();
-        let sent = settings.reasoning_effort.as_deref().map_or_else(
-            || "omit effort".to_owned(),
-            |effort| format!("send {effort}"),
-        );
-        let upstream = capabilities
-            .reasoning_default
-            .as_ref()
-            .map_or_else(String::new, |default| {
-                format!(" · upstream default {}", default.value)
-            });
-        self.picker(PickerKind::Thinking, choices).header =
-            format!("Active · {label} · {sent}{upstream}");
     }
 
     fn route_config(&self) -> AgentConfig {
@@ -927,6 +860,8 @@ fn move_cursor(editor: &mut Editor, key: KeyEvent, width: usize, multiline: bool
     }
 }
 
+#[cfg(test)]
+mod composer_tests;
 #[cfg(test)]
 #[path = "interaction/message_tests.rs"]
 mod message_tests;

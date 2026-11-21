@@ -786,7 +786,7 @@ def parser():
     interactive.add_argument("--upgrade-from", type=Path, help="replace a previous package during an active tool")
     interactive.add_argument("--scratch-base", type=Path, help="temporary installation and workspaces outside the checkout")
     interactive.add_argument("--browser", action="store_true", help="also exercise the embedded WebUI with Playwright Chromium")
-    interactive.add_argument("--native-smoke", action="store_true", help="exercise first run, model editing and paste on the native terminal")
+    interactive.add_argument("--native-smoke", action="store_true", help="exercise composer actions, first run, model editing and paste on the native terminal")
     scenario = interactive.add_mutually_exclusive_group()
     scenario.add_argument("--desktop", action="store_true", help="also exercise an isolated Linux or Windows graphical terminal")
     scenario.add_argument("--live", action="store_true", help="run the budgeted release-archive and real-model handoff")

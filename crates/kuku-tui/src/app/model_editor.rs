@@ -162,19 +162,10 @@ Agent requests image · built-in adapter supports text",
             self.problem("Change persistent model settings on the service host.");
             return;
         }
-        let header = match &change {
-            SavedModelSetting::Default(tier) => {
-                format!("Save {tier} as the persistent default for new Sessions?")
-            }
-            SavedModelSetting::Thinking { model, effort, .. } => format!(
-                "Save thinking for {model}? {}",
-                if effort == "provider-default" {
-                    "Omit effort in model requests".into()
-                } else {
-                    format!("Send {effort} in model requests")
-                },
-            ),
+        let SavedModelSetting::Default(tier) = &change else {
+            unreachable!("thinking defaults confirm beside the composer");
         };
+        let header = format!("Save {tier} as the persistent default for new Sessions?");
         let picker = self.picker(
             PickerKind::ModelActions,
             vec![

@@ -106,6 +106,28 @@ pub(crate) fn shorten_middle(text: &str, width: usize) -> String {
     format!("{}{}", shorten(&text[..tail], width - used), &text[tail..])
 }
 
+pub(crate) fn with_suffix(text: &str, suffix: &str, width: usize) -> String {
+    let separator = " · ";
+    let suffix_width = suffix.width();
+    if width <= suffix_width + separator.width() {
+        return shorten(suffix, width);
+    }
+    let text = shorten_middle(text, width - suffix_width - separator.width());
+    format!("{text}{separator}{suffix}")
+}
+
+pub(crate) fn effort_label(effort: Option<&str>) -> String {
+    let default = kuku::config::ThinkLevel::ProviderDefault.as_str();
+    let Some(effort) = effort.filter(|effort| *effort != default) else {
+        return "Default".into();
+    };
+    let effort = single_line(effort);
+    let mut chars = effort.chars();
+    chars.next().map_or(effort.clone(), |first| {
+        format!("{}{}", first.to_uppercase(), chars.as_str())
+    })
+}
+
 pub(crate) fn tail_start(text: &str, width: usize) -> (usize, usize) {
     let mut used = 0;
     let mut tail = text.len();

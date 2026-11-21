@@ -80,6 +80,7 @@ pub(crate) enum Job {
     RewindSource(Selection, Ticket, u64),
     RewindGroupHistory(Selection, RewindGroupRequest),
     Find(Ticket, Search),
+    ThinkingDefaults(u64, AgentConfig, ResolvedModel),
     ClosePicker,
     PrepareDefault {
         ticket: u64,
@@ -133,6 +134,7 @@ pub(crate) enum Update {
         Result<RewindGroupPage, Error>,
     ),
     Found(Ticket, Result<(Vec<Choice>, String), Error>),
+    ThinkingDefaults(u64, crate::setup::ThinkingDefaults),
     PreparedDefault(u64, Selection, Result<PreparedDefaultSave, String>),
     SavedDefault(u64, Selection, Result<(), String>),
     Saved(Command, Result<(), Error>),
@@ -250,6 +252,23 @@ impl Jobs {
                 let connection = self.connection.clone();
                 self.finder = Some(self.spawn(async move {
                     Update::Found(ticket, find(&options, connection.as_ref(), query).await)
+                }));
+            }
+            Job::ThinkingDefaults(ticket, config, route) => {
+                Self::abort(&mut self.finder);
+                let options = self.options.clone();
+                let connection = self.connection.clone();
+                self.finder = Some(self.spawn(async move {
+                    Update::ThinkingDefaults(
+                        ticket,
+                        crate::setup::thinking_defaults(
+                            &options,
+                            connection.as_ref(),
+                            config,
+                            route,
+                        )
+                        .await,
+                    )
                 }));
             }
             Job::ClosePicker => Self::abort(&mut self.finder),
@@ -521,6 +540,7 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
         | Job::Observe(_)
         | Job::StopObserving
         | Job::Find(_, _)
+        | Job::ThinkingDefaults(..)
         | Job::ClosePicker
         | Job::PrepareRestart(_)
         | Job::Restart(_)

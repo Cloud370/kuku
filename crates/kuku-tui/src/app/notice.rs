@@ -17,6 +17,25 @@ pub(crate) struct Notice {
 }
 
 impl Notice {
+    pub(crate) fn confirmation(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            error: false,
+            lifetime: NoticeLifetime::Transient(Instant::now() + Duration::from_secs(4)),
+        }
+    }
+
+    pub(crate) fn expire(notice: &mut Option<Self>, now: Instant) -> bool {
+        let expired = notice
+            .as_ref()
+            .and_then(Self::deadline)
+            .is_some_and(|deadline| deadline <= now);
+        if expired {
+            *notice = None;
+        }
+        expired
+    }
+
     pub(crate) fn transient(&self) -> bool {
         matches!(&self.lifetime, NoticeLifetime::Transient(_))
     }
@@ -49,11 +68,7 @@ impl App {
     }
 
     pub(crate) fn confirmation(&mut self, text: impl Into<String>) {
-        self.notice = Some(Notice {
-            text: text.into(),
-            error: false,
-            lifetime: NoticeLifetime::Transient(Instant::now() + Duration::from_secs(4)),
-        });
+        self.notice = Some(Notice::confirmation(text));
     }
 
     pub(crate) fn problem(&mut self, text: impl Into<String>) {

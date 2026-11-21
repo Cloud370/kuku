@@ -383,7 +383,7 @@ fn default_model_field_keeps_the_resolved_identifier_first_at_every_width() {
         let rows = screen(&mut app, &layout, width, 20);
         let identity = &rows[if width == 60 { 18 } else { 19 }];
         assert!(
-            identity.trim().starts_with("openai/gpt-6-luna "),
+            identity.trim().starts_with("openai/gpt-6-luna · High"),
             "{identity}"
         );
     }
@@ -394,6 +394,14 @@ fn default_model_field_keeps_the_resolved_identifier_first_at_every_width() {
         .starts_with("openai/gpt-6-luna (configured-model-gateway · high) ·"));
     let lines = layout.render_rows(&app, 80, 20, app.pane().activity());
     assert_eq!(Some(MODEL), lines[0].spans[0].style.fg);
+
+    let long = Segment::model(
+        "custom/a-long-model-from-a-named-provider".into(),
+        None,
+        Some("High".into()),
+    );
+    assert!(long.fit(18).contains('…'));
+    assert!(long.fit(18).ends_with(" · High"));
 }
 
 #[test]

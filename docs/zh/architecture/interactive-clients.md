@@ -45,6 +45,8 @@ SDK 在每个边界按回执次序接纳符合条件的输入。即使先排了�
 
 ## 终端交互
 
+高频操作在发起的位置完成，并在附近反馈结果。阅读、编辑或复核需要独立空间时，使用单独的对话框。关闭面板时恢复原有焦点、草稿、选区和阅读位置。
+
 在交互终端运行 `kuku` 后，按所选工作目录打开一个空白全屏窗口。用户首次明确发送时才创建 Session。本地数据目录尚未配置时，引导使用现有初始化流程。远程配置有误时，指出需要在服务端修正的设置。显示实际连接的 server、工作目录和模型或 Tier，修正配置期间保留草稿。环境变量凭据由加载它的 server 进程持有。更换环境后需要重启时，引导到服务状态和重启入口。在非交互终端提示可用于脚本的入口。脚本命令沿用已文档化的输出格式和退出行为。[配置指南](../start/configuration.md) · [CLI](../reference/cli.md)
 
 终端工作台采用平面布局。会话身份常驻顶部，轮次以带编号的分隔线起始，用户消息有独立色面，输入区随文字增高。助手正文与工具结果分开呈现，Markdown 随输出逐步排版，表格随宽度调整，可见工具共用一处快捷键提示。关联 Agent 默认收起，支持键盘、鼠标展开。发送回执表示已送达，执行阶段、流式文字、待用户决定事项与结果均来自对应 Agent 的观察数据。共享样式由终端主题模块维护。输入区顶部并排显示 kuku 圆环和阶段名称。工作期间缺口沿环移动，各阶段共用一个节奏。结束后圆环闭合静止，流式文字到达时图标宽度固定。状态变化时保持布局稳定，区分服务方已报告的思考、正在输出正文和等待首个事件。底栏可按需启用执行字段。新建会话显示有辨识度的 kuku 标题，工作开始后收为一行。Agent 列表和会话查询默认按参与者和活动提供摘要，详情保留原始结果。[OpenCode 会话](https://github.com/anomalyco/opencode/blob/63bfe62c91fb069c97fcdd7a721aa8f7291cbf49/packages/tui/src/routes/session/index.tsx) · [omp 对话组件](https://github.com/can1357/oh-my-pi/tree/e1ae2cc998efd1ca151b46ebefc0e0dab6c23c63/packages/tui/src/chat) · [Pi 终端](https://github.com/earendil-works/pi/blob/e56d35ce5eceedfa16eaf13a5f01a1f7b7271253/packages/coding-agent/docs/usage.md)

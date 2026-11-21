@@ -10,6 +10,7 @@ import re
 import sys
 from urllib.parse import urlencode, urlsplit
 
+from interactive_composer import composer_actions
 from interactive_lifecycle import first_run_credential_repair, lifecycle_cases, shared_model_editor, verify_restored_tool
 from interactive_rendering import (
     check_agent_reading_position,
@@ -948,6 +949,7 @@ def main():
 
     if options.native_smoke:
         run_cases([
+            ("composer-actions", lambda: native("composer-actions", composer_actions)),
             ("paste", lambda: native("paste", editable_multiline_paste)),
             ("first-run", lambda: first_run_credential_repair(options.binary, options.bridge, options.directory / "settings")),
             ("model-setup", lambda: shared_model_editor(options.binary, options.bridge, options.directory / "model-setup")),
@@ -964,6 +966,7 @@ def main():
                      client, *two_workspaces_and_disconnect(client))),
                  ("fast-stream", fast_markdown_stream),
                  ("statusline", configure_statusline),
+                 ("composer-actions", composer_actions),
                  ("interrupt", preserve_draft_after_interrupt),
                  ("paste", editable_multiline_paste),
                  ("remote-and-script", lambda client: remote_authorization_and_script_json(
