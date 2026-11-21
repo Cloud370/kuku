@@ -96,14 +96,14 @@ def profile_markdown_stream(client):
             assert pauses[index].arrived.wait(10)
             terminal.expect("Checkpoint 074", also=(DRAFT,))
             terminal.press("\x1b[5~")
-            reading = terminal.expect("History · Alt+↑", also=(DRAFT,))["screen"]
+            reading = terminal.expect("Alt+↑", also=(DRAFT,))["screen"]
             anchor = next((row, match[0]) for row, line in enumerate(reading.splitlines())
                           if (match := MARKER.search(line)))
             pauses[index].release.set()
             assert pauses[index + 1].arrived.wait(10)
             pauses[index + 1].release.set()
             assert pauses[index + 2].arrived.wait(10)
-            held = terminal.expect("History · Alt+↑", also=(DRAFT,))["screen"]
+            held = terminal.expect("Alt+↑", also=(DRAFT, "New"))["screen"]
             assert anchor[1] in held.splitlines()[anchor[0]], held
             pauses[index + 2].release.set()
 

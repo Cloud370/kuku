@@ -2,16 +2,20 @@ use std::io::{self, Stdout, Write};
 use std::time::{Duration, Instant, SystemTime};
 
 use base64::{engine::general_purpose::STANDARD, Engine};
-use crossterm::cursor::{Hide, Show};
+use crossterm::cursor::{Hide, MoveTo, Show};
 #[cfg(not(windows))]
 use crossterm::event::EventStream;
 use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
-use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
-use crossterm::{execute, SynchronizedUpdate};
+use crossterm::terminal::{
+    BeginSynchronizedUpdate, EndSynchronizedUpdate, EnterAlternateScreen, LeaveAlternateScreen,
+};
+use crossterm::{execute, queue};
 #[cfg(not(windows))]
 use futures_util::StreamExt;
 use kuku_client::{ConnectionOptions, Observation};
-use ratatui::backend::CrosstermBackend;
+use ratatui::backend::{Backend, ClearType, CrosstermBackend, WindowSize};
+use ratatui::buffer::Cell;
+use ratatui::layout::{Position, Size};
 use ratatui::{CompletedFrame, Terminal};
 
 use crate::app::{Address, App};
@@ -24,6 +28,7 @@ use crate::ui::{self, ActivityClock, ActivityFrame};
 mod windows;
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(33);
+const MAX_RENDER_COOLDOWN: Duration = Duration::from_millis(60);
 const UPDATE_BATCH: usize = 32;
 
 struct PaintSchedule {
@@ -38,13 +43,18 @@ impl PaintSchedule {
         self.urgent |= urgent;
     }
 
+    fn deadline(&self, now: Instant) -> Option<Instant> {
+        self.dirty
+            .then_some(if self.urgent { now } else { self.next_stream })
+    }
+
     fn ready(&self, now: Instant) -> bool {
-        self.dirty && (self.urgent || now >= self.next_stream)
+        self.deadline(now).is_some_and(|deadline| deadline <= now)
     }
 
     fn painted(&mut self, start: Instant, end: Instant) {
         let render_cost = end.duration_since(start);
-        self.next_stream = end + (render_cost * 2).min(Duration::from_millis(120));
+        self.next_stream = (start + FRAME_INTERVAL).max(end + render_cost.min(MAX_RENDER_COOLDOWN));
         self.dirty = false;
         self.urgent = false;
     }
@@ -60,7 +70,7 @@ fn apply_update(
         return;
     }
     let delta = matches!(&update, Update::Observation(_, Observation::Live { event, .. })
-        if matches!(event["type"].as_str(), Some("text" | "thinking" | "reasoning_preview" | "tool_arguments" | "tool_output")));
+        if matches!(event["type"].as_str(), Some("text" | "thinking" | "reasoning_preview" | "tool_arguments" | "tool_output" | "model_output_usage")));
     app.update(update);
     activity.observe(app, Instant::now());
     paint.request(!delta);
@@ -85,7 +95,7 @@ pub(crate) async fn run(options: ConnectionOptions) -> io::Result<()> {
     #[cfg(windows)]
     let mut events = windows::Input::new()?;
     let mut clipboard = Clipboard::default();
-    let mut next_frame = Instant::now();
+    let mut next_animation = Instant::now() + FRAME_INTERVAL;
     let mut activity = ActivityClock::default();
     let mut painted_activity = activity.sample(&app, Instant::now(), SystemTime::now());
     let (mut screen, mut activity_visible) = terminal.draw(&mut app, painted_activity.clone())?;
@@ -96,14 +106,16 @@ pub(crate) async fn run(options: ConnectionOptions) -> io::Result<()> {
         next_stream: Instant::now(),
     };
     while !app.quit {
-        let wake = if paint.dirty
-            || activity.confirming_phase()
-            || (activity_visible && painted_activity.changes_with_time())
-        {
-            Some(next_frame)
-        } else {
-            app.next_deadline()
-        };
+        let animate = activity.confirming_phase()
+            || (activity_visible && painted_activity.changes_with_time());
+        let wake = [
+            paint.deadline(Instant::now()),
+            animate.then_some(next_animation),
+            app.next_deadline(),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
         tokio::select! {
             event = events.next() => match event {
                 Some(Ok(event)) => {
@@ -123,12 +135,14 @@ pub(crate) async fn run(options: ConnectionOptions) -> io::Result<()> {
                     }
                 }
             },
-            _ = tokio::time::sleep_until(wake.unwrap_or(next_frame).into()), if wake.is_some() => {
+            _ = tokio::time::sleep_until(wake.unwrap_or(next_animation).into()), if wake.is_some() => {
                 if app.tick() {
                     paint.request(true);
                 }
                 let start = Instant::now();
-                next_frame = start + FRAME_INTERVAL;
+                if start >= next_animation {
+                    next_animation = start + FRAME_INTERVAL;
+                }
                 let frame = activity.sample(&app, start, SystemTime::now());
                 if frame.phase_changed(&painted_activity) || (activity_visible && frame != painted_activity) {
                     paint.request(false);
@@ -159,7 +173,7 @@ fn dispatch(app: &mut App, jobs: &mut Jobs, clipboard: &mut Clipboard) {
 }
 
 struct Screen {
-    terminal: Terminal<CrosstermBackend<Stdout>>,
+    terminal: Terminal<FrameBackend<Stdout>>,
     painted_target: Address,
     painted_anchor: Option<Anchor>,
     _restore: Restore,
@@ -171,7 +185,7 @@ impl Screen {
         let mut stdout = io::stdout();
         execute!(stdout, EnterAlternateScreen, EnableBracketedPaste, Hide)?;
         restore.enable_input_modes(&mut stdout)?;
-        let terminal = Terminal::new(CrosstermBackend::new(stdout)).map_err(io::Error::other)?;
+        let terminal = Terminal::new(FrameBackend::new(stdout))?;
         Ok(Self {
             terminal,
             painted_target,
@@ -198,17 +212,113 @@ impl Screen {
         let render = |frame: &mut ratatui::Frame<'_>| {
             activity_visible = ui::render_at(frame, app, activity);
         };
-        let frame = if target_changed || scrolled {
-            io::stdout().sync_update(|_| {
-                // NOTE: A scroll can move a wide glyph across an old table edge that a cell diff considers blank.
-                let area = self.terminal.current_buffer_mut().area;
-                self.terminal.resize(area).map_err(io::Error::other)?;
-                self.terminal.draw(render).map_err(io::Error::other)
-            })??
-        } else {
-            self.terminal.draw(render).map_err(io::Error::other)?
-        };
+        if target_changed || scrolled {
+            // NOTE: A scroll can move a wide glyph across an old table edge that a cell diff considers blank.
+            let area = self.terminal.current_buffer_mut().area;
+            self.terminal.resize(area)?;
+        }
+        let frame = self.terminal.draw(render)?;
         Ok((frame, activity_visible))
+    }
+}
+
+struct FrameBackend<W> {
+    output: W,
+    commands: Vec<u8>,
+    position: Position,
+    visible: bool,
+    painted_cursor: Option<Position>,
+}
+
+impl<W: Write> FrameBackend<W> {
+    fn new(output: W) -> Self {
+        Self {
+            output,
+            commands: Vec::new(),
+            position: Position::ORIGIN,
+            visible: false,
+            painted_cursor: None,
+        }
+    }
+
+    fn begin(&mut self) -> io::Result<()> {
+        if self.commands.is_empty() {
+            queue!(self.commands, BeginSynchronizedUpdate)?;
+            if self.painted_cursor.is_some() {
+                queue!(self.commands, Hide)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<W: Write> Backend for FrameBackend<W> {
+    type Error = io::Error;
+
+    fn draw<'a, I>(&mut self, content: I) -> io::Result<()>
+    where
+        I: Iterator<Item = (u16, u16, &'a Cell)>,
+    {
+        let mut content = content.peekable();
+        if content.peek().is_none() {
+            return Ok(());
+        }
+        self.begin()?;
+        CrosstermBackend::new(&mut self.commands).draw(content)
+    }
+
+    fn hide_cursor(&mut self) -> io::Result<()> {
+        self.visible = false;
+        Ok(())
+    }
+
+    fn show_cursor(&mut self) -> io::Result<()> {
+        self.visible = true;
+        Ok(())
+    }
+
+    fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {
+        self.position = position.into();
+        Ok(())
+    }
+
+    fn get_cursor_position(&mut self) -> io::Result<Position> {
+        CrosstermBackend::new(io::sink()).get_cursor_position()
+    }
+
+    fn size(&self) -> io::Result<Size> {
+        CrosstermBackend::new(io::sink()).size()
+    }
+
+    fn window_size(&mut self) -> io::Result<WindowSize> {
+        CrosstermBackend::new(io::sink()).window_size()
+    }
+
+    fn clear(&mut self) -> io::Result<()> {
+        self.clear_region(ClearType::All)
+    }
+
+    fn clear_region(&mut self, clear_type: ClearType) -> io::Result<()> {
+        self.begin()?;
+        CrosstermBackend::new(&mut self.commands).clear_region(clear_type)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        let cursor = self.visible.then_some(self.position);
+        if self.commands.is_empty() && cursor == self.painted_cursor {
+            return Ok(());
+        }
+        self.begin()?;
+        let bytes = &mut self.commands;
+        if let Some(Position { x, y }) = cursor {
+            queue!(bytes, MoveTo(x, y), Show)?;
+        }
+        queue!(bytes, EndSynchronizedUpdate)?;
+        self.output.write_all(bytes)?;
+        self.output.flush()?;
+        bytes.clear();
+        self.painted_cursor = cursor;
+        Ok(())
     }
 }
 
@@ -308,7 +418,10 @@ impl Clipboard {
 
 #[cfg(test)]
 mod tests {
-    use super::{Duration, Instant, PaintSchedule};
+    use ratatui::backend::{Backend, ClearType};
+    use ratatui::buffer::Cell;
+
+    use super::{Duration, FrameBackend, Instant, PaintSchedule, FRAME_INTERVAL};
 
     #[test]
     fn streaming_bursts_share_frames_and_input_bypasses_the_render_budget() {
@@ -326,9 +439,51 @@ mod tests {
         paint.painted(start, end);
         assert!(!paint.ready(end));
         paint.request(false);
-        assert!(!paint.ready(end + Duration::from_millis(79)));
-        assert!(paint.ready(end + Duration::from_millis(80)));
+        assert!(!paint.ready(end + Duration::from_millis(39)));
+        assert_eq!(paint.deadline(end), Some(end + Duration::from_millis(40)));
+        assert!(paint.ready(end + Duration::from_millis(40)));
         paint.request(true);
         assert!(paint.ready(end));
+    }
+    #[test]
+    fn short_frames_keep_a_fixed_interval_between_their_starts() {
+        let start = Instant::now();
+        let mut paint = PaintSchedule {
+            dirty: true,
+            urgent: false,
+            next_stream: start,
+        };
+        let end = start + Duration::from_millis(2);
+        paint.painted(start, end);
+        paint.request(false);
+        assert_eq!(paint.deadline(end), Some(start + FRAME_INTERVAL));
+    }
+
+    #[test]
+    fn terminal_frames_keep_cursor_hidden_during_cell_updates_and_move_before_showing() {
+        let mut backend = FrameBackend::new(Vec::new());
+        backend.show_cursor().unwrap();
+        backend.set_cursor_position((5, 4)).unwrap();
+        backend.flush().unwrap();
+        assert_eq!(backend.output, b"\x1b[?2026h\x1b[5;6H\x1b[?25h\x1b[?2026l");
+        backend.output.clear();
+
+        backend.clear_region(ClearType::All).unwrap();
+        let mut cell = Cell::EMPTY;
+        cell.set_symbol("X");
+        backend.draw([(1, 1, &cell)].into_iter()).unwrap();
+        backend.show_cursor().unwrap();
+        backend.set_cursor_position((8, 6)).unwrap();
+        assert!(backend.output.is_empty());
+        backend.flush().unwrap();
+        let output = String::from_utf8_lossy(&backend.output);
+        assert!(output.starts_with("\x1b[?2026h\x1b[?25l\x1b[2J"));
+        assert!(output.contains("\x1b[2;2HX"));
+        assert!(output.ends_with("\x1b[7;9H\x1b[?25h\x1b[?2026l"));
+
+        backend.output.clear();
+        backend.draw(std::iter::empty()).unwrap();
+        backend.flush().unwrap();
+        assert!(backend.output.is_empty());
     }
 }
