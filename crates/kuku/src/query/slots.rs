@@ -316,7 +316,7 @@ pub(super) fn spawn_command_slot(
                             &output.dir,
                             &output.id,
                             output.limits,
-                            output.has_output_reader,
+                            output.access,
                         ),
                     )
                     .await;
@@ -417,7 +417,7 @@ pub(crate) struct RetainedOutputSpec {
     pub(crate) dir: PathBuf,
     pub(crate) id: String,
     pub(crate) limits: crate::tool::builtin::run_command::output::OutputLimits,
-    pub(crate) has_output_reader: bool,
+    pub(crate) access: crate::tool::builtin::run_command::ModelOutputAccess,
     pub(crate) retention: crate::session::runtime::OutputReservation,
 }
 

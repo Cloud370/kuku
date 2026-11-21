@@ -293,11 +293,7 @@ pub(crate) fn run_command_definition(shells: &[CommandShell], session: bool) -> 
     description.push_str(r#" For literal arguments use {"program":"git","args":["status"]}. Prefix a workspace-relative program with './'. Reports exit status, elapsed time and the retained output ID."#);
     if session {
         schema["properties"]["background"] = serde_json::json!({"type":"boolean","description":"Return a Job handle if the command is still running after one second."});
-        schema["properties"]["preview_bytes"] = serde_json::json!({
-            "type":"integer","minimum":1,"maximum":builtin::run_command::MAX_REQUESTED_PREVIEW_BYTES,
-            "description":"Include up to this many output bytes in the result, within the Session preview budget. Set when you need a small excerpt immediately."
-        });
-        description.push_str(" When read_output is available, successful commands retain raw output for later reads by default. Request preview_bytes for an immediate excerpt. Slow calls become Jobs.");
+        description.push_str(" Long output is summarized. Use read_output to inspect the retained result. Slow calls become Jobs.");
     }
     tool(
         "run_command",

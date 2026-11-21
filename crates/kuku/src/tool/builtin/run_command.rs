@@ -37,7 +37,6 @@ mod shell;
 mod windows_tests;
 
 const RUN_COMMAND_MAX_CHARS: usize = 80_000;
-pub(crate) const MAX_REQUESTED_PREVIEW_BYTES: usize = 65_536;
 const READ_BUFFER_BYTES: usize = 8192;
 const CLEANUP_TIMEOUT: Duration = Duration::from_secs(1);
 static OUTPUT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -59,8 +58,15 @@ struct CommandOutcome {
     dropped_events: u64,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ModelOutputAccess {
+    Unavailable,
+    Read,
+    Script,
+}
+
 enum CommandView {
-    Model { has_output_reader: bool },
+    Model(ModelOutputAccess),
     Script { host_bytes: usize },
 }
 
@@ -76,13 +82,13 @@ impl<'a> CommandCapture<'a> {
         dir: &'a Path,
         id: &'a str,
         limits: OutputLimits,
-        has_output_reader: bool,
+        access: ModelOutputAccess,
     ) -> Self {
         Self {
             dir,
             id,
             limits,
-            view: CommandView::Model { has_output_reader },
+            view: CommandView::Model(access),
         }
     }
 }
@@ -130,7 +136,12 @@ pub(crate) async fn run_command_with_output(
         workspace,
         event_tx,
         cancel,
-        CommandCapture::model(output_dir, output_id, limits, false),
+        CommandCapture::model(
+            output_dir,
+            output_id,
+            limits,
+            ModelOutputAccess::Unavailable,
+        ),
     )
     .await
 }

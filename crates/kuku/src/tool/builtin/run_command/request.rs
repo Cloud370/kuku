@@ -9,7 +9,6 @@ use crate::execution::{CommandInvocation, CommandShell};
 use crate::tool::{ToolDefinition, ToolResultEnvelope};
 
 use super::shell::shell_command;
-use super::MAX_REQUESTED_PREVIEW_BYTES;
 
 pub(super) struct PreparedCommand {
     pub(super) command: Command,
@@ -28,7 +27,6 @@ pub(super) struct CommandRequest {
     pub(super) invocation: CommandInvocation,
     pub(super) cwd: PathBuf,
     pub(super) timeout_seconds: Option<u32>,
-    pub(super) preview_bytes: Option<usize>,
 }
 
 impl CommandRequest {
@@ -88,14 +86,12 @@ fn apply_command_defaults(
     definition: &ToolDefinition,
 ) -> Result<(), ToolResultEnvelope> {
     if let Some(fields) = args.as_object_mut() {
-        for field in ["background", "preview_bytes"] {
-            if fields.contains_key(field)
-                && definition.input_schema["properties"].get(field).is_none()
-            {
-                return Err(invalid(format!(
-                    "{field} requires a top-level Session tool call"
-                )));
-            }
+        if fields.contains_key("background")
+            && definition.input_schema["properties"]
+                .get("background")
+                .is_none()
+        {
+            return Err(invalid("background requires a top-level Session tool call"));
         }
         let shell_text = fields.contains_key("command");
         let mode_field = if shell_text { "shell" } else { "args" };
@@ -145,15 +141,7 @@ pub(super) fn run_command_request(
     if let Some(field) = fields.keys().find(|field| {
         !matches!(
             field.as_str(),
-            "program"
-                | "args"
-                | "shell"
-                | "command"
-                | "cwd"
-                | "timeout"
-                | "brief"
-                | "background"
-                | "preview_bytes"
+            "program" | "args" | "shell" | "command" | "cwd" | "timeout" | "brief" | "background"
         )
     }) {
         return Err(invalid(format!("run_command does not accept {field:?}")));
@@ -187,7 +175,6 @@ pub(super) fn run_command_request(
                 .ok_or_else(|| invalid("timeout must be a positive 32-bit integer in seconds"))
         })
         .transpose()?;
-    let preview_bytes = optional_preview_bytes(args)?;
     if args
         .get("background")
         .is_some_and(|value| !value.is_boolean())
@@ -198,24 +185,7 @@ pub(super) fn run_command_request(
         invocation,
         cwd,
         timeout_seconds,
-        preview_bytes,
     })
-}
-
-fn optional_preview_bytes(args: &Value) -> Result<Option<usize>, ToolResultEnvelope> {
-    args.get("preview_bytes")
-        .map(|value| {
-            value
-                .as_u64()
-                .filter(|n| (1..=MAX_REQUESTED_PREVIEW_BYTES as u64).contains(n))
-                .map(|n| n as usize)
-                .ok_or_else(|| {
-                    invalid(format!(
-                        "preview_bytes must be an integer from 1 to {MAX_REQUESTED_PREVIEW_BYTES}"
-                    ))
-                })
-        })
-        .transpose()
 }
 
 fn invocation(args: &Value) -> Result<CommandInvocation, ToolResultEnvelope> {

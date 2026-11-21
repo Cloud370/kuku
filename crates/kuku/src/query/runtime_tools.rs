@@ -430,6 +430,8 @@ pub(super) fn reject(pending: PendingRun, queued: QueuedToolCall) -> Result<Pend
 }
 
 fn output_spec(pending: &PendingRun, id: &str) -> Result<super::slots::RetainedOutputSpec> {
+    use crate::tool::builtin::run_command::ModelOutputAccess;
+
     let agent = pending.conversation.as_str();
     let output_id = crate::session::runtime::command_output_id(agent, pending.turn, id);
     let mut retention =
@@ -446,7 +448,14 @@ fn output_spec(pending: &PendingRun, id: &str) -> Result<super::slots::RetainedO
             max_output_bytes: retention.max_bytes(),
             max_preview_bytes: pending.query.runtime_limits.max_preview_bytes,
         },
-        has_output_reader: find_tool_definition(pending, "read_output").is_some(),
+        access: match (
+            find_tool_definition(pending, "read_output"),
+            find_tool_definition(pending, "run_js"),
+        ) {
+            (Some(_), Some(_)) => ModelOutputAccess::Script,
+            (Some(_), None) => ModelOutputAccess::Read,
+            (None, _) => ModelOutputAccess::Unavailable,
+        },
         retention,
     })
 }

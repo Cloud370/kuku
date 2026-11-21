@@ -409,10 +409,10 @@ async fn same_script_keeps_one_command_capture_across_foreground_and_automatic_j
     assert_eq!(10_000, RuntimeLimits::default().job_foreground_wait_ms);
     let server = MockServer::start_async().await;
     let script = script_args(false);
-    let fast = Fixture::new(&server, "/job-fast", SHORT_FOREGROUND_MS);
+    let fast = Fixture::new(&server, "/job-fast", 10_000);
     fast.release();
     let (fast_start, fast_end) =
-        model_fixture(&server, "/job-fast", "run_js", script_args(true)).await;
+        model_fixture(&server, "/job-fast", "run_js", script.clone()).await;
     let fast_session = fast.open().await;
     let mut fast_observer = fast_session.observe(0);
     submit(&fast_session);

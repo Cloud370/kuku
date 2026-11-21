@@ -16,7 +16,7 @@ This page describes the default public Session tool surface used by CLI and serv
 | `edit_file` | `path`, `old_text`, `new_text` | `replace_all`, `expected_version`, `brief` | `edit` |
 | `write_file` | `path`, `content` | `expected_version`, `brief` | `edit` |
 | `remove_file` | `path` | `expected_version`, `brief` | `edit` |
-| `run_command` | `command` or `program` | `args`, `cwd`, `shell` (required for command text if no default is listed), `timeout`, `preview_bytes`, `background`, `brief` | `command` |
+| `run_command` | `command` or `program` | `args`, `cwd`, `shell` (required for command text if no default is listed), `timeout`, `background`, `brief` | `command` |
 | `run_js` | `code` | `background` | `execute` |
 | `list_jobs` | none | `before` | `session` |
 | `wait_job` | `job_id` | none | `session` |
@@ -85,7 +85,7 @@ The command runs without a deadline when `timeout` is omitted. The same [Session
 
 An exited process can return tool status `ok` with a nonzero `exit_code`. A shell invocation reports the outer shell's exit code. Preserve each required check's failure when composing commands or pipelines. The command card shows elapsed time and flags stderr separately from the exit status. Check `termination`, `exit_code`, and `capture_complete` in the structured facts.
 
-When the Agent has `read_output`, successful commands give the model the outcome and retained output reference. The initial view uses selected build or test evidence when available. Otherwise it describes the observed output prefix, for example by listing a few JSON keys or showing a short sample of a multiline text result. Request `preview_bytes` from 1 to 65,536 for a bounded excerpt when the command itself is an inspection. The Session's preview limit still applies. Use `read_output` for a relevant range or literal search. The TUI can show an excerpt independently.
+When the Agent has `read_output`, short command output appears inline. Output above 2 KiB or 40 lines returns a bounded view and retained output reference. The view gives recognized build/test evidence or describes the observed prefix. For JSON Lines, the view can show observed keys and how to process the data through an available script. Use `read_output` to inspect a relevant range. The TUI can show an excerpt independently.
 
 The default Session preview is bounded to 8 KiB, including its summary and retained reference. A complete capture can still have a truncated preview. For failed commands with a complete capture that exceeds the preview size, the preview uses selected build or test lines when available. Otherwise it shows the end of stderr, falling back to stdout if stderr is empty. Missing executables, start failures, timeouts, and cancellation have separate termination values. Recognized Rust test and pytest summaries carry program-reported counts and bounded evidence. [SDK execution facts](sdk.md#workspace-execution)
 
@@ -109,7 +109,7 @@ Most host methods return `{status, result, truncated}`. Check for `status: "ok"`
 
 Return a small JSON value to give the model the evidence it needs. To process large captures, iterate `tools.output_lines({id, stream: "stdout"})` and keep only the state needed for the computation. The original bytes remain available through [retained output](#retained-tool-output). Each call owns its JavaScript variables until it finishes. Persist selected results as a [named value](#named-session-values) or write a requested deliverable to the workspace.
 
-`await tools.run_command(args)` waits for the command to settle. It accepts the command arguments above except `background` and `preview_bytes`. A process exit with an integer code resolves to `{exit_code, duration_ms, capture_complete, output_ref, stdout, stderr}`, including on nonzero exit. Actions such as a denied dispatch, a launch failure, a timeout or cancellation reject with an error. The error includes `status` and carries `termination`, `signal`, or `output_ref` when available.
+`await tools.run_command(args)` waits for the command to settle. It accepts the command arguments above except `background`. A process exit with an integer code resolves to `{exit_code, duration_ms, capture_complete, output_ref, stdout, stderr}`, including on nonzero exit. Actions such as a denied dispatch, a launch failure, a timeout or cancellation reject with an error. The error includes `status` and carries `termination`, `signal`, or `output_ref` when available.
 
 For either stream, `await run.stdout.text()` reads the complete decoded text up to 1 MiB, and `await run.stdout.json()` parses that text as JSON. Use `for await (const line of run.stderr.lines())` to stream decoded text without LF or CRLF terminators. Lines can contain up to 128 KiB each. The helpers reject incomplete or lossy output. Use `tools.output_chunks({id: run.output_ref.id})` to inspect retained partial output or raw bytes. Reads that page through retained output use the authorized `read_output` method.
 

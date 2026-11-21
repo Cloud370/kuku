@@ -14,10 +14,11 @@ use crate::tool::ToolResultEnvelope;
 use super::output::{read_stderr, CaptureMetadata, OutputChunk, OutputSegment};
 use super::{
     output_error, read_output, CommandCapture, CommandOutcome, CommandRequest, CommandView,
-    OutputRead, OutputStream,
+    ModelOutputAccess, OutputRead, OutputStream,
 };
 
 const MAX_OUTPUT_PREVIEW_BYTES: usize = 2048;
+const SHORT_OUTPUT_LINES: u64 = 40;
 const SHAPE_SAMPLE_BYTES: usize = 96;
 const SHAPE_FIELDS: usize = 6;
 const SHAPE_FIELD_BYTES: usize = 24;
@@ -90,15 +91,9 @@ pub(super) fn render_command_result(
         side_effects_observed: false,
     };
     match output.view {
-        CommandView::Model { has_output_reader } => render_model(
-            status,
-            summary,
-            facts,
-            &metadata,
-            output,
-            has_output_reader,
-            request.preview_bytes,
-        ),
+        CommandView::Model(access) => {
+            render_model(status, summary, facts, &metadata, output, access)
+        }
         CommandView::Script { host_bytes } => {
             render_script(status, summary, facts, output, host_bytes)
         }
@@ -111,34 +106,30 @@ fn render_model(
     mut facts: CommandExecutionFacts,
     metadata: &CaptureMetadata,
     output: CommandCapture<'_>,
-    has_output_reader: bool,
-    requested_preview: Option<usize>,
+    access: ModelOutputAccess,
 ) -> ToolResultEnvelope {
-    let filtered = !metadata.summary.is_empty() || !facts.reported_tests.is_empty();
     let output_preview_limit = output
         .limits
         .max_preview_bytes
         .min(MAX_OUTPUT_PREVIEW_BYTES);
     let failed =
         facts.timed_out || facts.signal.is_some() || facts.exit_code.is_some_and(|code| code != 0);
-    let defer_raw = has_output_reader
-        && requested_preview.is_none()
-        && facts.exit_code == Some(0)
-        && metadata.stored_bytes > 0;
-    let model_preview_limit = requested_preview
-        .unwrap_or(output.limits.max_preview_bytes)
-        .min(output.limits.max_preview_bytes);
+    let abbreviated = access != ModelOutputAccess::Unavailable
+        && (metadata.stored_bytes > output_preview_limit as u64
+            || facts.stdout_lines.saturating_add(facts.stderr_lines) > SHORT_OUTPUT_LINES);
+    let filtered = (abbreviated || access == ModelOutputAccess::Unavailable)
+        && (!metadata.summary.is_empty() || !facts.reported_tests.is_empty());
     let show_end = failed
         && !filtered
         && facts.capture_complete
-        && metadata.stored_bytes > model_preview_limit as u64;
+        && (abbreviated || metadata.stored_bytes > output.limits.max_preview_bytes as u64);
     let show_stderr = show_end && facts.stderr_bytes > 0;
     let read_limit = if show_end {
-        output_preview_limit.min(model_preview_limit / 2)
-    } else if (filtered && requested_preview.is_none()) || defer_raw {
+        output_preview_limit.min(output.limits.max_preview_bytes / 2)
+    } else if filtered || abbreviated {
         output_preview_limit
     } else {
-        model_preview_limit
+        output.limits.max_preview_bytes
     }
     .max(1);
     let source_bytes = if show_stderr {
@@ -193,7 +184,7 @@ fn render_model(
     } else {
         String::new()
     };
-    let include_raw = !defer_raw && (!filtered || requested_preview.is_some());
+    let include_raw = !filtered && (!abbreviated || show_end);
     if include_raw && show_end {
         let source = if show_stderr { "stderr" } else { "output" };
         body.push_str(&format!("\n\nEnd of captured {source}:\n{raw_preview}"));
@@ -205,11 +196,12 @@ fn render_model(
         };
         body.push_str("\n\n");
         body.push_str(text);
-    } else if defer_raw && !filtered {
-        body.push_str("\n\nRaw output is retained. Use read_output for the relevant range.");
+    } else if abbreviated && !filtered {
+        body.push_str("\n\nOutput shape from the observed prefix:");
+        append_output_shape(&mut body, &chunk, &facts, access);
     }
-    if defer_raw && !filtered {
-        append_output_shape(&mut body, &chunk, &facts);
+    if abbreviated {
+        body.push_str("\nRead the relevant range with read_output({id, offset, limit}) using the Output ID below.");
     }
     if !facts.capture_complete {
         summary.push_str(", capture incomplete");
@@ -220,8 +212,8 @@ fn render_model(
         filtered,
         chunk.lossy_utf8 && include_raw,
     );
-    let preview_truncated = (include_raw && (show_end || chunk.has_more))
-        || (defer_raw && !filtered)
+    let preview_truncated = abbreviated
+        || (include_raw && (show_end || chunk.has_more))
         || summary.len() + body.len() + reference.len() > output.limits.max_preview_bytes;
     if preview_truncated {
         summary.push_str(", preview truncated");
@@ -243,7 +235,12 @@ fn render_model(
     ToolResultEnvelope::command(status, summary, model_content, truncated, facts)
 }
 
-fn append_output_shape(body: &mut String, chunk: &OutputChunk, facts: &CommandExecutionFacts) {
+fn append_output_shape(
+    body: &mut String,
+    chunk: &OutputChunk,
+    facts: &CommandExecutionFacts,
+    access: ModelOutputAccess,
+) {
     for (stream, label, bytes) in [
         (OutputStream::Stdout, "stdout", facts.stdout_bytes),
         (OutputStream::Stderr, "stderr", facts.stderr_bytes),
@@ -258,18 +255,25 @@ fn append_output_shape(body: &mut String, chunk: &OutputChunk, facts: &CommandEx
                 .iter()
                 .find(|segment| segment.stream == stream)
             {
-                body.push_str(". Observed prefix: ");
-                body.push_str(&output_shape(&segment.text, segment.bytes as u64 == bytes));
+                let (description, json_lines) =
+                    output_shape(&segment.text, segment.bytes as u64 == bytes);
+                body.push_str(". ");
+                body.push_str(&description);
+                if json_lines && access == ModelOutputAccess::Script {
+                    body.push_str(&format!("\nFor {label} records in run_js, iterate tools.output_lines({{id, stream:{label:?}}}). Check line.truncated and line.lossy_utf8 before JSON.parse(line.text)."));
+                }
             }
         }
     }
 }
 
-fn output_shape(prefix: &str, complete: bool) -> String {
+fn output_shape(prefix: &str, complete: bool) -> (String, bool) {
     if complete {
         match serde_json::from_str::<Value>(prefix) {
-            Ok(Value::Object(fields)) => return json_object_shape("JSON object", &fields),
-            Ok(Value::Array(items)) => return format!("JSON array, {} items", items.len()),
+            Ok(Value::Object(fields)) => return (json_object_shape("JSON object", &fields), false),
+            Ok(Value::Array(items)) => {
+                return (format!("JSON array, {} items", items.len()), false)
+            }
             _ => {}
         }
     }
@@ -279,22 +283,31 @@ fn output_shape(prefix: &str, complete: bool) -> String {
         .map(|line| line.trim_end_matches(['\r', '\n']))
         .filter(|line| !line.trim().is_empty());
     let (Some(first), Some(second)) = (lines.next(), lines.next()) else {
-        return "text".into();
+        return ("text".into(), false);
     };
     if let (Ok(Value::Object(fields)), Ok(Value::Object(_))) =
         (serde_json::from_str(first), serde_json::from_str(second))
     {
-        return json_object_shape("first two lines are JSON objects", &fields);
+        return (
+            json_object_shape("first two lines are JSON objects", &fields),
+            true,
+        );
     }
     let columns = first.split('\t').count();
     if columns > 1 && second.split('\t').count() == columns {
-        return format!("{columns} tab-separated fields in each of the first two lines");
+        return (
+            format!("{columns} tab-separated fields in each of the first two lines"),
+            false,
+        );
     }
     let end = first.floor_char_boundary(first.len().min(SHAPE_SAMPLE_BYTES));
     let suffix = if end < first.len() { "…" } else { "" };
-    format!(
-        "multiline text, first nonblank line {}{suffix}",
-        json!(&first[..end])
+    (
+        format!(
+            "multiline text, first nonblank line {}{suffix}",
+            json!(&first[..end])
+        ),
+        false,
     )
 }
 

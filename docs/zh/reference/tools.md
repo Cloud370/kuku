@@ -16,7 +16,7 @@
 | `edit_file` | `path`, `old_text`, `new_text` | `replace_all`, `expected_version`, `brief` | `edit` |
 | `write_file` | `path`, `content` | `expected_version`, `brief` | `edit` |
 | `remove_file` | `path` | `expected_version`, `brief` | `edit` |
-| `run_command` | `command` 或 `program` | `args`、`cwd`、`shell`（命令文本在未列出默认解释器时必填）、`timeout`、`preview_bytes`、`background`、`brief` | `command` |
+| `run_command` | `command` 或 `program` | `args`、`cwd`、`shell`（命令文本在未列出默认解释器时必填）、`timeout`、`background`、`brief` | `command` |
 | `run_js` | `code` | `background` | `execute` |
 | `list_jobs` | 无 | `before` | `session` |
 | `wait_job` | `job_id` | 无 | `session` |
@@ -85,7 +85,7 @@
 
 进程正常退出后，工具状态可以为 `ok`，同时 `exit_code` 为非零值。Shell 调用报告外层 Shell 的退出码。串接命令或使用管道时，保留每项必要检查的失败状态。命令卡片显示用时，并单独标记 stderr。检查结构化事实中的 `termination`、`exit_code` 和 `capture_complete`。
 
-Agent 有 `read_output` 时，成功命令向模型提供执行结果和保留输出引用。首轮优先显示可用的构建或测试证据，其余输出只描述已观察到的开头，例如少量 JSON 字段名或很短的一段多行文本样本。命令本身用于查看信息时，可传入 1 至 65,536 的 `preview_bytes` 请求有限预览。Session 的预览上限仍然生效。之后可随时用 `read_output` 读取相关范围或按字面文本过滤。TUI 可以独立显示输出片段。
+Agent 有 `read_output` 时，短命令输出直接显示。超过 2 KiB 或 40 行时返回有界视图和保留输出引用。视图展示识别到的构建／测试证据或描述已观察到的开头。对 JSON Lines，可以提示观察到的字段以及如何用可用的脚本处理。用 `read_output` 查看相关范围。TUI 可以独立显示输出片段。
 
 Session 的默认预览上限为 8 KiB，包含摘要和保留输出引用。即使捕获完整，预览也可能截断。失败命令的完整捕获超过预览上限时，优先显示识别到的构建或测试摘要，否则显示 stderr 末尾。stderr 为空时，显示 stdout 末尾。程序缺失、启动失败、超时和取消有不同的终止原因。识别出的 Rust 测试和 pytest 摘要会提供程序报告的统计与有界证据。[SDK 执行事实](sdk.md#工作区执行)
 
@@ -109,7 +109,7 @@ Session 的默认预览上限为 8 KiB，包含摘要和保留输出引用。即
 
 脚本可以返回较小的 JSON 值，为模型提供所需的证据。处理大输出时，用 `tools.output_lines({id, stream: "stdout"})` 逐行遍历，只保留计算所需的状态。原始字节可以通过[保留输出](#保留的工具输出)读取。JavaScript 变量只在当次调用中存在。可以把选中的结果存为[命名值](#命名会话值)，也可以按用户要求把交付物写入工作区。
 
-`await tools.run_command(args)` 等待命令结束。它接受上述命令参数，`background` 和 `preview_bytes` 除外。进程退出时，只要有整数退出码，就返回 `{exit_code, duration_ms, capture_complete, output_ref, stdout, stderr}`，包括非零退出码。拒绝派发、启动失败、超时或取消等情况会抛出错误。错误提供 `status`，并在可用时附带 `termination`、`signal` 或 `output_ref`。
+`await tools.run_command(args)` 等待命令结束。它接受上述命令参数，`background` 除外。进程退出时，只要有整数退出码，就返回 `{exit_code, duration_ms, capture_complete, output_ref, stdout, stderr}`，包括非零退出码。拒绝派发、启动失败、超时或取消等情况会抛出错误。错误提供 `status`，并在可用时附带 `termination`、`signal` 或 `output_ref`。
 
 两个流的方法相同。`await run.stdout.text()` 读取完整的解码文本，上限为 1 MiB，`await run.stdout.json()` 将同一文本解析为 JSON。用 `for await (const line of run.stderr.lines())` 逐行读取去掉 LF 或 CRLF 的解码文本，单行上限为 128 KiB。遇到捕获不完整或有损解码时，这些方法会报错。需要查看已保留的部分输出或原始字节时，使用 `tools.output_chunks({id: run.output_ref.id})`。保留输出的分页读取经过 `read_output` 授权。
 
