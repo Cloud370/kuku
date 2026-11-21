@@ -377,7 +377,7 @@ def editable_multiline_paste(client):
         discarded = "draft to clear with Ctrl+C"
         terminal.type(discarded)
         terminal.press("\x03")
-        view = eventually(
+        eventually(
             "Ctrl+C clears the first-prompt draft",
             lambda: (
                 result
@@ -389,15 +389,12 @@ def editable_multiline_paste(client):
         )
 
         terminal.press("/qui\t")
-
-        def completed_quit():
-            view = terminal.request("screen")
-            assert view["exit_code"] is None, "Tab must leave the client open"
-            return view["screen"].count("/quit") == 2
-
-        eventually("Tab to complete /quit in the open actions menu", completed_quit)
+        completed = terminal.expect("/quit", absent=("Actions and Skills",))
+        assert completed["exit_code"] is None and completed["screen"].count("/quit") == 1
         terminal.press("\x03")
-        terminal.expect("Search…")
+        terminal.expect("Enter sends your first prompt", absent=("/quit",))
+        terminal.press("/")
+        terminal.expect("Actions and Skills")
 
         assert terminal.request("screen")["bracketed_paste"], "The client must request bracketed paste"
         framed = f"\x1b[200~{paste}\x1b[201~"
@@ -405,10 +402,10 @@ def editable_multiline_paste(client):
             terminal.press("\x1b" + framed)
         else:
             terminal.press("\x1b")
-            eventually("the action picker to close", lambda: "Search…" not in terminal.request("screen")["screen"])
+            eventually("the action picker to close", lambda: "Actions and Skills" not in terminal.request("screen")["screen"])
             terminal.press(framed)
         draft = terminal.expect("target 中文X")["screen"]
-        assert "Search…" not in draft, "Escape must have closed the action picker"
+        assert "Actions and Skills" not in draft, "Escape must have closed the action picker"
         assert client.sessions(workspace) == [], "Pasting a line break must leave the draft unsent"
         client.provider.assert_idle(duration=0.25)
 

@@ -880,7 +880,7 @@ impl App {
                     }
                 }
                 if active && route_changed {
-                    self.message("Model route set for the next safe model boundary");
+                    self.message("Settings saved for the next safe model boundary");
                 }
             }
             Action::ReplyPermission { .. } | Action::ReplyQuestion { .. } => {
