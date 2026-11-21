@@ -7,7 +7,7 @@ use serde_json::json;
 use crate::cli_args::{ConnectionArgs, ServerCommand, ServerCommandArgs};
 use crate::commands::CliResult;
 
-/// Show status or request a normal restart without requiring Session protocol compatibility.
+/// Manage the service without requiring an existing Session connection.
 pub async fn manage(command: ServerCommand, options: ConnectionOptions) -> CliResult {
     let result = match command {
         ServerCommand::Status => {
@@ -24,21 +24,47 @@ pub async fn manage(command: ServerCommand, options: ConnectionOptions) -> CliRe
                 }
             }
         }
-        ServerCommand::Restart => match options.local_service()?.restart().await? {
-            RestartOutcome::Deferred(status) => {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&json!({"state": "deferred", "service": status}))?
+        ServerCommand::Start => {
+            let service = options.local_service()?;
+            let connection = match service.status().await? {
+                Some(current) if current.status().version != kuku_server::BUILD_VERSION => {
+                    match service.restart_if_current(&current.identity()).await {
+                        Err(local::LocalError::ServiceChanged) => service.connect().await?,
+                        outcome => restarted(outcome?)?,
+                    }
+                }
+                _ => service.connect().await?,
+            };
+            if connection.status().version != kuku_server::BUILD_VERSION {
+                return Err(
+                    "service build changed while starting; check `kuku server status` and retry"
+                        .into(),
                 );
-                return Err("service restart deferred while work or cleanup is active; check `kuku server status` and retry after it settles".into());
             }
-            RestartOutcome::Restarted(connection) => {
-                json!({"state": "restarted", "service": connection.status()})
-            }
-        },
+            json!({"state": "ready", "service": connection.status()})
+        }
+        ServerCommand::Restart => {
+            let connection = restarted(options.local_service()?.restart().await?)?;
+            json!({"state": "restarted", "service": connection.status()})
+        }
     };
     println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
+}
+
+fn restarted(
+    outcome: RestartOutcome,
+) -> Result<local::LocalConnection, Box<dyn std::error::Error>> {
+    match outcome {
+        RestartOutcome::Restarted(connection) => Ok(connection),
+        RestartOutcome::Deferred(status) => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({"state": "deferred", "service": status}))?
+            );
+            Err("service restart deferred while work or cleanup is active; check `kuku server status` and retry after it settles".into())
+        }
+    }
 }
 
 pub(super) async fn standalone(args: ServerCommandArgs, target: &ConnectionArgs) -> CliResult {

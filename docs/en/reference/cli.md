@@ -38,6 +38,7 @@ Put options before the prompt in `kuku run`, because it consumes the remaining w
 | `kuku agents ...` | List or inspect agents |
 | `kuku skills ...` | List or inspect skills |
 | `kuku server ...` | Start an explicit HTTP server |
+| `kuku server start` | Start or reuse the matching managed build |
 | `kuku server status` | Inspect service identity and activity |
 | `kuku server restart` | Restart the managed local service after outstanding work settles |
 | `kuku web ...` | Open the browser interface on the selected service |
@@ -289,6 +290,7 @@ kuku skills [list | show <name>]
 
 ```text
 kuku server [--listen <addr>] [--config <path>] [--password <token>] [--max-concurrent-runs <n>]
+kuku server start
 kuku server status
 kuku server restart
 kuku web [--session <id> [--agent <address>]] [--print-url]
@@ -300,6 +302,8 @@ Defaults:
 - `--max-concurrent-runs 16`
 
 The explicit server requires `--password` or `KUKU_SERVER_PASSWORD`. `kuku web` opens the browser on the selected service. It can pass the workspace, Session and Agent selection to the page. Use `--print-url` to print the link. A managed sign-in link contains a short-lived, single-use ticket.
+
+`server start` starts the managed local service or reuses the running instance of the same build. It replaces a different build once active work has settled. If the service is busy, the command returns the same deferred status as `server restart`.
 
 `server status` reports service information as JSON. For a stopped local service it returns `{"state":"stopped"}`. On a busy service, `server restart` exits with status 1 and emits JSON with `state: "deferred"` and the current `service` status. On success it reports `state: "restarted"` and the replacement service.
 

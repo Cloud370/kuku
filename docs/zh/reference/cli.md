@@ -38,6 +38,7 @@
 | `kuku agents ...` | 列出或查看 Agent 联系卡 |
 | `kuku skills ...` | 列出或查看 Skill |
 | `kuku server ...` | 显式启动 HTTP 服务 |
+| `kuku server start` | 启动或复用同版本的受管本地服务 |
 | `kuku server status` | 检查服务身份和当前活动 |
 | `kuku server restart` | 在手头的工作结束后重启受管本地服务 |
 | `kuku web ...` | 打开所选服务的浏览器界面 |
@@ -289,6 +290,7 @@ kuku skills [list | show <name>]
 
 ```text
 kuku server [--listen <addr>] [--config <path>] [--password <token>] [--max-concurrent-runs <n>]
+kuku server start
 kuku server status
 kuku server restart
 kuku web [--session <id> [--agent <address>]] [--print-url]
@@ -300,6 +302,8 @@ kuku web [--session <id> [--agent <address>]] [--print-url]
 - `--max-concurrent-runs 16`
 
 显式启动服务需要 `--password` 或 `KUKU_SERVER_PASSWORD`。`kuku web` 会在浏览器中打开所选服务，可以把工作区、Session 和 Agent 选择传给页面。使用 `--print-url` 只打印链接。受管服务的登录链接带有短时一次性票据。
+
+`server start` 启动受管本地服务，或复用正在运行的同版本实例。版本不同时，等待当前工作结束后可替换。服务忙时，返回与 `server restart` 相同的延后状态。
 
 `server status` 以 JSON 输出服务信息。本地服务未运行时返回 `{"state":"stopped"}`。服务忙时，`server restart` 以状态码 1 退出，并输出含 `state: "deferred"` 和当前 `service` 状态的 JSON。重启成功时返回 `state: "restarted"` 和替换后的服务状态。
 
