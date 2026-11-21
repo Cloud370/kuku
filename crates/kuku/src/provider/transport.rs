@@ -4,7 +4,7 @@ use wreq::header::{HeaderMap, HeaderValue};
 use crate::config::ProviderAuth;
 
 use super::error::{classify_http_error, transport_error};
-use super::prepare::{authentication, invalid_request};
+use super::prepare::{authentication, invalid_request, is_official_openrouter};
 use super::trace::{ProviderTrace, ProviderTraceDirection, ProviderTraceMetadata};
 use super::types::{
     PreparedProviderRequest, ProviderFailure, ProviderFailureKind, ProviderKind, ResolvedProvider,
@@ -152,8 +152,7 @@ fn request_headers(
         headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
     }
     if config.capabilities.profile == crate::config::ProviderProfile::OpenRouter
-        && url::Url::parse(&prepared.url)
-            .is_ok_and(|url| super::openrouter_catalog::is_official_openrouter(&url))
+        && url::Url::parse(&prepared.url).is_ok_and(|url| is_official_openrouter(&url))
         && !matches!(
             config.options.model_pricing.get(&prepared.model),
             Some(crate::config::ModelPricing::UsageOnly)
@@ -235,6 +234,28 @@ mod tests {
         .unwrap();
         assert_eq!("test-key", headers["x-api-key"]);
         assert!(headers.get("authorization").is_none());
+    }
+
+    #[test]
+    fn billing_metadata_is_requested_on_official_openrouter_accounting_routes() {
+        let mut config = ResolvedProvider::default();
+        config.capabilities.profile = ProviderProfile::OpenRouter;
+        let mut request = prepared(&config);
+        assert!(!request_headers(&config, &request, "test-key")
+            .unwrap()
+            .contains_key("x-openrouter-metadata"));
+        request.url = "https://eu.openrouter.ai/api/v1/messages".into();
+        assert_eq!(
+            "enabled",
+            request_headers(&config, &request, "test-key").unwrap()["x-openrouter-metadata"]
+        );
+        config
+            .options
+            .model_pricing
+            .insert(config.model.clone(), crate::config::ModelPricing::UsageOnly);
+        assert!(!request_headers(&config, &request, "test-key")
+            .unwrap()
+            .contains_key("x-openrouter-metadata"));
     }
 
     #[test]

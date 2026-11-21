@@ -9,6 +9,7 @@ use crate::config::{resolve_request_url, OpenRouterRouting, ProviderConfig, Toke
 use crate::{Error, Result};
 
 use super::capabilities::normalized_tier;
+use super::prepare::is_official_openrouter;
 
 pub(super) fn same_endpoint(tag: &str, endpoint: &str) -> bool {
     tag == endpoint
@@ -109,15 +110,6 @@ pub fn openrouter_quote_url(connection: &ProviderConfig, model: &str) -> Option<
     )
     .ok()?;
     quote_url_for_request(&url, model)
-}
-
-pub(super) fn is_official_openrouter(url: &Url) -> bool {
-    url.scheme() == "https"
-        && matches!(
-            url.host_str(),
-            Some("openrouter.ai" | "us.openrouter.ai" | "eu.openrouter.ai")
-        )
-        && url.port_or_known_default() == Some(443)
 }
 
 pub(super) fn quote_url_for_request(request_url: &str, model: &str) -> Option<String> {

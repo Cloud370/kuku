@@ -74,6 +74,15 @@ pub(crate) fn request_url(config: &ResolvedProvider) -> Result<String, ProviderF
     .map_err(|error| invalid_request(&error.to_string()))
 }
 
+pub(super) fn is_official_openrouter(url: &url::Url) -> bool {
+    url.scheme() == "https"
+        && matches!(
+            url.host_str(),
+            Some("openrouter.ai" | "us.openrouter.ai" | "eu.openrouter.ai")
+        )
+        && url.port_or_known_default() == Some(443)
+}
+
 pub(crate) fn authentication(config: &ResolvedProvider) -> ProviderAuth {
     authentication_for(
         config.kind.format(),

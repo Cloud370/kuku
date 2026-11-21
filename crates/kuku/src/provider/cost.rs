@@ -4,7 +4,8 @@ use serde_json::Value;
 use crate::config::{ModelPricing, PriceCatalog, ProviderOptions, TokenRates};
 
 use super::capabilities::normalized_tier;
-use super::openrouter_catalog::{is_official_openrouter, quote_url_for_request, same_endpoint};
+use super::openrouter_catalog::{quote_url_for_request, same_endpoint};
+use super::prepare::is_official_openrouter;
 use super::{ProviderReport, ProviderUsage};
 
 /// Cost evidence for one physical model request.
