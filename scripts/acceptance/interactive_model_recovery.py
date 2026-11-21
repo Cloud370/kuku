@@ -3,6 +3,7 @@
 from collections import Counter
 import json
 import re
+import threading
 
 from interactive_fixture import InstalledClient, json_response, run_cases
 
@@ -12,6 +13,7 @@ def recovery_cases(binary, bridge, directory):
         ("change default, retry one model and skip another", lambda: recover_models(binary, bridge, directory / "models")),
         ("repair a rejected key", lambda: repair_connection(binary, bridge, directory / "key", "key")),
         ("repair a missing URL", lambda: repair_connection(binary, bridge, directory / "url", "url")),
+        ("confirm saving early", lambda: save_early(binary, bridge, directory / "save-early")),
     ])
 
 
@@ -31,6 +33,22 @@ def choose(terminal, down, label):
 
 def paste_key(terminal, key):
     terminal.press(f"\x1b[200~{key}\x1b[201~\r")
+
+
+def assert_testing_navigation(terminal, config):
+    terminal.press("\r")
+    terminal.expect("Model tests", also=("6 running",))
+    terminal.press("\x1b")
+    terminal.expect("› View progress")
+    choose(terminal, 2, "Save early")
+    terminal.expect("Save before tests finish?", also=("› Keep testing", "Stop tests and save"))
+    terminal.press("\r")
+    terminal.expect("› View progress", also=("6 running",))
+    terminal.press("\x1b")
+    terminal.expect("Go back before tests finish?", also=("› Keep testing", "Stop tests and go back"))
+    terminal.press("\x1b")
+    terminal.expect("› View progress", also=("6 running",))
+    assert config.read_text() == ""
 
 
 def start_custom(terminal, address, key):
@@ -53,6 +71,41 @@ def catalog(*models):
 
 def text_reply():
     return json_response({"choices": [{"message": {"content": "377"}, "finish_reason": "stop"}]})
+
+
+def save_early(binary, bridge, directory):
+    instance = InstalledClient(binary, bridge, directory)
+    started = threading.Event()
+    release = threading.Event()
+
+    def dispatch(method, path, headers, body):
+        if method == "GET":
+            return catalog("fixture-model")
+        if json.loads(body).get("reasoning_effort") == "low":
+            started.set()
+            release.wait(20)
+        return text_reply()
+
+    instance.provider.dispatch = dispatch
+    try:
+        with instance as client:
+            endpoint = setup_address(client)
+            with client.terminal(client.workspace("save-early"), "init") as terminal:
+                start_custom(terminal, f"{endpoint}/v1/chat/completions", "fixture-save-early-key")
+                terminal.expect("Choose models", also=("fixture-model",))
+                terminal.press("\r")
+                terminal.expect("› View progress", also=("Save early", "0/1 models done"))
+                assert started.wait(5)
+                choose(terminal, 2, "Save early")
+                terminal.expect("Save before tests finish?", also=("› Keep testing",))
+                config = client.home / "config.toml"
+                assert config.read_text() == ""
+                terminal.press("\x1b[B")
+                terminal.expect("› Stop tests and save")
+                terminal.exit_cleanly("\r")
+                assert f'provider = "{endpoint.removeprefix("http://")}"' in config.read_text()
+    finally:
+        release.set()
 
 
 def recover_models(binary, bridge, directory):
@@ -100,7 +153,7 @@ def recover_models(binary, bridge, directory):
             terminal.expect("Fix model", also=("› Retry this model", "Skip this model"))
             choose(terminal, 0, "Retry this model")
             retried = terminal.expect("Save setup", also=("› Save and continue", "Fix failed models"))["screen"]
-            assert re.search(r"alpha\s+Ready", retried), retried
+            assert re.search(r"alpha\s+│\s+Ready", retried), retried
             final_requests = Counter(requests)
             assert final_requests[("alpha", None)] == 2, requests
             assert all(final_requests[item] == count for item, count in initial_requests.items() if item[0] != "alpha"), requests

@@ -219,7 +219,7 @@ impl SetupState {
             .filter(|_| self.discovery.pending() || self.trials.pending())
     }
 
-    pub(super) fn poll_probes(&mut self, settings: &Settings) -> bool {
+    pub(super) fn poll_probes(&mut self, settings: &Settings, mode: super::SetupMode) -> bool {
         let now = std::time::Instant::now();
         if self.probe_deadline().is_none_or(|at| at > now) {
             return false;
@@ -231,8 +231,10 @@ impl SetupState {
                     .cloned()
             })
             .flatten();
+        let review_action = self.selected_review_action(mode);
         self.discovery.poll();
         self.trials.poll();
+        self.restore_review_action(mode, review_action);
         if let Some(selected) = thinking_selection {
             self.models.cursor = self
                 .thinking_choices(settings)
@@ -247,13 +249,17 @@ impl SetupState {
             self.accept_discovery();
         }
         if self.step == SetupStep::CheckingApi {
-            self.accept_api_check(settings);
-            if self.step == SetupStep::CheckingApi {
-                self.show_api_check_failure();
-            }
+            self.update_api_check(settings);
         }
         self.probe_repaint_at = Some(now + std::time::Duration::from_millis(100));
         true
+    }
+
+    pub(super) fn update_api_check(&mut self, settings: &Settings) {
+        self.accept_api_check(settings);
+        if self.step == SetupStep::CheckingApi {
+            self.show_api_check_failure();
+        }
     }
 
     pub(super) fn review_models(&mut self, settings: &Settings) {

@@ -26,6 +26,7 @@ pub(super) enum SetupStep {
     Discover,
     CheckingApi,
     TrialResults,
+    ConfirmStop(StopTests),
     RecoveryModels,
     RecoveryActions,
     RecoveryDefault,
@@ -44,10 +45,27 @@ pub(super) enum SetupStep {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum StopTests {
+    Save,
+    BackFromReview,
+    BackFromApiCheck,
+}
+
+impl StopTests {
+    fn previous_step(self) -> SetupStep {
+        match self {
+            Self::Save | Self::BackFromReview => SetupStep::Review,
+            Self::BackFromApiCheck => SetupStep::CheckingApi,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ReviewAction {
     SaveAndContinue,
     SaveAndExit,
     Save,
+    SaveEarly,
     Settings,
     ApiType,
     Thinking,
@@ -55,6 +73,7 @@ pub(super) enum ReviewAction {
     Advanced,
     RepairCredential,
     TrialResults,
+    ViewProgress,
     FixModels,
     UseAnotherDefault,
     Pricing,
@@ -67,6 +86,7 @@ impl ReviewAction {
             Self::SaveAndContinue => "Save and continue",
             Self::SaveAndExit => "Save and exit",
             Self::Save => "Save models",
+            Self::SaveEarly => "Save early",
             Self::Settings => "Settings",
             Self::ApiType => "API type",
             Self::Thinking => "Thinking",
@@ -74,6 +94,7 @@ impl ReviewAction {
             Self::Advanced => "Model capabilities",
             Self::RepairCredential => "Paste API key",
             Self::TrialResults => "Model tests",
+            Self::ViewProgress => "View progress",
             Self::FixModels => "Fix failed models",
             Self::UseAnotherDefault => "Use another default",
             Self::Pricing => "Costs",
@@ -194,6 +215,11 @@ impl SetupState {
     }
 
     pub(super) fn connection_label(&self, settings: &Settings) -> String {
+        if self.choice() == &ConnectionChoice::Custom {
+            if let Some(host) = super::connection_name::from_url(self.address.text()) {
+                return host;
+            }
+        }
         settings.choice_label(self.choice())
     }
 
@@ -280,18 +306,15 @@ impl SetupState {
             self.finish = Some(Finish::Cancel);
             return;
         }
-        if key.code == KeyCode::Esc {
-            if self.step == SetupStep::Consent {
-                self.finish = Some(Finish::Cancel);
-            } else {
-                self.previous();
-            }
-            return;
-        }
-        if key.code == KeyCode::BackTab
+        if key.code == KeyCode::Esc
+            || key.code == KeyCode::BackTab
             || (key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT))
         {
-            self.previous();
+            if key.code == KeyCode::Esc && self.step == SetupStep::Consent {
+                self.finish = Some(Finish::Cancel);
+            } else {
+                self.go_back(settings);
+            }
             return;
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('a') {
@@ -351,6 +374,7 @@ impl SetupState {
                 }
             }
             SetupStep::TrialResults => self.trial_input(key),
+            SetupStep::ConfirmStop(action) => self.confirm_stop(action, key, settings, mode),
             SetupStep::RecoveryModels | SetupStep::RecoveryActions | SetupStep::RecoveryDefault => {
                 self.recovery_input(key, settings)
             }
@@ -524,6 +548,7 @@ impl SetupState {
             | SetupStep::Discover
             | SetupStep::CheckingApi
             | SetupStep::TrialResults
+            | SetupStep::ConfirmStop(_)
             | SetupStep::RecoveryModels
             | SetupStep::RecoveryActions
             | SetupStep::RecoveryDefault
@@ -590,6 +615,16 @@ impl SetupState {
                 self.review_selection = 0;
                 SetupStep::Review
             }
+            SetupStep::ConfirmStop(action) => {
+                self.review_selection = 0;
+                action.previous_step()
+            }
+            SetupStep::Review if self.trials.pending() => {
+                SetupStep::ConfirmStop(StopTests::BackFromReview)
+            }
+            SetupStep::CheckingApi if self.trials.pending() => {
+                SetupStep::ConfirmStop(StopTests::BackFromApiCheck)
+            }
             SetupStep::Model | SetupStep::Discover => SetupStep::ModelSource,
             SetupStep::CheckingApi | SetupStep::Review => {
                 self.trials.stop();
@@ -604,6 +639,36 @@ impl SetupState {
         };
         if self.credential_source == CredentialSource::Environment {
             self.refresh_environment_detection();
+        }
+    }
+
+    fn go_back(&mut self, settings: &Settings) {
+        let resume_api_check = self.step == SetupStep::ConfirmStop(StopTests::BackFromApiCheck);
+        self.previous();
+        if resume_api_check {
+            self.update_api_check(settings);
+        }
+    }
+
+    fn confirm_stop(
+        &mut self,
+        action: StopTests,
+        key: KeyEvent,
+        settings: &Settings,
+        mode: SetupMode,
+    ) {
+        if key.code != KeyCode::Enter {
+            self.models.move_cursor(key.code, 2);
+        } else if self.models.cursor == 0 {
+            self.go_back(settings);
+        } else if action == StopTests::Save {
+            self.step = SetupStep::Review;
+            self.review_selection = 0;
+            self.save(self.save_action(mode));
+        } else {
+            self.trials.stop();
+            self.step = action.previous_step();
+            self.previous();
         }
     }
 
@@ -691,6 +756,50 @@ impl SetupState {
             (self.review_selection as isize + direction).rem_euclid(count) as usize;
     }
 
+    pub(super) fn selected_review_action(&self, mode: SetupMode) -> Option<ReviewAction> {
+        if self.step != SetupStep::Review {
+            return None;
+        }
+        self.review_choices(mode)
+            .get(self.review_selection)
+            .copied()
+    }
+
+    pub(super) fn restore_review_action(&mut self, mode: SetupMode, action: Option<ReviewAction>) {
+        if let Some(action) = action {
+            let action = if action == ReviewAction::SaveEarly && !self.trials.pending() {
+                ReviewAction::TrialResults
+            } else {
+                action
+            };
+            self.review_selection = self
+                .review_choices(mode)
+                .iter()
+                .position(|choice| *choice == action)
+                .unwrap_or(0);
+        }
+    }
+
+    fn save_action(&self, mode: SetupMode) -> ReviewAction {
+        match mode {
+            SetupMode::FirstRun if self.credential_ready() && !self.primary_failed() => {
+                ReviewAction::SaveAndContinue
+            }
+            SetupMode::FirstRun | SetupMode::Init => ReviewAction::SaveAndExit,
+            SetupMode::Session => ReviewAction::Save,
+        }
+    }
+
+    fn save(&mut self, action: ReviewAction) {
+        self.discovery.stop();
+        self.trials.stop();
+        self.finish = Some(if action == ReviewAction::SaveAndExit {
+            Finish::SaveAndExit
+        } else {
+            Finish::SaveAndContinue
+        });
+    }
+
     pub(super) fn review_choices(&self, mode: SetupMode) -> Vec<ReviewAction> {
         if self.step == SetupStep::ReviewSettings {
             let mut choices = vec![
@@ -700,32 +809,26 @@ impl SetupState {
                 ReviewAction::ApiType,
                 ReviewAction::Advanced,
             ];
-            if mode == SetupMode::FirstRun && self.credential_ready() {
+            if mode == SetupMode::FirstRun && self.credential_ready() && !self.trials.pending() {
                 choices.push(ReviewAction::SaveAndExit);
             }
             return choices;
         }
         let mut choices = Vec::new();
-        match mode {
-            SetupMode::FirstRun if self.credential_ready() && self.primary_failed() => {
-                choices.push(ReviewAction::SaveAndExit);
-            }
-            SetupMode::FirstRun if self.credential_ready() => {
-                choices.push(ReviewAction::SaveAndContinue);
-            }
-            SetupMode::FirstRun => {
+        if self.trials.pending() {
+            choices.push(ReviewAction::ViewProgress);
+        } else {
+            if mode == SetupMode::FirstRun && !self.credential_ready() {
                 choices.push(if self.can_store_key {
                     ReviewAction::RepairCredential
                 } else {
                     ReviewAction::Back
                 });
-                choices.push(ReviewAction::SaveAndExit);
             }
-            SetupMode::Init => choices.push(ReviewAction::SaveAndExit),
-            SetupMode::Session => choices.push(ReviewAction::Save),
-        }
-        if self.trials.selected_rows().next().is_some() {
-            choices.push(ReviewAction::TrialResults);
+            choices.push(self.save_action(mode));
+            if self.trials.selected_rows().next().is_some() {
+                choices.push(ReviewAction::TrialResults);
+            }
         }
         choices.push(ReviewAction::Settings);
         if self.intent == SetupIntent::Default
@@ -736,6 +839,9 @@ impl SetupState {
         }
         if !self.failed_models().is_empty() {
             choices.push(ReviewAction::FixModels);
+        }
+        if self.trials.pending() {
+            choices.push(ReviewAction::SaveEarly);
         }
         choices
     }
@@ -749,13 +855,11 @@ impl SetupState {
         };
         match action {
             ReviewAction::SaveAndContinue | ReviewAction::SaveAndExit | ReviewAction::Save => {
-                self.discovery.stop();
-                self.trials.stop();
-                self.finish = Some(if action == ReviewAction::SaveAndExit {
-                    Finish::SaveAndExit
-                } else {
-                    Finish::SaveAndContinue
-                });
+                self.save(action);
+            }
+            ReviewAction::SaveEarly => {
+                self.models.cursor = 0;
+                self.step = SetupStep::ConfirmStop(StopTests::Save);
             }
             ReviewAction::Settings => {
                 self.review_selection = 0;
@@ -781,7 +885,7 @@ impl SetupState {
                 self.step = SetupStep::Credential;
                 self.problem = None;
             }
-            ReviewAction::TrialResults => {
+            ReviewAction::TrialResults | ReviewAction::ViewProgress => {
                 self.models.cursor =
                     super::probes::first_check_to_review(&self.trials).unwrap_or(0);
                 self.step = SetupStep::TrialResults;

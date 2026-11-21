@@ -1,4 +1,5 @@
 mod config;
+mod connection_name;
 mod editor;
 mod models;
 mod probes;

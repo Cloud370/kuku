@@ -8,7 +8,7 @@ import time
 from urllib.parse import urlencode
 
 from interactive_fixture import InstalledClient, Response, TOOL_BRIEF, TOOL_OUTPUT, eventually, json_response, run_cases
-from interactive_model_recovery import recovery_cases
+from interactive_model_recovery import assert_testing_navigation, recovery_cases
 from interactive_rendering import has_selected_queued_input
 
 
@@ -267,7 +267,7 @@ def shared_model_editor(binary, bridge, directory):
             terminal.press("\r")
             terminal.expect("Set up a model")
             terminal.press("\r")
-            terminal.expect("Existing · custom")
+            terminal.expect(f"Existing · {endpoint.removeprefix('http://')}", absent=("Existing · custom",))
             terminal.press("\r")
             terminal.expect("Choose models")
             terminal.press("\x1b")
@@ -366,6 +366,7 @@ def setup_probe_progress(binary, bridge, directory):
         ("gamma", "medium"), ("alpha", "high"),
     )}
     release_requests = threading.Event()
+    release_beta_text = threading.Event()
     release_beta_effort = threading.Event()
     rate_request_started = threading.Event()
     allow_rate_limit = threading.Event()
@@ -404,7 +405,7 @@ def setup_probe_progress(binary, bridge, directory):
         trials.append((model, effort, time.monotonic()))
         if (model, effort) in held_requests:
             held_requests[model, effort].set()
-            completion_gate = release_beta_effort if (model, effort) == ("beta", "low") else release_requests
+            completion_gate = {("beta", None): release_beta_text, ("beta", "low"): release_beta_effort}.get((model, effort), release_requests)
             completion_gate.wait(20)
         if effort == "__kuku_unknown_effort__":
             return json_response({"error": {"param": "reasoning_effort", "allowed_values": ["none", "high", "max"]}}, 400)
@@ -432,13 +433,14 @@ def setup_probe_progress(binary, bridge, directory):
         model_rows = {model: next(index for index, line in enumerate(lines)
                                   if line.strip(" │").startswith(model + " "))
                       for model in ("alpha", "beta", "gamma")}
-        menu = next(index for index, line in enumerate(lines) if "› Save and continue" in line)
+        menu = next(index for index, line in enumerate(lines) if any(
+            label in line for label in ("› View progress", "› Save and continue")))
         return heading, status_column, usable_column, model_rows, menu
 
     def model_cells(screen, model):
         _, status_column, usable_column, model_rows, _ = overview_layout(screen)
         line = screen.splitlines()[model_rows[model]]
-        return line[status_column:usable_column].strip(), line[usable_column:].strip(" │")
+        return line[status_column:usable_column].strip(" │"), line[usable_column:].strip(" │")
 
     try:
         with instance as client:
@@ -469,7 +471,9 @@ def setup_probe_progress(binary, bridge, directory):
                 terminal.press("\r")
                 save_activity = terminal.expect(
                     "Testing models", rows=20,
-                    also=("Progress", "3 selected", "6 running", "1 queued", "Status", "Usable", "› Save and continue", "Model tests", "Settings", "Esc previous step"),
+                    also=("Progress", "0/3 models done", "Requests", "3 selected", "6 running", "1 queued",
+                          "Status", "Usable", "┼", "› View progress", "Settings", "Save early", "Esc previous step"),
+                    absent=("Save and continue",),
                 )["screen"]
                 assert all(event.wait(5) for event in held_requests.values()), trials
                 assert rate_request_started.wait(5), trials
@@ -477,18 +481,27 @@ def setup_probe_progress(binary, bridge, directory):
                 assert all(model_cells(save_activity, model) == ("Text, Thinking", "—")
                            for model in ("beta", "gamma")), save_activity
                 assert save_activity.splitlines()[-2].startswith("│Esc previous step")
+                assert next(line for line in save_activity.splitlines() if "0/3 models done" in line).count("━") == 0
+                assert_testing_navigation(terminal, config)
                 allow_rate_limit.set()
                 save_retry = terminal.expect("Retry in", also=("5 running", "2 waiting"), rows=20)["screen"]
                 release_beta_effort.set()
                 partial = terminal.expect("Testing models", also=("low", "4 running", "2 waiting"), rows=20)["screen"]
                 assert model_cells(partial, "beta") == ("Text", "low"), partial
                 assert overview_layout(save_activity) == overview_layout(save_retry) == overview_layout(partial)
-                terminal.press("\x1b[B\r")
+                terminal.press("\r")
                 progress = terminal.expect(
                     "Retry in", also=("Thinking none", "Text reply", "Testing", "API listed 3 values", "Esc previous step"), rows=20,
                 )["screen"]
                 assert progress.splitlines()[-2].startswith("│Esc previous step")
                 assert not any(row[:2] == ("alpha", "max") for row in trials)
+                release_beta_text.set()
+                terminal.press("\x1b")
+                one_done = terminal.expect("1/3 models done", also=("› View progress",), rows=20)["screen"]
+                bar = next(line for line in one_done.splitlines() if "1/3 models done" in line)
+                assert bar.count("━") == 8 and bar.count("─") == 16, one_done
+                terminal.press("\r")
+                terminal.expect("Model tests")
                 release_requests.set()
                 finished = terminal.expect(
                     "9/9 finished", also=("Usable · Thinking seen", "Rejected", "Thinking low", "Cost"), rows=20,
@@ -501,9 +514,10 @@ def setup_probe_progress(binary, bridge, directory):
                 terminal.expect("Thinking medium", also=("gamma",))
                 terminal.press("\x1b")
                 save_results = terminal.expect(
-                    "Save setup", also=("› Save and continue", "Usable", "none, max", "low", "medium", "3 models"),
-                    absent=("Retry in",), rows=20,
+                    "Save setup", also=("› Save and continue", "Usable", "none, max", "low", "medium", "3/3 models done"),
+                    absent=("Retry in", "Save early"), rows=20,
                 )["screen"]
+                assert next(line for line in save_results.splitlines() if "3/3 models done" in line).count("━") == 24
                 assert overview_layout(save_activity) == overview_layout(save_results)
                 for model, levels in (("alpha", "none, max"), ("beta", "low"), ("gamma", "medium")):
                     assert model_cells(save_results, model) == ("Ready", levels), save_results
@@ -532,6 +546,7 @@ def setup_probe_progress(binary, bridge, directory):
     finally:
         release.set()
         allow_rate_limit.set()
+        release_beta_text.set()
         release_beta_effort.set()
         release_requests.set()
 

@@ -413,7 +413,8 @@ pub(super) fn render_model_settings(
         | SetupStep::CredentialSource
         | SetupStep::Credential
         | SetupStep::Review
-        | SetupStep::ReviewSettings => unreachable!("handled by render_step"),
+        | SetupStep::ReviewSettings
+        | SetupStep::ConfirmStop(_) => unreachable!("handled by render_step"),
     }
 }
 

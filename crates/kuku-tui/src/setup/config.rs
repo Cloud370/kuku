@@ -191,7 +191,12 @@ impl Settings {
 
     pub(super) fn choice_label(&self, choice: &ConnectionChoice) -> String {
         match choice {
-            ConnectionChoice::Existing(name) => format!("Existing · {name}"),
+            ConnectionChoice::Existing(name) => {
+                format!(
+                    "Existing · {}",
+                    super::connection_name::existing(self, name)
+                )
+            }
             ConnectionChoice::Preset(preset) => format!("Preset · {}", preset.label()),
             ConnectionChoice::Custom => "New custom connection".into(),
         }
@@ -493,7 +498,6 @@ fn save_with_lookup(
 ) -> io::Result<Config> {
     let models = state.model_ids().map_err(|error| invalid_config(&error))?;
     let choice = state.choice();
-    let provider_name = provider_name(settings, choice);
     let existing_key = settings.key_for(choice).cloned();
     let mut staged = None;
     let key_reference = match state.credential_source {
@@ -569,6 +573,7 @@ fn save_with_lookup(
     let mut connection = state
         .connection(settings)
         .map_err(|error| invalid_config(&error))?;
+    let provider_name = super::connection_name::for_save(settings, choice, &connection);
     state.update_capabilities(&mut connection);
     if !settings.existing {
         edit_table(&mut document, "provider")?.clear();
@@ -859,24 +864,6 @@ fn unique_route(routes: &dyn toml_edit::TableLike, provider: &str, model: &str) 
         .map(|index| format!("{base}-{index}"))
         .find(|name| !routes.contains_key(name))
         .expect("a unique model route")
-}
-
-fn provider_name(settings: &Settings, choice: &ConnectionChoice) -> String {
-    let base = match choice {
-        ConnectionChoice::Existing(name) => return name.clone(),
-        ConnectionChoice::Preset(preset) if !settings.existing => {
-            return preset.connection().into()
-        }
-        ConnectionChoice::Preset(preset) => format!("{}_setup", preset.connection()),
-        ConnectionChoice::Custom => "custom".into(),
-    };
-    if !settings.resolved.providers.contains_key(&base) {
-        return base;
-    }
-    (2..)
-        .map(|index| format!("{base}_{index}"))
-        .find(|name| !settings.resolved.providers.contains_key(name))
-        .expect("a unique connection name")
 }
 
 struct StagedKey {

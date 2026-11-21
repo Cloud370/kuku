@@ -6,7 +6,11 @@ use kuku::adapter::{
 };
 use kuku::config::{ProviderConfig, ProviderProxy};
 use kuku::event::ModelStopReason;
-use ratatui::{layout::Rect, style::Color, Frame};
+use ratatui::layout::Rect;
+use ratatui::style::{Color, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::Paragraph;
+use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
 use crate::text::shorten_middle;
@@ -109,6 +113,45 @@ fn render_heading(
     }
 }
 
+pub(super) fn render_model_progress(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    row: &mut u16,
+    batch: &ProbeBatch,
+    models: &[String],
+) {
+    let mut all_finished = HashMap::new();
+    for check in batch.selected_rows() {
+        if let Some(model) = check.probe.model() {
+            let done = finished(&check.progress);
+            *all_finished.entry(model).or_insert(true) &= done;
+        }
+    }
+    let done = models
+        .iter()
+        .filter(|model| all_finished.get(model.as_str()) == Some(&true))
+        .count();
+    let total = models.len();
+    let label = format!(" {done}/{total} models done");
+    let width = usize::from(area.width)
+        .saturating_sub(12 + label.len())
+        .min(24);
+    let filled = (width * done).checked_div(total).unwrap_or_default();
+    let complete_color = if done == total { SUCCESS } else { ACCENT };
+    let bar = Line::from(vec![
+        Span::styled("Progress  [", Style::default().fg(MUTED)),
+        Span::styled("━".repeat(filled), Style::default().fg(complete_color)),
+        Span::styled("─".repeat(width - filled), Style::default().fg(MUTED)),
+        Span::styled("]", Style::default().fg(MUTED)),
+        Span::raw(label),
+    ]);
+    frame.render_widget(
+        Paragraph::new(bar),
+        Rect::new(area.x, area.y + *row, area.width, 1),
+    );
+    *row += 1;
+}
+
 pub(super) fn render_model_overview(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -121,7 +164,7 @@ pub(super) fn render_model_overview(
     if models.is_empty() || room == 0 {
         return;
     }
-    if room == 1 {
+    if room < 3 {
         let label = if batch.rows().is_empty() {
             "models selected"
         } else {
@@ -145,8 +188,8 @@ pub(super) fn render_model_overview(
         .unwrap_or(0)
         .clamp(10, name_limit) as u16;
     let status_width = 16;
-    let status_offset = name_width + 2;
-    let levels_offset = status_offset + status_width + 2;
+    let status_offset = name_width + 3;
+    let levels_offset = status_offset + status_width + 3;
     let name_area = Rect::new(area.x, area.y, name_width, area.height);
     let status_area = Rect::new(area.x + status_offset, area.y, status_width, area.height);
     let levels_area = Rect::new(
@@ -161,12 +204,19 @@ pub(super) fn render_model_overview(
         row,
         [("Model", MUTED), ("Status", MUTED), ("Usable", MUTED)],
     );
+    let divider = format!(
+        "{}┼{}┼{}",
+        "─".repeat(usize::from(name_width) + 1),
+        "─".repeat(usize::from(status_width) + 2),
+        "─".repeat(usize::from(levels_area.width) + 1),
+    );
+    line(frame, area, row, &divider, MUTED);
 
-    let room = usize::from(room - 1);
-    let visible = if models.len() > room {
+    let room = usize::from(room - 2);
+    let visible = if models.len() > room && room > 1 {
         room - 1
     } else {
-        models.len()
+        models.len().min(room)
     };
     for model in models.iter().take(visible) {
         let requests = batch
@@ -204,7 +254,7 @@ pub(super) fn render_model_overview(
             [(&name, ACCENT), (&status, color), (&usable, usable_color)],
         );
     }
-    if visible < models.len() {
+    if visible < models.len() && visible < room {
         let hint = if batch.rows().is_empty() {
             "more models"
         } else {
@@ -226,9 +276,19 @@ fn overview_row(
     row: &mut u16,
     cells: [(&str, Color); 3],
 ) {
-    for (area, (text, color)) in columns.into_iter().zip(cells) {
+    for (index, (area, (text, color))) in columns.into_iter().zip(cells).enumerate() {
         let mut cell_row = *row;
         line(frame, area, &mut cell_row, text, color);
+        if index > 0 {
+            let mut cell_row = *row;
+            line(
+                frame,
+                Rect::new(area.x - 2, area.y, 1, area.height),
+                &mut cell_row,
+                "│",
+                MUTED,
+            );
+        }
     }
     *row += 1;
 }

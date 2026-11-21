@@ -15,7 +15,7 @@ use crate::text::{shorten_middle, single_line};
 use crate::theme::{emphasis, focused_row, ACCENT, MUTED, SUCCESS, WARNING};
 
 use super::config::Settings;
-use super::state::{ReviewAction, SetupIntent, SetupState, SetupStep};
+use super::state::{ReviewAction, SetupIntent, SetupState, SetupStep, StopTests};
 use super::{CredentialSource, Finish, SetupMode};
 
 mod model_pages;
@@ -34,7 +34,7 @@ pub(super) async fn run(
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
     loop {
-        state.poll_probes(settings);
+        state.poll_probes(settings, mode);
         terminal.draw(|frame| render(frame, settings, state, mode))?;
         if let Some(finish) = state.finish {
             if finish == Finish::Cancel {
@@ -317,6 +317,9 @@ fn render_step(
             }
         }
         SetupStep::Review => render_review(frame, area, &mut row, settings, state, mode),
+        SetupStep::ConfirmStop(action) => {
+            render_stop_confirmation(frame, area, &mut row, state, action)
+        }
         SetupStep::ReviewSettings => {
             render_review_settings(frame, area, &mut row, settings, state, mode)
         }
@@ -345,6 +348,34 @@ fn render_step(
     }
 }
 
+fn render_stop_confirmation(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    row: &mut u16,
+    state: &SetupState,
+    action: StopTests,
+) {
+    let testing = state.trials.pending();
+    let (title, confirm) = match (action, testing) {
+        (StopTests::Save, true) => ("Save before tests finish?", "Stop tests and save"),
+        (StopTests::Save, false) => ("Tests finished", "Save setup"),
+        (_, true) => ("Go back before tests finish?", "Stop tests and go back"),
+        (_, false) => ("Tests finished", "Go back"),
+    };
+    line(frame, area, row, title, ACCENT);
+    if testing {
+        line(frame, area, row, "Pending tests will stop.", WARNING);
+    }
+    *row += 1;
+    let stay = if testing {
+        "Keep testing"
+    } else {
+        "Return to results"
+    };
+    option(frame, area, row, stay, state.models.cursor == 0);
+    option(frame, area, row, confirm, state.models.cursor == 1);
+}
+
 fn render_review(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -363,7 +394,9 @@ fn render_review(
         (false, _) => "Save setup".into(),
     };
     render_line(frame, area, row, Line::styled(title, emphasis(ACCENT)));
-    *row += 1;
+    if area.height > MIN_HEIGHT - 2 {
+        *row += 1;
+    }
     if models.len() > 1 && state.intent == SetupIntent::Default {
         summary_row(frame, area, row, "Default", &model, None);
     }
@@ -378,14 +411,16 @@ fn render_review(
         );
     }
     if state.trials.selected_rows().next().is_some() {
+        super::probes::render_model_progress(frame, area, row, &state.trials, &models);
         let progress = super::probes::review_status(&state.trials);
         let color = testing.then_some(ACCENT);
-        summary_row(frame, area, row, "Progress", &progress, color);
+        summary_row(frame, area, row, "Requests", &progress, color);
     }
     render_review_warnings(frame, area, row, settings, state, mode);
     let menu_rows = u16::try_from(state.review_choices(mode).len()).unwrap_or(area.height);
-    let reserved = menu_rows + 1 + u16::from(state.problem.is_some());
+    let reserved = menu_rows + u16::from(state.problem.is_some());
     let room = area.height.saturating_sub(*row + reserved);
+    let gap = u16::from(usize::from(room) > models.len().saturating_add(2));
     let connection = state.connection(settings).ok();
     super::probes::render_model_overview(
         frame,
@@ -394,18 +429,13 @@ fn render_review(
         &state.trials,
         &models,
         connection.as_ref(),
-        room,
+        room - gap,
     );
-    *row += 1;
+    *row += gap;
     let primary_failed = state.primary_failed();
     review_menu(frame, area, row, state, mode, |action| match action {
         ReviewAction::Save | ReviewAction::SaveAndExit if primary_failed => {
             Some("Keep unverified settings")
-        }
-        ReviewAction::Save | ReviewAction::SaveAndContinue | ReviewAction::SaveAndExit
-            if testing =>
-        {
-            Some("Stops pending tests")
         }
         ReviewAction::TrialResults => super::probes::review_detail_hint(&state.trials),
         ReviewAction::FixModels => Some("Retry, skip or repair"),
