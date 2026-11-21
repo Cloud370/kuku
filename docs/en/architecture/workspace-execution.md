@@ -30,6 +30,8 @@ A writer that supplied the entire contents of a file and received confirmation o
 
 A top-level command or workspace script starts once. The observation window defaults to ten seconds for foreground calls and one second for explicit background calls. A call still running at the boundary returns a Job handle. Promotion preserves the execution and its retained output. A timer alone does not schedule model inference. New input can steer the Agent while work continues. An awaited script command always resolves to its final typed outcome. Host I/O wait is separate from the JavaScript execution budget. The owning Session delivers completion once and supports inspection and cancellation.
 
+Schedule workspace reads together within a model response. Dispatch workspace mutations, arbitrary programs and scripts in call order with respect to reads and other workspace mutations. A read queued after a blocked mutation waits for it. Calls outside the workspace can continue independently, subject to authorization and capacity. Once a command or script returns a Job handle, the caller can continue while the Job runs. Each call retains its own result and authorization.
+
 ## Proposed command output path
 
 Keep one execution path across direct tools, JavaScript and Jobs. The tool catalog and Prompt explain how to choose a tool. The executor prepares and authorizes the final invocation. The capture writer owns stdout, stderr, quotas and the retained reference. Rust observers derive evidence from this capture. The model gets a bounded view, the clients use the same structured facts and output reference, and context admission records the exact view sent.

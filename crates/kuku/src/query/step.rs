@@ -5,7 +5,9 @@ use super::helpers::{
     resolved_tool_available,
 };
 use super::run::find_tool_definition;
-use super::slots::{dispatch_tool_slot, spawn_agent_slot, SlotDispatchArgs};
+use super::slots::{
+    dispatch_tool_slot, query_workspace_access, spawn_agent_slot, SlotDispatchArgs,
+};
 use super::tool_exec::{execute_tool_call, run_tool_pre_hooks};
 use super::tool_response::validate_tool_calls;
 use super::types::{
@@ -850,6 +852,7 @@ pub(super) async fn advance_pending(
 
                     let (slot, tool_kind) = dispatch_tool_slot(SlotDispatchArgs {
                         capacity: crate::WorkspaceExecutionHost::default(),
+                        workspace_access: query_workspace_access(&queued.tool_call.name),
                         output: None,
                         tool_name: queued.tool_call.name.clone(),
                         tool_id: id.clone(),

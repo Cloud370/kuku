@@ -283,11 +283,26 @@ pub struct Run {
     pub(crate) deferred_runtime_logs: VecDeque<LogRecord>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum WorkspaceAccess {
+    Independent,
+    Read,
+    Exclusive,
+}
+
+impl WorkspaceAccess {
+    pub(super) fn conflicts_with(self, other: Self) -> bool {
+        self != Self::Independent
+            && other != Self::Independent
+            && self.max(other) == Self::Exclusive
+    }
+}
+
 pub(crate) struct ExecSlot {
     pub(crate) tool_call_id: String,
     pub(crate) conversation: Option<ConversationAddress>,
     pub(crate) kind: ToolKind,
-    pub(crate) workspace_ordered: bool,
+    pub(crate) workspace_access: WorkspaceAccess,
     pub(crate) label: String,
     pub(crate) cancel: Arc<tokio::sync::Notify>,
     pub(super) job: Option<Box<super::job_slots::ForegroundJob>>,
@@ -300,7 +315,7 @@ impl std::fmt::Debug for ExecSlot {
         f.debug_struct("ExecSlot")
             .field("tool_call_id", &self.tool_call_id)
             .field("kind", &self.kind)
-            .field("workspace_ordered", &self.workspace_ordered)
+            .field("workspace_access", &self.workspace_access)
             .field("label", &self.label)
             .finish_non_exhaustive()
     }

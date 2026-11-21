@@ -21,7 +21,7 @@ use crate::{Error, Result, Session};
 
 use super::helpers::{now_timestamp, permission_candidate};
 use super::job_slots::ForegroundJob;
-use super::types::{ExecSlot, PendingRun, QueuedToolCall, SlotEvent, ToolKind};
+use super::types::{ExecSlot, PendingRun, QueuedToolCall, SlotEvent, ToolKind, WorkspaceAccess};
 
 pub(super) fn spawn(
     pending: &PendingRun,
@@ -120,7 +120,7 @@ pub(super) fn spawn(
         tool_call_id: queued.tool_call.id.clone(),
         conversation: Some(pending.conversation.clone()),
         kind: ToolKind::Simple,
-        workspace_ordered: true,
+        workspace_access: WorkspaceAccess::Exclusive,
         label: queued.display_summary.clone(),
         cancel,
         job: Some(job),

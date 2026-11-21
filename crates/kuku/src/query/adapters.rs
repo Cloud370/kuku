@@ -16,7 +16,14 @@ use crate::tool::{ToolFaults, ToolResultEnvelope};
 use crate::{ModelRequest, Result};
 
 use super::slots::RetainedOutputSpec;
-use super::types::{ExecSlot, PendingRun, SlotEvent, ToolKind};
+use super::types::{ExecSlot, PendingRun, SlotEvent, ToolKind, WorkspaceAccess};
+
+pub(super) fn workspace_access(access: crate::ToolAccess) -> WorkspaceAccess {
+    match access {
+        crate::ToolAccess::Read => WorkspaceAccess::Independent,
+        crate::ToolAccess::Write | crate::ToolAccess::Execute => WorkspaceAccess::Exclusive,
+    }
+}
 
 pub(super) async fn model_stream(
     pending: &mut PendingRun,
@@ -72,7 +79,7 @@ pub(super) fn spawn_tool(
     let conversation = crate::conversation::address::ConversationAddress::parse(&action.agent)
         .expect("session agent address was validated");
     let label = format!("{} (host tool)", registered.spec.name);
-    let workspace_ordered = registered.spec.access != crate::ToolAccess::Read;
+    let workspace_access = workspace_access(registered.spec.access);
     tokio::spawn(async move {
         let result = execute_tool(registered, action, output, slot_cancel)
             .await
@@ -85,7 +92,7 @@ pub(super) fn spawn_tool(
         tool_call_id: slot_tool_call_id,
         conversation: Some(conversation),
         kind: ToolKind::Simple,
-        workspace_ordered,
+        workspace_access,
         label,
         cancel,
         nested_permissions: Arc::new(Mutex::new(HashMap::new())),

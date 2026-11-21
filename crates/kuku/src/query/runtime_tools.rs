@@ -19,7 +19,7 @@ use super::run::find_tool_definition;
 use super::tool_exec::{execute_tool_call, run_tool_pre_hooks};
 use super::types::{
     ExecSlot, PendingPermission, PendingRun, PendingStep, PermissionChoice, PermissionRequest,
-    QueuedToolCall, SlotEvent, ToolKind, UiEvent,
+    QueuedToolCall, SlotEvent, ToolKind, UiEvent, WorkspaceAccess,
 };
 
 pub(super) async fn advance(
@@ -248,11 +248,14 @@ pub(super) async fn dispatch(
     if matches!(queued.tool_call.name.as_str(), "run_command" | "run_js") {
         return start_job_capable_slot(pending, queued, event_tx, active);
     }
-    let prior_events = crate::context::runtime::read_agent_events(
-        &pending.events_path,
-        pending.conversation.as_str(),
-        pending.query.runtime_limits.max_request_bytes,
-    )?;
+    let prior_events = match queued.tool_call.name.as_str() {
+        "find_files" | "search_text" | "stat_file" => Vec::new(),
+        _ => crate::context::runtime::read_agent_events(
+            &pending.events_path,
+            pending.conversation.as_str(),
+            pending.query.runtime_limits.max_request_bytes,
+        )?,
+    };
     let output = if queued.tool_call.name == "fetch_url" {
         match output_spec(&pending, &queued.tool_call.id) {
             Ok(output) => Some(output),
@@ -264,6 +267,7 @@ pub(super) async fn dispatch(
     mark_dispatched(&pending, &queued)?;
     let (slot, _) = super::slots::dispatch_tool_slot(super::slots::SlotDispatchArgs {
         capacity: runtime_session(&pending)?.workspace_execution_host(),
+        workspace_access: workspace_access(&pending, &queued.tool_call.name),
         output,
         tool_name: queued.tool_call.name.clone(),
         tool_id: queued.tool_call.id.clone(),
@@ -394,13 +398,11 @@ pub(super) fn yield_step(pending: PendingRun) -> Result<PendingStep> {
     Ok(PendingStep::Done(output, usage, pending.turn))
 }
 
-pub(super) fn requires_workspace_ordering(pending: &PendingRun, name: &str) -> bool {
-    pending
-        .query
-        .tool_adapters
-        .get(name)
-        .is_some_and(|tool| tool.spec.access != crate::ToolAccess::Read)
-        || super::slots::requires_workspace_ordering(name)
+pub(super) fn workspace_access(pending: &PendingRun, name: &str) -> WorkspaceAccess {
+    pending.query.tool_adapters.get(name).map_or_else(
+        || super::slots::workspace_access(name),
+        |tool| super::adapters::workspace_access(tool.spec.access),
+    )
 }
 
 pub(super) fn is_inline(name: &str) -> bool {

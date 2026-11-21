@@ -19,11 +19,11 @@ use super::helpers::{
     append_permission_decision, append_turn_cancelled, display_summary, now_timestamp,
     permission_candidate,
 };
-use super::slots::requires_workspace_ordering;
+use super::slots::query_workspace_access;
 use super::tool_exec::{execute_tool_call, run_tool_pre_hooks};
 use super::types::{
     ModelPhase, PendingPermission, PendingRun, PendingStep, PermissionChoice, QueuedToolCall, Run,
-    RunState, StreamingChunkState, UiEvent,
+    RunState, StreamingChunkState, UiEvent, WorkspaceAccess,
 };
 
 impl Drop for Run {
@@ -39,8 +39,15 @@ impl Drop for Run {
 }
 
 impl Run {
-    fn has_active_workspace_ordered_slot(&self) -> bool {
-        self.holds_job() || self.slots.values().any(|slot| slot.workspace_ordered)
+    fn active_workspace_access(&self) -> WorkspaceAccess {
+        if self.holds_job() {
+            return WorkspaceAccess::Exclusive;
+        }
+        self.slots
+            .values()
+            .map(|slot| slot.workspace_access)
+            .max()
+            .unwrap_or(WorkspaceAccess::Independent)
     }
 
     /// The session ID for this run.
@@ -826,8 +833,7 @@ impl Run {
                 result: result.structured,
             }));
         }
-        if requires_workspace_ordering(&tool_call.name) && self.has_active_workspace_ordered_slot()
-        {
+        if query_workspace_access(&tool_call.name).conflicts_with(self.active_workspace_access()) {
             pending.queued_tool_calls.push_front(QueuedToolCall {
                 tool_call,
                 display_summary: queued_summary,
@@ -864,6 +870,7 @@ impl Run {
         pending.record_tool_call(&tool_call.name);
         let (slot, tool_kind) = super::slots::dispatch_tool_slot(super::slots::SlotDispatchArgs {
             capacity: crate::WorkspaceExecutionHost::default(),
+            workspace_access: query_workspace_access(&tool_call.name),
             output: None,
             tool_name: tool_call.name.clone(),
             tool_id: tool_call.id.clone(),

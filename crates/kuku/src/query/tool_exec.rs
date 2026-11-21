@@ -4,7 +4,7 @@ use crate::provider::types::ProviderToolCall;
 use serde_json::json;
 
 use super::helpers::{is_inline_skill_tool, now_timestamp, resolved_tool_available};
-use super::types::{ExecSlot, PendingRun};
+use super::types::{ExecSlot, PendingRun, WorkspaceAccess};
 
 pub(super) struct HookBlockResult {
     pub(super) reason: String,
@@ -278,7 +278,7 @@ pub(super) async fn execute_tool_call(
                 tool_call_id: tool_call.id.clone(),
                 conversation: Some(pending.conversation.clone()),
                 kind: super::types::ToolKind::Simple,
-                workspace_ordered: false,
+                workspace_access: WorkspaceAccess::Independent,
                 job: None,
                 label: String::new(),
                 cancel: std::sync::Arc::new(tokio::sync::Notify::new()),
@@ -669,7 +669,7 @@ mod tests {
                     .unwrap(),
                 binding_id: "binding:review".to_string(),
             },
-            workspace_ordered: false,
+            workspace_access: WorkspaceAccess::Independent,
             job: None,
             label: "read".to_string(),
             cancel: Arc::new(tokio::sync::Notify::new()),

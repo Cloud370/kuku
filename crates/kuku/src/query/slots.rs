@@ -10,23 +10,24 @@ use crate::tool::ToolResultEnvelope;
 use super::job_slots::ForegroundJob;
 use super::types::{
     ExecSlot, PendingRun, PermissionChoice, QueuedToolCall, SlotEvent, ToolEvent, ToolKind,
+    WorkspaceAccess,
 };
 use super::UiEvent;
 
-pub(crate) fn requires_workspace_ordering(tool_name: &str) -> bool {
-    matches!(
-        tool_name,
-        "read_file"
-            | "run_js"
-            | "stat_file"
-            | "remove_file"
-            | "edit_file"
-            | "write_file"
-            | "remember_memory"
-            | "forget_memory"
-            | "run_command"
-            | "agent"
-    )
+pub(crate) fn workspace_access(tool_name: &str) -> WorkspaceAccess {
+    match tool_name {
+        "read_file" | "stat_file" | "find_files" | "search_text" => WorkspaceAccess::Read,
+        "run_js" | "remove_file" | "edit_file" | "write_file" | "remember_memory"
+        | "forget_memory" | "run_command" | "agent" => WorkspaceAccess::Exclusive,
+        _ => WorkspaceAccess::Independent,
+    }
+}
+
+pub(crate) fn query_workspace_access(tool_name: &str) -> WorkspaceAccess {
+    match tool_name {
+        "find_files" | "search_text" => WorkspaceAccess::Independent,
+        _ => workspace_access(tool_name),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -44,6 +45,7 @@ pub(crate) fn spawn_simple_slot(
     catalog: crate::prompt::PromptCatalog,
     events_path: PathBuf,
     capacity: crate::WorkspaceExecutionHost,
+    workspace_access: WorkspaceAccess,
 ) -> ExecSlot {
     let cancel = Arc::new(Notify::new());
     let cancel_clone = cancel.clone();
@@ -52,7 +54,6 @@ pub(crate) fn spawn_simple_slot(
     let dispatch_conversation = conversation
         .clone()
         .unwrap_or(crate::conversation::address::ConversationAddress::MAIN);
-    let workspace_ordered = requires_workspace_ordering(&tool_name);
 
     tokio::spawn(async move {
         let result = if crate::tool::dispatch::is_workspace_file(&tool_name) {
@@ -111,7 +112,7 @@ pub(crate) fn spawn_simple_slot(
         tool_call_id,
         conversation,
         kind: ToolKind::Simple,
-        workspace_ordered,
+        workspace_access,
         label: summary,
         cancel,
         job: None,
@@ -245,7 +246,7 @@ pub(crate) fn spawn_agent_slot(
         tool_call_id,
         conversation,
         kind: tool_kind,
-        workspace_ordered: true,
+        workspace_access: WorkspaceAccess::Exclusive,
         label: summary,
         cancel,
         job: None,
@@ -355,7 +356,7 @@ pub(super) fn spawn_command_slot(
         tool_call_id,
         conversation,
         kind: ToolKind::Command { pid: None },
-        workspace_ordered: true,
+        workspace_access: WorkspaceAccess::Exclusive,
         label: summary,
         cancel,
         job,
@@ -365,6 +366,7 @@ pub(super) fn spawn_command_slot(
 
 pub(crate) struct SlotDispatchArgs {
     pub(crate) capacity: crate::WorkspaceExecutionHost,
+    pub(crate) workspace_access: WorkspaceAccess,
     pub(crate) output: Option<RetainedOutputSpec>,
     pub(crate) tool_name: String,
     pub(crate) tool_id: String,
@@ -406,7 +408,7 @@ pub(super) fn spawn_job_control(
         tool_call_id: queued.tool_call.id.clone(),
         conversation: Some(pending.conversation.clone()),
         kind: ToolKind::Simple,
-        workspace_ordered: false,
+        workspace_access: WorkspaceAccess::Independent,
         label: queued.display_summary.clone(),
         cancel,
         job: None,
@@ -454,6 +456,7 @@ pub(crate) fn dispatch_tool_slot(args: SlotDispatchArgs) -> (ExecSlot, ToolKind)
             args.catalog,
             args.events_path,
             args.capacity,
+            args.workspace_access,
         );
         (slot, ToolKind::Simple)
     }
@@ -498,7 +501,7 @@ fn spawn_fetch_slot(args: SlotDispatchArgs) -> ExecSlot {
         tool_call_id: tool_id,
         conversation,
         kind: ToolKind::Simple,
-        workspace_ordered: false,
+        workspace_access: WorkspaceAccess::Independent,
         label: summary,
         cancel,
         job: None,
@@ -626,9 +629,15 @@ mod tests {
     }
 
     #[test]
-    fn workspace_ordering_is_limited_to_snapshot_and_mutator_slots() {
+    fn workspace_ordering_separates_reads_writes_and_independent_calls() {
+        for tool_name in ["read_file", "stat_file", "find_files", "search_text"] {
+            assert_eq!(
+                workspace_access(tool_name),
+                WorkspaceAccess::Read,
+                "{tool_name}"
+            );
+        }
         for tool_name in [
-            "read_file",
             "edit_file",
             "write_file",
             "remember_memory",
@@ -636,10 +645,18 @@ mod tests {
             "run_command",
             "agent",
         ] {
-            assert!(requires_workspace_ordering(tool_name), "{tool_name}");
+            assert_eq!(
+                workspace_access(tool_name),
+                WorkspaceAccess::Exclusive,
+                "{tool_name}"
+            );
         }
-        for tool_name in ["find_files", "search_text", "fetch_url", "query_session"] {
-            assert!(!requires_workspace_ordering(tool_name), "{tool_name}");
+        for tool_name in ["fetch_url", "query_session"] {
+            assert_eq!(
+                workspace_access(tool_name),
+                WorkspaceAccess::Independent,
+                "{tool_name}"
+            );
         }
     }
 
@@ -688,6 +705,7 @@ mod tests {
             crate::prompt::builtin_prompt_catalog(),
             dir.path().join("events.jsonl"),
             crate::WorkspaceExecutionHost::default(),
+            WorkspaceAccess::Exclusive,
         );
         let (_, denied) = event_rx.recv().await.unwrap();
         let SlotEvent::Done(result) = denied else {
@@ -710,6 +728,7 @@ mod tests {
             crate::prompt::builtin_prompt_catalog(),
             dir.path().join("events.jsonl"),
             crate::WorkspaceExecutionHost::default(),
+            WorkspaceAccess::Exclusive,
         );
         let (_, allowed) = event_rx.recv().await.unwrap();
         let SlotEvent::Done(result) = allowed else {

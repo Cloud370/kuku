@@ -1,5 +1,7 @@
 #[path = "session_runtime/authorization.rs"]
 mod authorization;
+#[path = "session_runtime/batches.rs"]
+mod batches;
 mod common;
 #[path = "session_runtime/permission_resume.rs"]
 mod permission_resume;
