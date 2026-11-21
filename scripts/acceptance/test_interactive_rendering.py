@@ -269,7 +269,7 @@ class QueuedInputFocusTests(unittest.TestCase):
                 "Pending inputs · ↑ select · Enter edit · Del withdraw",
                 "  › You · Queued · next Turn",
                 "  Actual queued input",
-                "│ ⢎⡱ Ready Draft",
+                "│ Send to reviewer ▾        ⢎⡱ Ready Draft",
                 "Composer text: Obsolete checkpoint follow-up",
             ]
         )
