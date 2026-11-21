@@ -21,6 +21,7 @@ pub(in crate::query) fn ensure_resolved(pending: &mut PendingRun) -> Result<()> 
         config: Some((*pending.config).clone()),
         connection: pending.query.connection.clone(),
         reasoning_effort: pending.query.reasoning_effort.clone(),
+        output: pending.query.output,
         service_tier: pending.query.service_tier.clone(),
     }) {
         Ok(config) => config,
@@ -80,4 +81,28 @@ pub(in crate::query) fn ensure_resolved(pending: &mut PendingRun) -> Result<()> 
     }
     pending.resolved = Some(ResolvedRuntime { config, registry });
     Ok(())
+}
+
+pub(in crate::query) fn usable_model_routes(
+    config: &crate::config::Config,
+) -> Vec<crate::config::TierInfo> {
+    config
+        .tier_infos()
+        .into_iter()
+        .filter_map(|mut info| {
+            let selected = crate::adapter::inspect_model(
+                config,
+                &crate::AgentConfig {
+                    tier: Some(info.name.clone()),
+                    ..crate::AgentConfig::default()
+                },
+            )
+            .ok()?;
+            if selected.output != crate::config::RequestedOutput::Text {
+                return None;
+            }
+            info.reasoning_effort = selected.settings.reasoning_effort;
+            Some(info)
+        })
+        .collect()
 }

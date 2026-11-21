@@ -45,6 +45,10 @@ pub(crate) fn render_at(
     app: &mut App,
     activity_frame: ActivityFrame,
 ) -> bool {
+    if let Some(editor) = &mut app.model_editor {
+        editor.render(frame);
+        return false;
+    }
     if let Some(repair) = &mut app.credential_repair {
         repair.render(frame);
         return false;
@@ -589,7 +593,7 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Rect
                 "Delete      Withdraw selected queued input",
                 "F2          Focus a pending request",
                 "Ctrl+P/F1   Show this help",
-                "/ (empty draft) Search actions and Skills",
+                "/           Search actions and Skills",
                 "Esc         Close help",
             ];
             frame.render_widget(
@@ -616,7 +620,7 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Rect
         }
         Modal::Prompt(prompt) => {
             let height = match prompt.kind {
-                PromptKind::Agent | PromptKind::Model { .. } => SHORT_PROMPT_HEIGHT,
+                PromptKind::Agent => SHORT_PROMPT_HEIGHT,
                 PromptKind::Question { .. }
                 | PromptKind::QueuedInput { .. }
                 | PromptKind::RewindMessage { .. }

@@ -34,6 +34,8 @@ pub(super) async fn list(State(state): State<Arc<AppState>>) -> Json<Value> {
             match inspect_model(&config, &selection) {
                 Ok(resolved) => {
                     value["settings"] = json!(resolved.settings);
+                    value["output"] = json!(resolved.output);
+                    value["request_url"] = json!(resolved.request_url);
                     value["capabilities"] = json!(resolved.capabilities);
                 }
                 Err(error) => value["error"] = ApiError::from(error).value(),

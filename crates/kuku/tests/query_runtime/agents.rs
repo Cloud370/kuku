@@ -237,6 +237,7 @@ async fn delegated_agent_request_includes_contact_card_instructions() {
             context_window: 200_000,
             max_output_tokens: Some(48_000),
             purpose: "strong".to_string(),
+            output: Default::default(),
         },
     );
     config.providers.get_mut("anthropic").unwrap().base_url = server.base_url();

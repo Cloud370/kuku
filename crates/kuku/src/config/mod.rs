@@ -1,4 +1,12 @@
+mod endpoint;
+mod model_capabilities;
 mod mutate;
+
+pub use endpoint::{resolve_models_url, resolve_request_url};
+pub use model_capabilities::{
+    MediaAdapterSupport, ModelCapabilityDeclaration, ModelCapabilityEntry,
+    ProtocolCapabilityDeclaration, RequestedOutput,
+};
 mod provider;
 mod resolve;
 pub(crate) mod types;

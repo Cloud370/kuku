@@ -440,6 +440,8 @@ pub struct ConfigArgs {
 pub enum ConfigSubcommand {
     /// Show current configuration (redacted)
     Show,
+    /// Inspect resolved models, configured settings and declared capabilities.
+    Models,
     /// Validate config file
     Validate,
     /// Set a config value (e.g. model.balanced.think high)

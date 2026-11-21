@@ -347,7 +347,17 @@ impl Session {
         self.validate_input_values(&state, &input, values)?;
         let config = config
             .map(|config| {
-                let config = self.resolve_defaults(&target, config)?;
+                let mut config = self.resolve_defaults(&target, config)?;
+                if config.tier.is_none()
+                    && config.connection.is_none()
+                    && config.model.is_none()
+                    && state
+                        .creation
+                        .as_ref()
+                        .is_some_and(|claim| claim.command.command_id == input.command_id)
+                {
+                    config.tier = Some(self.inner.options.config.default_tier.clone());
+                }
                 self.validate_config(&config)?;
                 Ok::<_, Error>(config)
             })

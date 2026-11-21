@@ -77,6 +77,8 @@ pub struct SessionOptions {
     pub session_id: Option<String>,
     /// Host configuration containing named connections and model tiers.
     pub config: Config,
+    /// Optional host-published route updates for later preparation boundaries.
+    pub model_config_updates: Option<Arc<arc_swap::ArcSwap<Config>>>,
     /// Optional external prompt asset directory.
     pub prompts_dir: Option<PathBuf>,
     /// Session resource limits.
@@ -92,6 +94,17 @@ pub struct SessionOptions {
 }
 
 impl SessionOptions {
+    pub(crate) fn model_config(&self) -> std::borrow::Cow<'_, Config> {
+        let Some(updates) = &self.model_config_updates else {
+            return std::borrow::Cow::Borrowed(&self.config);
+        };
+        let mut current = (**updates.load()).clone();
+        if current.tier(&self.config.default_tier).is_some() {
+            current.default_tier.clone_from(&self.config.default_tier);
+        }
+        std::borrow::Cow::Owned(current)
+    }
+
     /// Configure a session without changing process directories or environment.
     pub fn new(
         workspace: impl Into<PathBuf>,
@@ -103,6 +116,7 @@ impl SessionOptions {
             data_dir: data_dir.into(),
             session_id: None,
             config,
+            model_config_updates: None,
             prompts_dir: None,
             limits: RuntimeLimits::default(),
             workspace_host: crate::WorkspaceExecutionHost::default(),
@@ -216,6 +230,9 @@ pub struct AgentConfig {
     pub model: Option<String>,
     /// Explicit provider-supported reasoning setting.
     pub reasoning_effort: Option<String>,
+    /// Media output overriding the route default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<crate::config::RequestedOutput>,
     /// Explicit provider-supported service setting.
     pub service_tier: Option<String>,
     /// Maximum tokens returned by one model request.

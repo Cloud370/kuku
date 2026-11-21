@@ -24,20 +24,17 @@ pub(crate) fn prepare_provider_request(
             "transport correlation belongs to another connection",
         ));
     }
+    if config.output == crate::config::RequestedOutput::Image {
+        return Err(invalid_request(
+            "This Agent requests image output. The built-in runtime supports text output only.",
+        ));
+    }
     validate_replay(config, request)?;
-    let (url, mut body) = match config.kind {
-        ProviderKind::Anthropic => (
-            super::anthropic::messages_url(&config.base_url),
-            super::anthropic::render_body(request),
-        ),
-        ProviderKind::OpenAiCompatible => (
-            super::openai_compat::chat_completions_url(&config.base_url),
-            super::openai_compat::render_body(request),
-        ),
-        ProviderKind::OpenAiResponses => (
-            super::openai_responses::responses_url(&config.base_url),
-            super::openai_responses::render_body(request),
-        ),
+    let url = request_url(config)?;
+    let mut body = match config.kind {
+        ProviderKind::Anthropic => super::anthropic::render_body(request),
+        ProviderKind::OpenAiCompatible => super::openai_compat::render_body(request),
+        ProviderKind::OpenAiResponses => super::openai_responses::render_body(request),
     };
     body["stream"] = json!(true);
     apply_settings(config, &mut body);
@@ -69,11 +66,32 @@ pub(crate) fn prepare_provider_request(
     })
 }
 
+pub(crate) fn request_url(config: &ResolvedProvider) -> Result<String, ProviderFailure> {
+    crate::config::resolve_request_url(
+        config.kind.format(),
+        &config.base_url,
+        config.options.endpoint_url.as_deref(),
+    )
+    .map_err(|error| invalid_request(&error.to_string()))
+}
+
 pub(crate) fn authentication(config: &ResolvedProvider) -> ProviderAuth {
-    config.options.auth.unwrap_or_else(|| {
-        if config.capabilities.profile == ProviderProfile::OpenRouter {
+    authentication_for(
+        config.kind.format(),
+        config.capabilities.profile,
+        &config.options,
+    )
+}
+
+pub(crate) fn authentication_for(
+    format: ProviderFormat,
+    profile: ProviderProfile,
+    options: &crate::config::ProviderOptions,
+) -> ProviderAuth {
+    options.auth.unwrap_or_else(|| {
+        if profile == ProviderProfile::OpenRouter {
             ProviderAuth::Bearer
-        } else if config.kind == ProviderKind::Anthropic {
+        } else if format == ProviderFormat::Anthropic {
             ProviderAuth::ApiKey
         } else {
             ProviderAuth::Bearer

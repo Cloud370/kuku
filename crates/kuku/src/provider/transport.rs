@@ -22,13 +22,7 @@ pub(crate) async fn send_prepared(
     prepared: &PreparedProviderRequest,
     trace_metadata: Option<ProviderTraceMetadata>,
 ) -> Result<TransportResponse, ProviderFailure> {
-    let expected_url = match config.kind {
-        ProviderKind::Anthropic => super::anthropic::messages_url(&config.base_url),
-        ProviderKind::OpenAiCompatible => {
-            super::openai_compat::chat_completions_url(&config.base_url)
-        }
-        ProviderKind::OpenAiResponses => super::openai_responses::responses_url(&config.base_url),
-    };
+    let expected_url = super::prepare::request_url(config)?;
     if config.connection_name != prepared.connection_name
         || config.kind != prepared.kind
         || config.model != prepared.model
@@ -246,7 +240,7 @@ mod tests {
             ..Default::default()
         };
         let mut request = prepared(&config);
-        request.url = super::super::openai_compat::chat_completions_url(&config.base_url);
+        request.url = super::super::prepare::request_url(&config).unwrap();
         let failure = send_prepared(&config, &request, None)
             .await
             .err()

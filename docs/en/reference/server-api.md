@@ -146,6 +146,6 @@ On `send` to an existing Agent, `values` can carry the selected `reference` obje
 
 ## Discover models and workspaces
 
-`/models` returns `default_tier`, `connections` and `tiers`. A connection identifies its `name` and wire `protocol`. A tier identifies its `name`, `connection`, `model` and `purpose`, together with settings and capabilities or a resolution error. Pass model selection fields such as `tier`, `connection`, `model`, `reasoning_effort` or `service_tier` to `/models/resolve` to get a resolved `selection`.
+`/models` returns `default_tier`, `connections` and `tiers`. A tier identifies its `name`, `connection`, `model` and `purpose`, plus the request URL, effective settings, capability sources, and requested output or a resolution error. `/models/resolve` accepts the proposed Agent's `tier`, `connection`, `model`, `reasoning_effort`, `service_tier`, `output`, and `max_output_tokens`. The returned `selection` separates model declarations from the adapter's media support.
 
 `/workspaces` returns `workspaces`. Pass an existing absolute directory as `workspace` to `/workspaces/resolve` to obtain the canonical path. `/workspaces/files` and `/workspaces/skills` also accept a `query` filter and return `paths` and `skills`, respectively. File matches are workspace-relative paths and Skill matches include names and descriptions.

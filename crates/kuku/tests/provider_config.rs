@@ -1,8 +1,9 @@
 mod config {
     pub use kuku::config::{
-        ApiKey, Config, DiscoveryConfig, HandoffConfig, LogsConfig, PluginConfig, ProviderConfig,
-        ProviderFormat, ProviderOptions, ProviderProfile, ResolvedThinking, ThinkLevel, TierConfig,
-        UpdateConfig,
+        resolve_request_url, ApiKey, Config, DiscoveryConfig, HandoffConfig, LogsConfig,
+        MediaAdapterSupport, ModelCapabilityDeclaration, ModelCapabilityEntry, PluginConfig,
+        ProtocolCapabilityDeclaration, ProviderConfig, ProviderFormat, ProviderOptions,
+        ProviderProfile, RequestedOutput, ResolvedThinking, ThinkLevel, TierConfig, UpdateConfig,
     };
 }
 
@@ -68,6 +69,7 @@ fn default_config() -> Config {
             context_window: 200_000,
             max_output_tokens: Some(48_000),
             purpose: "balanced".to_string(),
+            output: Default::default(),
         },
     );
 
@@ -271,6 +273,7 @@ fn explicit_tier_selects_different_tier() {
             context_window: 200_000,
             max_output_tokens: Some(48_000),
             purpose: "balanced".to_string(),
+            output: Default::default(),
         },
     );
     tiers.insert(
@@ -284,6 +287,7 @@ fn explicit_tier_selects_different_tier() {
             context_window: 200_000,
             max_output_tokens: Some(32_000),
             purpose: "light".to_string(),
+            output: Default::default(),
         },
     );
 

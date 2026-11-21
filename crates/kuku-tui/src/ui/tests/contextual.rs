@@ -119,7 +119,7 @@ fn contextual_escape_hints_remain_complete_at_32_and_33_columns() {
                 if status == "running" {
                     matches!(control, ContextControl::Interrupt { .. })
                 } else {
-                    matches!(control, ContextControl::Restart { .. })
+                    matches!(control, ContextControl::Messages)
                 }
             })
             .unwrap();
@@ -162,8 +162,9 @@ fn pending_send(app: &mut crate::app::App) -> kuku_client::Command {
 }
 
 #[test]
-fn clicking_restart_only_focuses_it_and_enter_preserves_the_draft() {
+fn clicking_reconnect_only_focuses_it_and_enter_preserves_the_draft() {
     let mut app = app();
+    app.connection_problem = Some("kuku service offline".into());
     app.pane_mut().exists = true;
     app.pane_mut().draft.set_text("unsent draft".into());
     let mut terminal = Terminal::new(TestBackend::new(82, 20)).unwrap();
@@ -174,7 +175,7 @@ fn clicking_restart_only_focuses_it_and_enter_preserves_the_draft() {
     let hit = app
         .contextual_hits
         .iter()
-        .find(|hit| matches!(hit.control, ContextControl::Restart { .. }))
+        .find(|hit| matches!(hit.control, ContextControl::Reconnect { .. }))
         .unwrap()
         .area;
 
@@ -184,7 +185,8 @@ fn clicking_restart_only_focuses_it_and_enter_preserves_the_draft() {
     assert_eq!("unsent draft", app.pane().draft.text());
 
     key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-    assert!(app.restarting);
+    assert!(app.connecting);
+    assert!(!app.restarting);
     assert_eq!("unsent draft", app.pane().draft.text());
 }
 
@@ -308,24 +310,26 @@ fn contextual_cycle_cursor_is_retained_per_agent_across_navigation() {
     key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
     assert!(matches!(
         app.pane().contextual_focus.cursor,
-        Some(ContextControl::Restart { .. })
+        Some(ContextControl::Messages)
     ));
 }
 
 #[test]
 fn narrow_layout_keeps_contextual_service_action_keyboard_reachable() {
     let mut app = app();
+    app.connection_problem = Some("kuku service offline".into());
     app.pane_mut().exists = true;
     let view = screen(&mut app, 24, 12);
     assert!(!view.is_empty());
     key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
     assert!(app.pane().contextual_focus.active);
     let focused = screen(&mut app, 24, 12);
-    assert!(focused.contains("Restart"));
+    assert!(focused.contains("Reconnect"));
     assert!(focused.contains("Enter act"));
     assert!(focused.contains("Esc back"));
     key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-    assert!(app.restarting);
+    assert!(app.connecting);
+    assert!(!app.restarting);
 }
 
 #[test]
@@ -333,13 +337,14 @@ fn focused_control_hints_render_with_default_and_custom_statuslines() {
     let mut ordinary = app();
     ordinary.pane_mut().exists = true;
     let ordinary_view = screen(&mut ordinary, 82, 20);
-    assert!(ordinary_view.contains("F2 Restart · Enter"));
+    assert!(!ordinary_view.contains("Restart"));
+    assert!(!ordinary_view.contains("Connected"));
 
     let mut desktop = app();
     desktop.pane_mut().exists = true;
     key(&mut desktop, KeyCode::F(2), KeyModifiers::NONE);
     let default_view = screen(&mut desktop, 82, 20);
-    assert!(default_view.contains("Restart"));
+    assert!(default_view.contains("Messages"));
     assert!(default_view.contains("Enter act"));
     assert!(default_view.contains("Esc back"));
 
@@ -355,7 +360,7 @@ fn focused_control_hints_render_with_default_and_custom_statuslines() {
     custom.statusline_settings = StatusLineSettings::in_memory(StatusLine::parse("input").unwrap());
     key(&mut custom, KeyCode::F(2), KeyModifiers::NONE);
     let custom_view = screen(&mut custom, 82, 20);
-    assert!(custom_view.contains("Restart"));
+    assert!(custom_view.contains("Messages"));
     assert!(custom_view.contains("Enter act"));
     assert!(custom_view.contains("Esc back"));
 }

@@ -446,6 +446,8 @@ async fn preset_save_adds_an_inline_provider_without_overwriting_existing() {
         .position(|choice| *choice == crate::setup::ConnectionChoice::Preset(preset))
         .unwrap();
     state.model.set_text(preset.default_model().into());
+    state.load_selection(&settings);
+    select_environment(&mut state);
     state.environment.set_text("OPENAI_SETUP_KEY".into());
     save(&settings, &state).unwrap();
 
@@ -462,7 +464,7 @@ async fn preset_save_adds_an_inline_provider_without_overwriting_existing() {
 }
 
 #[tokio::test]
-async fn new_configuration_keeps_the_three_default_tiers() {
+async fn new_configuration_saves_a_single_default_route() {
     let directory = tempfile::tempdir().unwrap();
     let settings = Settings::load(options(directory.path(), None))
         .await
@@ -473,10 +475,14 @@ async fn new_configuration_keeps_the_three_default_tiers() {
     save(&settings, &state).unwrap();
 
     let parsed = load_config(&settings.config_path).unwrap();
-    for tier in ["strong", "balanced", "light"] {
-        assert_eq!("fixture-model", parsed.model[tier].model);
-        assert_eq!("anthropic", parsed.model[tier].provider);
-    }
+    assert_eq!(Some("default"), parsed.default_model.as_deref());
+    assert_eq!(1, parsed.model.len());
+    assert_eq!("fixture-model", parsed.model["default"].model);
+    assert_eq!("anthropic", parsed.model["default"].provider);
+    assert_eq!(
+        Some("provider-default"),
+        parsed.model["default"].think.as_deref()
+    );
 }
 
 #[tokio::test]
@@ -493,13 +499,15 @@ async fn all_provider_presets_generate_parseable_configs() {
             .iter()
             .position(|choice| *choice == crate::setup::ConnectionChoice::Preset(preset))
             .unwrap();
+        state.load_selection(&settings);
+        select_environment(&mut state);
         state.model.set_text(preset.default_model().into());
         state.environment.set_text(preset.default_env().into());
         save(&settings, &state).unwrap();
 
         let parsed = load_config(&settings.config_path).unwrap();
-        assert!(parsed.model["balanced"].provider == preset.connection());
-        assert!(parsed.model["balanced"].model == preset.default_model());
+        assert_eq!(preset.connection(), parsed.model["default"].provider);
+        assert_eq!(preset.default_model(), parsed.model["default"].model);
     }
 }
 

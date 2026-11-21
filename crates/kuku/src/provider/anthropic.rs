@@ -20,15 +20,6 @@ const TRUNCATED_STREAM_MESSAGE: &str = "provider stream ended before message_sto
 #[path = "anthropic_thinking_tests.rs"]
 mod thinking_tests;
 
-pub(crate) fn messages_url(base_url: &str) -> String {
-    let base = base_url.trim_end_matches('/');
-    if base.ends_with("/v1") {
-        format!("{base}/messages")
-    } else {
-        format!("{base}/v1/messages")
-    }
-}
-
 pub(crate) fn render_body(request: &ProviderRequest<'_>) -> Value {
     let mut messages = request
         .assembly

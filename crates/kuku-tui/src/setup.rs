@@ -1,4 +1,6 @@
 mod config;
+mod editor;
+mod models;
 mod repair;
 mod repair_backend;
 mod state;
@@ -6,8 +8,10 @@ mod ui;
 
 use std::io::{self, IsTerminal};
 
+use kuku::config::{ProviderFormat, ProviderProfile};
 use kuku_client::ConnectionOptions;
 
+pub(crate) use editor::{save_setting, ModelEditor, ModelEditorAction, SavedModelSetting};
 pub(crate) use repair::{CredentialRepair, CredentialRepairAction};
 pub(crate) use repair_backend::{
     apply as apply_credential_repair, prepare as prepare_credential_repair,
@@ -17,11 +21,13 @@ pub(crate) use repair_backend::{
     CredentialRepairApplied, CredentialRepairPlan, CredentialRepairRequest,
     PreparedCredentialRepair, SavedCredentialRepair,
 };
+pub(crate) use state::SetupIntent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SetupMode {
     Init,
     FirstRun,
+    Session,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,29 +95,31 @@ impl ProviderPreset {
         }
     }
 
-    pub(crate) fn format(self) -> &'static str {
+    pub(crate) fn format(self) -> ProviderFormat {
         match self {
-            Self::Anthropic | Self::DeepSeek => "anthropic",
-            Self::OpenAi => "openai-responses",
-            Self::OpenRouter => "openai-chat",
+            Self::Anthropic => ProviderFormat::Anthropic,
+            Self::OpenAi => ProviderFormat::OpenAiResponses,
+            Self::DeepSeek | Self::OpenRouter => ProviderFormat::OpenAiChat,
         }
     }
 
-    pub(crate) fn base_url(self) -> &'static str {
+    pub(crate) fn base_url(self, format: ProviderFormat) -> &'static str {
         match self {
-            Self::Anthropic => "https://api.anthropic.com",
-            Self::OpenAi => "https://api.openai.com/v1",
-            Self::DeepSeek => "https://api.deepseek.com/anthropic",
+            Self::DeepSeek if format == ProviderFormat::Anthropic => {
+                "https://api.deepseek.com/anthropic"
+            }
+            Self::DeepSeek => "https://api.deepseek.com",
             Self::OpenRouter => "https://openrouter.ai/api/v1",
+            Self::OpenAi | Self::Anthropic => format.default_base_url(),
         }
     }
 
-    pub(crate) fn profile(self) -> &'static str {
+    pub(crate) fn profile(self) -> ProviderProfile {
         match self {
-            Self::Anthropic => "anthropic",
-            Self::OpenAi => "openai",
-            Self::DeepSeek => "deepseek",
-            Self::OpenRouter => "openrouter",
+            Self::Anthropic => ProviderProfile::Anthropic,
+            Self::OpenAi => ProviderProfile::OpenAi,
+            Self::DeepSeek => ProviderProfile::DeepSeek,
+            Self::OpenRouter => ProviderProfile::OpenRouter,
         }
     }
 }
@@ -120,10 +128,12 @@ impl ProviderPreset {
 pub(crate) enum ConnectionChoice {
     Existing(String),
     Preset(ProviderPreset),
+    Custom,
 }
 
 pub(crate) async fn run(options: ConnectionOptions, mode: SetupMode) -> io::Result<bool> {
     let settings = match mode {
+        SetupMode::Session => unreachable!("in-session setup uses the active terminal"),
         SetupMode::Init => {
             validate_entry(
                 &options,
@@ -146,16 +156,25 @@ pub(crate) async fn run(options: ConnectionOptions, mode: SetupMode) -> io::Resu
         }
     };
     let mut state = state::SetupState::new(&settings);
-    let finish = ui::run(&settings, &mut state, mode)?;
-    if finish == Finish::Cancel {
-        println!("Setup canceled. No files were changed.");
-        return Ok(false);
-    }
-    if mode == SetupMode::FirstRun && !first_run_service_is_idle(&options).await {
-        println!("Local service is active or unavailable; setup was not saved.");
-        return Ok(true);
-    }
-    config::save(&settings, &state)?;
+    let finish = loop {
+        let finish = ui::run(&settings, &mut state, mode).await?;
+        if finish == Finish::Cancel {
+            println!("Setup canceled. No files were changed.");
+            return Ok(false);
+        }
+        if mode == SetupMode::FirstRun && !first_run_service_is_idle(&options).await {
+            state.problem = Some(
+                "Local service is active or unavailable. Open /model in the service's terminal."
+                    .into(),
+            );
+        } else {
+            match config::save(&settings, &state) {
+                Ok(_) => break finish,
+                Err(error) => state.problem = Some(error.to_string()),
+            }
+        }
+        state.finish = None;
+    };
     println!("Saved settings to {}.", settings.config_path.display());
     match state.credential_source {
         CredentialSource::Environment => {

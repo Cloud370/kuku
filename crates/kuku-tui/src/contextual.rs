@@ -43,9 +43,6 @@ pub(crate) enum ContextControl {
     Reconnect {
         endpoint: Option<String>,
     },
-    Restart {
-        endpoint: Option<String>,
-    },
     Messages,
 }
 
@@ -56,7 +53,7 @@ impl ContextControl {
     }
 
     pub(crate) fn is_service(&self) -> bool {
-        matches!(self, Self::Reconnect { .. } | Self::Restart { .. })
+        matches!(self, Self::Reconnect { .. })
     }
 }
 

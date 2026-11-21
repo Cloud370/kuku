@@ -422,7 +422,7 @@ fn initial_segment(
         project_memory,
         history: Vec::new(),
         tools: tools.to_vec(),
-        model_tiers: pending.config.tier_infos(),
+        model_tiers: super::provider::usable_model_routes(&pending.config),
         runtime_blocks: None,
         enable_memory: true,
         agent_name: pending.conversation.as_str().into(),

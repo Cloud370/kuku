@@ -13,7 +13,7 @@ use crate::config::StatusLineSettings;
 use crate::contextual::{ContextFocus, ContextHit};
 use crate::editor::Editor;
 use crate::jobs::{job_status_label, Job, Restarted, Selection, Update};
-use crate::menu::{Picker, Prompt};
+use crate::menu::{Choice, ChoiceKind, Picker, Prompt};
 use crate::output::OutputViewer;
 use crate::selection::TextSelection;
 use crate::statusline::StatusLineEditor;
@@ -28,6 +28,7 @@ mod contextual;
 mod delivery;
 mod history;
 mod model_default;
+mod model_editor;
 mod navigation;
 mod notice;
 mod pending;
@@ -180,7 +181,9 @@ impl Pane {
             .map_or(&self.initial_config, |snapshot| &snapshot.agent.config)
     }
 
-    pub(crate) fn reasoning_efforts(&self) -> Option<&[String]> {
+    pub(crate) fn reasoning(
+        &self,
+    ) -> Option<(&kuku::ProviderSettings, &kuku::ProviderCapabilities)> {
         if self.config_receipt.is_some() {
             return None;
         }
@@ -189,11 +192,11 @@ impl Pane {
                 .pending_selection
                 .as_ref()
                 .or(snapshot.selection.as_ref())
-                .map(|selection| selection.capabilities.reasoning_efforts.as_slice())
+                .map(|selection| (&selection.settings, &selection.capabilities))
         } else {
             self.initial_model
                 .as_ref()
-                .map(|selection| selection.capabilities.reasoning_efforts.as_slice())
+                .map(|selection| (&selection.settings, &selection.capabilities))
         }
     }
 
@@ -311,6 +314,7 @@ pub(crate) struct App {
     pub(crate) workspace: PathBuf,
     pub(crate) endpoint: Option<String>,
     pub(crate) remote: bool,
+    pub(crate) model_editor: Option<Box<crate::setup::ModelEditor>>,
     pub(crate) credential_repair: Option<Box<crate::setup::CredentialRepair>>,
     pub(crate) connection_problem: Option<String>,
     pub(crate) connecting: bool,
@@ -397,6 +401,7 @@ impl App {
             modal_info_rows: 4,
             quit: false,
             effects: vec![Job::Connect],
+            model_editor: None,
             credential_repair: None,
             generation: 0,
             next_modal: 0,
@@ -459,9 +464,9 @@ impl App {
             true
         } else {
             self.problem(if self.connecting {
-                "Connecting to the service…"
+                "Connecting to the kuku service…"
             } else {
-                "Service unavailable · Ctrl+R or /server"
+                "kuku service unavailable · Ctrl+R or /server"
             });
             false
         }
@@ -494,6 +499,38 @@ impl App {
             self.message("Saving pending input before leaving…");
         } else {
             self.quit = true;
+        }
+    }
+
+    fn restart_prepared(
+        &mut self,
+        ticket: u64,
+        result: Result<kuku_client::local::ServiceIdentity, Error>,
+    ) {
+        let Some(Modal::Picker(picker)) = &mut self.modal else {
+            return;
+        };
+        if picker.kind != crate::menu::PickerKind::Restart || picker.ticket.id != ticket {
+            return;
+        }
+        picker.loading = false;
+        match result {
+            Ok(identity) => {
+                picker.header = format!(
+                    "Restart the managed local kuku service at {}?",
+                    identity.endpoint
+                );
+                picker.set_local(vec![
+                    Choice::new(
+                        "Restart local service",
+                        "Restart when current work is settled",
+                        ChoiceKind::ConfirmRestart(Box::new(identity)),
+                    ),
+                    Choice::new("Cancel", "", ChoiceKind::Close),
+                ]);
+                picker.selected = 1;
+            }
+            Err(error) => picker.problem = Some(error.to_string()),
         }
     }
 
@@ -559,12 +596,12 @@ impl App {
             }
             Update::WatchReconnecting(selection, error) if selection == self.selection() => {
                 self.drop_watch(Watch::Reconnecting(format!(
-                    "Service updates interrupted · {error}"
+                    "kuku service live updates interrupted · {error} · Ctrl+R to reconnect"
                 )));
             }
             Update::WatchFailed(selection, error) if selection == self.selection() => {
                 self.drop_watch(Watch::Failed(format!(
-                    "Agent updates · {error} · Ctrl+R to reconnect"
+                    "kuku service live updates unavailable · {error} · Ctrl+R to reconnect"
                 )));
             }
             Update::Observation(selection, event) if selection == self.selection() => {
@@ -598,6 +635,12 @@ impl App {
                     }
                 }
             }
+            Update::ModelEditorOpened(ticket, result) => self.model_editor_opened(ticket, result),
+            Update::ModelsDiscovered(ticket, result) => self.model_discovered(ticket, result),
+            Update::ModelEditorSaved(ticket, editor, result) => {
+                self.model_editor_saved(ticket, editor, result)
+            }
+            Update::ModelSettingSaved(result) => self.model_setting_saved(result),
             Update::PreparedCredentialRepair(ticket, selection, result) => {
                 self.credential_repair_prepared(ticket, selection, result)
             }
@@ -646,6 +689,7 @@ impl App {
                     }
                 }
             }
+            Update::RestartPrepared(ticket, result) => self.restart_prepared(ticket, result),
             Update::Restarted(result) => {
                 self.restarting = false;
                 match result {
@@ -711,11 +755,11 @@ impl App {
     fn connect_failed(&mut self, error: Error) {
         self.connecting = false;
         let recovery = if self.remote {
-            "Check the server host configuration or remote credentials, then press Ctrl+R"
+            "Check the kuku service URL and token, then press Ctrl+R"
         } else {
-            "Use /server for status and restart, or press Ctrl+R to retry"
+            "Use Ctrl+R to reconnect, /server for status, or /restart"
         };
-        self.connection_problem = Some(format!("Connection · {error}\n{recovery}"));
+        self.connection_problem = Some(format!("kuku service connection · {error}\n{recovery}"));
     }
 
     fn begin_observing(&mut self) {

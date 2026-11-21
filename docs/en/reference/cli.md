@@ -62,7 +62,7 @@ Put options before the prompt in `kuku run`, because it consumes the remaining w
 | Permission request card | Choose **Deny** or **Allow once** with Left/Right or a click, then press Enter. F2, Left, Enter is the keyboard Deny path. While Waiting, Esc leaves focus without answering or interrupting. |
 | `/jobs` | List the selected Agent's background jobs with their IDs and states. Select a running job to cancel it or a finished job to read any saved output. |
 | `/jobs cancel <id>` | Cancel the specified background job for the selected Agent and report its resulting state. |
-| `/model`, `/thinking` | Choose a route or reasoning setting for the selected Agent's Session. Model and thinking choices are session-only; **Set current model as default** separately saves the resolved connection/model to config without changing the current Session. |
+| `/model`, `/thinking` | Choose, add, or edit models and manage thinking. Session changes and persistent defaults are separate actions. |
 | Authentication repair | After a matching authentication failure, **Repair credentials** can update the failed managed-local connection and explicitly restart its service. Remote connections show server-side guidance. [Recovery steps](../start/configuration.md#recover-an-authentication-failure). |
 | `/statusline` | Open **Status line settings** to preview, select, reorder and save footer fields. |
 | **Messages** (or **Msg** in a narrow header) | Browse user, assistant and tool entries in the active Agent's loaded transcript. Enter opens only the actions available for that entry; Tab or ←/→ selects an action, Enter runs it, and Esc returns to the message list without changing the composer draft. Full output opens a saved result or a complete inline result when no saved output exists. For scripts with multiple outputs, choose the individual action to inspect. Read-only rewind history groups are not message-action targets. |
@@ -74,7 +74,8 @@ Put options before the prompt in `kuku run`, because it consumes the remaining w
 | Mouse wheel, Page Up, Page Down | Scroll the transcript. |
 | Ctrl+End or Alt+↑ while reading history | Return to the latest output and resume following. |
 | ↑, ↓ in the editor | Move within a multiline draft and scroll the transcript at its boundaries. Ctrl+↑ and Ctrl+↓ recall sent prompts and restore the draft. In queue focus, Up/Down moves between editable queued inputs. |
-| `/server` | Inspect the connected service and its controls. F2 cycles to reconnect or managed-local restart when available; Ctrl+R still reconnects directly. |
+| `/server` | Inspect the kuku service. Ctrl+R reconnects. |
+| `/restart` | Confirm a managed local service restart. Active work defers it. Open Ctrl+P then `/` to keep a draft while choosing the command. |
 | Arrow keys, Tab, Enter in a menu | Move the highlight, complete editable text, or activate the selected action, respectively. |
 | `/web`, `/quit` | Open the conversation in the browser or leave the terminal client. |
 
@@ -239,6 +240,7 @@ Subcommands:
 |---|---|
 | show | `kuku config show` |
 | validate | `kuku config validate` |
+| models | `kuku config models` |
 | set | `kuku config set <key> <value>` |
 | policy allow | `kuku config policy allow <risk>` |
 | policy deny | `kuku config policy deny <risk>` |

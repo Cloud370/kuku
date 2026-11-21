@@ -110,7 +110,7 @@ async fn source_selection_backtracking_and_cancel_do_not_write_config_or_keys() 
         &settings,
         SetupMode::FirstRun,
     );
-    assert_eq!(SetupStep::Model, state.step);
+    assert_eq!(SetupStep::ModelsUrl, state.step);
     state.step = SetupStep::Connection;
     state.handle(
         Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
@@ -128,7 +128,7 @@ async fn minimum_size_renders_the_working_connection_choices() {
     let settings = Settings::load(options(directory.path())).await.unwrap();
     let mut state = SetupState::new(&settings);
     let rendered = screen(&settings, &mut state, SetupMode::Init, 60, 20);
-    assert!(rendered.contains("Step 1/5"));
+    assert!(rendered.contains("Connection"));
     assert!(rendered.contains("Preset · Anthropic"));
     assert!(rendered.contains("Preset · OpenAI"));
 }
@@ -217,7 +217,7 @@ async fn environment_detection_refreshes_after_edits_paste_and_back_navigation()
         &settings,
         SetupMode::FirstRun,
     );
-    assert_eq!(SetupStep::Credential, state.step);
+    assert_eq!(SetupStep::ModelSource, state.step);
     assert_eq!(back_expected, state.environment_set());
 }
 
@@ -383,8 +383,12 @@ async fn review_keyboard_choices_dispatch_each_action() {
             }
             ReviewAction::SaveAndExit => assert_eq!(Some(Finish::SaveAndExit), state.finish),
             ReviewAction::RepairCredential => unreachable!(),
-            ReviewAction::Back => assert_eq!(SetupStep::Credential, state.step),
+            ReviewAction::Back => assert_eq!(SetupStep::ModelSource, state.step),
             ReviewAction::Cancel => assert_eq!(Some(Finish::Cancel), state.finish),
+            ReviewAction::Save
+            | ReviewAction::Thinking
+            | ReviewAction::Output
+            | ReviewAction::Advanced => unreachable!(),
         }
     }
 
@@ -407,9 +411,71 @@ async fn review_keyboard_choices_dispatch_each_action() {
         match action {
             ReviewAction::SaveAndExit => assert_eq!(Some(Finish::SaveAndExit), state.finish),
             ReviewAction::RepairCredential => unreachable!(),
-            ReviewAction::Back => assert_eq!(SetupStep::Credential, state.step),
+            ReviewAction::Back => assert_eq!(SetupStep::ModelSource, state.step),
             ReviewAction::Cancel => assert_eq!(Some(Finish::Cancel), state.finish),
+            ReviewAction::Save
+            | ReviewAction::Thinking
+            | ReviewAction::Output
+            | ReviewAction::Advanced => unreachable!(),
             ReviewAction::SaveAndContinue => unreachable!(),
         }
     }
+}
+
+#[tokio::test]
+async fn discovery_failure_preserves_the_form_and_search_preserves_selection() {
+    use kuku::adapter::DiscoveredModel;
+
+    let directory = tempfile::tempdir().unwrap();
+    let settings = Settings::load(options(directory.path())).await.unwrap();
+    let mut state = SetupState::new(&settings);
+    let key = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+    state.step = SetupStep::ModelSource;
+    state
+        .address
+        .set_text("https://fixture.example/gateway/infer".into());
+    state.full_url = true;
+    state
+        .models_url
+        .set_text("https://fixture.example/catalog/models".into());
+    state.credential_source = CredentialSource::StoredKey;
+    state.stored_key.set_text("fixture-key".into());
+    state.handle(key(KeyCode::Down), &settings, SetupMode::FirstRun);
+    state.handle(key(KeyCode::Enter), &settings, SetupMode::FirstRun);
+    let discovery = state.take_discovery(&settings).unwrap();
+    assert_eq!(
+        Some("https://fixture.example/catalog/models"),
+        discovery.options.models_url.as_deref()
+    );
+    state.discovery_finished(Err(
+        "HTTP 401 · try a different key or enter a model manually".into(),
+    ));
+    assert_eq!(SetupStep::ModelSource, state.step);
+    assert_eq!("fixture-key", state.stored_key.text());
+    assert_eq!(
+        "https://fixture.example/gateway/infer",
+        state.address.text()
+    );
+
+    state.discovery_finished(Ok(["alpha", "beta"]
+        .into_iter()
+        .map(|id| DiscoveredModel {
+            id: id.into(),
+            name: None,
+            capabilities: Default::default(),
+        })
+        .collect()));
+    for query in ["alpha", "beta"] {
+        state.models.query.set_text(query.into());
+        state.handle(key(KeyCode::Char(' ')), &settings, SetupMode::FirstRun);
+    }
+    state.handle(key(KeyCode::Tab), &settings, SetupMode::FirstRun);
+    assert_eq!(SetupStep::DefaultModel, state.step);
+    state.handle(key(KeyCode::Down), &settings, SetupMode::FirstRun);
+    state.handle(key(KeyCode::Enter), &settings, SetupMode::FirstRun);
+    assert_eq!(Some("beta"), state.primary_model().as_deref());
+    assert_eq!(vec!["alpha", "beta"], state.model_ids().unwrap());
+    let config = super::config::save(&settings, &state).unwrap();
+    assert_eq!("beta", config.tier(config.default_tier()).unwrap().model);
+    assert_eq!(2, config.tiers.len());
 }

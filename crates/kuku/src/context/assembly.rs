@@ -164,7 +164,17 @@ pub(crate) fn render_project_policy(
         input
             .model_tiers
             .iter()
-            .map(|info| format!("{} — {}", info.name, info.purpose))
+            .map(|info| {
+                format!(
+                    "{} — {} (model {}, thinking {}, output text)",
+                    info.name,
+                    info.purpose,
+                    info.model,
+                    info.reasoning_effort
+                        .as_deref()
+                        .unwrap_or("provider default")
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n")
     };

@@ -23,7 +23,7 @@ use unicode_width::UnicodeWidthStr;
 use super::{render, render_at, ActivityFrame};
 use crate::app::{Address, App, KeyboardFocus, Modal};
 use crate::jobs::{Job, Update};
-use crate::menu::{Choice, ChoiceKind, MessageAction, PickerKind, PromptKind};
+use crate::menu::{Choice, ChoiceKind, MessageAction, PickerKind};
 use crate::output::OutputViewer;
 use crate::transcript::{MessageId, SelectedMessage, ToolView};
 
@@ -841,9 +841,19 @@ fn picker_drag_copies_and_click_opens_the_scrolled_model_detail_row() {
         })
         .collect();
     choices.push(Choice::new(
-        "Connection",
+        "Model route",
         "XYZ",
-        ChoiceKind::Connection("proxy".into()),
+        ChoiceKind::ModelActions(Box::new(kuku_client::TierSummary {
+            name: "proxy".into(),
+            connection: "gateway".into(),
+            model: "fixture".into(),
+            purpose: None,
+            settings: None,
+            output: None,
+            request_url: None,
+            capabilities: None,
+            error: None,
+        })),
     ));
     app.picker(PickerKind::Models, choices).move_by(14);
     let mut terminal = Terminal::new(TestBackend::new(82, 24)).unwrap();
@@ -869,8 +879,8 @@ fn picker_drag_copies_and_click_opens_the_scrolled_model_detail_row() {
     assert!(matches!(app.modal, Some(Modal::Picker(_))));
 
     click(&mut app, buffer, start);
-    assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
-        if matches!(&prompt.kind, PromptKind::Model { connection } if connection == "proxy")));
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+        if picker.kind == PickerKind::ModelActions && picker.header.contains("proxy")));
     assert!(matches!(app.effects.as_slice(), [Job::ClosePicker]));
 }
 

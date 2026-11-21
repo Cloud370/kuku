@@ -240,7 +240,7 @@ impl Field {
         activity: Activity,
     ) -> Option<Segment> {
         let segment = match self {
-            Self::Connection => connection(app, custom),
+            Self::Connection => return connection(app, custom),
             Self::Execution => return execution(app, activity),
             Self::Input => return input(app, true),
             Self::Agent => Segment::details(
@@ -507,8 +507,11 @@ fn render_segments(
     Some(Line::from(line))
 }
 
-fn connection(app: &App, show_endpoint: bool) -> Segment {
+fn connection(app: &App, show_endpoint: bool) -> Option<Segment> {
     let status = app.service_status();
+    if status == ServiceStatus::Connected && !show_endpoint {
+        return None;
+    }
     let (color, priority) = match status {
         ServiceStatus::Connected => (Color::Reset, Priority::Connected),
         ServiceStatus::Connecting | ServiceStatus::Reconnecting | ServiceStatus::Restarting => {
@@ -518,10 +521,20 @@ fn connection(app: &App, show_endpoint: bool) -> Segment {
             (ERROR, Priority::ConnectionProblem)
         }
     };
-    let mut labels = vec![status.label().to_owned()];
-    if status == ServiceStatus::UpdatesUnavailable {
-        labels.insert(0, "No updates".into());
-    }
+    let mut labels = match status {
+        ServiceStatus::Offline => vec![
+            "kuku service offline".into(),
+            "kuku service offline · Ctrl+R".into(),
+        ],
+        ServiceStatus::UpdatesUnavailable => vec![
+            "kuku service updates unavailable".into(),
+            "kuku service updates unavailable · Ctrl+R".into(),
+        ],
+        ServiceStatus::Reconnecting => vec!["Reconnecting to kuku service".into()],
+        ServiceStatus::Connected | ServiceStatus::Connecting | ServiceStatus::Restarting => {
+            vec![status.label().to_owned()]
+        }
+    };
     if show_endpoint {
         let kind = if app.remote { "Remote" } else { "Local" };
         let location = format!("{} {kind}", status.label());
@@ -532,7 +545,7 @@ fn connection(app: &App, show_endpoint: bool) -> Segment {
             labels.push(location);
         }
     }
-    Segment::labels(labels, color, priority)
+    Some(Segment::labels(labels, color, priority))
 }
 
 fn execution(app: &App, activity: Activity) -> Option<Segment> {

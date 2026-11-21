@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 /// Authentication scheme used independently of the connection's wire protocol.
@@ -49,6 +51,15 @@ pub enum PromptCacheScope {
 /// Optional connection behavior and capability declarations.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ProviderOptions {
+    /// Exact model request URL, taking precedence over the base URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint_url: Option<String>,
+    /// Optional explicit read-only model-list URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub models_url: Option<String>,
+    /// Model declarations owned by this connection, keyed by the exact model identifier.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_capabilities: BTreeMap<String, super::ModelCapabilityEntry>,
     /// Override the endpoint's default authentication scheme.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<ProviderAuth>,

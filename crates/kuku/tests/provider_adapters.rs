@@ -1,7 +1,8 @@
 mod config {
     pub use kuku::config::{
-        ApiKey, PromptCacheScope, ProviderAuth, ProviderFormat, ProviderOptions, ProviderProfile,
-        ResolvedThinking, ThinkLevel,
+        resolve_request_url, ApiKey, MediaAdapterSupport, PromptCacheScope, ProviderAuth,
+        ProviderFormat, ProviderOptions, ProviderProfile, RequestedOutput, ResolvedThinking,
+        ThinkLevel,
     };
 }
 
@@ -157,18 +158,16 @@ mod provider {
     }
 }
 
-use config::ResolvedThinking;
+use config::{resolve_request_url, ProviderFormat, ResolvedThinking};
 use context::{
     CanonicalMessage, ContextAssembly, FileSource, InstructionSource, MemorySource, MessageBlock,
     Role, ToolResult, ToolSchema, ToolUse,
 };
 use prompt::PromptCatalog;
-use provider::anthropic::{messages_url, render_body as render_anthropic_body};
+use provider::anthropic::render_body as render_anthropic_body;
 use provider::chunk::ProviderChunk;
-use provider::openai_compat::{chat_completions_url, render_body as render_openai_body};
-use provider::openai_responses::{
-    parse_responses_sse, render_body as render_responses_body, responses_url,
-};
+use provider::openai_compat::render_body as render_openai_body;
+use provider::openai_responses::{parse_responses_sse, render_body as render_responses_body};
 use provider::types::{CanonicalPromptInput, ProviderRequest};
 use serde_json::json;
 
@@ -351,11 +350,16 @@ fn assembly_with_tool_history() -> ContextAssembly {
 #[test]
 fn anthropic_messages_url_normalizes_v1_suffix() {
     assert_eq!(
-        messages_url("https://api.anthropic.com"),
+        resolve_request_url(ProviderFormat::Anthropic, "https://api.anthropic.com", None).unwrap(),
         "https://api.anthropic.com/v1/messages"
     );
     assert_eq!(
-        messages_url("https://gateway.example/v1/"),
+        resolve_request_url(
+            ProviderFormat::Anthropic,
+            "https://gateway.example/v1/",
+            None
+        )
+        .unwrap(),
         "https://gateway.example/v1/messages"
     );
 }
@@ -577,11 +581,21 @@ fn anthropic_render_body_uses_top_level_automatic_cache_control() {
 #[test]
 fn openai_chat_completions_url_appends_path() {
     assert_eq!(
-        chat_completions_url("https://api.openai.com/v1"),
+        resolve_request_url(
+            ProviderFormat::OpenAiChat,
+            "https://api.openai.com/v1",
+            None
+        )
+        .unwrap(),
         "https://api.openai.com/v1/chat/completions"
     );
     assert_eq!(
-        chat_completions_url("https://gateway.example/v1/"),
+        resolve_request_url(
+            ProviderFormat::OpenAiChat,
+            "https://gateway.example/v1/",
+            None
+        )
+        .unwrap(),
         "https://gateway.example/v1/chat/completions"
     );
 }
@@ -591,11 +605,21 @@ fn responses_url_appends_path() {
     let config: kuku::config::ConfigFile =
         toml::from_str(kuku::config::generate_default()).unwrap();
     assert_eq!(
-        responses_url(&config.provider["openai"].base_url),
+        resolve_request_url(
+            ProviderFormat::OpenAiResponses,
+            &config.provider["openai"].base_url,
+            None
+        )
+        .unwrap(),
         "https://api.openai.com/v1/responses"
     );
     assert_eq!(
-        responses_url("https://gateway.example/v1/"),
+        resolve_request_url(
+            ProviderFormat::OpenAiResponses,
+            "https://gateway.example/v1/",
+            None
+        )
+        .unwrap(),
         "https://gateway.example/v1/responses"
     );
 }

@@ -246,6 +246,7 @@ pub fn test_config() -> kuku::config::Config {
             context_window: 200_000,
             max_output_tokens: Some(48_000),
             purpose: "balanced".to_string(),
+            output: Default::default(),
         },
     );
 

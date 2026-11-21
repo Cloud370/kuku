@@ -23,6 +23,53 @@ pub async fn run(
             print!("{output}");
             Ok(())
         }
+        Some(ConfigSubcommand::Models) => {
+            let path = if target.config.is_none() {
+                target
+                    .options()
+                    .local_service()?
+                    .status()
+                    .await?
+                    .and_then(|connection| {
+                        connection
+                            .status()
+                            .config_path
+                            .as_deref()
+                            .map(std::path::PathBuf::from)
+                    })
+                    .unwrap_or(path)
+            } else {
+                path
+            };
+            let config = load_config(&path)?.resolve()?;
+            let routes = config
+                .tiers
+                .iter()
+                .map(|(name, tier)| {
+                    let selection = inspect_model(
+                        &config,
+                        &AgentConfig {
+                            tier: Some(name.clone()),
+                            ..AgentConfig::default()
+                        },
+                    );
+                    let mut route = serde_json::json!({"name": name, "purpose": tier.purpose});
+                    match selection {
+                        Ok(selection) => route["selection"] = serde_json::to_value(selection)?,
+                        Err(error) => route["error"] = serde_json::Value::String(error.to_string()),
+                    }
+                    Ok::<_, serde_json::Error>(route)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "default_tier": config.default_tier,
+                    "tiers": routes,
+                }))?
+            );
+            Ok(())
+        }
         Some(ConfigSubcommand::Validate) => {
             if !path.exists() {
                 eprintln!("error: config file not found: {}", path.display());

@@ -51,6 +51,10 @@ pub(crate) struct ValueSave {
 }
 
 pub(crate) enum Job {
+    OpenModelEditor(u64, crate::setup::SetupIntent),
+    DiscoverModels(u64, Box<kuku::config::ProviderConfig>),
+    SaveModelEditor(u64, Box<crate::setup::ModelEditor>),
+    SaveModelSetting(crate::setup::SavedModelSetting),
     PrepareCredentialRepair {
         ticket: u64,
         selection: Selection,
@@ -97,13 +101,18 @@ pub(crate) enum Job {
     Pending,
     Model(AgentConfig, u64),
     Output(Selection, u64, String, u64),
-    Restart,
+    PrepareRestart(u64),
+    Restart(Box<kuku_client::local::ServiceIdentity>),
     Web(Option<Target>),
     ReplySource(Selection, u64),
     Copy(String),
 }
 
 pub(crate) enum Update {
+    ModelEditorOpened(u64, Result<Box<crate::setup::ModelEditor>, String>),
+    ModelsDiscovered(u64, Result<Vec<kuku::adapter::DiscoveredModel>, String>),
+    ModelEditorSaved(u64, Box<crate::setup::ModelEditor>, Result<bool, String>),
+    ModelSettingSaved(Result<bool, String>),
     PreparedCredentialRepair(u64, Selection, Result<PreparedCredentialRepair, String>),
     SavedCredentialRepair(u64, Selection, Result<CredentialRepairApplied, String>),
     Connected {
@@ -137,6 +146,7 @@ pub(crate) enum Update {
     Pending(Result<Vec<Command>, Error>),
     DefaultModel(u64, Result<ModelSelection, Error>),
     Output(Selection, u64, Result<OutputChunk, Error>),
+    RestartPrepared(u64, Result<kuku_client::local::ServiceIdentity, Error>),
     Restarted(Result<Restarted, Error>),
     Web(Result<(), Error>),
     ReplySource(Selection, u64, Result<String, Error>),
@@ -189,6 +199,50 @@ impl Jobs {
     pub(crate) fn start(&mut self, job: Job) {
         while self.tasks.try_join_next().is_some() {}
         match job {
+            Job::OpenModelEditor(ticket, intent) => {
+                let options = self.options.clone();
+                let connection = self.connection.clone();
+                self.spawn(async move {
+                    Update::ModelEditorOpened(
+                        ticket,
+                        crate::setup::ModelEditor::open(
+                            &options,
+                            connection.as_ref(),
+                            ticket,
+                            intent,
+                        )
+                        .await
+                        .map(Box::new),
+                    )
+                });
+            }
+            Job::DiscoverModels(ticket, connection) => {
+                self.spawn(async move {
+                    Update::ModelsDiscovered(
+                        ticket,
+                        kuku::adapter::discover_models(&connection)
+                            .await
+                            .map_err(|error| error.to_string()),
+                    )
+                });
+            }
+            Job::SaveModelEditor(ticket, editor) => {
+                let options = self.options.clone();
+                let connection = self.connection.clone();
+                self.spawn(async move {
+                    let result = editor.save(&options, connection.as_ref()).await;
+                    Update::ModelEditorSaved(ticket, editor, result)
+                });
+            }
+            Job::SaveModelSetting(change) => {
+                let options = self.options.clone();
+                let connection = self.connection.clone();
+                self.spawn(async move {
+                    Update::ModelSettingSaved(
+                        crate::setup::save_setting(&options, connection.as_ref(), change).await,
+                    )
+                });
+            }
             Job::Connect => {
                 Self::abort(&mut self.observer);
                 let options = self.options.clone();
@@ -308,9 +362,19 @@ impl Jobs {
                     )
                 });
             }
-            Job::Restart => {
+            Job::PrepareRestart(ticket) => {
                 let options = self.options.clone();
-                self.spawn(async move { Update::Restarted(restart(&options).await) });
+                let connection = self.connection.clone();
+                self.spawn(async move {
+                    Update::RestartPrepared(
+                        ticket,
+                        prepare_restart(&options, connection.as_ref()).await,
+                    )
+                });
+            }
+            Job::Restart(identity) => {
+                let options = self.options.clone();
+                self.spawn(async move { Update::Restarted(restart(&options, &identity).await) });
             }
             Job::Copy(_) => unreachable!("clipboard belongs to the terminal"),
             connected => {
@@ -464,7 +528,11 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
             let result = history_text(client, &selection.target, id, HistoryKind::Assistant).await;
             Update::ReplySource(selection, id, result)
         }
-        Job::PrepareCredentialRepair { .. }
+        Job::OpenModelEditor(..)
+        | Job::DiscoverModels(..)
+        | Job::SaveModelEditor(..)
+        | Job::SaveModelSetting(..)
+        | Job::PrepareCredentialRepair { .. }
         | Job::SaveCredentialRepair { .. }
         | Job::RestartCredentialRepair { .. }
         | Job::Connect
@@ -472,7 +540,8 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
         | Job::StopObserving
         | Job::Find(_, _)
         | Job::ClosePicker
-        | Job::Restart
+        | Job::PrepareRestart(_)
+        | Job::Restart(_)
         | Job::Copy(_) => unreachable!("job requires service options or terminal"),
     }
 }
@@ -724,38 +793,24 @@ pub(crate) fn job_status_label(status: JobStatus) -> &'static str {
 fn model_choices(catalog: ModelCatalog) -> (Vec<Choice>, String) {
     let mut choices = Vec::new();
     for tier in catalog.tiers {
-        let detail = tier.error.map_or_else(
-            || {
-                format!(
-                    "{} · {}{}",
-                    tier.connection,
-                    tier.model,
-                    tier.purpose
-                        .map_or_else(String::new, |purpose| format!(" · {purpose}"))
-                )
-            },
-            |error| format!("{} · {} · {}", tier.connection, tier.model, error.message),
-        );
+        let mut detail = format!("{} · {}", tier.connection, tier.model);
+        if let Some(purpose) = tier
+            .purpose
+            .as_ref()
+            .filter(|purpose| *purpose != &tier.name)
+        {
+            detail.push_str(&format!(" · {purpose}"));
+        }
+        if let Some(error) = &tier.error {
+            detail.push_str(&format!(" · {}", error.message));
+        }
         choices.push(Choice::new(
             format!("Tier · {}", tier.name),
             detail,
-            ChoiceKind::Tier(tier.name),
+            ChoiceKind::ModelActions(Box::new(tier)),
         ));
     }
-    for connection in catalog.connections {
-        choices.push(Choice::new(
-            format!("Connection · {}", connection.name),
-            format!("{:?} · enter an explicit model ID", connection.protocol),
-            ChoiceKind::Connection(connection.name),
-        ));
-    }
-    (
-        choices,
-        format!(
-            "Default tier: {} · route choices are session-only; save the current route explicitly",
-            catalog.default_tier
-        ),
-    )
+    (choices, format!("Default route · {}", catalog.default_tier))
 }
 
 async fn service_status(
@@ -786,8 +841,36 @@ async fn service_status(
     ))
 }
 
-async fn restart(options: &ConnectionOptions) -> Result<Restarted, Error> {
-    match options.local_service()?.restart().await? {
+async fn prepare_restart(
+    options: &ConnectionOptions,
+    connection: Option<&Connection>,
+) -> Result<kuku_client::local::ServiceIdentity, Error> {
+    let service = options.local_service()?;
+    let current = service.status().await?.ok_or_else(|| {
+        Error::Options("No managed local kuku service is running. Use Ctrl+R to connect.".into())
+    })?;
+    if connection.is_some_and(|connection| {
+        !crate::local_settings::same_service_endpoint(
+            connection.client.endpoint(),
+            current.endpoint(),
+        )
+    }) {
+        return Err(Error::Options(
+            "The kuku service changed. Use Ctrl+R to reconnect.".into(),
+        ));
+    }
+    Ok(current.identity())
+}
+
+async fn restart(
+    options: &ConnectionOptions,
+    identity: &kuku_client::local::ServiceIdentity,
+) -> Result<Restarted, Error> {
+    match options
+        .local_service()?
+        .restart_if_current(identity)
+        .await?
+    {
         RestartOutcome::Restarted(_) => Ok(Restarted::Ready),
         RestartOutcome::Deferred(status) => {
             Ok(Restarted::Busy(busy(&status.busy, status.draining)))

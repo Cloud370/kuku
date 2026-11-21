@@ -20,6 +20,7 @@ pub(crate) enum CommandMenu {
     Save,
     Values,
     Server,
+    Restart,
     Web,
     Quit,
 }
@@ -36,6 +37,7 @@ impl CommandMenu {
         Self::Save,
         Self::Values,
         Self::Server,
+        Self::Restart,
         Self::Web,
         Self::Quit,
     ];
@@ -52,6 +54,7 @@ impl CommandMenu {
             Self::Save => "save",
             Self::Values => "values",
             Self::Server => "server",
+            Self::Restart => "restart",
             Self::Web => "web",
             Self::Quit => "quit",
         }
@@ -69,6 +72,7 @@ impl CommandMenu {
             Self::Save => ("Name pasted text or the current draft", None),
             Self::Values => ("Browse and attach saved values", None),
             Self::Server => ("Inspect the connected service", None),
+            Self::Restart => ("Confirm restart of the managed local kuku service", None),
             Self::Web => ("Open this target in the browser", None),
             Self::Quit => ("Leave the terminal", None),
         };
@@ -94,7 +98,11 @@ pub(crate) enum ChoiceKind {
     },
     CreateAgent,
     Tier(String),
-    Connection(String),
+    ModelActions(Box<kuku_client::TierSummary>),
+    EditModel(crate::setup::SetupIntent),
+    ConfirmModelSetting(crate::setup::SavedModelSetting),
+    SaveModelSetting(crate::setup::SavedModelSetting),
+    Close,
     Reconnect,
     SetCurrentModelAsDefault,
     ConfirmModelDefault,
@@ -136,7 +144,7 @@ pub(crate) enum ChoiceKind {
     AttachValue(NamedValue),
     ReadValue(NamedValue),
     ClearValues,
-    Restart,
+    ConfirmRestart(Box<kuku_client::local::ServiceIdentity>),
 }
 
 impl ChoiceKind {
@@ -153,10 +161,16 @@ impl ChoiceKind {
                     | CommandMenu::Save
                     | CommandMenu::Values
                     | CommandMenu::Server
+                    | CommandMenu::Restart
             ) | Self::Session { .. }
                 | Self::Agent { .. }
                 | Self::CreateAgent
-                | Self::Connection(_)
+                | Self::ModelActions(_)
+                | Self::EditModel(_)
+                | Self::ConfirmModelSetting(_)
+                | Self::SaveModelSetting(_)
+                | Self::Close
+                | Self::ConfirmRestart(_)
                 | Self::SetCurrentModelAsDefault
                 | Self::ConfirmModelDefault
                 | Self::CancelModelDefault
@@ -242,7 +256,7 @@ impl Choice {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PickerKind {
     Commands,
     Paths(Range<usize>),
@@ -250,6 +264,8 @@ pub(crate) enum PickerKind {
     Agents,
     Models,
     ModelDefault,
+    ModelActions,
+    Restart,
     Thinking,
     Pending,
     PendingItem,
@@ -273,6 +289,8 @@ impl PickerKind {
             Self::Agents => "Switch Agent",
             Self::Models => "Model route",
             Self::ModelDefault => "Set current model as default",
+            Self::ModelActions => "Model settings",
+            Self::Restart => "Restart kuku service",
             Self::Thinking => "Thinking",
             Self::Pending => "Unconfirmed commands",
             Self::PendingItem => "Recover command",
@@ -560,7 +578,6 @@ pub(crate) enum RewindLoad {
 #[derive(Debug)]
 pub(crate) enum PromptKind {
     Agent,
-    Model { connection: String },
     Question { request_id: String, target: Target },
     QueuedInput { input_command_id: String },
     RewindMessage { event_id: u64, text: String },
@@ -603,7 +620,7 @@ mod tests {
             "/interrupt",
             "/pending",
             "/reconnect",
-            "/restart",
+            "/reload",
             "/queue",
             "/queued",
             "/withdraw",
@@ -611,9 +628,9 @@ mod tests {
         ] {
             assert!(!labels.contains(&omitted));
         }
-        for retained in ["/new", "/resume", "/server", "/quit"] {
+        for retained in ["/new", "/resume", "/server", "/restart", "/quit"] {
             assert!(labels.contains(&retained));
         }
-        assert_eq!(12, choices.len());
+        assert_eq!(13, choices.len());
     }
 }

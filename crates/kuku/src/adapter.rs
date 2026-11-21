@@ -8,8 +8,10 @@ use futures_core::Stream;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::config::ProviderFormat;
+use crate::config::{ProviderFormat, RequestedOutput};
+
 use crate::permission::ToolAuthorization;
+pub use crate::provider::{discover_models, DiscoveredModel};
 use crate::{ProviderCapabilities, ProviderSettings, Result};
 
 pub use crate::provider::chunk::ProviderChunk as ModelEvent;
@@ -200,6 +202,9 @@ pub trait ToolAdapter: std::fmt::Debug + Send + Sync {
 /// Effective model and tool selection, inspectable without starting a model or tool.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentSelection {
+    /// Fully resolved request destination.
+    #[serde(default)]
+    pub request_url: String,
     /// Selected named connection.
     pub connection: String,
     /// Selected wire protocol.
@@ -214,6 +219,9 @@ pub struct AgentSelection {
     pub settings: ProviderSettings,
     /// Declared provider capabilities.
     pub capabilities: ProviderCapabilities,
+    /// Media requested by the Agent or inherited from the route.
+    #[serde(default)]
+    pub output: RequestedOutput,
     /// Final tool selection after preset and explicit overrides.
     pub tools: Vec<crate::context::ToolSchema>,
 }
@@ -221,6 +229,9 @@ pub struct AgentSelection {
 /// Effective model settings available to a host before creating an Agent.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelSelection {
+    /// Fully resolved request destination.
+    #[serde(default)]
+    pub request_url: String,
     /// Selected named connection.
     pub connection: String,
     /// Selected wire protocol.
@@ -235,6 +246,27 @@ pub struct ModelSelection {
     pub settings: ProviderSettings,
     /// Declared capabilities of the selected route.
     pub capabilities: ProviderCapabilities,
+    /// Media requested by the Agent or inherited from the route.
+    #[serde(default)]
+    pub output: RequestedOutput,
+}
+
+/// Inspect a draft connection's model capabilities without resolving its credential or sending a request.
+pub fn inspect_connection_model(
+    connection: &crate::config::ProviderConfig,
+    model: &str,
+) -> Result<ProviderCapabilities> {
+    let endpoint = crate::config::resolve_request_url(
+        connection.format,
+        &connection.base_url,
+        connection.options.endpoint_url.as_deref(),
+    )?;
+    Ok(crate::provider::capabilities::resolve_capabilities(
+        &endpoint,
+        model,
+        crate::provider::types::ProviderKind::from(connection.format),
+        &connection.options,
+    ))
 }
 
 /// Inspect model settings available locally without dispatching work or resolving credentials.
@@ -244,6 +276,8 @@ pub fn inspect_model(
 ) -> Result<ModelSelection> {
     let resolved = crate::session::runtime::resolve_agent_model(config, selection, None)?;
     Ok(ModelSelection {
+        request_url: crate::provider::prepare::request_url(&resolved)
+            .map_err(|failure| crate::Error::InvalidArgument(failure.message))?,
         connection: resolved.connection_name,
         protocol: protocol(resolved.kind),
         model: resolved.model,
@@ -251,6 +285,7 @@ pub fn inspect_model(
         max_output_tokens: resolved.max_output_tokens,
         settings: resolved.settings,
         capabilities: resolved.capabilities,
+        output: resolved.output,
     })
 }
 
@@ -261,9 +296,5 @@ pub(crate) struct RegisteredTool {
 }
 
 pub(crate) fn protocol(kind: crate::provider::types::ProviderKind) -> ProviderFormat {
-    match kind {
-        crate::provider::types::ProviderKind::Anthropic => ProviderFormat::Anthropic,
-        crate::provider::types::ProviderKind::OpenAiCompatible => ProviderFormat::OpenAiChat,
-        crate::provider::types::ProviderKind::OpenAiResponses => ProviderFormat::OpenAiResponses,
-    }
+    kind.format()
 }

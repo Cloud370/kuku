@@ -5,7 +5,12 @@ use std::path::{Path, PathBuf};
 
 use super::state::{valid_env_name, valid_stored_key, SetupState};
 use super::{ConnectionChoice, CredentialSource, ProviderPreset};
-use kuku::config::{generate_default, parse_config_text_with_env, ApiKey, Config, ConfigFile};
+use kuku::adapter::inspect_model;
+use kuku::config::{
+    generate_default, parse_config_text_with_env, ApiKey, Config, ConfigFile, ProviderFormat,
+    ProviderProfile, RequestedOutput, ThinkLevel,
+};
+use kuku::session::AgentConfig;
 use kuku::util::{is_valid_private_key, private_directory, sync_private_file};
 use kuku_client::ConnectionOptions;
 use tempfile::Builder;
@@ -107,11 +112,7 @@ impl Settings {
             .map_err(|_| invalid_config("cannot resolve the workspace path"))?;
         let credentials_dir = data_dir.join("credentials");
         let loaded = load_document(&config_path, &data_dir, environment)?;
-        let default_tier = loaded
-            .raw
-            .default_model
-            .clone()
-            .unwrap_or_else(|| "balanced".into());
+        let default_tier = loaded.resolved.default_tier.clone();
         let mut settings = Self {
             config_path,
             data_dir,
@@ -152,7 +153,32 @@ impl Settings {
                 .into_iter()
                 .map(ConnectionChoice::Preset),
         );
+        choices.push(ConnectionChoice::Custom);
         choices
+    }
+
+    pub(super) fn protocol_for(&self, choice: &ConnectionChoice) -> ProviderFormat {
+        match choice {
+            ConnectionChoice::Existing(name) => self.resolved.providers[name].format,
+            ConnectionChoice::Preset(preset) => preset.format(),
+            ConnectionChoice::Custom => ProviderFormat::OpenAiChat,
+        }
+    }
+
+    pub(super) fn address_for(&self, choice: &ConnectionChoice) -> (String, bool, String) {
+        if let ConnectionChoice::Existing(name) = choice {
+            let config = &self.resolved.providers[name];
+            return (
+                config
+                    .options
+                    .endpoint_url
+                    .clone()
+                    .unwrap_or_else(|| config.base_url.clone()),
+                config.options.endpoint_url.is_some(),
+                config.options.models_url.clone().unwrap_or_default(),
+            );
+        }
+        (String::new(), false, String::new())
     }
 
     pub(super) fn initial_choice(&self) -> ConnectionChoice {
@@ -168,12 +194,14 @@ impl Settings {
         match choice {
             ConnectionChoice::Existing(name) => format!("Existing · {name}"),
             ConnectionChoice::Preset(preset) => format!("Preset · {}", preset.label()),
+            ConnectionChoice::Custom => "New custom connection".into(),
         }
     }
 
     pub(super) fn model_for(&self, choice: &ConnectionChoice) -> String {
         match choice {
             ConnectionChoice::Preset(preset) => preset.default_model().into(),
+            ConnectionChoice::Custom => String::new(),
             ConnectionChoice::Existing(name) => self
                 .resolved
                 .tiers
@@ -194,6 +222,7 @@ impl Settings {
             Some(ApiKey::Env(name)) => name.clone(),
             _ => match choice {
                 ConnectionChoice::Preset(preset) => preset.default_env().into(),
+                ConnectionChoice::Custom => "KUKU_CUSTOM_API_KEY".into(),
                 ConnectionChoice::Existing(name) => {
                     format!("{}_API_KEY", name.to_ascii_uppercase())
                 }
@@ -261,7 +290,7 @@ impl Settings {
             ConnectionChoice::Existing(name) => {
                 self.resolved.providers.get(name).map(|p| &p.api_key)
             }
-            ConnectionChoice::Preset(_) => None,
+            ConnectionChoice::Preset(_) | ConnectionChoice::Custom => None,
         }
     }
 
@@ -365,34 +394,42 @@ fn load_document(
         Err(error) if error.kind() == io::ErrorKind::NotFound => None,
         Err(_) => return Err(invalid_config("cannot inspect the configuration path")),
     };
-    let (document, raw, resolved, permissions) = if let Some(bytes) = &original_bytes {
-        let contents = std::str::from_utf8(bytes)
-            .map_err(|_| invalid_config("the existing configuration is invalid"))?;
-        let document = contents
-            .parse::<DocumentMut>()
-            .map_err(|_| invalid_config("the existing configuration is invalid"))?;
-        let raw = parse_service_config(contents, data_dir, environment)
-            .map_err(|_| invalid_config("the existing configuration is invalid"))?;
-        let resolved = raw
-            .resolve()
-            .map_err(|_| invalid_config("the existing configuration is invalid"))?;
-        let permissions = fs::metadata(path)
-            .map_err(|_| invalid_config("cannot inspect the configuration file"))?
-            .permissions();
-        (document, raw, resolved, Some(permissions))
-    } else {
-        let contents = generate_default();
-        let document = contents
-            .parse::<DocumentMut>()
-            .map_err(|_| invalid_config("cannot create the default configuration"))?;
-        let raw: ConfigFile = toml::from_str(contents)
-            .map_err(|_| invalid_config("cannot create the default configuration"))?;
-        let resolved = raw
-            .resolve()
-            .map_err(|_| invalid_config("cannot create the default configuration"))?;
-        (document, raw, resolved, None)
-    };
-    let existing = original_bytes.is_some();
+    let existing = original_bytes
+        .as_deref()
+        .is_some_and(|bytes| !bytes.iter().all(u8::is_ascii_whitespace));
+    let permissions = original_bytes
+        .as_ref()
+        .map(|_| {
+            fs::metadata(path)
+                .map(|metadata| metadata.permissions())
+                .map_err(|_| invalid_config("cannot inspect the configuration file"))
+        })
+        .transpose()?;
+    let (document, raw, resolved) =
+        if let Some(bytes) = original_bytes.as_ref().filter(|_| existing) {
+            let contents = std::str::from_utf8(bytes)
+                .map_err(|_| invalid_config("the existing configuration is invalid"))?;
+            let document = contents
+                .parse::<DocumentMut>()
+                .map_err(|_| invalid_config("the existing configuration is invalid"))?;
+            let raw = parse_service_config(contents, data_dir, environment)
+                .map_err(|_| invalid_config("the existing configuration is invalid"))?;
+            let resolved = raw
+                .resolve()
+                .map_err(|_| invalid_config("the existing configuration is invalid"))?;
+            (document, raw, resolved)
+        } else {
+            let contents = generate_default();
+            let document = contents
+                .parse::<DocumentMut>()
+                .map_err(|_| invalid_config("cannot create the default configuration"))?;
+            let raw: ConfigFile = toml::from_str(contents)
+                .map_err(|_| invalid_config("cannot create the default configuration"))?;
+            let resolved = raw
+                .resolve()
+                .map_err(|_| invalid_config("cannot create the default configuration"))?;
+            (document, raw, resolved)
+        };
     Ok(LoadedDocument {
         document,
         original_bytes,
@@ -403,7 +440,7 @@ fn load_document(
     })
 }
 
-pub(super) fn save(settings: &Settings, state: &SetupState) -> io::Result<()> {
+pub(super) fn save(settings: &Settings, state: &SetupState) -> io::Result<Config> {
     save_with_hook(settings, state, || {})
 }
 
@@ -444,7 +481,7 @@ fn save_with_hook(
     settings: &Settings,
     state: &SetupState,
     before_compare: impl FnOnce(),
-) -> io::Result<()> {
+) -> io::Result<Config> {
     let environment = |name: &str| std::env::var(name);
     save_with_lookup(settings, state, &environment, before_compare)
 }
@@ -454,10 +491,8 @@ fn save_with_lookup(
     state: &SetupState,
     environment: EnvironmentLookup<'_>,
     before_compare: impl FnOnce(),
-) -> io::Result<()> {
-    let model = state
-        .model_text()
-        .map_err(|_| invalid_config("invalid model ID"))?;
+) -> io::Result<Config> {
+    let models = state.model_ids().map_err(|error| invalid_config(&error))?;
     let choice = state.choice();
     let provider_name = provider_name(settings, choice);
     let existing_key = settings.key_for(choice).cloned();
@@ -532,150 +567,293 @@ fn save_with_lookup(
     };
 
     let mut document = settings.document.clone();
+    let mut connection = state
+        .connection(settings)
+        .map_err(|error| invalid_config(&error))?;
+    state.update_capabilities(&mut connection);
     if !settings.existing {
-        if let Some(providers) = document
-            .get_mut("provider")
-            .and_then(Item::as_table_like_mut)
-        {
-            providers.clear();
-        }
-        for tier in ["strong", "balanced", "light"] {
-            if let Some(model_entry) = document
-                .get_mut("model")
-                .and_then(Item::as_table_like_mut)
-                .and_then(|table| table.get_mut(tier))
-                .and_then(Item::as_table_like_mut)
-            {
-                model_entry.insert("provider", value(provider_name.as_str()));
-                model_entry.insert("model", value(model.as_str()));
-            }
-        }
-        document["default_model"] = value("balanced");
-    } else if let Some(model_entry) = document
-        .get_mut("model")
-        .and_then(Item::as_table_like_mut)
-        .and_then(|table| table.get_mut(&settings.default_tier))
-        .and_then(Item::as_table_like_mut)
+        edit_table(&mut document, "provider")?.clear();
+        edit_table(&mut document, "model")?.clear();
+    }
+    let original = match choice {
+        ConnectionChoice::Existing(name) => settings.resolved.provider(name),
+        ConnectionChoice::Preset(_) | ConnectionChoice::Custom => None,
+    };
+    let provider = entry(&mut document, "provider", &provider_name)?;
+    if original.is_none_or(|old| old.format != connection.format) {
+        provider.insert("format", value(connection.format.as_str()));
+    }
+    if original.is_none_or(|old| old.base_url != connection.base_url) {
+        set_optional(
+            provider,
+            "base_url",
+            (!connection.base_url.is_empty()).then_some(connection.base_url.as_str()),
+        );
+    }
+    if original.and_then(|old| old.options.endpoint_url.as_deref())
+        != connection.options.endpoint_url.as_deref()
     {
-        let original_route = settings
-            .resolved
-            .tiers
-            .get(&settings.default_tier)
-            .ok_or_else(|| invalid_config("the selected default tier cannot be edited"))?;
-        let route_changed =
-            original_route.provider != provider_name || original_route.model != model;
-        if route_changed {
-            model_entry.insert("provider", value(provider_name.as_str()));
-            model_entry.insert("model", value(model.as_str()));
-            model_entry.remove("reasoning_effort");
-            model_entry.remove("service_tier");
-        } else {
-            let provider_is_reference = model_entry
-                .get("provider")
-                .and_then(Item::as_str)
-                .is_some_and(|value| value.starts_with('$'));
-            let model_is_reference = model_entry
-                .get("model")
-                .and_then(Item::as_str)
-                .is_some_and(|value| value.starts_with('$'));
-            if !provider_is_reference {
-                model_entry.insert("provider", value(provider_name.as_str()));
-            }
-            if !model_is_reference {
-                model_entry.insert("model", value(model.as_str()));
-            }
+        set_optional(
+            provider,
+            "endpoint_url",
+            connection.options.endpoint_url.as_deref(),
+        );
+    }
+    if original.and_then(|old| old.options.models_url.as_deref())
+        != connection.options.models_url.as_deref()
+    {
+        set_optional(
+            provider,
+            "models_url",
+            connection.options.models_url.as_deref(),
+        );
+    }
+    if let ConnectionChoice::Preset(preset) = choice {
+        if let toml::Value::String(profile) = toml::Value::try_from(preset.profile())
+            .map_err(|_| invalid_config("invalid provider profile"))?
+        {
+            provider.insert("profile", value(profile));
         }
-    } else {
-        return Err(invalid_config("the selected default tier cannot be edited"));
+    }
+    if provider.get("api_key").and_then(Item::as_str) != Some(&key_reference) {
+        provider.insert("api_key", value(key_reference));
+    }
+    if original
+        .is_none_or(|old| old.options.model_capabilities != connection.options.model_capabilities)
+        && !connection.options.model_capabilities.is_empty()
+    {
+        let capabilities = toml_edit::ser::to_document(&connection.options.model_capabilities)
+            .map_err(|_| invalid_config("could not encode model capabilities"))?;
+        provider.insert(
+            "model_capabilities",
+            Item::Value(Value::InlineTable(
+                capabilities.into_table().into_inline_table(),
+            )),
+        );
     }
 
-    match choice {
-        ConnectionChoice::Existing(name) => {
-            let api_key = document
-                .get("provider")
-                .and_then(Item::as_table_like)
-                .and_then(|table| table.get(name))
-                .and_then(Item::as_table_like)
-                .and_then(|table| table.get("api_key"))
-                .and_then(Item::as_str)
-                .unwrap_or_default()
-                .to_owned();
-            if api_key != key_reference {
-                let provider = document
-                    .get_mut("provider")
-                    .and_then(Item::as_table_like_mut)
-                    .and_then(|table| table.get_mut(name))
-                    .and_then(Item::as_table_like_mut)
-                    .ok_or_else(|| invalid_config("the selected provider cannot be edited"))?;
-                provider.insert("api_key", value(key_reference.as_str()));
-            }
+    let primary = state
+        .primary_model()
+        .ok_or_else(|| invalid_config("select at least one model"))?;
+    let edit_route = state.route_name(settings).map(str::to_owned);
+    if !settings.existing {
+        document["default_model"] = value("default");
+    } else if settings.raw.default_model.is_none()
+        && settings.raw.model.len() == 1
+        && models.len() > usize::from(edit_route.is_some())
+    {
+        document["default_model"] = value(settings.default_tier.as_str());
+    }
+    let connection_changed = original.is_some_and(|previous| {
+        previous.format != connection.format
+            || previous.base_url != connection.base_url
+            || previous.options.endpoint_url != connection.options.endpoint_url
+            || previous.options.model_capabilities != connection.options.model_capabilities
+    });
+    let mut validate_routes = Vec::new();
+    for model in models {
+        let is_primary = model == primary;
+        let routes = edit_table(&mut document, "model")?;
+        let tier = match (is_primary, &edit_route, settings.existing) {
+            (true, Some(name), _) => name.clone(),
+            (true, None, false) => "default".into(),
+            _ => unique_route(routes, &provider_name, &model),
+        };
+        let old = settings.resolved.tier(&tier);
+        let fields = entry(&mut document, "model", &tier)?;
+        if old.is_none_or(|route| route.provider != provider_name || route.model != model)
+            || (is_primary && (state.reasoning_changed || state.output_changed))
+        {
+            validate_routes.push(tier);
         }
-        ConnectionChoice::Preset(preset) => {
-            let inline = providers_is_inline(&document);
-            let entry = provider_entry(*preset, key_reference.as_str(), inline);
-            let providers = document
-                .get_mut("provider")
-                .and_then(Item::as_table_like_mut)
-                .ok_or_else(|| invalid_config("the provider table cannot be edited"))?;
-            providers.insert(&provider_name, entry);
-        }
+        save_route(
+            fields,
+            old,
+            &provider_name,
+            &model,
+            state,
+            is_primary,
+            &connection,
+        );
     }
 
     let output = document.to_string();
-    let validated: ConfigFile = parse_service_config(&output, &settings.data_dir, environment)
-        .map_err(|_| invalid_config("the edited configuration is invalid"))?;
-    validated
+    let validated = parse_service_config(&output, &settings.data_dir, environment)
+        .map_err(|_| invalid_config("the edited configuration is invalid"))?
         .resolve()
-        .map_err(|_| invalid_config("the edited configuration is invalid"))?;
+        .map_err(|error| invalid_config(&error.to_string()))?;
+    for (tier, route) in &validated.tiers {
+        if validate_routes.contains(tier) || (connection_changed && route.provider == provider_name)
+        {
+            inspect_model(
+                &validated,
+                &AgentConfig {
+                    tier: Some(tier.clone()),
+                    ..AgentConfig::default()
+                },
+            )
+            .map_err(|error| invalid_config(&format!("Model {tier}: {error}")))?;
+        }
+    }
 
-    let mut stage_guard = staged;
     write_config(settings, output.as_bytes(), before_compare)?;
-    if let Some(staged) = stage_guard.as_mut() {
+    if let Some(staged) = staged.as_mut() {
         staged.keep = true;
     }
-    Ok(())
+    Ok(validated)
+}
+
+pub(super) fn save_model_document(
+    settings: &Settings,
+    document: &DocumentMut,
+    routes: &[&str],
+) -> Result<Config, String> {
+    let output = document.to_string();
+    let config = parse_service_config(&output, &settings.data_dir, &|name| std::env::var(name))
+        .map_err(|_| "The edited configuration is invalid.".to_owned())?
+        .resolve()
+        .map_err(|error| error.to_string())?;
+    for route in routes {
+        inspect_model(
+            &config,
+            &AgentConfig {
+                tier: Some((*route).into()),
+                ..AgentConfig::default()
+            },
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    write_config(settings, output.as_bytes(), || {}).map_err(|error| error.to_string())?;
+    Ok(config)
+}
+
+fn save_route(
+    fields: &mut dyn toml_edit::TableLike,
+    old: Option<&kuku::config::TierConfig>,
+    provider: &str,
+    model: &str,
+    state: &SetupState,
+    primary: bool,
+    connection: &kuku::config::ProviderConfig,
+) {
+    let changed = old.is_none_or(|route| route.provider != provider || route.model != model);
+    if changed || !is_environment_reference(fields.get("provider")) {
+        fields.insert("provider", value(provider));
+    }
+    if changed || !is_environment_reference(fields.get("model")) {
+        fields.insert("model", value(model));
+    }
+    if changed || (primary && state.reasoning_changed) {
+        fields.insert("think", value(ThinkLevel::ProviderDefault.as_str()));
+        let effort = state
+            .reasoning
+            .as_deref()
+            .filter(|effort| *effort != ThinkLevel::ProviderDefault.as_str());
+        set_optional(
+            fields,
+            "reasoning_effort",
+            (primary && state.reasoning_changed)
+                .then_some(effort)
+                .flatten(),
+        );
+    }
+    if changed {
+        fields.remove("service_tier");
+    }
+    if changed || (primary && state.output_changed) {
+        set_optional(
+            fields,
+            "output",
+            (primary && state.output == RequestedOutput::Image).then_some("image"),
+        );
+    }
+    if connection.format == ProviderFormat::Anthropic
+        && fields.get("max_output_tokens").is_none()
+        && !matches!(
+            connection.options.profile,
+            ProviderProfile::DeepSeek | ProviderProfile::OpenRouter
+        )
+    {
+        fields.insert("max_output_tokens", value(8192));
+    }
+}
+
+fn edit_table<'a>(
+    document: &'a mut DocumentMut,
+    name: &str,
+) -> io::Result<&'a mut dyn toml_edit::TableLike> {
+    document
+        .as_table_mut()
+        .entry(name)
+        .or_insert_with(|| Item::Table(Table::new()))
+        .as_table_like_mut()
+        .ok_or_else(|| invalid_config("the configuration table cannot be edited"))
+}
+
+pub(super) fn entry<'a>(
+    document: &'a mut DocumentMut,
+    section: &str,
+    name: &str,
+) -> io::Result<&'a mut dyn toml_edit::TableLike> {
+    let inline = document.get(section).is_some_and(Item::is_inline_table);
+    let table = edit_table(document, section)?;
+    if !table.contains_key(name) {
+        let item = if inline {
+            Item::Value(Value::InlineTable(InlineTable::new()))
+        } else {
+            Item::Table(Table::new())
+        };
+        table.insert(name, item);
+    }
+    table
+        .get_mut(name)
+        .and_then(Item::as_table_like_mut)
+        .ok_or_else(|| invalid_config("the selected configuration entry cannot be edited"))
+}
+
+pub(super) fn set_optional(table: &mut dyn toml_edit::TableLike, name: &str, text: Option<&str>) {
+    if let Some(text) = text {
+        table.insert(name, value(text));
+    } else {
+        table.remove(name);
+    }
+}
+
+fn is_environment_reference(item: Option<&Item>) -> bool {
+    item.and_then(Item::as_str)
+        .is_some_and(|value| value.starts_with('$'))
+}
+
+fn unique_route(routes: &dyn toml_edit::TableLike, provider: &str, model: &str) -> String {
+    if !routes.contains_key(model) {
+        return model.to_owned();
+    }
+    let base = format!("{provider}/{model}");
+    if !routes.contains_key(&base) {
+        return base;
+    }
+    (2..)
+        .map(|index| format!("{base}-{index}"))
+        .find(|name| !routes.contains_key(name))
+        .expect("a unique model route")
 }
 
 fn provider_name(settings: &Settings, choice: &ConnectionChoice) -> String {
-    match choice {
-        ConnectionChoice::Existing(name) => name.clone(),
-        ConnectionChoice::Preset(preset) if !settings.existing => preset.connection().into(),
-        ConnectionChoice::Preset(preset) => {
-            let providers = settings
-                .document
-                .get("provider")
-                .and_then(Item::as_table_like);
-            let base = format!("{}_setup", preset.connection());
-            if providers.is_none_or(|table| !table.contains_key(&base)) {
-                base
-            } else {
-                (2..)
-                    .map(|index| format!("{base}_{index}"))
-                    .find(|name| providers.is_some_and(|table| !table.contains_key(name)))
-                    .expect("a unique connection name")
-            }
+    let base = match choice {
+        ConnectionChoice::Existing(name) => return name.clone(),
+        ConnectionChoice::Preset(preset) if !settings.existing => {
+            return preset.connection().into()
         }
-    }
-}
-
-fn providers_is_inline(document: &DocumentMut) -> bool {
-    document.get("provider").is_some_and(Item::is_inline_table)
-}
-
-fn provider_entry(preset: ProviderPreset, api_key: &str, inline: bool) -> Item {
-    let mut entry = if inline {
-        Item::Value(Value::InlineTable(InlineTable::new()))
-    } else {
-        Item::Table(Table::new())
+        ConnectionChoice::Preset(preset) => format!("{}_setup", preset.connection()),
+        ConnectionChoice::Custom => "custom".into(),
     };
-    let fields = entry
-        .as_table_like_mut()
-        .expect("provider entry is a table");
-    fields.insert("format", value(preset.format()));
-    fields.insert("base_url", value(preset.base_url()));
-    fields.insert("api_key", value(api_key));
-    fields.insert("profile", value(preset.profile()));
-    entry
+    if !settings.resolved.providers.contains_key(&base) {
+        return base;
+    }
+    (2..)
+        .map(|index| format!("{base}_{index}"))
+        .find(|name| !settings.resolved.providers.contains_key(name))
+        .expect("a unique connection name")
 }
 
 struct StagedKey {

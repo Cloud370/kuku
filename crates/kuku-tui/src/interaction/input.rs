@@ -1,4 +1,4 @@
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyCode, KeyEvent};
 
 use super::{App, Job, Modal, PromptKind, Shortcut};
 use crate::menu::{ChoiceKind, PickerKind};
@@ -69,6 +69,9 @@ impl App {
         let address = self.active.clone();
         let draft = self.pane().draft.text().to_owned();
         match self.modal {
+            Some(Modal::Help) if key.code == KeyCode::Char('/') && super::is_text(key) => {
+                self.command_menu()
+            }
             Some(Modal::Help) => {}
             Some(Modal::Picker(_)) => self.picker_key(key),
             Some(Modal::Prompt(_)) => self.prompt_key(key),

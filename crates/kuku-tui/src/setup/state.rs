@@ -1,9 +1,10 @@
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use kuku::config::ApiKey;
+use kuku::config::{ApiKey, ProviderFormat, RequestedOutput};
 
 use crate::editor::Editor;
 
 use super::config::Settings;
+use super::models::Models;
 use super::{ConnectionChoice, CredentialSource, Finish, SetupMode};
 
 const MAX_MODEL_BYTES: usize = 256;
@@ -12,7 +13,17 @@ const MAX_KEY_BYTES: usize = 4096;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SetupStep {
     Connection,
+    Protocol,
+    Address,
+    ModelsUrl,
+    ModelSource,
+    Discover,
+    DefaultModel,
     Model,
+    Thinking,
+    Output,
+    Advanced,
+    Override,
     CredentialSource,
     Credential,
     Review,
@@ -22,6 +33,10 @@ pub(super) enum SetupStep {
 pub(super) enum ReviewAction {
     SaveAndContinue,
     SaveAndExit,
+    Save,
+    Thinking,
+    Output,
+    Advanced,
     RepairCredential,
     Back,
     Cancel,
@@ -32,6 +47,10 @@ impl ReviewAction {
         match self {
             Self::SaveAndContinue => "Save and continue",
             Self::SaveAndExit => "Save and exit",
+            Self::Save => "Save models",
+            Self::Thinking => "Thinking",
+            Self::Output => "Requested output",
+            Self::Advanced => "Advanced model capabilities",
             Self::RepairCredential => "Paste API key",
             Self::Back => "Back",
             Self::Cancel => "Cancel",
@@ -39,9 +58,28 @@ impl ReviewAction {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SetupIntent {
+    Default,
+    Add,
+    Edit(String),
+}
+
 pub(super) struct SetupState {
     pub(super) choices: Vec<ConnectionChoice>,
     pub(super) selected: usize,
+    pub(super) intent: SetupIntent,
+    pub(super) protocol: ProviderFormat,
+    pub(super) full_url: bool,
+    pub(super) address: Editor,
+    pub(super) models_url: Editor,
+    pub(super) models: Models,
+    pub(super) reasoning: Option<String>,
+    pub(super) output: RequestedOutput,
+    pub(super) reasoning_changed: bool,
+    pub(super) output_changed: bool,
+    pub(super) discover_now: bool,
+    pub(super) discovery_pending: bool,
     pub(super) step: SetupStep,
     pub(super) model: Editor,
     pub(super) environment: Editor,
@@ -57,15 +95,43 @@ pub(super) struct SetupState {
 
 impl SetupState {
     pub(super) fn new(settings: &Settings) -> Self {
+        Self::for_intent(settings, SetupIntent::Default)
+    }
+
+    pub(super) fn for_intent(settings: &Settings, intent: SetupIntent) -> Self {
+        let edit = match &intent {
+            SetupIntent::Edit(tier) => settings.resolved.tier(tier),
+            SetupIntent::Default | SetupIntent::Add => None,
+        };
+        let initial = edit.map_or_else(
+            || settings.initial_choice(),
+            |tier| ConnectionChoice::Existing(tier.provider.clone()),
+        );
         let choices = settings.connection_choices();
         let selected = choices
             .iter()
-            .position(|choice| *choice == settings.initial_choice())
+            .position(|choice| *choice == initial)
             .unwrap_or(0);
         let mut state = Self {
             choices,
             selected,
-            step: SetupStep::Connection,
+            step: if edit.is_some() {
+                SetupStep::Protocol
+            } else {
+                SetupStep::Connection
+            },
+            intent,
+            protocol: ProviderFormat::OpenAiChat,
+            full_url: false,
+            address: Editor::default(),
+            models_url: Editor::default(),
+            models: Models::default(),
+            reasoning: None,
+            output: RequestedOutput::Text,
+            reasoning_changed: false,
+            output_changed: false,
+            discover_now: false,
+            discovery_pending: false,
             model: Editor::default(),
             environment: Editor::default(),
             environment_detected: false,
@@ -148,13 +214,12 @@ impl SetupState {
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => self.key(key, settings, mode),
             Event::Paste(text) => {
-                match self.step {
-                    SetupStep::Model => self.model.insert(&text),
-                    SetupStep::Credential => match self.credential_source {
-                        CredentialSource::Environment => self.environment.insert(&text),
-                        CredentialSource::StoredKey => self.stored_key.insert(&text),
-                    },
-                    _ => return,
+                let Some(editor) = self.editor_mut() else {
+                    return;
+                };
+                editor.insert(&text);
+                if self.step == SetupStep::Discover {
+                    self.models.cursor = 0;
                 }
                 if self.step == SetupStep::Credential
                     && self.credential_source == CredentialSource::Environment
@@ -198,6 +263,9 @@ impl SetupState {
             self.problem = None;
             return;
         }
+        if self.discovery_pending {
+            return;
+        }
         match self.step {
             SetupStep::Connection => match key.code {
                 KeyCode::Up | KeyCode::Left => self.change_choice(-1, settings),
@@ -205,7 +273,17 @@ impl SetupState {
                 KeyCode::Tab | KeyCode::Enter => self.advance(settings),
                 _ => {}
             },
+            SetupStep::Protocol => self.choose_protocol(key),
+            SetupStep::Address => self.edit_address(key, settings),
+            SetupStep::ModelsUrl => self.edit_models_url(key, settings),
+            SetupStep::ModelSource => self.choose_source(key, settings),
+            SetupStep::Discover => self.choose_discovered(key, settings),
+            SetupStep::DefaultModel => self.choose_default(key),
             SetupStep::Model => self.edit_model(key),
+            SetupStep::Thinking => self.choose_thinking(key, settings),
+            SetupStep::Output => self.choose_output(key),
+            SetupStep::Advanced => self.choose_advanced(key, settings),
+            SetupStep::Override => self.edit_override(key),
             SetupStep::CredentialSource => match key.code {
                 KeyCode::Up | KeyCode::Left | KeyCode::Down | KeyCode::Right => {
                     let source = match self.credential_source {
@@ -240,23 +318,11 @@ impl SetupState {
     }
 
     fn edit_model(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Left => self.model.left(),
-            KeyCode::Right => self.model.right(),
-            KeyCode::Home => self.model.home(),
-            KeyCode::End => self.model.end(),
-            KeyCode::Backspace => self.model.backspace(),
-            KeyCode::Delete => self.model.delete(),
-            KeyCode::Tab | KeyCode::Enter => self.advance_from_model(),
-            KeyCode::Char(character)
-                if !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-            {
-                self.model.insert(&character.to_string());
-                self.problem = None;
-            }
-            _ => {}
+        if matches!(key.code, KeyCode::Tab | KeyCode::Enter) {
+            self.advance_from_model();
+        } else {
+            edit_field(&mut self.model, key);
+            self.problem = None;
         }
     }
 
@@ -300,6 +366,10 @@ impl SetupState {
     fn editor_mut(&mut self) -> Option<&mut Editor> {
         match self.step {
             SetupStep::Model => Some(&mut self.model),
+            SetupStep::Address => Some(&mut self.address),
+            SetupStep::ModelsUrl => Some(&mut self.models_url),
+            SetupStep::Discover => Some(&mut self.models.query),
+            SetupStep::Override => Some(&mut self.models.override_value),
             SetupStep::Credential => Some(match self.credential_source {
                 CredentialSource::Environment => &mut self.environment,
                 CredentialSource::StoredKey => &mut self.stored_key,
@@ -311,7 +381,16 @@ impl SetupState {
     fn advance(&mut self, settings: &Settings) {
         self.problem = None;
         match self.step {
-            SetupStep::Connection => self.step = SetupStep::Model,
+            SetupStep::Connection => {
+                self.models.cursor = 0;
+                self.step = if self.intent == SetupIntent::Add
+                    && matches!(self.choice(), ConnectionChoice::Existing(_))
+                {
+                    SetupStep::ModelSource
+                } else {
+                    SetupStep::Protocol
+                };
+            }
             SetupStep::Model => self.advance_from_model(),
             SetupStep::CredentialSource => self.step = SetupStep::Credential,
             SetupStep::Credential => {
@@ -338,7 +417,8 @@ impl SetupState {
                 };
                 if valid {
                     self.review_selection = 0;
-                    self.step = SetupStep::Review;
+                    self.models.cursor = 0;
+                    self.step = SetupStep::ModelSource;
                 } else if self.problem.is_none() {
                     self.problem = Some(if settings.can_store_key() {
                         "Enter a key, or use a saved key for this connection.".into()
@@ -347,29 +427,46 @@ impl SetupState {
                     });
                 }
             }
-            SetupStep::Review => {}
+            SetupStep::Protocol
+            | SetupStep::Address
+            | SetupStep::ModelsUrl
+            | SetupStep::ModelSource
+            | SetupStep::Discover
+            | SetupStep::DefaultModel
+            | SetupStep::Thinking
+            | SetupStep::Output
+            | SetupStep::Advanced
+            | SetupStep::Override
+            | SetupStep::Review => {}
         }
     }
 
     fn advance_from_model(&mut self) {
         match valid_model_id(self.model.text()) {
             Ok(model) => {
-                self.model.set_text(model);
-                self.step = SetupStep::CredentialSource;
-                self.problem = None;
+                self.model.set_text(model.clone());
+                self.models.add_manual(model);
+                self.advance_from_models();
             }
             Err(error) => self.problem = Some(error),
         }
     }
 
-    fn previous(&mut self) {
+    pub(super) fn previous(&mut self) {
         self.problem = None;
         self.step = match self.step {
             SetupStep::Connection => return,
-            SetupStep::Model => SetupStep::Connection,
-            SetupStep::CredentialSource => SetupStep::Model,
+            SetupStep::Protocol => SetupStep::Connection,
+            SetupStep::Address => SetupStep::Protocol,
+            SetupStep::ModelsUrl => SetupStep::Address,
+            SetupStep::CredentialSource => SetupStep::ModelsUrl,
             SetupStep::Credential => SetupStep::CredentialSource,
-            SetupStep::Review => SetupStep::Credential,
+            SetupStep::ModelSource => SetupStep::Credential,
+            SetupStep::Model | SetupStep::Discover => SetupStep::ModelSource,
+            SetupStep::DefaultModel => SetupStep::ModelSource,
+            SetupStep::Review => SetupStep::ModelSource,
+            SetupStep::Thinking | SetupStep::Output | SetupStep::Advanced => SetupStep::Review,
+            SetupStep::Override => SetupStep::Advanced,
         };
         if self.credential_source == CredentialSource::Environment {
             self.refresh_environment_detection();
@@ -383,11 +480,42 @@ impl SetupState {
         self.problem = None;
     }
 
-    fn load_selection(&mut self, settings: &Settings) {
+    pub(super) fn load_selection(&mut self, settings: &Settings) {
         let choice = self.choice().clone();
-        self.model.set_text(settings.model_for(&choice));
+        let original = self
+            .route_name(settings)
+            .and_then(|name| settings.resolved.tier(name));
+        let initial_model = original.filter(
+            |tier| matches!(&choice, ConnectionChoice::Existing(name) if *name == tier.provider),
+        );
+        self.protocol = settings.protocol_for(&choice);
+        let (address, full_url, models_url) = settings.address_for(&choice);
+        self.address.set_text(address);
+        self.full_url = full_url;
+        self.models_url.set_text(models_url);
+        self.models = Models::default();
+        self.model.set_text(match &self.intent {
+            SetupIntent::Add if matches!(choice, ConnectionChoice::Existing(_)) => String::new(),
+            _ => {
+                initial_model.map_or_else(|| settings.model_for(&choice), |tier| tier.model.clone())
+            }
+        });
+        self.reasoning = initial_model.map(|tier| {
+            tier.reasoning_effort
+                .clone()
+                .unwrap_or_else(|| tier.think.as_str().into())
+        });
+        self.output = initial_model.map_or(RequestedOutput::Text, |tier| tier.output);
+        self.reasoning_changed = false;
+        self.output_changed = false;
         self.environment.set_text(settings.environment_for(&choice));
-        self.credential_source = settings.source_for(&choice);
+        self.credential_source = if self.intent == SetupIntent::Add
+            && matches!(settings.key_for(&choice), Some(ApiKey::Env(_)))
+        {
+            CredentialSource::Environment
+        } else {
+            settings.source_for(&choice)
+        };
         self.stored_key.set_text(String::new());
         self.saved_key_available = settings.saved_key_available(&choice);
         self.refresh_environment_detection();
@@ -418,11 +546,20 @@ impl SetupState {
                 choices.push(ReviewAction::Back);
             }
         }
-        choices.push(ReviewAction::SaveAndExit);
+        choices.push(if mode == SetupMode::Session {
+            ReviewAction::Save
+        } else {
+            ReviewAction::SaveAndExit
+        });
         if !choices.contains(&ReviewAction::Back) {
             choices.push(ReviewAction::Back);
         }
         choices.push(ReviewAction::Cancel);
+        choices.extend([
+            ReviewAction::Thinking,
+            ReviewAction::Output,
+            ReviewAction::Advanced,
+        ]);
         choices
     }
 
@@ -436,6 +573,19 @@ impl SetupState {
         match action {
             ReviewAction::SaveAndContinue => self.finish = Some(Finish::SaveAndContinue),
             ReviewAction::SaveAndExit => self.finish = Some(Finish::SaveAndExit),
+            ReviewAction::Save => self.finish = Some(Finish::SaveAndContinue),
+            ReviewAction::Thinking => {
+                self.models.cursor = 0;
+                self.step = SetupStep::Thinking;
+            }
+            ReviewAction::Output => {
+                self.models.cursor = usize::from(self.output == RequestedOutput::Image);
+                self.step = SetupStep::Output;
+            }
+            ReviewAction::Advanced => {
+                self.models.cursor = 0;
+                self.step = SetupStep::Advanced;
+            }
             ReviewAction::RepairCredential => {
                 self.credential_source = CredentialSource::StoredKey;
                 self.step = SetupStep::Credential;
@@ -447,7 +597,7 @@ impl SetupState {
     }
 }
 
-fn valid_model_id(input: &str) -> Result<String, String> {
+pub(super) fn valid_model_id(input: &str) -> Result<String, String> {
     let model = input.trim();
     if model.is_empty() {
         return Err("Enter a model ID.".into());
@@ -490,4 +640,23 @@ pub(super) fn valid_stored_key(input: &str) -> Result<String, String> {
         return Err("Keys must be a single line of at most 4096 bytes.".into());
     }
     Ok(key.to_owned())
+}
+
+pub(super) fn edit_field(editor: &mut Editor, key: KeyEvent) {
+    match key.code {
+        KeyCode::Left => editor.left(),
+        KeyCode::Right => editor.right(),
+        KeyCode::Home => editor.home(),
+        KeyCode::End => editor.end(),
+        KeyCode::Backspace => editor.backspace(),
+        KeyCode::Delete => editor.delete(),
+        KeyCode::Char(character)
+            if !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+        {
+            editor.insert(&character.to_string());
+        }
+        _ => {}
+    }
 }

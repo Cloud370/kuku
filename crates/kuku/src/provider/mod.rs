@@ -2,6 +2,7 @@ pub(crate) mod anthropic;
 pub(crate) mod capabilities;
 pub(crate) mod chunk;
 pub(crate) mod config;
+mod discovery;
 pub(crate) mod error;
 pub(crate) mod http_client;
 pub(crate) mod openai_compat;
@@ -14,7 +15,11 @@ pub(crate) mod trace;
 pub(crate) mod transport;
 pub(crate) mod types;
 
-pub use types::{Provider, ProviderCapabilities, ProviderReport, ProviderSettings, ProviderUsage};
+pub use discovery::{discover_models, DiscoveredModel};
+pub use types::{
+    CapabilitySource, DeclaredCapability, Provider, ProviderCapabilities, ProviderReport,
+    ProviderSettings, ProviderUsage,
+};
 
 use std::pin::Pin;
 

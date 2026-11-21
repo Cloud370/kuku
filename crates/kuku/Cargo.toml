@@ -9,6 +9,7 @@ readme = "../../README.md"
 keywords = ["agent", "coding", "terminal", "llm", "cli"]
 
 [dependencies]
+arc-swap = { workspace = true }
 home = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

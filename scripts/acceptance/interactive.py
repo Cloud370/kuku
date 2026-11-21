@@ -193,12 +193,12 @@ def two_workspaces_and_disconnect(client):
         assert client.session(other)
 
         left.type(prompt)
-        left.expect("Draft", state="Connected")
+        left.expect("Draft", absent=("Connected", "F2 Restart"))
         left.press("\r")
         call = client.provider.next(prompt)
-        left.expect("Waiting for model", state="Connected")
+        left.expect("Waiting for model", absent=("Connected", "F2 Restart"))
         client.gated_tool(workspace, call, tool_id)
-        left.expect("Running tools", state="Connected")
+        left.expect("Running tools", absent=("Connected", "F2 Restart"))
         session = client.session(workspace)
         assert session != client.session(other)
         assert client.status()["busy"], "Running tool is absent from service status"
@@ -306,7 +306,7 @@ def configure_statusline(client):
             footer(restored, lambda line: line == reordered)
             open_settings(restored)
             restored.press("r")
-            footer(restored, lambda line: "Connected" in line)
+            footer(restored, lambda line: "Connected" not in line and "Agent main" in line)
             restored.press("\r")
             restored.expect("Status line saved")
             assert "fields" not in settings.read_text(encoding="utf-8")
@@ -414,7 +414,7 @@ def editable_multiline_paste(client):
         terminal.press("\x7f")
         terminal.request("resize", rows=24, cols=42)
         phone = terminal.expect("target 中文", state="work-paste", rows=24)["screen"]
-        assert "Connected" in phone.splitlines()[-2] and "work-paste" in phone.splitlines()[-1], phone
+        assert "Connected" not in phone and "work-paste" in phone.splitlines()[-1], phone
         terminal.click_text(phone, "target 中文", cell_offset=8)
         terminal.press("!\r")
         call = client.provider.next("fourth line")
@@ -460,9 +460,9 @@ def wait_restart_and_recover_crash(client, workspace, session, title):
         terminal.resume(title)
         terminal.submit(started)
         crashed_call = client.provider.next(started)
-        terminal.expect("Waiting for model", state="Connected")
+        terminal.expect("Waiting for model", absent=("Connected", "F2 Restart"))
         client.kill(restarted)
-        terminal.expect("Reconnecting")
+        terminal.expect("Reconnecting to kuku service", also=("Ctrl+R",))
     crashed_call.text("Uncommitted response after crash")
     with client.terminal(workspace) as terminal:
         terminal.resume(title)

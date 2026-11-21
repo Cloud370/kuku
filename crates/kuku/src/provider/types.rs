@@ -1,7 +1,9 @@
 use std::fmt;
 use std::path::PathBuf;
 
-use crate::config::{ApiKey, ProviderOptions, ProviderProfile};
+use crate::config::{
+    ApiKey, MediaAdapterSupport, ProviderOptions, ProviderProfile, RequestedOutput,
+};
 use crate::context::CanonicalMessage;
 use crate::context::ContextAssembly;
 use crate::prompt::PromptCatalog;
@@ -31,7 +33,35 @@ impl From<Provider> for ProviderKind {
     }
 }
 
+impl From<crate::config::ProviderFormat> for ProviderKind {
+    fn from(format: crate::config::ProviderFormat) -> Self {
+        use crate::config::ProviderFormat;
+        match format {
+            ProviderFormat::Anthropic => Self::Anthropic,
+            ProviderFormat::OpenAiChat => Self::OpenAiCompatible,
+            ProviderFormat::OpenAiResponses => Self::OpenAiResponses,
+        }
+    }
+}
+
 impl ProviderKind {
+    pub(crate) fn format(self) -> crate::config::ProviderFormat {
+        use crate::config::ProviderFormat;
+        match self {
+            Self::Anthropic => ProviderFormat::Anthropic,
+            Self::OpenAiCompatible => ProviderFormat::OpenAiChat,
+            Self::OpenAiResponses => ProviderFormat::OpenAiResponses,
+        }
+    }
+
+    pub(crate) fn discovery_protocol(self) -> &'static str {
+        match self {
+            Self::Anthropic => "anthropic_messages",
+            Self::OpenAiCompatible => "chat_completions",
+            Self::OpenAiResponses => "responses",
+        }
+    }
+
     pub(crate) fn as_str(&self) -> &'static str {
         match self {
             ProviderKind::Anthropic => "anthropic",
@@ -80,6 +110,7 @@ pub(crate) struct ResolvedProvider {
     pub(crate) api_key: SecretString,
     pub(crate) max_context_tokens: u32,
     pub(crate) max_output_tokens: Option<u32>,
+    pub(crate) output: RequestedOutput,
     pub(crate) think_level: crate::config::ThinkLevel,
     pub(crate) thinking: crate::config::ResolvedThinking,
     pub(crate) options: ProviderOptions,
@@ -97,6 +128,7 @@ impl Default for ResolvedProvider {
             api_key: SecretString::new(""),
             max_context_tokens: 200_000,
             max_output_tokens: None,
+            output: RequestedOutput::Text,
             think_level: crate::config::ThinkLevel::Off,
             thinking: Default::default(),
             options: Default::default(),
@@ -121,6 +153,7 @@ pub struct ProviderSettings {
 
 /// Capabilities declared for the configured endpoint and model.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct ProviderCapabilities {
     /// Endpoint family that interprets these settings.
     pub profile: ProviderProfile,
@@ -128,6 +161,45 @@ pub struct ProviderCapabilities {
     pub reasoning_efforts: Vec<String>,
     /// Supported native service tiers.
     pub service_tiers: Vec<String>,
+    /// Source of the known native reasoning options.
+    pub reasoning_source: Option<CapabilitySource>,
+    /// Declared default reasoning effort.
+    pub reasoning_default: Option<DeclaredCapability<String>>,
+    /// Declared model input media.
+    pub input_modalities: Option<DeclaredCapability<Vec<String>>>,
+    /// Declared model output media.
+    pub output_modalities: Option<DeclaredCapability<Vec<String>>>,
+    /// Provider-advertised interfaces.
+    pub interfaces: Option<DeclaredCapability<Vec<String>>>,
+    /// Declared system prompt behavior on the selected protocol.
+    pub system_prompt_update: Option<DeclaredCapability<String>>,
+    /// Media representation implemented by the runtime.
+    pub media_adapter: MediaAdapterSupport,
+}
+
+/// Origin and scope of a normalized model capability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilitySource {
+    /// Declared by the provider model list.
+    ModelList,
+    /// Declared for the selected protocol by the provider model list.
+    ProtocolModelList,
+    /// Entered manually for the connection or model.
+    Manual,
+    /// Entered manually for the selected protocol.
+    ProtocolManual,
+    /// Defined by a built-in provider profile.
+    AdapterProfile,
+}
+
+/// A capability with the provenance of its effective value.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DeclaredCapability<T> {
+    /// Resolved value.
+    pub value: T,
+    /// Origin and scope.
+    pub source: CapabilitySource,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

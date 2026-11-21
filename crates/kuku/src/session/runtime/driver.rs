@@ -332,9 +332,10 @@ impl Session {
                     .unwrap_or(&self.inner.options.workspace),
             )
             .kuku_home(&self.inner.options.data_dir)
-            .config(self.inner.options.config.clone());
+            .config(self.inner.options.model_config().into_owned());
         query.connection = config.connection.clone();
         query.reasoning_effort = config.reasoning_effort.clone();
+        query.output = config.output;
         query.service_tier = config.service_tier.clone();
         query.authorizer = Some(self.inner.options.authorizer.clone());
         query.model_adapter = self.inner.options.model_adapter.clone();
@@ -619,6 +620,7 @@ mod tests {
                 context_window: 8192,
                 max_output_tokens: Some(128),
                 purpose: "balanced".into(),
+                output: Default::default(),
             },
         );
         let providers = BTreeMap::from([(

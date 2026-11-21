@@ -62,7 +62,7 @@
 | 权限请求卡片 | 用 ←/→ 或点击明确选择 **Deny** 或 **Allow once**，再按 Enter。键盘拒绝路径是 F2、←、Enter。Waiting 时 Esc 离开焦点，不作答也不打断。 |
 | `/jobs` | 列出所选 Agent 的后台任务及其 ID 和状态。选中运行中的任务可取消，选中已结束的任务可读取已有的保留输出。 |
 | `/jobs cancel <id>` | 取消所选 Agent 的指定后台任务，并显示任务最终状态。 |
-| `/model`、`/thinking` | 为所选 Agent 的 Session 选择模型线路或思考设置。模型和思考选项仅作用于 Session；单独选择 **Set current model as default** 可将已解析的连接和模型保存到配置，且不改变当前 Session。 |
+| `/model`、`/thinking` | 选择、添加或编辑模型，以及设置思考。Session 选择和持久默认值分别保存。 |
 | 认证修复 | 匹配的认证失败后，可通过 **Repair credentials** 更新实际失败的受管本地连接，并明确重启其服务；远程连接显示服务端修复指引。[恢复步骤](../start/configuration.md#认证失败后的恢复)。 |
 | `/statusline` | 打开 **Status line settings**，预览、选择、排序并保存状态栏字段。 |
 | 对话标题栏中的 **Messages**（窄窗口显示为 **Msg**） | 浏览当前 Agent 已加载对话中的用户、助手和工具条目。按 Enter 查看该条目可用的操作；按 Tab 或 ←/→ 选择操作，按 Enter 执行，按 Esc 返回条目列表且保留草稿。Full output 会打开已保存结果，或在没有保存结果时打开完整的内联结果。脚本有多份输出时，可继续选择要查看的单个动作。只读的回退历史组不是消息操作目标。 |
@@ -74,7 +74,8 @@
 | 鼠标滚轮、Page Up、Page Down | 滚动对话。 |
 | Ctrl+End，或阅读历史时按 Alt+↑ | 回到最新输出并恢复跟随。 |
 | 编辑区的 ↑、↓ | 在多行草稿内移动，到边缘后滚动对话。Ctrl+↑ 和 Ctrl+↓ 浏览已发送的提示词并返回草稿；队列焦点下则在可编辑的排队输入间移动。 |
-| `/server` | 检查所连服务及其控件。可用时，F2 循环到重连或受管本地重启；Ctrl+R 仍可直接重连。 |
+| `/server` | 检查 kuku 服务。按 Ctrl+R 重连。 |
+| `/restart` | 确认重启受管本地服务。有工作运行时会延后重启。已有草稿时可按 Ctrl+P，再输入 `/` 选择命令。 |
 | 菜单中的方向键、Tab、Enter | 方向键移动高亮项，Tab 补全可编辑文本，Enter 执行选中的动作。 |
 | `/web`、`/quit` | 在浏览器中打开对话或退出终端客户端。 |
 
@@ -239,6 +240,7 @@ kuku config [--config <path>] [show|validate|set|policy]
 |---|---|
 | show | `kuku config show` |
 | validate | `kuku config validate` |
+| models | `kuku config models` |
 | set | `kuku config set <key> <value>` |
 | policy allow | `kuku config policy allow <risk>` |
 | policy deny | `kuku config policy deny <risk>` |

@@ -23,6 +23,7 @@ def lifecycle_cases(binary, bridge, directory):
                      ("rewind", readonly_rewind),
                      ("rewind-history", paginated_rewind),
                  ))
+    cases.append(("model-setup", lambda: shared_model_editor(binary, bridge, directory / "model-setup")))
     cases.append(("auth-repair", lambda: runtime_credential_repair(binary, bridge, directory / "auth-repair")))
     run_cases(cases)
 
@@ -117,18 +118,16 @@ def first_run_credential_repair(binary, bridge, directory):
         workspace = client.workspace("work-first-run")
         prompt = "Verify the repaired first-run settings"
         with client.terminal(workspace) as terminal:
-            terminal.expect("Step 1/5", also=("Existing · test-anthropic",))
-            terminal.press("\r")
-            terminal.expect("Step 2/5")
-            terminal.press("\r")
-            missing = terminal.expect("Step 3/5", also=("not detected", "› Paste API key"))["screen"]
+            terminal.expect("Connection", also=("Existing · test-anthropic",))
+            terminal.press("\r\r\r\r")
+            missing = terminal.expect("Credential source", also=("not detected", "› Paste API key"))["screen"]
             client.provider.assert_idle()
             terminal.press("\r")
             terminal.expect("Paste a key; every character is masked.")
             terminal.press(f"\x1b[200~{key}\x1b[201~")
             masked = terminal.expect("•" * len(key))["screen"]
             assert key not in masked
-            terminal.press("\r")
+            terminal.press("\r\r\r")
             terminal.expect("Save and continue")
             terminal.press("\r")
             terminal.expect("New session", state="Ready")
@@ -154,6 +153,141 @@ def first_run_credential_repair(binary, bridge, directory):
         print("First-run credential repair kept the key masked and used it for the first reply.")
 
 
+def shared_model_editor(binary, bridge, directory):
+    key = "fixture-shared-model-key"
+    instance = InstalledClient(binary, bridge, directory)
+    original_dispatch = instance.provider.dispatch
+    addresses = []
+
+    def dispatch(method, path, headers, body):
+        assert headers.get("x-api-key") == key
+        addresses.append((method, path))
+        if method == "GET" and path == "/catalog/models":
+            return json_response({"data": [{"id": "alpha"}, {"id": "beta"}]})
+        return original_dispatch(method, "/v1/messages" if path == "/gateway/infer" else path, headers, body)
+
+    instance.provider.dispatch = dispatch
+    with instance as client:
+        config = client.home / "config.toml"
+        endpoint = re.search(r'base_url = "(http://127\.0\.0\.1:[0-9]+)"', config.read_text())[1]
+        config.write_text("")
+        workspace = client.workspace("work-model-setup")
+        with client.terminal(workspace) as terminal:
+            terminal.request("resize", rows=32, cols=110)
+            terminal.expect("New custom connection")
+            terminal.press("\x1b[A\r")
+            terminal.expect("API protocol")
+            terminal.press("\x1b[A\r")
+            terminal.expect("Base URL")
+            terminal.press("\x1bOQ\x01")
+            terminal.type(f"{endpoint}/gateway/infer")
+            terminal.expect(f"Request · {endpoint}/gateway/infer")
+            terminal.press("\r")
+            terminal.expect("Models URL")
+            terminal.type(f"{endpoint}/catalog/models")
+            terminal.press("\r\r")
+            terminal.expect("Paste a key")
+            terminal.press(f"\x1b[200~{key}\x1b[201~")
+            terminal.expect("•" * len(key), absent=(key,))
+            terminal.press("\r")
+            terminal.expect("Discover models")
+            assert addresses == []
+            terminal.press("\x1b[B\r")
+            terminal.expect("Discovered models")
+            terminal.press("alpha \x01beta \t")
+            terminal.expect("Choose the default model", also=("alpha", "beta"))
+            terminal.press("\x1b[B\r")
+            terminal.expect("Default model · beta", also=("Provider default",))
+            terminal.press("\r")
+            terminal.expect("New session", state="Ready", absent=("Connected", "F2 Restart"))
+            terminal.submit("Use the first saved default")
+            first = client.provider.next("Use the first saved default")
+            assert first.request["model"] == "beta"
+            assert "thinking" not in first.request and "output_config" not in first.request
+            first.text("Saved default sent a text turn.")
+            terminal.expect("Saved default sent a text turn.", state="Finished")
+
+            draft = "keep the unsent draft"
+            terminal.type(draft)
+            terminal.press("\x0c")
+            terminal.expect("Add model or connection")
+            terminal.press("\r")
+            terminal.expect("Existing · custom")
+            terminal.press("\r\r")
+            terminal.expect("Model ID")
+            terminal.type("gamma")
+            terminal.press("\r")
+            terminal.expect("Save models", also=("Model · gamma",))
+            terminal.press("\r")
+            terminal.expect("Tier · gamma")
+            terminal.press("gamma")
+            match = terminal.expect("/ gamma", also=("› Tier · gamma",))["screen"]
+            terminal.click_text(match, "Tier · gamma")
+            terminal.expect("Use in this Session", also=("Edit", "Set as default"))
+            terminal.press("\x1b[B\r")
+            terminal.expect("API protocol")
+            terminal.press("\r\r\r\r")
+            terminal.expect("Saved key configured; leave blank to keep.")
+            terminal.press("\r\r")
+            terminal.expect("Model ID", also=("gamma",))
+            terminal.press("\x01")
+            terminal.type("delta")
+            terminal.press("\r\r")
+            terminal.expect("Tier · gamma", also=("delta",))
+            terminal.press("\x1b")
+            terminal.expect(draft, absent=("Connected", "F2 Restart", "Model route"))
+            assert len(list((client.home / "credentials").iterdir())) == 1
+            catalog = client.request("GET", "/models").as_json()
+            assert catalog["default_tier"] == "default"
+            for item in catalog["tiers"]:
+                assert item["capabilities"]["reasoning_source"] is None
+                assert item["capabilities"]["input_modalities"] is None
+                assert item["capabilities"]["output_modalities"] is None
+            assert next(item for item in catalog["tiers"] if item["name"] == "default")["model"] == "beta"
+            assert next(item for item in catalog["tiers"] if item["name"] == "gamma")["model"] == "delta"
+
+            terminal.press("\x0c")
+            terminal.expect("Tier · gamma", also=("delta",))
+            terminal.press("gamma")
+            match = terminal.expect("/ gamma", also=("› Tier · gamma",))["screen"]
+            terminal.click_text(match, "Tier · gamma")
+            terminal.expect("Use in this Session")
+            terminal.press("\r")
+            terminal.expect(draft, also=("delta",), absent=("Model route", "Model settings"))
+            terminal.press("\r")
+            active = client.provider.next(draft)
+            assert active.request["model"] == "delta"
+            draft = "draft across busy and allowed restart"
+            terminal.type(draft)
+            previous = client.connection()
+            terminal.press("\x10/restart\r")
+            terminal.expect("Restart local service", also=("› Cancel",))
+            terminal.press("\x1b[A\r")
+            terminal.expect("Restart deferred", also=(draft,))
+            client.assert_current_service(previous)
+            active.text("Edited route completed.")
+            terminal.expect("Edited route completed.", state="Finished")
+
+            terminal.press("\x10/restart\r")
+            terminal.expect("Restart local service", also=("› Cancel",))
+            terminal.press("\r")
+            terminal.expect(draft, absent=("Restart local service",))
+            client.assert_current_service(previous)
+            terminal.press("\x10/restart\r")
+            terminal.expect("Restart local service", also=("› Cancel",))
+            terminal.press("\x1b[A\r")
+            def replaced_service():
+                try:
+                    return client.connection()["instance_id"] != previous["instance_id"]
+                except FileNotFoundError:
+                    return False
+
+            eventually("a replacement kuku service", replaced_service)
+            terminal.expect(draft, state="Finished", absent=("Connected", "F2 Restart"))
+            terminal.exit_cleanly("\x03\x03")
+        assert ("GET", "/catalog/models") in addresses and ("POST", "/gateway/infer") in addresses
+
+
 def persistent_model_default(client):
     workspace = client.workspace("work-model-default")
     chosen = "fixture-saved-model"
@@ -169,7 +303,7 @@ def persistent_model_default(client):
         models = terminal.expect("Tier · light", also=(chosen,))["screen"]
         initial_models = models
         tier_click = terminal.click_text(models, "Tier · light")
-        tier_selected = terminal.expect("› Tier · light", also=(chosen,))["screen"]
+        tier_selected = terminal.expect("Use in this Session", also=(chosen,))["screen"]
         terminal.press("\r")
         tier_return = terminal.expect("New session", state="Ready", also=(chosen,),
                                       absent=("Model route",))["screen"]

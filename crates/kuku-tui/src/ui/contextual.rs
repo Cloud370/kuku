@@ -29,7 +29,6 @@ pub(super) fn label(control: &ContextControl) -> String {
         ContextControl::Reconnect { .. } => {
             format!("F2 Reconnect · {} · Enter", Shortcut::RECONNECT.label)
         }
-        ContextControl::Restart { .. } => "F2 Restart · Enter".into(),
         ContextControl::Messages => "F2 Messages · Enter".into(),
     }
 }
@@ -49,7 +48,6 @@ fn action_label(control: &ContextControl) -> &'static str {
         }
         ContextControl::PreviousAgent { .. } => "Previous Agent",
         ContextControl::Reconnect { .. } => "Reconnect",
-        ContextControl::Restart { .. } => "Restart",
         ContextControl::Messages => "Messages",
     }
 }
@@ -162,11 +160,15 @@ pub(super) fn service_controls(app: &App) -> Vec<ContextControl> {
 }
 
 pub(super) fn service_row(footer: &[Line<'_>], app: &App) -> Option<(usize, u16)> {
-    let status = app.service_status().label();
+    let status = app.service_status().label().to_ascii_lowercase();
     footer
         .iter()
         .enumerate()
-        .find(|(_, line)| line.spans.iter().any(|span| span.content.contains(status)))
+        .find(|(_, line)| {
+            line.spans
+                .iter()
+                .any(|span| span.content.to_ascii_lowercase().contains(&status))
+        })
         .map(|(row, line)| (row, u16::try_from(line.width()).unwrap_or(u16::MAX)))
 }
 

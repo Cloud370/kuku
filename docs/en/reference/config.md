@@ -16,7 +16,7 @@ $KUKU_HOME/config.toml
 
 The HTTP server defaults to `config.toml` in its data directory and accepts an explicit `--config` path. An already running managed server reports its effective configuration with `kuku server status`. [Configuration](../start/configuration.md)
 
-The interactive TUI and `kuku init` share provider settings. First-run setup runs only when the selected local config is missing; `kuku init` also edits an existing valid config while preserving unrelated TOML. See [Configuration](../start/configuration.md) for key storage and editing behavior.
+First-run setup, `kuku init`, and TUI `/model` use the same provider settings. See [Configuration](../start/configuration.md) for key storage and editing behavior.
 
 The terminal client uses a separate preferences file. [Terminal preferences](#terminal-preferences)
 
@@ -41,14 +41,15 @@ Required and optional fields:
 |---|---|---|
 | `provider` | string | Provider name from `provider.<name>` |
 | `model` | string | Provider model ID |
-| `think` | `off`\|`low`\|`medium`\|`high` | Thinking level |
+| `think` | `provider-default`\|`off`\|`low`\|`medium`\|`high` | Thinking preference. `provider-default` omits the wire effort |
 | `reasoning_effort` | string | Native reasoning value; overrides `think` |
 | `service_tier` | string | Native service option, independent of reasoning |
 | `context_window` | integer | Max input tokens |
 | `max_output_tokens` | positive integer, optional | Generation ceiling for this tier, including reasoning tokens when the provider counts them as output |
-| `purpose` | string | Human-readable tier summary |
+| `purpose` | string | Route purpose shown to people and delegated Agents |
+| `output` | `text`\|`image` | Requested Agent output. Defaults to text |
 
-Default tiers are `strong`, `balanced`, and `light`. The TUI's explicit **Set current model as default** action reuses a matching tier or creates/overwrites one ordinary `user-default` tier when none matches. `user-default` has no special resolver priority; `default_model` selects it like any other tier.
+A single configured route can be the default. Set `default_model` to a route name, or omit it for a one-route configuration. Existing `strong`, `balanced`, and `light` routes still resolve. The TUI's explicit **Set current model as default** action reuses a matching tier or creates/overwrites one ordinary `user-default` tier when none matches. `user-default` has no special resolver priority; `default_model` selects it like any other tier.
 
 On Chat and Responses, omit `max_output_tokens` to use the upstream default. Native Anthropic Messages requires a numeric value. The bundled Sonnet and Haiku presets set it in TOML. A custom Messages connection can take its value from its tier, the Agent or the host. Existing numeric settings continue to apply to their tier. The available context can further limit each response.
 
@@ -57,7 +58,10 @@ On Chat and Responses, omit `max_output_tokens` to use the upstream default. Nat
 | Field | Type | Meaning |
 |---|---|---|
 | `format` | string | `anthropic`, `openai-chat`, or `openai-responses` |
-| `base_url` | string | Provider API base URL, or `$ENV_VAR_NAME` |
+| `base_url` | string | Provider API base URL with the protocol suffix appended |
+| `endpoint_url` | string | Full request URL, used exactly when set |
+| `models_url` | string | Optional full URL for standard model discovery |
+| `model_capabilities` | table | Model-list declarations and manual overrides keyed by exact model ID |
 | `api_key` | string | `$ENV_VAR_NAME`, a literal key, or `file:<absolute-path>` |
 | `auth` | `bearer`\|`x-api-key` | Override authentication independently of `format` |
 | `profile` | string | `auto` (default), `openai`, `anthropic`, `deepseek`, `openrouter`, or `compatible` |
@@ -67,6 +71,10 @@ On Chat and Responses, omit `max_output_tokens` to use the upstream default. Nat
 | `prompt_cache_scope` | `workspace`\|`session`\|`off` | Responses prompt-cache key scope; defaults to `workspace` |
 
 For the built-in `openai` connection, `base_url` is `https://api.openai.com/v1`. The Responses adapter appends `/responses`. For a gateway, use the API base supplied by its operator. [OpenAI Responses API](https://developers.openai.com/api/reference/resources/responses/methods/create)
+
+Use either `base_url` or `endpoint_url`. For example, the DeepSeek Chat base URLs `https://api.deepseek.com` and `https://api.deepseek.com/v1` append `/chat/completions` to their respective paths. An exact endpoint such as `https://gateway.example/gateway/infer` keeps its path. Use `models_url` for a separate catalog address such as `https://gateway.example/catalog/models`.
+
+A model capability entry has independent `discovered` and `manual` declarations. The supported fields are `reasoning_efforts`, `reasoning_default`, `input_modalities`, `output_modalities`, and `interfaces`. A `protocols` table can declare protocol-specific fields such as `anthropic_messages.system_prompt_update`. The resolver labels sources, keeps omitted values unknown, and preserves manual values across refreshes. An Agent can request image output when the route declares it or leaves output unknown. The built-in adapters support text and refuse image execution before dispatch. [DeepSeek model list](https://api-docs.deepseek.com/api/list-models/) · [OpenRouter model list](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties)
 
 `prompt_cache_scope` only affects Responses requests. `workspace` hashes the normalized absolute workspace identity with the connection, endpoint and model, so Agents and Sessions in that workspace can share a key without sending the path. `session` derives a separate key from the same Session, Agent address and connection identity as transport correlation, adding the endpoint and model to isolate routes. `off` omits `prompt_cache_key`. If correlation context is unavailable, the adapter omits the key. None of these settings changes the transport correlation or OpenRouter `session_id`.
 

@@ -146,6 +146,6 @@ Job 路由均要求 `workspace` 和 `agent` 查询参数。`GET /sessions/{id}/j
 
 ## 查找模型和工作区
 
-`/models` 返回 `default_tier`、`connections` 和 `tiers`。连接有 `name` 和线路 `protocol`。模型档包含 `name`、`connection`、`model` 和 `purpose`，以及设置与能力或解析错误。向 `/models/resolve` 传入 `tier`、`connection`、`model`、`reasoning_effort` 或 `service_tier` 等模型选择字段，可得到解析后的 `selection`。
+`/models` 返回 `default_tier`、`connections` 和 `tiers`。路由包含 `name`、`connection`、`model` 和 `purpose`，以及请求地址、生效设置、能力来源和请求的输出类型，或解析错误。`/models/resolve` 接收候选 Agent 的 `tier`、`connection`、`model`、`reasoning_effort`、`service_tier`、`output` 和 `max_output_tokens`；返回的 `selection` 分别提供模型声明和适配器媒体支持。
 
 `/workspaces` 返回 `workspaces`。向 `/workspaces/resolve` 将已有目录的绝对路径作为 `workspace` 传入，可取得规范路径。`/workspaces/files` 和 `/workspaces/skills` 还接受 `query` 过滤参数，分别返回 `paths` 和 `skills`。匹配的文件是工作区相对路径，匹配的 Skill 包含名称和描述。

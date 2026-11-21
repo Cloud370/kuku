@@ -175,9 +175,9 @@ pub(super) fn empty_notice(app: &App, width: usize, show_problem: bool) -> Vec<L
         ("Opening the conversation…", MUTED)
     } else {
         match app.service_status() {
-            ServiceStatus::Connecting => ("Connecting to the Session service…", MUTED),
-            ServiceStatus::Reconnecting => ("Reconnecting to the Session service…", MUTED),
-            ServiceStatus::Restarting => ("Restarting the Session service…", MUTED),
+            ServiceStatus::Connecting => ("Connecting to the kuku service…", MUTED),
+            ServiceStatus::Reconnecting => ("Reconnecting to the kuku service…", MUTED),
+            ServiceStatus::Restarting => ("Restarting the kuku service…", MUTED),
             ServiceStatus::Connected
             | ServiceStatus::Offline
             | ServiceStatus::UpdatesUnavailable => return Vec::new(),
