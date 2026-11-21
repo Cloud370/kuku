@@ -10,7 +10,7 @@ import re
 import sys
 from urllib.parse import urlencode, urlsplit
 
-from interactive_lifecycle import lifecycle_cases, verify_restored_tool
+from interactive_lifecycle import first_run_credential_repair, lifecycle_cases, shared_model_editor, verify_restored_tool
 from interactive_rendering import (
     check_agent_reading_position,
     named_output_cards,
@@ -933,9 +933,12 @@ def main():
     parser.add_argument("--bridge", required=True, type=Path)
     parser.add_argument("--directory", required=True, type=Path)
     parser.add_argument("--browser", action="store_true")
+    parser.add_argument("--native-smoke", action="store_true")
     parser.add_argument("--upgrade", nargs=2, type=Path, metavar=("OLD_ARCHIVE", "NEW_ARCHIVE"))
     parser.add_argument("--named-output", action="store_true", help="exercise keyboard naming and reopening")
     options = parser.parse_args()
+    if options.native_smoke and any((options.browser, options.upgrade, options.named_output)):
+        parser.error("--native-smoke cannot be combined with other scenarios")
     options.binary = options.binary.resolve()
     options.bridge = options.bridge.resolve()
     options.directory = options.directory.resolve()
@@ -943,6 +946,13 @@ def main():
         with InstalledClient(options.binary, options.bridge, options.directory / name) as client:
             operation(client)
 
+    if options.native_smoke:
+        run_cases([
+            ("paste", lambda: native("paste", editable_multiline_paste)),
+            ("first-run", lambda: first_run_credential_repair(options.binary, options.bridge, options.directory / "settings")),
+            ("model-setup", lambda: shared_model_editor(options.binary, options.bridge, options.directory / "model-setup")),
+        ])
+        return
     if options.named_output:
         native("named-output", named_output_cards)
         return

@@ -34,8 +34,9 @@ Example progression:
 ## Release steps
 
 1. Update `CHANGELOG.md` for the target version.
-2. Run `cargo release <version>`.
-3. Let CI build artifacts and publish the GitHub Release.
+2. Run the full CI matrix with `platform=all` on the release candidate and verify the result. [Testing](testing.md#verification-selection)
+3. Run `cargo release <version>`.
+4. Let CI build artifacts and publish the GitHub Release.
 
 `cargo release` updates workspace versions, creates the release commit, creates the `v<version>` tag, and pushes both.
 
