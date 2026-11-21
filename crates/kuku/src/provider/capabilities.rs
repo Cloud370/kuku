@@ -273,12 +273,12 @@ pub(crate) fn resolve_settings(
     let native_service = service
         .as_deref()
         .filter(|_| capabilities.profile == ProviderProfile::OpenRouter)
-        .map(|tier| super::openrouter_catalog::normalized_tier(Some(tier)))
+        .map(|tier| normalized_tier(Some(tier)))
         .filter(|tier| {
             capabilities
                 .service_tiers
                 .iter()
-                .any(|allowed| super::openrouter_catalog::normalized_tier(Some(allowed)) == *tier)
+                .any(|allowed| normalized_tier(Some(allowed)) == *tier)
         });
     if native_service.is_none() {
         validate_choice(
@@ -391,6 +391,14 @@ fn validate_choice(
 
 fn strings(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| (*value).to_string()).collect()
+}
+
+pub(super) fn normalized_tier(tier: Option<&str>) -> &str {
+    match tier {
+        None | Some("standard") => "default",
+        Some("fast") => "priority",
+        Some(tier) => tier,
+    }
 }
 
 #[cfg(test)]

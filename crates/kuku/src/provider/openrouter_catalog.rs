@@ -8,6 +8,8 @@ use url::Url;
 use crate::config::{resolve_request_url, OpenRouterRouting, ProviderConfig, TokenRates};
 use crate::{Error, Result};
 
+use super::capabilities::normalized_tier;
+
 /// An advertised quote for one OpenRouter route. Rates are in USD per million tokens.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RouteQuote {
@@ -16,14 +18,6 @@ pub struct RouteQuote {
     pub author_route: bool,
     pub service_tier: Option<String>,
     pub rates: TokenRates,
-}
-
-pub(super) fn normalized_tier(tier: Option<&str>) -> &str {
-    match tier {
-        None | Some("standard") => "default",
-        Some("fast") => "priority",
-        Some(tier) => tier,
-    }
 }
 
 fn same_endpoint(tag: &str, endpoint: &str) -> bool {

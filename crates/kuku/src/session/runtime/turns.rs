@@ -391,7 +391,7 @@ mod tests {
             } else {
                 assert!(warning.is_none());
             }
-            assert!(replayed.cache.get("reviewer").is_none());
+            assert!(!replayed.cache.contains_key("reviewer"));
         }
         let (index, _) = TurnIndex::read(&path).unwrap();
         let flags: Vec<_> = settled
