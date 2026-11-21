@@ -51,6 +51,32 @@ def assert_testing_navigation(terminal, config):
     assert config.read_text() == ""
 
 
+def assert_wide_setup(terminal):
+    def overview(rows, cols):
+        terminal.request("resize", rows=rows, cols=cols)
+        screen = terminal.expect("25%", also=("Try none, high", "› View requests"), rows=rows)["screen"]
+        lines = screen.splitlines()
+        assert len(lines[0]) == cols, screen
+        header = next(line for line in lines if "Model" in line and "Image" in line)
+        divider = next(line for line in lines if "┼" in line)
+        assert len(divider.rstrip(" │")) <= 92, screen
+        return screen, header.index("Image")
+
+    _, standard_column = overview(24, 100)
+    wide, wide_column = overview(25, 280)
+    assert wide_column == standard_column < 90, wide
+    terminal.press("\r")
+    details = terminal.expect("Model tests", rows=25)["screen"]
+    receipt = next(line for line in details.splitlines() if "API type" in line)
+    elapsed = re.search(r"\b\d+\.\d+s\b", receipt)
+    assert elapsed and elapsed.start() < 90, details
+    terminal.press("\x1b")
+    terminal.expect("› View requests", rows=25)
+    terminal.request("resize", rows=20, cols=60)
+    terminal.expect("… none, high", rows=20)
+    return wide
+
+
 def start_custom(terminal, address, key):
     terminal.expect("Find and test models")
     terminal.press("\r")

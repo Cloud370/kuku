@@ -8,7 +8,7 @@ import time
 from urllib.parse import urlencode
 
 from interactive_fixture import InstalledClient, Response, TOOL_BRIEF, TOOL_OUTPUT, eventually, json_response, run_cases
-from interactive_model_recovery import assert_testing_navigation, recovery_cases
+from interactive_model_recovery import assert_testing_navigation, assert_wide_setup, recovery_cases
 from interactive_rendering import has_selected_queued_input
 
 
@@ -486,10 +486,7 @@ def setup_probe_progress(binary, bridge, directory):
                     assert model_cells(save_activity, model) == ("Testing", f"Try {effort}", "Not tested"), save_activity
                 assert save_activity.splitlines()[-2].startswith("│Esc previous step")
                 overall(save_activity, 25, 6)
-                terminal.request("resize", rows=24, cols=100)
-                wide = terminal.expect("25%", also=("Try none, high", "› View requests"), rows=24)["screen"]
-                terminal.request("resize", rows=20, cols=60)
-                terminal.expect("… none, high", rows=20)
+                wide = assert_wide_setup(terminal)
                 assert_testing_navigation(terminal, config)
                 allow_rate_limit.set()
                 save_retry = terminal.expect("Retry ", also=("5 running", "2 waiting"), rows=20)["screen"]

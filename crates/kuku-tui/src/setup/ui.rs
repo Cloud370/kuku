@@ -25,6 +25,7 @@ use model_pages::render_model_settings;
 
 const MIN_WIDTH: u16 = 60;
 const MIN_HEIGHT: u16 = 20;
+const MAX_CONTENT_WIDTH: u16 = 88;
 
 pub(super) async fn run(
     settings: &Settings,
@@ -145,7 +146,7 @@ fn render_step(
     state: &mut SetupState,
     mode: SetupMode,
 ) {
-    let area = if matches!(
+    let mut area = if matches!(
         state.step,
         SetupStep::Review | SetupStep::ReviewSettings | SetupStep::TrialResults
     ) {
@@ -153,6 +154,7 @@ fn render_step(
     } else {
         area
     };
+    area.width = area.width.min(MAX_CONTENT_WIDTH);
     let mut row = 0;
     match state.step {
         SetupStep::Consent => {
