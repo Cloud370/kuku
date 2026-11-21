@@ -9,7 +9,12 @@ use crate::theme::{card_padding, emphasis, surface, ACCENT, MUTED, WARNING};
 use super::window::TurnHeading;
 use super::{render_rows, Row, MAX_VISUAL_ROWS};
 
-pub(super) fn render_user(title: &str, text: &str, width: usize) -> Vec<Row> {
+pub(super) fn render_user(
+    title: &str,
+    text: &str,
+    width: usize,
+    turn: Option<TurnHeading>,
+) -> Vec<Row> {
     let padding = card_padding(width);
     let edge = user_edge(width);
     let inset = edge.width() as u16;
@@ -28,10 +33,20 @@ pub(super) fn render_user(title: &str, text: &str, width: usize) -> Vec<Row> {
         }
     };
     let spacer = || Row::padding(decorate(Line::default()).line, width);
-    let mut rows = vec![decorate(Line::styled(
-        shorten(title, content_width),
-        Style::new().add_modifier(Modifier::BOLD),
-    ))];
+    let title = turn.map_or_else(
+        || {
+            Line::styled(
+                shorten(title, content_width),
+                Style::new().add_modifier(Modifier::BOLD),
+            )
+        },
+        |turn| user_turn_title(turn, width.saturating_sub(usize::from(inset))),
+    );
+    let mut rows = Vec::new();
+    if padding.top > 0 {
+        rows.push(spacer());
+    }
+    rows.push(decorate(title));
     if padding.top > 0 {
         rows.push(spacer());
     }
@@ -110,75 +125,34 @@ pub(super) fn render_record(
     rows
 }
 
-pub(super) fn padded_panel(
-    width: usize,
-    style: Style,
-    render: impl FnOnce(usize) -> Vec<Row>,
-) -> Vec<Row> {
-    let padding = card_padding(width);
-    let inner = width.saturating_sub(usize::from(padding.left + padding.right));
-    let mut rows = render(inner);
-    let end = rows.len() - usize::from(rows.last().is_some_and(|row| row.line.spans.is_empty()));
-    if end == 0 {
-        return rows;
-    }
-    for row in &mut rows[..end] {
-        row.line.style = style.patch(row.line.style);
-        if padding.left > 0 {
-            row.line.spans.insert(
-                0,
-                Span::styled(" ".repeat(usize::from(padding.left)), style),
-            );
-            row.inset += padding.left;
-        }
-    }
-    if padding.top > 0 {
-        let spacer = Row::padding(Line::styled(" ", style), width);
-        rows.insert(end, spacer.clone());
-        rows.insert(0, spacer);
-    }
-    rows
-}
-
-pub(super) fn paint_card(rows: &mut [Row], width: usize, color: Color) {
-    let background = Style::new().bg(color);
-    for row in rows {
-        let padding = width.saturating_sub(row.line.width());
-        for span in &mut row.line.spans {
-            span.style = background.patch(span.style);
-        }
-        if padding > 0 {
-            row.line
-                .push_span(Span::styled(" ".repeat(padding), background));
-        }
-    }
-}
-
-pub(super) fn render_turn(turn: TurnHeading, width: usize, user: bool) -> Line<'static> {
-    let label = match turn {
+fn turn_label(turn: TurnHeading, width: usize) -> String {
+    match turn {
         TurnHeading::Numbered(number) if width < 6 => format!("T{number}"),
         TurnHeading::Numbered(number) => format!("Turn {number}"),
         TurnHeading::Unnumbered => "Turn".to_owned(),
-    };
-    if user {
-        let edge = user_edge(width);
-        let separator = if width >= edge.width() + "You   /   ".len() + label.width() {
-            "   /   "
-        } else {
-            " / "
-        };
-        let mut header = Line::from(vec![
-            Span::styled(edge, emphasis(ACCENT)),
-            Span::styled("You", emphasis(crate::theme::SURFACE_TEXT)),
-            Span::styled(separator, Style::new().fg(crate::theme::MUTED)),
-        ]);
-        header.push_span(Span::styled(
-            shorten(&label, width.saturating_sub(header.width())),
-            emphasis(crate::theme::USAGE),
-        ));
-        header.style = surface();
-        return header;
     }
+}
+
+fn user_turn_title(turn: TurnHeading, width: usize) -> Line<'static> {
+    let label = turn_label(turn, width);
+    let separator = if width >= "You  ·  ".width() + label.width() + 2 {
+        "  ·  "
+    } else {
+        " · "
+    };
+    let mut title = Line::from(vec![
+        Span::styled("You", emphasis(crate::theme::SURFACE_TEXT)),
+        Span::styled(separator, Style::new().fg(MUTED)),
+    ]);
+    title.push_span(Span::styled(
+        shorten(&label, width.saturating_sub(title.width())),
+        emphasis(crate::theme::USAGE),
+    ));
+    title
+}
+
+pub(super) fn render_turn(turn: TurnHeading, width: usize) -> Line<'static> {
+    let label = turn_label(turn, width);
     let mut line = Line::from(Span::styled(
         shorten(&label, width),
         emphasis(crate::theme::SURFACE_TEXT).bg(crate::theme::TURN_RULE),

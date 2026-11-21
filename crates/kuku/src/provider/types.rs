@@ -163,6 +163,9 @@ pub struct ProviderCapabilities {
     pub thinking_test: Option<crate::config::ModelThinkingTest>,
     /// Supported native service tiers.
     pub service_tiers: Vec<String>,
+    /// Origin of the service choices, including an explicitly empty declaration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tier_source: Option<CapabilitySource>,
     /// Source of the known native reasoning options.
     pub reasoning_source: Option<CapabilitySource>,
     /// Declared default reasoning effort.

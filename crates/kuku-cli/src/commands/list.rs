@@ -7,7 +7,7 @@ use crate::display::util::truncate;
 /// List sessions: `kuku list [-a] [-w <workspace>] [-v]`
 pub async fn run(args: ListArgs, target: &ConnectionArgs) -> CliResult {
     let options = target.options();
-    let client = options.client().await?;
+    let client = target.client().await?;
     if let Some(session_id) = args.session_id.as_deref() {
         let workspace = client.workspace(options.workspace()?).await?;
         return render_agents(client.agents(&workspace, session_id).await?);

@@ -42,7 +42,7 @@ pub(super) fn repair_fences(source: &str) -> Cow<'_, str> {
     }
 }
 
-fn is_document_opening(line: &str) -> bool {
+pub(super) fn is_document_opening(line: &str) -> bool {
     Fence::parse(line).is_some_and(|fence| fence.is_triple_backtick() && is_markdown(fence.info))
 }
 

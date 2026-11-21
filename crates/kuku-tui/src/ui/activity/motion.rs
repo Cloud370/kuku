@@ -3,8 +3,7 @@ use ratatui::text::Line;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::Activity;
-use crate::theme::{ACCENT, ACTIVITY_MINT, KUKU_MARK, MODEL, USAGE};
+use crate::theme::{ACCENT, KUKU_MARK};
 
 const ORBIT: [&str; 8] = ["⢌⡱", "⢆⡱", "⢎⡰", "⢎⡡", "⢎⡑", "⢎⠱", "⠎⡱", "⢊⡱"];
 
@@ -22,22 +21,30 @@ impl Ring {
         }
     }
 
-    pub(super) fn moving(activity: Activity, step: u128) -> Self {
-        let tone = match activity {
-            Activity::Thinking => MODEL,
-            Activity::Streaming => ACTIVITY_MINT,
-            Activity::ToolArguments | Activity::RunningTools => USAGE,
-            _ => ACCENT,
-        };
+    pub(super) fn moving(step: u128) -> Self {
         Self {
             glyph: ORBIT[(step % ORBIT.len() as u128) as usize],
-            tone,
+            tone: ACCENT,
         }
     }
 
+    pub(super) fn phase(glyph: &'static str, tone: Color, step: Option<u128>) -> Self {
+        let tone = match (tone, step) {
+            (Color::Rgb(r, g, b), Some(step)) => {
+                let weight = [8, 9, 10, 10, 9, 8, 7, 7][(step % 8) as usize];
+                let shade = |channel| (u16::from(channel) * weight / 10) as u8;
+                Color::Rgb(shade(r), shade(g), shade(b))
+            }
+            _ => tone,
+        };
+        Self { glyph, tone }
+    }
+
     pub(super) fn line(self, width: usize) -> Line<'static> {
-        let glyph = if width >= 2 { self.glyph } else { "·" };
-        Line::styled(glyph, Style::new().fg(self.tone))
+        if width < 2 {
+            return Line::styled(crate::text::shorten("·", width), Style::new().fg(self.tone));
+        }
+        Line::styled(format!("{:<2}", self.glyph), Style::new().fg(self.tone))
     }
 }
 

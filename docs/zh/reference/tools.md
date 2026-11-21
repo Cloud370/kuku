@@ -45,7 +45,7 @@
 | `send_message` | `to`, `message` | `wake`, `values` | `session` |
 | `list_agents` | none | `wait_for` | `session` |
 
-`create_agent` 创建稳定、扁平的 Session 内地址及独立上下文，可选的 `preset` 提供联系卡。应传入接收方所需的完整指令和任务材料。`send_message` 向已有 Agent 投递，返回持久投递回执，不代表最终工作结果。`wake` 默认为 true；false 仅入箱，等待显式推进。`list_agents` 默认读取精简状态列表。传入目标地址 `wait_for` 可等待该 Agent 当前执行结束并读取已完成的回复，最多等待 30 秒，超时返回当前状态。
+`create_agent` 创建稳定、扁平的 Session 内地址及独立上下文，可选的 `preset` 提供联系卡。应传入接收方所需的完整指令和任务材料。`send_message` 向已有 Agent 投递，返回持久投递回执，不代表最终工作结果。`wake` 默认为 true；false 仅入箱，等待显式推进。`list_agents` 默认读取精简状态列表。传入目标地址 `wait_for` 可等待该 Agent 当前执行结束并读取已完成的回复，最多等待 30 秒，超时返回当前状态。已结束的回复可以附带 `last_request`，其中包含请求所用的模型、请求指定的服务档位和供应商回报的服务档位。缺少依据的字段省略。
 
 模型创建 Agent 时指定地址，并按需选择角色指令、工具白名单、preset、tier 和工作目录。宿主通过 SDK 配置供应商参数。
 

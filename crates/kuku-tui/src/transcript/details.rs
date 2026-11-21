@@ -7,13 +7,13 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::markup::render_literal;
 use crate::text::shorten;
-use crate::theme::{emphasis, ACCENT, MUTED, SUCCESS};
+use crate::theme::{emphasis, CardFrame, ACCENT, MUTED, SUCCESS};
 
 use super::agent::{AgentCard, AgentCards};
-use super::tool::{style_card, tool_title, Tool};
+use super::tool::{tool_title, Tool};
 use super::{
-    body_inset, render_rows, Key, Record, RewindGroupAction, RewindGroupChoice, Row, ToolDetails,
-    Transcript, MAX_RECORDS,
+    render_rows, Key, Record, RewindGroupAction, RewindGroupChoice, Row, ToolDetails, Transcript,
+    MAX_RECORDS,
 };
 
 const INSPECTIONS: [(&str, &str, &str); 5] = [
@@ -50,6 +50,10 @@ impl DetailKey {
             kind,
             record: record.clone(),
         }
+    }
+
+    pub(super) fn for_record(&self, key: &Key) -> bool {
+        &self.record == key
     }
 
     pub(super) fn settle(&mut self, preview: &Key, settled: &Key) {
@@ -262,11 +266,6 @@ impl Transcript {
     }
 
     pub(crate) fn markdown_link_at(&self, row: usize, column: usize) -> Option<&str> {
-        let row = match &self.notes {
-            Some(notes) if notes.hit(row) => return None,
-            Some(notes) => notes.source_row(row),
-            None => row,
-        };
         self.visible_links
             .iter()
             .find(|(line, link)| *line == row && link.columns.contains(&column))
@@ -278,14 +277,6 @@ impl Transcript {
         if !action.contains(&column) {
             return None;
         }
-        let row = if let Some(notes) = &self.notes {
-            if notes.hit(row) {
-                return None;
-            }
-            notes.source_row(row)
-        } else {
-            row
-        };
         self.detail_items
             .visible
             .iter()
@@ -295,14 +286,6 @@ impl Transcript {
     }
 
     pub(crate) fn detail_at(&self, row: usize) -> Option<&DetailKey> {
-        let row = if let Some(notes) = &self.notes {
-            if notes.hit(row) {
-                return notes.is_heading(row).then_some(&notes.key);
-            }
-            notes.source_row(row)
-        } else {
-            row
-        };
         self.detail_items
             .visible
             .iter()
@@ -358,7 +341,7 @@ impl Transcript {
             .map(|item| item.key.clone())
     }
 
-    pub(super) fn notes_at(&self, key: &DetailKey) -> Option<(&str, Range<usize>)> {
+    pub(super) fn notes_at(&self, key: &DetailKey) -> Option<(&str, bool)> {
         if key.kind != DetailKind::Reasoning {
             return None;
         }
@@ -366,11 +349,15 @@ impl Transcript {
             .reading
             .as_ref()
             .map_or(&self.recent, |reading| &reading.window);
-        let record = window
+        self.detail_items.rows_for(key)?;
+        let index = window
             .records
             .iter()
-            .find(|record| record.key == key.record)?;
-        Some((&record.reasoning_preview, self.detail_items.rows_for(key)?))
+            .position(|record| record.key == key.record)?;
+        let in_timeline = groups(&window.records)
+            .iter()
+            .any(|group| group.range.contains(&index));
+        Some((&window.records[index].reasoning_preview, in_timeline))
     }
 
     pub(crate) fn toggle_in_view(&mut self, key: &DetailKey, width: usize, height: usize) -> bool {
@@ -391,6 +378,7 @@ impl Transcript {
             assistant: self.assistant_view,
             agents: &self.agent_cards,
             items: &self.detail_items,
+            notes: self.notes.as_ref(),
         };
         if let Some(reading) = &mut self.reading {
             let opening = match key.kind {
@@ -484,13 +472,6 @@ impl Transcript {
                 let open = !self.detail_items.group_open(records);
                 if open {
                     remember(&mut self.detail_items.groups, &key.record);
-                    self.agent_cards.set_details(
-                        true,
-                        records
-                            .iter()
-                            .filter(|r| r.tool().and_then(Tool::agent_card).is_some())
-                            .map(|r| &r.key),
-                    );
                 } else {
                     self.detail_items
                         .groups
@@ -587,13 +568,17 @@ pub(super) struct GroupSummary {
     title: String,
     composition: String,
     listing: String,
+    preview: Option<String>,
     kind: GroupKind,
 }
 
 #[derive(PartialEq, Eq)]
 enum GroupKind {
-    Delegation { delivery: usize, checks: usize },
-    Listings,
+    Delegation {
+        creation: usize,
+        delivery: usize,
+        checks: usize,
+    },
     Inspections,
 }
 
@@ -613,11 +598,17 @@ impl GroupHeading {
         agents: &AgentCards,
     ) -> Self {
         let summary = span.summary;
-        if let GroupKind::Delegation { delivery, checks } = summary.kind {
+        if let GroupKind::Delegation {
+            creation,
+            delivery,
+            checks,
+        } = summary.kind
+        {
             let latest = &records[delivery];
             if let Some(card) = latest.tool().and_then(Tool::agent_card) {
                 let (_, facts) = agents.display(&latest.key, latest.position, card.address);
-                let rows = card.delegation_header(width, open, facts, checks);
+                let creation = records[creation].tool().and_then(Tool::agent_card);
+                let rows = card.delegation_header(width, open, facts, checks, creation.as_ref());
                 return Self {
                     agent_link: Some(card.address.to_owned()),
                     summary,
@@ -630,53 +621,52 @@ impl GroupHeading {
     }
 
     pub(super) fn new(summary: GroupSummary, open: bool, width: usize) -> Self {
-        let style = if summary.kind == GroupKind::Listings {
-            Style::new().bg(crate::theme::AGENT_SURFACE)
-        } else {
-            crate::theme::panel()
+        let frame = CardFrame::new(width);
+        let columns = frame.title_width();
+        let marker = if open { "▾ " } else { "▸ " };
+        let status = " · ok";
+        let mut title = Line::default();
+        if columns > marker.width() {
+            title.push_span(Span::styled(marker, Style::new().fg(MUTED)));
+        }
+        let room = columns.saturating_sub(title.width());
+        let show_status = room > status.width();
+        title.push_span(Span::styled(
+            shorten(
+                &summary.title,
+                room - usize::from(show_status) * status.width(),
+            ),
+            emphasis(ACCENT),
+        ));
+        if show_status {
+            title.push_span(Span::styled(status, Style::new().fg(SUCCESS)));
+        }
+        let mut rows = vec![Row::plain(frame.title_line(title))];
+        let composition = match (open, summary.preview.as_deref()) {
+            (true, Some(_)) => "",
+            (false, Some(preview)) => preview,
+            (_, None) => &summary.composition,
         };
-        let rows = super::message::padded_panel(width, style, |width| {
-            let inset = body_inset(width);
-            let columns = width.saturating_sub(usize::from(inset));
-            let mut spans = Vec::new();
-            if inset > 0 {
-                spans.push(Span::styled(
-                    if open { "▾ " } else { "▸ " },
-                    Style::new().fg(MUTED),
-                ));
-            }
-            let status = " · ok";
-            let title = if columns > status.width() {
-                shorten(&summary.title, columns - status.width())
-            } else {
-                shorten(&summary.title, columns)
-            };
-            spans.push(Span::styled(title, emphasis(ACCENT)));
-            if columns > status.width() {
-                spans.push(Span::styled(status, Style::new().fg(SUCCESS)));
-            }
-            let mut rows = vec![Row {
-                line: Line::from(spans),
-                inset,
-                links: Vec::new(),
-            }];
-            for detail in [&summary.composition, &summary.listing] {
-                if !detail.is_empty() {
-                    rows.extend(render_rows(
+        let listing = if open { "" } else { &summary.listing };
+        if open || !composition.is_empty() || !listing.is_empty() {
+            rows.extend(Row::frame_padding(&frame));
+        }
+        for detail in [composition, listing] {
+            if !detail.is_empty() {
+                rows.extend(
+                    render_rows(
                         render_literal(detail, Style::default()),
-                        width,
+                        frame.content_width(),
                         GROUP_DETAIL_ROWS,
-                        inset,
-                    ));
-                }
+                        0,
+                    )
+                    .map(|row| row.framed(&frame)),
+                );
             }
-            if summary.kind == GroupKind::Listings {
-                super::paint_card(&mut rows, width, crate::theme::AGENT_SURFACE);
-            } else {
-                style_card(&mut rows);
-            }
-            rows
-        });
+        }
+        if !open {
+            rows.extend(Row::frame_end(&frame));
+        }
         Self {
             agent_link: None,
             summary,
@@ -753,7 +743,9 @@ pub(super) fn groups(records: &[Record]) -> Vec<GroupSpan> {
                         title: format!("Agent {}", send.address),
                         composition: send.choice_summary(),
                         listing: String::new(),
+                        preview: None,
                         kind: GroupKind::Delegation {
+                            creation: index,
                             delivery: next,
                             checks,
                         },
@@ -812,9 +804,17 @@ fn group_summary(first: &str, records: &[Record]) -> GroupSummary {
     } else {
         group_title(first, records)
     };
+    let listing = records
+        .iter()
+        .rev()
+        .find(|record| group_name(record) == Some("list_agents"))
+        .and_then(|record| record.tool()?.agent_listing());
     let mut parts = Vec::new();
     if mixed {
         for (name, one, many) in INSPECTIONS {
+            if name == "list_agents" && listing.is_some() {
+                continue;
+            }
             let count = records
                 .iter()
                 .filter(|record| group_name(record) == Some(name))
@@ -824,27 +824,21 @@ fn group_summary(first: &str, records: &[Record]) -> GroupSummary {
             }
         }
     }
-    let listing = records
-        .iter()
-        .rev()
-        .find(|record| group_name(record) == Some("list_agents"))
-        .and_then(|record| record.tool()?.agent_listing())
-        .map_or_else(String::new, |(caption, detail)| {
-            if detail.is_empty() {
-                caption.to_owned()
-            } else {
-                format!("Latest · {caption}\n{detail}")
-            }
-        });
+    let preview = if mixed && count == 2 {
+        let results = records
+            .iter()
+            .filter_map(|record| record.tool()?.inspection_result())
+            .collect::<Vec<_>>();
+        (results.len() + usize::from(listing.is_some()) == count).then(|| results.join("\n"))
+    } else {
+        None
+    };
     GroupSummary {
         title,
         composition: parts.join(" · "),
-        listing,
-        kind: if !mixed && first == "list_agents" {
-            GroupKind::Listings
-        } else {
-            GroupKind::Inspections
-        },
+        listing: listing.unwrap_or_default(),
+        preview,
+        kind: GroupKind::Inspections,
     }
 }
 

@@ -166,13 +166,20 @@ pub(crate) fn render_project_policy(
             .iter()
             .map(|info| {
                 format!(
-                    "{} — {} (model {}, thinking {}, output text)",
+                    "{} — {} (model {}, thinking {}, thinking options {}, service {}, service options {}, output text)",
                     info.name,
                     info.purpose,
                     info.model,
                     info.reasoning_effort
                         .as_deref()
-                        .unwrap_or("provider default")
+                        .unwrap_or("provider default"),
+                    if info.reasoning_choices.is_empty() { "use default".into() } else { info.reasoning_choices.join(", ") },
+                    info.service_tier.as_deref().unwrap_or("provider default"),
+                    match &info.service_choices {
+                        None => "unknown".into(),
+                        Some(choices) if choices.is_empty() => "none".into(),
+                        Some(choices) => choices.join(", "),
+                    },
                 )
             })
             .collect::<Vec<_>>()

@@ -31,7 +31,6 @@ impl App {
         if self.pane().transcript.note_is_open(key) {
             return self.pane_mut().transcript.close_notes();
         }
-        self.pane_mut().transcript.close_notes();
         if self.pane_mut().transcript.open_notes(key, width, height) {
             self.pane_mut().keyboard_focus = KeyboardFocus::Transcript;
             return true;
@@ -78,13 +77,7 @@ impl App {
             self.jump_latest();
             return true;
         }
-        let page = self
-            .pane()
-            .transcript
-            .notes_page()
-            .unwrap_or(self.transcript_area.1)
-            .saturating_sub(1)
-            .max(1) as isize;
+        let page = self.transcript_area.1.saturating_sub(1).max(1) as isize;
         let amount = if Shortcut::PAGE_UP.matches(key) {
             -page
         } else if Shortcut::PAGE_DOWN.matches(key) {
@@ -102,10 +95,6 @@ impl App {
 
     pub(crate) fn scroll(&mut self, amount: isize) {
         let (width, height) = self.transcript_area;
-        if self.pane_mut().transcript.scroll_notes(amount) {
-            self.focus_history();
-            return;
-        }
         let request = self.pane_mut().transcript.scroll(amount, width, height);
         if self.pane().transcript.is_reading() {
             self.focus_history();

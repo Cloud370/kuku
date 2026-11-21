@@ -1,4 +1,4 @@
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 
 use super::{App, Job, Modal, PromptKind, Shortcut};
 use crate::menu::{ChoiceKind, PickerKind};
@@ -6,11 +6,28 @@ use crate::menu::{ChoiceKind, PickerKind};
 impl App {
     pub(super) fn key(&mut self, key: KeyEvent) {
         self.dismiss_confirmation();
-        self.text_selection.cancel_drag();
+        if self.modal.is_some() {
+            self.modal_selection.cancel_drag();
+        } else if !(self.opens_command_menu(key)
+            || Shortcut::ACTIONS.matches(key)
+            || Shortcut::ACTIONS_ALIAS.matches(key)
+            || Shortcut::CYCLE_THINKING.matches(key)
+            || (Shortcut::ENTER.matches(key) || Shortcut::NEXT_TURN.matches(key))
+                && self.bare_exit_draft())
+        {
+            self.text_selection.cancel_drag();
+        }
         if !Shortcut::ESCAPE.matches(key) {
             self.escape_armed_at = None;
         }
         if Shortcut::ESCAPE.matches(key) {
+            if key.kind == KeyEventKind::Repeat
+                || self.back_from_thinking_confirmation()
+                || self.back_from_agent_setup()
+            {
+                self.escape_armed_at = None;
+                return;
+            }
             let selected_message = match &self.modal {
                 Some(Modal::Picker(picker))
                     if matches!(picker.kind, PickerKind::MessageActions) =>
@@ -42,7 +59,8 @@ impl App {
                 Some(Modal::Picker(picker)) if matches!(picker.kind, PickerKind::Messages)
             );
             if let Some(modal) = self.modal.take() {
-                let close_picker = !matches!(&modal, Modal::Help);
+                self.modal_selection.clear();
+                let close_picker = !matches!(&modal, Modal::Help | Modal::ExitConfirmation);
                 if let Modal::Prompt(prompt) = modal {
                     if let PromptKind::Question { target, request_id } = prompt.kind {
                         self.save_question_draft(&target, &request_id, prompt.editor);
@@ -77,6 +95,7 @@ impl App {
             Some(Modal::Prompt(_)) => self.prompt_key(key),
             Some(Modal::Output(_)) => self.output_key(key),
             Some(Modal::StatusLineEditor(_)) => self.statusline_key(key),
+            Some(Modal::ExitConfirmation) => self.exit_confirmation_key(key),
             None => self.composer_key(key),
         }
         if let Some(pane) = self.panes.get_mut(&address) {
@@ -88,7 +107,11 @@ impl App {
 
     pub(super) fn paste(&mut self, text: &str) {
         self.dismiss_confirmation();
-        self.text_selection.cancel_drag();
+        if self.modal.is_some() {
+            self.modal_selection.cancel_drag();
+        } else {
+            self.text_selection.cancel_drag();
+        }
         self.escape_armed_at = None;
         if matches!(&self.modal, Some(Modal::Help)) {
             return;
@@ -98,8 +121,7 @@ impl App {
         if let Some(Modal::Picker(picker)) = &mut self.modal {
             if picker.kind.searchable() {
                 picker.query.insert(&text.replace(['\r', '\n'], " "));
-                picker.selected = 0;
-                self.search(false);
+                self.picker_query_changed();
             }
         } else if let Some(Modal::Prompt(prompt)) = &mut self.modal {
             if prompt.kind.multiline() {

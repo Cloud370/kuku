@@ -159,7 +159,6 @@ impl Tool {
         let summary = script.summary();
         let mut rows = self.render_header(
             width,
-            super::body_inset(width),
             inset,
             Some(&summary)
                 .filter(|summary| !summary.is_empty())

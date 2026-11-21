@@ -556,6 +556,8 @@ impl Run {
                     if input_tokens.is_some() {
                         entry.input_tokens = input_tokens;
                     }
+                    let updated_output =
+                        output_tokens.filter(|count| entry.output_tokens != Some(*count));
                     if output_tokens.is_some() {
                         entry.output_tokens = output_tokens;
                     }
@@ -564,6 +566,9 @@ impl Run {
                     }
                     if cache_creation_input_tokens.is_some() {
                         entry.cache_creation_input_tokens = cache_creation_input_tokens;
+                    }
+                    if let Some(output_tokens) = updated_output {
+                        return Ok(Some(UiEvent::ModelOutputUsage { output_tokens }));
                     }
                 }
                 ProviderChunk::Replay { protocol, value } => {

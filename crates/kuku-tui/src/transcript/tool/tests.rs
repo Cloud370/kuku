@@ -189,7 +189,7 @@ fn custom_tool_arguments_and_output_have_bounded_inline_previews() {
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(view.lines.len() <= 16);
+    assert!(view.lines.len() <= 17);
     assert!(plain.contains("{\"key\":\"中文"));
     assert!(plain.contains("first␛line"));
     assert!(plain.contains('…'));
@@ -375,7 +375,7 @@ fn short_command_results_show_stdout_without_capture_metadata_or_a_trailing_carr
         .unwrap();
     assert!(lines[heading].ends_with('╮') && !lines[heading].contains("exit"));
     assert!(lines[heading + 1].trim_matches('│').trim().is_empty());
-    assert!(lines[heading + 2].starts_with("│   check-file"));
+    assert!(lines[heading + 2].starts_with("│  check-file"));
     assert_eq!(lines[heading + 3].trim_matches('│').trim(), "GONE");
     assert!(lines[heading + 4].trim_matches('│').trim().is_empty());
     assert!(lines[heading + 5].starts_with("╰─ ok · exit 0"));

@@ -30,6 +30,9 @@ pub struct ModelCapabilityDeclaration {
     pub reasoning_efforts: Option<Vec<String>>,
     /// Upstream reasoning default when reported or supplied.
     pub reasoning_default: Option<String>,
+    /// Native service tiers supported by the model.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tiers: Option<Vec<String>>,
     /// Media accepted by the model.
     pub input_modalities: Option<Vec<String>>,
     /// Media produced by the model.
@@ -49,6 +52,9 @@ pub struct ProtocolCapabilityDeclaration {
     pub reasoning_efforts: Option<Vec<String>>,
     /// Upstream reasoning default on this protocol.
     pub reasoning_default: Option<String>,
+    /// Native service tiers available on this protocol.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tiers: Option<Vec<String>>,
     /// Media accepted on this protocol.
     pub input_modalities: Option<Vec<String>>,
     /// Media produced on this protocol.

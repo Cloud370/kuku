@@ -102,11 +102,13 @@
 
 已提交帧可通过 `delivery` 将队列变化关联到命令标识。`accepted` 带有 `input_ids`，`withdrawn` 带有 `input_id`，`replaced` 带有 `input_id` 和 `replacement_id`。
 
-带 `progress=true` 的快照可以包含所选 Agent 的 `reply_preview`，其中有 `execution_id`、`turn`、可选的 `turn_number`、`phase`、`text` 和 `truncated`。阶段为 `thinking`、`streaming` 或 `tool_arguments`。文本是活动请求的可见回复 UTF-8 前缀，最多 64 KiB。`truncated` 表示回复已经超过保留前缀的上限。 所选 Agent 的可选字段 `reasoning_preview` 保存服务方公开的思考文字或摘要的有界前缀，实时 `reasoning_preview` 事件追加该文本。已提交的助手条目也可包含此字段。
+带 `progress=true` 的快照可以包含所选 Agent 的 `reply_preview`，其中有 `execution_id`、`turn`、可选的 `turn_number`、`phase`、`text` 和 `truncated`。阶段为 `thinking`、`streaming` 或 `tool_arguments`。文本是活动请求的可见回复 UTF-8 前缀，最多 64 KiB。`truncated` 表示回复已经超过保留前缀的上限。所选 Agent 的可选字段 `reasoning_preview` 保存服务方公开的思考文字或摘要的有界前缀。Responses 可通过流或最终输出中带类型的思考和摘要文本提供这些内容。不透明思考状态仅用于报告活动，并留在 provider 重放记录中。实时 `reasoning_preview` 事件追加文本，已提交的助手条目也可包含此字段。
 
 重试进度投影支持持久化的 `runtime.model_retry` 和 `model.recovery` 记录。此分支不包含扩展 `runtime.model_retry` 格式的核心生产端更新，因此当前运行时事件仍使用旧格式。旧记录缺少 `phase` 时按 `started` 处理；旧记录缺少 `will_retry` 时沿用 started 事件语义。扩展格式仅以 `will_retry` 表示是否会发送下一请求。`delay_ms` 仅在 `phase:"waiting"` 时表示策略等待时长；客户端可结合该事件的 `ts` 推导剩余时间，不得从供应商响应头推断等待时间。
 
 在同一快照游标处，`agents` 中其他 Agent 的条目也可包含 `progress.phase`。`streaming` 条目的 `progress.preview` 包含该 Agent 当前回复开头的 UTF-8 文本，最多 512 字节。`thinking` 与 `tool_arguments` 仅报告活动。
+
+所选 Agent 的回复预览和对应的 `reply_preview` 事件包含 `output_bytes`，统计已观察到的可见回复字节，包括超出保留前缀的部分。如果有 `output_tokens`，它是上游为当前请求报告的最新累计输出量。实时 `model_output_usage` 事件更新所选 Agent 的同一个计数。每次新请求或重试从自己的计数开始。
 
 指定 Agent 且设置 `include_agent_activity=true` 时，观察流也可以发送 `event.type` 为 `reply_preview` 的 `live` 行。阶段放在 `event.phase`，前缀放在 `event.content`，截断标志放在 `event.truncated`。用该前缀替换对应的内存预览，再应用后续增量。取得前缀与开始接收新增量共用同一接入边界。在此订阅范围内，实时 `thinking` 与 `tool_arguments` 事件仅报告活动。工具从已提交的派发开始执行。续读游标只随已提交记录推进。
 

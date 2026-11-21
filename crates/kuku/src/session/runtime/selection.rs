@@ -120,6 +120,17 @@ impl Session {
         address: &str,
         config: AgentConfig,
     ) -> Result<AgentConfig> {
+        if config.instructions.is_some() && config.tier.is_some() && config.tools.is_some() {
+            return Ok(config);
+        }
+        self.resolve_agent_preset(address, config)
+    }
+
+    pub(super) fn resolve_agent_preset(
+        &self,
+        address: &str,
+        config: AgentConfig,
+    ) -> Result<AgentConfig> {
         resolve_defaults(&self.inner.options, config, || {
             crate::context::runtime::read_frozen_catalog(&self.inner.events_path, address)
         })
@@ -228,9 +239,6 @@ fn resolve_defaults(
     let Some(preset) = &config.preset else {
         return Ok(config);
     };
-    if config.instructions.is_some() && config.tier.is_some() && config.tools.is_some() {
-        return Ok(config);
-    }
     let catalog = match frozen_catalog()? {
         Some(catalog) => catalog,
         None => match &options.prompts_dir {

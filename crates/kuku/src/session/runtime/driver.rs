@@ -268,6 +268,7 @@ impl Session {
                     UiEvent::TextDelta { .. }
                     | UiEvent::ThinkingDelta { .. }
                     | UiEvent::ModelProgress { .. }
+                    | UiEvent::ModelOutputUsage { .. }
                     | UiEvent::ToolStart { .. }
                     | UiEvent::ToolOutput { .. }
                     | UiEvent::ToolEnd { .. }

@@ -15,7 +15,7 @@ use serde_json::json;
 
 use crate::app::{App, KeyboardFocus, Modal};
 use crate::jobs::{Job, Search, Update};
-use crate::menu::{Choice, ChoiceKind, CommandMenu, MessageAction, PickerKind, PromptKind};
+use crate::menu::{Choice, ChoiceKind, MessageAction, PickerKind, PromptKind};
 use crate::transcript::MessageId;
 
 pub(super) fn connected_app() -> App {
@@ -628,18 +628,14 @@ fn control_c_clears_dialogs_and_exits_only_from_an_empty_composer() {
     let mut app = connected_app();
     let clear = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
     app.paste("draft to keep");
-    app.picker(PickerKind::Commands, Choice::commands());
+    app.command_menu();
     app.paste("resume");
     app.effects.clear();
     app.key(clear);
-    assert!(matches!(&app.modal, Some(Modal::Picker(picker)) if picker.query.text().is_empty()));
-    assert!(
-        matches!(app.effects.as_slice(), [Job::Find(_, Search::Skills(query))] if query.is_empty())
-    );
-    app.key(clear);
-    assert!(!app.quit);
+    assert!(app.modal.is_none());
+    assert!(matches!(app.effects.as_slice(), [Job::ClosePicker]));
     assert_eq!("draft to keep", app.pane().draft.text());
-    press(&mut app, KeyCode::Esc);
+    assert!(!app.quit);
 
     app.prompt(PromptKind::Agent, "New agent", "Enter the address");
     app.paste("reviewer");
@@ -854,8 +850,8 @@ fn tab_completes_a_slash_action_and_enter_runs_it_from_an_empty_draft() {
     press(&mut app, KeyCode::Char('/'));
     app.paste("qui");
     press(&mut app, KeyCode::Tab);
-    assert!(matches!(&app.modal, Some(Modal::Picker(picker)) if picker.query.text() == "/quit"));
-    assert!(app.pane().draft.text().is_empty());
+    assert!(app.modal.is_none());
+    assert_eq!("/quit", app.pane().draft.text());
     assert!(!app.quit);
     press(&mut app, KeyCode::Enter);
     assert!(app.modal.is_none());
@@ -932,7 +928,10 @@ fn restart_requires_confirmation_and_preserves_draft_across_cancel_defer_and_suc
         config_path: "fixture/config.toml".into(),
     };
     let confirm_dialog = |app: &mut App| {
-        app.perform(CommandMenu::Restart);
+        app.key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
+        press(app, KeyCode::Char('/'));
+        app.paste("restart-service");
+        press(app, KeyCode::Enter);
         let Some(Job::PrepareRestart(ticket)) = app.effects.pop() else {
             panic!("restart must start with the identity check");
         };

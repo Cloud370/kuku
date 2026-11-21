@@ -20,14 +20,7 @@ impl App {
     pub(crate) fn resolved_model_route(&self) -> Result<ResolvedModel, &'static str> {
         let pane = self.pane();
         if pane.exists {
-            let target = self.target(&self.active);
-            if pane.waiting_for_configuration()
-                || self.pending.values().any(|item| {
-                    item.command.target == target
-                        && matches!(item.command.action, Action::Configure { .. })
-                        && !matches!(item.stage, PendingStage::Rejected(_))
-                })
-            {
+            if self.model_change_in_flight() {
                 return Err("Wait for model settings to finish, then reopen /model.");
             }
             let snapshot = pane
@@ -47,6 +40,9 @@ impl App {
                 model: selection.model.clone(),
             })
         } else {
+            if pane.waiting_for_configuration() {
+                return Err("Wait for the draft's model settings to finish, then reopen /model.");
+            }
             if pane.model_problem.is_some() {
                 return Err("Resolve the draft's model selection, then reopen /model.");
             }
@@ -64,12 +60,7 @@ impl App {
     pub(crate) fn model_default_choice(&self) -> Choice {
         let detail = self
             .resolved_model_route()
-            .map(|route| {
-                format!(
-                    "{}/{} · save as the persistent default",
-                    route.connection, route.model
-                )
-            })
+            .map(|route| format!("{} · {}", route.model, route.connection))
             .unwrap_or_else(str::to_owned);
         Choice::new(
             "Set current model as default",
@@ -240,14 +231,19 @@ impl App {
         }
     }
 
-    pub(crate) fn configure(&mut self, config: AgentConfig) {
-        if self.pane().exists {
-            let target = self.target(&self.active);
-            if self.pending.values().any(|item| {
+    pub(super) fn model_change_in_flight(&self) -> bool {
+        let target = self.target(&self.active);
+        self.pane().waiting_for_configuration()
+            || self.pending.values().any(|item| {
                 item.command.target == target
                     && matches!(item.command.action, Action::Configure { .. })
                     && !matches!(item.stage, PendingStage::Rejected(_))
-            }) {
+            })
+    }
+
+    pub(crate) fn configure(&mut self, config: AgentConfig) {
+        if self.pane().exists {
+            if self.model_change_in_flight() {
                 self.problem("Wait for the previous settings change to be resolved");
                 return;
             }
@@ -258,16 +254,28 @@ impl App {
                 },
             );
         } else {
-            self.pane_mut().initial_config = config;
-            self.preview_model();
+            let pane = self.pane_mut();
+            let keep = pane.initial_model.is_some()
+                && !pane.model_route_changed(&config)
+                && pane.initial_config.reasoning_effort != config.reasoning_effort;
+            pane.initial_config = config;
+            self.request_model_preview(keep);
         }
     }
 
     pub(super) fn preview_model(&mut self) {
+        self.request_model_preview(false);
+    }
+
+    fn request_model_preview(&mut self, keep: bool) {
         if self.require_service() {
             self.model_version = self.model_version.wrapping_add(1);
             let config = self.pane().initial_config.clone();
-            self.pane_mut().initial_model = None;
+            let pane = self.pane_mut();
+            pane.initial_thinking_refresh = keep;
+            if !keep {
+                pane.initial_model = None;
+            }
             self.effects.push(Job::Model(config, self.model_version));
         }
     }
@@ -280,13 +288,17 @@ impl App {
         if version != self.model_version || self.pane().exists {
             return;
         }
+        let pane = self.pane_mut();
+        pane.initial_thinking_refresh = false;
         match result {
             Ok(model) => {
-                let pane = self.pane_mut();
                 pane.initial_model = Some(model);
                 pane.model_problem = None;
             }
-            Err(error) => self.pane_mut().model_problem = Some(error.to_string()),
+            Err(error) => {
+                pane.initial_model = None;
+                pane.model_problem = Some(error.to_string());
+            }
         }
     }
 }

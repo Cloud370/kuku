@@ -169,8 +169,11 @@ fn mixed_twenty_four_tools_compact_by_operation_and_remain_individually_inspecta
         .unwrap();
     transcript.project(36, 2);
     assert!(transcript.toggle_detail(&record));
-    let detail = text(&transcript.project(90, 64));
-    assert!(detail.contains("Requested arguments") && detail.contains("\"offset\":2"));
+    let detail = text(&transcript.project(90, 90));
+    assert!(
+        detail.contains("Requested arguments") && detail.contains("\"offset\":2"),
+        "{detail}"
+    );
     assert!(detail.contains("contents for samples/read-12.txt"));
     assert!(transcript.toggle_detail(&group));
     let compact_again = text(&transcript.project(90, 64));
@@ -274,7 +277,6 @@ fn collapsed_delegation_expand_reopens_group_without_closing_agent_inspection() 
     let action = delegation_action(&transcript, "create_agent");
 
     assert!(transcript.toggle_detail(&group));
-    assert!(transcript.toggle_detail(&action));
     assert!(!text(&transcript.project(82, 44)).contains("Requested instructions"));
     assert!(transcript.toggle_detail(&action));
     assert!(text(&transcript.project(82, 44)).contains("Requested instructions"));
@@ -291,6 +293,41 @@ fn collapsed_delegation_expand_reopens_group_without_closing_agent_inspection() 
         reopened.contains("Requested instructions"),
         "Opening the selected delegation detail must leave its inspection open:\n{reopened}"
     );
+}
+
+#[test]
+fn a_targeted_agent_check_keeps_its_row_and_surface_when_it_finishes() {
+    let mut journal = Journal::default();
+    journal.push(
+        7,
+        "main",
+        json!({
+            "type":"tool_call", "tool":"list_agents", "tool_call_id":"check",
+            "args":{"wait_for":"v4flash-tester"}
+        }),
+    );
+    journal.push(
+        7,
+        "main",
+        json!({
+            "type":"tool_result", "tool_call_id":"check", "status":"ok",
+            "summary":"session operation committed",
+            "structured":[{"address":"v4flash-tester","status":"idle"}]
+        }),
+    );
+    let result = journal.0.pop().unwrap();
+    let mut transcript = journal.load();
+    let waiting = transcript.project(90, 10);
+    let row = line(&waiting, "Agent check · v4flash-tester · Waiting");
+    assert!(waiting.lines[row].style.bg.is_none());
+    let check = transcript.detail_at(row).unwrap().clone();
+    transcript.apply(result, None);
+    let settled = transcript.project(90, 10);
+    assert_eq!(line(&settled, "Agent check · v4flash-tester (Idle)"), row);
+    assert!(settled.lines[row].style.bg.is_none());
+    assert_eq!(transcript.detail_at(row), Some(&check));
+    assert!(transcript.toggle_detail(&check));
+    assert!(text(&transcript.project(90, 20)).contains("Requested arguments"));
 }
 
 #[test]
@@ -337,9 +374,9 @@ fn delegation_groups_only_its_own_checks_and_keeps_the_result_separate_from_hist
         json!({"to":"writer","message":"Draft the report"}),
         json!({"status":"ok","structured":{"agent":"writer","command_id":"send","event_id":5}}),
     );
-    for _ in 0..2 {
+    for agents in [json!([{"address":"writer","status":"running"}]), snapshot] {
         journal.push(7, "main", thought.clone());
-        journal.tool("list_agents", json!({}), check(snapshot.clone()));
+        journal.tool("list_agents", json!({}), check(agents));
     }
     journal.tool(
         "list_agents",
@@ -369,9 +406,8 @@ fn delegation_groups_only_its_own_checks_and_keeps_the_result_separate_from_hist
     let summary = text(&compact);
     for label in [
         "╭─ Agent writer",
-        "Finished",
-        "Reply  Report ready",
-        "Timeline · 4 calls · 2 status checks",
+        "Finished · Report ready",
+        "Timeline · 4 calls",
         "other (Idle)",
         "writer (Waiting)",
         "Assistant   View thinking",
@@ -386,11 +422,10 @@ fn delegation_groups_only_its_own_checks_and_keeps_the_result_separate_from_hist
     assert!(transcript.toggle_detail(&key));
     let expanded_view = transcript.project(82, 64);
     let opened = text(&expanded_view);
-    assert_eq!(2, opened.matches("List Agents · 2 Agents at check").count());
-    let check = transcript
-        .detail_at(line(&expanded_view, "List Agents · 2 Agents at check"))
-        .unwrap()
-        .clone();
+    assert_eq!(1, opened.matches("List Agents · 2 agents").count());
+    let check_row = line(&expanded_view, "Agent check · writer (Running)");
+    assert!(expanded_view.lines[check_row].style.bg.is_none());
+    let check = transcript.detail_at(check_row).unwrap().clone();
     assert!(transcript.toggle_detail(&check));
     let inspected = text(&transcript.project(82, 64));
     assert!(
@@ -401,8 +436,10 @@ fn delegation_groups_only_its_own_checks_and_keeps_the_result_separate_from_hist
             .contains(r#""writer","status":"running""#),
         "{inspected}"
     );
-    assert!(opened.contains("Agent writer · Created"));
-    assert!(opened.contains("Agent writer · Input delivered"));
+    assert!(opened.contains("▸ Created"));
+    assert!(opened.contains("▸ Input delivered"));
+    assert!(!opened.contains("Requested instructions") && !opened.contains("Draft the report"));
+    assert_eq!(1, opened.matches("Report ready").count());
     assert!(opened.contains("View thinking") && !opened.contains("Planning the next step"));
     assert!(transcript.toggle_detail(&key));
     assert_eq!(summary, text(&transcript.project(82, 44)));
@@ -483,7 +520,7 @@ fn listing_polls_show_their_recorded_snapshot_and_preserve_the_original_result()
     let mut split_page = Transcript::default();
     split_page.apply(journal.0[1].clone(), None);
     let without_call = text(&split_page.project(90, 10));
-    assert!(without_call.contains("2 Agents at check"));
+    assert!(without_call.contains("2 agents"));
     assert!(!without_call.contains("Original large reply heading"));
 
     let mut transcript = journal.load();
@@ -491,9 +528,9 @@ fn listing_polls_show_their_recorded_snapshot_and_preserve_the_original_result()
     let compact = text(&view);
     for term in [
         "List Agents ×3 · ok",
-        "Latest · 2 Agents at check",
+        "2 agents",
         "reviewer (Idle, reply available)",
-        "4 Agents at check · 2 need attention",
+        "4 agents · 2 need attention",
         "reviewer (Waiting for approval, 1 queued)",
         "audit (Last run failed)",
         "+1 more",
@@ -503,20 +540,103 @@ fn listing_polls_show_their_recorded_snapshot_and_preserve_the_original_result()
     assert!(!compact.contains("Original large reply heading") && !compact.contains("preset"));
     let row = line(&view, "List Agents ×3");
     assert_eq!(
-        Some(crate::theme::AGENT_SURFACE),
+        Some(crate::theme::CODE_BACKGROUND),
         view.lines[row].spans[0].style.bg
     );
     let group = transcript.detail_at(row).unwrap().clone();
     assert!(transcript.toggle_detail(&group));
     let expanded = transcript.project(108, 28);
     let member = transcript
-        .detail_at(line(&expanded, "List Agents · 2 Agents at check"))
+        .detail_at(line(&expanded, "List Agents · 2 agents"))
         .unwrap()
         .clone();
     assert!(transcript.toggle_detail(&member));
     let detail = text(&transcript.project(108, 28));
     assert!(detail.contains("Raw result") && detail.contains("Original large reply heading"));
     assert_eq!(source, transcript.tools()[1].details);
+}
+
+#[test]
+fn an_open_listing_group_reads_each_agent_check_once() {
+    let mut journal = Journal::default();
+    for name in ["tester-a", "tester-b"] {
+        journal.tool(
+            "list_agents",
+            json!({"wait_for":name}),
+            json!({
+                "status":"ok",
+                "summary":"session operation committed",
+                "structured":[{"address":name,"status":"idle","last_output":"Done"}]
+            }),
+        );
+    }
+    let mut transcript = journal.load();
+    let view = transcript.project(95, 24);
+    let key = transcript
+        .detail_at(line(&view, "List Agents ×2"))
+        .unwrap()
+        .clone();
+    let last_result = "tester-b (Idle, reply available)";
+    assert_eq!(1, text(&view).matches(last_result).count());
+    assert!(text(&view).contains("Agent · tester-b (Idle, reply available)"));
+    assert!(transcript.toggle_detail(&key));
+    let opened = text(&transcript.project(95, 24));
+    assert_eq!(1, opened.matches(last_result).count());
+    assert!(opened.contains("Agent check · tester-a (Idle, reply available)"));
+    assert!(opened.contains("Agent check · tester-b (Idle, reply available)"));
+    assert!(!opened.contains("Agent · tester-b"));
+}
+
+#[test]
+fn mixed_inspection_results_keep_the_same_frame_when_opened() {
+    let mut journal = Journal::default();
+    journal.tool(
+        "list_agents",
+        json!({}),
+        json!({"status":"ok","summary":"session operation committed","structured":[{"address":"main","status":"running"}]}),
+    );
+    journal.tool(
+        "find_files",
+        json!({"path":"."}),
+        json!({"status":"ok","summary":"found 0 entries under ."}),
+    );
+    let mut transcript = journal.load();
+    for width in [60, 120] {
+        let collapsed = transcript.project(width, 30);
+        let heading = line(&collapsed, "▸ Read-only activity");
+        let group = transcript.detail_at(heading).unwrap().clone();
+        let search = line(&collapsed, "Find files · found 0 entries under .");
+        assert_eq!(search + 1, line(&collapsed, "Agent · main (Running)"));
+        assert!(!text(&collapsed).contains("Agent listing"));
+        assert!(transcript.toggle_detail(&group));
+        let open = transcript.project(width, 30);
+        let heading = line(&open, "▾ Read-only activity");
+        let agent = line(&open, "Agent check · main (Running)");
+        let files = line(&open, "Find files");
+        assert_eq!(agent + 1, files);
+        assert!(open.lines[files]
+            .to_string()
+            .contains("found 0 entries under ."));
+        assert_ne!(transcript.detail_at(agent), transcript.detail_at(files));
+        assert!(!text(&open).contains("Agent · main"));
+        for view in [&collapsed, &open] {
+            let end = line(view, "╰");
+            for row in &view.lines[heading..=end] {
+                assert_eq!(row.width(), width);
+                assert!(row.spans.iter().all(|span| {
+                    row.style.patch(span.style).bg == Some(crate::theme::CODE_BACKGROUND)
+                }));
+            }
+            assert!(view.lines[end + 1].spans.is_empty());
+        }
+        assert!(open.lines[files + 1]
+            .to_string()
+            .trim_matches('│')
+            .trim()
+            .is_empty());
+        assert!(transcript.toggle_detail(&group));
+        assert_eq!(text(&collapsed), text(&transcript.project(width, 30)));
+    }
 }
 
 #[test]
@@ -573,8 +693,8 @@ fn a_full_window_of_large_agent_polls_keeps_default_paint_compact() {
     let mut transcript = journal.load();
     for width in [32, 72, 150].into_iter().cycle().take(120) {
         let view = transcript.project(width, 20);
-        assert!(view.lines.len() <= 7);
-        assert!(text(&view).contains("Agent at check"));
+        assert!(view.lines.len() <= 9, "{}", text(&view));
+        assert!(text(&view).contains("Agent · reviewer"));
         assert!(!text(&view).contains("archived Markdown"));
     }
     assert!(transcript
@@ -607,9 +727,9 @@ fn older_page_can_extend_an_open_group_without_moving_the_reader_or_invalidating
         .unwrap()
         .clone();
     assert!(transcript.toggle_detail(&group));
-    transcript.scroll(4, 72, 3);
+    transcript.scroll(3, 72, 3);
     let before = text(&transcript.project(72, 3));
-    assert!(before.starts_with("  Read file · p5.txt"), "{before}");
+    assert!(before.starts_with("│ Read file · p5.txt"), "{before}");
     let anchor = transcript.reading.as_ref().unwrap().anchor.clone();
     assert_eq!(AnchorLine::Body(0), anchor.line);
 
@@ -623,9 +743,7 @@ fn older_page_can_extend_an_open_group_without_moving_the_reader_or_invalidating
     );
     assert_eq!(before, text(&transcript.project(72, 3)));
     assert!(transcript.toggle_detail(&group));
-    assert!(text(&transcript.project(72, 3))
-        .trim_start()
-        .starts_with("▸ Read 8 files · ok"));
+    assert!(text(&transcript.project(72, 3)).starts_with("╭─ ▸ Read 8 files · ok"));
     assert_eq!(&anchor, &transcript.reading.as_ref().unwrap().anchor);
     assert!(transcript.toggle_detail(&group));
     assert_eq!(before, text(&transcript.project(72, 3)));
@@ -717,7 +835,7 @@ fn repeated_global_toggles_follow_the_group_state_before_the_next_frame() {
 #[test]
 fn reasoning_reader_keeps_the_same_transcript_rows_and_preserves_the_draft_view() {
     let mut journal = Journal::default();
-    let published = "long reasoning line ".repeat(100);
+    let published = "Check the calculation";
     journal.push(
         7,
         "main",
@@ -734,9 +852,6 @@ fn reasoning_reader_keeps_the_same_transcript_rows_and_preserves_the_draft_view(
     let read = transcript.project(55, 4);
     assert!(text(&read).contains("Esc back") && text(&read).contains("answer"));
     let answer_row = line(&read, "answer");
-    assert!(transcript.scroll_notes(1));
-    let next = transcript.project(55, 4);
-    assert_eq!(line(&next, "answer"), answer_row);
     assert!(transcript.detail_at(answer_row).is_none());
     assert!(transcript.close_notes());
     assert!(!transcript.toggle_in_view(&key, 55, 4));
@@ -772,7 +887,7 @@ fn a_reply_burst_preserves_the_first_answer_line_after_thinking() {
 }
 
 #[test]
-fn thinking_before_a_tool_is_available_in_details_without_an_extra_transcript_row() {
+fn thinking_before_a_tool_has_its_own_expandable_transcript_row() {
     let mut journal = Journal::default();
     journal.push(
         7,
@@ -782,13 +897,17 @@ fn thinking_before_a_tool_is_available_in_details_without_an_extra_transcript_ro
     journal.read(7, "main", "hello.py");
     let mut transcript = journal.load();
     let view = transcript.project(64, 10);
-    assert!(!text(&view).contains("View thinking"));
+    assert!(text(&view).contains("Assistant   View thinking ›"));
     let choice = transcript
         .visible_detail_choices()
         .into_iter()
         .find(|(_, _, text)| text == "Check the greeting")
         .unwrap();
     assert_eq!(Some(&choice.0), transcript.latest_notes().as_ref());
+    assert_eq!(
+        transcript.detail_at(line(&view, "View thinking")),
+        Some(&choice.0)
+    );
     assert_ne!(
         transcript.detail_at(line(&view, "Read file")),
         Some(&choice.0)
@@ -800,7 +919,7 @@ fn thinking_before_a_tool_is_available_in_details_without_an_extra_transcript_ro
 }
 
 #[test]
-fn browsing_long_thinking_keeps_the_reply_and_reaches_the_last_published_line() {
+fn global_scroll_keeps_expanded_thinking_with_its_message() {
     let mut journal = Journal::default();
     let published = (1..=40)
         .map(|n| format!("Note {n:02}"))
@@ -817,16 +936,24 @@ fn browsing_long_thinking_keeps_the_reply_and_reaches_the_last_published_line() 
     let key = transcript.detail_at(header).unwrap().clone();
     assert!(transcript.open_notes(&key, 90, 24));
     let open = transcript.project(90, 24);
-    let answer = line(&open, "Answer begins here");
     assert_eq!(line(&open, "Esc back"), header);
-    assert!(text(&open).contains("1–5/40") && !text(&open).contains("Note 06"));
-    assert!(transcript.scroll_notes(100));
+    assert!(text(&open).contains("Note 01") && !text(&open).contains("Note 40"));
+
+    let note = line(&open, "Note 07");
+    transcript.scroll(3, 90, 24);
+    let down = transcript.project(90, 24);
+    assert_eq!(line(&down, "Note 07"), note - 3);
+    assert!(!text(&down).contains("Thinking ▾"));
+    assert!(transcript.note_is_open(&key));
+
+    transcript.scroll(100, 90, 24);
     let last = transcript.project(90, 24);
-    assert_eq!(line(&last, "Answer begins here"), answer);
-    assert!(text(&last).contains("36–40/40") && text(&last).contains("Note 40"));
-    let narrow = transcript.project(27, 8);
-    assert!(text(&narrow).contains("Answer begins here"));
-    assert!(narrow.lines.iter().all(|row| row.width() <= 27));
+    assert!(!transcript.is_reading());
+    assert!(text(&last).contains("Answer begins here") && text(&last).contains("Note 40"));
+
+    transcript.scroll(-100, 90, 24);
+    let restored = transcript.project(90, 24);
+    assert_eq!(text(&open), text(&restored));
     assert!(transcript.close_notes());
     assert_eq!(text(&transcript.project(90, 24)), text(&closed));
 }

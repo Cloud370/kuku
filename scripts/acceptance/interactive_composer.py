@@ -1,0 +1,237 @@
+"""Check composer actions with the installed client and its native terminal."""
+
+import json
+from urllib.parse import urlencode
+
+from interactive_fixture import eventually
+
+
+def startup_info(client):
+    workspace = client.workspace("work-startup-info")
+    resources = workspace / ".claude"
+    config = client.home / "config.toml"
+    text = config.read_text(encoding="utf-8")
+    path = json.dumps(str(resources), ensure_ascii=False)
+    config.write_text(text.replace("[discovery]\n", f"[discovery]\nextra_project_paths = [{path}]\n"),
+                      encoding="utf-8")
+
+    def add_skill(name):
+        folder = resources / "skills" / name
+        folder.mkdir(parents=True)
+        (folder / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: A startup discovery fixture.\n---\n\nUse this when requested.\n",
+            encoding="utf-8",
+        )
+
+    add_skill("preview-review")
+    with client.terminal(workspace) as terminal:
+        terminal.request("resize", rows=28, cols=60)
+        terminal.expect("preview-review", also=("Workspace", "work-startup-info", "Skills",
+                                                  "New session", "test-anthropic/claude-sonnet-4-6",
+                                                  "/skill: Browse", "Ctrl+L Model", "Ctrl+T Think", "Ctrl+P Help"))
+        terminal.request("resize", rows=32, cols=132)
+        draft = "check the welcome column"
+        terminal.type(draft)
+        screen = terminal.expect(draft, also=("Workspace", "preview-review"), rows=32)["screen"]
+        workspace_row = next(line for line in screen.splitlines() if line.strip().startswith("Workspace "))
+        draft_row = next(line for line in screen.splitlines() if draft in line)
+        assert workspace_row.index("Workspace") == draft_row.index(draft), screen
+        terminal.press("\x03")
+        terminal.expect("New session", absent=(draft,))
+        add_skill("refresh-on-new")
+        terminal.press("/new\r")
+        terminal.expect("refresh-on-new", also=("preview-review", "New session"))
+        terminal.press("/skill:")
+        terminal.expect("/skill:refresh-on-new", state="Actions and Skills")
+        terminal.press("\x1b")
+        terminal.expect("New session", absent=("Actions and Skills",))
+        sessions = client.request("GET", f"/sessions?{urlencode({'workspace': workspace})}").as_json()
+        assert sessions["sessions"] == []
+        terminal.exit_cleanly()
+
+
+def agent_setup(client):
+    workspace = client.workspace("work-agent-setup")
+    config = client.home / "config.toml"
+    text = config.read_text(encoding="utf-8")
+    text = text.replace('reasoning_efforts = ["none"]',
+                        'reasoning_efforts = ["none", "high"]\nservice_tiers = ["flex", "priority"]')
+    text = text.replace('[model.strong]\nprovider = "test-anthropic"\nmodel = "claude-sonnet-4-6"',
+                        '[model.strong]\nprovider = "test-anthropic"\nmodel = "review-model"')
+    config.write_text(text, encoding="utf-8")
+
+    with client.terminal(workspace) as terminal:
+        terminal.request("resize", cols=60, rows=28)
+        terminal.expect("New session", state="Ready", rows=28)
+        terminal.submit("Start the Agent setup check")
+        client.provider.next("Start the Agent setup check").text("Ready to create a reviewer.")
+        terminal.expect("Ready to create a reviewer.")
+        terminal.press("/agents\r")
+        roster = terminal.expect("Create Agent", state="Switch Agent")["screen"]
+        terminal.click_text(roster, "Create Agent")
+        terminal.expect("New agent")
+        terminal.type("reviewer")
+        terminal.press("\r")
+        review = terminal.expect("› Create Agent", also=("Agent reviewer", "Thinking · None", "Service tier · Default"))["screen"]
+        terminal.click_text(review, "Model · claude-sonnet-4-6")
+        models = terminal.expect("strong · review-model", state="Agent model")["screen"]
+        terminal.click_text(models, "strong · review-model")
+        review = terminal.expect("Model · review-model", also=("Thinking · None", "Esc Back"))["screen"]
+        terminal.click_text(review, "Thinking · None")
+        thinking = terminal.expect("High", state="Agent thinking")["screen"]
+        terminal.click_text(thinking, "High")
+        review = terminal.expect("Thinking · High", also=("Service tier · Default",))["screen"]
+        terminal.click_text(review, "Service tier · Default")
+        service = terminal.expect("Fast", state="Agent service tier", also=("Flex",))["screen"]
+        terminal.click_text(service, "Fast")
+        terminal.expect("Service tier · Fast", also=("Model · review-model", "Thinking · High", "› Create Agent"))
+        terminal.press("\r")
+        terminal.expect("Agent reviewer", also=("review-model",), absent=("› Create Agent",))
+        terminal.submit("Review this request")
+        call = client.provider.next("Review this request")
+        assert call.request["model"] == "review-model", call.request["model"]
+        assert call.request["output_config"]["effort"] == "high", call.request.get("output_config")
+        assert call.request["service_tier"] == "priority", call.request.get("service_tier")
+        call.text("Reviewer settings verified.")
+        terminal.expect("Reviewer settings verified.")
+        terminal.exit_cleanly()
+    client.provider.assert_idle()
+
+
+def composer_actions(client):
+    workspace = client.workspace("work-composer")
+    config = client.home / "config.toml"
+    old = config.read_text(encoding="utf-8")
+    config.write_text(old.replace('reasoning_efforts = ["none"]',
+                                  'reasoning_efforts = ["none", "low", "medium", "high"]'),
+                      encoding="utf-8")
+    model = "claude-sonnet-4-6"
+    draft = "keep this composer draft"
+    input_text = "Hold this request during composer checks"
+    output = "Accepted work finished after detach"
+    screens = []
+
+    def thinking(terminal):
+        terminal.press("\x10/thinking\r")
+        return terminal.expect("D Save default", also=("Use default", "Low", "Medium", "High", "Esc Close", draft))["screen"]
+
+    def position(screen, text):
+        return next((row, line.index(text)) for row, line in enumerate(screen.splitlines()) if text in line)
+
+    with client.terminal(workspace) as terminal:
+        terminal.request("resize", rows=28, cols=60)
+        terminal.expect(f"{model} · None")
+        terminal.press("/")
+        terminal.expect("›/new", also=("Actions and Skills",))
+        terminal.press("\x1b[A")
+        terminal.expect("›/quit")
+        terminal.press("\x1b[B")
+        terminal.expect("›/new")
+        terminal.press("\x7f")
+        terminal.expect("New session", absent=("Actions and Skills",))
+        terminal.press("/models")
+        suggestions = terminal.expect("Actions and Skills", also=("›/model ",))["screen"]
+        assert suggestions.count("›/model ") == 1, suggestions
+        screens.append(("Commands at 60 columns", suggestions))
+        terminal.press("\t")
+        terminal.expect("/model", absent=("Actions and Skills", "/models"))
+        terminal.press("\r")
+        models = terminal.expect("Model route", also=("Search models…", "Default ·"))["screen"]
+        assert position(models, "Model route")[0] == position(models, "Search models…")[0]
+        assert position(models, "Model route")[0] < position(models, "Ready")[0]
+        screens.append(("Models at 60 columns", models))
+        terminal.press("\x1b")
+        terminal.expect(f"{model} · None", absent=("Model route",))
+        terminal.press("\x1b[200~/models\x1b[201~\r")
+        terminal.expect("/models → /model", also=("Model route",))
+        terminal.press("\x1b")
+        terminal.expect(f"{model} · None", absent=("Model route",))
+
+        terminal.type(draft)
+        previous = terminal.expect(f"{model} · None", also=("Ctrl+T think", draft))["screen"]
+        terminal.press("\x1b[D\x14")
+        leveled = terminal.expect(f"{model} · Low", also=("Ctrl+T think", draft))["screen"]
+        assert position(previous, "Agent main") == position(leveled, "Agent main"), leveled
+        assert position(previous, draft) == position(leveled, draft), leveled
+        for width in (60, 120):
+            terminal.request("resize", rows=28, cols=width)
+            screen = thinking(terminal)
+            assert "Use default · Model default · None" in screen and "Low ✓" in screen, screen
+            assert position(screen, "Use default")[1] == position(screen, draft)[1], screen
+            assert position(screen, "Esc Close")[0] < position(screen, draft)[0], screen
+            terminal.press("\x1b[B\x1b[B\x1b[B")
+            screen = terminal.expect("›Medium", also=("Low ✓", draft))["screen"]
+            screens.append((f"Thinking at {width} columns", screen))
+            terminal.press("\x1b")
+            terminal.expect(draft, absent=("Use default",))
+
+        terminal.press("X")
+        terminal.expect(draft[:-1] + "X" + draft[-1])
+        terminal.press("\x03")
+        terminal.submit(input_text)
+        call = client.provider.next(input_text)
+        session = client.session(workspace)
+        query = urlencode({"workspace": workspace, "agent": "main"})
+
+        def snapshot():
+            return client.request("GET", f"/sessions/{session}/snapshot?{query}").as_json()
+
+        def selected(level):
+            view = snapshot()
+            active = view["selection"]["settings"]["reasoning_effort"]
+            pending = (view.get("pending_selection") or {}).get("settings", {}).get("reasoning_effort")
+            return view if active == "low" and pending == level else None
+
+        terminal.type(draft)
+        terminal.press("\x14")
+        eventually("Medium selected at the next request boundary", lambda: selected("medium"))
+        terminal.expect("Next Medium", also=(f"{model} · Low", draft), absent=("Next model request",))
+        thinking(terminal)
+        terminal.press("\x1b[B\x1b[B\x1b[B\x1b[B\r")
+        eventually("High selected at the next request boundary", lambda: selected("high"))
+        terminal.expect("Next High", also=(f"{model} · Low", draft), absent=("Next model request",))
+
+        original_config = config.read_text(encoding="utf-8")
+        thinking(terminal)
+        terminal.press("\x1b[B\x1b[Bd")
+        confirmation = terminal.expect("Save Low as model default?", also=(model, draft))["screen"]
+        screens.append(("Model default confirmation", confirmation))
+        terminal.press("\x1b")
+        terminal.expect("Use default", also=("High ✓",), absent=("Save Low as model default?",))
+        assert config.read_text(encoding="utf-8") == original_config
+        terminal.press("d\r")
+
+        def saved_default():
+            catalog = client.request("GET", "/models").as_json()
+            return next(tier for tier in catalog["tiers"] if tier["name"] == "balanced")["settings"]["reasoning_effort"]
+
+        eventually("Low persisted as the model default", lambda: saved_default() == "low")
+        assert selected("high"), "Saving the default must retain the explicit Agent override"
+        thinking(terminal)
+        terminal.expect("Use default · Model default · Low", also=("High ✓", draft))
+        terminal.press("\x1b")
+        terminal.expect(draft, absent=("Use default",))
+
+        terminal.press("\x03")
+        for word, submit in (("  exit  ", "\r"), (" quit ", "\x1b\r")):
+            terminal.press(f"\x1b[200~{word}\x1b[201~{submit}")
+            terminal.expect("Exit kuku? Y exit · Esc edit")
+            terminal.press("\r\r")
+            confirmation = terminal.expect("Exit kuku? Y exit · Esc edit")["screen"]
+            assert position(confirmation, word.rstrip())[0] > position(confirmation, "Exit kuku?")[0]
+            assert snapshot()["pending"] == [] and snapshot()["agent"]["status"] == "running"
+            terminal.press("\x1b")
+            terminal.expect(word.rstrip(), absent=("Exit kuku?",))
+            assert snapshot()["pending"] == [] and snapshot()["agent"]["status"] == "running"
+            terminal.press("\x03")
+
+        terminal.press("exit\r")
+        screens.append(("Exit confirmation", terminal.expect("Exit kuku? Y exit · Esc edit")["screen"]))
+        terminal.exit_cleanly(keys="Y")
+
+    call.text(output)
+    eventually("the original reply to settle after detach",
+               lambda: client.snapshot(workspace, session)["last_output"] == output)
+    client.provider.assert_idle()
+    for caption, screen in screens:
+        print(f"{caption}\n{screen.rstrip()}")

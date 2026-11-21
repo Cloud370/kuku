@@ -35,6 +35,11 @@ pub struct ReplyPreview {
     pub reasoning_preview_truncated: bool,
     /// The reply already exceeded the preview's byte limit.
     pub truncated: bool,
+    /// Bytes of visible output, including text beyond the retained prefix.
+    pub output_bytes: u64,
+    /// Latest output count this request received from the provider.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
 }
 
 impl ReplyPreview {
@@ -47,10 +52,13 @@ impl ReplyPreview {
             reasoning_preview: String::new(),
             reasoning_preview_truncated: false,
             truncated: false,
+            output_bytes: 0,
+            output_tokens: None,
         }
     }
 
     fn append(&mut self, text: &str) {
+        self.output_bytes = self.output_bytes.saturating_add(text.len() as u64);
         append_prefix(&mut self.text, &mut self.truncated, text);
     }
 
@@ -305,6 +313,7 @@ impl Session {
             UiEvent::TextDelta { .. }
                 | UiEvent::ThinkingDelta { .. }
                 | UiEvent::ModelProgress { .. }
+                | UiEvent::ModelOutputUsage { .. }
                 | UiEvent::ModelRequest { .. }
                 | UiEvent::ModelRecovery { .. }
         ) {
@@ -319,6 +328,12 @@ impl Session {
                 UiEvent::TextDelta { text } if !text.is_empty() => Some(ModelPhase::Streaming),
                 UiEvent::ThinkingDelta { text } if !text.is_empty() => Some(ModelPhase::Thinking),
                 UiEvent::ModelProgress { phase } => Some(*phase),
+                UiEvent::ModelOutputUsage { output_tokens } => {
+                    if let Some(preview) = &mut agent.reply_preview {
+                        preview.output_tokens = Some(*output_tokens);
+                    }
+                    None
+                }
                 UiEvent::ModelRequest { .. } | UiEvent::ModelRecovery { .. } => {
                     agent.reply_preview = None;
                     None

@@ -14,12 +14,13 @@ use crate::menu::{ChoiceKind, Picker, PickerKind, Prompt, PromptKind};
 use crate::output::OutputViewer;
 use crate::text::{shorten, single_line};
 use crate::theme::{
-    composer_padding, emphasis, focused_row, horizontal_gutter, panel, panel_padding, surface,
-    ACCENT, ERROR, MAX_DRAFT_ROWS, MUTED, OUTPUT_WIDTH, PICKER_HEIGHT, PICKER_WIDTH,
-    SHORT_PROMPT_HEIGHT, STATUS_EDITOR_HEIGHT, WARNING,
+    composer_padding, composer_surface, emphasis, focused_row, horizontal_gutter, panel,
+    panel_padding, ACCENT, ERROR, MAX_DRAFT_ROWS, MODEL, MUTED, OUTPUT_WIDTH, PICKER_HEIGHT,
+    PICKER_WIDTH, SHORT_PROMPT_HEIGHT, STATUS_EDITOR_HEIGHT, WARNING,
 };
 
 mod activity;
+mod composer_panel;
 mod contextual;
 mod delivery;
 mod header;
@@ -55,8 +56,10 @@ pub(crate) fn render_at(
     }
     let outer = frame.area();
     app.contextual_hits.clear();
+    app.recipient_area = Rect::ZERO;
     if outer.is_empty() {
         app.text_selection.clear();
+        app.modal_selection.clear();
         app.delivery_area = Rect::ZERO;
         app.delivery_hits.clear();
         app.request_area = Rect::ZERO;
@@ -92,12 +95,20 @@ pub(crate) fn render_at(
         .height
         .saturating_sub(below_editor + chrome_rows + padding_rows + composer_gap + 2);
     let unobstructed = app.modal.is_none();
+    let anchored = app.modal.as_ref().is_some_and(Modal::composer_anchored);
     let focused = unobstructed && app.composer_focused();
-    let mut composer = Block::new().style(surface());
+    let composer_edge = if app.is_subagent() {
+        MODEL
+    } else if focused || anchored {
+        ACCENT
+    } else {
+        MUTED
+    };
+    let mut composer = Block::new().style(composer_surface(app.is_subagent()));
     if area.width >= 4 {
         composer = composer
             .borders(Borders::LEFT)
-            .border_style(Style::default().fg(if focused { ACCENT } else { MUTED }))
+            .border_style(Style::default().fg(composer_edge))
             .padding(padding);
     }
     let composer_content = composer.inner(area);
@@ -151,7 +162,7 @@ pub(crate) fn render_at(
         .saturating_sub(editor_height + above_editor + below_editor + MIN_TRANSCRIPT_ROWS)
         .min(MAX_BANNER_ROWS);
     let banner = banner(app, width, usize::from(banner_rows));
-    let [transcript, banner_area, gap, request_area, delivery_area, editor, _status_gap, status] =
+    let [transcript, banner_area, gap, request_area, delivery_area, editor, status_gap_area, status] =
         Layout::vertical([
             Constraint::Min(0),
             Constraint::Length(banner.len() as u16),
@@ -163,9 +174,10 @@ pub(crate) fn render_at(
             Constraint::Length(status_height),
         ])
         .areas(area);
-    let row_insets = render_transcript(
+    let (transcript_body, row_insets) = render_transcript(
         frame,
         transcript,
+        composer_content,
         app,
         banner_area.height == 0,
         &activity_frame,
@@ -290,7 +302,7 @@ pub(crate) fn render_at(
                     | crate::contextual::ContextControl::Interrupt { .. }
             )
         });
-        if let Some(control) = run_control.filter(|_| heading.width >= 48) {
+        let (area, control) = if let Some(control) = run_control.filter(|_| heading.width >= 48) {
             let chip_width = u16::try_from(contextual::label(&control).width())
                 .unwrap_or(u16::MAX)
                 .min(heading.width);
@@ -305,31 +317,33 @@ pub(crate) fn render_at(
                 chip_width,
                 heading.height,
             );
-            let line = activity::render_heading(app, usize::from(left.width), state);
-            frame.render_widget(Paragraph::new(line), left);
-            contextual::render_chip(frame, app, &control, chip);
+            (left, Some((control, chip)))
         } else {
-            let line = activity::render_heading(app, usize::from(heading.width), state);
-            frame.render_widget(Paragraph::new(line), heading);
+            (heading, None)
+        };
+        let (line, recipient) = activity::render_heading(app, usize::from(area.width), state);
+        frame.render_widget(Paragraph::new(line), area);
+        if let Some(range) = recipient.filter(|_| unobstructed) {
+            app.recipient_area =
+                Rect::new(area.x + range.start as u16, area.y, range.len() as u16, 1);
+        }
+        if let Some((control, chip)) = control {
+            contextual::render_chip(frame, app, &control, chip);
         }
     }
     if let Some(draft) = draft {
         let pane = app.pane();
         let placeholder = pane.draft.text().is_empty().then(|| {
-            let hint = if pane.value_attachments.is_empty() {
-                format!(
-                    "Enter steer · {} next Turn · / actions · {} help · F2 controls · Esc Esc Rewind",
-                    Shortcut::NEXT_TURN.label,
-                    Shortcut::ACTIONS.label
-                )
+            let send = if pane.value_attachments.is_empty() {
+                "Enter steer"
             } else {
-                format!(
-                    "Enter steer · {} next Turn · / actions · {} help · F2 controls · Esc Esc Rewind · {} sends attached values",
-                    Shortcut::NEXT_TURN.label,
-                    Shortcut::ACTIONS.label,
-                    Shortcut::ENTER.label
-                )
+                "Enter send with values"
             };
+            let mut hint = format!("{send} · / actions · {} help", Shortcut::ACTIONS.label);
+            let next = format!(" · {} next Turn", Shortcut::NEXT_TURN.label);
+            if hint.width() + next.width() <= content_width {
+                hint.push_str(&next);
+            }
             shorten(&hint, content_width)
         });
         render_editor_view(frame, inner, draft, focused, placeholder.as_deref());
@@ -355,7 +369,11 @@ pub(crate) fn render_at(
         }
     }
     let main_areas = [
-        transcript,
+        Rect {
+            height: transcript_body.y - transcript.y,
+            ..transcript
+        },
+        transcript_body,
         banner_area,
         request_area,
         delivery_area,
@@ -364,30 +382,44 @@ pub(crate) fn render_at(
         inner,
         status,
     ];
-    let modal_area = render_modal(frame, outer, app);
-    app.text_selection.render(
-        frame.buffer_mut(),
-        modal_area
-            .as_ref()
-            .map_or(&main_areas[..], std::slice::from_ref),
-        modal_area.is_none().then_some((transcript, row_insets)),
-    );
+    if anchored || app.modal.is_none() {
+        app.text_selection.render(
+            frame.buffer_mut(),
+            &main_areas,
+            Some((transcript_body, row_insets)),
+        );
+    }
+    let modal_area = if anchored {
+        composer_panel::render(frame, editor, composer_content.x, app)
+    } else {
+        render_modal(frame, outer, app)
+    };
+    if let Some(area) = modal_area {
+        app.modal_selection
+            .render(frame.buffer_mut(), &[area], None);
+    }
+    composer_panel::render_alias_hint(frame, status_gap_area, editor, composer_content.x, app);
     activity_visible
 }
 
 fn render_transcript(
     frame: &mut Frame<'_>,
     area: Rect,
+    composer_content: Rect,
     app: &mut App,
     show_service_problem: bool,
     activity: &ActivityFrame,
-) -> Vec<u16> {
+) -> (Rect, Vec<u16>) {
     if area.is_empty() {
         app.text_selection.set_messages_area(None);
         app.transcript_area = (usize::from(area.width).max(1), 1);
-        return Vec::new();
+        return (area, Vec::new());
     }
-    let [header, body] = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
+    let [header, body] = Layout::vertical([
+        Constraint::Length(header::session_rows(app, area.height)),
+        Constraint::Min(0),
+    ])
+    .areas(area);
     let (width, height) = (usize::from(body.width), usize::from(body.height));
     app.transcript_area = (width.max(1), height.max(1));
     let transcript = &mut app
@@ -412,8 +444,14 @@ fn render_transcript(
     }
     if view.lines.is_empty() && !app.pane().exists {
         app.text_selection.set_messages_area(None);
-        header::render_welcome(frame, area, app, show_service_problem);
-        return Vec::new();
+        let welcome = Rect::new(
+            composer_content.x,
+            area.y,
+            composer_content.width,
+            area.height,
+        );
+        header::render_welcome(frame, welcome, app, show_service_problem);
+        return (area, Vec::new());
     }
     if view.lines.is_empty() && height > 0 {
         view.lines = header::empty_notice(app, width, show_service_problem);
@@ -433,8 +471,7 @@ fn render_transcript(
         }
     }
     frame.render_widget(Paragraph::new(view.lines), body);
-    view.row_insets.insert(0, 0);
-    view.row_insets
+    (body, view.row_insets)
 }
 
 fn banner(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
@@ -508,12 +545,9 @@ fn banner(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
             ),
             emphasis(WARNING),
         ));
-    } else if let Some(next) = pane.next_model_label() {
+    } else if let Some(next) = pane.next_model_label(width) {
         lines.push(Line::styled(
-            shorten(
-                &format!("Next model request · {}", single_line(&next)),
-                width,
-            ),
+            shorten(&next, width),
             Style::default().fg(ACCENT),
         ));
     }
@@ -582,29 +616,10 @@ fn waiting(app: &App, width: usize) -> Vec<Line<'static>> {
 
 fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Rect> {
     Some(match app.modal.as_mut()? {
-        Modal::Help => {
-            let area = popup(area, 52, 14);
-            let inner = render_popup(frame, area, "Keyboard shortcuts");
-            let lines = [
-                "Enter       Send or steer",
-                "Alt+Enter   Send on the next turn",
-                "Esc         Close/back; stop active work",
-                "↑ / ↓       Edit draft; select queued input",
-                "Delete      Withdraw selected queued input",
-                "F2          Focus a pending request",
-                "Ctrl+P/F1   Show this help",
-                "/           Search actions and Skills",
-                "Esc         Close help",
-            ];
-            frame.render_widget(
-                Paragraph::new(lines.join("\n")).style(Style::new().fg(MUTED)),
-                inner,
-            );
-            inner
-        }
+        Modal::Help => composer_panel::render_help(frame, area),
         Modal::Picker(picker) => {
             let height = match picker.kind {
-                PickerKind::Models | PickerKind::Thinking | PickerKind::Agents => {
+                PickerKind::Models | PickerKind::Agents => {
                     let rows = picker.choice_count().clamp(4, 8) as u16;
                     9 + rows * 2
                 }
@@ -647,6 +662,7 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Rect
             editor.render(frame, inner);
             inner
         }
+        Modal::ExitConfirmation => unreachable!("exit confirmation is anchored to the composer"),
     })
 }
 
@@ -698,7 +714,11 @@ fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (us
         frame.render_widget(Paragraph::new(Span::styled("/ ", emphasis(ACCENT))), marker);
         render_editor(frame, field, &mut picker.query, true, "Search…");
     }
-    let cell_height = if list.height >= 6 { 2 } else { 1 };
+    let cell_height = if list.height >= 6 && !matches!(picker.kind, PickerKind::AgentSetup(_)) {
+        2
+    } else {
+        1
+    };
     let count = usize::from(list.height / cell_height).max(1);
     let options = picker.visible_choices();
     let first = picker
@@ -763,6 +783,7 @@ fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (us
             Some("Operate message · ←→/Tab Select · Enter Run · Esc Back")
         }
         PickerKind::Rewind => Some("Rewind · ↑↓ Select · Enter Rewind · Esc Close"),
+        PickerKind::AgentSetup(_) => Some("↑↓ Select · Enter Choose · Esc Back"),
         _ => None,
     } {
         Line::styled(shorten(help, width), Style::new().fg(MUTED))

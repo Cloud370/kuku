@@ -423,6 +423,12 @@ pub struct ReplyPreview {
     pub reasoning_preview_truncated: bool,
     /// Further text already exists past the preview limit.
     pub truncated: bool,
+    /// Observed visible output bytes, including the part beyond the preview limit.
+    #[serde(default)]
+    pub output_bytes: Option<u64>,
+    /// Latest provider-reported output count for this request.
+    #[serde(default)]
+    pub output_tokens: Option<u64>,
 }
 
 /// A displayable durable entry distinct from uncommitted streaming previews.

@@ -9,8 +9,15 @@ use crate::selection::{ClickTarget, MouseAction};
 impl App {
     pub(super) fn pointer(&mut self, mouse: MouseEvent, screen: &Buffer) {
         let click = self.click_target(mouse);
-        let action = self.text_selection.mouse(mouse, screen, click);
-        if matches!(&action, Some(MouseAction::Click(_))) {
+        let selection = if self.modal.is_some() {
+            &mut self.modal_selection
+        } else {
+            &mut self.text_selection
+        };
+        let action = selection.mouse(mouse, screen, click);
+        if matches!(&action, Some(MouseAction::Click(_)))
+            && !self.modal.as_ref().is_some_and(Modal::composer_anchored)
+        {
             self.deactivate_context_focus();
         }
         match action {
@@ -31,6 +38,7 @@ impl App {
                 }
             }
             Some(MouseAction::Click(ClickTarget::Agent(target))) => self.select_agent(target),
+            Some(MouseAction::Click(ClickTarget::Recipient)) => self.open_agents(),
             Some(MouseAction::Click(ClickTarget::Request { target, request_id })) => {
                 self.focus_context_control(ContextControl::Request { target, request_id });
             }
@@ -80,7 +88,11 @@ impl App {
         match &self.modal {
             Some(Modal::Picker(picker)) => picker.hit(position).map(ClickTarget::Picker),
             Some(
-                Modal::Help | Modal::Prompt(_) | Modal::Output(_) | Modal::StatusLineEditor(_),
+                Modal::Help
+                | Modal::Prompt(_)
+                | Modal::Output(_)
+                | Modal::StatusLineEditor(_)
+                | Modal::ExitConfirmation,
             ) => None,
             None => {
                 if let Some(hit) = self
@@ -101,6 +113,8 @@ impl App {
                     Some(ClickTarget::JumpLatest)
                 } else if self.composer_area.contains(position) {
                     Some(ClickTarget::Composer)
+                } else if self.recipient_area.contains(position) {
+                    Some(ClickTarget::Recipient)
                 } else if self.permission_choice_areas[0].contains(position) {
                     self.request_hit
                         .as_ref()

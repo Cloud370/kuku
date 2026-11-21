@@ -2,7 +2,7 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use crate::config::{ProviderFormat, ProviderProfile};
+use crate::config::ProviderFormat;
 use crate::context::{CanonicalMessage, MessageBlock, Role};
 use crate::event::ModelStopReason;
 
@@ -13,6 +13,11 @@ use super::sse::{parse_sse_frame, stream_sse_events};
 use super::trace::ProviderTraceDirection;
 use super::transport::{send_prepared, TransportResponse};
 use super::types::{PreparedProviderRequest, ProviderFailure, ProviderRequest, ResolvedProvider};
+
+#[path = "openai_responses/reasoning.rs"]
+mod reasoning;
+
+use reasoning::{PublishedReasoning, ReasoningText};
 
 const TRUNCATED_STREAM_MESSAGE: &str = "provider stream ended before response.completed";
 
@@ -188,9 +193,7 @@ pub(crate) async fn stream_prepared(
     let TransportResponse { response, trace } =
         send_prepared(config, prepared, trace_metadata).await?;
     let url = prepared.url.clone();
-    let parser = Arc::new(Mutex::new(OpenAiResponsesSseParser::new(
-        config.capabilities.profile == ProviderProfile::DeepSeek,
-    )));
+    let parser = Arc::new(Mutex::new(OpenAiResponsesSseParser::new()));
     let frame_parser = Arc::clone(&parser);
     let eof_parser = Arc::clone(&parser);
     let frame_trace = trace.clone();
@@ -228,7 +231,6 @@ enum ResponseTerminalEvent {
 }
 
 struct OpenAiResponsesSseParser {
-    public_reasoning_text: bool,
     chunks: Vec<ProviderChunk>,
     started: bool,
     terminal_event: Option<ResponseTerminalEvent>,
@@ -238,14 +240,13 @@ struct OpenAiResponsesSseParser {
     invalid_function_calls: bool,
     replay_items: BTreeMap<u64, Value>,
     replay_budget: ReplayBudget,
-    summary_lengths: BTreeMap<(u64, u64), usize>,
+    reasoning: PublishedReasoning,
     reports: ReportAccumulator,
 }
 
 impl OpenAiResponsesSseParser {
-    fn new(public_reasoning_text: bool) -> Self {
+    fn new() -> Self {
         Self {
-            public_reasoning_text,
             chunks: Vec::new(),
             started: false,
             terminal_event: None,
@@ -255,49 +256,37 @@ impl OpenAiResponsesSseParser {
             invalid_function_calls: false,
             replay_items: BTreeMap::new(),
             replay_budget: ReplayBudget::default(),
-            summary_lengths: BTreeMap::new(),
+            reasoning: PublishedReasoning::default(),
             reports: ReportAccumulator::default(),
         }
     }
 
-    fn publish_item_summary(&mut self, index: u64, item: &Value) {
-        if item["type"] == "reasoning" {
-            if let Some(parts) = item["summary"].as_array() {
-                for (part, value) in parts.iter().enumerate() {
-                    if value["type"] == "summary_text" {
-                        if let Some(text) = value["text"].as_str() {
-                            self.publish_summary(index, part as u64, text, true);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    fn publish_summary(&mut self, item: u64, part: u64, text: &str, complete: bool) {
-        if text.is_empty() {
+    fn publish_reasoning(&mut self, event: &Value, kind: ReasoningText, complete: bool) {
+        let Some(text) = event[if complete { "text" } else { "delta" }].as_str() else {
             return;
-        }
-        let key = (item, part);
-        let is_new = !self.summary_lengths.contains_key(&key);
-        if is_new && self.summary_lengths.len() >= MAX_REPLAY_ITEMS {
-            return;
-        }
-        let separate = is_new && !self.summary_lengths.is_empty();
-        let length = self.summary_lengths.entry(key).or_default();
-        let delta = if complete {
-            text.get(*length..).unwrap_or_default()
-        } else {
-            text
         };
-        if !delta.is_empty() {
-            *length += delta.len();
-            let text = if separate {
-                format!("\n\n{delta}")
-            } else {
-                delta.into()
-            };
-            self.chunks.push(ProviderChunk::ThinkingDelta { text });
+        let item_index = event["item_id"]
+            .as_str()
+            .and_then(|id| self.item_id_indices.get(id).copied());
+        let index = event["output_index"].as_u64().or(item_index);
+        if let Some(index) = index {
+            if item_index.is_none_or(|owner| owner == index)
+                && self
+                    .output_item_types
+                    .get(&index)
+                    .is_none_or(|item| item == "reasoning")
+            {
+                self.reasoning.publish(
+                    index,
+                    kind.part_index(event),
+                    kind,
+                    text,
+                    complete,
+                    &mut self.chunks,
+                );
+            }
+        } else if !text.is_empty() {
+            self.chunks.push(ProviderChunk::Reasoning);
         }
     }
 
@@ -539,7 +528,7 @@ impl OpenAiResponsesSseParser {
                         name,
                     });
                 } else if item_type == "reasoning" {
-                    self.chunks.push(ProviderChunk::Reasoning);
+                    self.reasoning.announce(index, &mut self.chunks);
                 }
             }
             "response.output_text.delta" | "response.refusal.delta" => {
@@ -551,24 +540,15 @@ impl OpenAiResponsesSseParser {
                     }
                 }
             }
-            "response.reasoning_text.delta" => {
-                if let Some(text) = data["delta"].as_str().filter(|text| !text.is_empty()) {
-                    self.chunks.push(if self.public_reasoning_text {
-                        ProviderChunk::ThinkingDelta { text: text.into() }
-                    } else {
-                        ProviderChunk::Reasoning
-                    });
-                }
+            "response.reasoning_text.delta" | "response.reasoning_text.done" => {
+                self.publish_reasoning(&data, ReasoningText::Text, event_type.ends_with(".done"));
             }
             "response.reasoning_summary_text.delta" | "response.reasoning_summary_text.done" => {
-                let complete = event_type.ends_with(".done");
-                if let (Some(item), Some(part), Some(text)) = (
-                    data["output_index"].as_u64(),
-                    data["summary_index"].as_u64(),
-                    data[if complete { "text" } else { "delta" }].as_str(),
-                ) {
-                    self.publish_summary(item, part, text, complete);
-                }
+                self.publish_reasoning(
+                    &data,
+                    ReasoningText::Summary,
+                    event_type.ends_with(".done"),
+                );
             }
             "response.function_call_arguments.delta" => {
                 let Some(index) = data.get("output_index").and_then(Value::as_u64) else {
@@ -679,7 +659,7 @@ impl OpenAiResponsesSseParser {
                     data.get("item"),
                 ) {
                     self.replay_budget.add(item)?;
-                    self.publish_item_summary(index, item);
+                    self.reasoning.item(index, item, &mut self.chunks);
                     self.replay_items.insert(index, item.clone());
                 }
                 self.finish_output_item(&data);
@@ -691,7 +671,7 @@ impl OpenAiResponsesSseParser {
                     if reason != ModelStopReason::InvalidResponse {
                         if let Some(items) = resp["output"].as_array() {
                             for (index, item) in items.iter().enumerate() {
-                                self.publish_item_summary(index as u64, item);
+                                self.reasoning.item(index as u64, item, &mut self.chunks);
                             }
                         }
                         let output = resp
@@ -812,7 +792,8 @@ impl OpenAiResponsesSseParser {
             }
             return;
         };
-        if self.output_item_types.get(&index).map(String::as_str) != Some(item_type) {
+        let known_type = self.output_item_types.get(&index).map(String::as_str);
+        if known_type != Some(item_type) && !(item_type == "reasoning" && known_type.is_none()) {
             self.invalidate_tool_stream();
             return;
         }
@@ -971,7 +952,7 @@ impl OpenAiResponsesSseParser {
 #[cfg(test)]
 #[allow(dead_code)] // included via include!() in integration tests
 pub(crate) fn parse_responses_sse(body: &str) -> Vec<ProviderChunk> {
-    let mut parser = OpenAiResponsesSseParser::new(false);
+    let mut parser = OpenAiResponsesSseParser::new();
     let mut chunks = Vec::new();
     for frame in body.split("\n\n") {
         chunks.extend(parser.feed(frame.trim()).unwrap());

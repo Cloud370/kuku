@@ -1,6 +1,8 @@
 use kuku_client::{HistoryPage, RetryPhase, RetrySource, RetryStopReason, RewindGroup};
 use serde_json::Value;
 
+use crate::theme::CardFrame;
+
 use super::agent::AgentCards;
 use super::details::{groups, DetailRecord, Details, GroupHeading};
 use super::{
@@ -12,6 +14,7 @@ use super::{
 pub(super) struct RenderCache {
     pub(super) preview: Option<(super::PreviewLayout, Vec<Row>)>,
     pub(super) source: Option<(usize, Vec<Row>)>,
+    pub(super) streaming: Option<Box<super::stream::StreamingReply>>,
 }
 
 impl Clone for Record {
@@ -335,6 +338,7 @@ impl Window {
             }
             if block.key == &anchor.key {
                 return match anchor.line {
+                    AnchorLine::Gap => start,
                     AnchorLine::Turn => start + usize::from(block.turn_gap),
                     AnchorLine::RewindEntry { event_id, line } => block
                         .rewind_group
@@ -346,11 +350,19 @@ impl Window {
                     AnchorLine::Group(row) => group_row.map_or(start, |(start, height)| {
                         start + row.min(height.saturating_sub(1))
                     }),
-                    AnchorLine::Body(_) if block.collapsed => {
+                    AnchorLine::Body(_) | AnchorLine::Note(_) if block.collapsed => {
                         group_row.map_or(start, |(first, _)| first)
                     }
                     AnchorLine::Body(line) => {
-                        start + block.prefix_height() + line.min(block.rows.len().saturating_sub(1))
+                        let line =
+                            line.min((block.rows.len() + block.footer.len()).saturating_sub(1));
+                        start
+                            + block.prefix_height()
+                            + line
+                            + if line == 0 { 0 } else { block.note_height() }
+                    }
+                    AnchorLine::Note(line) => {
+                        start + block.prefix_height() + line.min(block.note_height())
                     }
                 };
             }
@@ -364,7 +376,9 @@ impl Window {
             if row < block.height() {
                 let heading_row = usize::from(block.turn_gap);
                 let prefix = block.prefix_height();
-                let line = if row <= heading_row && block.heading.is_some() {
+                let line = if row == 0 && block.turn_gap {
+                    AnchorLine::Gap
+                } else if row == heading_row && block.heading.is_some() {
                     AnchorLine::Turn
                 } else if let Some(group) = block.rewind_group {
                     group
@@ -377,7 +391,13 @@ impl Window {
                         usize::from(block.turn_gap) + usize::from(block.heading.is_some()),
                     ))
                 } else {
-                    AnchorLine::Body(row - prefix)
+                    let body = row - prefix;
+                    let notes = block.note_height();
+                    if body > 0 && body <= notes {
+                        AnchorLine::Note(body)
+                    } else {
+                        AnchorLine::Body(body.saturating_sub(notes))
+                    }
                 };
                 return Some(Anchor {
                     key: block.key.clone(),
@@ -391,6 +411,7 @@ impl Window {
 
     pub(super) fn blocks<'a>(&'a mut self, layout: Layout<'a>) -> Vec<Block<'a>> {
         let from_start = self.older.is_none();
+        let group_frame = CardFrame::new(layout.width);
         let Self {
             records: window_records,
             rewind_groups,
@@ -454,22 +475,27 @@ impl Window {
                 .filter(|(range, _, _)| range.contains(&index));
             let grouped = member.is_some();
             let collapsed = member.as_ref().is_some_and(|(_, _, open)| !open);
+            let closes_group = member
+                .as_ref()
+                .is_some_and(|(range, _, open)| *open && index + 1 == range.end);
             let group = member.and_then(|(_, heading, _)| heading.take());
-            let user_header = heading.is_some()
-                && layout.width >= 14
-                && matches!(&record.body, Body::User { sender: None, .. });
+            let user_turn = heading.filter(|_| {
+                layout.width >= 14 && matches!(&record.body, Body::User { sender: None, .. })
+            });
+            let heading = heading.filter(|_| user_turn.is_none());
             let thinking = matches!(record.key, Key::Preview(_))
                 && matches!(&record.body, Body::Assistant(text) if text.trim().is_empty());
             let (key, rows, detail) = if collapsed {
                 (&record.key, &[][..], None)
             } else {
-                let trim = records.peek().is_some_and(|(_, next)| {
-                    record.turn == next.turn
-                        && record
-                            .tool()
-                            .is_some_and(|tool| tool.agent_card().is_none())
-                        && next.tool().is_some_and(|tool| tool.agent_card().is_none())
-                });
+                let trim = grouped
+                    || records.peek().is_some_and(|(_, next)| {
+                        record.turn == next.turn
+                            && record
+                                .tool()
+                                .is_some_and(|tool| tool.agent_card().is_none())
+                            && next.tool().is_some_and(|tool| tool.agent_card().is_none())
+                    });
                 let mode = if grouped {
                     ToolDetails::GroupMember
                 } else {
@@ -477,17 +503,18 @@ impl Window {
                 };
                 let (key, rows, detail) = record.render(
                     Layout {
+                        width: if grouped {
+                            group_frame.content_width()
+                        } else {
+                            layout.width
+                        },
                         tools: mode,
                         ..layout
                     },
                     retry_heading,
                     retry_end,
+                    user_turn,
                 );
-                let rows = if user_header {
-                    rows.get(1..).unwrap_or_default()
-                } else {
-                    rows
-                };
                 (
                     key,
                     if trim && rows.last().is_some_and(|row| row.line.spans.is_empty()) {
@@ -498,17 +525,28 @@ impl Window {
                     detail,
                 )
             };
+            let note = match detail {
+                Some(DetailRecord::Reasoning(_)) if !rows.is_empty() => {
+                    layout.notes.map_or(&[][..], |note| note.rows_for(key))
+                }
+                _ => &[],
+            };
             Some(Block {
                 key,
                 position,
                 heading,
                 turn_gap,
-                user_header,
                 thinking,
                 group,
                 grouped,
                 collapsed,
                 rows,
+                note,
+                footer: if closes_group {
+                    Row::frame_end(&group_frame)
+                } else {
+                    Vec::new()
+                },
                 detail,
                 rewind_group: None,
             })
@@ -521,12 +559,13 @@ impl Window {
                 position: group.position(),
                 heading: None,
                 turn_gap: false,
-                user_header: false,
                 thinking: false,
                 group: None,
                 grouped: false,
                 collapsed: false,
                 rows: &group.rows,
+                note: &[],
+                footer: Vec::new(),
                 detail: None,
                 rewind_group: Some(group),
             });
@@ -787,6 +826,7 @@ pub(super) struct Layout<'a> {
     pub(super) assistant: AssistantView,
     pub(super) agents: &'a AgentCards,
     pub(super) items: &'a Details,
+    pub(super) notes: Option<&'a super::notes::ThinkingRead>,
 }
 
 pub(super) struct Block<'a> {
@@ -794,17 +834,18 @@ pub(super) struct Block<'a> {
     pub(super) position: u64,
     pub(super) heading: Option<TurnHeading>,
     pub(super) turn_gap: bool,
-    pub(super) user_header: bool,
     pub(super) thinking: bool,
     pub(super) group: Option<GroupHeading>,
     pub(super) rows: &'a [Row],
+    note: &'a [Row],
+    pub(super) footer: Vec<Row>,
     pub(super) detail: Option<DetailRecord<'a>>,
     pub(super) rewind_group: Option<&'a RewindGroupState>,
     pub(super) grouped: bool,
     collapsed: bool,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TurnHeading {
     Numbered(u64),
     Unnumbered,
@@ -812,7 +853,21 @@ pub(super) enum TurnHeading {
 
 impl Block<'_> {
     pub(super) fn height(&self) -> usize {
-        self.rows.len() + self.prefix_height()
+        self.body_height() + self.prefix_height() + self.footer.len()
+    }
+
+    pub(super) fn body_height(&self) -> usize {
+        self.rows.len() + self.note_height()
+    }
+
+    pub(super) fn note_height(&self) -> usize {
+        self.note.len().saturating_sub(1)
+    }
+
+    pub(super) fn body_rows(&self) -> impl Iterator<Item = &Row> {
+        self.note
+            .iter()
+            .chain(self.rows.iter().skip(usize::from(!self.note.is_empty())))
     }
 
     fn prefix_height(&self) -> usize {

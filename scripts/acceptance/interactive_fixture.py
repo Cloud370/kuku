@@ -33,6 +33,12 @@ TOOL_OUTPUT = "fixture-tool-output-42"
 EXE = ".exe" if os.name == "nt" else ""
 
 
+def is_composer_heading(line):
+    recipient = r"(?:(?:Send to |To )?[a-z0-9_…-]+ ▾\s+)?"
+    activity = r"(?:[\u2800-\u28ff]{2}|[↑…◇↓↳])\s+\S"
+    return bool(re.match(r"^\s*[│┃]\s+" + recipient + activity, line))
+
+
 def cleanup_path(path):
     if not isinstance(path, PureWindowsPath):
         return path
@@ -96,10 +102,11 @@ def run_cases(cases):
         raise AssertionError(f"Acceptance cases failed: {', '.join(failed)}\n{context}")
 
 
-@dataclass(frozen=True)
+@dataclass
 class StreamPause:
     arrived: threading.Event = field(default_factory=threading.Event)
     release: threading.Event = field(default_factory=threading.Event)
+    flushed_at_ns: int = 0
 
 
 @dataclass(frozen=True)
@@ -149,6 +156,7 @@ def http_fixture(dispatch):
                 for offset, pause in response.pauses:
                     self.wfile.write(response.body[start:offset])
                     self.wfile.flush()
+                    pause.flushed_at_ns = time.perf_counter_ns()
                     pause.arrived.set()
                     if not pause.release.wait(TIMEOUT):
                         return

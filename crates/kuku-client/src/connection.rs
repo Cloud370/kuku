@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::local::LocalService;
+use crate::local::{BuildPolicy, LocalService};
 use crate::{Client, Error, PendingStore};
 
 /// Shared local and explicit remote connection choices for non-UI and interactive clients.
@@ -81,28 +81,44 @@ impl ConnectionOptions {
 
     /// Connect to an authenticated compatible service without selecting a workspace.
     pub async fn client(&self) -> Result<Client, Error> {
-        match self.remote_connection()? {
-            Some(client) => {
-                client.check_protocol().await?;
-                Ok(client)
-            }
-            None => Client::local(&self.local_service()?).await,
+        self.open(None).await.map(|(client, _)| client)
+    }
+
+    /// Connect using the installed client's build for a managed local service.
+    pub async fn client_for_build(&self, policy: BuildPolicy<'_>) -> Result<Client, Error> {
+        self.open(Some(policy)).await.map(|(client, _)| client)
+    }
+
+    async fn open(
+        &self,
+        build: Option<BuildPolicy<'_>>,
+    ) -> Result<(Client, Option<LocalService>), Error> {
+        if let Some(client) = self.remote_connection()? {
+            client.check_protocol().await?;
+            return Ok((client, None));
         }
+        let service = self.local_service()?;
+        let connection = match build {
+            Some(policy) => service.connect_build(policy).await?,
+            None => service.connect().await?,
+        };
+        let client = Client::remote(connection.endpoint(), connection.token())?;
+        Ok((client, Some(service)))
     }
 
     /// Connect, resolve the selected workspace, and open the scoped private pending store.
     pub async fn connect(&self) -> Result<Connection, Error> {
+        self.connect_with(None).await
+    }
+
+    /// Open a workspace using the installed client's build for a managed local service.
+    pub async fn connect_for_build(&self, policy: BuildPolicy<'_>) -> Result<Connection, Error> {
+        self.connect_with(Some(policy)).await
+    }
+
+    async fn connect_with(&self, build: Option<BuildPolicy<'_>>) -> Result<Connection, Error> {
         let workspace = self.workspace()?;
-        let (client, local) = match self.remote_connection()? {
-            Some(client) => {
-                client.check_protocol().await?;
-                (client, None)
-            }
-            None => {
-                let service = self.local_service()?;
-                (Client::local(&service).await?, Some(service))
-            }
-        };
+        let (client, local) = self.open(build).await?;
         let workspace = client.workspace(workspace).await?;
         let (data_dir, scope) = match &local {
             Some(service) => (service.data_dir().to_path_buf(), "local"),

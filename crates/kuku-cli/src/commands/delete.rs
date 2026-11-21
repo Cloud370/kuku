@@ -8,7 +8,7 @@ use crate::commands::CliResult;
 /// Delete a session: `kuku delete <session_id> [-w <workspace>]`
 pub async fn run(args: DeleteArgs, target: &ConnectionArgs) -> CliResult {
     let options = target.options();
-    let client = options.client().await?;
+    let client = target.client().await?;
     let workspace = if target.workspace.is_some() || target.remote.is_some() {
         Some(client.workspace(options.workspace()?).await?)
     } else {

@@ -9,6 +9,7 @@ use kuku_client::{Connection, ConnectionOptions};
 use ratatui::Frame;
 
 use crate::local_settings::{active_service, ensure_same_service};
+use crate::model_default::ResolvedModel;
 
 use super::config::{self, Settings};
 use super::state::{SetupIntent, SetupState};
@@ -30,11 +31,22 @@ pub(crate) enum ModelEditorAction {
 pub(crate) enum SavedModelSetting {
     Default(String),
     Thinking {
-        tier: Option<String>,
-        connection: String,
-        model: String,
+        target: ThinkingSaveTarget,
         effort: String,
     },
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ThinkingSaveTarget {
+    route: ResolvedModel,
+    tier: String,
+    requested_tier: Option<String>,
+    service: ServiceIdentity,
+}
+
+pub(crate) struct ThinkingDefaults {
+    pub(crate) inherited: Option<kuku::ProviderSettings>,
+    pub(crate) save: Option<ThinkingSaveTarget>,
 }
 
 impl ModelEditor {
@@ -93,6 +105,33 @@ impl ModelEditor {
     }
 }
 
+pub(crate) async fn thinking_defaults(
+    options: &ConnectionOptions,
+    connection: Option<&Connection>,
+    mut config: AgentConfig,
+    route: ResolvedModel,
+) -> ThinkingDefaults {
+    let tier = config.tier.clone();
+    config.reasoning_effort = None;
+    let inherited = async {
+        let resolved = connection?.client.resolve_model(&config).await.ok()?;
+        (resolved.connection == route.connection && resolved.model == route.model)
+            .then_some(resolved.settings)
+    };
+    let save = async {
+        let (service, settings) = active_settings(options, connection).await.ok()?;
+        let name = thinking_tier(&settings, tier.as_deref(), &route)?.to_owned();
+        Some(ThinkingSaveTarget {
+            route: route.clone(),
+            tier: name,
+            requested_tier: tier,
+            service,
+        })
+    };
+    let (inherited, save) = tokio::join!(inherited, save);
+    ThinkingDefaults { inherited, save }
+}
+
 pub(crate) async fn save_setting(
     options: &ConnectionOptions,
     connection: Option<&Connection>,
@@ -103,33 +142,14 @@ pub(crate) async fn save_setting(
     ensure_same_service(&service, &current)?;
     let (route, effort) = match &change {
         SavedModelSetting::Default(route) => (route.as_str(), None),
-        SavedModelSetting::Thinking {
-            tier,
-            connection,
-            model,
-            effort,
-        } => {
-            let matches = |name: &str| {
-                settings
-                    .resolved
-                    .tier(name)
-                    .is_some_and(|route| route.provider == *connection && route.model == *model)
-            };
-            let route = if let Some(tier) = tier {
-                matches(tier).then_some(tier.as_str())
-            } else if matches(&settings.default_tier) {
-                Some(settings.default_tier.as_str())
-            } else {
-                let mut candidates = settings.resolved.tiers.keys().filter(|name| matches(name));
-                candidates
-                    .next()
-                    .filter(|_| candidates.next().is_none())
-                    .map(String::as_str)
-            };
-            let route = route.ok_or_else(|| {
-                "Choose a configured model route in /model before saving its thinking setting."
-                    .to_owned()
-            })?;
+        SavedModelSetting::Thinking { target, effort } => {
+            ensure_same_service(&target.service, &current)?;
+            let route = thinking_tier(&settings, target.requested_tier.as_deref(), &target.route)
+                .filter(|tier| *tier == target.tier)
+                .ok_or_else(|| {
+                    "Choose a configured model route in /model before saving its thinking setting."
+                        .to_owned()
+                })?;
             (route, Some(effort.as_str()))
         }
     };
@@ -151,6 +171,34 @@ pub(crate) async fn save_setting(
     }
     let resolved = config::save_model_document(&settings, &document, &[route])?;
     Ok(wait_for_catalog(connection, &resolved).await)
+}
+
+fn thinking_tier<'a>(
+    settings: &'a Settings,
+    tier: Option<&str>,
+    route: &ResolvedModel,
+) -> Option<&'a str> {
+    let matches = |name: &str| {
+        settings.resolved.tier(name).is_some_and(|candidate| {
+            candidate.provider == route.connection && candidate.model == route.model
+        })
+    };
+    if let Some(tier) = tier {
+        return settings
+            .resolved
+            .tiers
+            .get_key_value(tier)
+            .filter(|(name, _)| matches(name))
+            .map(|(name, _)| name.as_str());
+    }
+    if matches(&settings.default_tier) {
+        return Some(&settings.default_tier);
+    }
+    let mut candidates = settings.resolved.tiers.keys().filter(|name| matches(name));
+    candidates
+        .next()
+        .filter(|_| candidates.next().is_none())
+        .map(String::as_str)
 }
 
 async fn active_settings(

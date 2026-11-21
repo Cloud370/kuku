@@ -9,6 +9,7 @@ use ratatui::widgets::Padding;
 pub(crate) const ACCENT: Color = Color::Rgb(70, 161, 163);
 pub(crate) const MUTED: Color = Color::Rgb(133, 146, 157);
 pub(crate) const SURFACE: Color = Color::Rgb(38, 48, 58);
+pub(crate) const SUBAGENT_SURFACE: Color = Color::Rgb(30, 37, 50);
 pub(crate) const SURFACE_TEXT: Color = Color::Rgb(229, 236, 240);
 pub(crate) const SUCCESS: Color = Color::Rgb(152, 202, 162);
 pub(crate) const WARNING: Color = Color::Rgb(232, 191, 122);
@@ -22,6 +23,10 @@ pub(crate) fn emphasis(color: Color) -> Style {
 
 pub(crate) fn surface() -> Style {
     Style::default().fg(SURFACE_TEXT).bg(SURFACE)
+}
+
+pub(crate) fn composer_surface(subagent: bool) -> Style {
+    surface().bg(if subagent { SUBAGENT_SURFACE } else { SURFACE })
 }
 
 pub(crate) fn selection() -> Style {
@@ -68,21 +73,14 @@ pub(crate) fn card_padding(width: usize) -> Padding {
         32..=79 => 2,
         _ => 3,
     };
-    let vertical = u16::from(width >= 24);
-    Padding::new(sides, sides, vertical, vertical)
+    compact_padding(sides, width >= 24)
 }
 
 pub(crate) fn composer_padding(area: Rect) -> Padding {
     if area.width < 4 {
         return Padding::ZERO;
     }
-    let sides = horizontal_gutter(area.width).max(1);
-    Padding::new(
-        sides,
-        sides,
-        u16::from(area.height >= 26),
-        u16::from(area.height >= 26),
-    )
+    compact_padding(horizontal_gutter(area.width).max(1), area.height >= 26)
 }
 
 pub(crate) fn panel_padding(area: Rect) -> Padding {
@@ -91,13 +89,17 @@ pub(crate) fn panel_padding(area: Rect) -> Padding {
     } else {
         u16::from(area.width >= 22)
     };
-    let vertical = u16::from(area.height >= 14);
+    compact_padding(sides, area.height >= 14)
+}
+
+pub(crate) fn compact_padding(sides: u16, vertical: bool) -> Padding {
+    let sides = (2 * sides + 1) / 3;
+    let vertical = u16::from(vertical);
     Padding::new(sides, sides, vertical, vertical)
 }
 
 pub(crate) const MODEL: Color = Color::Rgb(175, 165, 223);
 pub(crate) const EXECUTION: Color = Color::Rgb(103, 184, 178);
-pub(crate) const AGENT_SURFACE: Color = Color::Rgb(37, 39, 53);
 pub(crate) const ACTIVITY_EXCERPT_CELLS: usize = 66;
 pub(crate) const THINKING_GLINT: Color = Color::Rgb(161, 166, 188);
 pub(crate) const TURN_RULE: Color = Color::Rgb(70, 85, 100);
