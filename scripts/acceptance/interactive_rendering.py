@@ -650,13 +650,15 @@ def published_reasoning(client):
         operate_on_assistant(reopened, quiet, answer, "Thinking")
         notes = reopened.expect("Comparing the published results.", state="Esc back", rows=17)["screen"]
         assert hidden not in settled and hidden not in notes
-        prompt_row = next(i for i, row in enumerate(notes.splitlines(), 1) if prompt in row and "Session" not in row)
+        outside_notes = len(notes.splitlines())
         note_row = next(i for i, row in enumerate(notes.splitlines()) if "Note 5" in row)
-        reopened.press(f"\x1b[<65;5;{prompt_row}M")
-        scrolled = reopened.expect("Reading history", also=("Note 5",), rows=17)["screen"]
+        last_note = max(int(row.rsplit("Note ", 1)[1].strip()) for row in notes.splitlines() if "│ Note " in row)
+        reopened.press(f"\x1b[<65;5;{outside_notes}M")
+        scrolled = reopened.expect(f"Note {last_note + 3}", also=("Note 5", "Reading history"), rows=17)["screen"]
         moved = next(i for i, row in enumerate(scrolled.splitlines()) if "Note 5" in row)
         assert moved == note_row - 3, scrolled
         assert "View thinking" not in scrolled
+        reopened.press("\x1b[6~")
         reopened.press("\x1b[6~")
         reopened.expect("Note 20", also=(answer,))
         reopened.press("\x1b[5~")
