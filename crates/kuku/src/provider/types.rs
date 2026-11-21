@@ -257,6 +257,9 @@ pub struct ProviderReport {
     pub model: Option<String>,
     /// Upstream provider name, when the gateway reports one.
     pub provider: Option<String>,
+    /// Whether the gateway used a customer-supplied upstream credential.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_byok: Option<bool>,
     /// Native service tier reported by the response.
     pub service_tier: Option<String>,
     /// Native reasoning setting reported by the response.

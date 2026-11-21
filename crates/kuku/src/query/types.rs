@@ -515,7 +515,7 @@ pub(super) enum PendingStep {
 
 #[derive(Default)]
 pub(super) struct RequestAccounting {
-    pub(super) pricing: Option<crate::config::ModelPricing>,
+    pub(super) pricing: crate::provider::cost::RequestPricing,
     pub(super) report: Option<crate::provider::ProviderReport>,
 }
 
@@ -524,7 +524,7 @@ impl RequestAccounting {
         &self,
         usage: Option<&crate::provider::ProviderUsage>,
     ) -> crate::provider::RequestCost {
-        crate::provider::cost::request_cost(self.pricing.as_ref(), usage, self.report.as_ref())
+        self.pricing.cost(usage, self.report.as_ref())
     }
 }
 

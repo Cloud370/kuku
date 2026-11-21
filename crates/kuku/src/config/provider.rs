@@ -67,6 +67,9 @@ pub struct ProviderOptions {
     /// Per-model USD accounting and price preferences.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub model_pricing: BTreeMap<String, super::ModelPricing>,
+    /// Public route price snapshots keyed by exact model ID.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_price_catalogs: BTreeMap<String, super::PriceCatalog>,
     /// Model declarations owned by this connection, keyed by the exact model identifier.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub model_capabilities: BTreeMap<String, super::ModelCapabilityEntry>,

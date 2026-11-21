@@ -151,6 +151,16 @@ fn request_headers(
     if prepared.kind == ProviderKind::Anthropic {
         headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
     }
+    if config.capabilities.profile == crate::config::ProviderProfile::OpenRouter
+        && url::Url::parse(&prepared.url)
+            .is_ok_and(|url| super::openrouter_catalog::is_official_openrouter(&url))
+        && !matches!(
+            config.options.model_pricing.get(&prepared.model),
+            Some(crate::config::ModelPricing::UsageOnly)
+        )
+    {
+        headers.insert("x-openrouter-metadata", HeaderValue::from_static("enabled"));
+    }
     if let Some(correlation) = &prepared.correlation_id {
         headers.insert(
             "x-session-id",

@@ -13,7 +13,7 @@ mod resolve;
 pub(crate) mod types;
 
 pub use mutate::{config_patch_defaults, generate_default, load_and_patch_config, set_value};
-pub use pricing::{ModelPricing, TokenRates};
+pub use pricing::{ConfiguredRouteRates, ModelPricing, PriceCatalog, RouteQuote, TokenRates};
 pub use provider::{
     OpenRouterPrice, OpenRouterRouting, PromptCacheScope, ProviderAuth, ProviderOptions,
     ProviderProfile, ProviderProxy, ProxyAuth,

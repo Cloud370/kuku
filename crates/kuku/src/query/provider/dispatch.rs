@@ -140,11 +140,12 @@ pub(super) async fn dispatch_provider_step(
                 provider_attempt,
                 stream_failure: None,
                 accounting: super::super::types::RequestAccounting {
-                    pricing: resolved_config
-                        .options
-                        .model_pricing
-                        .get(&resolved_config.model)
-                        .cloned(),
+                    pricing: crate::provider::cost::RequestPricing::new(
+                        &resolved_config.options,
+                        &prepared.model,
+                        &prepared.url,
+                        prepared.settings.service_tier.as_deref(),
+                    ),
                     ..Default::default()
                 },
                 accumulated_text: String::new(),
