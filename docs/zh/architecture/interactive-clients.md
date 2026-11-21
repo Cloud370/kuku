@@ -35,7 +35,7 @@ Rust 和 Web 用同一组命令、回执、观察事件及错误样例测试。s
 
 SDK 在每个边界按回执次序接纳符合条件的输入。即使先排了下一轮消息，后来发送的插话仍能进入当前 Turn 的下一 Step。provider 重试沿用已准备的 Step。打断绑定到用户观察到的那次执行。打断后，尚未接纳的输入保留在可见队列里，明确继续或再次发送后才推进。用户可按回执撤回仍在队列中的输入，已经接纳时返回实际状态。提问和授权都标明等待中的 Agent 及具体请求。一个窗口先答复，另一个窗口就会看到已经生效的结果。[Step 准备逻辑](../../../crates/kuku/src/query/frozen.rs) · [SDK 命令](../../../crates/kuku/src/session/runtime/mod.rs)
 
-连接时取得 Agent 快照及与它对应的已提交 Session 游标。先显示该边界处最近的一页历史，向上翻阅时加载更早的页，从游标之后跟随新提交。临时文本和工具进度关联到产生它们的 Agent 和执行，正式结果替换临时预览，按事件 ID 去重。观察者掉线或落后时从持久历史补齐。每次订阅都记录自己的目标，切换 Agent 后，旧订阅的迟到事件不会混入当前对话。展开大段工具输出时按 SDK 的输出 ID 和字节偏移续读。[SDK 观察接口](../../../crates/kuku/src/session/runtime/observe.rs) · [持久工具输出](../reference/tools.md)
+连接时取得 Agent 快照及与它对应的已提交 Session 游标。先显示该边界处最近的一页历史，向上翻阅时加载更早的页，从游标之后跟随新提交。临时文本和工具进度关联到产生它们的 Agent 和执行，正式结果替换临时预览，按事件 ID 去重。观察者掉线或落后时从持久历史补齐。每次订阅都记录自己的目标，切换 Agent 后，旧订阅的迟到事件不会混入当前对话。浏览器房间观察整个 Session 跨 Agent 的有序流，并通过过滤同一批条目得到每个 Agent 的镜头，因此切换视角不会另开订阅；按 Agent 的观察仍可供终端和按 Agent 过滤的历史读取使用。展开大段工具输出时按 SDK 的输出 ID 和字节偏移续读。[SDK 观察接口](../../../crates/kuku/src/session/runtime/observe.rs) · [持久工具输出](../reference/tools.md)
 
 接入正在运行的 Agent 时，先取得当前请求已流出的有界文本预览，再接收该次执行的后续更新。预览是临时数据。在 Turn 开始或之后的 Step 接纳输入时，都保留可信的发送 Agent 地址，供接收端显示来源。
 
@@ -76,7 +76,7 @@ SDK 在每个边界按回执次序接纳符合条件的输入。即使先排了�
 
 1. **打通共享执行路径。** 补齐 SDK 在 Step 和 Turn 边界的输入接纳，复用其观察、输出读取及待决回复接口。实现本地服务发现、server 契约和无界面的 Rust 客户端，再将 CLI 的执行和观察命令接入。同一改动中迁移仓库内调用方并移除被替换的路由或执行路径。验证首次发送重试、两个工作区共享服务、忙时投递和断开重连。[核心方向](core-direction.md)
 2. **交付默认终端入口。** 用 Ratatui 排版、Crossterm 接收终端事件。输入编辑和对话渲染独立于网络时机，通过共享客户端实现上面的日常操作。按需翻页读取旧历史，为视口缓存和实时更新设上限，流式输出期间维持阅读位置。正常退出和可处理的错误都恢复终端模式、光标及粘贴设置。[Crossterm 事件](https://docs.rs/crossterm/latest/crossterm/event/struct.EventStream.html) · [Ratatui TestBackend](https://docs.rs/ratatui/latest/ratatui/backend/struct.TestBackend.html)
-3. **交付安装后的使用体验。** 发行包从同一服务提供现有 WebUI。通过 `kuku web` 或 TUI 菜单打开浏览器，接入该服务，带上已选的工作区、Session 和 Agent。浏览器接入时完成认证，可复用的凭据不写入链接或日志。`kuku server` 继续提供显式运行服务的入口。浏览器共用寻址、状态、回复、插话与打断契约。验证在浏览器里接着处理 TUI 发起的工作，再回到终端。按已交付的入口更新安装、快速上手、CLI 和 server 参考文档，把新增检查接入项目已有验收入口。[现有 WebUI API](../../../apps/web/src/api) · [发行打包](../../../.github/workflows/release.yml) · [测试指南](../contributing/testing.md)
+3. **交付安装后的使用体验。** 发行包从同一服务提供现有 WebUI。通过 `kuku web` 或 TUI 菜单打开浏览器，接入该服务，带上已选的工作区、Session 和 Agent。浏览器接入时完成认证，可复用的凭据不写入链接或日志。`kuku server` 继续提供显式运行服务的入口。浏览器共用寻址、状态、回复、插话与打断契约。验证在浏览器里接着处理 TUI 发起的工作，再回到终端。按已交付的入口更新安装、快速上手、CLI 和 server 参考文档，把新增检查接入项目已有验收入口。浏览器自身的交互模型、token 系统与交付阶段归 [Web 客户端](web-client.md)。[现有 WebUI API](../../../apps/web/src/api) · [发行打包](../../../.github/workflows/release.yml) · [测试指南](../contributing/testing.md)
 
 ## 开发时如何测试
 
