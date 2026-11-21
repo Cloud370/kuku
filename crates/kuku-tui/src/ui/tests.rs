@@ -447,11 +447,13 @@ fn switching_agent_keeps_drafts_and_read_position_and_ignores_old_observer() {
         rewind_groups: Vec::new(),
         next_before: Some(1),
     };
-    app.update(Update::Loaded(
-        main_selection.clone(),
-        snapshot(&app, "running", json!(null), json!(null)),
-        page,
-    ));
+    let mut main_state = snapshot(&app, "running", json!(null), json!(null));
+    main_state.agents = serde_json::from_value(json!([
+        {"address":"main", "status":"running", "pending_inputs":0},
+        {"address":"reviewer", "status":"idle", "pending_inputs":0},
+    ]))
+    .unwrap();
+    app.update(Update::Loaded(main_selection.clone(), main_state, page));
     event(&mut app, Event::Paste("main-draft".into()));
     screen(&mut app, 79, 22);
     key(&mut app, KeyCode::PageUp, KeyModifiers::NONE);

@@ -9,7 +9,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::{Activity, App, OutputTokens, ServiceStatus, SubmissionStatus};
 use crate::keys::Shortcut;
 use crate::text::{compact_token_count, format_elapsed, shorten, shorten_middle, single_line};
-use crate::theme::{emphasis, ACCENT, ERROR, EXECUTION, MUTED, SURFACE_TEXT, WARNING};
+use crate::theme::{emphasis, ACCENT, ERROR, EXECUTION, MODEL, MUTED, SURFACE_TEXT, WARNING};
 
 mod clock;
 mod motion;
@@ -18,6 +18,7 @@ pub(crate) use clock::ActivityClock;
 use motion::Ring;
 
 const PHASE_SLOT: usize = 14;
+const RECIPIENT_SLOT: usize = 30;
 const TOOLS_SLOT: usize = 4;
 const METER_SLOT: usize = 11;
 const FEEDBACK_LIMIT: usize = 48;
@@ -190,6 +191,36 @@ pub(super) fn render_heading(
     width: usize,
     frame: ActivityFrame,
 ) -> (Line<'static>, Option<Range<usize>>) {
+    let Some(name) = app.visible_recipient().filter(|_| width > 0) else {
+        return (render_activity(app, width, frame), None);
+    };
+
+    let room = if width >= 24 {
+        (width - PHASE_SLOT).min(RECIPIENT_SLOT)
+    } else {
+        width
+    };
+    let (prefix, suffix) = match room {
+        16.. => ("Send to ", " ▾"),
+        8..=15 => ("To ", " ▾"),
+        _ => ("", ""),
+    };
+    let name = shorten_middle(&single_line(name), room - (prefix.width() + suffix.width()));
+    let label = format!("{prefix}{name}{suffix}");
+    let mut line = Line::styled(
+        label,
+        emphasis(if app.is_subagent() { MODEL } else { ACCENT }),
+    );
+    let span = 0..line.width();
+    if width > room + 2 {
+        line.push_span(" ".repeat(room + 2 - span.end));
+        line.spans
+            .extend(render_activity(app, width - room - 2, frame).spans);
+    }
+    (line, Some(span))
+}
+
+fn render_activity(app: &App, width: usize, frame: ActivityFrame) -> Line<'static> {
     let muted = Style::default().fg(MUTED);
     let feedback_limit = width
         .saturating_sub(PHASE_SLOT + 1)
@@ -199,9 +230,7 @@ pub(super) fn render_heading(
         .displayed_statusline()
         .composer_feedback(app, feedback_limit);
     let left_width = width - feedback.as_ref().map_or(0, |feedback| feedback.width() + 1);
-    let has_recipient = app.active.agent != "main" || app.related_agents.iter().next().is_some();
-    let render_metrics =
-        left_width >= PHASE_SLOT + TOOLS_SLOT + METER_SLOT + usize::from(has_recipient) * 12;
+    let render_metrics = left_width >= PHASE_SLOT + TOOLS_SLOT + METER_SLOT;
     let phase_width = if render_metrics {
         PHASE_SLOT
     } else {
@@ -263,32 +292,6 @@ pub(super) fn render_heading(
             caps.selectable_reasoning_efforts()
                 .any(|level| level != ThinkLevel::ProviderDefault.as_str())
         });
-    let recipient = if has_recipient {
-        let room = left_width.saturating_sub(line.width() + 2);
-        let name = single_line(&app.active.agent);
-        let room = if thinking && room >= key_width + 18 {
-            room - key_width
-        } else {
-            room
-        };
-        let room = room.min(32);
-        let label = if room >= 16 {
-            format!(
-                "Send to {} ▾",
-                shorten_middle(&name, room - "Send to  ▾".width())
-            )
-        } else {
-            format!("{} ▾", shorten_middle(&name, room.saturating_sub(2)))
-        };
-        (room >= 5).then(|| {
-            line.push_span("  ");
-            let start = line.width();
-            line.push_span(Span::styled(label, emphasis(ACCENT)));
-            start..line.width()
-        })
-    } else {
-        None
-    };
     if thinking && left_width.saturating_sub(line.width()) >= key_width {
         line.push_span("  ");
         line.push_span(Span::styled(key, Style::new().fg(SURFACE_TEXT)));
@@ -298,5 +301,5 @@ pub(super) fn render_heading(
         line.push_span(" ".repeat(width - line.width() - feedback.width()));
         line.push_span(feedback);
     }
-    (line, recipient)
+    line
 }

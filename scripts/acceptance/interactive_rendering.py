@@ -316,9 +316,12 @@ def targeted_delegation(client):
             scene = terminal.expect(action, state="╭─ Agent writer")["screen"]
             terminal.click_text(scene, action)
             back = terminal.expect("F2 Back", state="writer ▾", also=("Proof of delivery",))["screen"]
+            assert "Agent writer" in back.splitlines()[1], back
+            assert any("To writer ▾" in row or "Send to writer ▾" in row for row in back.splitlines()), back
             terminal.click_text(back, "F2 Back")
             terminal.press("\r")
-            terminal.expect("main ▾", state="Received the delegated document.")
+            main = terminal.expect("main ▾", state="Received the delegated document.")["screen"]
+            assert "Agent main" in main.splitlines()[1], main
         terminal.exit_cleanly()
     client.provider.assert_idle()
 

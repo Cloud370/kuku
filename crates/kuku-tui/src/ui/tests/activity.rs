@@ -191,6 +191,68 @@ fn narrow_composer_preserves_the_distinguishing_end_of_the_agent_address() {
 }
 
 #[test]
+fn selected_recipient_stays_visible_at_the_top_and_beside_the_draft() {
+    let mut app = app();
+    app.statusline_settings = StatusLineSettings::in_memory(StatusLine::parse("model").unwrap());
+    let main = app.active.clone();
+    app.select(main.clone(), true, "Shared title".into());
+    let reviewer = Address::new(main.session.clone(), "reviewer".into());
+    app.select(reviewer.clone(), true, "Shared title".into());
+
+    for width in [32, 80, 128] {
+        let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+        let mut phase_column = None;
+        for (address, accent, background) in [
+            (
+                reviewer.clone(),
+                crate::theme::MODEL,
+                crate::theme::SUBAGENT_SURFACE,
+            ),
+            (main.clone(), crate::theme::ACCENT, crate::theme::SURFACE),
+        ] {
+            app.select(address.clone(), true, "Shared title".into());
+            let buffer = terminal
+                .draw(|frame| super::super::render(frame, &mut app))
+                .unwrap()
+                .buffer;
+            let row = |y: u16| {
+                (0..width)
+                    .map(|x| buffer.cell((x, y)).unwrap().symbol())
+                    .collect::<String>()
+            };
+            assert!(
+                row(1).contains(&format!("Agent {}", address.agent)),
+                "{}",
+                row(1)
+            );
+            let to = app.recipient_area;
+            assert_eq!(to.x, app.composer_area.x);
+            assert!(
+                row(to.y).contains(&format!("to {} ▾", address.agent))
+                    || row(to.y).contains(&format!("To {} ▾", address.agent)),
+                "{}",
+                row(to.y)
+            );
+            assert_eq!(buffer.cell((to.x, to.y)).unwrap().fg, accent);
+            let edge = crate::theme::horizontal_gutter(width);
+            assert_eq!(buffer.cell((edge, to.y)).unwrap().fg, accent);
+            let right = width - edge - 1;
+            assert_eq!(buffer.cell((right, to.y)).unwrap().bg, background);
+            assert_eq!(
+                buffer.cell((right, app.composer_area.y)).unwrap().bg,
+                background
+            );
+            let heading = row(to.y);
+            let column = heading
+                .find(crate::theme::KUKU_MARK)
+                .unwrap_or_else(|| panic!("{heading}"));
+            let expected = phase_column.get_or_insert(column);
+            assert_eq!(column, *expected);
+        }
+    }
+}
+
+#[test]
 fn compact_heading_shows_only_real_parallel_tools_and_prefers_reported_output() {
     let mut app = app();
     app.select(app.active.clone(), true, "Live output".into());

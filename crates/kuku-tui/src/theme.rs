@@ -9,6 +9,7 @@ use ratatui::widgets::Padding;
 pub(crate) const ACCENT: Color = Color::Rgb(70, 161, 163);
 pub(crate) const MUTED: Color = Color::Rgb(133, 146, 157);
 pub(crate) const SURFACE: Color = Color::Rgb(38, 48, 58);
+pub(crate) const SUBAGENT_SURFACE: Color = Color::Rgb(30, 37, 50);
 pub(crate) const SURFACE_TEXT: Color = Color::Rgb(229, 236, 240);
 pub(crate) const SUCCESS: Color = Color::Rgb(152, 202, 162);
 pub(crate) const WARNING: Color = Color::Rgb(232, 191, 122);
@@ -22,6 +23,10 @@ pub(crate) fn emphasis(color: Color) -> Style {
 
 pub(crate) fn surface() -> Style {
     Style::default().fg(SURFACE_TEXT).bg(SURFACE)
+}
+
+pub(crate) fn composer_surface(subagent: bool) -> Style {
+    surface().bg(if subagent { SUBAGENT_SURFACE } else { SURFACE })
 }
 
 pub(crate) fn selection() -> Style {

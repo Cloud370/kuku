@@ -43,6 +43,22 @@ impl App {
         self.begin_observing();
     }
 
+    pub(crate) fn is_subagent(&self) -> bool {
+        self.active.agent != super::DEFAULT_AGENT
+    }
+
+    pub(crate) fn visible_recipient(&self) -> Option<&str> {
+        (self.is_subagent()
+            || self.previous_agent().is_some()
+            || self.related_agents.iter().next().is_some()
+            || self
+                .pane()
+                .snapshot
+                .as_ref()
+                .is_some_and(|state| state.agents.len() > 1))
+        .then_some(self.active.agent.as_str())
+    }
+
     pub(crate) fn previous_agent(&self) -> Option<&Address> {
         self.navigation.previous.as_ref().filter(|address| {
             address.session == self.active.session

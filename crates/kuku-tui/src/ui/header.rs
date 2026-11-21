@@ -10,7 +10,7 @@ use crate::contextual::ContextControl;
 use crate::keys::Shortcut;
 use crate::markup::{render_literal, wrap};
 use crate::text::{shorten, shorten_middle, single_line, single_line_path};
-use crate::theme::{emphasis, ACCENT, KUKU_MARK, MODEL, MUTED, WARNING};
+use crate::theme::{emphasis, ACCENT, KUKU_MARK, MODEL, MUTED, TURN_CARD, WARNING};
 
 const BRAND: &str = "kuku";
 const SEPARATOR: &str = " · ";
@@ -22,6 +22,11 @@ const WELCOME_SKILL_ROWS: usize = 2;
 const WELCOME_SKILL_INDENT: &str = "  ";
 const SESSION_PREFIX_WIDTH: usize = 39;
 const TITLE_RESERVE: usize = 9;
+const MIN_AGENT_TITLE: u16 = 22;
+
+pub(super) fn session_rows(app: &App, height: u16) -> u16 {
+    1 + u16::from(height >= 5 && app.visible_recipient().is_some())
+}
 
 pub(super) fn render_session(
     frame: &mut Frame<'_>,
@@ -30,6 +35,18 @@ pub(super) fn render_session(
     following: bool,
     tool_hint: Option<&str>,
 ) -> Option<Rect> {
+    let mut recipient = app.visible_recipient().map(single_line);
+    if area.height > 1 {
+        if let Some(name) = recipient.take() {
+            render_agent(
+                frame,
+                Rect::new(area.x, area.y + 1, area.width, 1),
+                &name,
+                app,
+            );
+        }
+    }
+    let area = Rect { height: 1, ..area };
     let width = usize::from(area.width);
     let messages_label = if width >= 72 {
         " Messages "
@@ -58,7 +75,8 @@ pub(super) fn render_session(
         let chip_width = u16::try_from(super::contextual::label(control).width())
             .unwrap_or(u16::MAX)
             .min(right.saturating_sub(area.x));
-        if chip_width == 0 {
+        let remaining = right.saturating_sub(area.x).saturating_sub(chip_width + 1);
+        if chip_width == 0 || (recipient.is_some() && remaining < MIN_AGENT_TITLE) {
             continue;
         }
         right = right.saturating_sub(chip_width);
@@ -76,6 +94,18 @@ pub(super) fn render_session(
     };
     let content_width = usize::from(title_area.width);
     let mut line = wordmark(content_width >= SESSION_PREFIX_WIDTH);
+    if let Some(name) = recipient {
+        let available = content_width.saturating_sub(line.width() + SEPARATOR.width());
+        let prefix = if available >= 10 { "Agent " } else { "" };
+        let name = shorten_middle(&name, available - prefix.width());
+        let color = if app.is_subagent() { MODEL } else { ACCENT };
+        append(
+            &mut line,
+            &format!("{prefix}{name}"),
+            content_width,
+            emphasis(color),
+        );
+    }
     let id: String = single_line(&app.active.session).chars().take(8).collect();
     let identity = if content_width >= SESSION_PREFIX_WIDTH {
         format!("Session {id}")
@@ -91,13 +121,15 @@ pub(super) fn render_session(
     let title = single_line(&app.pane().title);
     let room = content_width.saturating_sub(line.width() + TITLE_RESERVE);
     let primary_hint = following.then_some(tool_hint).flatten();
-    let navigation = if app
-        .pane()
-        .snapshot
-        .as_ref()
-        .is_some_and(|snapshot| snapshot.agents.len() > 1)
+    let switch_hint = "Alt+←/→ Switch · /agents";
+    let navigation = if switch_hint.width() <= room
+        && app
+            .pane()
+            .snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.agents.len() > 1)
     {
-        "Alt+←/→ Switch · /agents"
+        switch_hint
     } else {
         "/agents"
     };
@@ -127,6 +159,18 @@ pub(super) fn render_session(
         );
     }
     messages_area
+}
+
+fn render_agent(frame: &mut Frame<'_>, area: Rect, name: &str, app: &App) {
+    let color = if app.is_subagent() { MODEL } else { ACCENT };
+    let width = usize::from(area.width);
+    let prefix = if width >= 14 { "│  Agent " } else { "│ " };
+    let mut line = Line::styled(shorten(prefix, width), Style::new().fg(color));
+    line.push_span(Span::styled(
+        shorten_middle(name, width.saturating_sub(line.width())),
+        emphasis(color),
+    ));
+    frame.render_widget(Paragraph::new(line).style(Style::new().bg(TURN_CARD)), area);
 }
 
 pub(super) fn render_welcome(frame: &mut Frame<'_>, area: Rect, app: &App, show_problem: bool) {

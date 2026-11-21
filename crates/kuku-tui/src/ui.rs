@@ -14,9 +14,9 @@ use crate::menu::{ChoiceKind, Picker, PickerKind, Prompt, PromptKind};
 use crate::output::OutputViewer;
 use crate::text::{shorten, single_line};
 use crate::theme::{
-    composer_padding, emphasis, focused_row, horizontal_gutter, panel, panel_padding, surface,
-    ACCENT, ERROR, MAX_DRAFT_ROWS, MUTED, OUTPUT_WIDTH, PICKER_HEIGHT, PICKER_WIDTH,
-    SHORT_PROMPT_HEIGHT, STATUS_EDITOR_HEIGHT, WARNING,
+    composer_padding, composer_surface, emphasis, focused_row, horizontal_gutter, panel,
+    panel_padding, ACCENT, ERROR, MAX_DRAFT_ROWS, MODEL, MUTED, OUTPUT_WIDTH, PICKER_HEIGHT,
+    PICKER_WIDTH, SHORT_PROMPT_HEIGHT, STATUS_EDITOR_HEIGHT, WARNING,
 };
 
 mod activity;
@@ -97,11 +97,18 @@ pub(crate) fn render_at(
     let unobstructed = app.modal.is_none();
     let anchored = app.modal.as_ref().is_some_and(Modal::composer_anchored);
     let focused = unobstructed && app.composer_focused();
-    let mut composer = Block::new().style(surface());
+    let composer_edge = if app.is_subagent() {
+        MODEL
+    } else if focused || anchored {
+        ACCENT
+    } else {
+        MUTED
+    };
+    let mut composer = Block::new().style(composer_surface(app.is_subagent()));
     if area.width >= 4 {
         composer = composer
             .borders(Borders::LEFT)
-            .border_style(Style::default().fg(if focused || anchored { ACCENT } else { MUTED }))
+            .border_style(Style::default().fg(composer_edge))
             .padding(padding);
     }
     let composer_content = composer.inner(area);
@@ -167,7 +174,7 @@ pub(crate) fn render_at(
             Constraint::Length(status_height),
         ])
         .areas(area);
-    let row_insets = render_transcript(
+    let (transcript_body, row_insets) = render_transcript(
         frame,
         transcript,
         composer_content,
@@ -362,7 +369,11 @@ pub(crate) fn render_at(
         }
     }
     let main_areas = [
-        transcript,
+        Rect {
+            height: transcript_body.y - transcript.y,
+            ..transcript
+        },
+        transcript_body,
         banner_area,
         request_area,
         delivery_area,
@@ -375,7 +386,7 @@ pub(crate) fn render_at(
         app.text_selection.render(
             frame.buffer_mut(),
             &main_areas,
-            Some((transcript, row_insets)),
+            Some((transcript_body, row_insets)),
         );
     }
     let modal_area = if anchored {
@@ -398,13 +409,17 @@ fn render_transcript(
     app: &mut App,
     show_service_problem: bool,
     activity: &ActivityFrame,
-) -> Vec<u16> {
+) -> (Rect, Vec<u16>) {
     if area.is_empty() {
         app.text_selection.set_messages_area(None);
         app.transcript_area = (usize::from(area.width).max(1), 1);
-        return Vec::new();
+        return (area, Vec::new());
     }
-    let [header, body] = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
+    let [header, body] = Layout::vertical([
+        Constraint::Length(header::session_rows(app, area.height)),
+        Constraint::Min(0),
+    ])
+    .areas(area);
     let (width, height) = (usize::from(body.width), usize::from(body.height));
     app.transcript_area = (width.max(1), height.max(1));
     let transcript = &mut app
@@ -436,7 +451,7 @@ fn render_transcript(
             area.height,
         );
         header::render_welcome(frame, welcome, app, show_service_problem);
-        return Vec::new();
+        return (area, Vec::new());
     }
     if view.lines.is_empty() && height > 0 {
         view.lines = header::empty_notice(app, width, show_service_problem);
@@ -456,8 +471,7 @@ fn render_transcript(
         }
     }
     frame.render_widget(Paragraph::new(view.lines), body);
-    view.row_insets.insert(0, 0);
-    view.row_insets
+    (body, view.row_insets)
 }
 
 fn banner(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
