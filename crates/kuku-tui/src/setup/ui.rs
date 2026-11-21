@@ -361,12 +361,9 @@ fn render_review(
     };
     render_line(frame, area, row, Line::styled(title, emphasis(ACCENT)));
     *row += 1;
-    let role = if state.intent == SetupIntent::Default {
-        "Default"
-    } else {
-        "Model"
-    };
-    summary_row(frame, area, row, role, &model, None);
+    if models.len() > 1 && state.intent == SetupIntent::Default {
+        summary_row(frame, area, row, "Default", &model, None);
+    }
     if let Ok(url) = state.request_url() {
         summary_row(
             frame,
@@ -384,44 +381,31 @@ fn render_review(
         } else {
             attention.then_some(WARNING)
         };
-        summary_row(
-            frame,
-            area,
-            row,
-            if testing { "Progress" } else { "Tests" },
-            &progress,
-            color,
-        );
+        summary_row(frame, area, row, "Progress", &progress, color);
     }
     render_review_warnings(frame, area, row, settings, state, mode);
     let menu_rows = u16::try_from(state.review_choices(mode).len()).unwrap_or(area.height);
     let reserved = menu_rows + 1 + u16::from(state.problem.is_some());
     let room = area.height.saturating_sub(*row + reserved);
     let connection = state.connection(settings).ok();
-    if models.len() > 1 {
-        super::probes::render_model_overview(
-            frame,
-            area,
-            row,
-            &state.trials,
-            &models,
-            connection.as_ref(),
-            room,
-        );
-    } else {
-        let levels = connection
-            .as_ref()
-            .and_then(|connection| super::probes::usable_levels(&state.trials, connection, &model));
-        if testing {
-            let activity_room = room.saturating_sub(u16::from(levels.is_some() && room > 1));
-            super::probes::render_activity(frame, area, row, &state.trials, activity_room);
-        }
-        if let Some(levels) = levels.filter(|_| area.height.saturating_sub(*row) > reserved) {
-            summary_row(frame, area, row, "Usable", &levels, Some(SUCCESS));
-        }
-    }
+    super::probes::render_model_overview(
+        frame,
+        area,
+        row,
+        &state.trials,
+        &models,
+        connection.as_ref(),
+        room,
+    );
     *row += 1;
-    review_menu(frame, area, row, state, mode, |_| None);
+    review_menu(frame, area, row, state, mode, |action| {
+        (testing
+            && matches!(
+                action,
+                ReviewAction::Save | ReviewAction::SaveAndContinue | ReviewAction::SaveAndExit
+            ))
+        .then_some("Stops pending tests")
+    });
 }
 
 fn render_review_warnings(

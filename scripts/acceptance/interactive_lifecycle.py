@@ -362,6 +362,7 @@ def setup_probe_progress(binary, bridge, directory):
         ("gamma", "medium"), ("alpha", "high"),
     )}
     release_requests = threading.Event()
+    release_beta_effort = threading.Event()
     rate_request_started = threading.Event()
     allow_rate_limit = threading.Event()
     runtime_requests = []
@@ -399,7 +400,8 @@ def setup_probe_progress(binary, bridge, directory):
         trials.append((model, effort, time.monotonic()))
         if (model, effort) in held_requests:
             held_requests[model, effort].set()
-            release_requests.wait(20)
+            completion_gate = release_beta_effort if (model, effort) == ("beta", "low") else release_requests
+            completion_gate.wait(20)
         if effort == "__kuku_unknown_effort__":
             return json_response({"error": {"param": "reasoning_effort", "allowed_values": ["none", "high", "max"]}}, 400)
         if model == "alpha" and effort == "none" and sum(row[:2] == ("alpha", "none") for row in trials) == 1:
@@ -417,6 +419,23 @@ def setup_probe_progress(binary, bridge, directory):
         })
 
     instance.provider.dispatch = dispatch
+
+    def overview_layout(screen):
+        lines = screen.splitlines()
+        heading = next(index for index, line in enumerate(lines) if "Status" in line and "Usable" in line)
+        status_column = lines[heading].index("Status")
+        usable_column = lines[heading].index("Usable")
+        model_rows = {model: next(index for index, line in enumerate(lines)
+                                  if line.strip(" │").startswith(model + " "))
+                      for model in ("alpha", "beta", "gamma")}
+        menu = next(index for index, line in enumerate(lines) if "› Save and continue" in line)
+        return heading, status_column, usable_column, model_rows, menu
+
+    def model_cells(screen, model):
+        _, status_column, usable_column, model_rows, _ = overview_layout(screen)
+        line = screen.splitlines()[model_rows[model]]
+        return line[status_column:usable_column].strip(), line[usable_column:].strip(" │")
+
     try:
         with instance as client:
             config = client.home / "config.toml"
@@ -446,17 +465,20 @@ def setup_probe_progress(binary, bridge, directory):
                 terminal.press("\r")
                 save_activity = terminal.expect(
                     "Testing models", rows=20,
-                    also=("Progress", "3 selected", "6 running", "1 queued", "› Save and continue", "Model tests", "Settings", "Esc previous step"),
+                    also=("Progress", "3 selected", "6 running", "1 queued", "Status", "Usable", "› Save and continue", "Model tests", "Settings", "Esc previous step"),
                 )["screen"]
                 assert all(event.wait(5) for event in held_requests.values()), trials
                 assert rate_request_started.wait(5), trials
-                model_rows = [next(line for line in save_activity.splitlines() if line.strip(" │").startswith(model + " "))
-                              for model in ("alpha", "beta", "gamma")]
-                assert all("2 running" in line for line in model_rows), save_activity
-                assert "Text, Think low" in model_rows[1] and "Text, Think medium" in model_rows[2], save_activity
+                assert model_cells(save_activity, "alpha") == ("Thinking", "—"), save_activity
+                assert all(model_cells(save_activity, model) == ("Text, Thinking", "—")
+                           for model in ("beta", "gamma")), save_activity
                 assert save_activity.splitlines()[-2].startswith("│Esc previous step")
                 allow_rate_limit.set()
                 save_retry = terminal.expect("Retry in", also=("5 running", "2 waiting"), rows=20)["screen"]
+                release_beta_effort.set()
+                partial = terminal.expect("Testing models", also=("low", "4 running", "2 waiting"), rows=20)["screen"]
+                assert model_cells(partial, "beta") == ("Text", "low"), partial
+                assert overview_layout(save_activity) == overview_layout(save_retry) == overview_layout(partial)
                 terminal.press("\x1b[B\r")
                 progress = terminal.expect(
                     "Retry in", also=("Thinking none", "Text reply", "Testing", "API listed 3 values", "Esc previous step"), rows=20,
@@ -475,10 +497,12 @@ def setup_probe_progress(binary, bridge, directory):
                 terminal.expect("Thinking medium", also=("gamma",))
                 terminal.press("\x1b")
                 save_results = terminal.expect(
-                    "Save setup", also=("› Save and continue", "Usable · none, max", "Usable · low", "Usable · medium", "3 models"),
+                    "Save setup", also=("› Save and continue", "Usable", "none, max", "low", "medium", "3 models"),
                     absent=("Retry in",), rows=20,
                 )["screen"]
-                assert all(model in save_results for model in ("alpha", "beta", "gamma")), save_results
+                assert overview_layout(save_activity) == overview_layout(save_results)
+                for model, levels in (("alpha", "none, max"), ("beta", "low"), ("gamma", "medium")):
+                    assert model_cells(save_results, model) == ("Done", levels), save_results
                 assert save_results.splitlines()[-2].startswith("│Esc previous step")
                 terminal.press("\x1b[B\x1b[B\r")
                 terminal.expect("› Thinking")
@@ -499,11 +523,12 @@ def setup_probe_progress(binary, bridge, directory):
                 retry_times = [stamp for model, effort, stamp in trials if (model, effort) == ("alpha", "none")]
                 assert len(retry_times) == 2 and retry_times[1] - retry_times[0] >= 2
                 terminal.exit_cleanly()
-            report = {"discovery": discovery, "save_activity": save_activity, "save_retry": save_retry, "save_results": save_results, "countdown": progress, "results": finished, "confirmed_in_flight": 6, "requests": [(m, e) for m, e, _ in trials], "runtime": runtime_requests}
+            report = {"discovery": discovery, "save_activity": save_activity, "save_retry": save_retry, "save_partial": partial, "save_results": save_results, "countdown": progress, "results": finished, "confirmed_in_flight": 6, "requests": [(m, e) for m, e, _ in trials], "runtime": runtime_requests}
             (client.directory / "probe-progress.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     finally:
         release.set()
         allow_rate_limit.set()
+        release_beta_effort.set()
         release_requests.set()
 
 

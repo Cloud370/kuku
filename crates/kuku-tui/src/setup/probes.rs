@@ -6,7 +6,8 @@ use kuku::adapter::{
 };
 use kuku::config::{ProviderConfig, ProviderProxy};
 use kuku::event::ModelStopReason;
-use ratatui::{layout::Rect, Frame};
+use ratatui::{layout::Rect, style::Color, Frame};
+use unicode_width::UnicodeWidthStr;
 
 use crate::text::shorten_middle;
 use crate::theme::{ACCENT, MUTED, SUCCESS, WARNING};
@@ -107,89 +108,6 @@ fn render_heading(
     }
 }
 
-pub(super) fn render_activity(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    row: &mut u16,
-    batch: &ProbeBatch,
-    room: u16,
-) {
-    if room == 0 {
-        return;
-    }
-    let mut active = batch
-        .rows()
-        .iter()
-        .filter(|request| {
-            matches!(
-                request.progress,
-                ProbeProgress::Waiting(_) | ProbeProgress::RetryWaiting { sent: true, .. }
-            )
-        })
-        .peekable();
-    if active.peek().is_none() {
-        if let Some(request) = batch.rows().iter().find(|request| {
-            matches!(
-                request.progress,
-                ProbeProgress::RetryWaiting { sent: false, .. }
-            )
-        }) {
-            activity_line(frame, area, row, request);
-        }
-        return;
-    }
-    for request in active
-        .by_ref()
-        .take(usize::from(room.saturating_sub(1).max(1)))
-    {
-        activity_line(frame, area, row, request);
-    }
-    if room > 1 {
-        let other = active.count();
-        let queued = batch
-            .rows()
-            .iter()
-            .filter(|request| {
-                matches!(
-                    request.progress,
-                    ProbeProgress::Queued | ProbeProgress::RetryWaiting { sent: false, .. }
-                )
-            })
-            .count();
-        let note = match (other, queued) {
-            (0, 0) => "Save stops tests".into(),
-            (0, queued) => format!("{queued} queued · Save stops tests"),
-            (other, 0) => format!("{other} more running · Save stops tests"),
-            (other, queued) => format!("{other} more running · {queued} queued"),
-        };
-        line(frame, area, row, &format!("  {note}"), MUTED);
-    }
-}
-
-fn activity_line(frame: &mut Frame<'_>, area: Rect, row: &mut u16, request: &ProbeRow) {
-    let (text, color) = match request.progress {
-        ProbeProgress::RetryWaiting { until, sent } => {
-            let action = if sent { "Retry" } else { "Start" };
-            (
-                format!(
-                    "… {action} in {}s · {}",
-                    seconds_until(until),
-                    label_for(&request.probe)
-                ),
-                WARNING,
-            )
-        }
-        _ => (format!("… {}", label_for(&request.probe)), ACCENT),
-    };
-    line(
-        frame,
-        area,
-        row,
-        &shorten_middle(&text, usize::from(area.width)),
-        color,
-    );
-}
-
 pub(super) fn render_model_overview(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -199,167 +117,203 @@ pub(super) fn render_model_overview(
     connection: Option<&ProviderConfig>,
     room: u16,
 ) {
-    let room = usize::from(room);
+    if models.is_empty() || room == 0 {
+        return;
+    }
+    if room == 1 {
+        let label = if batch.rows().is_empty() {
+            "models selected"
+        } else {
+            "models · See Model tests"
+        };
+        line(
+            frame,
+            area,
+            row,
+            &format!("{} {label}", models.len()),
+            MUTED,
+        );
+        return;
+    }
+
+    let name_limit = usize::from(area.width.saturating_sub(37)).clamp(10, 30);
+    let name_width = models
+        .iter()
+        .map(|name| name.width())
+        .max()
+        .unwrap_or(0)
+        .clamp(10, name_limit) as u16;
+    let status_width = 16;
+    let status_offset = name_width + 2;
+    let levels_offset = status_offset + status_width + 2;
+    let name_area = Rect::new(area.x, area.y, name_width, area.height);
+    let status_area = Rect::new(area.x + status_offset, area.y, status_width, area.height);
+    let levels_area = Rect::new(
+        area.x + levels_offset,
+        area.y,
+        area.width.saturating_sub(levels_offset),
+        area.height,
+    );
+    overview_row(
+        frame,
+        [name_area, status_area, levels_area],
+        row,
+        [("Model", MUTED), ("Status", MUTED), ("Usable", MUTED)],
+    );
+
+    let room = usize::from(room - 1);
     let visible = if models.len() > room {
-        room.saturating_sub(1)
+        room - 1
     } else {
         models.len()
     };
-    let hidden = models.len() - visible;
-    let mut extra = room.saturating_sub(visible + usize::from(hidden > 0));
-    let name_width = (area.width / 3).clamp(16, 28);
-    let name_area = Rect::new(area.x, area.y, name_width, area.height);
-    let status_area = Rect::new(
-        area.x + name_width + 2,
-        area.y,
-        area.width.saturating_sub(name_width + 2),
-        area.height,
-    );
     for model in models.iter().take(visible) {
         let requests = batch
             .rows()
             .iter()
-            .filter(|request| request.probe.model() == Some(model.as_str()))
-            .collect::<Vec<_>>();
-        let levels = connection.and_then(|connection| usable_levels(batch, connection, model));
-        let separate_levels = extra > 0 && levels.is_some();
-        let (status, color) =
-            model_status(&requests, levels.as_deref().filter(|_| !separate_levels));
-        let status = shorten_middle(&status, usize::from(status_area.width));
-        let mut name_row = *row;
+            .filter(|request| request.probe.model() == Some(model.as_str()));
+        let (status, color) = model_status(requests, usize::from(status_area.width));
+        let test = connection.and_then(|connection| batch.thinking_test(connection, model));
+        let levels = test
+            .as_ref()
+            .map(|test| {
+                test.accepted
+                    .iter()
+                    .filter(|level| !test.rejected.contains(level))
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let (usable, usable_color) = if levels.is_empty() {
+            ("—".into(), MUTED)
+        } else {
+            (
+                fit_items(&levels, usize::from(levels_area.width), ", "),
+                SUCCESS,
+            )
+        };
+        let name = shorten_middle(model, usize::from(name_width));
+        overview_row(
+            frame,
+            [name_area, status_area, levels_area],
+            row,
+            [(&name, ACCENT), (&status, color), (&usable, usable_color)],
+        );
+    }
+    if visible < models.len() {
+        let hint = if batch.rows().is_empty() {
+            "more models"
+        } else {
+            "more in Model tests"
+        };
         line(
             frame,
-            name_area,
-            &mut name_row,
-            &shorten_middle(model, usize::from(name_width)),
-            ACCENT,
+            area,
+            row,
+            &format!("+{} {hint}", models.len() - visible),
+            MUTED,
         );
-        line(frame, status_area, row, &status, color);
-        if let Some(levels) = levels.filter(|_| separate_levels) {
-            let note = shorten_middle(
-                &format!("Usable · {levels}"),
-                usize::from(status_area.width),
-            );
-            line(frame, status_area, row, &note, SUCCESS);
-            extra -= 1;
-        }
-    }
-    if hidden > 0 && room > 0 {
-        let hint = if batch.rows().is_empty() {
-            " more models"
-        } else {
-            " more in Model tests"
-        };
-        line(frame, area, row, &format!("+{hidden}{hint}"), MUTED);
-    } else if extra > 0 && batch.pending() {
-        line(frame, area, row, "Save stops tests", MUTED);
     }
 }
 
-pub(super) fn usable_levels(
-    batch: &ProbeBatch,
-    connection: &ProviderConfig,
-    model: &str,
-) -> Option<String> {
-    let test = batch.thinking_test(connection, model)?;
-    let levels = test
-        .accepted
-        .iter()
-        .filter(|level| !test.rejected.contains(level))
-        .map(String::as_str)
-        .collect::<Vec<_>>();
-    (!levels.is_empty()).then(|| levels.join(", "))
+fn overview_row(
+    frame: &mut Frame<'_>,
+    columns: [Rect; 3],
+    row: &mut u16,
+    cells: [(&str, Color); 3],
+) {
+    for (area, (text, color)) in columns.into_iter().zip(cells) {
+        let mut cell_row = *row;
+        line(frame, area, &mut cell_row, text, color);
+    }
+    *row += 1;
 }
 
-fn model_status(requests: &[&ProbeRow], levels: Option<&str>) -> (String, ratatui::style::Color) {
-    if requests.is_empty() {
-        return ("Not tested".into(), MUTED);
+fn fit_items(items: &[&str], width: usize, separator: &str) -> String {
+    let text = items.join(separator);
+    if text.width() <= width {
+        return text;
     }
-    let running = requests
-        .iter()
-        .filter(|request| matches!(request.progress, ProbeProgress::Waiting(_)))
-        .collect::<Vec<_>>();
-    let retry = requests
-        .iter()
-        .filter_map(|request| match request.progress {
-            ProbeProgress::RetryWaiting { until, sent: true } => Some((until, *request)),
-            _ => None,
-        })
-        .min_by_key(|(until, _)| *until);
-    let queued = requests
-        .iter()
-        .find(|request| matches!(request.progress, ProbeProgress::Queued));
-    let waiting = requests
-        .iter()
-        .filter_map(|request| match request.progress {
-            ProbeProgress::RetryWaiting { until, .. } => Some((until, *request)),
-            _ => None,
-        })
-        .min_by_key(|(until, _)| *until);
-    let done = requests
-        .iter()
-        .filter(|request| finished(&request.progress))
-        .count();
-
-    let (mut detail, color) = if let Some((until, request)) = retry {
-        let mut status = format!(
-            "Retry in {}s · {}",
-            seconds_until(until),
-            compact_check(&request.probe)
+    for visible in (1..items.len()).rev() {
+        let text = format!(
+            "{} +{}",
+            items[..visible].join(separator),
+            items.len() - visible
         );
-        if !running.is_empty() {
-            status.push_str(&format!(" · {} running", running.len()));
+        if text.width() <= width {
+            return text;
         }
-        (status, WARNING)
-    } else if !running.is_empty() {
-        let checks = running
-            .iter()
-            .take(2)
-            .map(|request| compact_check(&request.probe))
-            .collect::<Vec<_>>()
-            .join(", ");
-        (format!("{} running · {checks}", running.len()), ACCENT)
-    } else if let Some((until, request)) = waiting {
-        (
-            format!(
-                "Start in {}s · {}",
-                seconds_until(until),
-                compact_check(&request.probe)
-            ),
-            WARNING,
-        )
-    } else if let Some(request) = queued {
-        (format!("Queued · {}", compact_check(&request.probe)), MUTED)
-    } else if requests.iter().any(|request| needs_attention(request)) {
-        (format!("{done} done · Check results"), WARNING)
+    }
+    format!("{} available", items.len())
+}
+
+fn model_status<'a>(requests: impl Iterator<Item = &'a ProbeRow>, width: usize) -> (String, Color) {
+    let mut phases = [false; 5];
+    let mut retry = None;
+    let mut waiting = None;
+    let mut queued = false;
+    let mut done = false;
+    let mut stopped = false;
+    let mut attention = false;
+    for request in requests {
+        match request.progress {
+            ProbeProgress::Waiting(_) => phases[phase(&request.probe)] = true,
+            ProbeProgress::RetryWaiting { until, sent } => {
+                let timer = if sent { &mut retry } else { &mut waiting };
+                *timer =
+                    Some(timer.map_or(until, |previous: std::time::Instant| previous.min(until)));
+            }
+            ProbeProgress::Queued => queued = true,
+            ProbeProgress::Finished(..) => {
+                done = true;
+                attention |= needs_attention(request);
+            }
+            ProbeProgress::Canceled { .. } => stopped = true,
+        }
+    }
+    if let Some(until) = retry {
+        return (format!("Retry in {}s", seconds_until(until)), WARNING);
+    }
+    let active = ["API type", "Text", "Thinking", "Image", "Pricing"]
+        .into_iter()
+        .zip(phases)
+        .filter_map(|(name, running)| running.then_some(name))
+        .collect::<Vec<_>>();
+    if !active.is_empty() {
+        return (fit_items(&active, width, ", "), ACCENT);
+    }
+    if let Some(until) = waiting {
+        return (format!("Start in {}s", seconds_until(until)), WARNING);
+    }
+    if queued {
+        return ("Queued".into(), MUTED);
+    }
+    if attention {
+        return ("Check results".into(), WARNING);
+    }
+    let status = if stopped {
+        "Stopped"
+    } else if done {
+        "Done"
     } else {
-        (format!("{done} done"), MUTED)
+        "Not tested"
     };
-    if let Some(levels) = levels {
-        detail.push_str(&format!(" · Usable {levels}"));
-    }
-    (detail, color)
+    (status.into(), MUTED)
 }
 
-fn compact_check(probe: &Probe) -> String {
+fn phase(probe: &Probe) -> usize {
     match probe {
-        Probe::Thinking {
-            check: ReasoningCheck::Discover,
-            ..
-        } => "Find levels".into(),
-        Probe::Thinking {
-            check: ReasoningCheck::Level(level),
-            ..
-        } => format!("Think {level}"),
+        Probe::ApiType { .. } => 0,
         Probe::Trial {
-            check: ModelTrial::Text { effort: None, .. },
+            check: ModelTrial::Text { .. },
             ..
-        } => "Text".into(),
+        } => 1,
+        Probe::Thinking { .. } => 2,
         Probe::Trial {
             check: ModelTrial::ImageInput { .. },
             ..
-        } => "Image".into(),
-        _ => check_label(probe),
+        } => 3,
+        Probe::Quotes { .. } | Probe::Catalog(_) => 4,
     }
 }
 
@@ -524,13 +478,8 @@ fn activity_summary(batch: &ProbeBatch) -> String {
         };
         counts[stage] += 1;
     }
-    counts
-        .into_iter()
-        .zip(["done", "running", "queued", "waiting"])
-        .filter(|(count, _)| *count > 0)
-        .map(|(count, state)| format!("{count} {state}"))
-        .collect::<Vec<_>>()
-        .join(" · ")
+    let [done, running, queued, waiting] = counts;
+    format!("{done:>2} done  {running:>2} running  {queued:>2} queued  {waiting:>2} waiting")
 }
 
 pub(super) fn review_status(batch: &ProbeBatch) -> (String, bool) {
