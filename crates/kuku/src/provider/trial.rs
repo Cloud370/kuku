@@ -4,6 +4,7 @@ use std::time::Duration;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use flate2::{write::ZlibEncoder, Compression};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio_stream::StreamExt;
 
@@ -14,7 +15,10 @@ use super::capabilities::resolve_settings;
 use super::cost::{request_cost, RequestCost};
 use super::prepare::{apply_settings, request_url};
 use super::report::{normalize_usage, ReportAccumulator};
-use super::types::{PreparedProviderRequest, ProviderKind, ResolvedProvider, SecretString};
+use super::types::{
+    PreparedProviderRequest, ProviderKind, ProviderReport, ProviderUsage, ResolvedProvider,
+    SecretString,
+};
 
 pub const TRIAL_OUTPUT_TOKENS: u32 = 128;
 const TRIAL_TIMEOUT: Duration = Duration::from_secs(15);
@@ -40,12 +44,17 @@ pub enum ModelTrial {
     },
 }
 
-#[derive(Debug, Clone)]
+/// Timing-independent trial evidence a host can retain or render.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrialResult {
     pub text_returned: bool,
     pub observed_reasoning: bool,
     pub reported_effort: Option<String>,
     pub image_match: Option<bool>,
+    pub expected_colors: Option<[String; 4]>,
+    pub observed_colors: Vec<String>,
+    pub usage: Option<ProviderUsage>,
+    pub provider_report: Option<ProviderReport>,
     pub cost: RequestCost,
 }
 
@@ -234,12 +243,18 @@ fn interpret_trial(
                 .and_then(Value::as_u64)
                 .is_some_and(|count| count > 0)
         });
-    let image_match = expected.map(|expected| {
-        text.split(|character: char| !character.is_ascii_alphabetic())
-            .filter(|part| !part.is_empty())
-            .map(str::to_ascii_lowercase)
-            .eq(expected.iter().map(|index| COLORS[*index].0))
-    });
+    let expected_colors = expected.map(|indexes| indexes.map(|index| COLORS[index].0.to_owned()));
+    let observed_colors = expected_colors
+        .as_ref()
+        .map_or_else(Vec::new, |_| recognized_colors(&text));
+    let image_match = expected_colors
+        .as_ref()
+        .map(|expected| observed_colors.as_slice() == expected.as_slice());
+    let cost = request_cost(
+        connection.options.model_pricing.get(model),
+        usage.as_ref(),
+        report.as_ref(),
+    );
     Ok(TrialResult {
         text_returned: !text.trim().is_empty(),
         observed_reasoning,
@@ -247,12 +262,24 @@ fn interpret_trial(
             .as_ref()
             .and_then(|report| report.reasoning_effort.clone()),
         image_match,
-        cost: request_cost(
-            connection.options.model_pricing.get(model),
-            usage.as_ref(),
-            report.as_ref(),
-        ),
+        expected_colors,
+        observed_colors,
+        usage,
+        provider_report: report,
+        cost,
     })
+}
+
+fn recognized_colors(text: &str) -> Vec<String> {
+    text.split(|character: char| !character.is_ascii_alphabetic())
+        .filter_map(|word| {
+            COLORS
+                .iter()
+                .find(|(color, _)| word.eq_ignore_ascii_case(color))
+                .map(|(color, _)| (*color).to_owned())
+        })
+        .take(5)
+        .collect()
 }
 
 fn texts<'a>(items: impl Iterator<Item = &'a Value>, kind: &str) -> String {
@@ -311,4 +338,24 @@ fn png_chunk(png: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
     png.extend_from_slice(kind);
     png.extend_from_slice(data);
     png.extend_from_slice(&crc32fast::hash(&png[start..]).to_be_bytes());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::recognized_colors;
+
+    #[test]
+    fn accepts_position_labels_and_keeps_extra_colors_for_mismatch() {
+        assert_eq!(
+            ["red", "red", "blue", "yellow"],
+            recognized_colors(
+                "Top left: Red, top right: red; bottom left: blue, bottom right: yellow."
+            )
+            .as_slice()
+        );
+        assert_eq!(
+            5,
+            recognized_colors("red yellow blue green black white").len()
+        );
+    }
 }

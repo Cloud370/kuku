@@ -171,7 +171,13 @@ fn probe_detail(
                 Ok(ProbeResult::Trial(trial)) => {
                     let detail = match trial.image_match {
                         Some(true) => "Color-grid read passed".into(),
-                        Some(false) => "Color-grid read did not match".into(),
+                        Some(false) if trial.observed_colors.is_empty() => {
+                            "Color-grid reply contained no usable colors".into()
+                        }
+                        Some(false) => format!(
+                            "Color-grid read did not match · got {}",
+                            trial.observed_colors.join(", ")
+                        ),
                         None => match &trial.reported_effort {
                             Some(effort) => format!("Upstream reported effort {effort}"),
                             None if trial.observed_reasoning => {

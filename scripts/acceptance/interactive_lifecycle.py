@@ -337,11 +337,14 @@ def setup_probe_progress(binary, bridge, directory):
             assert slow_catalog_started.wait(8)
             return json_response({"data": [{"id": "alpha"}, {"id": "beta"}]})
         assert (method, path) == ("POST", "/v1/chat/completions")
+        body = json.loads(body)
         parts = body["messages"][0]["content"]
         image = any(part["type"] == "image_url" for part in parts)
         trials.append((body["model"], image))
         if image:
             slow_trial_started.set()
+            release.wait(20)
+        elif body["model"] == "beta":
             release.wait(20)
         else:
             assert slow_trial_started.wait(8)
@@ -361,7 +364,9 @@ def setup_probe_progress(binary, bridge, directory):
                 terminal.press("\x1b[B\r")
                 terminal.expect("Manual configuration", also=("config.toml",))
                 assert not slow_catalog_started.is_set() and not trials
-                terminal.press("\x1b\r")
+                terminal.press("\x1b")
+                terminal.expect("Automatic model setup")
+                terminal.press("\r")
                 terminal.expect("New custom connection")
                 terminal.press("\x1b[A\r")
                 terminal.expect("API protocol")

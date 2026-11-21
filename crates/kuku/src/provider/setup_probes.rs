@@ -94,7 +94,7 @@ impl From<ModelListTarget> for Probe {
 pub enum ProbeResult {
     Catalog(Vec<DiscoveredModel>),
     Quotes(Vec<RouteQuote>),
-    Trial(TrialResult),
+    Trial(Box<TrialResult>),
 }
 
 /// Lifecycle of one request, including its outcome and elapsed time.
@@ -292,7 +292,7 @@ impl Probe {
                     check,
                 } => trial_model(&connection, &model, check)
                     .await
-                    .map(ProbeResult::Trial),
+                    .map(|result| ProbeResult::Trial(Box::new(result))),
             }
         }
     }

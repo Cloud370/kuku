@@ -57,7 +57,9 @@ pub fn resolve_models_url(
     }
     let path = url.path().trim_end_matches('/');
     let prefix = path.strip_suffix(format.request_suffix()).ok_or_else(|| {
-        Error::ConfigLoad("Set a models URL to discover models for this request endpoint.".into())
+        Error::ConfigLoad(
+            "Set provider.<name>.models_url in config.toml for this custom endpoint.".into(),
+        )
     })?;
     let models_path = format!("{prefix}/models");
     url.set_path(&models_path);
