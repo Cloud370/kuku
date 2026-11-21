@@ -496,6 +496,35 @@ class EvidenceTests(unittest.TestCase):
             self.assertIsNone(usage["input_tokens"])
             self.assertEqual(200, usage["reported_partial"]["input_tokens"])
 
+    def test_completed_tool_argument_regeneration_counts_both_prepared_requests(self):
+        fixture = self.fixture
+        index = next(i for i, event in enumerate(fixture.records) if event["kind"] == "runtime.step_prepared")
+        rejected = "request-rejected"
+        prepared, usage, response = [{**event, "request_id": rejected} for event in fixture.records[index:index + 3]]
+        response["stop_reason"] = "invalid_response"
+        retry = {"kind": "runtime.model_retry", "agent": "main", "turn": fixture.turn, "request_id": rejected,
+                 "recovery": "regenerate_tool_arguments", "will_retry": True, "failed_kind": "invalid_response",
+                 "provider_stop_reason": "tool_use", "attempt": 2}
+        fixture.records[index:index] = [prepared, usage, response, retry]
+        fixture.renumber()
+        fixture.report["provider_settings"].insert(0, prepared)
+        fixture.report["facts"].update(prepared_steps=3, model_responses=3)
+        fixture.report["limits"]["automatic_retries"] = 1
+        fixture.totals.update(model_requests=3, input_tokens=300, output_tokens=60, cache_read_input_tokens=30)
+        result = fixture.inspect()
+        self.assertTrue(result["passed"], result)
+        for accounting in (result["usage"], result["session_usage"]):
+            self.assertEqual(3, accounting["requests"])
+            self.assertEqual(0, accounting["unreported_requests"])
+            self.assertEqual(300, accounting["input_tokens"])
+
+        response["stop_reason"] = "end_turn"
+        self.assertIn("no eligible rejected response", fixture.inspect()["error"])
+        response["stop_reason"] = "invalid_response"
+        call = next(event for event in fixture.records if event["kind"] == "tool.call")
+        call["request_id"] = rejected
+        self.assertIn("discarded model response admitted a tool call", fixture.inspect()["error"])
+
     def test_zero_usage_for_nonempty_requests_does_not_establish_free_work(self):
         for event in self.fixture.records:
             if event["kind"] == "runtime.model_usage":

@@ -251,6 +251,7 @@ class SessionFacts:
         self.counts = Counter()
         self.steps, self.responses, self.usages = {}, {}, {}
         self.session_steps, self.session_usages, self.session_reports = {}, {}, []
+        self.regenerations = {}
         self.calls, self.results, self.result_events, self.tool_prepared, self.dispatched = {}, {}, {}, {}, set()
         self.segments, self.admitted_results = {}, set()
         self.context_candidates, self.context_sources, self.staged_tool_blocks = {}, {}, 0
@@ -276,7 +277,8 @@ class SessionFacts:
         owner = event.get("agent", event.get("conversation") or "main")
         require(isinstance(owner, str) and len(owner) <= 64, "event Agent identity exceeds the diagnostic limit")
         request = (event.get("turn"), event.get("request_id"))
-        session_request = (owner, *request)
+        agent_turn = (owner, request[0])
+        session_request = (*agent_turn, request[1])
         if kind == "runtime.step_prepared":
             require(isinstance(request[1], str) and len(request[1]) <= 128 and len(self.session_steps) < 4096,
                     "prepared requests exceed the diagnostic identity/count limit")
@@ -285,15 +287,16 @@ class SessionFacts:
             require(all(isinstance(metadata[field], str) and len(metadata[field]) <= 512 for field in ("connection", "model")),
                     "prepared request routing metadata is invalid or oversized")
             self.session_steps[session_request] = metadata
+            if agent_turn in self.regenerations:
+                self.regenerations[agent_turn] = True
         elif kind == "runtime.model_retry":
-            require(session_request in self.session_steps and session_request not in self.session_usages,
-                    "retry has no active prepared request")
-            attempt = event.get("attempt", 2)
-            require(type(attempt) is int and attempt >= 2, "retry attempt must be an integer of at least two")
+            self.retry(event, agent_turn, session_request)
+        elif kind == "model.response" and session_request in self.session_steps:
+            self.session_steps[session_request]["stop_reason"] = event.get("stop_reason")
+        elif kind == "tool.call" and session_request in self.session_steps:
             step = self.session_steps[session_request]
-            if attempt > step.get("last_attempt", 1):
-                step["last_attempt"] = attempt
-                step["retry_count"] = step.get("retry_count", 0) + 1
+            require(not step.get("regenerated"), "discarded model response admitted a tool call")
+            step["admitted_tools"] = True
         elif kind in ("runtime.model_usage", "runtime.provider_report"):
             require(session_request in self.session_steps, "Session usage or report has no prepared request")
             if kind == "runtime.model_usage":
@@ -375,6 +378,24 @@ class SessionFacts:
                     self.outputs.append(output_reference(self.events_path, structured))
         elif kind == "turn.completed":
             self.counts["turns_completed"] += 1
+
+    def retry(self, event, agent_turn, session_request):
+        step = self.session_steps.get(session_request)
+        if event.get("recovery") == "regenerate_tool_arguments":
+            require(step and step.get("stop_reason") == "invalid_response"
+                    and session_request in self.session_usages and not step.get("admitted_tools")
+                    and event.get("will_retry") is True and event.get("failed_kind") == "invalid_response"
+                    and event.get("provider_stop_reason") == "tool_use" and agent_turn not in self.regenerations,
+                    "tool argument regeneration has no eligible rejected response")
+            step["regenerated"] = True
+            self.regenerations[agent_turn] = False
+            return
+        require(step and session_request not in self.session_usages, "retry has no active prepared request")
+        attempt = event.get("attempt", 2)
+        require(type(attempt) is int and attempt >= 2, "retry attempt must be an integer of at least two")
+        if attempt > step.get("last_attempt", 1):
+            step["last_attempt"] = attempt
+            step["retry_count"] = step.get("retry_count", 0) + 1
 
     def operation(self, event):
         record = event.get("record", {})
@@ -503,6 +524,7 @@ class SessionFacts:
         require(self.results.keys() <= self.admitted_results, "completed tool results were not admitted for model continuation")
         require(self.steps.keys() == self.responses.keys() == self.usages.keys(),
                 "prepared requests do not have paired model response and usage facts")
+        require(all(self.regenerations.values()), "tool argument regeneration has no replacement request")
         limits = report.get("limits", {})
         max_requests, max_steps = limits.get("max_requests"), limits.get("max_steps")
         max_output_tokens = limits.get("max_output_tokens")
