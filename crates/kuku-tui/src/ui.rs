@@ -349,8 +349,10 @@ pub(crate) fn render_at(
         render_editor_view(frame, inner, draft, focused, placeholder.as_deref());
     }
     if let Some(lines) = focused_hint {
+        contextual::cache_warning_hit(app, status, &lines, true);
         frame.render_widget(Paragraph::new(lines), status);
     } else {
+        contextual::cache_warning_hit(app, status, &footer, false);
         frame.render_widget(Paragraph::new(footer), status);
         if let Some((row, used_width)) = service_row {
             let start = used_width.saturating_add(2).min(status.width);

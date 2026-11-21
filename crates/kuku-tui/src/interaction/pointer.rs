@@ -52,7 +52,15 @@ impl App {
                 }
             }
             Some(MouseAction::Click(ClickTarget::Contextual(control))) => {
-                self.focus_context_control(control);
+                let focus = &self.pane().contextual_focus;
+                if matches!(&control, ContextControl::CacheWarning { .. })
+                    && focus.active
+                    && focus.cursor.as_ref() == Some(&control)
+                {
+                    self.activate_context_control();
+                } else {
+                    self.focus_context_control(control);
+                }
             }
             Some(MouseAction::Click(ClickTarget::Link(url))) => {
                 if let Err(error) = crate::open_browser(&url) {

@@ -6,7 +6,7 @@ use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
 use crate::text::{compact_token_count, format_elapsed};
-use crate::theme::{emphasis, MUTED, TURN_CARD, USAGE};
+use crate::theme::{emphasis, MUTED, TURN_CARD, USAGE, WARNING};
 
 use super::Transcript;
 use crate::text::shorten;
@@ -90,24 +90,41 @@ fn render_metrics(
         "tools"
     };
     let labels = [
-        summary
-            .elapsed_ms
-            .map(|millis| format_elapsed(Duration::from_millis(millis))),
-        summary
-            .input_tokens
-            .map(|count| format!("{} in", compact_token_count(count))),
-        summary
-            .output_tokens
-            .map(|count| format!("{} out", compact_token_count(count))),
-        summary
-            .cache_hit_percent
-            .filter(|rate| (0.0..=100.0).contains(rate))
-            .map(cache_hit),
-        Some(format!("{} {tools}", summary.tool_calls)),
+        (
+            summary
+                .elapsed_ms
+                .map(|millis| format_elapsed(Duration::from_millis(millis))),
+            color,
+        ),
+        (
+            summary
+                .input_tokens
+                .map(|count| format!("{} in", compact_token_count(count))),
+            color,
+        ),
+        (
+            summary
+                .output_tokens
+                .map(|count| format!("{} out", compact_token_count(count))),
+            color,
+        ),
+        (
+            summary
+                .cache_hit_percent
+                .filter(|rate| (0.0..=100.0).contains(rate))
+                .map(cache_hit),
+            if summary.low_cache_hit {
+                WARNING
+            } else {
+                color
+            },
+        ),
+        (Some(format!("{} {tools}", summary.tool_calls)), color),
     ];
     let muted = Style::new().fg(MUTED);
     let mut line = Line::default();
-    for label in labels.into_iter().flatten() {
+    for (label, color) in labels {
+        let Some(label) = label else { continue };
         let separator = if line.spans.is_empty() { "" } else { " · " };
         if line.width() + separator.width() + label.width() <= width {
             line.push_span(Span::styled(separator, muted));
@@ -144,6 +161,21 @@ mod tests {
             .iter()
             .map(ToString::to_string)
             .collect()
+    }
+
+    #[test]
+    fn only_the_cache_measurement_turns_yellow() {
+        let summary = serde_json::from_value(json!({"elapsed_ms":1337, "input_tokens":1000,
+            "cache_hit_percent":37.0,"low_cache_hit":true,"tool_calls":0}))
+        .unwrap();
+        let line = super::render_metrics(&summary, 80, super::MUTED);
+        let yellow: Vec<_> = line
+            .spans
+            .iter()
+            .filter(|span| span.style.fg == Some(super::WARNING))
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(yellow, ["Cache 37%"]);
     }
 
     #[test]

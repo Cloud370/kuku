@@ -41,10 +41,10 @@ pub use crate::tool::builtin::run_command::output::{
 pub use observe::{Observation, ReplyPreview, ReplyPreviews, SessionObserver};
 pub use turns::TurnIndex;
 pub use types::{
-    Activation, AgentConfig, AgentSnapshot, AgentStatus, AgentView, CostTotals, Input, InputSource,
-    InputStatus, InputTiming, JobResult, JobSnapshot, JobStatus, ModelUsageSample, PendingInput,
-    QuestionRequest, Receipt, RuntimeLimits, SessionCostSummary, SessionOptions, TurnSummary,
-    UsageTotals, Withdrawal,
+    Activation, AgentConfig, AgentSnapshot, AgentStatus, AgentView, CacheWarning, CostTotals,
+    Input, InputSource, InputStatus, InputTiming, JobResult, JobSnapshot, JobStatus,
+    ModelUsageSample, PendingInput, QuestionRequest, Receipt, RuntimeLimits, SessionCostSummary,
+    SessionOptions, TurnSummary, UsageTotals, Withdrawal,
 };
 pub use values::{
     NamedValue, NamedValueKind, NamedValueSource, MAX_INPUT_VALUES, MAX_VALUE_NAME_BYTES,
