@@ -552,6 +552,11 @@ impl App {
             .and_then(Notice::deadline)
             .into_iter()
             .chain(self.pane().cleanup_at)
+            .chain(
+                self.model_editor
+                    .as_ref()
+                    .and_then(|editor| editor.probe_deadline()),
+            )
             .min()
     }
 
@@ -572,7 +577,11 @@ impl App {
             self.pane_mut().cleanup_at = None;
             self.refresh();
         }
-        expired
+        let probes = self
+            .model_editor
+            .as_mut()
+            .is_some_and(|editor| editor.poll_probes());
+        expired || probes
     }
 
     pub(crate) fn update(&mut self, update: Update) {
@@ -636,7 +645,6 @@ impl App {
                 }
             }
             Update::ModelEditorOpened(ticket, result) => self.model_editor_opened(ticket, result),
-            Update::ModelsDiscovered(ticket, result) => self.model_discovered(ticket, result),
             Update::ModelEditorSaved(ticket, editor, result) => {
                 self.model_editor_saved(ticket, editor, result)
             }

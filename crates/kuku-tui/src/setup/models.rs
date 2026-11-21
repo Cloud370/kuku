@@ -1,10 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent};
-use kuku::adapter::{inspect_connection_model, DiscoveredModel};
+use kuku::adapter::{
+    inspect_connection_model, model_list_targets, plan_model_trials, DiscoveredModel, Probe,
+    ProbeBatch, TrialSelection,
+};
 use kuku::config::{
-    resolve_models_url, resolve_request_url, ApiKey, ModelCapabilityDeclaration, ProviderConfig,
-    ProviderFormat, ProviderOptions, RequestedOutput, ThinkLevel,
+    resolve_request_url, ApiKey, ModelCapabilityDeclaration, ModelPricing, ProviderConfig,
+    ProviderFormat, ProviderOptions, ProviderProxy, RequestedOutput, ThinkLevel, TokenRates,
 };
 use kuku::ProviderCapabilities;
 
@@ -92,7 +96,7 @@ impl SetupState {
 
     pub(super) fn address_parts(&self) -> (String, Option<String>) {
         let entered = self.address.text().trim();
-        if self.full_url {
+        if self.full_url || self.recognized_request_url() {
             (String::new(), Some(entered.to_owned()))
         } else {
             let base = if entered.is_empty() {
@@ -120,7 +124,9 @@ impl SetupState {
             ConnectionChoice::Custom => ProviderOptions::default(),
         };
         options.endpoint_url = self.address_parts().1;
-        let models_url = self.models_url.text().trim();
+        options.proxy = self.proxy.clone();
+        options.model_pricing = self.model_pricing.clone();
+        let models_url = self.models_url.trim();
         options.models_url = (!models_url.is_empty()).then(|| models_url.to_owned());
         options
     }
@@ -146,44 +152,135 @@ impl SetupState {
         })
     }
 
-    pub(super) fn take_discovery(&mut self, settings: &Settings) -> Option<ProviderConfig> {
-        if !std::mem::take(&mut self.discover_now) {
-            return None;
+    pub(super) fn start_discovery(&mut self, settings: &Settings) {
+        self.step = SetupStep::ModelSource;
+        self.models.cursor = 0;
+        if !self.authorized || !self.credential_ready() {
+            self.problem = Some("Supply a credential to find models, or enter a model ID.".into());
+            return;
         }
-        match self.connection(settings) {
-            Ok(connection) => {
-                self.discovery_pending = true;
-                if self.models.discovered_from.as_ref() != Some(&connection) {
-                    self.models.found.clear();
-                }
-                self.models.discovered_from = Some(connection.clone());
-                Some(connection)
+        let targets = self.connection(settings).and_then(|connection| {
+            model_list_targets(&connection, !self.address.text().trim().is_empty())
+                .map_err(|error| error.to_string())
+        });
+        match targets {
+            Ok(targets) => {
+                self.problem = None;
+                self.models.found.clear();
+                self.models.discovered_from = None;
+                self.discovery = ProbeBatch::start(targets.into_iter().map(Probe::from).collect());
+                self.probe_repaint_at = Some(std::time::Instant::now());
             }
-            Err(problem) => {
-                self.problem = Some(problem);
-                None
-            }
+            Err(problem) => self.problem = Some(problem),
         }
     }
 
-    pub(super) fn discovery_finished(&mut self, result: Result<Vec<DiscoveredModel>, String>) {
-        self.discovery_pending = false;
-        match result {
-            Ok(models) => {
-                self.models.found = models;
-                self.models.cursor = 0;
-                if self.models.found.is_empty() {
-                    self.problem =
-                        Some("The provider returned no models. Enter a model ID manually.".into());
-                    self.step = SetupStep::ModelSource;
-                } else {
-                    self.step = SetupStep::Discover;
-                }
+    fn accept_discovery(&mut self, settings: &Settings) {
+        if !self.models.found.is_empty() {
+            self.models.cursor = 0;
+            self.step = SetupStep::Discover;
+            return;
+        }
+        let Some((target, found)) = self.discovery.useful_catalog() else {
+            return;
+        };
+        let connection = target.connection.clone();
+        if self.connection(settings).ok().as_ref() != Some(&connection) {
+            self.address.set_text(connection.base_url.clone());
+            self.full_url = false;
+        }
+        self.models.found = found.to_vec();
+        self.models.discovered_from = Some(connection);
+        self.models.cursor = 0;
+        self.step = SetupStep::Discover;
+    }
+
+    pub(super) fn probe_deadline(&self) -> Option<std::time::Instant> {
+        self.probe_repaint_at
+            .filter(|_| self.discovery.pending() || self.trials.pending())
+    }
+
+    pub(super) fn poll_probes(&mut self) -> bool {
+        let now = std::time::Instant::now();
+        if self.probe_deadline().is_none_or(|at| at > now) {
+            return false;
+        }
+        self.discovery.poll();
+        self.trials.poll();
+        self.probe_repaint_at = Some(now + std::time::Duration::from_millis(100));
+        true
+    }
+
+    pub(super) fn start_trials(&mut self, settings: &Settings) {
+        self.review_selection = 0;
+        if !self.authorized || !self.credential_ready() {
+            self.step = SetupStep::Review;
+            return;
+        }
+        self.trials = ProbeBatch::start(self.planned_trials(settings));
+        self.probe_repaint_at = Some(std::time::Instant::now());
+        self.step = SetupStep::Trials;
+    }
+
+    pub(super) fn planned_trials(&self, settings: &Settings) -> Vec<Probe> {
+        let Ok(mut connection) = self.connection(settings) else {
+            return Vec::new();
+        };
+        self.update_capabilities(&mut connection);
+        let original = self
+            .route_name(settings)
+            .and_then(|name| settings.resolved.tier(name));
+        let primary = self.primary_model();
+        let models = self.model_ids().into_iter().flatten().map(|model| {
+            let existing = original.filter(|route| {
+                route.model == model
+                    && matches!(self.choice(), ConnectionChoice::Existing(name) if &route.provider == name)
+            });
+            let effort = (existing.is_some() || (self.reasoning_changed && primary.as_ref() == Some(&model)))
+                .then(|| self.reasoning.clone()).flatten()
+                .filter(|effort| effort != ThinkLevel::ProviderDefault.as_str());
+            TrialSelection { model, effort, service_tier: existing.and_then(|route| route.service_tier.clone()) }
+        });
+        plan_model_trials(Arc::new(connection), models)
+    }
+
+    pub(super) fn offer_trials(&mut self) {
+        self.models.cursor = 0;
+        self.review_selection = 0;
+        self.step = if self.authorized && self.credential_ready() {
+            SetupStep::TrialPlan
+        } else {
+            SetupStep::Review
+        };
+    }
+
+    pub(super) fn choose_trial_plan(&mut self, key: KeyEvent, settings: &Settings) {
+        if key.code == KeyCode::Enter {
+            if self.models.cursor == 0 {
+                self.start_trials(settings);
+            } else {
+                self.step = SetupStep::Review;
             }
-            Err(problem) => {
-                self.problem = Some(problem);
-                self.step = SetupStep::ModelSource;
+        } else {
+            self.models.move_cursor(key.code, 2);
+        }
+    }
+
+    pub(super) fn trial_input(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Enter => {
+                self.trials.stop();
+                self.step = SetupStep::Review;
             }
+            KeyCode::Up => self.models.cursor = self.models.cursor.saturating_sub(1),
+            KeyCode::Down => {
+                self.models.cursor = self
+                    .models
+                    .cursor
+                    .saturating_add(1)
+                    .min(self.trials.rows().len().saturating_sub(1))
+            }
+            _ => {}
         }
     }
 
@@ -206,7 +303,19 @@ impl SetupState {
     }
 
     pub(super) fn update_capabilities(&self, connection: &mut ProviderConfig) {
-        if self.models.discovered_from.as_ref() == Some(connection) {
+        if self
+            .models
+            .discovered_from
+            .as_ref()
+            .is_some_and(|original| {
+                original.format == connection.format
+                    && original.base_url == connection.base_url
+                    && original.api_key == connection.api_key
+                    && original.options.endpoint_url == connection.options.endpoint_url
+                    && original.options.models_url == connection.options.models_url
+                    && original.options.proxy == connection.options.proxy
+            })
+        {
             for model in &self.models.found {
                 if !self.models.selected.contains(&model.id)
                     && !connection
@@ -265,94 +374,162 @@ impl SetupState {
         }
     }
 
-    pub(super) fn edit_address(&mut self, key: KeyEvent, settings: &Settings) {
-        match key.code {
-            KeyCode::F(2) => self.full_url = !self.full_url,
-            KeyCode::Enter | KeyCode::Tab => match self.request_url() {
-                Ok(_) => {
-                    self.problem = None;
-                    self.step = SetupStep::ModelsUrl;
-                }
-                Err(problem) => self.problem = Some(problem),
-            },
-            _ => edit_field(&mut self.address, key),
-        }
-        if key.code == KeyCode::F(2) && self.full_url && self.address.text().trim().is_empty() {
-            let base = self.default_base_url();
-            if let Ok(preview) = resolve_request_url(self.protocol, base, None) {
-                self.address.set_text(preview);
-            }
-        }
-        if self.step == SetupStep::ModelsUrl
-            && !self.full_url
-            && self
-                .address
-                .text()
-                .trim_end_matches('/')
-                .ends_with(self.protocol.request_suffix())
-        {
-            self.problem =
-                Some("That address looks like a full endpoint. Press F2 to use it exactly.".into());
-            self.step = SetupStep::Address;
-        }
-        if self.step == SetupStep::Address
-            && key.code == KeyCode::F(2)
-            && matches!(self.choice(), ConnectionChoice::Existing(_))
-        {
-            self.problem = Some(format!(
-                "Review the shared connection before saving · {}",
-                settings.choice_label(self.choice())
-            ));
-        }
+    pub(super) fn recognized_request_url(&self) -> bool {
+        url::Url::parse(self.address.text().trim()).is_ok_and(|url| {
+            url.query().is_some()
+                || url
+                    .path()
+                    .trim_end_matches('/')
+                    .ends_with(self.protocol.request_suffix())
+        })
     }
 
-    pub(super) fn edit_models_url(&mut self, key: KeyEvent, settings: &Settings) {
-        if matches!(key.code, KeyCode::Enter | KeyCode::Tab) {
-            let (base, _) = self.address_parts();
-            let options = self.connection_options(settings);
-            if options.models_url.is_some() {
-                if let Err(error) = resolve_models_url(self.protocol, &base, &options) {
-                    self.problem = Some(error.to_string());
-                    return;
-                }
-            }
+    pub(super) fn edit_address(&mut self, key: KeyEvent) {
+        if key.code != KeyCode::Enter {
+            edit_field(&mut self.address, key);
             self.problem = None;
-            self.step = SetupStep::CredentialSource;
-        } else {
-            edit_field(&mut self.models_url, key);
+            return;
+        }
+        let entered = self.address.text().trim();
+        if entered.is_empty() {
+            self.full_url = false;
+        } else if let Ok(url) = url::Url::parse(entered) {
+            self.full_url |= self.recognized_request_url();
+            let path = url.path().trim_end_matches('/');
+            let last = path.rsplit('/').next().unwrap_or_default();
+            let versioned_base = last.strip_prefix('v').is_some_and(|suffix| {
+                suffix.starts_with(|character: char| character.is_ascii_digit())
+            });
+            if !self.full_url && !path.is_empty() && !versioned_base && !entered.ends_with('/') {
+                self.models.cursor = 0;
+                self.step = SetupStep::AddressKind;
+                return;
+            }
+        }
+        self.finish_address();
+    }
+
+    fn finish_address(&mut self) {
+        match self.request_url() {
+            Ok(_) => {
+                self.problem = None;
+                self.models.cursor = match self.proxy {
+                    ProviderProxy::Environment => 0,
+                    ProviderProxy::Direct => 1,
+                    ProviderProxy::Explicit { .. } => 2,
+                };
+                self.step = SetupStep::Network;
+            }
+            Err(problem) => {
+                self.problem = Some(problem);
+                self.step = SetupStep::Address;
+            }
         }
     }
 
-    pub(super) fn choose_source(&mut self, key: KeyEvent, settings: &Settings) {
-        if matches!(key.code, KeyCode::Enter | KeyCode::Tab) {
-            if self.models.cursor == 0 {
-                self.problem = None;
-                self.step = SetupStep::Model;
-            } else if self.models.found.is_empty()
-                || self.models.discovered_from.as_ref() != self.connection(settings).ok().as_ref()
-            {
-                self.discover_now = true;
-                self.problem = None;
-            } else {
-                self.step = SetupStep::Discover;
-                self.models.cursor = 0;
-            }
-        } else if key.code == KeyCode::F(5) && self.models.cursor == 1 {
-            self.discover_now = true;
+    pub(super) fn choose_address_kind(&mut self, key: KeyEvent) {
+        if key.code == KeyCode::Enter {
+            self.full_url = self.models.cursor == 0;
+            self.finish_address();
         } else {
-            self.models.cursor = self.models.cursor.min(1);
             self.models.move_cursor(key.code, 2);
         }
     }
 
-    pub(super) fn choose_discovered(&mut self, key: KeyEvent, _settings: &Settings) {
+    pub(super) fn choose_network(&mut self, key: KeyEvent) {
+        if key.code == KeyCode::Enter {
+            self.problem = None;
+            self.step = match self.models.cursor {
+                0 => {
+                    self.proxy = ProviderProxy::Environment;
+                    SetupStep::Credential
+                }
+                1 => {
+                    self.proxy = ProviderProxy::Direct;
+                    SetupStep::Credential
+                }
+                _ => SetupStep::ProxyAddress,
+            };
+        } else {
+            self.models.move_cursor(key.code, 3);
+        }
+    }
+
+    pub(super) fn edit_proxy(&mut self, key: KeyEvent) {
+        if key.code == KeyCode::Enter {
+            let url = self.proxy_address.text().trim().to_owned();
+            let auth = match &self.proxy {
+                ProviderProxy::Explicit { url: saved, auth } if *saved == url => auth.clone(),
+                _ => None,
+            };
+            let proxy = ProviderProxy::Explicit { url, auth };
+            match proxy.validate() {
+                Ok(()) => {
+                    self.proxy = proxy;
+                    self.step = SetupStep::Credential;
+                    self.problem = None;
+                }
+                Err(error) => self.problem = Some(error.to_string()),
+            }
+        } else {
+            edit_field(&mut self.proxy_address, key);
+            self.problem = None;
+        }
+    }
+
+    pub(super) fn source_choices(&self) -> &'static [&'static str] {
+        if self.discovery.useful_catalog().is_some() {
+            &[
+                "Use discovered models",
+                "Enter model ID manually",
+                "Retry discovery",
+            ]
+        } else if matches!(self.intent, SetupIntent::Edit(_)) && self.discovery.rows().is_empty() {
+            &[
+                "Keep current model",
+                "Enter model ID manually",
+                "Discover models",
+            ]
+        } else if self.discovery.pending() {
+            &["Waiting for a model list", "Enter model ID manually"]
+        } else {
+            &["Discover models", "Enter model ID manually"]
+        }
+    }
+
+    pub(super) fn choose_source(&mut self, key: KeyEvent, settings: &Settings) {
+        let choices = self.source_choices();
+        if key.code != KeyCode::Enter {
+            self.models.move_cursor(key.code, choices.len());
+            return;
+        }
+        match choices.get(self.models.cursor).copied() {
+            Some("Use discovered models") => self.accept_discovery(settings),
+            Some("Enter model ID manually") => {
+                self.discovery.stop();
+                self.problem = None;
+                self.step = SetupStep::Model;
+            }
+            Some("Keep current model") => match self.model_text() {
+                Ok(model) => {
+                    self.models.add_manual(model);
+                    self.step = SetupStep::Review;
+                    self.review_selection = 0;
+                }
+                Err(problem) => self.problem = Some(problem),
+            },
+            Some("Discover models" | "Retry discovery") => self.start_discovery(settings),
+            _ => {}
+        }
+    }
+
+    pub(super) fn choose_discovered(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Up | KeyCode::Down => {
                 let count = self.models.filtered().count();
                 self.models.move_cursor(key.code, count);
             }
-            KeyCode::F(5) => self.discover_now = true,
-            KeyCode::Char(' ') | KeyCode::Enter => {
+            KeyCode::Char(' ') => {
                 let model = self
                     .models
                     .filtered()
@@ -369,7 +546,19 @@ impl SetupState {
                     }
                 }
             }
-            KeyCode::Tab => self.advance_from_models(),
+            KeyCode::Enter => {
+                if self.models.selected.is_empty() {
+                    let model = self
+                        .models
+                        .filtered()
+                        .nth(self.models.cursor)
+                        .map(|item| item.id.clone());
+                    if let Some(model) = model {
+                        self.models.selected.insert(model);
+                    }
+                }
+                self.advance_from_models();
+            }
             _ => {
                 edit_field(&mut self.models.query, key);
                 self.models.cursor = 0;
@@ -379,23 +568,23 @@ impl SetupState {
 
     pub(super) fn advance_from_models(&mut self) {
         if self.models.selected.is_empty() {
-            self.problem = Some("Select at least one model, or enter a model ID manually.".into());
+            self.problem = Some("Choose a model, or enter a model ID manually.".into());
             return;
         }
         self.problem = None;
         self.models.cursor = 0;
         self.review_selection = 0;
-        self.step = if self.intent == SetupIntent::Default && self.models.selected.len() > 1 {
-            SetupStep::DefaultModel
+        if self.intent == SetupIntent::Default && self.models.selected.len() > 1 {
+            self.step = SetupStep::DefaultModel;
         } else {
-            SetupStep::Review
-        };
+            self.offer_trials();
+        }
     }
 
     pub(super) fn choose_default(&mut self, key: KeyEvent) {
-        if matches!(key.code, KeyCode::Enter | KeyCode::Tab) {
+        if key.code == KeyCode::Enter {
             self.models.default = self.models.selected.iter().nth(self.models.cursor).cloned();
-            self.step = SetupStep::Review;
+            self.offer_trials();
         } else {
             self.models
                 .move_cursor(key.code, self.models.selected.len());
@@ -424,6 +613,106 @@ impl SetupState {
             self.step = SetupStep::Review;
         } else {
             self.models.move_cursor(key.code, 2);
+        }
+    }
+
+    pub(super) fn pricing_label(&self) -> &'static str {
+        match self
+            .primary_model()
+            .and_then(|id| self.model_pricing.get(&id))
+        {
+            Some(ModelPricing::UsageOnly) => "Usage only",
+            Some(ModelPricing::Configured { .. }) => "Configured USD rates",
+            Some(ModelPricing::Automatic) | None => "Automatic · provider receipt when available",
+        }
+    }
+
+    pub(super) fn choose_pricing(&mut self, key: KeyEvent) {
+        if key.code != KeyCode::Enter {
+            self.models.move_cursor(key.code, 3);
+            return;
+        }
+        let Some(model) = self.primary_model() else {
+            self.step = SetupStep::Review;
+            return;
+        };
+        if self.models.cursor != 1 {
+            let mode = if self.models.cursor == 0 {
+                ModelPricing::Automatic
+            } else {
+                ModelPricing::UsageOnly
+            };
+            self.model_pricing.insert(model, mode);
+            self.step = SetupStep::Review;
+            return;
+        }
+        let rates = match self.model_pricing.get(&model) {
+            Some(ModelPricing::Configured { rates }) => rates.clone(),
+            _ => TokenRates::default(),
+        };
+        for (field, rate) in self.rate_fields.iter_mut().zip([
+            rates.input,
+            rates.output,
+            rates.cache_read,
+            rates.cache_write,
+        ]) {
+            field.set_text(rate.map_or_else(String::new, |rate| rate.to_string()));
+        }
+        self.models.cursor = 0;
+        self.step = SetupStep::Rates;
+    }
+
+    pub(super) fn edit_rates(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Up | KeyCode::Down => self.models.move_cursor(key.code, 5),
+            KeyCode::Enter if self.models.cursor < 4 => self.models.cursor += 1,
+            KeyCode::Enter => {
+                let parse = |index: usize| {
+                    let text = self.rate_fields[index].text().trim();
+                    if text.is_empty() {
+                        Ok(None)
+                    } else {
+                        text.parse::<f64>()
+                            .ok()
+                            .filter(|rate| rate.is_finite() && *rate >= 0.0)
+                            .map(Some)
+                            .ok_or(())
+                    }
+                };
+                let (Ok(input), Ok(output), Ok(cache_read), Ok(cache_write)) =
+                    (parse(0), parse(1), parse(2), parse(3))
+                else {
+                    self.problem =
+                        Some("Enter nonnegative USD rates, or leave an unknown rate blank.".into());
+                    return;
+                };
+                let Some(model) = self.primary_model() else {
+                    return;
+                };
+                let original = match self.model_pricing.get(&model) {
+                    Some(ModelPricing::Configured { rates }) => rates.clone(),
+                    _ => TokenRates::default(),
+                };
+                self.model_pricing.insert(
+                    model,
+                    ModelPricing::Configured {
+                        rates: TokenRates {
+                            input,
+                            output,
+                            cache_read,
+                            cache_write,
+                            ..original
+                        },
+                    },
+                );
+                self.problem = None;
+                self.step = SetupStep::Review;
+            }
+            _ => {
+                if let Some(field) = self.rate_fields.get_mut(self.models.cursor) {
+                    edit_field(field, key);
+                }
+            }
         }
     }
 

@@ -1,6 +1,7 @@
 mod config;
 mod editor;
 mod models;
+mod probes;
 mod repair;
 mod repair_backend;
 mod state;
@@ -178,10 +179,11 @@ pub(crate) async fn run(options: ConnectionOptions, mode: SetupMode) -> io::Resu
     println!("Saved settings to {}.", settings.config_path.display());
     match state.credential_source {
         CredentialSource::Environment => {
-            if let Some(name) = state.environment_name() {
-                println!(
-                    "Set {name} in the shell that launches kuku. The credential was not validated."
-                );
+            if let Some(name) = state
+                .environment_name()
+                .filter(|_| !state.environment_set())
+            {
+                println!("Set {name} in the shell that launches kuku.");
             }
         }
         CredentialSource::StoredKey => println!(
@@ -189,7 +191,6 @@ pub(crate) async fn run(options: ConnectionOptions, mode: SetupMode) -> io::Resu
             settings.credentials_dir.display()
         ),
     }
-    println!("Setup made no model request.");
     Ok(finish == Finish::SaveAndContinue)
 }
 

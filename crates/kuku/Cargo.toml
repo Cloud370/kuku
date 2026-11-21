@@ -19,11 +19,14 @@ tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "r
 futures-core = { workspace = true }
 tokio-stream = { workspace = true }
 time = { version = "0.3", default-features = false, features = ["std", "formatting", "local-offset", "parsing"] }
-wreq = { version = "6.0.0-rc.28", default-features = false, features = ["json", "stream"] }
+wreq = { version = "6.0.0-rc.28", default-features = false, features = ["gzip", "json", "socks", "stream"] }
 wreq-util = { version = "3.0.0-rc.11", features = ["emulation"] }
 httpdate = "1"
 sha2 = "0.10"
 base64 = "0.22"
+crc32fast = "1"
+fastrand = "2"
+flate2 = "1"
 regex = "1"
 readability = { version = "0.3", default-features = false }
 htmd = "0.5"

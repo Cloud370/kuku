@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use crossterm::event::Event;
-use kuku::adapter::{inspect_model, DiscoveredModel};
-use kuku::config::{ProviderConfig, ThinkLevel};
+use kuku::adapter::inspect_model;
+use kuku::config::ThinkLevel;
 use kuku::session::AgentConfig;
 use kuku_client::local::ServiceIdentity;
 use kuku_client::{Connection, ConnectionOptions};
@@ -18,13 +18,11 @@ pub(crate) struct ModelEditor {
     settings: Settings,
     state: SetupState,
     service: ServiceIdentity,
-    pub(crate) ticket: u64,
 }
 
 pub(crate) enum ModelEditorAction {
     None,
     Cancel,
-    Discover(Box<ProviderConfig>),
     Save,
 }
 
@@ -43,7 +41,6 @@ impl ModelEditor {
     pub(crate) async fn open(
         options: &ConnectionOptions,
         connection: Option<&Connection>,
-        ticket: u64,
         intent: SetupIntent,
     ) -> Result<Self, String> {
         let (service, settings) = active_settings(options, connection).await?;
@@ -55,7 +52,6 @@ impl ModelEditor {
             settings,
             state,
             service,
-            ticket,
         })
     }
 
@@ -64,12 +60,7 @@ impl ModelEditor {
         match self.state.finish.take() {
             Some(Finish::Cancel) => ModelEditorAction::Cancel,
             Some(Finish::SaveAndContinue | Finish::SaveAndExit) => ModelEditorAction::Save,
-            None => self
-                .state
-                .take_discovery(&self.settings)
-                .map_or(ModelEditorAction::None, |connection| {
-                    ModelEditorAction::Discover(Box::new(connection))
-                }),
+            None => ModelEditorAction::None,
         }
     }
 
@@ -77,8 +68,12 @@ impl ModelEditor {
         super::ui::render(frame, &self.settings, &mut self.state, SetupMode::Session);
     }
 
-    pub(crate) fn discovered(&mut self, result: Result<Vec<DiscoveredModel>, String>) {
-        self.state.discovery_finished(result);
+    pub(crate) fn probe_deadline(&self) -> Option<std::time::Instant> {
+        self.state.probe_deadline()
+    }
+
+    pub(crate) fn poll_probes(&mut self) -> bool {
+        self.state.poll_probes()
     }
 
     pub(crate) fn failed(&mut self, problem: String) {

@@ -11,7 +11,12 @@ use serde_json::Value;
 use crate::config::{ProviderFormat, RequestedOutput};
 
 use crate::permission::ToolAuthorization;
-pub use crate::provider::{discover_models, DiscoveredModel};
+pub use crate::provider::{
+    discover_models, model_list_targets, openrouter_quote_url, openrouter_quotes,
+    plan_model_trials, route_quote_for_display, trial_model, DiscoveredModel, ModelListTarget,
+    ModelTrial, Probe, ProbeBatch, ProbeProgress, ProbeResult, ProbeRow, RequestCost, RouteQuote,
+    TrialResult, TrialSelection, TRIAL_OUTPUT_TOKENS,
+};
 use crate::{ProviderCapabilities, ProviderSettings, Result};
 
 pub use crate::provider::chunk::ProviderChunk as ModelEvent;

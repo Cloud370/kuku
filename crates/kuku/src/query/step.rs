@@ -199,6 +199,7 @@ pub(super) async fn finish_streaming(mut state: StreamingChunkState) -> Result<P
         accumulated_text,
         accumulated_thinking,
         provider_replay,
+        accounting,
         stop_reason,
         tool_calls,
         tool_arg_buffers,
@@ -275,10 +276,11 @@ pub(super) async fn finish_streaming(mut state: StreamingChunkState) -> Result<P
         let elapsed_us = request_timing
             .filter(|_| terminal_measured)
             .and_then(|timing| timing.elapsed_us);
+        let cost = accounting.cost(usage.as_ref().filter(|_| terminal_measured));
         let measurement = EventPayload::Unknown(serde_json::json!({
             "kind": "runtime.model_usage", "ts": now_timestamp()?,
             "agent": pending.conversation.as_str(), "turn": pending.turn,
-            "request_id": request_id, "usage": usage, "elapsed_us": elapsed_us,
+            "request_id": request_id, "attempt": provider_attempt, "usage": usage, "elapsed_us": elapsed_us, "cost": cost,
         }));
         super::provider::runtime_session(&pending, execution)?.commit_model_facts(
             pending.conversation.as_str(),

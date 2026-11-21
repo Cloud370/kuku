@@ -41,7 +41,7 @@ pub use crate::tool::builtin::run_command::output::{
 pub use observe::{Observation, ReplyPreview, ReplyPreviews, SessionObserver};
 pub use turns::TurnIndex;
 pub use types::{
-    Activation, AgentConfig, AgentSnapshot, AgentStatus, AgentView, Input, InputSource,
+    Activation, AgentConfig, AgentSnapshot, AgentStatus, AgentView, CostTotals, Input, InputSource,
     InputStatus, InputTiming, JobResult, JobSnapshot, JobStatus, ModelUsageSample, PendingInput,
     QuestionRequest, Receipt, RuntimeLimits, SessionOptions, TurnSummary, UsageTotals, Withdrawal,
 };

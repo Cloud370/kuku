@@ -1,10 +1,12 @@
 mod config {
     pub use kuku::config::{
         resolve_request_url, ApiKey, MediaAdapterSupport, PromptCacheScope, ProviderAuth,
-        ProviderFormat, ProviderOptions, ProviderProfile, RequestedOutput, ResolvedThinking,
-        ThinkLevel,
+        ProviderFormat, ProviderOptions, ProviderProfile, ProviderProxy, RequestedOutput,
+        ResolvedThinking, ThinkLevel,
     };
 }
+
+use kuku::{Error, Result};
 
 mod error {
     pub use kuku::Result;
@@ -26,6 +28,11 @@ mod prompt {
 }
 
 mod provider {
+    pub mod discovery {
+        #[derive(Default)]
+        pub struct CachedCatalog;
+    }
+
     #[allow(dead_code)]
     pub mod types {
         include!(concat!(

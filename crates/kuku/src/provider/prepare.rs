@@ -121,7 +121,7 @@ pub(crate) fn invalid_response(message: &str) -> ProviderFailure {
     }
 }
 
-fn apply_settings(config: &ResolvedProvider, body: &mut Value) {
+pub(super) fn apply_settings(config: &ResolvedProvider, body: &mut Value) {
     let object = body
         .as_object_mut()
         .expect("protocol renderer returns an object");

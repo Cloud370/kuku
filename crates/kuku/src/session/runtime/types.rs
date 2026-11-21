@@ -415,6 +415,9 @@ pub struct UsageTotals {
     pub model_requests: u64,
     /// Responses missing either input or output usage, so reported totals may be partial.
     pub unreported_requests: u64,
+    /// USD amounts and evidence counts for this agent's requests.
+    #[serde(default)]
+    pub costs: CostTotals,
     /// Requests that reported their total input tokens.
     #[serde(default)]
     pub input_reported_requests: u64,
@@ -438,7 +441,23 @@ pub struct UsageTotals {
     pub latest_request: Option<ModelUsageSample>,
 }
 
+/// Request amounts rounded to billionths of a US dollar.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CostTotals {
+    pub reported_nanodollars: u64,
+    pub estimated_nanodollars: u64,
+    pub reported_requests: u64,
+    pub estimated_requests: u64,
+}
+
 impl UsageTotals {
+    /// Requests with unavailable monetary amounts, including unsettled attempts.
+    pub fn unknown_cost_requests(&self) -> u64 {
+        self.model_requests
+            .saturating_sub(self.costs.reported_requests)
+            .saturating_sub(self.costs.estimated_requests)
+    }
+
     /// Return whether every counted request reported its input tokens.
     pub fn input_tokens_complete(&self) -> bool {
         self.complete(self.input_tokens, self.input_reported_requests)

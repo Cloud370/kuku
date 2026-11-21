@@ -579,6 +579,7 @@ impl Run {
                     }
                 }
                 ProviderChunk::Report { report } => {
+                    streaming.accounting.report = Some(report.clone());
                     EventStore::open(&streaming.pending.events_path)?.append(EventPayload::Unknown(serde_json::json!({
                         "kind": "runtime.provider_report", "ts": now_timestamp()?,
                         "agent": streaming.conversation.as_str(), "turn": streaming.pending.turn,

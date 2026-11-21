@@ -510,6 +510,21 @@ pub(super) enum PendingStep {
     Failed(Error),
 }
 
+#[derive(Default)]
+pub(super) struct RequestAccounting {
+    pub(super) pricing: Option<crate::config::ModelPricing>,
+    pub(super) report: Option<crate::provider::ProviderReport>,
+}
+
+impl RequestAccounting {
+    pub(super) fn cost(
+        &self,
+        usage: Option<&crate::provider::ProviderUsage>,
+    ) -> crate::provider::RequestCost {
+        crate::provider::cost::request_cost(self.pricing.as_ref(), usage, self.report.as_ref())
+    }
+}
+
 pub(super) struct StreamingChunkState {
     pub(super) model_permit: Option<tokio::sync::OwnedSemaphorePermit>,
     pub(super) pending: PendingRun,
@@ -519,6 +534,7 @@ pub(super) struct StreamingChunkState {
         Pin<Box<dyn Stream<Item = std::result::Result<ProviderChunk, ProviderFailure>> + Send>>,
     pub(super) provider_attempt: u8,
     pub(super) stream_failure: Option<ProviderFailure>,
+    pub(super) accounting: RequestAccounting,
     pub(super) accumulated_text: String,
     pub(super) accumulated_thinking: String,
     pub(super) model_phase: Option<ModelPhase>,

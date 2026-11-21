@@ -1,5 +1,4 @@
 use crossterm::event::Event;
-use kuku::adapter::DiscoveredModel;
 
 use crate::jobs::Job;
 use crate::menu::{Choice, ChoiceKind, PickerKind};
@@ -103,10 +102,6 @@ Agent requests image · built-in adapter supports text",
                 self.open_models();
                 return;
             }
-            ModelEditorAction::Discover(connection) => {
-                self.effects
-                    .push(Job::DiscoverModels(editor.ticket, connection));
-            }
             ModelEditorAction::Save => {
                 let picker = self.picker(PickerKind::ModelActions, Vec::new());
                 picker.loading = true;
@@ -136,20 +131,6 @@ Agent requests image · built-in adapter supports text",
                 self.open_models();
                 self.problem(error);
             }
-        }
-    }
-
-    pub(super) fn model_discovered(
-        &mut self,
-        ticket: u64,
-        result: Result<Vec<DiscoveredModel>, String>,
-    ) {
-        if let Some(editor) = self
-            .model_editor
-            .as_mut()
-            .filter(|editor| editor.ticket == ticket)
-        {
-            editor.discovered(result);
         }
     }
 

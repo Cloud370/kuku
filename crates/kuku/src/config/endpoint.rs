@@ -51,7 +51,9 @@ pub fn resolve_models_url(
     let request = resolve_request_url(format, base_url, options.endpoint_url.as_deref())?;
     let mut url = http_url(&request)?;
     if url.host_str() == Some("api.deepseek.com") {
-        return Ok("https://api.deepseek.com/models".into());
+        url.set_path("/models");
+        url.set_query(None);
+        return Ok(url.into());
     }
     let path = url.path().trim_end_matches('/');
     let prefix = path.strip_suffix(format.request_suffix()).ok_or_else(|| {
@@ -60,6 +62,14 @@ pub fn resolve_models_url(
     let models_path = format!("{prefix}/models");
     url.set_path(&models_path);
     url.set_query(None);
+    if matches!(
+        url.host_str(),
+        Some("openrouter.ai" | "us.openrouter.ai" | "eu.openrouter.ai")
+    ) && models_path == "/api/v1/models"
+    {
+        url.query_pairs_mut()
+            .append_pair("output_modalities", "all");
+    }
     Ok(url.into())
 }
 

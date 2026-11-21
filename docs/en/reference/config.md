@@ -61,6 +61,8 @@ On Chat and Responses, omit `max_output_tokens` to use the upstream default. Nat
 | `base_url` | string | Provider API base URL with the protocol suffix appended |
 | `endpoint_url` | string | Full request URL, used exactly when set |
 | `models_url` | string | Optional full URL for standard model discovery |
+| `proxy` | table | Connection network path for discovery, trials and model requests |
+| `model_pricing` | table | USD accounting preferences keyed by exact model ID |
 | `model_capabilities` | table | Model-list declarations and manual overrides keyed by exact model ID |
 | `api_key` | string | `$ENV_VAR_NAME`, a literal key, or `file:<absolute-path>` |
 | `auth` | `bearer`\|`x-api-key` | Override authentication independently of `format` |
@@ -73,6 +75,22 @@ On Chat and Responses, omit `max_output_tokens` to use the upstream default. Nat
 For the built-in `openai` connection, `base_url` is `https://api.openai.com/v1`. The Responses adapter appends `/responses`. For a gateway, use the API base supplied by its operator. [OpenAI Responses API](https://developers.openai.com/api/reference/resources/responses/methods/create)
 
 Use either `base_url` or `endpoint_url`. For example, the DeepSeek Chat base URLs `https://api.deepseek.com` and `https://api.deepseek.com/v1` append `/chat/completions` to their respective paths. An exact endpoint such as `https://gateway.example/gateway/infer` keeps its path. Use `models_url` for a separate catalog address such as `https://gateway.example/catalog/models`.
+
+Set `proxy.mode` to `environment` (the default), `direct`, or `explicit`. For `explicit`, set `proxy.url` to an `http://`, `socks5://`, or `socks5h://` address. SOCKS5 resolves DNS on the client. SOCKS5H resolves it at the proxy. An authenticated proxy uses `proxy.auth.username` and one of `proxy.auth.password_env` or `proxy.auth.password_file`. The latter takes an absolute path and uses the same private-file checks as a model key.
+
+Each `model_pricing` entry sets `mode` to `automatic`, `configured`, or `usage-only`. Configured rates use USD per million tokens and apply to the connection and model named in the table. Set `input`, `output`, `cache_read`, and `cache_write` as applicable. Use `cache_write_5m` and `cache_write_1h` when the provider reports separate write durations. Amounts use the provider receipt when available, or an estimate from matching rates and complete usage. OpenRouter lookup shows the exact route quotes. The attempt's stored estimate retains its rate basis.
+
+```toml
+[provider.gateway.proxy]
+mode = "explicit"
+url = "socks5h://127.0.0.1:1080"
+
+[provider.gateway.model_pricing."example/model"]
+mode = "configured"
+input = 0.2
+output = 1.0
+cache_read = 0.05
+```
 
 A model capability entry has independent `discovered` and `manual` declarations. The supported fields are `reasoning_efforts`, `reasoning_default`, `input_modalities`, `output_modalities`, and `interfaces`. A `protocols` table can declare protocol-specific fields such as `anthropic_messages.system_prompt_update`. The resolver labels sources, keeps omitted values unknown, and preserves manual values across refreshes. An Agent can request image output when the route declares it or leaves output unknown. The built-in adapters support text and refuse image execution before dispatch. [DeepSeek model list](https://api-docs.deepseek.com/api/list-models/) · [OpenRouter model list](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties)
 
@@ -170,7 +188,7 @@ To choose all available fields, add this to `tui.toml`.
 [statusline]
 fields = [
   "model", "connection", "execution", "input", "agent", "workspace",
-  "context", "tokens_in", "tokens_out", "cache", "tps",
+  "context", "tokens_in", "tokens_out", "cache", "cost", "tps",
 ]
 ```
 

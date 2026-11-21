@@ -1,5 +1,6 @@
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use kuku::config::{ApiKey, ProviderFormat, RequestedOutput};
+use kuku::adapter::ProbeBatch;
+use kuku::config::{ApiKey, ModelPricing, ProviderFormat, ProviderProxy, RequestedOutput};
 
 use crate::editor::Editor;
 
@@ -12,16 +13,24 @@ const MAX_KEY_BYTES: usize = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SetupStep {
+    Consent,
+    ManualConfig,
     Connection,
     Protocol,
     Address,
-    ModelsUrl,
+    AddressKind,
+    Network,
+    ProxyAddress,
     ModelSource,
     Discover,
+    TrialPlan,
+    Trials,
     DefaultModel,
     Model,
     Thinking,
     Output,
+    Pricing,
+    Rates,
     Advanced,
     Override,
     CredentialSource,
@@ -38,6 +47,8 @@ pub(super) enum ReviewAction {
     Output,
     Advanced,
     RepairCredential,
+    TrialResults,
+    Pricing,
     Back,
     Cancel,
 }
@@ -52,6 +63,8 @@ impl ReviewAction {
             Self::Output => "Requested output",
             Self::Advanced => "Advanced model capabilities",
             Self::RepairCredential => "Paste API key",
+            Self::TrialResults => "Model trial and results",
+            Self::Pricing => "Cost and rates",
             Self::Back => "Back",
             Self::Cancel => "Cancel",
         }
@@ -72,14 +85,20 @@ pub(super) struct SetupState {
     pub(super) protocol: ProviderFormat,
     pub(super) full_url: bool,
     pub(super) address: Editor,
-    pub(super) models_url: Editor,
+    pub(super) models_url: String,
+    pub(super) proxy: ProviderProxy,
+    pub(super) proxy_address: Editor,
+    pub(super) model_pricing: std::collections::BTreeMap<String, ModelPricing>,
+    pub(super) rate_fields: [Editor; 4],
+    pub(super) authorized: bool,
+    pub(super) discovery: ProbeBatch,
+    pub(super) trials: ProbeBatch,
+    pub(super) probe_repaint_at: Option<std::time::Instant>,
     pub(super) models: Models,
     pub(super) reasoning: Option<String>,
     pub(super) output: RequestedOutput,
     pub(super) reasoning_changed: bool,
     pub(super) output_changed: bool,
-    pub(super) discover_now: bool,
-    pub(super) discovery_pending: bool,
     pub(super) step: SetupStep,
     pub(super) model: Editor,
     pub(super) environment: Editor,
@@ -115,23 +134,25 @@ impl SetupState {
         let mut state = Self {
             choices,
             selected,
-            step: if edit.is_some() {
-                SetupStep::Protocol
-            } else {
-                SetupStep::Connection
-            },
+            step: SetupStep::Consent,
             intent,
             protocol: ProviderFormat::OpenAiChat,
             full_url: false,
             address: Editor::default(),
-            models_url: Editor::default(),
+            models_url: String::new(),
+            proxy: ProviderProxy::default(),
+            proxy_address: Editor::default(),
+            model_pricing: Default::default(),
+            rate_fields: Default::default(),
+            authorized: false,
+            discovery: ProbeBatch::default(),
+            trials: ProbeBatch::default(),
+            probe_repaint_at: None,
             models: Models::default(),
             reasoning: None,
             output: RequestedOutput::Text,
             reasoning_changed: false,
             output_changed: false,
-            discover_now: false,
-            discovery_pending: false,
             model: Editor::default(),
             environment: Editor::default(),
             environment_detected: false,
@@ -238,7 +259,7 @@ impl SetupState {
             return;
         }
         if key.code == KeyCode::Esc {
-            if self.step == SetupStep::Connection {
+            if self.step == SetupStep::Consent {
                 self.finish = Some(Finish::Cancel);
             } else {
                 self.previous();
@@ -263,10 +284,28 @@ impl SetupState {
             self.problem = None;
             return;
         }
-        if self.discovery_pending {
-            return;
-        }
         match self.step {
+            SetupStep::Consent => match key.code {
+                KeyCode::Up | KeyCode::Down => self.models.move_cursor(key.code, 2),
+                KeyCode::Enter => {
+                    if self.models.cursor == 0 {
+                        self.authorized = true;
+                        self.step = if matches!(self.intent, SetupIntent::Edit(_)) {
+                            SetupStep::Protocol
+                        } else {
+                            SetupStep::Connection
+                        };
+                    } else {
+                        self.step = SetupStep::ManualConfig;
+                    }
+                }
+                _ => {}
+            },
+            SetupStep::ManualConfig => {
+                if key.code == KeyCode::Enter {
+                    self.finish = Some(Finish::Cancel);
+                }
+            }
             SetupStep::Connection => match key.code {
                 KeyCode::Up | KeyCode::Left => self.change_choice(-1, settings),
                 KeyCode::Down | KeyCode::Right => self.change_choice(1, settings),
@@ -274,14 +313,20 @@ impl SetupState {
                 _ => {}
             },
             SetupStep::Protocol => self.choose_protocol(key),
-            SetupStep::Address => self.edit_address(key, settings),
-            SetupStep::ModelsUrl => self.edit_models_url(key, settings),
+            SetupStep::Address => self.edit_address(key),
+            SetupStep::AddressKind => self.choose_address_kind(key),
+            SetupStep::Network => self.choose_network(key),
+            SetupStep::ProxyAddress => self.edit_proxy(key),
             SetupStep::ModelSource => self.choose_source(key, settings),
-            SetupStep::Discover => self.choose_discovered(key, settings),
+            SetupStep::Discover => self.choose_discovered(key),
+            SetupStep::TrialPlan => self.choose_trial_plan(key, settings),
+            SetupStep::Trials => self.trial_input(key),
             SetupStep::DefaultModel => self.choose_default(key),
             SetupStep::Model => self.edit_model(key),
             SetupStep::Thinking => self.choose_thinking(key, settings),
             SetupStep::Output => self.choose_output(key),
+            SetupStep::Pricing => self.choose_pricing(key),
+            SetupStep::Rates => self.edit_rates(key),
             SetupStep::Advanced => self.choose_advanced(key, settings),
             SetupStep::Override => self.edit_override(key),
             SetupStep::CredentialSource => match key.code {
@@ -367,9 +412,10 @@ impl SetupState {
         match self.step {
             SetupStep::Model => Some(&mut self.model),
             SetupStep::Address => Some(&mut self.address),
-            SetupStep::ModelsUrl => Some(&mut self.models_url),
+            SetupStep::ProxyAddress => Some(&mut self.proxy_address),
             SetupStep::Discover => Some(&mut self.models.query),
             SetupStep::Override => Some(&mut self.models.override_value),
+            SetupStep::Rates => self.rate_fields.get_mut(self.models.cursor),
             SetupStep::Credential => Some(match self.credential_source {
                 CredentialSource::Environment => &mut self.environment,
                 CredentialSource::StoredKey => &mut self.stored_key,
@@ -383,13 +429,13 @@ impl SetupState {
         match self.step {
             SetupStep::Connection => {
                 self.models.cursor = 0;
-                self.step = if self.intent == SetupIntent::Add
+                if self.intent == SetupIntent::Add
                     && matches!(self.choice(), ConnectionChoice::Existing(_))
                 {
-                    SetupStep::ModelSource
+                    self.start_discovery(settings);
                 } else {
-                    SetupStep::Protocol
-                };
+                    self.step = SetupStep::Protocol;
+                }
             }
             SetupStep::Model => self.advance_from_model(),
             SetupStep::CredentialSource => self.step = SetupStep::Credential,
@@ -418,7 +464,11 @@ impl SetupState {
                 if valid {
                     self.review_selection = 0;
                     self.models.cursor = 0;
-                    self.step = SetupStep::ModelSource;
+                    if matches!(self.intent, SetupIntent::Edit(_)) {
+                        self.step = SetupStep::ModelSource;
+                    } else {
+                        self.start_discovery(settings);
+                    }
                 } else if self.problem.is_none() {
                     self.problem = Some(if settings.can_store_key() {
                         "Enter a key, or use a saved key for this connection.".into()
@@ -427,14 +477,22 @@ impl SetupState {
                     });
                 }
             }
-            SetupStep::Protocol
+            SetupStep::Consent
+            | SetupStep::ManualConfig
+            | SetupStep::Protocol
             | SetupStep::Address
-            | SetupStep::ModelsUrl
+            | SetupStep::AddressKind
+            | SetupStep::Network
+            | SetupStep::ProxyAddress
             | SetupStep::ModelSource
             | SetupStep::Discover
+            | SetupStep::TrialPlan
+            | SetupStep::Trials
             | SetupStep::DefaultModel
             | SetupStep::Thinking
             | SetupStep::Output
+            | SetupStep::Pricing
+            | SetupStep::Rates
             | SetupStep::Advanced
             | SetupStep::Override
             | SetupStep::Review => {}
@@ -454,18 +512,38 @@ impl SetupState {
 
     pub(super) fn previous(&mut self) {
         self.problem = None;
+        self.models.cursor = 0;
         self.step = match self.step {
-            SetupStep::Connection => return,
+            SetupStep::Consent => return,
+            SetupStep::ManualConfig | SetupStep::Connection => SetupStep::Consent,
             SetupStep::Protocol => SetupStep::Connection,
             SetupStep::Address => SetupStep::Protocol,
-            SetupStep::ModelsUrl => SetupStep::Address,
-            SetupStep::CredentialSource => SetupStep::ModelsUrl,
+            SetupStep::AddressKind | SetupStep::Network => SetupStep::Address,
+            SetupStep::ProxyAddress => SetupStep::Network,
+            SetupStep::CredentialSource => SetupStep::Network,
             SetupStep::Credential => SetupStep::CredentialSource,
-            SetupStep::ModelSource => SetupStep::Credential,
+            SetupStep::ModelSource => {
+                self.discovery.stop();
+                if self.intent == SetupIntent::Add
+                    && matches!(self.choice(), ConnectionChoice::Existing(_))
+                {
+                    SetupStep::Connection
+                } else {
+                    SetupStep::Credential
+                }
+            }
+            SetupStep::Trials => {
+                self.trials.stop();
+                SetupStep::Review
+            }
+            SetupStep::TrialPlan => SetupStep::ModelSource,
             SetupStep::Model | SetupStep::Discover => SetupStep::ModelSource,
             SetupStep::DefaultModel => SetupStep::ModelSource,
             SetupStep::Review => SetupStep::ModelSource,
-            SetupStep::Thinking | SetupStep::Output | SetupStep::Advanced => SetupStep::Review,
+            SetupStep::Thinking | SetupStep::Output | SetupStep::Advanced | SetupStep::Pricing => {
+                SetupStep::Review
+            }
+            SetupStep::Rates => SetupStep::Pricing,
             SetupStep::Override => SetupStep::Advanced,
         };
         if self.credential_source == CredentialSource::Environment {
@@ -492,7 +570,28 @@ impl SetupState {
         let (address, full_url, models_url) = settings.address_for(&choice);
         self.address.set_text(address);
         self.full_url = full_url;
-        self.models_url.set_text(models_url);
+        self.models_url = models_url;
+        self.proxy = match &choice {
+            ConnectionChoice::Existing(name) => {
+                settings.resolved.providers[name].options.proxy.clone()
+            }
+            ConnectionChoice::Preset(_) | ConnectionChoice::Custom => ProviderProxy::Environment,
+        };
+        self.model_pricing = match &choice {
+            ConnectionChoice::Existing(name) => settings.resolved.providers[name]
+                .options
+                .model_pricing
+                .clone(),
+            _ => Default::default(),
+        };
+        self.proxy_address.set_text(match &self.proxy {
+            ProviderProxy::Explicit { url, .. } => url.clone(),
+            _ => String::new(),
+        });
+        self.discovery.stop();
+        self.trials.stop();
+        self.discovery = ProbeBatch::default();
+        self.trials = ProbeBatch::default();
         self.models = Models::default();
         self.model.set_text(match &self.intent {
             SetupIntent::Add if matches!(choice, ConnectionChoice::Existing(_)) => String::new(),
@@ -559,6 +658,8 @@ impl SetupState {
             ReviewAction::Thinking,
             ReviewAction::Output,
             ReviewAction::Advanced,
+            ReviewAction::TrialResults,
+            ReviewAction::Pricing,
         ]);
         choices
     }
@@ -590,6 +691,25 @@ impl SetupState {
                 self.credential_source = CredentialSource::StoredKey;
                 self.step = SetupStep::Credential;
                 self.problem = None;
+            }
+            ReviewAction::TrialResults => {
+                if self.trials.rows().is_empty() {
+                    self.offer_trials();
+                } else {
+                    self.step = SetupStep::Trials;
+                }
+            }
+            ReviewAction::Pricing => {
+                self.models.cursor = self
+                    .primary_model()
+                    .as_deref()
+                    .and_then(|model| self.model_pricing.get(model))
+                    .map_or(0, |pricing| match pricing {
+                        ModelPricing::Automatic => 0,
+                        ModelPricing::Configured { .. } => 1,
+                        ModelPricing::UsageOnly => 2,
+                    });
+                self.step = SetupStep::Pricing;
             }
             ReviewAction::Back => self.previous(),
             ReviewAction::Cancel => self.finish = Some(Finish::Cancel),

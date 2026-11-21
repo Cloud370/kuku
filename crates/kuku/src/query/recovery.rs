@@ -177,6 +177,10 @@ async fn dispatch_recovery(
             stream,
             provider_attempt: 1,
             stream_failure: None,
+            accounting: super::types::RequestAccounting {
+                pricing: resolved.options.model_pricing.get(&resolved.model).cloned(),
+                ..Default::default()
+            },
             accumulated_text: String::new(),
             accumulated_thinking: String::new(),
             model_phase: None,

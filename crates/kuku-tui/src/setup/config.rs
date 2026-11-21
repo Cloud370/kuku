@@ -608,6 +608,28 @@ fn save_with_lookup(
             connection.options.models_url.as_deref(),
         );
     }
+    if original.is_none_or(|old| old.options.proxy != connection.options.proxy) {
+        if connection.options.proxy.follows_environment() {
+            provider.remove("proxy");
+        } else {
+            let proxy = toml_edit::ser::to_document(&connection.options.proxy)
+                .map_err(|_| invalid_config("could not encode proxy settings"))?;
+            provider.insert(
+                "proxy",
+                Item::Value(Value::InlineTable(proxy.into_table().into_inline_table())),
+            );
+        }
+    }
+    if original.is_none_or(|old| old.options.model_pricing != connection.options.model_pricing)
+        && !connection.options.model_pricing.is_empty()
+    {
+        let pricing = toml_edit::ser::to_document(&connection.options.model_pricing)
+            .map_err(|_| invalid_config("could not encode model pricing"))?;
+        provider.insert(
+            "model_pricing",
+            Item::Value(Value::InlineTable(pricing.into_table().into_inline_table())),
+        );
+    }
     if let ConnectionChoice::Preset(preset) = choice {
         if let toml::Value::String(profile) = toml::Value::try_from(preset.profile())
             .map_err(|_| invalid_config("invalid provider profile"))?
@@ -648,6 +670,8 @@ fn save_with_lookup(
         previous.format != connection.format
             || previous.base_url != connection.base_url
             || previous.options.endpoint_url != connection.options.endpoint_url
+            || previous.options.proxy != connection.options.proxy
+            || previous.options.model_pricing != connection.options.model_pricing
             || previous.options.model_capabilities != connection.options.model_capabilities
     });
     let mut validate_routes = Vec::new();

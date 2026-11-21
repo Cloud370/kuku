@@ -2,20 +2,32 @@ pub(crate) mod anthropic;
 pub(crate) mod capabilities;
 pub(crate) mod chunk;
 pub(crate) mod config;
+pub(crate) mod cost;
 mod discovery;
 pub(crate) mod error;
 pub(crate) mod http_client;
 pub(crate) mod openai_compat;
 pub(crate) mod openai_responses;
+mod openrouter_catalog;
 pub(crate) mod prepare;
 pub(crate) mod replay;
 pub(crate) mod report;
+mod setup_probes;
 pub(crate) mod sse;
 pub(crate) mod trace;
 pub(crate) mod transport;
+mod trial;
 pub(crate) mod types;
 
-pub use discovery::{discover_models, DiscoveredModel};
+pub use cost::RequestCost;
+pub use discovery::{discover_models, model_list_targets, DiscoveredModel, ModelListTarget};
+pub use openrouter_catalog::{
+    openrouter_quote_url, openrouter_quotes, route_quote_for_display, RouteQuote,
+};
+pub use setup_probes::{
+    plan_model_trials, Probe, ProbeBatch, ProbeProgress, ProbeResult, ProbeRow, TrialSelection,
+};
+pub use trial::{trial_model, ModelTrial, TrialResult, TRIAL_OUTPUT_TOKENS};
 pub use types::{
     CapabilitySource, DeclaredCapability, Provider, ProviderCapabilities, ProviderReport,
     ProviderSettings, ProviderUsage,

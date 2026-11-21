@@ -1,8 +1,11 @@
 use std::collections::BTreeMap;
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
 use tokio_stream::StreamExt;
+use url::Url;
 use wreq::header::HeaderValue;
 
 use crate::config::{
@@ -16,6 +19,65 @@ use super::prepare::authentication_for;
 
 const MAX_LIST_BYTES: usize = 16 * 1024 * 1024;
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(15);
+const CATALOG_FRESH: Duration = Duration::from_secs(120);
+const CATALOG_STALE: Duration = Duration::from_secs(1800);
+
+#[derive(Default)]
+pub(super) struct CachedCatalog {
+    latest: Option<(Instant, Arc<[DiscoveredModel]>)>,
+}
+
+/// One exact model-list destination and the connection to use with its results.
+#[derive(Debug, Clone)]
+pub struct ModelListTarget {
+    pub url: String,
+    pub connection: ProviderConfig,
+}
+
+/// Plan same-origin model-list requests for a connection.
+pub fn model_list_targets(
+    connection: &ProviderConfig,
+    infer_base_path: bool,
+) -> Result<Vec<ModelListTarget>> {
+    let mut candidates = vec![connection.clone()];
+    if infer_base_path
+        && connection.options.endpoint_url.is_none()
+        && connection.options.models_url.is_none()
+    {
+        if let Ok(base) = Url::parse(&connection.base_url) {
+            if base.path() == "/" && base.query().is_none() {
+                let canonical = match base.host_str() {
+                    Some("api.deepseek.com") => None,
+                    Some("openrouter.ai" | "us.openrouter.ai" | "eu.openrouter.ai") => {
+                        Some(("/api/v1", true))
+                    }
+                    _ if connection.format == crate::config::ProviderFormat::Anthropic => None,
+                    _ => Some(("/v1", false)),
+                };
+                if let Some((prefix, canonical_only)) = canonical {
+                    if canonical_only {
+                        candidates.clear();
+                    }
+                    let mut candidate = connection.clone();
+                    candidate.base_url =
+                        format!("{}{prefix}", connection.base_url.trim_end_matches('/'));
+                    candidates.insert(0, candidate);
+                }
+            }
+        }
+    }
+    let mut targets = Vec::new();
+    for candidate in candidates {
+        let url = resolve_models_url(candidate.format, &candidate.base_url, &candidate.options)?;
+        if !targets.iter().any(|item: &ModelListTarget| item.url == url) {
+            targets.push(ModelListTarget {
+                url,
+                connection: candidate,
+            });
+        }
+    }
+    Ok(targets)
+}
 
 /// A model from the provider's model list together with its declarations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +102,17 @@ pub async fn discover_models(connection: &ProviderConfig) -> Result<Vec<Discover
     )?;
     let profile = profile_for(&endpoint, options.profile);
     let key = connection.api_key.resolve()?;
+    let slot = cached_slot(connection, &destination, &key);
+    let mut cache = if let Some(slot) = &slot {
+        Some(slot.lock().await)
+    } else {
+        None
+    };
+    if let Some((at, models)) = cache.as_ref().and_then(|entry| entry.latest.as_ref()) {
+        if at.elapsed() <= CATALOG_FRESH {
+            return Ok(models.to_vec());
+        }
+    }
     let (header, value) = match authentication_for(format, profile, options) {
         ProviderAuth::Bearer => ("authorization", format!("Bearer {key}")),
         ProviderAuth::ApiKey => ("x-api-key", key),
@@ -47,7 +120,7 @@ pub async fn discover_models(connection: &ProviderConfig) -> Result<Vec<Discover
     let mut credential = HeaderValue::from_str(&value)
         .map_err(|_| discovery_error("credential is not a valid HTTP header value"))?;
     credential.set_sensitive(true);
-    let mut request = super::http_client::api_client()
+    let mut request = super::http_client::api_client(&options.proxy)?
         .get(&destination)
         .redirect(wreq::redirect::Policy::none())
         .timeout(DISCOVERY_TIMEOUT)
@@ -68,7 +141,41 @@ pub async fn discover_models(connection: &ProviderConfig) -> Result<Vec<Discover
             response.status().as_u16()
         )));
     }
-    read_model_list(response).await
+    let models = read_model_list(response).await?;
+    if let Some(cache) = &mut cache {
+        cache.latest = Some((Instant::now(), Arc::from(models.clone())));
+    }
+    Ok(models)
+}
+
+fn cached_slot(
+    connection: &ProviderConfig,
+    destination: &str,
+    key: &str,
+) -> Option<Arc<Mutex<CachedCatalog>>> {
+    let url = Url::parse(destination).ok()?;
+    (url.scheme() == "https"
+        && url.port_or_known_default() == Some(443)
+        && matches!(
+            url.host_str(),
+            Some("openrouter.ai" | "us.openrouter.ai" | "eu.openrouter.ai")
+        )
+        && url.path() == "/api/v1/models")
+        .then(|| {
+            super::http_client::catalog_slot(
+                destination.into(),
+                connection.options.proxy.clone(),
+                key,
+            )
+        })
+}
+
+pub(super) fn cached_models(target: &ModelListTarget) -> Option<Arc<[DiscoveredModel]>> {
+    let key = target.connection.api_key.resolve().ok()?;
+    let slot = cached_slot(&target.connection, &target.url, &key)?;
+    let cache = slot.try_lock().ok()?;
+    let (at, models) = cache.latest.as_ref()?;
+    (at.elapsed() <= CATALOG_STALE).then(|| Arc::clone(models))
 }
 
 async fn read_model_list(response: wreq::Response) -> Result<Vec<DiscoveredModel>> {
@@ -165,9 +272,7 @@ fn parse_model_list(bytes: &[u8]) -> Result<Vec<DiscoveredModel>> {
 }
 
 fn discovery_error(message: &str) -> Error {
-    Error::InvalidArgument(format!(
-        "Model discovery: {message}. Check the URL and credential or enter the model ID manually."
-    ))
+    Error::InvalidArgument(format!("Model discovery: {message}"))
 }
 
 #[cfg(test)]

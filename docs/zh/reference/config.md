@@ -61,6 +61,8 @@ Chat 和 Responses 省略 `max_output_tokens` 时使用上游默认值。Anthrop
 | `base_url` | string | 附加协议后缀的 provider API 基础 URL |
 | `endpoint_url` | string | 完整请求 URL，按填写的地址发送请求 |
 | `models_url` | string | 可选的标准模型发现完整 URL |
+| `proxy` | table | 模型发现、试跑和正式请求共用的网络路径 |
+| `model_pricing` | table | 按精确模型 ID 配置的美元计费规则 |
 | `model_capabilities` | table | 按模型 ID 记录列表声明和手工覆盖 |
 | `api_key` | string | `$ENV_VAR_NAME`、直接填写的 key，或 `file:<绝对路径>` |
 | `auth` | `bearer`\|`x-api-key` | 独立于 `format` 覆盖认证方式 |
@@ -75,6 +77,22 @@ Chat 和 Responses 省略 `max_output_tokens` 时使用上游默认值。Anthrop
 内置 `openai` 连接的 `base_url` 是 `https://api.openai.com/v1`，Responses 适配器会在末尾加上 `/responses`。使用网关时，填写该网关提供的 API 基础地址。[OpenAI Responses API](https://developers.openai.com/api/reference/resources/responses/methods/create)
 
 连接通过 `base_url` 或 `endpoint_url` 设置地址。DeepSeek Chat 的基础地址 `https://api.deepseek.com` 和 `https://api.deepseek.com/v1` 都会在原路径上追加 `/chat/completions`。完整地址如 `https://gateway.example/gateway/infer` 会保留其路径。模型列表位于独立目录时，可将 `models_url` 设为 `https://gateway.example/catalog/models`。
+
+`proxy.mode` 可设为 `environment`（默认）、`direct` 或 `explicit`。显式代理的 `proxy.url` 使用 `http://`、`socks5://` 或 `socks5h://`。SOCKS5 在本机解析域名，SOCKS5H 在代理端解析。需要认证时填写 `proxy.auth.username`，再指定 `proxy.auth.password_env` 或 `proxy.auth.password_file` 之一。密码文件必须使用绝对路径，与模型密钥文件执行同样的权限检查。
+
+`model_pricing` 中的 `mode` 可选 `automatic`、`configured` 或 `usage-only`。配置的费率只用于表名对应的连接和模型，单位是每百万 token 的美元单价。按需填写 `input`、`output`、`cache_read` 和 `cache_write`。供应商单独回报缓存写入时长时，可填写 `cache_write_5m` 和 `cache_write_1h`。费用优先取上游回执，其次用适用费率和完整用量估算。OpenRouter 查询显示具体路由的报价。请求记录会保留估算时采用的费率。
+
+```toml
+[provider.gateway.proxy]
+mode = "explicit"
+url = "socks5h://127.0.0.1:1080"
+
+[provider.gateway.model_pricing."example/model"]
+mode = "configured"
+input = 0.2
+output = 1.0
+cache_read = 0.05
+```
 
 模型能力分别保存在 `discovered` 和 `manual` 下。字段包括 `reasoning_efforts`、`reasoning_default`、`input_modalities`、`output_modalities` 和 `interfaces`。`protocols` 可声明特定协议的字段，例如 `anthropic_messages.system_prompt_update`。解析结果标注来源，未声明的值保持未知，刷新时保留手工值。模型声明支持图像输出或输出能力未知时，Agent 可以保存图像输出设置。内置适配器支持文本，并在发送请求前拒绝执行图像输出。[DeepSeek 模型列表](https://api-docs.deepseek.com/api/list-models/) · [OpenRouter 模型列表](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties)
 
@@ -170,7 +188,7 @@ custom = "https://example.com/latest.json"
 [statusline]
 fields = [
   "model", "connection", "execution", "input", "agent", "workspace",
-  "context", "tokens_in", "tokens_out", "cache", "tps",
+  "context", "tokens_in", "tokens_out", "cache", "cost", "tps",
 ]
 ```
 

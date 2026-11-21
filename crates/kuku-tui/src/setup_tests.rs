@@ -74,7 +74,10 @@ async fn stored_key_paste_is_masked_and_small_terminals_are_safe() {
 
     let rendered = screen(&settings, &mut state, SetupMode::Init, 80, 24);
     assert!(!rendered.contains(fixture));
-    assert!(rendered.contains(&"•".repeat(fixture.chars().count())));
+    assert!(rendered.contains("fixture"));
+    assert!(rendered.contains("•l-key"));
+    assert_eq!("•••••••", super::ui::mask_key("1234567"));
+    assert_eq!("12••••78", super::ui::mask_key("12345678"));
 
     let small = screen(&settings, &mut state, SetupMode::Init, 24, 7);
     assert!(small.contains("Terminal too small"));
@@ -110,8 +113,8 @@ async fn source_selection_backtracking_and_cancel_do_not_write_config_or_keys() 
         &settings,
         SetupMode::FirstRun,
     );
-    assert_eq!(SetupStep::ModelsUrl, state.step);
-    state.step = SetupStep::Connection;
+    assert_eq!(SetupStep::Network, state.step);
+    state.step = SetupStep::Consent;
     state.handle(
         Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
         &settings,
@@ -127,6 +130,7 @@ async fn minimum_size_renders_the_working_connection_choices() {
     let directory = tempfile::tempdir().unwrap();
     let settings = Settings::load(options(directory.path())).await.unwrap();
     let mut state = SetupState::new(&settings);
+    state.step = SetupStep::Connection;
     let rendered = screen(&settings, &mut state, SetupMode::Init, 60, 20);
     assert!(rendered.contains("Connection"));
     assert!(rendered.contains("Preset · Anthropic"));
@@ -388,7 +392,9 @@ async fn review_keyboard_choices_dispatch_each_action() {
             ReviewAction::Save
             | ReviewAction::Thinking
             | ReviewAction::Output
-            | ReviewAction::Advanced => unreachable!(),
+            | ReviewAction::Advanced
+            | ReviewAction::TrialResults
+            | ReviewAction::Pricing => unreachable!(),
         }
     }
 
@@ -416,7 +422,9 @@ async fn review_keyboard_choices_dispatch_each_action() {
             ReviewAction::Save
             | ReviewAction::Thinking
             | ReviewAction::Output
-            | ReviewAction::Advanced => unreachable!(),
+            | ReviewAction::Advanced
+            | ReviewAction::TrialResults
+            | ReviewAction::Pricing => unreachable!(),
             ReviewAction::SaveAndContinue => unreachable!(),
         }
     }
@@ -435,41 +443,31 @@ async fn discovery_failure_preserves_the_form_and_search_preserves_selection() {
         .address
         .set_text("https://fixture.example/gateway/infer".into());
     state.full_url = true;
-    state
-        .models_url
-        .set_text("https://fixture.example/catalog/models".into());
+    state.models_url = "https://fixture.example/catalog/models".into();
     state.credential_source = CredentialSource::StoredKey;
     state.stored_key.set_text("fixture-key".into());
-    state.handle(key(KeyCode::Down), &settings, SetupMode::FirstRun);
     state.handle(key(KeyCode::Enter), &settings, SetupMode::FirstRun);
-    let discovery = state.take_discovery(&settings).unwrap();
-    assert_eq!(
-        Some("https://fixture.example/catalog/models"),
-        discovery.options.models_url.as_deref()
-    );
-    state.discovery_finished(Err(
-        "HTTP 401 · try a different key or enter a model manually".into(),
-    ));
-    assert_eq!(SetupStep::ModelSource, state.step);
+    assert!(state.discovery.rows().is_empty());
     assert_eq!("fixture-key", state.stored_key.text());
     assert_eq!(
         "https://fixture.example/gateway/infer",
         state.address.text()
     );
 
-    state.discovery_finished(Ok(["alpha", "beta"]
+    state.models.found = ["alpha", "beta"]
         .into_iter()
         .map(|id| DiscoveredModel {
             id: id.into(),
             name: None,
             capabilities: Default::default(),
         })
-        .collect()));
+        .collect();
+    state.step = SetupStep::Discover;
     for query in ["alpha", "beta"] {
         state.models.query.set_text(query.into());
         state.handle(key(KeyCode::Char(' ')), &settings, SetupMode::FirstRun);
     }
-    state.handle(key(KeyCode::Tab), &settings, SetupMode::FirstRun);
+    state.handle(key(KeyCode::Enter), &settings, SetupMode::FirstRun);
     assert_eq!(SetupStep::DefaultModel, state.step);
     state.handle(key(KeyCode::Down), &settings, SetupMode::FirstRun);
     state.handle(key(KeyCode::Enter), &settings, SetupMode::FirstRun);

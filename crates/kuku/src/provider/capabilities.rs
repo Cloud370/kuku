@@ -232,7 +232,9 @@ fn detect_profile(base_url: &str) -> ProviderProfile {
         .and_then(url::Url::host_str)
     {
         Some("api.deepseek.com") => ProviderProfile::DeepSeek,
-        Some("openrouter.ai") => ProviderProfile::OpenRouter,
+        Some("openrouter.ai" | "us.openrouter.ai" | "eu.openrouter.ai") => {
+            ProviderProfile::OpenRouter
+        }
         Some("api.openai.com") => ProviderProfile::OpenAi,
         Some("api.anthropic.com") => ProviderProfile::Anthropic,
         Some(_) | None => ProviderProfile::Compatible,

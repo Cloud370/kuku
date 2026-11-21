@@ -31,12 +31,13 @@ const DEFAULT_FIELDS: [Field; 6] = [
     Field::Context,
     Field::Throughput,
 ];
-const OPTIONAL_FIELDS: [Field; 5] = [
+const OPTIONAL_FIELDS: [Field; 6] = [
     Field::Execution,
     Field::InputTokens,
     Field::OutputTokens,
     Field::Cache,
     Field::Input,
+    Field::Cost,
 ];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -207,6 +208,7 @@ enum Field {
     InputTokens,
     OutputTokens,
     Cache,
+    Cost,
     Throughput,
 }
 
@@ -227,6 +229,7 @@ impl Field {
             Self::InputTokens => "tokens_in",
             Self::OutputTokens => "tokens_out",
             Self::Cache => "cache",
+            Self::Cost => "cost",
             Self::Throughput => "tps",
         }
     }
@@ -309,6 +312,19 @@ impl Field {
                 "Cache hit —",
                 |percent| format!("Cache hit {percent:.0}%"),
             ),
+            Self::Cost => {
+                let usage = usage?;
+                Segment::details(
+                    format!(
+                        "Cost · reported {symbol}{:.7} · estimated {symbol}{:.7} · {} unknown",
+                        usage.costs.reported_nanodollars as f64 / 1_000_000_000.0,
+                        usage.costs.estimated_nanodollars as f64 / 1_000_000_000.0,
+                        usage.unknown_cost_requests(),
+                        symbol = "$",
+                    ),
+                    Priority::Metric,
+                )
+            }
             Self::Throughput => Segment::measurement(
                 usage.and_then(UsageTotals::average_output_tokens_per_second),
                 "— TPS",

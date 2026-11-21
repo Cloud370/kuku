@@ -275,6 +275,20 @@ impl ConfigFile {
                 super::resolve_models_url(entry.format, &entry.base_url, &entry.options)
                     .map_err(|error| Error::ConfigLoad(format!("provider '{name}': {error}")))?;
             }
+            entry
+                .options
+                .proxy
+                .validate()
+                .map_err(|error| Error::ConfigLoad(format!("provider '{name}': {error}")))?;
+            for (model, pricing) in &entry.options.model_pricing {
+                if model.trim().is_empty()
+                    || matches!(pricing, super::ModelPricing::Configured { rates } if !rates.valid())
+                {
+                    return Err(Error::ConfigLoad(format!(
+                        "provider '{name}': invalid USD pricing for model '{model}'"
+                    )));
+                }
+            }
             let api_key = entry.api_key.trim();
             if api_key.is_empty() {
                 return Err(Error::ConfigLoad(format!(

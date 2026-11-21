@@ -22,6 +22,22 @@ pub(crate) async fn send_prepared(
     prepared: &PreparedProviderRequest,
     trace_metadata: Option<ProviderTraceMetadata>,
 ) -> Result<TransportResponse, ProviderFailure> {
+    send(config, prepared, trace_metadata, false).await
+}
+
+pub(super) async fn send_trial(
+    config: &ResolvedProvider,
+    prepared: &PreparedProviderRequest,
+) -> Result<TransportResponse, ProviderFailure> {
+    send(config, prepared, None, true).await
+}
+
+async fn send(
+    config: &ResolvedProvider,
+    prepared: &PreparedProviderRequest,
+    trace_metadata: Option<ProviderTraceMetadata>,
+    trial: bool,
+) -> Result<TransportResponse, ProviderFailure> {
     let expected_url = super::prepare::request_url(config)?;
     if config.connection_name != prepared.connection_name
         || config.kind != prepared.kind
@@ -54,23 +70,25 @@ pub(crate) async fn send_prepared(
             json!({"body": prepared.body}),
         );
     }
-    let response = super::http_client::api_client()
+    let mut request = super::http_client::api_client(&config.options.proxy)
+        .map_err(|error| invalid_request(&error.to_string()))?
         .post(&prepared.url)
         .headers(headers)
-        .json(&prepared.body)
-        .send()
-        .await
-        .map_err(|error| {
-            if let Some(trace) = &trace {
-                trace.record(
-                    ProviderTraceDirection::Error,
-                    Some(&prepared.url),
-                    None,
-                    json!({"error": "provider transport failed"}),
-                );
-            }
-            transport_error(&error)
-        })?;
+        .json(&prepared.body);
+    if trial {
+        request = request.redirect(wreq::redirect::Policy::none());
+    }
+    let response = request.send().await.map_err(|error| {
+        if let Some(trace) = &trace {
+            trace.record(
+                ProviderTraceDirection::Error,
+                Some(&prepared.url),
+                None,
+                json!({"error": "provider transport failed"}),
+            );
+        }
+        transport_error(&error)
+    })?;
     let status = response.status();
     if let Some(trace) = &trace {
         trace.record(

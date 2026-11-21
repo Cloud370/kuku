@@ -3,6 +3,7 @@
 import difflib
 import json
 import re
+import threading
 from urllib.parse import urlencode
 
 from interactive_fixture import InstalledClient, TOOL_BRIEF, TOOL_OUTPUT, eventually, json_response, run_cases
@@ -24,6 +25,7 @@ def lifecycle_cases(binary, bridge, directory):
                      ("rewind-history", paginated_rewind),
                  ))
     cases.append(("model-setup", lambda: shared_model_editor(binary, bridge, directory / "model-setup")))
+    cases.append(("setup-probe-progress", lambda: setup_probe_progress(binary, bridge, directory / "probe-progress")))
     cases.append(("auth-repair", lambda: runtime_credential_repair(binary, bridge, directory / "auth-repair")))
     run_cases(cases)
 
@@ -106,6 +108,8 @@ def first_run_credential_repair(binary, bridge, directory):
 
     def dispatch(method, path, headers, body):
         assert headers.get("x-api-key") == key, "Repaired credential did not reach the provider"
+        if method == "GET":
+            return json_response({}, 404)
         authenticated.append(True)
         return original_dispatch(method, path, headers, body)
 
@@ -118,16 +122,27 @@ def first_run_credential_repair(binary, bridge, directory):
         workspace = client.workspace("work-first-run")
         prompt = "Verify the repaired first-run settings"
         with client.terminal(workspace) as terminal:
+            terminal.expect("Automatic model setup", also=("may charge",))
+            client.provider.assert_idle()
+            terminal.press("\r")
             terminal.expect("Connection", also=("Existing · test-anthropic",))
             terminal.press("\r\r\r\r")
+            terminal.expect("Paste an API key")
+            terminal.press("\x1b")
             missing = terminal.expect("Credential source", also=("not detected", "› Paste API key"))["screen"]
             client.provider.assert_idle()
             terminal.press("\r")
-            terminal.expect("Paste a key; every character is masked.")
+            terminal.expect("Paste an API key")
             terminal.press(f"\x1b[200~{key}\x1b[201~")
-            masked = terminal.expect("•" * len(key))["screen"]
+            masked = terminal.expect(f"{key[:7]}{'•' * (len(key) - 12)}{key[-5:]}")["screen"]
             assert key not in masked
-            terminal.press("\r\r\r")
+            terminal.press("\r")
+            terminal.expect("HTTP 404")
+            terminal.press("\x1b[B\r")
+            terminal.expect("Model ID")
+            terminal.press("\r")
+            terminal.expect("Ready to try the selected models")
+            terminal.press("\x1b[B\r")
             terminal.expect("Save and continue")
             terminal.press("\r")
             terminal.expect("New session", state="Ready")
@@ -162,9 +177,9 @@ def shared_model_editor(binary, bridge, directory):
     def dispatch(method, path, headers, body):
         assert headers.get("x-api-key") == key
         addresses.append((method, path))
-        if method == "GET" and path == "/catalog/models":
+        if method == "GET" and path == "/gateway/models":
             return json_response({"data": [{"id": "alpha"}, {"id": "beta"}]})
-        return original_dispatch(method, "/v1/messages" if path == "/gateway/infer" else path, headers, body)
+        return original_dispatch(method, "/v1/messages" if path == "/gateway/messages" else path, headers, body)
 
     instance.provider.dispatch = dispatch
     with instance as client:
@@ -174,28 +189,30 @@ def shared_model_editor(binary, bridge, directory):
         workspace = client.workspace("work-model-setup")
         with client.terminal(workspace) as terminal:
             terminal.request("resize", rows=32, cols=110)
+            terminal.expect("Automatic model setup")
+            terminal.press("\r")
             terminal.expect("New custom connection")
             terminal.press("\x1b[A\r")
             terminal.expect("API protocol")
             terminal.press("\x1b[A\r")
-            terminal.expect("Base URL")
-            terminal.press("\x1bOQ\x01")
-            terminal.type(f"{endpoint}/gateway/infer")
-            terminal.expect(f"Request · {endpoint}/gateway/infer")
+            terminal.expect("Provider API URL")
+            terminal.type(f"{endpoint}/gateway/messages")
+            terminal.expect(f"Request · {endpoint}/gateway/messages")
             terminal.press("\r")
-            terminal.expect("Models URL")
-            terminal.type(f"{endpoint}/catalog/models")
-            terminal.press("\r\r")
-            terminal.expect("Paste a key")
+            terminal.expect("How should kuku reach this provider?")
+            terminal.press("\r")
+            terminal.expect("Paste an API key")
             terminal.press(f"\x1b[200~{key}\x1b[201~")
-            terminal.expect("•" * len(key), absent=(key,))
-            terminal.press("\r")
-            terminal.expect("Discover models")
+            terminal.expect(f"{key[:7]}{'•' * (len(key) - 12)}{key[-5:]}", absent=(key,))
             assert addresses == []
-            terminal.press("\x1b[B\r")
+            terminal.press("\r")
+            terminal.expect("Use discovered models")
+            terminal.press("\r")
             terminal.expect("Discovered models")
-            terminal.press("alpha \x01beta \t")
+            terminal.press("alpha \x01beta \r")
             terminal.expect("Choose the default model", also=("alpha", "beta"))
+            terminal.press("\x1b[B\r")
+            terminal.expect("Ready to try the selected models")
             terminal.press("\x1b[B\r")
             terminal.expect("Default model · beta", also=("Provider default",))
             terminal.press("\r")
@@ -212,11 +229,17 @@ def shared_model_editor(binary, bridge, directory):
             terminal.press("\x0c")
             terminal.expect("Add model or connection")
             terminal.press("\r")
+            terminal.expect("Automatic model setup")
+            terminal.press("\r")
             terminal.expect("Existing · custom")
-            terminal.press("\r\r")
+            terminal.press("\r")
+            terminal.expect("Use discovered models")
+            terminal.press("\x1b[B\r")
             terminal.expect("Model ID")
             terminal.type("gamma")
             terminal.press("\r")
+            terminal.expect("Ready to try the selected models")
+            terminal.press("\x1b[B\r")
             terminal.expect("Save models", also=("Model · gamma",))
             terminal.press("\r")
             terminal.expect("Tier · gamma")
@@ -225,14 +248,22 @@ def shared_model_editor(binary, bridge, directory):
             terminal.click_text(match, "Tier · gamma")
             terminal.expect("Use in this Session", also=("Edit", "Set as default"))
             terminal.press("\x1b[B\r")
+            terminal.expect("Automatic model setup")
+            terminal.press("\r")
             terminal.expect("API protocol")
-            terminal.press("\r\r\r\r")
+            terminal.press("\r\r\r")
             terminal.expect("Saved key configured; leave blank to keep.")
-            terminal.press("\r\r")
+            terminal.press("\r")
+            terminal.expect("Keep current model")
+            terminal.press("\x1b[B\r")
             terminal.expect("Model ID", also=("gamma",))
             terminal.press("\x01")
             terminal.type("delta")
-            terminal.press("\r\r")
+            terminal.press("\r")
+            terminal.expect("Ready to try the selected models")
+            terminal.press("\x1b[B\r")
+            terminal.expect("Save models", also=("Model · delta",))
+            terminal.press("\r")
             terminal.expect("Tier · gamma", also=("delta",))
             terminal.press("\x1b")
             terminal.expect(draft, absent=("Connected", "F2 Restart", "Model route"))
@@ -285,7 +316,81 @@ def shared_model_editor(binary, bridge, directory):
             eventually("a replacement kuku service", replaced_service)
             terminal.expect(draft, state="Finished", absent=("Connected", "F2 Restart"))
             terminal.exit_cleanly("\x03\x03")
-        assert ("GET", "/catalog/models") in addresses and ("POST", "/gateway/infer") in addresses
+        assert ("GET", "/gateway/models") in addresses and ("POST", "/gateway/messages") in addresses
+
+
+def setup_probe_progress(binary, bridge, directory):
+    key = "fixture-probe-only-key"
+    instance = InstalledClient(binary, bridge, directory)
+    slow_catalog_started = threading.Event()
+    slow_trial_started = threading.Event()
+    release = threading.Event()
+    trials = []
+
+    def dispatch(method, path, headers, body):
+        assert headers.get("authorization") == f"Bearer {key}"
+        if method == "GET" and path == "/models":
+            slow_catalog_started.set()
+            release.wait(20)
+            return json_response({}, 404)
+        if method == "GET" and path == "/v1/models":
+            assert slow_catalog_started.wait(8)
+            return json_response({"data": [{"id": "alpha"}, {"id": "beta"}]})
+        assert (method, path) == ("POST", "/v1/chat/completions")
+        parts = body["messages"][0]["content"]
+        image = any(part["type"] == "image_url" for part in parts)
+        trials.append((body["model"], image))
+        if image:
+            slow_trial_started.set()
+            release.wait(20)
+        else:
+            assert slow_trial_started.wait(8)
+        return json_response({
+            "choices": [{"message": {"content": "377"}}],
+            "usage": {"prompt_tokens": 20, "completion_tokens": 2, "cost": 0.000008},
+        })
+
+    instance.provider.dispatch = dispatch
+    try:
+        with instance as client:
+            config = client.home / "config.toml"
+            endpoint = re.search(r'base_url = "(http://127\.0\.0\.1:[0-9]+)"', config.read_text())[1]
+            config.write_text("")
+            with client.terminal(client.workspace("work-probe-progress")) as terminal:
+                terminal.expect("Automatic model setup")
+                terminal.press("\x1b[B\r")
+                terminal.expect("Manual configuration", also=("config.toml",))
+                assert not slow_catalog_started.is_set() and not trials
+                terminal.press("\x1b\r")
+                terminal.expect("New custom connection")
+                terminal.press("\x1b[A\r")
+                terminal.expect("API protocol")
+                terminal.press("\r")
+                terminal.expect("Provider API URL")
+                terminal.type(endpoint)
+                terminal.press("\r\x1b[B\r")
+                terminal.expect("Paste an API key")
+                terminal.press(f"\x1b[200~{key}\x1b[201~\r")
+                discovery = terminal.expect("Found 2 models", also=("1/2 finished", "Waiting for response"))["screen"]
+                terminal.press("\r")
+                terminal.expect("Discovered models")
+                terminal.press("alpha \x01beta \r")
+                terminal.expect("Choose the default model")
+                terminal.press("\r")
+                terminal.expect("Ready to try the selected models")
+                terminal.press("\r")
+                progress = terminal.expect("Text reply received", also=("Trying selected models", "Waiting for response", "Queued"))["screen"]
+                terminal.press("\r")
+                terminal.expect("Review models", also=(f"{endpoint}/v1/chat/completions",))
+                assert ("alpha", False) in trials and ("alpha", True) in trials
+                assert ("beta", True) not in trials, trials
+                terminal.press("\r")
+                terminal.expect("New session", state="Ready")
+                terminal.exit_cleanly()
+            report = {"discovery": discovery, "trials": progress, "requests": trials}
+            (client.directory / "probe-progress.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    finally:
+        release.set()
 
 
 def persistent_model_default(client):

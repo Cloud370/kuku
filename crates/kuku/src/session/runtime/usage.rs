@@ -3,10 +3,11 @@ use std::collections::HashMap;
 use serde_json::Value;
 
 use crate::event::EventPayload;
+use crate::provider::RequestCost;
 use crate::{Error, ProviderUsage, Result};
 
 use super::record::State;
-use super::{ModelUsageSample, Session, UsageTotals};
+use super::{CostTotals, ModelUsageSample, Session, UsageTotals};
 
 #[derive(Debug, Default)]
 pub(super) struct AgentUsage {
@@ -100,6 +101,7 @@ impl AgentUsage {
         request: &str,
         report: ProviderUsage,
         elapsed_us: Option<u64>,
+        cost: RequestCost,
         usage: &mut UsageTotals,
     ) -> Result<()> {
         if !self.attempts.contains_key(request) {
@@ -128,6 +130,19 @@ impl AgentUsage {
         };
         let (cache_measured_read_tokens, cache_measured_input_tokens) =
             report.cache_input_counts().unwrap_or_default();
+        let costs = match cost {
+            RequestCost::Reported { nanodollars } => CostTotals {
+                reported_nanodollars: nanodollars,
+                reported_requests: 1,
+                ..CostTotals::default()
+            },
+            RequestCost::Estimated { nanodollars, .. } => CostTotals {
+                estimated_nanodollars: nanodollars,
+                estimated_requests: 1,
+                ..CostTotals::default()
+            },
+            RequestCost::Unknown => CostTotals::default(),
+        };
         let delta = UsageTotals {
             input_tokens: report.input_tokens,
             output_tokens: report.output_tokens,
@@ -139,6 +154,7 @@ impl AgentUsage {
             cache_measured_read_tokens,
             measured_output_tokens,
             measured_elapsed_us,
+            costs,
             ..UsageTotals::default()
         };
         for total in [&mut self.totals, usage] {
@@ -243,7 +259,9 @@ pub(super) fn reduce_model_fact(state: &mut State, payload: &EventPayload) -> Re
         "runtime.model_usage" => {
             let report = serde_json::from_value::<Option<ProviderUsage>>(value["usage"].clone())?
                 .unwrap_or_default();
-            ledger.finish(request, report, value["elapsed_us"].as_u64(), usage)
+            let cost = serde_json::from_value::<Option<RequestCost>>(value["cost"].clone())?
+                .unwrap_or_default();
+            ledger.finish(request, report, value["elapsed_us"].as_u64(), cost, usage)
         }
         _ => unreachable!(),
     }
@@ -290,6 +308,22 @@ fn add_totals(total: &mut UsageTotals, delta: &UsageTotals) -> Result<()> {
             delta.measured_output_tokens,
         ),
         (&mut total.measured_elapsed_us, delta.measured_elapsed_us),
+        (
+            &mut total.costs.reported_nanodollars,
+            delta.costs.reported_nanodollars,
+        ),
+        (
+            &mut total.costs.estimated_nanodollars,
+            delta.costs.estimated_nanodollars,
+        ),
+        (
+            &mut total.costs.reported_requests,
+            delta.costs.reported_requests,
+        ),
+        (
+            &mut total.costs.estimated_requests,
+            delta.costs.estimated_requests,
+        ),
     ] {
         *count = checked_add(*count, add)?;
     }

@@ -14,9 +14,12 @@ use crate::editor::Editor;
 use crate::theme::{ACCENT, MUTED, SUCCESS, WARNING};
 
 use super::config::Settings;
-use super::models::{protocol_label, PROTOCOLS};
 use super::state::{SetupIntent, SetupState, SetupStep};
 use super::{CredentialSource, Finish, SetupMode};
+
+mod model_pages;
+
+use model_pages::render_model_settings;
 
 const MIN_WIDTH: u16 = 60;
 const MIN_HEIGHT: u16 = 20;
@@ -30,6 +33,7 @@ pub(super) async fn run(
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
     loop {
+        state.poll_probes();
         terminal.draw(|frame| render(frame, settings, state, mode))?;
         if let Some(finish) = state.finish {
             if finish == Finish::Cancel {
@@ -42,7 +46,7 @@ pub(super) async fn run(
             state.finish = None;
             state.problem = Some("Resize to at least 60 columns by 20 rows before saving.".into());
         }
-        if event::poll(Duration::from_millis(100))? {
+        if event::poll(Duration::ZERO)? {
             let event = event::read()?;
             let size = terminal.size()?;
             if !usable(size.width, size.height) {
@@ -52,13 +56,8 @@ pub(super) async fn run(
                 continue;
             }
             state.handle(event, settings, mode);
-            if let Some(connection) = state.take_discovery(settings) {
-                terminal.draw(|frame| render(frame, settings, state, mode))?;
-                let result = kuku::adapter::discover_models(&connection)
-                    .await
-                    .map_err(|error| error.to_string());
-                state.discovery_finished(result);
-            }
+        } else {
+            tokio::time::sleep(Duration::from_millis(35)).await;
         }
     }
 }
@@ -134,11 +133,11 @@ pub(super) fn render(
     frame.render_widget(
         Paragraph::new(vec![
             Line::styled(
-                "↑/↓ select · Tab next · Shift+Tab back · Enter confirm",
+                "↑/↓ move · Enter confirm · Esc back",
                 Style::default().fg(MUTED),
             ),
             Line::styled(
-                "Esc back/cancel · Ctrl+C cancel · Ctrl+A clear field",
+                "Ctrl+C cancel setup · Ctrl+A clear field",
                 Style::default().fg(MUTED),
             ),
         ]),
@@ -155,6 +154,48 @@ fn render_step(
 ) {
     let mut row = 0;
     match state.step {
+        SetupStep::Consent => {
+            line(frame, area, &mut row, "Automatic model setup", ACCENT);
+            for text in [
+                "Find models on your service and read public model metadata.",
+                "After you select models, try one short text request",
+                "and one local color-grid image per model when applicable.",
+                "The model trials may charge your API account.",
+                "This permission applies to this setup only.",
+            ] {
+                line(frame, area, &mut row, text, MUTED);
+            }
+            for (index, name) in ["Agree and continue", "Manual configuration"]
+                .iter()
+                .enumerate()
+            {
+                option(frame, area, &mut row, name, index == state.models.cursor);
+            }
+        }
+        SetupStep::ManualConfig => {
+            line(frame, area, &mut row, "Manual configuration", ACCENT);
+            line(
+                frame,
+                area,
+                &mut row,
+                &settings.config_path.display().to_string(),
+                MUTED,
+            );
+            line(
+                frame,
+                area,
+                &mut row,
+                "Edit the provider and model entries in config.toml.",
+                MUTED,
+            );
+            line(
+                frame,
+                area,
+                &mut row,
+                "Run kuku config validate to check them. Enter exits.",
+                MUTED,
+            );
+        }
         SetupStep::Connection => {
             line(frame, area, &mut row, "Connection", ACCENT);
             line(
@@ -279,10 +320,10 @@ fn render_step(
                         frame,
                         area,
                         &mut row,
-                        "Paste a key; every character is masked.",
+                        "Paste an API key · Esc chooses the credential source",
                         MUTED,
                     );
-                    masked_field(frame, area, &mut row, &state.stored_key);
+                    key_preview_field(frame, area, &mut row, &state.stored_key);
                     line(
                         frame,
                         area,
@@ -306,12 +347,18 @@ fn render_step(
         SetupStep::Review => render_review(frame, area, &mut row, settings, state, mode),
         SetupStep::Protocol
         | SetupStep::Address
-        | SetupStep::ModelsUrl
+        | SetupStep::AddressKind
+        | SetupStep::Network
+        | SetupStep::ProxyAddress
         | SetupStep::ModelSource
         | SetupStep::Discover
+        | SetupStep::TrialPlan
+        | SetupStep::Trials
         | SetupStep::DefaultModel
         | SetupStep::Thinking
         | SetupStep::Output
+        | SetupStep::Pricing
+        | SetupStep::Rates
         | SetupStep::Advanced
         | SetupStep::Override => render_model_settings(frame, area, &mut row, settings, state),
     }
@@ -402,7 +449,28 @@ fn render_review(
         };
         line(frame, area, row, guidance, WARNING);
     }
-    for (index, action) in state.review_choices(mode).iter().enumerate() {
+    line(
+        frame,
+        area,
+        row,
+        &format!("Cost · {}", state.pricing_label()),
+        MUTED,
+    );
+    let visible = usize::from(
+        area.height
+            .saturating_sub(*row + u16::from(state.problem.is_some())),
+    )
+    .max(1);
+    let start = state
+        .review_selection
+        .saturating_sub(visible.saturating_sub(1));
+    for (index, action) in state
+        .review_choices(mode)
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(visible)
+    {
         option(
             frame,
             area,
@@ -410,307 +478,6 @@ fn render_review(
             action.label(),
             index == state.review_selection,
         );
-    }
-}
-
-fn render_model_settings(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    row: &mut u16,
-    settings: &Settings,
-    state: &mut SetupState,
-) {
-    match state.step {
-        SetupStep::Protocol => {
-            line(frame, area, row, "API protocol", ACCENT);
-            for format in PROTOCOLS {
-                option(
-                    frame,
-                    area,
-                    row,
-                    protocol_label(format),
-                    format == state.protocol,
-                );
-            }
-        }
-        SetupStep::Address => {
-            let mode = if state.full_url {
-                "Full request URL"
-            } else {
-                "Base URL"
-            };
-            line(frame, area, row, mode, ACCENT);
-            if state.address.text().is_empty() && !state.full_url {
-                let placeholder = state.default_base_url();
-                line(frame, area, row, &format!("> {placeholder}"), MUTED);
-                frame.set_cursor_position((area.x + 2, area.y + *row - 1));
-            } else {
-                field(frame, area, row, &mut state.address);
-            }
-            if let Ok(url) = state.request_url() {
-                line(frame, area, row, &format!("Request · {url}"), MUTED);
-            }
-            line(
-                frame,
-                area,
-                row,
-                "F2 switch between Base URL and full request URL",
-                MUTED,
-            );
-        }
-        SetupStep::ModelsUrl => {
-            line(frame, area, row, "Models URL (optional)", ACCENT);
-            let (base, _) = state.address_parts();
-            let options = state.connection_options(settings);
-            field(frame, area, row, &mut state.models_url);
-            if let Ok(url) = kuku::config::resolve_models_url(state.protocol, &base, &options) {
-                line(frame, area, row, &format!("Discovery · {url}"), MUTED);
-            } else {
-                line(
-                    frame,
-                    area,
-                    row,
-                    "Enter a list URL to discover models at this custom endpoint.",
-                    MUTED,
-                );
-            }
-        }
-        SetupStep::ModelSource => {
-            line(frame, area, row, "Choose models", ACCENT);
-            let (base, _) = state.address_parts();
-            let options = state.connection_options(settings);
-            if let Ok(url) = kuku::config::resolve_models_url(state.protocol, &base, &options) {
-                line(
-                    frame,
-                    area,
-                    row,
-                    &format!("Read models using this credential · {url}"),
-                    MUTED,
-                );
-            }
-            if state.discovery_pending {
-                line(frame, area, row, "Reading model list…", MUTED);
-            } else {
-                option(
-                    frame,
-                    area,
-                    row,
-                    "Enter model ID manually",
-                    state.models.cursor == 0,
-                );
-                option(
-                    frame,
-                    area,
-                    row,
-                    "Discover models",
-                    state.models.cursor == 1,
-                );
-                if !state.models.selected.is_empty() {
-                    line(
-                        frame,
-                        area,
-                        row,
-                        &format!("{} selected", state.models.selected.len()),
-                        MUTED,
-                    );
-                }
-            }
-        }
-        SetupStep::Discover => {
-            line(frame, area, row, "Discovered models", ACCENT);
-            field(frame, area, row, &mut state.models.query);
-            line(
-                frame,
-                area,
-                row,
-                &format!(
-                    "{} selected · Space select · Tab continue · Esc back",
-                    state.models.selected.len()
-                ),
-                MUTED,
-            );
-            let visible = usize::from(area.height.saturating_sub(*row + 1));
-            let start = state
-                .models
-                .cursor
-                .saturating_sub(visible.saturating_sub(1));
-            for (index, model) in state
-                .models
-                .filtered()
-                .enumerate()
-                .skip(start)
-                .take(visible)
-            {
-                let check = if state.models.selected.contains(&model.id) {
-                    "✓"
-                } else {
-                    " "
-                };
-                option(
-                    frame,
-                    area,
-                    row,
-                    &format!("[{check}] {}", model.id),
-                    index == state.models.cursor,
-                );
-            }
-        }
-        SetupStep::DefaultModel => {
-            line(frame, area, row, "Choose the default model", ACCENT);
-            let visible = usize::from(area.height.saturating_sub(*row + 1));
-            let start = state
-                .models
-                .cursor
-                .saturating_sub(visible.saturating_sub(1));
-            for (index, model) in state
-                .models
-                .selected
-                .iter()
-                .enumerate()
-                .skip(start)
-                .take(visible)
-            {
-                option(frame, area, row, model, index == state.models.cursor);
-            }
-        }
-        SetupStep::Thinking => {
-            line(frame, area, row, "Thinking", ACCENT);
-            if let Some(default) = state
-                .capabilities(settings)
-                .and_then(|caps| caps.reasoning_default)
-            {
-                line(
-                    frame,
-                    area,
-                    row,
-                    &format!(
-                        "Upstream default · {} ({})",
-                        default.value,
-                        source_label(default.source)
-                    ),
-                    MUTED,
-                );
-            }
-            for (index, effort) in state.thinking_choices(settings).iter().enumerate() {
-                let label = match effort.as_str() {
-                    "provider-default" => "Provider default · omit effort",
-                    "none" => "Disable thinking · none",
-                    _ => effort,
-                };
-                option(frame, area, row, label, index == state.models.cursor);
-            }
-        }
-        SetupStep::Output => {
-            line(frame, area, row, "Agent requested output", ACCENT);
-            option(frame, area, row, "Text", state.models.cursor == 0);
-            option(frame, area, row, "Image", state.models.cursor == 1);
-            line(
-                frame,
-                area,
-                row,
-                "Built-in runtime supports text only.",
-                MUTED,
-            );
-        }
-        SetupStep::Advanced => {
-            line(
-                frame,
-                area,
-                row,
-                "Manual model capability overrides",
-                ACCENT,
-            );
-            let caps = state.capabilities(settings);
-            let reasoning = caps
-                .as_ref()
-                .and_then(|caps| caps.reasoning_source)
-                .map(|source| {
-                    format!(
-                        "{} ({})",
-                        caps.as_ref()
-                            .expect("known reasoning")
-                            .reasoning_efforts
-                            .join(", "),
-                        source_label(source)
-                    )
-                });
-            let default = caps
-                .as_ref()
-                .and_then(|caps| caps.reasoning_default.as_ref())
-                .map(|value| format!("{} ({})", value.value, source_label(value.source)));
-            let media = |value: Option<&kuku::DeclaredCapability<Vec<String>>>| {
-                value.map(|value| {
-                    format!(
-                        "{} ({})",
-                        value.value.join(", "),
-                        source_label(value.source)
-                    )
-                })
-            };
-            let values = [
-                reasoning,
-                default,
-                media(
-                    caps.as_ref()
-                        .and_then(|caps| caps.input_modalities.as_ref()),
-                ),
-                media(
-                    caps.as_ref()
-                        .and_then(|caps| caps.output_modalities.as_ref()),
-                ),
-                media(caps.as_ref().and_then(|caps| caps.interfaces.as_ref())),
-            ];
-            for (index, (label, value)) in ADVANCED_LABELS.iter().zip(values).enumerate() {
-                let value = value.as_deref().unwrap_or("unknown");
-                option(
-                    frame,
-                    area,
-                    row,
-                    &format!("{label} · {value}"),
-                    index == state.models.cursor,
-                );
-            }
-        }
-        SetupStep::Override => {
-            line(
-                frame,
-                area,
-                row,
-                ADVANCED_LABELS[state.models.cursor],
-                ACCENT,
-            );
-            line(
-                frame,
-                area,
-                row,
-                "Manual values · comma-separated · blank uses declarations",
-                MUTED,
-            );
-            field(frame, area, row, &mut state.models.override_value);
-        }
-        SetupStep::Connection
-        | SetupStep::Model
-        | SetupStep::CredentialSource
-        | SetupStep::Credential
-        | SetupStep::Review => unreachable!("handled by render_step"),
-    }
-}
-
-const ADVANCED_LABELS: [&str; 5] = [
-    "Native efforts",
-    "Default effort",
-    "Input modalities",
-    "Output modalities",
-    "Advertised interfaces",
-];
-
-fn source_label(source: kuku::CapabilitySource) -> &'static str {
-    match source {
-        kuku::CapabilitySource::ModelList => "model list",
-        kuku::CapabilitySource::ProtocolModelList => "protocol model list",
-        kuku::CapabilitySource::Manual => "manual",
-        kuku::CapabilitySource::ProtocolManual => "protocol manual",
-        kuku::CapabilitySource::AdapterProfile => "adapter profile",
     }
 }
 
@@ -729,7 +496,7 @@ fn option(frame: &mut Frame<'_>, area: Rect, row: &mut u16, label: &str, selecte
     );
 }
 
-fn line(
+pub(super) fn line(
     frame: &mut Frame<'_>,
     area: Rect,
     row: &mut u16,
@@ -773,6 +540,27 @@ pub(super) fn masked_field(frame: &mut Frame<'_>, area: Rect, row: &mut u16, edi
     let mut masked = Editor::default();
     masked.set_text("•".repeat(editor.text().chars().count()));
     field(frame, area, row, &mut masked);
+}
+
+fn key_preview_field(frame: &mut Frame<'_>, area: Rect, row: &mut u16, editor: &Editor) {
+    let mut preview = Editor::default();
+    preview.set_text(mask_key(editor.text()));
+    field(frame, area, row, &mut preview);
+}
+
+pub(super) fn mask_key(value: &str) -> String {
+    let characters: Vec<char> = value.chars().collect();
+    let (prefix, suffix) = match characters.len() {
+        16.. => (7, 5),
+        8..=15 => (2, 2),
+        _ => (0, 0),
+    };
+    characters[..prefix]
+        .iter()
+        .copied()
+        .chain(std::iter::repeat_n('•', characters.len() - prefix - suffix))
+        .chain(characters[characters.len() - suffix..].iter().copied())
+        .collect()
 }
 
 fn shortened(path: &std::path::Path) -> String {

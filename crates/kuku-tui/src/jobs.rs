@@ -52,7 +52,6 @@ pub(crate) struct ValueSave {
 
 pub(crate) enum Job {
     OpenModelEditor(u64, crate::setup::SetupIntent),
-    DiscoverModels(u64, Box<kuku::config::ProviderConfig>),
     SaveModelEditor(u64, Box<crate::setup::ModelEditor>),
     SaveModelSetting(crate::setup::SavedModelSetting),
     PrepareCredentialRepair {
@@ -110,7 +109,6 @@ pub(crate) enum Job {
 
 pub(crate) enum Update {
     ModelEditorOpened(u64, Result<Box<crate::setup::ModelEditor>, String>),
-    ModelsDiscovered(u64, Result<Vec<kuku::adapter::DiscoveredModel>, String>),
     ModelEditorSaved(u64, Box<crate::setup::ModelEditor>, Result<bool, String>),
     ModelSettingSaved(Result<bool, String>),
     PreparedCredentialRepair(u64, Selection, Result<PreparedCredentialRepair, String>),
@@ -205,24 +203,9 @@ impl Jobs {
                 self.spawn(async move {
                     Update::ModelEditorOpened(
                         ticket,
-                        crate::setup::ModelEditor::open(
-                            &options,
-                            connection.as_ref(),
-                            ticket,
-                            intent,
-                        )
-                        .await
-                        .map(Box::new),
-                    )
-                });
-            }
-            Job::DiscoverModels(ticket, connection) => {
-                self.spawn(async move {
-                    Update::ModelsDiscovered(
-                        ticket,
-                        kuku::adapter::discover_models(&connection)
+                        crate::setup::ModelEditor::open(&options, connection.as_ref(), intent)
                             .await
-                            .map_err(|error| error.to_string()),
+                            .map(Box::new),
                     )
                 });
             }
@@ -529,7 +512,6 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
             Update::ReplySource(selection, id, result)
         }
         Job::OpenModelEditor(..)
-        | Job::DiscoverModels(..)
         | Job::SaveModelEditor(..)
         | Job::SaveModelSetting(..)
         | Job::PrepareCredentialRepair { .. }

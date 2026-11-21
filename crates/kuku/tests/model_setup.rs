@@ -56,6 +56,13 @@ models_url = {:?}
 api_key = "fixture-key"
 profile = "deepseek"
 
+[provider.gateway.model_pricing.fixture]
+mode = "configured"
+input = 0.2
+output = 1.0
+cache_read = 0.05
+cache_write = 0.3
+
 [model.only]
 provider = "gateway"
 model = "fixture"
@@ -154,6 +161,10 @@ think = "provider-default"
         session.wait_for_agent("main").await.unwrap().status
     );
     explicit.assert_hits_async(1).await;
+    let cost = session.agent("main").unwrap().usage;
+    assert_eq!(44_000, cost.costs.estimated_nanodollars);
+    assert_eq!(2, cost.costs.estimated_requests);
+    assert_eq!(0, cost.unknown_cost_requests());
     session
         .create_agent("create-default", "child", AgentConfig::default())
         .unwrap();
@@ -188,6 +199,7 @@ think = "provider-default"
         })
         .await;
     let reopened = Session::open(options).await.unwrap();
+    assert_eq!(cost.costs, reopened.agent("main").unwrap().usage.costs);
     reopened
         .create_agent(
             "create-reviewer",
@@ -227,6 +239,7 @@ fn reply() -> String {
     common::openai_sse_response(json!({
         "id":"fixture",
         "model":"fixture",
-        "choices":[{"message":{"role":"assistant","content":"Fixture reply"},"finish_reason":"stop"}]
+        "choices":[{"message":{"role":"assistant","content":"Fixture reply"},"finish_reason":"stop"}],
+        "usage":{"prompt_tokens":100,"completion_tokens":10,"prompt_tokens_details":{"cached_tokens":60,"cache_write_tokens":10}}
     }))
 }
