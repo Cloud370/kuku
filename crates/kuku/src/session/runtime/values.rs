@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::execution::OutputReference;
+use crate::tool::builtin::run_command::output::search::{
+    search_open_output, OutputSearch, SearchPage,
+};
 use crate::tool::builtin::run_command::output::{
     capture_metadata, framed_bytes, read_open_output, validate_output_id, OutputLimits,
     OutputWriter, MAX_FRAME_BYTES,
@@ -138,16 +141,33 @@ impl Session {
         selector: OutputSelector<'_>,
         request: &OutputRead,
     ) -> Result<OutputChunk> {
-        let (file, id) = {
-            let state = self.inner.state.lock().unwrap();
-            let id = state.select_output(agent, selector)?;
-            state.check_output_access(agent, id)?;
-            (
-                open_retained_output(&output_dir(self.events_path())?, id)?,
-                id.to_owned(),
-            )
-        };
+        let (file, id) = self.open_selected_output(agent, selector)?;
         Ok(read_open_output(file, &id, request.clone())?)
+    }
+
+    pub(crate) fn search_selected_output(
+        &self,
+        agent: &str,
+        selector: OutputSelector<'_>,
+        request: OutputSearch<'_>,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<SearchPage> {
+        let (file, id) = self.open_selected_output(agent, selector)?;
+        Ok(search_open_output(file, id, request, cancelled)?)
+    }
+
+    fn open_selected_output(
+        &self,
+        agent: &str,
+        selector: OutputSelector<'_>,
+    ) -> Result<(std::fs::File, String)> {
+        let state = self.inner.state.lock().unwrap();
+        let id = state.select_output(agent, selector)?;
+        state.check_output_access(agent, id)?;
+        Ok((
+            open_retained_output(&output_dir(self.events_path())?, id)?,
+            id.to_owned(),
+        ))
     }
 
     /// Read an agent's granted output without opening a runtime writer.

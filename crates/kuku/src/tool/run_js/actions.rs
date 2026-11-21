@@ -79,7 +79,7 @@ impl WorkspaceActions {
                     value,
                 ))
             }
-            Op::ReadOutput | Op::ListValues | Op::SaveValue => {
+            Op::ReadOutput | Op::SearchOutput | Op::ListValues | Op::SaveValue => {
                 unreachable!("the Session handles output reads and named values")
             }
             _ => {

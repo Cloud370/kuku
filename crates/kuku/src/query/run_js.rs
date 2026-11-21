@@ -181,6 +181,7 @@ impl WorkspaceHost {
             ));
         }
         let name = call.op.name();
+        let permission_name = call.op.permission_name();
         let Some(definition) = self.methods.iter().find(|method| method.name == name) else {
             return Ok(ToolResultEnvelope::blocked(
                 "tool unavailable to this Agent",
@@ -194,7 +195,7 @@ impl WorkspaceHost {
             self.actions.session.events_path(),
             &self.actions.workspace,
             self.turn,
-            name,
+            permission_name,
             &call.args,
             &id,
             &mut context,
@@ -209,6 +210,14 @@ impl WorkspaceHost {
         let mut args = prepared.args;
         if call.op == ScriptOperation::ReadOutput {
             super::runtime_tools::output::prepare_local(
+                &self.actions.session,
+                &self.actions.agent,
+                self.turn,
+                &mut args,
+            )?;
+        }
+        if call.op == ScriptOperation::SearchOutput {
+            super::runtime_tools::output::prepare_search(
                 &self.actions.session,
                 &self.actions.agent,
                 self.turn,
@@ -238,13 +247,16 @@ impl WorkspaceHost {
             }
             self.actions.workspace.clone()
         };
-        let candidate = permission_candidate(&self.home, &self.actions.workspace, name, &args);
+        let candidate =
+            permission_candidate(&self.home, &self.actions.workspace, permission_name, &args);
+        let mut schema = super::runtime_tools::schema(definition);
+        schema.name = permission_name.into();
         let action = ToolAuthorization {
             session_id: self.actions.session.id().into(),
             agent: self.actions.agent.clone(),
             source: self.source.clone(),
             tool_call_id: id.clone(),
-            tool: super::runtime_tools::schema(definition),
+            tool: schema,
             args: args.clone(),
             workspace,
         };
@@ -391,6 +403,22 @@ impl WorkspaceHost {
                 let limit = self.host_result_limit;
                 tokio::task::spawn_blocking(move || {
                     super::runtime_tools::output::execute_local(&session, &agent, &args, limit)
+                })
+                .await
+                .map_err(|err| Error::InvalidEventStream(err.to_string()))?
+            }
+            ScriptOperation::SearchOutput => {
+                let session = self.actions.session.clone();
+                let agent = self.actions.agent.clone();
+                let limit = self.host_result_limit;
+                tokio::task::spawn_blocking(move || {
+                    super::runtime_tools::output::execute_search(
+                        &session,
+                        &agent,
+                        &args,
+                        limit,
+                        || execution.is_cancelled(),
+                    )
                 })
                 .await
                 .map_err(|err| Error::InvalidEventStream(err.to_string()))?

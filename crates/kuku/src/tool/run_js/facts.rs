@@ -23,6 +23,8 @@ pub enum WorkspaceScriptOperation {
     RunCommand,
     /// Read a bounded portion of a retained output.
     ReadOutput,
+    /// Find literal bytes in a retained output.
+    SearchOutput,
     /// Bind a literal value or retained output to an Agent's exact name.
     SaveValue,
     /// List an Agent's named value metadata and immutable references.
@@ -48,6 +50,7 @@ impl WorkspaceScriptOperation {
             Self::RemoveFile => "remove_file",
             Self::RunCommand => "run_command",
             Self::ReadOutput => "read_output",
+            Self::SearchOutput => "search_output",
             Self::SaveValue => "save_value",
             Self::ListValues => "list_values",
             Self::CreateOutput => "create_output",
@@ -56,7 +59,14 @@ impl WorkspaceScriptOperation {
         }
     }
 
-    pub(crate) const ALL: [Self; 14] = [
+    pub(crate) fn permission_name(self) -> &'static str {
+        match self {
+            Self::SearchOutput => Self::ReadOutput.name(),
+            _ => self.name(),
+        }
+    }
+
+    pub(crate) const ALL: [Self; 15] = [
         Self::FindFiles,
         Self::ReadFile,
         Self::SearchText,
@@ -66,6 +76,7 @@ impl WorkspaceScriptOperation {
         Self::RemoveFile,
         Self::RunCommand,
         Self::ReadOutput,
+        Self::SearchOutput,
         Self::SaveValue,
         Self::ListValues,
         Self::CreateOutput,

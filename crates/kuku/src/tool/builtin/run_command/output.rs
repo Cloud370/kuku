@@ -12,6 +12,8 @@ use crate::execution::ReportedTests;
 use super::encoding::display_text;
 use super::reports::ReportCollector;
 
+pub(crate) mod search;
+
 const HEADER_BYTES: usize = 4096;
 const MAGIC: &[u8; 8] = b"KUKUOUT1";
 const FRAME_HEADER_BYTES: usize = 5;
@@ -590,7 +592,7 @@ fn encode_header(metadata: &CaptureMetadata) -> io::Result<[u8; HEADER_BYTES]> {
     Ok(header)
 }
 
-fn decode_header(file: &mut fs::File) -> io::Result<CaptureMetadata> {
+fn decode_header(file: &mut impl Read) -> io::Result<CaptureMetadata> {
     let mut header = [0; HEADER_BYTES];
     file.read_exact(&mut header)?;
     if &header[..8] != MAGIC {
@@ -604,7 +606,7 @@ fn decode_header(file: &mut fs::File) -> io::Result<CaptureMetadata> {
 }
 
 fn read_frame_header(
-    file: &mut fs::File,
+    file: &mut impl Read,
     metadata: &CaptureMetadata,
 ) -> io::Result<Option<(OutputStream, usize)>> {
     let mut header = [0; FRAME_HEADER_BYTES];

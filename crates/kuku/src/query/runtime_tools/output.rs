@@ -1,9 +1,12 @@
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 use crate::session::runtime::OutputSelector;
+use crate::tool::builtin::run_command::output::search::{
+    OutputSearch, DEFAULT_MATCHES, MAX_LITERAL_BYTES, MAX_MATCHES,
+};
 use crate::tool::builtin::run_command::output::validate_output_id;
 use crate::tool::{ToolDefinition, ToolResultEnvelope};
-use crate::{Error, OutputRead, Result, Session, MAX_VALUE_NAME_BYTES};
+use crate::{Error, OutputRead, OutputStream, Result, Session, MAX_VALUE_NAME_BYTES};
 
 const DEFAULT_READ_BYTES: usize = 4096;
 const MAX_READ_BYTES: usize = 8192;
@@ -83,6 +86,35 @@ pub(crate) fn execute_local(
     )
 }
 
+pub(crate) fn execute_search(
+    session: &Session,
+    agent: &str,
+    args: &Value,
+    max_json_result_bytes: usize,
+    cancelled: impl Fn() -> bool,
+) -> Result<ToolResultEnvelope> {
+    let (selector, mut request) = search_request(args)?;
+    request.limit = request
+        .limit
+        .min((max_json_result_bytes.saturating_sub(512) / 96).max(1));
+    let page = match session.search_selected_output(agent, selector, request, cancelled) {
+        Ok(page) => page,
+        Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::Interrupted => {
+            return Ok(ToolResultEnvelope::cancelled("output search cancelled"));
+        }
+        Err(error) => return Err(error),
+    };
+    let summary = format!("searched retained output {}", page.output_id);
+    let value = serde_json::to_value(&page)?;
+    let content = serde_json::to_string(&value)?;
+    if content.len() > max_json_result_bytes {
+        return Err(Error::InvalidArgument(
+            "search_output page exceeds the JSON result bound".into(),
+        ));
+    }
+    Ok(ToolResultEnvelope::ok(summary, content, value))
+}
+
 fn execute_with_bounds(
     session: &Session,
     agent: &str,
@@ -141,25 +173,42 @@ fn prepare_with_bounds(
     bounds: PageBounds,
 ) -> Result<()> {
     let (selector, _) = request(args, bounds)?;
-    let references = session.pin_output_selectors(agent, turn, &[selector])?;
-    if matches!(selector, OutputSelector::Name(_)) {
-        let object = args.as_object_mut().expect("validated output arguments");
-        object.remove("name");
-        object.insert("id".into(), references[0].id.clone().into());
-    }
+    let pinned = pin_name(session, agent, turn, selector)?;
+    apply_pinned_name(args, pinned);
     Ok(())
 }
 
-fn request(args: &Value, bounds: PageBounds) -> Result<(OutputSelector<'_>, OutputRead)> {
-    let object = args
-        .as_object()
-        .ok_or_else(|| invalid("arguments must be an object"))?;
-    if object
-        .keys()
-        .any(|key| !matches!(key.as_str(), "id" | "name" | "offset" | "limit" | "search"))
-    {
-        return Err(invalid("unknown argument"));
+pub(crate) fn prepare_search(
+    session: &Session,
+    agent: &str,
+    turn: u64,
+    args: &mut Value,
+) -> Result<()> {
+    let (selector, _) = search_request(args)?;
+    let pinned = pin_name(session, agent, turn, selector)?;
+    apply_pinned_name(args, pinned);
+    Ok(())
+}
+
+fn pin_name(
+    session: &Session,
+    agent: &str,
+    turn: u64,
+    selector: OutputSelector<'_>,
+) -> Result<Option<String>> {
+    let references = session.pin_output_selectors(agent, turn, &[selector])?;
+    Ok(matches!(selector, OutputSelector::Name(_)).then(|| references[0].id.clone()))
+}
+
+fn apply_pinned_name(args: &mut Value, pinned: Option<String>) {
+    if let Some(id) = pinned {
+        let object = args.as_object_mut().expect("validated output arguments");
+        object.remove("name");
+        object.insert("id".into(), id.into());
     }
+}
+
+fn selection(object: &Map<String, Value>) -> Result<(OutputSelector<'_>, u64)> {
     let selector = match (object.get("id"), object.get("name")) {
         (Some(id), None) => {
             let id = id.as_str().ok_or_else(|| invalid("id must be a string"))?;
@@ -178,6 +227,65 @@ fn request(args: &Value, bounds: PageBounds) -> Result<(OutputSelector<'_>, Outp
             .ok_or_else(|| invalid("offset must be a nonnegative integer"))?,
         None => 0,
     };
+    Ok((selector, offset))
+}
+
+fn search_request(args: &Value) -> Result<(OutputSelector<'_>, OutputSearch<'_>)> {
+    let invalid_search = |message| Error::InvalidArgument(format!("search_output: {message}"));
+    let object = args
+        .as_object()
+        .ok_or_else(|| invalid_search("arguments must be an object"))?;
+    if object.keys().any(|key| {
+        !matches!(
+            key.as_str(),
+            "id" | "name" | "offset" | "limit" | "text" | "stream"
+        )
+    }) {
+        return Err(invalid_search("unknown argument"));
+    }
+    let (selector, offset) = selection(object)?;
+    let text = args["text"]
+        .as_str()
+        .filter(|text| (1..=MAX_LITERAL_BYTES).contains(&text.len()))
+        .ok_or_else(|| invalid_search("text must contain 1–4096 UTF-8 bytes"))?;
+    let limit = match object.get("limit") {
+        Some(value) => value
+            .as_u64()
+            .filter(|limit| (1..=MAX_MATCHES as u64).contains(limit))
+            .ok_or_else(|| invalid_search("limit must be an integer between 1 and 128 matches"))?
+            as usize,
+        None => DEFAULT_MATCHES,
+    };
+    let stream = match object.get("stream") {
+        None => None,
+        Some(value) => Some(match value.as_str() {
+            Some("stdout") => OutputStream::Stdout,
+            Some("stderr") => OutputStream::Stderr,
+            _ => return Err(invalid_search("stream must be stdout or stderr")),
+        }),
+    };
+    Ok((
+        selector,
+        OutputSearch {
+            text,
+            stream,
+            offset,
+            limit,
+        },
+    ))
+}
+
+fn request(args: &Value, bounds: PageBounds) -> Result<(OutputSelector<'_>, OutputRead)> {
+    let object = args
+        .as_object()
+        .ok_or_else(|| invalid("arguments must be an object"))?;
+    if object
+        .keys()
+        .any(|key| !matches!(key.as_str(), "id" | "name" | "offset" | "limit" | "search"))
+    {
+        return Err(invalid("unknown argument"));
+    }
+    let (selector, offset) = selection(object)?;
     let limit = match object.get("limit") {
         Some(value) => value
             .as_u64()

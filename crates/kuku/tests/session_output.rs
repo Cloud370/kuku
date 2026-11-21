@@ -26,11 +26,15 @@ struct ReadPolicy {
 impl ToolAuthorizer for ReadPolicy {
     fn authorize(&self, action: &ToolAuthorization) -> kuku::Result<AuthorizationDecision> {
         self.actions.lock().unwrap().push(action.clone());
-        Ok(if action.tool_call_id == "denied" {
-            AuthorizationDecision::Deny
-        } else {
-            AuthorizationDecision::Allow
-        })
+        Ok(
+            if action.tool_call_id == "denied"
+                || (action.tool.name == "read_output" && action.args["text"] == "withheld")
+            {
+                AuthorizationDecision::Deny
+            } else {
+                AuthorizationDecision::Allow
+            },
+        )
     }
 }
 
@@ -395,6 +399,10 @@ async fn model_receives_short_output_and_an_extraction_hint_for_large_output() {
                 content.contains(r#"tools.output_lines({id, stream:"stdout"})"#),
                 "{content}"
             );
+            assert!(
+                content.contains("tools.search_output({id, text})"),
+                "{content}"
+            );
         } else {
             assert!(
                 content.contains("first-record") && content.contains("second-record"),
@@ -410,6 +418,85 @@ async fn model_receives_short_output_and_an_extraction_hint_for_large_output() {
         assert_eq!(payload.as_bytes(), raw);
         session.close().await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn script_search_resolves_a_named_capture_and_uses_the_read_output_permission() {
+    let server = MockServer::start_async().await;
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let policy = Arc::new(ReadPolicy::default());
+    let (session, id) = captured(
+        &server,
+        workspace.path(),
+        data.path(),
+        b"x needle withheld needle\n",
+        policy.clone(),
+    )
+    .await;
+    session
+        .save_named_value("main", "log", NamedValueSource::Output(id.clone()), false)
+        .await
+        .unwrap();
+    let requested = fixture(
+        &server,
+        |request| !producing(request) && results(request).len() == 1,
+        json!({"tool_calls":[tool("script-search", "run_js", json!({"code":r#"
+            const first = await tools.search_output({name:"log",text:"needle",stream:"stdout",limit:1});
+            if (first.status !== "ok") return first;
+            const second = await tools.search_output({id:first.result.output_id,text:"needle",offset:first.result.next_offset});
+            const denied = await tools.search_output({name:"log",text:"withheld"});
+            return {first:first.result,second:second.result,denied:denied.status};
+        "#}))]}),
+        "tool_calls",
+    ).await;
+    let done = fixture(
+        &server,
+        |request| !producing(request) && results(request).len() == 2,
+        json!({"content":"script search settled"}),
+        "stop",
+    )
+    .await;
+    session
+        .send(Input::new(
+            "search",
+            "main",
+            "find the two known strings in the saved log",
+        ))
+        .unwrap();
+    idle(&session).await;
+    let (status, content, facts) = stored_result(&session, "script-search");
+    assert_eq!("ok", status, "{content}");
+    let returned = &facts.unwrap()["value"];
+    assert_eq!(
+        returned["first"]["matches"],
+        json!([{"stream":"stdout","offset":2,"end_offset":8}])
+    );
+    assert_eq!(returned["first"]["has_more"], true);
+    assert_eq!(
+        returned["second"]["matches"],
+        json!([{"stream":"stdout","offset":18,"end_offset":24}])
+    );
+    assert_eq!(returned["second"]["has_more"], false);
+    assert_eq!(returned["denied"], "blocked");
+    let actions = policy
+        .actions
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|action| action.tool.name == "read_output")
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(3, actions.len());
+    for action in &actions {
+        assert_eq!(id, action.args["id"]);
+        assert!(action.args.get("name").is_none());
+        assert_eq!(json!(["text"]), action.tool.input_schema["required"]);
+    }
+    assert_eq!(json!("withheld"), actions[2].args["text"]);
+    session.close().await.unwrap();
+    requested.assert_hits_async(1).await;
+    done.assert_hits_async(1).await;
 }
 
 #[tokio::test]

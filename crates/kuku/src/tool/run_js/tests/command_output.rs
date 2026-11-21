@@ -248,6 +248,7 @@ fn model_definition_advertises_only_selected_script_methods() {
         .contains("create_output({}) returns result.id"));
     assert!(!script.description.contains("run_command"));
     assert!(!script.description.contains("output_lines"));
+    assert!(!script.description.contains("search_output"));
     assert!(!script.description.contains("write_file"));
     assert_eq!(
         "boolean",

@@ -205,6 +205,7 @@ impl Continuation {
     ) -> Result<ToolResultEnvelope> {
         let action = &self.action;
         let name = action.operation.name();
+        let permission_name = action.operation.permission_name();
         if !host.methods.contains(&action.definition) || host.actions.workspace != action.workspace
         {
             return Ok(ToolResultEnvelope::blocked(
@@ -226,10 +227,15 @@ impl Continuation {
         if let Err(result) = check {
             return Ok(result);
         }
-        let candidate = permission_candidate(&host.home, &host.actions.workspace, name, &checked);
+        let candidate = permission_candidate(
+            &host.home,
+            &host.actions.workspace,
+            permission_name,
+            &checked,
+        );
         let policy = crate::permission::load_project_policy(&host.policy_path)?;
         let guard = crate::permission::decide_tool_call(
-            name,
+            permission_name,
             &action.definition.risk,
             &candidate,
             &policy,

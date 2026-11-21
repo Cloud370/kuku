@@ -808,6 +808,7 @@ pub(super) fn tool_title(name: &str) -> Cow<'_, str> {
         "run_command" => "Run command",
         "run_js" => "Run JavaScript",
         "read_output" => "Read saved output",
+        "search_output" => "Search saved output",
         "create_output" => "Start output",
         "append_output" => "Append output",
         "finish_output" => "Save output",

@@ -127,6 +127,10 @@ return {exit_code, duration_ms, entries, output_ref};
 
 `output_chunks({id, offset?, limit?, search?})` iterates the bounded output pages with original stream segments and raw bytes. The default scan window is 65,536 bytes, with at most 80,000 bytes per request. `output_lines({id, stream?, offset?, limit?})` iterates decoded lines without their trailing newline and takes unfiltered pages. Both accept `name` in place of `id` and keep reading the original output ID once the iterator resolves the name. Each line carries its stream, byte offsets and completeness flags. Script host methods report denied, failed and cancelled actions independently of the script's return value.
 
+`await tools.search_output({id, text, stream?, offset?, limit?})` finds exact UTF-8 bytes in retained output. It accepts `name` in place of `id` and uses the same `read_output` authorization. Each request scans up to 8 MiB of new retained bytes in Rust and returns up to 32 matches by default, with a maximum of 128. Check `status` before using `result`, then continue with `result.output_id` and `result.next_offset` while `result.has_more` is true. This includes empty pages.
+
+Matches are ordered by completion in the capture. Each match gives `stream`, `offset` and exclusive `end_offset` in the merged byte coordinates. A match can span frames of one stream, so filter by its stream when reading back a range interleaved with the other stream. `capture_complete` describes the original capture, separately from whether the scan has more pages.
+
 For a large derived result, take `result.id` from `await tools.create_output({})`, then `await tools.append_output({id, text})` for each batch of UTF-8 text. Check each action's status. Call `await tools.finish_output({id})` and check `result.capture_complete` before relying on the new `result.output_ref`. The original capture remains available independently.
 
 An output draft belongs to the current script invocation. See the [authorization rules for draft actions](../how-it-works/permissions.md).

@@ -202,6 +202,9 @@ fn render_model(
     }
     if abbreviated {
         body.push_str("\nRead the relevant range with read_output({id, offset, limit}) using the Output ID below.");
+        if access == ModelOutputAccess::Script {
+            body.push_str("\nTo locate a known literal first, call tools.search_output({id, text}) in run_js.");
+        }
     }
     if !facts.capture_complete {
         summary.push_str(", capture incomplete");

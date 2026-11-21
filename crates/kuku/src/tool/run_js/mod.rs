@@ -136,11 +136,16 @@ pub(crate) fn method_definitions(
     let derived = outputs::definitions();
     let mut methods: Vec<_> = ScriptOperation::ALL
         .into_iter()
+        .filter(|op| *op != ScriptOperation::SearchOutput)
         .filter(|op| !derived.iter().any(|method| method.name == op.name()))
         .filter_map(&mut lookup)
         .collect();
     methods.extend(derived);
-    let can_read = methods.iter().any(|method| method.name == "read_output");
+    let read = methods.iter().find(|method| method.name == "read_output");
+    let can_read = read.is_some();
+    if let Some(read) = read {
+        methods.push(outputs::search_definition(read));
+    }
     if let Some(command) = methods
         .iter_mut()
         .find(|method| method.name == "run_command")
@@ -182,6 +187,7 @@ fn method_result(operation: ScriptOperation) -> &'static str {
         Op::RemoveFile => "remove_file({path,expected_version?,brief?}) returns result.bytes_removed. ",
         Op::RunCommand => "",
         Op::ReadOutput => "read_output({id or name,offset?,limit?,search?}) returns result.segments, next_offset and has_more. output_chunks(args) yields pages. output_lines({id or name,stream?,offset?,limit?}) yields line records with text and completeness flags. ",
+        Op::SearchOutput => "search_output({id or name,text,stream?,offset?,limit?}) finds exact UTF-8 bytes in each stream and returns result.matches with stream, offset and end_offset. Continue with result.next_offset while result.has_more is true, even if a page has no matches. ",
         Op::SaveValue => "save_value({name,output_id or value,replace?}) returns result.reference. ",
         Op::ListValues => "list_values({prefix?,after?,limit?}) returns result.values and next_after. ",
         Op::CreateOutput => "create_output({}) returns result.id. ",
