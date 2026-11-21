@@ -341,9 +341,10 @@ def benchmark_attempt(args, case, source, image, directory, mode, secrets, *, sd
     (logs / "verifier").mkdir(parents=True)
     (logs / "agent").mkdir()
     container = "kuku-acceptance-" + uuid.uuid4().hex[:12]
+    cpus = getattr(args, "cpus", CASE_RESOURCE_LIMITS["cpus"])
     memory = f"{CASE_RESOURCE_LIMITS['memory_bytes'] // 1024**2}m"
     command = ["docker", "run", "-d", "--name", container,
-               "--cpus", str(CASE_RESOURCE_LIMITS["cpus"]), "--memory", memory,
+               "--cpus", str(cpus), "--memory", memory,
                "--mount", f"type=bind,source={logs},target=/logs"]
     runner_command = None
     pi = mode == "live" and getattr(args, "pi_prefix", None) is not None
@@ -352,7 +353,7 @@ def benchmark_attempt(args, case, source, image, directory, mode, secrets, *, sd
         command += ["--memory-swap", memory]
     record = {"mode": mode, "resources": {"scope": "benchmark_container_including_sdk_and_tools"}}
     if strict:
-        record["resource_requirements"] = CASE_RESOURCE_LIMITS.copy()
+        record["resource_requirements"] = {**CASE_RESOURCE_LIMITS, "cpus": cpus}
     env = os.environ.copy()
     env.update(secrets)
     if mode == "live":
@@ -397,7 +398,7 @@ def benchmark_attempt(args, case, source, image, directory, mode, secrets, *, sd
             if strict:
                 try:
                     before = read_case_cgroup(container)
-                    validate_case_limits(before)
+                    validate_case_limits(before, cpus)
                 except ValueError as error:
                     record.update(passed=False, failure_kind="resource_evidence",
                                   resource_evidence={"passed": False, "reasons": [str(error)]})
@@ -418,7 +419,8 @@ def benchmark_attempt(args, case, source, image, directory, mode, secrets, *, sd
             include_final_process_usage(record["resources"], process_result)
             if strict:
                 try:
-                    record["resource_evidence"] = case_resource_evidence(before, read_case_cgroup(container), record["resources"])
+                    record["resource_evidence"] = case_resource_evidence(before, read_case_cgroup(container),
+                                                                         record["resources"], cpus)
                 except ValueError as error:
                     record["resource_evidence"] = {"passed": False, "reasons": [str(error)], "before": before}
             if pi:
@@ -866,6 +868,8 @@ def main():
     paid = args.group == "live" or (args.group == "benchmark" and args.mode == "live")
     metered = paid and args.group == "benchmark" and args.suite == "frontier"
     if args.group == "benchmark":
+        if args.cpus <= 0:
+            raise ValueError("--cpus must be positive")
         if args.pi_prefix and (not metered or args.provider != "deepseek" or args.require_streaming):
             raise ValueError("--pi-prefix selects direct DeepSeek Frontier live with Pi Session evidence")
         if args.node_binary and not args.pi_prefix:

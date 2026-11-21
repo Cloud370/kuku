@@ -8,8 +8,9 @@ from pathlib import Path
 import re
 
 from benchmark_resources import CASE_RESOURCE_LIMITS
-from frontier_report import (CASES, FAILURE_KINDS, TASK_COMMIT, TEST_FIELDS, EvidenceError, allowed, boolean,
+from frontier_report import (FAILURE_KINDS, TASK_COMMIT, TEST_FIELDS, EvidenceError, allowed, boolean,
                              count, hex_digest, money, number, object_value, read_object)
+from run import manifest_case
 
 
 REQUIRED_LIMITS = ('max_request_bytes', 'max_output_tokens', 'agent_timeout_sec', 'provider_context_tokens')
@@ -21,14 +22,20 @@ def attempt(directory, harness):
     meter = read_object(directory / 'meter.json', 'provider meter')
     benchmark = object_value(record.get('benchmark'))
     attempts = record.get('attempts')
-    case = allowed(object_value(benchmark.get('case')).get('id'), CASES)
-    if (record.get('group') != 'benchmark' or benchmark.get('suite') != 'frontier' or case is None
+    case = object_value(benchmark.get('case')).get('id')
+    try:
+        manifest_case(case, 'frontier')
+    except ValueError as error:
+        raise EvidenceError('expected a case from the Frontier manifest') from error
+    if (record.get('group') != 'benchmark' or benchmark.get('suite') != 'frontier'
             or meter.get('case') != case or object_value(benchmark.get('source')).get('revision') != TASK_COMMIT
             or not isinstance(attempts, list) or len(attempts) != 1):
         raise EvidenceError('expected one pinned Frontier benchmark attempt per directory')
     result = object_value(attempts[0])
+    requirements = object_value(result.get('resource_requirements'))
+    cpus = count(requirements.get('cpus'))
     if (result.get('harness') != harness or result.get('mode') != 'live'
-            or result.get('resource_requirements') != CASE_RESOURCE_LIMITS):
+            or not cpus or requirements != {**CASE_RESOURCE_LIMITS, 'cpus': cpus}):
         raise EvidenceError(f'expected strict live {harness} evidence')
     route = {'service': 'deepseek', 'wire': 'openai-chat', 'provider': 'api.deepseek.com',
              'model_requested': 'deepseek-flash', 'effort': 'max'}
@@ -45,7 +52,7 @@ def attempt(directory, harness):
         raise EvidenceError('missing task, image, budget or provider limit evidence')
     shared = {'case': case, 'source_revision': TASK_COMMIT, 'image_id': image_id,
               'task_files_sha256': sha256(json.dumps(files, sort_keys=True).encode()).hexdigest(),
-              'provider': route, 'case_cap_usd': cap, 'container_limits': CASE_RESOURCE_LIMITS,
+              'provider': route, 'case_cap_usd': cap, 'container_limits': requirements,
               'model_limits': {key: limits[key] for key in (*REQUIRED_LIMITS, 'max_requests')}}
     resources = object_value(result.get('resource_evidence'))
     accounting = object_value(meter.get('accounting'))

@@ -205,7 +205,7 @@ tmux attach-session -t kuku-benchmark
 
 ## FrontierHarness 公开小样本
 
-`frontier` 套件在[题目清单](../../../scripts/acceptance/cases.json)中固定 FrontierHarness Eval v1.1.0 的四道题，覆盖日志汇总、异步取消、正则表达式和 Vim 大文件编辑。每题使用上游题面、镜像构建上下文和原始判分器。在有 Git、Docker、Python 3.10+ 和仓库指定 Rust 工具链的 Linux 上，先用空提交确认判分器能识别失败。构建和评分依赖需要网络，这一步没有模型费用。[数据集来源](https://hub.harborframework.com/datasets/frontier-harness-eval/frontier-harness-eval)
+[题目清单](../../../scripts/acceptance/cases.json)将 `frontier` 套件固定到 FrontierHarness Eval v1.1.0。历史小样本覆盖日志汇总、异步取消、正则表达式和 Vim 大文件编辑。本地对照还包含 Nginx 配置和 SQLite 覆盖率构建。每题使用上游题面、镜像构建上下文和原始判分器。在有 Git、Docker、Python 3.10+ 和仓库指定 Rust 工具链的 Linux 上，先用空提交确认判分器能识别失败。构建和评分依赖需要网络，这一步没有模型费用。[数据集来源](https://hub.harborframework.com/datasets/frontier-harness-eval/frontier-harness-eval)
 
 ```sh
 cargo build --locked -p kuku --example session_task
@@ -248,9 +248,9 @@ SDK 在写入结果前采集 Linux `getrusage(RUSAGE_SELF)`，得到本进程峰
 
 ### 严格的本地 Kuku–Pi 对照
 
-每道入选题先跑一个 Pi 对照。优先选能拉开 harness 差异的题，再用工作负载不同的第二题检验改动能否泛化。比较耗时和 CPU 时，两家在同一台空闲机器上依次运行。复测时交替先跑的一方，保留每次结果，包括失败。下面的对照使用无界面入口。TUI 观察另记一轮。
+每道入选题先跑一个 Pi 对照。优先选能拉开 harness 差异的题，再用工作负载不同的第二题检验改动能否泛化。快速收集反馈时两道不同的题可以并发，使用不同的运行 ID 并共享费用台账。SQLite 构建这类 CPU 密集任务可以在同一道题的两家运行中都加 `--cpus 2`。报告会校验 CPU 限额一致。结果需注明是否并发及 CPU 限额。正式比较耗时和 CPU 时，两家在同一台空闲机器上依次运行。复测时交替先跑的一方，保留每次结果，包括失败。下面的对照使用无界面入口。TUI 观察另记一轮。
 
-使用支持 cgroup v2 和 `memory.peak` 的 Linux Docker，以及与 Pi 兼容的 Linux Node.js 可执行文件（Pi 1.5.2 要求 22.19 或更高）。每次从原题固定镜像启动新容器。两家使用原始题面和判分器、直连 DeepSeek Chat Completions 的 `deepseek-flash` 和 `max` 推理档，以及相同的请求、时间和费用上限。容器限额为 1 CPU、2 GiB 内存，关闭 swap。资源验收要求能读取内核计数器和 harness RSS，且 agent 执行阶段没有 cgroup OOM 事件。
+使用支持 cgroup v2 和 `memory.peak` 的 Linux Docker，以及与 Pi 兼容的 Linux Node.js 可执行文件（Pi 1.5.2 要求 22.19 或更高）。每次从原题固定镜像启动新容器。两家使用原始题面和判分器、直连 DeepSeek Chat Completions 的 `deepseek-flash` 和 `max` 推理档，以及相同的请求、时间和费用上限。严格模式默认 1 CPU、2 GiB 内存，关闭 swap。资源验收要求内核限额符合配置，能采集 harness RSS，且 agent 执行阶段没有 cgroup OOM 事件。
 
 将对照版本装进 Git 忽略目录，用 release 模式构建 Kuku runner。保留 npm lockfile，之后可以用 `npm ci` 复现依赖树。将 `KUKU_TEST_DEEPSEEK_API_KEY=...` 放进 `keys` 所指的私有文件，付费执行前用已授权的总额初始化台账。
 

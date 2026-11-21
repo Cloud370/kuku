@@ -32,6 +32,10 @@ class ResourceEvidenceTest(unittest.TestCase):
         self.assertEqual(evidence['cpu_seconds'], 2.5)
         self.assertEqual(evidence['memory_peak_bytes'], 80_000_000)
         self.assertEqual(evidence['harness_peak_rss_kib'], 30_000)
+        with self.assertRaisesRegex(ValueError, '2 CPU'):
+            case_resource_evidence(before, after, resources, cpus=2)
+        self.assertTrue(case_resource_evidence({**before, 'cpu_quota_usec': 200_000},
+                                              {**after, 'cpu_quota_usec': 200_000}, resources, cpus=2)['passed'])
         for invalid in ({'memory_events': {'oom': 1, 'oom_kill': 0}}, {'cpu_usage_usec': 0}):
             self.assertFalse(case_resource_evidence(before, {**after, **invalid}, resources)['passed'])
         self.assertFalse(case_resource_evidence(before, after, {**resources, 'capture_incomplete': True})['passed'])

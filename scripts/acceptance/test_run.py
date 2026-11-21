@@ -352,6 +352,7 @@ class AcceptanceTests(unittest.TestCase):
         manifest, case = ACCEPTANCE.manifest_case("large-scale-text-editing", "frontier")
         self.assertEqual([item["id"] for item in manifest["cases"]], [
             "log-summary-date-ranges", "cancel-async-tasks", "regex-log", "large-scale-text-editing",
+            "nginx-request-logging", "sqlite-with-gcov",
         ])
         self.assertEqual(case["artifacts"], ["/app/apply_macros.vim"])
         legacy, legacy_case = ACCEPTANCE.manifest_case("cancel-async-tasks")

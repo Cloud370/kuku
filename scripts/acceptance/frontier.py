@@ -749,6 +749,7 @@ def run_live(args, case, source, image, directory, secrets):
                 sdk_args.extend(["--max-requests", str(limits.requests)])
             caller = SimpleNamespace(sdk_binary=args.sdk_binary, config=config, connection=route.connection,
                                      require_streaming=args.require_streaming, sdk_args=sdk_args, suite="frontier",
+                                     cpus=getattr(args, "cpus", 1),
                                      pi_prefix=pi_prefix, node_binary=node_binary, pi_model=route.model, pi_effort=route.effort,
                                      require_resource_evidence=getattr(args, "require_resource_evidence", False))
             ledger_edit(budget.reserve, run_id, float(cap),

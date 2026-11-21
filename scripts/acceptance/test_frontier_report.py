@@ -67,6 +67,12 @@ class PairedReportTests(unittest.TestCase):
             write_json(pi / 'meter.json', {**meter, 'case_cap_usd': '1.00'})
             with self.assertRaisesRegex(EvidenceError, 'case_cap_usd'):
                 compare(kuku, pi)
+            write_json(pi / 'meter.json', meter)
+            pi_result = json.loads((pi / 'result.json').read_text())
+            pi_result['attempts'][0]['resource_requirements']['cpus'] = 2
+            write_json(pi / 'result.json', pi_result)
+            with self.assertRaisesRegex(EvidenceError, 'container_limits'):
+                compare(kuku, pi)
 
 
 def local_evidence(directory, passed, *, ledger=False):

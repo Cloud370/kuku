@@ -61,15 +61,15 @@ def parse_case_cgroup(output):
             'memory_events': oom}
 
 
-def validate_case_limits(counters):
-    if (counters['cpu_quota_usec'] != counters['cpu_period_usec'] * CASE_RESOURCE_LIMITS['cpus']
+def validate_case_limits(counters, cpus=CASE_RESOURCE_LIMITS['cpus']):
+    if (counters['cpu_quota_usec'] != counters['cpu_period_usec'] * cpus
             or counters['memory_limit_bytes'] != CASE_MEMORY_BYTES or counters['swap_limit_bytes'] != 0):
-        raise ValueError('benchmark resource limits must be one CPU and 2 GiB memory with swap disabled')
+        raise ValueError(f'benchmark resource limits must be {cpus} CPU(s) and 2 GiB memory with swap disabled')
 
 
-def case_resource_evidence(before, after, resources):
-    validate_case_limits(before)
-    validate_case_limits(after)
+def case_resource_evidence(before, after, resources, cpus=CASE_RESOURCE_LIMITS['cpus']):
+    validate_case_limits(before, cpus)
+    validate_case_limits(after, cpus)
     cpu = after['cpu_usage_usec'] - before['cpu_usage_usec']
     oom = {key: after['memory_events'][key] - before['memory_events'][key] for key in before['memory_events']}
     peak = after['memory_peak_bytes']
