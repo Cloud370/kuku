@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
@@ -9,7 +9,7 @@ use crate::app::{App, Modal, ThinkingPicker};
 use crate::keys::Shortcut;
 use crate::menu::{Choice, ChoiceKind, CommandMenu, Picker, PickerKind};
 use crate::text::{effort_label, shorten, with_suffix};
-use crate::theme::{emphasis, focused_row, surface, ACCENT, ERROR, MUTED};
+use crate::theme::{compact_padding, emphasis, focused_row, surface, ACCENT, ERROR, MUTED};
 
 use super::{picker_line, popup, render_editor, render_popup};
 
@@ -41,7 +41,7 @@ pub(super) fn render(
                         .as_ref()
                         .is_some_and(|thinking| thinking.declared.is_some()),
                 ) + picker.header.lines().count().min(3) as u16;
-                items + 4 + extra
+                items + 3 + extra
             }
         },
         _ => unreachable!("the modal is anchored to the composer"),
@@ -126,7 +126,7 @@ pub(super) fn render_help(frame: &mut Frame<'_>, area: Rect) -> Rect {
 
 fn render_panel(frame: &mut Frame<'_>, area: Rect, text_x: u16) -> Rect {
     let indent = text_x.saturating_sub(area.x).min(area.width);
-    let margin = u16::from(area.height >= 5);
+    let mut padding = compact_padding(2, area.height >= 4);
     let mut block = Block::new().style(surface());
     let border = area.width >= 4 && indent > 0;
     if border {
@@ -134,7 +134,8 @@ fn render_panel(frame: &mut Frame<'_>, area: Rect, text_x: u16) -> Rect {
             .borders(Borders::LEFT)
             .border_style(Style::new().fg(ACCENT));
     }
-    let block = block.padding(Padding::new(indent - u16::from(border), 2, margin, margin));
+    padding.left = indent - u16::from(border);
+    let block = block.padding(padding);
     frame.render_widget(Clear, area);
     let mut inner = block.inner(area);
     inner.width = inner.width.min(MAX_WIDTH);

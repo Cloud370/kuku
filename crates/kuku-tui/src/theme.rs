@@ -68,21 +68,14 @@ pub(crate) fn card_padding(width: usize) -> Padding {
         32..=79 => 2,
         _ => 3,
     };
-    let vertical = u16::from(width >= 24);
-    Padding::new(sides, sides, vertical, vertical)
+    compact_padding(sides, width >= 24)
 }
 
 pub(crate) fn composer_padding(area: Rect) -> Padding {
     if area.width < 4 {
         return Padding::ZERO;
     }
-    let sides = horizontal_gutter(area.width).max(1);
-    Padding::new(
-        sides,
-        sides,
-        u16::from(area.height >= 26),
-        u16::from(area.height >= 26),
-    )
+    compact_padding(horizontal_gutter(area.width).max(1), area.height >= 26)
 }
 
 pub(crate) fn panel_padding(area: Rect) -> Padding {
@@ -91,8 +84,12 @@ pub(crate) fn panel_padding(area: Rect) -> Padding {
     } else {
         u16::from(area.width >= 22)
     };
-    let vertical = u16::from(area.height >= 14);
-    Padding::new(sides, sides, vertical, vertical)
+    compact_padding(sides, area.height >= 14)
+}
+
+pub(crate) fn compact_padding(sides: u16, top: bool) -> Padding {
+    let sides = (2 * sides + 1) / 3;
+    Padding::new(sides, sides, u16::from(top), 0)
 }
 
 pub(crate) const MODEL: Color = Color::Rgb(175, 165, 223);

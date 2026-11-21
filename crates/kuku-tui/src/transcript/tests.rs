@@ -304,7 +304,7 @@ fn roles_and_file_details_are_readable_without_styles_at_narrow_widths() {
             assert_eq!("│", plain[0].trim_end());
             assert_eq!(view.lines[0].style.bg, Some(crate::theme::SURFACE));
             assert_eq!(view.row_insets[0], width as u16);
-            (1, 3, 3, "│  You  ·  Turn 1")
+            (1, 3, 2, "│ You  ·  Turn 1")
         };
         assert_eq!(heading, plain[title]);
         assert_eq!(
@@ -313,8 +313,8 @@ fn roles_and_file_details_are_readable_without_styles_at_narrow_widths() {
         );
         assert_eq!(inset, view.row_insets[body]);
         if width == 72 {
-            assert_eq!("│", plain[body + 1].trim_end());
-            assert_eq!(view.lines[body + 1].style.bg, Some(crate::theme::SURFACE));
+            assert!(plain[body + 1].is_empty());
+            assert!(view.lines[body + 1].style.bg.is_none());
         }
         assert!(plain.windows(2).any(|pair| {
             pair[0] == "Assistant"
@@ -499,13 +499,13 @@ fn history_page_join_only_marks_genuine_turn_boundaries_and_preserves_the_anchor
     assert_eq!(
         vec!["1", "2"],
         all.iter()
-            .filter_map(|row| row.strip_prefix("│  You  ·  Turn ").or_else(|| row
+            .filter_map(|row| row.strip_prefix("│ You  ·  Turn ").or_else(|| row
                 .strip_prefix("Turn ")
                 .and_then(|tail| tail.split_once("  ─"))
                 .map(|(number, _)| number)))
             .collect::<Vec<_>>()
     );
-    assert_eq!("│  Inspect the file", all[3]);
+    assert_eq!("│ Inspect the file", all[3]);
 }
 
 #[test]

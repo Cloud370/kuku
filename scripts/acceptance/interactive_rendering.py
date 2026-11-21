@@ -300,7 +300,7 @@ def targeted_delegation(client):
                 gutter = 1 if columns < 72 else 2 if columns < 110 else 3
                 transcript_width = columns - 2 * gutter
                 body_inset = 2
-                right_padding = 2 if transcript_width < 80 else 3
+                right_padding = 1 if transcript_width < 80 else 2
                 right_edge = columns - gutter - 1
                 return (agent.index("╭") == gutter and agent.index("╮") == right_edge
                         and code.index("╭") == gutter + body_inset

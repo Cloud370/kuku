@@ -476,7 +476,6 @@ impl AgentCard<'_> {
                         .into_iter()
                         .map(|row| Row::plain(frame.line(row.line))),
                 );
-                framed.extend(Row::frame_padding(&frame));
                 if frame.bordered() {
                     framed.push(Row::plain(frame.border('╰', '╯')));
                 }

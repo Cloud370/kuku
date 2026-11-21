@@ -671,7 +671,7 @@ fn older_page_can_extend_an_open_group_without_moving_the_reader_or_invalidating
         .unwrap()
         .clone();
     assert!(transcript.toggle_detail(&group));
-    transcript.scroll(4, 72, 3);
+    transcript.scroll(3, 72, 3);
     let before = text(&transcript.project(72, 3));
     assert!(before.starts_with("  Read file · p5.txt"), "{before}");
     let anchor = transcript.reading.as_ref().unwrap().anchor.clone();
