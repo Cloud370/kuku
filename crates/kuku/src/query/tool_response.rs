@@ -1,6 +1,9 @@
 use std::collections::HashSet;
 
+use crate::event::{EventPayload, ModelStopReason};
 use crate::provider::types::ProviderToolCall;
+
+use super::types::{PendingRun, PendingStep};
 
 pub(super) fn validate_tool_calls(
     mut tool_calls: Vec<ProviderToolCall>,
@@ -108,4 +111,65 @@ impl ToolResponseError {
             }
         }
     }
+}
+
+pub(super) fn stop_reason(
+    reported: Option<ModelStopReason>,
+    invalid_terminal: bool,
+    validation: Option<&std::result::Result<Vec<ProviderToolCall>, ToolResponseError>>,
+) -> ModelStopReason {
+    use ModelStopReason::{EndTurn, InvalidResponse, ToolUse};
+
+    if invalid_terminal {
+        return InvalidResponse;
+    }
+    match (reported, validation) {
+        (None | Some(ToolUse), Some(Ok(_))) => ToolUse,
+        (None, None) => EndTurn,
+        (None, Some(Err(_))) | (Some(ToolUse), _) | (Some(EndTurn), Some(_)) => InvalidResponse,
+        (Some(reason), _) => reason,
+    }
+}
+
+pub(super) fn can_regenerate(pending: &PendingRun) -> bool {
+    pending.query.runtime_execution.is_some()
+        && pending.query.runtime_limits.retry_transient_provider_errors
+        && pending.recovery_count == 0
+        && !super::budget::exhausted(&pending.query)
+}
+
+pub(super) fn regenerate(mut pending: PendingRun, request_id: &str) -> crate::Result<PendingStep> {
+    let execution = pending
+        .query
+        .runtime_execution
+        .expect("Session owns regeneration");
+    let operation = EventPayload::Unknown(serde_json::json!({
+        "kind":"runtime.model_retry", "ts": super::helpers::now_timestamp()?,
+        "agent":pending.conversation.as_str(), "turn":pending.turn, "request_id": request_id,
+        "phase":"waiting", "attempt":2, "failed_attempt":1, "max_attempts":2,
+        "delay_ms":0, "will_retry":true, "failed_kind":"invalid_response",
+        "recovery":"regenerate_tool_arguments", "provider_stop_reason":"tool_use",
+        "message":"Retrying once after invalid tool arguments. The batch was discarded before execution.",
+    }));
+    super::provider::runtime_session(&pending, execution)?.commit_model_facts(
+        pending.conversation.as_str(),
+        execution,
+        [operation],
+    )?;
+    pending.recovery_count += 1;
+    Ok(PendingStep::Pending {
+        pending: Box::new(pending),
+        slot: None,
+        event: None,
+    })
+}
+
+pub(super) fn resumed_regeneration_count(
+    events: &[crate::event::StoredEvent],
+    turn: u64,
+    agent: &str,
+) -> u8 {
+    u8::from(events.iter().any(|event| matches!(&event.payload, EventPayload::Unknown(value)
+        if value["kind"] == "runtime.model_retry" && value["recovery"] == "regenerate_tool_arguments"
+            && value["turn"] == turn && value["agent"] == agent)))
 }

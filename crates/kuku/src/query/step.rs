@@ -9,7 +9,7 @@ use super::slots::{
     dispatch_tool_slot, query_workspace_access, spawn_agent_slot, SlotDispatchArgs,
 };
 use super::tool_exec::{execute_tool_call, run_tool_pre_hooks};
-use super::tool_response::{validate_tool_calls, ToolResponseError};
+use super::tool_response::{self, validate_tool_calls, ToolResponseError};
 use super::types::{
     PendingPermission, PendingRun, PendingStep, PermissionChoice, PermissionRequest,
     QueuedToolCall, StreamingChunkState, UiEvent,
@@ -235,24 +235,22 @@ pub(super) async fn finish_streaming(mut state: StreamingChunkState) -> Result<P
             &pending.admitted_tool_call_ids,
         )
     });
-    let final_stop_reason = if terminal_stream_invalid {
-        ModelStopReason::InvalidResponse
-    } else {
-        match (stop_reason, has_streamed_tool_artifacts) {
-            (None, true)
-                if validated_tool_calls
-                    .as_ref()
-                    .is_some_and(|result| result.is_ok()) =>
-            {
-                ModelStopReason::ToolUse
-            }
-            (None, true) => ModelStopReason::InvalidResponse,
-            (None, false) => ModelStopReason::EndTurn,
-            (Some(ModelStopReason::EndTurn), true) => ModelStopReason::InvalidResponse,
-            (Some(ModelStopReason::ToolUse), false) => ModelStopReason::InvalidResponse,
-            (Some(reason), _) => reason,
-        }
+    let declared_tool_use = matches!(stop_reason, Some(ModelStopReason::ToolUse));
+    let tool_error = match (&validated_tool_calls, declared_tool_use) {
+        (Some(Err(error)), _) => Some(*error),
+        (None, true) => Some(ToolResponseError::MissingCalls),
+        _ => None,
     };
+    let regenerate = stream_ended
+        && !terminal_stream_invalid
+        && declared_tool_use
+        && tool_error == Some(ToolResponseError::InvalidArguments)
+        && tool_response::can_regenerate(&pending);
+    let final_stop_reason = tool_response::stop_reason(
+        stop_reason,
+        terminal_stream_invalid,
+        validated_tool_calls.as_ref(),
+    );
     let is_success = matches!(
         final_stop_reason,
         ModelStopReason::EndTurn | ModelStopReason::ToolUse
@@ -287,7 +285,10 @@ pub(super) async fn finish_streaming(mut state: StreamingChunkState) -> Result<P
         super::provider::runtime_session(&pending, execution)?.commit_model_facts(
             pending.conversation.as_str(),
             execution,
-            provider_replay.into_iter().chain([measurement, response]),
+            provider_replay
+                .into_iter()
+                .filter(|_| final_stop_reason != ModelStopReason::InvalidResponse)
+                .chain([measurement, response]),
         )?;
     } else {
         EventStore::open(&pending.events_path)?.append(response)?;
@@ -331,10 +332,12 @@ pub(super) async fn finish_streaming(mut state: StreamingChunkState) -> Result<P
     }
 
     if !is_success {
-        let diagnostic = match (&final_stop_reason, &validated_tool_calls) {
-            (ModelStopReason::InvalidResponse, Some(Err(error))) => Some(error.message()),
-            _ => None,
-        };
+        if regenerate {
+            return tool_response::regenerate(pending, &request_id);
+        }
+        let diagnostic = tool_error
+            .filter(|_| final_stop_reason == ModelStopReason::InvalidResponse)
+            .map(ToolResponseError::message);
         let failure = super::provider::record_terminal_stop(
             &mut pending,
             &request_id,
@@ -345,23 +348,9 @@ pub(super) async fn finish_streaming(mut state: StreamingChunkState) -> Result<P
         return Ok(PendingStep::Failed(failure));
     }
 
-    let tool_calls = if matches!(final_stop_reason, ModelStopReason::ToolUse) {
-        match validated_tool_calls.unwrap_or(Err(ToolResponseError::MissingCalls)) {
-            Ok(tool_calls) => tool_calls,
-            Err(error) => {
-                let failure = super::provider::record_terminal_stop(
-                    &mut pending,
-                    &request_id,
-                    provider_attempt,
-                    &ModelStopReason::InvalidResponse,
-                    Some(error.message()),
-                )?;
-                return Ok(PendingStep::Failed(failure));
-            }
-        }
-    } else {
-        Vec::new()
-    };
+    let tool_calls = validated_tool_calls
+        .and_then(std::result::Result::ok)
+        .unwrap_or_default();
     let has_tool_calls = !tool_calls.is_empty();
     if has_tool_calls {
         pending.tool_rounds += 1;

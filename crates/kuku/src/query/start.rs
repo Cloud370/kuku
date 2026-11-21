@@ -466,7 +466,11 @@ impl Query {
             thinking_duration_ms: 0,
             runtime_log_writer,
             request_base: None,
-            recovery_count: 0,
+            recovery_count: super::tool_response::resumed_regeneration_count(
+                &existing_events,
+                turn,
+                conversation.as_str(),
+            ),
         };
 
         let state = if let Some(request) = resumed_state.first_request {

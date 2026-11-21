@@ -32,6 +32,8 @@ A top-level command or workspace script starts once. The observation window defa
 
 Schedule workspace reads together within a model response. Dispatch workspace mutations, arbitrary programs and scripts in call order with respect to reads and other workspace mutations. A read queued after a blocked mutation waits for it. Calls outside the workspace can continue independently, subject to authorization and capacity. Once a command or script returns a Job handle, the caller can continue while the Job runs. Each call retains its own result and authorization.
 
+Validate the complete tool batch before admitting any call. If a complete model response declares tool use with malformed argument JSON, the Session can regenerate once per turn under its retry setting and request budget. Keep the rejected response out of subsequent model input. Persist the cause and recovery so users can distinguish it from a failed tool.
+
 ## Proposed command output path
 
 Keep one execution path across direct tools, JavaScript and Jobs. The tool catalog and Prompt explain how to choose a tool. The executor prepares and authorizes the final invocation. The capture writer owns stdout, stderr, quotas and the retained reference. Rust observers derive evidence from this capture. The model gets a bounded view, the clients use the same structured facts and output reference, and context admission records the exact view sent.
