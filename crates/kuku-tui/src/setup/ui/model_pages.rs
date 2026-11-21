@@ -183,23 +183,13 @@ pub(super) fn render_model_settings(
             }
         }
         SetupStep::TrialResults => {
-            let proxy_lines = u16::from(matches!(
-                state.proxy,
-                kuku::config::ProviderProxy::Explicit { .. }
-            ));
-            let visible = super::super::probes::visible_trials(
-                &state.trials,
-                state.models.cursor,
-                area.height.saturating_sub(5 + proxy_lines),
-            );
-            super::super::probes::render(
+            super::super::probes::render_test_table(
                 frame,
                 area,
                 row,
-                "Model tests",
                 &state.proxy,
                 &state.trials,
-                visible,
+                state.models.cursor,
             );
             *row += 1;
             if let Ok(url) = state.request_url() {

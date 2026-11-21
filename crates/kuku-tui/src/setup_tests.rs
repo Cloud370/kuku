@@ -135,9 +135,17 @@ async fn minimum_size_renders_the_working_connection_choices() {
     assert!(rendered.contains("Choose a provider"));
     assert!(rendered.contains("› New custom connection"));
     assert!(rendered.find("New custom connection") < rendered.find("Preset"));
-    assert!(rendered.contains("Esc previous step"));
+    assert!(rendered
+        .lines()
+        .nth(18)
+        .unwrap()
+        .starts_with("│Esc previous step"));
     assert!(rendered.contains("Preset · Anthropic"));
     assert!(rendered.contains("Preset · OpenAI"));
+
+    state.step = SetupStep::Consent;
+    let consent = screen(&settings, &mut state, SetupMode::Init, 60, 20);
+    assert!(consent.lines().nth(18).unwrap().starts_with("│Esc exit"));
 }
 
 #[tokio::test]

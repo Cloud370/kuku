@@ -152,8 +152,8 @@ def first_run_credential_repair(binary, bridge, directory):
             terminal.expect("Save and continue", also=("2/2 finished", "1 to check"))
             terminal.press("\x1b[B\r")
             terminal.expect(
-                "Image not verified",
-                also=("hit output limit", "Text reply received", "Cost · Unknown"),
+                "Not verified · output limit",
+                also=("Image input", "✓ Received", "Cost · Unknown"),
             )
             terminal.press("\r")
             terminal.expect("› Save and continue")
@@ -434,16 +434,35 @@ def setup_probe_progress(binary, bridge, directory):
                 assert slow_catalog_started.is_set()
                 assert not trials
                 terminal.press("alpha \x01beta \r")
-                terminal.expect("Choose the default model")
+                terminal.request("resize", rows=20, cols=60)
+                terminal.expect("Choose the default model", rows=20)
                 terminal.press("\r")
-                terminal.expect("Save setup", also=(f"{endpoint}/v1/chat/completions",))
+                save_activity = terminal.expect(
+                    "Testing models", rows=20,
+                    also=("Progress", "Text reply · beta", "Retry in", "Thinking none · alpha", "› Save and continue", "Model tests", "Settings", "Esc previous step"),
+                )["screen"]
+                assert save_activity.splitlines()[-2].startswith("│Esc previous step")
                 terminal.press("\x1b[B\r")
-                progress = terminal.expect("Retry in", also=("none · alpha", "Waiting for response", "API listed 2 values", "Esc previous step"))["screen"]
+                progress = terminal.expect(
+                    "Retry in", also=("Thinking none", "Text reply", "Testing", "API listed 2 values", "Esc previous step"), rows=20,
+                )["screen"]
+                assert progress.splitlines()[-2].startswith("│Esc previous step")
                 assert not any(row[:2] == ("beta", "low") for row in trials)
                 release_beta.set()
-                finished = terminal.expect("6/6 finished", also=("Usable · none · alpha · Thinking seen", "Rejected · high · alpha", "Usable · low · beta"))["screen"]
+                finished = terminal.expect(
+                    "6/6 finished", also=("Usable · Thinking seen", "Rejected", "Thinking low", "Cost"), rows=20,
+                )["screen"]
+                assert finished.count("alpha") == 1 and finished.count("beta") == 1, finished
+                result_rows = [next(line for line in finished.splitlines() if label in line)
+                               for label in ("Thinking none", "Thinking high", "Thinking low")]
+                assert len({line.index(result) for line, result in zip(result_rows, ("Usable", "Rejected", "Usable"))}) == 1, finished
                 terminal.press("\x1b")
-                terminal.expect("Save setup", also=("› Save and continue",))
+                save_results = terminal.expect(
+                    "Save setup", also=("› Save and continue", "Usable", "alpha · none", "beta · low"),
+                    absent=("Retry in",), rows=20,
+                )["screen"]
+                assert save_results.splitlines()[-2].startswith("│Esc previous step")
+                terminal.request("resize", rows=32, cols=110)
                 terminal.press("\x1b[B\x1b[B\r")
                 terminal.expect("› Thinking")
                 terminal.press("\r")
@@ -461,7 +480,7 @@ def setup_probe_progress(binary, bridge, directory):
                 retry_times = [stamp for model, effort, stamp in trials if (model, effort) == ("alpha", "none")]
                 assert len(retry_times) == 2 and retry_times[1] - retry_times[0] >= 2
                 terminal.exit_cleanly()
-            report = {"discovery": discovery, "countdown": progress, "results": finished, "requests": [(m, e) for m, e, _ in trials], "runtime": runtime_requests}
+            report = {"discovery": discovery, "save_activity": save_activity, "save_results": save_results, "countdown": progress, "results": finished, "requests": [(m, e) for m, e, _ in trials], "runtime": runtime_requests}
             (client.directory / "probe-progress.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     finally:
         release.set()
