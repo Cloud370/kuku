@@ -18,6 +18,7 @@ pub use kuku::execution::{
     ReportedTests, TestReportFormat,
 };
 pub use kuku::query::ModelPhase;
+pub use kuku::session::runtime::SessionCostSummary;
 pub use kuku::{
     AgentConfig, AgentSelection, AgentSnapshot, AgentStatus, Input, InputSource, InputStatus,
     InputTiming, JobResult, JobSnapshot, JobStatus, NamedValue, NamedValueKind, NamedValueSource,

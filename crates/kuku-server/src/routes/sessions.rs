@@ -199,6 +199,7 @@ pub(super) async fn snapshot(
         "cursor":view.cursor,
         "agent":view.snapshot,
         "agents":agents,
+        "session_costs":view.session_costs(),
         "pending":view.pending_inputs,
         "selection":null,
     });

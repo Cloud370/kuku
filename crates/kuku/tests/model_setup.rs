@@ -222,6 +222,9 @@ think = "provider-default"
         reopened.wait_for_agent("reviewer").await.unwrap().status
     );
     reviewed.assert_hits_async(1).await;
+    let summary = reopened.agent_view("main").unwrap().session_costs();
+    assert_eq!(44_000, summary.estimated_nanodollars);
+    assert_eq!(1, summary.unknown_requests);
     let image = reopened.agent_selection("image").unwrap();
     assert_eq!(RequestedOutput::Image, image.output);
     assert_eq!(

@@ -313,13 +313,32 @@ impl Field {
                 |percent| format!("Cache hit {percent:.0}%"),
             ),
             Self::Cost => {
-                let usage = usage?;
+                let session_costs = app
+                    .pane()
+                    .snapshot
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.session_costs.as_ref());
+                let (scope, reported, estimated, unknown) = if let Some(costs) = session_costs {
+                    (
+                        "Session",
+                        costs.reported_nanodollars,
+                        costs.estimated_nanodollars,
+                        costs.unknown_requests,
+                    )
+                } else {
+                    let usage = usage?;
+                    (
+                        "Agent",
+                        usage.costs.reported_nanodollars,
+                        usage.costs.estimated_nanodollars,
+                        usage.unknown_cost_requests(),
+                    )
+                };
                 Segment::details(
                     format!(
-                        "Cost · reported {symbol}{:.7} · estimated {symbol}{:.7} · {} unknown",
-                        usage.costs.reported_nanodollars as f64 / 1_000_000_000.0,
-                        usage.costs.estimated_nanodollars as f64 / 1_000_000_000.0,
-                        usage.unknown_cost_requests(),
+                        "{scope} cost · reported {symbol}{:.7} · estimated {symbol}{:.7} · {unknown} unknown",
+                        reported as f64 / 1_000_000_000.0,
+                        estimated as f64 / 1_000_000_000.0,
                         symbol = "$",
                     ),
                     Priority::Metric,

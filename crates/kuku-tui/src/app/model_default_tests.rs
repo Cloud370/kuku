@@ -82,6 +82,7 @@ fn snapshot(selection: AgentSelection, pending_selection: Option<AgentSelection>
         cursor: 31,
         agent,
         agents: vec![summary],
+        session_costs: None,
         pending: Vec::new(),
         selection: Some(selection),
         selection_error: None,

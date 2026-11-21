@@ -5,7 +5,8 @@ use serde_json::Value;
 
 use crate::{
     AgentConfig, AgentSelection, AgentSnapshot, AgentStatus, InputStatus, ModelPhase,
-    OutputReference, PermissionRequest, QuestionRequest, QueuedInput, Receipt, StoredEvent,
+    OutputReference, PermissionRequest, QuestionRequest, QueuedInput, Receipt, SessionCostSummary,
+    StoredEvent,
 };
 
 /// The exact server-side workspace, Session, and Agent selected by a caller.
@@ -372,6 +373,9 @@ pub struct Snapshot {
     pub agent: AgentSnapshot,
     /// Brief state for every Agent in the Session.
     pub agents: Vec<AgentSummary>,
+    /// Session-wide USD totals at this cursor, when supported by the service.
+    #[serde(default)]
+    pub session_costs: Option<SessionCostSummary>,
     /// Current queue for the selected Agent.
     pub pending: Vec<QueuedInput>,
     /// Effective model, settings, and tool selection.

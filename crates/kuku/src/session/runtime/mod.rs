@@ -43,7 +43,8 @@ pub use turns::TurnIndex;
 pub use types::{
     Activation, AgentConfig, AgentSnapshot, AgentStatus, AgentView, CostTotals, Input, InputSource,
     InputStatus, InputTiming, JobResult, JobSnapshot, JobStatus, ModelUsageSample, PendingInput,
-    QuestionRequest, Receipt, RuntimeLimits, SessionOptions, TurnSummary, UsageTotals, Withdrawal,
+    QuestionRequest, Receipt, RuntimeLimits, SessionCostSummary, SessionOptions, TurnSummary,
+    UsageTotals, Withdrawal,
 };
 pub use values::{
     NamedValue, NamedValueKind, NamedValueSource, MAX_INPUT_VALUES, MAX_VALUE_NAME_BYTES,

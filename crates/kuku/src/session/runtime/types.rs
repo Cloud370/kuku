@@ -589,6 +589,34 @@ pub struct AgentView {
     pub pending_inputs: Vec<PendingInput>,
 }
 
+/// Monetary usage across all retained Agents at one Session snapshot cursor.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionCostSummary {
+    pub reported_nanodollars: u64,
+    pub estimated_nanodollars: u64,
+    pub unknown_requests: u64,
+}
+
+impl AgentView {
+    pub fn session_costs(&self) -> SessionCostSummary {
+        self.agents
+            .iter()
+            .fold(SessionCostSummary::default(), |mut total, agent| {
+                let usage = &agent.usage;
+                total.reported_nanodollars = total
+                    .reported_nanodollars
+                    .saturating_add(usage.costs.reported_nanodollars);
+                total.estimated_nanodollars = total
+                    .estimated_nanodollars
+                    .saturating_add(usage.costs.estimated_nanodollars);
+                total.unknown_requests = total
+                    .unknown_requests
+                    .saturating_add(usage.unknown_cost_requests());
+                total
+            })
+    }
+}
+
 /// Durable request for selected information at an agent's safe waiting boundary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuestionRequest {

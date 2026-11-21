@@ -94,6 +94,8 @@ Client errors use `{"ok":false,"code":"...","message":"..."}`. Invalid requests 
 
 The selected Agent’s `agent.usage` contains cumulative token counts and counts of requests that reported input or output. `cache_measured_input_tokens` and `cache_measured_read_tokens` sum input and cache reads over the same requests with valid paired counts. When available, `latest_request` carries `input_tokens`, `output_tokens`, `context_window_tokens` and `elapsed_us` for one request. Optional measurements may be absent on older records. [Terminal usage fields](cli.md#terminal-interface)
 
+The snapshot’s `session_costs` sums all retained Agents at this cursor. `reported_nanodollars` and `estimated_nanodollars` are billionths of a US dollar. `unknown_requests` counts attempts with no known amount.
+
 When available, `agent.turn_started_at_ms` is the latest Turn's first admission time in milliseconds since the Unix epoch. After settlement, `agent.turn_elapsed_ms` gives its final elapsed time in milliseconds. The committed `inputs_accepted` frame for a new Turn can also carry `turn_started_at_ms`.
 
 `committed` lines contain `id` and `kind`, plus an Agent address, conversation entry or state-change indicator when applicable. `live` lines carry `agent`, `execution_id`, `turn`, `cursor` and a transient `event`. Match those identities to the current view and replace previews when committed results arrive. A `lagged` line carries `skipped` transient observations. The stream can also emit `heartbeat` or `error` lines. Durable state remains readable after lag.
