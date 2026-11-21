@@ -2,6 +2,7 @@
 """Export a matched Frontier harness, Prompt, or reasoning comparison as shareable JSON."""
 
 import argparse
+from datetime import datetime
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -9,7 +10,8 @@ import re
 
 from benchmark_resources import CASE_RESOURCE_LIMITS
 from frontier_report import (FAILURE_KINDS, TASK_COMMIT, TEST_FIELDS, EvidenceError, allowed, boolean,
-                             count, hex_digest, middle, money, number, object_value, read_object, session_summary)
+                             count, hex_digest, middle, money, number, object_value, read_object,
+                             session_events, session_journal, session_summary)
 from run import manifest_case
 
 
@@ -39,6 +41,62 @@ def relay_summary(rows):
         'first_output_samples': len(first_output),
         'first_output_p50_seconds': middle(first_output),
     }
+
+
+def journal_time(event):
+    value = re.sub(r'(\.\d{6})\d+', r'\1', event['ts']).replace('Z', '+00:00')
+    time = datetime.fromisoformat(value)
+    if time.tzinfo is None:
+        raise ValueError('Session journal timestamp has no offset')
+    return time
+
+
+def artifact_mutations(event):
+    receipt = object_value(event.get('structured'))
+    if receipt.get('kind') != 'workspace_script_result':
+        return (receipt,)
+    return (object_value(action.get('result')) for action in receipt.get('actions', [])
+            if isinstance(action, dict) and action.get('status') == 'ok')
+
+
+def artifact_observation(live, attempt):
+    artifacts = attempt.get('task_artifacts')
+    if attempt.get('task_passed') is not True or not isinstance(artifacts, list) or not artifacts:
+        return None
+    expected = {}
+    for artifact in map(object_value, artifacts):
+        path = artifact.get('task_path')
+        digest = hex_digest(artifact.get('sha256'), 64)
+        if artifact.get('status') != 'retained' or not isinstance(path, str) or not digest or path in expected:
+            return None
+        expected[path] = 'sha256:' + digest
+    found = {}
+    first, last = None, None
+    try:
+        journal = session_journal(live)
+        if journal is None:
+            return None
+        for event in session_events(journal):
+            kind = event.get('kind')
+            if kind == 'runtime.step_prepared' and first is None:
+                first = journal_time(event)
+            elif kind == 'turn.completed':
+                last = journal_time(event)
+            elif first is not None and kind == 'tool.result' and event.get('status') == 'ok':
+                for facts in artifact_mutations(event):
+                    path = facts.get('canonical_path')
+                    if (path in expected and path not in found and facts.get('commit_state') == 'committed'
+                            and facts.get('content_hash_after') == expected[path]):
+                        found[path] = journal_time(event)
+        complete = max(found.values()) if found.keys() == expected.keys() else None
+        start_seconds = round((complete - first).total_seconds(), 6) if complete else None
+        tail_seconds = round((last - complete).total_seconds(), 6) if last and complete else None
+        if ((start_seconds is not None and start_seconds < 0) or (tail_seconds is not None and tail_seconds < 0)):
+            return None
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError):
+        return None
+    return {'clock': 'session_journal', 'retained_artifacts': len(expected), 'matched_artifacts': len(found),
+            'seconds_from_first_prepared_request': start_seconds, 'seconds_to_last_completed_turn': tail_seconds}
 
 
 def attempt(directory, harness):
@@ -126,6 +184,7 @@ def attempt(directory, harness):
         'agent_seconds': number(object_value(result.get('execution')).get('seconds')),
         'verifier_seconds': number(object_value(result.get('verification')).get('seconds')),
         'tests': {key: count(object_value(result.get('verifier_summary')).get(key)) for key in TEST_FIELDS},
+        'final_artifact_observation': artifact_observation(directory / 'live', result) if harness == 'kuku' else None,
         'upstream_requests': count(accounting.get('upstream_requests')),
         'provider_relay': relay_summary(meter.get('attempts', [])),
         'case_cap_rejections': case_cap_rejections,

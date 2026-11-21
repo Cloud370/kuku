@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from benchmark_compare import compare, compare_effort, compare_prompts
+from benchmark_compare import artifact_observation, compare, compare_effort, compare_prompts
 from benchmark_resources import CASE_RESOURCE_LIMITS
 from frontier_report import (CASES, DATASET, DELAYED_RECEIPTS, MODEL_ID, PRIVATE_RECEIPTS,
                             SDK_REQUEST_BYTES_ERROR, TASK_COMMIT, EvidenceError, build_report, cohort_efficiency, main, official_report,
@@ -45,6 +45,46 @@ def write_json(path, value):
 
 
 class PairedReportTests(unittest.TestCase):
+    def test_artifact_observation_uses_complete_matching_mutations(self):
+        digests = {'/app/a': SDK_SHA, '/app/b': '2' * 64}
+        attempt = {'task_passed': True, 'task_artifacts': [
+            {'task_path': path, 'sha256': digest, 'status': 'retained'} for path, digest in digests.items()
+        ]}
+        write_a, write_b = (
+            {'canonical_path': path, 'commit_state': 'committed', 'content_hash_after': 'sha256:' + digest}
+            for path, digest in digests.items()
+        )
+
+        def event(kind, second, **fields):
+            return {'kind': kind, 'ts': f'2026-01-01T00:00:{second:02d}.123456789Z', **fields}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            live = Path(temporary)
+            journal = live / 'session-data' / 'p' / 'app' / 'sessions' / 'fixture' / 'events.jsonl'
+            journal.parent.mkdir(parents=True)
+            prepared = event('runtime.step_prepared', 1)
+            committed = event('tool.result', 3, status='ok', structured=write_a)
+            rejected = event('tool.result', 4, status='error', structured=write_b)
+            scripted = event('tool.result', 7, status='ok', structured={
+                'kind': 'workspace_script_result', 'actions': [{'status': 'ok', 'result': write_b}],
+            })
+            completed = event('turn.completed', 10)
+
+            def write(events):
+                journal.write_text(''.join(json.dumps(row) + '\n' for row in events))
+
+            write([prepared, committed, rejected, completed])
+            incomplete = artifact_observation(live, attempt)
+            self.assertEqual(incomplete['matched_artifacts'], 1)
+            self.assertIsNone(incomplete['seconds_from_first_prepared_request'])
+
+            write([prepared, committed, rejected, scripted, completed])
+            self.assertEqual(artifact_observation(live, attempt), {
+                'clock': 'session_journal', 'retained_artifacts': 2, 'matched_artifacts': 2,
+                'seconds_from_first_prepared_request': 6.0, 'seconds_to_last_completed_turn': 3.0,
+            })
+            self.assertIsNone(artifact_observation(live, {**attempt, 'task_passed': False}))
+
     def test_effort_pair_checks_model_runtime_and_prompt(self):
         provider = {'model_version': MODEL_ID, 'effort': 'max'}
         provenance = {'kuku_binary_sha256': SDK_SHA, 'kuku_runtime_sha256': SDK_SHA,

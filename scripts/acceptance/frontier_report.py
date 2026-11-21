@@ -609,6 +609,31 @@ def meter_summary(meter, rows, delayed):
     }
 
 
+def session_journal(live):
+    session_root = live / 'session-data'
+    resolved_session_root = session_root.resolve()
+    if resolved_session_root != live.resolve() / 'session-data':
+        return None
+    candidates = sorted(session_root.glob('p/*/sessions/*/events.jsonl'))
+    if len(candidates) != 1:
+        return None
+    candidate = candidates[0]
+    if candidate.resolve() != resolved_session_root / candidate.relative_to(session_root):
+        return None
+    return candidate
+
+
+def session_events(journal):
+    with journal.open('rb') as source:
+        for index, line in enumerate(iter(lambda: source.readline(EVENT_LINE_BYTES + 1), b''), 1):
+            if index > EVENT_RECORD_LIMIT or len(line) > EVENT_LINE_BYTES or not line.endswith(b'\n'):
+                raise EvidenceError('saved Session journal exceeds its read bounds or has an incomplete tail')
+            event = json.loads(line)
+            if not isinstance(event, dict):
+                raise EvidenceError('saved Session journal contains a non-object event')
+            yield event
+
+
 def session_summary(live, sdk):
     facts = object_value(sdk.get('facts'))
     tools = {**{key: count(facts.get(key)) for key in ('tool_calls', 'tool_results', 'tool_errors')},
@@ -617,15 +642,8 @@ def session_summary(live, sdk):
     terminal = 'turn.completed' if (count(facts.get('turns_completed')) or 0) > 0 else None
     result = {'terminal_event': terminal, 'interrupt_reason': None, 'durable_turn_settled': None,
               'settled_status': None, 'sdk_error_kind': None, 'sdk_error_detail': None}
-    session_root = live / 'session-data'
-    resolved_session_root = session_root.resolve()
-    if resolved_session_root != live.resolve() / 'session-data':
-        return tools, result
-    candidates = sorted(session_root.glob('p/*/sessions/*/events.jsonl'))
-    if len(candidates) != 1:
-        return tools, result
-    candidate = candidates[0]
-    if candidate.resolve() != resolved_session_root / candidate.relative_to(session_root):
+    journal = session_journal(live)
+    if journal is None:
         return tools, result
     statuses = Counter()
     calls = 0
@@ -636,59 +654,55 @@ def session_summary(live, sdk):
     agent = sdk.get('agent') or 'main'
     provider_error_turn, provider_error_kind = None, None
     try:
-        with candidates[0].open('rb') as source:
-            for index, line in enumerate(iter(lambda: source.readline(EVENT_LINE_BYTES + 1), b''), 1):
-                if index > EVENT_RECORD_LIMIT or len(line) > EVENT_LINE_BYTES or not line.endswith(b'\n'):
-                    return tools, result
-                event = object_value(json.loads(line))
-                event_agent = event.get('conversation') or event.get('agent') or 'main'
-                if event.get('kind') == 'tool.call':
-                    calls += 1
-                    if event.get('tool') in ('run_js', 'workspace_script'):
-                        script_calls += 1
-                        call_id = event.get('tool_call_id')
-                        if isinstance(call_id, str) and call_id:
-                            call = (event_agent, event.get('turn'), call_id)
-                            if call in pending_scripts:
-                                script_evidence_complete = False
-                            pending_scripts.add(call)
-                        else:
+        for event in session_events(journal):
+            event_agent = event.get('conversation') or event.get('agent') or 'main'
+            if event.get('kind') == 'tool.call':
+                calls += 1
+                if event.get('tool') in ('run_js', 'workspace_script'):
+                    script_calls += 1
+                    call_id = event.get('tool_call_id')
+                    if isinstance(call_id, str) and call_id:
+                        call = (event_agent, event.get('turn'), call_id)
+                        if call in pending_scripts:
                             script_evidence_complete = False
-                if event.get('kind') == 'tool.result':
-                    statuses[allowed(event.get('status'), TOOL_STATUSES) or 'unknown'] += 1
-                    call = (event_agent, event.get('turn'), event.get('tool_call_id'))
-                    if call in pending_scripts:
-                        pending_scripts.remove(call)
-                        receipt = object_value(event.get('structured'))
-                        if receipt.get('kind') == 'workspace_script_result' and isinstance(receipt.get('actions'), list):
-                            script_actions += len(receipt['actions'])
-                        else:
-                            script_evidence_complete = False
-                if event_agent == agent:
-                    kind = allowed(event.get('kind'), TURN_EVENTS)
-                    if kind is not None:
-                        observed.update(terminal_event=kind, interrupt_reason=None)
-                        if kind == 'turn.interrupted':
-                            observed['interrupt_reason'] = allowed(event.get('reason'), INTERRUPT_REASONS) or 'other'
-                    if event.get('kind') == 'model.error':
-                        provider_error_turn = count(event.get('turn'))
-                        provider_error_kind = allowed(event.get('error_kind'), PROVIDER_ERROR_KINDS)
-                    elif kind == 'turn.interrupted' and observed['interrupt_reason'] in PROVIDER_ERROR_KINDS:
-                        provider_error_turn = count(event.get('turn'))
-                        provider_error_kind = observed['interrupt_reason']
-                operation = object_value(event.get('record')) if event.get('kind') == 'runtime.operation' else {}
-                if operation.get('operation') == 'turn_settled' and operation.get('address') == agent:
-                    error = operation.get('error')
-                    error_kind = None
-                    if isinstance(error, str):
-                        error_kind = 'invalid_argument' if error.startswith('invalid argument: ') else 'other'
-                        if (error.startswith('provider error: ') and provider_error_turn is not None
-                                and provider_error_turn == count(operation.get('turn'))):
-                            error_kind = provider_error_kind or 'other'
-                    observed.update(durable_turn_settled=True,
-                                    settled_status=allowed(operation.get('status'), SETTLED_STATUSES),
-                                    sdk_error_kind=error_kind,
-                                    sdk_error_detail='request_bytes_limit' if error == SDK_REQUEST_BYTES_ERROR else None)
+                        pending_scripts.add(call)
+                    else:
+                        script_evidence_complete = False
+            if event.get('kind') == 'tool.result':
+                statuses[allowed(event.get('status'), TOOL_STATUSES) or 'unknown'] += 1
+                call = (event_agent, event.get('turn'), event.get('tool_call_id'))
+                if call in pending_scripts:
+                    pending_scripts.remove(call)
+                    receipt = object_value(event.get('structured'))
+                    if receipt.get('kind') == 'workspace_script_result' and isinstance(receipt.get('actions'), list):
+                        script_actions += len(receipt['actions'])
+                    else:
+                        script_evidence_complete = False
+            if event_agent == agent:
+                kind = allowed(event.get('kind'), TURN_EVENTS)
+                if kind is not None:
+                    observed.update(terminal_event=kind, interrupt_reason=None)
+                    if kind == 'turn.interrupted':
+                        observed['interrupt_reason'] = allowed(event.get('reason'), INTERRUPT_REASONS) or 'other'
+                if event.get('kind') == 'model.error':
+                    provider_error_turn = count(event.get('turn'))
+                    provider_error_kind = allowed(event.get('error_kind'), PROVIDER_ERROR_KINDS)
+                elif kind == 'turn.interrupted' and observed['interrupt_reason'] in PROVIDER_ERROR_KINDS:
+                    provider_error_turn = count(event.get('turn'))
+                    provider_error_kind = observed['interrupt_reason']
+            operation = object_value(event.get('record')) if event.get('kind') == 'runtime.operation' else {}
+            if operation.get('operation') == 'turn_settled' and operation.get('address') == agent:
+                error = operation.get('error')
+                error_kind = None
+                if isinstance(error, str):
+                    error_kind = 'invalid_argument' if error.startswith('invalid argument: ') else 'other'
+                    if (error.startswith('provider error: ') and provider_error_turn is not None
+                            and provider_error_turn == count(operation.get('turn'))):
+                        error_kind = provider_error_kind or 'other'
+                observed.update(durable_turn_settled=True,
+                                settled_status=allowed(operation.get('status'), SETTLED_STATUSES),
+                                sdk_error_kind=error_kind,
+                                sdk_error_detail='request_bytes_limit' if error == SDK_REQUEST_BYTES_ERROR else None)
     except (OSError, UnicodeError, ValueError, TypeError):
         return tools, result
     results = sum(statuses.values())

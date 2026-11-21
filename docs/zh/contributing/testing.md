@@ -306,6 +306,8 @@ python3 scripts/acceptance/benchmark_compare.py \
 
 运行器有逐条响应的工具调用记录时，对照报告会分别统计零次、一次和多次调用的响应数。这项指标衡量模型如何组批。SDK 验证失败时，导出工具可以从保存的 Session 日志统计观察到的调用次数，并注明来源。实际执行是否重叠需另用工具开始和结算记录核对。
 
+对通过的 Kuku 试跑，对照报告可以将持久化文件变更的哈希与为原判定器保留的产物匹配。报告给出匹配覆盖情况。全部产物匹配时，记录从第一个模型请求准备完成到所有最终哈希均已出现的时间，以及之后到最后一个已完成 Turn 的时间。两个区间均使用 Session 日志时间戳。原判定器仍在试跑结束时执行。
+
 对照 Prompt 版本时复用同一份 release `session_task`，给每条 Frontier 真实试跑传入包含覆盖文件的 `--prompts-dir`。选择器为 Prompt 资源留存快照，在试跑记录中写入 SHA-256 摘要，并以只读方式挂载快照。缺少的资源由 SDK 提供嵌入的默认版本。使用 `benchmark_compare.py --baseline RUN_DIRECTORY --candidate RUN_DIRECTORY` 核对 SDK 二进制、运行时包、两份不同的 Prompt 快照，以及双方一致的题目、provider 设置和资源限额。
 
 直连 DeepSeek 实跑时，可用 `--reasoning-effort high` 测试不同的推理强度，默认值为 `max`。使用 `benchmark_compare.py --compare-effort --baseline RUN_DIRECTORY --candidate RUN_DIRECTORY` 对照两次 Kuku 试跑。导出要求模型版本、SDK 二进制、运行时包、Prompt 和其他运行设置一致。结合原判定器结果查看费用、耗时和请求次数。
