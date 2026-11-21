@@ -33,7 +33,7 @@ pub(super) async fn run(
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
     loop {
-        state.poll_probes();
+        state.poll_probes(settings);
         terminal.draw(|frame| render(frame, settings, state, mode))?;
         if let Some(finish) = state.finish {
             if finish == Finish::Cancel {
@@ -98,7 +98,7 @@ pub(super) fn render(
     let area = frame.area();
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" kuku · shared settings ")
+        .title(" kuku · model setup ")
         .border_style(Style::default().fg(ACCENT));
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -116,32 +116,13 @@ pub(super) fn render(
     }
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(2),
-            Constraint::Min(1),
-            Constraint::Length(2),
-        ])
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(inner);
+    render_step(frame, chunks[0], settings, state, mode);
     frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(format!("Workspace: {}", shortened(&settings.workspace))),
-            Line::from(format!("Config: {}", shortened(&settings.config_path))),
-        ]),
-        chunks[0],
-    );
-    render_step(frame, chunks[1], settings, state, mode);
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::styled(
-                "↑/↓ move · Enter confirm · Esc back",
-                Style::default().fg(MUTED),
-            ),
-            Line::styled(
-                "Ctrl+C cancel setup · Ctrl+A clear field",
-                Style::default().fg(MUTED),
-            ),
-        ]),
-        chunks[2],
+        Paragraph::new("↑/↓ move · Enter choose · Esc back · Ctrl+C exit")
+            .style(Style::default().fg(MUTED)),
+        chunks[1],
     );
 }
 
@@ -155,17 +136,9 @@ fn render_step(
     let mut row = 0;
     match state.step {
         SetupStep::Consent => {
-            line(frame, area, &mut row, "Automatic model setup", ACCENT);
-            for text in [
-                "Find models on your service and read public model metadata.",
-                "After you select models, try one short text request",
-                "and one local color-grid image per model when applicable.",
-                "The model trials may charge your API account.",
-                "This permission applies to this setup only.",
-            ] {
-                line(frame, area, &mut row, text, MUTED);
-            }
-            for (index, name) in ["Agree and continue", "Manual configuration"]
+            line(frame, area, &mut row, "Set up a model", ACCENT);
+            line(frame, area, &mut row, "Tests may cost money.", WARNING);
+            for (index, name) in ["Find and test models", "Edit config file"]
                 .iter()
                 .enumerate()
             {
@@ -197,14 +170,7 @@ fn render_step(
             );
         }
         SetupStep::Connection => {
-            line(frame, area, &mut row, "Connection", ACCENT);
-            line(
-                frame,
-                area,
-                &mut row,
-                "Existing connections and provider presets:",
-                MUTED,
-            );
+            line(frame, area, &mut row, "Choose a provider", ACCENT);
             let available = area.height.saturating_sub(row + 3) as usize;
             let first = state.selected.saturating_sub(available / 2);
             let last = (first + available).min(state.choices.len());
@@ -248,7 +214,7 @@ fn render_step(
             );
         }
         SetupStep::CredentialSource => {
-            line(frame, area, &mut row, "Credential source", ACCENT);
+            line(frame, area, &mut row, "API key source", ACCENT);
             let environment_status = if state.environment_set() {
                 "detected"
             } else {
@@ -285,7 +251,7 @@ fn render_step(
                 frame,
                 area,
                 &mut row,
-                "Presence only; credential not authenticated.",
+                "Keys are tested after you choose a model.",
                 MUTED,
             );
             if !settings.can_store_key() {
@@ -293,15 +259,15 @@ fn render_step(
             }
         }
         SetupStep::Credential => {
-            line(frame, area, &mut row, "Credential", ACCENT);
+            line(frame, area, &mut row, "API key", ACCENT);
             match state.credential_source {
                 CredentialSource::Environment => {
-                    line(frame, area, &mut row, "Enter a variable name only; key values are never displayed or stored here.", MUTED);
+                    line(frame, area, &mut row, "API key variable name", MUTED);
                     field(frame, area, &mut row, &mut state.environment);
                     let status = if state.environment_set() {
-                        "Variable is set (credential not validated)."
+                        "Key found."
                     } else {
-                        "Variable is missing; it can be set after saving."
+                        "Key missing. You can set it after saving."
                     };
                     line(
                         frame,
@@ -316,27 +282,14 @@ fn render_step(
                     );
                 }
                 CredentialSource::StoredKey => {
-                    line(
-                        frame,
-                        area,
-                        &mut row,
-                        "Paste an API key · Esc chooses the credential source",
-                        MUTED,
-                    );
+                    line(frame, area, &mut row, "Paste your API key", MUTED);
                     key_preview_field(frame, area, &mut row, &state.stored_key);
                     line(
                         frame,
                         area,
                         &mut row,
-                        "Saved locally as plaintext, not encrypted.",
+                        "Saved on this device without encryption.",
                         WARNING,
-                    );
-                    line(
-                        frame,
-                        area,
-                        &mut row,
-                        &format!("Location: {}", shortened(&settings.credentials_dir)),
-                        MUTED,
                     );
                     if let Some(hint) = state.saved_key_hint(settings) {
                         line(frame, area, &mut row, hint, SUCCESS);
@@ -352,8 +305,7 @@ fn render_step(
         | SetupStep::ProxyAddress
         | SetupStep::ModelSource
         | SetupStep::Discover
-        | SetupStep::TrialPlan
-        | SetupStep::Trials
+        | SetupStep::TrialResults
         | SetupStep::DefaultModel
         | SetupStep::Thinking
         | SetupStep::Output
@@ -375,9 +327,15 @@ fn render_review(
     state: &SetupState,
     mode: SetupMode,
 ) {
-    line(frame, area, row, "Review models", ACCENT);
+    line(frame, area, row, "Save setup", ACCENT);
     if let Ok(url) = state.request_url() {
-        line(frame, area, row, &format!("Request · {url}"), MUTED);
+        line(
+            frame,
+            area,
+            row,
+            &format!("Request · {}", super::probes::display_url(&url)),
+            MUTED,
+        );
     }
     let model = state.primary_model().unwrap_or_default();
     let count = state.models.selected.len().saturating_sub(1);
@@ -412,6 +370,21 @@ fn render_review(
         &format!("Thinking · {thinking}    Output · {output}"),
         MUTED,
     );
+    if !state.trials.rows().is_empty() {
+        let progress = super::probes::progress(&state.trials);
+        let hint = if state.trials.pending() {
+            " · Save stops tests"
+        } else {
+            ""
+        };
+        line(
+            frame,
+            area,
+            row,
+            &format!("Tests · {progress}{hint}"),
+            ACCENT,
+        );
+    }
     if let super::ConnectionChoice::Existing(name) = state.choice() {
         if state.connection(settings).is_ok_and(|connection| {
             settings.resolved.provider(name).is_some_and(|previous| {
@@ -443,9 +416,9 @@ fn render_review(
     }
     if mode == SetupMode::FirstRun && !state.credential_ready() {
         let guidance = if settings.can_store_key() {
-            "Choose Paste API key to repair this credential."
+            "Paste an API key to continue."
         } else {
-            "Storage unavailable; set the variable before launch."
+            "Set the API key variable before starting."
         };
         line(frame, area, row, guidance, WARNING);
     }
@@ -561,17 +534,6 @@ pub(super) fn mask_key(value: &str) -> String {
         .chain(std::iter::repeat_n('•', characters.len() - prefix - suffix))
         .chain(characters[characters.len() - suffix..].iter().copied())
         .collect()
-}
-
-fn shortened(path: &std::path::Path) -> String {
-    let display = path.display().to_string();
-    let length = display.chars().count();
-    if length <= 48 {
-        display
-    } else {
-        let suffix = display.chars().rev().take(47).collect::<String>();
-        format!("…{}", suffix.chars().rev().collect::<String>())
-    }
 }
 
 struct TerminalRestore {

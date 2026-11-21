@@ -23,8 +23,7 @@ pub(super) enum SetupStep {
     ProxyAddress,
     ModelSource,
     Discover,
-    TrialPlan,
-    Trials,
+    TrialResults,
     DefaultModel,
     Model,
     Thinking,
@@ -63,7 +62,7 @@ impl ReviewAction {
             Self::Output => "Requested output",
             Self::Advanced => "Advanced model capabilities",
             Self::RepairCredential => "Paste API key",
-            Self::TrialResults => "Model trial and results",
+            Self::TrialResults => "Model tests",
             Self::Pricing => "Cost and rates",
             Self::Back => "Back",
             Self::Cancel => "Cancel",
@@ -216,11 +215,9 @@ impl SetupState {
         }
         match settings.key_for(self.choice()) {
             Some(ApiKey::File(path)) if settings.file_reference_in_current_store(path) => {
-                Some("Saved key configured; leave blank to keep.")
+                Some("Leave blank to keep your saved key.")
             }
-            Some(ApiKey::File(_)) => Some(
-                "Saved key configured; leave blank to move it into this data directory on save.",
-            ),
+            Some(ApiKey::File(_)) => Some("Leave blank to copy your saved key here."),
             Some(ApiKey::Plaintext(_)) => {
                 Some("Existing inline key will move to private storage when saved.")
             }
@@ -296,6 +293,7 @@ impl SetupState {
                             SetupStep::Connection
                         };
                     } else {
+                        self.authorized = false;
                         self.step = SetupStep::ManualConfig;
                     }
                 }
@@ -318,11 +316,10 @@ impl SetupState {
             SetupStep::Network => self.choose_network(key),
             SetupStep::ProxyAddress => self.edit_proxy(key),
             SetupStep::ModelSource => self.choose_source(key, settings),
-            SetupStep::Discover => self.choose_discovered(key),
-            SetupStep::TrialPlan => self.choose_trial_plan(key, settings),
-            SetupStep::Trials => self.trial_input(key),
-            SetupStep::DefaultModel => self.choose_default(key),
-            SetupStep::Model => self.edit_model(key),
+            SetupStep::Discover => self.choose_discovered(key, settings),
+            SetupStep::TrialResults => self.trial_input(key),
+            SetupStep::DefaultModel => self.choose_default(key, settings),
+            SetupStep::Model => self.edit_model(key, settings),
             SetupStep::Thinking => self.choose_thinking(key, settings),
             SetupStep::Output => self.choose_output(key),
             SetupStep::Pricing => self.choose_pricing(key),
@@ -362,9 +359,9 @@ impl SetupState {
         }
     }
 
-    fn edit_model(&mut self, key: KeyEvent) {
+    fn edit_model(&mut self, key: KeyEvent, settings: &Settings) {
         if matches!(key.code, KeyCode::Tab | KeyCode::Enter) {
-            self.advance_from_model();
+            self.advance(settings);
         } else {
             edit_field(&mut self.model, key);
             self.problem = None;
@@ -437,7 +434,7 @@ impl SetupState {
                     self.step = SetupStep::Protocol;
                 }
             }
-            SetupStep::Model => self.advance_from_model(),
+            SetupStep::Model => self.advance_from_model(settings),
             SetupStep::CredentialSource => self.step = SetupStep::Credential,
             SetupStep::Credential => {
                 let valid = match self.credential_source {
@@ -486,8 +483,7 @@ impl SetupState {
             | SetupStep::ProxyAddress
             | SetupStep::ModelSource
             | SetupStep::Discover
-            | SetupStep::TrialPlan
-            | SetupStep::Trials
+            | SetupStep::TrialResults
             | SetupStep::DefaultModel
             | SetupStep::Thinking
             | SetupStep::Output
@@ -499,12 +495,12 @@ impl SetupState {
         }
     }
 
-    fn advance_from_model(&mut self) {
+    fn advance_from_model(&mut self, settings: &Settings) {
         match valid_model_id(self.model.text()) {
             Ok(model) => {
                 self.model.set_text(model.clone());
                 self.models.add_manual(model);
-                self.advance_from_models();
+                self.advance_from_models(settings);
             }
             Err(error) => self.problem = Some(error),
         }
@@ -532,14 +528,20 @@ impl SetupState {
                     SetupStep::Credential
                 }
             }
-            SetupStep::Trials => {
-                self.trials.stop();
+            SetupStep::TrialResults => {
+                self.review_selection = 0;
                 SetupStep::Review
             }
-            SetupStep::TrialPlan => SetupStep::ModelSource,
             SetupStep::Model | SetupStep::Discover => SetupStep::ModelSource,
             SetupStep::DefaultModel => SetupStep::ModelSource,
-            SetupStep::Review => SetupStep::ModelSource,
+            SetupStep::Review => {
+                self.trials.stop();
+                if self.models.found.is_empty() {
+                    SetupStep::ModelSource
+                } else {
+                    SetupStep::Discover
+                }
+            }
             SetupStep::Thinking | SetupStep::Output | SetupStep::Advanced | SetupStep::Pricing => {
                 SetupStep::Review
             }
@@ -650,6 +652,9 @@ impl SetupState {
         } else {
             ReviewAction::SaveAndExit
         });
+        if !self.trials.rows().is_empty() {
+            choices.push(ReviewAction::TrialResults);
+        }
         if !choices.contains(&ReviewAction::Back) {
             choices.push(ReviewAction::Back);
         }
@@ -658,7 +663,6 @@ impl SetupState {
             ReviewAction::Thinking,
             ReviewAction::Output,
             ReviewAction::Advanced,
-            ReviewAction::TrialResults,
             ReviewAction::Pricing,
         ]);
         choices
@@ -672,9 +676,15 @@ impl SetupState {
             return;
         };
         match action {
-            ReviewAction::SaveAndContinue => self.finish = Some(Finish::SaveAndContinue),
-            ReviewAction::SaveAndExit => self.finish = Some(Finish::SaveAndExit),
-            ReviewAction::Save => self.finish = Some(Finish::SaveAndContinue),
+            ReviewAction::SaveAndContinue | ReviewAction::SaveAndExit | ReviewAction::Save => {
+                self.discovery.stop();
+                self.trials.stop();
+                self.finish = Some(if action == ReviewAction::SaveAndExit {
+                    Finish::SaveAndExit
+                } else {
+                    Finish::SaveAndContinue
+                });
+            }
             ReviewAction::Thinking => {
                 self.models.cursor = 0;
                 self.step = SetupStep::Thinking;
@@ -693,11 +703,8 @@ impl SetupState {
                 self.problem = None;
             }
             ReviewAction::TrialResults => {
-                if self.trials.rows().is_empty() {
-                    self.offer_trials();
-                } else {
-                    self.step = SetupStep::Trials;
-                }
+                self.models.cursor = 0;
+                self.step = SetupStep::TrialResults;
             }
             ReviewAction::Pricing => {
                 self.models.cursor = self

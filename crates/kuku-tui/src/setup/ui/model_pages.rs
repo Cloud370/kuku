@@ -15,7 +15,7 @@ pub(super) fn render_model_settings(
 ) {
     match state.step {
         SetupStep::Protocol => {
-            line(frame, area, row, "API protocol", ACCENT);
+            line(frame, area, row, "API type", ACCENT);
             for format in PROTOCOLS {
                 option(
                     frame,
@@ -27,7 +27,7 @@ pub(super) fn render_model_settings(
             }
         }
         SetupStep::Address => {
-            line(frame, area, row, "Provider API URL", ACCENT);
+            line(frame, area, row, "API URL", ACCENT);
             if state.address.text().is_empty() {
                 let placeholder = state.default_base_url();
                 line(frame, area, row, &format!("> {placeholder}"), MUTED);
@@ -44,25 +44,16 @@ pub(super) fn render_model_settings(
                     MUTED,
                 );
             }
-            line(
-                frame,
-                area,
-                row,
-                "Paste a base address or a full request URL.",
-                MUTED,
-            );
+            line(frame, area, row, "Paste your provider URL.", MUTED);
         }
         SetupStep::AddressKind => {
-            line(frame, area, row, "How should kuku use this URL?", ACCENT);
+            line(frame, area, row, "Use this URL as", ACCENT);
             let entered = state.address.text().trim();
             option(
                 frame,
                 area,
                 row,
-                &format!(
-                    "Use this exact request URL · {}",
-                    super::super::probes::display_url(entered)
-                ),
+                &format!("Exact URL · {}", super::super::probes::display_url(entered)),
                 state.models.cursor == 0,
             );
             if let Ok(url) = kuku::config::resolve_request_url(state.protocol, entered, None) {
@@ -70,29 +61,16 @@ pub(super) fn render_model_settings(
                     frame,
                     area,
                     row,
-                    &format!(
-                        "Use as a base · {}",
-                        super::super::probes::display_url(&url)
-                    ),
+                    &format!("Base URL · {}", super::super::probes::display_url(&url)),
                     state.models.cursor == 1,
                 );
             }
         }
         SetupStep::Network => {
-            line(
-                frame,
-                area,
-                row,
-                "How should kuku reach this provider?",
-                ACCENT,
-            );
-            for (index, name) in [
-                "Follow proxy environment",
-                "Direct connection",
-                "Use a proxy",
-            ]
-            .iter()
-            .enumerate()
+            line(frame, area, row, "Use a proxy?", ACCENT);
+            for (index, name) in ["Use proxy from environment", "No proxy", "Enter proxy URL"]
+                .iter()
+                .enumerate()
             {
                 option(frame, area, row, name, index == state.models.cursor);
             }
@@ -115,23 +93,17 @@ pub(super) fn render_model_settings(
                 "SOCKS5H · socks5h://127.0.0.1:1080 · proxy DNS",
                 MUTED,
             );
-            line(
-                frame,
-                area,
-                row,
-                "Proxy credentials use the config file.",
-                MUTED,
-            );
+            line(frame, area, row, "Set proxy login in config.toml.", MUTED);
         }
         SetupStep::ModelSource => {
             if state.discovery.rows().is_empty() {
-                line(frame, area, row, "Choose models", ACCENT);
+                line(frame, area, row, "Find models", ACCENT);
             } else {
                 super::super::probes::render(
                     frame,
                     area,
                     row,
-                    "Discovering models",
+                    "Finding models",
                     &state.proxy,
                     &state.discovery,
                     0..4,
@@ -142,14 +114,24 @@ pub(super) fn render_model_settings(
             }
         }
         SetupStep::Discover => {
-            line(frame, area, row, "Discovered models", ACCENT);
+            line(frame, area, row, "Choose models", ACCENT);
+            if state.discovery.pending() {
+                let progress = super::super::probes::progress(&state.discovery);
+                line(
+                    frame,
+                    area,
+                    row,
+                    &format!("Model lists · {progress}"),
+                    MUTED,
+                );
+            }
             field(frame, area, row, &mut state.models.query);
             line(
                 frame,
                 area,
                 row,
                 &format!(
-                    "{} selected · Space toggle · Enter confirm",
+                    "{} selected · Type to search · Space to select",
                     state.models.selected.len()
                 ),
                 MUTED,
@@ -180,63 +162,8 @@ pub(super) fn render_model_settings(
                 );
             }
         }
-        SetupStep::TrialPlan => {
-            line(frame, area, row, "Ready to try the selected models", ACCENT);
-            if let Ok(url) = state.request_url() {
-                line(
-                    frame,
-                    area,
-                    row,
-                    &format!("POST {}", super::super::probes::display_url(&url)),
-                    MUTED,
-                );
-            }
-            let requests = state.planned_trials(settings);
-            let trials = requests
-                .iter()
-                .filter(|probe| matches!(probe, kuku::adapter::Probe::Trial { .. }))
-                .count();
-            let discovery = requests.len().saturating_sub(trials);
-            line(
-                frame,
-                area,
-                row,
-                &format!("{trials} model requests · {discovery} pricing lookups"),
-                MUTED,
-            );
-            line(
-                frame,
-                area,
-                row,
-                "Text and a local color grid when the model can accept images.",
-                MUTED,
-            );
-            line(
-                frame,
-                area,
-                row,
-                &format!(
-                    "Up to {} output tokens per model request.",
-                    kuku::adapter::TRIAL_OUTPUT_TOKENS
-                ),
-                MUTED,
-            );
-            line(
-                frame,
-                area,
-                row,
-                "Trial charges depend on your API account.",
-                MUTED,
-            );
-            for (index, name) in ["Run model trials", "Continue without trial"]
-                .iter()
-                .enumerate()
-            {
-                option(frame, area, row, name, index == state.models.cursor);
-            }
-        }
-        SetupStep::Trials => {
-            let visible = usize::from(area.height.saturating_sub(5) / 2).max(1);
+        SetupStep::TrialResults => {
+            let visible = usize::from(area.height.saturating_sub(5) / 4).max(1);
             let start = state
                 .models
                 .cursor
@@ -245,7 +172,7 @@ pub(super) fn render_model_settings(
                 frame,
                 area,
                 row,
-                "Trying selected models",
+                "Model tests",
                 &state.proxy,
                 &state.trials,
                 start..start + visible,
@@ -258,12 +185,7 @@ pub(super) fn render_model_settings(
                 &format!("Reported ${reported:.7} · estimated ${estimated:.7} · {unknown} unknown"),
                 MUTED,
             );
-            let label = if state.trials.pending() {
-                "Enter use current results and continue"
-            } else {
-                "Enter review and save"
-            };
-            line(frame, area, row, label, ACCENT);
+            line(frame, area, row, "Enter returns to save", ACCENT);
         }
         SetupStep::DefaultModel => {
             line(frame, area, row, "Choose the default model", ACCENT);

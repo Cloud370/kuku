@@ -42,26 +42,16 @@ pub(super) fn render(
     batch: &ProbeBatch,
     visible: std::ops::Range<usize>,
 ) {
-    let completed = batch
-        .rows()
-        .iter()
-        .filter(|row| {
-            matches!(
-                row.progress,
-                ProbeProgress::Finished(..) | ProbeProgress::Canceled { .. }
-            )
-        })
-        .count();
     line(
         frame,
         area,
         row,
-        &format!("{heading} · {completed}/{} finished", batch.rows().len()),
+        &format!("{heading} · {}", progress(batch)),
         ACCENT,
     );
     let network = match proxy {
-        ProviderProxy::Environment => "Follow proxy environment".to_owned(),
-        ProviderProxy::Direct => "Direct connection".to_owned(),
+        ProviderProxy::Environment => "Proxy from environment".to_owned(),
+        ProviderProxy::Direct => "No proxy".to_owned(),
         ProviderProxy::Explicit { url, .. } => display_url(url),
     };
     line(frame, area, row, &format!("Network · {network}"), MUTED);
@@ -80,7 +70,42 @@ pub(super) fn render(
             color,
         );
         line(frame, area, row, &format!("  {detail}"), MUTED);
+        if let ProbeProgress::Finished(_, Ok(ProbeResult::Trial(trial))) = &request.progress {
+            if let Some(expected) = trial
+                .expected_colors
+                .as_ref()
+                .filter(|_| trial.image_match == Some(false))
+            {
+                let got = if trial.observed_colors.is_empty() {
+                    "no colors".into()
+                } else {
+                    trial.observed_colors.join(", ")
+                };
+                line(
+                    frame,
+                    area,
+                    row,
+                    &format!("  Expected {}", expected.join(", ")),
+                    MUTED,
+                );
+                line(frame, area, row, &format!("  Got {got}"), MUTED);
+            }
+        }
     }
+}
+
+pub(super) fn progress(batch: &ProbeBatch) -> String {
+    let completed = batch
+        .rows()
+        .iter()
+        .filter(|row| {
+            matches!(
+                row.progress,
+                ProbeProgress::Finished(..) | ProbeProgress::Canceled { .. }
+            )
+        })
+        .count();
+    format!("{completed}/{} finished", batch.rows().len())
 }
 
 pub(super) fn amounts(batch: &ProbeBatch) -> (f64, f64, usize) {
@@ -170,14 +195,8 @@ fn probe_detail(
                 }
                 Ok(ProbeResult::Trial(trial)) => {
                     let detail = match trial.image_match {
-                        Some(true) => "Color-grid read passed".into(),
-                        Some(false) if trial.observed_colors.is_empty() => {
-                            "Color-grid reply contained no usable colors".into()
-                        }
-                        Some(false) => format!(
-                            "Color-grid read did not match · got {}",
-                            trial.observed_colors.join(", ")
-                        ),
+                        Some(true) => "Image verified".into(),
+                        Some(false) => "Image not verified".into(),
                         None => match &trial.reported_effort {
                             Some(effort) => format!("Upstream reported effort {effort}"),
                             None if trial.observed_reasoning => {

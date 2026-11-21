@@ -33,7 +33,7 @@ const COLORS: [(&str, [u8; 3]); 6] = [
 ];
 
 /// One opted-in, bounded request sent against the selected model.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelTrial {
     Text {
         effort: Option<String>,
@@ -147,7 +147,7 @@ async fn trial_request(
 
 fn trial_body(config: &ResolvedProvider, image: Option<&str>) -> Value {
     let prompt = if image.is_some() {
-        "List the four quadrant colors in reading order, as four English color words only."
+        "What are the colors at the top left, top right, bottom left, and bottom right? Give one English color per position, in that order."
     } else {
         "What is 17 times 23 minus 14? Reply with the number only."
     };

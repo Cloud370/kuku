@@ -28,7 +28,7 @@ pub(super) struct CachedCatalog {
 }
 
 /// One exact model-list destination and the connection to use with its results.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ModelListTarget {
     pub url: String,
     pub connection: ProviderConfig,

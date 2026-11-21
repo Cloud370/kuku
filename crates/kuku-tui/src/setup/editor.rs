@@ -73,7 +73,7 @@ impl ModelEditor {
     }
 
     pub(crate) fn poll_probes(&mut self) -> bool {
-        self.state.poll_probes()
+        self.state.poll_probes(&self.settings)
     }
 
     pub(crate) fn failed(&mut self, problem: String) {

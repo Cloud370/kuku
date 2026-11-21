@@ -132,7 +132,7 @@ async fn minimum_size_renders_the_working_connection_choices() {
     let mut state = SetupState::new(&settings);
     state.step = SetupStep::Connection;
     let rendered = screen(&settings, &mut state, SetupMode::Init, 60, 20);
-    assert!(rendered.contains("Connection"));
+    assert!(rendered.contains("Choose a provider"));
     assert!(rendered.contains("Preset · Anthropic"));
     assert!(rendered.contains("Preset · OpenAI"));
 }
@@ -174,7 +174,7 @@ async fn credential_source_status_is_visible_at_minimum_size() {
     let missing = screen(&settings, &mut state, SetupMode::Init, 60, 20);
     assert!(missing.contains("Environment · not detected · ANTHROPIC_API_KEY"));
     assert!(missing.contains("Paste API key (save locally)"));
-    assert!(missing.contains("Presence only; credential not authenticated."));
+    assert!(missing.contains("Keys are tested after you choose a model."));
 
     state.environment_detected = true;
     let detected = screen(&settings, &mut state, SetupMode::Init, 60, 20);
@@ -349,7 +349,7 @@ async fn unsafe_storage_shows_environment_guidance_and_never_defaults_to_save() 
         state.review_choices(SetupMode::FirstRun)[1]
     );
     let rendered = screen(&settings, &mut state, SetupMode::FirstRun, 60, 20);
-    assert!(rendered.contains("Storage unavailable; set the variable before launch."));
+    assert!(rendered.contains("Set the API key variable before starting."));
     assert!(rendered.contains("Save and exit"));
 }
 

@@ -200,29 +200,39 @@ impl SetupState {
             .filter(|_| self.discovery.pending() || self.trials.pending())
     }
 
-    pub(super) fn poll_probes(&mut self) -> bool {
+    pub(super) fn poll_probes(&mut self, settings: &Settings) -> bool {
         let now = std::time::Instant::now();
         if self.probe_deadline().is_none_or(|at| at > now) {
             return false;
         }
         self.discovery.poll();
         self.trials.poll();
+        if self.step == SetupStep::ModelSource
+            && self.models.cursor == 0
+            && self.models.found.is_empty()
+        {
+            self.accept_discovery(settings);
+        }
         self.probe_repaint_at = Some(now + std::time::Duration::from_millis(100));
         true
     }
 
-    pub(super) fn start_trials(&mut self, settings: &Settings) {
+    fn review_models(&mut self, settings: &Settings) {
         self.review_selection = 0;
-        if !self.authorized || !self.credential_ready() {
-            self.step = SetupStep::Review;
-            return;
+        self.discovery.stop();
+        let plan = if self.authorized && self.credential_ready() {
+            self.planned_trials(settings)
+        } else {
+            Vec::new()
+        };
+        if self.trials.rows().iter().map(|row| &row.probe).ne(&plan) {
+            self.trials = ProbeBatch::start(plan);
+            self.probe_repaint_at = Some(std::time::Instant::now());
         }
-        self.trials = ProbeBatch::start(self.planned_trials(settings));
-        self.probe_repaint_at = Some(std::time::Instant::now());
-        self.step = SetupStep::Trials;
+        self.step = SetupStep::Review;
     }
 
-    pub(super) fn planned_trials(&self, settings: &Settings) -> Vec<Probe> {
+    fn planned_trials(&self, settings: &Settings) -> Vec<Probe> {
         let Ok(mut connection) = self.connection(settings) else {
             return Vec::new();
         };
@@ -244,34 +254,9 @@ impl SetupState {
         plan_model_trials(Arc::new(connection), models)
     }
 
-    pub(super) fn offer_trials(&mut self) {
-        self.models.cursor = 0;
-        self.review_selection = 0;
-        self.step = if self.authorized && self.credential_ready() {
-            SetupStep::TrialPlan
-        } else {
-            SetupStep::Review
-        };
-    }
-
-    pub(super) fn choose_trial_plan(&mut self, key: KeyEvent, settings: &Settings) {
-        if key.code == KeyCode::Enter {
-            if self.models.cursor == 0 {
-                self.start_trials(settings);
-            } else {
-                self.step = SetupStep::Review;
-            }
-        } else {
-            self.models.move_cursor(key.code, 2);
-        }
-    }
-
     pub(super) fn trial_input(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Enter => {
-                self.trials.stop();
-                self.step = SetupStep::Review;
-            }
+            KeyCode::Enter => self.previous(),
             KeyCode::Up => self.models.cursor = self.models.cursor.saturating_sub(1),
             KeyCode::Down => {
                 self.models.cursor = self
@@ -479,21 +464,13 @@ impl SetupState {
 
     pub(super) fn source_choices(&self) -> &'static [&'static str] {
         if self.discovery.useful_catalog().is_some() {
-            &[
-                "Use discovered models",
-                "Enter model ID manually",
-                "Retry discovery",
-            ]
+            &["Choose from list", "Enter model ID", "Try again"]
         } else if matches!(self.intent, SetupIntent::Edit(_)) && self.discovery.rows().is_empty() {
-            &[
-                "Keep current model",
-                "Enter model ID manually",
-                "Discover models",
-            ]
+            &["Keep current model", "Enter model ID", "Find models"]
         } else if self.discovery.pending() {
-            &["Waiting for a model list", "Enter model ID manually"]
+            &["Waiting for model list", "Enter model ID"]
         } else {
-            &["Discover models", "Enter model ID manually"]
+            &["Find models", "Enter model ID"]
         }
     }
 
@@ -504,8 +481,8 @@ impl SetupState {
             return;
         }
         match choices.get(self.models.cursor).copied() {
-            Some("Use discovered models") => self.accept_discovery(settings),
-            Some("Enter model ID manually") => {
+            Some("Choose from list") => self.accept_discovery(settings),
+            Some("Enter model ID") => {
                 self.discovery.stop();
                 self.problem = None;
                 self.step = SetupStep::Model;
@@ -513,17 +490,18 @@ impl SetupState {
             Some("Keep current model") => match self.model_text() {
                 Ok(model) => {
                     self.models.add_manual(model);
+                    self.trials = ProbeBatch::default();
                     self.step = SetupStep::Review;
                     self.review_selection = 0;
                 }
                 Err(problem) => self.problem = Some(problem),
             },
-            Some("Discover models" | "Retry discovery") => self.start_discovery(settings),
+            Some("Find models" | "Try again") => self.start_discovery(settings),
             _ => {}
         }
     }
 
-    pub(super) fn choose_discovered(&mut self, key: KeyEvent) {
+    pub(super) fn choose_discovered(&mut self, key: KeyEvent, settings: &Settings) {
         match key.code {
             KeyCode::Up | KeyCode::Down => {
                 let count = self.models.filtered().count();
@@ -557,7 +535,7 @@ impl SetupState {
                         self.models.selected.insert(model);
                     }
                 }
-                self.advance_from_models();
+                self.advance_from_models(settings);
             }
             _ => {
                 edit_field(&mut self.models.query, key);
@@ -566,7 +544,7 @@ impl SetupState {
         }
     }
 
-    pub(super) fn advance_from_models(&mut self) {
+    pub(super) fn advance_from_models(&mut self, settings: &Settings) {
         if self.models.selected.is_empty() {
             self.problem = Some("Choose a model, or enter a model ID manually.".into());
             return;
@@ -577,14 +555,15 @@ impl SetupState {
         if self.intent == SetupIntent::Default && self.models.selected.len() > 1 {
             self.step = SetupStep::DefaultModel;
         } else {
-            self.offer_trials();
+            self.review_models(settings);
         }
     }
 
-    pub(super) fn choose_default(&mut self, key: KeyEvent) {
+    pub(super) fn choose_default(&mut self, key: KeyEvent, settings: &Settings) {
         if key.code == KeyCode::Enter {
             self.models.default = self.models.selected.iter().nth(self.models.cursor).cloned();
-            self.offer_trials();
+            self.models.cursor = 0;
+            self.review_models(settings);
         } else {
             self.models
                 .move_cursor(key.code, self.models.selected.len());

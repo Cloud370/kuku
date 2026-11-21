@@ -575,7 +575,7 @@ async fn existing_file_credentials_outside_policy_migrate_on_save() {
         assert!(state
             .saved_key_hint(&settings)
             .unwrap()
-            .contains("move it into this data directory"));
+            .contains("copy your saved key here"));
 
         save(&settings, &state).unwrap();
 

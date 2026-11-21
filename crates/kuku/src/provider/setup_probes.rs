@@ -69,6 +69,7 @@ pub fn plan_model_trials(
 }
 
 /// One request in a setup plan.
+#[derive(PartialEq)]
 pub enum Probe {
     Catalog(Box<ModelListTarget>),
     Quotes {
