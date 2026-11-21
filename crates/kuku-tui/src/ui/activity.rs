@@ -1,10 +1,12 @@
 use std::time::Duration;
 
+use kuku::config::ThinkLevel;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{Activity, App, ServiceStatus};
+use crate::keys::Shortcut;
 use crate::text::{format_elapsed, shorten, shorten_middle, single_line};
 use crate::theme::{emphasis, ACCENT, ERROR, EXECUTION, MUTED, SURFACE_TEXT, WARNING};
 
@@ -206,6 +208,20 @@ pub(super) fn render_heading(app: &App, width: usize, frame: ActivityFrame) -> L
     if let Some(elapsed) = elapsed {
         line.push_span(" ");
         line.push_span(Span::styled(shorten(&elapsed, TIME_SLOT), muted));
+    }
+    let key = Shortcut::CYCLE_THINKING.label;
+    let action = " think";
+    if app.modal.is_none()
+        && app.available()
+        && left_width.saturating_sub(line.width()) >= 2 + key.width() + action.width()
+        && app.pane().effective_reasoning().is_some_and(|(_, caps)| {
+            caps.selectable_reasoning_efforts()
+                .any(|level| level != ThinkLevel::ProviderDefault.as_str())
+        })
+    {
+        line.push_span("  ");
+        line.push_span(Span::styled(key, Style::new().fg(SURFACE_TEXT)));
+        line.push_span(Span::styled(action, muted));
     }
     if let Some(feedback) = app
         .displayed_statusline()

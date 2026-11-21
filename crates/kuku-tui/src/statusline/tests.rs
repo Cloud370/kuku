@@ -391,7 +391,8 @@ fn default_model_field_keeps_the_resolved_identifier_first_at_every_width() {
     let rows = screen(&mut app, &configured, 140, 20);
     assert!(rows[19]
         .trim()
-        .starts_with("openai/gpt-6-luna (configured-model-gateway · high) ·"));
+        .strip_prefix("openai/gpt-6-luna (configured-model-gateway · High)")
+        .is_some_and(|remaining| remaining.trim_start().starts_with('·')));
     let lines = layout.render_rows(&app, 80, 20, app.pane().activity());
     assert_eq!(Some(MODEL), lines[0].spans[0].style.fg);
 
@@ -399,6 +400,7 @@ fn default_model_field_keeps_the_resolved_identifier_first_at_every_width() {
         "custom/a-long-model-from-a-named-provider".into(),
         None,
         Some("High".into()),
+        4,
     );
     assert!(long.fit(18).contains('…'));
     assert!(long.fit(18).ends_with(" · High"));

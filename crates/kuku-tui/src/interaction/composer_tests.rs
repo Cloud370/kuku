@@ -287,7 +287,7 @@ fn composer_lists_keep_alignment_draft_selection_and_reading_position() {
         let baseline = frame(&mut app, width);
         assert!(lines(&baseline)
             .iter()
-            .any(|line| line.contains("Next model request") && line.contains("· Medium")));
+            .any(|line| line.contains("To main") && line.contains("Next Medium")));
         app.scroll(-6);
         assert_eq!(KeyboardFocus::Transcript, app.pane().keyboard_focus);
         let anchor = app.pane().transcript.reading_anchor().cloned();
@@ -320,6 +320,10 @@ fn composer_lists_keep_alignment_draft_selection_and_reading_position() {
         );
         assert_eq!(column, position(&suggestions, "›/model ").0 + 1);
         assert!(label.trim_end().width() <= 76 + usize::from(column));
+        let menu_row = position(&suggestions, "Actions and Skills").1;
+        let right = width - crate::theme::horizontal_gutter(width) - 1;
+        assert_eq!(suggestions[(right, menu_row)].bg, crate::theme::SURFACE);
+        assert_eq!(suggestions[(right, row)].bg, crate::theme::SURFACE);
         assert!(suggestions[(column, row)]
             .modifier
             .contains(Modifier::REVERSED));
@@ -388,6 +392,7 @@ fn cycling_respects_pending_model_settings_and_changes_only_the_active_agent() {
             if config.reasoning_effort.as_deref() == Some("max") && config.tier.as_deref() == Some("fixture-model"))));
     app.key(cycle);
     assert_eq!(1, app.effects.len());
+    assert!(app.notice.is_none());
     assert_eq!(KeyboardFocus::Transcript, app.pane().keyboard_focus);
     assert_eq!(cursor, app.pane().draft.cursor());
     assert_eq!("draft to keep", app.pane().draft.text());
@@ -395,6 +400,65 @@ fn cycling_respects_pending_model_settings_and_changes_only_the_active_agent() {
         Some("low"),
         app.pane().effective_model_identity().unwrap().2
     );
+}
+
+#[test]
+fn thinking_cycle_keeps_the_draft_route_and_other_cells_stable_until_it_resolves() {
+    for width in [60, 120] {
+        let workspace = std::path::PathBuf::from("/workspace");
+        let mut app = App::new(workspace.clone(), None);
+        app.update(Update::Connected {
+            endpoint: "http://127.0.0.1:6789".into(),
+            workspace,
+        });
+        let version = app
+            .effects
+            .iter()
+            .find_map(|effect| match effect {
+                Job::Model(_, version) => Some(*version),
+                _ => None,
+            })
+            .expect("initial model request");
+        let model: kuku_client::ModelSelection = serde_json::from_value(json!({
+            "connection": "fixture",
+            "protocol": "openai-responses",
+            "model": "gemini-4-neon",
+            "context_window_tokens": 100_000,
+            "settings": {"reasoning_effort": "low"},
+            "capabilities": {"reasoning_efforts": ["low", "medium", "high"]}
+        }))
+        .unwrap();
+        app.update(Update::DefaultModel(version, Ok(model.clone())));
+        app.effects.clear();
+        app.paste("keep this draft");
+        let before = frame(&mut app, width);
+        let cycle = KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL);
+        app.key(cycle);
+        app.key(cycle);
+        let during = frame(&mut app, width);
+        assert_eq!(before, during);
+        let [Job::Model(config, version)] = app.effects.as_slice() else {
+            panic!("Expected one in-flight model preview");
+        };
+        assert_eq!(config.reasoning_effort.as_deref(), Some("medium"));
+        let mut model = model;
+        model.settings.reasoning_effort = Some("medium".into());
+        app.update(Update::DefaultModel(*version, Ok(model)));
+        let after = frame(&mut app, width);
+        let (x, y) = position(&before, "Low");
+        assert_eq!((x, y), position(&after, "Medium"));
+        assert_eq!(
+            position(&before, "Ctrl+T think"),
+            position(&after, "Ctrl+T think")
+        );
+        for (index, (previous, current)) in before.content.iter().zip(&after.content).enumerate() {
+            let diff_x = (index % usize::from(width)) as u16;
+            let diff_y = (index / usize::from(width)) as u16;
+            if diff_y != y || !(x..x + 7).contains(&diff_x) {
+                assert_eq!(previous, current, "changed cell at {diff_x},{diff_y}");
+            }
+        }
+    }
 }
 
 #[test]

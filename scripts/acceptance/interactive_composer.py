@@ -55,8 +55,11 @@ def composer_actions(client):
         terminal.expect(f"{model} · None", absent=("Model route",))
 
         terminal.type(draft)
+        previous = terminal.expect(f"{model} · None", also=("Ctrl+T think", draft))["screen"]
         terminal.press("\x1b[D\x14")
-        terminal.expect(f"{model} · Low", also=(draft,))
+        leveled = terminal.expect(f"{model} · Low", also=("Ctrl+T think", draft))["screen"]
+        assert position(previous, "Agent main") == position(leveled, "Agent main"), leveled
+        assert position(previous, draft) == position(leveled, draft), leveled
         for width in (60, 120):
             terminal.request("resize", rows=28, cols=width)
             screen = thinking(terminal)
@@ -89,11 +92,11 @@ def composer_actions(client):
         terminal.type(draft)
         terminal.press("\x14")
         eventually("Medium selected at the next request boundary", lambda: selected("medium"))
-        terminal.expect("Next model request", also=(f"{model} · Low", "· Medium", draft))
+        terminal.expect("Next Medium", also=(f"{model} · Low", draft), absent=("Next model request",))
         thinking(terminal)
         terminal.press("\x1b[B\x1b[B\x1b[B\x1b[B\r")
         eventually("High selected at the next request boundary", lambda: selected("high"))
-        terminal.expect("Next model request", also=("· High", draft))
+        terminal.expect("Next High", also=(f"{model} · Low", draft), absent=("Next model request",))
 
         original_config = config.read_text(encoding="utf-8")
         thinking(terminal)

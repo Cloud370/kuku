@@ -7,7 +7,7 @@ use crate::model_default::ResolvedModel;
 use crate::setup::{SavedModelSetting, ThinkingDefaults, ThinkingSaveTarget};
 use crate::text::effort_label;
 
-use super::{App, Modal};
+use super::{App, Modal, Pane};
 
 #[derive(Debug)]
 pub(crate) struct ThinkingPicker {
@@ -20,6 +20,39 @@ pub(crate) struct ThinkingPicker {
     pub(crate) save: Option<ThinkingSaveTarget>,
     pub(crate) confirm: Option<String>,
     tier: Option<String>,
+}
+
+impl Pane {
+    pub(crate) fn effective_reasoning(&self) -> Option<(&ProviderSettings, &ProviderCapabilities)> {
+        if let Some(snapshot) = &self.snapshot {
+            snapshot
+                .selection
+                .as_ref()
+                .map(|model| (&model.settings, &model.capabilities))
+        } else {
+            self.initial_model
+                .as_ref()
+                .map(|model| (&model.settings, &model.capabilities))
+        }
+    }
+
+    pub(crate) fn next_thinking(&self) -> Option<Option<&str>> {
+        let snapshot = self.snapshot.as_ref()?;
+        let active = snapshot.selection.as_ref()?;
+        let next = snapshot.pending_selection.as_ref()?;
+        (active.connection == next.connection
+            && active.model == next.model
+            && active.protocol == next.protocol
+            && active.request_url == next.request_url
+            && active.output == next.output
+            && active.context_window_tokens == next.context_window_tokens
+            && active.max_output_tokens == next.max_output_tokens
+            && active.settings.service_tier == next.settings.service_tier
+            && active.settings.requested_service_tier == next.settings.requested_service_tier
+            && active.tools == next.tools
+            && active.settings.reasoning_effort != next.settings.reasoning_effort)
+            .then_some(next.settings.reasoning_effort.as_deref())
+    }
 }
 
 impl App {
@@ -79,7 +112,7 @@ impl App {
     }
 
     pub(crate) fn cycle_thinking(&mut self) {
-        if !self.require_service() {
+        if !self.require_service() || self.model_change_in_flight() {
             return;
         }
         if self.resolved_model_route().is_err() {

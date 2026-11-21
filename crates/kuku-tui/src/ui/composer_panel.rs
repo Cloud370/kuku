@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Padding, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph};
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
@@ -9,7 +9,7 @@ use crate::app::{App, Modal, ThinkingPicker};
 use crate::keys::Shortcut;
 use crate::menu::{Choice, ChoiceKind, CommandMenu, Picker, PickerKind};
 use crate::text::{effort_label, shorten, with_suffix};
-use crate::theme::{emphasis, focused_row, panel, ACCENT, ERROR, MUTED};
+use crate::theme::{emphasis, focused_row, surface, ACCENT, ERROR, MUTED};
 
 use super::{picker_line, popup, render_editor, render_popup};
 
@@ -47,12 +47,7 @@ pub(super) fn render(
         _ => unreachable!("the modal is anchored to the composer"),
     };
     let height = height.min(editor.y.saturating_sub(frame.area().y));
-    let area = Rect::new(
-        editor.x,
-        editor.y - height,
-        editor.width.min(MAX_WIDTH),
-        height,
-    );
+    let area = Rect::new(editor.x, editor.y - height, editor.width, height);
     let inner = render_panel(frame, area, text_x);
     match modal {
         Modal::ExitConfirmation => {
@@ -127,11 +122,17 @@ pub(super) fn render_help(frame: &mut Frame<'_>, area: Rect) -> Rect {
 fn render_panel(frame: &mut Frame<'_>, area: Rect, text_x: u16) -> Rect {
     let indent = text_x.saturating_sub(area.x).min(area.width);
     let margin = u16::from(area.height >= 5);
-    let block = Block::new()
-        .style(panel())
-        .padding(Padding::new(indent, 2, margin, margin));
+    let mut block = Block::new().style(surface());
+    let border = area.width >= 4 && indent > 0;
+    if border {
+        block = block
+            .borders(Borders::LEFT)
+            .border_style(Style::new().fg(ACCENT));
+    }
+    let block = block.padding(Padding::new(indent - u16::from(border), 2, margin, margin));
     frame.render_widget(Clear, area);
-    let inner = block.inner(area);
+    let mut inner = block.inner(area);
+    inner.width = inner.width.min(MAX_WIDTH);
     frame.render_widget(block, area);
     inner
 }
@@ -312,7 +313,7 @@ fn choice_line(picker: &Picker, choice: &Choice, width: usize, active: bool) -> 
             detail = "Agent override";
         }
     }
-    let style = if active { focused_row() } else { panel() };
+    let style = if active { focused_row() } else { surface() };
     if detail.is_empty() || label.width() + 3 >= width {
         return picker_line(&label, width, active, style);
     }

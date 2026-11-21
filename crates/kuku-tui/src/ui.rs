@@ -94,12 +94,13 @@ pub(crate) fn render_at(
         .height
         .saturating_sub(below_editor + chrome_rows + padding_rows + composer_gap + 2);
     let unobstructed = app.modal.is_none();
+    let anchored = app.modal.as_ref().is_some_and(Modal::composer_anchored);
     let focused = unobstructed && app.composer_focused();
     let mut composer = Block::new().style(surface());
     if area.width >= 4 {
         composer = composer
             .borders(Borders::LEFT)
-            .border_style(Style::default().fg(if focused { ACCENT } else { MUTED }))
+            .border_style(Style::default().fg(if focused || anchored { ACCENT } else { MUTED }))
             .padding(padding);
     }
     let composer_content = composer.inner(area);
@@ -318,20 +319,16 @@ pub(crate) fn render_at(
     if let Some(draft) = draft {
         let pane = app.pane();
         let placeholder = pane.draft.text().is_empty().then(|| {
-            let hint = if pane.value_attachments.is_empty() {
-                format!(
-                    "Enter steer · {} next Turn · / actions · {} help · F2 controls · Esc Esc Rewind",
-                    Shortcut::NEXT_TURN.label,
-                    Shortcut::ACTIONS.label
-                )
+            let send = if pane.value_attachments.is_empty() {
+                "Enter steer"
             } else {
-                format!(
-                    "Enter steer · {} next Turn · / actions · {} help · F2 controls · Esc Esc Rewind · {} sends attached values",
-                    Shortcut::NEXT_TURN.label,
-                    Shortcut::ACTIONS.label,
-                    Shortcut::ENTER.label
-                )
+                "Enter send with values"
             };
+            let mut hint = format!("{send} · / actions · {} help", Shortcut::ACTIONS.label);
+            let next = format!(" · {} next Turn", Shortcut::NEXT_TURN.label);
+            if hint.width() + next.width() <= content_width {
+                hint.push_str(&next);
+            }
             shorten(&hint, content_width)
         });
         render_editor_view(frame, inner, draft, focused, placeholder.as_deref());
@@ -366,7 +363,6 @@ pub(crate) fn render_at(
         inner,
         status,
     ];
-    let anchored = app.modal.as_ref().is_some_and(Modal::composer_anchored);
     if anchored || app.modal.is_none() {
         app.text_selection.render(
             frame.buffer_mut(),

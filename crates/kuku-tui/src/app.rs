@@ -122,6 +122,7 @@ pub(crate) struct Pane {
     pub(crate) pending_selected_reply_copy: Option<u64>,
     pub(crate) initial_config: AgentConfig,
     initial_model: Option<ModelSelection>,
+    initial_thinking_refresh: bool,
     config_receipt: Option<(u64, Box<AgentConfig>)>,
     pub(crate) model_problem: Option<String>,
     pub(crate) opening: bool,
@@ -185,24 +186,22 @@ impl Pane {
     pub(crate) fn reasoning(
         &self,
     ) -> Option<(&kuku::ProviderSettings, &kuku::ProviderCapabilities)> {
-        if self.config_receipt.is_some() {
+        if self.waiting_for_configuration() {
             return None;
         }
-        if let Some(snapshot) = &self.snapshot {
-            snapshot
-                .pending_selection
-                .as_ref()
-                .or(snapshot.selection.as_ref())
-                .map(|selection| (&selection.settings, &selection.capabilities))
-        } else {
-            self.initial_model
-                .as_ref()
-                .map(|selection| (&selection.settings, &selection.capabilities))
-        }
+        self.snapshot
+            .as_ref()
+            .and_then(|snapshot| {
+                snapshot
+                    .pending_selection
+                    .as_ref()
+                    .map(|model| (&model.settings, &model.capabilities))
+            })
+            .or_else(|| self.effective_reasoning())
     }
 
     pub(crate) fn waiting_for_configuration(&self) -> bool {
-        self.config_receipt.is_some()
+        self.config_receipt.is_some() || self.initial_thinking_refresh
     }
 
     pub(crate) fn effective_model_identity(&self) -> Option<(&str, &str, Option<&str>)> {
@@ -239,6 +238,9 @@ impl Pane {
     }
 
     pub(crate) fn next_model_label(&self, width: usize) -> Option<String> {
+        if self.next_thinking().is_some() {
+            return None;
+        }
         let model = self.snapshot.as_ref()?.pending_selection.as_ref()?;
         let route = crate::text::single_line(&format!("{}/{}", model.connection, model.model));
         let effort = crate::text::effort_label(model.settings.reasoning_effort.as_deref());

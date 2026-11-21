@@ -10,7 +10,7 @@ use crate::text::{
     compact_token_count, effort_label, shorten, shorten_middle, single_line, single_line_path,
     tail_start, with_suffix,
 };
-use crate::theme::{emphasis, ERROR, EXECUTION, MODEL, MUTED, USAGE, WARNING};
+use crate::theme::{emphasis, ACCENT, ERROR, EXECUTION, MODEL, MUTED, USAGE, WARNING};
 
 mod editor;
 
@@ -21,6 +21,7 @@ const WIDE_SEPARATOR: &str = "  ";
 const GROUP_GAP: &str = "    ";
 const COMPACT_DETAILS_WIDTH: usize = 12;
 const COMPACT_MODEL_WIDTH: usize = 28;
+const MAX_EFFORT_WIDTH: usize = 12;
 const COMPACT_STATUS_WIDTH: usize = 96;
 const PHONE_WIDTH: usize = 60;
 const TWO_ROW_MIN_HEIGHT: u16 = 10;
@@ -162,10 +163,24 @@ impl StatusLine {
             .fields
             .as_ref()
             .is_some_and(|fields| fields.contains(&Field::Input));
-        if !input_in_footer {
-            if let Some(input) = input(app, notice.is_none()) {
-                return Some(Span::styled(input.fit(width), input.style));
-            }
+        let input = (!input_in_footer)
+            .then(|| input(app, notice.is_none()))
+            .flatten();
+        if let Some(input) = input
+            .as_ref()
+            .filter(|input| input.priority >= Priority::Submission)
+        {
+            return Some(Span::styled(input.fit(width), input.style));
+        }
+        if let Some(effort) = app.pane().next_thinking() {
+            let label = format!("Next {}", effort_label(effort));
+            return Some(Span::styled(
+                shorten(&label, width),
+                Style::new().fg(ACCENT),
+            ));
+        }
+        if let Some(input) = input {
+            return Some(Span::styled(input.fit(width), input.style));
         }
         notice.map(|notice| {
             Span::styled(
@@ -258,19 +273,27 @@ impl Field {
             ),
             Self::Model => {
                 let pane = app.pane();
-                let (id, route, effort) = match pane.effective_model_identity() {
+                let (id, route, effort, slot) = match pane.effective_model_identity() {
                     Some((id, connection, effort)) => {
                         let id = single_line(id);
+                        let effort = shorten(&effort_label(effort), MAX_EFFORT_WIDTH);
                         let route = custom.then(|| {
                             let connection = single_line(connection);
-                            match effort {
-                                Some(effort) => {
-                                    format!("{id} ({connection} · {})", single_line(effort))
-                                }
-                                None => format!("{id} ({connection})"),
-                            }
+                            format!("{id} ({connection} · {effort})")
                         });
-                        (id, route, Some(effort_label(effort)))
+                        let slot = pane
+                            .effective_reasoning()
+                            .and_then(|(_, caps)| {
+                                caps.selectable_reasoning_efforts()
+                                    .map(|level| {
+                                        effort_label(Some(level)).width().min(MAX_EFFORT_WIDTH)
+                                    })
+                                    .max()
+                            })
+                            .map_or(effort.width(), |width| {
+                                width.max(effort.width()).max("Default".width())
+                            });
+                        (id, route, Some(effort), slot)
                     }
                     None => {
                         let label = pane.effective_model_label().unwrap_or_else(|| {
@@ -280,10 +303,10 @@ impl Field {
                                 "Model pending".into()
                             }
                         });
-                        (single_line(&label), None, None)
+                        (single_line(&label), None, None, 0)
                     }
                 };
-                Segment::model(id, route, effort)
+                Segment::model(id, route, effort, slot)
             }
             Self::Context => Segment::measurement(
                 app.pane()
@@ -379,6 +402,7 @@ enum SegmentText {
         id: String,
         route: Option<String>,
         effort: Option<String>,
+        effort_slot: usize,
     },
 }
 
@@ -389,9 +413,19 @@ struct Segment {
 }
 
 impl Segment {
-    fn model(id: String, route: Option<String>, effort: Option<String>) -> Self {
+    fn model(
+        id: String,
+        route: Option<String>,
+        effort: Option<String>,
+        effort_slot: usize,
+    ) -> Self {
         Self {
-            text: SegmentText::Model { id, route, effort },
+            text: SegmentText::Model {
+                id,
+                route,
+                effort,
+                effort_slot,
+            },
             style: Style::default().fg(MODEL),
             priority: Priority::Model,
         }
@@ -455,10 +489,15 @@ impl Segment {
     fn compact_width(&self, row_width: usize) -> usize {
         match &self.text {
             SegmentText::Labels(labels) => labels[0].width(),
-            SegmentText::Model { id, effort, .. } => {
+            SegmentText::Model {
+                id,
+                effort,
+                effort_slot,
+                ..
+            } => {
                 let effort_width = effort
                     .as_ref()
-                    .map_or(0, |effort| SEPARATOR.width() + effort.width());
+                    .map_or(0, |_| SEPARATOR.width() + effort_slot);
                 (id.width() + effort_width)
                     .min(COMPACT_MODEL_WIDTH)
                     .min((row_width / 3).max(effort_width + 1))
@@ -478,14 +517,31 @@ impl Segment {
                 .cloned()
                 .unwrap_or_else(|| shorten(&labels[0], width)),
             SegmentText::Details(text) => shorten_middle(text, width),
-            SegmentText::Model { id, route, effort } => route
-                .as_ref()
-                .filter(|route| route.width() <= width)
-                .cloned()
-                .unwrap_or_else(|| match effort {
-                    Some(effort) => with_suffix(id, effort, width),
-                    None => shorten_middle(id, width),
-                }),
+            SegmentText::Model {
+                id,
+                route,
+                effort,
+                effort_slot,
+            } => {
+                let pad = effort.as_ref().map_or(0, |effort| {
+                    effort_slot
+                        .saturating_sub(effort.width())
+                        .min(width.saturating_sub(SEPARATOR.width() + effort.width() + 1))
+                });
+                let available = width - pad;
+                let mut text = route
+                    .as_ref()
+                    .filter(|route| route.width() <= available)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        effort.as_ref().map_or_else(
+                            || shorten_middle(id, available),
+                            |effort| with_suffix(id, effort, available),
+                        )
+                    });
+                text.push_str(&" ".repeat(pad));
+                text
+            }
             SegmentText::Workspace(text) => {
                 if text.width() <= width {
                     text.clone()
