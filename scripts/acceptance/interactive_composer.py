@@ -27,7 +27,8 @@ def startup_info(client):
     with client.terminal(workspace) as terminal:
         terminal.request("resize", rows=28, cols=60)
         terminal.expect("preview-review", also=("Workspace", "work-startup-info", "Skills",
-                                                  "New session", "test-anthropic/claude-sonnet-4-6"))
+                                                  "New session", "test-anthropic/claude-sonnet-4-6",
+                                                  "/skill: Browse", "Ctrl+L Model", "Ctrl+T Think", "Ctrl+P Help"))
         add_skill("refresh-on-new")
         terminal.press("/new\r")
         terminal.expect("refresh-on-new", also=("preview-review", "New session"))

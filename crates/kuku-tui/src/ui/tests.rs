@@ -353,18 +353,29 @@ fn blank_welcome_scales_down_and_active_session_uses_one_branded_row() {
         let welcome = screen(&mut app, width, 28);
         let rows: Vec<_> = welcome.lines().collect();
         assert_eq!("", rows[0].trim());
-        assert_eq!("⢎⡱  kuku", rows[1].trim());
-        let indent = " ".repeat(rows[1].split_once("kuku").unwrap().0.width());
-        assert_eq!(format!("{indent}New session"), rows[2].trim_end());
-        assert_eq!("Workspace  /workspace", rows[4].trim());
-        assert_eq!("Model      Tier work", rows[5].trim());
-        assert_eq!("Skills     review-workspace, format-code", rows[6].trim());
-        assert!(rows[8].starts_with(&format!("{indent}Enter sends your first prompt")));
-        if width == 64 {
-            assert!(rows[9].starts_with(&format!("{indent}/resume opens a saved session")));
+        assert_eq!("│", rows[1].trim());
+        assert_eq!("│ ⢎⡱  kuku · New session", rows[2].trim());
+        assert_eq!("│ Workspace  /workspace", rows[4].trim());
+        assert_eq!("│ Model      Tier work", rows[5].trim());
+        assert_eq!("│", rows[6].trim());
+        assert_eq!("│ Skills   /skill: Browse", rows[7].trim());
+        assert_eq!("│ review-workspace · format-code", rows[8].trim());
+        assert!(rows[10]
+            .trim_start()
+            .starts_with("Enter sends your first prompt"));
+        let shortcuts_row = if width == 64 {
+            assert!(rows[11]
+                .trim_start()
+                .starts_with("/resume opens a saved session"));
+            12
         } else {
-            assert!(rows[8].contains("/resume opens a saved session"));
-        }
+            assert!(rows[10].contains("/resume opens a saved session"));
+            11
+        };
+        assert_eq!(
+            "/ Actions · Ctrl+L Model · Ctrl+T Think · Ctrl+P Help",
+            rows[shortcuts_row].trim()
+        );
     }
 
     let short = screen(&mut app, 29, 6);
@@ -387,7 +398,7 @@ fn blank_welcome_shows_the_shortened_workspace_path() {
     let welcome = screen(&mut app, 118, 28);
     let workspace = welcome
         .lines()
-        .find(|line| line.trim_start().starts_with("Workspace "))
+        .find(|line| line.trim_start().starts_with("│ Workspace "))
         .unwrap();
     assert!(workspace.contains('…'));
     assert!(workspace.trim_end().ends_with("actual-workspace"));
