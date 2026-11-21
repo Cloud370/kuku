@@ -55,7 +55,8 @@
         "sqlite-with-gcov",
         "kv-store-grpc",
         "gcode-to-text",
-        "pypi-server"
+        "pypi-server",
+        "schemelike-metacircular-eval"
       ],
       "additional_cases": [
         {
@@ -99,6 +100,13 @@
           "workspace": "/app",
           "artifacts": [],
           "timeout_sec": 900
+        },
+        {
+          "id": "schemelike-metacircular-eval",
+          "role": "implement and test a Scheme evaluator that can also interpret itself",
+          "workspace": "/app",
+          "artifacts": ["/app/eval.scm"],
+          "timeout_sec": 2400
         }
       ]
     }
