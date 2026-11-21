@@ -95,6 +95,9 @@ pub struct JobSnapshot {
     /// Display title captured when the execution moved into the background.
     #[serde(default)]
     pub title: String,
+    /// Monotonic time since dispatch when queried live, or measured time through settlement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<u64>,
     /// Short description of the running Job or its terminal result.
     pub summary: String,
     /// Retained output identity for a native command, available after capture is finalized.

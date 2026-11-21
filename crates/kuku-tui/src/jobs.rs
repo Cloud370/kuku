@@ -20,7 +20,7 @@ use crate::setup::{
     CredentialRepairApplied, CredentialRepairPlan, CredentialRepairRequest,
     PreparedCredentialRepair, SavedCredentialRepair,
 };
-use crate::text::single_line;
+use crate::text::{format_elapsed, single_line};
 use crate::transcript::{HistoryRequest, RewindGroupRequest, HISTORY_PAGE, REWIND_GROUP_PAGE};
 
 mod connect;
@@ -738,6 +738,12 @@ pub(crate) fn job_detail(job: &JobSnapshot) -> String {
         &job.title
     };
     let mut detail = format!("{} · {}", job_status_label(job.status), single_line(title));
+    if job.status == JobStatus::Running || job.tool == "run_js" {
+        if let Some(elapsed_ms) = job.elapsed_ms {
+            detail.push_str(" · ");
+            detail.push_str(&format_elapsed(Duration::from_millis(elapsed_ms)));
+        }
+    }
     if job.status != JobStatus::Running && !job.summary.is_empty() && job.summary != *title {
         detail.push_str(" · ");
         detail.push_str(&single_line(&job.summary));

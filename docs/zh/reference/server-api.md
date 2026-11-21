@@ -138,6 +138,8 @@ Job 路由均要求 `workspace` 和 `agent` 查询参数。`GET /sessions/{id}/j
 
 快照中的 `title` 在状态变化后仍保留原始显示标题。`summary` 描述当前执行状态或终态结果。
 
+`elapsed_ms` 从派发开始计时。查询运行中的任务会返回观察时的用时，查询终态任务会在有测量记录时返回截至结束的用时。`started_at` 和 `finished_at` 是事件游标。
+
 `DELETE /sessions/{id}/jobs/{job_id}` 等待指定执行结束并返回结果快照。对已终结的 Job 重复请求会返回已有结果。两个 GET 路由可以直接读取已关闭的 Session。若本服务尚未打开 Session，取消其中未终结的 Job 会返回 `409` 和 `job_not_active`。
 
 归属 Agent 的历史和观察流包含 `job_finished` 条目，带有 `job_id`、`status`、`summary`、原始 `turn` 以及可用的 `output_id`。此条目可能在对应的 Turn 结束后到达。

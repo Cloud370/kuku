@@ -138,6 +138,8 @@ All Job routes require `workspace` and `agent` query parameters. `GET /sessions/
 
 The snapshot keeps the original display `title` across status changes. The `summary` describes the current execution state or terminal result.
 
+`elapsed_ms` measures from dispatch. A live lookup shows the elapsed time at observation. A terminal lookup returns the measured duration through settlement when available. `started_at` and `finished_at` are event cursors.
+
 `DELETE /sessions/{id}/jobs/{job_id}` waits for the targeted execution to settle and returns the resulting snapshot. Repeating the request for a terminal Job returns its existing result. Both GET routes can read a closed Session without opening it. A DELETE for an unsettled Job in a Session that this server has not opened returns `409` with `job_not_active`.
 
 The owning Agent's history and observation stream include a `job_finished` entry with `job_id`, `status`, `summary`, the original `turn` and any `output_id`. This entry can arrive after its Turn settles.

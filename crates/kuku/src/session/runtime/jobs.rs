@@ -6,6 +6,7 @@ use std::sync::Arc;
 use serde_json::json;
 use tokio::sync::{watch, Notify};
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
 
 use crate::event::{EventPayload, EventStore, StoredEvent};
 use crate::tool::{ToolFaults, ToolResultEnvelope};
@@ -28,6 +29,7 @@ pub(crate) struct JobRequest {
     pub(crate) tool_call_id: String,
     pub(crate) tool: String,
     pub(crate) summary: String,
+    pub(crate) started: Instant,
 }
 
 pub(super) struct JobWorker {
@@ -41,6 +43,7 @@ pub(super) struct JobWorker {
 pub(super) struct JobIndex {
     sequence: u64,
     agents: HashMap<String, AgentJobs>,
+    active_since: HashMap<u64, Instant>,
 }
 
 #[derive(Debug, Default)]
@@ -71,6 +74,7 @@ pub(super) struct JobCompletion<'a> {
     pub(super) job_id: &'a str,
     pub(super) result: &'a JobResult,
     pub(super) status: JobStatus,
+    pub(super) elapsed_ms: Option<u64>,
 }
 
 impl JobReplay {
@@ -228,7 +232,7 @@ impl Session {
         let snapshot = {
             let state = self.inner.state.lock().unwrap();
             state.agent(agent)?;
-            state.jobs.get(agent, job_id)?.clone()
+            state.jobs.observe_snapshot(state.jobs.get(agent, job_id)?)
         };
         hydrate_job(self.events_path(), snapshot)
     }
@@ -393,6 +397,7 @@ impl Session {
         let worker_id = id.clone();
         let worker_agent = request.agent.clone();
         let session = self.clone();
+        let started = request.started;
         let (complete, done) = watch::channel(None);
         let completion = completion();
         let join = tokio::spawn(async move {
@@ -402,7 +407,8 @@ impl Session {
                     unconfirmed_result(format!("Job worker ended before confirmation: {error}"))
                 }
             };
-            let result = session.finish_job(&worker_agent, &worker_id, outcome);
+            let result =
+                session.finish_job(&worker_agent, &worker_id, outcome, elapsed_ms(started));
             let _ = complete.send(Some(
                 result.as_ref().map(|_| ()).map_err(ToString::to_string),
             ));
@@ -443,6 +449,7 @@ impl Session {
                     turn: job.turn,
                     result,
                     status: JobStatus::Interrupted,
+                    elapsed_ms: None,
                     delivery: Box::new(delivery),
                 },
             )?;
@@ -481,6 +488,7 @@ impl Session {
             "status": JobStatus::Running,
             "tool": request.tool,
             "title": title,
+            "elapsed_ms": elapsed_ms(request.started),
             "output_id": output_id,
         });
         let envelope = ToolResultEnvelope::ok(&summary, serde_json::to_string(&facts)?, facts);
@@ -504,10 +512,17 @@ impl Session {
             structured: envelope.structured.clone(),
         })?;
         state.jobs.register(&event)?;
+        state.jobs.active_since.insert(sequence, request.started);
         Ok(envelope)
     }
 
-    fn finish_job(&self, agent: &str, job_id: &str, outcome: ToolResultEnvelope) -> Result<()> {
+    fn finish_job(
+        &self,
+        agent: &str,
+        job_id: &str,
+        outcome: ToolResultEnvelope,
+        elapsed_ms: u64,
+    ) -> Result<()> {
         let mut state = self.inner.state.lock().unwrap();
         let job = state.jobs.get(agent, job_id)?;
         let status = JobStatus::for_result(&outcome);
@@ -540,6 +555,7 @@ impl Session {
                 turn,
                 result,
                 status,
+                elapsed_ms: Some(elapsed_ms),
                 delivery: Box::new(delivery),
             },
         ) {
@@ -672,6 +688,7 @@ impl JobIndex {
                 )
                 .into(),
                 summary: bounded(summary, MAX_JOB_SUMMARY_BYTES).into(),
+                elapsed_ms: None,
                 output_id: data["output_id"].as_str().map(str::to_owned),
                 started_at: event.id,
                 finished_at: None,
@@ -695,10 +712,12 @@ impl JobIndex {
             return Err(error());
         }
         snapshot.status = completion.status;
+        snapshot.elapsed_ms = completion.elapsed_ms;
         snapshot.summary = bounded(&completion.result.summary, MAX_JOB_SUMMARY_BYTES).into();
         snapshot.output_id = completion.result.output_id().map(str::to_owned);
         snapshot.finished_at = Some(completion.event_id);
         jobs.running.remove(&sequence);
+        self.active_since.remove(&sequence);
         Ok(())
     }
 
@@ -723,7 +742,7 @@ impl JobIndex {
         selected
             .into_iter()
             .rev()
-            .map(|sequence| jobs.jobs[sequence].clone())
+            .map(|sequence| self.observe_snapshot(&jobs.jobs[sequence]))
             .collect()
     }
 
@@ -734,8 +753,18 @@ impl JobIndex {
             .flat_map(|jobs| jobs.jobs.values().rev())
             .skip_while(|job| before.is_some_and(|before| job.started_at >= before))
             .take(limit)
-            .cloned()
+            .map(|snapshot| self.observe_snapshot(snapshot))
             .collect()
+    }
+
+    fn observe_snapshot(&self, snapshot: &JobSnapshot) -> JobSnapshot {
+        let mut snapshot = snapshot.clone();
+        if let Some(started) =
+            job_sequence(&snapshot.id).and_then(|sequence| self.active_since.get(&sequence))
+        {
+            snapshot.elapsed_ms = Some(elapsed_ms(*started));
+        }
+        snapshot
     }
 
     fn unsettled(&self) -> Vec<JobSnapshot> {
@@ -823,6 +852,10 @@ fn bounded(text: &str, max_bytes: usize) -> &str {
     &text[..text.floor_char_boundary(text.len().min(max_bytes))]
 }
 
+fn elapsed_ms(started: Instant) -> u64 {
+    started.elapsed().as_millis().min(u64::MAX as u128) as u64
+}
+
 fn unconfirmed_result(summary: String) -> ToolResultEnvelope {
     ToolResultEnvelope {
         faults: ToolFaults {
@@ -834,164 +867,4 @@ fn unconfirmed_result(summary: String) -> ToolResultEnvelope {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use crate::config::{
-        Config, DiscoveryConfig, HandoffConfig, LogsConfig, PluginConfig, UpdateConfig,
-    };
-
-    use super::super::{AgentConfig, SessionOptions};
-    use super::*;
-
-    fn dispatch_recorded_call(path: &Path, tool: &str, id: &str, turn: u64) -> EventStore {
-        let mut store = EventStore::open(path).unwrap();
-        store
-            .append(EventPayload::ToolCall {
-                turn,
-                ts: timestamp().unwrap(),
-                conversation: Some("main".into()),
-                tool_call_id: id.into(),
-                request_id: "req_1".into(),
-                index: 0,
-                tool: tool.into(),
-                args: json!({}),
-            })
-            .unwrap();
-        store
-            .append(EventPayload::Unknown(json!({
-                "kind": "runtime.tool_dispatched", "ts": timestamp().unwrap(), "agent": "main",
-                "turn": turn, "tool_call_id": id,
-            })))
-            .unwrap();
-        store
-    }
-
-    #[tokio::test]
-    async fn reopening_settles_an_unconfirmed_job_once_without_dispatch() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = Config {
-            tiers: BTreeMap::new(),
-            providers: BTreeMap::new(),
-            default_tier: String::new(),
-            discovery: DiscoveryConfig::default(),
-            handoff: HandoffConfig::default(),
-            logs: LogsConfig::default(),
-            plugin: PluginConfig::default(),
-            update: UpdateConfig::default(),
-        };
-        let mut options = SessionOptions::new(dir.path(), dir.path().join("data"), config);
-        options.session_id = Some("job-recovery".into());
-        let session = Session::open(options.clone()).await.unwrap();
-        let path = session.events_path().to_owned();
-        {
-            let mut state = session.inner.state.lock().unwrap();
-            session
-                .commit(
-                    &mut state,
-                    Record::AgentCreated {
-                        command_id: "fixture-agent".into(),
-                        fingerprint: String::new(),
-                        address: "main".into(),
-                        config: AgentConfig::default(),
-                    },
-                )
-                .unwrap();
-            let mut store = dispatch_recorded_call(&path, "custom", "unrelated", 3);
-            store
-                .append(EventPayload::ToolResult {
-                    turn: 3,
-                    ts: timestamp().unwrap(),
-                    conversation: Some("main".into()),
-                    tool_call_id: "unrelated".into(),
-                    status: "ok".into(),
-                    summary: "unrelated output".into(),
-                    model_content: String::new(),
-                    truncated: false,
-                    files_read: Vec::new(),
-                    files_changed: Vec::new(),
-                    commands_run: Vec::new(),
-                    memory_changed: None,
-                    structured: Some(
-                        json!({"kind": "job", "job_id": "job-42", "tool": "run_command"}),
-                    ),
-                })
-                .unwrap();
-            dispatch_recorded_call(&path, "run_command", "fixture-command", 3);
-            session
-                .register_job(
-                    &mut state,
-                    &JobRequest {
-                        agent: "main".into(),
-                        execution_id: 2,
-                        turn: 3,
-                        tool_call_id: "fixture-command".into(),
-                        tool: "run_command".into(),
-                        summary: "interrupted command".into(),
-                    },
-                )
-                .unwrap();
-        }
-        assert!(session.job("main", "job-1").unwrap().output_id.is_some());
-        {
-            let waiting = session.wait_job("main", "job-1");
-            tokio::pin!(waiting);
-            tokio::select! {
-                biased;
-                result = &mut waiting => panic!("unconfirmed job settled before close: {result:?}"),
-                _ = tokio::task::yield_now() => {}
-            }
-            session.close().await.unwrap();
-            let result = tokio::time::timeout(Duration::from_secs(1), waiting)
-                .await
-                .unwrap();
-            assert!(matches!(result, Err(Error::InterruptedOpenTool(_))));
-        }
-        assert!(matches!(
-            session.wait_job("main", "job-1").await,
-            Err(Error::InterruptedOpenTool(_))
-        ));
-        let failure = "fixture settlement failure";
-        session
-            .inner
-            .settlement_failure
-            .set(failure.into())
-            .unwrap();
-        assert!(matches!(
-            session.wait_job("main", "job-1").await,
-            Err(Error::InvalidEventStream(message)) if message == failure
-        ));
-        drop(session);
-
-        let offline = Session::read_job(&path, "main", "job-1").unwrap();
-        assert_eq!(JobStatus::Interrupted, offline.status);
-        assert_eq!(None, offline.finished_at);
-        assert_eq!(None, offline.result);
-        assert_eq!(None, offline.output_id);
-        assert_eq!(vec![offline], Session::read_jobs(&path, "main").unwrap());
-
-        let session = Session::open(options.clone()).await.unwrap();
-        assert_eq!(1, session.jobs("main").unwrap().len());
-        let terminal = session.job("main", "job-1").unwrap();
-        assert_eq!(JobStatus::Interrupted, terminal.status);
-        assert!(terminal.result.as_ref().unwrap().cleanup_incomplete);
-        let cursor = terminal.finished_at.unwrap();
-        assert_eq!(1, session.agent("main").unwrap().pending_inputs);
-        assert_eq!(
-            crate::AgentStatus::Idle,
-            session.agent("main").unwrap().status
-        );
-        assert!(session.inner.job_workers.lock().unwrap().is_empty());
-        session.close().await.unwrap();
-        assert_eq!(terminal, session.wait_job("main", "job-1").await.unwrap());
-
-        let session = Session::open(options).await.unwrap();
-        assert_eq!(
-            Some(cursor),
-            session.job("main", "job-1").unwrap().finished_at
-        );
-        assert_eq!(1, session.agent("main").unwrap().pending_inputs);
-        assert!(session.inner.job_workers.lock().unwrap().is_empty());
-        session.close().await.unwrap();
-    }
-}
+mod tests;

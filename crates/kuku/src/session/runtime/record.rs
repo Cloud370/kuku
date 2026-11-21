@@ -170,6 +170,8 @@ pub(super) enum Record {
         turn: u64,
         result: super::JobResult,
         status: super::JobStatus,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        elapsed_ms: Option<u64>,
         delivery: Box<Input>,
     },
     QuestionRequested {
@@ -669,6 +671,7 @@ impl State {
                 turn: _,
                 result,
                 status,
+                elapsed_ms,
                 delivery,
             } => {
                 self.jobs.finish(JobCompletion {
@@ -677,6 +680,7 @@ impl State {
                     job_id: &job_id,
                     result: &result,
                     status,
+                    elapsed_ms,
                 })?;
                 self.deliver(event_id, String::new(), *delivery, Vec::new())?;
             }

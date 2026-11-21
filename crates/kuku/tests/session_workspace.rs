@@ -577,7 +577,10 @@ async fn reusing_a_tool_call_id_in_the_next_model_step_cannot_redispatch_the_old
     })
     .await;
     assert_eq!(AgentStatus::Interrupted, agent.status);
-    assert!(agent.last_error.unwrap().contains("invalid_response"));
+    assert!(agent
+        .last_error
+        .unwrap()
+        .contains("The model reused a tool call ID."));
     assert_eq!(1, host.metrics().started_workers);
     assert_eq!(
         "once",

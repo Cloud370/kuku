@@ -18,6 +18,7 @@ const BACKGROUND_OBSERVATION: Duration = Duration::from_secs(1);
 pub(super) struct ForegroundJob {
     tool: String,
     background: bool,
+    started: Instant,
     deadline: Instant,
     completion: Option<oneshot::Receiver<SlotEvent>>,
     detached: Arc<AtomicBool>,
@@ -35,10 +36,12 @@ impl ForegroundJob {
         } else {
             Duration::from_millis(pending.query.runtime_limits.job_foreground_wait_ms)
         };
+        let started = Instant::now();
         let job = Self {
             tool: queued.tool_call.name.clone(),
             background,
-            deadline: Instant::now() + observation,
+            started,
+            deadline: started + observation,
             completion: Some(receiver),
             detached: Arc::new(AtomicBool::new(false)),
         };
@@ -218,6 +221,7 @@ impl Run {
                 tool_call_id: id.to_owned(),
                 tool: job.tool.clone(),
                 summary: slot.label.clone(),
+                started: job.started,
             },
             slot.cancel.clone(),
             || {
