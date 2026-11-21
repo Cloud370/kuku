@@ -269,7 +269,7 @@ pub(crate) fn run_command_definition(shells: &[CommandShell], session: bool) -> 
         schema["properties"]["title"] = action_title_schema();
         return tool(
             "run_command",
-            r#"Run a program with literal arguments, for example {"program":"git","args":["status"]}. To run a shell script, specify its interpreter as program. Returns exit status, elapsed time and output evidence. Long captures are available through read_output."#,
+            r#"Run a program with literal arguments, for example {"program":"git","args":["status"]}. To run a shell script, specify its interpreter as program. The host controls process deadlines. Returns exit status, elapsed time and output evidence. Long captures are available through read_output."#,
             schema,
             false,
             80_000,
@@ -395,6 +395,11 @@ mod tests {
             assert!(result
                 .model_content
                 .contains(&format!("does not accept {field:?}")));
+            if field == "timeout" {
+                assert!(result
+                    .model_content
+                    .contains("The host controls process deadlines."));
+            }
         }
     }
 

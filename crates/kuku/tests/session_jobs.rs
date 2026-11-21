@@ -770,6 +770,10 @@ fn check_first_request(body: &Value) {
             .unwrap_or_else(|| panic!("first request is missing {name}"))["function"]
     };
     let command = tool("run_command");
+    assert!(command["description"]
+        .as_str()
+        .unwrap()
+        .contains("The host controls process deadlines."));
     assert_eq!(
         "boolean",
         command["parameters"]["properties"]["background"]["type"]
@@ -805,6 +809,7 @@ fn check_first_request(body: &Value) {
     for contract in [
         "tools.run_command(",
         "Set background:true on the outer run_js call",
+        "The host controls process deadlines.",
         "exit_code",
         "stdout",
         "stderr",

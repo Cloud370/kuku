@@ -98,6 +98,11 @@ fn apply_command_defaults(
                 "Set background on the outer run_js call or a direct Session run_command call.",
             ));
         }
+        if field == "timeout" {
+            return Err(invalid(
+                "run_command does not accept \"timeout\". Omit it. The host controls process deadlines.",
+            ));
+        }
         return Err(invalid(format!("run_command does not accept {field:?}")));
     }
     let shell_text = fields.contains_key("command");
