@@ -128,7 +128,11 @@ async fn malformed_tool_json_is_classified_after_model_response_persists() {
     )
     .await;
 
-    assert!(matches!(step, Ok(PendingStep::Failed(_))));
+    assert!(matches!(
+        step,
+        Ok(PendingStep::Failed(crate::Error::Provider { message, .. }))
+            if message == "The model sent tool arguments that were not a valid JSON object."
+    ));
     assert_rejected_tool_response(&events_path, crate::event::ModelStopReason::ToolUse);
 }
 

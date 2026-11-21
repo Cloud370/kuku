@@ -109,6 +109,15 @@ pub(super) fn scheduled_retry_delay(failed_attempt: u8, retry_after: Option<Dura
 }
 
 pub(crate) fn record_retry_event(pending: &PendingRun, event: RetryEvent<'_>) -> Result<()> {
+    let message = event.failure.kind.safe_retry_message();
+    record_retry_event_with_message(pending, event, message)
+}
+
+fn record_retry_event_with_message(
+    pending: &PendingRun,
+    event: RetryEvent<'_>,
+    message: &str,
+) -> Result<()> {
     let Some(execution) = pending.query.runtime_execution else {
         return Ok(());
     };
@@ -130,7 +139,7 @@ pub(crate) fn record_retry_event(pending: &PendingRun, event: RetryEvent<'_>) ->
             0
         },
         "will_retry": event.phase != RetryPhase::Stopped,
-        "message": event.failure.kind.safe_retry_message(),
+        "message": message,
         "status": event.failure.status,
         "stop_reason": event.stop_reason.map(RetryStopReason::as_str),
     }));
@@ -142,17 +151,44 @@ pub(crate) fn record_terminal_stop(
     request_id: &str,
     attempt: u8,
     reason: &ModelStopReason,
+    diagnostic: Option<&'static str>,
 ) -> Result<crate::error::Error> {
     let kind = match reason {
         ModelStopReason::ContextWindowExceeded => ProviderFailureKind::ContextTooLarge,
         ModelStopReason::InvalidResponse => ProviderFailureKind::InvalidResponse,
         _ => ProviderFailureKind::InvalidRequest,
     };
-    let message = format!(
-        "model response ended with terminal state {}",
-        reason.wire_value()
+    let message = diagnostic.map_or_else(
+        || {
+            format!(
+                "model response ended with terminal state {}",
+                reason.wire_value()
+            )
+        },
+        str::to_owned,
     );
-    record_nonretryable_stream_stop(pending, request_id, attempt, kind, &message)?;
+    let attempt = attempt.max(1);
+    let failure = ProviderFailure {
+        kind,
+        message: message.clone(),
+        status: None,
+        provider_request_id: None,
+        retry_after: None,
+        retryable: false,
+    };
+    record_retry_event_with_message(
+        pending,
+        RetryEvent {
+            request_id,
+            failure: &failure,
+            phase: RetryPhase::Stopped,
+            attempt,
+            failed_attempt: attempt,
+            delay: Duration::ZERO,
+            stop_reason: Some(RetryStopReason::NonRetryable),
+        },
+        diagnostic.unwrap_or_else(|| kind.safe_retry_message()),
+    )?;
     super::super::helpers::append_turn_interrupted(
         &pending.events_path,
         &pending.conversation,
@@ -166,36 +202,6 @@ pub(crate) fn record_terminal_stop(
         provider: None,
         model: None,
     })
-}
-
-pub(crate) fn record_nonretryable_stream_stop(
-    pending: &PendingRun,
-    request_id: &str,
-    attempt: u8,
-    kind: ProviderFailureKind,
-    message: &str,
-) -> Result<()> {
-    let attempt = attempt.max(1);
-    let failure = ProviderFailure {
-        kind,
-        message: message.to_string(),
-        status: None,
-        provider_request_id: None,
-        retry_after: None,
-        retryable: false,
-    };
-    record_retry_event(
-        pending,
-        RetryEvent {
-            request_id,
-            failure: &failure,
-            phase: RetryPhase::Stopped,
-            attempt,
-            failed_attempt: attempt,
-            delay: Duration::ZERO,
-            stop_reason: Some(RetryStopReason::NonRetryable),
-        },
-    )
 }
 
 pub(super) enum PreflightError {

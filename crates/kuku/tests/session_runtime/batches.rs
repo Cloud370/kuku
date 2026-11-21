@@ -112,3 +112,49 @@ async fn workspace_reads_overlap_and_wait_for_earlier_mutations_in_the_batch() {
     last.assert_hits_async(1).await;
     session.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn malformed_tool_batch_reports_its_cause_without_dispatching_calls() {
+    let server = MockServer::start_async().await;
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let calls = [
+        tool("valid", "find_files", json!({"path":"."})),
+        json!({"id":"invalid","type":"function","function":{
+            "name":"read_file", "arguments":"{\"path\":PRIVATE_ARGUMENT_TEXT"
+        }}),
+    ];
+    let model = fixture(&server, |_| true, json!({"tool_calls":calls}), "tool_calls").await;
+    let session = Session::open(options(&server, workspace.path(), data.path()))
+        .await
+        .unwrap();
+    session
+        .create_agent(
+            "create",
+            "main",
+            AgentConfig {
+                no_agents: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    session
+        .send(Input::new("input", "main", "read the workspace"))
+        .unwrap();
+    let result = settled(&session, "main").await;
+    let expected = "The model sent tool arguments that were not a valid JSON object.";
+    assert_eq!(result.status, AgentStatus::Interrupted);
+    assert_eq!(
+        result.last_error.as_deref(),
+        Some(format!("provider error: {expected}").as_str())
+    );
+    let events = session.events(0, 128).unwrap();
+    assert!(events.iter().any(|event| matches!(&event.payload,
+        EventPayload::Unknown(value) if value["kind"] == "runtime.model_retry"
+            && value["message"] == expected && value["will_retry"] == false)));
+    assert!(!events
+        .iter()
+        .any(|event| matches!(&event.payload, EventPayload::ToolCall { .. })));
+    model.assert_hits_async(1).await;
+    session.close().await.unwrap();
+}

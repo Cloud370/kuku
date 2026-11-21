@@ -87,3 +87,25 @@ pub(super) enum ToolResponseError {
     InvalidCompletionMapping,
     InvalidArguments,
 }
+
+impl ToolResponseError {
+    pub(super) fn message(self) -> &'static str {
+        match self {
+            Self::InvalidLifecycle => "The model sent tool events in an invalid order.",
+            Self::MissingCalls => "The model ended the response without a complete tool call.",
+            Self::EmptyId => "The model sent a tool call without an ID.",
+            Self::EmptyName => "The model sent a tool call without a name.",
+            Self::DuplicateId => "The model reused a tool call ID.",
+            Self::DuplicateIndex => "The model reused a tool call index.",
+            Self::InvalidBufferMapping => {
+                "The model sent arguments that could not be matched to its tool calls."
+            }
+            Self::InvalidCompletionMapping => {
+                "The model sent completion events that could not be matched to its tool calls."
+            }
+            Self::InvalidArguments => {
+                "The model sent tool arguments that were not a valid JSON object."
+            }
+        }
+    }
+}

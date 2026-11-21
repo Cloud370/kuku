@@ -9,7 +9,7 @@ use super::slots::{
     dispatch_tool_slot, query_workspace_access, spawn_agent_slot, SlotDispatchArgs,
 };
 use super::tool_exec::{execute_tool_call, run_tool_pre_hooks};
-use super::tool_response::validate_tool_calls;
+use super::tool_response::{validate_tool_calls, ToolResponseError};
 use super::types::{
     PendingPermission, PendingRun, PendingStep, PermissionChoice, PermissionRequest,
     QueuedToolCall, StreamingChunkState, UiEvent,
@@ -331,24 +331,30 @@ pub(super) async fn finish_streaming(mut state: StreamingChunkState) -> Result<P
     }
 
     if !is_success {
+        let diagnostic = match (&final_stop_reason, &validated_tool_calls) {
+            (ModelStopReason::InvalidResponse, Some(Err(error))) => Some(error.message()),
+            _ => None,
+        };
         let failure = super::provider::record_terminal_stop(
             &mut pending,
             &request_id,
             provider_attempt,
             &final_stop_reason,
+            diagnostic,
         )?;
         return Ok(PendingStep::Failed(failure));
     }
 
     let tool_calls = if matches!(final_stop_reason, ModelStopReason::ToolUse) {
-        match validated_tool_calls {
-            Some(Ok(tool_calls)) => tool_calls,
-            Some(Err(_)) | None => {
+        match validated_tool_calls.unwrap_or(Err(ToolResponseError::MissingCalls)) {
+            Ok(tool_calls) => tool_calls,
+            Err(error) => {
                 let failure = super::provider::record_terminal_stop(
                     &mut pending,
                     &request_id,
                     provider_attempt,
                     &ModelStopReason::InvalidResponse,
+                    Some(error.message()),
                 )?;
                 return Ok(PendingStep::Failed(failure));
             }
