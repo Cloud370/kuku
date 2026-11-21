@@ -5,7 +5,7 @@ import json
 import re
 import threading
 
-from interactive_fixture import InstalledClient, json_response, run_cases
+from interactive_fixture import InstalledClient, eventually, json_response, run_cases
 
 
 def recovery_cases(binary, bridge, directory):
@@ -54,9 +54,17 @@ def assert_testing_navigation(terminal, config):
 def assert_wide_setup(terminal):
     def overview(rows, cols):
         terminal.request("resize", rows=rows, cols=cols)
-        screen = terminal.expect("25%", also=("Try none, high", "› View requests"), rows=rows)["screen"]
+
+        def resized_frame():
+            screen = terminal.request("screen")["screen"]
+            lines = screen.splitlines()
+            if len(lines) == rows and len(lines[0]) == cols and all(
+                label in screen for label in ("25%", "Try none, high", "› View requests")
+            ):
+                return screen
+
+        screen = eventually(f"setup at {cols}×{rows}", resized_frame)
         lines = screen.splitlines()
-        assert len(lines[0]) == cols, screen
         header = next(line for line in lines if "Model" in line and "Image" in line)
         divider = next(line for line in lines if "┼" in line)
         assert len(divider.rstrip(" │")) <= 92, screen
