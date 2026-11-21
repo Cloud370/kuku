@@ -492,7 +492,7 @@ async fn same_script_keeps_one_command_capture_across_foreground_and_automatic_j
         })
         .expect("the Job result should reach the model as marked feedback");
     assert!(wake.ends_with("</kuku_job_result>"));
-    assert!(wake.contains(&format!("Job {id} (")));
+    assert!(wake.contains(&format!("Job {id} (workspace_script): Completed.")));
     let agent = slow_session.agent(AGENT).unwrap();
     assert_eq!(0, agent.running_jobs);
     assert_eq!(Some(STEERING), agent.admitted_task.as_deref());
@@ -512,6 +512,43 @@ async fn same_script_keeps_one_command_capture_across_foreground_and_automatic_j
             .count()
     );
     slow_session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn failed_job_delivery_keeps_the_retained_output_id_when_truncated() {
+    let server = MockServer::start_async().await;
+    let mut fixture = Fixture::new(&server, "/job-output", SHORT_FOREGROUND_MS);
+    fixture.options.limits.max_preview_bytes = 1024;
+    let stdout = "x".repeat(1_000);
+    fs::write(fixture.workspace.join("stdout.txt"), &stdout).unwrap();
+    let args = if cfg!(windows) {
+        json!({"background":true,"shell":"cmd","command":"type stdout.txt & exit /b 7"})
+    } else {
+        json!({"background":true,"shell":"sh","command":"cat stdout.txt; exit 7"})
+    };
+    let (start, _finish) = model_fixture(&server, "/job-output", "run_command", args).await;
+    let session = fixture.open().await;
+    let mut observer = session.observe(0);
+    submit(&session);
+    let (_, receipt) = first_result(&mut observer).await;
+    let id = job_id(&receipt);
+    let job = session.wait_job(AGENT, id).await.unwrap();
+    assert_eq!(JobStatus::Failed, job.status);
+    let output_id = job.output_id.unwrap();
+    wait_until(|| session.agent(AGENT).unwrap().status == AgentStatus::Idle).await;
+    start.assert_hits_async(1).await;
+    let wire = wire_requests("/job-output");
+    let delivery = wire
+        .iter()
+        .flat_map(|body| body["messages"].as_array().unwrap())
+        .filter_map(|message| message["content"].as_str())
+        .find(|text| text.starts_with("<kuku_job_result>"))
+        .expect("model should receive the Job delivery");
+    assert!(delivery.contains("Job preview truncated."));
+    assert!(delivery.contains(&format!("Output: {output_id} ")));
+    assert!(delivery.contains(&format!("Job {id} (run_command): Failed. shell exited 7")));
+    assert_eq!(1, delivery.matches("shell exited 7").count());
+    session.close().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]

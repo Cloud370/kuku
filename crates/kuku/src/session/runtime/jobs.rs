@@ -438,7 +438,7 @@ impl Session {
                 output_persistence_failed: false,
                 cleanup_incomplete: true,
             };
-            let delivery = self.job_delivery(&job, &result, "");
+            let delivery = self.job_delivery(&job, JobStatus::Interrupted, &result, "");
             self.commit(
                 &mut state,
                 Record::JobFinished {
@@ -515,15 +515,7 @@ impl Session {
     fn finish_job(&self, agent: &str, job_id: &str, outcome: ToolResultEnvelope) -> Result<()> {
         let mut state = self.inner.state.lock().unwrap();
         let job = state.jobs.get(agent, job_id)?;
-        let status = if outcome.faults.cleanup_incomplete {
-            JobStatus::Interrupted
-        } else {
-            match outcome.status.as_str() {
-                "ok" => JobStatus::Completed,
-                "cancelled" => JobStatus::Cancelled,
-                _ => JobStatus::Failed,
-            }
-        };
+        let status = JobStatus::for_result(&outcome);
         let failure =
             if outcome.faults.output_persistence_failed || outcome.faults.cleanup_incomplete {
                 Some(
@@ -543,7 +535,7 @@ impl Session {
             output_persistence_failed: outcome.faults.output_persistence_failed,
             cleanup_incomplete: outcome.faults.cleanup_incomplete,
         };
-        let delivery = self.job_delivery(job, &result, &outcome.model_content);
+        let delivery = self.job_delivery(job, status, &result, &outcome.model_content);
         let turn = job.turn;
         if let Err(error) = self.commit(
             &mut state,
@@ -571,10 +563,16 @@ impl Session {
         Ok(())
     }
 
-    fn job_delivery(&self, job: &JobSnapshot, result: &JobResult, model_content: &str) -> Input {
+    fn job_delivery(
+        &self,
+        job: &JobSnapshot,
+        status: JobStatus,
+        result: &JobResult,
+        model_content: &str,
+    ) -> Input {
         let mut text = format!(
-            "Job {} ({}): {}. {}",
-            job.id, job.tool, result.status, result.summary
+            "Job {} ({}): {status:?}. {}",
+            job.id, job.tool, result.summary
         );
         let body = model_content
             .strip_prefix(result.summary.as_str())
@@ -593,7 +591,15 @@ impl Session {
             .limits
             .max_input_bytes
             .min(self.inner.options.limits.max_preview_bytes);
-        text.truncate(text.floor_char_boundary(limit.min(text.len())));
+        if text.len() > limit {
+            let mut suffix = "\n\nJob preview truncated.".to_string();
+            if let Some(id) = result.output_id() {
+                suffix.push_str(&format!("\nOutput: {id} (read more with read_output)."));
+            }
+            let suffix = bounded(&suffix, limit);
+            text.truncate(text.floor_char_boundary(limit - suffix.len()));
+            text.push_str(suffix);
+        }
         Input {
             command_id: format!("{JOB_DELIVERY_PREFIX}{}", job.id),
             source: InputSource::session_job(),
@@ -690,12 +696,7 @@ impl JobIndex {
         }
         snapshot.status = completion.status;
         snapshot.summary = bounded(&completion.result.summary, MAX_JOB_SUMMARY_BYTES).into();
-        snapshot.output_id = completion
-            .result
-            .structured
-            .as_ref()
-            .and_then(|value| value["output_ref"]["id"].as_str())
-            .map(str::to_owned);
+        snapshot.output_id = completion.result.output_id().map(str::to_owned);
         snapshot.finished_at = Some(completion.event_id);
         jobs.running.remove(&sequence);
         Ok(())

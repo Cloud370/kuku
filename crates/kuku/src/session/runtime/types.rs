@@ -4,7 +4,9 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
+use crate::execution::{CommandExecutionFacts, CommandTermination};
 use crate::permission::{ToolAuthorizer, TrustedLocal};
+use crate::tool::ToolResultEnvelope;
 
 /// Durable status of a command or workspace script transferred to a Session Job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -22,6 +24,34 @@ pub enum JobStatus {
     Interrupted,
 }
 
+impl JobStatus {
+    pub(super) fn for_result(outcome: &ToolResultEnvelope) -> Self {
+        if outcome.faults.cleanup_incomplete {
+            return Self::Interrupted;
+        }
+        match outcome.status.as_str() {
+            "ok" => {
+                let failed_command = outcome
+                    .structured
+                    .as_ref()
+                    .and_then(|value| CommandExecutionFacts::deserialize(value).ok())
+                    .is_some_and(|command| {
+                        command.termination == CommandTermination::Exited
+                            && (command.signal.is_some()
+                                || command.exit_code.is_some_and(|code| code != 0))
+                    });
+                if failed_command {
+                    Self::Failed
+                } else {
+                    Self::Completed
+                }
+            }
+            "cancelled" => Self::Cancelled,
+            _ => Self::Failed,
+        }
+    }
+}
+
 /// Observed terminal facts for the original execution.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JobResult {
@@ -37,6 +67,14 @@ pub struct JobResult {
     pub output_persistence_failed: bool,
     /// Whether cleanup of owned resources could not be confirmed.
     pub cleanup_incomplete: bool,
+}
+
+impl JobResult {
+    pub(super) fn output_id(&self) -> Option<&str> {
+        self.structured
+            .as_ref()
+            .and_then(|value| value["output_ref"]["id"].as_str())
+    }
 }
 
 /// Session-scoped handle and status for an execution's background lifetime.
