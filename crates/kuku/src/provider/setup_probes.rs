@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -17,6 +18,7 @@ use super::{
 use tokio::task::JoinSet;
 
 const IN_FLIGHT: usize = 2;
+const MAX_MODEL_IN_FLIGHT: usize = 4;
 const MAX_RATE_LIMIT_RETRIES: u8 = 2;
 
 /// A selected model with the settings to check at its actual endpoint.
@@ -237,6 +239,13 @@ impl ProbeBatch {
     fn schedule(&mut self) {
         let now = Instant::now();
         self.cooldowns.retain(|(_, until)| *until > now);
+        let models = self
+            .rows
+            .iter()
+            .filter_map(|row| row.probe.connection().and_then(|_| row.probe.model()))
+            .collect::<HashSet<_>>()
+            .len();
+        let limits = [IN_FLIGHT, models.clamp(IN_FLIGHT, MAX_MODEL_IN_FLIGHT)];
         let mut active = [0; 2];
         for row in &self.rows {
             if matches!(row.progress, ProbeProgress::Waiting(_)) {
@@ -305,7 +314,7 @@ impl ProbeBatch {
                 Some(true) => {}
             }
             let lane = row.probe.lane();
-            if active[lane] < IN_FLIGHT {
+            if active[lane] < limits[lane] {
                 active[lane] += 1;
                 let started = Instant::now();
                 row.progress = ProbeProgress::Waiting(started);
@@ -622,6 +631,17 @@ impl ProbeBatch {
 }
 
 impl Probe {
+    /// Model ID for a model-scoped operation.
+    pub fn model(&self) -> Option<&str> {
+        match self {
+            Self::ApiType { model, .. }
+            | Self::Quotes { model, .. }
+            | Self::Thinking { model, .. }
+            | Self::Trial { model, .. } => Some(model),
+            Self::Catalog(_) => None,
+        }
+    }
+
     fn connection(&self) -> Option<&Arc<ProviderConfig>> {
         match self {
             Self::Thinking { connection, .. }

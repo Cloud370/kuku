@@ -358,7 +358,8 @@ def setup_probe_progress(binary, bridge, directory):
     instance = InstalledClient(binary, bridge, directory)
     slow_catalog_started = threading.Event()
     beta_started = threading.Event()
-    release_beta = threading.Event()
+    gamma_started = threading.Event()
+    release_baselines = threading.Event()
     runtime_requests = []
     release = threading.Event()
     trials = []
@@ -376,6 +377,7 @@ def setup_probe_progress(binary, bridge, directory):
             return json_response({"data": [
                 {"id": "alpha", "input_modalities": ["text"]},
                 {"id": "beta", "input_modalities": ["text"], "reasoning_efforts": ["low"]},
+                {"id": "gamma", "input_modalities": ["text"], "reasoning_efforts": ["medium"]},
             ]})
         if method == "GET" and path == "/api/v1/models":
             return json_response({}, 404)
@@ -391,13 +393,14 @@ def setup_probe_progress(binary, bridge, directory):
             return Response(200, ("".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks) + "data: [DONE]\n\n").encode(), "text/event-stream")
         assert body["max_tokens"] == 4096
         trials.append((model, effort, time.monotonic()))
-        if model == "beta" and effort is None:
-            beta_started.set()
-            release_beta.wait(20)
+        if model in ("beta", "gamma") and effort is None:
+            (beta_started if model == "beta" else gamma_started).set()
+            release_baselines.wait(20)
         if effort == "__kuku_unknown_effort__":
             return json_response({"error": {"param": "reasoning_effort", "allowed_values": ["none", "high"]}}, 400)
         if model == "alpha" and effort == "none" and sum(row[:2] == ("alpha", "none") for row in trials) == 1:
             assert beta_started.wait(8)
+            assert gamma_started.wait(8)
             return json_response({"error": {"type": "rate_limit_error", "message": "fixture rate limit"}}, 429)
         if effort == "high":
             return json_response({"error": {"param": "reasoning_effort", "message": "high is unsupported"}}, 422)
@@ -430,37 +433,43 @@ def setup_probe_progress(binary, bridge, directory):
                 terminal.press("\r\x1b[B\r")
                 terminal.expect("Paste your API key")
                 terminal.press(f"\x1b[200~{key}\x1b[201~\r")
-                discovery = terminal.expect("Choose models", also=("alpha", "beta"))["screen"]
+                discovery = terminal.expect("Choose models", also=("alpha", "beta", "gamma"))["screen"]
                 assert slow_catalog_started.is_set()
                 assert not trials
-                terminal.press("alpha \x01beta \r")
+                terminal.press("alpha \x01beta \x01gamma \r")
                 terminal.request("resize", rows=20, cols=60)
                 terminal.expect("Choose the default model", rows=20)
                 terminal.press("\r")
                 save_activity = terminal.expect(
                     "Testing models", rows=20,
-                    also=("Progress", "Text reply · beta", "Retry in", "Thinking none · alpha", "› Save and continue", "Model tests", "Settings", "Esc previous step"),
+                    also=("Progress", "3 models", "Retry in", "Thinking none", "› Save and continue", "Model tests", "Settings", "Esc previous step"),
                 )["screen"]
+                model_rows = [next(line for line in save_activity.splitlines() if line.strip(" │").startswith(model + " "))
+                              for model in ("alpha", "beta", "gamma")]
+                assert "Retry in" in model_rows[0] and all("Text reply" in line for line in model_rows[1:]), save_activity
                 assert save_activity.splitlines()[-2].startswith("│Esc previous step")
                 terminal.press("\x1b[B\r")
                 progress = terminal.expect(
                     "Retry in", also=("Thinking none", "Text reply", "Testing", "API listed 2 values", "Esc previous step"), rows=20,
                 )["screen"]
                 assert progress.splitlines()[-2].startswith("│Esc previous step")
-                assert not any(row[:2] == ("beta", "low") for row in trials)
-                release_beta.set()
+                assert not any(row[:2] in (("beta", "low"), ("gamma", "medium")) for row in trials)
+                release_baselines.set()
                 finished = terminal.expect(
-                    "6/6 finished", also=("Usable · Thinking seen", "Rejected", "Thinking low", "Cost"), rows=20,
+                    "8/8 finished", also=("Usable · Thinking seen", "Rejected", "Thinking low", "Cost"), rows=20,
                 )["screen"]
                 assert finished.count("alpha") == 1 and finished.count("beta") == 1, finished
                 result_rows = [next(line for line in finished.splitlines() if label in line)
                                for label in ("Thinking none", "Thinking high", "Thinking low")]
                 assert len({line.index(result) for line, result in zip(result_rows, ("Usable", "Rejected", "Usable"))}) == 1, finished
+                terminal.press("\x1b[B")
+                terminal.expect("Thinking medium", also=("gamma",))
                 terminal.press("\x1b")
                 save_results = terminal.expect(
-                    "Save setup", also=("› Save and continue", "Usable", "alpha · none", "beta · low"),
+                    "Save setup", also=("› Save and continue", "Usable · none", "Usable · low", "Usable · medium", "3 models"),
                     absent=("Retry in",), rows=20,
                 )["screen"]
+                assert all(model in save_results for model in ("alpha", "beta", "gamma")), save_results
                 assert save_results.splitlines()[-2].startswith("│Esc previous step")
                 terminal.press("\x1b[B\x1b[B\r")
                 terminal.expect("› Thinking")
@@ -472,6 +481,8 @@ def setup_probe_progress(binary, bridge, directory):
                 terminal.expect("› Save and continue")
                 terminal.press("\r")
                 terminal.expect("New session", state="Ready")
+                saved_models = client.request("GET", "/models").as_json()["tiers"]
+                assert {item["model"] for item in saved_models} == {"alpha", "beta", "gamma"}
                 terminal.submit("Verify the saved thinking setting")
                 terminal.expect("Saved effort sent.", state="Finished")
                 assert runtime_requests == [("alpha", "none")]
@@ -483,7 +494,7 @@ def setup_probe_progress(binary, bridge, directory):
             (client.directory / "probe-progress.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     finally:
         release.set()
-        release_beta.set()
+        release_baselines.set()
 
 
 def persistent_model_default(client):

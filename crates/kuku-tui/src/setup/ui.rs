@@ -359,18 +359,13 @@ fn render_review(
     render_line(frame, area, row, Line::styled(title, emphasis(ACCENT)));
     *row += 1;
     let model = state.primary_model().unwrap_or_default();
-    let count = state.models.selected.len().saturating_sub(1);
-    let selection = if count > 0 {
-        format!("{model} + {count} more")
-    } else {
-        model
-    };
+    let models = state.model_ids().unwrap_or_default();
     let role = if state.intent == SetupIntent::Default {
         "Default"
     } else {
         "Model"
     };
-    summary_row(frame, area, row, role, &selection, None);
+    summary_row(frame, area, row, role, &model, None);
     if let Ok(url) = state.request_url() {
         summary_row(
             frame,
@@ -382,7 +377,10 @@ fn render_review(
         );
     }
     if !state.trials.rows().is_empty() {
-        let (progress, attention) = super::probes::review_status(&state.trials);
+        let (mut progress, attention) = super::probes::review_status(&state.trials);
+        if models.len() > 1 {
+            progress.push_str(&format!(" · {} models", models.len()));
+        }
         let color = if testing {
             Some(ACCENT)
         } else {
@@ -401,63 +399,31 @@ fn render_review(
     let menu_rows = u16::try_from(state.review_choices(mode).len()).unwrap_or(area.height);
     let reserved = menu_rows + 1 + u16::from(state.problem.is_some());
     let room = area.height.saturating_sub(*row + reserved);
-    let levels = usable_thinking(state, settings);
-    let activity_rows = if room > 2 { 2 } else { 1 };
-    let level_rows = if testing {
-        room.saturating_sub(activity_rows).min(3)
+    let connection = state.connection(settings).ok();
+    if models.len() > 1 {
+        super::probes::render_model_overview(
+            frame,
+            area,
+            row,
+            &state.trials,
+            &models,
+            connection.as_ref(),
+            room,
+        );
     } else {
-        room
-    };
-    let detail_rows = level_rows.min(u16::try_from(levels.len()).unwrap_or(room));
-    if testing {
-        super::probes::render_activity(frame, area, row, &state.trials, room - detail_rows);
-    }
-    let visible = usize::from(detail_rows);
-    for (index, value) in levels.iter().take(visible).enumerate() {
-        let label = if index == 0 { "Usable" } else { "" };
-        let remaining = levels.len() - visible;
-        if remaining > 0 && index + 1 == visible {
-            summary_row(
-                frame,
-                area,
-                row,
-                label,
-                &format!("{value} +{remaining} models"),
-                Some(SUCCESS),
-            );
-        } else {
-            summary_row(frame, area, row, label, value, Some(SUCCESS));
+        let levels = connection
+            .as_ref()
+            .and_then(|connection| super::probes::usable_levels(&state.trials, connection, &model));
+        if testing {
+            let activity_room = room.saturating_sub(u16::from(levels.is_some() && room > 1));
+            super::probes::render_activity(frame, area, row, &state.trials, activity_room);
+        }
+        if let Some(levels) = levels.filter(|_| area.height.saturating_sub(*row) > reserved) {
+            summary_row(frame, area, row, "Usable", &levels, Some(SUCCESS));
         }
     }
     *row += 1;
     review_menu(frame, area, row, state, mode, |_| None);
-}
-
-fn usable_thinking(state: &SetupState, settings: &Settings) -> Vec<String> {
-    let (Ok(connection), Ok(models)) = (state.connection(settings), state.model_ids()) else {
-        return Vec::new();
-    };
-    models
-        .iter()
-        .filter_map(|model| {
-            let test = state.trials.thinking_test(&connection, model)?;
-            let levels = test
-                .accepted
-                .iter()
-                .filter(|level| !test.rejected.contains(level))
-                .map(String::as_str)
-                .collect::<Vec<_>>();
-            if levels.is_empty() {
-                return None;
-            }
-            let levels = levels.join(", ");
-            Some(if models.len() > 1 {
-                format!("{model} · {levels}")
-            } else {
-                levels
-            })
-        })
-        .collect()
 }
 
 fn render_review_warnings(
