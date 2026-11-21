@@ -472,9 +472,10 @@ impl Window {
             let grouped = member.is_some();
             let collapsed = member.as_ref().is_some_and(|(_, _, open)| !open);
             let group = member.and_then(|(_, heading, _)| heading.take());
-            let user_header = heading.is_some()
-                && layout.width >= 14
-                && matches!(&record.body, Body::User { sender: None, .. });
+            let user_turn = heading.filter(|_| {
+                layout.width >= 14 && matches!(&record.body, Body::User { sender: None, .. })
+            });
+            let heading = heading.filter(|_| user_turn.is_none());
             let thinking = matches!(record.key, Key::Preview(_))
                 && matches!(&record.body, Body::Assistant(text) if text.trim().is_empty());
             let (key, rows, detail) = if collapsed {
@@ -499,12 +500,8 @@ impl Window {
                     },
                     retry_heading,
                     retry_end,
+                    user_turn,
                 );
-                let rows = if user_header {
-                    rows.get(1..).unwrap_or_default()
-                } else {
-                    rows
-                };
                 (
                     key,
                     if trim && rows.last().is_some_and(|row| row.line.spans.is_empty()) {
@@ -526,7 +523,6 @@ impl Window {
                 position,
                 heading,
                 turn_gap,
-                user_header,
                 thinking,
                 group,
                 grouped,
@@ -545,7 +541,6 @@ impl Window {
                 position: group.position(),
                 heading: None,
                 turn_gap: false,
-                user_header: false,
                 thinking: false,
                 group: None,
                 grouped: false,
@@ -820,7 +815,6 @@ pub(super) struct Block<'a> {
     pub(super) position: u64,
     pub(super) heading: Option<TurnHeading>,
     pub(super) turn_gap: bool,
-    pub(super) user_header: bool,
     pub(super) thinking: bool,
     pub(super) group: Option<GroupHeading>,
     pub(super) rows: &'a [Row],
@@ -831,7 +825,7 @@ pub(super) struct Block<'a> {
     collapsed: bool,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TurnHeading {
     Numbered(u64),
     Unnumbered,

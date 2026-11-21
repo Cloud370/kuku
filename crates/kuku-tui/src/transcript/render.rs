@@ -76,7 +76,7 @@ impl Transcript {
             }
             if let Some(turn) = block.heading {
                 if skip == 0 {
-                    lines.push(message::render_turn(turn, width, block.user_header));
+                    lines.push(message::render_turn(turn, width));
                     row_insets.push(0);
                 }
                 skip = skip.saturating_sub(1);

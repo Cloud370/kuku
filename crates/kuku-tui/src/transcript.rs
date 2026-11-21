@@ -578,6 +578,7 @@ impl Record {
         layout: Layout<'_>,
         retry_heading: bool,
         retry_end: bool,
+        user_turn: Option<window::TurnHeading>,
     ) -> (&Key, &[Row], Option<DetailRecord<'_>>) {
         let Layout {
             width,
@@ -646,6 +647,7 @@ impl Record {
             agent_revision: facts.map_or(0, |facts| facts.paint_revision),
             retry_heading,
             retry_end,
+            user_turn,
         };
         if self
             .rendered
@@ -662,7 +664,7 @@ impl Record {
                         ),
                         None => "You".to_owned(),
                     };
-                    render_user(&title, text, width)
+                    render_user(&title, text, width, user_turn)
                 }
                 Body::Assistant(_) if cache_key.in_timeline && self.reasoning_only() => {
                     render_rows(
@@ -728,6 +730,7 @@ struct PreviewLayout {
     agent_revision: u64,
     retry_heading: bool,
     retry_end: bool,
+    user_turn: Option<window::TurnHeading>,
 }
 
 fn body_inset(width: usize) -> u16 {
