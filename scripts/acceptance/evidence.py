@@ -571,12 +571,16 @@ class SessionFacts:
 
 
 def inspect_sdk(result_path, data_dir, connection=None, container_data=None, session_id=None, require_streaming=False,
-                *, require_fixed_limits=False, require_output_limit=False):
+                *, require_fixed_limits=False, require_output_limit=False, expected_max_command_seconds=None):
     inspected = {"passed": False, "result_path": str(result_path), "data_dir": str(data_dir)}
     try:
         report = json_file(result_path)
         inspected["runtime_completed"] = report.get("runtime_completed")
         inspected["cleanup_closed"] = report.get("cleanup", {}).get("closed")
+        if expected_max_command_seconds is not None:
+            limit = (report.get("limits") or {}).get("max_command_seconds")
+            require(type(limit) is int and limit == expected_max_command_seconds,
+                    "SDK report differs from the selected command deadline")
         reported_path = report.get("events_path")
         require(isinstance(reported_path, str), "SDK report has no durable events path")
         if container_data:

@@ -477,6 +477,18 @@ class AcceptanceTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "direct DeepSeek model for Frontier live"):
                     ACCEPTANCE.main()
 
+    def test_benchmark_deadline_requires_live_sdk_and_positive_seconds(self):
+        base = ["run.py", "benchmark", "--suite", "frontier", "--case", "regex-log"]
+        for context, seconds, error in (
+            (["--sdk-binary", "/fixture/sdk"], "60", "requires a live Frontier SDK runner"),
+            (["--mode", "live", "--sdk-binary", "/fixture/sdk"], "0", "positive 32-bit integer"),
+            (["--mode", "live", "--sdk-binary", "/fixture/sdk"], "4294967296", "positive 32-bit integer"),
+        ):
+            with self.subTest(context=context, seconds=seconds), \
+                    mock.patch.object(sys, "argv", [*base, *context, "--max-command-seconds", seconds]):
+                with self.assertRaisesRegex(ValueError, error):
+                    ACCEPTANCE.main()
+
     def test_legacy_paid_benchmark_keeps_finite_request_and_output_limits_and_disables_retries(self):
         config = self.directory / "config.toml"
         config.write_text("# local fixture\n")

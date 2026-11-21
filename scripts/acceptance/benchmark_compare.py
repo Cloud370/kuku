@@ -69,6 +69,9 @@ def attempt(directory, harness):
     image_id = benchmark.get('image_id')
     limits = object_value(meter.get('limits'))
     cap = money(meter.get('case_cap_usd'))
+    max_command_seconds = result.get('max_command_seconds')
+    if max_command_seconds is not None and (harness != 'kuku' or not count(max_command_seconds)):
+        raise EvidenceError('invalid SDK command deadline evidence')
     if (not task_digest
             or not isinstance(image_id, str) or not re.fullmatch(r'sha256:[0-9a-f]{64}', image_id)
             or not cap or any(not count(limits.get(key)) for key in REQUIRED_LIMITS)
@@ -77,6 +80,7 @@ def attempt(directory, harness):
     shared = {'case': case, 'source_revision': TASK_COMMIT, 'image_id': image_id,
               'task_files_sha256': task_digest,
               'provider': route, 'case_cap_usd': cap, 'container_limits': requirements,
+              'max_command_seconds': max_command_seconds,
               'model_limits': {key: limits[key] for key in (*REQUIRED_LIMITS, 'max_requests')}}
     resources = object_value(result.get('resource_evidence'))
     accounting = object_value(meter.get('accounting'))

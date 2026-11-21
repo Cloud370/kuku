@@ -187,6 +187,16 @@ class Fixture:
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_command_deadline_must_match_the_selected_sdk_setting(self):
+        for setting in (None, True, 59):
+            with self.subTest(setting=setting):
+                self.fixture.report["limits"]["max_command_seconds"] = setting
+                evidence = self.fixture.inspect(expected_max_command_seconds=60)
+                self.assertFalse(evidence["passed"])
+                self.assertIn("selected command deadline", evidence["error"])
+        self.fixture.report["limits"]["max_command_seconds"] = 60
+        self.assertTrue(self.fixture.inspect(expected_max_command_seconds=60)["passed"])
+
     def test_metered_limits_allow_declared_automatic_retries(self):
         limits = self.fixture.report["limits"]
         limits.pop("max_steps")

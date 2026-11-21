@@ -748,8 +748,12 @@ def run_live(args, case, source, image, directory, secrets):
                         "--max-context-tokens", str(route.context), "--max-request-bytes", str(WIRE_BYTES)]
             if limits.requests is not None:
                 sdk_args.extend(["--max-requests", str(limits.requests)])
+            max_command_seconds = getattr(args, "max_command_seconds", None)
+            if max_command_seconds is not None:
+                sdk_args.extend(["--max-command-seconds", str(max_command_seconds)])
             caller = SimpleNamespace(sdk_binary=args.sdk_binary, config=config, connection=route.connection,
                                      require_streaming=args.require_streaming, sdk_args=sdk_args, suite="frontier",
+                                     max_command_seconds=max_command_seconds,
                                      prompts_dir=getattr(args, "prompts_dir", None),
                                      cpus=getattr(args, "cpus", 1),
                                      pi_prefix=pi_prefix, node_binary=node_binary, pi_model=route.model, pi_effort=route.effort,

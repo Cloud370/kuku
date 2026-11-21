@@ -517,7 +517,8 @@ class FrontierTests(unittest.TestCase):
         case = {"id": "fixture-case", "timeout_sec": 900}
         models = [{"id": DIRECT.model, "context_window": DIRECT.context, "effort": {"supported_levels": ["max"]}}]
         args = SimpleNamespace(provider="deepseek", sdk_binary=binary, ledger=ledger.path, max_output_tokens=None,
-                               max_requests=None, case_cap_usd=0.75, agent_timeout_sec=None, require_streaming=True)
+                               max_requests=None, case_cap_usd=0.75, agent_timeout_sec=None, require_streaming=True,
+                               max_command_seconds=60)
 
         def transfer(client, _body):
             reply_to_client(client, 200)
@@ -529,6 +530,8 @@ class FrontierTests(unittest.TestCase):
             self.assertIn("max_output_tokens = 131072", config)
             flags = dict(zip(caller.sdk_args[::2], caller.sdk_args[1::2]))
             self.assertEqual(flags["--max-output-tokens"], "131072")
+            self.assertEqual(flags["--max-command-seconds"], "60")
+            self.assertEqual(caller.max_command_seconds, 60)
             endpoint = re.search(r'base_url = "(http://[^\"]+)"', config)[1]
             token = env[TOKEN_VARIABLE]
             self.assertEqual(request(endpoint, DIRECT, {**DIRECT_PAYLOAD, "max_tokens": 131073}, token).status, 400)

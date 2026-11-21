@@ -380,6 +380,7 @@ def benchmark_attempt(args, case, source, image, directory, mode, secrets, *, sd
             record["harness"] = "pi"
         else:
             runner_command, record["runtime_files"] = bundle_binary(args.sdk_binary.resolve(), attempt)
+            record["max_command_seconds"] = getattr(args, "max_command_seconds", None)
             if prompts_dir := getattr(args, "prompts_dir", None):
                 record["prompt_overrides"] = bundle_prompts(prompts_dir, attempt / "runtime" / "prompts")
                 runner_command += ["--prompts-dir", "/kuku/runtime/prompts"]
@@ -447,7 +448,8 @@ def benchmark_attempt(args, case, source, image, directory, mode, secrets, *, sd
                 record["sdk_result"] = str(process_result)
                 record[evidence_key] = inspect_sdk(process_result, data_dir, args.connection,
                                                     "/kuku/data", record["session_id"], args.require_streaming,
-                                                    require_fixed_limits=args.suite == "legacy", require_output_limit=True)
+                                                    require_fixed_limits=args.suite == "legacy", require_output_limit=True,
+                                                    expected_max_command_seconds=record["max_command_seconds"])
         else:
             record["execution"] = {"exit_code": 0, "scope": "untouched environment; no Agent or oracle"}
         if record["execution"].get("timed_out"):

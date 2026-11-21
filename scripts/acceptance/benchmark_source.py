@@ -19,6 +19,11 @@ def validate_benchmark_arguments(args, metered, paid):
         raise ValueError("--node-binary requires --pi-prefix")
     if args.prompts_dir and (not metered or not args.sdk_binary or args.pi_prefix):
         raise ValueError("--prompts-dir requires a live Frontier SDK runner")
+    if args.max_command_seconds is not None:
+        if not metered or not args.sdk_binary or args.pi_prefix:
+            raise ValueError("--max-command-seconds requires a live Frontier SDK runner")
+        if not 0 < args.max_command_seconds <= 2**32 - 1:
+            raise ValueError("--max-command-seconds must be a positive 32-bit integer")
     if args.require_resource_evidence and not paid:
         raise ValueError("--require-resource-evidence applies to live benchmark measurements")
 
@@ -44,6 +49,7 @@ def add_benchmark_arguments(parser):
     parser.add_argument("--max-output-tokens", type=int, help="Frontier live output ceiling (default: the selected route's limit)")
     parser.add_argument("--max-requests", type=int, help="optional total upstream attempt limit for Frontier live")
     parser.add_argument("--agent-timeout-sec", type=int)
+    parser.add_argument("--max-command-seconds", type=int, help="optional per-command deadline for Frontier SDK live")
     parser.add_argument("sdk_args", nargs=argparse.REMAINDER, help="additional bounded session_task args after --")
 
 

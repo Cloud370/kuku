@@ -308,6 +308,8 @@ python3 scripts/acceptance/benchmark_compare.py \
 
 对照 Prompt 版本时复用同一份 release `session_task`，给每条 Frontier 真实试跑传入包含覆盖文件的 `--prompts-dir`。选择器为 Prompt 资源留存快照，在试跑记录中写入 SHA-256 摘要，并以只读方式挂载快照。缺少的资源由 SDK 提供嵌入的默认版本。使用 `benchmark_compare.py --baseline RUN_DIRECTORY --candidate RUN_DIRECTORY` 核对 SDK 二进制、运行时包、两份不同的 Prompt 快照，以及双方一致的题目、provider 设置和资源限额。
 
+测试宿主进程期限时，可给 Frontier SDK 真实试跑传入 `--max-command-seconds N`。它设置每条命令的 SDK 进程期限，覆盖 `run_js` 启动的命令和转为 Job 的命令。整场 Agent 的期限与原判定器各自独立。选择器会核对 SDK 报告中的实际期限，对照导出要求双方使用相同的进程期限。省略时沿用 SDK 默认值，即不设单条命令期限。
+
 ## 资源测量
 
 ```bash
