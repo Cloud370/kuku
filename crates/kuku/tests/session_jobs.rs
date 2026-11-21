@@ -35,8 +35,6 @@ const STDERR: &str = concat!(
 #[cfg(windows)]
 const GATE_FILE: &str = "fixture.cmd";
 #[cfg(windows)]
-const COMMAND: &str = "call fixture.cmd";
-#[cfg(windows)]
 const GATE_SCRIPT: &str = concat!(
     "@echo off\r\n",
     ">>attempts.txt echo started\r\n",
@@ -56,8 +54,6 @@ const GATE_SCRIPT: &str = concat!(
 
 #[cfg(unix)]
 const GATE_FILE: &str = "fixture.sh";
-#[cfg(unix)]
-const COMMAND: &str = "sh fixture.sh";
 #[cfg(unix)]
 const GATE_SCRIPT: &str = concat!(
     "printf '%s\\n' started >> attempts.txt\n",
@@ -150,11 +146,9 @@ impl Fixture {
             fs::canonicalize(&self.workspace).unwrap(),
             authorization.workspace
         );
-        assert_eq!(COMMAND, authorization.args["command"]);
-        assert_eq!(
-            if cfg!(windows) { "cmd" } else { "sh" },
-            authorization.args["shell"]
-        );
+        let expected = command_args(false);
+        assert_eq!(expected["program"], authorization.args["program"]);
+        assert_eq!(expected["args"], authorization.args["args"]);
         assert!(authorization.args.get("timeout").is_none());
     }
 }
@@ -186,10 +180,11 @@ return {{
 }
 
 fn command_args(background: bool) -> Value {
-    let mut args = json!({"command": COMMAND});
-    if cfg!(windows) {
-        args["shell"] = "cmd".into();
-    }
+    let mut args = if cfg!(windows) {
+        common::shell_args(GATE_FILE)
+    } else {
+        json!({"program":"sh","args":[GATE_FILE]})
+    };
     if background {
         args["background"] = true.into();
     }
@@ -543,8 +538,8 @@ async fn failed_job_delivery_keeps_the_retained_output_id_when_truncated() {
         .expect("model should receive the Job delivery");
     assert!(delivery.contains("Job preview truncated."));
     assert!(delivery.contains(&format!("Output: {output_id} ")));
-    assert!(delivery.contains(&format!("Job {id} (run_command): Failed. shell exited 7")));
-    assert_eq!(1, delivery.matches("shell exited 7").count());
+    assert!(delivery.contains(&format!("Job {id} (run_command): Failed. command exited 7")));
+    assert_eq!(1, delivery.matches("command exited 7").count());
     session.close().await.unwrap();
 }
 
@@ -569,12 +564,62 @@ async fn fast_background_failure_returns_the_command_result_directly() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
-async fn explicit_background_returns_before_foreground_deadline_and_can_be_cancelled() {
+async fn host_process_deadline_applies_to_direct_and_script_commands() {
     let server = MockServer::start_async().await;
     for (route, tool, args) in [
+        ("/deadline-command", "run_command", command_args(false)),
+        ("/deadline-script", "run_js", script_args(false)),
+    ] {
+        let mut fixture = Fixture::new(&server, route, 20_000);
+        fixture.options.limits.max_command_seconds = std::num::NonZeroU32::new(1);
+        let (model_start, model_end) = model_fixture(&server, route, tool, args).await;
+        let session = fixture.open().await;
+        let mut observer = session.observe(0);
+        submit(&session);
+        let event = committed(&mut observer, |payload| {
+            matches!(payload, EventPayload::ToolResult { tool_call_id, .. } if tool_call_id == CALL)
+        })
+        .await;
+        let EventPayload::ToolResult {
+            structured: Some(facts),
+            ..
+        } = event.payload
+        else {
+            panic!("expected structured deadline outcome");
+        };
+        let script;
+        let command = if tool == "run_js" {
+            script = WorkspaceScriptFacts::from_structured(&facts).unwrap();
+            let [action] = script.actions.as_slice() else {
+                panic!("expected one process, got {:?}", script.actions);
+            };
+            &action.result
+        } else {
+            &facts
+        };
+        let command = CommandExecutionFacts::from_structured(command).unwrap();
+        assert_eq!(CommandTermination::TimedOut, command.termination);
+        assert!(command.started && !command.cleanup_incomplete);
+        assert!(session.jobs(AGENT).unwrap().is_empty());
+        fixture.assert_launch();
+        assert!(!fixture.workspace.join("completed.txt").exists());
+        wait_until(|| session.agent(AGENT).unwrap().status == AgentStatus::Idle).await;
+        model_start.assert_hits_async(1).await;
+        model_end.assert_hits_async(1).await;
+        session.close().await.unwrap();
+        wire_requests(route);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+async fn explicit_background_returns_before_foreground_deadline_and_can_be_cancelled() {
+    let server = MockServer::start_async().await;
+    let title = "Check fixture in background";
+    for (route, tool, mut args) in [
         ("/explicit-command", "run_command", command_args(true)),
         ("/explicit-script", "run_js", script_args(true)),
     ] {
+        args["title"] = json!(title);
         let fixture = Fixture::new(&server, route, 20_000);
         let (model_start, model_end) = model_fixture(&server, route, tool, args).await;
         let session = fixture.open().await;
@@ -586,6 +631,7 @@ async fn explicit_background_returns_before_foreground_deadline_and_can_be_cance
         assert_eq!(JobStatus::Running, job.status);
         assert_eq!(start_cursor, job.started_at);
         assert_eq!(tool, job.tool);
+        assert_eq!(format!("{id} running: {title}"), job.summary);
         wait_until(|| fixture.workspace.join("attempts.txt").is_file()).await;
         wait_until(|| session.agent(AGENT).unwrap().last_output.as_deref() == Some(ACKNOWLEDGED))
             .await;
@@ -727,21 +773,32 @@ fn check_first_request(body: &Value) {
         json!([]),
         command["parameters"]["properties"]["args"]["default"]
     );
-    assert!(command["parameters"]["properties"]["timeout"]
-        .get("default")
-        .is_none());
+    assert_eq!(json!(["program"]), command["parameters"]["required"]);
+    let fields = command["parameters"]["properties"].as_object().unwrap();
+    assert!(fields.keys().map(String::as_str).eq([
+        "args",
+        "background",
+        "cwd",
+        "program",
+        "title"
+    ]));
     let script = tool("run_js");
     assert_eq!(
         "boolean",
         script["parameters"]["properties"]["background"]["type"]
     );
     assert_eq!(json!(["code"]), script["parameters"]["required"]);
+    assert_eq!(
+        "string",
+        script["parameters"]["properties"]["title"]["type"]
+    );
     for name in ["list_jobs", "wait_job", "cancel_job"] {
         assert_eq!("object", tool(name)["parameters"]["type"]);
     }
     let description = script["description"].as_str().unwrap();
     for contract in [
         "tools.run_command(",
+        "Set background:true on the outer run_js call",
         "exit_code",
         "stdout",
         "stderr",

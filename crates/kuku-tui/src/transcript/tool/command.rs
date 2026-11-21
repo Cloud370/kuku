@@ -166,13 +166,22 @@ impl CommandPreview {
 }
 
 impl Tool {
-    pub(super) fn command_heading(&self, frame: &CardFrame) -> Row {
-        let title = if self.start_summary.is_empty() {
-            "Run command"
-        } else {
+    pub(super) fn command_title(&self) -> &str {
+        if !self.request_title.is_empty() {
+            return &self.request_title;
+        }
+        let invocation = self.invocation();
+        if !invocation.is_empty() && invocation != self.arguments {
+            invocation
+        } else if !self.start_summary.is_empty() {
             &self.start_summary
-        };
-        Row::plain(frame.title(&single_line(title), SURFACE_TEXT))
+        } else {
+            "Run command"
+        }
+    }
+
+    pub(super) fn command_heading(&self, frame: &CardFrame) -> Row {
+        Row::plain(frame.title(&single_line(self.command_title()), SURFACE_TEXT))
     }
 }
 

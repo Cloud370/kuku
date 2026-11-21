@@ -108,10 +108,12 @@ pub(super) fn display_summary(
                 None => format!("{:?}", pattern),
             }
         }
-        "run_command" => args
-            .get("brief")
+        "run_command" | "run_js" => args
+            .get("title")
             .and_then(|v| v.as_str())
-            .filter(|brief| !brief.trim().is_empty())
+            .or_else(|| args["brief"].as_str())
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
             .or_else(|| args["program"].as_str())
             .or_else(|| args["shell"].as_str())
             .unwrap_or(tool)

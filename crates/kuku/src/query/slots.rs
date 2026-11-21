@@ -317,7 +317,8 @@ pub(super) fn spawn_command_slot(
                             &output.id,
                             output.limits,
                             output.access,
-                        ),
+                        )
+                        .with_time_limit(output.max_command_seconds),
                     )
                     .await;
                     if result
@@ -418,6 +419,7 @@ pub(crate) struct RetainedOutputSpec {
     pub(crate) id: String,
     pub(crate) limits: crate::tool::builtin::run_command::output::OutputLimits,
     pub(crate) access: crate::tool::builtin::run_command::ModelOutputAccess,
+    pub(crate) max_command_seconds: Option<std::num::NonZeroU32>,
     pub(crate) retention: crate::session::runtime::OutputReservation,
 }
 

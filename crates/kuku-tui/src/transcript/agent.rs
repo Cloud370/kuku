@@ -660,7 +660,7 @@ mod tests {
             &mut transcript,
             5,
             json!({
-                "type":"tool_call", "tool":"run_command", "tool_call_id":"command", "args":{"program":"verify-fixtures","args":[],"cwd":".","timeout":5,"brief":"Verify fixtures"}
+                "type":"tool_call", "tool":"run_command", "tool_call_id":"command", "args":{"program":"verify-fixtures","title":"Verify fixtures"}
             }),
         );
         let view = transcript.project(90, 24);
@@ -709,7 +709,7 @@ mod tests {
         let command = |id: &str| {
             json!({
                 "type": "tool_call", "tool": "run_command", "tool_call_id": id,
-                "args": {"program":"example","args":[],"cwd":".","timeout":5,"brief":id}
+                "args": {"program":"example","title":id}
             })
         };
         apply(

@@ -215,13 +215,17 @@ async fn one_tool_batch_retains_success_denial_and_real_failure() {
     let first = fixture(
         &server,
         |request| tool_count(request) == 0,
-        response(json!({"tool_calls":[
-            tool("missing", "read_file", json!({"path":"missing.txt"})),
-            tool("denied", "run_command", json!({"shell":if cfg!(windows) {"cmd"} else {"sh"},"cwd":".","command":"echo denied > denied.txt","timeout":5,"brief":"must not dispatch"})),
-            tool("find", "find_files", json!({"path":".","pattern":"seed.txt"})),
-            tool("write", "run_command", json!({"shell":if cfg!(windows) {"cmd"} else {"sh"},"cwd":".","command":"echo allowed > allowed.txt","timeout":5,"brief":"independent allowed work"}))
-        ]}), "tool_calls"),
-    ).await;
+        response(
+            json!({"tool_calls":[
+                tool("missing", "read_file", json!({"path":"missing.txt"})),
+                tool("denied", "run_command", common::shell_args("echo denied > denied.txt")),
+                tool("find", "find_files", json!({"path":".","pattern":"seed.txt"})),
+                tool("write", "run_command", common::shell_args("echo allowed > allowed.txt"))
+            ]}),
+            "tool_calls",
+        ),
+    )
+    .await;
     let continuation = fixture(
         &server,
         complete_batch_results,
@@ -505,7 +509,7 @@ async fn lagged_observer_is_bounded_and_reconnects_after_unobserved_execution() 
     let server = MockServer::start_async().await;
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
-    let first = fixture(&server, |request| tool_count(request) == 0, response(json!({"tool_calls":[tool("first", "run_command", json!({"shell":if cfg!(windows) {"cmd"} else {"sh"},"cwd":".","command":"echo first > first.txt","timeout":5,"brief":"first unobserved write"}))]}), "tool_calls")).await;
+    let first = fixture(&server, |request| tool_count(request) == 0, response(json!({"tool_calls":[tool("first", "run_command", common::shell_args("echo first > first.txt"))]}), "tool_calls")).await;
     let (stream, text) = streaming_response();
     let burst = fixture(
         &server,
@@ -513,7 +517,7 @@ async fn lagged_observer_is_bounded_and_reconnects_after_unobserved_execution() 
         stream,
     )
     .await;
-    let second = fixture(&server, |request| tool_count(request) == 1 && second_round(request), response(json!({"tool_calls":[tool("second", "run_command", json!({"shell":if cfg!(windows) {"cmd"} else {"sh"},"cwd":".","command":"echo second > second.txt","timeout":5,"brief":"write with all observers dropped"}))]}), "tool_calls")).await;
+    let second = fixture(&server, |request| tool_count(request) == 1 && second_round(request), response(json!({"tool_calls":[tool("second", "run_command", common::shell_args("echo second > second.txt"))]}), "tool_calls")).await;
     let last = fixture(
         &server,
         |request| tool_count(request) == 2,

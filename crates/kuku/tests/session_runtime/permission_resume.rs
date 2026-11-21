@@ -82,13 +82,7 @@ async fn resume_with_permission_reply(allow: bool) {
     let action = fixture(
         &server,
         original_input_without_tools,
-        json!({"tool_calls":[tool("command", "run_command", json!({
-            "shell": if cfg!(windows) { "powershell" } else { "sh" },
-            "cwd": ".",
-            "command": "echo permission-resume",
-            "timeout": 2,
-            "brief": "verify resumed permission context"
-        }))]}),
+        json!({"tool_calls":[tool("command", "run_command", crate::common::shell_args("echo permission-resume"))]}),
         "tool_calls",
     )
     .await;

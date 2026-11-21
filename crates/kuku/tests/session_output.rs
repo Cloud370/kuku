@@ -110,12 +110,11 @@ async fn captured(
     policy: Arc<ReadPolicy>,
 ) -> (Session, String) {
     std::fs::write(workspace.join("captured.bin"), payload).unwrap();
-    let command = if cfg!(windows) {
-        "type captured.bin"
+    let args = if cfg!(windows) {
+        common::shell_args("type captured.bin")
     } else {
-        "cat captured.bin"
+        json!({"program":"cat","args":["captured.bin"]})
     };
-    let args = json!({"shell":if cfg!(windows) {"cmd"} else {"sh"},"cwd":".","command":command,"timeout":5,"brief":"retain output"});
     let first = fixture(
         server,
         |request| producing(request) && results(request).is_empty(),

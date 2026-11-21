@@ -7,7 +7,7 @@ import threading
 import time
 from urllib.parse import urlencode
 
-from interactive_fixture import is_composer_heading, InstalledClient, Response, TOOL_BRIEF, TOOL_OUTPUT, eventually, json_response, run_cases
+from interactive_fixture import is_composer_heading, InstalledClient, Response, TOOL_OUTPUT, TOOL_PROGRAM, eventually, json_response, run_cases
 from interactive_model_recovery import assert_live_elapsed, assert_testing_navigation, assert_wide_setup, recovery_cases
 from interactive_rendering import has_selected_queued_input
 
@@ -38,21 +38,21 @@ def verify_restored_tool(terminal, job, history):
         terminal.press("\x0f")
         terminal.expect("Ctrl+O show")
         terminal.press("\x1b[5~")
-        screen = terminal.expect(TOOL_BRIEF, also=("started in background", "Background job",
+        screen = terminal.expect(TOOL_PROGRAM, also=("started in background", "Background job",
                                                  f"{job['id']} · Completed"))["screen"]
-        assert screen.count(f"╭─ {TOOL_BRIEF}") == 1 and screen.count("Background job") == 1, screen
+        assert screen.count(f"╭─ {TOOL_PROGRAM}") == 1 and screen.count("Background job") == 1, screen
         terminal.press("\x1b[6~")
         terminal.press("\x0f")
         terminal.expect(TOOL_OUTPUT)
         return
-    screen = terminal.expect(TOOL_BRIEF)["screen"]
-    assert screen.count(f"╭─ {TOOL_BRIEF}") == 1 and "╰─ ok" in screen, f"{screen}\nCommitted tool: {history}"
+    screen = terminal.expect(TOOL_PROGRAM)["screen"]
+    assert screen.count(f"╭─ {TOOL_PROGRAM}") == 1 and "╰─ ok" in screen, f"{screen}\nCommitted tool: {history}"
     assert "--gated-tool" in screen and TOOL_OUTPUT in screen
     terminal.press("\x0f")
     collapsed = terminal.expect("Ctrl+O show")["screen"]
-    assert "Saved output" not in collapsed and "--gated-tool" not in collapsed
+    assert "Saved output" not in collapsed and "--gated-tool" in collapsed, collapsed
     terminal.press("\x0f")
-    terminal.expect(TOOL_BRIEF, also=(TOOL_OUTPUT,))
+    terminal.expect(TOOL_PROGRAM, also=(TOOL_OUTPUT,))
 
 
 def background_job_recovery(client, *, explicit=False):

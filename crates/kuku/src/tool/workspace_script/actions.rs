@@ -6,7 +6,7 @@ use serde_json::Value;
 use super::{ScriptExecution, ScriptOperation};
 use crate::session::runtime::OutputReservation;
 use crate::tool::builtin;
-use crate::tool::builtin::run_command::{output::OutputLimits, run_command_for_script};
+use crate::tool::builtin::run_command::{output::OutputLimits, run_command_to, CommandCapture};
 use crate::tool::ToolResultEnvelope;
 use crate::{Result, Session};
 
@@ -17,6 +17,7 @@ pub(crate) struct WorkspaceActions {
     pub(crate) tool_call_id: String,
     pub(crate) workspace: PathBuf,
     pub(crate) preview_bytes: usize,
+    pub(crate) max_command_seconds: Option<std::num::NonZeroU32>,
 }
 
 impl WorkspaceActions {
@@ -44,17 +45,21 @@ impl WorkspaceActions {
                     .parent()
                     .expect("session parent")
                     .join("outputs");
-                let result = run_command_for_script(
+                let result = run_command_to(
                     &args,
                     &self.workspace,
-                    execution.cancellation(),
-                    &output_dir,
-                    output_id,
-                    OutputLimits {
-                        max_output_bytes: reservation.max_bytes(),
-                        max_preview_bytes: self.preview_bytes,
-                    },
-                    execution.limits.host_bytes,
+                    None,
+                    Some(execution.cancellation()),
+                    CommandCapture::script(
+                        &output_dir,
+                        output_id,
+                        OutputLimits {
+                            max_output_bytes: reservation.max_bytes(),
+                            max_preview_bytes: self.preview_bytes,
+                        },
+                        execution.limits.host_bytes,
+                    )
+                    .with_time_limit(self.max_command_seconds),
                 )
                 .await;
                 if result

@@ -456,6 +456,7 @@ fn output_spec(pending: &PendingRun, id: &str) -> Result<super::slots::RetainedO
             (Some(_), None) => ModelOutputAccess::Read,
             (None, _) => ModelOutputAccess::Unavailable,
         },
+        max_command_seconds: pending.query.runtime_limits.max_command_seconds,
         retention,
     })
 }

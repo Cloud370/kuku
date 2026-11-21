@@ -535,8 +535,10 @@ async fn windows_batch_execution_requires_an_explicit_cmd_interpreter() {
     let native = serde_json::json!({"program":"./fixture.cmd","args":[],"cwd":".","timeout":CHILD_START_TIMEOUT.as_secs()});
     let rejected = run_command(&native, dir.path(), None, None).await;
     assert_eq!("error", rejected.status);
-    assert!(rejected.model_content.contains("shell='cmd'"));
-    let shell = serde_json::json!({"shell":"cmd","command":"fixture.cmd","cwd":".","timeout":CHILD_START_TIMEOUT.as_secs()});
+    assert!(rejected
+        .model_content
+        .contains("explicit cmd.exe invocation"));
+    let shell = serde_json::json!({"program":"cmd.exe","args":["/D","/S","/C","fixture.cmd"],"cwd":".","timeout":CHILD_START_TIMEOUT.as_secs()});
     let explicit = run_command(&shell, dir.path(), None, None).await;
     assert_eq!("ok", explicit.status, "{explicit:?}");
     assert_eq!(4, explicit.structured.unwrap()["exit_code"]);

@@ -105,8 +105,7 @@ def drive_mock(provider, turn, evidence):
     assert REQUIRED_WORKSPACE_TOOLS <= set(names), names
     evidence["offered_tools"] = names
     if turn == 0:
-        call.tool("run_command", "ingest-replay", program=PROGRAM, args=ARGS, cwd=".", timeout=15,
-                  brief="Run ingestion replay")
+        call.tool("run_command", "ingest-replay", program=PROGRAM, args=ARGS)
         call = provider.next("ingest-replay")
         result = mock_result(call, "ingest-replay")
         output_id = re.search(r"^Output: ([\w-]+)", result, re.MULTILINE)

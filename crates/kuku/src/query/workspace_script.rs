@@ -60,6 +60,7 @@ pub(super) fn spawn(
             tool_call_id: queued.tool_call.id.clone(),
             workspace: pending.workspace.clone(),
             preview_bytes: pending.query.runtime_limits.max_preview_bytes,
+            max_command_seconds: pending.query.runtime_limits.max_command_seconds,
         },
         call_id: queued.tool_call.id.clone(),
         turn: pending.turn,
@@ -92,7 +93,7 @@ pub(super) fn spawn(
             }
             (None, None) => ToolResultEnvelope::error(
                 "missing script code",
-                "workspace_script requires a JavaScript function body in code",
+                "run_js requires a JavaScript function body in code",
             ),
         };
         let plan = host.deferred.lock().unwrap().take();

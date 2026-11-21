@@ -56,6 +56,7 @@ pub(super) struct Tool {
     name: String,
     invocation: String,
     arguments: String,
+    request_title: String,
     start_summary: String,
     progress: String,
     state: State,
@@ -92,8 +93,8 @@ impl Tool {
         let invocation = invocation(&name, args);
         let arguments = arguments_json(args);
         let agent_request = AgentRequest::from_call(&name, args);
-        let start_summary = if name == "run_command" {
-            capped(args["brief"].as_str().map(str::trim), MAX_LABEL_BYTES)
+        let request_title = if matches!(name.as_str(), "run_command" | "run_js") {
+            capped(args["title"].as_str().map(str::trim), MAX_LABEL_BYTES)
         } else {
             String::new()
         };
@@ -101,7 +102,7 @@ impl Tool {
             name,
             invocation,
             arguments,
-            start_summary,
+            request_title,
             agent_request,
             ..Self::default()
         }
@@ -116,6 +117,9 @@ impl Tool {
         }
         if !incoming.start_summary.is_empty() {
             self.start_summary = incoming.start_summary;
+        }
+        if !incoming.request_title.is_empty() {
+            self.request_title = incoming.request_title;
         }
         if !incoming.arguments.is_empty() {
             self.arguments = incoming.arguments;
@@ -469,7 +473,11 @@ impl Tool {
             .as_deref()
             .filter(|summary| !summary.is_empty())
             .unwrap_or_else(|| self.summary());
-        if expanded && caption.is_none() && (!inspecting || invocation != self.arguments) {
+        if expanded
+            && caption.is_none()
+            && (frame.is_none() || inspecting || !self.request_title.is_empty())
+            && (!inspecting || invocation != self.arguments)
+        {
             if frame.is_some() && !inspecting && !invocation.is_empty() {
                 let command = shorten(&single_line(cap(invocation, MAX_PREVIEW_BYTES)), width);
                 rows.push(Row::plain(Line::styled(command, Style::new().fg(MUTED))));
@@ -486,7 +494,7 @@ impl Tool {
         if !concise
             && caption.is_none()
             && (!expanded || summary != invocation)
-            && (frame.is_none() || summary != self.start_summary)
+            && (frame.is_none() || summary != self.command_title())
         {
             let limit = if expanded { MAX_SUMMARY_ROWS } else { 1 };
             rows.extend(render_preview(summary, SURFACE_TEXT, width, limit, inset));
@@ -611,7 +619,11 @@ impl Tool {
     }
 
     fn title(&self) -> Cow<'_, str> {
-        tool_title(self.name())
+        if self.name() == "run_js" && !self.request_title.is_empty() {
+            Cow::Owned(single_line(&self.request_title))
+        } else {
+            tool_title(self.name())
+        }
     }
 
     fn name(&self) -> &str {

@@ -250,7 +250,7 @@ async fn buffer_response(
         }
     }
     let observation = observation.filter(|_| envelope.status == "ok");
-    let error = (envelope.status != "ok").then(|| {
+    let error = (envelope.status != "ok").then_some({
         if envelope.model_content.is_empty() {
             envelope.summary.as_str()
         } else {

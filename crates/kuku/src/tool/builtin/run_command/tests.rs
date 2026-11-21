@@ -422,7 +422,7 @@ async fn unavailable_shell_fixture() {
 
     let dir = workspace();
     let result = run_command(
-        &serde_json::json!({"shell":"sh","command":"echo should-not-run > marker","cwd":".","timeout":5}),
+        &serde_json::json!({"program":"sh","args":["-c","echo should-not-run > marker"],"cwd":".","timeout":5}),
         dir.path(),
         None,
         None,

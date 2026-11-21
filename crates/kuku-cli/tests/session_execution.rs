@@ -307,7 +307,7 @@ async fn cli_persists_file_and_command_results_then_reopens_same_agent() {
     mock_round(
         &mock,
         2,
-        json!([{"type":"tool_use","id":"verify","name":"run_command","input":{"program": "git", "args": ["diff", "--no-index", "--exit-code", "expected.txt", "answer.txt"], "cwd": ".","timeout":10,"brief":"verify actual file"}}]),
+        json!([{"type":"tool_use","id":"verify","name":"run_command","input":{"program": "git", "args": ["diff", "--no-index", "--exit-code", "expected.txt", "answer.txt"],"title":"Verify actual file"}}]),
         "tool_use",
     );
     mock_round(

@@ -16,8 +16,8 @@ This page describes the default public Session tool surface used by CLI and serv
 | `edit_file` | `path`, `old_text`, `new_text` | `replace_all`, `expected_version`, `brief` | `edit` |
 | `write_file` | `path`, `content` | `expected_version`, `brief` | `edit` |
 | `remove_file` | `path` | `expected_version`, `brief` | `edit` |
-| `run_command` | `command` or `program` | `args`, `cwd`, `shell` (required for command text if no default is listed), `timeout`, `background`, `brief` | `command` |
-| `run_js` | `code` | `background` | `execute` |
+| `run_command` | `program` | `args`, `cwd`, `background`, `title` | `command` |
+| `run_js` | `code` | `background`, `title` | `execute` |
 | `list_jobs` | none | `before` | `session` |
 | `wait_job` | `job_id` | none | `session` |
 | `cancel_job` | `job_id` | none | `session` |
@@ -26,7 +26,7 @@ This page describes the default public Session tool surface used by CLI and serv
 | `remember_memory` | `scope`, `kind`, `text` | none | `edit` |
 | `forget_memory` | `scope`, `text` | none | `edit` |
 
-Tool guidance follows the actual tool selection. Reply-only Agents receive no tool workflow. Collaboration and memory-writing instructions are included only for Agents with the corresponding capabilities. The optional `brief` on file edits, writes and commands is a display label.
+Tool guidance follows the actual tool selection. Reply-only Agents receive no tool workflow. Collaboration and memory-writing instructions are included only for Agents with the corresponding capabilities. The optional `brief` on file edits and writes is a display label.
 
 Conditional skill tools:
 
@@ -69,19 +69,19 @@ Important filters:
 
 ## Run a native program
 
-Pass shell text in `command`. The working directory defaults to the Agent's workspace. Use `cwd` for a different workspace-relative or absolute directory. When available, the default shell is `sh` on Linux and macOS and `powershell` on Windows. Select a listed `shell` when the syntax requires another interpreter or the tool lists no default. On Windows, use `shell: "cmd"` for batch files or commands that use `cmd.exe`.
+Pass the executable as `program` and one literal string per argument in `args`. Omit `args` for a program with no arguments. Empty strings, spaces, quotes, and shell metacharacters can be parts of arguments. The working directory defaults to the Agent's workspace. Use `cwd` for a different workspace-relative or absolute directory. Prefix an executable path relative to `cwd` with `./` on any platform. Standard input supplies EOF.
 
 ```json
-{"command":"git status"}
+{"program":"git","args":["status","--short"]}
 ```
 
-To call an executable directly, pass `program` and one literal string per argument in `args`. Omit `args` for a program with no arguments. Empty strings, spaces, quotes, and shell metacharacters can be parts of arguments. Prefix an executable path relative to `cwd` with `./` on any platform. Standard input supplies EOF. To set a deadline, pass `timeout` as a positive 32-bit unsigned integer in seconds.
+If the task requires a shell script, supply its interpreter and arguments explicitly. For example, on Windows a batch file can run with `{"program":"cmd.exe","args":["/D","/C","build.cmd"]}`.
 
 ```json
-{"program":"cargo","args":["test","-p","kuku"],"timeout":120}
+{"program":"sh","args":["./verify.sh"]}
 ```
 
-The command runs without a deadline when `timeout` is omitted. The same [Session Job](#session-jobs) behavior applies to commands and scripts.
+The [embedding host](sdk.md#workspace-execution) can set a process deadline. The same [Session Job](#session-jobs) behavior applies to commands and scripts. An optional top-level `title` explains the action's purpose on its card and while its Job is running.
 
 An exited process can return tool status `ok` with a nonzero `exit_code`. A shell invocation reports the outer shell's exit code. Preserve each required check's failure when composing commands or pipelines. The command card shows elapsed time and flags stderr separately from the exit status. Check `termination`, `exit_code`, and `capture_complete` in the structured facts.
 
@@ -109,7 +109,7 @@ Most host methods return `{status, result, truncated}`. Check for `status: "ok"`
 
 Return a small JSON value to give the model the evidence it needs. To process large captures, iterate `tools.output_lines({id, stream: "stdout"})` and keep only the state needed for the computation. The original bytes remain available through [retained output](#retained-tool-output). Each call owns its JavaScript variables until it finishes. Persist selected results as a [named value](#named-session-values) or write a requested deliverable to the workspace.
 
-`await tools.run_command(args)` waits for the command to settle. It accepts the command arguments above except `background`. A process exit with an integer code resolves to `{exit_code, duration_ms, capture_complete, output_ref, stdout, stderr}`, including on nonzero exit. Actions such as a denied dispatch, a launch failure, a timeout or cancellation reject with an error. The error includes `status` and carries `termination`, `signal`, or `output_ref` when available.
+`await tools.run_command({program, args?, cwd?})` waits for the command to settle. To detach the script, set `background: true` on the outer `run_js` call. A process exit with an integer code resolves to `{exit_code, duration_ms, capture_complete, output_ref, stdout, stderr}`, including on nonzero exit. Actions such as a denied dispatch, a launch failure, a timeout or cancellation reject with an error. The error includes `status` and carries `termination`, `signal`, or `output_ref` when available.
 
 For either stream, `await run.stdout.text()` reads the complete decoded text up to 1 MiB, and `await run.stdout.json()` parses that text as JSON. Use `for await (const line of run.stderr.lines())` to stream decoded text without LF or CRLF terminators. Lines can contain up to 128 KiB each. The helpers reject incomplete or lossy output. Use `tools.output_chunks({id: run.output_ref.id})` to inspect retained partial output or raw bytes. Reads that page through retained output use the authorized `read_output` method.
 

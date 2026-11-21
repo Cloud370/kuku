@@ -142,11 +142,7 @@ fn command_preview_keeps_stdout_and_warnings_without_the_model_output_reference(
         .map(|line| line.to_string().trim_matches('│').trim().to_owned())
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(
-        rendered.contains("╭─ Run command")
-            && rendered.contains("╰─ timed out")
-            && !rendered.contains("╭─ check")
-    );
+    assert!(rendered.contains("╭─ check") && rendered.contains("╰─ timed out"));
     assert!(rendered.contains("command timed out; output truncated"));
     assert!(rendered.contains("stdout:\nOutput: from the process"));
     assert!(
@@ -353,13 +349,15 @@ fn short_command_results_show_stdout_without_capture_metadata_or_a_trailing_carr
     let mut transcript = Transcript::default();
     transcript.apply(serde_json::from_value(json!({
         "id":0,"agent":"main","turn":1,"type":"tool_call","tool":"run_command","tool_call_id":"cmd",
-        "args":{"program":"check-file","args":[],"cwd":".","timeout":5,"brief":"Verify file removal"}
+        "args":{"program":"check-file","args":["file with spaces"],"cwd":"."}
     })).unwrap(),None);
     let raw = "stdout:\nGONE\r\n\n\nOutput: saved (6 captured bytes; read by merged byte offset).";
+    let mut facts = command_facts("check-file", "saved", 6, "GONE\r\n");
+    facts["invocation"]["args"] = json!(["file with spaces"]);
     transcript.apply(serde_json::from_value(json!({
         "id":1,"agent":"main","turn":1,"type":"tool_result","tool":"run_command","tool_call_id":"cmd",
         "status":"ok","summary":"command exited 0 in 180ms, stdout 1 lines, stderr 0 lines","model_content":raw,
-        "structured":command_facts("check-file","saved",6,"GONE\r\n")
+        "structured":facts
     })).unwrap(),None);
     let view = transcript.project(80, 16);
     let screen = view
@@ -371,14 +369,13 @@ fn short_command_results_show_stdout_without_capture_metadata_or_a_trailing_carr
     let lines: Vec<_> = screen.lines().collect();
     let heading = lines
         .iter()
-        .position(|line| line.starts_with("╭─ Verify file removal"))
+        .position(|line| line.starts_with(r#"╭─ check-file ["file with spaces"]"#))
         .unwrap();
     assert!(lines[heading].ends_with('╮') && !lines[heading].contains("exit"));
     assert!(lines[heading + 1].trim_matches('│').trim().is_empty());
-    assert!(lines[heading + 2].starts_with("│  check-file"));
-    assert_eq!(lines[heading + 3].trim_matches('│').trim(), "GONE");
-    assert!(lines[heading + 4].trim_matches('│').trim().is_empty());
-    assert!(lines[heading + 5].starts_with("╰─ ok · exit 0 · 180ms"));
+    assert_eq!(lines[heading + 2].trim_matches('│').trim(), "GONE");
+    assert!(lines[heading + 3].trim_matches('│').trim().is_empty());
+    assert!(lines[heading + 4].starts_with("╰─ ok · exit 0 · 180ms"));
     let key = transcript.detail_at(heading).unwrap().clone();
     assert!(transcript.toggle_detail(&key));
     let inspected = transcript.project(80, 24);

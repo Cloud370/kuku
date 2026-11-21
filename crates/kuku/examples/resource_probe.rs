@@ -426,7 +426,7 @@ fn tool_response(id: &str, name: &str, arguments: &Value) -> String {
 fn native_call(flag: &str, number: usize) -> Result<Value, AnyError> {
     let exe = std::env::current_exe()?;
     let program = exe.to_str().ok_or("resource probe path is not UTF-8")?;
-    Ok(json!({"program":program,"args":[flag,number.to_string()],"cwd":".","timeout":30}))
+    Ok(json!({"program":program,"args":[flag,number.to_string()],"cwd":"."}))
 }
 
 fn no_tool_results(request: &httpmock::prelude::HttpMockRequest) -> bool {

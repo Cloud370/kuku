@@ -85,29 +85,35 @@ fn apply_command_defaults(
     args: &mut Value,
     definition: &ToolDefinition,
 ) -> Result<(), ToolResultEnvelope> {
-    if let Some(fields) = args.as_object_mut() {
-        if fields.contains_key("background")
-            && definition.input_schema["properties"]
-                .get("background")
-                .is_none()
-        {
-            return Err(invalid("background requires a top-level Session tool call"));
+    let fields = args
+        .as_object_mut()
+        .ok_or_else(|| invalid("run_command expects an object"))?;
+    let properties = &definition.input_schema["properties"];
+    if let Some(field) = fields
+        .keys()
+        .find(|field| properties.get(field.as_str()).is_none())
+    {
+        if field == "background" {
+            return Err(invalid(
+                "Set background on the outer run_js call or a direct Session run_command call.",
+            ));
         }
-        let shell_text = fields.contains_key("command");
-        let mode_field = if shell_text { "shell" } else { "args" };
-        for key in ["cwd", mode_field] {
-            if let Some(default) = definition.input_schema["properties"][key].get("default") {
-                fields.entry(key).or_insert_with(|| default.clone());
-            }
+        return Err(invalid(format!("run_command does not accept {field:?}")));
+    }
+    let shell_text = fields.contains_key("command");
+    let mode_field = if shell_text { "shell" } else { "args" };
+    for key in ["cwd", mode_field] {
+        if let Some(default) = properties[key].get("default") {
+            fields.entry(key).or_insert_with(|| default.clone());
         }
-        if shell_text
-            && fields
-                .get("args")
-                .and_then(Value::as_array)
-                .is_some_and(Vec::is_empty)
-        {
-            fields.remove("args");
-        }
+    }
+    if shell_text
+        && fields
+            .get("args")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty)
+    {
+        fields.remove("args");
     }
     Ok(())
 }
@@ -141,7 +147,15 @@ pub(super) fn run_command_request(
     if let Some(field) = fields.keys().find(|field| {
         !matches!(
             field.as_str(),
-            "program" | "args" | "shell" | "command" | "cwd" | "timeout" | "brief" | "background"
+            "program"
+                | "args"
+                | "shell"
+                | "command"
+                | "cwd"
+                | "timeout"
+                | "brief"
+                | "background"
+                | "title"
         )
     }) {
         return Err(invalid(format!("run_command does not accept {field:?}")));
@@ -214,7 +228,7 @@ fn invocation(args: &Value) -> Result<CommandInvocation, ToolResultEnvelope> {
         .get("program")
         .and_then(Value::as_str)
         .filter(|program| !program.trim().is_empty())
-        .ok_or_else(|| invalid("run_command requires program and literal args, or command text"))?;
+        .ok_or_else(|| invalid("run_command requires program and literal args"))?;
     let args = args
         .get("args")
         .and_then(Value::as_array)
@@ -228,9 +242,9 @@ fn invocation(args: &Value) -> Result<CommandInvocation, ToolResultEnvelope> {
                 .ok_or_else(|| invalid("every command argument must be a string"))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    if cfg!(windows) && requires_cmd_shell(program) {
+    if cfg!(windows) && is_batch_file(program) {
         return Err(invalid(
-            "Windows batch files and cmd.exe require shell='cmd' and command text",
+            "Windows batch files require an explicit cmd.exe invocation",
         ));
     }
     Ok(CommandInvocation::Program {
@@ -239,16 +253,14 @@ fn invocation(args: &Value) -> Result<CommandInvocation, ToolResultEnvelope> {
     })
 }
 
-fn requires_cmd_shell(program: &str) -> bool {
+fn is_batch_file(program: &str) -> bool {
     let Some(name) = Path::new(program).file_name().and_then(OsStr::to_str) else {
         return false;
     };
     let name = name.trim_end_matches([' ', '.']);
-    name.eq_ignore_ascii_case("cmd")
-        || name.eq_ignore_ascii_case("cmd.exe")
-        || Path::new(name).extension().is_some_and(|extension| {
-            extension.eq_ignore_ascii_case("bat") || extension.eq_ignore_ascii_case("cmd")
-        })
+    Path::new(name).extension().is_some_and(|extension| {
+        extension.eq_ignore_ascii_case("bat") || extension.eq_ignore_ascii_case("cmd")
+    })
 }
 
 fn invalid(message: impl Into<String>) -> ToolResultEnvelope {

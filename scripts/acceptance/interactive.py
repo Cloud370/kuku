@@ -21,7 +21,7 @@ from interactive_rendering import (
     rendering_cases,
 )
 from interactive_fixture import (
-    DenseTranscript, InstalledClient, MarkdownDocument, TOOL_BRIEF, TOOL_OUTPUT, eventually, http_fixture, install,
+    DenseTranscript, InstalledClient, MarkdownDocument, TOOL_OUTPUT, TOOL_PROGRAM, eventually, http_fixture, install,
     delegate_reviewer, json_response, local_request, run_cases,
 )
 
@@ -216,7 +216,7 @@ def two_workspaces_and_disconnect(client):
     calls = [entry for entry in tool_history if entry["type"] == "tool_call"]
     results = [entry for entry in tool_history if entry["type"] == "tool_result"]
     assert len(calls) == len(results) == 1 and results[0]["status"] == "ok", tool_history
-    assert calls[0]["args"]["brief"] == TOOL_BRIEF, tool_history
+    assert calls[0]["args"]["program"] == TOOL_PROGRAM and calls[0]["args"]["args"] == ["--gated-tool"], tool_history
     if completed.completed_job is None:
         assert TOOL_OUTPUT in results[0]["model_content"], tool_history
     with client.terminal(workspace) as reopened:
@@ -706,7 +706,7 @@ def dense_transcript(client, reference=False):
         r"(?:Read-only activity · \d+ calls|Read (?:file|\d+ files)|Find files|Search text|"
         r"Write file|Edit file|Run command|Tool [a-z_]+)"
         r"(?: ×\d+)? · (?:ok|error|running)\b"
-        rf"|╭─ (?:Run command|{re.escape(TOOL_BRIEF)})\b"
+        rf"|╭─ (?:Run command|{re.escape(TOOL_PROGRAM)})\b"
     )
 
     def row_of(screen, text):
@@ -737,7 +737,7 @@ def dense_transcript(client, reference=False):
         lines = screen.splitlines()
         headings = [index for index, line in enumerate(lines) if tool_heading.search(line)]
         assert len(headings) == (21 if reference else 5), screen
-        last = next(index for index, line in enumerate(lines) if TOOL_BRIEF in line)
+        last = next(index for index, line in enumerate(lines) if TOOL_PROGRAM in line)
         assert last >= headings[-1], screen
         return {"summary_rows": len(headings), "tool_rows": last - headings[0] + 1}
 
@@ -747,7 +747,7 @@ def dense_transcript(client, reference=False):
                 terminal,
                 read_while,
                 32,
-                (TOOL_BRIEF, scenario.draft),
+                (TOOL_PROGRAM, scenario.draft),
             )
         except AssertionError as error:
             raise AssertionError(

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 
-use crate::tool::builtin::run_command::{output::OutputLimits, run_command_for_script};
+use crate::tool::builtin::run_command::{output::OutputLimits, run_command_to, CommandCapture};
 use crate::tool::ToolResultEnvelope;
 use crate::OutputRead;
 
@@ -31,14 +31,17 @@ async fn command_readers_use_the_authorized_short_capture_and_keep_its_reference
                     } else {
                         ("sh", r#"printf '{"value":7}'; printf 'note\r\nlast' >&2; exit 7"#)
                     };
-                    run_command_for_script(
+                    run_command_to(
                         &json!({"shell":shell, "command":command, "cwd":".", "timeout":5}),
                         workspace.path(),
-                        execution.cancellation(),
-                        workspace.path(),
-                        "capture",
-                        OutputLimits::default(),
-                        execution.limits.host_bytes,
+                        None,
+                        Some(execution.cancellation()),
+                        CommandCapture::script(
+                            workspace.path(),
+                            "capture",
+                            OutputLimits::default(),
+                            execution.limits.host_bytes,
+                        ),
                     ).await
                 }
             },

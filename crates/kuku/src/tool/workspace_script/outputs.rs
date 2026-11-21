@@ -10,8 +10,9 @@ use crate::tool::ToolDefinition;
 use crate::{Error, OutputStream, Result};
 
 const COMMAND_SIGNATURE: &str = concat!(
-    "tools.run_command({program,args?,cwd?,timeout?} or {command,shell?,cwd?,timeout?}) ",
+    "tools.run_command({program,args?,cwd?}) ",
     "returns {exit_code,duration_ms,capture_complete,output_ref,stdout,stderr}. ",
+    "It waits for the process inside the script. Set background:true on the outer run_js call to detach it. ",
     "A process exit resolves with its code. Launch errors, denial, timeout and cancellation throw. "
 );
 
@@ -24,6 +25,7 @@ const STREAM_SIGNATURE: &str = concat!(
 pub(super) fn describe_script_command(definition: &mut ToolDefinition, can_read: bool) {
     if let Some(properties) = definition.input_schema["properties"].as_object_mut() {
         properties.remove("background");
+        properties.remove("title");
     }
     let access = if can_read {
         "Larger reads require host authorization for read_output. For raw or partial bytes, use tools.output_chunks({id:run.output_ref.id}). "

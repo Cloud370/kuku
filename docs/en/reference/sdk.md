@@ -59,7 +59,7 @@ Models call [`run_command` or `run_js`](tools.md#run-a-native-program) using the
 
 When the tool returns a [Session Job](tools.md#session-jobs), call `Session::jobs(agent)` to list recent and running Jobs or `Session::job(agent, job_id)` to inspect one. Use `Session::wait_job(agent, job_id).await` to await its terminal result or `Session::cancel_job(agent, job_id).await` to request cancellation and await cleanup. Job states are `running`, `completed`, `failed`, `cancelled`, and `interrupted`. The terminal `JobSnapshot.result` contains the action's structured outcome. Once the command's capture is finalized, its `output_id` uses the same output reader as other captures and its `output_ref` gives the captured byte range.
 
-`RuntimeLimits.job_foreground_wait_ms` controls the foreground observation window for top-level commands and scripts.
+`RuntimeLimits.job_foreground_wait_ms` controls the foreground observation window for top-level commands and scripts. `RuntimeLimits.max_command_seconds` optionally sets a separate process deadline for each command, including commands invoked from `run_js` or running as Jobs. It defaults to `None`.
 
 A `run_js` result has `kind: "workspace_script_result"`. Decode it with `kuku::WorkspaceScriptFacts::from_structured`. The result contains the script's return `value` and its observed host `actions`. Each action records its ID, tool, status, summary, truncation, and bounded result. An `unknown` action status means the host could not confirm its final outcome. At the script level, `timed_out`, `cleanup_incomplete`, and `not_dispatched` help reconcile partial work, including after a script fails. See [script methods](tools.md#workspace-scripts).
 

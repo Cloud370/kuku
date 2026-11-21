@@ -28,9 +28,9 @@ CONFIG = Path(__file__).resolve().with_name("fixtures") / "config.toml"
 TIMEOUT = 30
 TERMINAL_ROWS = 32
 TERMINAL_COLS = 140
-TOOL_BRIEF = "Run installed acceptance fixture"
 TOOL_OUTPUT = "fixture-tool-output-42"
 EXE = ".exe" if os.name == "nt" else ""
+TOOL_PROGRAM = f"./fixture-command{EXE}"
 
 
 def is_composer_heading(line):
@@ -796,8 +796,7 @@ class InstalledClient:
         else:
             program = str(executable)
         self.tool_workspaces.append(workspace)
-        call.tool("run_command", call_id, program=program, args=["--gated-tool"], cwd=".",
-                  timeout=95, brief=TOOL_BRIEF, background=background)
+        call.tool("run_command", call_id, program=program, args=["--gated-tool"], background=background)
         eventually("gated tool dispatch", lambda: (workspace / "tool-attempts.txt").exists())
 
     def completed_tool(self, workspace, call_id):

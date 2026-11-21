@@ -16,8 +16,8 @@
 | `edit_file` | `path`, `old_text`, `new_text` | `replace_all`, `expected_version`, `brief` | `edit` |
 | `write_file` | `path`, `content` | `expected_version`, `brief` | `edit` |
 | `remove_file` | `path` | `expected_version`, `brief` | `edit` |
-| `run_command` | `command` 或 `program` | `args`、`cwd`、`shell`（命令文本在未列出默认解释器时必填）、`timeout`、`background`、`brief` | `command` |
-| `run_js` | `code` | `background` | `execute` |
+| `run_command` | `program` | `args`、`cwd`、`background`、`title` | `command` |
+| `run_js` | `code` | `background`、`title` | `execute` |
 | `list_jobs` | 无 | `before` | `session` |
 | `wait_job` | `job_id` | 无 | `session` |
 | `cancel_job` | `job_id` | 无 | `session` |
@@ -26,7 +26,7 @@
 | `remember_memory` | `scope`, `kind`, `text` | none | `edit` |
 | `forget_memory` | `scope`, `text` | none | `edit` |
 
-工具指引按 Agent 实际可用的能力组装。只回复的 Agent 不加载工具流程。委派和记忆写入指引只发给具备相应工具的 Agent。编辑、写入和命令调用的 `brief` 是可选的显示标签。
+工具指引按 Agent 实际可用的能力组装。只回复的 Agent 不加载工具流程。委派和记忆写入指引只发给具备相应工具的 Agent。编辑和写入中的 `brief` 是可选的显示标签。
 
 条件 Skill 工具：
 
@@ -69,19 +69,19 @@
 
 ## 运行本机程序
 
-将 shell 命令文本传入 `command`。工作目录默认为 Agent 的工作区。可用 `cwd` 指定相对工作区的目录或绝对目录。解释器可用时，Linux 和 macOS 默认使用 `sh`，Windows 默认使用 `powershell`。命令语法需要其他解释器或工具未列出默认值时，从工具列出的解释器中指定 `shell`。在 Windows 上，批处理文件和依赖 `cmd.exe` 的命令使用 `shell: "cmd"`。
+把可执行程序传入 `program`，在 `args` 中把每个参数写成一个字面字符串。程序无需参数时可省略 `args`。参数可以是空字符串，也可以包含空格、引号或 shell 元字符。工作目录默认为 Agent 的工作区。可用 `cwd` 指定相对工作区的目录或绝对目录。各个平台都用 `./` 指定相对 `cwd` 的可执行文件路径。程序从标准输入立即读到 EOF。
 
 ```json
-{"command":"git status"}
+{"program":"git","args":["status","--short"]}
 ```
 
-直接运行可执行文件时，传入 `program`，并在 `args` 中把每个参数写成一个字面字符串。程序无需参数时可省略 `args`。参数可以是空字符串，也可以包含空格、引号或 shell 元字符。各个平台都用 `./` 指定相对 `cwd` 的可执行文件路径。程序从标准输入立即读到 EOF。需要设置截止时间时，传入以秒为单位的 `timeout`，取值为正的 32 位无符号整数。
+需要执行 shell 脚本时，显式传入解释器和参数。例如，在 Windows 上可以用 `{"program":"cmd.exe","args":["/D","/C","build.cmd"]}` 运行批处理文件。
 
 ```json
-{"program":"cargo","args":["test","-p","kuku"],"timeout":120}
+{"program":"sh","args":["./verify.sh"]}
 ```
 
-省略 `timeout` 时不设置命令截止时间。命令和脚本共用 [Session Job](#session-job) 行为。
+[嵌入式宿主](sdk.md#工作区执行)可以设置进程截止时间。命令和脚本共用 [Session Job](#session-job) 行为。顶层调用可用 `title` 说明操作目的，卡片和运行中的 Job 会显示这段说明。
 
 进程正常退出后，工具状态可以为 `ok`，同时 `exit_code` 为非零值。Shell 调用报告外层 Shell 的退出码。串接命令或使用管道时，保留每项必要检查的失败状态。命令卡片显示用时，并单独标记 stderr。检查结构化事实中的 `termination`、`exit_code` 和 `capture_complete`。
 
@@ -109,7 +109,7 @@ Session 的默认预览上限为 8 KiB，包含摘要和保留输出引用。即
 
 脚本可以返回较小的 JSON 值，为模型提供所需的证据。处理大输出时，用 `tools.output_lines({id, stream: "stdout"})` 逐行遍历，只保留计算所需的状态。原始字节可以通过[保留输出](#保留的工具输出)读取。JavaScript 变量只在当次调用中存在。可以把选中的结果存为[命名值](#命名会话值)，也可以按用户要求把交付物写入工作区。
 
-`await tools.run_command(args)` 等待命令结束。它接受上述命令参数，`background` 除外。进程退出时，只要有整数退出码，就返回 `{exit_code, duration_ms, capture_complete, output_ref, stdout, stderr}`，包括非零退出码。拒绝派发、启动失败、超时或取消等情况会抛出错误。错误提供 `status`，并在可用时附带 `termination`、`signal` 或 `output_ref`。
+`await tools.run_command({program, args?, cwd?})` 等待命令结束。要让脚本在后台运行，在外层 `run_js` 调用上设置 `background: true`。进程退出时，只要有整数退出码，就返回 `{exit_code, duration_ms, capture_complete, output_ref, stdout, stderr}`，包括非零退出码。拒绝派发、启动失败、超时或取消等情况会抛出错误。错误提供 `status`，并在可用时附带 `termination`、`signal` 或 `output_ref`。
 
 两个流的方法相同。`await run.stdout.text()` 读取完整的解码文本，上限为 1 MiB，`await run.stdout.json()` 将同一文本解析为 JSON。用 `for await (const line of run.stderr.lines())` 逐行读取去掉 LF 或 CRLF 的解码文本，单行上限为 128 KiB。遇到捕获不完整或有损解码时，这些方法会报错。需要查看已保留的部分输出或原始字节时，使用 `tools.output_chunks({id: run.output_ref.id})`。保留输出的分页读取经过 `read_output` 授权。
 
