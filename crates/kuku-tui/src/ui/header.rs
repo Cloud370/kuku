@@ -5,7 +5,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, ServiceStatus};
+use crate::app::{App, ServiceStatus, StartupSkills};
 use crate::contextual::ContextControl;
 use crate::keys::Shortcut;
 use crate::markup::{render_literal, wrap};
@@ -16,6 +16,9 @@ const BRAND: &str = "kuku";
 const SEPARATOR: &str = " · ";
 const WELCOME_WIDTH: u16 = 56;
 const WELCOME_HEIGHT: u16 = 7;
+const WELCOME_MAX_WIDTH: usize = 104;
+const WELCOME_LABEL_WIDTH: usize = 11;
+const WELCOME_SKILL_ROWS: usize = 2;
 const SESSION_PREFIX_WIDTH: usize = 39;
 const TITLE_RESERVE: usize = 9;
 
@@ -160,9 +163,81 @@ pub(super) fn render_welcome(frame: &mut Frame<'_>, area: Rect, app: &App, show_
         lines.push(line);
     }
     let remaining = usize::from(body.height).saturating_sub(lines.len());
-    let workspace = format!("Workspace: {}", single_line_path(&app.workspace));
-    lines.extend(welcome_actions(width, remaining, &workspace));
+    if remaining >= 3 && width >= 22 {
+        let details = welcome_details(app, width.min(WELCOME_MAX_WIDTH), remaining - 1);
+        lines.extend(details);
+        if usize::from(body.height).saturating_sub(lines.len()) > 2 {
+            lines.push(Line::default());
+        }
+    }
+    let remaining = usize::from(body.height).saturating_sub(lines.len());
+    lines.extend(welcome_actions(width, remaining));
     frame.render_widget(Paragraph::new(lines), body);
+}
+
+fn welcome_details(app: &App, width: usize, rows: usize) -> Vec<Line<'static>> {
+    let content_width = width.saturating_sub(WELCOME_LABEL_WIDTH);
+    let workspace = single_line_path(&app.workspace);
+    let mut details = vec![welcome_field(
+        "Workspace",
+        Line::raw(shorten_middle(&workspace, content_width)),
+    )];
+    let pane = app.pane();
+    let model = pane
+        .effective_model_identity()
+        .map(|(model, connection, _)| format!("{connection}/{model}"))
+        .or_else(|| pane.effective_model_label());
+    if let Some(model) = model.filter(|_| rows >= 3) {
+        details.push(welcome_field(
+            "Model",
+            Line::raw(shorten_middle(&single_line(&model), content_width)),
+        ));
+    }
+    let slots = (rows - details.len()).min(WELCOME_SKILL_ROWS);
+    let skills = match &app.startup_skills {
+        StartupSkills::Loading if app.available() || app.connecting => "Loading…".into(),
+        StartupSkills::Loading | StartupSkills::Unavailable => "Unavailable".into(),
+        StartupSkills::Ready(names) if names.is_empty() => "None found".into(),
+        StartupSkills::Ready(names) => names
+            .iter()
+            .map(|name| single_line(name))
+            .collect::<Vec<_>>()
+            .join(", "),
+    };
+    let mut skills = wrap(render_literal(&skills, Style::default()), content_width);
+    if skills.len() > slots {
+        skills.truncate(slots);
+        if let Some(last) = skills.last_mut() {
+            let suffix = " /skill:";
+            let text = shorten(
+                &format!("{} …", last.to_string().trim_end()),
+                content_width.saturating_sub(suffix.width()),
+            );
+            *last = Line::from(vec![
+                Span::raw(text),
+                Span::styled(suffix, Style::default().fg(MUTED)),
+            ]);
+        }
+    }
+    details.extend(
+        skills
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| welcome_field(if index == 0 { "Skills" } else { "" }, value)),
+    );
+    details
+}
+
+fn welcome_field(label: &str, value: Line<'static>) -> Line<'static> {
+    let label = Span::styled(
+        format!("{label:<WELCOME_LABEL_WIDTH$}"),
+        Style::default().fg(MUTED),
+    );
+    Line::from(
+        std::iter::once(label)
+            .chain(value.spans)
+            .collect::<Vec<_>>(),
+    )
 }
 
 pub(super) fn empty_notice(app: &App, width: usize, show_problem: bool) -> Vec<Line<'static>> {
@@ -196,7 +271,10 @@ fn wordmark(mark: bool) -> Line<'static> {
     line
 }
 
-fn welcome_actions(width: usize, rows: usize, workspace: &str) -> Vec<Line<'static>> {
+fn welcome_actions(width: usize, rows: usize) -> Vec<Line<'static>> {
+    if rows == 0 {
+        return Vec::new();
+    }
     let muted = Style::default().fg(MUTED);
     let action = Style::default().fg(Color::Reset);
     let send = if width >= 31 {
@@ -215,28 +293,19 @@ fn welcome_actions(width: usize, rows: usize, workspace: &str) -> Vec<Line<'stat
     ]);
     let command = Span::styled("/resume", action);
     let caption = Span::styled(resume, muted);
-    let mut actions =
-        if input.width() + SEPARATOR.width() + command.width() + caption.width() <= width {
-            input.push_span(Span::styled(SEPARATOR, muted));
-            input.push_span(command);
-            input.push_span(caption);
-            vec![input]
-        } else if rows <= 1 {
-            vec![Line::styled(
-                shorten("Enter to send · /resume", width),
-                muted,
-            )]
-        } else {
-            vec![input, Line::from(vec![command, caption])]
-        };
-    if width >= 70 && rows.saturating_sub(actions.len()) >= 2 {
-        actions.push(Line::styled(shorten_middle(workspace, width), muted));
-        actions.push(Line::styled(
-            "/model: Set current model as default to persist the route.",
+    if input.width() + SEPARATOR.width() + command.width() + caption.width() <= width {
+        input.push_span(Span::styled(SEPARATOR, muted));
+        input.push_span(command);
+        input.push_span(caption);
+        vec![input]
+    } else if rows <= 1 {
+        vec![Line::styled(
+            shorten("Enter to send · /resume", width),
             muted,
-        ));
+        )]
+    } else {
+        vec![input, Line::from(vec![command, caption])]
     }
-    actions
 }
 
 fn append(line: &mut Line<'static>, label: &str, width: usize, style: Style) {

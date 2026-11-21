@@ -346,6 +346,9 @@ fn clicking_the_queue_focuses_its_inline_editor_and_saves_the_exact_replacement(
 #[test]
 fn blank_welcome_scales_down_and_active_session_uses_one_branded_row() {
     let mut app = app();
+    app.pane_mut().initial_config.tier = Some("work".into());
+    app.startup_skills =
+        crate::app::StartupSkills::Ready(vec!["review-workspace".into(), "format-code".into()]);
     for width in [64, 118] {
         let welcome = screen(&mut app, width, 28);
         let rows: Vec<_> = welcome.lines().collect();
@@ -353,13 +356,14 @@ fn blank_welcome_scales_down_and_active_session_uses_one_branded_row() {
         assert_eq!("⢎⡱  kuku", rows[1].trim());
         let indent = " ".repeat(rows[1].split_once("kuku").unwrap().0.width());
         assert_eq!(format!("{indent}New session"), rows[2].trim_end());
-        assert!(rows[4].starts_with(&format!("{indent}Enter sends your first prompt")));
+        assert_eq!("Workspace  /workspace", rows[4].trim());
+        assert_eq!("Model      Tier work", rows[5].trim());
+        assert_eq!("Skills     review-workspace, format-code", rows[6].trim());
+        assert!(rows[8].starts_with(&format!("{indent}Enter sends your first prompt")));
         if width == 64 {
-            assert!(rows[5].starts_with(&format!("{indent}/resume opens a saved session")));
+            assert!(rows[9].starts_with(&format!("{indent}/resume opens a saved session")));
         } else {
-            assert!(rows[4].contains("/resume opens a saved session"));
-            assert!(rows[5].contains("Workspace: /workspace"));
-            assert!(rows[6].contains("/model: Set current model as default to persist the route."));
+            assert!(rows[8].contains("/resume opens a saved session"));
         }
     }
 
@@ -383,7 +387,7 @@ fn blank_welcome_shows_the_shortened_workspace_path() {
     let welcome = screen(&mut app, 118, 28);
     let workspace = welcome
         .lines()
-        .find(|line| line.contains("Workspace: "))
+        .find(|line| line.trim_start().starts_with("Workspace "))
         .unwrap();
     assert!(workspace.contains('…'));
     assert!(workspace.trim_end().ends_with("actual-workspace"));

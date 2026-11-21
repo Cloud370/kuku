@@ -334,6 +334,7 @@ pub(crate) struct App {
     pub(crate) panes: HashMap<Address, Pane>,
     pub(crate) related_agents: AgentActivities,
     pub(crate) workspace: PathBuf,
+    pub(crate) startup_skills: StartupSkills,
     pub(crate) endpoint: Option<String>,
     pub(crate) remote: bool,
     pub(crate) model_editor: Option<Box<crate::setup::ModelEditor>>,
@@ -383,6 +384,14 @@ pub(crate) struct App {
     pub(crate) rewind_restore_files: bool,
 }
 
+#[derive(Debug, Default)]
+pub(crate) enum StartupSkills {
+    #[default]
+    Loading,
+    Ready(Vec<String>),
+    Unavailable,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct RewindDraft {
     pub(crate) address: Address,
@@ -400,6 +409,7 @@ impl App {
             cached: VecDeque::from([active.clone()]),
             active,
             workspace,
+            startup_skills: StartupSkills::default(),
             remote,
             endpoint,
             connection_problem: None,
@@ -711,6 +721,14 @@ impl App {
                 Err(error) => self.problem(format!("Client storage · {error} · Ctrl+R to recheck")),
             },
             Update::DefaultModel(version, result) => self.default_model_updated(version, result),
+            Update::StartupSkills(generation, result)
+                if generation == self.generation && !self.pane().exists =>
+            {
+                self.startup_skills = match result {
+                    Ok(names) => StartupSkills::Ready(names),
+                    Err(_) => StartupSkills::Unavailable,
+                };
+            }
             Update::Output(selection, id, result) if selection == self.selection() => {
                 if let Some(Modal::Output(viewer)) = &mut self.modal {
                     if viewer.id == id {
@@ -745,6 +763,7 @@ impl App {
             | Update::Observation(..)
             | Update::Refreshed(..)
             | Update::BackgroundJobCancelled(..)
+            | Update::StartupSkills(..)
             | Update::Output(..) => {}
         }
         self.sync_pending_picker();
@@ -818,6 +837,8 @@ impl App {
         } else {
             self.effects.push(Job::StopObserving);
             self.preview_model();
+            self.startup_skills = StartupSkills::Loading;
+            self.effects.push(Job::StartupSkills(self.generation));
         }
     }
 

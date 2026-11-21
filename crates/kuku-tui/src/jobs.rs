@@ -100,6 +100,7 @@ pub(crate) enum Job {
     Discard(Command),
     Pending,
     Model(AgentConfig, u64),
+    StartupSkills(u64),
     Output(Selection, u64, String, u64),
     PrepareRestart(u64),
     Restart(Box<kuku_client::local::ServiceIdentity>),
@@ -145,6 +146,7 @@ pub(crate) enum Update {
     Discarded(String, Result<(), Error>),
     Pending(Result<Vec<Command>, Error>),
     DefaultModel(u64, Result<ModelSelection, Error>),
+    StartupSkills(u64, Result<Vec<String>, Error>),
     Output(Selection, u64, Result<OutputChunk, Error>),
     RestartPrepared(u64, Result<kuku_client::local::ServiceIdentity, Error>),
     Restarted(Result<Restarted, Error>),
@@ -515,6 +517,13 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
         }
         Job::Model(config, version) => {
             Update::DefaultModel(version, client.resolve_model(&config).await)
+        }
+        Job::StartupSkills(generation) => {
+            let result = client
+                .skills(&connection.workspace, None)
+                .await
+                .map(|skills| skills.into_iter().map(|skill| skill.name).collect());
+            Update::StartupSkills(generation, result)
         }
         Job::PrepareDefault { .. } | Job::SaveDefault { .. } => {
             unreachable!("default-save jobs are handled before connected jobs")

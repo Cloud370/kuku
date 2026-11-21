@@ -5,7 +5,35 @@ from urllib.parse import urlencode
 from interactive_fixture import eventually
 
 
+def startup_info(client):
+    workspace = client.workspace("work-startup-info")
+
+    def add_skill(name):
+        folder = workspace / ".claude" / "skills" / name
+        folder.mkdir(parents=True)
+        (folder / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: A startup discovery fixture.\n---\n\nUse this when requested.\n",
+            encoding="utf-8",
+        )
+
+    add_skill("preview-review")
+    with client.terminal(workspace) as terminal:
+        terminal.request("resize", rows=28, cols=60)
+        terminal.expect("preview-review", also=("Workspace", "Skills", "New session", "claude-sonnet-4-6 · None"))
+        add_skill("refresh-on-new")
+        terminal.press("/new\r")
+        terminal.expect("refresh-on-new", also=("preview-review", "New session"))
+        terminal.press("/skill:")
+        terminal.expect("/skill:refresh-on-new", state="Actions and Skills")
+        terminal.press("\x1b")
+        terminal.expect("New session", absent=("Actions and Skills",))
+        sessions = client.request("GET", f"/sessions?{urlencode({'workspace': workspace})}").as_json()
+        assert sessions["sessions"] == []
+        terminal.exit_cleanly()
+
+
 def composer_actions(client):
+    startup_info(client)
     workspace = client.workspace("work-composer")
     config = client.home / "config.toml"
     old = config.read_text(encoding="utf-8")
