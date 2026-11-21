@@ -646,9 +646,7 @@ impl App {
                 )));
             }
             Update::WatchFailed(selection, error) if selection == self.selection() => {
-                self.drop_watch(Watch::Failed(format!(
-                    "kuku service live updates unavailable · {error} · Ctrl+R to reconnect"
-                )));
+                self.watch_failed(error);
             }
             Update::Observation(selection, event) if selection == self.selection() => {
                 self.observe(event)
@@ -806,19 +804,6 @@ impl App {
         self.connection_problem = None;
         self.begin_observing();
         self.effects.push(Job::Pending);
-    }
-
-    fn connect_failed(&mut self, error: Error) {
-        self.connecting = false;
-        let recovery = match &error {
-            Error::Local(kuku_client::local::LocalError::BuildDeferred { .. }) => {
-                "\nPress Ctrl+R when the service is idle."
-            }
-            Error::Local(kuku_client::local::LocalError::BuildMismatch { .. }) => "",
-            _ if self.remote => "\nCheck the kuku service URL and token, then press Ctrl+R",
-            _ => "\nUse Ctrl+R to reconnect, /server for status, or /restart",
-        };
-        self.connection_problem = Some(format!("kuku service connection · {error}{recovery}"));
     }
 
     fn begin_observing(&mut self) {

@@ -100,7 +100,7 @@ pub enum LocalError {
     )]
     ServiceChanged,
     /// The running build cannot satisfy the requested build policy.
-    #[error("kuku {requested} needs its matching service. The running service is {running}. Open that build to use the current service.")]
+    #[error("kuku {running} is already running. Open that version to continue. This client is {requested}.")]
     BuildMismatch {
         /// Build in use by the running service.
         running: String,

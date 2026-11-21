@@ -14,7 +14,7 @@ For a tagged release, choose the new release’s manifest and use the installer 
 
 Launch the new executable as usual. For each data directory, the installed client reuses a managed service of the same build or replaces an idle service from an older release. Starting a different build of the same release selects that build. A client from an older release reports the newer running build. Use a separate data directory to run releases side by side.
 
-When a service is busy, the TUI shows why it is waiting. Press Ctrl+R after the work settles. A TUI that has already connected keeps its build on reconnect and reports when another build has taken over. Use `kuku server status` to see the running build and active work. An orderly replacement preserves committed history, waiting requests and queued inputs. [Run the server](run-the-server.md) · [Sessions](../how-it-works/sessions.md)
+When a service is busy, the TUI waits for the work to finish and connects automatically. An open TUI reports the new build when a version change disconnects its Session and keeps its own build on reconnect. Use `kuku server status` to see the running build and active work. An orderly replacement preserves committed history, waiting requests and queued inputs. [Run the server](run-the-server.md) · [Sessions](../how-it-works/sessions.md)
 
 ## Check your configuration
 

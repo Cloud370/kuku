@@ -1,7 +1,8 @@
 use std::collections::HashSet;
 
+use kuku_client::local::LocalError;
 use kuku_client::{
-    Action, AgentProgress, AgentStatus, HistoryEntry, HistoryKind, InputStatus, ModelPhase,
+    Action, AgentProgress, AgentStatus, Error, HistoryEntry, HistoryKind, InputStatus, ModelPhase,
     Observation, ReplyPreview, RetryMetadata, RetryStopReason,
 };
 use serde_json::Value;
@@ -564,6 +565,37 @@ impl App {
                 self.request_refresh(SnapshotRefresh::Progress);
             }
             Observation::Heartbeat => {}
+        }
+    }
+
+    pub(super) fn connect_failed(&mut self, error: Error) {
+        self.connecting = matches!(error, Error::Local(LocalError::BuildDeferred { .. }));
+        let notice = match error {
+            Error::Local(LocalError::BuildDeferred { .. }) => {
+                "Waiting for the previous version to finish.\nThis window will connect automatically."
+                    .into()
+            }
+            Error::Local(LocalError::BuildMismatch { running, .. }) => {
+                format!("kuku {running} is already running.\nOpen that version to continue.")
+            }
+            _ if self.remote => format!(
+                "kuku service connection · {error}\nCheck the service URL and token, then press Ctrl+R"
+            ),
+            _ => format!(
+                "kuku service connection · {error}\nUse Ctrl+R to reconnect, /server for status, or /restart"
+            ),
+        };
+        self.connection_problem = Some(notice);
+    }
+
+    pub(super) fn watch_failed(&mut self, error: Error) {
+        if matches!(error, Error::Local(LocalError::BuildMismatch { .. })) {
+            self.drop_watch(Watch::Detached);
+            self.connect_failed(error);
+        } else {
+            self.drop_watch(Watch::Failed(format!(
+                "kuku service live updates unavailable · {error} · Ctrl+R to reconnect"
+            )));
         }
     }
 

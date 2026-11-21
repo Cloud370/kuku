@@ -25,6 +25,16 @@ impl<'a> BuildPolicy<'a> {
 }
 
 impl LocalService {
+    /// Check the build of a running service without changing its lifecycle.
+    pub async fn check_running_build(&self, policy: BuildPolicy<'_>) -> Result<(), LocalError> {
+        if let Some(connection) = self.status().await? {
+            if connection.status.version != policy.version() {
+                return Err(mismatch(connection, policy.version()));
+            }
+        }
+        Ok(())
+    }
+
     /// Connect to the selected build of the managed service.
     pub async fn connect_build(
         &self,
@@ -42,7 +52,12 @@ impl LocalService {
                 {
                     return Err(mismatch(current, requested));
                 }
-                match self.replace(current).await? {
+                let outcome = if current.status.busy.is_empty() {
+                    self.replace(current).await?
+                } else {
+                    RestartOutcome::Deferred(current.status)
+                };
+                match outcome {
                     RestartOutcome::Restarted(connection) => connection,
                     RestartOutcome::Deferred(status) => {
                         return Err(LocalError::BuildDeferred {

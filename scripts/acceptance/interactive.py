@@ -49,14 +49,12 @@ def installed_upgrade(client, previous, current):
     assert config_record(client.binary)["sha256"] == target_hash
     version, _ = client.cli(workspace, "--version")
     with client.terminal(workspace) as terminal:
-        terminal.expect("Service is busy", also=("Ctrl+R",))
+        terminal.expect("Waiting for the previous version to finish")
         client.assert_current_service(original)
         client.release_tool(workspace)
         client.completed_tool(workspace, "upgrade-gated-tool").text(output)
         eventually("old service to complete the tool", lambda: client.snapshot(workspace, session)["last_output"] == output)
-        eventually("old service to become idle", lambda: not client.status()["busy"])
         client.verify_tool(workspace)
-        terminal.press("\x12")
         terminal.expect("New session", state="Ready")
         assert client.connection()["instance_id"] != original["instance_id"]
         assert version.strip() == "kuku " + client.status()["version"]
