@@ -47,7 +47,7 @@ Project durable retry decisions into both the transcript and the attached Agent'
 
 Frequent actions finish where they start and report the result nearby. Give reading, editing and review their own dialog when they need independent space. Closing a panel restores the original focus, draft, selection and reading position.
 
-Actions, models and thinking use the same list above the composer while the draft stays in place. Deleting the opening slash closes command completion. Up and Down wrap choice lists. Page Up can load earlier rewind targets.
+Actions, models and thinking use the same list above the composer while the draft stays in place. Deleting the opening slash closes command completion. Up and Down wrap choice lists. In the rewind history, Up and Down browse user messages chronologically. Reaching the top with Up loads earlier messages.
 
 While Markdown streams, reuse rows for complete top-level blocks whose meaning has settled. Layout follows the current width and presentation. Use the canonical renderer for mutable structure and settled or interrupted replies, and keep the original source available for reading and copying.
 

@@ -104,7 +104,7 @@ impl App {
         } else {
             self.text_selection.cancel_drag();
         }
-        if self.move_rewind_selection(amount, false) {
+        if self.move_rewind_selection(amount) {
             return;
         }
         match &mut self.modal {

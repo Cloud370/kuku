@@ -830,24 +830,14 @@ def paginated_rewind(client):
         terminal.press("\x1b")
         terminal.expect("Press Esc again")
         terminal.press("\x1b")
-        screen = terminal.expect("Rewind to message", also=(
-            prompts[-1], "PgUp loads earlier messages",
-        ))["screen"]
-        for steps in range(40):
-            if re.search(r"› Turn 1(?:\s|$)", screen) and prompts[0] in screen:
-                return steps, screen
-            terminal.press("\x1b[5~")
-
-            def moved():
-                value = terminal.request("screen")["screen"]
-                return value if value != screen and "Loading earlier messages…" not in value else None
-
-            try:
-                screen = eventually("rewind selection to advance toward the earliest message", moved)
-            except AssertionError as error:
-                screen = terminal.request("screen")["screen"]
-                raise AssertionError(f"{error}\nLast terminal screen:\n{screen}") from error
-        raise AssertionError(f"Could not select the earliest committed message:\n{screen}")
+        terminal.expect("Rewind to message", also=(
+            prompts[-1], "↑ at the top loads earlier messages",
+        ))
+        for turn in range(len(prompts) - 1, 0, -1):
+            terminal.press("\x1b[A")
+            screen = terminal.expect(f"› Turn {turn} ", also=(prompts[turn - 1],),
+                                     absent=("Loading earlier messages…",))["screen"]
+        return len(prompts) - 1, screen
 
     with client.terminal(workspace) as terminal:
         terminal.expect("New session", state="Ready")

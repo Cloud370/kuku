@@ -101,9 +101,6 @@ impl App {
         } else {
             return false;
         };
-        self.move_rewind_selection(
-            amount,
-            Shortcut::UP.matches(key) || Shortcut::DOWN.matches(key),
-        )
+        self.move_rewind_selection(amount)
     }
 }
