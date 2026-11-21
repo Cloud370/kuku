@@ -471,6 +471,7 @@ async fn new_configuration_saves_a_single_default_route() {
         .unwrap();
     let mut state = SetupState::new(&settings);
     select_environment(&mut state);
+    state.address.set_text("https://provider.invalid/v1".into());
     state.model.set_text("fixture-model".into());
     save(&settings, &state).unwrap();
 
@@ -478,7 +479,11 @@ async fn new_configuration_saves_a_single_default_route() {
     assert_eq!(Some("default"), parsed.default_model.as_deref());
     assert_eq!(1, parsed.model.len());
     assert_eq!("fixture-model", parsed.model["default"].model);
-    assert_eq!("anthropic", parsed.model["default"].provider);
+    assert_eq!("custom", parsed.model["default"].provider);
+    assert_eq!(
+        "https://provider.invalid/v1",
+        parsed.provider["custom"].base_url
+    );
     assert_eq!(
         Some("provider-default"),
         parsed.model["default"].think.as_deref()
@@ -944,6 +949,8 @@ async fn stored_keys_are_refused_when_data_directory_is_inside_workspace() {
     };
     let settings = Settings::load(options).await.unwrap();
     let mut state = SetupState::new(&settings);
+    state.address.set_text("https://provider.invalid/v1".into());
+    state.model.set_text("fixture-model".into());
     state.credential_source = CredentialSource::StoredKey;
     state
         .stored_key
