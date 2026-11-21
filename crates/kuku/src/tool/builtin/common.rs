@@ -39,8 +39,7 @@ fn prepare_workspace_path(
     let resolved = match tool {
         "find_files" | "search_text" => resolve_path(workspace, optional_path.unwrap_or(".")),
         "read_file" | "edit_file" => resolve_path(workspace, required_path(tool, args)?),
-        "write_file" => resolve_write_path(workspace, required_path(tool, args)?),
-        "stat_file" => resolve_stat_path(workspace, required_path(tool, args)?),
+        "write_file" | "stat_file" => resolve_stat_path(workspace, required_path(tool, args)?),
         "remove_file" => resolve_remove_path(workspace, required_path(tool, args)?),
         _ => return Ok(None),
     }?;
@@ -97,20 +96,6 @@ pub(super) fn resolve_path(
         .canonicalize()
         .map_err(|error| path_error(path, error))?;
     checked_resolved_path(workspace, resolved, path)
-}
-
-pub(super) fn resolve_write_path(
-    workspace: &Path,
-    path: &str,
-) -> Result<ResolvedPath, ToolResultEnvelope> {
-    let resolved = resolve_stat_path(workspace, path)?;
-    if resolved.path != resolved.workspace && !resolved.path.parent().is_some_and(Path::is_dir) {
-        return Err(ToolResultEnvelope::error(
-            format!("failed: parent path not found: {path}"),
-            format!("parent directory does not exist: {path}"),
-        ));
-    }
-    Ok(resolved)
 }
 
 pub(super) fn resolve_stat_path(

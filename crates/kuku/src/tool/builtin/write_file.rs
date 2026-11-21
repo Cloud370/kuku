@@ -10,7 +10,7 @@ use crate::tool::ToolResultEnvelope;
 
 use super::common::{
     content_hash, expected_version, file_read_error, file_version, mutation_preview, plural,
-    publish_file, require_version, resolve_write_path, snapshot_stale_error, ExecutorObservation,
+    publish_file, require_version, resolve_stat_path, snapshot_stale_error, ExecutorObservation,
     FileCancellation, WriteEvidence, WriteSnapshotLookup,
 };
 
@@ -60,7 +60,7 @@ fn write_file_with_evidence(
         Ok(expected) => expected,
         Err(result) => return result,
     };
-    let resolved = match resolve_write_path(workspace, request.path) {
+    let resolved = match resolve_stat_path(workspace, request.path) {
         Ok(resolved) => resolved,
         Err(result) => return result,
     };
@@ -226,6 +226,20 @@ mod tests {
             std::fs::read_to_string(dir.path().join("docs/normalized.md")).unwrap(),
             "normalized\n"
         );
+    }
+
+    #[test]
+    fn write_file_rejects_an_expected_version_before_creating_parents() {
+        let dir = workspace();
+        let version = content_hash(b"previous version");
+        let result = write_file(
+            &serde_json::json!({"path": "new/src/main.rs", "content": "fn main() {}", "expected_version": version}),
+            dir.path(),
+            &[],
+        );
+
+        assert_eq!("error", result.status);
+        assert!(!dir.path().join("new").exists());
     }
 
     #[test]

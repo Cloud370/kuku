@@ -237,7 +237,12 @@ pub(crate) fn publish_file(
     cancelled: &FileCancellation<'_>,
 ) -> Result<Publication, WorkspaceCommitError> {
     let _commit = path_lock(path, cancelled)?;
-    verify_canonical_parent(path).map_err(version_error)?;
+    match verify_canonical_parent(path) {
+        Err(error) if expected.is_none() && error.kind() == io::ErrorKind::NotFound => {
+            create_missing_parents(path, cancelled).map_err(version_error)?;
+        }
+        result => result.map_err(version_error)?,
+    }
     let mut staged = stage_file(path, bytes, cancelled)?;
     staged.flush()?;
     if expected.is_some() {
@@ -367,6 +372,40 @@ fn verify_canonical_parent(path: &Path) -> io::Result<()> {
         return Err(changed_during_read());
     }
     Ok(())
+}
+
+fn create_missing_parents(path: &Path, cancelled: &FileCancellation<'_>) -> io::Result<()> {
+    let mut missing = Vec::new();
+    for directory in path.ancestors().skip(1) {
+        match directory.canonicalize() {
+            Ok(canonical) if canonical == directory => break,
+            Ok(_) => return Err(changed_during_read()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => missing.push(directory),
+            Err(error) => return Err(error),
+        }
+    }
+
+    for directory in missing.into_iter().rev() {
+        ensure_active(cancelled)?;
+        verify_canonical_parent(directory)?;
+        match fs::create_dir(directory) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+        if directory.canonicalize()? != directory {
+            return Err(changed_during_read());
+        }
+        if !fs::metadata(directory)?.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotADirectory,
+                format!("{} is not a directory", directory.display()),
+            ));
+        }
+        #[cfg(unix)]
+        fs_sync::sync_parent(directory)?;
+    }
+    verify_canonical_parent(path)
 }
 
 fn verify_file_version(

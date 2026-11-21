@@ -79,7 +79,10 @@ impl ToolAuthorizer for Gate {
     fn authorize(&self, action: &ToolAuthorization) -> kuku::Result<AuthorizationDecision> {
         assert_eq!(action.agent, "main");
         Ok(
-            if action.tool.name == "write_file" && action.args["path"] == "forbidden.txt" {
+            if action.tool.name == "write_file"
+                && action.args["path"].as_str().map(std::path::Path::new)
+                    == Some(std::path::Path::new("denied/nested/forbidden.txt"))
+            {
                 AuthorizationDecision::Deny
             } else if action.tool.name == "edit_file" && action.args["path"] == "approval.txt" {
                 AuthorizationDecision::Defer
@@ -157,10 +160,10 @@ async fn script_checks_final_authority_and_keeps_host_outcomes_after_js_returns(
         &work,
         &data,
         r#"
-const one = await tools.write_file({path:"allowed.txt",content:"before"});
-const two = await tools.write_file({path:"forbidden.txt",content:"denied"});
-const read = await tools.read_file({path:"allowed.txt"});
-await tools.edit_file({path:"allowed.txt",old_text:read.result.raw_text,new_text:"after"});
+const one = await tools.write_file({path:"docs/guide/allowed.txt",content:"before"});
+const two = await tools.write_file({path:"unused/../denied/nested/forbidden.txt",content:"denied"});
+const read = await tools.read_file({path:"docs/guide/allowed.txt"});
+await tools.edit_file({path:"docs/guide/allowed.txt",old_text:read.result.raw_text,new_text:"after"});
 return {denied:two.status,first:one.status};
 "#,
     ))
@@ -174,9 +177,10 @@ return {denied:two.status,first:one.status};
             && action.status == WorkspaceScriptActionStatus::Blocked));
     assert_eq!(
         "after",
-        std::fs::read_to_string(work.path().join("allowed.txt")).unwrap()
+        std::fs::read_to_string(work.path().join("docs/guide/allowed.txt")).unwrap()
     );
-    assert!(!work.path().join("forbidden.txt").exists());
+    assert!(!work.path().join("denied").exists());
+    assert!(!work.path().join("unused").exists());
     session.close().await.unwrap();
 }
 

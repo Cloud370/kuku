@@ -236,6 +236,65 @@ fn add_tool(events: &mut Vec<ModelEvent>, index: u64, id: &str, name: &str, args
 }
 
 #[tokio::test]
+async fn workspace_creation_batch_writes_nested_files_in_one_model_turn() {
+    let server = MockServer::start_async().await;
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let files = [
+        ("config", "package/pyproject.toml", "[project]\n"),
+        ("source", "package/src/main.py", "VERSION = 1\n"),
+        ("docs", "package/README.md", "# Package\n"),
+    ];
+    let calls = files.map(|(id, path, content)| {
+        tool(
+            id,
+            "write_file",
+            json!({ "path": path, "content": content }),
+        )
+    });
+    let first = fixture(
+        &server,
+        |request| super::tool_count(request) == 0,
+        json!({"tool_calls":calls}),
+        "tool_calls",
+    )
+    .await;
+    let last = fixture(
+        &server,
+        |request| super::tool_count(request) == 3,
+        json!({"content":"files ready"}),
+        "stop",
+    )
+    .await;
+    let mut settings = options(&server, workspace.path(), data.path());
+    settings.limits.max_requests_per_open = Some(2);
+    let session = Session::open(settings).await.unwrap();
+    session
+        .create_agent("create", "main", AgentConfig::default())
+        .unwrap();
+    session
+        .send(Input::new("input", "main", "create a new package"))
+        .unwrap();
+    assert_eq!(
+        Some("files ready"),
+        settled(&session, "main").await.last_output.as_deref()
+    );
+    let events = session.events(0, 256).unwrap();
+    for (id, path, expected) in files {
+        assert!(events.iter().any(|event| matches!(&event.payload,
+            EventPayload::ToolResult { tool_call_id, status, .. }
+                if tool_call_id == id && status == "ok")));
+        assert_eq!(
+            expected,
+            std::fs::read_to_string(workspace.path().join(path)).unwrap()
+        );
+    }
+    first.assert_hits_async(1).await;
+    last.assert_hits_async(1).await;
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn malformed_tool_arguments_regenerate_once_with_the_same_admitted_context() {
     let server = MockServer::start_async().await;
     for (always_invalid, budget, expected_requests, expected_regenerations) in

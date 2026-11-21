@@ -120,7 +120,7 @@ fn registry(agent_enabled: bool, skills_enabled: bool, session: bool) -> Vec<Too
         ),
         tool(
             "write_file",
-            "Write a complete file. Overwrite an existing file after a full read or your own confirmed full write of the same version.",
+            "Write a complete file, creating missing parent directories. Overwrite an existing file after a full read or your own confirmed full write of the same version.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
