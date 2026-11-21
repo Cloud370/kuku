@@ -1,5 +1,6 @@
 mod dispatch;
 mod resolve;
+pub(super) use resolve::usable_model_routes;
 mod retry;
 
 use dispatch::dispatch_provider_step;
@@ -54,7 +55,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         load_memory_sources(&pending.kuku_home, &pending.workspace)?;
     let platform = platform_label().to_string();
     let current_date = current_date_string();
-    let model_tiers = pending.config.tier_infos();
+    let model_tiers = resolve::usable_model_routes(&pending.config);
 
     let catalog = if let Some(dir) = &pending.prompts_dir {
         crate::prompt::PromptCatalog::load_from_dir(dir).map_err(|e| {
@@ -486,10 +487,12 @@ fn apply_runtime_boundary(pending: &mut PendingRun) -> Result<()> {
         pending.query.input_source = source;
     }
     if let Some(config) = boundary.config {
+        pending.config = std::sync::Arc::new(session.current_model_config().into_owned());
         pending.query.connection = config.connection;
         pending.query.tier = config.tier;
         pending.query.model = config.model;
         pending.query.reasoning_effort = config.reasoning_effort;
+        pending.query.output = config.output;
         pending.query.service_tier = config.service_tier;
         pending.query.max_output_tokens = config.max_output_tokens;
         pending.resolved = None;

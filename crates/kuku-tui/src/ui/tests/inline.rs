@@ -304,7 +304,7 @@ fn request_card_is_visible_without_focus_and_question_answer_is_scoped_and_stale
     assert!(app.modal.is_none());
     assert!(matches!(
         app.pane().contextual_focus.cursor,
-        Some(crate::contextual::ContextControl::Restart { .. })
+        Some(crate::contextual::ContextControl::Messages)
     ));
     for _ in 0..5 {
         if matches!(&app.modal, Some(Modal::Prompt(prompt))
@@ -357,7 +357,7 @@ fn reconnect_shortcut_survives_permission_request_focus_without_answering_it() {
     key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
     assert!(matches!(
         app.pane().contextual_focus.cursor,
-        Some(crate::contextual::ContextControl::Restart { .. })
+        Some(crate::contextual::ContextControl::Messages)
     ));
     key(&mut app, KeyCode::BackTab, KeyModifiers::SHIFT);
     assert_eq!(KeyboardFocus::Request, app.pane().keyboard_focus);

@@ -4,23 +4,30 @@ use std::time::Duration;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::{Frame, Terminal};
 
 use crate::editor::Editor;
-use crate::theme::{ACCENT, MUTED, SUCCESS, WARNING};
+use crate::text::{shorten_middle, single_line};
+use crate::theme::{emphasis, focused_row, ACCENT, MUTED, SUCCESS, WARNING};
 
 use super::config::Settings;
-use super::state::{SetupState, SetupStep};
+use super::dashboard::TestOverview;
+use super::state::{ReviewAction, SetupIntent, SetupState, SetupStep, StopTests};
 use super::{CredentialSource, Finish, SetupMode};
+
+mod model_pages;
+
+use model_pages::render_model_settings;
 
 const MIN_WIDTH: u16 = 60;
 const MIN_HEIGHT: u16 = 20;
+const MAX_CONTENT_WIDTH: u16 = 88;
 
-pub(super) fn run(
+pub(super) async fn run(
     settings: &Settings,
     state: &mut SetupState,
     mode: SetupMode,
@@ -29,6 +36,7 @@ pub(super) fn run(
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
     loop {
+        state.poll_probes(settings, mode);
         terminal.draw(|frame| render(frame, settings, state, mode))?;
         if let Some(finish) = state.finish {
             if finish == Finish::Cancel {
@@ -41,7 +49,7 @@ pub(super) fn run(
             state.finish = None;
             state.problem = Some("Resize to at least 60 columns by 20 rows before saving.".into());
         }
-        if event::poll(Duration::from_millis(100))? {
+        if event::poll(Duration::ZERO)? {
             let event = event::read()?;
             let size = terminal.size()?;
             if !usable(size.width, size.height) {
@@ -51,6 +59,8 @@ pub(super) fn run(
                 continue;
             }
             state.handle(event, settings, mode);
+        } else {
+            tokio::time::sleep(Duration::from_millis(35)).await;
         }
     }
 }
@@ -91,7 +101,7 @@ pub(super) fn render(
     let area = frame.area();
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" kuku · shared settings ")
+        .title(" kuku · model setup ")
         .border_style(Style::default().fg(ACCENT));
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -109,32 +119,23 @@ pub(super) fn render(
     }
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(2),
-            Constraint::Min(1),
-            Constraint::Length(2),
-        ])
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(inner);
+    render_step(frame, chunks[0], settings, state, mode);
+    let (escape, keys) = match state.step {
+        SetupStep::Consent => ("Esc exit", " · ↑/↓ move · Enter choose"),
+        SetupStep::TrialResults => ("Esc previous step", " · ↑/↓ scroll · Enter returns"),
+        _ => (
+            "Esc previous step",
+            " · ↑/↓ move · Enter choose · Ctrl+C exit",
+        ),
+    };
     frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(format!("Workspace: {}", shortened(&settings.workspace))),
-            Line::from(format!("Config: {}", shortened(&settings.config_path))),
-        ]),
-        chunks[0],
-    );
-    render_step(frame, chunks[1], settings, state, mode);
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::styled(
-                "↑/↓ select · Tab next · Shift+Tab back · Enter confirm",
-                Style::default().fg(MUTED),
-            ),
-            Line::styled(
-                "Esc back/cancel · Ctrl+C cancel · Ctrl+A clear field",
-                Style::default().fg(MUTED),
-            ),
-        ]),
-        chunks[2],
+        Paragraph::new(Line::from(vec![
+            Span::styled(escape, emphasis(ACCENT)),
+            Span::styled(keys, Style::default().fg(MUTED)),
+        ])),
+        chunks[1],
     );
 }
 
@@ -145,17 +146,53 @@ fn render_step(
     state: &mut SetupState,
     mode: SetupMode,
 ) {
+    let mut area = if matches!(
+        state.step,
+        SetupStep::Review | SetupStep::ReviewSettings | SetupStep::TrialResults
+    ) {
+        area.inner(Margin::new(2, 1))
+    } else {
+        area
+    };
+    area.width = area.width.min(MAX_CONTENT_WIDTH);
     let mut row = 0;
     match state.step {
-        SetupStep::Connection => {
-            line(frame, area, &mut row, "Step 1/5 · Connection", ACCENT);
+        SetupStep::Consent => {
+            line(frame, area, &mut row, "Set up a model", ACCENT);
+            line(frame, area, &mut row, "Tests may cost money.", WARNING);
+            for (index, name) in ["Find and test models", "Edit config file"]
+                .iter()
+                .enumerate()
+            {
+                option(frame, area, &mut row, name, index == state.models.cursor);
+            }
+        }
+        SetupStep::ManualConfig => {
+            line(frame, area, &mut row, "Manual configuration", ACCENT);
             line(
                 frame,
                 area,
                 &mut row,
-                "Existing connections and provider presets:",
+                &settings.config_path.display().to_string(),
                 MUTED,
             );
+            line(
+                frame,
+                area,
+                &mut row,
+                "Edit the provider and model entries in config.toml.",
+                MUTED,
+            );
+            line(
+                frame,
+                area,
+                &mut row,
+                "Run kuku config validate to check them. Enter exits.",
+                MUTED,
+            );
+        }
+        SetupStep::Connection => {
+            line(frame, area, &mut row, "Choose a provider", ACCENT);
             let available = area.height.saturating_sub(row + 3) as usize;
             let first = state.selected.saturating_sub(available / 2);
             let last = (first + available).min(state.choices.len());
@@ -177,12 +214,16 @@ fn render_step(
             }
         }
         SetupStep::Model => {
-            line(frame, area, &mut row, "Step 2/5 · Model ID", ACCENT);
+            line(frame, area, &mut row, "Model ID", ACCENT);
             line(
                 frame,
                 area,
                 &mut row,
-                "This edits the current default tier; availability is not checked.",
+                &match &state.intent {
+                    SetupIntent::Default => "Choose the default model ID".into(),
+                    SetupIntent::Add => "Add a model to this connection".into(),
+                    SetupIntent::Edit(tier) => format!("Editing {tier}"),
+                },
                 MUTED,
             );
             field(frame, area, &mut row, &mut state.model);
@@ -195,13 +236,7 @@ fn render_step(
             );
         }
         SetupStep::CredentialSource => {
-            line(
-                frame,
-                area,
-                &mut row,
-                "Step 3/5 · Credential source",
-                ACCENT,
-            );
+            line(frame, area, &mut row, "API key source", ACCENT);
             let environment_status = if state.environment_set() {
                 "detected"
             } else {
@@ -238,7 +273,7 @@ fn render_step(
                 frame,
                 area,
                 &mut row,
-                "Presence only; credential not authenticated.",
+                "Keys are tested after you choose a model.",
                 MUTED,
             );
             if !settings.can_store_key() {
@@ -246,15 +281,15 @@ fn render_step(
             }
         }
         SetupStep::Credential => {
-            line(frame, area, &mut row, "Step 4/5 · Credential", ACCENT);
+            line(frame, area, &mut row, "API key", ACCENT);
             match state.credential_source {
                 CredentialSource::Environment => {
-                    line(frame, area, &mut row, "Enter a variable name only; key values are never displayed or stored here.", MUTED);
+                    line(frame, area, &mut row, "API key variable name", MUTED);
                     field(frame, area, &mut row, &mut state.environment);
                     let status = if state.environment_set() {
-                        "Variable is set (credential not validated)."
+                        "Key found."
                     } else {
-                        "Variable is missing; it can be set after saving."
+                        "Key missing. You can set it after saving."
                     };
                     line(
                         frame,
@@ -269,27 +304,14 @@ fn render_step(
                     );
                 }
                 CredentialSource::StoredKey => {
+                    line(frame, area, &mut row, "Paste your API key", MUTED);
+                    key_preview_field(frame, area, &mut row, &state.stored_key);
                     line(
                         frame,
                         area,
                         &mut row,
-                        "Paste a key; every character is masked.",
-                        MUTED,
-                    );
-                    masked_field(frame, area, &mut row, &state.stored_key);
-                    line(
-                        frame,
-                        area,
-                        &mut row,
-                        "Saved locally as plaintext, not encrypted.",
+                        "Saved on this device without encryption.",
                         WARNING,
-                    );
-                    line(
-                        frame,
-                        area,
-                        &mut row,
-                        &format!("Location: {}", shortened(&settings.credentials_dir)),
-                        MUTED,
                     );
                     if let Some(hint) = state.saved_key_hint(settings) {
                         line(frame, area, &mut row, hint, SUCCESS);
@@ -297,134 +319,281 @@ fn render_step(
                 }
             }
         }
-        SetupStep::Review => {
-            line(frame, area, &mut row, "Step 5/5 · Review", ACCENT);
-            line(
-                frame,
-                area,
-                &mut row,
-                &format!("Connection: {}", state.connection_label(settings)),
-                MUTED,
-            );
-            line(
-                frame,
-                area,
-                &mut row,
-                &format!("Default tier: {}", settings.default_tier),
-                MUTED,
-            );
-            line(
-                frame,
-                area,
-                &mut row,
-                &format!("Model: {}", state.model.text().trim()),
-                MUTED,
-            );
-            match state.credential_source {
-                CredentialSource::Environment => {
-                    line(
-                        frame,
-                        area,
-                        &mut row,
-                        &format!("Environment: {}", state.environment.text().trim()),
-                        MUTED,
-                    );
-                    let status = if state.environment_set() {
-                        "Variable is set; credential not validated."
-                    } else {
-                        "Variable not detected; set it in the launch shell."
-                    };
-                    line(
-                        frame,
-                        area,
-                        &mut row,
-                        status,
-                        if state.environment_set() {
-                            SUCCESS
-                        } else {
-                            WARNING
-                        },
-                    );
-                }
-                CredentialSource::StoredKey => {
-                    line(
-                        frame,
-                        area,
-                        &mut row,
-                        "Saved locally as plaintext, not encrypted.",
-                        WARNING,
-                    );
-                    line(
-                        frame,
-                        area,
-                        &mut row,
-                        &format!("Location: {}", shortened(&settings.credentials_dir)),
-                        MUTED,
-                    );
-                    if let Some(hint) = state.saved_key_hint(settings) {
-                        line(frame, area, &mut row, hint, SUCCESS);
-                    } else if !state.stored_key_is_entered() {
-                        line(
-                            frame,
-                            area,
-                            &mut row,
-                            "Enter a key before saving this source.",
-                            WARNING,
-                        );
-                    }
-                }
-            }
-            line(
-                frame,
-                area,
-                &mut row,
-                "Setup makes no model request.",
-                MUTED,
-            );
-            if mode == SetupMode::FirstRun && !state.credential_ready() {
-                let guidance = if settings.can_store_key() {
-                    "Choose Paste API key to repair this credential."
-                } else {
-                    "Storage unavailable; set the variable before launch."
-                };
-                line(
-                    frame,
-                    area,
-                    &mut row,
-                    guidance,
-                    if settings.can_store_key() {
-                        MUTED
-                    } else {
-                        WARNING
-                    },
-                );
-            }
-            for (index, action) in state.review_choices(mode).iter().enumerate() {
-                let marker = if index == state.review_selection {
-                    "› "
-                } else {
-                    "  "
-                };
-                let style = if index == state.review_selection {
-                    Style::default().add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
-                };
-                render_line(
-                    frame,
-                    area,
-                    &mut row,
-                    Line::styled(format!("{marker}{}", action.label()), style),
-                );
-            }
+        SetupStep::Review => render_review(frame, area, &mut row, settings, state, mode),
+        SetupStep::ConfirmStop(action) => {
+            render_stop_confirmation(frame, area, &mut row, state, action)
         }
+        SetupStep::ReviewSettings => {
+            render_review_settings(frame, area, &mut row, settings, state, mode)
+        }
+        SetupStep::Protocol
+        | SetupStep::Address
+        | SetupStep::AddressKind
+        | SetupStep::Network
+        | SetupStep::ProxyAddress
+        | SetupStep::ModelSource
+        | SetupStep::Discover
+        | SetupStep::CheckingApi
+        | SetupStep::TrialResults
+        | SetupStep::RecoveryModels
+        | SetupStep::RecoveryActions
+        | SetupStep::RecoveryDefault
+        | SetupStep::DefaultModel
+        | SetupStep::Thinking
+        | SetupStep::Output
+        | SetupStep::Pricing
+        | SetupStep::Rates
+        | SetupStep::Advanced
+        | SetupStep::Override => render_model_settings(frame, area, &mut row, settings, state),
     }
     if let Some(problem) = &state.problem {
         line(frame, area, &mut row, problem, WARNING);
     }
 }
 
-fn line(
+fn render_stop_confirmation(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    row: &mut u16,
+    state: &SetupState,
+    action: StopTests,
+) {
+    let testing = state.trials.pending();
+    let (title, confirm) = match (action, testing) {
+        (StopTests::Save, true) => ("Save before tests finish?", "Stop tests and save"),
+        (StopTests::Save, false) => ("Tests finished", "Save setup"),
+        (_, true) => ("Go back before tests finish?", "Stop tests and go back"),
+        (_, false) => ("Tests finished", "Go back"),
+    };
+    line(frame, area, row, title, ACCENT);
+    if testing {
+        line(frame, area, row, "Pending tests will stop.", WARNING);
+    }
+    *row += 1;
+    let stay = if testing {
+        "Keep testing"
+    } else {
+        "Return to results"
+    };
+    option(frame, area, row, stay, state.models.cursor == 0);
+    option(frame, area, row, confirm, state.models.cursor == 1);
+}
+
+fn render_review(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    row: &mut u16,
+    settings: &Settings,
+    state: &SetupState,
+    mode: SetupMode,
+) {
+    let testing = state.trials.pending();
+    let model = state.primary_model().unwrap_or_default();
+    let models = state.model_ids().unwrap_or_default();
+    let title = match (testing, models.len()) {
+        (true, count) if count > 1 => format!("Testing models · {count} selected"),
+        (false, count) if count > 1 => format!("Save setup · {count} models"),
+        (true, _) => "Testing models".into(),
+        (false, _) => "Save setup".into(),
+    };
+    render_line(frame, area, row, Line::styled(title, emphasis(ACCENT)));
+    if area.height > MIN_HEIGHT - 2 {
+        *row += 1;
+    }
+    if models.len() > 1 && state.intent == SetupIntent::Default {
+        summary_row(frame, area, row, "Default", &model, None);
+    }
+    if let Ok(url) = state.request_url() {
+        summary_row(
+            frame,
+            area,
+            row,
+            "API URL",
+            &super::probes::display_url(&url),
+            None,
+        );
+    }
+    let overview = TestOverview::new(&state.trials, &models);
+    if state.trials.selected_rows().next().is_some() {
+        overview.render_progress(frame, area, row);
+        let progress = super::probes::review_status(&state.trials);
+        let color = testing.then_some(ACCENT);
+        summary_row(frame, area, row, "Requests", &progress, color);
+    }
+    render_review_warnings(frame, area, row, settings, state, mode);
+    let menu_rows = u16::try_from(state.review_choices(mode).len()).unwrap_or(area.height);
+    let reserved = menu_rows + u16::from(state.problem.is_some());
+    let room = area.height.saturating_sub(*row + reserved);
+    let gap = u16::from(usize::from(room) > models.len().saturating_add(2));
+    let connection = state.connection(settings).ok();
+    overview.render_table(frame, area, row, connection.as_ref(), room - gap);
+    *row += gap;
+    let primary_failed = state.primary_failed();
+    review_menu(frame, area, row, state, mode, |action| match action {
+        ReviewAction::Save | ReviewAction::SaveAndExit if primary_failed => {
+            Some("Keep unverified settings")
+        }
+        ReviewAction::TrialResults => super::probes::review_detail_hint(&state.trials),
+        ReviewAction::FixModels => Some("Retry, skip or repair"),
+        ReviewAction::UseAnotherDefault => Some("Choose a model that replied"),
+        _ => None,
+    });
+}
+
+fn render_review_warnings(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    row: &mut u16,
+    settings: &Settings,
+    state: &SetupState,
+    mode: SetupMode,
+) {
+    if let super::ConnectionChoice::Existing(name) = state.choice() {
+        if state.connection(settings).is_ok_and(|connection| {
+            settings.resolved.provider(name).is_some_and(|previous| {
+                previous.format != connection.format
+                    || previous.base_url != connection.base_url
+                    || previous.options.endpoint_url != connection.options.endpoint_url
+                    || previous.api_key != connection.api_key
+            })
+        }) {
+            let shared = settings
+                .resolved
+                .tiers
+                .iter()
+                .filter(|(route, tier)| {
+                    tier.provider == *name && state.route_name(settings) != Some(route)
+                })
+                .map(|(route, _)| route.as_str())
+                .collect::<Vec<_>>();
+            if !shared.is_empty() {
+                line(
+                    frame,
+                    area,
+                    row,
+                    &format!("Also affects · {}", shared.join(", ")),
+                    WARNING,
+                );
+            }
+        }
+    }
+    if mode == SetupMode::FirstRun && !state.credential_ready() {
+        let guidance = if settings.can_store_key() {
+            "Paste an API key to continue."
+        } else {
+            "Set the API key variable before starting."
+        };
+        line(frame, area, row, guidance, WARNING);
+    }
+}
+
+fn render_review_settings(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    row: &mut u16,
+    settings: &Settings,
+    state: &SetupState,
+    mode: SetupMode,
+) {
+    render_line(frame, area, row, Line::styled("Settings", emphasis(ACCENT)));
+    *row += 1;
+    let unchanged_model = state.route_name(settings).and_then(|route| settings.resolved.tier(route))
+        .zip(state.primary_model())
+        .is_some_and(|(route, model)| route.model == model &&
+            matches!(state.choice(), super::ConnectionChoice::Existing(name) if route.provider == *name));
+    let effort = (unchanged_model || state.reasoning_changed)
+        .then_some(state.reasoning.as_deref())
+        .flatten()
+        .filter(|effort| *effort != "provider-default");
+    let output = match state.output {
+        kuku::config::RequestedOutput::Text => "Text",
+        kuku::config::RequestedOutput::Image => "Image requested",
+    };
+    review_menu(frame, area, row, state, mode, |action| match action {
+        ReviewAction::Thinking => Some(effort.unwrap_or("Provider default")),
+        ReviewAction::Output => Some(output),
+        ReviewAction::Pricing => Some(state.pricing_label()),
+        _ => None,
+    });
+}
+
+fn summary_row(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    row: &mut u16,
+    label: &str,
+    value: &str,
+    color: Option<ratatui::style::Color>,
+) {
+    const LABEL_WIDTH: usize = 10;
+    let value = shorten_middle(
+        &single_line(value),
+        usize::from(area.width).saturating_sub(LABEL_WIDTH),
+    );
+    let style = color.map_or_else(Style::default, |color| Style::default().fg(color));
+    render_line(
+        frame,
+        area,
+        row,
+        Line::from(vec![
+            Span::styled(format!("{label:<LABEL_WIDTH$}"), Style::default().fg(MUTED)),
+            Span::styled(value, style),
+        ]),
+    );
+}
+
+fn review_menu<'a>(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    row: &mut u16,
+    state: &SetupState,
+    mode: SetupMode,
+    value: impl Fn(ReviewAction) -> Option<&'a str>,
+) {
+    for (index, action) in state.review_choices(mode).into_iter().enumerate() {
+        if *row
+            >= area
+                .height
+                .saturating_sub(u16::from(state.problem.is_some()))
+        {
+            break;
+        }
+        let selected = index == state.review_selection;
+        let marker = if selected { "› " } else { "  " };
+        let label = action.label();
+        let text = match value(action) {
+            Some(value) => format!("{marker}{label:<19} {}", single_line(value)),
+            None => format!("{marker}{label}"),
+        };
+        let style = if selected {
+            focused_row().add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        frame.render_widget(
+            Paragraph::new(text).style(style),
+            Rect::new(area.x, area.y + *row, area.width, 1),
+        );
+        *row += 1;
+    }
+}
+
+fn option(frame: &mut Frame<'_>, area: Rect, row: &mut u16, label: &str, selected: bool) {
+    let marker = if selected { "› " } else { "  " };
+    let style = if selected {
+        Style::default().add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+    render_line(
+        frame,
+        area,
+        row,
+        Line::styled(format!("{marker}{label}"), style),
+    );
+}
+
+pub(super) fn line(
     frame: &mut Frame<'_>,
     area: Rect,
     row: &mut u16,
@@ -470,15 +639,25 @@ pub(super) fn masked_field(frame: &mut Frame<'_>, area: Rect, row: &mut u16, edi
     field(frame, area, row, &mut masked);
 }
 
-fn shortened(path: &std::path::Path) -> String {
-    let display = path.display().to_string();
-    let length = display.chars().count();
-    if length <= 48 {
-        display
-    } else {
-        let suffix = display.chars().rev().take(47).collect::<String>();
-        format!("…{}", suffix.chars().rev().collect::<String>())
-    }
+fn key_preview_field(frame: &mut Frame<'_>, area: Rect, row: &mut u16, editor: &Editor) {
+    let mut preview = Editor::default();
+    preview.set_text(mask_key(editor.text()));
+    field(frame, area, row, &mut preview);
+}
+
+pub(super) fn mask_key(value: &str) -> String {
+    let characters: Vec<char> = value.chars().collect();
+    let (prefix, suffix) = match characters.len() {
+        16.. => (7, 5),
+        8..=15 => (2, 2),
+        _ => (0, 0),
+    };
+    characters[..prefix]
+        .iter()
+        .copied()
+        .chain(std::iter::repeat_n('•', characters.len() - prefix - suffix))
+        .chain(characters[characters.len() - suffix..].iter().copied())
+        .collect()
 }
 
 struct TerminalRestore {

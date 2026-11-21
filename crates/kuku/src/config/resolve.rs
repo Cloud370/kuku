@@ -112,6 +112,7 @@ impl ConfigFile {
         for (name, entry) in &self.model {
             let think = match entry.think.as_deref() {
                 None | Some("medium") => ThinkLevel::Medium,
+                Some("provider-default") => ThinkLevel::ProviderDefault,
                 Some("off") => ThinkLevel::Off,
                 Some("low") => ThinkLevel::Low,
                 Some("high") => ThinkLevel::High,
@@ -128,6 +129,7 @@ impl ConfigFile {
                     context_window: entry.context_window.unwrap_or(200000),
                     max_output_tokens: entry.max_output_tokens,
                     purpose: entry.purpose.clone().unwrap_or_else(|| name.clone()),
+                    output: entry.output.unwrap_or_default(),
                 },
             );
         }
@@ -159,10 +161,7 @@ impl ConfigFile {
             );
         }
 
-        let default_tier = self
-            .default_model
-            .clone()
-            .unwrap_or_else(|| "balanced".to_string());
+        let default_tier = self.default_route().to_owned();
 
         let discovery = self.discovery.clone().unwrap_or_default();
 
@@ -207,22 +206,19 @@ impl ConfigFile {
     }
 
     pub(crate) fn validate_all(&self) -> Result<()> {
-        self.validate_required_tiers()?;
         self.validate_tier_entries()?;
         self.validate_provider_entries()?;
         self.validate_cross_references()
     }
 
-    pub(crate) fn validate_required_tiers(&self) -> Result<()> {
-        const REQUIRED_TIERS: &[&str] = &["strong", "balanced", "light"];
-        for &name in REQUIRED_TIERS {
-            if !self.model.contains_key(name) {
-                return Err(Error::ConfigLoad(format!(
-                    "required tier '{name}' is missing"
-                )));
+    fn default_route(&self) -> &str {
+        self.default_model.as_deref().unwrap_or_else(|| {
+            if self.model.len() == 1 {
+                self.model.keys().next().expect("one configured model")
+            } else {
+                "balanced"
             }
-        }
-        Ok(())
+        })
     }
 
     pub(crate) fn validate_tier_entries(&self) -> Result<()> {
@@ -240,7 +236,7 @@ impl ConfigFile {
             if let Some(ref think) = entry.think {
                 if ThinkLevel::from_str(think).is_err() {
                     return Err(Error::ConfigLoad(format!(
-                        "tier '{name}': think '{think}' is invalid, must be off/low/medium/high"
+                        "tier '{name}': think '{think}' is invalid, must be provider-default/off/low/medium/high"
                     )));
                 }
             }
@@ -264,10 +260,34 @@ impl ConfigFile {
 
     pub(crate) fn validate_provider_entries(&self) -> Result<()> {
         for (name, entry) in &self.provider {
-            if entry.base_url.trim().is_empty() {
+            if entry.base_url.trim().is_empty() && entry.options.endpoint_url.is_none() {
                 return Err(Error::ConfigLoad(format!(
-                    "provider '{name}': base_url is required"
+                    "provider '{name}': base_url or endpoint_url is required"
                 )));
+            }
+            super::resolve_request_url(
+                entry.format,
+                &entry.base_url,
+                entry.options.endpoint_url.as_deref(),
+            )
+            .map_err(|error| Error::ConfigLoad(format!("provider '{name}': {error}")))?;
+            if entry.options.models_url.is_some() {
+                super::resolve_models_url(entry.format, &entry.base_url, &entry.options)
+                    .map_err(|error| Error::ConfigLoad(format!("provider '{name}': {error}")))?;
+            }
+            entry
+                .options
+                .proxy
+                .validate()
+                .map_err(|error| Error::ConfigLoad(format!("provider '{name}': {error}")))?;
+            for (model, pricing) in &entry.options.model_pricing {
+                if model.trim().is_empty()
+                    || matches!(pricing, super::ModelPricing::Configured { rates } if !rates.valid())
+                {
+                    return Err(Error::ConfigLoad(format!(
+                        "provider '{name}': invalid USD pricing for model '{model}'"
+                    )));
+                }
             }
             let api_key = entry.api_key.trim();
             if api_key.is_empty() {
@@ -302,7 +322,7 @@ impl ConfigFile {
                 )));
             }
         }
-        let default_tier = self.default_model.as_deref().unwrap_or("balanced");
+        let default_tier = self.default_route();
         if !self.model.contains_key(default_tier) {
             return Err(Error::ConfigLoad(format!(
                 "default_model '{default_tier}' is not defined in [model]"

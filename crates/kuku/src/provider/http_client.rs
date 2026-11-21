@@ -1,14 +1,48 @@
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::sync::{Arc, LazyLock, Mutex, OnceLock, Weak};
 
+use lru::LruCache;
+use sha2::{Digest, Sha256};
 use tokio::runtime::{Handle, Id};
 use wreq::Client;
 use wreq_util::Emulation;
 
+use crate::config::ProviderProxy;
+use crate::{Error, Result};
+
+type ProxyPool = LruCache<(ProviderProxy, Option<[u8; 32]>), Client>;
+type CatalogSlots = LruCache<
+    (String, ProviderProxy, [u8; 32]),
+    Arc<tokio::sync::Mutex<super::discovery::CachedCatalog>>,
+>;
+
 #[derive(Default)]
 struct RuntimeClients {
     api: OnceLock<Client>,
+    direct: OnceLock<Client>,
+    proxies: OnceLock<Mutex<ProxyPool>>,
+    catalogs: OnceLock<Mutex<CatalogSlots>>,
     fetch: OnceLock<Client>,
+}
+
+pub(super) fn catalog_slot(
+    url: String,
+    proxy: ProviderProxy,
+    credential: &str,
+) -> Arc<tokio::sync::Mutex<super::discovery::CachedCatalog>> {
+    let clients = runtime_clients();
+    let mut entries = clients
+        .catalogs
+        .get_or_init(|| Mutex::new(LruCache::new(NonZeroUsize::new(8).unwrap())))
+        .lock()
+        .unwrap();
+    entries
+        .get_or_insert(
+            (url, proxy, Sha256::digest(credential).into()),
+            Arc::default,
+        )
+        .clone()
 }
 
 fn runtime_clients() -> Arc<RuntimeClients> {
@@ -31,16 +65,60 @@ fn runtime_clients() -> Arc<RuntimeClients> {
     clients
 }
 
-pub(crate) fn api_client() -> Client {
-    runtime_clients()
-        .api
-        .get_or_init(|| {
-            Client::builder()
-                .user_agent(concat!("kuku/", env!("CARGO_PKG_VERSION")))
-                .build()
-                .expect("default HTTP client builds")
-        })
-        .clone()
+fn api_builder() -> wreq::ClientBuilder {
+    Client::builder().user_agent(concat!("kuku/", env!("CARGO_PKG_VERSION")))
+}
+
+pub(crate) fn api_client(settings: &ProviderProxy) -> Result<Client> {
+    let clients = runtime_clients();
+    let (url, auth) = match settings {
+        ProviderProxy::Environment => {
+            return Ok(clients
+                .api
+                .get_or_init(|| api_builder().build().expect("default HTTP client builds"))
+                .clone());
+        }
+        ProviderProxy::Direct => {
+            return Ok(clients
+                .direct
+                .get_or_init(|| {
+                    api_builder()
+                        .no_proxy()
+                        .build()
+                        .expect("direct HTTP client builds")
+                })
+                .clone());
+        }
+        ProviderProxy::Explicit { url, auth } => (url, auth),
+    };
+    settings.validate()?;
+    let password = auth
+        .as_ref()
+        .map(|auth| auth.password_reference()?.resolve())
+        .transpose()?;
+    let fingerprint = password
+        .as_ref()
+        .map(|password| Sha256::digest(password).into());
+    let mut pools = clients
+        .proxies
+        .get_or_init(|| Mutex::new(LruCache::new(NonZeroUsize::new(16).unwrap())))
+        .lock()
+        .unwrap();
+    let cache_key = (settings.clone(), fingerprint);
+    if let Some(client) = pools.get(&cache_key) {
+        return Ok(client.clone());
+    }
+    let mut proxy = wreq::Proxy::all(url.as_str())
+        .map_err(|_| Error::ConfigLoad("Invalid provider proxy address.".into()))?;
+    if let Some((auth, password)) = auth.as_ref().zip(password) {
+        proxy = proxy.basic_auth(&auth.username, &password);
+    }
+    let client = api_builder()
+        .proxy(proxy)
+        .build()
+        .map_err(|_| Error::ConfigLoad("Could not configure the provider proxy.".into()))?;
+    pools.put(cache_key, client.clone());
+    Ok(client)
 }
 
 pub(crate) fn fetch_client() -> Client {
@@ -79,7 +157,10 @@ mod tests {
         });
         for runtime in [&first, &second, &first] {
             runtime.block_on(async {
-                for client in [super::api_client(), super::fetch_client()] {
+                for client in [
+                    super::api_client(&crate::config::ProviderProxy::Environment).unwrap(),
+                    super::fetch_client(),
+                ] {
                     let response = tokio::time::timeout(Duration::from_secs(5), async {
                         client
                             .post(server.url("/runtime-pool"))

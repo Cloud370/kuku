@@ -77,6 +77,8 @@ pub struct SessionOptions {
     pub session_id: Option<String>,
     /// Host configuration containing named connections and model tiers.
     pub config: Config,
+    /// Optional host-published route updates for later preparation boundaries.
+    pub model_config_updates: Option<Arc<arc_swap::ArcSwap<Config>>>,
     /// Optional external prompt asset directory.
     pub prompts_dir: Option<PathBuf>,
     /// Session resource limits.
@@ -92,6 +94,17 @@ pub struct SessionOptions {
 }
 
 impl SessionOptions {
+    pub(crate) fn model_config(&self) -> std::borrow::Cow<'_, Config> {
+        let Some(updates) = &self.model_config_updates else {
+            return std::borrow::Cow::Borrowed(&self.config);
+        };
+        let mut current = (**updates.load()).clone();
+        if current.tier(&self.config.default_tier).is_some() {
+            current.default_tier.clone_from(&self.config.default_tier);
+        }
+        std::borrow::Cow::Owned(current)
+    }
+
     /// Configure a session without changing process directories or environment.
     pub fn new(
         workspace: impl Into<PathBuf>,
@@ -103,6 +116,7 @@ impl SessionOptions {
             data_dir: data_dir.into(),
             session_id: None,
             config,
+            model_config_updates: None,
             prompts_dir: None,
             limits: RuntimeLimits::default(),
             workspace_host: crate::WorkspaceExecutionHost::default(),
@@ -216,6 +230,9 @@ pub struct AgentConfig {
     pub model: Option<String>,
     /// Explicit provider-supported reasoning setting.
     pub reasoning_effort: Option<String>,
+    /// Media output overriding the route default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<crate::config::RequestedOutput>,
     /// Explicit provider-supported service setting.
     pub service_tier: Option<String>,
     /// Maximum tokens returned by one model request.
@@ -398,6 +415,9 @@ pub struct UsageTotals {
     pub model_requests: u64,
     /// Responses missing either input or output usage, so reported totals may be partial.
     pub unreported_requests: u64,
+    /// USD amounts and evidence counts for this agent's requests.
+    #[serde(default)]
+    pub costs: CostTotals,
     /// Requests that reported their total input tokens.
     #[serde(default)]
     pub input_reported_requests: u64,
@@ -421,7 +441,23 @@ pub struct UsageTotals {
     pub latest_request: Option<ModelUsageSample>,
 }
 
+/// Request amounts rounded to billionths of a US dollar.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CostTotals {
+    pub reported_nanodollars: u64,
+    pub estimated_nanodollars: u64,
+    pub reported_requests: u64,
+    pub estimated_requests: u64,
+}
+
 impl UsageTotals {
+    /// Requests with unavailable monetary amounts, including unsettled attempts.
+    pub fn unknown_cost_requests(&self) -> u64 {
+        self.model_requests
+            .saturating_sub(self.costs.reported_requests)
+            .saturating_sub(self.costs.estimated_requests)
+    }
+
     /// Return whether every counted request reported its input tokens.
     pub fn input_tokens_complete(&self) -> bool {
         self.complete(self.input_tokens, self.input_reported_requests)
@@ -551,6 +587,34 @@ pub struct AgentView {
     pub cursor: u64,
     /// Selected agent's retractable deliveries in receipt order.
     pub pending_inputs: Vec<PendingInput>,
+}
+
+/// Monetary usage across all retained Agents at one Session snapshot cursor.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionCostSummary {
+    pub reported_nanodollars: u64,
+    pub estimated_nanodollars: u64,
+    pub unknown_requests: u64,
+}
+
+impl AgentView {
+    pub fn session_costs(&self) -> SessionCostSummary {
+        self.agents
+            .iter()
+            .fold(SessionCostSummary::default(), |mut total, agent| {
+                let usage = &agent.usage;
+                total.reported_nanodollars = total
+                    .reported_nanodollars
+                    .saturating_add(usage.costs.reported_nanodollars);
+                total.estimated_nanodollars = total
+                    .estimated_nanodollars
+                    .saturating_add(usage.costs.estimated_nanodollars);
+                total.unknown_requests = total
+                    .unknown_requests
+                    .saturating_add(usage.unknown_cost_requests());
+                total
+            })
+    }
 }
 
 /// Durable request for selected information at an agent's safe waiting boundary.

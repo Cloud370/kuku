@@ -14,17 +14,17 @@ python3 scripts/acceptance/run.py integration
 
 Windows workspace 选择器串行运行独立 Rust 测试用例（`--test-threads=1`），各用例内部验证的并发保持不变。Shell 语法和输出检查复用子进程启动预算；进程超时测试先观察真实子进程就绪，再推进 Tokio 时钟触发截止时间，并检查实际进程清理。
 
-`contract` 启用 `kuku/test_support`，运行 workspace 测试，包含受 feature 控制的运行时套件、共享客户端和 TUI 测试。某个测试程序失败后会继续运行其余测试程序，任一测试失败仍返回失败。`protocol` 选择 provider 适配、配置、错误、集成、追踪及缓存通知固定输入，无需付费请求。`integration` 依次执行只读格式检查、启用测试 feature 的 workspace／all-target Clippy 和 `contract`。草稿 PR 与 main 推送只运行一套 Linux workspace 契约与 Python 工具检查，加上格式检查和 Clippy。进入评审的 PR 与手动触发的 CI 执行 Linux、macOS、Windows 三平台契约及 Python 工具检查，并运行安装终端、Windows 桌面与 Linux 浏览器交接验收，保留有界证据。浏览器交接复用 Linux 已安装程序，不再由另一个 workflow 重复构建。真实模型调用和 Linux benchmark 容器需要在本地明确选择。
+`contract` 启用 `kuku/test_support`，运行 workspace 测试，包含受 feature 控制的运行时套件、共享客户端和 TUI 测试。某个测试程序失败后会继续运行其余测试程序，任一测试失败仍返回失败。`protocol` 选择 provider 适配、配置、错误、集成、追踪及缓存通知固定输入，无需付费请求。`integration` 依次执行只读格式检查、启用测试 feature 的 workspace／all-target Clippy 和 `contract`。草稿 PR 与 main 推送只运行一套 Linux workspace 契约与 Python 工具检查，加上格式检查和 Clippy。进入评审的 PR 在 Linux 运行完整 workspace 契约、安装终端和浏览器验收。macOS 和 Windows 运行原生安装冒烟测试，覆盖首启、模型编辑、终端缩放、粘贴和终端恢复。Python 工具检查在三个平台运行。Linux 浏览器和终端验收共用同一个已安装程序。真实模型调用和 Linux benchmark 容器需要在本地明确选择。
 
 契约测试采集保留原有 64 KiB 输出尾部和完整输出 hash。独立失败摘要在 16 KiB UTF-8 字节范围内保留失败测试名、panic 位置与少量上下文，以及 Cargo 失败 target。`failure_summary.truncated` 标记遗漏内容；失败仍由子进程退出状态判定。
 
 契约测试、release 安装和 PTY 构建通过 Cargo 原生 `--timings` 在 `target/cargo-timings/` 生成报告。CI 将其保存为 `build-timings-<os>` artifact，以便分别评估编译与测试执行时间。判断耗时变化是否来自源码前，先比较缓存状态、feature 与 profile。
 
-两个 workflow 都支持目标为 `main` 或 `feat/interactive-clients` 的 PR，以及 main 推送。WebUI 检查的路径范围限于 `apps/web/**` 和自身 workflow，Rust 改动不再触发重复的安装浏览器构建。PR 检查统一使用 GitHub 的 merge-ref。记录实际 commit/tree，只有 tree 相同才复用源分支证据。同一 PR 的旧运行会被取消。Python 工具检查失败不会阻止 Rust 契约与安装验收作业收集各自结果。失败后保留 Rust 依赖缓存；Cargo 仍校验构建指纹。PTY helper 共享契约测试的 workspace/`kuku/test_support` feature 解析，并记录编译身份。
+两个 workflow 都支持目标为 `main` 或 `feat/interactive-clients` 的 PR，以及 main 推送。WebUI 检查的路径范围限于 `apps/web/**` 和自身 workflow，Rust 改动不再触发重复的安装浏览器构建。PR 检查统一使用 GitHub 的 merge-ref。记录实际 commit/tree，只有 tree 相同才复用源分支证据。同一 PR 的旧运行会被取消。Python 工具检查失败不会阻止 Rust 契约与安装验收作业收集各自结果。失败后保留 Rust 依赖缓存；Cargo 仍校验构建指纹。PTY helper 共享契约测试的 workspace/`kuku/test_support` feature 解析，并记录编译身份。CI 每轮只构建一次 Web 资源。各原生任务用这些资源安装对应平台的程序，也可复用同一合并提交、OS、架构和编译器的缓存程序。验收前校验安装程序的版本。
 
-手动 CI 默认 `platform=all`。排查单个平台时可选 `linux`、`macos` 或 `windows`；运行标题标明所选范围，不同平台的运行不会互相取消。单平台运行只提供定向证据，不能替代合并前的完整门禁。
+手动 CI 默认 `platform=all`。排查单个平台时可选 `linux`、`macos` 或 `windows`；运行标题标明所选范围，不同平台的运行不会互相取消。手动触发会在所选平台运行完整契约和安装验收，包括 Windows 桌面和 Linux 浏览器交接。
 
-草稿 PR 通过不代表安装验收通过。合并前，将 PR 转为待评审或为目标版本以 `platform=all` 手动触发 CI，并要求完整矩阵通过。完整验收保留带嵌入 Web 资源的真实 release 安装；选择 Windows 桌面检查时必须完成桌面准备。独立安装场景使用隔离服务，单个场景失败后继续其余场景，保留原始错误并让整体返回失败。现有每条命令的超时界限保持不变。每个场景打印耗时，最多 16 KiB 的失败详情在最后一个场景之后再次输出，避免后续输出挤掉失败终端画面。受控模型只有核实工具结果后才能回复成功，模拟成功消息本身不能证明工具成功。命令可能在前台完成，也可能返回 Job 句柄；固定模型通过 `wait_job` 等待并核对持久化命令事实后才能报告成功。安装恢复场景还会明确等到自动转为 Job，再通过正常历史滚动检查重开的启动卡片和完成通知。需要执行持续活跃的测试会保持模型请求，完成相关断言后再释放响应，不依赖固定响应延迟。
+草稿 PR 通过不代表安装验收通过。合并前要求目标版本的待评审 PR 检查通过。发布候选版本和需要完整跨平台排查的改动，以 `platform=all` 手动触发全量检查。安装验收使用带嵌入 Web 资源的 release 程序；选择 Windows 桌面检查时必须完成桌面准备。独立安装场景使用隔离服务，单个场景失败后继续其余场景，保留原始错误并让整体返回失败。现有每条命令的超时界限保持不变。每个场景打印耗时，最多 16 KiB 的失败详情在最后一个场景之后再次输出，避免后续输出挤掉失败终端画面。受控模型只有核实工具结果后才能回复成功，模拟成功消息本身不能证明工具成功。命令可能在前台完成，也可能返回 Job 句柄；固定模型通过 `wait_job` 等待并核对持久化命令事实后才能报告成功。安装恢复场景还会明确等到自动转为 Job，再通过正常历史滚动检查重开的启动卡片和完成通知。需要执行持续活跃的测试会保持模型请求，完成相关断言后再释放响应，不依赖固定响应延迟。
 
 选择入口将 `CARGO_TARGET_DIR` 固定为当前 checkout 的 `target/`，不改变宿主环境。每个 worktree 使用独立 target，即使串行构建也不共享：workspace 产物可能错误复用另一源码树的缓存。本地 target 可以使用第三方依赖缓存作为种子，但首次构建前先执行一次 `cargo clean --target-dir target -p kuku -p kuku-cli -p kuku-server -p kuku-client -p kuku-tui -p kuku-app` 清除 workspace 产物。记录提交／工作树、target 目录、feature、profile 和二进制 hash；共享 target 构建的冻结二进制本身不能证明对应的源码版本。
 
@@ -62,6 +62,7 @@ cargo test -p kuku --features test_support --test provider_integration --test qu
 
 ```bash
 python3 scripts/acceptance/run.py interactive
+python3 scripts/acceptance/run.py interactive --native-smoke
 python3 scripts/acceptance/run.py interactive --archive PATH_TO_PLATFORM_ARCHIVE --browser
 python3 scripts/acceptance/run.py interactive --archive NEW_ARCHIVE --upgrade-from OLD_ARCHIVE
 python3 scripts/acceptance/run.py interactive --desktop --archive PATH_TO_LINUX_ARCHIVE

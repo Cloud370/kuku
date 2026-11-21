@@ -19,6 +19,7 @@ pub(crate) struct ResolveConfigInput {
     pub(crate) reasoning_effort: Option<String>,
     pub(crate) service_tier: Option<String>,
     pub(crate) config: Option<Config>,
+    pub(crate) output: Option<crate::config::RequestedOutput>,
 }
 
 pub(crate) fn resolve_config(input: ResolveConfigInput) -> Result<ResolvedProvider> {
@@ -26,11 +27,7 @@ pub(crate) fn resolve_config(input: ResolveConfigInput) -> Result<ResolvedProvid
     let tier = select_tier(cfg, input.tier.as_deref())?;
     let (name, connection) = select_connection(cfg, tier, &input)?;
     let kind = match connection {
-        Some(connection) => match connection.format {
-            ProviderFormat::Anthropic => ProviderKind::Anthropic,
-            ProviderFormat::OpenAiChat => ProviderKind::OpenAiCompatible,
-            ProviderFormat::OpenAiResponses => ProviderKind::OpenAiResponses,
-        },
+        Some(connection) => ProviderKind::from(connection.format),
         None => input.provider.map(ProviderKind::from).ok_or_else(|| {
             Error::MissingProviderConfig(format!("connection '{name}' is not configured"))
         })?,
@@ -71,8 +68,14 @@ pub(crate) fn resolve_config(input: ResolveConfigInput) -> Result<ResolvedProvid
     let options = connection
         .map(|connection| connection.options.clone())
         .unwrap_or_default();
-    let capabilities = resolve_capabilities(&base_url, &model, kind, &options);
-    let settings_tier = tier.filter(|tier| input.tier.is_some() || tier.provider == name);
+    let endpoint = crate::config::resolve_request_url(
+        kind.format(),
+        &base_url,
+        options.endpoint_url.as_deref(),
+    )?;
+    let capabilities = resolve_capabilities(&endpoint, &model, kind, &options);
+    let settings_tier =
+        tier.filter(|tier| input.tier.is_some() || (tier.provider == name && tier.model == model));
     let think = settings_tier.map(|tier| tier.think);
     let native_reasoning = input
         .reasoning_effort
@@ -82,6 +85,20 @@ pub(crate) fn resolve_config(input: ResolveConfigInput) -> Result<ResolvedProvid
         .service_tier
         .clone()
         .or_else(|| settings_tier.and_then(|tier| tier.service_tier.clone()));
+    let output = input
+        .output
+        .or_else(|| settings_tier.map(|tier| tier.output))
+        .unwrap_or_default();
+    if output == crate::config::RequestedOutput::Image
+        && capabilities
+            .output_modalities
+            .as_ref()
+            .is_some_and(|media| !media.value.iter().any(|item| item == "image"))
+    {
+        return Err(Error::InvalidArgument(format!(
+            "connection '{name}', model '{model}' does not declare image output"
+        )));
+    }
     let settings = resolve_settings(
         &name,
         &capabilities,
@@ -130,6 +147,7 @@ pub(crate) fn resolve_config(input: ResolveConfigInput) -> Result<ResolvedProvid
         api_key,
         max_context_tokens: tier.map(|tier| tier.context_window).unwrap_or(200_000),
         max_output_tokens,
+        output,
         think_level: think.unwrap_or(ThinkLevel::Off),
         thinking: Default::default(),
         options,

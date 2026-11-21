@@ -24,6 +24,7 @@ export interface AgentConfig {
   reasoning_effort?: string | null;
   service_tier?: string | null;
   workspace?: string | null;
+  output?: RequestedOutput | null;
 }
 
 export type SendTiming = "steer" | "next_turn";
@@ -73,10 +74,32 @@ export interface AgentSummary {
   pending_inputs: number;
 }
 
+type RequestedOutput = "text" | "image";
+type CapabilitySource = "model_list" | "protocol_model_list" | "manual" | "protocol_manual" | "adapter_profile";
+
+interface Declaration<T> {
+  value: T;
+  source: CapabilitySource;
+}
+
+interface ModelCapabilities {
+  reasoning_efforts: string[];
+  reasoning_source?: CapabilitySource | null;
+  reasoning_default?: Declaration<string> | null;
+  input_modalities?: Declaration<string[]> | null;
+  output_modalities?: Declaration<string[]> | null;
+  interfaces?: Declaration<string[]> | null;
+  system_prompt_update?: Declaration<string> | null;
+  media_adapter: "text_only";
+}
+
 interface ModelSelection {
   model: string;
   connection: string;
+  request_url?: string;
   settings: { reasoning_effort?: string | null };
+  capabilities?: ModelCapabilities;
+  output?: RequestedOutput;
 }
 
 export interface Snapshot {
@@ -147,6 +170,11 @@ export interface ModelTier {
   connection: string;
   model: string;
   error?: { code: string; message: string };
+  purpose?: string | null;
+  request_url?: string | null;
+  settings?: ModelSelection["settings"] | null;
+  capabilities?: ModelCapabilities | null;
+  output?: RequestedOutput | null;
 }
 
 export type LiveEvent =

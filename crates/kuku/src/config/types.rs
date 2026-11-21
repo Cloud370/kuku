@@ -21,6 +21,23 @@ pub enum ProviderFormat {
 }
 
 impl ProviderFormat {
+    /// Default base URL used when the input is empty.
+    pub fn default_base_url(self) -> &'static str {
+        match self {
+            Self::Anthropic => "https://api.anthropic.com",
+            Self::OpenAiChat | Self::OpenAiResponses => "https://api.openai.com/v1",
+        }
+    }
+
+    /// Standard terminal path segment for this wire protocol.
+    pub fn request_suffix(self) -> &'static str {
+        match self {
+            Self::Anthropic => "/messages",
+            Self::OpenAiChat => "/chat/completions",
+            Self::OpenAiResponses => "/responses",
+        }
+    }
+
     pub fn as_str(&self) -> &'static str {
         match self {
             ProviderFormat::Anthropic => "anthropic",
@@ -112,11 +129,15 @@ pub struct ModelEntry {
     pub max_output_tokens: Option<u32>,
     #[serde(default)]
     pub purpose: Option<String>,
+    /// Requested media output for Agents using this route.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<super::RequestedOutput>,
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProviderEntry {
     pub format: ProviderFormat,
+    #[serde(default)]
     pub base_url: String,
     pub api_key: String,
     #[serde(default, flatten)]
@@ -274,6 +295,8 @@ pub struct TierConfig {
     /// Optional ceiling for one model response.
     pub max_output_tokens: Option<u32>,
     pub purpose: String,
+    /// Requested media output inherited by Agents on this route.
+    pub output: super::RequestedOutput,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -303,6 +326,9 @@ impl fmt::Debug for ApiKey {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ThinkLevel {
+    /// Omit the effort setting and use the upstream default.
+    #[serde(rename = "provider-default")]
+    ProviderDefault,
     #[serde(rename = "off")]
     Off,
     #[serde(rename = "low")]
@@ -316,6 +342,7 @@ pub enum ThinkLevel {
 impl ThinkLevel {
     pub fn as_str(&self) -> &'static str {
         match self {
+            ThinkLevel::ProviderDefault => "provider-default",
             ThinkLevel::Off => "off",
             ThinkLevel::Low => "low",
             ThinkLevel::Medium => "medium",
@@ -325,7 +352,7 @@ impl ThinkLevel {
 
     pub fn overhead_tokens(&self) -> u32 {
         match self {
-            ThinkLevel::Off => 0,
+            ThinkLevel::ProviderDefault | ThinkLevel::Off => 0,
             ThinkLevel::Low => 1024,
             ThinkLevel::Medium => 4096,
             ThinkLevel::High => 16000,
@@ -338,12 +365,13 @@ impl FromStr for ThinkLevel {
 
     fn from_str(s: &str) -> Result<Self> {
         match s {
+            "provider-default" => Ok(ThinkLevel::ProviderDefault),
             "off" => Ok(ThinkLevel::Off),
             "low" => Ok(ThinkLevel::Low),
             "medium" => Ok(ThinkLevel::Medium),
             "high" => Ok(ThinkLevel::High),
             _ => Err(Error::ConfigLoad(format!(
-                "unknown ThinkLevel: '{s}', must be off/low/medium/high"
+                "unknown ThinkLevel: '{s}', must be provider-default/off/low/medium/high"
             ))),
         }
     }
@@ -362,6 +390,12 @@ pub struct ResolvedThinking {
 pub struct TierInfo {
     pub name: String,
     pub purpose: String,
+    /// Model identifier for this route.
+    pub model: String,
+    /// Effective reasoning when supplied by the resolver.
+    pub reasoning_effort: Option<String>,
+    /// Requested output for this route.
+    pub output: super::RequestedOutput,
 }
 
 // ── Config methods ──
@@ -404,6 +438,9 @@ impl Config {
             .map(|(name, tier)| TierInfo {
                 name: name.clone(),
                 purpose: tier.purpose.clone(),
+                model: tier.model.clone(),
+                reasoning_effort: tier.reasoning_effort.clone(),
+                output: tier.output,
             })
             .collect()
     }
@@ -418,6 +455,12 @@ impl Config {
             out.push_str(&format!("provider = \"{}\"\n", tier.provider));
             out.push_str(&format!("model = \"{}\"\n", tier.model));
             out.push_str(&format!("think = \"{}\"\n", tier.think.as_str()));
+            if let Some(effort) = &tier.reasoning_effort {
+                out.push_str(&format!("reasoning_effort = {effort:?}\n"));
+            }
+            if tier.output == super::RequestedOutput::Image {
+                out.push_str("output = \"image\"\n");
+            }
             out.push_str(&format!("context_window = {}\n", tier.context_window));
             if let Some(max_output_tokens) = tier.max_output_tokens {
                 out.push_str(&format!("max_output_tokens = {max_output_tokens}\n"));
@@ -431,7 +474,15 @@ impl Config {
         for (name, provider) in &self.providers {
             out.push_str(&format!("[provider.{name}]\n"));
             out.push_str(&format!("format = \"{}\"\n", provider.format.as_str()));
-            out.push_str(&format!("base_url = \"{}\"\n", provider.base_url));
+            if !provider.base_url.is_empty() {
+                out.push_str(&format!("base_url = {:?}\n", provider.base_url));
+            }
+            if let Some(endpoint) = &provider.options.endpoint_url {
+                out.push_str(&format!("endpoint_url = {endpoint:?}\n"));
+            }
+            if let Some(models) = &provider.options.models_url {
+                out.push_str(&format!("models_url = {models:?}\n"));
+            }
             match &provider.api_key {
                 ApiKey::Plaintext(_) => out.push_str("api_key = \"<redacted>\"\n"),
                 ApiKey::Env(env) => out.push_str(&format!(

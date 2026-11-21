@@ -3,9 +3,12 @@
 import difflib
 import json
 import re
+import threading
+import time
 from urllib.parse import urlencode
 
-from interactive_fixture import InstalledClient, TOOL_BRIEF, TOOL_OUTPUT, eventually, json_response, run_cases
+from interactive_fixture import InstalledClient, Response, TOOL_BRIEF, TOOL_OUTPUT, eventually, json_response, run_cases
+from interactive_model_recovery import assert_live_elapsed, assert_testing_navigation, assert_wide_setup, recovery_cases
 from interactive_rendering import has_selected_queued_input
 
 
@@ -23,6 +26,9 @@ def lifecycle_cases(binary, bridge, directory):
                      ("rewind", readonly_rewind),
                      ("rewind-history", paginated_rewind),
                  ))
+    cases.append(("model-setup", lambda: shared_model_editor(binary, bridge, directory / "model-setup")))
+    cases.append(("setup-probe-progress", lambda: setup_probe_progress(binary, bridge, directory / "probe-progress")))
+    cases.append(("setup-recovery", lambda: recovery_cases(binary, bridge, directory / "setup-recovery")))
     cases.append(("auth-repair", lambda: runtime_credential_repair(binary, bridge, directory / "auth-repair")))
     run_cases(cases)
 
@@ -105,6 +111,15 @@ def first_run_credential_repair(binary, bridge, directory):
 
     def dispatch(method, path, headers, body):
         assert headers.get("x-api-key") == key, "Repaired credential did not reach the provider"
+        if method == "GET":
+            return json_response({}, 404)
+        request = json.loads(body)
+        if not request.get("stream"):
+            assert request.get("thinking") == {"type": "disabled"}
+            assert request["max_tokens"] == 4096, request["max_tokens"]
+            if any(part["type"] == "image" for part in request["messages"][0]["content"]):
+                return json_response({"content": [], "stop_reason": "max_tokens"})
+            return json_response({"content": [{"type": "text", "text": "377"}]})
         authenticated.append(True)
         return original_dispatch(method, path, headers, body)
 
@@ -117,19 +132,33 @@ def first_run_credential_repair(binary, bridge, directory):
         workspace = client.workspace("work-first-run")
         prompt = "Verify the repaired first-run settings"
         with client.terminal(workspace) as terminal:
-            terminal.expect("Step 1/5", also=("Existing · test-anthropic",))
-            terminal.press("\r")
-            terminal.expect("Step 2/5")
-            terminal.press("\r")
-            missing = terminal.expect("Step 3/5", also=("not detected", "› Paste API key"))["screen"]
+            terminal.expect("Find and test models", also=("may cost money",))
             client.provider.assert_idle()
             terminal.press("\r")
-            terminal.expect("Paste a key; every character is masked.")
+            terminal.expect("Choose a provider", also=("Existing · test-anthropic",))
+            terminal.press("\r\r\r")
+            terminal.expect("Paste your API key")
+            terminal.press("\x1b")
+            missing = terminal.expect("API key source", also=("not detected", "› Paste API key"))["screen"]
+            client.provider.assert_idle()
+            terminal.press("\r")
+            terminal.expect("Paste your API key")
             terminal.press(f"\x1b[200~{key}\x1b[201~")
-            masked = terminal.expect("•" * len(key))["screen"]
+            masked = terminal.expect(f"{key[:7]}{'•' * (len(key) - 12)}{key[-5:]}")["screen"]
             assert key not in masked
             terminal.press("\r")
-            terminal.expect("Save and continue")
+            terminal.expect("HTTP 404")
+            terminal.press("\x1b[B\r")
+            terminal.expect("Model ID")
+            terminal.press("\r")
+            terminal.expect("› Model tests", also=("2/2 finished", "Ready", "Image unverified", "Save and continue"), absent=("Fix failed models",))
+            terminal.press("\r")
+            terminal.expect(
+                "Not verified · output limit",
+                also=("› Image input", "✓ Received", "Cost · Unknown"),
+            )
+            terminal.press("\r")
+            terminal.expect("› Save and continue")
             terminal.press("\r")
             terminal.expect("New session", state="Ready")
             client.provider.assert_idle()
@@ -154,6 +183,384 @@ def first_run_credential_repair(binary, bridge, directory):
         print("First-run credential repair kept the key masked and used it for the first reply.")
 
 
+def shared_model_editor(binary, bridge, directory):
+    key = "fixture-shared-model-key"
+    instance = InstalledClient(binary, bridge, directory)
+    original_dispatch = instance.provider.dispatch
+    addresses = []
+
+    def dispatch(method, path, headers, body):
+        assert headers.get("x-api-key") == key
+        addresses.append((method, path))
+        if method == "GET" and path == "/gateway/models":
+            return json_response({"data": [{"id": "beta"}, {"id": "alpha"}, {"id": "beta"}]})
+        if not json.loads(body).get("stream"):
+            return json_response({"content": [{"type": "text", "text": "377"}]})
+        return original_dispatch(method, "/v1/messages" if path == "/gateway/messages" else path, headers, body)
+
+    instance.provider.dispatch = dispatch
+    with instance as client:
+        config = client.home / "config.toml"
+        endpoint = re.search(r'base_url = "(http://127\.0\.0\.1:[0-9]+)"', config.read_text())[1]
+        config.write_text("")
+        workspace = client.workspace("work-model-setup")
+        with client.terminal(workspace) as terminal:
+            terminal.request("resize", rows=32, cols=110)
+            terminal.expect("Set up a model", also=("Esc exit",))
+            terminal.press("\r")
+            providers = terminal.expect("› New custom connection", also=("Esc previous step",))["screen"]
+            assert providers.index("New custom connection") < providers.index("Preset")
+            terminal.press("\r")
+            terminal.expect("API URL", also=("Esc previous step",))
+            terminal.press("\x1b")
+            terminal.expect("› New custom connection")
+            terminal.press("\r")
+            terminal.expect("API URL")
+            terminal.type(f"{endpoint}/gateway/messages")
+            terminal.expect(f"Request · {endpoint}/gateway/messages")
+            terminal.press("\r")
+            terminal.expect("Use a proxy?")
+            terminal.press("\r")
+            terminal.expect("Paste your API key")
+            terminal.press(f"\x1b[200~{key}\x1b[201~")
+            terminal.expect(f"{key[:7]}{'•' * (len(key) - 12)}{key[-5:]}", absent=(key,))
+            assert addresses == []
+            terminal.press("\r")
+            catalog = terminal.expect("Choose models", also=("beta", "alpha"))["screen"]
+            assert catalog.index("beta") < catalog.index("alpha") and catalog.count("beta") == 1
+            terminal.press("alpha \x01beta \r")
+            defaults = terminal.expect("Choose the default model", also=("› beta", "alpha"))["screen"]
+            assert defaults.index("beta") < defaults.index("alpha")
+            terminal.press("\x1b")
+            terminal.expect("Choose models", also=("2 selected", "Esc previous step"))
+            terminal.press("\r")
+            terminal.expect("Choose the default model")
+            terminal.press("\r")
+            terminal.request("resize", rows=20, cols=60)
+            save_review = terminal.expect(
+                "Save setup", also=("Default", "beta", "API URL", "Settings", "› Model tests"),
+                absent=("Model capabilities", "Save and exit"),
+            )["screen"]
+            terminal.press("\x1b[B\r")
+            settings_review = terminal.expect(
+                "Model capabilities", also=("Provider default", "Costs", "Save and exit"),
+                absent=("API URL",),
+            )["screen"]
+            terminal.press("\x1b")
+            terminal.expect("› Model tests")
+            terminal.press("\x1b[A")
+            terminal.expect("› Save and continue")
+            terminal.press("\r")
+            terminal.expect("New session", state="Ready", absent=("Connected", "F2 Restart"))
+            terminal.request("resize", rows=32, cols=110)
+            terminal.submit("Use the first saved default")
+            first = client.provider.next("Use the first saved default")
+            assert first.request["model"] == "beta"
+            assert "thinking" not in first.request and "output_config" not in first.request
+            first.text("Saved default sent a text turn.")
+            terminal.expect("Saved default sent a text turn.", state="Finished")
+
+            draft = "keep the unsent draft"
+            terminal.type(draft)
+            terminal.press("\x0c")
+            terminal.expect("Add model or connection")
+            terminal.press("\r")
+            terminal.expect("Set up a model")
+            terminal.press("\r")
+            terminal.expect(f"Existing · {endpoint.removeprefix('http://')}", absent=("Existing · custom",))
+            terminal.press("\r")
+            terminal.expect("Choose models")
+            terminal.press("\x1b")
+            terminal.expect("Enter model ID")
+            terminal.press("\x1b[B\r")
+            terminal.expect("Model ID")
+            terminal.type("gamma")
+            terminal.press("\r")
+            terminal.expect("› Model tests", also=("Save models", "API URL", "gamma"))
+            terminal.press("\x1b[A\r")
+            terminal.expect("Tier · gamma")
+            terminal.press("gamma")
+            match = terminal.expect("/ gamma", also=("› Tier · gamma",))["screen"]
+            terminal.click_text(match, "Tier · gamma")
+            terminal.expect("Use in this Session", also=("Edit", "Set as default"))
+            terminal.press("\x1b[B\r")
+            terminal.expect("Set up a model")
+            terminal.press("\r")
+            terminal.expect("API URL")
+            terminal.press("\r\r")
+            terminal.expect("Leave blank to keep your saved key.")
+            terminal.press("\r")
+            terminal.expect("Keep current model")
+            terminal.press("\x1b[B\r")
+            terminal.expect("Model ID", also=("gamma",))
+            terminal.press("\x01")
+            terminal.type("delta")
+            terminal.press("\r")
+            terminal.expect("› Model tests", also=("Save models", "API URL", "delta"))
+            terminal.press("\x1b[A\r")
+            terminal.expect("Tier · gamma", also=("delta",))
+            terminal.press("\x1b")
+            terminal.expect(draft, absent=("Connected", "F2 Restart", "Model route"))
+            assert len(list((client.home / "credentials").iterdir())) == 1
+            catalog = client.request("GET", "/models").as_json()
+            assert catalog["default_tier"] == "default"
+            for item in catalog["tiers"]:
+                assert item["capabilities"]["reasoning_source"] is None
+                assert item["capabilities"]["input_modalities"] is None
+                assert item["capabilities"]["output_modalities"] is None
+            assert next(item for item in catalog["tiers"] if item["name"] == "default")["model"] == "beta"
+            assert next(item for item in catalog["tiers"] if item["name"] == "gamma")["model"] == "delta"
+
+            terminal.press("\x0c")
+            terminal.expect("Tier · gamma", also=("delta",))
+            terminal.press("gamma")
+            match = terminal.expect("/ gamma", also=("› Tier · gamma",))["screen"]
+            terminal.click_text(match, "Tier · gamma")
+            terminal.expect("Use in this Session")
+            terminal.press("\r")
+            terminal.expect(draft, also=("delta",), absent=("Model route", "Model settings"))
+            terminal.press("\r")
+            active = client.provider.next(draft)
+            assert active.request["model"] == "delta"
+            draft = "draft across busy and allowed restart"
+            terminal.type(draft)
+            previous = client.connection()
+            terminal.press("\x10/restart\r")
+            terminal.expect("Restart local service", also=("› Cancel",))
+            terminal.press("\x1b[A\r")
+            terminal.expect("Restart deferred", also=(draft,))
+            client.assert_current_service(previous)
+            active.text("Edited route completed.")
+            terminal.expect("Edited route completed.", state="Finished")
+
+            terminal.press("\x10/restart\r")
+            terminal.expect("Restart local service", also=("› Cancel",))
+            terminal.press("\r")
+            terminal.expect(draft, absent=("Restart local service",))
+            client.assert_current_service(previous)
+            terminal.press("\x10/restart\r")
+            terminal.expect("Restart local service", also=("› Cancel",))
+            terminal.press("\x1b[A\r")
+            def replaced_service():
+                try:
+                    return client.connection()["instance_id"] != previous["instance_id"]
+                except FileNotFoundError:
+                    return False
+
+            eventually("a replacement kuku service", replaced_service)
+            terminal.expect(draft, state="Finished", absent=("Connected", "F2 Restart"))
+            terminal.exit_cleanly("\x03\x03")
+        assert ("GET", "/gateway/models") in addresses and ("POST", "/gateway/messages") in addresses
+        (client.directory / "review-layout.json").write_text(
+            json.dumps({"save": save_review, "settings": settings_review}, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+
+def setup_probe_progress(binary, bridge, directory):
+    key = "fixture-probe-only-key"
+    instance = InstalledClient(binary, bridge, directory)
+    slow_catalog_started = threading.Event()
+    held_requests = {pair: threading.Event() for pair in (
+        ("beta", None), ("gamma", None), ("beta", "low"),
+        ("gamma", "medium"), ("alpha", "high"),
+    )}
+    release_requests = threading.Event()
+    release_beta_text = threading.Event()
+    release_beta_effort = threading.Event()
+    rate_request_started = threading.Event()
+    allow_rate_limit = threading.Event()
+    runtime_requests = []
+    release = threading.Event()
+    trials = []
+
+    def dispatch(method, path, headers, body):
+        if method == "GET" and "x-api-key" in headers:
+            return json_response({}, 401)
+        assert headers.get("authorization") == f"Bearer {key}"
+        if method == "GET" and path == "/models":
+            slow_catalog_started.set()
+            release.wait(20)
+            return json_response({}, 404)
+        if method == "GET" and path == "/v1/models":
+            assert slow_catalog_started.wait(8)
+            return json_response({"data": [
+                {"id": "alpha", "input_modalities": ["text"]},
+                {"id": "beta", "input_modalities": ["text"], "reasoning_efforts": ["low"]},
+                {"id": "gamma", "input_modalities": ["text"], "reasoning_efforts": ["medium"]},
+            ]})
+        if method == "GET" and path == "/api/v1/models":
+            return json_response({}, 404)
+        assert (method, path) == ("POST", "/v1/chat/completions")
+        body = json.loads(body)
+        model, effort = body["model"], body.get("reasoning_effort")
+        if body.get("stream"):
+            runtime_requests.append((model, effort))
+            chunks = [
+                {"choices": [{"index": 0, "delta": {"content": "Saved effort sent."}}]},
+                {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+            ]
+            return Response(200, ("".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks) + "data: [DONE]\n\n").encode(), "text/event-stream")
+        assert body["max_tokens"] == 4096
+        trials.append((model, effort, time.monotonic()))
+        if (model, effort) in held_requests:
+            held_requests[model, effort].set()
+            completion_gate = {("beta", None): release_beta_text, ("beta", "low"): release_beta_effort}.get((model, effort), release_requests)
+            completion_gate.wait(20)
+        if effort == "__kuku_unknown_effort__":
+            return json_response({"error": {"param": "reasoning_effort", "allowed_values": ["none", "high", "max"]}}, 400)
+        if model == "alpha" and effort == "none" and sum(row[:2] == ("alpha", "none") for row in trials) == 1:
+            rate_request_started.set()
+            allow_rate_limit.wait(20)
+            return json_response({"error": {"type": "rate_limit_error", "message": "fixture rate limit"}}, 429)
+        if effort == "high":
+            return json_response({"error": {"param": "reasoning_effort", "message": "high is unsupported"}}, 422)
+        message = {"content": "377"}
+        if effort == "none":
+            message["reasoning_content"] = "fixture reasoning"
+        return json_response({
+            "choices": [{"message": message, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 20, "completion_tokens": 2, "cost": 0.000008},
+        })
+
+    instance.provider.dispatch = dispatch
+
+    def overview_layout(screen):
+        lines = screen.splitlines()
+        heading = next(index for index, line in enumerate(lines)
+                       if all(label in line for label in ("Model", "Text", "Thinking", "Image")))
+        columns = tuple(lines[heading].index(label) for label in ("Text", "Thinking", "Image"))
+        model_rows = {model: next(index for index, line in enumerate(lines)
+                                  if line.strip(" │").startswith(model + " "))
+                      for model in ("alpha", "beta", "gamma")}
+        menu = next(index for index, line in enumerate(lines) if any(
+            label in line for label in ("› View requests", "› Save and continue")))
+        return heading, columns, model_rows, menu
+
+    def model_cells(screen, model):
+        _, columns, model_rows, _ = overview_layout(screen)
+        line = screen.splitlines()[model_rows[model]]
+        return tuple(line[left:right].strip(" │") for left, right in zip(columns, (*columns[1:], len(line))))
+
+    def overall(screen, percent, filled):
+        bar = next(line for line in screen.splitlines() if "Overall" in line)
+        assert f"] {percent}%" in bar and bar.count("━") == filled, screen
+
+    try:
+        with instance as client:
+            config = client.home / "config.toml"
+            endpoint = re.search(r'base_url = "(http://127\.0\.0\.1:[0-9]+)"', config.read_text())[1]
+            config.write_text("")
+            with client.terminal(client.workspace("work-probe-progress")) as terminal:
+                terminal.expect("Find and test models", also=("Edit config file", "may cost money"))
+                terminal.press("\x1b[B\r")
+                terminal.expect("Manual configuration", also=("config.toml",))
+                assert not slow_catalog_started.is_set() and not trials
+                terminal.press("\x1b")
+                terminal.expect("Set up a model")
+                terminal.press("\r")
+                terminal.expect("› New custom connection")
+                terminal.press("\r")
+                terminal.expect("API URL", also=("API type · Auto",))
+                terminal.type(endpoint)
+                terminal.press("\r\x1b[B\r")
+                terminal.expect("Paste your API key")
+                terminal.press(f"\x1b[200~{key}\x1b[201~\r")
+                discovery = terminal.expect("Choose models", also=("alpha", "beta", "gamma"))["screen"]
+                assert slow_catalog_started.is_set()
+                assert not trials
+                terminal.press("alpha \x01beta \x01gamma \r")
+                terminal.request("resize", rows=20, cols=60)
+                terminal.expect("Choose the default model", rows=20)
+                terminal.press("\r")
+                save_activity = terminal.expect(
+                    "Testing models", rows=20,
+                    also=("Overall", "25%", "3 selected", "6 running", "1 queued", "┼",
+                          "› View requests", "Settings", "Save early", "Esc previous step"),
+                    absent=("Save and continue", "models done"),
+                )["screen"]
+                assert all(event.wait(5) for event in held_requests.values()), trials
+                assert rate_request_started.wait(5), trials
+                text, thinking, image = model_cells(save_activity, "alpha")
+                assert text == "Ready" and re.fullmatch(r"none\+1 \d+s", thinking) and image == "Not tested", save_activity
+                for model, effort in (("beta", "low"), ("gamma", "medium")):
+                    text, thinking, image = model_cells(save_activity, model)
+                    assert text.startswith("Testing ") and re.search(rf"{effort} \d+s$", thinking) and image == "Not tested", save_activity
+                assert save_activity.splitlines()[-2].startswith("│Esc previous step")
+                overall(save_activity, 25, 6)
+                ticking = assert_live_elapsed(terminal, save_activity)
+                wide = assert_wide_setup(terminal)
+                assert_testing_navigation(terminal, config)
+                allow_rate_limit.set()
+                save_retry = terminal.expect("Retry ", also=("5 running", "2 waiting"), rows=20)["screen"]
+                release_beta_effort.set()
+                partial = terminal.expect("Testing models", also=("low", "4 running", "2 waiting"), rows=20)["screen"]
+                text, thinking, image = model_cells(partial, "beta")
+                assert text.startswith("Testing ") and thinking == "low" and image == "Not tested", partial
+                assert model_cells(save_retry, "alpha")[1].startswith("Retry "), save_retry
+                overall(partial, 41, 10)
+                assert overview_layout(save_activity) == overview_layout(save_retry) == overview_layout(partial)
+                terminal.press("\r")
+                progress = terminal.expect(
+                    "Retry in", also=("Thinking none", "Text reply", "Testing", "API listed 3 values", "Esc previous step"), rows=20,
+                )["screen"]
+                assert progress.splitlines()[-2].startswith("│Esc previous step")
+                assert not any(row[:2] == ("alpha", "max") for row in trials)
+                release_beta_text.set()
+                terminal.press("\x1b")
+                after_text = terminal.expect("58%", also=("› View requests",), rows=20)["screen"]
+                overall(after_text, 58, 14)
+                terminal.press("\r")
+                terminal.expect("Model tests")
+                release_requests.set()
+                finished = terminal.expect(
+                    "9/9 finished", also=("Usable · Thinking seen", "Rejected", "Thinking low", "Cost"), rows=20,
+                )["screen"]
+                assert finished.count("alpha") == 1 and finished.count("beta") == 1, finished
+                result_rows = [next(line for line in finished.splitlines() if label in line)
+                               for label in ("Thinking none", "Thinking high", "Thinking low")]
+                assert len({line.index(result) for line, result in zip(result_rows, ("Usable", "Rejected", "Usable"))}) == 1, finished
+                terminal.press("\x1b[B\x1b[B")
+                terminal.expect("Thinking medium", also=("gamma",))
+                terminal.press("\x1b")
+                save_results = terminal.expect(
+                    "Save setup", also=("› Save and continue", "100%", "none, max", "low", "medium"),
+                    absent=("Retry in", "Save early"), rows=20,
+                )["screen"]
+                overall(save_results, 100, 24)
+                assert overview_layout(save_activity) == overview_layout(save_results)
+                for model, levels in (("alpha", "none, max"), ("beta", "low"), ("gamma", "medium")):
+                    assert model_cells(save_results, model) == ("Ready", levels, "Not tested"), save_results
+                assert save_results.splitlines()[-2].startswith("│Esc previous step")
+                terminal.press("\x1b[B\x1b[B\r")
+                terminal.expect("› Thinking")
+                terminal.press("\r")
+                terminal.expect("2 usable", also=("none · send to provider", "max"), absent=("high",))
+                terminal.press("\x1b[B\r")
+                terminal.expect("Model capabilities")
+                terminal.press("\x1b")
+                terminal.expect("› Save and continue")
+                terminal.press("\r")
+                terminal.expect("New session", state="Ready")
+                saved_models = client.request("GET", "/models").as_json()["tiers"]
+                assert {item["model"] for item in saved_models} == {"alpha", "beta", "gamma"}
+                terminal.submit("Verify the saved thinking setting")
+                terminal.expect("Saved effort sent.", state="Finished")
+                assert runtime_requests == [("alpha", "none")]
+                assert sum(row[:2] == ("alpha", None) for row in trials) == 1
+                retry_times = [stamp for model, effort, stamp in trials if (model, effort) == ("alpha", "none")]
+                assert len(retry_times) == 2 and retry_times[1] - retry_times[0] >= 2
+                terminal.exit_cleanly()
+            report = {"discovery": discovery, "save_activity": save_activity, "ticking": ticking, "wide": wide, "save_retry": save_retry, "save_partial": partial, "save_results": save_results, "countdown": progress, "results": finished, "confirmed_in_flight": 6, "requests": [(m, e) for m, e, _ in trials], "runtime": runtime_requests}
+            (client.directory / "probe-progress.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    finally:
+        release.set()
+        allow_rate_limit.set()
+        release_beta_text.set()
+        release_beta_effort.set()
+        release_requests.set()
+
+
 def persistent_model_default(client):
     workspace = client.workspace("work-model-default")
     chosen = "fixture-saved-model"
@@ -169,7 +576,7 @@ def persistent_model_default(client):
         models = terminal.expect("Tier · light", also=(chosen,))["screen"]
         initial_models = models
         tier_click = terminal.click_text(models, "Tier · light")
-        tier_selected = terminal.expect("› Tier · light", also=(chosen,))["screen"]
+        tier_selected = terminal.expect("Use in this Session", also=(chosen,))["screen"]
         terminal.press("\r")
         tier_return = terminal.expect("New session", state="Ready", also=(chosen,),
                                       absent=("Model route",))["screen"]

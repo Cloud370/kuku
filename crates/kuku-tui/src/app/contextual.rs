@@ -39,20 +39,18 @@ impl App {
         if let Some(target) = self.previous_agent().cloned() {
             controls.push(ContextControl::PreviousAgent { target });
         }
-        if !self.connecting && !self.restarting {
-            if matches!(
+        if !self.connecting
+            && !self.restarting
+            && matches!(
                 self.service_status(),
-                ServiceStatus::Offline | ServiceStatus::UpdatesUnavailable
-            ) {
-                controls.push(ContextControl::Reconnect {
-                    endpoint: self.endpoint.clone(),
-                });
-            }
-            if !self.remote {
-                controls.push(ContextControl::Restart {
-                    endpoint: self.endpoint.clone(),
-                });
-            }
+                ServiceStatus::Offline
+                    | ServiceStatus::UpdatesUnavailable
+                    | ServiceStatus::Reconnecting
+            )
+        {
+            controls.push(ContextControl::Reconnect {
+                endpoint: self.endpoint.clone(),
+            });
         }
         controls.push(ContextControl::Messages);
         controls

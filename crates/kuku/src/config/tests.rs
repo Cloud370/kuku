@@ -273,7 +273,7 @@ api_key = "$_KUKU_TEST_SHOW_KEY"
 #[test]
 fn show_redacted_errors_on_missing_file() {
     let error = show_redacted(std::path::Path::new("/nonexistent/config.toml")).unwrap_err();
-    assert!(error.to_string().contains("required tier"));
+    assert!(error.to_string().contains("default_model"));
 }
 
 #[test]

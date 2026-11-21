@@ -222,6 +222,9 @@ fn merge_config(mut current: AgentConfig, update: AgentConfig) -> AgentConfig {
     if update.reasoning_effort.is_some() {
         current.reasoning_effort = update.reasoning_effort;
     }
+    if update.output.is_some() {
+        current.output = update.output;
+    }
     if update.service_tier.is_some() {
         current.service_tier = update.service_tier;
     }

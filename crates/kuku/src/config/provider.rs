@@ -1,4 +1,10 @@
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
+use url::Url;
+
+use crate::{Error, Result};
 
 /// Authentication scheme used independently of the connection's wire protocol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,6 +55,21 @@ pub enum PromptCacheScope {
 /// Optional connection behavior and capability declarations.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ProviderOptions {
+    /// Exact model request URL, taking precedence over the base URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint_url: Option<String>,
+    /// Optional explicit read-only model-list URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub models_url: Option<String>,
+    /// Network path shared by all calls for this connection.
+    #[serde(default, skip_serializing_if = "ProviderProxy::follows_environment")]
+    pub proxy: ProviderProxy,
+    /// Per-model USD accounting and price preferences.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_pricing: BTreeMap<String, super::ModelPricing>,
+    /// Model declarations owned by this connection, keyed by the exact model identifier.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_capabilities: BTreeMap<String, super::ModelCapabilityEntry>,
     /// Override the endpoint's default authentication scheme.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<ProviderAuth>,
@@ -67,6 +88,80 @@ pub struct ProviderOptions {
     /// Scope for Responses prompt caching; ignored by other protocols.
     #[serde(default)]
     pub prompt_cache_scope: PromptCacheScope,
+}
+
+/// How the HTTP transport reaches a provider connection.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "kebab-case")]
+pub enum ProviderProxy {
+    #[default]
+    Environment,
+    Direct,
+    Explicit {
+        url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        auth: Option<ProxyAuth>,
+    },
+}
+
+/// References for the password of an authenticated proxy.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ProxyAuth {
+    pub username: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password_file: Option<PathBuf>,
+}
+
+impl ProviderProxy {
+    pub fn follows_environment(&self) -> bool {
+        matches!(self, Self::Environment)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        let Self::Explicit { url, auth } = self else {
+            return Ok(());
+        };
+        if !Url::parse(url).is_ok_and(|parsed| {
+            matches!(parsed.scheme(), "http" | "socks5" | "socks5h")
+                && parsed.host_str().is_some()
+                && parsed.port_or_known_default().is_some()
+                && matches!(parsed.path(), "" | "/")
+                && parsed.username().is_empty()
+                && parsed.password().is_none()
+                && parsed.query().is_none()
+                && parsed.fragment().is_none()
+        }) {
+            return Err(Error::ConfigLoad(
+                "Use an http://, socks5:// or socks5h:// proxy address with a valid port and no embedded credentials.".into(),
+            ));
+        }
+        if let Some(auth) = auth {
+            auth.password_reference()?;
+        }
+        Ok(())
+    }
+}
+
+impl ProxyAuth {
+    /// Validate and return the reference without reading its password.
+    pub fn password_reference(&self) -> Result<super::ApiKey> {
+        if !self.username.is_empty() && !self.username.chars().any(char::is_control) {
+            match (&self.password_env, &self.password_file) {
+                (Some(name), None) if !name.trim().is_empty() => {
+                    return Ok(super::ApiKey::Env(name.clone()));
+                }
+                (None, Some(path)) if path.is_absolute() => {
+                    return Ok(super::ApiKey::File(path.clone()));
+                }
+                _ => {}
+            }
+        }
+        Err(Error::ConfigLoad(
+            "Proxy authentication requires a username and one password environment variable or absolute file path.".into(),
+        ))
+    }
 }
 
 /// OpenRouter upstream routing constraints for this connection.

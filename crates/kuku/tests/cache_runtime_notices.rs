@@ -157,6 +157,7 @@ fn anthro_with_agents(query_text: &str, server: &MockServer) -> query::Query {
             context_window: 200_000,
             max_output_tokens: Some(16_000),
             purpose: "light".to_string(),
+            output: Default::default(),
         },
     );
     let provider = config

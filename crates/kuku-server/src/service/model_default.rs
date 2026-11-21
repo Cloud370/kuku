@@ -149,6 +149,7 @@ fn resolve_plan(
             context_window: None,
             max_output_tokens: None,
             purpose: Some("Saved by /model".into()),
+            output: None,
         },
     );
     fallback.default_model = Some("user-default".into());

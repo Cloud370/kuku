@@ -52,6 +52,12 @@ pub(super) fn record_streaming_provider_error_facts(
                 address,
                 execution,
                 [
+                    EventPayload::Unknown(serde_json::json!({
+                        "kind": "runtime.model_usage", "ts": now_timestamp()?,
+                        "agent": address, "turn": turn,
+                        "request_id": streaming.request_id, "attempt": streaming.provider_attempt,
+                        "cost": streaming.accounting.cost(None),
+                    })),
                     EventPayload::ModelError {
                         conversation: Some(address.into()),
                         turn,

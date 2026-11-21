@@ -22,13 +22,24 @@ pub(crate) async fn send_prepared(
     prepared: &PreparedProviderRequest,
     trace_metadata: Option<ProviderTraceMetadata>,
 ) -> Result<TransportResponse, ProviderFailure> {
-    let expected_url = match config.kind {
-        ProviderKind::Anthropic => super::anthropic::messages_url(&config.base_url),
-        ProviderKind::OpenAiCompatible => {
-            super::openai_compat::chat_completions_url(&config.base_url)
-        }
-        ProviderKind::OpenAiResponses => super::openai_responses::responses_url(&config.base_url),
-    };
+    send(config, prepared, trace_metadata, None).await
+}
+
+pub(super) async fn send_trial(
+    config: &ResolvedProvider,
+    prepared: &PreparedProviderRequest,
+    error_body: &mut String,
+) -> Result<TransportResponse, ProviderFailure> {
+    send(config, prepared, None, Some(error_body)).await
+}
+
+async fn send(
+    config: &ResolvedProvider,
+    prepared: &PreparedProviderRequest,
+    trace_metadata: Option<ProviderTraceMetadata>,
+    trial_error_body: Option<&mut String>,
+) -> Result<TransportResponse, ProviderFailure> {
+    let expected_url = super::prepare::request_url(config)?;
     if config.connection_name != prepared.connection_name
         || config.kind != prepared.kind
         || config.model != prepared.model
@@ -60,23 +71,25 @@ pub(crate) async fn send_prepared(
             json!({"body": prepared.body}),
         );
     }
-    let response = super::http_client::api_client()
+    let mut request = super::http_client::api_client(&config.options.proxy)
+        .map_err(|error| invalid_request(&error.to_string()))?
         .post(&prepared.url)
         .headers(headers)
-        .json(&prepared.body)
-        .send()
-        .await
-        .map_err(|error| {
-            if let Some(trace) = &trace {
-                trace.record(
-                    ProviderTraceDirection::Error,
-                    Some(&prepared.url),
-                    None,
-                    json!({"error": "provider transport failed"}),
-                );
-            }
-            transport_error(&error)
-        })?;
+        .json(&prepared.body);
+    if trial_error_body.is_some() {
+        request = request.redirect(wreq::redirect::Policy::none());
+    }
+    let response = request.send().await.map_err(|error| {
+        if let Some(trace) = &trace {
+            trace.record(
+                ProviderTraceDirection::Error,
+                Some(&prepared.url),
+                None,
+                json!({"error": "provider transport failed"}),
+            );
+        }
+        transport_error(&error)
+    })?;
     let status = response.status();
     if let Some(trace) = &trace {
         trace.record(
@@ -112,6 +125,9 @@ pub(crate) async fn send_prepared(
                 .push_str(&format!(" (Retry-After: {}s)", delay.as_secs_f64().ceil()));
         }
         failure.provider_request_id = request_id;
+        if let Some(capture) = trial_error_body {
+            *capture = body;
+        }
         return Err(failure);
     }
     Ok(TransportResponse { response, trace })
@@ -246,7 +262,7 @@ mod tests {
             ..Default::default()
         };
         let mut request = prepared(&config);
-        request.url = super::super::openai_compat::chat_completions_url(&config.base_url);
+        request.url = super::super::prepare::request_url(&config).unwrap();
         let failure = send_prepared(&config, &request, None)
             .await
             .err()

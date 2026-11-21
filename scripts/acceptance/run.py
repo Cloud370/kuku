@@ -664,6 +664,9 @@ def run_interactive(args, directory, record):
     from interactive_fixture import EXE, scratch_directory
 
     record["desktop"] = args.desktop
+    if args.native_smoke and any((args.desktop, args.browser, args.live, args.intent, args.upgrade_from)):
+        raise ValueError("--native-smoke selects only controlled installed terminal cases")
+    record["scenario"] = "native-smoke" if args.native_smoke else "full"
     if args.windows_terminal and (not args.desktop or os.name != "nt"):
         raise ValueError("--windows-terminal requires --desktop on a dedicated Windows test desktop")
     if args.desktop and os.name == "nt":
@@ -745,6 +748,8 @@ def run_interactive(args, directory, record):
             command.extend(["--upgrade", str(args.upgrade_from.resolve()), str(args.archive.resolve())])
         if args.browser:
             command.append("--browser")
+        if args.native_smoke:
+            command.append("--native-smoke")
         try:
             checked(command, "installed-interactive", timeout=420, cwd=scratch_dir)
         finally:
@@ -781,6 +786,7 @@ def parser():
     interactive.add_argument("--upgrade-from", type=Path, help="replace a previous package during an active tool")
     interactive.add_argument("--scratch-base", type=Path, help="temporary installation and workspaces outside the checkout")
     interactive.add_argument("--browser", action="store_true", help="also exercise the embedded WebUI with Playwright Chromium")
+    interactive.add_argument("--native-smoke", action="store_true", help="exercise first run, model editing and paste on the native terminal")
     scenario = interactive.add_mutually_exclusive_group()
     scenario.add_argument("--desktop", action="store_true", help="also exercise an isolated Linux or Windows graphical terminal")
     scenario.add_argument("--live", action="store_true", help="run the budgeted release-archive and real-model handoff")

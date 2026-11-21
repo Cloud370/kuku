@@ -43,9 +43,10 @@ impl ReportAccumulator {
             super::replay::validate_replay_size(existing)?;
             update_string(&mut self.report.service_tier, usage.get("service_tier"));
             if let Some(cost) = usage
-                .get("cost")
+                .get("cost_usd")
                 .and_then(Value::as_f64)
-                .filter(|cost| *cost >= 0.0)
+                .or_else(|| usage.get("cost").and_then(Value::as_f64))
+                .filter(|cost| cost.is_finite() && *cost >= 0.0)
             {
                 self.report.cost_usd = Some(cost);
             }
@@ -69,7 +70,7 @@ impl ReportAccumulator {
     }
 }
 
-fn normalize_usage(protocol: ProviderFormat, usage: &Value) -> ProviderUsage {
+pub(super) fn normalize_usage(protocol: ProviderFormat, usage: &Value) -> ProviderUsage {
     let (input, output, read, write) = match protocol {
         ProviderFormat::OpenAiChat => {
             let cache_hit = usage.get("prompt_cache_hit_tokens").and_then(Value::as_u64);

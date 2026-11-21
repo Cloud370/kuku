@@ -194,8 +194,7 @@ fn question_stays_visible_when_execution_is_hidden_or_the_service_is_offline() {
         "fixture offline".into(),
     )));
     let rows = screen(&mut app, &StatusLine::default(), 29, 10);
-    assert!(rows[8].contains("Offline"));
-    assert!(rows[..8].iter().any(|row| row.contains("Offline")));
+    assert!(rows[8].contains("kuku service offline"), "{rows:?}");
     assert!(rows.iter().any(|row| row.contains("Which test target?")));
 }
 
@@ -304,16 +303,10 @@ fn default_status_line_shows_context_tps_and_workspace_in_one_row() {
     let statusline = StatusLine::default();
     let rows = screen(&mut app, &statusline, 140, 24);
     let footer = rows[23].trim();
-    for label in [
-        "Connected",
-        "Agent main",
-        "work-right",
-        "Context 89% used",
-        "18.4 TPS",
-    ] {
+    for label in ["Agent main", "work-right", "Context 89% used", "18.4 TPS"] {
         assert!(footer.contains(label), "missing {label:?} in {footer}");
     }
-    assert!(footer.starts_with("Model pending  Connected  Agent main"));
+    assert!(footer.starts_with("Model pending  Agent main"));
     for detail in ["Running", "http://", "129M in", "210K out", "Cache hit"] {
         assert!(!footer.contains(detail), "{footer}");
     }
@@ -327,7 +320,7 @@ fn default_status_line_shows_context_tps_and_workspace_in_one_row() {
     let rows = screen(&mut app, &statusline, 29, 24);
     assert!(rows[19].contains("Running") && rows[19].contains("To main"));
     let rows = screen(&mut app, &statusline, 42, 24);
-    assert!(rows[22].contains("Model pending · Connected · Agent main"));
+    assert!(rows[22].contains("Model pending · Agent main"));
     assert!(
         rows[23].contains("work-right · Ctx 89% · 18.4 TPS"),
         "{}",

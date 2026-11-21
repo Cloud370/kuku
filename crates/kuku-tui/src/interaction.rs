@@ -28,6 +28,10 @@ const MOUSE_SCROLL_LINES: isize = 3;
 
 impl App {
     pub(crate) fn event(&mut self, event: Event, screen: &Buffer) {
+        if self.model_editor.is_some() {
+            self.model_editor_input(event);
+            return;
+        }
         if self.credential_repair.is_some() {
             self.credential_repair_input(event);
             return;
@@ -282,12 +286,6 @@ impl App {
                         config: Box::default(),
                     },
                 ),
-                PromptKind::Model { connection } => {
-                    let mut config = self.route_config();
-                    config.connection = Some(connection);
-                    config.model = Some(content.trim().to_owned());
-                    self.configure(config);
-                }
                 PromptKind::Question { request_id, target } => {
                     self.restore_question_composer(&target);
                     if self.selection().target != target
@@ -367,7 +365,7 @@ impl App {
         self.modal = Some(Modal::Help);
     }
 
-    fn search(&mut self, first: bool) {
+    pub(crate) fn search(&mut self, first: bool) {
         let available = self.available();
         let Some(Modal::Picker(picker)) = &mut self.modal else {
             return;
@@ -468,14 +466,13 @@ impl App {
                 config.tier = Some(tier);
                 self.configure(config);
             }
-            ChoiceKind::Connection(connection) => {
-                let title = format!("Model on {connection}");
-                self.prompt(
-                    PromptKind::Model { connection },
-                    title,
-                    "Enter the model ID for this connection",
-                );
+            ChoiceKind::ModelActions(tier) => self.open_model_actions(*tier),
+            ChoiceKind::EditModel(intent) => self.open_model_editor(intent),
+            ChoiceKind::ConfirmModelSetting(change) => self.confirm_model_setting(change),
+            ChoiceKind::SaveModelSetting(change) => {
+                self.effects.push(Job::SaveModelSetting(change))
             }
+            ChoiceKind::Close => {}
             ChoiceKind::SetCurrentModelAsDefault => self.prepare_model_default(),
             ChoiceKind::ConfirmModelDefault => self.confirm_model_default(ticket),
             ChoiceKind::CancelModelDefault => self.cancel_model_default(ticket),
@@ -514,7 +511,7 @@ impl App {
             ChoiceKind::AttachValue(value) => self.attach_value(value),
             ChoiceKind::ReadValue(value) => self.read_value(value),
             ChoiceKind::ClearValues => self.clear_values(),
-            ChoiceKind::Restart => self.restart(),
+            ChoiceKind::ConfirmRestart(identity) => self.confirm_restart(*identity),
         }
     }
 
@@ -527,17 +524,13 @@ impl App {
             }
             CommandMenu::Agents => self.open_agents(),
             CommandMenu::Jobs => self.open_jobs(),
-            CommandMenu::Model => {
-                self.clear_model_default_if_closed();
-                let save_default = self.model_default_choice();
-                self.picker(PickerKind::Models, vec![save_default]);
-                self.search(true);
-            }
+            CommandMenu::Model => self.open_models(),
             CommandMenu::Thinking => self.open_thinking(),
             CommandMenu::StatusLine => self.open_statusline(),
             CommandMenu::Save => self.open_value_save(),
             CommandMenu::Values => self.open_values(),
             CommandMenu::Server => self.open_server(),
+            CommandMenu::Restart => self.open_restart(),
             CommandMenu::Web if self.require_service() => {
                 self.effects.push(Job::Web(
                     self.pane().exists.then(|| self.selection().target),
@@ -588,28 +581,61 @@ impl App {
             self.message("Waiting for the service to report the changed route");
             return;
         }
-        let Some(efforts) = pane.reasoning_efforts() else {
+        let Some((settings, capabilities)) = pane.reasoning() else {
             self.problem("Select a resolved model with /model to see its reasoning settings");
             return;
         };
-        if efforts.is_empty() {
-            self.problem("The selected route does not expose a reasoning setting · /model");
-            return;
-        }
         let mut choices = vec![Choice::new(
-            "Use route default",
-            "Clear the explicit reasoning setting",
+            "Use route default in this Session",
+            "Clear the Session override",
             ChoiceKind::Thinking(None),
         )];
-        choices.extend(efforts.iter().map(|effort| {
-            Choice::new(
-                effort,
-                "Provider-supported reasoning",
-                ChoiceKind::Thinking(Some(effort.clone())),
-            )
-        }));
+        let route = self.resolved_model_route().ok();
+        let default = kuku::config::ThinkLevel::ProviderDefault.as_str();
+        for effort in std::iter::once(default).chain(capabilities.selectable_reasoning_efforts()) {
+            let label = match effort {
+                "provider-default" => "Provider default",
+                _ => effort,
+            };
+            let wire = if effort == default {
+                "Omit effort".into()
+            } else {
+                format!("Send {effort}")
+            };
+            choices.push(Choice::new(
+                format!("{label} · this Session"),
+                wire.clone(),
+                ChoiceKind::Thinking(Some(effort.into())),
+            ));
+            if !self.remote {
+                if let Some(route) = &route {
+                    let change = crate::setup::SavedModelSetting::Thinking {
+                        tier: pane.config().tier.clone(),
+                        connection: route.connection.clone(),
+                        model: route.model.clone(),
+                        effort: effort.into(),
+                    };
+                    choices.push(Choice::new(
+                        format!("{label} · save model default"),
+                        wire,
+                        ChoiceKind::ConfirmModelSetting(change),
+                    ));
+                }
+            }
+        }
         let label = pane.effective_model_label().unwrap_or_default();
-        self.picker(PickerKind::Thinking, choices).header = format!("Active · {label}");
+        let sent = settings.reasoning_effort.as_deref().map_or_else(
+            || "omit effort".to_owned(),
+            |effort| format!("send {effort}"),
+        );
+        let upstream = capabilities
+            .reasoning_default
+            .as_ref()
+            .map_or_else(String::new, |default| {
+                format!(" · upstream default {}", default.value)
+            });
+        self.picker(PickerKind::Thinking, choices).header =
+            format!("Active · {label} · {sent}{upstream}");
     }
 
     fn route_config(&self) -> AgentConfig {
@@ -658,30 +684,33 @@ impl App {
     }
 
     fn open_server(&mut self) {
-        let mut actions = vec![Choice::new(
+        let actions = vec![Choice::new(
             "Reconnect",
-            "Check the connection again",
+            "Check the kuku service connection again",
             ChoiceKind::Reconnect,
         )];
-        if !self.remote {
-            actions.push(Choice::new(
-                "Restart local service",
-                "Restart when current work is settled",
-                ChoiceKind::Restart,
-            ));
-        }
         let status = self.connection_problem.clone().unwrap_or_default();
         self.picker(PickerKind::Server, actions).header = status;
         self.search(true);
     }
 
-    fn restart(&mut self) {
+    fn open_restart(&mut self) {
         if self.remote {
-            self.problem("Restart the remote service on its host");
+            self.problem("Restart the kuku service from its host.");
         } else if !self.restarting && !self.connecting {
+            let picker = self.picker(PickerKind::Restart, Vec::new());
+            picker.header = "Checking the managed local kuku service…".into();
+            picker.loading = true;
+            let ticket = picker.ticket.id;
+            self.effects.push(Job::PrepareRestart(ticket));
+        }
+    }
+
+    fn confirm_restart(&mut self, identity: kuku_client::local::ServiceIdentity) {
+        if !self.restarting && !self.connecting && !self.remote {
             self.restarting = true;
-            self.message("Checking whether the service can restart…");
-            self.effects.push(Job::Restart);
+            self.message("Checking whether the kuku service can restart…");
+            self.effects.push(Job::Restart(Box::new(identity)));
         }
     }
 

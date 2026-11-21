@@ -1,7 +1,9 @@
 mod config {
     pub use kuku::config::{
-        load_and_patch_config, load_config, ApiKey, Config, ProviderConfig, ProviderFormat,
-        ProviderOptions, ProviderProfile, ResolvedThinking, ThinkLevel, TierConfig,
+        load_and_patch_config, load_config, resolve_request_url, ApiKey, Config,
+        MediaAdapterSupport, ModelCapabilityDeclaration, ModelCapabilityEntry, ModelThinkingTest,
+        ProtocolCapabilityDeclaration, ProviderConfig, ProviderFormat, ProviderOptions,
+        ProviderProfile, RequestedOutput, ResolvedThinking, ThinkLevel, TierConfig,
     };
 }
 
@@ -143,28 +145,13 @@ fn generated_messages_presets_supply_the_required_output_limit() {
 }
 
 #[test]
-fn missing_required_tier_is_rejected() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("config.toml");
-    std::fs::write(
-        &path,
-        r#"
-[model.strong]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
-
-[provider.anthropic]
-format = "anthropic"
-base_url = "https://api.anthropic.com"
-api_key = "sk-ant-123"
-"#,
-    )
-    .unwrap();
-    let file = load_config(&path).unwrap();
-    let err = file.resolve().unwrap_err();
-    assert!(err
-        .to_string()
-        .contains("required tier 'balanced' is missing"));
+fn missing_optional_tier_keeps_a_valid_default() {
+    let text = minimal_valid_toml();
+    let start = text.find("[model.strong]").unwrap();
+    let end = text.find("[model.balanced]").unwrap();
+    let config = config_from_toml(&format!("{}{}", &text[..start], &text[end..]));
+    assert_eq!("balanced", config.default_tier());
+    assert!(config.tier("strong").is_none());
 }
 
 #[test]

@@ -65,6 +65,7 @@ pub(crate) fn resolve_agent_model(
         model: config.model.clone(),
         tier: config.tier.clone(),
         reasoning_effort: config.reasoning_effort.clone(),
+        output: config.output,
         service_tier: config.service_tier.clone(),
         max_output_tokens: config.max_output_tokens,
         max_output_tokens_per_request,
@@ -100,6 +101,8 @@ impl Session {
         let resolved = self.resolve_model(&config)?;
         let tools = crate::tool::to_tool_schemas(&self.selected_tools(&config)?);
         Ok(AgentSelection {
+            request_url: crate::provider::prepare::request_url(&resolved)
+                .map_err(|failure| Error::InvalidArgument(failure.message))?,
             connection: resolved.connection_name,
             protocol: crate::adapter::protocol(resolved.kind),
             model: resolved.model,
@@ -107,6 +110,7 @@ impl Session {
             max_output_tokens: resolved.max_output_tokens,
             settings: resolved.settings,
             capabilities: resolved.capabilities,
+            output: resolved.output,
             tools,
         })
     }
@@ -161,9 +165,13 @@ impl Session {
         Ok(selected_tools)
     }
 
+    pub(crate) fn current_model_config(&self) -> std::borrow::Cow<'_, crate::config::Config> {
+        self.inner.options.model_config()
+    }
+
     pub(super) fn resolve_model(&self, config: &AgentConfig) -> Result<ResolvedProvider> {
         resolve_agent_model(
-            &self.inner.options.config,
+            &self.current_model_config(),
             config,
             self.inner.options.limits.max_output_tokens_per_request,
         )
@@ -243,7 +251,9 @@ fn resolve_defaults(
     config
         .instructions
         .get_or_insert_with(|| definition.instructions.clone());
-    config.tier.get_or_insert_with(|| definition.tier.clone());
+    if config.tier.is_none() && options.model_config().tier(&definition.tier).is_some() {
+        config.tier = Some(definition.tier.clone());
+    }
     config.tools.get_or_insert_with(|| {
         definition
             .tools

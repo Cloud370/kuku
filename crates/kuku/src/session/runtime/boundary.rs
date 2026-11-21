@@ -330,6 +330,7 @@ fn update_model_selection(snapshot: &super::AgentSnapshot) -> Option<AgentConfig
         tier: requested.tier.clone(),
         model: requested.model.clone(),
         reasoning_effort: requested.reasoning_effort.clone(),
+        output: requested.output,
         service_tier: requested.service_tier.clone(),
         max_output_tokens: requested.max_output_tokens,
         ..active.clone()

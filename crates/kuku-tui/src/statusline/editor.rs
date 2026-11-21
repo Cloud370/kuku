@@ -211,6 +211,7 @@ impl Field {
             Self::InputTokens => "Input tokens",
             Self::OutputTokens => "Output tokens",
             Self::Cache => "Cache hit rate",
+            Self::Cost => "Request cost",
             Self::Input => "Input feedback",
         }
     }

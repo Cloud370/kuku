@@ -139,6 +139,14 @@ pub(super) async fn dispatch_provider_step(
                 stream,
                 provider_attempt,
                 stream_failure: None,
+                accounting: super::super::types::RequestAccounting {
+                    pricing: resolved_config
+                        .options
+                        .model_pricing
+                        .get(&resolved_config.model)
+                        .cloned(),
+                    ..Default::default()
+                },
                 accumulated_text: String::new(),
                 accumulated_thinking: String::new(),
                 model_phase: None,

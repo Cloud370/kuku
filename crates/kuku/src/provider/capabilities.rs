@@ -1,18 +1,21 @@
-use crate::config::{ProviderOptions, ProviderProfile, ThinkLevel};
+use crate::config::{
+    ModelCapabilityDeclaration, ModelCapabilityEntry, ProtocolCapabilityDeclaration,
+    ProviderFormat, ProviderOptions, ProviderProfile, ThinkLevel,
+};
 use crate::error::{Error, Result};
+use sha2::{Digest, Sha256};
 
-use super::types::{ProviderCapabilities, ProviderKind, ProviderSettings};
+use super::types::{
+    CapabilitySource, DeclaredCapability, ProviderCapabilities, ProviderKind, ProviderSettings,
+};
 
 pub(crate) fn resolve_capabilities(
     base_url: &str,
     model: &str,
-    _kind: ProviderKind,
+    kind: ProviderKind,
     options: &ProviderOptions,
 ) -> ProviderCapabilities {
-    let profile = match options.profile {
-        ProviderProfile::Auto => detect_profile(base_url),
-        profile => profile,
-    };
+    let profile = profile_for(base_url, options.profile);
     let (reasoning, services): (&[&str], &[&str]) = match profile {
         ProviderProfile::DeepSeek => (&["none", "low", "high", "max"], &[]),
         ProviderProfile::Anthropic if adaptive_claude(model) => {
@@ -47,16 +50,154 @@ pub(crate) fn resolve_capabilities(
             (&[], &[])
         }
     };
-    ProviderCapabilities {
-        profile,
-        reasoning_efforts: options
+    let declaration = options.model_capabilities.get(model);
+    let protocol = kind.discovery_protocol();
+    let resolve = ModelDeclarations {
+        entry: declaration,
+        protocol,
+    };
+    let reasoning_override = resolve.field(
+        |entry| entry.reasoning_efforts.as_ref(),
+        |entry| entry.reasoning_efforts.as_ref(),
+    );
+    let connection_reasoning = || {
+        options
             .reasoning_efforts
             .clone()
-            .unwrap_or_else(|| strings(reasoning)),
+            .map(|value| DeclaredCapability {
+                value,
+                source: CapabilitySource::Manual,
+            })
+    };
+    let reasoning_options = match reasoning_override {
+        Some(declared)
+            if matches!(
+                declared.source,
+                CapabilitySource::Manual | CapabilitySource::ProtocolManual
+            ) =>
+        {
+            Some(declared)
+        }
+        declared => connection_reasoning().or(declared),
+    };
+    let (mut reasoning_efforts, reasoning_source) = if let Some(reasoning) = reasoning_options {
+        (reasoning.value, Some(reasoning.source))
+    } else if declaration.is_none_or(|entry| entry.discovered.is_none()) && !reasoning.is_empty() {
+        (strings(reasoning), Some(CapabilitySource::AdapterProfile))
+    } else {
+        (Vec::new(), None)
+    };
+    if profile == ProviderProfile::DeepSeek
+        && matches!(
+            reasoning_source,
+            Some(CapabilitySource::ModelList | CapabilitySource::ProtocolModelList)
+        )
+        && !reasoning_efforts.iter().any(|effort| effort == "none")
+    {
+        reasoning_efforts.insert(0, "none".into());
+    }
+    let thinking_test = declaration
+        .and_then(|entry| entry.thinking_test.as_ref())
+        .filter(|test| test.scope == thinking_scope(base_url, kind.format(), options))
+        .cloned();
+    if let Some(test) = &thinking_test {
+        for level in &test.accepted {
+            if !reasoning_efforts.contains(level) {
+                reasoning_efforts.push(level.clone());
+            }
+        }
+    }
+    ProviderCapabilities {
+        profile,
+        reasoning_efforts,
+        thinking_test,
+        reasoning_source,
+        reasoning_default: resolve.field(
+            |entry| entry.reasoning_default.as_ref(),
+            |entry| entry.reasoning_default.as_ref(),
+        ),
+        input_modalities: resolve.field(
+            |entry| entry.input_modalities.as_ref(),
+            |entry| entry.input_modalities.as_ref(),
+        ),
+        output_modalities: resolve.field(
+            |entry| entry.output_modalities.as_ref(),
+            |entry| entry.output_modalities.as_ref(),
+        ),
+        interfaces: resolve.field(|entry| entry.interfaces.as_ref(), |_| None),
+        system_prompt_update: resolve.field(|_| None, |entry| entry.system_prompt_update.as_ref()),
         service_tiers: options
             .service_tiers
             .clone()
             .unwrap_or_else(|| strings(services)),
+        ..ProviderCapabilities::default()
+    }
+}
+
+pub(super) fn thinking_scope(
+    endpoint: &str,
+    format: ProviderFormat,
+    options: &ProviderOptions,
+) -> String {
+    let route = serde_json::to_vec(&(
+        endpoint,
+        format,
+        options.profile,
+        &options.routing,
+        &options.proxy,
+    ))
+    .expect("serializable thinking route");
+    format!("{:x}", Sha256::digest(route))
+}
+
+pub(crate) fn profile_for(endpoint: &str, configured: ProviderProfile) -> ProviderProfile {
+    match configured {
+        ProviderProfile::Auto => detect_profile(endpoint),
+        profile => profile,
+    }
+}
+
+struct ModelDeclarations<'a> {
+    entry: Option<&'a ModelCapabilityEntry>,
+    protocol: &'a str,
+}
+
+impl ModelDeclarations<'_> {
+    fn field<T: Clone>(
+        &self,
+        model: impl Fn(&ModelCapabilityDeclaration) -> Option<&T>,
+        protocol: impl Fn(&ProtocolCapabilityDeclaration) -> Option<&T>,
+    ) -> Option<DeclaredCapability<T>> {
+        let entry = self.entry?;
+        for (declaration, model_source, protocol_source) in [
+            (
+                &entry.manual,
+                CapabilitySource::Manual,
+                CapabilitySource::ProtocolManual,
+            ),
+            (
+                &entry.discovered,
+                CapabilitySource::ModelList,
+                CapabilitySource::ProtocolModelList,
+            ),
+        ] {
+            let Some(declaration) = declaration else {
+                continue;
+            };
+            if let Some(value) = declaration.protocols.get(self.protocol).and_then(&protocol) {
+                return Some(DeclaredCapability {
+                    value: value.clone(),
+                    source: protocol_source,
+                });
+            }
+            if let Some(value) = model(declaration) {
+                return Some(DeclaredCapability {
+                    value: value.clone(),
+                    source: model_source,
+                });
+            }
+        }
+        None
     }
 }
 
@@ -68,6 +209,7 @@ pub(crate) fn resolve_settings(
     service: Option<String>,
 ) -> Result<ProviderSettings> {
     let (requested_reasoning_effort, reasoning_effort) = match native_reasoning {
+        Some(effort) if effort == ThinkLevel::ProviderDefault.as_str() => (None, None),
         Some(effort) => {
             validate_choice(
                 connection,
@@ -78,7 +220,9 @@ pub(crate) fn resolve_settings(
             (Some(effort.clone()), Some(effort))
         }
         None => (
-            think.map(|level| level.as_str().to_string()),
+            think
+                .filter(|level| *level != ThinkLevel::ProviderDefault)
+                .map(|level| level.as_str().to_string()),
             think.and_then(|level| portable_reasoning(level, capabilities)),
         ),
     };
@@ -98,6 +242,7 @@ pub(crate) fn resolve_settings(
 
 fn portable_reasoning(level: ThinkLevel, capabilities: &ProviderCapabilities) -> Option<String> {
     let effort = match level {
+        ThinkLevel::ProviderDefault => return None,
         ThinkLevel::Off => "none",
         ThinkLevel::Medium if capabilities.profile == ProviderProfile::DeepSeek => "high",
         ThinkLevel::Low | ThinkLevel::Medium | ThinkLevel::High => level.as_str(),
@@ -116,7 +261,9 @@ fn detect_profile(base_url: &str) -> ProviderProfile {
         .and_then(url::Url::host_str)
     {
         Some("api.deepseek.com") => ProviderProfile::DeepSeek,
-        Some("openrouter.ai") => ProviderProfile::OpenRouter,
+        Some("openrouter.ai" | "us.openrouter.ai" | "eu.openrouter.ai") => {
+            ProviderProfile::OpenRouter
+        }
         Some("api.openai.com") => ProviderProfile::OpenAi,
         Some("api.anthropic.com") => ProviderProfile::Anthropic,
         Some(_) | None => ProviderProfile::Compatible,

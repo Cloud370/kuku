@@ -281,11 +281,13 @@ mod tests {
             socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n").await.unwrap();
             assert_eq!(0, socket.read(&mut buffer).await.unwrap());
         });
-        let response = super::super::http_client::api_client()
-            .get(format!("http://{address}/stall"))
-            .send()
-            .await
-            .unwrap();
+        let response =
+            super::super::http_client::api_client(&crate::config::ProviderProxy::Environment)
+                .unwrap()
+                .get(format!("http://{address}/stall"))
+                .send()
+                .await
+                .unwrap();
         let stream = stream_sse_events(response, |_| {}, |_| Ok(Vec::new()), || Ok(Vec::new()));
         drop(stream);
         tokio::time::timeout(std::time::Duration::from_secs(2), server)

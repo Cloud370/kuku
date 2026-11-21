@@ -117,6 +117,7 @@ fn session_options(state: &AppState, workspace: PathBuf, id: String) -> SessionO
     let mut options =
         SessionOptions::new(workspace, &state.kuku_home, (**state.config.load()).clone());
     options.session_id = Some(id);
+    options.model_config_updates = Some(state.config.clone());
     options.authorizer = state.authorizer.clone();
     options
 }

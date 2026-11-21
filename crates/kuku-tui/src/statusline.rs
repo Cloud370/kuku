@@ -31,12 +31,13 @@ const DEFAULT_FIELDS: [Field; 6] = [
     Field::Context,
     Field::Throughput,
 ];
-const OPTIONAL_FIELDS: [Field; 5] = [
+const OPTIONAL_FIELDS: [Field; 6] = [
     Field::Execution,
     Field::InputTokens,
     Field::OutputTokens,
     Field::Cache,
     Field::Input,
+    Field::Cost,
 ];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -207,6 +208,7 @@ enum Field {
     InputTokens,
     OutputTokens,
     Cache,
+    Cost,
     Throughput,
 }
 
@@ -227,6 +229,7 @@ impl Field {
             Self::InputTokens => "tokens_in",
             Self::OutputTokens => "tokens_out",
             Self::Cache => "cache",
+            Self::Cost => "cost",
             Self::Throughput => "tps",
         }
     }
@@ -240,7 +243,7 @@ impl Field {
         activity: Activity,
     ) -> Option<Segment> {
         let segment = match self {
-            Self::Connection => connection(app, custom),
+            Self::Connection => return connection(app, custom),
             Self::Execution => return execution(app, activity),
             Self::Input => return input(app, true),
             Self::Agent => Segment::details(
@@ -309,6 +312,38 @@ impl Field {
                 "Cache hit —",
                 |percent| format!("Cache hit {percent:.0}%"),
             ),
+            Self::Cost => {
+                let session_costs = app
+                    .pane()
+                    .snapshot
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.session_costs.as_ref());
+                let (scope, reported, estimated, unknown) = if let Some(costs) = session_costs {
+                    (
+                        "Session",
+                        costs.reported_nanodollars,
+                        costs.estimated_nanodollars,
+                        costs.unknown_requests,
+                    )
+                } else {
+                    let usage = usage?;
+                    (
+                        "Agent",
+                        usage.costs.reported_nanodollars,
+                        usage.costs.estimated_nanodollars,
+                        usage.unknown_cost_requests(),
+                    )
+                };
+                Segment::details(
+                    format!(
+                        "{scope} cost · reported {symbol}{:.7} · estimated {symbol}{:.7} · {unknown} unknown",
+                        reported as f64 / 1_000_000_000.0,
+                        estimated as f64 / 1_000_000_000.0,
+                        symbol = "$",
+                    ),
+                    Priority::Metric,
+                )
+            }
             Self::Throughput => Segment::measurement(
                 usage.and_then(UsageTotals::average_output_tokens_per_second),
                 "— TPS",
@@ -507,8 +542,11 @@ fn render_segments(
     Some(Line::from(line))
 }
 
-fn connection(app: &App, show_endpoint: bool) -> Segment {
+fn connection(app: &App, show_endpoint: bool) -> Option<Segment> {
     let status = app.service_status();
+    if status == ServiceStatus::Connected && !show_endpoint {
+        return None;
+    }
     let (color, priority) = match status {
         ServiceStatus::Connected => (Color::Reset, Priority::Connected),
         ServiceStatus::Connecting | ServiceStatus::Reconnecting | ServiceStatus::Restarting => {
@@ -518,10 +556,20 @@ fn connection(app: &App, show_endpoint: bool) -> Segment {
             (ERROR, Priority::ConnectionProblem)
         }
     };
-    let mut labels = vec![status.label().to_owned()];
-    if status == ServiceStatus::UpdatesUnavailable {
-        labels.insert(0, "No updates".into());
-    }
+    let mut labels = match status {
+        ServiceStatus::Offline => vec![
+            "kuku service offline".into(),
+            "kuku service offline · Ctrl+R".into(),
+        ],
+        ServiceStatus::UpdatesUnavailable => vec![
+            "kuku service updates unavailable".into(),
+            "kuku service updates unavailable · Ctrl+R".into(),
+        ],
+        ServiceStatus::Reconnecting => vec!["Reconnecting to kuku service".into()],
+        ServiceStatus::Connected | ServiceStatus::Connecting | ServiceStatus::Restarting => {
+            vec![status.label().to_owned()]
+        }
+    };
     if show_endpoint {
         let kind = if app.remote { "Remote" } else { "Local" };
         let location = format!("{} {kind}", status.label());
@@ -532,7 +580,7 @@ fn connection(app: &App, show_endpoint: bool) -> Segment {
             labels.push(location);
         }
     }
-    Segment::labels(labels, color, priority)
+    Some(Segment::labels(labels, color, priority))
 }
 
 fn execution(app: &App, activity: Activity) -> Option<Segment> {

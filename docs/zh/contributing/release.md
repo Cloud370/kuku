@@ -34,8 +34,9 @@ v0.MINOR.PATCH
 ## Release steps
 
 1. 为目标版本更新 `CHANGELOG.md`。
-2. 运行 `cargo release <version>`。
-3. 让 CI 构建产物并发布 GitHub Release。
+2. 在发布候选版本上以 `platform=all` 运行完整 CI 矩阵并确认结果。[测试](testing.md#选择验证范围)
+3. 运行 `cargo release <version>`。
+4. 让 CI 构建产物并发布 GitHub Release。
 
 `cargo release` 会更新 workspace 版本、创建发布 commit、创建 `v<version>` tag，并 push 两者。
 

@@ -39,6 +39,10 @@ pub struct TierSummary {
     pub purpose: Option<String>,
     /// Effective provider settings, when resolution succeeds.
     pub settings: Option<ProviderSettings>,
+    /// Media output inherited from this route.
+    pub output: Option<kuku::config::RequestedOutput>,
+    /// Resolved request destination.
+    pub request_url: Option<String>,
     /// Declared supported provider options, when resolution succeeds.
     pub capabilities: Option<ProviderCapabilities>,
     /// Service error when the configured route cannot be resolved.
@@ -68,6 +72,7 @@ impl Client {
             connection: Option<&'a str>,
             model: Option<&'a str>,
             reasoning_effort: Option<&'a str>,
+            output: Option<kuku::config::RequestedOutput>,
             service_tier: Option<&'a str>,
             max_output_tokens: Option<u32>,
         }
@@ -83,6 +88,7 @@ impl Client {
                     connection: config.connection.as_deref(),
                     model: config.model.as_deref(),
                     reasoning_effort: config.reasoning_effort.as_deref(),
+                    output: config.output,
                     service_tier: config.service_tier.as_deref(),
                     max_output_tokens: config.max_output_tokens,
                 },

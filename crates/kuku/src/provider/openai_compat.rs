@@ -17,10 +17,6 @@ use super::types::{PreparedProviderRequest, ProviderFailure, ProviderRequest, Re
 
 const TRUNCATED_STREAM_MESSAGE: &str = "provider stream ended before [DONE]";
 
-pub(crate) fn chat_completions_url(base_url: &str) -> String {
-    format!("{}/chat/completions", base_url.trim_end_matches('/'))
-}
-
 pub(crate) fn render_body(request: &ProviderRequest<'_>) -> Value {
     let has_tools = !request.assembly.tools.is_empty();
     let mut messages = vec![json!({

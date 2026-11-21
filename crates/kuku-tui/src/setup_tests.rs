@@ -74,7 +74,10 @@ async fn stored_key_paste_is_masked_and_small_terminals_are_safe() {
 
     let rendered = screen(&settings, &mut state, SetupMode::Init, 80, 24);
     assert!(!rendered.contains(fixture));
-    assert!(rendered.contains(&"•".repeat(fixture.chars().count())));
+    assert!(rendered.contains("fixture"));
+    assert!(rendered.contains("•l-key"));
+    assert_eq!("•••••••", super::ui::mask_key("1234567"));
+    assert_eq!("12••••78", super::ui::mask_key("12345678"));
 
     let small = screen(&settings, &mut state, SetupMode::Init, 24, 7);
     assert!(small.contains("Terminal too small"));
@@ -110,8 +113,8 @@ async fn source_selection_backtracking_and_cancel_do_not_write_config_or_keys() 
         &settings,
         SetupMode::FirstRun,
     );
-    assert_eq!(SetupStep::Model, state.step);
-    state.step = SetupStep::Connection;
+    assert_eq!(SetupStep::Network, state.step);
+    state.step = SetupStep::Consent;
     state.handle(
         Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
         &settings,
@@ -127,14 +130,26 @@ async fn minimum_size_renders_the_working_connection_choices() {
     let directory = tempfile::tempdir().unwrap();
     let settings = Settings::load(options(directory.path())).await.unwrap();
     let mut state = SetupState::new(&settings);
+    state.step = SetupStep::Connection;
     let rendered = screen(&settings, &mut state, SetupMode::Init, 60, 20);
-    assert!(rendered.contains("Step 1/5"));
+    assert!(rendered.contains("Choose a provider"));
+    assert!(rendered.contains("› New custom connection"));
+    assert!(rendered.find("New custom connection") < rendered.find("Preset"));
+    assert!(rendered
+        .lines()
+        .nth(18)
+        .unwrap()
+        .starts_with("│Esc previous step"));
     assert!(rendered.contains("Preset · Anthropic"));
     assert!(rendered.contains("Preset · OpenAI"));
+
+    state.step = SetupStep::Consent;
+    let consent = screen(&settings, &mut state, SetupMode::Init, 60, 20);
+    assert!(consent.lines().nth(18).unwrap().starts_with("│Esc exit"));
 }
 
 #[tokio::test]
-async fn minimum_size_shows_review_actions_in_both_modes() {
+async fn minimum_size_keeps_save_and_settings_separate() {
     let directory = tempfile::tempdir().unwrap();
     let settings = Settings::load(options(directory.path())).await.unwrap();
     let mut state = SetupState::new(&settings);
@@ -144,17 +159,25 @@ async fn minimum_size_shows_review_actions_in_both_modes() {
         .stored_key
         .set_text("fixture-only-not-a-real-key".into());
 
+    state.model.set_text("fixture".into());
+    state.address.set_text("https://fixture.test/v1".into());
     let init = screen(&settings, &mut state, SetupMode::Init, 60, 20);
-    assert!(!init.contains("Save and continue"));
     assert!(init.contains("Save and exit"));
-    assert!(init.contains("Back"));
-    assert!(init.contains("Cancel"));
+    assert!(init.contains("API URL"));
+    assert!(init.contains("Settings"));
+    assert!(!init.contains("Model capabilities"));
 
     let first_run = screen(&settings, &mut state, SetupMode::FirstRun, 60, 20);
-    assert!(first_run.contains("Save and continue"));
-    assert!(first_run.contains("Save and exit"));
-    assert!(first_run.contains("Back"));
-    assert!(first_run.contains("Cancel"));
+    assert!(first_run.contains("› Save and continue"));
+    assert!(!first_run.contains("Save and exit"));
+    assert!(!first_run.contains("Configured USD rates"));
+
+    state.step = SetupStep::ReviewSettings;
+    let settings_page = screen(&settings, &mut state, SetupMode::FirstRun, 60, 20);
+    assert!(settings_page.contains("Thinking"));
+    assert!(settings_page.contains("Costs"));
+    assert!(settings_page.contains("Model capabilities"));
+    assert!(settings_page.contains("Save and exit"));
 }
 
 #[tokio::test]
@@ -170,7 +193,7 @@ async fn credential_source_status_is_visible_at_minimum_size() {
     let missing = screen(&settings, &mut state, SetupMode::Init, 60, 20);
     assert!(missing.contains("Environment · not detected · ANTHROPIC_API_KEY"));
     assert!(missing.contains("Paste API key (save locally)"));
-    assert!(missing.contains("Presence only; credential not authenticated."));
+    assert!(missing.contains("Keys are tested after you choose a model."));
 
     state.environment_detected = true;
     let detected = screen(&settings, &mut state, SetupMode::Init, 60, 20);
@@ -217,7 +240,7 @@ async fn environment_detection_refreshes_after_edits_paste_and_back_navigation()
         &settings,
         SetupMode::FirstRun,
     );
-    assert_eq!(SetupStep::Credential, state.step);
+    assert_eq!(SetupStep::ModelSource, state.step);
     assert_eq!(back_expected, state.environment_set());
 }
 
@@ -345,12 +368,12 @@ async fn unsafe_storage_shows_environment_guidance_and_never_defaults_to_save() 
         state.review_choices(SetupMode::FirstRun)[1]
     );
     let rendered = screen(&settings, &mut state, SetupMode::FirstRun, 60, 20);
-    assert!(rendered.contains("Storage unavailable; set the variable before launch."));
+    assert!(rendered.contains("Set the API key variable before starting."));
     assert!(rendered.contains("Save and exit"));
 }
 
 #[tokio::test]
-async fn review_keyboard_choices_dispatch_each_action() {
+async fn review_settings_return_to_save_and_keep_the_secondary_exit() {
     let directory = tempfile::tempdir().unwrap();
     let settings = Settings::load(options(directory.path())).await.unwrap();
     let mut state = SetupState::new(&settings);
@@ -359,57 +382,72 @@ async fn review_keyboard_choices_dispatch_each_action() {
     state
         .stored_key
         .set_text("fixture-only-not-a-real-key".into());
+    let key = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+    let mode = SetupMode::FirstRun;
 
-    for (index, action) in [
-        ReviewAction::SaveAndContinue,
-        ReviewAction::SaveAndExit,
-        ReviewAction::Back,
-        ReviewAction::Cancel,
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        state.step = SetupStep::Review;
-        state.review_selection = index;
-        state.finish = None;
-        state.handle(
-            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-            &settings,
-            SetupMode::FirstRun,
-        );
-        match action {
-            ReviewAction::SaveAndContinue => {
-                assert_eq!(Some(Finish::SaveAndContinue), state.finish)
-            }
-            ReviewAction::SaveAndExit => assert_eq!(Some(Finish::SaveAndExit), state.finish),
-            ReviewAction::RepairCredential => unreachable!(),
-            ReviewAction::Back => assert_eq!(SetupStep::Credential, state.step),
-            ReviewAction::Cancel => assert_eq!(Some(Finish::Cancel), state.finish),
-        }
-    }
+    state.handle(key(KeyCode::Down), &settings, mode);
+    state.handle(key(KeyCode::Enter), &settings, mode);
+    assert_eq!(SetupStep::ReviewSettings, state.step);
 
-    for (index, action) in [
-        ReviewAction::SaveAndExit,
-        ReviewAction::Back,
-        ReviewAction::Cancel,
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        state.step = SetupStep::Review;
-        state.review_selection = index;
-        state.finish = None;
-        state.handle(
-            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-            &settings,
-            SetupMode::Init,
-        );
-        match action {
-            ReviewAction::SaveAndExit => assert_eq!(Some(Finish::SaveAndExit), state.finish),
-            ReviewAction::RepairCredential => unreachable!(),
-            ReviewAction::Back => assert_eq!(SetupStep::Credential, state.step),
-            ReviewAction::Cancel => assert_eq!(Some(Finish::Cancel), state.finish),
-            ReviewAction::SaveAndContinue => unreachable!(),
-        }
+    state.handle(key(KeyCode::Enter), &settings, mode);
+    assert_eq!(SetupStep::Thinking, state.step);
+    state.handle(key(KeyCode::Enter), &settings, mode);
+    assert_eq!(SetupStep::ReviewSettings, state.step);
+    state.handle(key(KeyCode::Esc), &settings, mode);
+    assert_eq!(SetupStep::Review, state.step);
+    assert_eq!(0, state.review_selection);
+
+    state.handle(key(KeyCode::Down), &settings, mode);
+    state.handle(key(KeyCode::Enter), &settings, mode);
+    state.handle(key(KeyCode::Up), &settings, mode);
+    state.handle(key(KeyCode::Enter), &settings, mode);
+    assert_eq!(Some(Finish::SaveAndExit), state.finish);
+}
+
+#[tokio::test]
+async fn discovery_failure_preserves_the_form_and_search_preserves_selection() {
+    use kuku::adapter::DiscoveredModel;
+
+    let directory = tempfile::tempdir().unwrap();
+    let settings = Settings::load(options(directory.path())).await.unwrap();
+    let mut state = SetupState::new(&settings);
+    let key = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+    state.step = SetupStep::ModelSource;
+    state
+        .address
+        .set_text("https://fixture.example/gateway/infer".into());
+    state.full_url = true;
+    state.models_url = "https://fixture.example/catalog/models".into();
+    state.credential_source = CredentialSource::StoredKey;
+    state.stored_key.set_text("fixture-key".into());
+    state.handle(key(KeyCode::Enter), &settings, SetupMode::FirstRun);
+    assert!(state.discovery.rows().is_empty());
+    assert_eq!("fixture-key", state.stored_key.text());
+    assert_eq!(
+        "https://fixture.example/gateway/infer",
+        state.address.text()
+    );
+
+    state.models.found = ["alpha", "beta"]
+        .into_iter()
+        .map(|id| DiscoveredModel {
+            id: id.into(),
+            name: None,
+            capabilities: Default::default(),
+        })
+        .collect();
+    state.step = SetupStep::Discover;
+    for query in ["alpha", "beta"] {
+        state.models.query.set_text(query.into());
+        state.handle(key(KeyCode::Char(' ')), &settings, SetupMode::FirstRun);
     }
+    state.handle(key(KeyCode::Enter), &settings, SetupMode::FirstRun);
+    assert_eq!(SetupStep::DefaultModel, state.step);
+    state.handle(key(KeyCode::Down), &settings, SetupMode::FirstRun);
+    state.handle(key(KeyCode::Enter), &settings, SetupMode::FirstRun);
+    assert_eq!(Some("beta"), state.primary_model().as_deref());
+    assert_eq!(vec!["alpha", "beta"], state.model_ids().unwrap());
+    let config = super::config::save(&settings, &state).unwrap();
+    assert_eq!("beta", config.tier(config.default_tier()).unwrap().model);
+    assert_eq!(2, config.tiers.len());
 }

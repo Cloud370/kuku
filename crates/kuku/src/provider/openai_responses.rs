@@ -16,10 +16,6 @@ use super::types::{PreparedProviderRequest, ProviderFailure, ProviderRequest, Re
 
 const TRUNCATED_STREAM_MESSAGE: &str = "provider stream ended before response.completed";
 
-pub(crate) fn responses_url(base_url: &str) -> String {
-    format!("{}/responses", base_url.trim_end_matches('/'))
-}
-
 fn convert_to_input_items(message: &CanonicalMessage) -> Vec<Value> {
     if message.role == Role::Assistant {
         if let Some(items) = native_replay(message, ProviderFormat::OpenAiResponses)

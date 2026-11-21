@@ -39,7 +39,8 @@ pub use error::{Error, Result};
 pub use execution::OutputReference;
 pub use provider::types::ProviderFailureKind;
 pub use provider::{
-    Provider, ProviderCapabilities, ProviderReport, ProviderSettings, ProviderUsage,
+    CapabilitySource, DeclaredCapability, Provider, ProviderCapabilities, ProviderReport,
+    ProviderSettings, ProviderUsage,
 };
 pub use query::{
     query, ModelRecoveryInfo, PermissionChoice, PermissionRequest, Query, Run, RunOutput,

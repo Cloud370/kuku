@@ -21,6 +21,8 @@ fn model() -> ModelSelection {
         context_window_tokens: 0,
         max_output_tokens: None,
         settings: Default::default(),
+        output: Default::default(),
+        request_url: "https://example.test/v1/messages".into(),
         capabilities: Default::default(),
     }
 }
@@ -33,6 +35,8 @@ fn selection(connection: &str, model: &str) -> AgentSelection {
         context_window_tokens: 16_000,
         max_output_tokens: Some(1_000),
         settings: Default::default(),
+        output: Default::default(),
+        request_url: "https://example.test/v1/messages".into(),
         capabilities: Default::default(),
         tools: Vec::new(),
     }
@@ -78,6 +82,7 @@ fn snapshot(selection: AgentSelection, pending_selection: Option<AgentSelection>
         cursor: 31,
         agent,
         agents: vec![summary],
+        session_costs: None,
         pending: Vec::new(),
         selection: Some(selection),
         selection_error: None,

@@ -94,6 +94,8 @@
 
 所选 Agent 的 `agent.usage` 包含累计 token 数，以及报告输入或输出量的请求数。`cache_measured_input_tokens` 和 `cache_measured_read_tokens` 分别汇总同一批提供有效成对计数的请求中的输入与缓存读取量。有测量时，`latest_request` 提供同一次请求的 `input_tokens`、`output_tokens`、`context_window_tokens` 和 `elapsed_us`。旧记录可能缺少可选测量字段。[终端用量字段](cli.md#终端界面)
 
+快照的 `session_costs` 汇总同一游标下所有保留的 Agent。`reported_nanodollars` 和 `estimated_nanodollars` 的单位是十亿分之一美元。`unknown_requests` 是金额未知的请求尝试数。
+
 有记录时，`agent.turn_started_at_ms` 是最近轮次首次接纳输入的时间，单位为自 Unix 纪元起的毫秒数。轮次结算后，`agent.turn_elapsed_ms` 提供该轮最终耗时，单位为毫秒。新轮次的已提交 `inputs_accepted` 帧也可带有 `turn_started_at_ms`。
 
 `committed` 行包含 `id` 和 `kind`，适用时还包含 Agent 地址、对话条目或状态变更标记。`live` 行包含 `agent`、`execution_id`、`turn`、`cursor` 和临时 `event`。核对它们与当前视图的标识，收到正式结果后替换临时预览。`lagged` 行包含跳过的临时观察数 `skipped`。观察流还可以发送 `heartbeat` 或 `error` 行。观察落后后仍可读取持久状态。
@@ -146,6 +148,6 @@ Job 路由均要求 `workspace` 和 `agent` 查询参数。`GET /sessions/{id}/j
 
 ## 查找模型和工作区
 
-`/models` 返回 `default_tier`、`connections` 和 `tiers`。连接有 `name` 和线路 `protocol`。模型档包含 `name`、`connection`、`model` 和 `purpose`，以及设置与能力或解析错误。向 `/models/resolve` 传入 `tier`、`connection`、`model`、`reasoning_effort` 或 `service_tier` 等模型选择字段，可得到解析后的 `selection`。
+`/models` 返回 `default_tier`、`connections` 和 `tiers`。路由包含 `name`、`connection`、`model` 和 `purpose`，以及请求地址、生效设置、能力来源和请求的输出类型，或解析错误。`/models/resolve` 接收候选 Agent 的 `tier`、`connection`、`model`、`reasoning_effort`、`service_tier`、`output` 和 `max_output_tokens`；返回的 `selection` 分别提供模型声明和适配器媒体支持。
 
 `/workspaces` 返回 `workspaces`。向 `/workspaces/resolve` 将已有目录的绝对路径作为 `workspace` 传入，可取得规范路径。`/workspaces/files` 和 `/workspaces/skills` 还接受 `query` 过滤参数，分别返回 `paths` 和 `skills`。匹配的文件是工作区相对路径，匹配的 Skill 包含名称和描述。

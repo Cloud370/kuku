@@ -15,7 +15,7 @@ use serde_json::json;
 
 use crate::app::{App, KeyboardFocus, Modal};
 use crate::jobs::{Job, Search, Update};
-use crate::menu::{Choice, ChoiceKind, MessageAction, PickerKind, PromptKind};
+use crate::menu::{Choice, ChoiceKind, CommandMenu, MessageAction, PickerKind, PromptKind};
 use crate::transcript::MessageId;
 
 pub(super) fn connected_app() -> App {
@@ -914,5 +914,61 @@ fn obsolete_message_commands_are_absent_from_picker() {
     let commands = Choice::commands();
     for name in ["/copy", "/source", "/notes", "/details", "/tools"] {
         assert!(commands.iter().all(|choice| choice.label != name), "{name}");
+    }
+}
+
+#[test]
+fn restart_requires_confirmation_and_preserves_draft_across_cancel_defer_and_success() {
+    use kuku_client::local::ServiceIdentity;
+
+    let mut app = connected_app();
+    let selection = app.active.clone();
+    app.pane_mut().draft.set_text("draft to keep".into());
+    let identity = ServiceIdentity {
+        endpoint: app.endpoint.clone().unwrap(),
+        instance_id: "observed-instance".into(),
+        pid: 1,
+        data_dir: "fixture".into(),
+        config_path: "fixture/config.toml".into(),
+    };
+    let confirm_dialog = |app: &mut App| {
+        app.perform(CommandMenu::Restart);
+        let Some(Job::PrepareRestart(ticket)) = app.effects.pop() else {
+            panic!("restart must start with the identity check");
+        };
+        app.update(Update::RestartPrepared(ticket, Ok(identity.clone())));
+        assert!(
+            matches!(&app.modal, Some(Modal::Picker(picker)) if picker.kind == PickerKind::Restart && picker.selected == 1)
+        );
+    };
+    for _ in 0..4 {
+        press(&mut app, KeyCode::F(2));
+    }
+    press(&mut app, KeyCode::Enter);
+    assert!(!app.restarting);
+    assert!(!app
+        .effects
+        .iter()
+        .any(|job| matches!(job, Job::PrepareRestart(_) | Job::Restart(_))));
+    press(&mut app, KeyCode::Esc);
+
+    confirm_dialog(&mut app);
+    press(&mut app, KeyCode::Enter);
+    assert!(!app.restarting);
+    assert_eq!("draft to keep", app.pane().draft.text());
+
+    for outcome in [
+        crate::jobs::Restarted::Busy("active work".into()),
+        crate::jobs::Restarted::Ready,
+    ] {
+        confirm_dialog(&mut app);
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.effects.pop(), Some(Job::Restart(expected)) if *expected == identity));
+        assert!(app.restarting);
+        app.update(Update::Restarted(Ok(outcome)));
+        assert_eq!("draft to keep", app.pane().draft.text());
+        assert_eq!(selection, app.active);
+        assert!(!app.restarting);
     }
 }

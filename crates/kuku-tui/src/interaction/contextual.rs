@@ -119,7 +119,6 @@ impl App {
             }
             ContextControl::PreviousAgent { .. } => self.back_to_agent(),
             ContextControl::Reconnect { .. } => self.reconnect(),
-            ContextControl::Restart { .. } => self.restart(),
             ContextControl::Messages => self.open_messages_picker(),
         }
     }
@@ -136,7 +135,7 @@ mod tests {
         let control = app
             .contextual_controls()
             .into_iter()
-            .find(|control| matches!(control, ContextControl::Restart { .. }))
+            .find(|control| matches!(control, ContextControl::Messages))
             .unwrap();
         assert!(app.focus_context_control(control.clone()));
         assert!(app.pane().contextual_focus.active);
@@ -149,38 +148,21 @@ mod tests {
     }
 
     #[test]
-    fn enter_activates_focused_service_control_without_sending_the_draft() {
+    fn enter_reconnects_the_service_without_sending_the_draft() {
         let mut app = crate::interaction::tests::connected_app();
+        app.connection_problem = Some("kuku service offline".into());
         app.pane_mut().draft.insert("unsent");
         app.key(KeyEvent::new(
             crossterm::event::KeyCode::F(2),
             KeyModifiers::NONE,
         ));
-        assert!(app.pane().contextual_focus.active);
-        assert_eq!("unsent", app.pane().draft.text());
         app.key(KeyEvent::new(
             crossterm::event::KeyCode::Enter,
             KeyModifiers::NONE,
         ));
-        assert!(app.restarting);
+        assert!(app.connecting);
+        assert!(!app.restarting);
         assert_eq!("unsent", app.pane().draft.text());
-    }
-
-    #[test]
-    fn stale_service_focus_cannot_restart_twice() {
-        let mut app = crate::interaction::tests::connected_app();
-        let control = app
-            .contextual_controls()
-            .into_iter()
-            .find(|control| matches!(control, ContextControl::Restart { .. }))
-            .unwrap();
-        assert!(app.focus_context_control(control));
-        app.restarting = true;
-        app.key(KeyEvent::new(
-            crossterm::event::KeyCode::Enter,
-            KeyModifiers::NONE,
-        ));
-        assert!(app.effects.is_empty());
     }
 
     #[test]
@@ -201,7 +183,7 @@ mod tests {
         ));
         assert!(matches!(
             app.pane().contextual_focus.cursor,
-            Some(ContextControl::Restart { .. })
+            Some(ContextControl::Messages)
         ));
         app.key(KeyEvent::new(
             crossterm::event::KeyCode::BackTab,

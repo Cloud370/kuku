@@ -1,6 +1,7 @@
 mod config {
     pub use kuku::config::{
-        ApiKey, ProviderOptions, ProviderProfile, ResolvedThinking, ThinkLevel,
+        ApiKey, MediaAdapterSupport, ModelThinkingTest, ProviderFormat, ProviderOptions,
+        ProviderProfile, RequestedOutput, ResolvedThinking, ThinkLevel,
     };
 }
 

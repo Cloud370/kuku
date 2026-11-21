@@ -111,6 +111,7 @@ fn tool_stream_state(
         stream: Box::pin(tokio_stream::iter(chunks.into_iter().map(Ok))),
         provider_attempt: 1,
         stream_failure: None,
+        accounting: Default::default(),
         accumulated_text: String::new(),
         accumulated_thinking: String::new(),
         model_phase: None,

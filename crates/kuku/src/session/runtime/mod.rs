@@ -41,9 +41,10 @@ pub use crate::tool::builtin::run_command::output::{
 pub use observe::{Observation, ReplyPreview, ReplyPreviews, SessionObserver};
 pub use turns::TurnIndex;
 pub use types::{
-    Activation, AgentConfig, AgentSnapshot, AgentStatus, AgentView, Input, InputSource,
+    Activation, AgentConfig, AgentSnapshot, AgentStatus, AgentView, CostTotals, Input, InputSource,
     InputStatus, InputTiming, JobResult, JobSnapshot, JobStatus, ModelUsageSample, PendingInput,
-    QuestionRequest, Receipt, RuntimeLimits, SessionOptions, TurnSummary, UsageTotals, Withdrawal,
+    QuestionRequest, Receipt, RuntimeLimits, SessionCostSummary, SessionOptions, TurnSummary,
+    UsageTotals, Withdrawal,
 };
 pub use values::{
     NamedValue, NamedValueKind, NamedValueSource, MAX_INPUT_VALUES, MAX_VALUE_NAME_BYTES,
@@ -347,7 +348,17 @@ impl Session {
         self.validate_input_values(&state, &input, values)?;
         let config = config
             .map(|config| {
-                let config = self.resolve_defaults(&target, config)?;
+                let mut config = self.resolve_defaults(&target, config)?;
+                if config.tier.is_none()
+                    && config.connection.is_none()
+                    && config.model.is_none()
+                    && state
+                        .creation
+                        .as_ref()
+                        .is_some_and(|claim| claim.command.command_id == input.command_id)
+                {
+                    config.tier = Some(self.inner.options.config.default_tier.clone());
+                }
                 self.validate_config(&config)?;
                 Ok::<_, Error>(config)
             })
