@@ -261,7 +261,8 @@ def targeted_delegation(client):
         create = client.provider.next(prompt)
         schema = next(tool["input_schema"] for tool in create.request["tools"]
                       if tool["name"] == "create_agent")
-        assert set(schema["properties"]) == {"address", "instructions", "tools", "tier", "preset", "workspace"}
+        assert set(schema["properties"]) == {"address", "instructions", "tools", "tier", "preset", "workspace",
+                                            "reasoning_effort", "service_tier"}
         create.tool("create_agent", "create-writer", address="writer", tools=[])
         client.provider.next("create-writer").tool("send_message", "dispatch", to="writer", message=task)
         first, second = client.provider.next(), client.provider.next()
@@ -271,7 +272,8 @@ def targeted_delegation(client):
         assert "<kuku_delegation>" not in json.dumps(child.request["messages"])
         assert "<kuku_memory_guidance>" not in json.dumps(child.request["messages"])
         parent.tool("list_agents", "collect", wait_for="writer")
-        waiting = terminal.expect("Agent check · writer · Waiting", also=("╭─ Agent writer", "Timeline"))["screen"]
+        waiting = terminal.expect("Agent check · writer · Waiting", also=("╭─ Agent writer", "Timeline", "Thinking · None"),
+                                  absent=("· Fast", "· Ultra Fast"))["screen"]
         client.provider.assert_idle(0.35)
         child.text(result)
         collected = client.provider.next("collect")

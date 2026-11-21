@@ -10,7 +10,7 @@ import re
 import sys
 from urllib.parse import urlencode, urlsplit
 
-from interactive_composer import composer_actions, startup_info
+from interactive_composer import agent_setup, composer_actions, startup_info
 from interactive_stream import profile_markdown_stream
 from interactive_lifecycle import first_run_credential_repair, lifecycle_cases, shared_model_editor, verify_restored_tool
 from interactive_rendering import (
@@ -954,6 +954,7 @@ def main():
         run_cases([
             ("startup-info", lambda: native("startup-info", startup_info)),
             ("composer-actions", lambda: native("composer-actions", composer_actions)),
+            ("agent-setup", lambda: native("agent-setup", agent_setup)),
             ("paste", lambda: native("paste", editable_multiline_paste)),
             ("first-run", lambda: first_run_credential_repair(options.binary, options.bridge, options.directory / "settings")),
             ("model-setup", lambda: shared_model_editor(options.binary, options.bridge, options.directory / "model-setup")),

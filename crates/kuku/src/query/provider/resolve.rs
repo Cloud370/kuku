@@ -102,6 +102,16 @@ pub(in crate::query) fn usable_model_routes(
                 return None;
             }
             info.reasoning_effort = selected.settings.reasoning_effort;
+            info.reasoning_choices = selected
+                .capabilities
+                .selectable_reasoning_efforts()
+                .map(str::to_owned)
+                .collect();
+            info.service_tier = selected.settings.service_tier;
+            info.service_choices = selected
+                .capabilities
+                .service_tier_source
+                .map(|_| selected.capabilities.service_tiers);
             Some(info)
         })
         .collect()

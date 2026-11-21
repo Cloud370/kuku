@@ -394,6 +394,12 @@ pub struct TierInfo {
     pub model: String,
     /// Effective reasoning when supplied by the resolver.
     pub reasoning_effort: Option<String>,
+    /// Known reasoning choices for delegation.
+    pub reasoning_choices: Vec<String>,
+    /// Effective service tier when supplied by the resolver.
+    pub service_tier: Option<String>,
+    /// Known service choices. None indicates the route did not declare its capabilities.
+    pub service_choices: Option<Vec<String>>,
     /// Requested output for this route.
     pub output: super::RequestedOutput,
 }
@@ -440,6 +446,9 @@ impl Config {
                 purpose: tier.purpose.clone(),
                 model: tier.model.clone(),
                 reasoning_effort: tier.reasoning_effort.clone(),
+                reasoning_choices: Vec::new(),
+                service_tier: tier.service_tier.clone(),
+                service_choices: None,
                 output: tier.output,
             })
             .collect()

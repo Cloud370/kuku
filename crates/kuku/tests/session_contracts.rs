@@ -278,11 +278,15 @@ async fn create_agent_uses_default_routing_and_rejects_invalid_tool_configuratio
                 && properties["tier"]["description"]
                     .as_str()
                     .is_some_and(|text| text.contains("<kuku_models>"))
-                && properties.as_object().unwrap().len() == 6
+                && properties.as_object().unwrap().len() == 8
+                && properties["reasoning_effort"]["type"] == "string"
+                && properties["service_tier"]["type"] == "string"
                 && properties["tools"]["description"].as_str().is_some_and(|text| text.contains("empty array means no tools"))
                 && context.contains("<kuku_models>")
                 && context.contains("balanced")
                 && context.contains("Omit tier to use the default model")
+                && context.contains("service provider default, service options flex, priority")
+                && context.contains("only when the user explicitly asks for that tier")
                 && context.contains("collect its reply with list_agents")
         },
         response(
@@ -321,7 +325,7 @@ async fn create_agent_uses_default_routing_and_rejects_invalid_tool_configuratio
                 && content("denied").contains("not dispatched")
         },
         response(
-            json!({"tool_calls":[tool("correct-route", "create_agent", json!({"address":"second-reviewer","tier":"balanced"}))]}),
+            json!({"tool_calls":[tool("correct-route", "create_agent", json!({"address":"second-reviewer","tier":"balanced","reasoning_effort":"high","service_tier":"flex"}))]}),
             "tool_calls",
         ),
     )
@@ -334,7 +338,10 @@ async fn create_agent_uses_default_routing_and_rejects_invalid_tool_configuratio
     .await;
     let mut options = options(&server, workspace.path(), data.path());
     options.authorizer = Arc::new(BatchPolicy);
-    let parent_provider = options.config.providers["openai"].clone();
+    let connection = options.config.providers.get_mut("openai").unwrap();
+    connection.options.reasoning_efforts = Some(vec!["high".into()]);
+    connection.options.service_tiers = Some(vec!["flex".into(), "priority".into()]);
+    let parent_provider = connection.clone();
     options
         .config
         .providers
@@ -370,6 +377,17 @@ async fn create_agent_uses_default_routing_and_rejects_invalid_tool_configuratio
         assert_eq!("openai", selected.connection);
     }
     let reviewer = session.agent("reviewer").unwrap();
+    assert_eq!(
+        None,
+        session
+            .agent_selection("reviewer")
+            .unwrap()
+            .settings
+            .service_tier
+    );
+    let selected = session.agent_selection("second-reviewer").unwrap();
+    assert_eq!(Some("high"), selected.settings.reasoning_effort.as_deref());
+    assert_eq!(Some("flex"), selected.settings.service_tier.as_deref());
     assert_eq!(None, reviewer.config.max_output_tokens);
     assert!(!reviewer.config.no_agents);
     assert_eq!(

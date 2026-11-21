@@ -285,12 +285,7 @@ impl App {
             };
             let content = prompt.editor.text();
             match prompt.kind {
-                PromptKind::Agent => self.issue(
-                    Address::new(self.active.session.clone(), content.trim().to_owned()),
-                    Action::CreateAgent {
-                        config: Box::default(),
-                    },
-                ),
+                PromptKind::Agent => self.begin_agent_setup(content.trim().to_owned()),
                 PromptKind::Question { request_id, target } => {
                     self.restore_question_composer(&target);
                     if self.selection().target != target
@@ -396,7 +391,7 @@ impl App {
 
     pub(crate) fn picker(&mut self, kind: PickerKind, local: Vec<Choice>) -> &mut Picker {
         let id = self.modal_id();
-        self.modal = Some(Modal::Picker(Picker::new(kind, id, local)));
+        self.modal = Some(Modal::Picker(Box::new(Picker::new(kind, id, local))));
         if let Some(Modal::Picker(picker)) = &mut self.modal {
             picker
         } else {
@@ -410,13 +405,13 @@ impl App {
         title: impl Into<String>,
         instructions: impl Into<String>,
     ) {
-        self.modal = Some(Modal::Prompt(Prompt {
+        self.modal = Some(Modal::Prompt(Box::new(Prompt {
             kind,
             title: title.into(),
             instructions: instructions.into(),
             instructions_top: 0,
             editor: Editor::default(),
-        }));
+        })));
     }
 
     fn choose(&mut self, picker: PickerKind, choice: ChoiceKind, ticket: u64) {
@@ -434,6 +429,10 @@ impl App {
         if let ChoiceKind::Thinking(effort) = choice {
             self.apply_thinking_choice(effort);
             self.close_picker();
+            return;
+        }
+        if let ChoiceKind::AgentSetup(action) = choice {
+            self.choose_agent_setup(action);
             return;
         }
         self.close_picker();
@@ -470,6 +469,7 @@ impl App {
                 "New agent",
                 "Choose the address used to send to this agent",
             ),
+            ChoiceKind::AgentSetup(_) => unreachable!("agent setup retains its picker state"),
             ChoiceKind::Tier(tier) => {
                 let mut config = self.route_config();
                 config.tier = Some(tier);
@@ -551,13 +551,13 @@ impl App {
             .question_drafts
             .remove(&request_id)
             .unwrap_or_default();
-        self.modal = Some(Modal::Prompt(Prompt {
+        self.modal = Some(Modal::Prompt(Box::new(Prompt {
             kind: PromptKind::Question { request_id, target },
             title,
             instructions,
             instructions_top: 0,
             editor,
-        }));
+        })));
     }
 
     fn route_config(&self) -> AgentConfig {

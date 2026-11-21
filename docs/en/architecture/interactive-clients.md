@@ -43,6 +43,8 @@ Reasoning, visible reply text, incremental tool arguments and tool execution can
 
 Project durable retry decisions into both the transcript and the attached Agent's progress. Show the reported attempt, an optional reported maximum, the authoritative failure kind and `Esc` cancellation; a waiting countdown may use only the event timestamp and policy-selected delay. Keep stopped reasons in history without a live-stop affordance. Preserve the bounded model diagnostic and choose recovery guidance only from its explicit error code. Never infer retry policy from message text or provider response headers, and never resubmit automatically.
 
+Agent creation uses the same model resolver as later changes. A model can see each route's known thinking and service choices even when no service tier is configured. Delegated creation inherits the configured or default service tier unless the user explicitly requests a supported alternative. The creation card shows the preset name when a preset was selected, or the effective thinking level for a direct route. Show the service tier only when a specific tier is selected.
+
 ## Terminal interaction
 
 Frequent actions finish where they start and report the result nearby. Give reading, editing and review their own dialog when they need independent space. Closing a panel restores the original focus, draft, selection and reading position.

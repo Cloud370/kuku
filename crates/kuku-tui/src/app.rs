@@ -21,6 +21,7 @@ use crate::transcript::{HistoryRequest, Transcript};
 use model_default::PendingDefaultSave;
 
 mod activity;
+pub(crate) mod agent_setup;
 pub(crate) mod agents;
 mod auth_repair;
 mod background_jobs;
@@ -312,8 +313,8 @@ fn model_label(connection: &str, model: &str, effort: Option<&str>) -> String {
 #[derive(Debug)]
 pub(crate) enum Modal {
     Help,
-    Picker(Picker),
-    Prompt(Prompt),
+    Picker(Box<Picker>),
+    Prompt(Box<Prompt>),
     Output(Box<OutputViewer>),
     StatusLineEditor(StatusLineEditor),
     ExitConfirmation,
@@ -681,6 +682,7 @@ impl App {
                 }
             }
             Update::ThinkingDefaults(ticket, defaults) => self.thinking_defaults(ticket, defaults),
+            Update::AgentModels(ticket, result) => self.agent_models_loaded(ticket, result),
             Update::ModelEditorOpened(ticket, result) => self.model_editor_opened(ticket, result),
             Update::ModelEditorSaved(ticket, editor, result) => {
                 self.model_editor_saved(ticket, editor, result)

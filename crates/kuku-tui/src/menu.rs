@@ -25,6 +25,7 @@ pub(crate) enum ChoiceKind {
         target: Target,
     },
     CreateAgent,
+    AgentSetup(crate::app::agent_setup::AgentSetupAction),
     Tier(String),
     ModelActions(Box<kuku_client::TierSummary>),
     EditModel(crate::setup::SetupIntent),
@@ -93,6 +94,7 @@ impl ChoiceKind {
             ) | Self::Session { .. }
                 | Self::Agent { .. }
                 | Self::CreateAgent
+                | Self::AgentSetup(_)
                 | Self::ModelActions(_)
                 | Self::EditModel(_)
                 | Self::ConfirmModelSetting(_)
@@ -190,6 +192,7 @@ pub(crate) enum PickerKind {
     Paths(Range<usize>),
     Sessions,
     Agents,
+    AgentSetup(crate::app::agent_setup::AgentSetupStep),
     Models,
     ModelDefault,
     ModelActions,
@@ -215,6 +218,7 @@ impl PickerKind {
             Self::Paths(_) => "Workspace paths",
             Self::Sessions => "Resume session",
             Self::Agents => "Switch Agent",
+            Self::AgentSetup(step) => step.title(),
             Self::Models => "Model route",
             Self::ModelDefault => "Set current model as default",
             Self::ModelActions => "Model settings",
@@ -241,6 +245,7 @@ impl PickerKind {
                 | Self::Paths(_)
                 | Self::Sessions
                 | Self::Agents
+                | Self::AgentSetup(crate::app::agent_setup::AgentSetupStep::Model)
                 | Self::Models
                 | Self::Tools
                 | Self::Jobs
@@ -292,6 +297,7 @@ pub(crate) struct Picker {
     pub(crate) ticket: Ticket,
     pub(crate) rewind_history: Option<RewindHistory>,
     pub(crate) thinking: Option<Box<crate::app::ThinkingPicker>>,
+    pub(crate) agent_setup: Option<Box<crate::app::agent_setup::AgentSetup>>,
     local: Vec<Choice>,
     remote: Vec<Choice>,
     rows: Option<PickerRows>,
@@ -312,6 +318,7 @@ impl Picker {
             ticket: Ticket { id, revision: 0 },
             rewind_history: None,
             thinking: None,
+            agent_setup: None,
             local,
             remote: Vec::new(),
             rows: None,

@@ -21,7 +21,10 @@ impl App {
             self.escape_armed_at = None;
         }
         if Shortcut::ESCAPE.matches(key) {
-            if key.kind == KeyEventKind::Repeat || self.back_from_thinking_confirmation() {
+            if key.kind == KeyEventKind::Repeat
+                || self.back_from_thinking_confirmation()
+                || self.back_from_agent_setup()
+            {
                 self.escape_armed_at = None;
                 return;
             }

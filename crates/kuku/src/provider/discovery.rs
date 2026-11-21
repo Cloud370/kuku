@@ -235,6 +235,7 @@ struct ListModel {
     effort: Option<Effort>,
     reasoning: Option<Reasoning>,
     reasoning_efforts: Option<Vec<String>>,
+    service_tiers: Option<Vec<String>>,
     input_modalities: Option<Vec<String>>,
     output_modalities: Option<Vec<String>>,
     architecture: Option<Architecture>,
@@ -303,6 +304,7 @@ fn parse_model_list(bytes: &[u8]) -> Result<Vec<DiscoveredModel>> {
                     .or(reasoning.supported_efforts)
                     .or(model.reasoning_efforts),
                 reasoning_default: effort.default_level.or(reasoning.default_effort),
+                service_tiers: model.service_tiers,
                 input_modalities: model.input_modalities.or(architecture.input_modalities),
                 output_modalities: model.output_modalities.or(architecture.output_modalities),
                 interfaces: (!interfaces.is_empty()).then_some(interfaces),

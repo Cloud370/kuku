@@ -50,6 +50,54 @@ def startup_info(client):
         terminal.exit_cleanly()
 
 
+def agent_setup(client):
+    workspace = client.workspace("work-agent-setup")
+    config = client.home / "config.toml"
+    text = config.read_text(encoding="utf-8")
+    text = text.replace('reasoning_efforts = ["none"]',
+                        'reasoning_efforts = ["none", "high"]\nservice_tiers = ["flex", "priority"]')
+    text = text.replace('[model.strong]\nprovider = "test-anthropic"\nmodel = "claude-sonnet-4-6"',
+                        '[model.strong]\nprovider = "test-anthropic"\nmodel = "review-model"')
+    config.write_text(text, encoding="utf-8")
+
+    with client.terminal(workspace) as terminal:
+        terminal.request("resize", cols=60, rows=28)
+        terminal.expect("New session", state="Ready", rows=28)
+        terminal.submit("Start the Agent setup check")
+        client.provider.next("Start the Agent setup check").text("Ready to create a reviewer.")
+        terminal.expect("Ready to create a reviewer.")
+        terminal.press("/agents\r")
+        roster = terminal.expect("Create Agent", state="Switch Agent")["screen"]
+        terminal.click_text(roster, "Create Agent")
+        terminal.expect("New agent")
+        terminal.type("reviewer")
+        terminal.press("\r")
+        review = terminal.expect("› Create Agent", also=("Agent reviewer", "Thinking · None", "Service tier · Default"))["screen"]
+        terminal.click_text(review, "Model · claude-sonnet-4-6")
+        models = terminal.expect("strong · review-model", state="Agent model")["screen"]
+        terminal.click_text(models, "strong · review-model")
+        review = terminal.expect("Model · review-model", also=("Thinking · None", "Esc Back"))["screen"]
+        terminal.click_text(review, "Thinking · None")
+        thinking = terminal.expect("High", state="Agent thinking")["screen"]
+        terminal.click_text(thinking, "High")
+        review = terminal.expect("Thinking · High", also=("Service tier · Default",))["screen"]
+        terminal.click_text(review, "Service tier · Default")
+        service = terminal.expect("Fast", state="Agent service tier", also=("Flex",))["screen"]
+        terminal.click_text(service, "Fast")
+        terminal.expect("Service tier · Fast", also=("Model · review-model", "Thinking · High", "› Create Agent"))
+        terminal.press("\r")
+        terminal.expect("Agent reviewer", also=("review-model",), absent=("› Create Agent",))
+        terminal.submit("Review this request")
+        call = client.provider.next("Review this request")
+        assert call.request["model"] == "review-model", call.request["model"]
+        assert call.request["output_config"]["effort"] == "high", call.request.get("output_config")
+        assert call.request["service_tier"] == "priority", call.request.get("service_tier")
+        call.text("Reviewer settings verified.")
+        terminal.expect("Reviewer settings verified.")
+        terminal.exit_cleanly()
+    client.provider.assert_idle()
+
+
 def composer_actions(client):
     workspace = client.workspace("work-composer")
     config = client.home / "config.toml"

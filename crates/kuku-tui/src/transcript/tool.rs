@@ -226,7 +226,10 @@ impl Tool {
                     &outcome.content
                 }
             });
-        Some(request.card(receipt, status, error))
+        let model = receipt
+            .and(outcome)
+            .and_then(|outcome| outcome.agent_model.as_deref());
+        Some(request.card(receipt, model, status, error))
     }
 
     pub(super) fn group_name(&self) -> Option<&str> {

@@ -128,6 +128,16 @@ pub(crate) fn effort_label(effort: Option<&str>) -> String {
     })
 }
 
+pub(crate) fn service_tier_label(value: Option<&str>) -> String {
+    match value {
+        Some("priority" | "fast") => "Fast".into(),
+        Some("ultrafast") => "Ultra Fast".into(),
+        Some("default" | "standard") => "Standard".into(),
+        None => "Default".into(),
+        Some(value) => effort_label(Some(value)),
+    }
+}
+
 pub(crate) fn tail_start(text: &str, width: usize) -> (usize, usize) {
     let mut used = 0;
     let mut tail = text.len();

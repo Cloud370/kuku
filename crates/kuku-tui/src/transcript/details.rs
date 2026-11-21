@@ -581,7 +581,11 @@ pub(super) struct GroupSummary {
 
 #[derive(PartialEq, Eq)]
 enum GroupKind {
-    Delegation { delivery: usize, checks: usize },
+    Delegation {
+        creation: usize,
+        delivery: usize,
+        checks: usize,
+    },
     Inspections,
 }
 
@@ -601,11 +605,17 @@ impl GroupHeading {
         agents: &AgentCards,
     ) -> Self {
         let summary = span.summary;
-        if let GroupKind::Delegation { delivery, checks } = summary.kind {
+        if let GroupKind::Delegation {
+            creation,
+            delivery,
+            checks,
+        } = summary.kind
+        {
             let latest = &records[delivery];
             if let Some(card) = latest.tool().and_then(Tool::agent_card) {
                 let (_, facts) = agents.display(&latest.key, latest.position, card.address);
-                let rows = card.delegation_header(width, open, facts, checks);
+                let creation = records[creation].tool().and_then(Tool::agent_card);
+                let rows = card.delegation_header(width, open, facts, checks, creation.as_ref());
                 return Self {
                     agent_link: Some(card.address.to_owned()),
                     summary,
@@ -742,6 +752,7 @@ pub(super) fn groups(records: &[Record]) -> Vec<GroupSpan> {
                         listing: String::new(),
                         preview: None,
                         kind: GroupKind::Delegation {
+                            creation: index,
                             delivery: next,
                             checks,
                         },

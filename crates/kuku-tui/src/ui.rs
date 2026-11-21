@@ -700,7 +700,11 @@ fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (us
         frame.render_widget(Paragraph::new(Span::styled("/ ", emphasis(ACCENT))), marker);
         render_editor(frame, field, &mut picker.query, true, "Search…");
     }
-    let cell_height = if list.height >= 6 { 2 } else { 1 };
+    let cell_height = if list.height >= 6 && !matches!(picker.kind, PickerKind::AgentSetup(_)) {
+        2
+    } else {
+        1
+    };
     let count = usize::from(list.height / cell_height).max(1);
     let options = picker.visible_choices();
     let first = picker
@@ -765,6 +769,7 @@ fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (us
             Some("Operate message · ←→/Tab Select · Enter Run · Esc Back")
         }
         PickerKind::Rewind => Some("Rewind · ↑↓ Select · Enter Rewind · Esc Close"),
+        PickerKind::AgentSetup(_) => Some("↑↓ Select · Enter Choose · Esc Back"),
         _ => None,
     } {
         Line::styled(shorten(help, width), Style::new().fg(MUTED))

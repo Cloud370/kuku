@@ -80,6 +80,7 @@ pub(crate) enum Job {
     RewindSource(Selection, Ticket, u64),
     RewindGroupHistory(Selection, RewindGroupRequest),
     Find(Ticket, Search),
+    AgentModels(u64),
     ThinkingDefaults(u64, AgentConfig, ResolvedModel),
     ClosePicker,
     PrepareDefault {
@@ -135,6 +136,7 @@ pub(crate) enum Update {
         Result<RewindGroupPage, Error>,
     ),
     Found(Ticket, Result<(Vec<Choice>, String), Error>),
+    AgentModels(u64, Result<ModelCatalog, Error>),
     ThinkingDefaults(u64, crate::setup::ThinkingDefaults),
     PreparedDefault(u64, Selection, Result<PreparedDefaultSave, String>),
     SavedDefault(u64, Selection, Result<(), String>),
@@ -518,6 +520,7 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
         Job::Model(config, version) => {
             Update::DefaultModel(version, client.resolve_model(&config).await)
         }
+        Job::AgentModels(ticket) => Update::AgentModels(ticket, client.models().await),
         Job::StartupSkills(generation) => {
             let result = client
                 .skills(&connection.workspace, None)

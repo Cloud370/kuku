@@ -489,6 +489,8 @@ pub(crate) fn definitions() -> Vec<ToolDefinition> {
                     "tools": {"type": "array", "items": {"type":"string"}, "description":"Exact tool names. Omit to use defaults. An empty array means no tools."},
                     "preset": {"type": "string", "description": "Configured Agent preset."},
                     "tier": {"type": "string", "description": "Configured model tier from <kuku_models>. Omit to use the preset or Session default."},
+                    "reasoning_effort": {"type": "string", "description": "Supported thinking value from the selected route in <kuku_models>."},
+                    "service_tier": {"type": "string", "description": "Supported service tier from <kuku_models>. Omit to inherit. Set only at the user's explicit request."},
                     "workspace": {"type": "string", "description": "Working directory when different from the Session workspace."}
                 },
                 "required": ["address"]
@@ -532,7 +534,16 @@ pub(super) async fn execute(
         "list_jobs" => return jobs::list(&session, agent, &call.args),
         "create_agent" => {
             let (address, config) = create_agent_input(&call.args)?;
-            serde_json::to_value(session.create_agent(&key, &address, config)?)?
+            let preset = config.preset.clone();
+            let mut receipt = serde_json::to_value(session.create_agent(&key, &address, config)?)?;
+            if let Ok(selection) = session.agent_selection(&address) {
+                receipt["model_selection"] = serde_json::json!({
+                    "preset": preset, "model": selection.model,
+                    "reasoning_effort": selection.settings.reasoning_effort.or_else(|| selection.capabilities.reasoning_default.map(|level| level.value)),
+                    "service_tier": selection.settings.service_tier,
+                });
+            }
+            receipt
         }
         "send_message" => {
             let input = crate::Input {
@@ -656,6 +667,8 @@ struct CreateAgentInput {
     tools: Option<Vec<String>>,
     preset: Option<String>,
     tier: Option<String>,
+    reasoning_effort: Option<String>,
+    service_tier: Option<String>,
     workspace: Option<std::path::PathBuf>,
 }
 
@@ -674,6 +687,8 @@ fn create_agent_input(args: &serde_json::Value) -> Result<(String, crate::AgentC
             tools: input.tools,
             preset: input.preset,
             tier: input.tier,
+            reasoning_effort: input.reasoning_effort,
+            service_tier: input.service_tier,
             workspace: input.workspace,
             ..Default::default()
         },
@@ -684,7 +699,13 @@ fn normalize_create_agent_args(args: &mut serde_json::Value) {
     let Some(values) = args.as_object_mut() else {
         return;
     };
-    for field in ["tier", "preset", "workspace"] {
+    for field in [
+        "tier",
+        "preset",
+        "workspace",
+        "reasoning_effort",
+        "service_tier",
+    ] {
         if values
             .get(field)
             .and_then(serde_json::Value::as_str)

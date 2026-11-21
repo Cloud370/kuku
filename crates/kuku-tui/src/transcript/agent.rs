@@ -182,7 +182,11 @@ pub(super) struct AgentRequest {
     kind: AgentAction,
     target: String,
     task: String,
+    preset: Option<String>,
 }
+
+mod model;
+pub(super) use model::AgentModel;
 
 impl AgentRequest {
     pub(super) fn from_call(tool: &str, args: &Value) -> Option<Self> {
@@ -198,6 +202,10 @@ impl AgentRequest {
         Some(Self {
             kind,
             target: capped(Some(target), MAX_ACTIVITY_BYTES),
+            preset: args["preset"]
+                .as_str()
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned),
             task: capped(
                 args[task].as_str(),
                 if matches!(kind, AgentAction::Create) {
@@ -212,6 +220,7 @@ impl AgentRequest {
     pub(super) fn card<'a>(
         &'a self,
         receipt: Option<&'a Receipt>,
+        model: Option<&'a AgentModel>,
         tool_status: &'a str,
         error: &'a str,
     ) -> AgentCard<'a> {
@@ -227,6 +236,8 @@ impl AgentRequest {
             task_label: self.kind.task_label(),
             error,
             receipt_cursor: receipt.map(|receipt| receipt.event_id),
+            model,
+            preset: self.preset.as_deref(),
         }
     }
 }
@@ -261,6 +272,8 @@ pub(super) struct AgentCard<'a> {
     task: &'a str,
     task_label: &'static str,
     error: &'a str,
+    model: Option<&'a AgentModel>,
+    preset: Option<&'a str>,
 }
 
 impl AgentCard<'_> {
@@ -278,6 +291,7 @@ impl AgentCard<'_> {
         open: bool,
         facts: Option<&AgentFacts>,
         checks: usize,
+        creation: Option<&AgentCard<'_>>,
     ) -> Vec<Row> {
         let frame = CardFrame::new(width);
         let title = format!("Agent {}", single_line(self.address));
@@ -291,6 +305,12 @@ impl AgentCard<'_> {
         rows.push(Row::plain(
             frame.line(Line::styled(shorten(label, space), color)),
         ));
+        if let Some(line) = creation
+            .filter(|_| !open)
+            .and_then(|card| card.model_label(space))
+        {
+            rows.push(Row::plain(frame.line(line)));
+        }
         let reply = facts.and_then(|facts| first_content_line(&facts.preview));
         let (caption, excerpt) = match reply {
             Some(text) if facts.is_some_and(|facts| facts.status == Activity::Failed) => {
@@ -373,6 +393,9 @@ impl AgentCard<'_> {
         if let Some(row) = rows.first_mut().filter(|_| in_timeline && inset != 0) {
             let marker = if expanded { "▾ " } else { "▸ " };
             row.line.spans[0] = Span::styled(marker, emphasis(MODEL));
+        }
+        if let Some(line) = self.model_label(width.saturating_sub(usize::from(body_inset))) {
+            rows.extend(render_rows(vec![line], width, 1, body_inset));
         }
         let preview = facts.map_or("", |facts| facts.preview.as_str());
         if !in_timeline || !expanded {
