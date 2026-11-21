@@ -1,8 +1,9 @@
 use ratatui::{layout::Rect, Frame};
 
-use crate::theme::{ACCENT, MUTED};
+use crate::theme::{ACCENT, MUTED, WARNING};
 
 use super::super::models::{protocol_label, PROTOCOLS};
+use super::super::recovery::text_problem;
 use super::super::state::{SetupState, SetupStep};
 use super::{field, line, option, Settings};
 
@@ -201,6 +202,9 @@ pub(super) fn render_model_settings(
             if let Some(cost) = super::super::probes::cost_summary(&state.trials) {
                 line(frame, area, row, &cost, MUTED);
             }
+        }
+        SetupStep::RecoveryModels | SetupStep::RecoveryActions | SetupStep::RecoveryDefault => {
+            render_recovery(frame, area, row, state);
         }
         SetupStep::DefaultModel => {
             line(frame, area, row, "Choose the default model", ACCENT);
@@ -410,6 +414,54 @@ pub(super) fn render_model_settings(
         | SetupStep::Credential
         | SetupStep::Review
         | SetupStep::ReviewSettings => unreachable!("handled by render_step"),
+    }
+}
+
+fn render_recovery(frame: &mut Frame<'_>, area: Rect, row: &mut u16, state: &SetupState) {
+    let (title, choices) = match state.step {
+        SetupStep::RecoveryModels => (
+            "Choose a model to fix",
+            state
+                .failed_models()
+                .into_iter()
+                .map(|model| {
+                    let reason = text_problem(state.trials.text_check(&model));
+                    format!("{model} · {reason}")
+                })
+                .collect::<Vec<_>>(),
+        ),
+        SetupStep::RecoveryDefault => ("Use another default", state.verified_defaults()),
+        SetupStep::RecoveryActions => (
+            "Fix model",
+            state
+                .recovery_actions()
+                .iter()
+                .map(|action| action.label().to_owned())
+                .collect(),
+        ),
+        _ => unreachable!("recovery page"),
+    };
+    line(frame, area, row, title, ACCENT);
+    if state.step == SetupStep::RecoveryActions {
+        if let Some(model) = state.recovery_model.as_deref() {
+            line(frame, area, row, model, MUTED);
+            line(
+                frame,
+                area,
+                row,
+                text_problem(state.trials.text_check(model)),
+                WARNING,
+            );
+        }
+    }
+    *row += 1;
+    let visible = usize::from(area.height.saturating_sub(*row + 1));
+    let start = state
+        .models
+        .cursor
+        .saturating_sub(visible.saturating_sub(1));
+    for (index, label) in choices.iter().enumerate().skip(start).take(visible) {
+        option(frame, area, row, label, index == state.models.cursor);
     }
 }
 

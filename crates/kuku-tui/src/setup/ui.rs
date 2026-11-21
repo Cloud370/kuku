@@ -329,6 +329,9 @@ fn render_step(
         | SetupStep::Discover
         | SetupStep::CheckingApi
         | SetupStep::TrialResults
+        | SetupStep::RecoveryModels
+        | SetupStep::RecoveryActions
+        | SetupStep::RecoveryDefault
         | SetupStep::DefaultModel
         | SetupStep::Thinking
         | SetupStep::Output
@@ -374,13 +377,9 @@ fn render_review(
             None,
         );
     }
-    if !state.trials.rows().is_empty() {
-        let (progress, attention) = super::probes::review_status(&state.trials);
-        let color = if testing {
-            Some(ACCENT)
-        } else {
-            attention.then_some(WARNING)
-        };
+    if state.trials.selected_rows().next().is_some() {
+        let progress = super::probes::review_status(&state.trials);
+        let color = testing.then_some(ACCENT);
         summary_row(frame, area, row, "Progress", &progress, color);
     }
     render_review_warnings(frame, area, row, settings, state, mode);
@@ -398,13 +397,20 @@ fn render_review(
         room,
     );
     *row += 1;
-    review_menu(frame, area, row, state, mode, |action| {
-        (testing
-            && matches!(
-                action,
-                ReviewAction::Save | ReviewAction::SaveAndContinue | ReviewAction::SaveAndExit
-            ))
-        .then_some("Stops pending tests")
+    let primary_failed = state.primary_failed();
+    review_menu(frame, area, row, state, mode, |action| match action {
+        ReviewAction::Save | ReviewAction::SaveAndExit if primary_failed => {
+            Some("Keep unverified settings")
+        }
+        ReviewAction::Save | ReviewAction::SaveAndContinue | ReviewAction::SaveAndExit
+            if testing =>
+        {
+            Some("Stops pending tests")
+        }
+        ReviewAction::TrialResults => super::probes::review_detail_hint(&state.trials),
+        ReviewAction::FixModels => Some("Retry, skip or repair"),
+        ReviewAction::UseAnotherDefault => Some("Choose a model that replied"),
+        _ => None,
     });
 }
 

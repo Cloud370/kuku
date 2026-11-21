@@ -6,6 +6,7 @@ use crate::editor::Editor;
 
 use super::config::Settings;
 use super::models::Models;
+use super::recovery::RepairDraft;
 use super::{ConnectionChoice, CredentialSource, Finish, SetupMode};
 
 const MAX_MODEL_BYTES: usize = 256;
@@ -25,6 +26,9 @@ pub(super) enum SetupStep {
     Discover,
     CheckingApi,
     TrialResults,
+    RecoveryModels,
+    RecoveryActions,
+    RecoveryDefault,
     DefaultModel,
     Model,
     Thinking,
@@ -51,6 +55,8 @@ pub(super) enum ReviewAction {
     Advanced,
     RepairCredential,
     TrialResults,
+    FixModels,
+    UseAnotherDefault,
     Pricing,
     Back,
 }
@@ -68,6 +74,8 @@ impl ReviewAction {
             Self::Advanced => "Model capabilities",
             Self::RepairCredential => "Paste API key",
             Self::TrialResults => "Model tests",
+            Self::FixModels => "Fix failed models",
+            Self::UseAnotherDefault => "Use another default",
             Self::Pricing => "Costs",
             Self::Back => "Back",
         }
@@ -114,6 +122,8 @@ pub(super) struct SetupState {
     pub(super) review_selection: usize,
     pub(super) finish: Option<Finish>,
     pub(super) problem: Option<String>,
+    pub(super) recovery_model: Option<String>,
+    pub(super) repair: Option<RepairDraft>,
     saved_key_available: bool,
     can_store_key: bool,
 }
@@ -170,6 +180,8 @@ impl SetupState {
             review_selection: 0,
             finish: None,
             problem: None,
+            recovery_model: None,
+            repair: None,
             saved_key_available: false,
             can_store_key: settings.can_store_key(),
         };
@@ -327,8 +339,8 @@ impl SetupState {
                 _ => {}
             },
             SetupStep::Protocol => self.choose_protocol(key, settings),
-            SetupStep::Address => self.edit_address(key),
-            SetupStep::AddressKind => self.choose_address_kind(key),
+            SetupStep::Address => self.edit_address(key, settings),
+            SetupStep::AddressKind => self.choose_address_kind(key, settings),
             SetupStep::Network => self.choose_network(key),
             SetupStep::ProxyAddress => self.edit_proxy(key),
             SetupStep::ModelSource => self.choose_source(key, settings),
@@ -339,6 +351,9 @@ impl SetupState {
                 }
             }
             SetupStep::TrialResults => self.trial_input(key),
+            SetupStep::RecoveryModels | SetupStep::RecoveryActions | SetupStep::RecoveryDefault => {
+                self.recovery_input(key, settings)
+            }
             SetupStep::DefaultModel => self.choose_default(key, settings),
             SetupStep::Model => self.edit_model(key, settings),
             SetupStep::Thinking => self.choose_thinking(key, settings),
@@ -480,6 +495,9 @@ impl SetupState {
                     }
                 };
                 if valid {
+                    if self.apply_connection_repair(settings) {
+                        return;
+                    }
                     self.review_selection = 0;
                     self.models.cursor = 0;
                     if matches!(self.intent, SetupIntent::Edit(_)) {
@@ -506,6 +524,9 @@ impl SetupState {
             | SetupStep::Discover
             | SetupStep::CheckingApi
             | SetupStep::TrialResults
+            | SetupStep::RecoveryModels
+            | SetupStep::RecoveryActions
+            | SetupStep::RecoveryDefault
             | SetupStep::DefaultModel
             | SetupStep::Thinking
             | SetupStep::Output
@@ -533,6 +554,9 @@ impl SetupState {
         if self.step != SetupStep::Protocol || self.protocol_picker_from_review {
             self.problem = None;
         }
+        if self.cancel_repair_at_start() {
+            return;
+        }
         self.models.cursor = 0;
         self.step = match self.step {
             SetupStep::Consent => return,
@@ -556,6 +580,13 @@ impl SetupState {
                 }
             }
             SetupStep::TrialResults | SetupStep::ReviewSettings => {
+                self.review_selection = 0;
+                SetupStep::Review
+            }
+            SetupStep::RecoveryActions if self.failed_models().len() > 1 => {
+                SetupStep::RecoveryModels
+            }
+            SetupStep::RecoveryActions | SetupStep::RecoveryModels | SetupStep::RecoveryDefault => {
                 self.review_selection = 0;
                 SetupStep::Review
             }
@@ -646,7 +677,7 @@ impl SetupState {
         self.refresh_environment_detection();
     }
 
-    fn refresh_environment_detection(&mut self) {
+    pub(super) fn refresh_environment_detection(&mut self) {
         self.environment_detected = self.environment_name().is_some_and(|name| {
             ApiKey::Env(name)
                 .resolve()
@@ -676,6 +707,9 @@ impl SetupState {
         }
         let mut choices = Vec::new();
         match mode {
+            SetupMode::FirstRun if self.credential_ready() && self.primary_failed() => {
+                choices.push(ReviewAction::SaveAndExit);
+            }
             SetupMode::FirstRun if self.credential_ready() => {
                 choices.push(ReviewAction::SaveAndContinue);
             }
@@ -690,10 +724,19 @@ impl SetupState {
             SetupMode::Init => choices.push(ReviewAction::SaveAndExit),
             SetupMode::Session => choices.push(ReviewAction::Save),
         }
-        if !self.trials.rows().is_empty() {
+        if self.trials.selected_rows().next().is_some() {
             choices.push(ReviewAction::TrialResults);
         }
         choices.push(ReviewAction::Settings);
+        if self.intent == SetupIntent::Default
+            && self.primary_failed()
+            && !self.verified_defaults().is_empty()
+        {
+            choices.push(ReviewAction::UseAnotherDefault);
+        }
+        if !self.failed_models().is_empty() {
+            choices.push(ReviewAction::FixModels);
+        }
         choices
     }
 
@@ -739,8 +782,14 @@ impl SetupState {
                 self.problem = None;
             }
             ReviewAction::TrialResults => {
-                self.models.cursor = 0;
+                self.models.cursor =
+                    super::probes::first_check_to_review(&self.trials).unwrap_or(0);
                 self.step = SetupStep::TrialResults;
+            }
+            ReviewAction::FixModels => self.open_recovery(),
+            ReviewAction::UseAnotherDefault => {
+                self.models.cursor = 0;
+                self.step = SetupStep::RecoveryDefault;
             }
             ReviewAction::Pricing => {
                 self.models.cursor = self

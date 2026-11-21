@@ -2,6 +2,7 @@ mod config;
 mod editor;
 mod models;
 mod probes;
+mod recovery;
 mod repair;
 mod repair_backend;
 mod state;

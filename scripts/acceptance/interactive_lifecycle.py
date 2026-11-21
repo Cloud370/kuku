@@ -8,6 +8,7 @@ import time
 from urllib.parse import urlencode
 
 from interactive_fixture import InstalledClient, Response, TOOL_BRIEF, TOOL_OUTPUT, eventually, json_response, run_cases
+from interactive_model_recovery import recovery_cases
 from interactive_rendering import has_selected_queued_input
 
 
@@ -27,6 +28,7 @@ def lifecycle_cases(binary, bridge, directory):
                  ))
     cases.append(("model-setup", lambda: shared_model_editor(binary, bridge, directory / "model-setup")))
     cases.append(("setup-probe-progress", lambda: setup_probe_progress(binary, bridge, directory / "probe-progress")))
+    cases.append(("setup-recovery", lambda: recovery_cases(binary, bridge, directory / "setup-recovery")))
     cases.append(("auth-repair", lambda: runtime_credential_repair(binary, bridge, directory / "auth-repair")))
     run_cases(cases)
 
@@ -149,11 +151,13 @@ def first_run_credential_repair(binary, bridge, directory):
             terminal.press("\x1b[B\r")
             terminal.expect("Model ID")
             terminal.press("\r")
-            terminal.expect("Save and continue", also=("2/2 finished", "1 to check"))
-            terminal.press("\x1b[B\r")
+            terminal.expect("› Save and continue", also=("2/2 finished", "Ready", "Image unverified", "Model tests"), absent=("Fix failed models",))
+            terminal.press("\x1b[B")
+            terminal.expect("› Model tests")
+            terminal.press("\r")
             terminal.expect(
                 "Not verified · output limit",
-                also=("Image input", "✓ Received", "Cost · Unknown"),
+                also=("› Image input", "✓ Received", "Cost · Unknown"),
             )
             terminal.press("\r")
             terminal.expect("› Save and continue")
@@ -469,7 +473,7 @@ def setup_probe_progress(binary, bridge, directory):
                 )["screen"]
                 assert all(event.wait(5) for event in held_requests.values()), trials
                 assert rate_request_started.wait(5), trials
-                assert model_cells(save_activity, "alpha") == ("Thinking", "—"), save_activity
+                assert model_cells(save_activity, "alpha") == ("Ready · Thinking", "—"), save_activity
                 assert all(model_cells(save_activity, model) == ("Text, Thinking", "—")
                            for model in ("beta", "gamma")), save_activity
                 assert save_activity.splitlines()[-2].startswith("│Esc previous step")
@@ -502,7 +506,7 @@ def setup_probe_progress(binary, bridge, directory):
                 )["screen"]
                 assert overview_layout(save_activity) == overview_layout(save_results)
                 for model, levels in (("alpha", "none, max"), ("beta", "low"), ("gamma", "medium")):
-                    assert model_cells(save_results, model) == ("Done", levels), save_results
+                    assert model_cells(save_results, model) == ("Ready", levels), save_results
                 assert save_results.splitlines()[-2].startswith("│Esc previous step")
                 terminal.press("\x1b[B\x1b[B\r")
                 terminal.expect("› Thinking")

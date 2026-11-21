@@ -248,12 +248,15 @@ impl SetupState {
         }
         if self.step == SetupStep::CheckingApi {
             self.accept_api_check(settings);
+            if self.step == SetupStep::CheckingApi {
+                self.show_api_check_failure();
+            }
         }
         self.probe_repaint_at = Some(now + std::time::Duration::from_millis(100));
         true
     }
 
-    fn review_models(&mut self, settings: &Settings) {
+    pub(super) fn review_models(&mut self, settings: &Settings) {
         if matches!(
             self.step,
             SetupStep::Model | SetupStep::Discover | SetupStep::DefaultModel
@@ -291,7 +294,7 @@ impl SetupState {
         self.step = SetupStep::Review;
     }
 
-    fn start_api_check(&mut self, settings: &Settings) {
+    pub(super) fn start_api_check(&mut self, settings: &Settings) {
         self.step = SetupStep::CheckingApi;
         let Some(model) = self.primary_model() else {
             return;
@@ -426,7 +429,7 @@ impl SetupState {
                     .models
                     .cursor
                     .saturating_add(1)
-                    .min(self.trials.rows().len().saturating_sub(1))
+                    .min(self.trials.selected_rows().count().saturating_sub(1))
             }
             _ => {}
         }
@@ -564,7 +567,7 @@ impl SetupState {
             .is_ok_and(|url| url.query().is_some() || setup_endpoint_format(url.as_str()).is_some())
     }
 
-    pub(super) fn edit_address(&mut self, key: KeyEvent) {
+    pub(super) fn edit_address(&mut self, key: KeyEvent, settings: &Settings) {
         if key.code != KeyCode::Enter {
             let entered = self.address.text().to_owned();
             edit_field(&mut self.address, key);
@@ -600,13 +603,16 @@ impl SetupState {
                 return;
             }
         }
-        self.finish_address();
+        self.finish_address(settings);
     }
 
-    fn finish_address(&mut self) {
+    fn finish_address(&mut self, settings: &Settings) {
         match self.request_url() {
             Ok(_) => {
                 self.problem = None;
+                if self.apply_connection_repair(settings) {
+                    return;
+                }
                 self.models.cursor = match self.proxy {
                     ProviderProxy::Environment => 0,
                     ProviderProxy::Direct => 1,
@@ -621,10 +627,10 @@ impl SetupState {
         }
     }
 
-    pub(super) fn choose_address_kind(&mut self, key: KeyEvent) {
+    pub(super) fn choose_address_kind(&mut self, key: KeyEvent, settings: &Settings) {
         if key.code == KeyCode::Enter {
             self.full_url = self.models.cursor == 0;
-            self.finish_address();
+            self.finish_address(settings);
         } else {
             self.models.move_cursor(key.code, 2);
         }

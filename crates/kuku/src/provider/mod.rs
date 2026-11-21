@@ -30,7 +30,8 @@ pub use openrouter_catalog::{
 };
 pub use setup_api::{setup_api_candidates, setup_endpoint_format, SetupApiEvidence};
 pub use setup_probes::{
-    plan_model_trials, Probe, ProbeBatch, ProbeProgress, ProbeResult, ProbeRow, TrialSelection,
+    plan_model_trials, Probe, ProbeBatch, ProbeProgress, ProbeResult, ProbeRow, SetupTextCheck,
+    TrialSelection,
 };
 pub use setup_reasoning::{ReasoningCheck, ReasoningCheckResult};
 pub use trial::{trial_model, ModelTrial, TrialResult, TRIAL_OUTPUT_TOKENS};

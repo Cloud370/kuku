@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use kuku::adapter::{
     ModelTrial, Probe, ProbeBatch, ProbeProgress, ProbeResult, ProbeRow, ReasoningCheck,
-    ReasoningCheckResult, RequestCost,
+    ReasoningCheckResult, RequestCost, SetupTextCheck,
 };
 use kuku::config::{ProviderConfig, ProviderProxy};
 use kuku::event::ModelStopReason;
@@ -13,6 +13,7 @@ use crate::text::shorten_middle;
 use crate::theme::{ACCENT, MUTED, SUCCESS, WARNING};
 
 use super::models::protocol_label;
+use super::recovery::text_problem;
 use super::ui::line;
 
 fn check_label(probe: &Probe) -> String {
@@ -169,10 +170,13 @@ pub(super) fn render_model_overview(
     };
     for model in models.iter().take(visible) {
         let requests = batch
-            .rows()
-            .iter()
+            .selected_rows()
             .filter(|request| request.probe.model() == Some(model.as_str()));
-        let (status, color) = model_status(requests, usize::from(status_area.width));
+        let (status, color) = model_status(
+            requests,
+            batch.text_check(model),
+            usize::from(status_area.width),
+        );
         let test = connection.and_then(|connection| batch.thinking_test(connection, model));
         let levels = test
             .as_ref()
@@ -247,14 +251,20 @@ fn fit_items(items: &[&str], width: usize, separator: &str) -> String {
     format!("{} available", items.len())
 }
 
-fn model_status<'a>(requests: impl Iterator<Item = &'a ProbeRow>, width: usize) -> (String, Color) {
+fn model_status<'a>(
+    requests: impl Iterator<Item = &'a ProbeRow>,
+    text: SetupTextCheck,
+    width: usize,
+) -> (String, Color) {
+    if matches!(text, SetupTextCheck::Failed { .. }) {
+        return (text_problem(text).into(), WARNING);
+    }
     let mut phases = [false; 5];
     let mut retry = None;
     let mut waiting = None;
     let mut queued = false;
     let mut done = false;
     let mut stopped = false;
-    let mut attention = false;
     for request in requests {
         match request.progress {
             ProbeProgress::Waiting(_) => phases[phase(&request.probe)] = true,
@@ -266,7 +276,6 @@ fn model_status<'a>(requests: impl Iterator<Item = &'a ProbeRow>, width: usize) 
             ProbeProgress::Queued => queued = true,
             ProbeProgress::Finished(..) => {
                 done = true;
-                attention |= needs_attention(request);
             }
             ProbeProgress::Canceled { .. } => stopped = true,
         }
@@ -279,6 +288,19 @@ fn model_status<'a>(requests: impl Iterator<Item = &'a ProbeRow>, width: usize) 
         .zip(phases)
         .filter_map(|(name, running)| running.then_some(name))
         .collect::<Vec<_>>();
+    if text == SetupTextCheck::Ready {
+        let status = if let [phase] = active.as_slice() {
+            let status = format!("Ready · {phase}");
+            if status.width() <= width {
+                status
+            } else {
+                "Ready".into()
+            }
+        } else {
+            "Ready".into()
+        };
+        return (status, SUCCESS);
+    }
     if !active.is_empty() {
         return (fit_items(&active, width, ", "), ACCENT);
     }
@@ -287,9 +309,6 @@ fn model_status<'a>(requests: impl Iterator<Item = &'a ProbeRow>, width: usize) 
     }
     if queued {
         return ("Queued".into(), MUTED);
-    }
-    if attention {
-        return ("Check results".into(), WARNING);
     }
     let status = if stopped {
         "Stopped"
@@ -344,7 +363,12 @@ pub(super) fn render_test_table(
         area.height,
     );
     let mut previous = None;
-    for request in &rows[visible] {
+    for (index, request) in rows
+        .iter()
+        .enumerate()
+        .skip(visible.start)
+        .take(visible.len())
+    {
         let model = request.probe.model().unwrap_or("Connection");
         if previous != Some(model) {
             line(
@@ -359,12 +383,18 @@ pub(super) fn render_test_table(
         let (mark, detail, color) = probe_detail(&request.probe, &request.progress);
         let check = shorten_middle(&check_label(&request.probe), usize::from(check_width - 3));
         let mut check_row = *row;
+        let highlighted = index == scroll && review_reason(request).is_some();
+        let (marker, check_color) = if highlighted {
+            ("› ", WARNING)
+        } else {
+            ("  ", MUTED)
+        };
         line(
             frame,
             check_area,
             &mut check_row,
-            &format!("  {check}"),
-            MUTED,
+            &format!("{marker}{check}"),
+            check_color,
         );
         if time_width > 0 {
             if let ProbeProgress::Finished(elapsed, _) = request.progress {
@@ -396,7 +426,7 @@ pub(super) fn render_test_table(
 
 fn group_by_model(batch: &ProbeBatch) -> Vec<&ProbeRow> {
     let mut models = HashMap::new();
-    let mut rows = batch.rows().iter().collect::<Vec<_>>();
+    let mut rows = batch.selected_rows().collect::<Vec<_>>();
     for request in &rows {
         let index = models.len();
         models.entry(request.probe.model()).or_insert(index);
@@ -460,16 +490,15 @@ fn visible_tests(rows: &[&ProbeRow], scroll: usize, lines: u16) -> std::ops::Ran
 
 pub(super) fn progress(batch: &ProbeBatch) -> String {
     let completed = batch
-        .rows()
-        .iter()
+        .selected_rows()
         .filter(|row| finished(&row.progress))
         .count();
-    format!("{completed}/{} finished", batch.rows().len())
+    format!("{completed}/{} finished", batch.selected_rows().count())
 }
 
 fn activity_summary(batch: &ProbeBatch) -> String {
     let mut counts = [0; 4];
-    for row in batch.rows() {
+    for row in batch.selected_rows() {
         let stage = match row.progress {
             ProbeProgress::Finished(..) | ProbeProgress::Canceled { .. } => 0,
             ProbeProgress::Waiting(_) => 1,
@@ -482,21 +511,28 @@ fn activity_summary(batch: &ProbeBatch) -> String {
     format!("{done:>2} done  {running:>2} running  {queued:>2} queued  {waiting:>2} waiting")
 }
 
-pub(super) fn review_status(batch: &ProbeBatch) -> (String, bool) {
+pub(super) fn review_status(batch: &ProbeBatch) -> String {
     if batch.pending() {
-        return (activity_summary(batch), false);
-    }
-    let progress = progress(batch);
-    let unresolved = batch
-        .rows()
-        .iter()
-        .filter(|row| needs_attention(row))
-        .count();
-    if unresolved == 0 {
-        (progress, false)
+        activity_summary(batch)
     } else {
-        (format!("{progress} · {unresolved} to check"), true)
+        progress(batch)
     }
+}
+
+pub(super) fn review_detail_hint(batch: &ProbeBatch) -> Option<&'static str> {
+    let mut reasons = batch.selected_rows().filter_map(review_reason);
+    let reason = reasons.next()?;
+    if reasons.next().is_none() {
+        Some(reason)
+    } else {
+        Some("See test details")
+    }
+}
+
+pub(super) fn first_check_to_review(batch: &ProbeBatch) -> Option<usize> {
+    group_by_model(batch)
+        .iter()
+        .position(|request| review_reason(request).is_some())
 }
 
 fn finished(progress: &ProbeProgress) -> bool {
@@ -506,16 +542,23 @@ fn finished(progress: &ProbeProgress) -> bool {
     )
 }
 
-fn needs_attention(row: &ProbeRow) -> bool {
+fn review_reason(row: &ProbeRow) -> Option<&'static str> {
     match &row.progress {
-        ProbeProgress::Finished(_, Ok(ProbeResult::Trial(trial))) => {
-            trial.image_match == Some(false) || !trial.text_returned
+        ProbeProgress::Finished(_, Ok(ProbeResult::Trial(trial)))
+            if trial.image_match == Some(false) =>
+        {
+            Some("Image unverified")
         }
-        ProbeProgress::Finished(_, Ok(ProbeResult::ApiType(evidence))) => {
-            !evidence.trial.text_returned
+        ProbeProgress::Finished(_, Ok(ProbeResult::Trial(trial))) if !trial.text_returned => {
+            Some("No text reply")
         }
-        ProbeProgress::Finished(_, Err(_)) => true,
-        _ => false,
+        ProbeProgress::Finished(_, Ok(ProbeResult::ApiType(evidence)))
+            if !evidence.trial.text_returned =>
+        {
+            Some("No text reply")
+        }
+        ProbeProgress::Finished(_, Err(_)) => Some("Request failed"),
+        _ => None,
     }
 }
 

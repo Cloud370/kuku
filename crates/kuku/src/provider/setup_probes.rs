@@ -11,11 +11,12 @@ use super::capabilities::thinking_scope;
 use super::setup_api::check_setup_api;
 use super::setup_reasoning::{bounded_levels, check_reasoning, reply_accepted};
 use super::trial::{trial_with_route_evidence, TrialProblem};
+use super::types::ProviderFailureKind;
 use super::{
     discover_models, openrouter_quote_url, openrouter_quotes, DiscoveredModel, ModelListTarget,
     ModelTrial, ReasoningCheck, ReasoningCheckResult, RouteQuote, SetupApiEvidence, TrialResult,
 };
-use tokio::task::JoinSet;
+use tokio::task::{AbortHandle, JoinSet};
 
 const IN_FLIGHT: usize = 2;
 const MAX_MODEL_IN_FLIGHT: usize = 6;
@@ -179,11 +180,26 @@ pub struct ProbeRow {
     pub probe: Probe,
     pub progress: ProbeProgress,
     pub cached_models: Option<Arc<[DiscoveredModel]>>,
+    failure_status: Option<u16>,
+    task: Option<AbortHandle>,
+    skipped: bool,
     attempts: u8,
 }
 
+/// Whether the model has completed a normal text request during setup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetupTextCheck {
+    NotTested,
+    Testing,
+    Ready,
+    Failed {
+        kind: Option<ProviderFailureKind>,
+        status: Option<u16>,
+    },
+}
+
 enum ProbeCompletion {
-    Finished(Result<ProbeResult>),
+    Finished(Result<ProbeResult>, Option<u16>),
     RateLimited {
         retry_after: Option<Duration>,
         error: Error,
@@ -199,7 +215,8 @@ fn model_completion<T>(
             retry_after: problem.retry_after,
             error: *problem.error,
         },
-        result => ProbeCompletion::Finished(result.map(receipt).map_err(|problem| *problem.error)),
+        Ok(value) => ProbeCompletion::Finished(Ok(receipt(value)), None),
+        Err(problem) => ProbeCompletion::Finished(Err(*problem.error), problem.status),
     }
 }
 
@@ -232,6 +249,9 @@ impl ProbeBatch {
             },
             probe,
             progress: ProbeProgress::Queued,
+            failure_status: None,
+            task: None,
+            skipped: false,
             attempts: 0,
         }));
     }
@@ -242,6 +262,7 @@ impl ProbeBatch {
         let models = self
             .rows
             .iter()
+            .filter(|row| !row.skipped)
             .filter_map(|row| row.probe.connection().and_then(|_| row.probe.model()))
             .collect::<HashSet<_>>()
             .len();
@@ -323,10 +344,10 @@ impl ProbeBatch {
                 row.progress = ProbeProgress::Waiting(started);
                 row.attempts += 1;
                 let future = row.probe.run();
-                self.tasks.spawn(async move {
+                row.task = Some(self.tasks.spawn(async move {
                     let result = future.await;
                     (index, started.elapsed(), result)
-                });
+                }));
             }
         }
     }
@@ -382,6 +403,109 @@ impl ProbeBatch {
         &self.rows
     }
 
+    /// Requests for models that are still selected in this batch.
+    pub fn selected_rows(&self) -> impl Iterator<Item = &ProbeRow> {
+        self.rows.iter().filter(|row| !row.skipped)
+    }
+
+    pub fn text_check(&self, model: &str) -> SetupTextCheck {
+        let Some(row) = self.rows.iter().rev().find(|row| is_text_row(row, model)) else {
+            return SetupTextCheck::NotTested;
+        };
+        match &row.progress {
+            ProbeProgress::Queued
+            | ProbeProgress::Waiting(_)
+            | ProbeProgress::RetryWaiting { .. } => SetupTextCheck::Testing,
+            ProbeProgress::Finished(_, Ok(ProbeResult::Trial(trial))) if trial.text_returned => {
+                SetupTextCheck::Ready
+            }
+            ProbeProgress::Finished(_, Ok(ProbeResult::ApiType(evidence)))
+                if evidence.trial.text_returned =>
+            {
+                SetupTextCheck::Ready
+            }
+            ProbeProgress::Finished(_, Err(Error::Provider { kind, .. })) => {
+                SetupTextCheck::Failed {
+                    kind: Some(*kind),
+                    status: row.failure_status,
+                }
+            }
+            ProbeProgress::Finished(..) => SetupTextCheck::Failed {
+                kind: None,
+                status: row.failure_status,
+            },
+            ProbeProgress::Canceled { .. } => SetupTextCheck::NotTested,
+        }
+    }
+
+    /// Retry the failed text request and any unsent checks for it, preserving other models.
+    pub fn retry_text(&mut self, model: &str, connection: &ProviderConfig) -> bool {
+        if !matches!(self.text_check(model), SetupTextCheck::Failed { .. }) {
+            return false;
+        }
+        let Some(row) = self
+            .rows
+            .iter_mut()
+            .rev()
+            .find(|row| is_text_row(row, model))
+        else {
+            return false;
+        };
+        if matches!(row.probe, Probe::ApiType { .. }) {
+            if !matches!(
+                row.progress,
+                ProbeProgress::Finished(_, Ok(ProbeResult::ApiType(_)))
+            ) {
+                return false;
+            }
+            row.probe = Probe::Trial {
+                connection: Arc::new(connection.clone()),
+                model: model.to_owned(),
+                check: ModelTrial::Text {
+                    effort: None,
+                    service_tier: None,
+                },
+            };
+        }
+        row.progress = ProbeProgress::Queued;
+        row.failure_status = None;
+        row.attempts = 0;
+        for row in self
+            .rows
+            .iter_mut()
+            .filter(|row| !row.skipped && row.probe.model() == Some(model))
+        {
+            if matches!(row.progress, ProbeProgress::Canceled { sent: false }) {
+                row.progress = ProbeProgress::Queued;
+            }
+        }
+        self.schedule();
+        true
+    }
+
+    /// Drop this model's queued checks and stop waiting for its in-flight checks.
+    pub fn skip_model(&mut self, model: &str) {
+        for row in self
+            .rows
+            .iter_mut()
+            .filter(|row| row.probe.model() == Some(model))
+        {
+            row.skipped = true;
+            if let Some(task) = row.task.take() {
+                task.abort();
+            }
+            match row.progress {
+                ProbeProgress::Queued => row.progress = ProbeProgress::Canceled { sent: false },
+                ProbeProgress::Waiting(_) => row.progress = ProbeProgress::Canceled { sent: true },
+                ProbeProgress::RetryWaiting { sent, .. } => {
+                    row.progress = ProbeProgress::Canceled { sent }
+                }
+                _ => {}
+            }
+        }
+        self.schedule();
+    }
+
     /// Accepted and rejected values for this model on the tested connection.
     pub fn thinking_test(
         &self,
@@ -398,7 +522,7 @@ impl ProbeBatch {
             scope: thinking_scope(&endpoint, connection.format, &connection.options),
             ..ModelThinkingTest::default()
         };
-        for row in &self.rows {
+        for row in self.selected_rows() {
             let (route, selected, level, accepted) = match (&row.probe, &row.progress) {
                 (
                     Probe::Thinking {
@@ -499,19 +623,24 @@ impl ProbeBatch {
         joined: std::result::Result<(usize, Duration, ProbeCompletion), tokio::task::JoinError>,
     ) {
         if let Ok((index, elapsed, result)) = joined {
-            let result = match result {
-                ProbeCompletion::Finished(result) => result,
+            self.rows[index].task = None;
+            if self.rows[index].skipped {
+                return;
+            }
+            let (result, status) = match result {
+                ProbeCompletion::Finished(result, status) => (result, status),
                 ProbeCompletion::RateLimited { retry_after, error } => {
                     if self.rate_limit(index, retry_after) {
                         return;
                     }
-                    Err(error)
+                    (Err(error), Some(429))
                 }
             };
             let checks = self.follow_up_thinking(index, &result);
             self.rows[index].progress = ProbeProgress::Finished(elapsed, result);
+            self.rows[index].failure_status = status;
             self.add_rows(checks);
-        } else {
+        } else if joined.is_err_and(|error| !error.is_cancelled()) {
             self.tasks.abort_all();
             self.tasks = JoinSet::new();
             self.mark_canceled();
@@ -624,6 +753,7 @@ impl ProbeBatch {
 
     fn mark_canceled(&mut self) {
         for row in &mut self.rows {
+            row.task = None;
             match row.progress {
                 ProbeProgress::Queued => row.progress = ProbeProgress::Canceled { sent: false },
                 ProbeProgress::Waiting(_) => row.progress = ProbeProgress::Canceled { sent: true },
@@ -711,6 +841,7 @@ impl Probe {
                     discover_models(&target.connection)
                         .await
                         .map(ProbeResult::Catalog),
+                    None,
                 ),
                 Self::ApiType {
                     connection,
@@ -726,6 +857,7 @@ impl Probe {
                     openrouter_quotes(&connection, &model)
                         .await
                         .map(ProbeResult::Quotes),
+                    None,
                 ),
                 Self::Trial {
                     connection,
@@ -747,6 +879,19 @@ impl Probe {
             }
         }
     }
+}
+
+fn is_text_row(row: &ProbeRow, model: &str) -> bool {
+    !row.skipped
+        && row.probe.model() == Some(model)
+        && matches!(
+            row.probe,
+            Probe::ApiType { .. }
+                | Probe::Trial {
+                    check: ModelTrial::Text { .. },
+                    ..
+                }
+        )
 }
 
 fn same_connection(left: &ProviderConfig, right: &ProviderConfig) -> bool {

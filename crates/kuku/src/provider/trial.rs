@@ -114,7 +114,12 @@ pub(super) async fn run_trial(
         trial_request(connection, model, trial, probe_effort),
     )
     .await
-    .map_err(|_| Error::InvalidArgument("Model trial timed out.".into()))?
+    .map_err(|_| Error::Provider {
+        kind: ProviderFailureKind::Timeout,
+        message: "Model trial timed out.".into(),
+        provider: None,
+        model: None,
+    })?
 }
 
 async fn trial_request(
