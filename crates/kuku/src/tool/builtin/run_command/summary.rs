@@ -1,6 +1,9 @@
+use std::borrow::Cow;
+
 use crate::execution::{CommandInvocation, CommandOutputRange, CommandOutputSummary, OutputStream};
 
 mod formats;
+mod git_status;
 mod rules;
 mod typescript;
 use formats::{Format, Observation};
@@ -11,15 +14,24 @@ const MAX_SAVED_BYTES: usize = 64 * 1024;
 const MAX_LINE_BYTES: usize = 4096;
 
 pub(super) struct Collector {
-    format: Format,
     rule: &'static Rule,
     stdout: LineBuffer,
     stderr: LineBuffer,
+    evidence: Evidence,
+    unrecognized: bool,
+}
+
+enum Evidence {
+    Lines(BoundedLines),
+    GitStatus(git_status::Status),
+}
+
+struct BoundedLines {
+    format: Format,
     lines: Vec<EvidenceLine>,
     saved_bytes: usize,
     finished: bool,
     failed: bool,
-    unrecognized: bool,
 }
 
 #[derive(Default)]
@@ -37,20 +49,28 @@ struct EvidenceLine {
 pub(super) struct Summary {
     pub(super) text: String,
     pub(super) source: CommandOutputSummary,
+    pub(super) script_hint: Option<&'static str>,
 }
 
 impl Collector {
     pub(super) fn new(invocation: &CommandInvocation) -> Option<Self> {
         let (format, rule) = Format::select(invocation)?;
+        let evidence = if format == Format::GitStatus {
+            Evidence::GitStatus(git_status::Status::default())
+        } else {
+            Evidence::Lines(BoundedLines {
+                format,
+                lines: Vec::new(),
+                saved_bytes: 0,
+                finished: false,
+                failed: false,
+            })
+        };
         Some(Self {
-            format,
             rule,
             stdout: LineBuffer::default(),
             stderr: LineBuffer::default(),
-            lines: Vec::new(),
-            saved_bytes: 0,
-            finished: false,
-            failed: false,
+            evidence,
             unrecognized: false,
         })
     }
@@ -104,46 +124,63 @@ impl Collector {
             self.unrecognized = true;
             return;
         }
-        match self.format.observe(stream, trimmed) {
+        let source = CommandOutputRange {
+            stream,
+            offset,
+            end_offset,
+        };
+        self.unrecognized = !match &mut self.evidence {
+            Evidence::Lines(lines) => lines.observe(line, source, self.rule),
+            Evidence::GitStatus(status) => status.observe(line, source),
+        };
+    }
+
+    pub(super) fn summarize(self, exit_code: i32) -> Option<Summary> {
+        if self.unrecognized || self.stdout.offset.is_some() || self.stderr.offset.is_some() {
+            return None;
+        }
+        match self.evidence {
+            Evidence::Lines(lines) => lines.summarize(self.rule, exit_code),
+            Evidence::GitStatus(status) => status.summarize(self.rule, exit_code),
+        }
+    }
+}
+
+impl BoundedLines {
+    fn observe(&mut self, line: Cow<'_, str>, source: CommandOutputRange, rule: &Rule) -> bool {
+        let trimmed = line.trim();
+        match self.format.observe(source.stream, trimmed) {
             Some(Observation::Finished) => self.finished = true,
             Some(Observation::Failed) => self.failed = true,
             None => {}
         }
-        if !self.rule.keeps(&line) {
-            return;
+        if !rule.keeps(&line) {
+            return true;
         }
         if self.saved_bytes + line.len() > MAX_SAVED_BYTES || self.lines.len() >= MAX_SAVED_LINES {
-            self.unrecognized = true;
-            return;
+            return false;
         }
         self.saved_bytes += line.len();
         let blank = trimmed.is_empty();
         self.lines.push(EvidenceLine {
             text: line.into_owned(),
-            source: CommandOutputRange {
-                stream,
-                offset,
-                end_offset,
-            },
+            source,
             blank,
         });
+        true
     }
 
-    pub(super) fn summarize(self, exit_code: i32) -> Option<Summary> {
-        if self.unrecognized
-            || self.stdout.offset.is_some()
-            || self.stderr.offset.is_some()
-            || self.lines.is_empty()
-        {
+    fn summarize(self, rule: &Rule, exit_code: i32) -> Option<Summary> {
+        if self.lines.is_empty() {
             return None;
         }
         if self.format == Format::TypeScript {
-            return typescript::summarize(self.rule, &self.lines, exit_code);
+            return typescript::summarize(rule, &self.lines, exit_code);
         }
         if (exit_code == 0 && !self.finished) || (exit_code != 0 && !self.failed) {
             return None;
         }
-        let selected = self.rule.select_lines(self.lines.len());
+        let selected = rule.select_lines(self.lines.len());
         if exit_code != 0
             && selected
                 .iter()
@@ -178,9 +215,10 @@ impl Collector {
         Some(Summary {
             text: text.join("\n"),
             source: CommandOutputSummary::Rule {
-                rule: self.rule.name.clone(),
+                rule: rule.name.clone(),
                 ranges,
             },
+            script_hint: None,
         })
     }
 }

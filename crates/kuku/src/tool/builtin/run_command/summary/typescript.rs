@@ -88,5 +88,6 @@ pub(super) fn summarize(rule: &Rule, lines: &[EvidenceLine], exit_code: i32) -> 
             rule: rule.name.clone(),
             ranges,
         },
+        script_hint: None,
     })
 }

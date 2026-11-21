@@ -11,6 +11,7 @@ pub(super) enum Format {
     Cargo,
     Pytest,
     TypeScript,
+    GitStatus,
 }
 
 pub(super) enum Observation {
@@ -38,6 +39,7 @@ impl Format {
             "cargo" if cargo_human_args(args) => Self::Cargo,
             "pytest" if pytest_human_args(args) => Self::Pytest,
             "tsc" if typescript_args(args) => Self::TypeScript,
+            "git" if git_status_args(args) => Self::GitStatus,
             name if python_launcher(name) => match args.as_slice() {
                 [mode, module, flags @ ..]
                     if mode == "-m" && module == "pytest" && pytest_human_args(flags) =>
@@ -70,7 +72,7 @@ impl Format {
                     Observation::Finished
                 }
             }),
-            Self::Pytest | Self::TypeScript => None,
+            Self::Pytest | Self::TypeScript | Self::GitStatus => None,
         }
     }
 }
@@ -82,6 +84,35 @@ fn typescript_args(args: &[String]) -> bool {
             "--watch" | "-w" | "--showConfig" | "--help" | "-h" | "--version" | "-v"
         )
     })
+}
+
+fn git_status_args(args: &[String]) -> bool {
+    let Some((name, options)) = args.split_first() else {
+        return false;
+    };
+    let options = options
+        .iter()
+        .map(String::as_str)
+        .take_while(|arg| *arg != "--");
+    name == "status"
+        && options.clone().any(|arg| {
+            matches!(
+                arg,
+                "--short"
+                    | "-s"
+                    | "-sb"
+                    | "-bs"
+                    | "--porcelain"
+                    | "--porcelain=v1"
+                    | "--porcelain=1"
+            )
+        })
+        && !options.clone().any(|arg| {
+            arg.starts_with("--porcelain=") && !matches!(arg, "--porcelain=v1" | "--porcelain=1")
+        })
+        && !options
+            .clone()
+            .any(|arg| matches!(arg, "-z" | "--null" | "--long" | "--verbose" | "-v" | "-vv"))
 }
 
 fn cargo_human_args(args: &[String]) -> bool {

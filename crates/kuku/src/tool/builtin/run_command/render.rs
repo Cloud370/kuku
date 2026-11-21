@@ -282,7 +282,8 @@ fn render_rule(
         "{outcome}, summarized output\n\n{preview}\n\nFor the first selected range, call read_output({{id:{id:?}, offset:{start}, limit:{bytes}}})."
     );
     if access == ModelOutputAccess::Script {
-        content.push_str(" To locate a literal in the full capture, call tools.search_output({id, text}) in run_js.");
+        content.push(' ');
+        content.push_str(summary.script_hint.unwrap_or("To locate a literal in the full capture, call tools.search_output({id, text}) in run_js."));
     }
     content.push_str(&render_reference(id, capture, false, false));
     (content.len() <= limit && (content.len() as u64) < capture.stored_bytes)

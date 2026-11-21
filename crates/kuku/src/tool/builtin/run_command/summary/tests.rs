@@ -143,6 +143,54 @@ fn tsc_groups_exact_repeats_and_keeps_other_diagnostics_and_source_ranges() {
     assert!(unrecognized.summarize(2).is_none());
 }
 
+#[test]
+fn git_status_counts_large_captures_and_keeps_quoted_conflict_and_rename_rows() {
+    let git = |args: &[&str]| CommandInvocation::Program {
+        program: "git".into(),
+        args: std::iter::once("status")
+            .chain(args.iter().copied())
+            .map(str::to_owned)
+            .collect(),
+    };
+    let mut collector = Collector::new(&git(&["--porcelain=v1", "--branch"])).unwrap();
+    let prefix = b"## main\nMM checked.txt\nUU conflict.txt\nR  \"before name\" -> \"after name\"\n D removed.txt\n?? \"a note\\nwith newline.txt\"\n!! ignored.txt\n";
+    collector.observe(OutputStream::Stdout, 0, prefix);
+    let mut raw = prefix.to_vec();
+    for index in 0..340 {
+        let row = format!("?? scratch-{index:03}\n");
+        collector.observe(OutputStream::Stdout, raw.len() as u64, row.as_bytes());
+        raw.extend_from_slice(row.as_bytes());
+    }
+    let summary = collector.summarize(0).unwrap();
+    assert!(summary.text.contains("Unmerged (1)\nUU conflict.txt"));
+    assert!(summary
+        .text
+        .contains("Staged and unstaged (1)\nMM checked.txt"));
+    assert!(summary
+        .text
+        .contains("Staged only (1)\nR  \"before name\" -> \"after name\""));
+    assert!(summary
+        .text
+        .contains("Untracked (341)\n?? \"a note\\nwith newline.txt\""));
+    assert!(!summary.text.contains("scratch-200"));
+    let CommandOutputSummary::Rule { rule, ranges } = summary.source;
+    assert_eq!(rule, "git-status");
+    assert!(ranges.iter().any(
+        |range| &raw[range.offset as usize..range.end_offset as usize] == b"UU conflict.txt\n"
+    ));
+    for args in [
+        &["--porcelain=v2"][..],
+        &["--porcelain", "-z"],
+        &["--", "--short"],
+        &[],
+    ] {
+        assert!(Collector::new(&git(args)).is_none(), "{args:?}");
+    }
+    let mut invalid = Collector::new(&git(&["--short"])).unwrap();
+    invalid.observe(OutputStream::Stdout, 0, b"?? valid\nVV unsupported\n");
+    assert!(invalid.summarize(0).is_none());
+}
+
 #[tokio::test]
 async fn cargo_rule_retains_assertions_and_the_original_output() {
     let dir = workspace();

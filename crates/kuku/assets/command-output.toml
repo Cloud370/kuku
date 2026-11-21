@@ -62,3 +62,8 @@ test_checkout.py:5: AssertionError
 description = "Repeated TypeScript compiler diagnostics in the plain reporter"
 match_command = '^tsc(?: |$)'
 strip_ansi = true
+
+[filters.git-status]
+description = "Line-oriented Git short or porcelain v1 status"
+match_command = '^git status(?: |$)'
+strip_ansi = true

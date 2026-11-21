@@ -91,6 +91,8 @@ For recognized human output from a long native Cargo build, check, Clippy, test,
 
 Long plain TypeScript compiler reports can group repeated errors by exact code and message. Each group includes its count and sample source locations. Pretty and multiline diagnostics use the generic preview.
 
+Long Git short status and line-oriented porcelain v1 can group rows by staged, unstaged, conflicting, untracked and ignored state. The view keeps counts, representative rows with Git quoting, and a hint for filtering each raw status row in `run_js`. Other Git status formats use the generic preview. [Git status formats](https://git-scm.com/docs/git-status#_output)
+
 The default Session preview is bounded to 8 KiB, including its summary and retained reference. A complete capture can still have a truncated preview. For failed commands with a complete capture that exceeds the preview size, the preview uses selected build or test lines when available. Otherwise it shows the end of stderr, falling back to stdout if stderr is empty. Missing executables, start failures, timeouts, and cancellation have separate termination values. Recognized Rust test and pytest summaries carry program-reported counts and bounded evidence. [SDK execution facts](sdk.md#workspace-execution)
 
 ## Session Jobs
