@@ -690,12 +690,7 @@ async fn find(
                 .map(|job| {
                     Choice::new(
                         job.id.clone(),
-                        format!(
-                            "{} · {} · {}",
-                            job_status_label(job.status),
-                            job.tool,
-                            single_line(&job.summary)
-                        ),
+                        job_detail(&job),
                         ChoiceKind::BackgroundJob(Box::new(job)),
                     )
                 })
@@ -734,6 +729,20 @@ pub(crate) fn job_status_label(status: JobStatus) -> &'static str {
         JobStatus::Cancelled => "Cancelled",
         JobStatus::Interrupted => "Interrupted",
     }
+}
+
+pub(crate) fn job_detail(job: &JobSnapshot) -> String {
+    let title = if job.title.trim().is_empty() {
+        &job.tool
+    } else {
+        &job.title
+    };
+    let mut detail = format!("{} · {}", job_status_label(job.status), single_line(title));
+    if job.status != JobStatus::Running && !job.summary.is_empty() && job.summary != *title {
+        detail.push_str(" · ");
+        detail.push_str(&single_line(&job.summary));
+    }
+    detail
 }
 
 fn model_choices(catalog: ModelCatalog) -> (Vec<Choice>, String) {

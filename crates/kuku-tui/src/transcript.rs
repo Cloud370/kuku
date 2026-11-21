@@ -33,7 +33,7 @@ use self::agent::AgentCards;
 use self::body::Body;
 pub(crate) use self::details::DetailKey;
 use self::details::{DetailRecord, Details};
-use self::job::job_notice;
+use self::job::JobNotice;
 use self::message::{render_assistant_source, render_record, render_user};
 pub(crate) use self::messages::{MessageId, MessageInfo, MessageKind, SelectedMessage};
 use self::rewound::RewindGroupState;
@@ -478,7 +478,7 @@ impl Record {
                 }
                 Body::Tool(Box::new(Tool::from_entry(&entry)))
             }
-            HistoryKind::JobFinished => job_notice(&entry),
+            HistoryKind::JobFinished => Body::Job(JobNotice::from_entry(&entry)),
             HistoryKind::Question => Body::Notice("Question", text, WARNING),
             HistoryKind::Permission => Body::Notice("Permission", text, WARNING),
             HistoryKind::QuestionReply => Body::Notice("Answer", text, ACCENT),
@@ -567,6 +567,7 @@ impl Record {
             | Body::Assistant(_)
             | Body::Interrupted(_)
             | Body::Notice(..)
+            | Body::Job(_)
             | Body::ModelError { .. }
             | Body::Retry { .. }
             | Body::TurnSummary => None,
@@ -636,6 +637,7 @@ impl Record {
             | Body::Assistant(_)
             | Body::Interrupted(_)
             | Body::Notice(..)
+            | Body::Job(_)
             | Body::ModelError { .. }
             | Body::Retry { .. }
             | Body::TurnSummary => (None, ToolDetails::Expanded, None),
@@ -691,6 +693,13 @@ impl Record {
                     title,
                     *color,
                     render_literal(text, Style::default()),
+                    width,
+                    0,
+                ),
+                Body::Job(job) => render_record(
+                    "Background job",
+                    job.color,
+                    render_literal(&job.text, Style::default()),
                     width,
                     0,
                 ),

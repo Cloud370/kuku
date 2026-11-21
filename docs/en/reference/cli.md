@@ -85,7 +85,7 @@ Search by the command or any alias. The list shows the canonical spelling. Tab c
 | `/new` | `/new-session` | Open a blank draft and keep the prior Session available. |
 | `/resume` | `/sessions` | Find a retained Session in the workspace. |
 | `/agents` | `/agent` | Search the Session's Agents, switch recipients or create an Agent. The selector shows activity, pending requests, queue counts and task excerpts when available. |
-| `/jobs` | `/job` | List the selected Agent's background jobs. The input area shows the running count when there is room. Select a job to cancel it or read its available output. Use `/jobs cancel <id>` to cancel by ID. |
+| `/jobs` | `/job` | List the selected Agent's background jobs with their original title and current status. The input area shows the running count when there is room. Select a job to cancel it or read its available output. Use `/jobs cancel <id>` to cancel by ID. A completion entry in `/messages` can also open its retained output. |
 | `/model` | `/models` | Choose, add or edit model routes. Ctrl+L opens the same selector. |
 | `/thinking` | `/think`, `/effort` | Show the inherited model default and supported levels. A check marks the current selection. Enter applies the highlighted level to this Agent. **Use default** clears its override. On a writable local model route, press D on a level then Enter to save it as the model default while retaining explicit Agent overrides. |
 | `/statusline` | `/status-line` | Open **Status line settings** to preview, select, reorder and save footer fields. |

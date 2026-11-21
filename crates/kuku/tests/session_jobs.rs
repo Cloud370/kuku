@@ -631,6 +631,7 @@ async fn explicit_background_returns_before_foreground_deadline_and_can_be_cance
         assert_eq!(JobStatus::Running, job.status);
         assert_eq!(start_cursor, job.started_at);
         assert_eq!(tool, job.tool);
+        assert_eq!(title, job.title);
         assert_eq!(format!("{id} running: {title}"), job.summary);
         wait_until(|| fixture.workspace.join("attempts.txt").is_file()).await;
         wait_until(|| session.agent(AGENT).unwrap().last_output.as_deref() == Some(ACKNOWLEDGED))
@@ -640,6 +641,7 @@ async fn explicit_background_returns_before_foreground_deadline_and_can_be_cance
 
         let cancelled = session.cancel_job(AGENT, id).await.unwrap();
         assert_eq!(JobStatus::Cancelled, cancelled.status);
+        assert_eq!(title, cancelled.title);
         let result = cancelled.result.unwrap();
         assert!(!result.cleanup_incomplete);
         if tool == "run_command" {
@@ -664,10 +666,9 @@ async fn explicit_background_returns_before_foreground_deadline_and_can_be_cance
         let mut options = fixture.options.clone();
         options.session_id = Some(session.id().into());
         let reopened = Session::open(options).await.unwrap();
-        assert_eq!(
-            JobStatus::Cancelled,
-            reopened.job(AGENT, id).unwrap().status
-        );
+        let job = reopened.job(AGENT, id).unwrap();
+        assert_eq!(JobStatus::Cancelled, job.status);
+        assert_eq!(title, job.title);
         assert_one_completion(&reopened, id);
         reopened.close().await.unwrap();
         wire_requests(route);

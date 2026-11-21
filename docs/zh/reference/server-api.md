@@ -136,6 +136,8 @@ Agent 快照和摘要可以包含 `admitted_task` 和 `queued_task`。这两个�
 
 Job 路由均要求 `workspace` 和 `agent` 查询参数。`GET /sessions/{id}/jobs` 返回 `{ "jobs": [...] }`，其中包含该 Agent 最近的 Job 和所有运行中 Job 的元信息。单个 Job 查询直接返回快照，终态 `result` 可用时一并返回。若快照包含 `output_id`，可通过输出端点读取保留的命令输出。查询未知 Job 或其他 Agent 的 Job 会返回 `404` 和 `job_not_found`。
 
+快照中的 `title` 在状态变化后仍保留原始显示标题。`summary` 描述当前执行状态或终态结果。
+
 `DELETE /sessions/{id}/jobs/{job_id}` 等待指定执行结束并返回结果快照。对已终结的 Job 重复请求会返回已有结果。两个 GET 路由可以直接读取已关闭的 Session。若本服务尚未打开 Session，取消其中未终结的 Job 会返回 `409` 和 `job_not_active`。
 
 归属 Agent 的历史和观察流包含 `job_finished` 条目，带有 `job_id`、`status`、`summary`、原始 `turn` 以及可用的 `output_id`。此条目可能在对应的 Turn 结束后到达。

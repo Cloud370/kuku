@@ -195,6 +195,32 @@ fn remediation_thinking_from_source_opens_only_the_selected_reply_notes() {
 }
 
 #[test]
+fn completed_job_opens_retained_output_from_its_message() {
+    let mut app = connected_app();
+    for event in [
+        json!({"id":70,"agent":"main","turn":3,"type":"job_finished","job_id":"job-1",
+            "status":"failed","summary":"command exited 7","output_id":"saved-job-output"}),
+        json!({"id":71,"agent":"main","turn":3,"type":"job_finished","job_id":"job-2",
+            "status":"interrupted","summary":"capture unavailable"}),
+    ] {
+        app.pane_mut()
+            .transcript
+            .apply(serde_json::from_value(event).unwrap(), None);
+    }
+    open_message_actions(&mut app, MessageId::Event(71));
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+        if !picker.visible_choices().iter().any(|choice| choice.label == "Full output")));
+
+    app.modal = None;
+    open_message_actions(&mut app, MessageId::Event(70));
+    choose_message_action(&mut app, MessageAction::FullOutput);
+    assert!(matches!(&app.modal, Some(Modal::Output(viewer))
+        if viewer.tool.name == "job-1" && viewer.tool.summary.contains("command exited 7")));
+    assert!(app.effects.iter().any(|effect| matches!(effect,
+        Job::Output(selection, _, id, 0) if selection == &app.selection() && id == "saved-job-output")));
+}
+
+#[test]
 fn tool_actions_expand_the_selected_call_and_open_saved_or_complete_inline_output() {
     let mut app = connected_app();
     for event in [

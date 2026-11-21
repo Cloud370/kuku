@@ -92,6 +92,9 @@ pub struct JobSnapshot {
     pub tool: String,
     /// Current durable Job status.
     pub status: JobStatus,
+    /// Display title captured when the execution moved into the background.
+    #[serde(default)]
+    pub title: String,
     /// Short description of the running Job or its terminal result.
     pub summary: String,
     /// Retained output identity for a native command, available after capture is finalized.

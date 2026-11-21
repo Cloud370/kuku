@@ -473,15 +473,14 @@ impl Session {
         let id = job_id(sequence);
         let output_id = (request.tool == "run_command")
             .then(|| command_output_id(&request.agent, request.turn, &request.tool_call_id));
-        let summary = format!(
-            "{id} running: {}",
-            bounded(&request.summary, MAX_JOB_SUMMARY_BYTES)
-        );
+        let title = bounded(&request.summary, MAX_JOB_SUMMARY_BYTES);
+        let summary = format!("{id} running: {title}");
         let facts = json!({
             "kind": "job",
             "job_id": id,
             "status": JobStatus::Running,
             "tool": request.tool,
+            "title": title,
             "output_id": output_id,
         });
         let envelope = ToolResultEnvelope::ok(&summary, serde_json::to_string(&facts)?, facts);
@@ -667,6 +666,11 @@ impl JobIndex {
                 tool_call_id: tool_call_id.clone(),
                 tool: tool.into(),
                 status: JobStatus::Running,
+                title: bounded(
+                    data["title"].as_str().unwrap_or(tool),
+                    MAX_JOB_SUMMARY_BYTES,
+                )
+                .into(),
                 summary: bounded(summary, MAX_JOB_SUMMARY_BYTES).into(),
                 output_id: data["output_id"].as_str().map(str::to_owned),
                 started_at: event.id,

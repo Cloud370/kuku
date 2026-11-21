@@ -136,6 +136,8 @@ Read a known tool output by its ID in `/outputs/{output_id}`, passing `workspace
 
 All Job routes require `workspace` and `agent` query parameters. `GET /sessions/{id}/jobs` returns `{ "jobs": [...] }` with metadata for the Agent's recent Jobs and all running Jobs. A Job lookup returns the snapshot directly, including the terminal `result` when available. Use `output_id`, when present, to read the retained command output through the output endpoint. An unknown Job ID or a Job belonging to another Agent returns `404` with `job_not_found`.
 
+The snapshot keeps the original display `title` across status changes. The `summary` describes the current execution state or terminal result.
+
 `DELETE /sessions/{id}/jobs/{job_id}` waits for the targeted execution to settle and returns the resulting snapshot. Repeating the request for a terminal Job returns its existing result. Both GET routes can read a closed Session without opening it. A DELETE for an unsettled Job in a Session that this server has not opened returns `409` with `job_not_active`.
 
 The owning Agent's history and observation stream include a `job_finished` entry with `job_id`, `status`, `summary`, the original `turn` and any `output_id`. This entry can arrive after its Turn settles.

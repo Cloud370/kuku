@@ -106,6 +106,7 @@ impl Transcript {
                         };
                         (label, detail)
                     }
+                    Body::Job(job) => (job.label(), job.text.clone()),
                     Body::Notice(..)
                     | Body::ModelError { .. }
                     | Body::Retry { .. }
@@ -153,6 +154,12 @@ impl Transcript {
                 }
                 (MessageKind::Tool, text, outputs, false)
             }
+            Body::Job(job) => (
+                MessageKind::Tool,
+                job.text.clone(),
+                job.output().into_iter().collect(),
+                false,
+            ),
             Body::Notice(..) | Body::ModelError { .. } | Body::Retry { .. } | Body::TurnSummary => {
                 return None
             }
@@ -260,6 +267,7 @@ impl Transcript {
                 | Body::Assistant(_)
                 | Body::Interrupted(_)
                 | Body::Notice(..)
+                | Body::Job(_)
                 | Body::ModelError { .. }
                 | Body::Retry { .. }
                 | Body::TurnSummary => None,

@@ -1,6 +1,7 @@
 use kuku_client::RetryMetadata;
 use ratatui::style::Color;
 
+use super::job::JobNotice;
 use super::tool::Tool;
 
 #[derive(Debug, Clone)]
@@ -12,6 +13,7 @@ pub(super) enum Body {
     Assistant(String),
     Interrupted(String),
     Notice(&'static str, String, Color),
+    Job(JobNotice),
     ModelError {
         title: &'static str,
         diagnostic: String,

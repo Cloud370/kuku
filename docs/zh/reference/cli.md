@@ -85,7 +85,7 @@ Continue 回执提示只短暂显示，不会替换已有错误。窄屏的聚�
 | `/new` | `/new-session` | 打开一份空白草稿，之前的 Session 仍可打开。 |
 | `/resume` | `/sessions` | 查找工作区中已有的 Session。 |
 | `/agents` | `/agent` | 搜索 Session 中的 Agent、切换接收者或新建 Agent。选择器显示活动、待决请求、队列数量和可用的任务摘录。 |
-| `/jobs` | `/job` | 列出所选 Agent 的后台任务。空间充足时，输入区会显示正在运行的数量。选中任务可取消或读取已有输出。用 `/jobs cancel <id>` 按 ID 取消。 |
+| `/jobs` | `/job` | 列出所选 Agent 的后台任务，保留原始标题并显示当前状态。空间充足时，输入区会显示正在运行的数量。选中任务可取消或读取已有输出。用 `/jobs cancel <id>` 按 ID 取消。也可以从 `/messages` 里的完成条目打开保留的输出。 |
 | `/model` | `/models` | 选择、添加或编辑模型路由。Ctrl+L 打开同一个选择器。 |
 | `/thinking` | `/think`、`/effort` | 显示继承的模型默认值和受支持的等级，勾号标记当前选择。Enter 将高亮项应用到当前 Agent。**Use default** 清除该 Agent 的覆盖设置。对于可写入的本地模型路由，在等级上按 D 后用 Enter 确认，即可保存为模型默认值并保留 Agent 的显式覆盖。 |
 | `/statusline` | `/status-line` | 打开 **Status line settings**，预览、选择、排序并保存状态栏字段。 |
