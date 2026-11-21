@@ -722,7 +722,7 @@ def check_agent_reading_position(client, terminal):
 
     terminal.submit(follow_up)
     with client.provider.next(follow_up).streaming_text(beginning, f"\n\n{new_content}", "\n\nCheckpoint stream finished") as pauses:
-        terminal.expect(beginning, state="Streaming")
+        terminal.expect(beginning, state="↓  Reply")
         terminal.type(original)
         terminal.press("\x1b\r")
         terminal.expect(original, state="Queued · next Turn")

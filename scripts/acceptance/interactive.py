@@ -149,7 +149,7 @@ def two_workspaces_and_disconnect(client):
                 "input_tokens": 44_500, "cache_read_input_tokens": 133_500,
                 "cache_creation_input_tokens": 0, "output_tokens": 205,
             }):
-                partial = right.expect("基础测试", state="Streaming")["screen"]
+                partial = right.expect("基础测试", state="↓  Reply")["screen"]
                 assert "Summary saved." not in partial and "| ---" not in partial, partial
                 assert any("基础测试" in row and "通过" in row for row in partial.splitlines()), partial
             right.expect("Summary saved.")
@@ -251,7 +251,7 @@ def fast_markdown_stream(client):
         terminal.expect("New session", state="Ready")
         terminal.submit(prompt)
         with client.provider.next(prompt).streaming_text(first, last, chunk_size=2):
-            terminal.expect("0159:", state="Streaming")
+            terminal.expect("0159:", state="↓  Reply")
             terminal.type(draft)
         terminal.expect("Final marker", state="Finished")
         assert draft in terminal.request("screen")["screen"]
@@ -335,7 +335,7 @@ def preserve_draft_after_interrupt(client):
         prefix = "This part reached the screen."
         tail = "Late cancelled text"
         with cancelled.streaming_text(prefix, tail):
-            terminal.expect(prefix, state="Streaming")
+            terminal.expect(prefix, state="↓  Reply")
             terminal.type(draft)
             terminal.press("\x1b")
             stopped_screen = terminal.expect(draft, state="Stopped")["screen"]
@@ -704,6 +704,8 @@ def dense_transcript(client, reference=False):
     workspace = client.workspace("dense-transcript")
     scenario = DenseTranscript(client, workspace)
     screens = []
+    tool_state = "Running tools" if reference else "↳  Tools"
+    reply_state = "Streaming reply" if reference else "↓  Reply"
     tool_heading = re.compile(
         r"(?:Read-only activity · \d+ calls|Read (?:file|\d+ files)|Find files|Search text|"
         r"Write file|Edit file|Run command|Tool [a-z_]+)"
@@ -729,9 +731,7 @@ def dense_transcript(client, reference=False):
 
     def running_view(screen, height):
         rows = screen.split("\n")
-        return len(rows) == height and (
-            "Tools" in rows[-1] or any("Tools" in row for row in rows[-8:])
-        )
+        return len(rows) == height and any(tool_state in row for row in rows[-8:])
 
     def measure_tools(terminal):
         height = 144
@@ -804,7 +804,7 @@ def dense_transcript(client, reference=False):
         terminal.request("resize", rows=32, cols=140)
         terminal.submit(scenario.prompt)
         with scenario.running_tool():
-            terminal.expect("Tools")
+            terminal.expect(tool_state)
             terminal.type(scenario.draft)
             measurements = measure_tools(terminal)
             terminal.request("resize", rows=36, cols=140)
@@ -824,11 +824,11 @@ def dense_transcript(client, reference=False):
             screens.append(("Narrow tool turn with the same draft", narrow))
             terminal.request("resize", rows=32, cols=140)
         with scenario.streaming_reply():
-            wide = terminal.expect(scenario.source, state="Streaming", also=(scenario.draft, scenario.heading), rows=32)["screen"]
+            wide = terminal.expect(scenario.source, state=reply_state, also=(scenario.draft, scenario.heading), rows=32)["screen"]
             assert scenario.heading in wide and scenario.draft in wide and scenario.end not in wide and "rust" in wide, wide
             screens.append(("Wide Chinese report while the Rust fence is open", wide))
             terminal.request("resize", rows=26, cols=74)
-            narrow = terminal.expect(scenario.source, state="Streaming", also=(scenario.draft,), rows=26)["screen"]
+            narrow = terminal.expect(scenario.source, state=reply_state, also=(scenario.draft,), rows=26)["screen"]
             assert scenario.draft in narrow and scenario.end not in narrow, narrow
             screens.append(("Narrow Chinese report while the Rust fence is open", narrow))
         complete = terminal.expect(scenario.end, state="Finished", also=(scenario.draft,), rows=26)["screen"]
@@ -849,6 +849,7 @@ def markdown_document(client, document=None, reference=False):
     workspace = client.workspace("markdown-document")
     outer = f"╭─ {document.label} "
     preview = "Markdown preview"
+    reply_state = "Streaming reply" if reference else "↓  Reply"
     frames = {}
 
     def check_preview(screen, complete):
@@ -868,11 +869,11 @@ def markdown_document(client, document=None, reference=False):
         terminal.submit(document.prompt)
         with document.stream(client.provider) as (opened, inner):
             assert opened.arrived.wait(10), "The provider opener must arrive before its body"
-            frames["opener"] = terminal.expect(outer if reference else preview, state="Streaming")["screen"]
+            frames["opener"] = terminal.expect(outer if reference else preview, state=reply_state)["screen"]
             assert document.intro in frames["opener"] and document.code_anchor not in frames["opener"], frames["opener"]
             opened.release.set()
             assert inner.arrived.wait(10), "The provider must pause with the inner fence still open"
-            frames["partial"] = terminal.expect(document.code_anchor, state="Streaming")["screen"]
+            frames["partial"] = terminal.expect(document.code_anchor, state=reply_state)["screen"]
             assert document.trailer not in frames["partial"], frames["partial"]
             if not reference:
                 check_preview(frames["partial"], complete=False)

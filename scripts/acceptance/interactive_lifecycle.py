@@ -766,7 +766,7 @@ def keyboard_queue_withdrawal(client):
         terminal.submit(prompt)
         response = client.provider.next(prompt)
         with response.streaming_text("Keyboard queue check in progress", "\n\nKeyboard queue check finished"):
-            terminal.expect("Keyboard queue check in progress", state="Streaming")
+            terminal.expect("Keyboard queue check in progress", state="↓  Reply")
             for text in (kept, withdrawn):
                 terminal.type(text)
                 terminal.press("\x1b\r")
