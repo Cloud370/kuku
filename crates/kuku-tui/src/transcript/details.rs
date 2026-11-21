@@ -648,7 +648,8 @@ impl GroupHeading {
                 inset,
                 links: Vec::new(),
             }];
-            for detail in [&summary.composition, &summary.listing] {
+            let listing = if open { "" } else { &summary.listing };
+            for detail in [summary.composition.as_str(), listing] {
                 if !detail.is_empty() {
                     rows.extend(render_rows(
                         render_literal(detail, Style::default()),

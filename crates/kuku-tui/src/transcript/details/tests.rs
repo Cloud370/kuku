@@ -554,6 +554,36 @@ fn listing_polls_show_their_recorded_snapshot_and_preserve_the_original_result()
 }
 
 #[test]
+fn an_open_listing_group_reads_each_agent_check_once() {
+    let mut journal = Journal::default();
+    for name in ["tester-a", "tester-b"] {
+        journal.tool(
+            "list_agents",
+            json!({"wait_for":name}),
+            json!({
+                "status":"ok",
+                "summary":"session operation committed",
+                "structured":[{"address":name,"status":"idle","last_output":"Done"}]
+            }),
+        );
+    }
+    let mut transcript = journal.load();
+    let view = transcript.project(95, 24);
+    let key = transcript
+        .detail_at(line(&view, "List Agents ×2"))
+        .unwrap()
+        .clone();
+    let last_result = "tester-b (Idle, reply available)";
+    assert_eq!(1, text(&view).matches(last_result).count());
+    assert!(transcript.toggle_detail(&key));
+    let opened = text(&transcript.project(95, 24));
+    assert_eq!(1, opened.matches(last_result).count());
+    assert!(opened.contains("Agent check · tester-a (Idle, reply available)"));
+    assert!(opened.contains("Agent check · tester-b (Idle, reply available)"));
+    assert!(!opened.contains("Latest ·"));
+}
+
+#[test]
 fn query_counts_preserve_observed_types_even_when_a_row_was_clipped() {
     let mut journal = Journal::default();
     let source = "[\n{\"kind\":\"message.user\",\"text\":\"Fixture input\"},\n{\"kind\":\"model.error\",\"text\":\"model failed\"},\n{\"kind\":\"runtime.model_retry\"},\n{\"kind\":\"tool.call\",\"args\": ...(truncated)\n]";
