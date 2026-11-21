@@ -390,6 +390,7 @@ class AcceptanceTests(unittest.TestCase):
             self.assertEqual((args.provider, args.upstream), expected)
             self.assertIsNone(args.max_requests)
             self.assertIsNone(args.model)
+            self.assertIsNone(args.reasoning_effort)
         for limit in (22, 48):
             args = parser.parse_args([*base, "--suite", "frontier", "--max-requests", str(limit)])
             self.assertEqual(args.max_requests, limit)
@@ -441,7 +442,7 @@ class AcceptanceTests(unittest.TestCase):
         image = "sha256:fixture-image"
         args = ["run.py", "--output", str(self.directory), "benchmark", "--suite", "frontier",
                 "--mode", "live", "--case", "large-scale-text-editing", "--sdk-binary", "/fixture/sdk",
-                "--provider", "deepseek", "--model", "deepseek-v4-pro"]
+                "--provider", "deepseek", "--model", "deepseek-flash", "--reasoning-effort", "high"]
 
         def capture(command, directory, label, **kwargs):
             if label == "image-build":
@@ -460,22 +461,25 @@ class AcceptanceTests(unittest.TestCase):
         budget.assert_not_called()
         parsed, case, source, built, directory, secrets = fake.call_args.args
         self.assertEqual(parsed.run_id, directory.name)
-        self.assertEqual((parsed.provider, parsed.model, parsed.upstream), ("deepseek", "deepseek-v4-pro", None))
+        self.assertEqual((parsed.provider, parsed.model, parsed.upstream), ("deepseek", "deepseek-flash", None))
+        self.assertEqual(parsed.reasoning_effort, "high")
         self.assertEqual((parsed.case_cap_usd, parsed.max_output_tokens, parsed.max_requests), (0.75, None, None))
         self.assertEqual(parsed.agent_timeout_sec, 1200)
         self.assertEqual(source, self.directory / "source" / "tasks" / case["id"])
         self.assertEqual((built, secrets), (image, creds))
 
-    def test_benchmark_model_override_requires_live_direct_deepseek(self):
-        base = ["run.py", "benchmark", "--case", "regex-log", "--model", "deepseek-v4-pro"]
+    def test_benchmark_model_and_effort_overrides_require_live_direct_deepseek(self):
+        base = ["run.py", "benchmark", "--case", "regex-log"]
         for flags in (
             ["--suite", "frontier", "--provider", "deepseek"],
             ["--suite", "frontier", "--mode", "live", "--provider", "openrouter"],
             ["--mode", "live", "--provider", "deepseek"],
         ):
-            with self.subTest(flags=flags), mock.patch.object(sys, "argv", [*base, *flags]):
-                with self.assertRaisesRegex(ValueError, "direct DeepSeek model for Frontier live"):
-                    ACCEPTANCE.main()
+            for option in (("--model", "deepseek-v4-pro"), ("--reasoning-effort", "high")):
+                with self.subTest(flags=flags, option=option), \
+                        mock.patch.object(sys, "argv", [*base, *flags, *option]):
+                    with self.assertRaisesRegex(ValueError, f"{option[0]} selects a direct DeepSeek"):
+                        ACCEPTANCE.main()
 
     def test_benchmark_deadline_requires_live_sdk_and_positive_seconds(self):
         base = ["run.py", "benchmark", "--suite", "frontier", "--case", "regex-log"]

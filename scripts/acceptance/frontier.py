@@ -713,7 +713,8 @@ def run_live(args, case, source, image, directory, secrets):
     if not key:
         raise ValueError(f"Frontier live requires the {provider} credential")
     router = provider == "openrouter"
-    route = route_for(provider, model=ROUTER_MODEL if router else getattr(args, "model", None), effort="max",
+    effort = getattr(args, "reasoning_effort", None) or "max"
+    route = route_for(provider, model=ROUTER_MODEL if router else getattr(args, "model", None), effort=effort,
                       upstream=(upstream or "deepseek"), key=key, verify_catalog=router)
     output_tokens = route.completion_limit if args.max_output_tokens is None else args.max_output_tokens
     if output_tokens is None:
@@ -759,7 +760,7 @@ def run_live(args, case, source, image, directory, secrets):
                                      pi_prefix=pi_prefix, node_binary=node_binary, pi_model=route.model, pi_effort=route.effort,
                                      require_resource_evidence=getattr(args, "require_resource_evidence", False))
             ledger_edit(budget.reserve, run_id, float(cap),
-                        f"{case['id']} single-case cap on {route.model} via {route.host}/{route.upstream}")
+                        f"{case['id']} single-case cap on {route.model} ({route.effort}) via {route.host}/{route.upstream}")
             thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
             thread.start()
             try:

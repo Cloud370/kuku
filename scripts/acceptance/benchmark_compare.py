@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export a matched Frontier harness or SDK Prompt comparison as shareable JSON."""
+"""Export a matched Frontier harness, Prompt, or reasoning comparison as shareable JSON."""
 
 import argparse
 from hashlib import sha256
@@ -62,9 +62,14 @@ def attempt(directory, harness):
             or not cpus or requirements != {**CASE_RESOURCE_LIMITS, 'cpus': cpus}):
         raise EvidenceError(f'expected strict live {harness} evidence')
     route = {'service': 'deepseek', 'wire': 'openai-chat', 'provider': 'api.deepseek.com',
-             'model_requested': 'deepseek-flash', 'effort': 'max'}
-    if any(meter.get(key) != value for key, value in route.items()):
-        raise EvidenceError('paired runs require direct DeepSeek Chat with max reasoning')
+             'model_requested': 'deepseek-flash'}
+    effort = meter.get('effort')
+    if any(meter.get(key) != value for key, value in route.items()) or effort not in ('low', 'high', 'max'):
+        raise EvidenceError('paired runs require direct DeepSeek Flash with a recorded reasoning effort')
+    model_version = meter.get('model_version')
+    if not isinstance(model_version, str) or not re.fullmatch(r'[A-Za-z0-9._-]{1,120}', model_version):
+        model_version = None
+    route.update(effort=effort, model_version=model_version)
     task_digest = digest_map(benchmark.get('task_files_sha256'))
     image_id = benchmark.get('image_id')
     limits = object_value(meter.get('limits'))
@@ -86,6 +91,9 @@ def attempt(directory, harness):
     accounting = object_value(meter.get('accounting'))
     package = object_value(result.get('pi_package'))
     runtime_files = object_value(result.get('runtime_files'))
+    prompt_digest = digest_map(result.get('prompt_overrides'))
+    if 'prompt_overrides' in result and not prompt_digest:
+        raise EvidenceError('invalid recorded Prompt override snapshot')
     agent = object_value(result.get('agent_evidence' if harness == 'pi' else 'sdk_evidence'))
     tool_facts = agent if harness == 'pi' else object_value(agent.get('facts'))
     tool_batches = object_value(agent.get('tool_batches'))
@@ -99,7 +107,7 @@ def attempt(directory, harness):
             'checkout_commit': hex_digest(object_value(record.get('tree')).get('commit'), 40),
             'kuku_binary_sha256': hex_digest(runtime_files.get('session_task'), 64),
             'kuku_runtime_sha256': digest_map(runtime_files) if harness == 'kuku' else None,
-            'prompt_overrides_sha256': digest_map(result.get('prompt_overrides')),
+            'prompt_overrides_sha256': prompt_digest,
             'pi_version': version if isinstance(version, str) and re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version) else None,
             'pi_lock_sha256': hex_digest(package.get('lock_sha256'), 64),
             'pi_cli_sha256': hex_digest(package.get('cli_sha256'), 64),
@@ -139,14 +147,19 @@ def compare(kuku, pi):
     return {'schema_version': 1, 'configuration': shared, 'attempts': [left, right]}
 
 
+def require_same_sdk(left, right):
+    before, after = left['provenance'], right['provenance']
+    for key in ('kuku_binary_sha256', 'kuku_runtime_sha256'):
+        if not before[key] or before[key] != after[key]:
+            raise EvidenceError('comparison requires the same SDK binary and packaged runtime')
+    return before, after
+
+
 def compare_prompts(baseline, candidate):
     shared, left = attempt(baseline, 'kuku')
     other, right = attempt(candidate, 'kuku')
     require_matching(shared, other)
-    before, after = left['provenance'], right['provenance']
-    for key in ('kuku_binary_sha256', 'kuku_runtime_sha256'):
-        if not before[key] or before[key] != after[key]:
-            raise EvidenceError('Prompt comparison requires the same SDK binary and packaged runtime')
+    before, after = require_same_sdk(left, right)
     if (not before['prompt_overrides_sha256'] or not after['prompt_overrides_sha256']
             or before['prompt_overrides_sha256'] == after['prompt_overrides_sha256']):
         raise EvidenceError('Prompt comparison requires two distinct recorded Prompt override snapshots')
@@ -154,18 +167,37 @@ def compare_prompts(baseline, candidate):
             'attempts': [{'arm': 'baseline', **left}, {'arm': 'candidate', **right}]}
 
 
+def compare_effort(baseline, candidate):
+    shared, left = attempt(baseline, 'kuku')
+    other, right = attempt(candidate, 'kuku')
+    before_route, after_route = dict(shared['provider']), dict(other['provider'])
+    before_effort, after_effort = before_route.pop('effort'), after_route.pop('effort')
+    require_matching({**shared, 'provider': before_route}, {**other, 'provider': after_route})
+    if not before_route['model_version'] or before_effort == after_effort:
+        raise EvidenceError('reasoning comparison requires a recorded model version and distinct efforts')
+    before, after = require_same_sdk(left, right)
+    if before['prompt_overrides_sha256'] != after['prompt_overrides_sha256']:
+        raise EvidenceError('reasoning comparison requires the same Prompt')
+    return {'schema_version': 1, 'configuration': {**shared, 'provider': before_route},
+            'attempts': [{'arm': 'baseline', 'reasoning_effort': before_effort, **left},
+                         {'arm': 'candidate', 'reasoning_effort': after_effort, **right}]}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('kuku', 'pi', 'baseline', 'candidate'):
         parser.add_argument(f'--{name}', type=Path, metavar='RUN_DIRECTORY')
+    parser.add_argument('--compare-effort', action='store_true',
+                        help='compare two SDK attempts with different reasoning efforts and the same Prompt')
     args = parser.parse_args()
     try:
-        if args.kuku and args.pi and not (args.baseline or args.candidate):
+        if args.kuku and args.pi and not (args.baseline or args.candidate or args.compare_effort):
             report = compare(args.kuku, args.pi)
         elif args.baseline and args.candidate and not (args.kuku or args.pi):
-            report = compare_prompts(args.baseline, args.candidate)
+            comparator = compare_effort if args.compare_effort else compare_prompts
+            report = comparator(args.baseline, args.candidate)
         else:
-            parser.error('provide --kuku and --pi or --baseline and --candidate')
+            parser.error('provide --kuku and --pi or --baseline and --candidate (optionally with --compare-effort)')
         print(json.dumps(report, indent=2, allow_nan=False))
     except EvidenceError as error:
         parser.exit(2, f'error: {error}\n')

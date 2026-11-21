@@ -308,6 +308,8 @@ When the runner's inspection recorded tool calls per response, the paired export
 
 To compare Prompt variants, reuse the same release `session_task` and give each live Frontier attempt a `--prompts-dir` containing its overrides. The selector snapshots the Prompt assets, records their SHA-256 digests in the attempt, and mounts the snapshot read-only. The SDK supplies embedded defaults for missing assets. Use `benchmark_compare.py --baseline RUN_DIRECTORY --candidate RUN_DIRECTORY` to check the SDK binary, runtime bundle, distinct Prompt snapshots, and matching task, provider settings and resource limits.
 
+Use `--reasoning-effort high` on a live direct DeepSeek attempt to test a different reasoning setting. The default is `max`. Compare two Kuku attempts with `benchmark_compare.py --compare-effort --baseline RUN_DIRECTORY --candidate RUN_DIRECTORY`. The exporter requires the same model version, SDK binary, packaged runtime, Prompt and other run settings. Compare original verifier outcomes alongside cost, time and request counts.
+
 For a host deadline experiment, use `--max-command-seconds N` on a live Frontier SDK attempt. This sets the SDK process deadline for each command, including commands launched from `run_js` and commands that become Jobs. The task's whole-agent deadline and verifier are separate. The selector checks the applied limit in the SDK report, and paired exports require a matching process deadline. Omit the option for the SDK default of no per-command deadline.
 
 ## Resource measurements

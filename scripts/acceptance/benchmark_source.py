@@ -13,6 +13,8 @@ def validate_benchmark_arguments(args, metered, paid):
         raise ValueError("--cpus must be positive")
     if args.model is not None and (not metered or args.provider != "deepseek"):
         raise ValueError("--model selects a direct DeepSeek model for Frontier live")
+    if args.reasoning_effort is not None and (not metered or args.provider != "deepseek"):
+        raise ValueError("--reasoning-effort selects a direct DeepSeek reasoning setting for Frontier live")
     if args.pi_prefix and (not metered or args.provider != "deepseek" or args.require_streaming):
         raise ValueError("--pi-prefix selects direct DeepSeek Frontier live with Pi Session evidence")
     if args.node_binary and not args.pi_prefix:
@@ -44,6 +46,8 @@ def add_benchmark_arguments(parser):
     parser.add_argument("--provider", choices=("openrouter", "deepseek"), default="openrouter",
                         help="Frontier live API service (default: openrouter)")
     parser.add_argument("--model", help="priced model for direct DeepSeek Frontier live (default: deepseek-flash)")
+    parser.add_argument("--reasoning-effort", choices=("low", "high", "max"),
+                        help="reasoning effort for direct DeepSeek Frontier live (default: max)")
     parser.add_argument("--upstream", help="exact OpenRouter endpoint tag for Frontier live")
     parser.add_argument("--case-cap-usd", type=money, default=0.75)
     parser.add_argument("--max-output-tokens", type=int, help="Frontier live output ceiling (default: the selected route's limit)")

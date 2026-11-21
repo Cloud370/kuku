@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from benchmark_compare import compare, compare_prompts
+from benchmark_compare import compare, compare_effort, compare_prompts
 from benchmark_resources import CASE_RESOURCE_LIMITS
 from frontier_report import (CASES, DATASET, DELAYED_RECEIPTS, MODEL_ID, PRIVATE_RECEIPTS,
                             SDK_REQUEST_BYTES_ERROR, TASK_COMMIT, EvidenceError, build_report, cohort_efficiency, main, official_report,
@@ -45,6 +45,34 @@ def write_json(path, value):
 
 
 class PairedReportTests(unittest.TestCase):
+    def test_effort_pair_checks_model_runtime_and_prompt(self):
+        provider = {'model_version': MODEL_ID, 'effort': 'max'}
+        provenance = {'kuku_binary_sha256': SDK_SHA, 'kuku_runtime_sha256': SDK_SHA,
+                      'prompt_overrides_sha256': None}
+        left = ({'case': 'regex-log', 'provider': provider}, {'provenance': provenance})
+        right = ({'case': 'regex-log', 'provider': {**provider, 'effort': 'high'}},
+                 {'provenance': dict(provenance)})
+        paths = (Path('max'), Path('high'))
+        with patch('benchmark_compare.attempt', side_effect=[left, right]):
+            report = compare_effort(*paths)
+        self.assertEqual(report['configuration']['provider'], {'model_version': MODEL_ID})
+        self.assertEqual([arm['reasoning_effort'] for arm in report['attempts']], ['max', 'high'])
+        for pair, error in (
+            ([left, left], 'recorded model version and distinct efforts'),
+            ([left, ({**right[0], 'provider': {**right[0]['provider'], 'model_version': 'other'}}, right[1])],
+             'configuration differs in provider'),
+            ([left, (right[0], {'provenance': {**provenance, 'prompt_overrides_sha256': '2' * 64}})],
+             'same Prompt'),
+            ([left, (right[0], {'provenance': {**provenance, 'kuku_runtime_sha256': '2' * 64}})],
+             'same SDK binary and packaged runtime'),
+        ):
+            with self.subTest(error=error), patch('benchmark_compare.attempt', side_effect=pair):
+                with self.assertRaisesRegex(EvidenceError, error):
+                    compare_effort(*paths)
+        with patch('benchmark_compare.attempt', side_effect=[left, right]):
+            with self.assertRaisesRegex(EvidenceError, 'configuration differs in provider'):
+                compare_prompts(*paths)
+
     def test_prompt_pair_requires_unchanged_runtime_and_distinct_snapshots(self):
         provenance = {'kuku_binary_sha256': SDK_SHA, 'kuku_runtime_sha256': SDK_SHA,
                       'prompt_overrides_sha256': '2' * 64}
