@@ -10,6 +10,7 @@ use super::rules::{self, Rule};
 pub(super) enum Format {
     Cargo,
     Pytest,
+    GoTest,
     TypeScript,
     GitStatus,
 }
@@ -38,6 +39,7 @@ impl Format {
         let format = match name {
             "cargo" if cargo_human_args(args) => Self::Cargo,
             "pytest" if pytest_human_args(args) => Self::Pytest,
+            "go" if go_test_human_args(args) => Self::GoTest,
             "tsc" if typescript_args(args) => Self::TypeScript,
             "git" if git_status_args(args) => Self::GitStatus,
             name if python_launcher(name) => match args.as_slice() {
@@ -72,9 +74,42 @@ impl Format {
                     Observation::Finished
                 }
             }),
-            Self::Pytest | Self::TypeScript | Self::GitStatus => None,
+            Self::Pytest | Self::GoTest | Self::TypeScript | Self::GitStatus => None,
         }
     }
+}
+
+fn go_test_human_args(args: &[String]) -> bool {
+    let Some((command, options)) = args.split_first() else {
+        return false;
+    };
+    command == "test"
+        && !options.iter().any(|arg| {
+            matches!(
+                arg.split('=')
+                    .next()
+                    .unwrap_or_default()
+                    .trim_start_matches('-'),
+                "" | "json"
+                    | "test.json"
+                    | "v"
+                    | "test.v"
+                    | "list"
+                    | "test.list"
+                    | "bench"
+                    | "test.bench"
+                    | "cover"
+                    | "covermode"
+                    | "coverpkg"
+                    | "coverprofile"
+                    | "test.coverprofile"
+                    | "args"
+                    | "c"
+                    | "o"
+                    | "h"
+                    | "help"
+            ) && arg.starts_with('-')
+        })
 }
 
 fn typescript_args(args: &[String]) -> bool {

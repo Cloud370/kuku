@@ -4,6 +4,7 @@ use crate::execution::{CommandInvocation, CommandOutputRange, CommandOutputSumma
 
 mod formats;
 mod git_status;
+mod go_test;
 mod rules;
 mod typescript;
 use formats::{Format, Observation};
@@ -24,14 +25,20 @@ pub(super) struct Collector {
 enum Evidence {
     Lines(BoundedLines),
     GitStatus(git_status::Status),
+    GoTest(go_test::Report),
 }
 
 struct BoundedLines {
     format: Format,
-    lines: Vec<EvidenceLine>,
-    saved_bytes: usize,
+    lines: EvidenceLines,
     finished: bool,
     failed: bool,
+}
+
+#[derive(Default)]
+struct EvidenceLines {
+    entries: Vec<EvidenceLine>,
+    bytes: usize,
 }
 
 #[derive(Default)]
@@ -55,16 +62,15 @@ pub(super) struct Summary {
 impl Collector {
     pub(super) fn new(invocation: &CommandInvocation) -> Option<Self> {
         let (format, rule) = Format::select(invocation)?;
-        let evidence = if format == Format::GitStatus {
-            Evidence::GitStatus(git_status::Status::default())
-        } else {
-            Evidence::Lines(BoundedLines {
+        let evidence = match format {
+            Format::GitStatus => Evidence::GitStatus(git_status::Status::default()),
+            Format::GoTest => Evidence::GoTest(go_test::Report::default()),
+            _ => Evidence::Lines(BoundedLines {
                 format,
-                lines: Vec::new(),
-                saved_bytes: 0,
+                lines: EvidenceLines::default(),
                 finished: false,
                 failed: false,
-            })
+            }),
         };
         Some(Self {
             rule,
@@ -132,6 +138,7 @@ impl Collector {
         self.unrecognized = !match &mut self.evidence {
             Evidence::Lines(lines) => lines.observe(line, source, self.rule),
             Evidence::GitStatus(status) => status.observe(line, source),
+            Evidence::GoTest(report) => report.observe(line, source),
         };
     }
 
@@ -142,7 +149,23 @@ impl Collector {
         match self.evidence {
             Evidence::Lines(lines) => lines.summarize(self.rule, exit_code),
             Evidence::GitStatus(status) => status.summarize(self.rule, exit_code),
+            Evidence::GoTest(report) => report.summarize(self.rule, exit_code),
         }
+    }
+}
+
+impl EvidenceLines {
+    fn push(&mut self, line: Cow<'_, str>, source: CommandOutputRange) -> bool {
+        if self.bytes + line.len() > MAX_SAVED_BYTES || self.entries.len() >= MAX_SAVED_LINES {
+            return false;
+        }
+        self.bytes += line.len();
+        self.entries.push(EvidenceLine {
+            blank: line.trim().is_empty(),
+            text: line.into_owned(),
+            source,
+        });
+        true
     }
 }
 
@@ -157,30 +180,21 @@ impl BoundedLines {
         if !rule.keeps(&line) {
             return true;
         }
-        if self.saved_bytes + line.len() > MAX_SAVED_BYTES || self.lines.len() >= MAX_SAVED_LINES {
-            return false;
-        }
-        self.saved_bytes += line.len();
-        let blank = trimmed.is_empty();
-        self.lines.push(EvidenceLine {
-            text: line.into_owned(),
-            source,
-            blank,
-        });
-        true
+        self.lines.push(line, source)
     }
 
     fn summarize(self, rule: &Rule, exit_code: i32) -> Option<Summary> {
-        if self.lines.is_empty() {
+        let lines = self.lines.entries;
+        if lines.is_empty() {
             return None;
         }
         if self.format == Format::TypeScript {
-            return typescript::summarize(rule, &self.lines, exit_code);
+            return typescript::summarize(rule, &lines, exit_code);
         }
         if (exit_code == 0 && !self.finished) || (exit_code != 0 && !self.failed) {
             return None;
         }
-        let selected = rule.select_lines(self.lines.len());
+        let selected = rule.select_lines(lines.len());
         if exit_code != 0
             && selected
                 .iter()
@@ -194,7 +208,7 @@ impl BoundedLines {
         for entry in selected {
             match entry {
                 Selection::Line(index) => {
-                    let line = &self.lines[index];
+                    let line = &lines[index];
                     selected_nonblank += usize::from(!line.blank);
                     text.push(line.text.clone());
                     if let Some(last) = ranges.last_mut().filter(|last| {
@@ -209,7 +223,7 @@ impl BoundedLines {
                 Selection::Truncated(count) => text.push(format!("... ({count} lines truncated)")),
             }
         }
-        if selected_nonblank != self.lines.iter().filter(|line| !line.blank).count() {
+        if selected_nonblank != lines.iter().filter(|line| !line.blank).count() {
             return None;
         }
         Some(Summary {

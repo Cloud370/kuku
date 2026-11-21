@@ -220,6 +220,7 @@ mod tests {
             [
                 "cargo-humans",
                 "git-status",
+                "go-test-human",
                 "pytest-human",
                 "tsc-diagnostics"
             ]

@@ -63,6 +63,11 @@ description = "Repeated TypeScript compiler diagnostics in the plain reporter"
 match_command = '^tsc(?: |$)'
 strip_ansi = true
 
+[filters.go-test-human]
+description = "Go test package results and plain diagnostics"
+match_command = '^go test(?: |$)'
+strip_ansi = true
+
 [filters.git-status]
 description = "Line-oriented Git short or porcelain v1 status"
 match_command = '^git status(?: |$)'

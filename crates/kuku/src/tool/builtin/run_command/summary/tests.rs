@@ -108,6 +108,84 @@ fn pytest_rule_requires_a_test_report_and_preserves_failure_context() {
     assert!(unrecognized.summarize(0).is_none());
 }
 
+fn go_test(args: &[&str]) -> CommandInvocation {
+    CommandInvocation::Program {
+        program: "go".into(),
+        args: args.iter().map(|arg| (*arg).into()).collect(),
+    }
+}
+
+#[test]
+fn go_test_counts_packages_and_retains_both_failure_streams() {
+    let mut collector = Collector::new(&go_test(&["test", "./..."])).unwrap();
+    let stdout = b"ok  \texample.com/probe/alpha\t(cached)\n?   \texample.com/probe/beta\t[no test files]\n--- FAIL: TestFixture (0.00s)\n    probe_test.go:6: values differ: got 2, want 3\n";
+    let stderr = b"# example.com/probe/delta [example.com/probe/delta.test]\ndelta/probe.go:3:16: cannot use \"bad type\" as int value\n";
+    let last = b"FAIL\nFAIL\texample.com/probe/gamma\t0.002s\nFAIL\texample.com/probe/delta [build failed]\nFAIL\n";
+    collector.observe(OutputStream::Stdout, 0, stdout);
+    collector.observe(OutputStream::Stderr, stdout.len() as u64, stderr);
+    collector.observe(
+        OutputStream::Stdout,
+        (stdout.len() + stderr.len()) as u64,
+        last,
+    );
+    let summary = collector.summarize(1).unwrap();
+    assert!(summary
+        .text
+        .starts_with("Go test packages: 1 ok, 1 no test files, 1 failed, 1 build failed."));
+    assert!(summary.text.contains("probe_test.go:6: values differ"));
+    assert!(summary.text.contains("delta/probe.go:3:16: cannot use"));
+    assert!(!summary.text.contains("probe/alpha"));
+    let CommandOutputSummary::Rule { rule, ranges } = summary.source;
+    assert_eq!(rule, "go-test-human");
+    let merged = [stdout.as_slice(), stderr.as_slice(), last.as_slice()].concat();
+    for (stream, diagnostic) in [
+        (
+            OutputStream::Stdout,
+            b"    probe_test.go:6: values differ: got 2, want 3\n".as_slice(),
+        ),
+        (
+            OutputStream::Stderr,
+            b"delta/probe.go:3:16: cannot use \"bad type\" as int value\n".as_slice(),
+        ),
+    ] {
+        assert!(ranges.iter().any(|range| range.stream == stream
+            && merged.get(range.offset as usize..range.end_offset as usize) == Some(diagnostic)));
+    }
+}
+
+#[test]
+fn go_test_requires_plain_package_evidence_and_consistent_exit() {
+    for args in [
+        vec!["test", "-json", "./..."],
+        vec!["test", "-test.v=test2json", "."],
+        vec!["test", "-bench=.", "."],
+        vec!["test", "-coverprofile", "cover.out"],
+        vec!["test", "./...", "-args", "--reporter"],
+    ] {
+        assert!(Collector::new(&go_test(&args)).is_none(), "{args:?}");
+    }
+    for (output, code) in [
+        ("ok  \texample.com/probe\t0.003s\n", 1),
+        ("ok  \texample.com/probe\t0.003s\nFAIL\texample.com/other [setup failed]\n", 1),
+        ("=== RUN   TestFixture\n--- PASS: TestFixture (0.00s)\nok  \texample.com/probe\t0.003s\n", 0),
+        ("ok  \texample.com/probe\t0.003s\tcoverage: 2.0% of statements\n", 0),
+    ] {
+        let mut collector = Collector::new(&go_test(&["test", "./..."])).unwrap();
+        collector.observe(OutputStream::Stdout, 0, output.as_bytes());
+        assert!(collector.summarize(code).is_none(), "{output}");
+    }
+    let mut collector = Collector::new(&go_test(&["test", "./..."])).unwrap();
+    collector.observe(
+        OutputStream::Stdout,
+        0,
+        b"ok  \texample.com/probe\t0.003s\n?   \texample.com/util\t[no test files]\n",
+    );
+    let summary = collector.summarize(0).unwrap();
+    assert!(summary.text.contains("1 ok, 1 no test files"));
+    assert!(summary.text.contains("Example package result:"));
+    assert!(!summary.text.contains("example.com/util"));
+}
+
 #[test]
 fn tsc_groups_exact_repeats_and_keeps_other_diagnostics_and_source_ranges() {
     let invocation = CommandInvocation::Program {
