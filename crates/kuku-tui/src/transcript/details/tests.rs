@@ -337,9 +337,9 @@ fn delegation_groups_only_its_own_checks_and_keeps_the_result_separate_from_hist
         json!({"to":"writer","message":"Draft the report"}),
         json!({"status":"ok","structured":{"agent":"writer","command_id":"send","event_id":5}}),
     );
-    for _ in 0..2 {
+    for agents in [json!([{"address":"writer","status":"running"}]), snapshot] {
         journal.push(7, "main", thought.clone());
-        journal.tool("list_agents", json!({}), check(snapshot.clone()));
+        journal.tool("list_agents", json!({}), check(agents));
     }
     journal.tool(
         "list_agents",
@@ -386,11 +386,10 @@ fn delegation_groups_only_its_own_checks_and_keeps_the_result_separate_from_hist
     assert!(transcript.toggle_detail(&key));
     let expanded_view = transcript.project(82, 64);
     let opened = text(&expanded_view);
-    assert_eq!(2, opened.matches("List Agents · 2 Agents at check").count());
-    let check = transcript
-        .detail_at(line(&expanded_view, "List Agents · 2 Agents at check"))
-        .unwrap()
-        .clone();
+    assert_eq!(1, opened.matches("List Agents · 2 agents").count());
+    let check_row = line(&expanded_view, "Agent check · writer (Running)");
+    assert!(expanded_view.lines[check_row].style.bg.is_none());
+    let check = transcript.detail_at(check_row).unwrap().clone();
     assert!(transcript.toggle_detail(&check));
     let inspected = text(&transcript.project(82, 64));
     assert!(
@@ -483,7 +482,7 @@ fn listing_polls_show_their_recorded_snapshot_and_preserve_the_original_result()
     let mut split_page = Transcript::default();
     split_page.apply(journal.0[1].clone(), None);
     let without_call = text(&split_page.project(90, 10));
-    assert!(without_call.contains("2 Agents at check"));
+    assert!(without_call.contains("2 agents"));
     assert!(!without_call.contains("Original large reply heading"));
 
     let mut transcript = journal.load();
@@ -491,9 +490,9 @@ fn listing_polls_show_their_recorded_snapshot_and_preserve_the_original_result()
     let compact = text(&view);
     for term in [
         "List Agents ×3 · ok",
-        "Latest · 2 Agents at check",
+        "Latest · 2 agents",
         "reviewer (Idle, reply available)",
-        "4 Agents at check · 2 need attention",
+        "4 agents · 2 need attention",
         "reviewer (Waiting for approval, 1 queued)",
         "audit (Last run failed)",
         "+1 more",
@@ -510,7 +509,7 @@ fn listing_polls_show_their_recorded_snapshot_and_preserve_the_original_result()
     assert!(transcript.toggle_detail(&group));
     let expanded = transcript.project(108, 28);
     let member = transcript
-        .detail_at(line(&expanded, "List Agents · 2 Agents at check"))
+        .detail_at(line(&expanded, "List Agents · 2 agents"))
         .unwrap()
         .clone();
     assert!(transcript.toggle_detail(&member));
@@ -574,7 +573,7 @@ fn a_full_window_of_large_agent_polls_keeps_default_paint_compact() {
     for width in [32, 72, 150].into_iter().cycle().take(120) {
         let view = transcript.project(width, 20);
         assert!(view.lines.len() <= 7);
-        assert!(text(&view).contains("Agent at check"));
+        assert!(text(&view).contains("1 agent"));
         assert!(!text(&view).contains("archived Markdown"));
     }
     assert!(transcript
@@ -717,7 +716,7 @@ fn repeated_global_toggles_follow_the_group_state_before_the_next_frame() {
 #[test]
 fn reasoning_reader_keeps_the_same_transcript_rows_and_preserves_the_draft_view() {
     let mut journal = Journal::default();
-    let published = "long reasoning line ".repeat(100);
+    let published = "Check the calculation";
     journal.push(
         7,
         "main",
@@ -734,9 +733,6 @@ fn reasoning_reader_keeps_the_same_transcript_rows_and_preserves_the_draft_view(
     let read = transcript.project(55, 4);
     assert!(text(&read).contains("Esc back") && text(&read).contains("answer"));
     let answer_row = line(&read, "answer");
-    assert!(transcript.scroll_notes(1));
-    let next = transcript.project(55, 4);
-    assert_eq!(line(&next, "answer"), answer_row);
     assert!(transcript.detail_at(answer_row).is_none());
     assert!(transcript.close_notes());
     assert!(!transcript.toggle_in_view(&key, 55, 4));
@@ -804,7 +800,7 @@ fn thinking_before_a_tool_has_its_own_expandable_transcript_row() {
 }
 
 #[test]
-fn browsing_long_thinking_keeps_the_reply_and_reaches_the_last_published_line() {
+fn global_scroll_keeps_expanded_thinking_with_its_message() {
     let mut journal = Journal::default();
     let published = (1..=40)
         .map(|n| format!("Note {n:02}"))
@@ -821,16 +817,24 @@ fn browsing_long_thinking_keeps_the_reply_and_reaches_the_last_published_line() 
     let key = transcript.detail_at(header).unwrap().clone();
     assert!(transcript.open_notes(&key, 90, 24));
     let open = transcript.project(90, 24);
-    let answer = line(&open, "Answer begins here");
     assert_eq!(line(&open, "Esc back"), header);
-    assert!(text(&open).contains("1–5/40") && !text(&open).contains("Note 06"));
-    assert!(transcript.scroll_notes(100));
+    assert!(text(&open).contains("Note 01") && !text(&open).contains("Note 40"));
+
+    let note = line(&open, "Note 07");
+    transcript.scroll(3, 90, 24);
+    let down = transcript.project(90, 24);
+    assert_eq!(line(&down, "Note 07"), note - 3);
+    assert!(!text(&down).contains("Thinking ▾"));
+    assert!(transcript.note_is_open(&key));
+
+    transcript.scroll(100, 90, 24);
     let last = transcript.project(90, 24);
-    assert_eq!(line(&last, "Answer begins here"), answer);
-    assert!(text(&last).contains("36–40/40") && text(&last).contains("Note 40"));
-    let narrow = transcript.project(27, 8);
-    assert!(text(&narrow).contains("Answer begins here"));
-    assert!(narrow.lines.iter().all(|row| row.width() <= 27));
+    assert!(!transcript.is_reading());
+    assert!(text(&last).contains("Answer begins here") && text(&last).contains("Note 40"));
+
+    transcript.scroll(-100, 90, 24);
+    let restored = transcript.project(90, 24);
+    assert_eq!(text(&open), text(&restored));
     assert!(transcript.close_notes());
     assert_eq!(text(&transcript.project(90, 24)), text(&closed));
 }

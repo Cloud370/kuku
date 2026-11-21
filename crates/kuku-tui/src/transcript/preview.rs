@@ -142,6 +142,7 @@ impl Transcript {
             assistant: self.assistant_view,
             agents: &self.agent_cards,
             items: &self.detail_items,
+            notes: self.notes.as_ref(),
         };
         let answer = super::Anchor {
             key: position.key,

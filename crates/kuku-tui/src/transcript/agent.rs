@@ -20,6 +20,7 @@ use super::{
 
 const MAX_ACTIVITY_BYTES: usize = 4 * 1024;
 const MAX_SECTION_ROWS: usize = 4;
+const MAX_TIMELINE_TEXT_WIDTH: usize = 96;
 const INSTRUCTION_PREVIEW_ROWS: usize = 3;
 const MAX_CHOICE_CELLS: usize = 120;
 
@@ -328,9 +329,7 @@ impl AgentCard<'_> {
         };
         Row::pad_framed_body(&mut rows, &frame);
         rows.push(Row::plain(frame.foot(&timeline)));
-        if !open {
-            rows.push(Row::plain(Line::default()));
-        }
+        rows.push(Row::plain(Line::default()));
         rows
     }
 
@@ -360,6 +359,11 @@ impl AgentCard<'_> {
             0
         };
         let expanded = details == ToolDetails::Expanded;
+        let section_width = if in_timeline {
+            width.min(MAX_TIMELINE_TEXT_WIDTH + usize::from(body_inset))
+        } else {
+            width
+        };
         let header = self.header(width.saturating_sub(usize::from(inset)), facts, in_timeline);
         let mut rows: Vec<_> = render_rows(header, width, 3, inset).collect();
         if let Some(row) = rows.first_mut().filter(|_| in_timeline && inset != 0) {
@@ -421,7 +425,7 @@ impl AgentCard<'_> {
                 &mut rows,
                 self.task_label,
                 self.task,
-                width,
+                section_width,
                 body_inset,
                 task_rows,
             );
@@ -430,11 +434,14 @@ impl AgentCard<'_> {
                 Some(Activity::Failed) => "Latest Agent error",
                 _ => "Latest Agent reply",
             };
+            if rows.len() > summary_rows && !preview.trim().is_empty() {
+                rows.push(Row::plain(Line::default()));
+            }
             render_section(
                 &mut rows,
                 label,
                 preview,
-                width,
+                section_width,
                 body_inset,
                 MAX_SECTION_ROWS,
             );
@@ -551,6 +558,9 @@ fn render_section(
         width.saturating_sub(usize::from(inset)),
         limit,
     ));
+    if let Some(last) = source.iter().rposition(|line| line.width() > 0) {
+        source.truncate(last + 1);
+    }
     rows.extend(render_rows(source, width, limit, inset));
 }
 

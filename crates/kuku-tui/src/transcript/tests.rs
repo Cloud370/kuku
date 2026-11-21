@@ -300,9 +300,9 @@ fn roles_and_file_details_are_readable_without_styles_at_narrow_widths() {
         let plain: Vec<_> = view.lines.iter().map(ToString::to_string).collect();
         assert_eq!(
             if width == 17 {
-                "│ You / Turn 1"
+                "│ You · Turn 1"
             } else {
-                "│  You   /   Turn 1"
+                "│  You  ·  Turn 1"
             },
             plain[0]
         );
@@ -490,7 +490,7 @@ fn history_page_join_only_marks_genuine_turn_boundaries_and_preserves_the_anchor
     assert_eq!(
         vec!["1", "2"],
         all.iter()
-            .filter_map(|row| row.strip_prefix("│  You   /   Turn ").or_else(|| row
+            .filter_map(|row| row.strip_prefix("│  You  ·  Turn ").or_else(|| row
                 .strip_prefix("Turn ")
                 .and_then(|tail| tail.split_once("  ─"))
                 .map(|(number, _)| number)))
@@ -528,7 +528,7 @@ fn live_and_committed_turns_use_display_numbers_and_unknown_remains_generic() {
         .iter()
         .position(|row| row.starts_with("Turn 2  ─"))
         .expect("second turn heading");
-    assert!(turn_two > 0 && live[turn_two - 1].trim().starts_with('─'));
+    assert!(turn_two > 0 && live[turn_two - 1].is_empty());
 
     let mut settled = response(29, "Second reply".into());
     settled.turn = Some(23);

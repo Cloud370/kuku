@@ -52,6 +52,10 @@ impl DetailKey {
         }
     }
 
+    pub(super) fn for_record(&self, key: &Key) -> bool {
+        &self.record == key
+    }
+
     pub(super) fn settle(&mut self, preview: &Key, settled: &Key) {
         if self.record == *preview {
             self.record = settled.clone();
@@ -262,11 +266,6 @@ impl Transcript {
     }
 
     pub(crate) fn markdown_link_at(&self, row: usize, column: usize) -> Option<&str> {
-        let row = match &self.notes {
-            Some(notes) if notes.hit(row) => return None,
-            Some(notes) => notes.source_row(row),
-            None => row,
-        };
         self.visible_links
             .iter()
             .find(|(line, link)| *line == row && link.columns.contains(&column))
@@ -278,14 +277,6 @@ impl Transcript {
         if !action.contains(&column) {
             return None;
         }
-        let row = if let Some(notes) = &self.notes {
-            if notes.hit(row) {
-                return None;
-            }
-            notes.source_row(row)
-        } else {
-            row
-        };
         self.detail_items
             .visible
             .iter()
@@ -295,14 +286,6 @@ impl Transcript {
     }
 
     pub(crate) fn detail_at(&self, row: usize) -> Option<&DetailKey> {
-        let row = if let Some(notes) = &self.notes {
-            if notes.hit(row) {
-                return notes.is_heading(row).then_some(&notes.key);
-            }
-            notes.source_row(row)
-        } else {
-            row
-        };
         self.detail_items
             .visible
             .iter()
@@ -358,7 +341,7 @@ impl Transcript {
             .map(|item| item.key.clone())
     }
 
-    pub(super) fn notes_at(&self, key: &DetailKey) -> Option<(&str, Range<usize>)> {
+    pub(super) fn notes_at(&self, key: &DetailKey) -> Option<(&str, bool)> {
         if key.kind != DetailKind::Reasoning {
             return None;
         }
@@ -366,11 +349,15 @@ impl Transcript {
             .reading
             .as_ref()
             .map_or(&self.recent, |reading| &reading.window);
-        let record = window
+        self.detail_items.rows_for(key)?;
+        let index = window
             .records
             .iter()
-            .find(|record| record.key == key.record)?;
-        Some((&record.reasoning_preview, self.detail_items.rows_for(key)?))
+            .position(|record| record.key == key.record)?;
+        let in_timeline = groups(&window.records)
+            .iter()
+            .any(|group| group.range.contains(&index));
+        Some((&window.records[index].reasoning_preview, in_timeline))
     }
 
     pub(crate) fn toggle_in_view(&mut self, key: &DetailKey, width: usize, height: usize) -> bool {
@@ -391,6 +378,7 @@ impl Transcript {
             assistant: self.assistant_view,
             agents: &self.agent_cards,
             items: &self.detail_items,
+            notes: self.notes.as_ref(),
         };
         if let Some(reading) = &mut self.reading {
             let opening = match key.kind {

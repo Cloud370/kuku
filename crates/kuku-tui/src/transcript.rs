@@ -67,7 +67,9 @@ pub(crate) struct Anchor {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AnchorLine {
+    Gap,
     Turn,
+    Note(usize),
     Group(usize),
     RewindEntry { event_id: u64, line: usize },
     Body(usize),
@@ -245,7 +247,6 @@ impl Transcript {
 
     pub(crate) fn show_latest(&mut self) {
         self.reply_position = None;
-        self.notes = None;
         self.focused_rewind_group = None;
         self.reading = None;
         self.restore = None;
@@ -271,14 +272,10 @@ impl Transcript {
         self.reading.is_some()
     }
 
-    pub(crate) fn reading_has_new_content(&self) -> Option<bool> {
-        self.reading.as_ref().map(|reading| reading.unseen)
-    }
-
     pub(crate) fn history_hint(&self) -> Option<bool> {
         self.reading
             .as_ref()
-            .filter(|reading| reading.manual && self.notes.is_none())
+            .filter(|reading| reading.manual)
             .map(|reading| reading.unseen)
     }
 
@@ -308,12 +305,16 @@ impl Transcript {
         height: usize,
     ) -> Option<HistoryRequest> {
         self.link_recent_agent_cards();
+        if let Some(notes) = &mut self.notes {
+            notes.fit(width);
+        }
         let layout = Layout {
             width,
             tools: self.details,
             assistant: self.assistant_view,
             agents: &self.agent_cards,
             items: &self.detail_items,
+            notes: self.notes.as_ref(),
         };
         if self.reading.is_none() {
             if amount > 0
@@ -584,6 +585,7 @@ impl Record {
             assistant,
             agents,
             items,
+            ..
         } = layout;
         let source_selected = match assistant {
             #[cfg(test)]
@@ -661,6 +663,18 @@ impl Record {
                         None => "You".to_owned(),
                     };
                     render_user(&title, text, width)
+                }
+                Body::Assistant(_) if cache_key.in_timeline && self.reasoning_only() => {
+                    render_rows(
+                        vec![Line::styled(
+                            "View thinking ›",
+                            crate::theme::emphasis(crate::theme::MODEL),
+                        )],
+                        width,
+                        1,
+                        body_inset(width),
+                    )
+                    .collect()
                 }
                 Body::Assistant(text) => preview::render_assistant(
                     text,

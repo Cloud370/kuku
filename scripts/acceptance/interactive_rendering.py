@@ -645,20 +645,26 @@ def published_reasoning(client):
         reopened.press("\x0f")
         quiet = reopened.expect(answer, state="View thinking")["screen"]
         assert "Comparing the published results." not in quiet
+        reopened.request("resize", rows=17, cols=100)
+        quiet = reopened.expect(answer, state="View thinking")["screen"]
         operate_on_assistant(reopened, quiet, answer, "Thinking")
-        notes = reopened.expect("Comparing the published results.", state="Esc back", also=(answer,))["screen"]
+        notes = reopened.expect("Comparing the published results.", state="Esc back", rows=17)["screen"]
         assert hidden not in settled and hidden not in notes
-        answer_row = next(i for i, row in enumerate(notes.splitlines()) if answer in row)
-        note_row = next(i for i, row in enumerate(notes.splitlines(), 1) if "Checking the totals." in row)
-        reopened.press(f"\x1b[<65;5;{note_row}M")
-        scrolled = reopened.expect("Note 6", state="Esc back")["screen"]
-        assert "Checking the totals." not in scrolled and answer in scrolled.splitlines()[answer_row]
-        reopened.press("\x1b[B")
-        down = reopened.expect("Note 7", state="Esc back")["screen"]
-        assert answer in down.splitlines()[answer_row]
-        reopened.press("\x1b")
+        prompt_row = next(i for i, row in enumerate(notes.splitlines(), 1) if prompt in row and "Session" not in row)
+        note_row = next(i for i, row in enumerate(notes.splitlines()) if "Note 5" in row)
+        reopened.press(f"\x1b[<65;5;{prompt_row}M")
+        scrolled = reopened.expect("Reading history", also=("Note 5",), rows=17)["screen"]
+        moved = next(i for i, row in enumerate(scrolled.splitlines()) if "Note 5" in row)
+        assert moved == note_row - 3, scrolled
+        assert "View thinking" not in scrolled
+        reopened.press("\x1b[6~")
+        reopened.expect("Note 20", also=(answer,))
+        reopened.press("\x1b[5~")
+        reopened.press("\x1b[5~")
+        expanded = reopened.expect("Comparing the published results.", state="Esc back")["screen"]
+        reopened.click_text(expanded, "Thinking ▾")
         restored = reopened.expect(answer, state="Assistant   View thinking")["screen"]
-        assert "Esc back" not in restored and "Note 7" not in restored
+        assert "Esc back" not in restored and "Note 5" not in restored
 
         reopened.exit_cleanly()
 

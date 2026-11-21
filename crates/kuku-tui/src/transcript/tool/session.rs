@@ -49,6 +49,10 @@ impl Observation {
                 .all(|name| name == sender || name == recipient)
     }
 
+    pub(super) fn single_agent(&self) -> Option<&str> {
+        (self.tool == "list_agents" && self.participants.len() == 1).then_some(&self.detail)
+    }
+
     pub(super) fn is_for(&self, tool: &str) -> bool {
         self.tool == tool
     }
@@ -82,8 +86,8 @@ fn listing(agents: &[Value]) -> Option<Observation> {
         }
     }
     let caption = match agents.len() {
-        1 => "1 Agent at check".to_owned(),
-        count => format!("{count} Agents at check"),
+        1 => "1 agent".to_owned(),
+        count => format!("{count} agents"),
     };
     let unshown = agents.len() - shown.len();
     let mut detail = shown.into_iter().map(AgentFact::label).collect::<Vec<_>>();

@@ -6,6 +6,9 @@ use super::{message, preview, Key, Layout, ToolDetails, Transcript, TranscriptVi
 impl Transcript {
     pub(crate) fn project(&mut self, width: usize, height: usize) -> TranscriptView {
         self.link_recent_agent_cards();
+        if let Some(notes) = &mut self.notes {
+            notes.fit(width);
+        }
         self.keep_first_reply_line(width, height);
         let layout = Layout {
             width,
@@ -13,6 +16,7 @@ impl Transcript {
             assistant: self.assistant_view,
             agents: &self.agent_cards,
             items: &self.detail_items,
+            notes: self.notes.as_ref(),
         };
         let (window, start, following) = if let Some(reading) = &mut self.reading {
             let start = reading.window.position_of(&reading.anchor, layout);
@@ -21,7 +25,7 @@ impl Transcript {
             let rows = self.recent.row_count(layout);
             (&mut self.recent, rows.saturating_sub(height), true)
         };
-        let limit = height.saturating_add(usize::from(self.notes.is_some()));
+        let limit = height;
         let mut lines = Vec::with_capacity(limit);
         let mut row_insets = Vec::with_capacity(height);
         self.visible_links.clear();
@@ -29,7 +33,7 @@ impl Transcript {
         let mut thinking_row = None;
         let mut skip = start;
         self.visible_rewind_actions.clear();
-        for block in window.blocks(layout) {
+        for mut block in window.blocks(layout) {
             if lines.len() == limit {
                 break;
             }
@@ -62,7 +66,7 @@ impl Transcript {
             }
             if block.turn_gap {
                 if skip == 0 {
-                    lines.push(message::turn_gap(width));
+                    lines.push(ratatui::text::Line::default());
                     row_insets.push(0);
                 }
                 skip = skip.saturating_sub(1);
@@ -77,7 +81,7 @@ impl Transcript {
                 }
                 skip = skip.saturating_sub(1);
             }
-            if let Some(group) = block.group {
+            if let Some(group) = block.group.take() {
                 let first = lines.len();
                 let title_visible = skip == 0;
                 for row in group.rows.iter().skip(skip).take(limit - first) {
@@ -97,14 +101,19 @@ impl Transcript {
                 }
             }
             let first = lines.len();
-            for row in block.rows.iter().skip(skip).take(limit - lines.len()) {
+            for row in block.body_rows().skip(skip).take(limit - lines.len()) {
                 self.visible_links
                     .extend(row.links.iter().cloned().map(|link| (lines.len(), link)));
                 lines.push(row.line.clone());
                 row_insets.push(row.inset);
             }
-            if following && block.thinking && skip <= 1 && first + 1 - skip < lines.len() {
-                thinking_row = Some(first + 1 - skip);
+            let placeholder = 1 + block.note_height();
+            if following
+                && block.thinking
+                && skip <= placeholder
+                && first + placeholder - skip < lines.len()
+            {
+                thinking_row = Some(first + placeholder - skip);
             }
             if let Some(detail) = block.detail {
                 let last = lines.len()
@@ -154,18 +163,13 @@ impl Transcript {
             };
             format!("{} {action}", Shortcut::DETAILS.label)
         });
-        let mut view = TranscriptView {
+        TranscriptView {
             thinking_row,
             lines,
             row_insets,
             following,
             tool_hint,
-        };
-        if let Some(notes) = &mut self.notes {
-            let origin = self.detail_items.rows_for(&notes.key);
-            notes.paint(&mut view, origin, width, height);
         }
-        view
     }
 
     pub(super) fn details_can_expand(&self) -> bool {

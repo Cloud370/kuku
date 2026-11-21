@@ -41,18 +41,14 @@ impl App {
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => self.key(key),
             Event::Paste(text) => self.paste(&text),
-            Event::Mouse(
-                mouse @ MouseEvent {
-                    kind: MouseEventKind::ScrollUp,
-                    ..
-                },
-            ) => self.wheel(mouse, -MOUSE_SCROLL_LINES),
-            Event::Mouse(
-                mouse @ MouseEvent {
-                    kind: MouseEventKind::ScrollDown,
-                    ..
-                },
-            ) => self.wheel(mouse, MOUSE_SCROLL_LINES),
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                ..
+            }) => self.wheel(-MOUSE_SCROLL_LINES),
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                ..
+            }) => self.wheel(MOUSE_SCROLL_LINES),
             Event::Mouse(mouse) => self.pointer(mouse, screen),
             Event::FocusLost => {
                 self.text_selection.cancel_drag();
@@ -98,7 +94,7 @@ impl App {
             pane.focused_request = None;
         }
     }
-    fn wheel(&mut self, mouse: MouseEvent, amount: isize) {
+    fn wheel(&mut self, amount: isize) {
         if self.modal.is_some() {
             self.modal_selection.cancel_drag();
         } else {
@@ -129,16 +125,7 @@ impl App {
                 prompt.instructions_top = prompt.instructions_top.saturating_add_signed(amount)
             }
             Some(Modal::StatusLineEditor(editor)) => editor.move_selection(amount),
-            None => {
-                if !self
-                    .text_selection
-                    .transcript_cell(mouse)
-                    .is_some_and(|(row, _)| self.pane().transcript.notes_at_row(row))
-                {
-                    self.pane_mut().transcript.close_notes();
-                }
-                self.scroll(amount);
-            }
+            None => self.scroll(amount),
         }
     }
 

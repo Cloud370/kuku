@@ -308,6 +308,21 @@ impl Tool {
         let inset = heading_inset + body_inset(width.saturating_sub(usize::from(heading_inset)));
         let caption = self.file_caption();
         if details == ToolDetails::GroupMember {
+            if let Some((result, agent)) = self
+                .observation()
+                .and_then(|result| result.single_agent().map(|agent| (result, agent)))
+            {
+                let columns = width.saturating_sub(usize::from(heading_inset));
+                let label = shorten(&format!("Agent check · {agent}"), columns);
+                let color = if result.attention { WARNING } else { MUTED };
+                return render_rows(
+                    vec![Line::styled(label, Style::new().fg(color)), Line::default()],
+                    width,
+                    2,
+                    heading_inset,
+                )
+                .collect();
+            }
             let target = self.session_caption().map_or_else(
                 || caption.unwrap_or_else(|| single_line(cap(self.invocation(), MAX_LABEL_BYTES))),
                 |summary| join_details([self.invocation.as_str(), summary]),
