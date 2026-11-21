@@ -177,7 +177,7 @@ pub(super) fn render_model_settings(
                 "Checking API type",
                 &state.proxy,
                 &state.trials,
-                0..1,
+                0..state.trials.rows().len(),
             );
             if !state.trials.pending() {
                 line(frame, area, row, "Enter to choose API type", ACCENT);

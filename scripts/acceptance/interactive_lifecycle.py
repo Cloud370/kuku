@@ -360,6 +360,7 @@ def shared_model_editor(binary, bridge, directory):
 def setup_probe_progress(binary, bridge, directory):
     key = "fixture-probe-only-key"
     instance = InstalledClient(binary, bridge, directory)
+    api_checks = threading.Barrier(3, timeout=5)
     slow_catalog_started = threading.Event()
     held_requests = {pair: threading.Event() for pair in (
         ("beta", None), ("gamma", None), ("beta", "low"),
@@ -375,6 +376,10 @@ def setup_probe_progress(binary, bridge, directory):
     trials = []
 
     def dispatch(method, path, headers, body):
+        if method == "POST" and path in ("/v1/responses", "/v1/messages"):
+            assert json.loads(body)["model"] == "alpha"
+            api_checks.wait()
+            return json_response({}, 404)
         if method == "GET" and "x-api-key" in headers:
             return json_response({}, 401)
         assert headers.get("authorization") == f"Bearer {key}"
@@ -402,6 +407,8 @@ def setup_probe_progress(binary, bridge, directory):
             ]
             return Response(200, ("".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks) + "data: [DONE]\n\n").encode(), "text/event-stream")
         assert body["max_tokens"] == 4096
+        if not trials:
+            api_checks.wait()
         trials.append((model, effort, time.monotonic()))
         if (model, effort) in held_requests:
             held_requests[model, effort].set()

@@ -75,7 +75,7 @@ def assert_wide_setup(terminal):
     assert wide_column == standard_column < 90, wide
     terminal.press("\r")
     details = terminal.expect("Model tests", rows=25)["screen"]
-    receipt = next(line for line in details.splitlines() if "API type" in line)
+    receipt = next(line for line in details.splitlines() if "OpenAI Chat Completions" in line)
     elapsed = re.search(r"\b\d+\.\d+s\b", receipt)
     assert elapsed and elapsed.start() < 90, details
     terminal.press("\x1b")
@@ -239,11 +239,11 @@ def repair_connection(binary, bridge, directory, issue):
             return catalog("fixture-model")
         key = headers.get("authorization")
         requests.append((path, key))
+        if path != "/v1/chat/completions":
+            return json_response({"error": {"message": "fixture URL missing"}}, 404)
         if key == "Bearer fixture-rejected-key":
             return json_response({"error": {"message": "fixture key invalid"}}, 401)
-        if path.startswith("/missing/"):
-            return json_response({"error": {"message": "fixture URL missing"}}, 404)
-        assert path == "/v1/chat/completions" and key == "Bearer fixture-repair-key"
+        assert key == "Bearer fixture-repair-key"
         return text_reply()
 
     instance.provider.dispatch = dispatch

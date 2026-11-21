@@ -8,7 +8,7 @@ use crate::Error;
 use super::trial::{trial_with_route_evidence, TrialProblem};
 use super::{ModelTrial, TrialResult};
 
-const DECLARED_ORDER: [ProviderFormat; 3] = [
+pub(super) const DECLARED_ORDER: [ProviderFormat; 3] = [
     ProviderFormat::OpenAiResponses,
     ProviderFormat::OpenAiChat,
     ProviderFormat::Anthropic,
@@ -145,5 +145,8 @@ pub(super) async fn check_setup_api(
             }
         }
     }
-    Err(Error::InvalidArgument("No API type answered for this model.".into()).into())
+    Err(TrialProblem {
+        route_missing: true,
+        ..Error::InvalidArgument("No API type answered for this model.".into()).into()
+    })
 }

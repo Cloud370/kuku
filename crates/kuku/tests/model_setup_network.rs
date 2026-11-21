@@ -151,6 +151,107 @@ async fn api_discovery_tries_another_route_after_an_explicit_404() {
 }
 
 #[tokio::test]
+async fn api_discovery_starts_all_protocols_and_respects_preference() {
+    let formats = [
+        ProviderFormat::OpenAiResponses,
+        ProviderFormat::OpenAiChat,
+        ProviderFormat::Anthropic,
+    ];
+    for (responses_status, chat_status, selected) in [
+        (200, 200, Some(ProviderFormat::OpenAiResponses)),
+        (404, 200, Some(ProviderFormat::OpenAiChat)),
+        (404, 404, Some(ProviderFormat::Anthropic)),
+        (401, 200, None),
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/v1", listener.local_addr().unwrap());
+        let mut batch = ProbeBatch::start_api_check(
+            &connection(base, ProviderProxy::Direct),
+            "fixture-model",
+            &[formats[2], formats[1], formats[0]],
+        );
+
+        let mut streams = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut streams = Vec::new();
+            for _ in formats {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let (request, body) = read_request_with_body(&mut stream).await;
+                let path = request.split_ascii_whitespace().nth(1).unwrap().to_owned();
+                let body: Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!("fixture-model", body["model"]);
+                streams.push((path, stream));
+            }
+            streams.sort_by(|left, right| left.0.cmp(&right.0));
+            streams
+        })
+        .await
+        .expect("all three requests must arrive before any reply");
+        assert_eq!(
+            ["/v1/chat/completions", "/v1/messages", "/v1/responses"],
+            std::array::from_fn(|index| streams[index].0.as_str())
+        );
+        let (_, mut responses) = streams.pop().unwrap();
+        let (_, mut messages) = streams.pop().unwrap();
+        let (_, mut chat) = streams.pop().unwrap();
+
+        response(
+            &mut messages,
+            r#"{"content":[{"type":"text","text":"377"}],"stop_reason":"end_turn"}"#,
+        )
+        .await;
+        if chat_status == 200 {
+            response(
+                &mut chat,
+                r#"{"choices":[{"message":{"content":"377"},"finish_reason":"stop"}]}"#,
+            )
+            .await;
+        } else {
+            error_status(&mut chat, chat_status).await;
+        }
+        for _ in 0..2 {
+            assert!(tokio::time::timeout(Duration::from_secs(5), batch.next())
+                .await
+                .unwrap());
+            assert!(!batch.finish_api_check());
+        }
+
+        if responses_status == 200 {
+            response(
+                &mut responses,
+                r#"{"output":[{"type":"message","content":[{"type":"output_text","text":"377"}]}]}"#,
+            )
+            .await;
+        } else {
+            error_status(&mut responses, responses_status).await;
+        }
+        assert!(tokio::time::timeout(Duration::from_secs(5), batch.next())
+            .await
+            .unwrap());
+        assert!(batch.finish_api_check());
+        assert_eq!(1, batch.selected_rows().count());
+        let selected_format = match &batch.rows()[0].progress {
+            ProbeProgress::Finished(_, Ok(ProbeResult::ApiType(evidence))) => {
+                assert!(evidence.trial.text_returned);
+                Some(evidence.format)
+            }
+            ProbeProgress::Finished(_, Err(_)) => None,
+            _ => panic!("missing final API discovery result"),
+        };
+        assert_eq!(selected, selected_format);
+    }
+}
+
+async fn error_status(stream: &mut TcpStream, status: u16) {
+    stream
+        .write_all(
+            format!("HTTP/1.1 {status} Rejected\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .as_bytes(),
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn thinking_test_waits_for_retry_after_and_persists_request_acceptance() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let route = Arc::new(connection(
