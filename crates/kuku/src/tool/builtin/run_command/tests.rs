@@ -662,6 +662,35 @@ async fn large_output_is_persisted_within_quota_without_an_event_consumer() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn long_failed_command_shows_final_diagnostic_within_preview_bound() {
+    let dir = workspace();
+    let outputs = dir.path().join("outputs");
+    let diagnostic = "configure terminated: missing required option";
+    let result = run_command_with_output(
+        &serde_json::json!({
+            "shell": shell_name(), "cwd": ".", "timeout": 5, "brief": "fixture build",
+            "command": format!("printf '{diagnostic}\\n' >&2; head -c 16384 /dev/zero | tr '\\0' x; exit 7"),
+        }),
+        dir.path(), None, None, &outputs, "failed-build",
+        OutputLimits { max_output_bytes: 32_768, max_preview_bytes: 512 },
+    ).await;
+    let facts =
+        CommandExecutionFacts::from_structured(result.structured.as_ref().unwrap()).unwrap();
+    assert_eq!(facts.exit_code, Some(7));
+    assert!(facts.capture_complete);
+    assert!(result.model_content.contains("End of captured stderr"));
+    assert!(
+        result.model_content.contains(diagnostic),
+        "{}",
+        result.model_content
+    );
+    assert!(facts.output_preview.contains(diagnostic));
+    assert!(facts.preview_truncated);
+    assert!(result.model_content.len() <= 512);
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn build_test_summary_survives_the_capture_quota_and_reopen() {
     let dir = workspace();
     let outputs = dir.path().join("outputs");

@@ -83,7 +83,7 @@ To call an executable directly, pass `program` and one literal string per argume
 
 The command runs without a deadline when `timeout` is omitted. The same [Session Job](#session-jobs) behavior applies to commands and scripts.
 
-An exited process can return tool status `ok` with a nonzero `exit_code`. Check `termination`, `exit_code`, and `capture_complete` in the structured facts. A complete capture can still have a truncated preview. Missing executables, start failures, timeouts, and cancellation have separate termination values. Recognized Rust test and pytest summaries carry program-reported counts and bounded evidence. Use the retained `output_ref.id` with `read_output` to investigate failures or read beyond the preview. [SDK execution facts](sdk.md#workspace-execution)
+An exited process can return tool status `ok` with a nonzero `exit_code`. Check `termination`, `exit_code`, and `capture_complete` in the structured facts. A complete capture can still have a truncated preview. For failed commands with a complete capture that exceeds the preview size, the preview uses selected build or test lines when available. Otherwise it shows the end of stderr, falling back to stdout if stderr is empty. Missing executables, start failures, timeouts, and cancellation have separate termination values. Recognized Rust test and pytest summaries carry program-reported counts and bounded evidence. Use the retained `output_ref.id` with `read_output` to investigate failures or read beyond the preview. [SDK execution facts](sdk.md#workspace-execution)
 
 ## Session Jobs
 

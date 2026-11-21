@@ -11,7 +11,7 @@ use crate::execution::{
 };
 use crate::tool::ToolResultEnvelope;
 
-use super::output::{CaptureMetadata, OutputSegment};
+use super::output::{read_stderr, CaptureMetadata, OutputSegment};
 use super::{
     output_error, read_output, CommandCapture, CommandOutcome, CommandRequest, CommandView,
     OutputRead, OutputStream,
@@ -106,24 +106,50 @@ fn render_model(
         .limits
         .max_preview_bytes
         .min(MAX_OUTPUT_PREVIEW_BYTES);
-    let read_limit = if filtered {
+    let failed =
+        facts.timed_out || facts.signal.is_some() || facts.exit_code.is_some_and(|code| code != 0);
+    let show_end = failed
+        && !filtered
+        && facts.capture_complete
+        && metadata.stored_bytes > output.limits.max_preview_bytes as u64;
+    let show_stderr = show_end && facts.stderr_bytes > 0;
+    let read_limit = if show_end {
+        output_preview_limit.min(output.limits.max_preview_bytes / 2)
+    } else if filtered {
         output_preview_limit
     } else {
         output.limits.max_preview_bytes
+    }
+    .max(1);
+    let source_bytes = if show_stderr {
+        facts.stderr_bytes
+    } else {
+        metadata.stored_bytes
     };
-    let chunk = match read_output(
-        output.dir,
-        output.id,
-        OutputRead {
-            offset: 0,
-            limit: read_limit.max(1),
-            search: None,
+    let request = OutputRead {
+        offset: if show_end {
+            source_bytes.saturating_sub(read_limit as u64)
+        } else {
+            0
         },
-    ) {
+        limit: read_limit,
+        search: None,
+    };
+    let result = if show_stderr {
+        read_stderr(output.dir, output.id, request)
+    } else {
+        read_output(output.dir, output.id, request)
+    };
+    let chunk = match result {
         Ok(chunk) => chunk,
         Err(error) => return output_error("read", error, metadata.cleanup_incomplete),
     };
-    let raw_preview = render_streams(&chunk.segments);
+    let rendered = render_streams(&chunk.segments);
+    let raw_preview = if show_end {
+        &rendered[rendered.ceil_char_boundary(rendered.len().saturating_sub(read_limit))..]
+    } else {
+        rendered.as_str()
+    };
     let mut output_preview = if chunk
         .segments
         .iter()
@@ -131,12 +157,13 @@ fn render_model(
     {
         raw_preview
             .strip_prefix("stdout:\n")
-            .unwrap_or(&raw_preview)
+            .unwrap_or(raw_preview)
             .to_string()
     } else {
-        raw_preview.clone()
+        raw_preview.to_owned()
     };
-    let output_preview_truncated = chunk.has_more || output_preview.len() > output_preview_limit;
+    let output_preview_truncated =
+        show_end || chunk.has_more || output_preview.len() > output_preview_limit;
     truncate_utf8(&mut output_preview, output_preview_limit);
     let mut model_content = if filtered {
         format!(
@@ -144,15 +171,18 @@ fn render_model(
             summary,
             report_evidence(&metadata.summary, &facts.reported_tests)
         )
+    } else if show_end {
+        let source = if show_stderr { "stderr" } else { "output" };
+        format!("{summary}\n\nEnd of captured {source}:\n{raw_preview}")
     } else {
         let text = if raw_preview.is_empty() {
             "(command produced no output)"
         } else {
-            &raw_preview
+            raw_preview
         };
         format!("{summary}\n\n{text}")
     };
-    let preview_truncated = !filtered && chunk.has_more;
+    let preview_truncated = !filtered && (show_end || chunk.has_more);
     let reference = render_reference(output.id, metadata, filtered, chunk.lossy_utf8);
     let content_truncated = model_content.len() + reference.len() > output.limits.max_preview_bytes;
     let truncated = !facts.capture_complete || preview_truncated || content_truncated;

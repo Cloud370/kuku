@@ -407,14 +407,37 @@ pub(crate) fn framed_bytes(payload: u64) -> u64 {
 }
 
 pub(crate) fn read_open_output(
+    file: fs::File,
+    output_id: &str,
+    request: OutputRead,
+) -> io::Result<OutputChunk> {
+    read_open_output_view(file, output_id, request, None)
+}
+
+pub(super) fn read_stderr(
+    output_dir: &Path,
+    output_id: &str,
+    request: OutputRead,
+) -> io::Result<OutputChunk> {
+    read_open_output_view(
+        open_output(output_dir, output_id)?,
+        output_id,
+        request,
+        Some(OutputStream::Stderr),
+    )
+}
+
+fn read_open_output_view(
     mut file: fs::File,
     output_id: &str,
     request: OutputRead,
+    selected_stream: Option<OutputStream>,
 ) -> io::Result<OutputChunk> {
     validate_read(&request)?;
     let metadata = decode_header(&mut file)?;
     let mut window = OutputWindow::default();
-    let mut logical_offset = 0;
+    let mut captured_bytes = 0;
+    let mut selected_bytes = 0;
     let file_bytes = file.metadata()?.len();
     while file.stream_position()? < file_bytes {
         let Some((stream, frame_bytes)) = read_frame_header(&mut file, &metadata)? else {
@@ -427,17 +450,22 @@ pub(crate) fn read_open_output(
             }
             break;
         }
+        captured_bytes += frame_bytes as u64;
+        if selected_stream.is_some_and(|selected| selected != stream) {
+            file.seek(SeekFrom::Current(frame_bytes as i64))?;
+            continue;
+        }
         window.read_frame(
             &mut file,
             stream,
-            logical_offset,
+            selected_bytes,
             frame_bytes,
             payload,
             &request,
         )?;
-        logical_offset += frame_bytes as u64;
+        selected_bytes += frame_bytes as u64;
     }
-    if metadata.complete && logical_offset != metadata.stored_bytes {
+    if metadata.complete && captured_bytes != metadata.stored_bytes {
         return Err(invalid_output(
             "output length disagrees with committed metadata",
         ));
@@ -447,7 +475,7 @@ pub(crate) fn read_open_output(
         request,
         metadata,
         window,
-        logical_offset,
+        selected_bytes,
         &mut file,
     )
 }
