@@ -794,8 +794,12 @@ pub(crate) fn job_status_label(status: JobStatus) -> &'static str {
 
 fn model_choices(catalog: ModelCatalog) -> (Vec<Choice>, String) {
     let mut choices = Vec::new();
+    let mut default = catalog.default_tier.clone();
     for tier in catalog.tiers {
-        let mut detail = format!("{} · {}", tier.connection, tier.model);
+        let mut detail = format!("{} · {}", tier.model, tier.connection);
+        if tier.name == catalog.default_tier {
+            default.clone_from(&tier.model);
+        }
         if let Some(purpose) = tier
             .purpose
             .as_ref()
@@ -806,13 +810,14 @@ fn model_choices(catalog: ModelCatalog) -> (Vec<Choice>, String) {
         if let Some(error) = &tier.error {
             detail.push_str(&format!(" · {}", error.message));
         }
+        let label = tier.name.clone();
         choices.push(Choice::new(
-            format!("Tier · {}", tier.name),
+            label,
             detail,
             ChoiceKind::ModelActions(Box::new(tier)),
         ));
     }
-    (choices, format!("Default route · {}", catalog.default_tier))
+    (choices, format!("Default · {default}"))
 }
 
 async fn service_status(

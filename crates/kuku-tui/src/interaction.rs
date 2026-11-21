@@ -104,7 +104,7 @@ impl App {
         } else {
             self.text_selection.cancel_drag();
         }
-        if self.move_rewind_selection(amount) {
+        if self.move_rewind_selection(amount, false) {
             return;
         }
         match &mut self.modal {
@@ -384,7 +384,9 @@ impl App {
         };
         let query = picker.query.text().trim().to_owned();
         let request = match &picker.kind {
-            PickerKind::Commands if available => Search::Skills(query),
+            PickerKind::Commands if available => {
+                Search::Skills(crate::menu::CommandInput::query(&query).text().to_owned())
+            }
             PickerKind::Paths(_) if available => Search::Paths(query),
             PickerKind::Sessions if available => Search::Sessions(query),
             PickerKind::Models if first && available => Search::Models,

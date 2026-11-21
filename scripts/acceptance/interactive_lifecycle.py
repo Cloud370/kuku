@@ -278,10 +278,10 @@ def shared_model_editor(binary, bridge, directory):
             terminal.press("\r")
             terminal.expect("› Model tests", also=("Save models", "API URL", "gamma"))
             terminal.press("\x1b[A\r")
-            terminal.expect("Tier · gamma")
+            terminal.expect("gamma")
             terminal.press("gamma")
-            match = terminal.expect("/ gamma", also=("› Tier · gamma",))["screen"]
-            terminal.click_text(match, "Tier · gamma")
+            match = terminal.expect("/ gamma", also=("›gamma",))["screen"]
+            terminal.click_text(match, "›gamma")
             terminal.expect("Use in this Session", also=("Edit", "Set as default"))
             terminal.press("\x1b[B\r")
             terminal.expect("Set up a model")
@@ -298,7 +298,7 @@ def shared_model_editor(binary, bridge, directory):
             terminal.press("\r")
             terminal.expect("› Model tests", also=("Save models", "API URL", "delta"))
             terminal.press("\x1b[A\r")
-            terminal.expect("Tier · gamma", also=("delta",))
+            terminal.expect("gamma", also=("delta",))
             terminal.press("\x1b")
             terminal.expect(draft, absent=("Connected", "F2 Restart", "Model route"))
             assert len(list((client.home / "credentials").iterdir())) == 1
@@ -312,10 +312,10 @@ def shared_model_editor(binary, bridge, directory):
             assert next(item for item in catalog["tiers"] if item["name"] == "gamma")["model"] == "delta"
 
             terminal.press("\x0c")
-            terminal.expect("Tier · gamma", also=("delta",))
+            terminal.expect("gamma", also=("delta",))
             terminal.press("gamma")
-            match = terminal.expect("/ gamma", also=("› Tier · gamma",))["screen"]
-            terminal.click_text(match, "Tier · gamma")
+            match = terminal.expect("/ gamma", also=("›gamma",))["screen"]
+            terminal.click_text(match, "›gamma")
             terminal.expect("Use in this Session")
             terminal.press("\r")
             terminal.expect(draft, also=("delta",), absent=("Model route", "Model settings"))
@@ -573,9 +573,9 @@ def persistent_model_default(client):
     with client.terminal(workspace) as terminal:
         terminal.expect("New session", state="Ready")
         terminal.press("/model\r")
-        models = terminal.expect("Tier · light", also=(chosen,))["screen"]
+        models = terminal.expect("light", also=(chosen,))["screen"]
         initial_models = models
-        tier_click = terminal.click_text(models, "Tier · light")
+        tier_click = terminal.click_text(models, "light")
         tier_selected = terminal.expect("Use in this Session", also=(chosen,))["screen"]
         terminal.press("\r")
         tier_return = terminal.expect("New session", state="Ready", also=(chosen,),
@@ -592,7 +592,7 @@ def persistent_model_default(client):
         def open_default_confirmation():
             terminal.press("/model\r")
             models = terminal.expect("Model route", also=(
-                "Set current model as default", "Tier · light", chosen,
+                "Set current model as default", "light", chosen,
             ))["screen"]
             clicked = terminal.click_text(models, "Set current model as default")
             try:
@@ -831,7 +831,7 @@ def paginated_rewind(client):
         terminal.expect("Press Esc again")
         terminal.press("\x1b")
         screen = terminal.expect("Rewind to message", also=(
-            prompts[-1], "↑ at the top loads earlier messages",
+            prompts[-1], "PgUp loads earlier messages",
         ))["screen"]
         for steps in range(40):
             if re.search(r"› Turn 1(?:\s|$)", screen) and prompts[0] in screen:

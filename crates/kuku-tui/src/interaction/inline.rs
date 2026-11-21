@@ -109,8 +109,10 @@ impl App {
             let current = self.pane().selected_queue_input.as_ref();
             let next = current
                 .and_then(|id| ids.iter().position(|candidate| candidate == id))
-                .and_then(|index| index.checked_add_signed(direction))
-                .and_then(|index| ids.get(index).cloned());
+                .map(|index| {
+                    let next = (index as isize + direction).rem_euclid(ids.len() as isize);
+                    ids[next as usize].clone()
+                });
             if current.is_some_and(|id| !ids.contains(id)) {
                 self.problem("Selected input is no longer queued");
                 return true;
@@ -175,9 +177,15 @@ impl App {
             pane.request_scroll = pane.request_scroll.saturating_add(page).min(end);
             return true;
         }
-        if key.code == KeyCode::Left || Shortcut::UP.matches(key) {
+        if Shortcut::UP.matches(key) || Shortcut::DOWN.matches(key) {
+            let pane = self.pane_mut();
+            pane.permission_choice = Some(
+                pane.permission_choice
+                    .map_or_else(|| Shortcut::DOWN.matches(key), |allow| !allow),
+            );
+        } else if key.code == KeyCode::Left {
             self.pane_mut().permission_choice = Some(false);
-        } else if key.code == KeyCode::Right || Shortcut::DOWN.matches(key) {
+        } else if key.code == KeyCode::Right {
             self.pane_mut().permission_choice = Some(true);
         } else if Shortcut::ENTER.matches(key) {
             let Some(allow) = self.pane().permission_choice else {

@@ -49,8 +49,8 @@ impl App {
                     _ => {}
                 }
             }
-            key if Shortcut::UP.matches(key) => picker.move_by(-1),
-            key if Shortcut::DOWN.matches(key) => picker.move_by(1),
+            key if Shortcut::UP.matches(key) => picker.cycle_by(-1),
+            key if Shortcut::DOWN.matches(key) => picker.cycle_by(1),
             key if Shortcut::PAGE_UP.matches(key)
                 && matches!(picker.kind, PickerKind::Server | PickerKind::ModelDefault) =>
             {
@@ -66,10 +66,22 @@ impl App {
             _ if picker.kind.searchable()
                 && super::edit(&mut picker.query, key, self.modal_editor_width, false) =>
             {
-                picker.selected = 0;
-                self.search(false);
+                self.picker_query_changed();
             }
             _ => {}
+        }
+    }
+
+    pub(super) fn picker_query_changed(&mut self) {
+        let Some(Modal::Picker(picker)) = &mut self.modal else {
+            return;
+        };
+        if picker.kind == PickerKind::Commands && !picker.query.text().starts_with('/') {
+            self.close_picker();
+            self.focus_composer();
+        } else {
+            picker.selected = 0;
+            self.search(false);
         }
     }
 }

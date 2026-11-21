@@ -429,13 +429,9 @@ impl SetupState {
     pub(super) fn trial_input(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Enter => self.previous(),
-            KeyCode::Up => self.models.cursor = self.models.cursor.saturating_sub(1),
-            KeyCode::Down => {
-                self.models.cursor = self
-                    .models
-                    .cursor
-                    .saturating_add(1)
-                    .min(self.trials.selected_rows().count().saturating_sub(1))
+            KeyCode::Up | KeyCode::Down => {
+                self.models
+                    .move_cursor(key.code, self.trials.selected_rows().count());
             }
             _ => {}
         }

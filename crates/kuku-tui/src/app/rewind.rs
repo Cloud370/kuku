@@ -57,7 +57,7 @@ impl App {
         current
     }
 
-    pub(crate) fn move_rewind_selection(&mut self, amount: isize) -> bool {
+    pub(crate) fn move_rewind_selection(&mut self, amount: isize, cycle: bool) -> bool {
         let Some(super::Modal::Picker(picker)) = &self.modal else {
             return false;
         };
@@ -77,9 +77,13 @@ impl App {
         {
             return true;
         }
-        picker.move_by(amount);
-        if amount < 0 && picker.selected == 0 {
-            self.load_rewind_history();
+        if cycle {
+            picker.cycle_by(amount);
+        } else {
+            picker.move_by(amount);
+            if amount < 0 && picker.selected == 0 {
+                self.load_rewind_history();
+            }
         }
         true
     }
@@ -253,7 +257,7 @@ pub(super) fn rewind_history_header(
     let status = if loading {
         "Loading earlier messages…"
     } else if next_before.is_some() {
-        "↑ at the top loads earlier messages"
+        "PgUp loads earlier messages"
     } else {
         "All earlier messages loaded"
     };

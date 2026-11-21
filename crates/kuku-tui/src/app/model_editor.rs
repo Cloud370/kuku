@@ -15,7 +15,7 @@ impl App {
             vec![
                 Choice::new(
                     "Add model or connection",
-                    "Choose a saved connection or configure a new endpoint",
+                    "",
                     ChoiceKind::EditModel(SetupIntent::Add),
                 ),
                 save_default,
@@ -45,7 +45,7 @@ impl App {
                 ChoiceKind::ConfirmModelSetting(SavedModelSetting::Default(tier.name.clone())),
             ));
         }
-        let mut header = format!("{} · {} · {}", tier.name, tier.connection, tier.model);
+        let mut header = format!("{} · {} · {}", tier.model, tier.connection, tier.name);
         if let Some(settings) = tier.settings {
             header.push_str(&format!(
                 "

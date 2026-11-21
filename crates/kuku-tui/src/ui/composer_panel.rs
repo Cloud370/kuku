@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph};
+use ratatui::widgets::{Block, Clear, Padding, Paragraph};
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
@@ -13,11 +13,12 @@ use crate::theme::{emphasis, focused_row, panel, ACCENT, ERROR, MUTED};
 
 use super::{picker_line, popup, render_editor, render_popup};
 
-const MAX_WIDTH: u16 = 64;
+const MAX_WIDTH: u16 = 76;
 const MAX_ITEMS: u16 = 7;
 const COMMAND_HELP: &str = "↑↓ Move · Tab Complete · Enter Run · Esc Close";
 const THINKING_HELP: &str = "↑↓ Move · Enter Apply · Esc Close";
 const SAVE_HELP: &str = "↑↓ Move · Enter Apply · D Save default · Esc Close";
+const MODEL_HELP: &str = "↑↓ Move · Enter Select · Esc Close";
 
 pub(super) fn render(
     frame: &mut Frame<'_>,
@@ -35,11 +36,12 @@ pub(super) fn render(
                     .visible_choices()
                     .len()
                     .clamp(1, usize::from(MAX_ITEMS)) as u16;
-                let extra = picker.kind == PickerKind::Commands
-                    || thinking
+                let extra = u16::from(
+                    thinking
                         .as_ref()
-                        .is_some_and(|thinking| thinking.declared.is_some());
-                items + 2 + u16::from(extra)
+                        .is_some_and(|thinking| thinking.declared.is_some()),
+                ) + picker.header.lines().count().min(3) as u16;
+                items + 4 + extra
             }
         },
         _ => unreachable!("the modal is anchored to the composer"),
@@ -124,16 +126,10 @@ pub(super) fn render_help(frame: &mut Frame<'_>, area: Rect) -> Rect {
 
 fn render_panel(frame: &mut Frame<'_>, area: Rect, text_x: u16) -> Rect {
     let indent = text_x.saturating_sub(area.x).min(area.width);
-    let border = if indent > 0 {
-        Borders::LEFT
-    } else {
-        Borders::NONE
-    };
+    let margin = u16::from(area.height >= 5);
     let block = Block::new()
         .style(panel())
-        .borders(border)
-        .border_style(Style::new().fg(ACCENT))
-        .padding(Padding::new(indent.saturating_sub(1), 1, 0, 0));
+        .padding(Padding::new(indent, 2, margin, margin));
     frame.render_widget(Clear, area);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -160,18 +156,18 @@ fn render_confirmation(frame: &mut Frame<'_>, area: Rect, thinking: &ThinkingPic
 fn render_choices(frame: &mut Frame<'_>, area: Rect, picker: &mut Picker) -> (usize, usize) {
     let commands = picker.kind == PickerKind::Commands;
     let rows = area.height;
-    let title_rows = u16::from(rows >= 3);
-    let query_rows = u16::from(commands && rows >= 2);
-    let footer_rows = u16::from(rows > title_rows + query_rows + 1);
+    let header_rows = u16::from(rows >= 2);
+    let footer_rows = u16::from(rows > header_rows + 1);
     let declared = picker
         .thinking
         .as_ref()
         .and_then(|thinking| thinking.declared.as_deref());
-    let declared_rows = u16::from(declared.is_some() && rows > title_rows + footer_rows + 1);
-    let [title, query, declaration, list, footer] = Layout::vertical([
-        Constraint::Length(title_rows),
-        Constraint::Length(query_rows),
-        Constraint::Length(declared_rows),
+    let details = declared.unwrap_or(&picker.header);
+    let details_rows = (details.lines().count().min(3) as u16)
+        .min(rows.saturating_sub(header_rows + footer_rows + 1));
+    let [header, information, list, footer] = Layout::vertical([
+        Constraint::Length(header_rows),
+        Constraint::Length(details_rows),
         Constraint::Min(0),
         Constraint::Length(footer_rows),
     ])
@@ -198,14 +194,22 @@ fn render_choices(frame: &mut Frame<'_>, area: Rect, picker: &mut Picker) -> (us
         }
         None => picker.kind.title().into(),
     };
-    frame.render_widget(Paragraph::new(title_line).style(emphasis(ACCENT)), title);
-    if let Some(declared) = declared {
-        frame.render_widget(
-            Paragraph::new(shorten(declared, width)).style(Style::new().fg(MUTED)),
-            declaration,
-        );
-    }
-    let field_width = render_query(frame, query, picker);
+    frame.render_widget(
+        Paragraph::new(
+            details
+                .lines()
+                .take(usize::from(details_rows))
+                .map(|line| {
+                    Line::styled(
+                        shorten(&crate::text::single_line(line), width),
+                        Style::new().fg(MUTED),
+                    )
+                })
+                .collect::<Vec<_>>(),
+        ),
+        information,
+    );
+    let field_width = render_header(frame, header, &title_line, picker);
     let count = usize::from(list.height).max(1);
     let range = picker.composer_rows(count, picker.visible_choices().len());
     let choices = picker.visible_choices();
@@ -230,7 +234,9 @@ fn render_choices(frame: &mut Frame<'_>, area: Rect, picker: &mut Picker) -> (us
         lines.push(Line::styled(status, Style::new().fg(MUTED)));
     }
     frame.render_widget(Paragraph::new(lines), list);
-    picker.set_rows(list, range, 1);
+    let marker = u16::from(list.x > 0);
+    let hit_rows = Rect::new(list.x - marker, list.y, list.width + marker, list.height);
+    picker.set_rows(hit_rows, range, 1);
     let help = if commands {
         COMMAND_HELP
     } else if picker
@@ -239,8 +245,10 @@ fn render_choices(frame: &mut Frame<'_>, area: Rect, picker: &mut Picker) -> (us
         .is_some_and(|thinking| thinking.save.is_some())
     {
         SAVE_HELP
-    } else {
+    } else if picker.kind == PickerKind::Thinking {
         THINKING_HELP
+    } else {
+        MODEL_HELP
     };
     let (hint, color) = picker
         .problem
@@ -253,15 +261,34 @@ fn render_choices(frame: &mut Frame<'_>, area: Rect, picker: &mut Picker) -> (us
     (count, field_width)
 }
 
-fn render_query(frame: &mut Frame<'_>, area: Rect, picker: &mut Picker) -> usize {
-    if area.is_empty() {
-        return usize::from(area.width).max(1);
+fn render_header(frame: &mut Frame<'_>, area: Rect, title: &str, picker: &mut Picker) -> usize {
+    let searchable = picker.kind.searchable();
+    let title_width = if searchable {
+        let preferred = title.width() as u16 + 3;
+        if area.width >= preferred + 12 {
+            preferred
+        } else {
+            0
+        }
+    } else {
+        area.width
+    };
+    let marker_width =
+        u16::from(searchable && picker.kind != PickerKind::Commands && area.width >= 4) * 2;
+    let [heading, marker, field] = Layout::horizontal([
+        Constraint::Length(title_width),
+        Constraint::Length(marker_width),
+        Constraint::Min(0),
+    ])
+    .areas(area);
+    frame.render_widget(
+        Paragraph::new(shorten(title, usize::from(heading.width))).style(emphasis(ACCENT)),
+        heading,
+    );
+    frame.render_widget(Paragraph::new(Span::styled("/ ", emphasis(ACCENT))), marker);
+    if searchable && !field.is_empty() {
+        render_editor(frame, field, &mut picker.query, true, "Search models…");
     }
-    let marker_width = u16::from(!picker.query.text().starts_with('/'));
-    let [marker, field] =
-        Layout::horizontal([Constraint::Length(marker_width), Constraint::Min(0)]).areas(area);
-    frame.render_widget(Paragraph::new(Span::styled("/", emphasis(ACCENT))), marker);
-    render_editor(frame, field, &mut picker.query, true, "");
     usize::from(field.width).max(1)
 }
 
@@ -289,7 +316,16 @@ fn choice_line(picker: &Picker, choice: &Choice, width: usize, active: bool) -> 
     if detail.is_empty() || label.width() + 3 >= width {
         return picker_line(&label, width, active, style);
     }
-    let info = format!(" · {}", crate::text::single_line(detail));
+    let aligned = match picker.kind {
+        PickerKind::Commands => Some(15),
+        PickerKind::Models | PickerKind::ModelActions => Some(30.min(width / 2)),
+        _ => None,
+    };
+    let separator = aligned.map_or_else(
+        || " · ".to_owned(),
+        |column| " ".repeat(column.saturating_sub(label.width()).max(2)),
+    );
+    let info = format!("{separator}{}", crate::text::single_line(detail));
     let info = shorten(&info, width - label.width());
     let padding = " ".repeat(width - label.width() - info.width());
     Line::from(vec![

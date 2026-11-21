@@ -28,13 +28,25 @@ def composer_actions(client):
     with client.terminal(workspace) as terminal:
         terminal.request("resize", rows=28, cols=60)
         terminal.expect(f"{model} · None")
+        terminal.press("/")
+        terminal.expect("›/new", also=("Actions and Skills",))
+        terminal.press("\x1b[A")
+        terminal.expect("›/quit")
+        terminal.press("\x1b[B")
+        terminal.expect("›/new")
+        terminal.press("\x7f")
+        terminal.expect("New session", absent=("Actions and Skills",))
         terminal.press("/models")
-        suggestions = terminal.expect("Actions and Skills", also=("/model ·",))["screen"]
-        assert suggestions.count("/model ·") == 1, suggestions
+        suggestions = terminal.expect("Actions and Skills", also=("›/model ",))["screen"]
+        assert suggestions.count("›/model ") == 1, suggestions
+        screens.append(("Commands at 60 columns", suggestions))
         terminal.press("\t")
         terminal.expect("/model", absent=("Actions and Skills", "/models"))
         terminal.press("\r")
-        terminal.expect("Model route")
+        models = terminal.expect("Model route", also=("Search models…", "Default ·"))["screen"]
+        assert position(models, "Model route")[0] == position(models, "Search models…")[0]
+        assert position(models, "Model route")[0] < position(models, "To main")[0]
+        screens.append(("Models at 60 columns", models))
         terminal.press("\x1b")
         terminal.expect(f"{model} · None", absent=("Model route",))
         terminal.press("\x1b[200~/models\x1b[201~\r")

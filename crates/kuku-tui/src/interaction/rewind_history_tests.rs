@@ -160,9 +160,14 @@ fn boundary_loads_one_page_and_preserves_selection_through_two_older_pages() {
     let mut app = app();
     assert_eq!(102, selected(&app));
     assert_eq!(vec![100, 101, 102], ids(&app));
+    press(&mut app, KeyCode::Down);
+    assert_eq!(100, selected(&app));
+    press(&mut app, KeyCode::Up);
+    assert_eq!(102, selected(&app));
+    assert!(app.effects.is_empty());
     top(&mut app);
     for _ in 0..10 {
-        press(&mut app, KeyCode::Up);
+        top(&mut app);
     }
     assert!(picker(&app).loading);
     assert!(render(&mut app).contains("Loading earlier messages"));
@@ -199,7 +204,7 @@ fn boundary_loads_one_page_and_preserves_selection_through_two_older_pages() {
 }
 
 #[test]
-fn an_empty_selectable_page_advances_once_and_waits_for_another_up() {
+fn an_empty_selectable_page_advances_once_and_waits_for_another_page_up() {
     let mut app = app();
     top(&mut app);
     let first = request(&mut app);
@@ -209,7 +214,7 @@ fn an_empty_selectable_page_advances_once_and_waits_for_another_up() {
     assert_eq!(vec![100, 101, 102], ids(&app));
     assert_eq!(100, selected(&app));
     assert!(app.effects.is_empty());
-    press(&mut app, KeyCode::Up);
+    top(&mut app);
     assert_eq!(50, request(&mut app).2);
 }
 
@@ -221,7 +226,7 @@ fn an_empty_current_user_page_still_loads_the_previous_committed_message() {
     app.pane_mut().transcript.replace_recent(current);
     app.open_rewind_picker();
     assert!(ids(&app).is_empty());
-    press(&mut app, KeyCode::Up);
+    top(&mut app);
     let first = request(&mut app);
     assert_eq!(100, first.2);
     reply(&mut app, first, Ok(page(&[80], None)));
@@ -369,7 +374,7 @@ fn failed_pages_retry_with_a_new_ticket_and_old_retry_responses_are_ignored() {
     assert!(!picker(&app).loading);
     assert!(render(&mut app).contains("fixture page unavailable"));
     assert!(picker(&app).problem.as_ref().unwrap().contains("retries"));
-    press(&mut app, KeyCode::Up);
+    top(&mut app);
     let retry = request(&mut app);
     assert_eq!(first.2, retry.2);
     assert_ne!(first.1, retry.1);
@@ -394,7 +399,7 @@ fn nonadvancing_pages_keep_the_cursor_available_for_explicit_retry() {
         .as_ref()
         .unwrap()
         .contains("did not advance"));
-    press(&mut app, KeyCode::Up);
+    top(&mut app);
     assert_eq!(100, request(&mut app).2);
 }
 

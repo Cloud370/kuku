@@ -100,6 +100,60 @@ fn position(buffer: &Buffer, text: &str) -> (u16, u16) {
 }
 
 #[test]
+fn slash_deletion_closes_the_list_without_changing_the_draft() {
+    let mut app = connected_app();
+    press(&mut app, KeyCode::Char('/'));
+    press(&mut app, KeyCode::Char('m'));
+    press(&mut app, KeyCode::Backspace);
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker)) if picker.query.text() == "/"));
+    press(&mut app, KeyCode::Backspace);
+    assert!(app.modal.is_none());
+    press(&mut app, KeyCode::Char('n'));
+    assert_eq!(app.pane().draft.text(), "n");
+
+    action_picker(&mut app, "model");
+    press(&mut app, KeyCode::Home);
+    press(&mut app, KeyCode::Delete);
+    assert!(app.modal.is_none());
+    assert_eq!(app.pane().draft.text(), "n");
+}
+
+#[test]
+fn command_and_model_lists_wrap_and_stay_above_the_composer() {
+    let mut app = connected_app();
+    press(&mut app, KeyCode::Char('/'));
+    press(&mut app, KeyCode::Up);
+    assert!(
+        matches!(&app.modal, Some(Modal::Picker(picker)) if matches!(
+            picker.selected_choice(), Some(crate::menu::ChoiceKind::Command(crate::menu::CommandMenu::Quit))
+        ))
+    );
+    press(&mut app, KeyCode::Down);
+    let buffer = frame(&mut app, 120);
+    assert_eq!(
+        position(&buffer, "Actions and Skills").1,
+        position(&buffer, "Actions and Skills   /").1
+    );
+    assert!(lines(&buffer).iter().any(|line| line.contains("›/new")));
+    press(&mut app, KeyCode::Esc);
+
+    app.pane_mut().draft.set_text("keep this draft".into());
+    app.open_models();
+    press(&mut app, KeyCode::Up);
+    let buffer = frame(&mut app, 60);
+    assert!(lines(&buffer)
+        .iter()
+        .any(|line| line.contains("›Set current model as default")));
+    assert_eq!(
+        position(&buffer, "Model route").1,
+        position(&buffer, "Search models…").1
+    );
+    assert!(position(&buffer, "Esc Close").1 < position(&buffer, "keep this draft").1);
+    press(&mut app, KeyCode::Down);
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker)) if picker.selected == 0));
+}
+
+#[test]
 fn jobs_alias_preserves_arguments_through_completion_paste_and_execution() {
     let mut app = connected_app();
     app.pane_mut().exists = true;
@@ -258,14 +312,14 @@ fn composer_lists_keep_alignment_draft_selection_and_reading_position() {
         let suggestions = frame(&mut app, width);
         let label = lines(&suggestions)
             .into_iter()
-            .find(|line| line.contains("/model ·"))
+            .find(|line| line.contains("›/model "))
             .unwrap();
         assert_eq!(
             (column, row),
             position(&suggestions, "draft stays in place")
         );
-        assert_eq!(column, position(&suggestions, "/model ·").0);
-        assert!(label.trim_end().width() <= 64 + usize::from(column));
+        assert_eq!(column, position(&suggestions, "›/model ").0 + 1);
+        assert!(label.trim_end().width() <= 76 + usize::from(column));
         assert!(suggestions[(column, row)]
             .modifier
             .contains(Modifier::REVERSED));

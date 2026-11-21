@@ -253,7 +253,10 @@ impl PickerKind {
     }
 
     pub(crate) fn composer_anchored(&self) -> bool {
-        matches!(self, Self::Commands | Self::Thinking)
+        matches!(
+            self,
+            Self::Commands | Self::Thinking | Self::Models | Self::ModelActions
+        )
     }
 }
 

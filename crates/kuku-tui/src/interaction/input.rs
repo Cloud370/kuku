@@ -118,8 +118,7 @@ impl App {
         if let Some(Modal::Picker(picker)) = &mut self.modal {
             if picker.kind.searchable() {
                 picker.query.insert(&text.replace(['\r', '\n'], " "));
-                picker.selected = 0;
-                self.search(false);
+                self.picker_query_changed();
             }
         } else if let Some(Modal::Prompt(prompt)) = &mut self.modal {
             if prompt.kind.multiline() {

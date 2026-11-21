@@ -30,7 +30,9 @@ impl Invocation {
 
 impl App {
     pub(super) fn command_menu(&mut self) {
-        self.picker(PickerKind::Commands, Choice::commands());
+        self.picker(PickerKind::Commands, Choice::commands())
+            .query
+            .set_text("/".into());
         self.search(true);
     }
 
