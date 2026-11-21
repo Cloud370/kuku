@@ -425,6 +425,9 @@ impl Picker {
             .local
             .iter()
             .filter(|choice| match (&choice.kind, command_query) {
+                (ChoiceKind::Command(command), Some(_)) if !command.advertised() => {
+                    exact_command == Some(*command)
+                }
                 (ChoiceKind::Command(command), Some(input)) => exact_command.map_or_else(
                     || command.starts_with(input.name) || choice.matches(query),
                     |exact| exact == *command,
@@ -592,6 +595,10 @@ mod tests {
     #[test]
     fn aliases_find_exactly_one_canonical_action() {
         let mut picker = Picker::new(PickerKind::Commands, 1, Choice::commands());
+        assert!(!picker
+            .visible_choices()
+            .iter()
+            .any(|choice| choice.label == "/web"));
         for (alias, canonical) in [
             ("new-session", "/new"),
             ("sessions", "/resume"),

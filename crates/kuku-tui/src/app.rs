@@ -38,7 +38,7 @@ mod thinking;
 mod timing;
 mod values;
 
-pub(crate) use activity::{Activity, ServiceStatus, SubmissionStatus};
+pub(crate) use activity::{Activity, OutputTokens, ServiceStatus, SubmissionStatus};
 use activity::{ExecutionProgress, Watch};
 use agents::AgentActivities;
 use delivery::{Deliveries, PendingQueueAction};
@@ -361,6 +361,7 @@ pub(crate) struct App {
     pub(crate) contextual_hits: Vec<ContextHit>,
     pub(crate) reading_area: Rect,
     pub(crate) composer_area: Rect,
+    pub(crate) recipient_area: Rect,
     pub(crate) modal_editor_width: usize,
     pub(crate) modal_page: usize,
     pub(crate) modal_info_rows: usize,
@@ -424,6 +425,7 @@ impl App {
             contextual_hits: Vec::new(),
             reading_area: Rect::ZERO,
             composer_area: Rect::ZERO,
+            recipient_area: Rect::ZERO,
             modal_editor_width: 60,
             modal_page: 6,
             modal_info_rows: 4,

@@ -772,7 +772,7 @@ fn a_reply_burst_preserves_the_first_answer_line_after_thinking() {
 }
 
 #[test]
-fn thinking_before_a_tool_is_available_in_details_without_an_extra_transcript_row() {
+fn thinking_before_a_tool_has_its_own_expandable_transcript_row() {
     let mut journal = Journal::default();
     journal.push(
         7,
@@ -782,13 +782,17 @@ fn thinking_before_a_tool_is_available_in_details_without_an_extra_transcript_ro
     journal.read(7, "main", "hello.py");
     let mut transcript = journal.load();
     let view = transcript.project(64, 10);
-    assert!(!text(&view).contains("View thinking"));
+    assert!(text(&view).contains("Assistant   View thinking ›"));
     let choice = transcript
         .visible_detail_choices()
         .into_iter()
         .find(|(_, _, text)| text == "Check the greeting")
         .unwrap();
     assert_eq!(Some(&choice.0), transcript.latest_notes().as_ref());
+    assert_eq!(
+        transcript.detail_at(line(&view, "View thinking")),
+        Some(&choice.0)
+    );
     assert_ne!(
         transcript.detail_at(line(&view, "Read file")),
         Some(&choice.0)

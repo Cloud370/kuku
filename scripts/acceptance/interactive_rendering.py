@@ -8,7 +8,7 @@ import sys
 from unittest.mock import patch
 from urllib.parse import urlencode
 
-from interactive_fixture import InstalledClient, Response, StreamPause, eventually, run_cases
+from interactive_fixture import InstalledClient, Response, StreamPause, eventually, is_composer_heading, run_cases
 from interactive_responses import responses_reasoning
 
 RUNNING_STATUS_ROWS_FROM_BOTTOM = 6
@@ -20,7 +20,8 @@ def rendered_running_transcript(screen, height, markers):
     return (
         len(rows) == height
         and status_row >= 0
-        and "To main · Running" in rows[status_row]
+        and is_composer_heading(rows[status_row])
+        and any(label in rows[status_row] for label in ("Tools", "Running"))
         and all(marker in screen for marker in markers)
     )
 
@@ -133,7 +134,7 @@ def queued_input_click_position(screen, text):
         return None
     end = next(
         (index for index, line in enumerate(lines[start + 1 :], start + 1)
-         if "To main" in line or "To reviewer" in line),
+         if is_composer_heading(line)),
         len(lines),
     )
     for index in range(start + 1, end):
@@ -305,10 +306,10 @@ def targeted_delegation(client):
             action = "Open →" if columns == 44 else "Open agent →"
             scene = terminal.expect(action, state="╭─ Agent writer")["screen"]
             terminal.click_text(scene, action)
-            back = terminal.expect("F2 Back", state="To writer", also=("Proof of delivery",))["screen"]
+            back = terminal.expect("F2 Back", state="writer ▾", also=("Proof of delivery",))["screen"]
             terminal.click_text(back, "F2 Back")
             terminal.press("\r")
-            terminal.expect("To main", state="Received the delegated document.")
+            terminal.expect("main ▾", state="Received the delegated document.")
         terminal.exit_cleanly()
     client.provider.assert_idle()
 
@@ -609,7 +610,7 @@ def published_reasoning(client):
                                           ((len(start), waiting), (len(start + public), published))))
         try:
             assert waiting.arrived.wait(8)
-            screen = terminal.expect("To main · Thinking")["screen"]
+            screen = terminal.expect("Thinking")["screen"]
             assert "View thinking" not in screen and hidden not in screen
             waiting.release.set()
             assert published.arrived.wait(8)
@@ -617,15 +618,15 @@ def published_reasoning(client):
             flow_row = next(i for i, row in enumerate(compact.splitlines()) if "Thinking" in row and "Check" in row)
             header_row = flow_row - 1
             assert "Assistant" in compact.splitlines()[header_row] and "View thinking" in compact.splitlines()[header_row]
-            assert not any("Check" in row for row in compact.splitlines() if "To main" in row)
+            assert not any("Check" in row for row in compact.splitlines() if is_composer_heading(row))
             terminal.click_text(compact, "View thinking")
             reader = terminal.expect("Comparing the published results.", state="Esc back")["screen"]
             assert hidden not in reader and "Esc back" in reader.splitlines()[header_row] and "Enter steer" in reader
             terminal.press("\x1b")
-            terminal.expect("View thinking", state="To main · Thinking")
+            terminal.expect("View thinking", state="Thinking")
             with client.terminal(workspace) as attached:
                 attached.resume(prompt)
-                restored = attached.expect("View thinking", state="To main · Thinking")["screen"]
+                restored = attached.expect("View thinking", state="Thinking")["screen"]
                 assert hidden not in restored
                 attached.exit_cleanly()
         finally:
@@ -676,25 +677,19 @@ def check_agent_reading_position(client, terminal):
     beginning = "Streaming checkpoint update"
     new_content = "Another checkpoint arrived while reading"
 
+    def queue_and_composer(screen):
+        rows = screen.splitlines()
+        start = next((index for index, line in enumerate(rows) if "Pending inputs" in line), None)
+        end = next((index for index, line in enumerate(rows) if is_composer_heading(line)), None)
+        if start is None or end is None or start >= end:
+            return [], []
+        return rows[start:end], rows[end:]
+
     def composer_lines(screen):
-        start = screen.find("Pending inputs")
-        positions = [
-            position for label in ("To main", "To reviewer")
-            if (position := screen.find(label, start)) >= 0
-        ]
-        if start < 0 or not positions:
-            return []
-        return screen[min(positions):].splitlines()
+        return queue_and_composer(screen)[1]
 
     def queued_row_contains(screen, text):
-        start = screen.find("Pending inputs")
-        positions = [
-            position for label in ("To main", "To reviewer")
-            if (position := screen.find(label, start)) >= 0
-        ]
-        if start < 0 or not positions:
-            return False
-        lines = screen[start:min(positions)].splitlines()
+        lines, _ = queue_and_composer(screen)
         for index, line in enumerate(lines):
             if "Queued ·" not in line:
                 continue
@@ -827,7 +822,7 @@ def check_reading_focus(terminal, markers, stream_pause, new_content, queued):
     assert anchor in updated.splitlines()[row] and new_content not in updated, updated
     terminal.type("draft at checkpoint")
     terminal.press("\x1b[1;3C")
-    assert "Switch Agent" not in terminal.expect("To reviewer")["screen"]
+    assert "Switch Agent" not in terminal.expect("reviewer ▾")["screen"]
     terminal.press("\x1b[1;3D")
     restored = terminal.expect("draft at checkpoint", state="Reading history · Editing")["screen"]
     restored_lines = restored.splitlines()

@@ -203,7 +203,7 @@ class QueuedInputFocusTests(unittest.TestCase):
             "  Process this after the checkpoint report",
             "  You · Queued · next Turn",
             "  Obsolete checkpoint follow-up",
-            "│ To main · Streaming reply",
+            "│ ↓  Reply",
         ])
         terminal = Mock()
 
@@ -220,7 +220,7 @@ class QueuedInputFocusTests(unittest.TestCase):
             AssertionError,
             "target row unavailable; no click coordinates were sent",
         ):
-            click_queued_input(terminal, "To main · Draft", "missing")
+            click_queued_input(terminal, "│ ⢎⡱ Ready Draft", "missing")
 
         terminal.press.assert_not_called()
 
@@ -250,7 +250,7 @@ class QueuedInputFocusTests(unittest.TestCase):
             "  Process this after the checkpoint report",
             "  › You · Queued · next Turn",
             "  Obsolete checkpoint follow-up",
-            "│ To main · Streaming reply",
+            "│ ↓  Reply",
         ])
 
         self.assertTrue(has_selected_queued_input(screen, "Obsolete checkpoint follow-up"))
@@ -261,7 +261,7 @@ class QueuedInputFocusTests(unittest.TestCase):
         )
 
     def test_requires_a_pending_inputs_row(self):
-        self.assertFalse(has_selected_queued_input("To main · Draft", "anything"))
+        self.assertFalse(has_selected_queued_input("│ ⢎⡱ Ready Draft", "anything"))
 
     def test_does_not_match_text_only_in_composer(self):
         screen = "\n".join(
@@ -269,7 +269,7 @@ class QueuedInputFocusTests(unittest.TestCase):
                 "Pending inputs · ↑ select · Enter edit · Del withdraw",
                 "  › You · Queued · next Turn",
                 "  Actual queued input",
-                "│ To main · Draft",
+                "│ ⢎⡱ Ready Draft",
                 "Composer text: Obsolete checkpoint follow-up",
             ]
         )
@@ -291,7 +291,7 @@ class TranscriptResizeSynchronizationTests(unittest.TestCase):
     def running_frame(self, status_row, *, history=False):
         rows = [""] * 32
         rows[5] = self.activity_composition
-        rows[status_row] = self.history if history else "To main · Running tools 31s"
+        rows[status_row] = self.history if history else "│ ↳  Tools 31s"
         rows[28] = self.draft
         rows[-1] = "Connected · Context 0% used"
         return "\n".join(rows)
@@ -311,12 +311,12 @@ class TranscriptResizeSynchronizationTests(unittest.TestCase):
         stale_rows = stale.splitlines()
         self.assertEqual(32, len(stale_rows))
         self.assertTrue(
-            any("To main · Running tools" in row for row in stale_rows[-8:])
+            any("↳  Tools" in row for row in stale_rows[-8:])
         )
         self.assertFalse(rendered_running_transcript(stale, 32, markers))
         self.assertTrue(rendered_running_transcript(resized, 32, markers))
 
-        background = resized.replace("Running tools", "Running")
+        background = resized.replace("Tools", "Running")
         self.assertTrue(rendered_running_transcript(background, 32, markers))
         self.assertFalse(rendered_running_transcript(
             background.replace("Running", "Finished"), 32, markers

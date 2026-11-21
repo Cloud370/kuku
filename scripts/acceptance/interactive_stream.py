@@ -79,7 +79,7 @@ def profile_markdown_stream(client):
                 width = 120 if offset < len(samples) // 2 else 60
                 if terminal.cols != width:
                     terminal.request("resize", rows=28, cols=width)
-                    terminal.expect("To main", rows=28)
+                    terminal.expect("Reply", rows=28)
                 marker = MARKER.match(piece)[0]
                 pauses[index - 1].release.set()
                 assert pauses[index].arrived.wait(10), f"Measured phase {index} did not arrive"

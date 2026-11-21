@@ -455,7 +455,7 @@ fn switching_agent_keeps_drafts_and_read_position_and_ignores_old_observer() {
         },
     ));
     let other = screen(&mut app, 79, 22);
-    assert!(other.contains("To reviewer"));
+    assert!(other.contains("Send to reviewer"));
     assert!(other.contains("review-notes"));
     assert!(!other.contains("obsolete main stream"));
     app.select(main, true, "Example".into());

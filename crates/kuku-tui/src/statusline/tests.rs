@@ -265,21 +265,21 @@ fn composer_follows_wrapped_draft_rows_and_caps_the_visible_paste() {
     let mut app = connected_app();
     let statusline = StatusLine::default();
     let rows = screen(&mut app, &statusline, 80, 20);
-    assert!(rows[15].contains("To main"));
+    assert!(rows[15].contains("Ready"));
     assert!(rows[17].contains("Enter steer"));
     app.pane_mut().draft.insert(&"a".repeat(76));
     let rows = screen(&mut app, &statusline, 80, 20);
-    assert!(rows[14].contains("To main") && rows[17].trim_end().ends_with('a'));
+    assert!(rows[14].contains("Ready") && rows[17].trim_end().ends_with('a'));
     app.pane_mut()
         .draft
         .set_text("line 1\nline 2\nline 3\nline 4\nline 5\n中文\nline 7".into());
     let rows = screen(&mut app, &statusline, 80, 20);
-    assert!(rows[12].contains("To main"));
+    assert!(rows[12].contains("Ready"));
     assert!(rows[14].contains("line 4"));
     assert!(rows[16].contains("中") && rows[16].contains("文"));
     assert!(rows[17].contains("line 7"));
     let rows = screen(&mut app, &statusline, 29, 6);
-    assert!(rows[2].contains("To main"));
+    assert!(rows[2].contains("Ready"));
     assert!(rows[2].contains("Ready") && rows[4].contains("line 7"));
 }
 
@@ -290,6 +290,19 @@ fn compact_token_counts_use_decimal_units_with_integer_arithmetic() {
     assert_eq!("999K", compact_token_count(999_999));
     assert_eq!("1B", compact_token_count(1_000_000_000));
     assert_eq!("18446744073B", compact_token_count(u64::MAX));
+}
+
+#[test]
+fn cost_is_a_compact_amount_with_an_honest_precision_marker() {
+    use super::compact_cost;
+
+    assert_eq!(
+        compact_cost(10_000_000, 8_000_000, 0).as_deref(),
+        Some("~$0.018")
+    );
+    assert_eq!(compact_cost(17_999_999, 0, 1).as_deref(), Some("≥$0.017"));
+    assert_eq!(compact_cost(234_000, 0, 0).as_deref(), Some("$0.000234"));
+    assert_eq!(compact_cost(0, 0, 2), None);
 }
 
 #[test]
@@ -311,14 +324,14 @@ fn default_status_line_shows_context_tps_and_workspace_in_one_row() {
         assert!(!footer.contains(detail), "{footer}");
     }
     assert!(!footer.contains(workspace.to_string_lossy().as_ref()));
-    assert!(rows[19].contains("To main") && rows[19].contains("2 queued, Draft"));
+    assert!(rows[19].contains("2 queued, Draft"));
     assert!(rows[19].contains("Running"));
     assert!(rows[21].contains("Local draft"));
     let rows = screen(&mut app, &statusline, 80, 24);
     assert!(rows[23].contains("Ctx 89%"));
     assert!(rows[23].contains("work-right") && rows[21].contains("Local draft"));
     let rows = screen(&mut app, &statusline, 29, 24);
-    assert!(rows[19].contains("Running") && rows[19].contains("To main"));
+    assert!(rows[19].contains("Running"));
     let rows = screen(&mut app, &statusline, 42, 24);
     assert!(rows[22].contains("Model pending · Agent main"));
     assert!(

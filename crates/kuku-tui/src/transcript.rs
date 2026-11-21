@@ -662,21 +662,12 @@ impl Record {
                     };
                     render_user(&title, text, width)
                 }
-                Body::Assistant(text) => {
-                    if self.reasoning_only()
-                        && !matches!(self.key, Key::Preview(_))
-                        && details != ToolDetails::GroupMember
-                    {
-                        Vec::new()
-                    } else {
-                        preview::render_assistant(
-                            text,
-                            !self.reasoning_preview.is_empty(),
-                            matches!(self.key, Key::Preview(_)),
-                            width,
-                        )
-                    }
-                }
+                Body::Assistant(text) => preview::render_assistant(
+                    text,
+                    !self.reasoning_preview.is_empty(),
+                    matches!(self.key, Key::Preview(_)),
+                    width,
+                ),
                 Body::Interrupted(text) => {
                     message::render_markdown_record("Interrupted", WARNING, text, width)
                 }

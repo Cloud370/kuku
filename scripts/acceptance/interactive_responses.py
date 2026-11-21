@@ -92,6 +92,7 @@ def check_responses(client, workspace, terminal, prompt):
         waiting.release.set()
         streamed.release.set()
     second = client.provider.next()
+    terminal.expect("View thinking ›", also=("Find files",), absent=(opaque, hidden))
     native = second.request["input"]
     assert opaque_item in native and readable in native and tool in native
     assert any(item.get("call_id") == "call_find" and item.get("type") == "function_call_output"
@@ -105,10 +106,19 @@ def check_responses(client, workspace, terminal, prompt):
         {"id": "msg_final", "type": "message", "role": "assistant",
          "content": [{"type": "output_text", "text": answer}]},
     ]
-    second.response.put_nowait(Response(200, event("response.output_text.delta", delta=answer)
-                                       + completed(output, 41), "text/event-stream"))
-    screen = terminal.expect(answer, state="Finished", also=("View thinking",), absent=(opaque, hidden))["screen"]
-    terminal.click_text(screen, "View thinking")
+    partial = event("response.output_text.delta", delta=answer)
+    before_usage = StreamPause()
+    second.response.put_nowait(Response(200, partial + completed(output, 41), "text/event-stream",
+                                       ((len(partial), before_usage),)))
+    try:
+        assert before_usage.arrived.wait(8)
+        terminal.expect(answer, state="Reply", also=(f"~{(len(answer.encode()) + 3) // 4} tok",))
+    finally:
+        before_usage.release.set()
+    screen = terminal.expect(answer, state="Finished", also=("View thinking", "48 tok"), absent=(opaque, hidden))["screen"]
+    before_reader, mark, after_reader = screen.rpartition("View thinking")
+    terminal.click_text(before_reader.replace("View thinking", "             ") + mark + after_reader,
+                        "View thinking")
     terminal.expect(final_preview, also=(published_summary, answer), absent=(opaque, hidden, "Alternate summary body."))
     session = client.session(workspace)
     query = urlencode({"workspace": workspace, "agent": "main", "limit": 30})

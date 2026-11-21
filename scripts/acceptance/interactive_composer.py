@@ -45,7 +45,7 @@ def composer_actions(client):
         terminal.press("\r")
         models = terminal.expect("Model route", also=("Search models…", "Default ·"))["screen"]
         assert position(models, "Model route")[0] == position(models, "Search models…")[0]
-        assert position(models, "Model route")[0] < position(models, "To main")[0]
+        assert position(models, "Model route")[0] < position(models, "Ready")[0]
         screens.append(("Models at 60 columns", models))
         terminal.press("\x1b")
         terminal.expect(f"{model} · None", absent=("Model route",))

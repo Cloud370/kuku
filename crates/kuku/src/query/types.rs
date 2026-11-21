@@ -214,6 +214,9 @@ pub enum UiEvent {
     ModelProgress {
         phase: ModelPhase,
     },
+    ModelOutputUsage {
+        output_tokens: u64,
+    },
     ToolStart {
         id: String,
         tool: String,

@@ -56,6 +56,7 @@ pub(crate) fn render_at(
     }
     let outer = frame.area();
     app.contextual_hits.clear();
+    app.recipient_area = Rect::ZERO;
     if outer.is_empty() {
         app.text_selection.clear();
         app.modal_selection.clear();
@@ -293,7 +294,7 @@ pub(crate) fn render_at(
                     | crate::contextual::ContextControl::Interrupt { .. }
             )
         });
-        if let Some(control) = run_control.filter(|_| heading.width >= 48) {
+        let (area, control) = if let Some(control) = run_control.filter(|_| heading.width >= 48) {
             let chip_width = u16::try_from(contextual::label(&control).width())
                 .unwrap_or(u16::MAX)
                 .min(heading.width);
@@ -308,12 +309,18 @@ pub(crate) fn render_at(
                 chip_width,
                 heading.height,
             );
-            let line = activity::render_heading(app, usize::from(left.width), state);
-            frame.render_widget(Paragraph::new(line), left);
-            contextual::render_chip(frame, app, &control, chip);
+            (left, Some((control, chip)))
         } else {
-            let line = activity::render_heading(app, usize::from(heading.width), state);
-            frame.render_widget(Paragraph::new(line), heading);
+            (heading, None)
+        };
+        let (line, recipient) = activity::render_heading(app, usize::from(area.width), state);
+        frame.render_widget(Paragraph::new(line), area);
+        if let Some(range) = recipient.filter(|_| unobstructed) {
+            app.recipient_area =
+                Rect::new(area.x + range.start as u16, area.y, range.len() as u16, 1);
+        }
+        if let Some((control, chip)) = control {
+            contextual::render_chip(frame, app, &control, chip);
         }
     }
     if let Some(draft) = draft {

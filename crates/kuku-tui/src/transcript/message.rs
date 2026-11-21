@@ -193,3 +193,15 @@ pub(super) fn render_turn(turn: TurnHeading, width: usize, user: bool) -> Line<'
     }
     line
 }
+
+pub(super) fn turn_gap(width: usize) -> Line<'static> {
+    if width < 24 {
+        return Line::default();
+    }
+    let inset = usize::from(super::body_inset(width));
+    let rule = width.saturating_sub(inset).min(40);
+    Line::styled(
+        format!("{}{}", " ".repeat(inset), "─".repeat(rule)),
+        Style::new().fg(crate::theme::TURN_RULE),
+    )
+}

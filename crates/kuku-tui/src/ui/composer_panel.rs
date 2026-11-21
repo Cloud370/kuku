@@ -108,7 +108,12 @@ pub(super) fn render_help(frame: &mut Frame<'_>, area: Rect) -> Rect {
         Line::raw("/           Search actions and Skills"),
         Line::default(),
     ];
-    lines.extend(CommandMenu::ALL.chunks(4).map(|commands| {
+    let advertised: Vec<_> = CommandMenu::ALL
+        .iter()
+        .copied()
+        .filter(|command| command.advertised())
+        .collect();
+    lines.extend(advertised.chunks(4).map(|commands| {
         let labels = commands
             .iter()
             .map(|command| format!("/{}", command.name()))

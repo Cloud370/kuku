@@ -6,7 +6,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::text::{replace_tabs, shorten, terminal_text};
-use crate::theme::{emphasis, MUTED, SURFACE_TEXT};
+use crate::theme::{emphasis, MODEL, MUTED};
 
 use super::{DetailKey, Transcript, TranscriptView};
 
@@ -68,7 +68,7 @@ impl ThinkingRead {
         } else {
             "Thinking"
         };
-        let mut title = Line::from(Span::styled(shorten(label, width), emphasis(SURFACE_TEXT)));
+        let mut title = Line::from(Span::styled(shorten(label, width), emphasis(MODEL)));
         let room = width.saturating_sub(title.width());
         let range = format!("{}–{}/{}", self.top + 1, self.top + count, self.rows.len());
         let hint = if self.rows.len() > count && count > 0 {
@@ -86,7 +86,7 @@ impl ThinkingRead {
         title.push_span(Span::styled(hint, Style::new().fg(MUTED)));
         let notes = self.rows.iter().skip(self.top).take(count).map(|text| {
             Line::from(vec![
-                Span::styled(gutter, Style::new().fg(MUTED)),
+                Span::styled(gutter, Style::new().fg(MODEL)),
                 Span::styled(text.clone(), Style::new().fg(MUTED)),
             ])
         });

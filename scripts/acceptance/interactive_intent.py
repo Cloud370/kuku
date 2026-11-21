@@ -12,7 +12,7 @@ import shutil
 import sys
 from urllib.parse import urlencode
 
-from interactive_fixture import EXE, InstalledClient, eventually, install, scratch_directory, serve
+from interactive_fixture import EXE, InstalledClient, eventually, install, is_composer_heading, scratch_directory, serve
 from paid_model import RequestBoundary, RunLimits, paid_budget, route_for
 from run import ROOT, config_record, load_secrets, now, redact, write_json
 
@@ -90,7 +90,7 @@ def assistant_lines(screen):
     lines = [line.strip() for line in screen.splitlines()]
     start = max((index + 1 for index, line in enumerate(lines)
                  if re.fullmatch(r"Assistant(?:\s+View thinking)?", line)), default=len(lines))
-    end = next((index for index in range(start, len(lines)) if lines[index].startswith("│") and "To main" in lines[index]), len(lines))
+    end = next((index for index in range(start, len(lines)) if is_composer_heading(lines[index])), len(lines))
     body = [line for line in lines[start:end] if line and line != "│"]
     summary_pattern = (r"(?:Turn \d+\s+)?\d+(?:h \d{2}m \d{2}|m \d{2})?s"
                        r"(?: · \d+(?:\.\d+)?[KMB]? (?:in|out)| · Cache \d+(?:\.\d+)?%)* · \d+ tools?")

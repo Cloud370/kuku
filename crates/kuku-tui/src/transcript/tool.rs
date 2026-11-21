@@ -8,7 +8,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::markup::{render_diff, render_literal};
 use crate::text::{cap, shorten, single_line};
-use crate::theme::{emphasis, panel, ACCENT, ERROR, MODEL, MUTED, SURFACE_TEXT, WARNING};
+use crate::theme::{code_surface, emphasis, ACCENT, ERROR, MODEL, MUTED, SURFACE_TEXT, WARNING};
 
 use super::agent::{AgentCard, AgentRequest};
 use super::{append_bounded, body_inset, capped, render_rows, Row, ToolDetails};
@@ -296,7 +296,9 @@ impl Tool {
         if has_frame || details == ToolDetails::GroupMember {
             return self.render_content(width, details);
         }
-        super::message::padded_panel(width, panel(), |inner| self.render_content(inner, details))
+        super::message::padded_panel(width, tool_surface(), |inner| {
+            self.render_content(inner, details)
+        })
     }
 
     fn render_content(&self, width: usize, details: ToolDetails) -> Vec<Row> {
@@ -701,8 +703,12 @@ impl Tool {
 
 pub(super) fn style_card(rows: &mut [Row]) {
     for row in rows {
-        row.line.style = panel().patch(row.line.style);
+        row.line.style = tool_surface().patch(row.line.style);
     }
+}
+
+fn tool_surface() -> Style {
+    code_surface().fg(SURFACE_TEXT)
 }
 
 fn finish_card(mut rows: Vec<Row>) -> Vec<Row> {

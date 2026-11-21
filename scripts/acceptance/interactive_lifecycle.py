@@ -7,7 +7,7 @@ import threading
 import time
 from urllib.parse import urlencode
 
-from interactive_fixture import InstalledClient, Response, TOOL_BRIEF, TOOL_OUTPUT, eventually, json_response, run_cases
+from interactive_fixture import is_composer_heading, InstalledClient, Response, TOOL_BRIEF, TOOL_OUTPUT, eventually, json_response, run_cases
 from interactive_model_recovery import assert_live_elapsed, assert_testing_navigation, assert_wide_setup, recovery_cases
 from interactive_rendering import has_selected_queued_input
 
@@ -796,7 +796,9 @@ def keyboard_queue_withdrawal(client):
                 return value if [entry["receipt"]["command_id"] for entry in value] == [ids[kept]] else None
 
             remaining = eventually("keyboard withdrawal to leave the other input queued", remaining_input)
-            composer = restored[restored.index("To main"):]
+            rows = restored.splitlines()
+            heading = next(index for index, row in enumerate(rows) if is_composer_heading(row))
+            composer = "\n".join(rows[heading:])
             assert withdrawn in composer, restored
             terminal.press("\x03")
             terminal.type(draft)
@@ -860,7 +862,7 @@ def paginated_rewind(client):
         cancelled_steps, cancelled = oldest_message(terminal)
         assert cancelled_steps > 0
         terminal.press("\x1b")
-        terminal.expect("To main", state="Finished")
+        terminal.expect("Finished", absent=("Rewind to message",))
         assert history() == before, "Browsing and cancelling rewind changed durable history"
         client.provider.assert_idle()
         confirmed_steps, selected = oldest_message(terminal)

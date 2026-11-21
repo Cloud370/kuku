@@ -198,9 +198,9 @@ def two_workspaces_and_disconnect(client):
         left.expect("Draft", absent=("Connected", "F2 Restart"))
         left.press("\r")
         call = client.provider.next(prompt)
-        left.expect("Waiting for model", absent=("Connected", "F2 Restart"))
+        left.expect("Waiting", absent=("Connected", "F2 Restart"))
         client.gated_tool(workspace, call, tool_id)
-        left.expect("Running tools", absent=("Connected", "F2 Restart"))
+        left.expect("Tools", absent=("Connected", "F2 Restart"))
         session = client.session(workspace)
         assert session != client.session(other)
         assert client.status()["busy"], "Running tool is absent from service status"
@@ -459,7 +459,7 @@ def wait_restart_and_recover_crash(client, workspace, session, title):
         terminal.resume(title)
         terminal.submit(started)
         crashed_call = client.provider.next(started)
-        terminal.expect("Waiting for model", absent=("Connected", "F2 Restart"))
+        terminal.expect("Waiting", absent=("Connected", "F2 Restart"))
         client.kill(restarted)
         terminal.expect("Reconnecting to kuku service", also=("Ctrl+R",))
     crashed_call.text("Uncommitted response after crash")
@@ -588,9 +588,9 @@ def lost_first_receipt(client):
 
 
 def open_reviewer(terminal):
-    screen = terminal.expect("Open agent →", state="To main")["screen"]
+    screen = terminal.expect("Open agent →", state="main ▾")["screen"]
     terminal.click_text(screen, "Open agent →")
-    terminal.expect("To reviewer")
+    terminal.expect("reviewer ▾")
     return screen
 
 
@@ -624,12 +624,12 @@ def delegated_agent_cards(client):
         screens.append(("Switching to the active reviewer with a parent draft", menu))
         terminal.type("reviewer draft to keep")
         terminal.press("\x1b[1;3D")
-        original_draft = terminal.expect("parent draft to keep", state="To main")["screen"]
+        original_draft = terminal.expect("parent draft to keep", state="main ▾")["screen"]
         assert "reviewer draft to keep" not in original_draft
         terminal.press("\x1b[1;3D")
-        terminal.expect("reviewer draft to keep", state="To reviewer")
+        terminal.expect("reviewer draft to keep", state="reviewer ▾")
         terminal.press("\x1b[1;3D")
-        terminal.expect("parent draft to keep", state="To main")
+        terminal.expect("parent draft to keep", state="main ▾")
         terminal.press("\x03")
         client.provider.assert_idle()
 
@@ -642,11 +642,11 @@ def delegated_agent_cards(client):
             ))
             terminal.expect(card, state="Streaming reply", also=(initial,))
             open_reviewer(terminal)
-            attached = terminal.expect(initial, state="Streaming reply")["screen"]
+            attached = terminal.expect(initial, state="Reply")["screen"]
             assert attached.count(initial) == 1 and "reviewer draft to keep" in attached, attached
             screens.append(("Attaching to a reviewer mid-reply", attached))
             terminal.press("\x1b[1;3D")
-            terminal.expect(card, state="To main", also=(initial, "Streaming reply"))
+            terminal.expect(card, state="main ▾", also=(initial, "Streaming reply"))
             terminal.press("\x0f")
             expanded = terminal.expect("Live Agent reply")["screen"]
             assert "Requested instructions" in expanded and "Requested task" in expanded and task in expanded, expanded
@@ -730,7 +730,7 @@ def dense_transcript(client, reference=False):
     def running_view(screen, height):
         rows = screen.split("\n")
         return len(rows) == height and (
-            "Running tools" in rows[-1] or any("To main · Running" in row for row in rows[-8:])
+            "Tools" in rows[-1] or any("Tools" in row for row in rows[-8:])
         )
 
     def measure_tools(terminal):
@@ -794,7 +794,7 @@ def dense_transcript(client, reference=False):
 
         terminal.click_text(restored, "Read file · error")
         error = terminal.expect("Requested arguments")["screen"]
-        assert f"path does not exist: {scenario.missing}" in error and "To main · Running" in error and scenario.draft in error, error
+        assert f"path does not exist: {scenario.missing}" in error and "Tools" in error and scenario.draft in error, error
         screens.append(("Independent failed call with its exact error", error))
         terminal.click_text(error, "Read file · error")
         terminal.press("\x1b[1;5F")
@@ -804,7 +804,7 @@ def dense_transcript(client, reference=False):
         terminal.request("resize", rows=32, cols=140)
         terminal.submit(scenario.prompt)
         with scenario.running_tool():
-            terminal.expect("Running tools")
+            terminal.expect("Tools")
             terminal.type(scenario.draft)
             measurements = measure_tools(terminal)
             terminal.request("resize", rows=36, cols=140)

@@ -287,7 +287,7 @@ fn composer_lists_keep_alignment_draft_selection_and_reading_position() {
         let baseline = frame(&mut app, width);
         assert!(lines(&baseline)
             .iter()
-            .any(|line| line.contains("To main") && line.contains("Next Medium")));
+            .any(|line| line.contains("Running") && line.contains("Next Medium")));
         app.scroll(-6);
         assert_eq!(KeyboardFocus::Transcript, app.pane().keyboard_focus);
         let anchor = app.pane().transcript.reading_anchor().cloned();

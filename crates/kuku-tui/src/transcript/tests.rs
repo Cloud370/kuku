@@ -528,7 +528,7 @@ fn live_and_committed_turns_use_display_numbers_and_unknown_remains_generic() {
         .iter()
         .position(|row| row.starts_with("Turn 2  ─"))
         .expect("second turn heading");
-    assert!(turn_two > 0 && live[turn_two - 1].is_empty());
+    assert!(turn_two > 0 && live[turn_two - 1].trim().starts_with('─'));
 
     let mut settled = response(29, "Second reply".into());
     settled.turn = Some(23);

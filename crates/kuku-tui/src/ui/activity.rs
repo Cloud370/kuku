@@ -1,3 +1,4 @@
+use std::ops::Range;
 use std::time::Duration;
 
 use kuku::config::ThinkLevel;
@@ -5,9 +6,9 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{Activity, App, ServiceStatus};
+use crate::app::{Activity, App, OutputTokens, ServiceStatus, SubmissionStatus};
 use crate::keys::Shortcut;
-use crate::text::{format_elapsed, shorten, shorten_middle, single_line};
+use crate::text::{compact_token_count, format_elapsed, shorten, shorten_middle, single_line};
 use crate::theme::{emphasis, ACCENT, ERROR, EXECUTION, MUTED, SURFACE_TEXT, WARNING};
 
 mod clock;
@@ -16,25 +17,33 @@ mod motion;
 pub(crate) use clock::ActivityClock;
 use motion::Ring;
 
-const COMPACT_WIDTH: usize = 37;
-const WIDE_WIDTH: usize = 66;
-const PHASE_SLOT: usize = 22;
-const TIME_SLOT: usize = 12;
+const PHASE_SLOT: usize = 14;
+const TOOLS_SLOT: usize = 4;
+const METER_SLOT: usize = 11;
 const FEEDBACK_LIMIT: usize = 48;
-const RECIPIENT_LIMIT: usize = 28;
-const SEPARATOR: &str = " · ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ObservedActivity {
     Service(ServiceStatus),
     Agent(Activity),
+    Sending,
 }
 
 impl ObservedActivity {
     fn of(app: &App) -> Self {
         let service = app.service_status();
         if service == ServiceStatus::Connected {
-            Self::Agent(app.pane().activity())
+            let activity = app.pane().composer_activity();
+            if matches!(activity, Activity::Ready | Activity::Finished)
+                && matches!(
+                    app.input_status().submission,
+                    Some(SubmissionStatus::Saving | SubmissionStatus::AwaitingReceipt)
+                )
+            {
+                Self::Sending
+            } else {
+                Self::Agent(activity)
+            }
         } else {
             Self::Service(service)
         }
@@ -43,6 +52,12 @@ impl ObservedActivity {
     fn label(self) -> &'static str {
         match self {
             Self::Service(service) => service.label(),
+            Self::Sending => "Send",
+            Self::Agent(Activity::WaitingForModel) => "Waiting",
+            Self::Agent(Activity::Streaming) => "Reply",
+            Self::Agent(Activity::ToolArguments) => "Tool call",
+            Self::Agent(Activity::RunningTools) => "Tools",
+            Self::Agent(Activity::RetryingModel) => "Retrying",
             Self::Agent(activity) => activity.label(),
         }
     }
@@ -58,6 +73,7 @@ impl ObservedActivity {
                 | Activity::Stopping
                 | Activity::Stopped,
             ) => WARNING,
+            Self::Sending => EXECUTION,
             phase if phase.motion().is_some() => EXECUTION,
             _ => MUTED,
         }
@@ -120,16 +136,22 @@ impl ActivityFrame {
             color @ (ERROR | WARNING) => color,
             _ => ACCENT,
         };
-        let ring = status.motion().zip(step).map_or_else(
-            || Ring::resting(tone),
-            |(phase, step)| {
-                if phase == Activity::Thinking {
-                    Ring::resting(MUTED)
-                } else {
-                    Ring::moving(phase, step)
-                }
-            },
-        );
+        let ring = match status {
+            ObservedActivity::Sending => Ring::phase("↑", EXECUTION, step),
+            ObservedActivity::Agent(Activity::WaitingForModel) => Ring::phase("…", EXECUTION, step),
+            ObservedActivity::Agent(Activity::Thinking) => {
+                Ring::phase("◇", crate::theme::MODEL, step)
+            }
+            ObservedActivity::Agent(Activity::Streaming) => {
+                Ring::phase("↓", crate::theme::ACTIVITY_MINT, step)
+            }
+            ObservedActivity::Agent(Activity::ToolArguments | Activity::RunningTools) => {
+                Ring::phase("↳", crate::theme::USAGE, step)
+            }
+            _ => step
+                .filter(|_| status.motion().is_some())
+                .map_or_else(|| Ring::resting(tone), Ring::moving),
+        };
         Self {
             status,
             ring,
@@ -158,77 +180,123 @@ impl ActivityFrame {
     pub(super) fn agent_activity(&self, app: &App) -> Activity {
         match self.status {
             ObservedActivity::Agent(activity) => activity,
-            ObservedActivity::Service(_) => app.pane().activity(),
+            ObservedActivity::Service(_) | ObservedActivity::Sending => app.pane().activity(),
         }
     }
 }
 
-pub(super) fn render_heading(app: &App, width: usize, frame: ActivityFrame) -> Line<'static> {
-    let compact = width < COMPACT_WIDTH;
-    let wide = width >= WIDE_WIDTH;
-    let mut line = frame.ring.line(width);
+pub(super) fn render_heading(
+    app: &App,
+    width: usize,
+    frame: ActivityFrame,
+) -> (Line<'static>, Option<Range<usize>>) {
     let muted = Style::default().fg(MUTED);
-    let name = single_line(&app.active.agent);
-    let separator = if compact { " " } else { SEPARATOR };
-    let fixed_width = line.width() + " To ".width() + separator.width();
-    let reserved = if wide { PHASE_SLOT + TIME_SLOT + 2 } else { 0 };
-    let name_width = (width / 3).clamp(4, RECIPIENT_LIMIT);
-    let name_width = name_width.min(width.saturating_sub(fixed_width + reserved));
-    if name_width > 0 {
-        line.push_span(Span::styled(" To ", muted));
-        line.push_span(Span::styled(
-            shorten_middle(&name, name_width),
-            emphasis(SURFACE_TEXT),
-        ));
-    }
-    if line.width() + separator.width() < width {
-        line.push_span(Span::styled(separator, muted));
-    }
-    let label = frame.status.label();
-    let elapsed = frame
-        .elapsed
-        .filter(|_| frame.status.clock_runs())
-        .map(|seconds| format_elapsed(Duration::from_secs(seconds)));
-    let elapsed = elapsed.filter(|text| {
-        wide || line.width() + label.width() + text.width() + 2 <= width.saturating_sub(6)
-    });
-    let time_space = if wide {
-        TIME_SLOT + 2
-    } else {
-        elapsed.as_ref().map_or(0, |text| text.width() + 2)
-    };
-    let phase_space = if wide { PHASE_SLOT } else { label.width() };
-    let feedback_width = width
-        .saturating_sub(line.width() + phase_space + time_space + 1)
+    let feedback_limit = width
+        .saturating_sub(PHASE_SLOT + 1)
         .min(width / 3)
         .min(FEEDBACK_LIMIT);
-    let left_width = width - feedback_width - usize::from(feedback_width > 0);
-    let status = shorten(label, left_width.saturating_sub(line.width()));
-    line.push_span(Span::styled(status, Style::new().fg(frame.status.color())));
-    if let Some(elapsed) = elapsed {
+    let feedback = app
+        .displayed_statusline()
+        .composer_feedback(app, feedback_limit);
+    let left_width = width - feedback.as_ref().map_or(0, |feedback| feedback.width() + 1);
+    let has_recipient = app.active.agent != "main" || app.related_agents.iter().next().is_some();
+    let render_metrics =
+        left_width >= PHASE_SLOT + TOOLS_SLOT + METER_SLOT + usize::from(has_recipient) * 12;
+    let phase_width = if render_metrics {
+        PHASE_SLOT
+    } else {
+        left_width
+    };
+    let mut line = frame.ring.line(phase_width);
+    if phase_width > line.width() {
         line.push_span(" ");
-        line.push_span(Span::styled(shorten(&elapsed, TIME_SLOT), muted));
     }
+    let status = shorten(
+        frame.status.label(),
+        phase_width.saturating_sub(line.width()),
+    );
+    line.push_span(Span::styled(status, Style::new().fg(frame.status.color())));
+
+    if render_metrics {
+        line.push_span(" ".repeat(PHASE_SLOT - line.width()));
+        let activity = frame.agent_activity(app);
+        let parallel = matches!(
+            frame.status,
+            ObservedActivity::Agent(
+                Activity::Streaming | Activity::Thinking | Activity::ToolArguments
+            )
+        );
+        let count = app.pane().parallel_tools();
+        let tools = if parallel && count != 0 {
+            format!("↳{}", count.min(999))
+        } else {
+            String::new()
+        };
+        line.push_span(Span::styled(
+            format!("{tools:<TOOLS_SLOT$}"),
+            Style::new().fg(crate::theme::USAGE),
+        ));
+        let tokens = match frame.status {
+            ObservedActivity::Agent(_) => app.pane().composer_output_tokens(activity),
+            _ => None,
+        };
+        let metric = match tokens {
+            Some(OutputTokens::Reported(count)) => format!("{} tok", compact_token_count(count)),
+            Some(OutputTokens::Estimated(count)) => format!("~{} tok", compact_token_count(count)),
+            None => frame
+                .elapsed
+                .filter(|_| frame.status.clock_runs())
+                .map_or_else(String::new, |seconds| {
+                    format_elapsed(Duration::from_secs(seconds))
+                }),
+        };
+        let metric = shorten(&metric, METER_SLOT);
+        line.push_span(Span::styled(format!("{metric:<METER_SLOT$}"), muted));
+    }
+
     let key = Shortcut::CYCLE_THINKING.label;
     let action = " think";
-    if app.modal.is_none()
+    let key_width = 2 + key.width() + action.width();
+    let thinking = app.modal.is_none()
         && app.available()
-        && left_width.saturating_sub(line.width()) >= 2 + key.width() + action.width()
         && app.pane().effective_reasoning().is_some_and(|(_, caps)| {
             caps.selectable_reasoning_efforts()
                 .any(|level| level != ThinkLevel::ProviderDefault.as_str())
+        });
+    let recipient = if has_recipient {
+        let room = left_width.saturating_sub(line.width() + 2);
+        let name = single_line(&app.active.agent);
+        let room = if thinking && room >= key_width + 18 {
+            room - key_width
+        } else {
+            room
+        };
+        let room = room.min(32);
+        let label = if room >= 16 {
+            format!(
+                "Send to {} ▾",
+                shorten_middle(&name, room - "Send to  ▾".width())
+            )
+        } else {
+            format!("{} ▾", shorten_middle(&name, room.saturating_sub(2)))
+        };
+        (room >= 5).then(|| {
+            line.push_span("  ");
+            let start = line.width();
+            line.push_span(Span::styled(label, emphasis(ACCENT)));
+            start..line.width()
         })
-    {
+    } else {
+        None
+    };
+    if thinking && left_width.saturating_sub(line.width()) >= key_width {
         line.push_span("  ");
         line.push_span(Span::styled(key, Style::new().fg(SURFACE_TEXT)));
         line.push_span(Span::styled(action, muted));
     }
-    if let Some(feedback) = app
-        .displayed_statusline()
-        .composer_feedback(app, feedback_width)
-    {
+    if let Some(feedback) = feedback {
         line.push_span(" ".repeat(width - line.width() - feedback.width()));
         line.push_span(feedback);
     }
-    line
+    (line, recipient)
 }

@@ -108,6 +108,8 @@
 
 在同一快照游标处，`agents` 中其他 Agent 的条目也可包含 `progress.phase`。`streaming` 条目的 `progress.preview` 包含该 Agent 当前回复开头的 UTF-8 文本，最多 512 字节。`thinking` 与 `tool_arguments` 仅报告活动。
 
+所选 Agent 的回复预览和对应的 `reply_preview` 事件包含 `output_bytes`，统计已观察到的可见回复字节，包括超出保留前缀的部分。如果有 `output_tokens`，它是上游为当前请求报告的最新累计输出量。实时 `model_output_usage` 事件更新所选 Agent 的同一个计数。每次新请求或重试从自己的计数开始。
+
 指定 Agent 且设置 `include_agent_activity=true` 时，观察流也可以发送 `event.type` 为 `reply_preview` 的 `live` 行。阶段放在 `event.phase`，前缀放在 `event.content`，截断标志放在 `event.truncated`。用该前缀替换对应的内存预览，再应用后续增量。取得前缀与开始接收新增量共用同一接入边界。在此订阅范围内，实时 `thinking` 与 `tool_arguments` 事件仅报告活动。工具从已提交的派发开始执行。续读游标只随已提交记录推进。
 
 历史条目包含持久的 `id`、Agent 地址、可选的 Turn 标识、在该 Agent 内的显示序号（已知时提供 `turn_number`），以及 `user`、`assistant`、`tool_call`、`tool_result`、`question`、`permission`、`question_reply`、`permission_reply`、`status` 或 `error` 等 `type`。工具结果可以包含摘要、结构化详情以及保留的 `output_id`。已提交条目也可以带有运行时 `operation` 或记录该轮结果的 `settlement`。

@@ -38,6 +38,10 @@ impl CommandMenu {
         self.spec().0
     }
 
+    pub(crate) fn advertised(self) -> bool {
+        self != Self::Web
+    }
+
     pub(crate) fn description(self) -> String {
         let (_, _, description, shortcut) = self.spec();
         shortcut.map_or_else(

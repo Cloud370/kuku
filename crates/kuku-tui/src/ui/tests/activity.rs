@@ -4,7 +4,6 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use kuku_client::{
     Acknowledgement, Action, AgentProgress, Error, HistoryPage, Observation, Receipt,
 };
-use ratatui::style::Modifier;
 use ratatui::{backend::TestBackend, Terminal};
 use serde_json::json;
 
@@ -38,7 +37,7 @@ fn composer_animates_only_observed_work_and_keeps_feedback_in_place() {
     let next_heading = next.0.lines().nth(19).unwrap();
     assert!(first.1 && next.1);
     assert_ne!(first_heading, next_heading);
-    assert_eq!(first_heading.find("To main"), next_heading.find("To main"));
+    assert!(!first_heading.contains("Send to"));
     assert_eq!(first_heading.find("Running"), next_heading.find("Running"));
     assert_eq!(first_heading.find("Draft"), next_heading.find("Draft"));
     assert_eq!(first.0.lines().last(), next.0.lines().last());
@@ -63,7 +62,7 @@ fn composer_animates_only_observed_work_and_keeps_feedback_in_place() {
 }
 
 #[test]
-fn attached_activity_keeps_recipient_clock_and_draft_fixed_across_phases() {
+fn attached_activity_keeps_clock_tokens_and_draft_fixed_across_phases() {
     let mut app = app();
     app.statusline_settings =
         StatusLineSettings::in_memory(StatusLine::parse("model,execution,agent").unwrap());
@@ -105,19 +104,19 @@ fn attached_activity_keeps_recipient_clock_and_draft_fixed_across_phases() {
         let cells = row(app.composer_area.y - 2);
         let heading: String = cells.iter().map(|cell| cell.symbol()).collect();
         assert!(
-            heading.contains("To main") && heading.contains(label),
+            heading.contains(label) && !heading.contains("Send to"),
             "{heading}"
         );
-        assert!(cells.windows(4).any(|name| name
-            .iter()
-            .map(|cell| cell.symbol())
-            .eq(["m", "a", "i", "n"])
-            && name
-                .iter()
-                .all(|cell| cell.modifier.contains(Modifier::BOLD))));
         let footer: String = row(27).iter().map(|cell| cell.symbol()).collect();
+        let footer_label = match label {
+            "Waiting" => "Waiting for model",
+            "Tool call" => "Writing tool arguments",
+            other => other,
+        };
         assert!(
-            footer.trim().ends_with(&format!("{label} · Agent main")),
+            footer
+                .trim()
+                .ends_with(&format!("{footer_label} · Agent main")),
             "{footer}"
         );
         (
@@ -126,8 +125,8 @@ fn attached_activity_keeps_recipient_clock_and_draft_fixed_across_phases() {
             app.composer_area,
         )
     };
-    let original = draw(&mut app, &mut clock, 0, "Waiting for model");
-    assert!(original.0.contains("Waiting for model 8s"));
+    let original = draw(&mut app, &mut clock, 0, "Waiting");
+    assert!(original.0.contains("8s"));
     let live = |app: &mut App, clock: &mut ActivityClock, ms, event| {
         app.update(Update::Observation(
             selection.clone(),
@@ -143,7 +142,7 @@ fn attached_activity_keeps_recipient_clock_and_draft_fixed_across_phases() {
         clock.observe(app, first + Duration::from_millis(ms));
     };
     live(&mut app, &mut clock, 40, json!({"type":"thinking"}));
-    draw(&mut app, &mut clock, 45, "Waiting for model");
+    draw(&mut app, &mut clock, 45, "Waiting");
     live(
         &mut app,
         &mut clock,
@@ -151,11 +150,11 @@ fn attached_activity_keeps_recipient_clock_and_draft_fixed_across_phases() {
         json!({"type":"text","content":"Early text"}),
     );
     live(&mut app, &mut clock, 95, json!({"type":"thinking"}));
-    let current = draw(&mut app, &mut clock, 145, "Waiting for model");
+    let current = draw(&mut app, &mut clock, 145, "Waiting");
     assert_eq!((original.1, original.2), (current.1, current.2));
     live(&mut app, &mut clock, 160, json!({"type":"tool_arguments"}));
-    let tools = draw(&mut app, &mut clock, 2_100, "Writing tool arguments");
-    assert!(tools.0.contains("Writing tool arguments 10s"));
+    let tools = draw(&mut app, &mut clock, 2_100, "Tool call");
+    assert!(tools.0.contains("~3 tok"));
     assert_eq!(original.0.find("Draft"), tools.0.find("Draft"));
     assert_eq!((original.1, original.2), (tools.1, tools.2));
     key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
@@ -178,7 +177,9 @@ fn narrow_composer_preserves_the_distinguishing_end_of_the_agent_address() {
     let rows = screen(&mut app, 71, 25);
     let recipient = rows.lines().nth(20).unwrap();
     assert!(
-        recipient.contains("To reviewer") && recipient.contains("-92 · Ready"),
+        recipient.contains("Send to reviewer")
+            && recipient.contains("-92 ▾")
+            && recipient.contains("Ready"),
         "{recipient}"
     );
     assert!(rows
@@ -187,6 +188,65 @@ fn narrow_composer_preserves_the_distinguishing_end_of_the_agent_address() {
         .unwrap()
         .trim_matches([' ', '│'])
         .is_empty());
+}
+
+#[test]
+fn compact_heading_shows_only_real_parallel_tools_and_prefers_reported_output() {
+    let mut app = app();
+    app.select(app.active.clone(), true, "Live output".into());
+    let selection = app.selection();
+    let mut current = snapshot(&app, "running", json!(null), json!(null));
+    current.progress = Some(AgentProgress::RunningTools {
+        tool_call_ids: vec!["tool-1".into()],
+    });
+    app.update(Update::Loaded(
+        selection.clone(),
+        current,
+        HistoryPage {
+            entries: vec![],
+            rewind_groups: vec![],
+            next_before: None,
+        },
+    ));
+    app.update(Update::WatchConnected(selection.clone()));
+    let emit = |app: &mut App, event| {
+        app.update(Update::Observation(
+            selection.clone(),
+            Observation::Live {
+                agent: "main".into(),
+                execution_id: 49,
+                cursor: 53,
+                turn: Some(40),
+                turn_number: Some(1),
+                event,
+            },
+        ));
+    };
+    let before = screen(&mut app, 60, 28);
+    assert!(before.contains("Tools") && !before.contains("↳1"));
+    emit(
+        &mut app,
+        json!({"type":"text","content":"01234567890123456789"}),
+    );
+    let estimate = screen(&mut app, 60, 28);
+    assert!(
+        estimate
+            .lines()
+            .any(|line| line.contains("Reply") && line.contains("↳1") && line.contains("~5 tok")),
+        "{estimate}"
+    );
+    emit(
+        &mut app,
+        json!({"type":"model_output_usage","output_tokens":37}),
+    );
+    let reported = screen(&mut app, 60, 28);
+    assert!(
+        reported
+            .lines()
+            .any(|line| line.contains("Reply") && line.contains("↳1") && line.contains("37 tok")),
+        "{reported}"
+    );
+    assert!(!reported.contains("~5 tok"));
 }
 
 #[test]

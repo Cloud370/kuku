@@ -30,6 +30,7 @@ pub(crate) enum ClickTarget {
     },
     Transcript,
     Composer,
+    Recipient,
     JumpLatest,
     Messages,
 }

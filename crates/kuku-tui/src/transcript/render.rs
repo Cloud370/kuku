@@ -62,7 +62,7 @@ impl Transcript {
             }
             if block.turn_gap {
                 if skip == 0 {
-                    lines.push(ratatui::text::Line::default());
+                    lines.push(message::turn_gap(width));
                     row_insets.push(0);
                 }
                 skip = skip.saturating_sub(1);

@@ -38,6 +38,7 @@ impl App {
                 }
             }
             Some(MouseAction::Click(ClickTarget::Agent(target))) => self.select_agent(target),
+            Some(MouseAction::Click(ClickTarget::Recipient)) => self.open_agents(),
             Some(MouseAction::Click(ClickTarget::Request { target, request_id })) => {
                 self.focus_context_control(ContextControl::Request { target, request_id });
             }
@@ -112,6 +113,8 @@ impl App {
                     Some(ClickTarget::JumpLatest)
                 } else if self.composer_area.contains(position) {
                     Some(ClickTarget::Composer)
+                } else if self.recipient_area.contains(position) {
+                    Some(ClickTarget::Recipient)
                 } else if self.permission_choice_areas[0].contains(position) {
                     self.request_hit
                         .as_ref()

@@ -317,15 +317,15 @@ pub(super) fn assistant_header(
     let mut rows = Vec::new();
     let role = if width >= 9 { "Assistant" } else { "AI" };
     let placeholder = live && !has_reply;
-    let joined = (has_reply || placeholder) && has_thinking && width >= 16;
+    let joined = has_thinking && width >= 27;
     if has_thinking {
         let mut title = Line::default();
         if joined {
             title.push_span(Span::styled(format!("{role}   "), emphasis(SURFACE_TEXT)));
         }
         title.push_span(Span::styled(
-            shorten("View thinking", width.saturating_sub(title.width())),
-            Style::new().fg(MUTED),
+            shorten("View thinking ›", width.saturating_sub(title.width())),
+            emphasis(crate::theme::MODEL),
         ));
         rows.push(Row::plain(title));
     }

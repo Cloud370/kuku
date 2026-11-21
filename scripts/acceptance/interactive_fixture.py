@@ -33,6 +33,10 @@ TOOL_OUTPUT = "fixture-tool-output-42"
 EXE = ".exe" if os.name == "nt" else ""
 
 
+def is_composer_heading(line):
+    return bool(re.match(r"^\s*[│┃]\s+(?:[\u2800-\u28ff]{2}|[↑…◇↓↳])\s+\S", line))
+
+
 def cleanup_path(path):
     if not isinstance(path, PureWindowsPath):
         return path

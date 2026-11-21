@@ -342,9 +342,8 @@ impl Field {
                     .snapshot
                     .as_ref()
                     .and_then(|snapshot| snapshot.session_costs.as_ref());
-                let (scope, reported, estimated, unknown) = if let Some(costs) = session_costs {
+                let (reported, estimated, unknown) = if let Some(costs) = session_costs {
                     (
-                        "Session",
                         costs.reported_nanodollars,
                         costs.estimated_nanodollars,
                         costs.unknown_requests,
@@ -352,21 +351,12 @@ impl Field {
                 } else {
                     let usage = usage?;
                     (
-                        "Agent",
                         usage.costs.reported_nanodollars,
                         usage.costs.estimated_nanodollars,
                         usage.unknown_cost_requests(),
                     )
                 };
-                Segment::details(
-                    format!(
-                        "{scope} cost · reported {symbol}{:.7} · estimated {symbol}{:.7} · {unknown} unknown",
-                        reported as f64 / 1_000_000_000.0,
-                        estimated as f64 / 1_000_000_000.0,
-                        symbol = "$",
-                    ),
-                    Priority::Metric,
-                )
+                Segment::metric(compact_cost(reported, estimated, unknown), "—")
             }
             Self::Throughput => Segment::measurement(
                 usage.and_then(UsageTotals::average_output_tokens_per_second),
@@ -738,6 +728,42 @@ fn tokens(value: Option<u64>, complete: bool, direction: &str) -> Segment {
         format!("{bound}{} {direction}", compact_token_count(count))
     });
     Segment::metric(label, &format!("— {direction}"))
+}
+
+fn compact_cost(reported: u64, estimated: u64, unknown: u64) -> Option<String> {
+    let total = u128::from(reported) + u128::from(estimated);
+    if total == 0 && unknown != 0 {
+        return None;
+    }
+    let prefix = if estimated != 0 {
+        "~"
+    } else if unknown != 0 {
+        "≥"
+    } else {
+        ""
+    };
+    if (1..1_000).contains(&total) {
+        return Some(
+            match prefix {
+                "~" => "~$0.000001",
+                "≥" => ">$0",
+                _ => "<$0.000001",
+            }
+            .into(),
+        );
+    }
+    let precision = if total < 1_000_000 { 6 } else { 3 };
+    let unit = 10u128.pow(9 - precision as u32);
+    let total = if prefix == "≥" {
+        total / unit * unit
+    } else {
+        total
+    };
+    let amount = format!("{:.precision$}", total as f64 / 1_000_000_000.0);
+    Some(format!(
+        "{prefix}${}",
+        amount.trim_end_matches('0').trim_end_matches('.')
+    ))
 }
 
 fn tokens_per_second(rate: f64) -> String {
