@@ -449,6 +449,7 @@ fn output_spec(pending: &PendingRun, id: &str) -> Result<super::slots::RetainedO
             max_output_bytes: retention.max_bytes(),
             max_preview_bytes: pending.query.runtime_limits.max_preview_bytes,
         },
+        has_output_reader: find_tool_definition(pending, "read_output").is_some(),
         retention,
     })
 }

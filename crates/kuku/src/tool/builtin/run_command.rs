@@ -37,6 +37,7 @@ mod shell;
 mod windows_tests;
 
 const RUN_COMMAND_MAX_CHARS: usize = 80_000;
+pub(crate) const MAX_REQUESTED_PREVIEW_BYTES: usize = 65_536;
 const READ_BUFFER_BYTES: usize = 8192;
 const CLEANUP_TIMEOUT: Duration = Duration::from_secs(1);
 static OUTPUT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -59,15 +60,31 @@ struct CommandOutcome {
 }
 
 enum CommandView {
-    Model,
+    Model { has_output_reader: bool },
     Script { host_bytes: usize },
 }
 
-struct CommandCapture<'a> {
+pub(crate) struct CommandCapture<'a> {
     dir: &'a Path,
     id: &'a str,
     limits: OutputLimits,
     view: CommandView,
+}
+
+impl<'a> CommandCapture<'a> {
+    pub(crate) fn model(
+        dir: &'a Path,
+        id: &'a str,
+        limits: OutputLimits,
+        has_output_reader: bool,
+    ) -> Self {
+        Self {
+            dir,
+            id,
+            limits,
+            view: CommandView::Model { has_output_reader },
+        }
+    }
 }
 
 pub(crate) async fn run_command(
@@ -113,12 +130,7 @@ pub(crate) async fn run_command_with_output(
         workspace,
         event_tx,
         cancel,
-        CommandCapture {
-            dir: output_dir,
-            id: output_id,
-            limits,
-            view: CommandView::Model,
-        },
+        CommandCapture::model(output_dir, output_id, limits, false),
     )
     .await
 }
@@ -147,7 +159,7 @@ pub(crate) async fn run_command_for_script(
     .await
 }
 
-async fn run_command_to(
+pub(crate) async fn run_command_to(
     args: &Value,
     workspace: &Path,
     event_tx: Option<mpsc::Sender<CommandEvent>>,

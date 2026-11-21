@@ -3,7 +3,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::process::ExitStatus;
 use std::time::Duration;
 
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::execution::{
     CommandExecutionFacts, CommandInvocation, CommandResultKind, CommandStdin, CommandTermination,
@@ -11,13 +11,16 @@ use crate::execution::{
 };
 use crate::tool::ToolResultEnvelope;
 
-use super::output::{read_stderr, CaptureMetadata, OutputSegment};
+use super::output::{read_stderr, CaptureMetadata, OutputChunk, OutputSegment};
 use super::{
     output_error, read_output, CommandCapture, CommandOutcome, CommandRequest, CommandView,
     OutputRead, OutputStream,
 };
 
 const MAX_OUTPUT_PREVIEW_BYTES: usize = 2048;
+const SHAPE_SAMPLE_BYTES: usize = 96;
+const SHAPE_FIELDS: usize = 6;
+const SHAPE_FIELD_BYTES: usize = 24;
 
 pub(super) fn render_command_result(
     request: &CommandRequest,
@@ -87,7 +90,15 @@ pub(super) fn render_command_result(
         side_effects_observed: false,
     };
     match output.view {
-        CommandView::Model => render_model(status, summary, facts, &metadata, output),
+        CommandView::Model { has_output_reader } => render_model(
+            status,
+            summary,
+            facts,
+            &metadata,
+            output,
+            has_output_reader,
+            request.preview_bytes,
+        ),
         CommandView::Script { host_bytes } => {
             render_script(status, summary, facts, output, host_bytes)
         }
@@ -100,6 +111,8 @@ fn render_model(
     mut facts: CommandExecutionFacts,
     metadata: &CaptureMetadata,
     output: CommandCapture<'_>,
+    has_output_reader: bool,
+    requested_preview: Option<usize>,
 ) -> ToolResultEnvelope {
     let filtered = !metadata.summary.is_empty() || !facts.reported_tests.is_empty();
     let output_preview_limit = output
@@ -108,17 +121,24 @@ fn render_model(
         .min(MAX_OUTPUT_PREVIEW_BYTES);
     let failed =
         facts.timed_out || facts.signal.is_some() || facts.exit_code.is_some_and(|code| code != 0);
+    let defer_raw = has_output_reader
+        && requested_preview.is_none()
+        && facts.exit_code == Some(0)
+        && metadata.stored_bytes > 0;
+    let model_preview_limit = requested_preview
+        .unwrap_or(output.limits.max_preview_bytes)
+        .min(output.limits.max_preview_bytes);
     let show_end = failed
         && !filtered
         && facts.capture_complete
-        && metadata.stored_bytes > output.limits.max_preview_bytes as u64;
+        && metadata.stored_bytes > model_preview_limit as u64;
     let show_stderr = show_end && facts.stderr_bytes > 0;
     let read_limit = if show_end {
-        output_preview_limit.min(output.limits.max_preview_bytes / 2)
-    } else if filtered {
+        output_preview_limit.min(model_preview_limit / 2)
+    } else if (filtered && requested_preview.is_none()) || defer_raw {
         output_preview_limit
     } else {
-        output.limits.max_preview_bytes
+        model_preview_limit
     }
     .max(1);
     let source_bytes = if show_stderr {
@@ -165,27 +185,43 @@ fn render_model(
     let output_preview_truncated =
         show_end || chunk.has_more || output_preview.len() > output_preview_limit;
     truncate_utf8(&mut output_preview, output_preview_limit);
-    let body = if filtered {
+    let mut body = if filtered {
         format!(
             "\n\nBuild/test summary (selected lines):\n{}",
             report_evidence(&metadata.summary, &facts.reported_tests)
         )
-    } else if show_end {
-        let source = if show_stderr { "stderr" } else { "output" };
-        format!("\n\nEnd of captured {source}:\n{raw_preview}")
     } else {
+        String::new()
+    };
+    let include_raw = !defer_raw && (!filtered || requested_preview.is_some());
+    if include_raw && show_end {
+        let source = if show_stderr { "stderr" } else { "output" };
+        body.push_str(&format!("\n\nEnd of captured {source}:\n{raw_preview}"));
+    } else if include_raw {
         let text = if raw_preview.is_empty() {
             "(command produced no output)"
         } else {
             raw_preview
         };
-        format!("\n\n{text}")
-    };
+        body.push_str("\n\n");
+        body.push_str(text);
+    } else if defer_raw && !filtered {
+        body.push_str("\n\nRaw output is retained. Use read_output for the relevant range.");
+    }
+    if defer_raw && !filtered {
+        append_output_shape(&mut body, &chunk, &facts);
+    }
     if !facts.capture_complete {
         summary.push_str(", capture incomplete");
     }
-    let reference = render_reference(output.id, metadata, filtered, chunk.lossy_utf8);
-    let preview_truncated = (!filtered && (show_end || chunk.has_more))
+    let reference = render_reference(
+        output.id,
+        metadata,
+        filtered,
+        chunk.lossy_utf8 && include_raw,
+    );
+    let preview_truncated = (include_raw && (show_end || chunk.has_more))
+        || (defer_raw && !filtered)
         || summary.len() + body.len() + reference.len() > output.limits.max_preview_bytes;
     if preview_truncated {
         summary.push_str(", preview truncated");
@@ -199,12 +235,80 @@ fn render_model(
     );
     facts.lossy_utf8 = chunk.lossy_utf8
         && (output_preview.contains(char::REPLACEMENT_CHARACTER)
-            || (!filtered && model_content.contains(char::REPLACEMENT_CHARACTER)));
+            || (include_raw && model_content.contains(char::REPLACEMENT_CHARACTER)));
     facts.output_filtered = filtered;
     facts.preview_truncated = preview_truncated;
     facts.output_preview = output_preview;
     facts.output_preview_truncated = output_preview_truncated;
     ToolResultEnvelope::command(status, summary, model_content, truncated, facts)
+}
+
+fn append_output_shape(body: &mut String, chunk: &OutputChunk, facts: &CommandExecutionFacts) {
+    for (stream, label, bytes) in [
+        (OutputStream::Stdout, "stdout", facts.stdout_bytes),
+        (OutputStream::Stderr, "stderr", facts.stderr_bytes),
+    ] {
+        if bytes == 0 {
+            continue;
+        }
+        body.push_str(&format!("\n{label}: {bytes} observed bytes"));
+        if !chunk.lossy_utf8 {
+            if let Some(segment) = chunk
+                .segments
+                .iter()
+                .find(|segment| segment.stream == stream)
+            {
+                body.push_str(". Observed prefix: ");
+                body.push_str(&output_shape(&segment.text, segment.bytes as u64 == bytes));
+            }
+        }
+    }
+}
+
+fn output_shape(prefix: &str, complete: bool) -> String {
+    if complete {
+        match serde_json::from_str::<Value>(prefix) {
+            Ok(Value::Object(fields)) => return json_object_shape("JSON object", &fields),
+            Ok(Value::Array(items)) => return format!("JSON array, {} items", items.len()),
+            _ => {}
+        }
+    }
+    let mut lines = prefix
+        .split_inclusive('\n')
+        .filter(|line| complete || line.ends_with('\n'))
+        .map(|line| line.trim_end_matches(['\r', '\n']))
+        .filter(|line| !line.trim().is_empty());
+    let (Some(first), Some(second)) = (lines.next(), lines.next()) else {
+        return "text".into();
+    };
+    if let (Ok(Value::Object(fields)), Ok(Value::Object(_))) =
+        (serde_json::from_str(first), serde_json::from_str(second))
+    {
+        return json_object_shape("first two lines are JSON objects", &fields);
+    }
+    let columns = first.split('\t').count();
+    if columns > 1 && second.split('\t').count() == columns {
+        return format!("{columns} tab-separated fields in each of the first two lines");
+    }
+    let end = first.floor_char_boundary(first.len().min(SHAPE_SAMPLE_BYTES));
+    let suffix = if end < first.len() { "…" } else { "" };
+    format!(
+        "multiline text, first nonblank line {}{suffix}",
+        json!(&first[..end])
+    )
+}
+
+fn json_object_shape(kind: &str, fields: &serde_json::Map<String, Value>) -> String {
+    let keys: Vec<_> = fields
+        .keys()
+        .filter(|key| key.len() <= SHAPE_FIELD_BYTES)
+        .take(SHAPE_FIELDS)
+        .collect();
+    format!(
+        "{kind}, {} fields, sample keys {}",
+        fields.len(),
+        json!(keys)
+    )
 }
 
 fn render_script(

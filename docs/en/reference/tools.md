@@ -16,7 +16,7 @@ This page describes the default public Session tool surface used by CLI and serv
 | `edit_file` | `path`, `old_text`, `new_text` | `replace_all`, `expected_version`, `brief` | `edit` |
 | `write_file` | `path`, `content` | `expected_version`, `brief` | `edit` |
 | `remove_file` | `path` | `expected_version`, `brief` | `edit` |
-| `run_command` | `command` or `program` | `args`, `cwd`, `shell` (required for command text if no default is listed), `timeout`, `background`, `brief` | `command` |
+| `run_command` | `command` or `program` | `args`, `cwd`, `shell` (required for command text if no default is listed), `timeout`, `preview_bytes`, `background`, `brief` | `command` |
 | `workspace_script` | `code` | `background` | `execute` |
 | `list_jobs` | none | `before` | `session` |
 | `wait_job` | `job_id` | none | `session` |
@@ -85,7 +85,9 @@ The command runs without a deadline when `timeout` is omitted. The same [Session
 
 An exited process can return tool status `ok` with a nonzero `exit_code`. A shell invocation reports the outer shell's exit code. Preserve each required check's failure when composing commands or pipelines. The command card shows elapsed time and flags stderr separately from the exit status. Check `termination`, `exit_code`, and `capture_complete` in the structured facts.
 
-The default Session preview is bounded to 8 KiB, including its summary and retained reference. A complete capture can still have a truncated preview. For failed commands with a complete capture that exceeds the preview size, the preview uses selected build or test lines when available. Otherwise it shows the end of stderr, falling back to stdout if stderr is empty. Missing executables, start failures, timeouts, and cancellation have separate termination values. Recognized Rust test and pytest summaries carry program-reported counts and bounded evidence. Use the retained `output_ref.id` with `read_output` to investigate failures or read beyond the preview. [SDK execution facts](sdk.md#workspace-execution)
+When the Agent has `read_output`, successful commands give the model the outcome and retained output reference. The initial view uses selected build or test evidence when available. Otherwise it describes the observed output prefix, for example by listing a few JSON keys or showing a short sample of a multiline text result. Request `preview_bytes` from 1 to 65,536 for a bounded excerpt when the command itself is an inspection. The Session's preview limit still applies. Use `read_output` for a relevant range or literal search. The TUI can show an excerpt independently.
+
+The default Session preview is bounded to 8 KiB, including its summary and retained reference. A complete capture can still have a truncated preview. For failed commands with a complete capture that exceeds the preview size, the preview uses selected build or test lines when available. Otherwise it shows the end of stderr, falling back to stdout if stderr is empty. Missing executables, start failures, timeouts, and cancellation have separate termination values. Recognized Rust test and pytest summaries carry program-reported counts and bounded evidence. [SDK execution facts](sdk.md#workspace-execution)
 
 ## Session Jobs
 

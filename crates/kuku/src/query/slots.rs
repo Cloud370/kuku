@@ -305,14 +305,19 @@ pub(super) fn spawn_command_slot(
 
             let r = match output {
                 Some(mut output) => {
-                    let result = crate::tool::builtin::run_command::run_command_with_output(
+                    use crate::tool::builtin::run_command::{run_command_to, CommandCapture};
+
+                    let result = run_command_to(
                         &args,
                         &workspace,
                         Some(tool_tx),
                         Some(cancel_cmd),
-                        &output.dir,
-                        &output.id,
-                        output.limits,
+                        CommandCapture::model(
+                            &output.dir,
+                            &output.id,
+                            output.limits,
+                            output.has_output_reader,
+                        ),
                     )
                     .await;
                     if result
@@ -412,6 +417,7 @@ pub(crate) struct RetainedOutputSpec {
     pub(crate) dir: PathBuf,
     pub(crate) id: String,
     pub(crate) limits: crate::tool::builtin::run_command::output::OutputLimits,
+    pub(crate) has_output_reader: bool,
     pub(crate) retention: crate::session::runtime::OutputReservation,
 }
 

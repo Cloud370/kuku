@@ -108,6 +108,7 @@ async fn captured(
     data: &Path,
     payload: &[u8],
     policy: Arc<ReadPolicy>,
+    preview_bytes: Option<usize>,
 ) -> (Session, String) {
     std::fs::write(workspace.join("captured.bin"), payload).unwrap();
     let command = if cfg!(windows) {
@@ -115,10 +116,27 @@ async fn captured(
     } else {
         "cat captured.bin"
     };
-    let first = fixture(server, |request| producing(request) && results(request).is_empty(), json!({"tool_calls":[tool("command", "run_command", json!({"shell":if cfg!(windows) {"cmd"} else {"sh"},"cwd":".","command":command,"timeout":5,"brief":"retain output"}))]}), "tool_calls").await;
+    let mut args = json!({"shell":if cfg!(windows) {"cmd"} else {"sh"},"cwd":".","command":command,"timeout":5,"brief":"retain output"});
+    if let Some(bytes) = preview_bytes {
+        args["preview_bytes"] = json!(bytes);
+    }
+    let first = fixture(
+        server,
+        |request| producing(request) && results(request).is_empty(),
+        json!({"tool_calls":[tool("command", "run_command", args)]}),
+        "tool_calls",
+    )
+    .await;
     let second = fixture(
         server,
-        |request| producing(request) && results(request).len() == 1,
+        |request| {
+            producing(request)
+                && results(request).first().is_some_and(|result| {
+                    result["content"]
+                        .as_str()
+                        .is_some_and(|text| text.contains("Output: "))
+                })
+        },
         json!({"content":"retained"}),
         "stop",
     )
@@ -258,13 +276,22 @@ async fn model_reads_and_searches_retained_command_output_without_consuming_ui_r
         data.path(),
         payload.as_bytes(),
         policy.clone(),
+        None,
     )
     .await;
     let command = stored_result(&session, "command");
     assert!(
-        !command.1.contains(MARKER),
-        "initial model preview already contained the target marker"
+        command.1.contains("Raw output is retained.") && !command.1.contains(&"p".repeat(80)),
+        "initial model result included raw bulk output: {}",
+        command.1
     );
+    let facts = command.2.unwrap();
+    assert_eq!(true, facts["capture_complete"]);
+    assert_eq!(true, facts["preview_truncated"]);
+    assert!(facts["output_preview"]
+        .as_str()
+        .unwrap()
+        .contains(&"p".repeat(80)));
     let first = chunk(&session, &id, 0, 8192, None);
     let second = chunk(&session, &id, first.next_offset, 8192, None);
     let searched = chunk(&session, &id, second.next_offset, 8192, Some(MARKER));
@@ -341,6 +368,47 @@ async fn model_reads_and_searches_retained_command_output_without_consuming_ui_r
 
 #[cfg(unix)]
 #[tokio::test]
+async fn model_receives_shape_by_default_and_raw_bytes_only_on_request() {
+    let payload = b"{\"id\":1,\"name\":\"first-record\"}\n{\"id\":2,\"name\":\"second-record\"}\n";
+    for preview in [None, Some(36)] {
+        let server = MockServer::start_async().await;
+        let workspace = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let (session, id) = captured(
+            &server,
+            workspace.path(),
+            data.path(),
+            payload,
+            Arc::new(ReadPolicy::default()),
+            preview,
+        )
+        .await;
+        let (status, content, facts) = stored_result(&session, "command");
+        assert_eq!("ok", status);
+        assert!(content.contains(&format!("Output: {id}")));
+        assert!(!content.contains("second-record"));
+        if preview.is_some() {
+            assert!(content.contains("first-record"), "{content}");
+        } else {
+            assert!(!content.contains("first-record"));
+            assert!(
+                content.contains("first two lines are JSON objects"),
+                "{content}"
+            );
+            assert!(content.contains(r#"["id","name"]"#), "{content}");
+        }
+        assert_eq!(true, facts.unwrap()["capture_complete"]);
+        let raw: Vec<_> = chunk(&session, &id, 0, 1024, None)
+            .segments
+            .into_iter()
+            .flat_map(|segment| segment.as_bytes().to_vec())
+            .collect();
+        assert_eq!(payload.as_slice(), raw);
+        session.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
 async fn escaped_and_invalid_utf8_output_keeps_json_bounded_and_the_authorized_limit_unchanged() {
     let server = MockServer::start_async().await;
     let workspace = tempfile::tempdir().unwrap();
@@ -353,6 +421,7 @@ async fn escaped_and_invalid_utf8_output_keeps_json_bounded_and_the_authorized_l
         data.path(),
         &payload,
         policy.clone(),
+        None,
     )
     .await;
     let read = fixture(
@@ -411,6 +480,7 @@ async fn invalid_output_arguments_and_host_denial_never_expose_outside_output() 
         data.path(),
         b"retained evidence",
         policy.clone(),
+        None,
     )
     .await;
     std::fs::write(data.path().join("outside.output"), "PRIVATE_OUTSIDE_MARKER").unwrap();
@@ -478,6 +548,7 @@ async fn naming_command_output_reuses_its_file_and_replaced_body_can_expire() {
         data.path(),
         "retained evidence\n".repeat(9_000).as_bytes(),
         Arc::new(ReadPolicy::default()),
+        None,
     )
     .await;
     let dir = session.events_path().parent().unwrap().join("outputs");

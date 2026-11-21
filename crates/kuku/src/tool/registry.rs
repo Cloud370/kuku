@@ -290,10 +290,14 @@ pub(crate) fn run_command_definition(shells: &[CommandShell], session: bool) -> 
             {"required": command_fields, "not": {"required": ["program"]}, "properties": {"args": {"maxItems": 0}}}
         ]);
     }
-    description.push_str(r#" For literal arguments use {"program":"git","args":["status"]}. Prefix a workspace-relative program with './'. Reports the exit code, a stdout/stderr preview and the retained output ID."#);
+    description.push_str(r#" For literal arguments use {"program":"git","args":["status"]}. Prefix a workspace-relative program with './'. Reports exit status, elapsed time and the retained output ID."#);
     if session {
         schema["properties"]["background"] = serde_json::json!({"type":"boolean","description":"Return a Job handle immediately to continue independent work."});
-        description.push_str(" Read more with read_output({id: output_id}). Slow calls return a Job handle and deliver completion automatically. Set background:true to continue independent work immediately.");
+        schema["properties"]["preview_bytes"] = serde_json::json!({
+            "type":"integer","minimum":1,"maximum":builtin::run_command::MAX_REQUESTED_PREVIEW_BYTES,
+            "description":"Include up to this many output bytes in the result, within the Session preview budget. Set when you need a small excerpt immediately."
+        });
+        description.push_str(" When read_output is available, successful commands retain raw output for later reads by default. Request preview_bytes for an immediate excerpt. Slow calls become Jobs.");
     }
     tool(
         "run_command",

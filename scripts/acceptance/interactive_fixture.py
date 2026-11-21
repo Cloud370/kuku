@@ -797,7 +797,7 @@ class InstalledClient:
             program = str(executable)
         self.tool_workspaces.append(workspace)
         call.tool("run_command", call_id, program=program, args=["--gated-tool"], cwd=".",
-                  timeout=95, brief=TOOL_BRIEF, background=background)
+                  timeout=95, brief=TOOL_BRIEF, background=background, preview_bytes=128)
         eventually("gated tool dispatch", lambda: (workspace / "tool-attempts.txt").exists())
 
     def completed_tool(self, workspace, call_id):
