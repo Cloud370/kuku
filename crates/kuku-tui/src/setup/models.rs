@@ -3,13 +3,14 @@ use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent};
 use kuku::adapter::{
-    inspect_connection_model, model_list_targets, plan_model_trials, DiscoveredModel, Probe,
-    ProbeBatch, TrialSelection,
+    inspect_connection_model, inspect_model, model_list_targets, plan_model_trials,
+    DiscoveredModel, Probe, ProbeBatch, TrialSelection,
 };
 use kuku::config::{
     resolve_request_url, ApiKey, ModelCapabilityDeclaration, ModelPricing, ProviderConfig,
     ProviderFormat, ProviderOptions, ProviderProxy, RequestedOutput, ThinkLevel, TokenRates,
 };
+use kuku::session::AgentConfig;
 use kuku::ProviderCapabilities;
 
 use crate::editor::Editor;
@@ -237,19 +238,31 @@ impl SetupState {
             return Vec::new();
         };
         self.update_capabilities(&mut connection);
-        let original = self
-            .route_name(settings)
-            .and_then(|name| settings.resolved.tier(name));
+        let original = self.route_name(settings).and_then(|name| {
+            let route = settings.resolved.tier(name)?;
+            let effort = inspect_model(
+                &settings.resolved,
+                &AgentConfig {
+                    tier: Some(name.to_owned()),
+                    ..AgentConfig::default()
+                },
+            )
+            .ok()
+            .and_then(|selection| selection.settings.reasoning_effort);
+            Some((route, effort))
+        });
         let primary = self.primary_model();
         let models = self.model_ids().into_iter().flatten().map(|model| {
-            let existing = original.filter(|route| {
+            let existing = original.as_ref().filter(|(route, _)| {
                 route.model == model
                     && matches!(self.choice(), ConnectionChoice::Existing(name) if &route.provider == name)
             });
-            let effort = (existing.is_some() || (self.reasoning_changed && primary.as_ref() == Some(&model)))
-                .then(|| self.reasoning.clone()).flatten()
-                .filter(|effort| effort != ThinkLevel::ProviderDefault.as_str());
-            TrialSelection { model, effort, service_tier: existing.and_then(|route| route.service_tier.clone()) }
+            let effort = if self.reasoning_changed && primary.as_ref() == Some(&model) {
+                self.reasoning.clone().filter(|effort| effort != ThinkLevel::ProviderDefault.as_str())
+            } else {
+                existing.and_then(|(_, effort)| effort.clone())
+            };
+            TrialSelection { model, effort, service_tier: existing.and_then(|(route, _)| route.service_tier.clone()) }
         });
         plan_model_trials(Arc::new(connection), models)
     }

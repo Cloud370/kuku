@@ -112,6 +112,7 @@ def first_run_credential_repair(binary, bridge, directory):
             return json_response({}, 404)
         request = json.loads(body)
         if not request.get("stream"):
+            assert request.get("thinking") == {"type": "disabled"}
             if any(part["type"] == "image" for part in request["messages"][0]["content"]):
                 return json_response({"content": [], "stop_reason": "max_tokens"})
             return json_response({"content": [{"type": "text", "text": "377"}]})
@@ -148,7 +149,10 @@ def first_run_credential_repair(binary, bridge, directory):
             terminal.press("\r")
             terminal.expect("Save and continue", also=("2/2 finished", "1 to check"))
             terminal.press("\x1b[B\r")
-            terminal.expect("Image not verified", also=("hit output limit", "Cost · Unknown"))
+            terminal.expect(
+                "Image not verified",
+                also=("hit output limit", "Text reply received", "Cost · Unknown"),
+            )
             terminal.press("\r")
             terminal.expect("› Save and continue")
             terminal.press("\r")
