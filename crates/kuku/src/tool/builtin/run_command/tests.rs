@@ -694,6 +694,28 @@ async fn long_failed_command_shows_final_diagnostic_within_preview_bound() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn failed_command_keeps_stderr_diagnosis_alongside_program_test_counts() {
+    let dir = workspace();
+    let outputs = dir.path().join("outputs");
+    let diagnostic = "post-test packaging failed to open the destination";
+    let result = run_command_with_output(
+        &serde_json::json!({"shell": shell_name(), "cwd": ".", "timeout": 5,
+            "command": format!("head -c 4096 /dev/zero | tr '\\0' x; printf '\\ntest result: ok. 13 passed; 0 failed; 0 ignored\\n'; printf '{diagnostic}\\n' >&2; exit 7")}),
+        dir.path(), None, None, &outputs, "tests-and-wrapper", OutputLimits { max_output_bytes: 16_384, max_preview_bytes: 1024 },
+    ).await;
+    let facts =
+        CommandExecutionFacts::from_structured(result.structured.as_ref().unwrap()).unwrap();
+    assert_eq!(facts.exit_code, Some(7));
+    assert_eq!(facts.reported_tests[0].passed, 13);
+    assert!(facts.capture_complete);
+    assert!(facts.output_preview.contains(diagnostic));
+    assert!(result.model_content.contains(diagnostic));
+    assert!(result.model_content.contains("13 passed"));
+    assert!(result.model_content.len() <= 1024);
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn build_test_summary_survives_the_capture_quota_and_reopen() {
     let dir = workspace();
     let outputs = dir.path().join("outputs");

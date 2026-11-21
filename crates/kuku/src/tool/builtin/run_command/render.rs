@@ -147,7 +147,6 @@ fn render_model(
     let filtered = (abbreviated || access == ModelOutputAccess::Unavailable)
         && (!metadata.summary.is_empty() || !facts.reported_tests.is_empty());
     let show_end = failed
-        && !filtered
         && facts.capture_complete
         && (abbreviated || metadata.stored_bytes > output.limits.max_preview_bytes as u64);
     let show_stderr = show_end && facts.stderr_bytes > 0;
@@ -203,16 +202,9 @@ fn render_model(
     let output_preview_truncated =
         show_end || chunk.has_more || output_preview.len() > output_preview_limit;
     truncate_utf8(&mut output_preview, output_preview_limit);
-    let mut body = if filtered {
-        format!(
-            "\n\nBuild/test summary (selected lines):\n{}",
-            report_evidence(&metadata.summary, &facts.reported_tests)
-        )
-    } else {
-        String::new()
-    };
-    let include_raw = !filtered && (!abbreviated || show_end);
-    if include_raw && show_end {
+    let mut body = String::new();
+    let include_raw = show_end || (!filtered && !abbreviated);
+    if show_end {
         let source = if show_stderr { "stderr" } else { "output" };
         body.push_str(&format!("\n\nEnd of captured {source}:\n{raw_preview}"));
     } else if include_raw {
@@ -226,6 +218,14 @@ fn render_model(
     } else if abbreviated && !filtered {
         body.push_str("\n\nOutput shape from the observed prefix:");
         append_output_shape(&mut body, &chunk, &facts, access);
+    }
+    if filtered {
+        let excerpt = if show_end { raw_preview } else { "" };
+        let evidence = report_evidence(&metadata.summary, &facts.reported_tests, excerpt);
+        if !evidence.is_empty() {
+            body.push_str("\n\nBuild/test summary (selected lines):\n");
+            body.push_str(&evidence);
+        }
     }
     if abbreviated {
         body.push_str("\nRead the relevant range with read_output({id, offset, limit}) using the Output ID below.");
@@ -498,7 +498,7 @@ fn render_streams(segments: &[OutputSegment]) -> String {
     text
 }
 
-fn report_evidence(summary: &[String], reports: &[ReportedTests]) -> String {
+fn report_evidence(summary: &[String], reports: &[ReportedTests], excerpt: &str) -> String {
     let mut lines = Vec::new();
     for report in reports {
         let mut counts = vec![
@@ -534,6 +534,7 @@ fn report_evidence(summary: &[String], reports: &[ReportedTests]) -> String {
             lines.push(line.clone());
         }
     }
+    lines.retain(|line| !excerpt.lines().any(|raw| raw.trim() == line));
     lines.join("\n")
 }
 
@@ -556,7 +557,7 @@ fn render_reference(
     if metadata.cleanup_incomplete {
         reference.push_str(" Pipe cleanup deadline reached; capture is incomplete.");
     }
-    if lossy && !filtered {
+    if lossy {
         reference.push_str(" Preview replaces invalid or split UTF-8; stored bytes are unchanged.");
     }
     reference
