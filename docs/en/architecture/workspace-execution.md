@@ -14,8 +14,8 @@ Embed a pinned QuickJS engine in the distributed kuku binary and activate a work
 |---|---|
 | Inspect, search or precisely change one file | Keep concise direct tools. Scripts may compose the same authorized actions. Give actions with equal semantics the same name and one Rust implementation. Render line numbers and decoration in the view. |
 | Batch or dependent workspace operations | One script may find, search, read, edit, write, stat and remove files. Keep intermediate values local. Teach a complete read → compute → deliver example. Models should inspect unknown formats and otherwise finish a specified transformation in one call. |
-| Run an installed program | Accept an executable and literal arguments. Omitted working directories resolve to the Agent workspace. Resolve the command deadline and working directory before host authorization. Use the same Rust process execution path from direct tools and scripts. Keep stdin policy, stdout, stderr, exit status, limits, cancellation and output references visible. |
-| Run platform-specific shell syntax | Advertise the available interpreters and the platform default for command text. Resolve the advertised default before authorization and record the selected interpreter. Windows batch files and command built-ins require appropriate interpreter handling. Missing programs, startup errors, nonzero exit and truncation have distinct meanings. Avoid shell-string rewriting, global cwd changes and silent interpreter substitution. |
+| Run an installed program | Give the model `run_command({program, args?, cwd?, background?})`. Pass arguments literally. Resolve an omitted `cwd` to the Agent workspace. Direct tools and `run_js` share the Rust process executor. Embedding hosts can set a process deadline. |
+| Run a shell script or use shell syntax | Launch the required interpreter explicitly with literal arguments. Embedding hosts can choose a typed shell invocation. Authorize and record the actual invocation, including its interpreter and working directory. |
 | Delegate, ask a user or wait for a reply | Session owns durable receipts, identities and waits. A child Agent may run scripts within its granted tools. A no-tools child can only reply. Consider an optional first task on creation, separate from standing instructions. A targeted wait should replace model polling. |
 
 Keep other tools directly discoverable. Expose an extension to JS when a real task benefits from composing its operations. A general string-based tool dispatcher and duplicate descriptions of every host tool would increase the model's search space. Let reusable, verified procedures graduate to ordinary project scripts.
@@ -29,6 +29,44 @@ A test runner with a recognized report can yield counts, the first failing case,
 A writer that supplied the entire contents of a file and received confirmation of its successful write knows that version. It should be able to edit or overwrite that same version without reading its own output back. Scope this evidence to the originating actor and its effective history. A focused edit can use exact text supplied by the caller when it matches one location in the current file. A current partial read can distinguish repeated occurrences. A partial read or edit establishes only the range observed for operations requiring whole-file knowledge. A deterministic script can transform a fully read file without sending the whole file to the model. The host must still authorize the action and verify the current version at dispatch.
 
 A top-level command or workspace script starts once. The observation window defaults to ten seconds for foreground calls and one second for explicit background calls. A call still running at the boundary returns a Job handle. Promotion preserves the execution and its retained output. A timer alone does not schedule model inference. New input can steer the Agent while work continues. An awaited script command always resolves to its final typed outcome. Host I/O wait is separate from the JavaScript execution budget. The owning Session delivers completion once and supports inspection and cancellation.
+
+## Proposed command output path
+
+Keep one execution path across direct tools, JavaScript and Jobs. The tool catalog and Prompt explain how to choose a tool. The executor prepares and authorizes the final invocation. The capture writer owns stdout, stderr, quotas and the retained reference. Rust observers derive evidence from this capture. The model gets a bounded view, the clients use the same structured facts and output reference, and context admission records the exact view sent.
+
+Use complete short output when it fits the model preview budget. Start with an additional short-output limit of 2 KiB and 40 lines, then calibrate against real workloads. A long result provides useful evidence, the observed data shape and a retained reference. Label whether the shape comes from a prefix or a validated format. Show representative fields or columns and a short extraction hint for the methods actually available to the Agent. Give failures diagnostic space first. Distinguish the process outcome, capture completeness and the presentation limit. Keep the same presentation policy for foreground results and automatic Job delivery.
+
+The default Prompt should favor `run_js` for deterministic processing that would otherwise require multiple model Steps or bring intermediate data into model context. Give the model examples grounded in the exposed methods and actual response fields. Keep direct tools the natural choice for one file operation and direct native invocation for programs. Measure script selection on tasks that can usefully compose work, along with first-attempt correctness and total model requests.
+
+`read_output` is the raw range reader. Add a JavaScript-callable literal search over the same authorized capture, initially exposed as `tools.search_output`. Rust scans with bounded memory and checks cancellation. Return a small set of matches with stream and original byte offsets, plus continuation and capture-completeness information. Keep intermediate parsing in the local script when the task needs custom logic. The TUI and model can read the same range independently.
+
+### Built-in rule format
+
+Use an explicit subset of RTK's TOML rule format for line-level filtering. Share `[filters.<name>]`, `description`, `match_command`, `strip_ansi`, the mutually exclusive `strip_lines_matching` and `keep_lines_matching`, `head_lines`, `tail_lines`, `max_lines`, and `[[tests.<name>]]`. Match RTK's processing order for these fields. Compile rules once, reject unsupported fields with a diagnostic, and pin the upstream revision when borrowing a rule and its fixtures. [RTK filter format and order](https://github.com/rtk-ai/rtk/blob/b8cb15167268b7a27519b84f79e53c4cb742bafe/src/core/toml_filter.rs#L600)
+
+Select a rule using the prepared native program and argument boundaries. Evaluate `match_command` on a deterministic rendering of that invocation for rule matching only. Treat output modes and reporters as part of eligibility. Preserve the authorized command and arguments. Use the generic preview when selection is ambiguous or the captured format has no verified rule.
+
+Use TOML for predictable noise lines and a Rust parser for multiline diagnostics and test reports. Extend the current streaming report collector and use one view builder for both. A view records its kind and the selected rule identity. The process outcome stays authoritative. Label summaries and preserve source ranges for actionable evidence. Store ranges only for retained bytes, including stream identity when stdout and stderr interleave. Keep the generic view available when a formatter fails, loses decisive evidence or expands the result.
+
+| Initial rule family | Evidence to keep |
+|---|---|
+| `cargo build`, `cargo check`, `cargo clippy` | Outcome, diagnostic blocks, source locations and warnings |
+| `cargo test` | Suite counts, failing tests and relevant assertions |
+| `pytest` | Observed outcome counts, failure names and locations |
+| `go test` | Affected packages, failed tests and diagnostic excerpts |
+| `tsc` | Source locations, error codes and diagnostic messages |
+| `vitest`, `jest` | Suite counts, failed cases and relevant assertions for recognized reporters |
+| `npm install`, `npm ci`, `pnpm install` | Resolution and lifecycle errors, dependency conflicts and security warnings |
+| `git status` | File status groups and conflicts for recognized long results |
+
+Use the actual captured format in every family. A rule borrowed from RTK may depend on additional flags or a different reporter, so port the fixtures and verify the same mode before enabling it. Output whose body is the requested evidence, such as a diff or a search result, uses the generic preview and raw range reader.
+
+### Delivery order
+
+1. Stabilize the native command interface and generic preview. Cover the one-second Job observation and result delivery in the same public execution workflow.
+2. Add Rust-backed literal search through the existing retained-output reader and JS host boundary.
+3. Land the shared rule format with one full Cargo slice, including diagnostics, source ranges and replay tests. Add the remaining rule families in independently verified batches before claiming first-release coverage.
+4. Compare the full candidate and the generic-preview baseline through the SDK, installed TUI and representative tasks. Use the recorded evidence to select the next improvement. [Command output acceptance](../contributing/testing.md#command-output-and-long-task-acceptance)
 
 ## Output and named data
 
@@ -58,6 +96,8 @@ Make host I/O genuinely asynchronous. Independent reads may use `Promise.all`. D
 Check the actual Agent, action, final arguments and target when dispatching each side effect. Program execution is its own permission since a program can modify files outside file-tool controls. Reuse process-tree cleanup and output capture. On interruption, stop new dispatch, settle owned work and report completed actions. A new user instruction takes effect at a safe boundary. A TUI may show “Stopped · 12 of 40 files changed” when those counts are known.
 
 A deferred action can retain its prepared arguments, content reference, version conditions and receipt. The host may release the worker while waiting. On approval, revalidate and execute the matching action once, then deliver its outcome for continued work. A discarded VM cannot resume an arbitrary JavaScript continuation. After interruption or restart, never silently rerun a program with unknown side effects. Session owns durable waits and recovery as described in [Core Direction](core-direction.md).
+
+For long work, make elapsed execution and observed progress available at existing tool and Job boundaries. Keep process deadlines separate from observation windows and measure elapsed time using a monotonic clock. A quiet interval is evidence of silence. A stop decision can use a documented deadline, a definitive outcome or a concrete blocker. Deliver terminal outcomes promptly and let independent work continue. Coalesce progress with work the Agent is ready to handle. Inference should follow useful evidence or an explicit input.
 
 ## Evidence needed for adoption
 

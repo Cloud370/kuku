@@ -143,6 +143,21 @@ python3 scripts/acceptance/run.py --run-id WORKSPACE_OPENROUTER_RUN workspace \
 
 `workspace/result.json` records task checks, accounting, the model and reasoning effort sent, and route evidence. The `workspace` selector allows `upstream_confirmed: null` when confirmation is unavailable. If OpenRouter returns no generation receipt, report the requested endpoint pin and keep the actual upstream unknown. Report the reasoning effort as requested unless the provider reports it. A confirmed route mismatch fails the run. [Credentials and run artifacts](#credentials-and-run-artifacts)
 
+### Command output and long-task acceptance
+
+Use the [command output proposal](../architecture/workspace-execution.md#proposed-command-output-path) as the behavioral contract. Reuse the current tool, Session and installed-client fixtures. A fixed provider can prove what is available to a model. Use a real provider to evaluate what the model actually chooses.
+
+| Check | Required evidence |
+|---|---|
+| Native invocation | The default command schema admits literal program arguments. Run fixtures with spaces, quotes and Unicode on native Linux and Windows. Record macOS coverage separately. Compare the granted invocation, actual results and TUI title. |
+| Short, long and failed output | Compare the first provider-visible response with the capture. Small results fit directly. A large result includes enough observed shape and a valid method hint to retrieve the target on the next Step. Failure retains decisive diagnostics and separate capture-completeness flags. |
+| Native search and rule coverage | Use byte-level fixtures for matches spanning frames, authorization, cancellation and truncated captures. Read each diagnostic reference back from the original capture. Exercise success, failure and a format mismatch for every enabled rule family. Confirm generic fallback and the exact admitted view after reopen. |
+| Background and long work | Cover fast completion, the one-second boundary, cancellation and one terminal result. Observe both a slow job that makes progress and a quiet job with a concrete blocker. Check that a definitive outcome can finish a run promptly and that observed silence alone leaves useful work eligible to continue. |
+
+For real comparisons, keep the model, reasoning, tools, budgets, original environment and verifier fixed. Include short direct work, a task suited to `run_js`, and a long workflow that includes a Job or expensive verification. Reserve at least two structurally different tasks from Prompt tuning. Compare Prompt selection with the output view fixed, and compare extraction hints with the Prompt fixed before evaluating the combined change.
+
+Record first-attempt tool and script correctness, `run_js` selection among eligible tasks, exploratory reads, retries and repeated checks. Record original verifier results, wall time, cumulative provider input and cache usage, peak RSS, and retained disk bytes. Compare summary bytes with the generic bounded preview. Use provider usage for token claims. Stop a run when the outcome is definitive or a concrete blocker makes further work uninformative. Keep the observation and reason in the run evidence. Record execution duration independently of the maximum runtime.
+
 ## Test ownership and evidence
 
 Unit tests remain in `#[cfg(test)] mod tests`; integration tests stay under `tests/` by domain, with shared helpers in `tests/common/mod.rs`. Reuse existing callers and fixtures. The rewrite should provide one maintained entrypoint or small case manifest for selecting contract, replay, live, and benchmark checks, without building an evaluation platform.
