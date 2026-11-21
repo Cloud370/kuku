@@ -9,6 +9,7 @@ from unittest.mock import patch
 from urllib.parse import urlencode
 
 from interactive_fixture import InstalledClient, Response, StreamPause, eventually, run_cases
+from interactive_responses import responses_reasoning
 
 RUNNING_STATUS_ROWS_FROM_BOTTOM = 6
 
@@ -242,6 +243,7 @@ def rendering_cases(binary, bridge, directory):
                           for shell in ("powershell.exe", "pwsh.exe") if shutil.which(shell))
     cases = [(name, lambda name=name, operation=operation: configured(name, operation))
              for name, operation in operations]
+    cases.append(("responses-reasoning", lambda: responses_reasoning(binary, bridge, directory / "responses-reasoning")))
     cases.extend((name, lambda name=name, operation=operation: configured(name, operation, True))
                  for name, operation in (("reasoning", published_reasoning), ("mixed-table", scroll_mixed_table)))
     run_cases(cases)

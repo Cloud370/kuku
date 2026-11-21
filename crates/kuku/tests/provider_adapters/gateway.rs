@@ -263,6 +263,15 @@ fn assert_interrupted_without_tools(events: &[StoredEvent], turn: u64, reason: &
 
 #[tokio::test]
 async fn recorded_openrouter_responses_done_dispatches_both_tools_and_continues() {
+    readable_responses_continue(ProviderProfile::OpenRouter).await;
+}
+
+#[tokio::test]
+async fn deepseek_responses_keep_readable_reasoning_and_native_continuation() {
+    readable_responses_continue(ProviderProfile::DeepSeek).await;
+}
+
+async fn readable_responses_continue(profile: ProviderProfile) {
     let server = MockServer::start_async().await;
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
@@ -275,14 +284,20 @@ async fn recorded_openrouter_responses_done_dispatches_both_tools_and_continues(
         &completion(ProviderFormat::OpenAiResponses),
     )
     .await;
-    let session = Session::open(options(
+    let mut settings = options(
         &server,
         workspace.path(),
         data.path(),
         ProviderFormat::OpenAiResponses,
-    ))
-    .await
-    .unwrap();
+    );
+    settings
+        .config
+        .providers
+        .get_mut("openai")
+        .unwrap()
+        .options
+        .profile = profile;
+    let session = Session::open(settings).await.unwrap();
     session
         .create_agent("create", "main", AgentConfig::default())
         .unwrap();
@@ -307,6 +322,10 @@ async fn recorded_openrouter_responses_done_dispatches_both_tools_and_continues(
         &events,
         &[("gateway_4", "find_files"), ("gateway_6", "read_file")],
     );
+    assert!(events.iter().any(|event| matches!(&event.payload,
+        EventPayload::ModelResponse { text, thinking: Some(thinking), stop_reason: Some(ModelStopReason::ToolUse), .. }
+            if text.is_empty() && thinking == "Let me read seed.txt first."
+    )));
     assert!(events.iter().any(|event| matches!(&event.payload, EventPayload::Unknown(value) if value["kind"] == "runtime.provider_report" && value["report"]["cost_usd"] == 0.000157636)));
     first.assert_hits_async(1).await;
     second.assert_hits_async(1).await;
