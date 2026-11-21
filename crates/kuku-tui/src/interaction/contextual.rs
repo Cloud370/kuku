@@ -164,6 +164,35 @@ mod tests {
             ..warning
         });
         assert_eq!(8, app.cache_warning().unwrap().since_turn);
+        assert!(app.focus_context_control(ContextControl::CacheWarning { since_turn: 8 }));
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(99, 24)).unwrap();
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+        let hit = app
+            .contextual_hits
+            .iter()
+            .find(|hit| hit.control == ContextControl::CacheWarning { since_turn: 8 })
+            .unwrap()
+            .area;
+        use crossterm::event::{Event, MouseButton, MouseEvent, MouseEventKind};
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            app.event(
+                Event::Mouse(MouseEvent {
+                    kind,
+                    column: hit.x,
+                    row: hit.y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                terminal.backend().buffer(),
+            );
+        }
+        assert!(app.cache_warning().is_none());
+        assert_eq!("unsent", app.pane().draft.text());
     }
 
     #[test]

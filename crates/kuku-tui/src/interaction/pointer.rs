@@ -15,7 +15,12 @@ impl App {
             &mut self.text_selection
         };
         let action = selection.mouse(mouse, screen, click);
+        let focus = &self.pane().contextual_focus;
+        let dismiss_cache_warning = matches!(&action,
+            Some(MouseAction::Click(ClickTarget::Contextual(control @ ContextControl::CacheWarning { .. })))
+            if focus.active && focus.cursor.as_ref() == Some(control));
         if matches!(&action, Some(MouseAction::Click(_)))
+            && !dismiss_cache_warning
             && !self.modal.as_ref().is_some_and(Modal::composer_anchored)
         {
             self.deactivate_context_focus();
@@ -52,11 +57,7 @@ impl App {
                 }
             }
             Some(MouseAction::Click(ClickTarget::Contextual(control))) => {
-                let focus = &self.pane().contextual_focus;
-                if matches!(&control, ContextControl::CacheWarning { .. })
-                    && focus.active
-                    && focus.cursor.as_ref() == Some(&control)
-                {
+                if dismiss_cache_warning {
                     self.activate_context_control();
                 } else {
                     self.focus_context_control(control);
