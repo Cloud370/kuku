@@ -14,6 +14,7 @@ from interactive_rendering import (
     queued_input_click_context,
     queued_input_click_position,
     rendered_running_transcript,
+    select_message_action,
 )
 
 
@@ -282,6 +283,20 @@ class QueuedInputFocusTests(unittest.TestCase):
         )
 
 
+class MessageActionSelectionTests(unittest.TestCase):
+    def test_selects_a_message_action_with_a_transcript_frame_at_the_right(self):
+        terminal = MagicMock()
+        terminal.request.return_value = {"screen": "The message action ran"}
+        screen = "\n".join([
+            "  │   Message actions                                           │",
+            "  │   › Copy                                             ───────╮",
+            "  │     Copy this entry                                         │",
+            "  │   Operate message · Enter Run                               │",
+        ])
+        select_message_action(terminal, screen, "Copy")
+        terminal.press.assert_called_once_with("\r")
+
+
 class TranscriptResizeSynchronizationTests(unittest.TestCase):
     activity_composition = "12 file reads · 3 file searches · 2 text searches"
     draft = "draft survives the review"
@@ -305,8 +320,8 @@ class TranscriptResizeSynchronizationTests(unittest.TestCase):
 
     def test_page_up_waits_for_rendered_target_size_after_resize(self):
         stale = self.running_frame(30)
-        resized = self.running_frame(27)
-        history = self.running_frame(27, history=True)
+        resized = self.running_frame(26)
+        history = self.running_frame(26, history=True)
         markers = (self.activity_composition, self.draft)
         stale_rows = stale.splitlines()
         self.assertEqual(32, len(stale_rows))

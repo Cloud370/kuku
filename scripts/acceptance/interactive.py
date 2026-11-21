@@ -751,7 +751,7 @@ def dense_transcript(client, reference=False):
             )
         except AssertionError as error:
             raise AssertionError(
-                f"{error}\n36-row running-tools screen before resize to 32:\n{before_resize}"
+                f"{error}\nWide running-tools screen before resize to 32:\n{before_resize}"
             ) from error
         screens.append(("32-row running-tools screen before PageUp", before_page_up))
         try:
@@ -789,8 +789,10 @@ def dense_transcript(client, reference=False):
         assert row_of(restored, scenario.activity_group) == anchor and scenario.draft in restored, restored
 
         terminal.click_text(restored, "Read file · error")
-        error = terminal.expect("Requested arguments")["screen"]
-        assert f"path does not exist: {scenario.missing}" in error and "Tools" in error and scenario.draft in error, error
+        terminal.expect("Requested arguments")
+        terminal.request("resize", rows=44, cols=140)
+        error = terminal.expect(f"path does not exist: {scenario.missing}",
+                                also=("Requested arguments", "Tools", scenario.draft), rows=44)["screen"]
         screens.append(("Independent failed call with its exact error", error))
         terminal.click_text(error, "Read file · error")
         terminal.press("\x1b[1;5F")
@@ -803,8 +805,9 @@ def dense_transcript(client, reference=False):
             terminal.expect(tool_state)
             terminal.type(scenario.draft)
             measurements = measure_tools(terminal)
-            terminal.request("resize", rows=36, cols=140)
-            wide = read_while(terminal, lambda value: running_view(value, 36)
+            overview_height = 36 if reference else 48
+            terminal.request("resize", rows=overview_height, cols=140)
+            wide = read_while(terminal, lambda value: running_view(value, overview_height)
                               and scenario.missing in value and scenario.draft in value,
                               "the wide tool turn")
             screens.append(("Dense tool turn with a running command and local draft", wide))
@@ -813,10 +816,10 @@ def dense_transcript(client, reference=False):
                 terminal.request("resize", rows=32, cols=140)
                 inspect_tools(terminal, wide)
             terminal.request("resize", rows=26, cols=74)
+            running_card = "Run command · running" if reference else "╰─ running"
             narrow = read_while(terminal, lambda value: running_view(value, 26) and scenario.missing in value
-                                and scenario.draft in value,
+                                and scenario.draft in value and running_card in value,
                                 "the narrow tool turn")
-            assert scenario.draft in narrow and ("╰─ running" in narrow or reference and "Run command · running" in narrow), narrow
             screens.append(("Narrow tool turn with the same draft", narrow))
             terminal.request("resize", rows=32, cols=140)
         with scenario.streaming_reply():

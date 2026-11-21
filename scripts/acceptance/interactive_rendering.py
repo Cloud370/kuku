@@ -11,7 +11,7 @@ from urllib.parse import urlencode
 from interactive_fixture import InstalledClient, Response, StreamPause, eventually, is_composer_heading, run_cases
 from interactive_responses import responses_reasoning
 
-RUNNING_STATUS_ROWS_FROM_BOTTOM = 5
+RUNNING_STATUS_ROWS_FROM_BOTTOM = 6
 
 
 def rendered_running_transcript(screen, height, markers):
@@ -52,7 +52,7 @@ def select_message_action(terminal, screen, action):
             (
                 index
                 for index, line in enumerate(rows)
-                if any(line.rstrip().endswith(f"› {label}") for label in labels)
+                if any(line.rstrip(" │┃─╮╯").endswith(f"› {label}") for label in labels)
             ),
             None,
         )
@@ -68,7 +68,7 @@ def select_message_action(terminal, screen, action):
     def visible_actions(value):
         visible = []
         for line in action_rows(value):
-            line = line.rstrip()
+            line = line.rstrip(" │┃─╮╯")
             for label in labels:
                 if line.endswith(label) or line.endswith(f"› {label}"):
                     visible.append(label)
@@ -77,7 +77,7 @@ def select_message_action(terminal, screen, action):
 
     def selected_action(value):
         for line in action_rows(value):
-            line = line.rstrip()
+            line = line.rstrip(" │┃─╮╯")
             for label in labels:
                 if line.endswith(f"› {label}"):
                     return label
