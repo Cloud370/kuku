@@ -222,7 +222,7 @@ A TUI on the host can also connect to the container service with `--remote` and 
 
 ## FrontierHarness public sample
 
-The [case manifest](../../../scripts/acceptance/cases.json) pins the `frontier` suite to FrontierHarness Eval v1.1.0 tasks. The historical sample covers log aggregation, async cancellation, regular expressions and large-file Vim editing. The local comparison also includes Nginx configuration and a SQLite coverage build. Each task uses the upstream prompt, image build context and grader. On Linux with Git, Docker, Python 3.10+ and the repository's Rust toolchain, first check that an empty submission fails the original grader. This step requires network access for build and grader dependencies and uses no model credits. [Dataset provenance](https://hub.harborframework.com/datasets/frontier-harness-eval/frontier-harness-eval)
+The [case manifest](../../../scripts/acceptance/cases.json) pins the `frontier` suite to FrontierHarness Eval v1.1.0 tasks. The historical sample covers log aggregation, async cancellation, regular expressions and large-file Vim editing. The local comparison also includes Nginx configuration, a SQLite coverage build, and a gRPC service that must stay running through verification. Each task uses the upstream prompt, image build context and grader. On Linux with Git, Docker, Python 3.10+ and the repository's Rust toolchain, first check that an empty submission fails the original grader. This step requires network access for build and grader dependencies and uses no model credits. [Dataset provenance](https://hub.harborframework.com/datasets/frontier-harness-eval/frontier-harness-eval)
 
 ```sh
 cargo build --locked -p kuku --example session_task

@@ -52,7 +52,8 @@
         "regex-log",
         "large-scale-text-editing",
         "nginx-request-logging",
-        "sqlite-with-gcov"
+        "sqlite-with-gcov",
+        "kv-store-grpc"
       ],
       "additional_cases": [
         {
@@ -74,6 +75,13 @@
           "role": "build and verify a local CLI from vendored source with coverage instrumentation",
           "workspace": "/app",
           "artifacts": [],
+          "timeout_sec": 900
+        },
+        {
+          "id": "kv-store-grpc",
+          "role": "generate a gRPC service and keep it running for independent verification",
+          "workspace": "/app",
+          "artifacts": ["/app/kv-store.proto", "/app/server.py"],
           "timeout_sec": 900
         }
       ]
