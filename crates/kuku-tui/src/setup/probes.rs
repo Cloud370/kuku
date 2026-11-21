@@ -19,6 +19,9 @@ use super::ui::line;
 fn check_label(probe: &Probe) -> String {
     match probe {
         Probe::Catalog(target) => format!("GET {}", display_url(&target.url)),
+        Probe::ApiType { candidates, .. } if candidates.len() == 1 => {
+            protocol_label(candidates[0]).into()
+        }
         Probe::ApiType { .. } => "API type".into(),
         Probe::Quotes { .. } => "Route pricing".into(),
         Probe::Thinking { check, .. } => match check {

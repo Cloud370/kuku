@@ -256,6 +256,9 @@ impl SetupState {
     }
 
     pub(super) fn update_api_check(&mut self, settings: &Settings) {
+        if !self.trials.finish_api_check() {
+            return;
+        }
         self.accept_api_check(settings);
         if self.step == SetupStep::CheckingApi {
             self.show_api_check_failure();
@@ -346,8 +349,7 @@ impl SetupState {
                     let remaining = self.remaining_trials(settings);
                     if self
                         .trials
-                        .rows()
-                        .iter()
+                        .selected_rows()
                         .skip(1)
                         .take(remaining.len())
                         .map(|row| &row.probe)
@@ -359,11 +361,7 @@ impl SetupState {
                 }
             }
         }
-        self.trials = ProbeBatch::start(vec![Probe::ApiType {
-            connection: Arc::new(connection),
-            model,
-            candidates,
-        }]);
+        self.trials = ProbeBatch::start_api_check(&connection, &model, &candidates);
         self.probe_repaint_at = Some(std::time::Instant::now());
     }
 

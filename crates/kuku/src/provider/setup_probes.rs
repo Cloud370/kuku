@@ -8,7 +8,7 @@ use crate::config::{
 use crate::{CapabilitySource, Error, Result};
 
 use super::capabilities::thinking_scope;
-use super::setup_api::check_setup_api;
+use super::setup_api::{check_setup_api, DECLARED_ORDER};
 use super::setup_reasoning::{bounded_levels, check_reasoning, reply_accepted};
 use super::trial::{trial_with_route_evidence, TrialProblem};
 use super::types::ProviderFailureKind;
@@ -181,6 +181,7 @@ pub struct ProbeRow {
     pub progress: ProbeProgress,
     pub cached_models: Option<Arc<[DiscoveredModel]>>,
     failure_status: Option<u16>,
+    route_missing: bool,
     task: Option<AbortHandle>,
     skipped: bool,
     attempts: u8,
@@ -200,6 +201,7 @@ pub enum SetupTextCheck {
 
 enum ProbeCompletion {
     Finished(Result<ProbeResult>, Option<u16>),
+    Unavailable(Error, Option<u16>),
     RateLimited {
         retry_after: Option<Duration>,
         error: Error,
@@ -215,6 +217,9 @@ fn model_completion<T>(
             retry_after: problem.retry_after,
             error: *problem.error,
         },
+        Err(problem) if problem.route_missing => {
+            ProbeCompletion::Unavailable(*problem.error, problem.status)
+        }
         Ok(value) => ProbeCompletion::Finished(Ok(receipt(value)), None),
         Err(problem) => ProbeCompletion::Finished(Err(*problem.error), problem.status),
     }
@@ -235,6 +240,55 @@ impl ProbeBatch {
         batch
     }
 
+    /// Check the eligible API protocols concurrently and retain the preferred usable result.
+    pub fn start_api_check(
+        connection: &ProviderConfig,
+        model: &str,
+        candidates: &[ProviderFormat],
+    ) -> Self {
+        Self::start(
+            DECLARED_ORDER
+                .into_iter()
+                .filter(|format| candidates.contains(format))
+                .map(|format| {
+                    let mut route = connection.clone();
+                    route.format = format;
+                    Probe::ApiType {
+                        connection: Arc::new(route),
+                        model: model.to_owned(),
+                        candidates: vec![format],
+                    }
+                })
+                .collect(),
+        )
+    }
+
+    /// Finalize once protocol priority determines the outcome, and move it to the first row.
+    pub fn finish_api_check(&mut self) -> bool {
+        if self.rows.is_empty()
+            || self
+                .rows
+                .iter()
+                .any(|row| !matches!(row.probe, Probe::ApiType { .. }))
+        {
+            return false;
+        }
+        let index = self
+            .rows
+            .iter()
+            .position(|row| !row.route_missing)
+            .unwrap_or(0);
+        if !matches!(self.rows[index].progress, ProbeProgress::Finished(..)) {
+            return false;
+        }
+        self.stop();
+        self.rows.swap(0, index);
+        for row in &mut self.rows[1..] {
+            row.skipped = true;
+        }
+        true
+    }
+
     /// Continue with more work while keeping progress and results of earlier requests.
     pub fn append(&mut self, probes: Vec<Probe>) {
         self.add_rows(probes);
@@ -250,6 +304,7 @@ impl ProbeBatch {
             probe,
             progress: ProbeProgress::Queued,
             failure_status: None,
+            route_missing: false,
             task: None,
             skipped: false,
             attempts: 0,
@@ -269,6 +324,19 @@ impl ProbeBatch {
         let model_limit = models
             .saturating_mul(IN_FLIGHT)
             .clamp(IN_FLIGHT, MAX_MODEL_IN_FLIGHT);
+        let protocol_checks = self
+            .rows
+            .iter()
+            .filter(|row| {
+                matches!(row.probe, Probe::ApiType { .. })
+                    && !matches!(
+                        row.progress,
+                        ProbeProgress::Finished(..) | ProbeProgress::Canceled { .. }
+                    )
+            })
+            .count()
+            .min(DECLARED_ORDER.len());
+        let model_limit = model_limit.max(protocol_checks);
         let limits = [IN_FLIGHT, model_limit];
         let mut active = [0; 2];
         for row in &self.rows {
@@ -359,30 +427,33 @@ impl ProbeBatch {
         else {
             return Some(true);
         };
-        let baseline = self.rows[..index].iter().find(|row| match &row.probe {
-            Probe::Trial {
-                model: baseline,
-                connection: route,
-                check: ModelTrial::Text { .. },
-            } => baseline == model && same_connection(connection, route),
-            Probe::ApiType {
-                model: baseline,
-                connection: before,
-                ..
-            } => {
-                baseline == model
-                    && match &row.progress {
-                        ProbeProgress::Finished(_, Ok(ProbeResult::ApiType(evidence))) => {
-                            let mut verified = before.as_ref().clone();
-                            verified.format = evidence.format;
-                            verified.base_url.clone_from(&evidence.base_url);
-                            same_connection(connection, &verified)
+        let baseline = self.rows[..index]
+            .iter()
+            .filter(|row| !row.skipped)
+            .find(|row| match &row.probe {
+                Probe::Trial {
+                    model: baseline,
+                    connection: route,
+                    check: ModelTrial::Text { .. },
+                } => baseline == model && same_connection(connection, route),
+                Probe::ApiType {
+                    model: baseline,
+                    connection: before,
+                    ..
+                } => {
+                    baseline == model
+                        && match &row.progress {
+                            ProbeProgress::Finished(_, Ok(ProbeResult::ApiType(evidence))) => {
+                                let mut verified = before.as_ref().clone();
+                                verified.format = evidence.format;
+                                verified.base_url.clone_from(&evidence.base_url);
+                                same_connection(connection, &verified)
+                            }
+                            _ => same_connection(connection, before),
                         }
-                        _ => same_connection(connection, before),
-                    }
-            }
-            _ => false,
-        });
+                }
+                _ => false,
+            });
         let Some(baseline) = baseline else {
             return Some(true);
         };
@@ -629,6 +700,10 @@ impl ProbeBatch {
             }
             let (result, status) = match result {
                 ProbeCompletion::Finished(result, status) => (result, status),
+                ProbeCompletion::Unavailable(error, status) => {
+                    self.rows[index].route_missing = true;
+                    (Err(error), status)
+                }
                 ProbeCompletion::RateLimited { retry_after, error } => {
                     if self.rate_limit(index, retry_after) {
                         return;

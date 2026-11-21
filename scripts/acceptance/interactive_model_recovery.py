@@ -75,7 +75,7 @@ def assert_wide_setup(terminal):
     assert wide_column == standard_column < 90, wide
     terminal.press("\r")
     details = terminal.expect("Model tests", rows=25)["screen"]
-    receipt = next(line for line in details.splitlines() if "API type" in line)
+    receipt = next(line for line in details.splitlines() if "OpenAI Chat Completions" in line)
     elapsed = re.search(r"\b\d+\.\d+s\b", receipt)
     assert elapsed and elapsed.start() < 90, details
     terminal.press("\x1b")
