@@ -300,6 +300,8 @@ python3 scripts/acceptance/benchmark_compare.py \
 
 The exporter checks the task file digest, Docker image ID, model route and limits before pairing the attempts. Compare verifier reward and tests, agent and verifier wall time, model requests, token counts and estimated USD, then resource acceptance, harness RSS, container peak memory, CPU seconds and OOM events. Container peak is the kernel high-water mark from startup to the pre-verifier snapshot and includes memory charged to the cgroup for the harness, tool subprocesses and measurement overhead. Harness RSS covers the primary process's resident pages, including shared mappings. CPU seconds are the delta between snapshots around agent execution. Share the comparison JSON together with the rounds, host and build profile used for the test. Include the Pi lockfile if readers need to reproduce the exact dependency tree. Keep credentials, raw prompts, tool output and Session files private.
 
+The paired report includes the sum of host meter relay time and serialized request body bytes across all admitted attempts, including retries. Relay time covers outbound connection and response transfer. The report leaves either total empty when an attempt is missing the corresponding measurement. Median time to first output uses the measured requests and includes its sample count.
+
 ## Resource measurements
 
 ```bash

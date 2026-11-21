@@ -64,6 +64,20 @@ class PairedReportTests(unittest.TestCase):
             report = compare(kuku, pi)
             self.assertEqual([result['reward'] for result in report['attempts']], [0, 0])
             self.assertNotIn(SECRET, json.dumps(report))
+            rows = [
+                {'seconds': 0.25, 'request_bytes': 40, 'body': SECRET},
+                {'seconds': 1.25, 'request_bytes': 42, 'timing': {'request_to_first_output_delta_seconds': 0.5}},
+                {'seconds': 2.0, 'request_bytes': 45, 'timing': {'request_to_first_output_delta_seconds': 1.0}},
+            ]
+            write_json(kuku / 'meter.json', {**meter, 'attempts': rows})
+            write_json(pi / 'meter.json', {**meter, 'attempts': [{**rows[1], 'seconds': None}]})
+            report = compare(kuku, pi)
+            self.assertEqual(report['attempts'][0]['provider_relay'], {
+                'admitted_attempts': 3, 'timed_attempts': 3, 'elapsed_seconds': 3.5, 'request_body_bytes': 127,
+                'first_output_samples': 2, 'first_output_p50_seconds': 0.75,
+            })
+            self.assertIsNone(report['attempts'][1]['provider_relay']['elapsed_seconds'])
+            self.assertNotIn(SECRET, json.dumps(report))
             write_json(pi / 'meter.json', {**meter, 'case_cap_usd': '1.00'})
             with self.assertRaisesRegex(EvidenceError, 'case_cap_usd'):
                 compare(kuku, pi)

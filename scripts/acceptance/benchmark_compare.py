@@ -9,12 +9,29 @@ import re
 
 from benchmark_resources import CASE_RESOURCE_LIMITS
 from frontier_report import (FAILURE_KINDS, TASK_COMMIT, TEST_FIELDS, EvidenceError, allowed, boolean,
-                             count, hex_digest, money, number, object_value, read_object)
+                             count, hex_digest, middle, money, number, object_value, read_object)
 from run import manifest_case
 
 
 REQUIRED_LIMITS = ('max_request_bytes', 'max_output_tokens', 'agent_timeout_sec', 'provider_context_tokens')
 TOKEN_FIELDS = ('prompt_tokens', 'completion_tokens', 'prompt_cache_hit_tokens', 'prompt_cache_miss_tokens')
+
+
+def relay_summary(rows):
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise EvidenceError('paired meter must contain request rows')
+    elapsed = [value for row in rows if (value := number(row.get('seconds'))) is not None]
+    request_bytes = [value for row in rows if (value := count(row.get('request_bytes'))) is not None]
+    first_output = [value for row in rows if (value := number(object_value(row.get('timing')).get(
+        'request_to_first_output_delta_seconds'))) is not None]
+    return {
+        'admitted_attempts': len(rows),
+        'timed_attempts': len(elapsed),
+        'elapsed_seconds': round(sum(elapsed), 6) if elapsed and len(elapsed) == len(rows) else None,
+        'request_body_bytes': sum(request_bytes) if request_bytes and len(request_bytes) == len(rows) else None,
+        'first_output_samples': len(first_output),
+        'first_output_p50_seconds': middle(first_output),
+    }
 
 
 def attempt(directory, harness):
@@ -78,6 +95,7 @@ def attempt(directory, harness):
         'verifier_seconds': number(object_value(result.get('verification')).get('seconds')),
         'tests': {key: count(object_value(result.get('verifier_summary')).get(key)) for key in TEST_FIELDS},
         'upstream_requests': count(accounting.get('upstream_requests')),
+        'provider_relay': relay_summary(meter.get('attempts', [])),
         'tool_calls': count(tool_facts.get('tool_calls')),
         'usage': {key: count(object_value(accounting.get('usage')).get(key)) for key in TOKEN_FIELDS},
         'token_estimate_usd': money(accounting.get('token_estimate_usd')),
