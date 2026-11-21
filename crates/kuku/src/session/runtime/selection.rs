@@ -172,7 +172,7 @@ impl Session {
         } else {
             available
         };
-        crate::tool::workspace_script::describe_selected_tools(&mut selected_tools);
+        crate::tool::run_js::describe_selected_tools(&mut selected_tools);
         Ok(selected_tools)
     }
 

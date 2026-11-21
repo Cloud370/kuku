@@ -714,7 +714,7 @@ impl Run {
                 )));
             }
         };
-        let result = super::workspace_script::cancelled_permission(waiting)?;
+        let result = super::run_js::cancelled_permission(waiting)?;
         let mut store = EventStore::open(&waiting.pending.events_path)?;
         store.append(EventPayload::ToolResult {
             turn: waiting.pending.turn,

@@ -84,7 +84,7 @@ impl JobReplay {
                 ..
             } => {
                 let call = match tool.as_str() {
-                    "run_command" | "run_js" | "workspace_script" => JobCall::Execution {
+                    "run_command" | "run_js" => JobCall::Execution {
                         tool: tool.clone(),
                         dispatched: false,
                     },

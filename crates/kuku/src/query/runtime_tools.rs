@@ -6,6 +6,7 @@ pub(crate) mod values;
 use crate::context::ToolSchema;
 use crate::event::{EventPayload, EventStore};
 use crate::permission::{AuthorizationDecision, GateDecisionKind};
+use crate::tool::builtin::common::{changed_file_target, prepare_file_target};
 use crate::tool::{ToolDefinition, ToolResultEnvelope};
 use crate::{Error, Result};
 
@@ -191,7 +192,7 @@ pub(super) async fn dispatch(
     event_tx: tokio::sync::mpsc::Sender<(String, SlotEvent)>,
     active: usize,
 ) -> Result<PendingStep> {
-    if let Some(result) = super::workspace_script::changed_file_target(
+    if let Some(result) = changed_file_target(
         &queued.tool_call.name,
         &queued.tool_call.args,
         &pending.workspace,
@@ -314,7 +315,7 @@ fn start_job_capable_slot(
         )
     } else {
         mark_dispatched(&pending, &queued)?;
-        super::workspace_script::spawn(&pending, &queued, ForegroundJob::start(&pending, &queued))?
+        super::run_js::spawn(&pending, &queued, ForegroundJob::start(&pending, &queued))?
     };
     start_slot(pending, queued, slot)
 }
@@ -418,7 +419,7 @@ pub(super) fn is_inline(name: &str) -> bool {
 
 pub(super) fn reject(pending: PendingRun, queued: QueuedToolCall) -> Result<PendingStep> {
     if queued.tool_call.name == "run_js" {
-        if let Some(result) = super::workspace_script::declined(&pending, &queued.tool_call.id)? {
+        if let Some(result) = super::run_js::declined(&pending, &queued.tool_call.id)? {
             return finish_inline(pending, queued, result);
         }
     }
@@ -478,7 +479,7 @@ fn output_admission_failed(
 
 pub(crate) fn definitions() -> Vec<ToolDefinition> {
     vec![
-        crate::tool::workspace_script::definition(),
+        crate::tool::run_js::definition(),
         output::definition(),
         values::save_definition(),
         values::list_definition(),
@@ -743,7 +744,7 @@ async fn prepare(
         return Ok(Some(block.reason));
     }
     queued.tool_call.args = result.args;
-    super::workspace_script::prepare_file_target(
+    prepare_file_target(
         &queued.tool_call.name,
         &mut queued.tool_call.args,
         &pending.workspace,

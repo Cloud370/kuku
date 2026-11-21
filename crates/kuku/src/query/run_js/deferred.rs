@@ -5,13 +5,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::Notify;
 
-use super::{prepare_file_target, WorkspaceHost};
+use super::WorkspaceHost;
 use crate::event::{EventPayload, EventStore};
 use crate::permission::GateDecisionKind;
 use crate::query::helpers::{display_summary, now_timestamp, permission_candidate};
 use crate::query::types::{PendingRun, PermissionRequest, QueuedToolCall};
-use crate::tool::builtin::common::ExecutorObservation;
-use crate::tool::workspace_script::{ScriptCall, ScriptExecution, ScriptOperation};
+use crate::tool::builtin::common::{prepare_file_target, ExecutorObservation};
+use crate::tool::run_js::{ScriptCall, ScriptExecution, ScriptOperation};
 use crate::tool::{ToolDefinition, ToolResultEnvelope};
 use crate::{Error, Result, WorkspaceScriptActionStatus, WorkspaceScriptFacts};
 
