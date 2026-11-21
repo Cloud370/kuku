@@ -107,6 +107,7 @@ def open_focused_results(terminal):
     terminal.press("\r")
     terminal.expect("Model tests", also=("Enter returns",))
     terminal.press("\x1b")
+    terminal.expect("Save setup")
 
 
 def start_custom(terminal, address, key):
