@@ -25,7 +25,7 @@ from paid_model import RequestBoundary, RunLimits, route_for, usd, valid_counts
 from run import Budget, benchmark_attempt, money, write_json
 
 
-MODEL_VERSION = "DeepSeek-V4.1-Flash-1017"
+ROUTER_MODEL_VERSION = "DeepSeek-V4.1-Flash-1017"
 ROUTER_MODEL = "deepseek/deepseek-v4.1-flash-1017"
 WIRE_BYTES = 4 * 1024 * 1024
 TOKEN_VARIABLE = "KUKU_INTENT_FIXTURE_TOKEN"
@@ -631,7 +631,8 @@ class CaseMeter(RequestBoundary):
         binary = (result or {}).get("runtime_files", {}).get("session_task")
         write_json(self.evidence, {
             "schema_version": 1, "case": self.phase, "outcome": self.outcome,
-            "service": route.service, "wire": route.wire, "provider": route.host, "model_version": MODEL_VERSION,
+            "service": route.service, "wire": route.wire, "provider": route.host,
+            "model_version": ROUTER_MODEL_VERSION if route.router else route.upstream_model,
             "model_requested": route.model, "effort": route.effort, "upstream": route.upstream,
             "upstream_provider": route.upstream_name, "allow_fallbacks": False,
             "excluded_upstreams": route.excluded_upstreams, "catalog_upstream_model": route.upstream_model,

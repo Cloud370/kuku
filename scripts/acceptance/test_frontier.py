@@ -1,5 +1,6 @@
 import concurrent.futures
 from contextlib import closing
+from dataclasses import replace
 from decimal import Decimal
 from email.message import Message
 import http.client
@@ -16,7 +17,7 @@ import unittest
 from unittest import mock
 from urllib.parse import urlsplit
 
-from frontier import CaseMeter, MODEL_VERSION, ROUTER_MODEL, TOKEN_VARIABLE, WIRE_BYTES, run_live
+from frontier import CaseMeter, ROUTER_MODEL, ROUTER_MODEL_VERSION, TOKEN_VARIABLE, WIRE_BYTES, run_live
 from interactive_fixture import local_request, serve
 from paid_model import Route, RunLimits, route_for
 from run import Budget
@@ -25,7 +26,7 @@ from run import Budget
 KEY = "fixture-key-stays-on-host"
 TOKEN = "fixture-key-only-for-loopback"
 DIRECT = Route("deepseek", "api.deepseek.com", "deepseek-chat", "openai-chat", "deepseek-flash", "max",
-               "deepseek", "DeepSeek", MODEL_VERSION, 1048576, 393216, Decimal("0.0000003"),
+               "deepseek", "DeepSeek", "DeepSeek-V4.1-Flash-1017", 1048576, 393216, Decimal("0.0000003"),
                Decimal("0.000000006"), Decimal(0), Decimal("0.0000012"), "https://example.invalid/prices")
 ROUTER = Route("openrouter", "openrouter.ai", "openrouter-deepseek", "openai-responses", ROUTER_MODEL, "max",
                "deepseek", "DeepSeek", "deepseek/deepseek-v4.1-flash-20261017", 1048576, 393216,
@@ -73,6 +74,15 @@ class FrontierTests(unittest.TestCase):
         meter = CaseMeter(route, limits, KEY, TOKEN, Decimal(cap), "fixture-case", 300, self.directory / "meter.json")
         meter.arm()
         return meter
+
+    def test_meter_records_the_selected_direct_model_version(self):
+        pro = replace(DIRECT, model="deepseek-v4-pro", upstream_model="DeepSeek-V4-Pro-0813")
+        for route, expected in ((DIRECT, DIRECT.upstream_model), (pro, pro.upstream_model),
+                                (ROUTER, ROUTER_MODEL_VERSION)):
+            with self.subTest(model=route.model):
+                evidence = json.loads(self.meter(route=route).evidence.read_text())
+                self.assertEqual(evidence["model_requested"], route.model)
+                self.assertEqual(evidence["model_version"], expected)
 
     def test_request_ceiling_is_durable_and_concurrent_requests_cannot_overrun_case(self):
         meter = self.meter()
