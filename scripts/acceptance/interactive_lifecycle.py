@@ -362,6 +362,7 @@ def setup_probe_progress(binary, bridge, directory):
         ("gamma", "medium"), ("alpha", "high"),
     )}
     release_requests = threading.Event()
+    rate_request_started = threading.Event()
     allow_rate_limit = threading.Event()
     runtime_requests = []
     release = threading.Event()
@@ -402,6 +403,7 @@ def setup_probe_progress(binary, bridge, directory):
         if effort == "__kuku_unknown_effort__":
             return json_response({"error": {"param": "reasoning_effort", "allowed_values": ["none", "high", "max"]}}, 400)
         if model == "alpha" and effort == "none" and sum(row[:2] == ("alpha", "none") for row in trials) == 1:
+            rate_request_started.set()
             allow_rate_limit.wait(20)
             return json_response({"error": {"type": "rate_limit_error", "message": "fixture rate limit"}}, 429)
         if effort == "high":
@@ -447,7 +449,7 @@ def setup_probe_progress(binary, bridge, directory):
                     also=("Progress", "3 selected", "6 running", "1 queued", "› Save and continue", "Model tests", "Settings", "Esc previous step"),
                 )["screen"]
                 assert all(event.wait(5) for event in held_requests.values()), trials
-                assert any(row[:2] == ("alpha", "none") for row in trials), trials
+                assert rate_request_started.wait(5), trials
                 model_rows = [next(line for line in save_activity.splitlines() if line.strip(" │").startswith(model + " "))
                               for model in ("alpha", "beta", "gamma")]
                 assert all("2 running" in line for line in model_rows), save_activity
