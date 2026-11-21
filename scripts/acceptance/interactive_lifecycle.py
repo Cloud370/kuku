@@ -278,7 +278,7 @@ def shared_model_editor(binary, bridge, directory):
             terminal.press("\r")
             terminal.expect("› Model tests", also=("Save models", "API URL", "gamma"))
             terminal.press("\x1b[A\r")
-            terminal.expect("gamma")
+            terminal.expect("gamma", state="Model route")
             terminal.press("gamma")
             match = terminal.expect("/ gamma", also=("›gamma",))["screen"]
             terminal.click_text(match, "›gamma")
@@ -298,7 +298,7 @@ def shared_model_editor(binary, bridge, directory):
             terminal.press("\r")
             terminal.expect("› Model tests", also=("Save models", "API URL", "delta"))
             terminal.press("\x1b[A\r")
-            terminal.expect("gamma", also=("delta",))
+            terminal.expect("gamma", state="Model route", also=("delta",))
             terminal.press("\x1b")
             terminal.expect(draft, absent=("Connected", "F2 Restart", "Model route"))
             assert len(list((client.home / "credentials").iterdir())) == 1
@@ -312,7 +312,7 @@ def shared_model_editor(binary, bridge, directory):
             assert next(item for item in catalog["tiers"] if item["name"] == "gamma")["model"] == "delta"
 
             terminal.press("\x0c")
-            terminal.expect("gamma", also=("delta",))
+            terminal.expect("gamma", state="Model route", also=("delta",))
             terminal.press("gamma")
             match = terminal.expect("/ gamma", also=("›gamma",))["screen"]
             terminal.click_text(match, "›gamma")
