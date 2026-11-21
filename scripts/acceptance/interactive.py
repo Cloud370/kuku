@@ -600,7 +600,7 @@ def delegated_agent_cards(client):
     reply = f"{initial}\n\n{conclusion}"
     parent_reply = "Parent finished and left the review running"
     card = "╭─ Agent reviewer"
-    delivery = "Agent reviewer · Input delivered"
+    delivery = "Input delivered"
     screens = []
 
     with client.terminal(workspace) as terminal:
