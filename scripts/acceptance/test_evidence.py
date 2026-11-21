@@ -531,6 +531,20 @@ class EvidenceTests(unittest.TestCase):
                 self.assertFalse(evidence["passed"])
                 self.assertEqual("SDK runtime did not complete successfully", evidence["error"])
 
+    def test_closed_timeout_reports_cleanup_independent_of_runtime_success(self):
+        fixture = self.fixture
+        fixture.report.update(runtime_completed=False, error="task exceeded 1s")
+        fixture.report["agent"]["status"] = "stopped"
+        settled = next(e["record"] for e in fixture.records if e.get("record", {}).get("operation") == "turn_settled")
+        settled["status"] = "stopped"
+        evidence = fixture.inspect()
+        self.assertFalse(evidence["passed"])
+        self.assertTrue(evidence["durable_cleanup_closed"])
+        fixture.add("diagnostic.after_close")
+        fixture.renumber()
+        evidence = fixture.inspect()
+        self.assertFalse(evidence["durable_cleanup_closed"])
+
     def test_completed_tool_argument_regeneration_counts_both_prepared_requests(self):
         fixture = self.fixture
         index = next(i for i, event in enumerate(fixture.records) if event["kind"] == "runtime.step_prepared")

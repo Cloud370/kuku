@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 
 from benchmark_resources import CASE_RESOURCE_LIMITS
+from benchmark_runtime import verifier_passed
 from frontier_report import (FAILURE_KINDS, TASK_COMMIT, TEST_FIELDS, EvidenceError, allowed, boolean,
                              count, hex_digest, middle, money, number, object_value, read_object,
                              session_events, session_journal, session_summary)
@@ -166,6 +167,10 @@ def attempt(directory, harness):
     case_cap_rejections = (sum(object_value(entry).get('reason') == 'case USD cap' for entry in rejections)
                            if isinstance(rejections, list) else None)
     memory_events = object_value(resources.get('memory_event_deltas'))
+    verification = object_value(result.get('verification'))
+    verifier_summary = object_value(result.get('verifier_summary'))
+    original_verifier_passed = (verifier_passed('live', verification, result.get('reward'), verifier_summary)
+                                if type(verification.get('exit_code')) is int else None)
     version = package.get('version')
     return shared, {
         'harness': harness, 'passed': boolean(record.get('passed')), 'task_passed': boolean(result.get('task_passed')),
@@ -182,8 +187,10 @@ def attempt(directory, harness):
             'node_binary_sha256': hex_digest(runtime_files.get('node'), 64),
         },
         'agent_seconds': number(object_value(result.get('execution')).get('seconds')),
-        'verifier_seconds': number(object_value(result.get('verification')).get('seconds')),
-        'tests': {key: count(object_value(result.get('verifier_summary')).get(key)) for key in TEST_FIELDS},
+        'agent_timed_out': boolean(object_value(result.get('execution')).get('timed_out')),
+        'verifier_seconds': number(verification.get('seconds')),
+        'original_verifier_passed': original_verifier_passed,
+        'tests': {key: count(verifier_summary.get(key)) for key in TEST_FIELDS},
         'final_artifact_observation': artifact_observation(directory / 'live', result) if harness == 'kuku' else None,
         'upstream_requests': count(accounting.get('upstream_requests')),
         'provider_relay': relay_summary(meter.get('attempts', [])),

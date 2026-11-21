@@ -28,7 +28,7 @@ import zipfile
 from benchmark_resources import (CASE_RESOURCE_LIMITS, ResourceSampler, case_resource_evidence, include_final_process_usage,
                                  read_case_cgroup, validate_case_limits)
 from benchmark_runtime import (attempt_passed, bundle_binary, bundle_ca, bundle_prompts, file_hashes,
-                               fresh_verifier_directory, reward, verifier_summary)
+                               fresh_verifier_directory, reward, verifier_passed, verifier_summary)
 from evidence import FailureSummary, inspect_sdk
 
 
@@ -452,8 +452,10 @@ def benchmark_attempt(args, case, source, image, directory, mode, secrets, *, sd
                                                     expected_max_command_seconds=record["max_command_seconds"])
         else:
             record["execution"] = {"exit_code": 0, "scope": "untouched environment; no Agent or oracle"}
-        if record["execution"].get("timed_out"):
-            record.update(passed=False, failure_kind="runtime", verification={"skipped": "runner timed out"})
+        timed_out = record["execution"].get("timed_out")
+        if timed_out and not record.get("sdk_evidence", {}).get("durable_cleanup_closed"):
+            record.update(passed=False, failure_kind="runtime",
+                          verification={"skipped": "runner timed out without a verified Session close"})
             return record
         if mode == "live":
             record["task_artifacts"] = retain_task_artifacts(case, container, attempt)
@@ -465,12 +467,16 @@ def benchmark_attempt(args, case, source, image, directory, mode, secrets, *, sd
                                           attempt, "verifier", timeout=case["timeout_sec"])
         record["reward"] = reward(logs)
         record["verifier_summary"] = verifier_summary(logs)
+        record["original_verifier_passed"] = verifier_passed("live", record["verification"],
+                                                            record["reward"], record["verifier_summary"])
         record["task_passed"] = attempt_passed(mode, record["execution"], record["verification"],
                                                record["reward"], record["verifier_summary"])
         agent_passed = mode != "live" or record[evidence_key]["passed"]
         resources_passed = not strict or record["resource_evidence"]["passed"]
         record["passed"] = record["task_passed"] and agent_passed and resources_passed
-        if record["reward"] is None or not record["verifier_summary"] or record["verification"]["timed_out"]:
+        if timed_out:
+            record["failure_kind"] = "runtime"
+        elif record["reward"] is None or not record["verifier_summary"] or record["verification"]["timed_out"]:
             record["failure_kind"] = "infrastructure"
         elif record["execution"]["exit_code"] != 0:
             record["failure_kind"] = "runtime"

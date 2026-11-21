@@ -380,6 +380,40 @@ class AcceptanceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "unknown benchmark case"):
                 ACCEPTANCE.manifest_case(case_id, suite)
 
+    def test_runner_grades_timed_out_sdk_only_after_verified_cleanup(self):
+        args = SimpleNamespace(sdk_binary=self.directory / "session_task", config=self.directory / "config.toml",
+                               connection="fixture", require_streaming=False, sdk_args=[], suite="frontier")
+        case = {"workspace": "/app", "artifacts": [], "timeout_sec": 20}
+        summary = {"tests": 1, "passed": 1, "failed": 0, "skipped": 0, "pending": 0, "other": 0}
+        sampler = mock.Mock()
+        sampler.finish.return_value = {}
+
+        def capture(_command, _directory, label, **_options):
+            return {"exit_code": -9, "timed_out": True} if label == "sdk" else {"exit_code": 0, "timed_out": False}
+
+        for closed in (False, True):
+            with self.subTest(closed=closed), mock.patch.multiple(
+                ACCEPTANCE,
+                bundle_binary=mock.Mock(return_value=(["/kuku/runtime/session_task"], {})),
+                bundle_ca=mock.Mock(return_value={"sha256": "", "runtime_path": "/kuku/runtime/ca.crt"}),
+                ResourceSampler=mock.Mock(return_value=sampler),
+                include_final_process_usage=mock.Mock(),
+                inspect_sdk=mock.Mock(return_value={"passed": False, "durable_cleanup_closed": closed}),
+                reward=mock.Mock(return_value=1.0),
+                verifier_summary=mock.Mock(return_value=summary),
+            ), mock.patch.object(ACCEPTANCE, "capture", side_effect=capture) as calls:
+                result = ACCEPTANCE.benchmark_attempt(args, case, self.directory, "fixture", self.directory / str(closed),
+                                                      "live", {}, sdk_timeout_sec=1)
+                self.assertTrue(result["execution"]["timed_out"])
+                self.assertFalse(result["passed"])
+                self.assertEqual("runtime", result["failure_kind"])
+                self.assertEqual(closed, any(call.args[2] == "verifier" for call in calls.call_args_list))
+                if closed:
+                    self.assertTrue(result["original_verifier_passed"])
+                    self.assertFalse(result["task_passed"])
+                else:
+                    self.assertIn("skipped", result["verification"])
+
     def test_benchmark_parser_selects_frontier_route_and_preserves_legacy_default(self):
         parser = ACCEPTANCE.parser()
         base = ["benchmark", "--case", "regex-log"]

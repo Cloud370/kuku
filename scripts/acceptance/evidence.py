@@ -520,6 +520,17 @@ class SessionFacts:
                 self.admitted_results.add(matches[0])
                 pending.pop(call_id)
 
+    def durable_cleanup_closed(self, report):
+        snapshot = report.get("agent") or {}
+        status = snapshot.get("status")
+        return (report.get("session_id") == self.session_id
+                and report.get("last_event_id") == self.last_id == self.closed_at
+                and report.get("cleanup", {}).get("closed") is True and self.cleanup_failures == 0
+                and self.settled is not None and self.settled[0] < self.closed_at
+                and status in ("idle", "stopped", "interrupted", "waiting")
+                and status == self.settled[1].get("status")
+                and snapshot.get("pending_inputs") == len(self.pending) == 0)
+
     def finish(self, report, require_fixed_limits, require_output_limit):
         snapshot = report.get("agent") or {}
         require(report.get("session_id") == self.session_id, "SDK report names a different durable Session")
@@ -618,6 +629,7 @@ def inspect_sdk(result_path, data_dir, connection=None, container_data=None, ses
                     records += 1
                     require(records <= EVENT_RECORD_LIMIT, "event log exceeds the diagnostic record limit")
                     facts.accept(json.loads(line))
+        inspected["durable_cleanup_closed"] = facts.durable_cleanup_closed(report)
         inspected.update(facts.finish(report, require_fixed_limits, require_output_limit), events_path=str(path),
                          events_sha256=digest.hexdigest(), records=records)
         if require_streaming:

@@ -109,6 +109,10 @@ def fresh_verifier_directory(logs):
 def attempt_passed(mode, execution, verification, value, summary):
     if execution["exit_code"] != 0 or execution.get("timed_out") or execution.get("capture_incomplete"):
         return False
+    return verifier_passed(mode, verification, value, summary)
+
+
+def verifier_passed(mode, verification, value, summary):
     if verification["exit_code"] != 0 or verification.get("timed_out") or verification.get("capture_incomplete"):
         return False
     if not summary or summary.get("tests", 0) <= 0:
