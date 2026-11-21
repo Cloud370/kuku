@@ -250,11 +250,35 @@ impl Tool {
                 .is_some_and(|item| item.checks_delegation(sender, recipient))
     }
 
-    pub(super) fn agent_listing(&self) -> Option<(&str, &str)> {
+    pub(super) fn agent_listing(&self) -> Option<String> {
         let observation = self
             .observation()
             .filter(|value| value.is_for("list_agents"))?;
-        Some((&observation.caption, &observation.detail))
+        Some(if let Some(agent) = observation.single_agent() {
+            format!("Agent · {agent}")
+        } else if observation.detail.is_empty() {
+            observation.caption.clone()
+        } else {
+            format!("{}\n{}", observation.caption, observation.detail)
+        })
+    }
+
+    pub(super) fn inspection_result(&self) -> Option<String> {
+        let result = match self.name.as_str() {
+            "read_file" => self.file_caption()?,
+            "find_files" | "search_text" => {
+                single_line(cap(self.search_summary()?, MAX_LABEL_BYTES))
+            }
+            "query_session" => self.session_caption()?.to_owned(),
+            _ => return None,
+        };
+        Some(format!("{} · {result}", self.title()))
+    }
+
+    fn search_summary(&self) -> Option<&str> {
+        let summary = self.summary();
+        (matches!(self.name.as_str(), "find_files" | "search_text") && !summary.trim().is_empty())
+            .then_some(summary)
     }
 
     pub(super) fn read_path(&self) -> Option<&str> {
@@ -367,9 +391,23 @@ impl Tool {
             if !target.is_empty() {
                 label.push_str(&format!(" · {target}"));
             }
-            let caption = shorten(&label, width);
-            let rows =
-                render_rows(vec![Line::styled(caption, emphasis(ACCENT))], width, 1, 0).collect();
+            let mut line = Line::styled(shorten(&label, width), emphasis(ACCENT));
+            let room = width.saturating_sub(line.width());
+            if let Some(summary) = self
+                .search_summary()
+                .filter(|summary| *summary != target && room >= 12)
+            {
+                line.push_span(Span::styled(
+                    shorten(
+                        &format!(" · {}", single_line(cap(summary, MAX_LABEL_BYTES))),
+                        room,
+                    ),
+                    Style::new()
+                        .fg(MUTED)
+                        .remove_modifier(ratatui::style::Modifier::BOLD),
+                ));
+            }
+            let rows = render_rows(vec![line], width, 1, 0).collect();
             return finish_card(rows);
         }
         if let Some(change) = self.file_change() {
@@ -429,13 +467,18 @@ impl Tool {
             .filter(|summary| !summary.is_empty())
             .unwrap_or_else(|| self.summary());
         if expanded && caption.is_none() && (!inspecting || invocation != self.arguments) {
-            rows.extend(render_preview(
-                invocation,
-                ACCENT,
-                width,
-                MAX_INVOCATION_ROWS,
-                inset,
-            ));
+            if frame.is_some() && !inspecting && !invocation.is_empty() {
+                let command = shorten(&single_line(cap(invocation, MAX_PREVIEW_BYTES)), width);
+                rows.push(Row::plain(Line::styled(command, Style::new().fg(MUTED))));
+            } else {
+                rows.extend(render_preview(
+                    invocation,
+                    ACCENT,
+                    width,
+                    MAX_INVOCATION_ROWS,
+                    inset,
+                ));
+            }
         }
         if !concise
             && caption.is_none()

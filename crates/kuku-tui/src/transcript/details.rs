@@ -575,6 +575,7 @@ pub(super) struct GroupSummary {
     title: String,
     composition: String,
     listing: String,
+    preview: Option<String>,
     kind: GroupKind,
 }
 
@@ -638,11 +639,16 @@ impl GroupHeading {
             title.push_span(Span::styled(status, Style::new().fg(SUCCESS)));
         }
         let mut rows = vec![Row::plain(frame.title_line(title))];
+        let composition = match (open, summary.preview.as_deref()) {
+            (true, Some(_)) => "",
+            (false, Some(preview)) => preview,
+            (_, None) => &summary.composition,
+        };
         let listing = if open { "" } else { &summary.listing };
-        if open || !summary.composition.is_empty() || !listing.is_empty() {
+        if open || !composition.is_empty() || !listing.is_empty() {
             rows.extend(Row::frame_padding(&frame));
         }
-        for detail in [summary.composition.as_str(), listing] {
+        for detail in [composition, listing] {
             if !detail.is_empty() {
                 rows.extend(
                     render_rows(
@@ -734,6 +740,7 @@ pub(super) fn groups(records: &[Record]) -> Vec<GroupSpan> {
                         title: format!("Agent {}", send.address),
                         composition: send.choice_summary(),
                         listing: String::new(),
+                        preview: None,
                         kind: GroupKind::Delegation {
                             delivery: next,
                             checks,
@@ -793,9 +800,17 @@ fn group_summary(first: &str, records: &[Record]) -> GroupSummary {
     } else {
         group_title(first, records)
     };
+    let listing = records
+        .iter()
+        .rev()
+        .find(|record| group_name(record) == Some("list_agents"))
+        .and_then(|record| record.tool()?.agent_listing());
     let mut parts = Vec::new();
     if mixed {
         for (name, one, many) in INSPECTIONS {
+            if name == "list_agents" && listing.is_some() {
+                continue;
+            }
             let count = records
                 .iter()
                 .filter(|record| group_name(record) == Some(name))
@@ -805,22 +820,20 @@ fn group_summary(first: &str, records: &[Record]) -> GroupSummary {
             }
         }
     }
-    let listing = records
-        .iter()
-        .rev()
-        .find(|record| group_name(record) == Some("list_agents"))
-        .and_then(|record| record.tool()?.agent_listing())
-        .map_or_else(String::new, |(caption, detail)| {
-            if detail.is_empty() {
-                caption.to_owned()
-            } else {
-                format!("Latest · {caption}\n{detail}")
-            }
-        });
+    let preview = if mixed && count == 2 {
+        let results = records
+            .iter()
+            .filter_map(|record| record.tool()?.inspection_result())
+            .collect::<Vec<_>>();
+        (results.len() + usize::from(listing.is_some()) == count).then(|| results.join("\n"))
+    } else {
+        None
+    };
     GroupSummary {
         title,
         composition: parts.join(" · "),
-        listing,
+        listing: listing.unwrap_or_default(),
+        preview,
         kind: GroupKind::Inspections,
     }
 }

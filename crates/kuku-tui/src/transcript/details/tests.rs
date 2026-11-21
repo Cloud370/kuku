@@ -528,7 +528,7 @@ fn listing_polls_show_their_recorded_snapshot_and_preserve_the_original_result()
     let compact = text(&view);
     for term in [
         "List Agents ×3 · ok",
-        "Latest · 2 agents",
+        "2 agents",
         "reviewer (Idle, reply available)",
         "4 agents · 2 need attention",
         "reviewer (Waiting for approval, 1 queued)",
@@ -578,12 +578,13 @@ fn an_open_listing_group_reads_each_agent_check_once() {
         .clone();
     let last_result = "tester-b (Idle, reply available)";
     assert_eq!(1, text(&view).matches(last_result).count());
+    assert!(text(&view).contains("Agent · tester-b (Idle, reply available)"));
     assert!(transcript.toggle_detail(&key));
     let opened = text(&transcript.project(95, 24));
     assert_eq!(1, opened.matches(last_result).count());
     assert!(opened.contains("Agent check · tester-a (Idle, reply available)"));
     assert!(opened.contains("Agent check · tester-b (Idle, reply available)"));
-    assert!(!opened.contains("Latest ·"));
+    assert!(!opened.contains("Agent · tester-b"));
 }
 
 #[test]
@@ -597,21 +598,27 @@ fn mixed_inspection_results_keep_the_same_frame_when_opened() {
     journal.tool(
         "find_files",
         json!({"path":"."}),
-        json!({"status":"ok","summary":"found files"}),
+        json!({"status":"ok","summary":"found 0 entries under ."}),
     );
     let mut transcript = journal.load();
     for width in [60, 120] {
         let collapsed = transcript.project(width, 30);
         let heading = line(&collapsed, "▸ Read-only activity");
         let group = transcript.detail_at(heading).unwrap().clone();
+        let search = line(&collapsed, "Find files · found 0 entries under .");
+        assert_eq!(search + 1, line(&collapsed, "Agent · main (Running)"));
+        assert!(!text(&collapsed).contains("Agent listing"));
         assert!(transcript.toggle_detail(&group));
         let open = transcript.project(width, 30);
         let heading = line(&open, "▾ Read-only activity");
         let agent = line(&open, "Agent check · main (Running)");
         let files = line(&open, "Find files");
         assert_eq!(agent + 1, files);
+        assert!(open.lines[files]
+            .to_string()
+            .contains("found 0 entries under ."));
         assert_ne!(transcript.detail_at(agent), transcript.detail_at(files));
-        assert!(!text(&open).contains("Latest ·"));
+        assert!(!text(&open).contains("Agent · main"));
         for view in [&collapsed, &open] {
             let end = line(view, "╰");
             for row in &view.lines[heading..=end] {
@@ -687,7 +694,7 @@ fn a_full_window_of_large_agent_polls_keeps_default_paint_compact() {
     for width in [32, 72, 150].into_iter().cycle().take(120) {
         let view = transcript.project(width, 20);
         assert!(view.lines.len() <= 9, "{}", text(&view));
-        assert!(text(&view).contains("1 agent"));
+        assert!(text(&view).contains("Agent · reviewer"));
         assert!(!text(&view).contains("archived Markdown"));
     }
     assert!(transcript
