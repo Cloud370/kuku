@@ -18,7 +18,7 @@ use super::{
 use tokio::task::JoinSet;
 
 const IN_FLIGHT: usize = 2;
-const MAX_MODEL_IN_FLIGHT: usize = 4;
+const MAX_MODEL_IN_FLIGHT: usize = 6;
 const MAX_RATE_LIMIT_RETRIES: u8 = 2;
 
 /// A selected model with the settings to check at its actual endpoint.
@@ -245,7 +245,10 @@ impl ProbeBatch {
             .filter_map(|row| row.probe.connection().and_then(|_| row.probe.model()))
             .collect::<HashSet<_>>()
             .len();
-        let limits = [IN_FLIGHT, models.clamp(IN_FLIGHT, MAX_MODEL_IN_FLIGHT)];
+        let model_limit = models
+            .saturating_mul(IN_FLIGHT)
+            .clamp(IN_FLIGHT, MAX_MODEL_IN_FLIGHT);
+        let limits = [IN_FLIGHT, model_limit];
         let mut active = [0; 2];
         for row in &self.rows {
             if matches!(row.progress, ProbeProgress::Waiting(_)) {
@@ -287,7 +290,7 @@ impl ProbeBatch {
             Probe::Trial {
                 check: ModelTrial::ImageInput { .. },
                 ..
-            } => (3, 0),
+            } => (2, 0),
             _ => (0, 0),
         });
         for index in queued {
@@ -359,16 +362,19 @@ impl ProbeBatch {
             }
             _ => false,
         });
-        match baseline.map(|row| &row.progress) {
-            None => Some(true),
-            Some(ProbeProgress::Finished(_, Ok(ProbeResult::Trial(trial)))) => {
+        let Some(baseline) = baseline else {
+            return Some(true);
+        };
+        match &baseline.progress {
+            ProbeProgress::Finished(_, Ok(ProbeResult::Trial(trial))) => {
                 Some(reply_accepted(trial))
             }
-            Some(ProbeProgress::Finished(_, Ok(ProbeResult::ApiType(evidence)))) => {
+            ProbeProgress::Finished(_, Ok(ProbeResult::ApiType(evidence))) => {
                 Some(reply_accepted(&evidence.trial))
             }
-            Some(ProbeProgress::Finished(..) | ProbeProgress::Canceled { .. }) => Some(false),
-            _ => None,
+            ProbeProgress::Finished(..) | ProbeProgress::Canceled { .. } => Some(false),
+            _ if matches!(baseline.probe, Probe::ApiType { .. }) => None,
+            _ => Some(true),
         }
     }
 

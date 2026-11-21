@@ -357,9 +357,12 @@ def setup_probe_progress(binary, bridge, directory):
     key = "fixture-probe-only-key"
     instance = InstalledClient(binary, bridge, directory)
     slow_catalog_started = threading.Event()
-    beta_started = threading.Event()
-    gamma_started = threading.Event()
-    release_baselines = threading.Event()
+    held_requests = {pair: threading.Event() for pair in (
+        ("beta", None), ("gamma", None), ("beta", "low"),
+        ("gamma", "medium"), ("alpha", "high"),
+    )}
+    release_requests = threading.Event()
+    allow_rate_limit = threading.Event()
     runtime_requests = []
     release = threading.Event()
     trials = []
@@ -393,14 +396,13 @@ def setup_probe_progress(binary, bridge, directory):
             return Response(200, ("".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks) + "data: [DONE]\n\n").encode(), "text/event-stream")
         assert body["max_tokens"] == 4096
         trials.append((model, effort, time.monotonic()))
-        if model in ("beta", "gamma") and effort is None:
-            (beta_started if model == "beta" else gamma_started).set()
-            release_baselines.wait(20)
+        if (model, effort) in held_requests:
+            held_requests[model, effort].set()
+            release_requests.wait(20)
         if effort == "__kuku_unknown_effort__":
-            return json_response({"error": {"param": "reasoning_effort", "allowed_values": ["none", "high"]}}, 400)
+            return json_response({"error": {"param": "reasoning_effort", "allowed_values": ["none", "high", "max"]}}, 400)
         if model == "alpha" and effort == "none" and sum(row[:2] == ("alpha", "none") for row in trials) == 1:
-            assert beta_started.wait(8)
-            assert gamma_started.wait(8)
+            allow_rate_limit.wait(20)
             return json_response({"error": {"type": "rate_limit_error", "message": "fixture rate limit"}}, 429)
         if effort == "high":
             return json_response({"error": {"param": "reasoning_effort", "message": "high is unsupported"}}, 422)
@@ -442,31 +444,36 @@ def setup_probe_progress(binary, bridge, directory):
                 terminal.press("\r")
                 save_activity = terminal.expect(
                     "Testing models", rows=20,
-                    also=("Progress", "3 models", "Retry in", "Thinking none", "› Save and continue", "Model tests", "Settings", "Esc previous step"),
+                    also=("Progress", "3 selected", "6 running", "1 queued", "› Save and continue", "Model tests", "Settings", "Esc previous step"),
                 )["screen"]
+                assert all(event.wait(5) for event in held_requests.values()), trials
+                assert any(row[:2] == ("alpha", "none") for row in trials), trials
                 model_rows = [next(line for line in save_activity.splitlines() if line.strip(" │").startswith(model + " "))
                               for model in ("alpha", "beta", "gamma")]
-                assert "Retry in" in model_rows[0] and all("Text reply" in line for line in model_rows[1:]), save_activity
+                assert all("2 running" in line for line in model_rows), save_activity
+                assert "Text, Think low" in model_rows[1] and "Text, Think medium" in model_rows[2], save_activity
                 assert save_activity.splitlines()[-2].startswith("│Esc previous step")
+                allow_rate_limit.set()
+                save_retry = terminal.expect("Retry in", also=("5 running", "2 waiting"), rows=20)["screen"]
                 terminal.press("\x1b[B\r")
                 progress = terminal.expect(
-                    "Retry in", also=("Thinking none", "Text reply", "Testing", "API listed 2 values", "Esc previous step"), rows=20,
+                    "Retry in", also=("Thinking none", "Text reply", "Testing", "API listed 3 values", "Esc previous step"), rows=20,
                 )["screen"]
                 assert progress.splitlines()[-2].startswith("│Esc previous step")
-                assert not any(row[:2] in (("beta", "low"), ("gamma", "medium")) for row in trials)
-                release_baselines.set()
+                assert not any(row[:2] == ("alpha", "max") for row in trials)
+                release_requests.set()
                 finished = terminal.expect(
-                    "8/8 finished", also=("Usable · Thinking seen", "Rejected", "Thinking low", "Cost"), rows=20,
+                    "9/9 finished", also=("Usable · Thinking seen", "Rejected", "Thinking low", "Cost"), rows=20,
                 )["screen"]
                 assert finished.count("alpha") == 1 and finished.count("beta") == 1, finished
                 result_rows = [next(line for line in finished.splitlines() if label in line)
                                for label in ("Thinking none", "Thinking high", "Thinking low")]
                 assert len({line.index(result) for line, result in zip(result_rows, ("Usable", "Rejected", "Usable"))}) == 1, finished
-                terminal.press("\x1b[B")
+                terminal.press("\x1b[B\x1b[B")
                 terminal.expect("Thinking medium", also=("gamma",))
                 terminal.press("\x1b")
                 save_results = terminal.expect(
-                    "Save setup", also=("› Save and continue", "Usable · none", "Usable · low", "Usable · medium", "3 models"),
+                    "Save setup", also=("› Save and continue", "Usable · none, max", "Usable · low", "Usable · medium", "3 models"),
                     absent=("Retry in",), rows=20,
                 )["screen"]
                 assert all(model in save_results for model in ("alpha", "beta", "gamma")), save_results
@@ -474,7 +481,7 @@ def setup_probe_progress(binary, bridge, directory):
                 terminal.press("\x1b[B\x1b[B\r")
                 terminal.expect("› Thinking")
                 terminal.press("\r")
-                terminal.expect("1 usable", also=("none · send to provider",), absent=("high",))
+                terminal.expect("2 usable", also=("none · send to provider", "max"), absent=("high",))
                 terminal.press("\x1b[B\r")
                 terminal.expect("Model capabilities")
                 terminal.press("\x1b")
@@ -490,11 +497,12 @@ def setup_probe_progress(binary, bridge, directory):
                 retry_times = [stamp for model, effort, stamp in trials if (model, effort) == ("alpha", "none")]
                 assert len(retry_times) == 2 and retry_times[1] - retry_times[0] >= 2
                 terminal.exit_cleanly()
-            report = {"discovery": discovery, "save_activity": save_activity, "save_results": save_results, "countdown": progress, "results": finished, "requests": [(m, e) for m, e, _ in trials], "runtime": runtime_requests}
+            report = {"discovery": discovery, "save_activity": save_activity, "save_retry": save_retry, "save_results": save_results, "countdown": progress, "results": finished, "confirmed_in_flight": 6, "requests": [(m, e) for m, e, _ in trials], "runtime": runtime_requests}
             (client.directory / "probe-progress.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     finally:
         release.set()
-        release_baselines.set()
+        allow_rate_limit.set()
+        release_requests.set()
 
 
 def persistent_model_default(client):

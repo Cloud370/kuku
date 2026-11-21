@@ -351,15 +351,16 @@ fn render_review(
     mode: SetupMode,
 ) {
     let testing = state.trials.pending();
-    let title = if testing {
-        "Testing models"
-    } else {
-        "Save setup"
+    let model = state.primary_model().unwrap_or_default();
+    let models = state.model_ids().unwrap_or_default();
+    let title = match (testing, models.len()) {
+        (true, count) if count > 1 => format!("Testing models · {count} selected"),
+        (false, count) if count > 1 => format!("Save setup · {count} models"),
+        (true, _) => "Testing models".into(),
+        (false, _) => "Save setup".into(),
     };
     render_line(frame, area, row, Line::styled(title, emphasis(ACCENT)));
     *row += 1;
-    let model = state.primary_model().unwrap_or_default();
-    let models = state.model_ids().unwrap_or_default();
     let role = if state.intent == SetupIntent::Default {
         "Default"
     } else {
@@ -377,10 +378,7 @@ fn render_review(
         );
     }
     if !state.trials.rows().is_empty() {
-        let (mut progress, attention) = super::probes::review_status(&state.trials);
-        if models.len() > 1 {
-            progress.push_str(&format!(" · {} models", models.len()));
-        }
+        let (progress, attention) = super::probes::review_status(&state.trials);
         let color = if testing {
             Some(ACCENT)
         } else {
