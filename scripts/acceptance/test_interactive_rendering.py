@@ -305,8 +305,8 @@ class TranscriptResizeSynchronizationTests(unittest.TestCase):
 
     def test_page_up_waits_for_rendered_target_size_after_resize(self):
         stale = self.running_frame(30)
-        resized = self.running_frame(26)
-        history = self.running_frame(26, history=True)
+        resized = self.running_frame(27)
+        history = self.running_frame(27, history=True)
         markers = (self.activity_composition, self.draft)
         stale_rows = stale.splitlines()
         self.assertEqual(32, len(stale_rows))

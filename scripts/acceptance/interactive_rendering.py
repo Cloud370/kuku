@@ -11,7 +11,7 @@ from urllib.parse import urlencode
 from interactive_fixture import InstalledClient, Response, StreamPause, eventually, is_composer_heading, run_cases
 from interactive_responses import responses_reasoning
 
-RUNNING_STATUS_ROWS_FROM_BOTTOM = 6
+RUNNING_STATUS_ROWS_FROM_BOTTOM = 5
 
 
 def rendered_running_transcript(screen, height, markers):
