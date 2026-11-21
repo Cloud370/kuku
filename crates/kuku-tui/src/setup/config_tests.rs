@@ -479,10 +479,10 @@ async fn new_configuration_saves_a_single_default_route() {
     assert_eq!(Some("default"), parsed.default_model.as_deref());
     assert_eq!(1, parsed.model.len());
     assert_eq!("fixture-model", parsed.model["default"].model);
-    assert_eq!("custom", parsed.model["default"].provider);
+    assert_eq!("provider.invalid", parsed.model["default"].provider);
     assert_eq!(
         "https://provider.invalid/v1",
-        parsed.provider["custom"].base_url
+        parsed.provider["provider.invalid"].base_url
     );
     assert_eq!(
         Some("provider-default"),
