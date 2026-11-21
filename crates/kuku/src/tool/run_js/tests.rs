@@ -35,7 +35,7 @@ where
                 description: "test operation".into(),
                 input_schema: json!({
                     "type": "object",
-                    "properties": {"limit": {"maximum": 80000}},
+                    "properties": {"limit": {"default": 65536}},
                 }),
                 read_only: true,
                 max_result_chars: 4096,

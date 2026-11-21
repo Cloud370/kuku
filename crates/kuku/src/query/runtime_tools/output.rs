@@ -53,7 +53,7 @@ fn definition_with_bounds(bounds: PageBounds) -> ToolDefinition {
                 "id":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9_-]+$"},
                 "name":{"type":"string","minLength":1,"maxLength":MAX_VALUE_NAME_BYTES,"pattern":"^[A-Za-z][A-Za-z0-9_-]*$"},
                 "offset":{"type":"integer","minimum":0,"description":"Starting raw byte offset across both output streams; defaults to 0."},
-                "limit":{"type":"integer","minimum":1,"maximum":bounds.scan,"description":format!("Maximum raw bytes to scan. Defaults to {}. A page can be smaller to fit the JSON result bound.", bounds.default)},
+                "limit":{"type":"integer","minimum":1,"default":bounds.default,"description":format!("Raw byte budget capped at {}. Continue with next_offset.", bounds.scan)},
                 "search":{"type":"string","minLength":1,"maxLength":MAX_SEARCH_BYTES,"description":"Literal filter of at most 4096 UTF-8 bytes, no longer than limit. Continue with next_offset even when no matches are returned."}
             },
             "oneOf":[{"required":["id"]},{"required":["name"]}],
@@ -289,13 +289,9 @@ fn request(args: &Value, bounds: PageBounds) -> Result<(OutputSelector<'_>, Outp
     let limit = match object.get("limit") {
         Some(value) => value
             .as_u64()
-            .filter(|value| (1..=bounds.scan as u64).contains(value))
-            .ok_or_else(|| {
-                invalid(&format!(
-                    "limit must be an integer between 1 and {} bytes",
-                    bounds.scan
-                ))
-            })? as usize,
+            .filter(|value| *value > 0)
+            .ok_or_else(|| invalid("limit must be a positive integer"))?
+            .min(bounds.scan as u64) as usize,
         None => bounds.default,
     };
     let search = match object.get("search") {
@@ -345,10 +341,11 @@ mod tests {
             json!([{"required":["id"]},{"required":["name"]}]),
             definition.input_schema["oneOf"]
         );
-        assert_eq!(
-            MAX_READ_BYTES,
-            definition.input_schema["properties"]["limit"]["maximum"]
-        );
+        let limit = &definition.input_schema["properties"]["limit"];
+        assert_eq!(1, limit["minimum"]);
+        assert_eq!(DEFAULT_READ_BYTES, limit["default"]);
+        assert!(limit.get("maximum").is_none());
+        assert!(limit["description"].as_str().unwrap().contains("8192"));
     }
 
     #[test]
@@ -367,7 +364,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_or_unbounded_output_requests_are_rejected() {
+    fn malformed_output_requests_are_rejected() {
         for args in [
             json!(null),
             json!({}),
@@ -377,7 +374,8 @@ mod tests {
             json!({"id":"out","offset":1.5}),
             json!({"id":"out","offset":null}),
             json!({"id":"out","limit":0}),
-            json!({"id":"out","limit":MAX_READ_BYTES+1}),
+            json!({"id":"out","limit":-1}),
+            json!({"id":"out","limit":1.5}),
             json!({"id":"out","limit":"12"}),
             json!({"id":"out","search":""}),
             json!({"id":"out","search":null}),
@@ -394,16 +392,20 @@ mod tests {
     #[test]
     fn local_output_reader_has_a_larger_page_than_the_model_reader() {
         let definition = definition_local();
-        assert_eq!(
-            MAX_LOCAL_READ_BYTES,
-            definition.input_schema["properties"]["limit"]["maximum"]
-        );
+        let limit = &definition.input_schema["properties"]["limit"];
+        assert_eq!(DEFAULT_LOCAL_READ_BYTES, limit["default"]);
+        assert!(limit.get("maximum").is_none());
+        assert!(limit["description"].as_str().unwrap().contains("80000"));
         let args = json!({"name":"baseline"});
         let (selected, read) = request(&args, LOCAL_BOUNDS).unwrap();
         assert!(matches!(selected, OutputSelector::Name("baseline")));
         assert_eq!(DEFAULT_LOCAL_READ_BYTES, read.limit);
-        let args = json!({"id":"captured","limit":MAX_LOCAL_READ_BYTES});
-        assert!(request(&args, MODEL_BOUNDS).is_err());
-        assert!(request(&args, LOCAL_BOUNDS).is_ok());
+        let args = json!({"id":"captured","offset":17,"limit":u64::MAX,"search":"marker"});
+        let (_, model) = request(&args, MODEL_BOUNDS).unwrap();
+        let (_, local) = request(&args, LOCAL_BOUNDS).unwrap();
+        assert_eq!(MAX_READ_BYTES, model.limit);
+        assert_eq!(MAX_LOCAL_READ_BYTES, local.limit);
+        assert_eq!(17, model.offset);
+        assert_eq!(Some("marker"), model.search.as_deref());
     }
 }

@@ -152,7 +152,7 @@ An output draft belongs to the current script invocation. See the [authorization
 | `id` | Output ID of 1–128 ASCII letters, digits, `-`, or `_`. Use exactly one of `id` and `name`. |
 | `name` | Exact name of a saved value owned by the Agent |
 | `offset` | Nonnegative raw byte offset across stdout and stderr in capture order; defaults to `0` |
-| `limit` | Maximum raw bytes to scan: `1`–`8192`; defaults to `4096` |
+| `limit` | Positive raw byte budget. Defaults to `4096` and is capped at `8192`. |
 | `search` | Optional literal filter: `1`–`4096` UTF-8 bytes, no longer than `limit` |
 
 The result is complete JSON in `model_content`, at most 16,384 UTF-8 bytes; `structured` contains the same value. Encoding overhead or replacement of invalid UTF-8 can reduce the returned page below the requested scan limit. The tool keeps the reader's raw byte offsets and never cuts the JSON text. A search that cannot fit the result bound even at its minimum scan window returns an error asking for a shorter literal.

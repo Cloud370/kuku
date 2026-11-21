@@ -6,7 +6,7 @@
     tools.methods = Object.freeze(methods);
     const read = tools.read_output;
     const readSchema = methods.find(({name}) => name === "read_output")?.input_schema;
-    const defaultLimit = Math.min(65536, readSchema?.properties?.limit?.maximum ?? 8192);
+    const defaultLimit = readSchema?.properties?.limit?.default ?? 8192;
     const textLimit = 1024 * 1024;
 
     if (tools.run_command) {

@@ -93,6 +93,7 @@ async fn command_readers_reassemble_interleaved_utf8_across_authorized_pages() {
                     ScriptOperation::RunCommand => command(8, 10, true, Value::Null),
                     ScriptOperation::ReadOutput => {
                         assert_eq!("capture", call.args["id"]);
+                        assert_eq!(65536, call.args["limit"]);
                         let offset = call.args["offset"].as_u64().unwrap();
                         let parts = if offset == 0 { &first } else { &last };
                         output_page(offset, 18, parts)

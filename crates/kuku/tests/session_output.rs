@@ -304,11 +304,11 @@ async fn model_reads_and_searches_retained_command_output_without_consuming_ui_r
     let page_1 = fixture(
         &server,
         |request| !producing(request) && results(request).len() == 1,
-        json!({"tool_calls":[tool("page-1", "read_output", json!({"id":id,"limit":8192}))]}),
+        json!({"tool_calls":[tool("page-1", "read_output", json!({"id":id,"limit":9000}))]}),
         "tool_calls",
     )
     .await;
-    let page_2 = fixture(&server, |request| !producing(request) && results(request).len() == 2, json!({"tool_calls":[tool("page-2", "read_output", json!({"id":id,"offset":first.next_offset,"limit":8192}))]}), "tool_calls").await;
+    let page_2 = fixture(&server, |request| !producing(request) && results(request).len() == 2, json!({"tool_calls":[tool("page-2", "read_output", json!({"id":id,"offset":first.next_offset,"limit":u64::MAX}))]}), "tool_calls").await;
     let search = fixture(&server, |request| !producing(request) && results(request).len() == 3, json!({"tool_calls":[tool("search", "read_output", json!({"id":id,"offset":second.next_offset,"limit":8192,"search":MARKER}))]}), "tool_calls").await;
     let final_response = fixture(
         &server,
@@ -349,11 +349,11 @@ async fn model_reads_and_searches_retained_command_output_without_consuming_ui_r
         .filter(|action| action.tool.name == "read_output")
         .collect::<Vec<_>>();
     assert_eq!(3, actions.len());
-    for action in actions {
+    for (action, requested_limit) in actions.into_iter().zip([9000, u64::MAX, 8192]) {
         assert_eq!("main", action.agent);
         assert_eq!(InputSource::Host("local".into()), action.source);
         assert_eq!(id, action.args["id"]);
-        assert_eq!(8192, action.args["limit"]);
+        assert_eq!(requested_limit, action.args["limit"]);
         assert_eq!(
             json!([{"required":["id"]},{"required":["name"]}]),
             action.tool.input_schema["oneOf"]
@@ -579,7 +579,7 @@ async fn invalid_output_arguments_and_host_denial_never_expose_outside_output() 
         json!({"tool_calls":[
             tool("bad-id", "read_output", json!({"id":"../../outside","limit":8192})),
             tool("zero", "read_output", json!({"id":"absent","limit":0})),
-            tool("over", "read_output", json!({"id":"absent","limit":8193})),
+            tool("fraction", "read_output", json!({"id":"absent","limit":1.5})),
             tool("denied", "read_output", json!({"id":id,"offset":3,"limit":9,"search":"evidence"}))
         ]}),
         "tool_calls",
@@ -600,7 +600,7 @@ async fn invalid_output_arguments_and_host_denial_never_expose_outside_output() 
         ))
         .unwrap();
     idle(&session).await;
-    for call in ["bad-id", "zero", "over"] {
+    for call in ["bad-id", "zero", "fraction"] {
         let result = stored_result(&session, call);
         assert_eq!("error", result.0);
         assert!(!result.1.contains("PRIVATE_OUTSIDE_MARKER"));
