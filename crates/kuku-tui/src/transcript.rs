@@ -34,7 +34,7 @@ use self::body::Body;
 pub(crate) use self::details::DetailKey;
 use self::details::{DetailRecord, Details};
 use self::job::job_notice;
-use self::message::{paint_card, render_assistant_source, render_record, render_user};
+use self::message::{render_assistant_source, render_record, render_user};
 pub(crate) use self::messages::{MessageId, MessageInfo, MessageKind, SelectedMessage};
 use self::rewound::RewindGroupState;
 pub(crate) use self::rewound::{RewindGroupAction, RewindGroupChoice, RewindGroupRequest};
@@ -700,7 +700,7 @@ impl Record {
                 }
                 Body::TurnSummary => Vec::new(),
                 Body::Tool(tool) => card.as_ref().map_or_else(
-                    || tool.render(width, mode),
+                    || tool.render(width, mode, cache_key.in_timeline),
                     |card| card.render(width, mode, facts, cache_key.in_timeline),
                 ),
             };

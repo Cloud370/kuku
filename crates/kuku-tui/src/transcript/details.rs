@@ -7,13 +7,13 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::markup::render_literal;
 use crate::text::shorten;
-use crate::theme::{emphasis, ACCENT, MUTED, SUCCESS};
+use crate::theme::{emphasis, CardFrame, ACCENT, MUTED, SUCCESS};
 
 use super::agent::{AgentCard, AgentCards};
-use super::tool::{style_card, tool_title, Tool};
+use super::tool::{tool_title, Tool};
 use super::{
-    body_inset, render_rows, Key, Record, RewindGroupAction, RewindGroupChoice, Row, ToolDetails,
-    Transcript, MAX_RECORDS,
+    render_rows, Key, Record, RewindGroupAction, RewindGroupChoice, Row, ToolDetails, Transcript,
+    MAX_RECORDS,
 };
 
 const INSPECTIONS: [(&str, &str, &str); 5] = [
@@ -581,7 +581,6 @@ pub(super) struct GroupSummary {
 #[derive(PartialEq, Eq)]
 enum GroupKind {
     Delegation { delivery: usize, checks: usize },
-    Listings,
     Inspections,
 }
 
@@ -618,54 +617,47 @@ impl GroupHeading {
     }
 
     pub(super) fn new(summary: GroupSummary, open: bool, width: usize) -> Self {
-        let style = if summary.kind == GroupKind::Listings {
-            Style::new().bg(crate::theme::AGENT_SURFACE)
-        } else {
-            crate::theme::panel()
-        };
-        let rows = super::message::padded_panel(width, style, |width| {
-            let inset = body_inset(width);
-            let columns = width.saturating_sub(usize::from(inset));
-            let mut spans = Vec::new();
-            if inset > 0 {
-                spans.push(Span::styled(
-                    if open { "▾ " } else { "▸ " },
-                    Style::new().fg(MUTED),
-                ));
-            }
-            let status = " · ok";
-            let title = if columns > status.width() {
-                shorten(&summary.title, columns - status.width())
-            } else {
-                shorten(&summary.title, columns)
-            };
-            spans.push(Span::styled(title, emphasis(ACCENT)));
-            if columns > status.width() {
-                spans.push(Span::styled(status, Style::new().fg(SUCCESS)));
-            }
-            let mut rows = vec![Row {
-                line: Line::from(spans),
-                inset,
-                links: Vec::new(),
-            }];
-            let listing = if open { "" } else { &summary.listing };
-            for detail in [summary.composition.as_str(), listing] {
-                if !detail.is_empty() {
-                    rows.extend(render_rows(
+        let frame = CardFrame::new(width);
+        let columns = frame.title_width();
+        let marker = if open { "▾ " } else { "▸ " };
+        let status = " · ok";
+        let mut title = Line::default();
+        if columns > marker.width() {
+            title.push_span(Span::styled(marker, Style::new().fg(MUTED)));
+        }
+        let room = columns.saturating_sub(title.width());
+        let show_status = room > status.width();
+        title.push_span(Span::styled(
+            shorten(
+                &summary.title,
+                room - usize::from(show_status) * status.width(),
+            ),
+            emphasis(ACCENT),
+        ));
+        if show_status {
+            title.push_span(Span::styled(status, Style::new().fg(SUCCESS)));
+        }
+        let mut rows = vec![Row::plain(frame.title_line(title))];
+        let listing = if open { "" } else { &summary.listing };
+        if open || !summary.composition.is_empty() || !listing.is_empty() {
+            rows.extend(Row::frame_padding(&frame));
+        }
+        for detail in [summary.composition.as_str(), listing] {
+            if !detail.is_empty() {
+                rows.extend(
+                    render_rows(
                         render_literal(detail, Style::default()),
-                        width,
+                        frame.content_width(),
                         GROUP_DETAIL_ROWS,
-                        inset,
-                    ));
-                }
+                        0,
+                    )
+                    .map(|row| row.framed(&frame)),
+                );
             }
-            if summary.kind == GroupKind::Listings {
-                super::paint_card(&mut rows, width, crate::theme::AGENT_SURFACE);
-            } else {
-                style_card(&mut rows);
-            }
-            rows
-        });
+        }
+        if !open {
+            rows.extend(Row::frame_end(&frame));
+        }
         Self {
             agent_link: None,
             summary,
@@ -829,11 +821,7 @@ fn group_summary(first: &str, records: &[Record]) -> GroupSummary {
         title,
         composition: parts.join(" · "),
         listing,
-        kind: if !mixed && first == "list_agents" {
-            GroupKind::Listings
-        } else {
-            GroupKind::Inspections
-        },
+        kind: GroupKind::Inspections,
     }
 }
 

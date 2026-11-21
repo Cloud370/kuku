@@ -189,7 +189,7 @@ fn custom_tool_arguments_and_output_have_bounded_inline_previews() {
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(view.lines.len() <= 16);
+    assert!(view.lines.len() <= 17);
     assert!(plain.contains("{\"key\":\"中文"));
     assert!(plain.contains("first␛line"));
     assert!(plain.contains('…'));

@@ -1,4 +1,5 @@
 use crate::keys::Shortcut;
+use crate::theme::CardFrame;
 
 use super::details::{DetailRecord, VisibleDetail};
 use super::{message, preview, Key, Layout, ToolDetails, Transcript, TranscriptView};
@@ -26,6 +27,7 @@ impl Transcript {
             (&mut self.recent, rows.saturating_sub(height), true)
         };
         let limit = height;
+        let group_frame = CardFrame::new(width);
         let mut lines = Vec::with_capacity(limit);
         let mut row_insets = Vec::with_capacity(height);
         self.visible_links.clear();
@@ -101,10 +103,16 @@ impl Transcript {
                 }
             }
             let first = lines.len();
+            let footer_skip = skip.saturating_sub(block.body_height());
             for row in block.body_rows().skip(skip).take(limit - lines.len()) {
+                let row = if block.grouped {
+                    row.clone().framed(&group_frame)
+                } else {
+                    row.clone()
+                };
                 self.visible_links
-                    .extend(row.links.iter().cloned().map(|link| (lines.len(), link)));
-                lines.push(row.line.clone());
+                    .extend(row.links.into_iter().map(|link| (lines.len(), link)));
+                lines.push(row.line);
                 row_insets.push(row.inset);
             }
             let placeholder = 1 + block.note_height();
@@ -138,6 +146,15 @@ impl Transcript {
                         skip == 0 && !block.grouped,
                     ));
                 }
+            }
+            for row in block
+                .footer
+                .into_iter()
+                .skip(footer_skip)
+                .take(limit - lines.len())
+            {
+                lines.push(row.line);
+                row_insets.push(row.inset);
             }
             skip = 0;
         }

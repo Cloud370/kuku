@@ -325,12 +325,14 @@ fn roles_and_file_details_are_readable_without_styles_at_narrow_widths() {
                 && pair[1].trim_start() == "我来检查"
                 && pair[1].starts_with("  ")
         }));
+        assert!(plain.iter().any(|row| row.starts_with("╭─ Read file")));
+        assert!(plain.iter().any(|row| row.contains("error")));
         assert!(plain
             .iter()
-            .any(|row| row.trim_start().starts_with("Read file")));
-        assert!(plain.iter().any(|row| row.contains("error")));
-        assert!(plain.iter().any(|row| row.trim_start() == "中文.txt"));
-        assert!(plain.iter().any(|row| row.trim_start() == "文件丢失"));
+            .any(|row| row.trim_matches('│').trim() == "中文.txt"));
+        assert!(plain
+            .iter()
+            .any(|row| row.trim_matches('│').trim() == "文件丢失"));
         assert!(view.lines.iter().all(|line| line.width() <= width));
     }
 

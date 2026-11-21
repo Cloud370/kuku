@@ -125,52 +125,6 @@ pub(super) fn render_record(
     rows
 }
 
-pub(super) fn padded_panel(
-    width: usize,
-    style: Style,
-    render: impl FnOnce(usize) -> Vec<Row>,
-) -> Vec<Row> {
-    let padding = card_padding(width);
-    let inner = width.saturating_sub(usize::from(padding.left + padding.right));
-    let mut rows = render(inner);
-    let end = rows.len() - usize::from(rows.last().is_some_and(|row| row.line.spans.is_empty()));
-    if end == 0 {
-        return rows;
-    }
-    for row in &mut rows[..end] {
-        row.line.style = style.patch(row.line.style);
-        if padding.left > 0 {
-            row.line.spans.insert(
-                0,
-                Span::styled(" ".repeat(usize::from(padding.left)), style),
-            );
-            row.inset += padding.left;
-        }
-    }
-    let spacer = || Row::padding(Line::styled(" ", style), width);
-    if padding.bottom > 0 {
-        rows.insert(end, spacer());
-    }
-    if padding.top > 0 {
-        rows.insert(0, spacer());
-    }
-    rows
-}
-
-pub(super) fn paint_card(rows: &mut [Row], width: usize, color: Color) {
-    let background = Style::new().bg(color);
-    for row in rows {
-        let padding = width.saturating_sub(row.line.width());
-        for span in &mut row.line.spans {
-            span.style = background.patch(span.style);
-        }
-        if padding > 0 {
-            row.line
-                .push_span(Span::styled(" ".repeat(padding), background));
-        }
-    }
-}
-
 fn turn_label(turn: TurnHeading, width: usize) -> String {
     match turn {
         TurnHeading::Numbered(number) if width < 6 => format!("T{number}"),

@@ -279,7 +279,7 @@ impl AgentCard<'_> {
         facts: Option<&AgentFacts>,
         checks: usize,
     ) -> Vec<Row> {
-        let frame = CardFrame::agent(width);
+        let frame = CardFrame::new(width);
         let title = format!("Agent {}", single_line(self.address));
         let mut rows = vec![Row::plain(
             frame.agent_title(&title, self.receipt_cursor.is_some()),
@@ -328,8 +328,12 @@ impl AgentCard<'_> {
             )
         };
         Row::pad_framed_body(&mut rows, &frame);
-        rows.push(Row::plain(frame.foot(&timeline)));
-        rows.push(Row::plain(Line::default()));
+        if open {
+            rows.push(Row::plain(frame.divider(&timeline)));
+        } else {
+            rows.push(Row::plain(frame.foot(&timeline)));
+            rows.push(Row::plain(Line::default()));
+        }
         rows
     }
 
@@ -346,7 +350,7 @@ impl AgentCard<'_> {
         facts: Option<&AgentFacts>,
         in_timeline: bool,
     ) -> Vec<Row> {
-        let frame = CardFrame::agent(width);
+        let frame = CardFrame::new(width);
         let width = if in_timeline {
             width
         } else {

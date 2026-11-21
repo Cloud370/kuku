@@ -95,7 +95,6 @@ pub(crate) fn compact_padding(sides: u16, vertical: bool) -> Padding {
 
 pub(crate) const MODEL: Color = Color::Rgb(175, 165, 223);
 pub(crate) const EXECUTION: Color = Color::Rgb(103, 184, 178);
-pub(crate) const AGENT_SURFACE: Color = Color::Rgb(37, 39, 53);
 pub(crate) const ACTIVITY_EXCERPT_CELLS: usize = 66;
 pub(crate) const THINKING_GLINT: Color = Color::Rgb(161, 166, 188);
 pub(crate) const TURN_RULE: Color = Color::Rgb(70, 85, 100);

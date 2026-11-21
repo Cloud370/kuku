@@ -4,7 +4,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::text::{replace_tabs, shorten, terminal_text};
-use crate::theme::{emphasis, MODEL, MUTED};
+use crate::theme::{emphasis, CardFrame, MODEL, MUTED};
 
 use super::{AnchorLine, DetailKey, Key, Row, Transcript};
 
@@ -22,6 +22,11 @@ pub(super) struct ThinkingRead {
 
 impl ThinkingRead {
     pub(super) fn fit(&mut self, width: usize) {
+        let width = if self.in_timeline {
+            CardFrame::new(width).content_width()
+        } else {
+            width
+        };
         if width == self.width {
             return;
         }

@@ -169,8 +169,11 @@ fn mixed_twenty_four_tools_compact_by_operation_and_remain_individually_inspecta
         .unwrap();
     transcript.project(36, 2);
     assert!(transcript.toggle_detail(&record));
-    let detail = text(&transcript.project(90, 64));
-    assert!(detail.contains("Requested arguments") && detail.contains("\"offset\":2"));
+    let detail = text(&transcript.project(90, 90));
+    assert!(
+        detail.contains("Requested arguments") && detail.contains("\"offset\":2"),
+        "{detail}"
+    );
     assert!(detail.contains("contents for samples/read-12.txt"));
     assert!(transcript.toggle_detail(&group));
     let compact_again = text(&transcript.project(90, 64));
@@ -537,7 +540,7 @@ fn listing_polls_show_their_recorded_snapshot_and_preserve_the_original_result()
     assert!(!compact.contains("Original large reply heading") && !compact.contains("preset"));
     let row = line(&view, "List Agents ×3");
     assert_eq!(
-        Some(crate::theme::AGENT_SURFACE),
+        Some(crate::theme::CODE_BACKGROUND),
         view.lines[row].spans[0].style.bg
     );
     let group = transcript.detail_at(row).unwrap().clone();
@@ -581,6 +584,52 @@ fn an_open_listing_group_reads_each_agent_check_once() {
     assert!(opened.contains("Agent check · tester-a (Idle, reply available)"));
     assert!(opened.contains("Agent check · tester-b (Idle, reply available)"));
     assert!(!opened.contains("Latest ·"));
+}
+
+#[test]
+fn mixed_inspection_results_keep_the_same_frame_when_opened() {
+    let mut journal = Journal::default();
+    journal.tool(
+        "list_agents",
+        json!({}),
+        json!({"status":"ok","summary":"session operation committed","structured":[{"address":"main","status":"running"}]}),
+    );
+    journal.tool(
+        "find_files",
+        json!({"path":"."}),
+        json!({"status":"ok","summary":"found files"}),
+    );
+    let mut transcript = journal.load();
+    for width in [60, 120] {
+        let collapsed = transcript.project(width, 30);
+        let heading = line(&collapsed, "▸ Read-only activity");
+        let group = transcript.detail_at(heading).unwrap().clone();
+        assert!(transcript.toggle_detail(&group));
+        let open = transcript.project(width, 30);
+        let heading = line(&open, "▾ Read-only activity");
+        let agent = line(&open, "Agent check · main (Running)");
+        let files = line(&open, "Find files");
+        assert_eq!(agent + 1, files);
+        assert_ne!(transcript.detail_at(agent), transcript.detail_at(files));
+        assert!(!text(&open).contains("Latest ·"));
+        for view in [&collapsed, &open] {
+            let end = line(view, "╰");
+            for row in &view.lines[heading..=end] {
+                assert_eq!(row.width(), width);
+                assert!(row.spans.iter().all(|span| {
+                    row.style.patch(span.style).bg == Some(crate::theme::CODE_BACKGROUND)
+                }));
+            }
+            assert!(view.lines[end + 1].spans.is_empty());
+        }
+        assert!(open.lines[files + 1]
+            .to_string()
+            .trim_matches('│')
+            .trim()
+            .is_empty());
+        assert!(transcript.toggle_detail(&group));
+        assert_eq!(text(&collapsed), text(&transcript.project(width, 30)));
+    }
 }
 
 #[test]
@@ -637,7 +686,7 @@ fn a_full_window_of_large_agent_polls_keeps_default_paint_compact() {
     let mut transcript = journal.load();
     for width in [32, 72, 150].into_iter().cycle().take(120) {
         let view = transcript.project(width, 20);
-        assert!(view.lines.len() <= 7);
+        assert!(view.lines.len() <= 9, "{}", text(&view));
         assert!(text(&view).contains("1 agent"));
         assert!(!text(&view).contains("archived Markdown"));
     }
@@ -671,9 +720,9 @@ fn older_page_can_extend_an_open_group_without_moving_the_reader_or_invalidating
         .unwrap()
         .clone();
     assert!(transcript.toggle_detail(&group));
-    transcript.scroll(4, 72, 3);
+    transcript.scroll(3, 72, 3);
     let before = text(&transcript.project(72, 3));
-    assert!(before.starts_with("  Read file · p5.txt"), "{before}");
+    assert!(before.starts_with("│ Read file · p5.txt"), "{before}");
     let anchor = transcript.reading.as_ref().unwrap().anchor.clone();
     assert_eq!(AnchorLine::Body(0), anchor.line);
 
@@ -687,9 +736,7 @@ fn older_page_can_extend_an_open_group_without_moving_the_reader_or_invalidating
     );
     assert_eq!(before, text(&transcript.project(72, 3)));
     assert!(transcript.toggle_detail(&group));
-    assert!(text(&transcript.project(72, 3))
-        .trim_start()
-        .starts_with("▸ Read 8 files · ok"));
+    assert!(text(&transcript.project(72, 3)).starts_with("╭─ ▸ Read 8 files · ok"));
     assert_eq!(&anchor, &transcript.reading.as_ref().unwrap().anchor);
     assert!(transcript.toggle_detail(&group));
     assert_eq!(before, text(&transcript.project(72, 3)));

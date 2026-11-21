@@ -1,6 +1,8 @@
 use kuku_client::{HistoryPage, RetryPhase, RetrySource, RetryStopReason, RewindGroup};
 use serde_json::Value;
 
+use crate::theme::CardFrame;
+
 use super::agent::AgentCards;
 use super::details::{groups, DetailRecord, Details, GroupHeading};
 use super::{
@@ -352,7 +354,8 @@ impl Window {
                         group_row.map_or(start, |(first, _)| first)
                     }
                     AnchorLine::Body(line) => {
-                        let line = line.min(block.rows.len().saturating_sub(1));
+                        let line =
+                            line.min((block.rows.len() + block.footer.len()).saturating_sub(1));
                         start
                             + block.prefix_height()
                             + line
@@ -408,6 +411,7 @@ impl Window {
 
     pub(super) fn blocks<'a>(&'a mut self, layout: Layout<'a>) -> Vec<Block<'a>> {
         let from_start = self.older.is_none();
+        let group_frame = CardFrame::new(layout.width);
         let Self {
             records: window_records,
             rewind_groups,
@@ -471,6 +475,9 @@ impl Window {
                 .filter(|(range, _, _)| range.contains(&index));
             let grouped = member.is_some();
             let collapsed = member.as_ref().is_some_and(|(_, _, open)| !open);
+            let closes_group = member
+                .as_ref()
+                .is_some_and(|(range, _, open)| *open && index + 1 == range.end);
             let group = member.and_then(|(_, heading, _)| heading.take());
             let user_turn = heading.filter(|_| {
                 layout.width >= 14 && matches!(&record.body, Body::User { sender: None, .. })
@@ -481,13 +488,14 @@ impl Window {
             let (key, rows, detail) = if collapsed {
                 (&record.key, &[][..], None)
             } else {
-                let trim = records.peek().is_some_and(|(_, next)| {
-                    record.turn == next.turn
-                        && record
-                            .tool()
-                            .is_some_and(|tool| tool.agent_card().is_none())
-                        && next.tool().is_some_and(|tool| tool.agent_card().is_none())
-                });
+                let trim = grouped
+                    || records.peek().is_some_and(|(_, next)| {
+                        record.turn == next.turn
+                            && record
+                                .tool()
+                                .is_some_and(|tool| tool.agent_card().is_none())
+                            && next.tool().is_some_and(|tool| tool.agent_card().is_none())
+                    });
                 let mode = if grouped {
                     ToolDetails::GroupMember
                 } else {
@@ -495,6 +503,11 @@ impl Window {
                 };
                 let (key, rows, detail) = record.render(
                     Layout {
+                        width: if grouped {
+                            group_frame.content_width()
+                        } else {
+                            layout.width
+                        },
                         tools: mode,
                         ..layout
                     },
@@ -529,6 +542,11 @@ impl Window {
                 collapsed,
                 rows,
                 note,
+                footer: if closes_group {
+                    Row::frame_end(&group_frame)
+                } else {
+                    Vec::new()
+                },
                 detail,
                 rewind_group: None,
             })
@@ -547,6 +565,7 @@ impl Window {
                 collapsed: false,
                 rows: &group.rows,
                 note: &[],
+                footer: Vec::new(),
                 detail: None,
                 rewind_group: Some(group),
             });
@@ -819,6 +838,7 @@ pub(super) struct Block<'a> {
     pub(super) group: Option<GroupHeading>,
     pub(super) rows: &'a [Row],
     note: &'a [Row],
+    pub(super) footer: Vec<Row>,
     pub(super) detail: Option<DetailRecord<'a>>,
     pub(super) rewind_group: Option<&'a RewindGroupState>,
     pub(super) grouped: bool,
@@ -833,7 +853,11 @@ pub(super) enum TurnHeading {
 
 impl Block<'_> {
     pub(super) fn height(&self) -> usize {
-        self.rows.len() + self.note_height() + self.prefix_height()
+        self.body_height() + self.prefix_height() + self.footer.len()
+    }
+
+    pub(super) fn body_height(&self) -> usize {
+        self.rows.len() + self.note_height()
     }
 
     pub(super) fn note_height(&self) -> usize {

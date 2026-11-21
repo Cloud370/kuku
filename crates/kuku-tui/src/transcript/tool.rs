@@ -8,7 +8,10 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::markup::{render_diff, render_literal};
 use crate::text::{cap, shorten, single_line};
-use crate::theme::{code_surface, emphasis, ACCENT, ERROR, MODEL, MUTED, SURFACE_TEXT, WARNING};
+use crate::theme::{
+    emphasis, CardFrame, ACCENT, ERROR, MIN_TRANSCRIPT_INDENT_WIDTH, MODEL, MUTED, SURFACE_TEXT,
+    WARNING,
+};
 
 use super::agent::{AgentCard, AgentRequest};
 use super::{append_bounded, body_inset, capped, render_rows, Row, ToolDetails};
@@ -286,9 +289,9 @@ impl Tool {
         (title.into_owned(), summary)
     }
 
-    pub(super) fn render(&self, width: usize, details: ToolDetails) -> Vec<Row> {
+    pub(super) fn render(&self, width: usize, details: ToolDetails, in_group: bool) -> Vec<Row> {
         if details != ToolDetails::Inspection {
-            if let Some(rows) = self.render_agent_check(width) {
+            if let Some(rows) = self.render_agent_check(width, in_group) {
                 return rows;
             }
         }
@@ -298,15 +301,29 @@ impl Tool {
                 .state
                 .outcome()
                 .is_some_and(|outcome| outcome.command_preview.is_some());
-        if has_frame || details == ToolDetails::GroupMember {
+        if has_frame || in_group || width < MIN_TRANSCRIPT_INDENT_WIDTH {
             return self.render_content(width, details);
         }
-        super::message::padded_panel(width, tool_surface(), |inner| {
-            self.render_content(inner, details)
-        })
+        let frame = CardFrame::new(width);
+        let inner = frame.content_width().min(frame.title_width());
+        let mut content = self.render_content(inner, details);
+        content.pop();
+        let mut content = content.into_iter();
+        let Some(title) = content.next() else {
+            return Vec::new();
+        };
+        let mut rows = vec![Row::plain(frame.title_line(title.line))];
+        rows.extend(content.map(|row| row.framed(&frame)));
+        Row::pad_framed_body(&mut rows, &frame);
+        rows.extend(
+            frame
+                .bordered()
+                .then(|| Row::padding(frame.border('╰', '╯'), width)),
+        );
+        finish_card(rows)
     }
 
-    fn render_agent_check(&self, width: usize) -> Option<Vec<Row>> {
+    fn render_agent_check(&self, width: usize, in_group: bool) -> Option<Vec<Row>> {
         let (summary, color) = match self.state.outcome() {
             None if self.name == "list_agents" && !self.invocation.is_empty() => (
                 format!("{} · Waiting", single_line(&self.invocation)),
@@ -319,7 +336,11 @@ impl Tool {
             }
             _ => return None,
         };
-        let inset = body_inset(width);
+        let inset = if in_group {
+            0
+        } else {
+            CardFrame::new(width).content_inset() as u16
+        };
         let columns = width.saturating_sub(usize::from(inset));
         let caption = "Agent check · ";
         let line = Line::from(vec![
@@ -335,31 +356,24 @@ impl Tool {
     fn render_content(&self, width: usize, details: ToolDetails) -> Vec<Row> {
         let inspecting = details == ToolDetails::Inspection;
         let expanded = inspecting || details == ToolDetails::Expanded;
-        let heading_inset = body_inset(width);
-        let inset = heading_inset + body_inset(width.saturating_sub(usize::from(heading_inset)));
+        let inset = body_inset(width);
         let caption = self.file_caption();
         if details == ToolDetails::GroupMember {
             let target = self.session_caption().map_or_else(
                 || caption.unwrap_or_else(|| single_line(cap(self.invocation(), MAX_LABEL_BYTES))),
                 |summary| join_details([self.invocation.as_str(), summary]),
             );
-            let columns = width.saturating_sub(usize::from(heading_inset));
             let mut label = self.title().into_owned();
             if !target.is_empty() {
                 label.push_str(&format!(" · {target}"));
             }
-            let caption = shorten(&label, columns);
-            let rows = render_rows(
-                vec![Line::styled(caption, emphasis(ACCENT))],
-                width,
-                1,
-                heading_inset,
-            )
-            .collect();
+            let caption = shorten(&label, width);
+            let rows =
+                render_rows(vec![Line::styled(caption, emphasis(ACCENT))], width, 1, 0).collect();
             return finish_card(rows);
         }
         if let Some(change) = self.file_change() {
-            return self.render_change(change, width, inset, details);
+            return self.render_change(change, width, details);
         }
         if let Some(outcome) = self.state.outcome() {
             if let Some(script) = &outcome.script {
@@ -368,7 +382,7 @@ impl Tool {
         }
         if !inspecting {
             if let Some(caption) = self.session_caption() {
-                let mut rows = self.render_header(width, heading_inset, inset, Some(caption));
+                let mut rows = self.render_header(width, inset, Some(caption));
                 let color = if self.observation().is_some_and(|value| value.attention) {
                     WARNING
                 } else {
@@ -396,7 +410,7 @@ impl Tool {
         let mut rows = if let Some(frame) = &frame {
             vec![self.command_heading(frame)]
         } else {
-            self.render_header(width, heading_inset, inset, caption.as_deref())
+            self.render_header(width, inset, caption.as_deref())
         };
         if !inspecting && self.is_missing_read() {
             rows.extend(render_preview(
@@ -604,25 +618,18 @@ impl Tool {
         (status, color)
     }
 
-    fn render_header(
-        &self,
-        width: usize,
-        inset: u16,
-        detail_inset: u16,
-        caption: Option<&str>,
-    ) -> Vec<Row> {
-        let columns = width.saturating_sub(usize::from(inset));
+    fn render_header(&self, width: usize, detail_inset: u16, caption: Option<&str>) -> Vec<Row> {
         let (status, color) = self.status_label();
         let title = self.title();
         let style = emphasis(ACCENT);
         let status_style = Style::default().fg(color);
-        let mut title = Line::styled(shorten(&title, columns), style);
-        let status_inline = title.width() + status.width() + 3 <= columns;
+        let mut title = Line::styled(shorten(&title, width), style);
+        let status_inline = title.width() + status.width() + 3 <= width;
         if status_inline {
             title.push_span(Span::styled(format!(" · {status}"), status_style));
         }
-        let separate_caption = caption
-            .filter(|caption| !status_inline || title.width() + caption.width() + 3 > columns);
+        let separate_caption =
+            caption.filter(|caption| !status_inline || title.width() + caption.width() + 3 > width);
         if let Some(caption) = caption.filter(|_| separate_caption.is_none()) {
             title.push_span(Span::styled(format!(" · {caption}"), Style::new()));
         }
@@ -630,7 +637,7 @@ impl Tool {
         if !status_inline {
             lines.push(Line::styled(status, status_style));
         }
-        let mut rows: Vec<_> = render_rows(lines, width, 4, inset).collect();
+        let mut rows: Vec<_> = render_rows(lines, width, 4, 0).collect();
         if let Some(caption) = separate_caption {
             rows.extend(render_preview(
                 caption,
@@ -713,18 +720,7 @@ impl Tool {
     }
 }
 
-pub(super) fn style_card(rows: &mut [Row]) {
-    for row in rows {
-        row.line.style = tool_surface().patch(row.line.style);
-    }
-}
-
-fn tool_surface() -> Style {
-    code_surface().fg(SURFACE_TEXT)
-}
-
 fn finish_card(mut rows: Vec<Row>) -> Vec<Row> {
-    style_card(&mut rows);
     rows.push(Row::plain(Line::default()));
     rows
 }
