@@ -27,6 +27,11 @@ pub(crate) fn session_registry(skills_enabled: bool) -> Vec<ToolDefinition> {
 }
 
 fn registry(agent_enabled: bool, skills_enabled: bool, session: bool) -> Vec<ToolDefinition> {
+    let shells = if session {
+        Vec::new()
+    } else {
+        builtin::run_command::available_shells()
+    };
     let mut tools = vec![
         tool(
             "find_files",
@@ -177,7 +182,7 @@ fn registry(agent_enabled: bool, skills_enabled: bool, session: bool) -> Vec<Too
             20_000,
             "edit",
         ),
-        run_command_definition(&builtin::run_command::available_shells(), session),
+        run_command_definition(&shells, session),
         tool(
             "fetch_url",
             "Download an HTTP(S) response and return its metadata. In a Session, use read_output with the returned output ID to read its body. Standalone queries receive a temporary file path.",
@@ -252,11 +257,31 @@ pub(crate) fn run_command_definition(shells: &[CommandShell], session: bool) -> 
         "properties": {
             "program": {"type": "string", "description": "Executable name or path. Prefix a path relative to cwd with './'."},
             "args": {"type": "array", "items": {"type": "string"}, "default": [], "description": "Literal arguments to program."},
-            "cwd": {"type": "string", "default": ".", "description": "Optional absolute or workspace-relative working directory."},
-            "timeout": {"type": "integer", "minimum": 1, "maximum": u32::MAX, "description": "Optional execution deadline in seconds. Omit to run until completion or cancellation."},
-            "brief": {"type": "string", "description": "Optional short description of the action."}
+            "cwd": {"type": "string", "default": ".", "description": "Optional absolute or workspace-relative working directory."}
         },
         "required": ["program"]
+    });
+    if session {
+        schema["properties"]["background"] = serde_json::json!({
+            "type":"boolean",
+            "description":"Return a Job handle if the command is still running after one second."
+        });
+        schema["properties"]["title"] = action_title_schema();
+        return tool(
+            "run_command",
+            r#"Run a program with literal arguments, for example {"program":"git","args":["status"]}. To run a shell script, specify its interpreter as program. Returns exit status, elapsed time and output evidence. Long captures are available through read_output."#,
+            schema,
+            false,
+            80_000,
+            "command",
+        );
+    }
+    schema["properties"]["timeout"] = serde_json::json!({
+        "type":"integer","minimum":1,"maximum":u32::MAX,
+        "description":"Optional process deadline in seconds."
+    });
+    schema["properties"]["brief"] = serde_json::json!({
+        "type":"string","description":"Optional short description of the action."
     });
     if !shells.is_empty() {
         let platform_shell = if cfg!(windows) {
@@ -282,7 +307,7 @@ pub(crate) fn run_command_definition(shells: &[CommandShell], session: bool) -> 
             description.push_str(" Use shell='cmd' for .bat or .cmd files.");
         }
         schema["properties"]["command"] = serde_json::json!({
-            "type": "string", "description": "Original shell text evaluated by the selected interpreter."
+            "type": "string", "description": "Shell text evaluated by the selected interpreter. The result reports the outer shell's exit code."
         });
         schema.as_object_mut().unwrap().remove("required");
         schema["oneOf"] = serde_json::json!([
@@ -290,11 +315,7 @@ pub(crate) fn run_command_definition(shells: &[CommandShell], session: bool) -> 
             {"required": command_fields, "not": {"required": ["program"]}, "properties": {"args": {"maxItems": 0}}}
         ]);
     }
-    description.push_str(r#" For literal arguments use {"program":"git","args":["status"]}. Prefix a workspace-relative program with './'. Reports the exit code, a stdout/stderr preview and the retained output ID."#);
-    if session {
-        schema["properties"]["background"] = serde_json::json!({"type":"boolean","description":"Return a Job handle immediately to continue independent work."});
-        description.push_str(" Read more with read_output({id: output_id}). Slow calls return a Job handle and deliver completion automatically. Set background:true to continue independent work immediately.");
-    }
+    description.push_str(r#" For literal arguments use {"program":"git","args":["status"]}. Prefix a workspace-relative program with './'. Reports exit status, elapsed time and the retained output ID."#);
     tool(
         "run_command",
         &description,
@@ -303,6 +324,14 @@ pub(crate) fn run_command_definition(shells: &[CommandShell], session: bool) -> 
         80_000,
         "command",
     )
+}
+
+pub(crate) fn action_title_schema() -> Value {
+    serde_json::json!({
+        "type":"string",
+        "maxLength":80,
+        "description":"Optional short purpose shown to the user. Omit when the action is self-explanatory."
+    })
 }
 
 fn tool(
@@ -345,11 +374,28 @@ mod tests {
             command_permission_candidate(&json!({"program":"git","args":[],"cwd":"."}))
         );
         let mut background = json!({"program":"git","background":true});
-        assert!(prepare_command_args(&mut background, workspace.path(), &standalone).is_err());
+        let error =
+            prepare_command_args(&mut background, workspace.path(), &standalone).unwrap_err();
+        assert!(error
+            .model_content
+            .contains("background on the outer run_js call"));
         let session = run_command_definition(&[], true);
         assert!(prepare_command_args(&mut background, workspace.path(), &session).is_ok());
         background["background"] = json!("yes");
         assert!(prepare_command_args(&mut background, workspace.path(), &session).is_err());
+        for (field, value) in [
+            ("command", json!("git status")),
+            ("shell", json!("sh")),
+            ("timeout", json!(1)),
+            ("brief", json!("Git status")),
+        ] {
+            let mut args = minimal.clone();
+            args[field] = value;
+            let result = prepare_command_args(&mut args, workspace.path(), &session).unwrap_err();
+            assert!(result
+                .model_content
+                .contains(&format!("does not accept {field:?}")));
+        }
     }
 
     #[test]

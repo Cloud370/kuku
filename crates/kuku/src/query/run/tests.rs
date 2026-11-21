@@ -285,6 +285,7 @@ fn assert_prepared_handoff_after_rewind(target_before_handoff: bool, expect_summ
                     text: "rewound target input".into(),
                     from: None,
                     via_tool_call_id: None,
+                    job_delivery: false,
                 })
                 .unwrap(),
         )
@@ -318,6 +319,7 @@ fn assert_prepared_handoff_after_rewind(target_before_handoff: bool, expect_summ
                     text: "rewound target input".into(),
                     from: None,
                     via_tool_call_id: None,
+                    job_delivery: false,
                 })
                 .unwrap()
         }
@@ -362,6 +364,7 @@ fn assert_prepared_handoff_after_rewind(target_before_handoff: bool, expect_summ
             text: "new input after rewind".into(),
             from: None,
             via_tool_call_id: None,
+            job_delivery: false,
         })
         .unwrap();
     drop(writer);

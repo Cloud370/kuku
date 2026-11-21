@@ -5,15 +5,18 @@ use tokio::sync::Mutex;
 
 use super::{ScriptOperation, WorkspaceActions, WorkspaceScriptLimits};
 use crate::session::runtime::OutputReservation;
+use crate::tool::builtin::run_command::output::search::{
+    DEFAULT_MATCHES, MAX_LITERAL_BYTES, MAX_MATCHES,
+};
 use crate::tool::builtin::run_command::output::{OutputLimits, OutputWriter, MAX_FRAME_BYTES};
 use crate::tool::ToolDefinition;
 use crate::{Error, OutputStream, Result};
 
 const COMMAND_SIGNATURE: &str = concat!(
-    "await workspace.run_command(args) returns {exit_code: number, stdout: CommandStream, ",
-    "stderr: CommandStream, capture_complete: boolean, output_ref: {id: string, offset: number, bytes: number}}. ",
-    "Include program with optional literal args, or command with the advertised shell options. cwd and timeout are optional. ",
-    "A normal nonzero exit returns its code. Launch errors, denial, timeout and cancellation throw. "
+    "tools.run_command({program,args?,cwd?}) ",
+    "returns {exit_code,duration_ms,capture_complete,output_ref,stdout,stderr}. ",
+    "It waits for the process inside the script. Set background:true on the outer run_js call to detach it. ",
+    "A process exit resolves with its code. Launch errors, denial, timeout and cancellation throw. "
 );
 
 const STREAM_SIGNATURE: &str = concat!(
@@ -22,12 +25,36 @@ const STREAM_SIGNATURE: &str = concat!(
     "Readers require complete, decodable output. Small complete output is included within command authorization. ",
 );
 
+pub(super) fn search_definition(read: &ToolDefinition) -> ToolDefinition {
+    let properties = &read.input_schema["properties"];
+    ToolDefinition {
+        name: ScriptOperation::SearchOutput.name().into(),
+        description: "Find literal UTF-8 bytes in retained output. Returns merged byte ranges and a continuation offset.".into(),
+        input_schema: json!({
+            "type":"object",
+            "properties":{
+                "id":properties["id"],
+                "name":properties["name"],
+                "text":{"type":"string","minLength":1,"maxLength":MAX_LITERAL_BYTES},
+                "stream":{"type":"string","enum":["stdout","stderr"]},
+                "offset":properties["offset"],
+                "limit":{"type":"integer","minimum":1,"maximum":MAX_MATCHES,"default":DEFAULT_MATCHES}
+            },
+            "required":["text"],
+            "oneOf":read.input_schema["oneOf"],
+            "additionalProperties":false
+        }),
+        ..read.clone()
+    }
+}
+
 pub(super) fn describe_script_command(definition: &mut ToolDefinition, can_read: bool) {
     if let Some(properties) = definition.input_schema["properties"].as_object_mut() {
         properties.remove("background");
+        properties.remove("title");
     }
     let access = if can_read {
-        "Larger reads require host authorization for read_output. For raw or partial bytes, use workspace.output_chunks({id:run.output_ref.id}). "
+        "Larger reads require host authorization for read_output. For raw or partial bytes, use tools.output_chunks({id:run.output_ref.id}). "
     } else {
         "Larger captures still return a reference. This Agent has no read_output access. "
     };

@@ -5,7 +5,8 @@ pub(crate) mod values;
 
 use crate::context::ToolSchema;
 use crate::event::{EventPayload, EventStore};
-use crate::permission::{AuthorizationDecision, GateDecisionKind};
+use crate::permission::{authorize_action, ActionAuthorization};
+use crate::tool::builtin::common::{changed_file_target, prepare_file_target};
 use crate::tool::{ToolDefinition, ToolResultEnvelope};
 use crate::{Error, Result};
 
@@ -91,9 +92,9 @@ pub(super) async fn advance(
         workspace,
     };
     let policy = crate::permission::load_project_policy(&pending.policy_path)?;
-    let decision = match authorize(
+    let decision = match authorize_action(
         &policy,
-        &definition,
+        &definition.risk,
         &candidate,
         pending
             .query
@@ -115,7 +116,7 @@ pub(super) async fn advance(
         }
     };
     match decision {
-        AuthorizationDecision::Defer => {
+        ActionAuthorization::Defer => {
             if active > 0 {
                 pending.queued_tool_calls.push_front(queued);
                 return Ok(PendingStep::Pending {
@@ -147,13 +148,13 @@ pub(super) async fn advance(
                 request,
             })))
         }
-        AuthorizationDecision::Deny => {
+        ActionAuthorization::Deny { source, reason } => {
             append_permission_decision(
                 &pending.events_path,
                 pending.turn,
                 &queued.tool_call.id,
                 PermissionChoice::Deny,
-                "host",
+                source,
                 &candidate,
             )?;
             pending.record_tool_denied(&queued.tool_call.name);
@@ -161,12 +162,12 @@ pub(super) async fn advance(
                 pending,
                 queued,
                 ToolResultEnvelope::blocked(
-                    "host denied tool action",
-                    "the action was not dispatched",
+                    reason,
+                    format!("The action was not dispatched because {reason}."),
                 ),
             )
         }
-        AuthorizationDecision::Allow => {
+        ActionAuthorization::Allow => {
             append_permission_decision(
                 &pending.events_path,
                 pending.turn,
@@ -191,7 +192,7 @@ pub(super) async fn dispatch(
     event_tx: tokio::sync::mpsc::Sender<(String, SlotEvent)>,
     active: usize,
 ) -> Result<PendingStep> {
-    if let Some(result) = super::workspace_script::changed_file_target(
+    if let Some(result) = changed_file_target(
         &queued.tool_call.name,
         &queued.tool_call.args,
         &pending.workspace,
@@ -244,10 +245,7 @@ pub(super) async fn dispatch(
         let slot = super::slots::spawn_job_control(session, &pending, &queued, event_tx);
         return start_slot(pending, queued, slot);
     }
-    if matches!(
-        queued.tool_call.name.as_str(),
-        "run_command" | "workspace_script"
-    ) {
+    if matches!(queued.tool_call.name.as_str(), "run_command" | "run_js") {
         return start_job_capable_slot(pending, queued, event_tx, active);
     }
     let prior_events = crate::context::runtime::read_agent_events(
@@ -317,7 +315,7 @@ fn start_job_capable_slot(
         )
     } else {
         mark_dispatched(&pending, &queued)?;
-        super::workspace_script::spawn(&pending, &queued, ForegroundJob::start(&pending, &queued))?
+        super::run_js::spawn(&pending, &queued, ForegroundJob::start(&pending, &queued))?
     };
     start_slot(pending, queued, slot)
 }
@@ -420,8 +418,8 @@ pub(super) fn is_inline(name: &str) -> bool {
 }
 
 pub(super) fn reject(pending: PendingRun, queued: QueuedToolCall) -> Result<PendingStep> {
-    if queued.tool_call.name == "workspace_script" {
-        if let Some(result) = super::workspace_script::declined(&pending, &queued.tool_call.id)? {
+    if queued.tool_call.name == "run_js" {
+        if let Some(result) = super::run_js::declined(&pending, &queued.tool_call.id)? {
             return finish_inline(pending, queued, result);
         }
     }
@@ -433,6 +431,8 @@ pub(super) fn reject(pending: PendingRun, queued: QueuedToolCall) -> Result<Pend
 }
 
 fn output_spec(pending: &PendingRun, id: &str) -> Result<super::slots::RetainedOutputSpec> {
+    use crate::tool::builtin::run_command::ModelOutputAccess;
+
     let agent = pending.conversation.as_str();
     let output_id = crate::session::runtime::command_output_id(agent, pending.turn, id);
     let mut retention =
@@ -449,6 +449,15 @@ fn output_spec(pending: &PendingRun, id: &str) -> Result<super::slots::RetainedO
             max_output_bytes: retention.max_bytes(),
             max_preview_bytes: pending.query.runtime_limits.max_preview_bytes,
         },
+        access: match (
+            find_tool_definition(pending, "read_output"),
+            find_tool_definition(pending, "run_js"),
+        ) {
+            (Some(_), Some(_)) => ModelOutputAccess::Script,
+            (Some(_), None) => ModelOutputAccess::Read,
+            (None, _) => ModelOutputAccess::Unavailable,
+        },
+        max_command_seconds: pending.query.runtime_limits.max_command_seconds,
         retention,
     })
 }
@@ -470,7 +479,7 @@ fn output_admission_failed(
 
 pub(crate) fn definitions() -> Vec<ToolDefinition> {
     vec![
-        crate::tool::workspace_script::definition(),
+        crate::tool::run_js::definition(),
         output::definition(),
         values::save_definition(),
         values::list_definition(),
@@ -735,7 +744,7 @@ async fn prepare(
         return Ok(Some(block.reason));
     }
     queued.tool_call.args = result.args;
-    super::workspace_script::prepare_file_target(
+    prepare_file_target(
         &queued.tool_call.name,
         &mut queued.tool_call.args,
         &pending.workspace,
@@ -752,7 +761,7 @@ async fn prepare(
         )
         .map_err(|result| Error::InvalidArgument(result.model_content))?;
     }
-    if queued.tool_call.name == "workspace_script"
+    if queued.tool_call.name == "run_js"
         && queued
             .tool_call
             .args
@@ -872,26 +881,6 @@ fn finish_inline_event(
         slot: None,
         event: Some(event),
     })
-}
-
-pub(super) fn authorize(
-    policy: &crate::permission::PermissionPolicy,
-    definition: &ToolDefinition,
-    candidate: &str,
-    authority: &dyn crate::permission::ToolAuthorizer,
-    action: &crate::permission::ToolAuthorization,
-) -> Result<AuthorizationDecision> {
-    let guard = crate::permission::decide_tool_call(
-        &definition.name,
-        &definition.risk,
-        candidate,
-        policy,
-        &[],
-    );
-    if guard.kind == GateDecisionKind::Deny {
-        return Ok(AuthorizationDecision::Deny);
-    }
-    authority.authorize(action)
 }
 
 pub(super) fn schema(definition: &ToolDefinition) -> ToolSchema {

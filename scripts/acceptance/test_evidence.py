@@ -8,7 +8,31 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from benchmark_pi import inspect_pi
 from evidence import comparison_path, inspect_sdk, SessionFacts
+
+
+class PiEvidenceTests(unittest.TestCase):
+    def test_original_prompt_and_completed_tool_continuation_are_required(self):
+        messages = [
+            {"role": "user", "content": [{"type": "text", "text": "original prompt"}]},
+            {"role": "assistant", "content": [{"type": "toolCall", "id": "fixture"}], "stopReason": "toolUse"},
+            {"role": "toolResult", "toolCallId": "fixture"},
+            {"role": "assistant", "content": [], "stopReason": "stop"},
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            data = Path(temporary)
+            session = data / "sessions" / "fixture.jsonl"
+            session.parent.mkdir()
+
+            def write(entries):
+                session.write_text("".join(json.dumps({"type": "message", "message": entry}) + "\n" for entry in entries))
+
+            write(messages)
+            self.assertTrue(inspect_pi(data, "original prompt")["passed"])
+            self.assertFalse(inspect_pi(data, "different prompt")["passed"])
+            write(messages[:2] + messages[3:])
+            self.assertFalse(inspect_pi(data, "original prompt")["passed"])
 
 
 class Fixture:
@@ -158,16 +182,18 @@ class Fixture:
 
 
 class EvidenceTests(unittest.TestCase):
-    def test_metered_limits_can_declare_no_count_limit_and_one_retry(self):
+    def test_metered_limits_allow_declared_automatic_retries(self):
         limits = self.fixture.report["limits"]
         limits.pop("max_steps")
-        limits.update(max_requests=None, automatic_retries=1)
-        evidence = self.fixture.inspect()
-        self.assertTrue(evidence["passed"], evidence.get("error"))
-        self.assertIsNone(evidence["limits"]["max_requests"])
-        self.assertEqual(evidence["limits"]["max_request_bytes"], 65536)
-        self.assertEqual(evidence["limits"]["max_context_tokens"], 131072)
-        self.assertEqual(evidence["limits"]["automatic_retries"], 1)
+        limits["max_requests"] = None
+        for retries in (1, 5):
+            limits["automatic_retries"] = retries
+            evidence = self.fixture.inspect()
+            self.assertTrue(evidence["passed"], evidence.get("error"))
+            self.assertIsNone(evidence["limits"]["max_requests"])
+            self.assertEqual(evidence["limits"]["max_request_bytes"], 65536)
+            self.assertEqual(evidence["limits"]["max_context_tokens"], 131072)
+            self.assertEqual(evidence["limits"]["automatic_retries"], retries)
         self.assertFalse(self.fixture.inspect(require_fixed_limits=True)["passed"])
         limits["max_requests"] = 22
         self.assertFalse(self.fixture.inspect(require_fixed_limits=True)["passed"])

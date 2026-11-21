@@ -2,6 +2,7 @@ pub(crate) mod gate;
 pub(crate) mod policy;
 mod runtime;
 
+pub(crate) use runtime::{authorize_action, ActionAuthorization};
 pub use runtime::{AuthorizationDecision, ToolAuthorization, ToolAuthorizer, TrustedLocal};
 
 pub use gate::{

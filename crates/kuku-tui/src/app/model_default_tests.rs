@@ -50,6 +50,7 @@ fn snapshot(selection: AgentSelection, pending_selection: Option<AgentSelection>
         active_config: Some(config),
         status: AgentStatus::Running,
         pending_inputs: 0,
+        running_jobs: 0,
         admitted_task: Some("unchanged task".into()),
         queued_task: None,
         turn: Some(3),

@@ -85,7 +85,7 @@ Search by the command or any alias. The list shows the canonical spelling. Tab c
 | `/new` | `/new-session` | Open a blank draft and keep the prior Session available. |
 | `/resume` | `/sessions` | Find a retained Session in the workspace. |
 | `/agents` | `/agent` | Search the Session's Agents, switch recipients or create an Agent. The selector shows activity, pending requests, queue counts and task excerpts when available. |
-| `/jobs` | `/job` | List the selected Agent's background jobs and their states. Select a job to cancel it or read saved output. Use `/jobs cancel <id>` to cancel by ID. |
+| `/jobs` | `/job` | List the selected Agent's background jobs. The input area shows the running count when there is room. Select a job to cancel it or read its available output. Use `/jobs cancel <id>` to cancel by ID. |
 | `/model` | `/models` | Choose, add or edit model routes. Ctrl+L opens the same selector. |
 | `/thinking` | `/think`, `/effort` | Show the inherited model default and supported levels. A check marks the current selection. Enter applies the highlighted level to this Agent. **Use default** clears its override. On a writable local model route, press D on a level then Enter to save it as the model default while retaining explicit Agent overrides. |
 | `/statusline` | `/status-line` | Open **Status line settings** to preview, select, reorder and save footer fields. |
@@ -104,7 +104,7 @@ While reading earlier output, click **Jump to latest** beside the composer to re
 
 Completed Turn statistics appear once beneath the reply and scroll with it. When reading history, a floating Turn strip shares the composer’s left edge and text inset. It offers a return control without moving the input. It shows elapsed time, tokens, cache hits and tools as space permits.
 
-The title of a command card is the short task description, or **Run command** if none was supplied. The card previews the executable and arguments or the selected shell and command text. The bottom border shows the observed status and exit code when available. Recognized test reports show program-reported counts. Open the card for recorded arguments, capture details, and available evidence. Completed writes and edits share the code block frame. A write previews recorded file content with syntax highlighting or rendered Markdown. An edit shows the recorded diff. The footer shows the written or changed line counts.
+The command card shows the executable and arguments. If a call has a title, the card shows that purpose above the invocation. The bottom border shows the observed status and exit code when available. Recognized test reports show program-reported counts. Open the card for recorded arguments, capture details, and available evidence. Completed writes and edits share the code block frame. A write previews recorded file content with syntax highlighting or rendered Markdown. An edit shows the recorded diff. The footer shows the written or changed line counts.
 
 A workspace script card shows completed host actions and observed file changes. Expand it for action outcomes, including partial or unknown work. Choose the script in **Messages**, then **Full output**, to open retained captures from individual script actions.
 

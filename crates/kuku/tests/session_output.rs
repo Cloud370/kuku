@@ -26,11 +26,15 @@ struct ReadPolicy {
 impl ToolAuthorizer for ReadPolicy {
     fn authorize(&self, action: &ToolAuthorization) -> kuku::Result<AuthorizationDecision> {
         self.actions.lock().unwrap().push(action.clone());
-        Ok(if action.tool_call_id == "denied" {
-            AuthorizationDecision::Deny
-        } else {
-            AuthorizationDecision::Allow
-        })
+        Ok(
+            if action.tool_call_id == "denied"
+                || (action.tool.name == "read_output" && action.args["text"] == "withheld")
+            {
+                AuthorizationDecision::Deny
+            } else {
+                AuthorizationDecision::Allow
+            },
+        )
     }
 }
 
@@ -110,15 +114,28 @@ async fn captured(
     policy: Arc<ReadPolicy>,
 ) -> (Session, String) {
     std::fs::write(workspace.join("captured.bin"), payload).unwrap();
-    let command = if cfg!(windows) {
-        "type captured.bin"
+    let args = if cfg!(windows) {
+        common::shell_args("type captured.bin")
     } else {
-        "cat captured.bin"
+        json!({"program":"cat","args":["captured.bin"]})
     };
-    let first = fixture(server, |request| producing(request) && results(request).is_empty(), json!({"tool_calls":[tool("command", "run_command", json!({"shell":if cfg!(windows) {"cmd"} else {"sh"},"cwd":".","command":command,"timeout":5,"brief":"retain output"}))]}), "tool_calls").await;
+    let first = fixture(
+        server,
+        |request| producing(request) && results(request).is_empty(),
+        json!({"tool_calls":[tool("command", "run_command", args)]}),
+        "tool_calls",
+    )
+    .await;
     let second = fixture(
         server,
-        |request| producing(request) && results(request).len() == 1,
+        |request| {
+            producing(request)
+                && results(request).first().is_some_and(|result| {
+                    result["content"]
+                        .as_str()
+                        .is_some_and(|text| text.contains("Output: "))
+                })
+        },
         json!({"content":"retained"}),
         "stop",
     )
@@ -262,9 +279,18 @@ async fn model_reads_and_searches_retained_command_output_without_consuming_ui_r
     .await;
     let command = stored_result(&session, "command");
     assert!(
-        !command.1.contains(MARKER),
-        "initial model preview already contained the target marker"
+        command.1.contains("Output shape from the observed prefix:")
+            && !command.1.contains(&"p".repeat(80)),
+        "initial model result included raw bulk output: {}",
+        command.1
     );
+    let facts = command.2.unwrap();
+    assert_eq!(true, facts["capture_complete"]);
+    assert_eq!(true, facts["preview_truncated"]);
+    assert!(facts["output_preview"]
+        .as_str()
+        .unwrap()
+        .contains(&"p".repeat(80)));
     let first = chunk(&session, &id, 0, 8192, None);
     let second = chunk(&session, &id, first.next_offset, 8192, None);
     let searched = chunk(&session, &id, second.next_offset, 8192, Some(MARKER));
@@ -340,6 +366,139 @@ async fn model_reads_and_searches_retained_command_output_without_consuming_ui_r
 }
 
 #[cfg(unix)]
+#[tokio::test]
+async fn model_receives_short_output_and_an_extraction_hint_for_large_output() {
+    let line = |name: &str| format!("{{\"id\":1,\"name\":\"{name}\"}}\n");
+    for long in [false, true] {
+        let mut payload = line("first-record") + &line("second-record");
+        if long {
+            payload.push_str(&line("extra").repeat(100));
+        }
+        let server = MockServer::start_async().await;
+        let workspace = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let (session, id) = captured(
+            &server,
+            workspace.path(),
+            data.path(),
+            payload.as_bytes(),
+            Arc::new(ReadPolicy::default()),
+        )
+        .await;
+        let (status, content, facts) = stored_result(&session, "command");
+        assert_eq!("ok", status);
+        assert!(content.contains(&format!("Output: {id}")));
+        if long {
+            assert!(!content.contains("first-record") && !content.contains("second-record"));
+            assert!(
+                content.contains("first two lines are JSON objects"),
+                "{content}"
+            );
+            assert!(content.contains(r#"["id","name"]"#), "{content}");
+            assert!(
+                content.contains(r#"tools.output_lines({id, stream:"stdout"})"#),
+                "{content}"
+            );
+            assert!(
+                content.contains("tools.search_output({id, text})"),
+                "{content}"
+            );
+        } else {
+            assert!(
+                content.contains("first-record") && content.contains("second-record"),
+                "{content}"
+            );
+        }
+        assert_eq!(true, facts.unwrap()["capture_complete"]);
+        let raw: Vec<_> = chunk(&session, &id, 0, 8192, None)
+            .segments
+            .into_iter()
+            .flat_map(|segment| segment.as_bytes().to_vec())
+            .collect();
+        assert_eq!(payload.as_bytes(), raw);
+        session.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn script_search_resolves_a_named_capture_and_uses_the_read_output_permission() {
+    let server = MockServer::start_async().await;
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let policy = Arc::new(ReadPolicy::default());
+    let (session, id) = captured(
+        &server,
+        workspace.path(),
+        data.path(),
+        b"x needle withheld needle\n",
+        policy.clone(),
+    )
+    .await;
+    session
+        .save_named_value("main", "log", NamedValueSource::Output(id.clone()), false)
+        .await
+        .unwrap();
+    let requested = fixture(
+        &server,
+        |request| !producing(request) && results(request).len() == 1,
+        json!({"tool_calls":[tool("script-search", "run_js", json!({"code":r#"
+            const first = await tools.search_output({name:"log",text:"needle",stream:"stdout",limit:1});
+            if (first.status !== "ok") return first;
+            const second = await tools.search_output({id:first.result.output_id,text:"needle",offset:first.result.next_offset});
+            const denied = await tools.search_output({name:"log",text:"withheld"});
+            return {first:first.result,second:second.result,denied:denied.status};
+        "#}))]}),
+        "tool_calls",
+    ).await;
+    let done = fixture(
+        &server,
+        |request| !producing(request) && results(request).len() == 2,
+        json!({"content":"script search settled"}),
+        "stop",
+    )
+    .await;
+    session
+        .send(Input::new(
+            "search",
+            "main",
+            "find the two known strings in the saved log",
+        ))
+        .unwrap();
+    idle(&session).await;
+    let (status, content, facts) = stored_result(&session, "script-search");
+    assert_eq!("ok", status, "{content}");
+    let returned = &facts.unwrap()["value"];
+    assert_eq!(
+        returned["first"]["matches"],
+        json!([{"stream":"stdout","offset":2,"end_offset":8}])
+    );
+    assert_eq!(returned["first"]["has_more"], true);
+    assert_eq!(
+        returned["second"]["matches"],
+        json!([{"stream":"stdout","offset":18,"end_offset":24}])
+    );
+    assert_eq!(returned["second"]["has_more"], false);
+    assert_eq!(returned["denied"], "blocked");
+    let actions = policy
+        .actions
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|action| action.tool.name == "read_output")
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(3, actions.len());
+    for action in &actions {
+        assert_eq!(id, action.args["id"]);
+        assert!(action.args.get("name").is_none());
+        assert_eq!(json!(["text"]), action.tool.input_schema["required"]);
+    }
+    assert_eq!(json!("withheld"), actions[2].args["text"]);
+    session.close().await.unwrap();
+    requested.assert_hits_async(1).await;
+    done.assert_hits_async(1).await;
+}
+
 #[tokio::test]
 async fn escaped_and_invalid_utf8_output_keeps_json_bounded_and_the_authorized_limit_unchanged() {
     let server = MockServer::start_async().await;

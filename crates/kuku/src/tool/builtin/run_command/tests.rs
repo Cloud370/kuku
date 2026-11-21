@@ -73,7 +73,7 @@ async fn run_command_captures_stdout_from_workspace() {
     .await;
 
     assert_eq!(result.status, "ok", "{result:?}");
-    assert!(result.summary.contains("command exited 0"));
+    assert!(result.summary.contains("shell exited 0"));
     assert!(result.model_content.contains("stdout:"));
     assert!(result.model_content.contains("workspace marker"));
     let structured = result.structured.unwrap();
@@ -98,7 +98,7 @@ async fn run_command_treats_nonzero_exit_as_command_evidence() {
     .await;
 
     assert_eq!(result.status, "ok", "{result:?}");
-    assert!(result.summary.contains("command exited 7"));
+    assert!(result.summary.contains("shell exited 7"));
     assert!(result.model_content.contains("stderr:"));
     assert!(result.model_content.contains("bad"));
     assert_eq!(result.structured.as_ref().unwrap()["exit_code"], 7);
@@ -147,7 +147,7 @@ async fn run_command_reports_timeout_as_tool_error() {
     assert_eq!(result.structured.as_ref().unwrap()["timed_out"], true);
     assert!(result.truncated);
     assert!(result.model_content.len() <= RUN_COMMAND_MAX_CHARS);
-    assert!(result.model_content.contains("Command output truncated"));
+    assert!(result.summary.contains("preview truncated"));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -422,7 +422,7 @@ async fn unavailable_shell_fixture() {
 
     let dir = workspace();
     let result = run_command(
-        &serde_json::json!({"shell":"sh","command":"echo should-not-run > marker","cwd":".","timeout":5}),
+        &serde_json::json!({"program":"sh","args":["-c","echo should-not-run > marker"],"cwd":".","timeout":5}),
         dir.path(),
         None,
         None,
@@ -658,6 +658,38 @@ async fn large_output_is_persisted_within_quota_without_an_event_consumer() {
         .segments
         .iter()
         .all(|segment| segment.text.bytes().all(|byte| byte == b'x')));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn long_failed_command_shows_final_diagnostic_within_preview_bound() {
+    let dir = workspace();
+    let outputs = dir.path().join("outputs");
+    let diagnostic = "configure terminated: missing required option";
+    let result = run_command_with_output(
+        &serde_json::json!({
+            "shell": shell_name(), "cwd": ".", "timeout": 5, "brief": "fixture build",
+            "command": format!("printf '{diagnostic}\\n' >&2; head -c 16384 /dev/zero | tr '\\0' x; exit 7"),
+        }),
+        dir.path(), None, None, &outputs, "failed-build",
+        OutputLimits { max_output_bytes: 32_768, max_preview_bytes: 512 },
+    ).await;
+    let facts =
+        CommandExecutionFacts::from_structured(result.structured.as_ref().unwrap()).unwrap();
+    assert_eq!(facts.exit_code, Some(7));
+    assert!(facts.capture_complete);
+    assert!(result.model_content.contains("End of captured stderr"));
+    assert!(
+        result.model_content.contains(diagnostic),
+        "{}",
+        result.model_content
+    );
+    assert!(facts.output_preview.contains(diagnostic));
+    assert!(facts.preview_truncated);
+    assert!(result.model_content.starts_with(&result.summary));
+    assert!(result.summary.contains("preview truncated"));
+    assert!(!result.summary.contains("capture incomplete"));
+    assert!(result.model_content.len() <= 512);
 }
 
 #[cfg(unix)]

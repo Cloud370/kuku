@@ -4,7 +4,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from benchmark_resources import IO_FIELDS, PROCESS_IO_SCOPE, include_final_process_usage, ResourceSampler
+from benchmark_resources import (CASE_MEMORY_BYTES, IO_FIELDS, PROCESS_IO_SCOPE, ResourceSampler,
+                                 case_resource_evidence, include_final_process_usage, parse_case_cgroup,
+                                 validate_case_limits)
 from frontier_report import resource_summary
 
 
@@ -18,6 +20,28 @@ def proc(rss, hwm, start_time=222, user_ticks=0, system_ticks=0):
 
 
 class ResourceEvidenceTest(unittest.TestCase):
+    def test_cgroup_peaks_and_cpu_are_independent_of_process_rss(self):
+        before = parse_case_cgroup(
+            f'[cpu.max]\n100000 100000\n[cpu.stat]\nusage_usec 200000\n'
+            f'[memory.max]\n{CASE_MEMORY_BYTES}\n[memory.swap.max]\n0\n'
+            '[memory.peak]\n14000000\n[memory.events]\noom 0\noom_kill 0\n')
+        after = {**before, 'cpu_usage_usec': 2_700_000, 'memory_peak_bytes': 80_000_000}
+        resources = {'capture_incomplete': False, 'harness_memory': {'peak_rss_kib': 30_000}}
+        evidence = case_resource_evidence(before, after, resources)
+        self.assertTrue(evidence['passed'])
+        self.assertEqual(evidence['cpu_seconds'], 2.5)
+        self.assertEqual(evidence['memory_peak_bytes'], 80_000_000)
+        self.assertEqual(evidence['harness_peak_rss_kib'], 30_000)
+        with self.assertRaisesRegex(ValueError, '2 CPU'):
+            case_resource_evidence(before, after, resources, cpus=2)
+        self.assertTrue(case_resource_evidence({**before, 'cpu_quota_usec': 200_000},
+                                              {**after, 'cpu_quota_usec': 200_000}, resources, cpus=2)['passed'])
+        for invalid in ({'memory_events': {'oom': 1, 'oom_kill': 0}}, {'cpu_usage_usec': 0}):
+            self.assertFalse(case_resource_evidence(before, {**after, **invalid}, resources)['passed'])
+        self.assertFalse(case_resource_evidence(before, after, {**resources, 'capture_incomplete': True})['passed'])
+        with self.assertRaisesRegex(ValueError, 'swap disabled'):
+            validate_case_limits({**before, 'swap_limit_bytes': 1024})
+
     def test_proc_cpu_ticks_have_windows_fallback_without_sysconf(self):
         sampler = ResourceSampler('unused')
         with patch('benchmark_resources.os.sysconf', None, create=True):

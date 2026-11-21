@@ -360,7 +360,7 @@ fn toggling_tool_previews_preserves_the_reading_anchor_through_settlement() {
     transcript.apply(
         serde_json::from_value(json!({
             "id": 2, "agent": "main", "turn": 1, "type": "tool_call",
-            "tool": "run_command", "tool_call_id": "cmd", "args": {"program":"check-workspace","args":[],"cwd":".","timeout":5,"brief":"Check workspace"}
+            "tool": "run_command", "tool_call_id": "cmd", "args": {"program":"check-workspace","title":"Check workspace"}
         }))
         .unwrap(),
         None,

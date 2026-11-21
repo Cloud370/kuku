@@ -35,8 +35,6 @@ const STDERR: &str = concat!(
 #[cfg(windows)]
 const GATE_FILE: &str = "fixture.cmd";
 #[cfg(windows)]
-const COMMAND: &str = "call fixture.cmd";
-#[cfg(windows)]
 const GATE_SCRIPT: &str = concat!(
     "@echo off\r\n",
     ">>attempts.txt echo started\r\n",
@@ -56,8 +54,6 @@ const GATE_SCRIPT: &str = concat!(
 
 #[cfg(unix)]
 const GATE_FILE: &str = "fixture.sh";
-#[cfg(unix)]
-const COMMAND: &str = "sh fixture.sh";
 #[cfg(unix)]
 const GATE_SCRIPT: &str = concat!(
     "printf '%s\\n' started >> attempts.txt\n",
@@ -150,11 +146,9 @@ impl Fixture {
             fs::canonicalize(&self.workspace).unwrap(),
             authorization.workspace
         );
-        assert_eq!(COMMAND, authorization.args["command"]);
-        assert_eq!(
-            if cfg!(windows) { "cmd" } else { "sh" },
-            authorization.args["shell"]
-        );
+        let expected = command_args(false);
+        assert_eq!(expected["program"], authorization.args["program"]);
+        assert_eq!(expected["args"], authorization.args["args"]);
         assert!(authorization.args.get("timeout").is_none());
     }
 }
@@ -163,7 +157,7 @@ fn script_args(background: bool) -> Value {
     let command = command_args(false);
     let code = format!(
         r#"
-const run = await workspace.run_command({command});
+const run = await tools.run_command({command});
 const stdout_lines = [];
 for await (const line of run.stdout.lines()) stdout_lines.push(line);
 const stderr_lines = [];
@@ -186,10 +180,11 @@ return {{
 }
 
 fn command_args(background: bool) -> Value {
-    let mut args = json!({"command": COMMAND});
-    if cfg!(windows) {
-        args["shell"] = "cmd".into();
-    }
+    let mut args = if cfg!(windows) {
+        common::shell_args(GATE_FILE)
+    } else {
+        json!({"program":"sh","args":[GATE_FILE]})
+    };
     if background {
         args["background"] = true.into();
     }
@@ -409,10 +404,10 @@ async fn same_script_keeps_one_command_capture_across_foreground_and_automatic_j
     assert_eq!(10_000, RuntimeLimits::default().job_foreground_wait_ms);
     let server = MockServer::start_async().await;
     let script = script_args(false);
-    let fast = Fixture::new(&server, "/job-fast", SHORT_FOREGROUND_MS);
+    let fast = Fixture::new(&server, "/job-fast", 10_000);
     fast.release();
     let (fast_start, fast_end) =
-        model_fixture(&server, "/job-fast", "workspace_script", script.clone()).await;
+        model_fixture(&server, "/job-fast", "run_js", script.clone()).await;
     let fast_session = fast.open().await;
     let mut fast_observer = fast_session.observe(0);
     submit(&fast_session);
@@ -429,8 +424,7 @@ async fn same_script_keeps_one_command_capture_across_foreground_and_automatic_j
     check_first_request(requests.iter().find(|body| first_request(body)).unwrap());
 
     let slow = Fixture::new(&server, "/job-slow", SHORT_FOREGROUND_MS);
-    let (slow_start, slow_end) =
-        model_fixture(&server, "/job-slow", "workspace_script", script).await;
+    let (slow_start, slow_end) = model_fixture(&server, "/job-slow", "run_js", script).await;
     let slow_session = slow.open().await;
     let mut observer = slow_session.observe(0);
     submit(&slow_session);
@@ -438,6 +432,7 @@ async fn same_script_keeps_one_command_capture_across_foreground_and_automatic_j
     let id = job_id(&receipt);
     let started = slow_session.job(AGENT, id).unwrap();
     assert_eq!(JobStatus::Running, started.status);
+    assert_eq!(1, slow_session.agent(AGENT).unwrap().running_jobs);
     assert_eq!(start_cursor, started.started_at);
     assert_eq!(CALL, started.tool_call_id);
     assert!(started.result.is_none() && !slow.workspace.join("completed.txt").exists());
@@ -480,6 +475,27 @@ async fn same_script_keeps_one_command_capture_across_foreground_and_automatic_j
     .await;
     slow_end.assert_hits_async(2).await;
     let delivered = wire_requests("/job-slow");
+    let wake = delivered
+        .iter()
+        .find_map(|body| {
+            body["messages"].as_array()?.iter().find_map(|message| {
+                message["content"]
+                    .as_str()
+                    .filter(|text| text.starts_with("<kuku_job_result>"))
+            })
+        })
+        .expect("the Job result should reach the model as marked feedback");
+    assert!(wake.ends_with("</kuku_job_result>"));
+    assert!(wake.contains(&format!("Job {id} (run_js): Completed.")));
+    let agent = slow_session.agent(AGENT).unwrap();
+    assert_eq!(0, agent.running_jobs);
+    assert_eq!(Some(STEERING), agent.admitted_task.as_deref());
+    let job_input = slow_session.events(0, 512).unwrap().into_iter().find(|event| matches!(
+        &event.payload, EventPayload::MessageUser { job_delivery: true, text, .. } if text == wake
+    )).expect("the durable event should identify the Job delivery");
+    assert!(slow_session
+        .rewind_message("rewind-job", AGENT, job_input.id, wake, false)
+        .is_err());
     assert_eq!(
         1,
         delivered
@@ -492,13 +508,118 @@ async fn same_script_keeps_one_command_capture_across_foreground_and_automatic_j
     slow_session.close().await.unwrap();
 }
 
+#[tokio::test]
+async fn failed_job_delivery_keeps_the_retained_output_id_when_truncated() {
+    let server = MockServer::start_async().await;
+    let mut fixture = Fixture::new(&server, "/job-output", SHORT_FOREGROUND_MS);
+    fixture.options.limits.max_preview_bytes = 1024;
+    let stdout = "x".repeat(1_000);
+    fs::write(fixture.workspace.join("stdout.txt"), &stdout).unwrap();
+    fs::write(fixture.workspace.join("stderr.txt"), "").unwrap();
+    let args = command_args(true);
+    let (start, _finish) = model_fixture(&server, "/job-output", "run_command", args).await;
+    let session = fixture.open().await;
+    let mut observer = session.observe(0);
+    submit(&session);
+    let (_, receipt) = first_result(&mut observer).await;
+    let id = job_id(&receipt);
+    fixture.release();
+    let job = session.wait_job(AGENT, id).await.unwrap();
+    assert_eq!(JobStatus::Failed, job.status);
+    let output_id = job.output_id.unwrap();
+    wait_until(|| session.agent(AGENT).unwrap().status == AgentStatus::Idle).await;
+    start.assert_hits_async(1).await;
+    let wire = wire_requests("/job-output");
+    let delivery = wire
+        .iter()
+        .flat_map(|body| body["messages"].as_array().unwrap())
+        .filter_map(|message| message["content"].as_str())
+        .find(|text| text.starts_with("<kuku_job_result>"))
+        .expect("model should receive the Job delivery");
+    assert!(delivery.contains("Job preview truncated."));
+    assert!(delivery.contains(&format!("Output: {output_id} ")));
+    assert!(delivery.contains(&format!("Job {id} (run_command): Failed. command exited 7")));
+    assert_eq!(1, delivery.matches("command exited 7").count());
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn fast_background_failure_returns_the_command_result_directly() {
+    let server = MockServer::start_async().await;
+    let route = "/job-fast-failure";
+    let fixture = Fixture::new(&server, route, SHORT_FOREGROUND_MS);
+    fixture.release();
+    let (start, finish) = model_fixture(&server, route, "run_command", command_args(true)).await;
+    let session = fixture.open().await;
+    let mut observer = session.observe(0);
+    submit(&session);
+    let (_, result) = first_result(&mut observer).await;
+    reported_exit(&CommandExecutionFacts::from_structured(&result).unwrap());
+    assert!(session.jobs(AGENT).unwrap().is_empty());
+    wait_until(|| session.agent(AGENT).unwrap().status == AgentStatus::Idle).await;
+    assert_eq!(2, wire_requests(route).len());
+    start.assert_hits_async(1).await;
+    finish.assert_hits_async(1).await;
+    session.close().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+async fn host_process_deadline_applies_to_direct_and_script_commands() {
+    let server = MockServer::start_async().await;
+    for (route, tool, args) in [
+        ("/deadline-command", "run_command", command_args(false)),
+        ("/deadline-script", "run_js", script_args(false)),
+    ] {
+        let mut fixture = Fixture::new(&server, route, 20_000);
+        fixture.options.limits.max_command_seconds = std::num::NonZeroU32::new(1);
+        let (model_start, model_end) = model_fixture(&server, route, tool, args).await;
+        let session = fixture.open().await;
+        let mut observer = session.observe(0);
+        submit(&session);
+        let event = committed(&mut observer, |payload| {
+            matches!(payload, EventPayload::ToolResult { tool_call_id, .. } if tool_call_id == CALL)
+        })
+        .await;
+        let EventPayload::ToolResult {
+            structured: Some(facts),
+            ..
+        } = event.payload
+        else {
+            panic!("expected structured deadline outcome");
+        };
+        let script;
+        let command = if tool == "run_js" {
+            script = WorkspaceScriptFacts::from_structured(&facts).unwrap();
+            let [action] = script.actions.as_slice() else {
+                panic!("expected one process, got {:?}", script.actions);
+            };
+            &action.result
+        } else {
+            &facts
+        };
+        let command = CommandExecutionFacts::from_structured(command).unwrap();
+        assert_eq!(CommandTermination::TimedOut, command.termination);
+        assert!(command.started && !command.cleanup_incomplete);
+        assert!(session.jobs(AGENT).unwrap().is_empty());
+        fixture.assert_launch();
+        assert!(!fixture.workspace.join("completed.txt").exists());
+        wait_until(|| session.agent(AGENT).unwrap().status == AgentStatus::Idle).await;
+        model_start.assert_hits_async(1).await;
+        model_end.assert_hits_async(1).await;
+        session.close().await.unwrap();
+        wire_requests(route);
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
 async fn explicit_background_returns_before_foreground_deadline_and_can_be_cancelled() {
     let server = MockServer::start_async().await;
-    for (route, tool, args) in [
+    let title = "Check fixture in background";
+    for (route, tool, mut args) in [
         ("/explicit-command", "run_command", command_args(true)),
-        ("/explicit-script", "workspace_script", script_args(true)),
+        ("/explicit-script", "run_js", script_args(true)),
     ] {
+        args["title"] = json!(title);
         let fixture = Fixture::new(&server, route, 20_000);
         let (model_start, model_end) = model_fixture(&server, route, tool, args).await;
         let session = fixture.open().await;
@@ -510,6 +631,7 @@ async fn explicit_background_returns_before_foreground_deadline_and_can_be_cance
         assert_eq!(JobStatus::Running, job.status);
         assert_eq!(start_cursor, job.started_at);
         assert_eq!(tool, job.tool);
+        assert_eq!(format!("{id} running: {title}"), job.summary);
         wait_until(|| fixture.workspace.join("attempts.txt").is_file()).await;
         wait_until(|| session.agent(AGENT).unwrap().last_output.as_deref() == Some(ACKNOWLEDGED))
             .await;
@@ -563,17 +685,17 @@ async fn detached_script_keeps_its_original_output_during_zero_retention_collect
     let command = command_args(false);
     let code = format!(
         r#"
-const command = await workspace.run_command({command});
-const draft = await workspace.create_output({{}});
-await workspace.append_output({{id:draft.result.id, text:"independent derived output"}});
-const derived = await workspace.finish_output({{id:draft.result.id}});
+const command = await tools.run_command({command});
+const draft = await tools.create_output({{}});
+await tools.append_output({{id:draft.result.id, text:"independent derived output"}});
+const derived = await tools.finish_output({{id:draft.result.id}});
 const text = await command.stdout.text();
 return {{length:text.length, original:command.output_ref, derived:derived.result.output_ref}};"#
     );
     let (first, continuation) = model_fixture(
         &server,
         route,
-        "workspace_script",
+        "run_js",
         json!({"code":code,"background":true}),
     )
     .await;
@@ -651,30 +773,42 @@ fn check_first_request(body: &Value) {
         json!([]),
         command["parameters"]["properties"]["args"]["default"]
     );
-    assert!(command["parameters"]["properties"]["timeout"]
-        .get("default")
-        .is_none());
-    let script = tool("workspace_script");
+    assert_eq!(json!(["program"]), command["parameters"]["required"]);
+    let fields = command["parameters"]["properties"].as_object().unwrap();
+    assert!(fields.keys().map(String::as_str).eq([
+        "args",
+        "background",
+        "cwd",
+        "program",
+        "title"
+    ]));
+    let script = tool("run_js");
     assert_eq!(
         "boolean",
         script["parameters"]["properties"]["background"]["type"]
     );
     assert_eq!(json!(["code"]), script["parameters"]["required"]);
+    assert_eq!(
+        "string",
+        script["parameters"]["properties"]["title"]["type"]
+    );
     for name in ["list_jobs", "wait_job", "cancel_job"] {
         assert_eq!("object", tool(name)["parameters"]["type"]);
     }
     let description = script["description"].as_str().unwrap();
     for contract in [
-        "workspace.run_command(",
+        "tools.run_command(",
+        "Set background:true on the outer run_js call",
         "exit_code",
         "stdout",
         "stderr",
+        "duration_ms",
         "capture_complete",
         "output_ref",
         "CommandStream.text()",
         ".json()",
         ".lines()",
-        "model_content",
+        "{status,result,truncated,error?}",
     ] {
         assert!(
             description.contains(contract),
@@ -772,15 +906,19 @@ async fn detached_script_stops_at_a_deferred_action_and_keeps_completed_writes()
     let route = "/job-deferred-write";
     let mut fixture = Fixture::new(&server, route, 20_000);
     fixture.options.authorizer = Arc::new(DeferredWrite);
-    let code = r#"
-await workspace.write_file({path:"prior.txt",content:"completed"});
-await workspace.write_file({path:"guarded.txt",content:"needs approval"});
-await workspace.write_file({path:"later.txt",content:"do not dispatch"});
-"#;
+    let command = command_args(false);
+    let code = format!(
+        r#"
+await tools.write_file({{path:"prior.txt",content:"completed"}});
+await tools.run_command({command});
+await tools.write_file({{path:"guarded.txt",content:"needs approval"}});
+await tools.write_file({{path:"later.txt",content:"do not dispatch"}});
+"#
+    );
     let (start, _finish) = model_fixture(
         &server,
         route,
-        "workspace_script",
+        "run_js",
         json!({"code": code, "background": true}),
     )
     .await;
@@ -789,6 +927,7 @@ await workspace.write_file({path:"later.txt",content:"do not dispatch"});
     submit(&session);
     let (_, receipt) = first_result(&mut observer).await;
     let id = job_id(&receipt);
+    fixture.release();
     let job = session.wait_job(AGENT, id).await.unwrap();
     assert_eq!(JobStatus::Failed, job.status);
     let result = job.result.unwrap();

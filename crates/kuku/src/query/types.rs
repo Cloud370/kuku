@@ -308,7 +308,7 @@ impl std::fmt::Debug for ExecSlot {
 
 #[derive(Debug)]
 pub(crate) enum SlotEvent {
-    WorkspacePermission(Box<super::workspace_script::AwaitingAction>),
+    WorkspacePermission(Box<super::run_js::AwaitingAction>),
     Output(ToolEvent),
     Done(crate::tool::ToolResultEnvelope),
     JobWaitDone(crate::tool::ToolResultEnvelope),

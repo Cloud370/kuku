@@ -22,7 +22,7 @@ Agent 使用稳定的 Session 内扁平地址，例如 `main`、`reviewer` 或 `
 
 Session 用 Job 句柄跟踪已派发的命令或工作区脚本。Job 归发起它的 Agent 所有，可以在该 Turn 结束或客户端断开后继续运行，执行期间仍会占用执行宿主的资源。前台观察窗口决定工具何时返回句柄。显式设置的进程截止时间在转入 Job 后继续生效。[工具参数与 Job 句柄](../reference/tools.md#session-job)
 
-仅达到观察时限不会触发模型请求。Session 记录终态并向所属 Agent 的收件箱投递有界结果。该 Agent 可在当前或下一 Turn 的安全边界接纳结果，无需轮询。Session 保持打开时，客户端可以检查或取消指定 Job。[终端控制](../reference/cli.md#终端界面) · [SDK 方法](../reference/sdk.md#工作区执行)
+仅达到观察时限不会触发模型请求。Session 记录终态，并向所属 Agent 的收件箱投递有界结果和可用的保留输出 ID。命令以非零状态退出或被信号终止时，Job 标记为失败。该 Agent 可在当前或下一 Turn 的安全边界接纳结果，无需轮询。已接纳的消息将结果标明为运行时反馈。客户端显示 Job 自己的完成条目，用户或 Agent 的输入可作为消息回退目标。Session 保持打开时，客户端可以检查或取消指定 Job。[终端控制](../reference/cli.md#终端界面) · [SDK 方法](../reference/sdk.md#工作区执行)
 
 定向停止已观察到的 Agent 执行时，已经分离的 Job 继续运行。`Session::cancel(agent)` 停止指定 Agent 并取消其 Job。关闭 Session 会取消所有仍在运行的 Job，等待清理和持久写入。如果运行时在记录终态前停止，重开时会将未结算的 Job 标记为 `interrupted`。显式启动新工作前，先检查可观察到的副作用。
 

@@ -240,6 +240,7 @@ impl Query {
                         .map(ConversationAddress::as_str)
                         .or_else(|| self.input_source.agent_address()),
                     self.via_tool_call_id.as_deref(),
+                    &self.input_source,
                 )?;
             }
 
@@ -500,7 +501,7 @@ impl Query {
                 None => {
                     return Err(Error::InvalidEventStream(
                         "run ended without producing Done".to_string(),
-                    ))
+                    ));
                 }
             }
         }
@@ -521,7 +522,7 @@ impl Query {
                 None => {
                     return Err(Error::InvalidEventStream(
                         "run ended without producing Done".to_string(),
-                    ))
+                    ));
                 }
             }
         }

@@ -5,13 +5,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::Notify;
 
-use super::{prepare_file_target, WorkspaceHost};
+use super::WorkspaceHost;
 use crate::event::{EventPayload, EventStore};
 use crate::permission::GateDecisionKind;
 use crate::query::helpers::{display_summary, now_timestamp, permission_candidate};
 use crate::query::types::{PendingRun, PermissionRequest, QueuedToolCall};
-use crate::tool::builtin::common::ExecutorObservation;
-use crate::tool::workspace_script::{ScriptCall, ScriptExecution, ScriptOperation};
+use crate::tool::builtin::common::{prepare_file_target, ExecutorObservation};
+use crate::tool::run_js::{ScriptCall, ScriptExecution, ScriptOperation};
 use crate::tool::{ToolDefinition, ToolResultEnvelope};
 use crate::{Error, Result, WorkspaceScriptActionStatus, WorkspaceScriptFacts};
 
@@ -98,7 +98,7 @@ impl PreparedAction {
             risk: self.definition.risk.clone(),
             summary: display_summary(self.operation.name(), &self.args, Some(256)),
             candidate: self.candidate.clone(),
-            source: "workspace_script".into(),
+            source: "run_js".into(),
         };
         let facts: WorkspaceScriptFacts =
             serde_json::from_value(partial.structured.clone().unwrap_or(Value::Null))?;
@@ -205,6 +205,7 @@ impl Continuation {
     ) -> Result<ToolResultEnvelope> {
         let action = &self.action;
         let name = action.operation.name();
+        let permission_name = action.operation.permission_name();
         if !host.methods.contains(&action.definition) || host.actions.workspace != action.workspace
         {
             return Ok(ToolResultEnvelope::blocked(
@@ -226,22 +227,33 @@ impl Continuation {
         if let Err(result) = check {
             return Ok(result);
         }
-        let candidate = permission_candidate(&host.home, &host.actions.workspace, name, &checked);
+        let candidate = permission_candidate(
+            &host.home,
+            &host.actions.workspace,
+            permission_name,
+            &checked,
+        );
         let policy = crate::permission::load_project_policy(&host.policy_path)?;
         let guard = crate::permission::decide_tool_call(
-            name,
+            permission_name,
             &action.definition.risk,
             &candidate,
             &policy,
             &[],
         );
-        if checked != action.args
-            || candidate != action.candidate
-            || guard.kind == GateDecisionKind::Deny
-        {
+        if checked != action.args || candidate != action.candidate {
             return Ok(ToolResultEnvelope::blocked(
-                "prepared target or permission changed",
+                "prepared target changed",
                 "the saved operation was not dispatched",
+            ));
+        }
+        if guard.kind == GateDecisionKind::Deny {
+            let reason = guard
+                .denial_reason
+                .unwrap_or("authorization denied this action");
+            return Ok(ToolResultEnvelope::blocked(
+                reason,
+                format!("The saved operation was not dispatched because {reason}."),
             ));
         }
         let capacity = host.actions.session.workspace_execution_host().operations();

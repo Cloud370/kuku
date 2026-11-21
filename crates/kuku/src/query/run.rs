@@ -123,9 +123,6 @@ impl Run {
         let event = loop {
             self.persist_deferred_runtime_logs();
 
-            if let Some(event) = self.promote_explicit_job()? {
-                break event;
-            }
             if matches!(&self.state, RunState::Pending(_)) {
                 if let Some(event) = self.try_process_queued_call().await? {
                     break self.defer_runtime_log_if_needed(event);
@@ -717,7 +714,7 @@ impl Run {
                 )));
             }
         };
-        let result = super::workspace_script::cancelled_permission(waiting)?;
+        let result = super::run_js::cancelled_permission(waiting)?;
         let mut store = EventStore::open(&waiting.pending.events_path)?;
         store.append(EventPayload::ToolResult {
             turn: waiting.pending.turn,
@@ -765,7 +762,7 @@ impl Run {
             super::provider::ensure_resolved(&mut pending)?;
             super::runtime_tools::validate_prepared(&pending, &tool_call)?;
         }
-        let (granted_tool, candidate) = if waiting.request.source == "workspace_script" {
+        let (granted_tool, candidate) = if waiting.request.source == "run_js" {
             (
                 waiting.request.tool.clone(),
                 waiting.request.candidate.clone(),

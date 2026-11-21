@@ -4,7 +4,9 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
+use crate::execution::{CommandExecutionFacts, CommandTermination};
 use crate::permission::{ToolAuthorizer, TrustedLocal};
+use crate::tool::ToolResultEnvelope;
 
 /// Durable status of a command or workspace script transferred to a Session Job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -22,6 +24,34 @@ pub enum JobStatus {
     Interrupted,
 }
 
+impl JobStatus {
+    pub(super) fn for_result(outcome: &ToolResultEnvelope) -> Self {
+        if outcome.faults.cleanup_incomplete {
+            return Self::Interrupted;
+        }
+        match outcome.status.as_str() {
+            "ok" => {
+                let failed_command = outcome
+                    .structured
+                    .as_ref()
+                    .and_then(|value| CommandExecutionFacts::deserialize(value).ok())
+                    .is_some_and(|command| {
+                        command.termination == CommandTermination::Exited
+                            && (command.signal.is_some()
+                                || command.exit_code.is_some_and(|code| code != 0))
+                    });
+                if failed_command {
+                    Self::Failed
+                } else {
+                    Self::Completed
+                }
+            }
+            "cancelled" => Self::Cancelled,
+            _ => Self::Failed,
+        }
+    }
+}
+
 /// Observed terminal facts for the original execution.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JobResult {
@@ -37,6 +67,14 @@ pub struct JobResult {
     pub output_persistence_failed: bool,
     /// Whether cleanup of owned resources could not be confirmed.
     pub cleanup_incomplete: bool,
+}
+
+impl JobResult {
+    pub(super) fn output_id(&self) -> Option<&str> {
+        self.structured
+            .as_ref()
+            .and_then(|value| value["output_ref"]["id"].as_str())
+    }
 }
 
 /// Session-scoped handle and status for an execution's background lifetime.
@@ -155,6 +193,8 @@ pub struct RuntimeLimits {
     /// Foreground wait in milliseconds before a top-level command or script becomes a Job.
     #[serde(default = "default_job_foreground_wait_ms")]
     pub job_foreground_wait_ms: u64,
+    /// Optional process deadline in seconds for direct commands and commands run by scripts.
+    pub max_command_seconds: Option<std::num::NonZeroU32>,
     /// Maximum retained bytes for one command or host-tool output.
     pub max_output_bytes: u64,
     /// Maximum total physical bytes retained in this session, including capture framing.
@@ -186,11 +226,12 @@ impl Default for RuntimeLimits {
             max_output_tokens_per_request: None,
             max_tools_per_agent: 8,
             job_foreground_wait_ms: default_job_foreground_wait_ms(),
+            max_command_seconds: None,
             max_output_bytes: 8 * 1024 * 1024,
             max_retained_output_bytes: default_retained_output_bytes(),
             output_retention_secs: default_output_retention_secs(),
             max_named_values: default_named_values(),
-            max_preview_bytes: 16 * 1024,
+            max_preview_bytes: 8 * 1024,
             observation_capacity: 128,
         }
     }
@@ -264,6 +305,25 @@ pub enum InputSource {
 }
 
 impl InputSource {
+    const SESSION_JOB: &str = "session_job";
+
+    pub(super) fn session_job() -> Self {
+        Self::External(Self::SESSION_JOB.into())
+    }
+
+    pub(crate) fn is_job_delivery(&self) -> bool {
+        matches!(self, Self::External(source) if source == Self::SESSION_JOB)
+    }
+
+    pub(crate) fn message_text(&self, text: String) -> String {
+        if self.is_job_delivery() {
+            let text = text.replace('&', "&amp;").replace('<', "&lt;");
+            format!("<kuku_job_result>\n{text}\n</kuku_job_result>")
+        } else {
+            text
+        }
+    }
+
     pub(crate) fn agent_address(&self) -> Option<&str> {
         match self {
             Self::Agent(address) => Some(address),
@@ -561,6 +621,9 @@ pub struct AgentSnapshot {
     pub status: AgentStatus,
     /// Number of delivered inputs awaiting acceptance.
     pub pending_inputs: usize,
+    /// Number of background Jobs still running for this Agent.
+    #[serde(default)]
+    pub running_jobs: usize,
     /// Bounded excerpt of the most recent admitted task input.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub admitted_task: Option<String>,

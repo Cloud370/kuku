@@ -12,7 +12,12 @@ def add_benchmark_arguments(parser):
     parser.add_argument("--suite", choices=("legacy", "frontier"), default="legacy")
     parser.add_argument("--case", required=True)
     parser.add_argument("--mode", choices=("preflight", "live"), default="preflight")
+    parser.add_argument("--cpus", type=int, default=1, help="container CPU quota (default: 1)")
     parser.add_argument("--sdk-binary", type=Path)
+    parser.add_argument("--pi-prefix", type=Path, help="compare with an isolated Pi npm install on direct DeepSeek")
+    parser.add_argument("--node-binary", type=Path, help="Linux Node.js executable for --pi-prefix")
+    parser.add_argument("--require-resource-evidence", action="store_true",
+                        help="require kernel cgroup CPU, memory peak, OOM and harness RSS evidence")
     parser.add_argument("--config", type=Path)
     parser.add_argument("--connection")
     parser.add_argument("--provider", choices=("openrouter", "deepseek"), default="openrouter",
@@ -83,7 +88,10 @@ def prepare_pinned(sources, spec, directory, case):
     task = Path(spec["task_root"]) / case["id"]
     patterns = tuple(f"/{task.as_posix()}/{name}" for name in (
         ".gitignore", "README.md", "instruction.md", "task.toml", "environment/", "tests/"))
-    with locked(checkout.with_suffix(".lock")):
+    if checkout.exists():
+        check_pinned(checkout, revision, task, patterns)
+        return checkout
+    with locked(checkout.with_suffix(".lock"), wait_seconds=3600):
         if not checkout.exists():
             with tempfile.TemporaryDirectory(prefix=f".{case['id']}-", dir=cache) as temporary:
                 staging = Path(temporary) / "source"

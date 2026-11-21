@@ -111,6 +111,7 @@ async fn agent_directory_notice_lists_open_conversations() {
             text: "bootstrap main".into(),
             from: None,
             via_tool_call_id: None,
+            job_delivery: false,
         })
         .unwrap();
     store
@@ -141,6 +142,7 @@ async fn agent_directory_notice_lists_open_conversations() {
             text: "review secret transcript".into(),
             from: Some("main".into()),
             via_tool_call_id: Some("toolu_agent".into()),
+            job_delivery: false,
         })
         .unwrap();
     store
@@ -217,6 +219,7 @@ async fn agent_conversation_sees_own_notices_and_incoming_messages_only() {
             text: "bootstrap main".into(),
             from: None,
             via_tool_call_id: None,
+            job_delivery: false,
         })
         .unwrap();
     store
@@ -240,6 +243,7 @@ async fn agent_conversation_sees_own_notices_and_incoming_messages_only() {
             text: "please review this".into(),
             from: Some("main".into()),
             via_tool_call_id: Some("toolu_agent_review".into()),
+            job_delivery: false,
         })
         .unwrap();
     store
@@ -304,6 +308,7 @@ async fn agent_conversation_sees_own_notices_and_incoming_messages_only() {
             text: "explore secret transcript".into(),
             from: Some("main".into()),
             via_tool_call_id: Some("toolu_agent_explore".into()),
+            job_delivery: false,
         })
         .unwrap();
 

@@ -50,7 +50,9 @@
         "log-summary-date-ranges",
         "cancel-async-tasks",
         "regex-log",
-        "large-scale-text-editing"
+        "large-scale-text-editing",
+        "nginx-request-logging",
+        "sqlite-with-gcov"
       ],
       "additional_cases": [
         {
@@ -59,6 +61,20 @@
           "workspace": "/app",
           "artifacts": ["/app/apply_macros.vim"],
           "timeout_sec": 1200
+        },
+        {
+          "id": "nginx-request-logging",
+          "role": "configure a local service and verify its behavior after startup",
+          "workspace": "/app",
+          "artifacts": ["/etc/nginx/nginx.conf", "/etc/nginx/conf.d/benchmark-site.conf"],
+          "timeout_sec": 900
+        },
+        {
+          "id": "sqlite-with-gcov",
+          "role": "build and verify a local CLI from vendored source with coverage instrumentation",
+          "workspace": "/app",
+          "artifacts": [],
+          "timeout_sec": 900
         }
       ]
     }

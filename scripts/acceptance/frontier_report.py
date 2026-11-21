@@ -31,7 +31,8 @@ PROVIDERS = {'deepseek': 'DeepSeek', 'baseten': 'Baseten', 'api.deepseek.com': '
 EFFORTS = {'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'}
 FINISH_REASONS = {'stop', 'length', 'tool_calls', 'function_call', 'content_filter', 'error',
                   'response.completed', 'response.incomplete', 'response.failed', 'insufficient_system_resource'}
-FAILURE_KINDS = {'runtime', 'infrastructure', 'sdk_evidence', 'artifact_retention', 'agent_task', 'cleanup', 'provider_boundary'}
+FAILURE_KINDS = {'runtime', 'infrastructure', 'sdk_evidence', 'artifact_retention', 'agent_task', 'cleanup',
+                 'provider_boundary', 'resource_evidence', 'agent_evidence'}
 TOOL_STATUSES = {'ok', 'error', 'blocked', 'cancelled'}
 TURN_EVENTS = {'turn.completed', 'turn.interrupted', 'turn.cancelled'}
 PROVIDER_ERROR_KINDS = {'authentication', 'rate_limited', 'context_too_large', 'invalid_request',
@@ -638,7 +639,7 @@ def session_summary(live, sdk):
                 event_agent = event.get('conversation') or event.get('agent') or 'main'
                 if event.get('kind') == 'tool.call':
                     calls += 1
-                    if event.get('tool') == 'workspace_script':
+                    if event.get('tool') in ('run_js', 'workspace_script'):
                         script_calls += 1
                         call_id = event.get('tool_call_id')
                         if isinstance(call_id, str) and call_id:
@@ -774,6 +775,8 @@ def local_attempt(case, directory, ordinal, label, receipt_key=None):
         raise EvidenceError('invalid round label; use first, rerun, round-N, guidance, guarded, outputNk or contextNk')
     live = directory.resolve() / 'live'
     result = read_object(live / 'result.json', 'local live result')
+    if result.get('harness', 'kuku') != 'kuku':
+        raise EvidenceError('historical report expects Kuku evidence; use benchmark_compare.py for the paired run')
     meter, raw_meter = load_object(directory / 'meter.json', 'local meter')
     if result.get('mode') != 'live' or meter.get('case', case) != case:
         raise EvidenceError('local attempt evidence does not match its declared case or mode')

@@ -3,21 +3,25 @@ use std::os::unix::process::ExitStatusExt;
 use std::process::ExitStatus;
 use std::time::Duration;
 
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::execution::{
-    CommandExecutionFacts, CommandResultKind, CommandStdin, CommandTermination, OutputReference,
-    ReportedTests,
+    CommandExecutionFacts, CommandInvocation, CommandResultKind, CommandStdin, CommandTermination,
+    OutputReference, ReportedTests,
 };
 use crate::tool::ToolResultEnvelope;
 
-use super::output::{CaptureMetadata, OutputSegment};
+use super::output::{read_stderr, CaptureMetadata, OutputChunk, OutputSegment};
 use super::{
     output_error, read_output, CommandCapture, CommandOutcome, CommandRequest, CommandView,
-    OutputRead, OutputStream,
+    ModelOutputAccess, OutputRead, OutputStream,
 };
 
 const MAX_OUTPUT_PREVIEW_BYTES: usize = 2048;
+const SHORT_OUTPUT_LINES: u64 = 40;
+const SHAPE_SAMPLE_BYTES: usize = 96;
+const SHAPE_FIELDS: usize = 6;
+const SHAPE_FIELD_BYTES: usize = 24;
 
 pub(super) fn render_command_result(
     request: &CommandRequest,
@@ -87,7 +91,9 @@ pub(super) fn render_command_result(
         side_effects_observed: false,
     };
     match output.view {
-        CommandView::Model => render_model(status, summary, facts, &metadata, output),
+        CommandView::Model(access) => {
+            render_model(status, summary, facts, &metadata, output, access)
+        }
         CommandView::Script { host_bytes } => {
             render_script(status, summary, facts, output, host_bytes)
         }
@@ -100,30 +106,61 @@ fn render_model(
     mut facts: CommandExecutionFacts,
     metadata: &CaptureMetadata,
     output: CommandCapture<'_>,
+    access: ModelOutputAccess,
 ) -> ToolResultEnvelope {
-    let filtered = !metadata.summary.is_empty() || !facts.reported_tests.is_empty();
     let output_preview_limit = output
         .limits
         .max_preview_bytes
         .min(MAX_OUTPUT_PREVIEW_BYTES);
-    let read_limit = if filtered {
+    let failed =
+        facts.timed_out || facts.signal.is_some() || facts.exit_code.is_some_and(|code| code != 0);
+    let abbreviated = access != ModelOutputAccess::Unavailable
+        && (metadata.stored_bytes > output_preview_limit as u64
+            || facts.stdout_lines.saturating_add(facts.stderr_lines) > SHORT_OUTPUT_LINES);
+    let filtered = (abbreviated || access == ModelOutputAccess::Unavailable)
+        && (!metadata.summary.is_empty() || !facts.reported_tests.is_empty());
+    let show_end = failed
+        && !filtered
+        && facts.capture_complete
+        && (abbreviated || metadata.stored_bytes > output.limits.max_preview_bytes as u64);
+    let show_stderr = show_end && facts.stderr_bytes > 0;
+    let read_limit = if show_end {
+        output_preview_limit.min(output.limits.max_preview_bytes / 2)
+    } else if filtered || abbreviated {
         output_preview_limit
     } else {
         output.limits.max_preview_bytes
+    }
+    .max(1);
+    let source_bytes = if show_stderr {
+        facts.stderr_bytes
+    } else {
+        metadata.stored_bytes
     };
-    let chunk = match read_output(
-        output.dir,
-        output.id,
-        OutputRead {
-            offset: 0,
-            limit: read_limit.max(1),
-            search: None,
+    let request = OutputRead {
+        offset: if show_end {
+            source_bytes.saturating_sub(read_limit as u64)
+        } else {
+            0
         },
-    ) {
+        limit: read_limit,
+        search: None,
+    };
+    let result = if show_stderr {
+        read_stderr(output.dir, output.id, request)
+    } else {
+        read_output(output.dir, output.id, request)
+    };
+    let chunk = match result {
         Ok(chunk) => chunk,
         Err(error) => return output_error("read", error, metadata.cleanup_incomplete),
     };
-    let raw_preview = render_streams(&chunk.segments);
+    let rendered = render_streams(&chunk.segments);
+    let raw_preview = if show_end {
+        &rendered[rendered.ceil_char_boundary(rendered.len().saturating_sub(read_limit))..]
+    } else {
+        rendered.as_str()
+    };
     let mut output_preview = if chunk
         .segments
         .iter()
@@ -131,48 +168,163 @@ fn render_model(
     {
         raw_preview
             .strip_prefix("stdout:\n")
-            .unwrap_or(&raw_preview)
+            .unwrap_or(raw_preview)
             .to_string()
     } else {
-        raw_preview.clone()
+        raw_preview.to_owned()
     };
-    let output_preview_truncated = chunk.has_more || output_preview.len() > output_preview_limit;
+    let output_preview_truncated =
+        show_end || chunk.has_more || output_preview.len() > output_preview_limit;
     truncate_utf8(&mut output_preview, output_preview_limit);
-    let mut model_content = if filtered {
+    let mut body = if filtered {
         format!(
-            "{}\n\nBuild/test summary (selected lines):\n{}",
-            summary,
+            "\n\nBuild/test summary (selected lines):\n{}",
             report_evidence(&metadata.summary, &facts.reported_tests)
         )
     } else {
+        String::new()
+    };
+    let include_raw = !filtered && (!abbreviated || show_end);
+    if include_raw && show_end {
+        let source = if show_stderr { "stderr" } else { "output" };
+        body.push_str(&format!("\n\nEnd of captured {source}:\n{raw_preview}"));
+    } else if include_raw {
         let text = if raw_preview.is_empty() {
             "(command produced no output)"
         } else {
-            &raw_preview
+            raw_preview
         };
-        format!("{summary}\n\n{text}")
-    };
-    let preview_truncated = !filtered && chunk.has_more;
-    let reference = render_reference(output.id, metadata, filtered, chunk.lossy_utf8);
-    let content_truncated = model_content.len() + reference.len() > output.limits.max_preview_bytes;
-    let truncated = !facts.capture_complete || preview_truncated || content_truncated;
-    if truncated {
-        summary.push_str(", output truncated");
+        body.push_str("\n\n");
+        body.push_str(text);
+    } else if abbreviated && !filtered {
+        body.push_str("\n\nOutput shape from the observed prefix:");
+        append_output_shape(&mut body, &chunk, &facts, access);
     }
-    let suffix = if truncated {
-        format!("\n\n(Command output truncated.){reference}")
-    } else {
-        reference
-    };
-    fit_content(&mut model_content, &suffix, output.limits.max_preview_bytes);
+    if abbreviated {
+        body.push_str("\nRead the relevant range with read_output({id, offset, limit}) using the Output ID below.");
+        if access == ModelOutputAccess::Script {
+            body.push_str("\nTo locate a known literal first, call tools.search_output({id, text}) in run_js.");
+        }
+    }
+    if !facts.capture_complete {
+        summary.push_str(", capture incomplete");
+    }
+    let reference = render_reference(
+        output.id,
+        metadata,
+        filtered,
+        chunk.lossy_utf8 && include_raw,
+    );
+    let preview_truncated = abbreviated
+        || (include_raw && (show_end || chunk.has_more))
+        || summary.len() + body.len() + reference.len() > output.limits.max_preview_bytes;
+    if preview_truncated {
+        summary.push_str(", preview truncated");
+    }
+    let truncated = !facts.capture_complete || preview_truncated;
+    let mut model_content = format!("{summary}{body}");
+    fit_content(
+        &mut model_content,
+        &reference,
+        output.limits.max_preview_bytes,
+    );
     facts.lossy_utf8 = chunk.lossy_utf8
         && (output_preview.contains(char::REPLACEMENT_CHARACTER)
-            || (!filtered && model_content.contains(char::REPLACEMENT_CHARACTER)));
+            || (include_raw && model_content.contains(char::REPLACEMENT_CHARACTER)));
     facts.output_filtered = filtered;
-    facts.preview_truncated = preview_truncated || content_truncated;
+    facts.preview_truncated = preview_truncated;
     facts.output_preview = output_preview;
     facts.output_preview_truncated = output_preview_truncated;
     ToolResultEnvelope::command(status, summary, model_content, truncated, facts)
+}
+
+fn append_output_shape(
+    body: &mut String,
+    chunk: &OutputChunk,
+    facts: &CommandExecutionFacts,
+    access: ModelOutputAccess,
+) {
+    for (stream, label, bytes) in [
+        (OutputStream::Stdout, "stdout", facts.stdout_bytes),
+        (OutputStream::Stderr, "stderr", facts.stderr_bytes),
+    ] {
+        if bytes == 0 {
+            continue;
+        }
+        body.push_str(&format!("\n{label}: {bytes} observed bytes"));
+        if !chunk.lossy_utf8 {
+            if let Some(segment) = chunk
+                .segments
+                .iter()
+                .find(|segment| segment.stream == stream)
+            {
+                let (description, json_lines) =
+                    output_shape(&segment.text, segment.bytes as u64 == bytes);
+                body.push_str(". ");
+                body.push_str(&description);
+                if json_lines && access == ModelOutputAccess::Script {
+                    body.push_str(&format!("\nFor {label} records in run_js, iterate tools.output_lines({{id, stream:{label:?}}}). Check line.truncated and line.lossy_utf8 before JSON.parse(line.text)."));
+                }
+            }
+        }
+    }
+}
+
+fn output_shape(prefix: &str, complete: bool) -> (String, bool) {
+    if complete {
+        match serde_json::from_str::<Value>(prefix) {
+            Ok(Value::Object(fields)) => return (json_object_shape("JSON object", &fields), false),
+            Ok(Value::Array(items)) => {
+                return (format!("JSON array, {} items", items.len()), false)
+            }
+            _ => {}
+        }
+    }
+    let mut lines = prefix
+        .split_inclusive('\n')
+        .filter(|line| complete || line.ends_with('\n'))
+        .map(|line| line.trim_end_matches(['\r', '\n']))
+        .filter(|line| !line.trim().is_empty());
+    let (Some(first), Some(second)) = (lines.next(), lines.next()) else {
+        return ("text".into(), false);
+    };
+    if let (Ok(Value::Object(fields)), Ok(Value::Object(_))) =
+        (serde_json::from_str(first), serde_json::from_str(second))
+    {
+        return (
+            json_object_shape("first two lines are JSON objects", &fields),
+            true,
+        );
+    }
+    let columns = first.split('\t').count();
+    if columns > 1 && second.split('\t').count() == columns {
+        return (
+            format!("{columns} tab-separated fields in each of the first two lines"),
+            false,
+        );
+    }
+    let end = first.floor_char_boundary(first.len().min(SHAPE_SAMPLE_BYTES));
+    let suffix = if end < first.len() { "…" } else { "" };
+    (
+        format!(
+            "multiline text, first nonblank line {}{suffix}",
+            json!(&first[..end])
+        ),
+        false,
+    )
+}
+
+fn json_object_shape(kind: &str, fields: &serde_json::Map<String, Value>) -> String {
+    let keys: Vec<_> = fields
+        .keys()
+        .filter(|key| key.len() <= SHAPE_FIELD_BYTES)
+        .take(SHAPE_FIELDS)
+        .collect();
+    format!(
+        "{kind}, {} fields, sample keys {}",
+        fields.len(),
+        json!(keys)
+    )
 }
 
 fn render_script(
@@ -251,8 +403,12 @@ fn outcome_summary(request: &CommandRequest, outcome: &CommandOutcome, duration_
     } else if let Some(signal) = exit_signal(outcome.exit_status) {
         format!("command terminated by signal {signal} in {duration_ms}ms")
     } else {
+        let process = match &request.invocation {
+            CommandInvocation::Program { .. } => "command",
+            CommandInvocation::Shell { .. } => "shell",
+        };
         format!(
-            "command exited {} in {duration_ms}ms",
+            "{process} exited {} in {duration_ms}ms",
             outcome
                 .exit_status
                 .and_then(|status| status.code())

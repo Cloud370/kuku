@@ -13,11 +13,78 @@ PROCESS_IO_SCOPE = 'SDK process and waited-for children. rchar and wchar count l
 EXTERNAL_PROCESS_IO = 'proc_pid_io'
 FINAL_PROCESS_IO = 'proc_self_io'
 PROC_TICKS_PER_SECOND_FALLBACK = 100
+CASE_MEMORY_BYTES = 2 * 1024**3
+CASE_RESOURCE_LIMITS = {'cpus': 1, 'memory_bytes': CASE_MEMORY_BYTES, 'swap_bytes': 0}
+CGROUP_FILES = ('cpu.max', 'cpu.stat', 'memory.max', 'memory.swap.max', 'memory.peak', 'memory.events')
 PROC = '''p=$(cat /logs/agent/sdk.pid 2>/dev/null) || exit 1
 d=/proc/$p
 cat "$d/stat" "$d/status" 2>/dev/null || exit 1
 cat "$d/io" 2>/dev/null || :
 '''
+
+
+def read_case_cgroup(container):
+    command = 'for field do printf "[%s]\\n" "$field"; cat "/sys/fs/cgroup/$field" || exit 1; done'
+    try:
+        result = subprocess.run(['docker', 'exec', container, 'sh', '-c', command, 'sh', *CGROUP_FILES],
+                                capture_output=True, text=True, check=True, timeout=5)
+        return parse_case_cgroup(result.stdout)
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, IndexError) as error:
+        raise ValueError('benchmark resource evidence requires container cgroup v2 CPU and memory counters') from error
+
+
+def parse_case_cgroup(output):
+    blocks = {}
+    name = None
+    for line in output.splitlines():
+        if line.startswith('[') and line.endswith(']'):
+            name = line[1:-1]
+            if name not in CGROUP_FILES or name in blocks:
+                raise ValueError('invalid cgroup counter header')
+            blocks[name] = []
+        elif name is not None:
+            blocks[name].append(line)
+        else:
+            raise ValueError('missing cgroup counter header')
+    quota, period = map(int, blocks['cpu.max'][0].split())
+    limit = int(blocks['memory.max'][0])
+    swap = int(blocks['memory.swap.max'][0])
+    peak = int(blocks['memory.peak'][0])
+    cpu = dict(line.split() for line in blocks['cpu.stat'])
+    events = dict(line.split() for line in blocks['memory.events'])
+    oom = {name: int(events[name]) for name in ('oom', 'oom_kill')}
+    cpu_usec = int(cpu['usage_usec'])
+    if min(quota, period, limit, peak) <= 0 or min(cpu_usec, swap, *oom.values()) < 0:
+        raise ValueError('invalid cgroup counter value')
+    return {'cpu_quota_usec': quota, 'cpu_period_usec': period, 'cpu_usage_usec': cpu_usec,
+            'memory_limit_bytes': limit, 'swap_limit_bytes': swap, 'memory_peak_bytes': peak,
+            'memory_events': oom}
+
+
+def validate_case_limits(counters, cpus=CASE_RESOURCE_LIMITS['cpus']):
+    if (counters['cpu_quota_usec'] != counters['cpu_period_usec'] * cpus
+            or counters['memory_limit_bytes'] != CASE_MEMORY_BYTES or counters['swap_limit_bytes'] != 0):
+        raise ValueError(f'benchmark resource limits must be {cpus} CPU(s) and 2 GiB memory with swap disabled')
+
+
+def case_resource_evidence(before, after, resources, cpus=CASE_RESOURCE_LIMITS['cpus']):
+    validate_case_limits(before, cpus)
+    validate_case_limits(after, cpus)
+    cpu = after['cpu_usage_usec'] - before['cpu_usage_usec']
+    oom = {key: after['memory_events'][key] - before['memory_events'][key] for key in before['memory_events']}
+    peak = after['memory_peak_bytes']
+    rss = resources['harness_memory']['peak_rss_kib']
+    reasons = []
+    if cpu < 0 or peak < before['memory_peak_bytes'] or min(oom.values()) < 0:
+        reasons.append('cgroup counters went backwards')
+    if peak > after['memory_limit_bytes'] or any(oom.values()):
+        reasons.append('container exceeded its memory budget or encountered OOM')
+    if resources['capture_incomplete'] or not rss:
+        reasons.append('harness process memory evidence is incomplete')
+    return {'passed': not reasons, 'reasons': reasons, 'scope': 'container_start_to_before_verifier',
+            'cpu_seconds': cpu / 1_000_000 if cpu >= 0 else None, 'memory_peak_bytes': peak,
+            'memory_limit_bytes': after['memory_limit_bytes'], 'swap_limit_bytes': after['swap_limit_bytes'],
+            'memory_event_deltas': oom, 'harness_peak_rss_kib': rss, 'before': before, 'after': after}
 
 
 def proc_ticks_per_second():

@@ -452,7 +452,7 @@ async fn jobs_are_scoped_cancellable_and_readable_after_server_restart() {
             "job-call",
             json!({
                 "program":program,"args":["--ignored","--exact","gated_command_fixture","--nocapture"],
-                "cwd":".","timeout":TOOL_TIMEOUT.as_secs(),"brief":"wait for the fixture",
+                "title":"Wait for the fixture",
                 "background":true,
             }),
         ));
@@ -631,7 +631,7 @@ async fn a_later_steer_reaches_the_current_turn_after_a_real_tool_boundary() {
                     {"type":"text","text":"Running the gate."},
                     {"type":"tool_use","id":"gated-tool","name":"run_command","input":{
                         "program":program,"args":["--ignored","--exact","gated_command_fixture","--nocapture"],
-                        "cwd":".","timeout":TOOL_TIMEOUT.as_secs(),"brief":"wait for a file"
+                        "title":"Wait for a file"
                     }}
                 ],
                 "stop_reason":"tool_use",

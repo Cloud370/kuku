@@ -513,7 +513,7 @@ class SessionFacts:
                 and type(limits.get("max_request_bytes")) is int and limits["max_request_bytes"] >= 4096
                 and "max_output_tokens" in limits
                 and (max_output_tokens is None or type(max_output_tokens) is int and max_output_tokens > 0)
-                and type(retries) is int and retries in (0, 1), "SDK report has invalid request/retry limits")
+                and type(retries) is int and retries >= 0, "SDK report has invalid request/retry limits")
         if require_fixed_limits or require_output_limit:
             require(max_output_tokens is not None, "paid SDK evidence requires a finite output token limit")
         if require_fixed_limits:

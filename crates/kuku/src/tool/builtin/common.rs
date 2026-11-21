@@ -30,7 +30,7 @@ pub(super) struct ResolvedPath {
     pub(super) relative: String,
 }
 
-pub(crate) fn prepare_workspace_path(
+fn prepare_workspace_path(
     tool: &str,
     args: &Value,
     workspace: &Path,
@@ -45,6 +45,38 @@ pub(crate) fn prepare_workspace_path(
         _ => return Ok(None),
     }?;
     Ok(Some(resolved.path))
+}
+
+pub(crate) fn prepare_file_target(
+    name: &str,
+    args: &mut Value,
+    workspace: &Path,
+) -> Result<(), ToolResultEnvelope> {
+    if let Some(path) = prepare_workspace_path(name, args, workspace)? {
+        let relative = path.strip_prefix(workspace).unwrap_or(&path);
+        let target = relative.to_str().ok_or_else(|| {
+            ToolResultEnvelope::error("invalid file path", "target must be valid Unicode")
+        })?;
+        args["path"] = if target.is_empty() { "." } else { target }.into();
+    }
+    Ok(())
+}
+
+pub(crate) fn changed_file_target(
+    name: &str,
+    args: &Value,
+    workspace: &Path,
+) -> Option<ToolResultEnvelope> {
+    let mut current = args.clone();
+    if let Err(result) = prepare_file_target(name, &mut current, workspace) {
+        return Some(result);
+    }
+    (current != *args).then(|| {
+        ToolResultEnvelope::blocked(
+            "workspace target changed after preparation",
+            "read the new target before requesting another action",
+        )
+    })
 }
 
 pub(super) fn required_path<'a>(

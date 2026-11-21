@@ -143,6 +143,21 @@ python3 scripts/acceptance/run.py --run-id WORKSPACE_OPENROUTER_RUN workspace \
 
 `workspace/result.json` 记录任务检查、费用、发送的模型和思考档，以及路由证据。无法核实时，`workspace` 选择器允许 `upstream_confirmed: null`。OpenRouter 未返回生成回执时，只能报告请求已固定到哪个端点，实际上游仍未知。思考档同样按请求值报告，除非 provider 回报实际值。确认路由不一致会使本次验收失败。见[凭据与运行产物](#凭据与运行产物)。
 
+### 命令输出与长任务验收
+
+以[命令输出提案](../architecture/workspace-execution.md#命令输出处理提案)为行为契约。复用现有工具、Session 和安装客户端夹具。固定 provider 验证模型实际能看到什么，真实 provider 验证模型实际怎么选。
+
+| 检查 | 必要证据 |
+|---|---|
+| 原生调用 | 默认命令 schema 接受字面程序参数。用原生 Linux 和 Windows 验证空格、引号与 Unicode，单独记录 macOS 覆盖。核对实际授权的调用、运行结果与 TUI 标题。 |
+| 短、长和失败输出 | 核对首条送给 provider 的结果与实际捕获。短结果直接显示。长结果的形态和方法提示足以在下一 Step 取到需要的内容。失败时保住决定性诊断和独立的捕获完整性标志。 |
+| 原生搜索和规则覆盖 | 用字节级夹具验证跨帧匹配、授权、取消和截断。按每条诊断引用读回原始捕获。每个启用的规则族覆盖成功、失败和格式不匹配，并验证通用回退以及重开后原先接纳的精确视图。 |
+| 后台和长任务 | 覆盖快速完成、一秒边界、取消和单次终态。观察持续有进展的慢 Job，以及安静且存在具体阻碍的 Job。验证结果已经明确时可以立即收束，同时仅观察到安静时，有用的工作仍可继续。 |
+
+真实对照固定模型、思考档、工具、预算和原环境及 verifier。覆盖短程直接操作、适合 `run_js` 的任务，以及包含 Job 或昂贵验证的长流程。至少保留两个结构不同的任务用于独立验证，调 Prompt 时不使用。先固定输出视图比较 Prompt 选型，再固定 Prompt 比较提取提示，最后验收组合效果。
+
+记录工具和脚本首次调用的正确性、适用任务中的 `run_js` 选用率、探索性补读、重试和重复检查。记录原 verifier 结果、墙钟耗时、provider 累计输入与缓存用量、峰值 RSS 和保留磁盘字节。用通用有界预览作为摘要字节数基线，用 provider 用量支持 token 结论。结果已明确，或具体阻碍让继续执行失去验证价值时，结束当次运行并保存观察与原因。实际执行用时和最长运行上限分别记录。
+
 ## 测试归属与证据
 
 单元测试保留在 `#[cfg(test)] mod tests`；集成测试按领域位于 `tests/` 下，共用 helper 位于 `tests/common/mod.rs`。复用已有调用程序与固定输入。重构应提供一个持续维护的入口或小型 case 清单，选择契约、重放、真实调用及 benchmark 检查，不另建评测平台。
@@ -176,9 +191,36 @@ Linux／Docker 预检将固定源码检出到已忽略的 `benchmarks/sources/`�
 
 SDK 运行时，入口分别采样 SDK RSS／RSS 高水位、CPU 时间和线程数，以及整个容器的 CPU、内存、进程数和 I/O。采样与输出日志均有界；未采样值保持 `null`，不把整容器数据归因于 SDK。下方专门的资源调用程序测量其余生命周期边界。
 
+### 共同观察 TUI 运行（可选）
+
+在交互终端中提交任务并观察 Agent 的执行。有 tmux 时，可以用命名会话让其他人接入同一个 TUI，也可以抓取当前画面。在待测 checkout 或 worktree 中运行：
+
+```sh
+cargo build --locked -p kuku-app --bin kuku
+tmux new-session -d -s kuku-review -c "$PWD" \
+  "$PWD/target/debug/kuku" --workspace "$PWD"
+tmux set-option -t kuku-review mouse on
+tmux attach-session -t kuku-review
+```
+
+从已接入的 tmux 客户端用 `tmux switch-client -t kuku-review` 切换。在 TUI 中用滚轮或 Page Up 和 Page Down 翻页，按 Ctrl+End 回到最新输出。普通接入方式会传递这些输入。并发跑多个案例时，各用一个会话名。不同 worktree 需要独立受管服务时，为各自的 TUI 指定 `--data-dir`，并用 `--config` 选择配置。
+
+通过 Session 日志或 `kuku events SESSION_ID` 查看任务进度、工具结果和请求边界。运行事件命令时沿用相同的连接和工作区选项。用 `tmux capture-pane -p -t kuku-review` 核对画面呈现。将有用的画面文本随运行证据留存。
+
+跑上游 benchmark 时，将 kuku 服务放在固定的任务容器里。若容器内已可运行且已配置 kuku，可以用宿主机的 tmux 接入容器内的 TUI。将 `benchmark_container` 设为正在运行的任务容器的名称：
+
+```sh
+tmux new-session -d -s kuku-benchmark \
+  docker exec -it "$benchmark_container" kuku --workspace /app
+tmux set-option -t kuku-benchmark mouse on
+tmux attach-session -t kuku-benchmark
+```
+
+宿主机上的 TUI 也可用 `--remote` 连到容器服务，并用 `--workspace` 指定容器内的路径。粘贴原题面，等 Agent 和 Job 都结束后再运行原 verifier。判分隔离和验收证据沿用上面的原始 benchmark 流程。[终端操作](../reference/cli.md#终端界面) · [远程连接](../guides/run-the-server.md#显式启动服务)
+
 ## FrontierHarness 公开小样本
 
-`frontier` 套件在[题目清单](../../../scripts/acceptance/cases.json)中固定 FrontierHarness Eval v1.1.0 的四道题，覆盖日志汇总、异步取消、正则表达式和 Vim 大文件编辑。每题使用上游题面、镜像构建上下文和原始判分器。在有 Git、Docker、Python 3.10+ 和仓库指定 Rust 工具链的 Linux 上，先用空提交确认判分器能识别失败。构建和评分依赖需要网络，这一步没有模型费用。[数据集来源](https://hub.harborframework.com/datasets/frontier-harness-eval/frontier-harness-eval)
+[题目清单](../../../scripts/acceptance/cases.json)将 `frontier` 套件固定到 FrontierHarness Eval v1.1.0。历史小样本覆盖日志汇总、异步取消、正则表达式和 Vim 大文件编辑。本地对照还包含 Nginx 配置和 SQLite 覆盖率构建。每题使用上游题面、镜像构建上下文和原始判分器。在有 Git、Docker、Python 3.10+ 和仓库指定 Rust 工具链的 Linux 上，先用空提交确认判分器能识别失败。构建和评分依赖需要网络，这一步没有模型费用。[数据集来源](https://hub.harborframework.com/datasets/frontier-harness-eval/frontier-harness-eval)
 
 ```sh
 cargo build --locked -p kuku --example session_task
@@ -218,6 +260,43 @@ python3 scripts/acceptance/frontier_report.py --official-live benchmarks/accepta
 SDK 在写入结果前采集 Linux `getrusage(RUSAGE_SELF)`，得到本进程峰值 RSS、CPU 时间、文件系统输入和输出块计数。宿主采样器按相邻样本的时间间隔估算平均 RSS，并报告覆盖窗口。最后一次 Linux `/proc/PID/io` 读数可能包含已等待结束的子进程，分别记录逻辑读写量、系统调用数和存储字节。容器快照还包含工具进程。判分在 SDK 采样结束后进行。计量程序分开记录到首个有效流式输出的时间与供应商原生指标，并给出 TPS 与缓存命中统计的分母。
 
 [小样本结果与 Session 诊断](../../../scripts/acceptance/results/frontier-sample.md)保留探索阶段的各次尝试及统一配置下的复测。
+
+### 严格的本地 Kuku–Pi 对照
+
+每道入选题先跑一个 Pi 对照。优先选能拉开 harness 差异的题，再用工作负载不同的第二题检验改动能否泛化。快速收集反馈时，只要宿主机和供应商有余量，两道题的 Kuku 和 Pi 共四次试验可以并发。启动负载较高时，可以把各次启动间隔几秒。每次使用唯一的运行 ID，四次共用费用台账。SQLite 构建这类 CPU 密集任务可以在同一道题的两家运行中都加 `--cpus 2`。报告会校验 CPU 限额一致。结果需注明是否并发及 CPU 限额。正式比较耗时和 CPU 时，两家在同一台空闲机器上依次运行。复测时交替先跑的一方，保留每次结果，包括失败。下面的对照使用无界面入口。TUI 观察另记一轮。
+
+使用支持 cgroup v2 和 `memory.peak` 的 Linux Docker，以及与 Pi 兼容的 Linux Node.js 可执行文件（Pi 1.5.2 要求 22.19 或更高）。每次从原题固定镜像启动新容器。两家使用原始题面和判分器、直连 DeepSeek Chat Completions 的 `deepseek-flash` 和 `max` 推理档，以及相同的请求、时间和费用上限。严格模式默认 1 CPU、2 GiB 内存，关闭 swap。资源验收要求内核限额符合配置，能采集 harness RSS，且 agent 执行阶段没有 cgroup OOM 事件。
+
+将对照版本装进 Git 忽略目录，用 release 模式构建 Kuku runner。保留 npm lockfile，之后可以用 `npm ci` 复现依赖树。将 `KUKU_TEST_DEEPSEEK_API_KEY=...` 放进 `keys` 所指的私有文件，付费执行前用已授权的总额初始化台账。
+
+```sh
+pi_ref="$PWD/benchmarks/tools/pi-1.5.2"
+npm install --prefix "$pi_ref" --registry=https://registry.npmjs.org --save-exact \
+  --ignore-scripts --no-audit --no-fund @earendil-works/pi-coding-agent@1.5.2
+cargo build --release --locked -p kuku --example session_task
+
+ledger="$PWD/benchmarks/acceptance/paired-budget.json"
+keys="$HOME/.config/kuku/frontier.env"
+case_id=large-scale-text-editing
+python3 scripts/acceptance/run.py budget init --ledger "$ledger" \
+  --authorization local-paired-frontier --limit-usd 1.50
+
+paired_run() {
+  run_id="$1"
+  shift
+  python3 scripts/acceptance/run.py --run-id "$run_id" benchmark \
+    --suite frontier --case "$case_id" --mode live --provider deepseek --require-resource-evidence \
+    --max-output-tokens 131072 --case-cap-usd 0.75 --ledger "$ledger" --secrets "$keys" "$@"
+}
+paired_run vim-kuku --sdk-binary target/release/examples/session_task || test "$?" -eq 1
+paired_run vim-pi --pi-prefix "$pi_ref" || test "$?" -eq 1
+
+python3 scripts/acceptance/benchmark_compare.py \
+  --kuku benchmarks/acceptance/vim-kuku --pi benchmarks/acceptance/vim-pi \
+  > benchmarks/acceptance/vim-comparison.json
+```
+
+导出工具先核对题目文件摘要、Docker 镜像 ID、模型路由和运行限额。对照报告包含原始评分和测试数、agent 与判分耗时、模型请求数与 token 用量、估算美元费用，以及资源验收、harness RSS、容器内存峰值、CPU 秒数和 OOM 事件。容器内存峰值取启动到判分前的内核高水位，覆盖计入 cgroup 的 harness、工具子进程和采样开销。harness RSS 统计主进程的驻留页面，包含共享映射。CPU 秒数取 agent 执行前后两次内核读数的差值。分享对照 JSON 时附上轮次、主机和构建模式。需要精确复现依赖树时附上 Pi lockfile。凭据、原始 Prompt、工具输出和 Session 文件留在本机。
 
 ## 资源测量
 

@@ -143,6 +143,21 @@ python3 scripts/acceptance/run.py --run-id WORKSPACE_OPENROUTER_RUN workspace \
 
 `workspace/result.json` records task checks, accounting, the model and reasoning effort sent, and route evidence. The `workspace` selector allows `upstream_confirmed: null` when confirmation is unavailable. If OpenRouter returns no generation receipt, report the requested endpoint pin and keep the actual upstream unknown. Report the reasoning effort as requested unless the provider reports it. A confirmed route mismatch fails the run. [Credentials and run artifacts](#credentials-and-run-artifacts)
 
+### Command output and long-task acceptance
+
+Use the [command output proposal](../architecture/workspace-execution.md#proposed-command-output-path) as the behavioral contract. Reuse the current tool, Session and installed-client fixtures. A fixed provider can prove what is available to a model. Use a real provider to evaluate what the model actually chooses.
+
+| Check | Required evidence |
+|---|---|
+| Native invocation | The default command schema admits literal program arguments. Run fixtures with spaces, quotes and Unicode on native Linux and Windows. Record macOS coverage separately. Compare the granted invocation, actual results and TUI title. |
+| Short, long and failed output | Compare the first provider-visible response with the capture. Small results fit directly. A large result includes enough observed shape and a valid method hint to retrieve the target on the next Step. Failure retains decisive diagnostics and separate capture-completeness flags. |
+| Native search and rule coverage | Use byte-level fixtures for matches spanning frames, authorization, cancellation and truncated captures. Read each diagnostic reference back from the original capture. Exercise success, failure and a format mismatch for every enabled rule family. Confirm generic fallback and the exact admitted view after reopen. |
+| Background and long work | Cover fast completion, the one-second boundary, cancellation and one terminal result. Observe both a slow job that makes progress and a quiet job with a concrete blocker. Check that a definitive outcome can finish a run promptly and that observed silence alone leaves useful work eligible to continue. |
+
+For real comparisons, keep the model, reasoning, tools, budgets, original environment and verifier fixed. Include short direct work, a task suited to `run_js`, and a long workflow that includes a Job or expensive verification. Reserve at least two structurally different tasks from Prompt tuning. Compare Prompt selection with the output view fixed, and compare extraction hints with the Prompt fixed before evaluating the combined change.
+
+Record first-attempt tool and script correctness, `run_js` selection among eligible tasks, exploratory reads, retries and repeated checks. Record original verifier results, wall time, cumulative provider input and cache usage, peak RSS, and retained disk bytes. Compare summary bytes with the generic bounded preview. Use provider usage for token claims. Stop a run when the outcome is definitive or a concrete blocker makes further work uninformative. Keep the observation and reason in the run evidence. Record execution duration independently of the maximum runtime.
+
 ## Test ownership and evidence
 
 Unit tests remain in `#[cfg(test)] mod tests`; integration tests stay under `tests/` by domain, with shared helpers in `tests/common/mod.rs`. Reuse existing callers and fixtures. The rewrite should provide one maintained entrypoint or small case manifest for selecting contract, replay, live, and benchmark checks, without building an evaluation platform.
@@ -176,9 +191,36 @@ When the caller reports `streaming`, the inspector validates its counters, first
 
 While the SDK runs, the selector samples SDK RSS/high-water RSS, CPU time and thread count separately from aggregate container CPU, memory, processes and I/O. Samples and output logs are bounded. Unsampled values stay `null`; do not attribute whole-container measurements to the SDK. The focused resource caller below measures the other lifecycle boundaries.
 
+### Watch a TUI run together (optional)
+
+Use an interactive terminal to submit the task and watch the Agent work. When tmux is available, a named session lets someone join the same TUI and lets you capture the current viewport. From the checkout or worktree under test:
+
+```sh
+cargo build --locked -p kuku-app --bin kuku
+tmux new-session -d -s kuku-review -c "$PWD" \
+  "$PWD/target/debug/kuku" --workspace "$PWD"
+tmux set-option -t kuku-review mouse on
+tmux attach-session -t kuku-review
+```
+
+From an already attached tmux client, use `tmux switch-client -t kuku-review`. In the TUI, use the mouse wheel or Page Up and Page Down to scroll, and Ctrl+End to return to the latest output. Normal attachment forwards these inputs. Use a different session name for each concurrent case. When different worktrees need independent managed services, give each TUI its own `--data-dir` and select its configuration with `--config`.
+
+Use the Session journal or `kuku events SESSION_ID` with the same connection and workspace options for task progress, tool results and request boundaries. Use `tmux capture-pane -p -t kuku-review` to check how those facts appear on screen. Keep any captured text with the run evidence.
+
+For an upstream benchmark, run the kuku service in the pinned task container. If kuku is already available and configured in that container, run the TUI there through the host's tmux. Set `benchmark_container` to the running task container's name:
+
+```sh
+tmux new-session -d -s kuku-benchmark \
+  docker exec -it "$benchmark_container" kuku --workspace /app
+tmux set-option -t kuku-benchmark mouse on
+tmux attach-session -t kuku-benchmark
+```
+
+A TUI on the host can also connect to the container service with `--remote` and the container's path as `--workspace`. Paste the original instructions, then run the original verifier after the Agent and its Jobs settle. Use the original benchmark procedure above for verifier isolation and evidence. [Terminal controls](../reference/cli.md#terminal-interface) · [Remote connection](../guides/run-the-server.md#start-an-explicit-server)
+
 ## FrontierHarness public sample
 
-The `frontier` suite pins four tasks from FrontierHarness Eval v1.1.0 in the [case manifest](../../../scripts/acceptance/cases.json). They cover log aggregation, async cancellation, regular expressions and large-file Vim editing. Each task uses the upstream prompt, image build context and grader. On Linux with Git, Docker, Python 3.10+ and the repository's Rust toolchain, first check that an empty submission fails the original grader. This step requires network access for build and grader dependencies and uses no model credits. [Dataset provenance](https://hub.harborframework.com/datasets/frontier-harness-eval/frontier-harness-eval)
+The [case manifest](../../../scripts/acceptance/cases.json) pins the `frontier` suite to FrontierHarness Eval v1.1.0 tasks. The historical sample covers log aggregation, async cancellation, regular expressions and large-file Vim editing. The local comparison also includes Nginx configuration and a SQLite coverage build. Each task uses the upstream prompt, image build context and grader. On Linux with Git, Docker, Python 3.10+ and the repository's Rust toolchain, first check that an empty submission fails the original grader. This step requires network access for build and grader dependencies and uses no model credits. [Dataset provenance](https://hub.harborframework.com/datasets/frontier-harness-eval/frontier-harness-eval)
 
 ```sh
 cargo build --locked -p kuku --example session_task
@@ -218,6 +260,43 @@ python3 scripts/acceptance/frontier_report.py --official-live benchmarks/accepta
 The SDK samples its own Linux `getrusage(RUSAGE_SELF)` immediately before writing its result, including process peak RSS, CPU time and filesystem block input/output counts. The parent sampler estimates mean RSS by time-weighting adjacent SDK samples and reports its observed window. The last Linux `/proc/PID/io` reading can include waited-for children. It distinguishes logical characters and system calls from storage bytes. Container-wide snapshots include the tool processes. Verifier time and resources are outside the SDK sampling window. The meter distinguishes its time to the first content-bearing stream delta from native provider metrics and reports denominators for TPS and cache comparisons.
 
 The [sample results and session findings](../../../scripts/acceptance/results/frontier-sample.md) include the exploratory attempts and the shared-protocol rerun.
+
+### Strict local Kuku–Pi comparison
+
+Use one Pi reference run per selected task. Start with a task that distinguishes the harnesses, and use a second task with a different workload to check whether a proposed improvement generalizes. For rapid feedback, start both harnesses for both tasks concurrently when the host and provider have capacity. Space launches a few seconds apart if the startup load is high. Give all four trials unique run IDs and use the same spend ledger. Add `--cpus 2` to both runs for a task when gathering feedback on CPU-heavy work such as the SQLite build. The report requires matching CPU quotas. Identify concurrent runs and their quotas in the results. For wall-time and CPU comparisons, run each attempt on the same idle host. For repeats, alternate which harness goes first and retain every attempt, including failures. Use the headless commands below for comparison and record TUI observation runs separately.
+
+Use Linux Docker with cgroup v2 and `memory.peak`, and a Linux Node.js executable compatible with Pi (22.19 or newer for Pi 1.5.2). Each run starts a fresh container from the original pinned task. Both harnesses use the original prompt and verifier, direct DeepSeek Chat Completions, `deepseek-flash` at `max`, and identical request, time and spend ceilings. The strict defaults are one CPU, 2 GiB of memory and no swap. Resource acceptance requires matching kernel limits, a harness RSS observation and zero cgroup OOM events during the agent phase.
+
+Install the reference in an ignored directory and build the Kuku runner in release mode. Keep the npm lockfile to reproduce that dependency tree with `npm ci`. Put `KUKU_TEST_DEEPSEEK_API_KEY=...` in the private file referenced by `keys`, and initialize the ledger with your authorized total before a paid run.
+
+```sh
+pi_ref="$PWD/benchmarks/tools/pi-1.5.2"
+npm install --prefix "$pi_ref" --registry=https://registry.npmjs.org --save-exact \
+  --ignore-scripts --no-audit --no-fund @earendil-works/pi-coding-agent@1.5.2
+cargo build --release --locked -p kuku --example session_task
+
+ledger="$PWD/benchmarks/acceptance/paired-budget.json"
+keys="$HOME/.config/kuku/frontier.env"
+case_id=large-scale-text-editing
+python3 scripts/acceptance/run.py budget init --ledger "$ledger" \
+  --authorization local-paired-frontier --limit-usd 1.50
+
+paired_run() {
+  run_id="$1"
+  shift
+  python3 scripts/acceptance/run.py --run-id "$run_id" benchmark \
+    --suite frontier --case "$case_id" --mode live --provider deepseek --require-resource-evidence \
+    --max-output-tokens 131072 --case-cap-usd 0.75 --ledger "$ledger" --secrets "$keys" "$@"
+}
+paired_run vim-kuku --sdk-binary target/release/examples/session_task || test "$?" -eq 1
+paired_run vim-pi --pi-prefix "$pi_ref" || test "$?" -eq 1
+
+python3 scripts/acceptance/benchmark_compare.py \
+  --kuku benchmarks/acceptance/vim-kuku --pi benchmarks/acceptance/vim-pi \
+  > benchmarks/acceptance/vim-comparison.json
+```
+
+The exporter checks the task file digest, Docker image ID, model route and limits before pairing the attempts. Compare verifier reward and tests, agent and verifier wall time, model requests, token counts and estimated USD, then resource acceptance, harness RSS, container peak memory, CPU seconds and OOM events. Container peak is the kernel high-water mark from startup to the pre-verifier snapshot and includes memory charged to the cgroup for the harness, tool subprocesses and measurement overhead. Harness RSS covers the primary process's resident pages, including shared mappings. CPU seconds are the delta between snapshots around agent execution. Share the comparison JSON together with the rounds, host and build profile used for the test. Include the Pi lockfile if readers need to reproduce the exact dependency tree. Keep credentials, raw prompts, tool output and Session files private.
 
 ## Resource measurements
 

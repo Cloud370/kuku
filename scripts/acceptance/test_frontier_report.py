@@ -7,9 +7,11 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from benchmark_compare import compare
+from benchmark_resources import CASE_RESOURCE_LIMITS
 from frontier_report import (CASES, DATASET, DELAYED_RECEIPTS, MODEL_ID, PRIVATE_RECEIPTS,
-                             SDK_REQUEST_BYTES_ERROR, EvidenceError, build_report, main, official_report, resource_summary,
-                             session_summary)
+                             SDK_REQUEST_BYTES_ERROR, TASK_COMMIT, EvidenceError, build_report, main, official_report,
+                             resource_summary, session_summary)
 
 
 SECRET = 'do-not-publish-local-identity'
@@ -40,6 +42,37 @@ def official_feed():
 def write_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value), encoding='utf-8')
+
+
+class PairedReportTests(unittest.TestCase):
+    def test_exports_matched_evidence_even_for_verifier_failure(self):
+        case = 'regex-log'
+        benchmark = {'case': {'id': case}, 'suite': 'frontier', 'source': {'revision': TASK_COMMIT},
+                     'image_id': 'sha256:' + SDK_SHA, 'task_files_sha256': {'instruction.md': SDK_SHA}}
+        meter = {'case': case, 'service': 'deepseek', 'wire': 'openai-chat', 'provider': 'api.deepseek.com',
+                 'model_requested': 'deepseek-flash', 'effort': 'max', 'case_cap_usd': '0.75',
+                 'limits': {'max_request_bytes': 4194304, 'max_output_tokens': 131072, 'agent_timeout_sec': 900,
+                            'provider_context_tokens': 1048576, 'max_requests': None}}
+        with tempfile.TemporaryDirectory() as temporary:
+            kuku, pi = (Path(temporary) / name for name in ('kuku', 'pi'))
+            for directory in (kuku, pi):
+                write_json(directory / 'result.json', {'group': 'benchmark', 'benchmark': benchmark,
+                                                        'attempts': [{'harness': directory.name, 'mode': 'live',
+                                                                      'resource_requirements': CASE_RESOURCE_LIMITS,
+                                                                      'reward': 0, 'session_data': SECRET}]})
+                write_json(directory / 'meter.json', meter)
+            report = compare(kuku, pi)
+            self.assertEqual([result['reward'] for result in report['attempts']], [0, 0])
+            self.assertNotIn(SECRET, json.dumps(report))
+            write_json(pi / 'meter.json', {**meter, 'case_cap_usd': '1.00'})
+            with self.assertRaisesRegex(EvidenceError, 'case_cap_usd'):
+                compare(kuku, pi)
+            write_json(pi / 'meter.json', meter)
+            pi_result = json.loads((pi / 'result.json').read_text())
+            pi_result['attempts'][0]['resource_requirements']['cpus'] = 2
+            write_json(pi / 'result.json', pi_result)
+            with self.assertRaisesRegex(EvidenceError, 'container_limits'):
+                compare(kuku, pi)
 
 
 def local_evidence(directory, passed, *, ledger=False):
@@ -141,7 +174,7 @@ class FrontierReportTests(unittest.TestCase):
                 event('tool.result', tool_call_id='a', status='ok',
                       structured={'kind': 'workspace_script_result', 'actions': []})
                 self.assertEqual((1, 0), counts())
-                event('tool.call', tool='workspace_script', tool_call_id='b')
+                event('tool.call', tool='run_js', tool_call_id='b')
                 event('tool.result', tool_call_id='b', status='error',
                       structured={'kind': 'workspace_script_result',
                                   'actions': [{'tool': 'run_command'}, {'tool': 'read_output'}]})

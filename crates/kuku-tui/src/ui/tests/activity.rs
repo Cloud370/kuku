@@ -16,6 +16,27 @@ use crate::statusline::StatusLine;
 use crate::ui::{render_at, ActivityClock};
 
 #[test]
+fn composer_counts_running_jobs_when_the_agent_is_idle() {
+    let mut app = app();
+    app.select(app.active.clone(), true, "Jobs".into());
+    let selection = app.selection();
+    let mut state = snapshot(&app, "idle", json!(null), json!(null));
+    state.agent.running_jobs = 2;
+    app.update(Update::Loaded(
+        selection.clone(),
+        state,
+        HistoryPage {
+            entries: Vec::new(),
+            rewind_groups: Vec::new(),
+            next_before: None,
+        },
+    ));
+    app.update(Update::WatchConnected(selection));
+    let (rendered, _) = activity_screen(&mut app, 92, 24, None);
+    assert!(rendered.contains("2 jobs · /jobs"));
+}
+
+#[test]
 fn composer_animates_only_observed_work_and_keeps_feedback_in_place() {
     let mut app = app();
     app.select(app.active.clone(), true, "Motion".into());

@@ -77,6 +77,7 @@ pub struct GateDecision {
     pub scope: GateScope,
     pub source: GateSource,
     pub rule: String,
+    pub(crate) denial_reason: Option<&'static str>,
 }
 
 /// Extract session-scoped permission grants from previously recorded permission facts.
@@ -114,12 +115,13 @@ pub fn decide_tool_call(
     policy: &crate::permission::PermissionPolicy,
     session_grants: &[SessionGrant],
 ) -> GateDecision {
-    if let Some(rule) = hard_guard_rule(tool, risk, candidate) {
+    if let Some(reason) = hard_guard_reason(tool, risk, candidate) {
         return GateDecision {
             kind: GateDecisionKind::Deny,
             scope: GateScope::Once,
             source: GateSource::HardGuard,
-            rule,
+            rule: candidate.to_string(),
+            denial_reason: Some(reason),
         };
     }
 
@@ -129,6 +131,7 @@ pub fn decide_tool_call(
             scope: GateScope::Once,
             source: GateSource::ProjectPolicy,
             rule: candidate.to_string(),
+            denial_reason: Some("workspace policy denied this action"),
         };
     }
 
@@ -141,6 +144,7 @@ pub fn decide_tool_call(
             scope: GateScope::Session,
             source: GateSource::SessionGrant,
             rule: candidate.to_string(),
+            denial_reason: None,
         };
     }
 
@@ -150,6 +154,7 @@ pub fn decide_tool_call(
             scope: GateScope::Project,
             source: GateSource::ProjectPolicy,
             rule: candidate.to_string(),
+            denial_reason: None,
         };
     }
 
@@ -159,12 +164,14 @@ pub fn decide_tool_call(
             scope: GateScope::Once,
             source: GateSource::DefaultAsk,
             rule: candidate.to_string(),
+            denial_reason: None,
         },
         _ => GateDecision {
             kind: GateDecisionKind::Allow,
             scope: GateScope::Once,
             source: GateSource::TrustPosture,
             rule: tool.to_string(),
+            denial_reason: None,
         },
     }
 }
@@ -182,12 +189,12 @@ fn matcher_from_rule(rule: &str) -> String {
     rule[open + 1..close].trim().to_string()
 }
 
-fn hard_guard_rule(tool: &str, risk: &str, candidate: &str) -> Option<String> {
+fn hard_guard_reason(tool: &str, risk: &str, candidate: &str) -> Option<&'static str> {
     if (risk == "read" || risk == "edit") && is_hard_guarded_path(candidate) {
-        return Some(candidate.to_string());
+        return Some("the target is protected by a filesystem safety rule");
     }
-    if tool == "run_command" && is_hard_guarded_command(candidate) {
-        return Some(candidate.to_string());
+    if tool == "run_command" {
+        return guarded_command_candidate_reason(candidate);
     }
     None
 }
@@ -203,7 +210,7 @@ fn is_hard_guarded_path(candidate: &str) -> bool {
         )
 }
 
-fn is_hard_guarded_command(candidate: &str) -> bool {
+fn guarded_command_candidate_reason(candidate: &str) -> Option<&'static str> {
     #[derive(serde::Deserialize)]
     struct Candidate {
         invocation: CommandInvocation,
@@ -211,10 +218,10 @@ fn is_hard_guarded_command(candidate: &str) -> bool {
 
     if candidate.starts_with('{') {
         if let Ok(candidate) = serde_json::from_str::<Candidate>(candidate) {
-            return blocked_command_reason(&candidate.invocation).is_some();
+            return blocked_command_reason(&candidate.invocation);
         }
     }
-    shell_guard_reason(candidate).is_some()
+    shell_guard_reason(candidate)
 }
 
 pub(crate) fn blocked_command_reason(invocation: &CommandInvocation) -> Option<&'static str> {
@@ -358,12 +365,14 @@ mod tests {
             serde_json::json!({"program":"printf","args":["text & rm -rf literal"],"cwd":"."});
         let shell =
             serde_json::json!({"shell":"sh","command":"printf text & rm -rf literal","cwd":"."});
-        assert!(!is_hard_guarded_command(&command_permission_candidate(
-            &native
-        )));
-        assert!(is_hard_guarded_command(&command_permission_candidate(
-            &shell
-        )));
+        assert_eq!(
+            None,
+            guarded_command_candidate_reason(&command_permission_candidate(&native))
+        );
+        assert_eq!(
+            Some("recursive force delete is destructive"),
+            guarded_command_candidate_reason(&command_permission_candidate(&shell))
+        );
         let candidate = |args| command_permission_candidate(&args);
         let granted = candidate(serde_json::json!({"program":"name","args":["one two"],"cwd":"."}));
         let grants = [SessionGrant {

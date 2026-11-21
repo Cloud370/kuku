@@ -298,6 +298,7 @@ mod tests {
                 text: "current host input".to_string(),
                 from: None,
                 via_tool_call_id: None,
+                job_delivery: false,
             },
         }];
 
@@ -326,6 +327,7 @@ mod tests {
                 text: "delegated input".to_string(),
                 from: Some("main".to_string()),
                 via_tool_call_id: Some("toolu_agent_review".to_string()),
+                job_delivery: false,
             },
         }];
 

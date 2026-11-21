@@ -55,13 +55,13 @@
 
 ## 工作区执行
 
-模型通过 Session 选定的工具调用 [`run_command` 或 `workspace_script`](tools.md#运行本机程序)。嵌入宿主通过 `Session::events` 或 `Session::observe` 读取 `kuku::event::EventPayload::ToolResult` 的 `structured` 字段，可以用 `kuku::execution::CommandExecutionFacts::from_structured` 解码命令结果。`invocation` 保留程序名及参数边界，或解释器及命令文本。`started`、`termination`、`exit_code` 和 `signal` 描述宿主观察到的进程结果。`capture_complete`、`cleanup_incomplete` 和 `output_ref` 描述保留证据与清理情况。可信宿主可将 `output_ref.id` 交给 `Session::read_output` 分页读取，再用 `OutputSegment::as_bytes()` 获取原始字节。`reported_tests` 包含从程序输出获得的统计。任意外部程序造成的文件变更可能仍然未知。
+模型通过 Session 选定的工具调用 [`run_command` 或 `run_js`](tools.md#运行本机程序)。嵌入宿主通过 `Session::events` 或 `Session::observe` 读取 `kuku::event::EventPayload::ToolResult` 的 `structured` 字段，可以用 `kuku::execution::CommandExecutionFacts::from_structured` 解码命令结果。`invocation` 保留程序名及参数边界，或解释器及命令文本。`started`、`termination`、`exit_code` 和 `signal` 描述宿主观察到的进程结果。`capture_complete`、`cleanup_incomplete` 和 `output_ref` 描述保留证据与清理情况。可信宿主可将 `output_ref.id` 交给 `Session::read_output` 分页读取，再用 `OutputSegment::as_bytes()` 获取原始字节。`reported_tests` 包含从程序输出获得的统计。任意外部程序造成的文件变更可能仍然未知。
 
 工具返回 [Session Job](tools.md#session-job) 时，用 `Session::jobs(agent)` 列出最近及正在运行的 Job，或用 `Session::job(agent, job_id)` 查询单个 Job。调用 `Session::wait_job(agent, job_id).await` 等待最终结果，或调用 `Session::cancel_job(agent, job_id).await` 请求取消并等待清理。Job 状态包括 `running`、`completed`、`failed`、`cancelled` 和 `interrupted`。终态的 `JobSnapshot.result` 包含该动作的结构化结果。命令捕获完成后，可将其 `output_id` 传给同一个输出读取器，`output_ref` 提供所捕获的字节范围。
 
-`RuntimeLimits.job_foreground_wait_ms` 控制顶层命令和脚本的前台观察窗口。
+`RuntimeLimits.job_foreground_wait_ms` 控制顶层命令和脚本的前台观察窗口。`RuntimeLimits.max_command_seconds` 可为每条命令设置独立的进程截止时间，包括 `run_js` 内启动的命令和作为 Job 运行的命令。默认值为 `None`。
 
-`workspace_script` 的结果类型为 `kind: "workspace_script_result"`，可以用 `kuku::WorkspaceScriptFacts::from_structured` 解码。结果包含脚本返回的 `value` 及已观察到的宿主 `actions`。每个动作记录 ID、工具、状态、摘要、截断情况及有界结果。动作状态 `unknown` 表示宿主未能确认最终结果。即使脚本失败，也可以结合整次调用的 `timed_out`、`cleanup_incomplete` 和 `not_dispatched` 核对部分完成的工作。见[脚本方法](tools.md#工作区脚本)。
+`run_js` 的结果类型为 `kind: "workspace_script_result"`，可以用 `kuku::WorkspaceScriptFacts::from_structured` 解码。结果包含脚本返回的 `value` 及已观察到的宿主 `actions`。每个动作记录 ID、工具、状态、摘要、截断情况及有界结果。动作状态 `unknown` 表示宿主未能确认最终结果。即使脚本失败，也可以结合整次调用的 `timed_out`、`cleanup_incomplete` 和 `not_dispatched` 核对部分完成的工作。见[脚本方法](tools.md#工作区脚本)。
 
 用 `kuku::execution::WorkspaceActionReceipt::from_event` 解码 `workspace.action` 事件，读取日志中脚本内动作的派发和结果事实。在父 `tool_call_id` 内按 `action_id` 关联记录。派发记录缺少对应结果时，副作用仍然未知。
 
@@ -89,7 +89,7 @@ cargo run -p kuku --example session_task -- \
 
 ## 限额与用量
 
-默认限额允许 64 个 Agent、每 Agent 128 条待处理输入、65,536 输入字节、每次已准备请求 512 KiB、四个模型流、每 Agent 八个工具、每份保留输出 8 MiB、首次预览 16 KiB 和 128 条临时观察。预览至少 1 KiB，以保留完整引用和标志。
+默认限额允许 64 个 Agent、每 Agent 128 条待处理输入、65,536 输入字节、每次已准备请求 512 KiB、四个模型流、每 Agent 八个工具、每份保留输出 8 MiB、首次预览 8 KiB 和 128 条临时观察。预览至少 1 KiB，以保留完整引用和标志。
 
 `RuntimeLimits.max_requests_per_open` 可限制所有 Agent Turn 的总尝试数，重开后重置。`RuntimeLimits.max_output_tokens_per_request` 可为宿主上的每次响应设置生成上限。两者默认都是 `None`。Agent 显式设置的输出上限优先于 tier 配置，宿主上限适用于每个 Agent。Rust 的 `TierConfig.max_output_tokens`、`AgentSelection.max_output_tokens` 和 `ModelSelection.max_output_tokens` 类型均为 `Option<u32>`。协议允许时，省略有效值就由供应商选择默认行为。请求准备记录给出本次请求采用的值。`session_task --max-output-tokens N` 同时设置宿主和主 Agent 的上限。详见[模型配置](config.md#modelname)。
 

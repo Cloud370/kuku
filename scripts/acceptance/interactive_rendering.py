@@ -413,10 +413,10 @@ def named_output_cards(client):
         terminal.submit(prompt)
         call = client.provider.next(prompt)
         assert "status recorded" not in json.dumps(call.request)
-        shell = "cmd" if os.name == "nt" else "sh"
         command = f"echo {log}&&exit /b 7" if os.name == "nt" else f"printf '%s\\n' {log}; exit 7"
-        call.tool("run_command", "capture-log", shell=shell, command=command, cwd=".", timeout=5,
-                  brief="Capture replay output")
+        invocation = ({"program": "cmd.exe", "args": ["/D", "/S", "/C", command]} if os.name == "nt"
+                      else {"program": "sh", "args": ["-c", command]})
+        call.tool("run_command", "capture-log", title="Capture replay output", **invocation)
         after_command = client.provider.next("capture-log")
         session = client.session(workspace)
         query = urlencode({"workspace": workspace, "agent": "main"})
@@ -428,22 +428,24 @@ def named_output_cards(client):
         reference = result["output_ref"]
         page_range = f"0–{reference['bytes']} / {reference['bytes']} bytes"
         after_command.tool(
-            "workspace_script", "summarize-log",
-            code=f"""const chunk = await workspace.read_output({{id: {json.dumps(reference['id'])}}});
-await workspace.write_file({{path: "summary.txt", content: chunk.result.segments[0].text}});
-await workspace.run_command({{shell: {json.dumps(shell)}, command: {json.dumps(command)}, cwd: ".", timeout: 5}});
-await workspace.run_command({{program: "kuku-deliberately-missing-fixture"}});""",
+            "run_js", "summarize-log",
+            title="Summarize saved replay",
+            code=f"""const chunk = await tools.read_output({{id: {json.dumps(reference['id'])}}});
+await tools.write_file({{path: "summary.txt", content: chunk.result.segments[0].text}});
+await tools.run_command({json.dumps(invocation)});
+await tools.run_command({{program: "kuku-deliberately-missing-fixture"}});""",
         )
         client.provider.next("summarize-log").text("Replay inspected.")
         display = terminal.expect("Replay inspected.", also=(
-            "exit 7", "Workspace script · partial", "1 file change", "Wrote summary.txt", "program missing",
+            "Capture replay output", "exit 7", "Summarize saved replay · partial",
+            "1 file change", "Wrote summary.txt", "program missing",
         ))["screen"]
         assert (workspace / "summary.txt").read_text(encoding="utf-8") == log + "\n"
         operate_on_message(terminal, display, "Tool · run_command", None, "Full output")
         terminal.expect(log, state="S Name", also=(page_range,))
         terminal.press("\x1b")
         display = terminal.expect("Replay inspected.")["screen"]
-        operate_on_message(terminal, display, "Tool · workspace_script", None, "Full output")
+        operate_on_message(terminal, display, "Tool · run_js", None, "Full output")
         outputs = terminal.expect("Outputs for selected message")["screen"]
         terminal.click_text(outputs, "Script action 3 · Run command")
         terminal.expect(log, state="S Name", also=(page_range,))
@@ -525,21 +527,20 @@ def windows_diagnostic(client):
         terminal.submit(prompt)
         request = client.provider.next(prompt)
         schema = next(tool["input_schema"] for tool in request.request["tools"] if tool["name"] == "run_command")
-        assert "cmd" in schema["properties"]["shell"]["enum"], schema
-        request.tool("run_command", "missing-example", shell="cmd", command=command, cwd=".",
-                     timeout=5, brief="Check for missing example")
+        assert schema["required"] == ["program"], schema
+        assert set(schema["properties"]) == {"program", "args", "cwd", "background", "title"}, schema
+        request.tool("run_command", "missing-example", program="cmd.exe", args=["/D", "/S", "/C", command])
         result = client.provider.next("missing-example")
         assert diagnostic in json.dumps(result.request, ensure_ascii=False)
         result.text("Check complete.")
         screen = terminal.expect(diagnostic, also=("Check complete.", "exit 1"))["screen"]
         assert "␍" not in screen and "�" not in screen and "command exited" not in screen and "Saved output" not in screen
         rows = screen.splitlines()
-        header = next(i for i, line in enumerate(rows) if "╭─ Check for missing example" in line)
-        assert "exit 1" not in rows[header] and not rows[header + 1].strip(" │"), screen
-        assert command in rows[header + 2], screen
-        assert diagnostic in rows[header + 3] and not rows[header + 4].strip(" │"), screen
-        assert "exit 1" in rows[header + 5], screen
-        terminal.click_text(screen, "Check for missing example")
+        header = next(i for i, line in enumerate(rows) if "╭─ cmd.exe " in line)
+        assert command in rows[header] and "exit 1" not in rows[header] and not rows[header + 1].strip(" │"), screen
+        assert diagnostic in rows[header + 2] and not rows[header + 3].strip(" │"), screen
+        assert "exit 1" in rows[header + 4], screen
+        terminal.click_text(screen, "cmd.exe ")
         terminal.expect("Requested arguments", state=diagnostic)
         terminal.exit_cleanly()
 
@@ -562,8 +563,7 @@ def windows_command_encoding(client, shell):
     with client.terminal(workspace) as terminal:
         terminal.expect("Ready")
         terminal.submit("Check shell output")
-        client.provider.next().tool("run_command", "encoding", program=shell, args=args, cwd=".",
-                                    timeout=15, brief="Check shell output")
+        client.provider.next().tool("run_command", "encoding", program=shell, args=args)
         result = client.provider.next("encoding")
         content = json.dumps(result.request["messages"], ensure_ascii=False)
         assert all(line in content for line in (stdout, stderr, "utf8 中文")), content

@@ -215,13 +215,17 @@ async fn one_tool_batch_retains_success_denial_and_real_failure() {
     let first = fixture(
         &server,
         |request| tool_count(request) == 0,
-        response(json!({"tool_calls":[
-            tool("missing", "read_file", json!({"path":"missing.txt"})),
-            tool("denied", "run_command", json!({"shell":if cfg!(windows) {"cmd"} else {"sh"},"cwd":".","command":"echo denied > denied.txt","timeout":5,"brief":"must not dispatch"})),
-            tool("find", "find_files", json!({"path":".","pattern":"seed.txt"})),
-            tool("write", "run_command", json!({"shell":if cfg!(windows) {"cmd"} else {"sh"},"cwd":".","command":"echo allowed > allowed.txt","timeout":5,"brief":"independent allowed work"}))
-        ]}), "tool_calls"),
-    ).await;
+        response(
+            json!({"tool_calls":[
+                tool("missing", "read_file", json!({"path":"missing.txt"})),
+                tool("denied", "run_command", common::shell_args("echo denied > denied.txt")),
+                tool("find", "find_files", json!({"path":".","pattern":"seed.txt"})),
+                tool("write", "run_command", common::shell_args("echo allowed > allowed.txt"))
+            ]}),
+            "tool_calls",
+        ),
+    )
+    .await;
     let continuation = fixture(
         &server,
         complete_batch_results,
@@ -251,6 +255,69 @@ async fn one_tool_batch_retains_success_denial_and_real_failure() {
     assert!(!workspace.path().join("missing.txt").exists());
     session.close().await.unwrap();
     assert_batch_facts(&EventStore::replay(session.events_path()).unwrap());
+    first.assert_hits_async(1).await;
+    continuation.assert_hits_async(1).await;
+}
+
+#[tokio::test]
+async fn command_guard_reason_reaches_direct_calls_and_scripts_without_raw_arguments() {
+    let server = MockServer::start_async().await;
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let marker = workspace.path().join("authorization-marker.txt");
+    std::fs::write(&marker, "keep").unwrap();
+    let args = json!({"program":"rm", "args":["-rf","authorization-marker.txt"]});
+    let first = fixture(
+        &server,
+        |request| tool_count(request) == 0,
+        response(
+            json!({"tool_calls":[
+                tool("direct", "run_command", args.clone()),
+                tool("script", "run_js", json!({"code":format!("return await tools.run_command({args});")}))
+            ]}),
+            "tool_calls",
+        ),
+    )
+    .await;
+    let continuation = fixture(
+        &server,
+        |request| {
+            let body = request_body(request);
+            let results: Vec<_> = body["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|message| message["role"] == "tool")
+                .collect();
+            results.len() == 2
+                && results.iter().all(|message| {
+                    message["content"].as_str().is_some_and(|content| {
+                        content.contains("recursive force delete is destructive")
+                            && !content.contains("authorization-marker.txt")
+                    })
+                })
+        },
+        response(json!({"content":"guard explained"}), "stop"),
+    )
+    .await;
+    let session = Session::open(options(&server, workspace.path(), data.path()))
+        .await
+        .unwrap();
+    session
+        .create_agent("create", "main", AgentConfig::default())
+        .unwrap();
+    session
+        .send(Input::new("input", "main", "check the guard response"))
+        .unwrap();
+    assert_eq!(
+        Some("guard explained"),
+        idle(&session).await.last_output.as_deref()
+    );
+    assert_eq!("keep", std::fs::read_to_string(marker).unwrap());
+    session.close().await.unwrap();
+    let events = EventStore::replay(session.events_path()).unwrap();
+    assert!(events.iter().any(|event| matches!(&event.payload, EventPayload::PermissionDeny { tool_call_id, source, .. } if tool_call_id == "direct" && source == "hard_guard")));
+    assert!(events.iter().any(|event| matches!(&event.payload, EventPayload::Unknown(value) if value["kind"] == "workspace.action" && value["status"] == "blocked" && value["facts"]["source"] == "hard_guard")));
     first.assert_hits_async(1).await;
     continuation.assert_hits_async(1).await;
 }
@@ -505,7 +572,7 @@ async fn lagged_observer_is_bounded_and_reconnects_after_unobserved_execution() 
     let server = MockServer::start_async().await;
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
-    let first = fixture(&server, |request| tool_count(request) == 0, response(json!({"tool_calls":[tool("first", "run_command", json!({"shell":if cfg!(windows) {"cmd"} else {"sh"},"cwd":".","command":"echo first > first.txt","timeout":5,"brief":"first unobserved write"}))]}), "tool_calls")).await;
+    let first = fixture(&server, |request| tool_count(request) == 0, response(json!({"tool_calls":[tool("first", "run_command", common::shell_args("echo first > first.txt"))]}), "tool_calls")).await;
     let (stream, text) = streaming_response();
     let burst = fixture(
         &server,
@@ -513,7 +580,7 @@ async fn lagged_observer_is_bounded_and_reconnects_after_unobserved_execution() 
         stream,
     )
     .await;
-    let second = fixture(&server, |request| tool_count(request) == 1 && second_round(request), response(json!({"tool_calls":[tool("second", "run_command", json!({"shell":if cfg!(windows) {"cmd"} else {"sh"},"cwd":".","command":"echo second > second.txt","timeout":5,"brief":"write with all observers dropped"}))]}), "tool_calls")).await;
+    let second = fixture(&server, |request| tool_count(request) == 1 && second_round(request), response(json!({"tool_calls":[tool("second", "run_command", common::shell_args("echo second > second.txt"))]}), "tool_calls")).await;
     let last = fixture(
         &server,
         |request| tool_count(request) == 2,

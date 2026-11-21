@@ -2,7 +2,7 @@ mod deferred;
 
 pub(crate) use deferred::AwaitingAction;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -11,9 +11,9 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{oneshot, Notify};
 
 use crate::event::{EventPayload, EventStore};
-use crate::permission::{AuthorizationDecision, ToolAuthorization, ToolAuthorizer};
-use crate::tool::builtin::common::ExecutorObservation;
-use crate::tool::workspace_script::{
+use crate::permission::{authorize_action, ActionAuthorization, ToolAuthorization, ToolAuthorizer};
+use crate::tool::builtin::common::{changed_file_target, prepare_file_target, ExecutorObservation};
+use crate::tool::run_js::{
     self, ScriptCall, ScriptExecution, ScriptFuture, ScriptHost, ScriptOperation, WorkspaceActions,
 };
 use crate::tool::{ToolDefinition, ToolResultEnvelope};
@@ -39,7 +39,7 @@ pub(super) fn spawn(
                 Error::InvalidArgument("workspace execution requires an open Session".into())
             })?,
     };
-    let methods = workspace_script::method_definitions(|op| {
+    let methods = run_js::method_definitions(|op| {
         let definition = super::run::find_tool_definition(pending, op.name())?;
         Some(if op == ScriptOperation::ReadOutput {
             super::runtime_tools::output::definition_local()
@@ -60,6 +60,7 @@ pub(super) fn spawn(
             tool_call_id: queued.tool_call.id.clone(),
             workspace: pending.workspace.clone(),
             preview_bytes: pending.query.runtime_limits.max_preview_bytes,
+            max_command_seconds: pending.query.runtime_limits.max_command_seconds,
         },
         call_id: queued.tool_call.id.clone(),
         turn: pending.turn,
@@ -88,11 +89,11 @@ pub(super) fn spawn(
                 continuation.resume(&host, execution, stop).await
             }
             (None, Some(code)) => {
-                workspace_script::execute(code, host.clone(), limits, host_capacity, stop).await
+                run_js::execute(code, host.clone(), limits, host_capacity, stop).await
             }
             (None, None) => ToolResultEnvelope::error(
                 "missing script code",
-                "workspace_script requires a JavaScript function body in code",
+                "run_js requires a JavaScript function body in code",
             ),
         };
         let plan = host.deferred.lock().unwrap().take();
@@ -180,6 +181,7 @@ impl WorkspaceHost {
             ));
         }
         let name = call.op.name();
+        let permission_name = call.op.permission_name();
         let Some(definition) = self.methods.iter().find(|method| method.name == name) else {
             return Ok(ToolResultEnvelope::blocked(
                 "tool unavailable to this Agent",
@@ -193,7 +195,7 @@ impl WorkspaceHost {
             self.actions.session.events_path(),
             &self.actions.workspace,
             self.turn,
-            name,
+            permission_name,
             &call.args,
             &id,
             &mut context,
@@ -208,6 +210,14 @@ impl WorkspaceHost {
         let mut args = prepared.args;
         if call.op == ScriptOperation::ReadOutput {
             super::runtime_tools::output::prepare_local(
+                &self.actions.session,
+                &self.actions.agent,
+                self.turn,
+                &mut args,
+            )?;
+        }
+        if call.op == ScriptOperation::SearchOutput {
+            super::runtime_tools::output::prepare_search(
                 &self.actions.session,
                 &self.actions.agent,
                 self.turn,
@@ -237,20 +247,23 @@ impl WorkspaceHost {
             }
             self.actions.workspace.clone()
         };
-        let candidate = permission_candidate(&self.home, &self.actions.workspace, name, &args);
+        let candidate =
+            permission_candidate(&self.home, &self.actions.workspace, permission_name, &args);
+        let mut schema = super::runtime_tools::schema(definition);
+        schema.name = permission_name.into();
         let action = ToolAuthorization {
             session_id: self.actions.session.id().into(),
             agent: self.actions.agent.clone(),
             source: self.source.clone(),
             tool_call_id: id.clone(),
-            tool: super::runtime_tools::schema(definition),
+            tool: schema,
             args: args.clone(),
             workspace,
         };
         let policy = crate::permission::load_project_policy(&self.policy_path)?;
-        let decision = super::runtime_tools::authorize(
+        let decision = authorize_action(
             &policy,
-            definition,
+            &definition.risk,
             &candidate,
             self.authority.as_ref(),
             &action,
@@ -265,8 +278,8 @@ impl WorkspaceHost {
         }
         let mutating = !definition.read_only;
         match decision {
-            AuthorizationDecision::Allow => {}
-            AuthorizationDecision::Deny => {
+            ActionAuthorization::Allow => {}
+            ActionAuthorization::Deny { source, reason } => {
                 let target = args
                     .get("path")
                     .or(args.get("id"))
@@ -277,14 +290,14 @@ impl WorkspaceHost {
                     name,
                     target,
                     "blocked",
-                    json!({"reason":"host denied workspace action"}),
+                    json!({"source":source, "reason":reason}),
                 )?;
                 return Ok(ToolResultEnvelope::blocked(
-                    "host denied workspace action",
-                    format!("{name} was not dispatched"),
+                    reason,
+                    format!("{name} was not dispatched because {reason}."),
                 ));
             }
-            AuthorizationDecision::Defer
+            ActionAuthorization::Defer
                 if matches!(
                     call.op,
                     ScriptOperation::CreateOutput
@@ -305,7 +318,7 @@ impl WorkspaceHost {
                     reason,
                 ));
             }
-            AuthorizationDecision::Defer => {
+            ActionAuthorization::Defer => {
                 let mut waiting = self.deferred.lock().unwrap();
                 if waiting.is_some() {
                     return Ok(ToolResultEnvelope::cancelled(
@@ -394,6 +407,22 @@ impl WorkspaceHost {
                 .await
                 .map_err(|err| Error::InvalidEventStream(err.to_string()))?
             }
+            ScriptOperation::SearchOutput => {
+                let session = self.actions.session.clone();
+                let agent = self.actions.agent.clone();
+                let limit = self.host_result_limit;
+                tokio::task::spawn_blocking(move || {
+                    super::runtime_tools::output::execute_search(
+                        &session,
+                        &agent,
+                        &args,
+                        limit,
+                        || execution.is_cancelled(),
+                    )
+                })
+                .await
+                .map_err(|err| Error::InvalidEventStream(err.to_string()))?
+            }
             ScriptOperation::SaveValue => {
                 Box::pin(super::runtime_tools::values::save(
                     &self.actions.session,
@@ -472,38 +501,6 @@ impl WorkspaceHost {
     }
 }
 
-pub(super) fn prepare_file_target(
-    name: &str,
-    args: &mut Value,
-    workspace: &Path,
-) -> std::result::Result<(), ToolResultEnvelope> {
-    if let Some(path) = crate::tool::builtin::prepare_workspace_path(name, args, workspace)? {
-        let relative = path.strip_prefix(workspace).unwrap_or(&path);
-        let target = relative.to_str().ok_or_else(|| {
-            ToolResultEnvelope::error("invalid file path", "target must be valid Unicode")
-        })?;
-        args["path"] = if target.is_empty() { "." } else { target }.into();
-    }
-    Ok(())
-}
-
-pub(super) fn changed_file_target(
-    name: &str,
-    args: &Value,
-    workspace: &Path,
-) -> Option<ToolResultEnvelope> {
-    let mut current = args.clone();
-    if let Err(result) = prepare_file_target(name, &mut current, workspace) {
-        return Some(result);
-    }
-    (current != *args).then(|| {
-        ToolResultEnvelope::blocked(
-            "workspace target changed after preparation",
-            "read the new target before requesting another action",
-        )
-    })
-}
-
 pub(super) fn declined(pending: &PendingRun, id: &str) -> Result<Option<ToolResultEnvelope>> {
     Ok(deferred::load(pending, id)?.map(deferred::Continuation::decline))
 }
@@ -515,7 +512,7 @@ pub(crate) fn cancelled_deferred_script(continuation: Value) -> Result<ToolResul
 pub(super) fn cancelled_permission(
     waiting: &super::types::PendingPermission,
 ) -> Result<ToolResultEnvelope> {
-    if waiting.request.source == "workspace_script" {
+    if waiting.request.source == "run_js" {
         if let Some(action) = deferred::load(&waiting.pending, &waiting.request.tool_call_id)? {
             return Ok(action.cancel());
         }

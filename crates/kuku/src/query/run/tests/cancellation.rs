@@ -243,6 +243,7 @@ async fn resume_after_cancel_includes_turn_end_in_history() {
                 text: "hello".to_string(),
                 from: None,
                 via_tool_call_id: None,
+                job_delivery: false,
             })
             .unwrap();
         store

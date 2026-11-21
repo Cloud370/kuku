@@ -147,15 +147,17 @@ def text_input(items, router):
         if not isinstance(item, dict):
             return False
         content = item.get("content")
-        if router:
-            if item.get("type") not in (None, "message", "reasoning", "function_call", "function_call_output"):
+        if router and item.get("type") not in (None, "message", "reasoning", "function_call", "function_call_output"):
+            return False
+        if isinstance(content, list):
+            if router:
+                allowed = ("input_text", "output_text", "reasoning_text", "summary_text", "refusal")
+                if not all(isinstance(part, dict) and part.get("type") in allowed for part in content):
+                    return False
+            elif not all(isinstance(part, dict) and set(part) == {"type", "text"}
+                         and part["type"] == "text" and isinstance(part["text"], str) for part in content):
                 return False
-            if isinstance(content, list):
-                if all(isinstance(part, dict) and part.get("type") in (
-                    "input_text", "output_text", "reasoning_text", "summary_text", "refusal",
-                ) for part in content):
-                    continue
-                return False
+            continue
         if content is not None and not isinstance(content, str):
             return False
     return True
@@ -699,6 +701,11 @@ def ledger_edit(operation, *arguments):
 
 
 def run_live(args, case, source, image, directory, secrets):
+    pi_prefix = getattr(args, "pi_prefix", None)
+    node_binary = getattr(args, "node_binary", None)
+    if pi_prefix is not None:
+        from benchmark_pi import pi_config, pi_install
+        pi_install(pi_prefix, node_binary)
     provider = getattr(args, "provider", "openrouter")
     upstream = getattr(args, "upstream", None)
     key = secrets.get(f"KUKU_TEST_{provider.upper()}_API_KEY")
@@ -713,8 +720,8 @@ def run_live(args, case, source, image, directory, secrets):
     limits = RunLimits(args.max_requests, WIRE_BYTES, output_tokens, byte_ceiling=WIRE_BYTES,
                        output_ceiling=route.completion_limit)
     timeout = args.agent_timeout_sec if args.agent_timeout_sec is not None else case["timeout_sec"]
-    if timeout <= 0 or not args.sdk_binary.is_file():
-        raise ValueError("Frontier live requires a positive SDK timeout and a built --sdk-binary")
+    if timeout <= 0 or (pi_prefix is None and not args.sdk_binary.is_file()):
+        raise ValueError("Frontier live requires a positive timeout and an installed runner")
     cap = Decimal(str(money(args.case_cap_usd)))
     token = random_secrets.token_urlsafe(32)
     meter = CaseMeter(route, limits, key, token, cap, case["id"], timeout, directory / "meter.json")
@@ -729,24 +736,32 @@ def run_live(args, case, source, image, directory, secrets):
     with tempfile.TemporaryDirectory(dir=directory, prefix=".frontier-") as scratch:
         gateway = bridge_gateway()
         with BridgeServer((gateway, 0), meter.handler()) as server:
-            config = Path(scratch) / "config.toml"
-            config.write_text(route.config(f"http://{gateway}:{server.server_port}", limits,
-                                          context_window=route.context), encoding="utf-8")
+            endpoint = f"http://{gateway}:{server.server_port}"
+            config = Path(scratch) / ("models.json" if pi_prefix else "config.toml")
+            if pi_prefix:
+                write_json(config, pi_config(route, endpoint, limits, TOKEN_VARIABLE))
+            else:
+                config.write_text(route.config(endpoint, limits, context_window=route.context), encoding="utf-8")
             sdk_args = ["--reasoning-effort", route.effort, "--timeout", str(timeout),
                         "--max-output-tokens", str(limits.output_tokens), "--max-agents", "16",
                         "--max-context-tokens", str(route.context), "--max-request-bytes", str(WIRE_BYTES)]
             if limits.requests is not None:
                 sdk_args.extend(["--max-requests", str(limits.requests)])
             caller = SimpleNamespace(sdk_binary=args.sdk_binary, config=config, connection=route.connection,
-                                     require_streaming=args.require_streaming, sdk_args=sdk_args, suite="frontier")
+                                     require_streaming=args.require_streaming, sdk_args=sdk_args, suite="frontier",
+                                     cpus=getattr(args, "cpus", 1),
+                                     pi_prefix=pi_prefix, node_binary=node_binary, pi_model=route.model, pi_effort=route.effort,
+                                     require_resource_evidence=getattr(args, "require_resource_evidence", False))
             ledger_edit(budget.reserve, run_id, float(cap),
                         f"{case['id']} single-case cap on {route.model} via {route.host}/{route.upstream}")
             thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
             thread.start()
             try:
                 meter.arm()
+                hard_timeout = timeout if pi_prefix or caller.require_resource_evidence else timeout + 45
                 result = benchmark_attempt(caller, case, source, image, directory, "live", {TOKEN_VARIABLE: token},
-                                           sdk_timeout_sec=timeout + 45, on_sdk_finished=meter.stop_admissions)
+                                           sdk_timeout_sec=hard_timeout,
+                                           on_sdk_finished=meter.stop_admissions)
             finally:
                 meter.stop_admissions()
                 meter.drained.wait(timeout=1.5)

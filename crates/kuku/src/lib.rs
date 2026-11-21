@@ -26,7 +26,7 @@ pub mod util;
 pub mod wire;
 
 pub use session::runtime::{WorkspaceExecutionHost, WorkspaceExecutionMetrics};
-pub use tool::workspace_script::{
+pub use tool::run_js::{
     WorkspaceScriptActionFacts, WorkspaceScriptActionStatus, WorkspaceScriptFacts,
     WorkspaceScriptLimits, WorkspaceScriptOperation, WorkspaceScriptResultKind,
 };

@@ -93,9 +93,11 @@ fn journal_metadata(events: &[StoredEvent]) -> (String, String, u64) {
     let mut turns = 0;
     for event in events {
         match &event.payload {
-            EventPayload::MessageUser { text, .. } if title.is_none() => {
-                title = Some(text.as_str())
-            }
+            EventPayload::MessageUser {
+                text,
+                job_delivery: false,
+                ..
+            } if title.is_none() => title = Some(text.as_str()),
             EventPayload::SessionCreated { created_at, .. } => created = Some(created_at.as_str()),
             EventPayload::Unknown(value)
                 if created.is_none()

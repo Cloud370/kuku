@@ -13,6 +13,8 @@ use crate::Result;
 use super::runtime_tools;
 use super::types::{PendingRun, QueuedToolCall, Run, RunState, SlotEvent, UiEvent};
 
+const BACKGROUND_OBSERVATION: Duration = Duration::from_secs(1);
+
 pub(super) struct ForegroundJob {
     tool: String,
     background: bool,
@@ -27,11 +29,16 @@ impl ForegroundJob {
         queued: &QueuedToolCall,
     ) -> (Box<Self>, oneshot::Sender<SlotEvent>) {
         let (sender, receiver) = oneshot::channel();
+        let background = queued.tool_call.args["background"] == true;
+        let observation = if background {
+            BACKGROUND_OBSERVATION
+        } else {
+            Duration::from_millis(pending.query.runtime_limits.job_foreground_wait_ms)
+        };
         let job = Self {
             tool: queued.tool_call.name.clone(),
-            background: queued.tool_call.args["background"] == true,
-            deadline: Instant::now()
-                + Duration::from_millis(pending.query.runtime_limits.job_foreground_wait_ms),
+            background,
+            deadline: Instant::now() + observation,
             completion: Some(receiver),
             detached: Arc::new(AtomicBool::new(false)),
         };
@@ -133,19 +140,6 @@ impl Run {
             return runtime_tools::should_yield(pending).map(|yield_turn| !yield_turn);
         }
         Ok(true)
-    }
-
-    pub(super) fn promote_explicit_job(&mut self) -> Result<Option<UiEvent>> {
-        if !matches!(self.state, RunState::Pending(_)) {
-            return Ok(None);
-        }
-        let id = self.slots.values().find_map(|slot| {
-            slot.job
-                .as_ref()
-                .filter(|job| job.background)
-                .map(|_| slot.tool_call_id.clone())
-        });
-        id.map(|id| self.promote_job(&id)).transpose()
     }
 
     async fn wait_for_slot(&mut self, wait_for_input: bool) -> Result<SlotProgress> {

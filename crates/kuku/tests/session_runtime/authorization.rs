@@ -16,10 +16,9 @@ impl ToolAuthorizer for Deferred {
     fn authorize(&self, action: &ToolAuthorization) -> kuku::Result<AuthorizationDecision> {
         assert_eq!("main", action.agent);
         assert_eq!("run_command", action.tool.name);
-        assert_eq!("echo authorized", action.args["command"]);
-        let shell = if cfg!(windows) { "powershell" } else { "sh" };
-        assert_eq!(shell, action.args["shell"]);
-        assert!(action.args.get("args").is_none());
+        let expected = crate::common::shell_args("echo authorized");
+        assert_eq!(expected["program"], action.args["program"]);
+        assert_eq!(expected["args"], action.args["args"]);
         assert_eq!(
             Some(std::ffi::OsStr::new("authorized-dir")),
             action.workspace.file_name()
@@ -35,7 +34,15 @@ async fn exact_authorization_survives_close_and_rejects_stale_replies() {
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     std::fs::create_dir(workspace.path().join("authorized-dir")).unwrap();
-    let first = fixture(&server, |request| tool_count(request) == 0, json!({"tool_calls":[tool("command", "run_command", json!({"args":[],"cwd":"authorized-dir","command":"echo authorized","timeout":2,"brief":"check permission"}))]}), "tool_calls").await;
+    let mut args = crate::common::shell_args("echo authorized");
+    args["cwd"] = json!("authorized-dir");
+    let first = fixture(
+        &server,
+        |request| tool_count(request) == 0,
+        json!({"tool_calls":[tool("command", "run_command", args)]}),
+        "tool_calls",
+    )
+    .await;
     let last = fixture(
         &server,
         |request| tool_count(request) == 1,
@@ -120,7 +127,7 @@ async fn question_reply_waits_in_inbox_until_prior_authorization_is_settled() {
     let server = MockServer::start_async().await;
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
-    let first = fixture(&server, |request| tool_count(request) == 0, json!({"tool_calls":[tool("question", "ask_user", json!({"question":"Which color?"})),tool("command", "run_command", json!({"shell":if cfg!(windows) {"cmd"} else {"sh"},"cwd":".","command":"echo authorized","timeout":2,"brief":"run after authorization"}))]}), "tool_calls").await;
+    let first = fixture(&server, |request| tool_count(request) == 0, json!({"tool_calls":[tool("question", "ask_user", json!({"question":"Which color?"})),tool("command", "run_command", crate::common::shell_args("echo authorized"))]}), "tool_calls").await;
     let last = fixture(
         &server,
         |request| {
@@ -200,7 +207,7 @@ async fn independent_same_protocol_agents_restore_permissions_in_reverse_order()
     let second_server = MockServer::start_async().await;
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
-    let first_request = fixture(&first_server, |request| tool_count(request) == 0, json!({"tool_calls":[tool("command", "run_command", json!({"shell":if cfg!(windows) {"cmd"} else {"sh"},"cwd":".","command":"echo first","timeout":2,"brief":"first independent action"}))]}), "tool_calls").await;
+    let first_request = fixture(&first_server, |request| tool_count(request) == 0, json!({"tool_calls":[tool("command", "run_command", crate::common::shell_args("echo first"))]}), "tool_calls").await;
     let first_final = fixture(
         &first_server,
         |request| tool_count(request) == 1,
@@ -208,7 +215,7 @@ async fn independent_same_protocol_agents_restore_permissions_in_reverse_order()
         "stop",
     )
     .await;
-    let second_request = fixture(&second_server, |request| tool_count(request) == 0 && !String::from_utf8_lossy(request.body.as_deref().unwrap_or_default()).contains("MAIN_SECRET"), json!({"tool_calls":[tool("command", "run_command", json!({"shell":if cfg!(windows) {"cmd"} else {"sh"},"cwd":".","command":"echo second","timeout":2,"brief":"second independent action"}))]}), "tool_calls").await;
+    let second_request = fixture(&second_server, |request| tool_count(request) == 0 && !String::from_utf8_lossy(request.body.as_deref().unwrap_or_default()).contains("MAIN_SECRET"), json!({"tool_calls":[tool("command", "run_command", crate::common::shell_args("echo second"))]}), "tool_calls").await;
     let second_final = fixture(
         &second_server,
         |request| {
@@ -283,7 +290,7 @@ async fn cancelling_a_durable_wait_expires_both_question_and_authorization() {
     let server = MockServer::start_async().await;
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
-    let model = fixture(&server, |_| true, json!({"tool_calls":[tool("question", "ask_user", json!({"question":"Continue?"})),tool("command", "run_command", json!({"shell":if cfg!(windows) {"cmd"} else {"sh"},"cwd":".","command":"echo never-dispatched","timeout":2,"brief":"deferred action"}))]}), "tool_calls").await;
+    let model = fixture(&server, |_| true, json!({"tool_calls":[tool("question", "ask_user", json!({"question":"Continue?"})),tool("command", "run_command", crate::common::shell_args("echo never-dispatched"))]}), "tool_calls").await;
     let mut reopen = options(&server, workspace.path(), data.path());
     reopen.authorizer = Arc::new(DeferCommands);
     let session = Session::open(reopen.clone()).await.unwrap();

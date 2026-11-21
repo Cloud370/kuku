@@ -180,6 +180,15 @@ class FrontierTests(unittest.TestCase):
             forward.assert_not_called()
         self.assertEqual(meter.attempts, [])
 
+    def test_direct_accepts_text_only_content_parts(self):
+        meter = self.meter()
+        text = {"type": "text", "text": "fixture input text"}
+        valid = {**DIRECT_PAYLOAD, "messages": [{"role": "user", "content": [text]}]}
+        self.assertEqual(meter.checked_output(valid), (131072, []))
+        for invalid in ({**text, "image_url": "https://example.invalid"}, {**text, "text": ["not text"]}):
+            payload = {**valid, "messages": [{"role": "user", "content": [invalid]}]}
+            self.assertIsNone(meter.checked_output(payload))
+
     def test_cancelled_inflight_request_keeps_full_ceiling(self):
         meter = self.meter()
         started = threading.Event()

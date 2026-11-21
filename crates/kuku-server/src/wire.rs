@@ -220,7 +220,11 @@ pub(crate) fn history_entry(event: &StoredEvent, turns: &TurnLookup) -> Option<V
     let mut summary = None;
     let mut entry = match &event.payload {
         EventPayload::MessageUser {
-            turn, text, from, ..
+            turn,
+            text,
+            from,
+            job_delivery: false,
+            ..
         } => {
             json!({"type":"user","turn":turn,"text":text,"from":from})
         }
@@ -659,10 +663,34 @@ fn event_value(event: &UiEvent) -> Option<Value> {
 
 #[cfg(test)]
 mod retry_tests {
-    use kuku::event::EventPayload;
+    use std::sync::Arc;
+
+    use kuku::event::{EventPayload, StoredEvent};
     use serde_json::json;
 
-    use super::retry_metadata;
+    use super::{history_entry, retry_metadata, TurnLookup};
+
+    #[test]
+    fn history_projects_human_input_and_omits_internal_job_wakes() {
+        let turns = TurnLookup::Closed(Arc::default());
+        let message = |job_delivery| StoredEvent {
+            id: 9,
+            payload: EventPayload::MessageUser {
+                ts: "2026-01-01T00:00:00Z".into(),
+                conversation: "main".into(),
+                turn: 7,
+                text: "Input to the model".into(),
+                from: None,
+                via_tool_call_id: None,
+                job_delivery,
+            },
+        };
+        assert_eq!(
+            "user",
+            history_entry(&message(false), &turns).unwrap()["type"]
+        );
+        assert!(history_entry(&message(true), &turns).is_none());
+    }
 
     #[test]
     fn legacy_retry_projection_defaults_to_started_and_preserves_metadata() {

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 
-use crate::tool::builtin::run_command::{output::OutputLimits, run_command_for_script};
+use crate::tool::builtin::run_command::{output::OutputLimits, run_command_to, CommandCapture};
 use crate::tool::ToolResultEnvelope;
 use crate::OutputRead;
 
@@ -16,7 +16,7 @@ async fn command_readers_use_the_authorized_short_capture_and_keep_its_reference
     let capture = workspace.clone();
     let result = run(
         r#"
-        const run = await workspace.run_command({});
+        const run = await tools.run_command({});
         const lines = [];
         for await (const line of run.stderr.lines()) lines.push(line);
         return {exit:run.exit_code, output:await run.stdout.json(), lines, id:run.output_ref.id};
@@ -31,14 +31,17 @@ async fn command_readers_use_the_authorized_short_capture_and_keep_its_reference
                     } else {
                         ("sh", r#"printf '{"value":7}'; printf 'note\r\nlast' >&2; exit 7"#)
                     };
-                    run_command_for_script(
+                    run_command_to(
                         &json!({"shell":shell, "command":command, "cwd":".", "timeout":5}),
                         workspace.path(),
-                        execution.cancellation(),
-                        workspace.path(),
-                        "capture",
-                        OutputLimits::default(),
-                        execution.limits.host_bytes,
+                        None,
+                        Some(execution.cancellation()),
+                        CommandCapture::script(
+                            workspace.path(),
+                            "capture",
+                            OutputLimits::default(),
+                            execution.limits.host_bytes,
+                        ),
                     ).await
                 }
             },
@@ -71,7 +74,7 @@ async fn command_readers_use_the_authorized_short_capture_and_keep_its_reference
 async fn command_readers_reassemble_interleaved_utf8_across_authorized_pages() {
     let result = run(
         r#"
-        const run = await workspace.run_command({program:'fixture'});
+        const run = await tools.run_command({program:'fixture'});
         const lines = [];
         for await (const line of run.stderr.lines()) lines.push(line);
         return {exit:run.exit_code, text:await run.stdout.text(), lines};
@@ -118,12 +121,12 @@ async fn command_failures_throw_and_incomplete_or_invalid_captures_reject_reader
             }
             throw new Error("expected a rejection");
         }
-        const missing = await errorFor(() => workspace.run_command({program:'missing'}));
-        const cancelled = await errorFor(() => workspace.run_command({program:'cancelled'}));
-        const partial = await workspace.run_command({program:'partial'});
-        const invalid = await workspace.run_command({program:'invalid'});
-        const binary = await workspace.run_command({program:'binary'});
-        const retained = await workspace.run_command({program:'retained'});
+        const missing = await errorFor(() => tools.run_command({program:'missing'}));
+        const cancelled = await errorFor(() => tools.run_command({program:'cancelled'}));
+        const partial = await tools.run_command({program:'partial'});
+        const invalid = await tools.run_command({program:'invalid'});
+        const binary = await tools.run_command({program:'binary'});
+        const retained = await tools.run_command({program:'retained'});
         return [missing, cancelled, await errorFor(() => partial.stdout.json()),
             await errorFor(async () => { for await (const line of partial.stdout.lines()) {} }),
             await errorFor(() => invalid.stdout.json()), await errorFor(() => binary.stdout.text()),
@@ -183,7 +186,7 @@ async fn command_failures_throw_and_incomplete_or_invalid_captures_reject_reader
     assert!(returned[6]["message"]
         .as_str()
         .unwrap()
-        .contains("workspace.read_output is required"));
+        .contains("tools.read_output is required"));
     assert_eq!("capture", returned[6]["id"]);
 }
 
@@ -192,7 +195,7 @@ async fn complete_readers_reject_oversized_text_and_lines() {
     const TEXT_BYTES: u64 = 1024 * 1024 + 1;
     let result = run(
         r#"
-        const run = await workspace.run_command({program:'fixture'});
+        const run = await tools.run_command({program:'fixture'});
         let textFailure, lineFailure;
         try { await run.stdout.text(); } catch (error) { textFailure = error.message; }
         try { for await (const line of run.stdout.lines()) throw new Error("unexpected line"); }
@@ -236,10 +239,7 @@ fn model_definition_advertises_only_selected_script_methods() {
     tools.retain(|tool| tool.name == "read_file");
     tools.push(super::super::definition());
     super::super::describe_selected_tools(&mut tools);
-    let script = tools
-        .iter()
-        .find(|tool| tool.name == "workspace_script")
-        .unwrap();
+    let script = tools.iter().find(|tool| tool.name == "run_js").unwrap();
     assert!(script
         .description
         .contains("read_file({path,offset?,limit?}) returns result.raw_text"));
@@ -248,6 +248,7 @@ fn model_definition_advertises_only_selected_script_methods() {
         .contains("create_output({}) returns result.id"));
     assert!(!script.description.contains("run_command"));
     assert!(!script.description.contains("output_lines"));
+    assert!(!script.description.contains("search_output"));
     assert!(!script.description.contains("write_file"));
     assert_eq!(
         "boolean",
