@@ -1,6 +1,6 @@
 //! Shared management commands for the managed and explicit HTTP service.
 
-use kuku_client::local::{self, RestartOutcome};
+use kuku_client::local::{self, BuildPolicy, LocalError, RestartOutcome, ServiceStatus};
 use kuku_client::ConnectionOptions;
 use serde_json::json;
 
@@ -25,22 +25,19 @@ pub async fn manage(command: ServerCommand, options: ConnectionOptions) -> CliRe
             }
         }
         ServerCommand::Start => {
-            let service = options.local_service()?;
-            let connection = match service.status().await? {
-                Some(current) if current.status().version != kuku_server::BUILD_VERSION => {
-                    match service.restart_if_current(&current.identity()).await {
-                        Err(local::LocalError::ServiceChanged) => service.connect().await?,
-                        outcome => restarted(outcome?)?,
+            let connection = match options
+                .local_service()?
+                .connect_build(BuildPolicy::Start(kuku_server::BUILD_VERSION))
+                .await
+            {
+                Ok(connection) => connection,
+                Err(error) => {
+                    if let LocalError::BuildDeferred { running, .. } = &error {
+                        print_deferred(running)?;
                     }
+                    return Err(error.into());
                 }
-                _ => service.connect().await?,
             };
-            if connection.status().version != kuku_server::BUILD_VERSION {
-                return Err(
-                    "service build changed while starting; check `kuku server status` and retry"
-                        .into(),
-                );
-            }
             json!({"state": "ready", "service": connection.status()})
         }
         ServerCommand::Restart => {
@@ -58,13 +55,18 @@ fn restarted(
     match outcome {
         RestartOutcome::Restarted(connection) => Ok(connection),
         RestartOutcome::Deferred(status) => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&json!({"state": "deferred", "service": status}))?
-            );
+            print_deferred(&status)?;
             Err("service restart deferred while work or cleanup is active; check `kuku server status` and retry after it settles".into())
         }
     }
+}
+
+fn print_deferred(status: &ServiceStatus) -> CliResult {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({"state": "deferred", "service": status}))?
+    );
+    Ok(())
 }
 
 pub(super) async fn standalone(args: ServerCommandArgs, target: &ConnectionArgs) -> CliResult {

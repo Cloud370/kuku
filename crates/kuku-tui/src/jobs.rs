@@ -2,6 +2,7 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use kuku_client::local::BuildPolicy;
 use kuku_client::local::{RestartOutcome, SESSION_PROTOCOL_VERSION};
 use kuku_client::{
     Acknowledgement, AgentConfig, Client, Command, Connection, ConnectionOptions, Error,
@@ -168,6 +169,7 @@ enum Message {
 
 pub(crate) struct Jobs {
     options: ConnectionOptions,
+    build: BuildPolicy<'static>,
     connection: Option<Connection>,
     tasks: JoinSet<()>,
     observer: Option<AbortHandle>,
@@ -177,10 +179,11 @@ pub(crate) struct Jobs {
 }
 
 impl Jobs {
-    pub(crate) fn new(options: ConnectionOptions) -> Self {
+    pub(crate) fn new(options: ConnectionOptions, build: &'static str) -> Self {
         let (sender, receiver) = mpsc::channel(UPDATE_CAPACITY);
         Self {
             options,
+            build: BuildPolicy::Start(build),
             connection: None,
             tasks: JoinSet::new(),
             observer: None,
@@ -235,9 +238,9 @@ impl Jobs {
             Job::Connect => {
                 Self::abort(&mut self.observer);
                 let options = self.options.clone();
-                let sender = self.sender.clone();
+                let (sender, build) = (self.sender.clone(), self.build);
                 self.tasks.spawn(async move {
-                    let result = options.connect().await;
+                    let result = options.connect_for_build(build).await;
                     let _ = sender.send(Message::Connection(Box::new(result))).await;
                 });
             }
@@ -401,6 +404,7 @@ impl Jobs {
         match message {
             Message::Connection(result) => match *result {
                 Ok(connection) => {
+                    self.build = self.build.for_reconnect();
                     let endpoint = connection.client.endpoint().to_owned();
                     let workspace = connection.workspace.clone();
                     self.connection = Some(connection);

@@ -77,7 +77,7 @@ fn apply_update(
     paint.request(!delta);
 }
 
-pub(crate) async fn run(options: ConnectionOptions) -> io::Result<()> {
+pub(crate) async fn run(options: ConnectionOptions, build: &'static str) -> io::Result<()> {
     let workspace = options
         .workspace
         .clone()
@@ -89,7 +89,7 @@ pub(crate) async fn run(options: ConnectionOptions) -> io::Result<()> {
     if let Some(problem) = problem {
         app.problem(format!("Using the default status line · {problem}"));
     }
-    let mut jobs = Jobs::new(options);
+    let mut jobs = Jobs::new(options, build);
     let mut terminal = Screen::new(app.active.clone())?;
     #[cfg(not(windows))]
     let mut events = EventStream::new();

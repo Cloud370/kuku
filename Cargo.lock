@@ -1882,6 +1882,7 @@ dependencies = [
  "futures-core",
  "kuku",
  "libc",
+ "semver",
  "serde",
  "serde_json",
  "sha2",

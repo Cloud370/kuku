@@ -303,7 +303,7 @@ Defaults:
 
 The explicit server requires `--password` or `KUKU_SERVER_PASSWORD`. `kuku web` opens the browser on the selected service. It can pass the workspace, Session and Agent selection to the page. Use `--print-url` to print the link. A managed sign-in link contains a short-lived, single-use ticket.
 
-`server start` starts the managed local service or reuses the running instance of the same build. It replaces a different build once active work has settled. If the service is busy, the command returns the same deferred status as `server restart`.
+`server start` starts the managed local service or reuses the running instance of the same build. It can replace a different build of the same or an older release once active work has settled. If the service is busy, the command returns the same deferred status as `server restart`.
 
 `server status` reports service information as JSON. For a stopped local service it returns `{"state":"stopped"}`. On a busy service, `server restart` exits with status 1 and emits JSON with `state: "deferred"` and the current `service` status. On success it reports `state: "restarted"` and the replacement service.
 

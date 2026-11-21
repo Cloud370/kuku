@@ -810,12 +810,15 @@ impl App {
 
     fn connect_failed(&mut self, error: Error) {
         self.connecting = false;
-        let recovery = if self.remote {
-            "Check the kuku service URL and token, then press Ctrl+R"
-        } else {
-            "Use Ctrl+R to reconnect, /server for status, or /restart"
+        let recovery = match &error {
+            Error::Local(kuku_client::local::LocalError::BuildDeferred { .. }) => {
+                "\nPress Ctrl+R when the service is idle."
+            }
+            Error::Local(kuku_client::local::LocalError::BuildMismatch { .. }) => "",
+            _ if self.remote => "\nCheck the kuku service URL and token, then press Ctrl+R",
+            _ => "\nUse Ctrl+R to reconnect, /server for status, or /restart",
         };
-        self.connection_problem = Some(format!("kuku service connection · {error}\n{recovery}"));
+        self.connection_problem = Some(format!("kuku service connection · {error}{recovery}"));
     }
 
     fn begin_observing(&mut self) {
