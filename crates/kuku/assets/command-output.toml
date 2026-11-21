@@ -33,3 +33,27 @@ test result: FAILED. 1 passed; 1 failed; 0 ignored
 expected = """
 test validates ... FAILED
 test result: FAILED. 1 passed; 1 failed; 0 ignored"""
+
+[filters.pytest-human]
+description = "Pytest's built-in progress, diagnostic, and result output"
+match_command = '^(?:pytest|(?:python(?:3(?:\.[0-9]+)?)?|py) -m pytest)(?: |$)'
+strip_ansi = true
+strip_lines_matching = ['^\S.*::.+ PASSED\s+\[\s*[0-9]+%\]\s*$']
+head_lines = 24
+tail_lines = 12
+max_lines = 37
+
+[[tests.pytest-human]]
+name = "Verbose progress with a failing assertion"
+input = """
+test_checkout.py::test_checkout[0] \u001B[31mFAILED\u001B[0m [  1%]
+test_checkout.py::test_checkout[1] \u001B[32mPASSED\u001B[0m [  2%]
+E       AssertionError: minimum checkout amount
+test_checkout.py:5: AssertionError
+========================= 1 failed, 84 passed in 0.06s =========================
+"""
+expected = """
+test_checkout.py::test_checkout[0] FAILED [  1%]
+E       AssertionError: minimum checkout amount
+test_checkout.py:5: AssertionError
+========================= 1 failed, 84 passed in 0.06s ========================="""

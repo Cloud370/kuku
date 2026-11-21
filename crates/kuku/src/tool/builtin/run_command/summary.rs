@@ -1,10 +1,8 @@
-use std::path::Path;
-
 use crate::execution::{CommandInvocation, CommandOutputRange, CommandOutputSummary, OutputStream};
 
-use super::reports::rust_report;
-
+mod formats;
 mod rules;
+use formats::{Format, Observation};
 use rules::{Rule, Selection};
 
 const MAX_SAVED_LINES: usize = 256;
@@ -12,6 +10,7 @@ const MAX_SAVED_BYTES: usize = 64 * 1024;
 const MAX_LINE_BYTES: usize = 4096;
 
 pub(super) struct Collector {
+    format: Format,
     rule: &'static Rule,
     stdout: LineBuffer,
     stderr: LineBuffer,
@@ -41,47 +40,10 @@ pub(super) struct Summary {
 
 impl Collector {
     pub(super) fn new(invocation: &CommandInvocation) -> Option<Self> {
-        let CommandInvocation::Program { program, args } = invocation else {
-            return None;
-        };
-        let program = Path::new(program).file_name()?.to_str()?;
-        if program != "cargo"
-            && !(cfg!(windows)
-                && (program.eq_ignore_ascii_case("cargo")
-                    || program.eq_ignore_ascii_case("cargo.exe")))
-        {
-            return None;
-        }
-        if args.iter().any(|arg| {
-            matches!(
-                arg.as_str(),
-                "--message-format"
-                    | "--format"
-                    | "--nocapture"
-                    | "--no-capture"
-                    | "--show-output"
-                    | "-v"
-                    | "-vv"
-                    | "--verbose"
-                    | "-Z"
-                    | "--config"
-            ) || arg.starts_with("--message-format=")
-                || arg.starts_with("--format=")
-        }) {
-            return None;
-        }
-        let command = std::iter::once("cargo".to_owned())
-            .chain(args.iter().map(|arg| {
-                if arg.is_empty() || arg.chars().any(char::is_whitespace) {
-                    serde_json::Value::String(arg.clone()).to_string()
-                } else {
-                    arg.clone()
-                }
-            }))
-            .collect::<Vec<_>>()
-            .join(" ");
+        let (format, rule) = Format::select(invocation)?;
         Some(Self {
-            rule: rules::select(&command)?,
+            format,
+            rule,
             stdout: LineBuffer::default(),
             stderr: LineBuffer::default(),
             lines: Vec::new(),
@@ -141,16 +103,11 @@ impl Collector {
             self.unrecognized = true;
             return;
         }
-        let test_failure = (trimmed.starts_with("test ") && trimmed.ends_with(" ... FAILED"))
-            || trimmed.starts_with("---- ")
-            || (trimmed.starts_with("thread ") && trimmed.contains("panicked at "));
-        let report = rust_report(trimmed);
-        let finished = trimmed.starts_with("Finished ") && trimmed.contains(" in ");
-        self.finished |= finished || report.is_some();
-        self.failed |= trimmed.starts_with("error:")
-            || trimmed.starts_with("error[")
-            || report.is_some_and(|report| report.failed > 0)
-            || test_failure;
+        match self.format.observe(stream, trimmed) {
+            Some(Observation::Finished) => self.finished = true,
+            Some(Observation::Failed) => self.failed = true,
+            None => {}
+        }
         if !self.rule.keeps(&line) {
             return;
         }

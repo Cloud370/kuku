@@ -63,6 +63,51 @@ fn declines_machine_reporters_and_unrecognized_captures() {
     }
 }
 
+#[test]
+fn pytest_rule_requires_a_test_report_and_preserves_failure_context() {
+    let invocation = |program: &str, args: &[&str]| CommandInvocation::Program {
+        program: program.into(),
+        args: args.iter().map(|arg| (*arg).into()).collect(),
+    };
+    let python = invocation("python3.10", &["-m", "pytest", "-v", "--color=yes"]);
+    let mut collector = Collector::new(&python).unwrap();
+    let mut output =
+        String::from("test_checkout.py::test_checkout[0] \x1b[31mFAILED\x1b[0m [  1%]\n");
+    for index in 1..85 {
+        output.push_str(&format!(
+            "test_checkout.py::test_checkout[{index}] \x1b[32mPASSED\x1b[0m [100%]\n"
+        ));
+    }
+    let location = output.len() as u64;
+    output.push_str("E       AssertionError: minimum checkout amount\ntest_checkout.py:5: AssertionError\n========================= 1 failed, 84 passed in 0.06s =========================\n");
+    collector.observe(OutputStream::Stdout, 0, output.as_bytes());
+    let summary = collector.summarize(1).unwrap();
+    let CommandOutputSummary::Rule { rule, ranges } = &summary.source;
+    assert_eq!(rule, "pytest-human");
+    assert!(summary.text.contains("minimum checkout amount"));
+    assert!(summary.text.contains("test_checkout.py:5: AssertionError"));
+    assert!(summary.text.contains("1 failed, 84 passed"));
+    assert!(!summary.text.contains(" PASSED "));
+    assert!(ranges
+        .iter()
+        .any(|range| range.stream == OutputStream::Stdout && range.offset == location));
+
+    for mode in [
+        "--collect-only",
+        "--capture=tee-sys",
+        "--json-report",
+        "--fixtures",
+    ] {
+        assert!(
+            Collector::new(&invocation("pytest", &[mode])).is_none(),
+            "{mode}"
+        );
+    }
+    let mut unrecognized = Collector::new(&invocation("pytest", &[])).unwrap();
+    unrecognized.observe(OutputStream::Stdout, 0, b"22 tests collected in 0.04s\n");
+    assert!(unrecognized.summarize(0).is_none());
+}
+
 #[tokio::test]
 async fn cargo_rule_retains_assertions_and_the_original_output() {
     let dir = workspace();
