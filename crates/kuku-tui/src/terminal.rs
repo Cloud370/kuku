@@ -27,7 +27,8 @@ use crate::ui::{self, ActivityClock, ActivityFrame};
 #[cfg(windows)]
 mod windows;
 
-const FRAME_INTERVAL: Duration = Duration::from_millis(33);
+const FRAME_INTERVAL: Duration = Duration::from_millis(25);
+const ACTIVITY_SAMPLE_INTERVAL: Duration = Duration::from_millis(33);
 const MAX_RENDER_COOLDOWN: Duration = Duration::from_millis(60);
 const UPDATE_BATCH: usize = 32;
 
@@ -95,7 +96,7 @@ pub(crate) async fn run(options: ConnectionOptions) -> io::Result<()> {
     #[cfg(windows)]
     let mut events = windows::Input::new()?;
     let mut clipboard = Clipboard::default();
-    let mut next_animation = Instant::now() + FRAME_INTERVAL;
+    let mut next_animation = Instant::now() + ACTIVITY_SAMPLE_INTERVAL;
     let mut activity = ActivityClock::default();
     let mut painted_activity = activity.sample(&app, Instant::now(), SystemTime::now());
     let (mut screen, mut activity_visible) = terminal.draw(&mut app, painted_activity.clone())?;
@@ -141,7 +142,7 @@ pub(crate) async fn run(options: ConnectionOptions) -> io::Result<()> {
                 }
                 let start = Instant::now();
                 if start >= next_animation {
-                    next_animation = start + FRAME_INTERVAL;
+                    next_animation = start + ACTIVITY_SAMPLE_INTERVAL;
                 }
                 let frame = activity.sample(&app, start, SystemTime::now());
                 if frame.phase_changed(&painted_activity) || (activity_visible && frame != painted_activity) {
