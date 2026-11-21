@@ -20,7 +20,7 @@ def composer_actions(client):
 
     def thinking(terminal):
         terminal.press("\x10/thinking\r")
-        return terminal.expect("D Save default", also=("Use default", "Low", "Medium", "High", draft))["screen"]
+        return terminal.expect("D Save default", also=("Use default", "Low", "Medium", "High", "Esc Close", draft))["screen"]
 
     def position(screen, text):
         return next((row, line.index(text)) for row, line in enumerate(screen.splitlines()) if text in line)
