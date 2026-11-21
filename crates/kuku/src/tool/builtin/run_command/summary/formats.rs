@@ -6,10 +6,11 @@ use crate::execution::{CommandInvocation, OutputStream};
 use super::super::reports::{pytest_report, rust_report};
 use super::rules::{self, Rule};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Format {
     Cargo,
     Pytest,
+    TypeScript,
 }
 
 pub(super) enum Observation {
@@ -36,6 +37,7 @@ impl Format {
         let format = match name {
             "cargo" if cargo_human_args(args) => Self::Cargo,
             "pytest" if pytest_human_args(args) => Self::Pytest,
+            "tsc" if typescript_args(args) => Self::TypeScript,
             name if python_launcher(name) => match args.as_slice() {
                 [mode, module, flags @ ..]
                     if mode == "-m" && module == "pytest" && pytest_human_args(flags) =>
@@ -68,9 +70,18 @@ impl Format {
                     Observation::Finished
                 }
             }),
-            Self::Pytest => None,
+            Self::Pytest | Self::TypeScript => None,
         }
     }
+}
+
+fn typescript_args(args: &[String]) -> bool {
+    !args.iter().any(|arg| {
+        matches!(
+            arg.split('=').next().unwrap_or_default(),
+            "--watch" | "-w" | "--showConfig" | "--help" | "-h" | "--version" | "-v"
+        )
+    })
 }
 
 fn cargo_human_args(args: &[String]) -> bool {

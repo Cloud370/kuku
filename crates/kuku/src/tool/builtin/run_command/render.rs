@@ -275,7 +275,7 @@ fn render_rule(
 ) -> Option<(String, String)> {
     let CommandOutputSummary::Rule { rule, ranges } = &summary.source;
     let first = ranges.first()?;
-    let preview = format!("Output summary ({rule}, selected lines):\n{}", summary.text);
+    let preview = format!("Output summary ({rule}):\n{}", summary.text);
     let start = first.offset;
     let bytes = first.end_offset.checked_sub(start)?.min(4096);
     let mut content = format!(

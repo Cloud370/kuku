@@ -215,7 +215,7 @@ mod tests {
             .into_iter()
             .map(|rule| rule.name)
             .collect::<Vec<_>>();
-        assert_eq!(names, ["cargo-humans", "pytest-human"]);
+        assert_eq!(names, ["cargo-humans", "pytest-human", "tsc-diagnostics"]);
         let unsupported = BUILTIN.replace("strip_ansi = true", "replace = []");
         assert!(load(&unsupported).err().unwrap().contains("unknown field"));
         let conflicting = BUILTIN.replace("head_lines = 16", "keep_lines_matching = ['error']");

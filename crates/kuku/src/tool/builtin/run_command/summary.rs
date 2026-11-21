@@ -2,6 +2,7 @@ use crate::execution::{CommandInvocation, CommandOutputRange, CommandOutputSumma
 
 mod formats;
 mod rules;
+mod typescript;
 use formats::{Format, Observation};
 use rules::{Rule, Selection};
 
@@ -133,9 +134,13 @@ impl Collector {
             || self.stdout.offset.is_some()
             || self.stderr.offset.is_some()
             || self.lines.is_empty()
-            || (exit_code == 0 && !self.finished)
-            || (exit_code != 0 && !self.failed)
         {
+            return None;
+        }
+        if self.format == Format::TypeScript {
+            return typescript::summarize(self.rule, &self.lines, exit_code);
+        }
+        if (exit_code == 0 && !self.finished) || (exit_code != 0 && !self.failed) {
             return None;
         }
         let selected = self.rule.select_lines(self.lines.len());

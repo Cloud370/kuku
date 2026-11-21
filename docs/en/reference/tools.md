@@ -89,6 +89,8 @@ When the Agent has `read_output`, short command output appears inline. Output ab
 
 For recognized human output from a long native Cargo build, check, Clippy, test, or ordinary Pytest run, the view can summarize progress and successful test lines while showing diagnostics and failing assertions. A summary names its rule and gives an example byte range to reopen. The structured `output_summary` includes the stream and half-open merged offsets for its source ranges. The raw capture remains available through `read_output`. Explicit machine-readable modes, test discovery, and incomplete captures use the generic preview.
 
+Long plain TypeScript compiler reports can group repeated errors by exact code and message. Each group includes its count and sample source locations. Pretty and multiline diagnostics use the generic preview.
+
 The default Session preview is bounded to 8 KiB, including its summary and retained reference. A complete capture can still have a truncated preview. For failed commands with a complete capture that exceeds the preview size, the preview uses selected build or test lines when available. Otherwise it shows the end of stderr, falling back to stdout if stderr is empty. Missing executables, start failures, timeouts, and cancellation have separate termination values. Recognized Rust test and pytest summaries carry program-reported counts and bounded evidence. [SDK execution facts](sdk.md#workspace-execution)
 
 ## Session Jobs

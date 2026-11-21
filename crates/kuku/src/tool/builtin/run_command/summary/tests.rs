@@ -108,6 +108,41 @@ fn pytest_rule_requires_a_test_report_and_preserves_failure_context() {
     assert!(unrecognized.summarize(0).is_none());
 }
 
+#[test]
+fn tsc_groups_exact_repeats_and_keeps_other_diagnostics_and_source_ranges() {
+    let invocation = CommandInvocation::Program {
+        program: "tsc".into(),
+        args: vec!["--pretty".into(), "false".into()],
+    };
+    let repeated = "Type 'string' is not assignable to type 'number'.";
+    let common = format!(
+        "alpha.ts(1,14): error TS2322: {repeated}\nbeta.ts(2,14): error TS2322: {repeated}\n"
+    );
+    let other = "delta.ts(1,14): error TS2322: Type 'number' is not assignable to type 'string'.\nerror TS5058: The specified path does not exist.\n";
+    let mut collector = Collector::new(&invocation).unwrap();
+    collector.observe(OutputStream::Stdout, 0, common.as_bytes());
+    collector.observe(OutputStream::Stdout, common.len() as u64, other.as_bytes());
+    let summary = collector.summarize(2).unwrap();
+    assert_eq!(summary.text.matches(repeated).count(), 1);
+    assert!(summary.text.contains("TS2322 (2 occurrences)"));
+    assert!(summary.text.contains("alpha.ts(1,14)\n  beta.ts(2,14)"));
+    assert!(summary.text.contains("delta.ts(1,14)"));
+    assert!(summary.text.contains("The specified path does not exist."));
+    let CommandOutputSummary::Rule { rule, ranges } = summary.source;
+    assert_eq!(rule, "tsc-diagnostics");
+    assert_eq!(ranges.len(), 4);
+    assert_eq!(ranges[2].offset, common.len() as u64);
+
+    let mut unrecognized = Collector::new(&invocation).unwrap();
+    unrecognized.observe(OutputStream::Stdout, 0, common.as_bytes());
+    unrecognized.observe(
+        OutputStream::Stdout,
+        common.len() as u64,
+        b"  Additional diagnostic detail.\n",
+    );
+    assert!(unrecognized.summarize(2).is_none());
+}
+
 #[tokio::test]
 async fn cargo_rule_retains_assertions_and_the_original_output() {
     let dir = workspace();

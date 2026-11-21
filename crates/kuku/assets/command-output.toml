@@ -57,3 +57,8 @@ test_checkout.py::test_checkout[0] FAILED [  1%]
 E       AssertionError: minimum checkout amount
 test_checkout.py:5: AssertionError
 ========================= 1 failed, 84 passed in 0.06s ========================="""
+
+[filters.tsc-diagnostics]
+description = "Repeated TypeScript compiler diagnostics in the plain reporter"
+match_command = '^tsc(?: |$)'
+strip_ansi = true

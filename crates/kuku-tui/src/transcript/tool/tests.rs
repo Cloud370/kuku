@@ -410,7 +410,7 @@ fn shell_card_distinguishes_stderr_from_the_outer_exit_status() {
 #[test]
 fn command_card_labels_selected_evidence_and_exposes_its_capture() {
     let mut transcript = Transcript::default();
-    let preview = "Output summary (cargo-humans, selected lines):\nerror[E0308]: mismatched types";
+    let preview = "Output summary (cargo-humans):\nerror[E0308]: mismatched types";
     let mut facts = command_facts("cargo", "saved", 4000, preview);
     facts["invocation"]["args"] = json!(["check"]);
     facts["output_summary"] = json!({
