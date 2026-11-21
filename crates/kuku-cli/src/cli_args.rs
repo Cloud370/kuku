@@ -156,8 +156,6 @@ impl ServerCommandArgs {
 /// Operations on a managed or remote service.
 #[derive(Subcommand)]
 pub enum ServerCommand {
-    /// Start or reuse the matching managed local service.
-    Start,
     /// Show the service version, configuration, and running work.
     Status,
     /// Restart the managed service when running work has settled.
