@@ -123,9 +123,6 @@ impl Run {
         let event = loop {
             self.persist_deferred_runtime_logs();
 
-            if let Some(event) = self.promote_explicit_job()? {
-                break event;
-            }
             if matches!(&self.state, RunState::Pending(_)) {
                 if let Some(event) = self.try_process_queued_call().await? {
                     break self.defer_runtime_log_if_needed(event);

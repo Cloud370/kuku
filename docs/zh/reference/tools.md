@@ -91,7 +91,7 @@ Session 的默认预览上限为 8 KiB，包含摘要和保留输出引用。即
 
 ## Session Job
 
-顶层 `run_command` 或 `run_js` 在前台观察窗口内结束时，工具直接返回结果。窗口默认为 10 秒。若仍在运行，工具返回句柄，其中 `structured.kind` 为 `"job"`，`structured.job_id` 是 Job 标识。使用 `background: true` 可立即获得句柄并继续独立工作。
+顶层 `run_command` 或 `run_js` 在观察窗口内结束时直接返回结果。前台窗口默认为 10 秒，设置 `background: true` 时改为 1 秒。窗口结束时若仍在运行，工具返回 Job 句柄，其中 `structured.kind` 为 `"job"`，`structured.job_id` 是 Job 标识。Agent 可以继续独立工作。
 
 [Job 生命周期与结果投递](../how-it-works/sessions.md#后台-job) · [权限](../how-it-works/permissions.md)
 

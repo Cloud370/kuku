@@ -412,7 +412,7 @@ async fn same_script_keeps_one_command_capture_across_foreground_and_automatic_j
     let fast = Fixture::new(&server, "/job-fast", SHORT_FOREGROUND_MS);
     fast.release();
     let (fast_start, fast_end) =
-        model_fixture(&server, "/job-fast", "run_js", script.clone()).await;
+        model_fixture(&server, "/job-fast", "run_js", script_args(true)).await;
     let fast_session = fast.open().await;
     let mut fast_observer = fast_session.observe(0);
     submit(&fast_session);
@@ -520,17 +520,15 @@ async fn failed_job_delivery_keeps_the_retained_output_id_when_truncated() {
     fixture.options.limits.max_preview_bytes = 1024;
     let stdout = "x".repeat(1_000);
     fs::write(fixture.workspace.join("stdout.txt"), &stdout).unwrap();
-    let args = if cfg!(windows) {
-        json!({"background":true,"shell":"cmd","command":"type stdout.txt & exit /b 7"})
-    } else {
-        json!({"background":true,"shell":"sh","command":"cat stdout.txt; exit 7"})
-    };
+    fs::write(fixture.workspace.join("stderr.txt"), "").unwrap();
+    let args = command_args(true);
     let (start, _finish) = model_fixture(&server, "/job-output", "run_command", args).await;
     let session = fixture.open().await;
     let mut observer = session.observe(0);
     submit(&session);
     let (_, receipt) = first_result(&mut observer).await;
     let id = job_id(&receipt);
+    fixture.release();
     let job = session.wait_job(AGENT, id).await.unwrap();
     assert_eq!(JobStatus::Failed, job.status);
     let output_id = job.output_id.unwrap();
@@ -547,6 +545,26 @@ async fn failed_job_delivery_keeps_the_retained_output_id_when_truncated() {
     assert!(delivery.contains(&format!("Output: {output_id} ")));
     assert!(delivery.contains(&format!("Job {id} (run_command): Failed. shell exited 7")));
     assert_eq!(1, delivery.matches("shell exited 7").count());
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn fast_background_failure_returns_the_command_result_directly() {
+    let server = MockServer::start_async().await;
+    let route = "/job-fast-failure";
+    let fixture = Fixture::new(&server, route, SHORT_FOREGROUND_MS);
+    fixture.release();
+    let (start, finish) = model_fixture(&server, route, "run_command", command_args(true)).await;
+    let session = fixture.open().await;
+    let mut observer = session.observe(0);
+    submit(&session);
+    let (_, result) = first_result(&mut observer).await;
+    reported_exit(&CommandExecutionFacts::from_structured(&result).unwrap());
+    assert!(session.jobs(AGENT).unwrap().is_empty());
+    wait_until(|| session.agent(AGENT).unwrap().status == AgentStatus::Idle).await;
+    assert_eq!(2, wire_requests(route).len());
+    start.assert_hits_async(1).await;
+    finish.assert_hits_async(1).await;
     session.close().await.unwrap();
 }
 
@@ -831,11 +849,15 @@ async fn detached_script_stops_at_a_deferred_action_and_keeps_completed_writes()
     let route = "/job-deferred-write";
     let mut fixture = Fixture::new(&server, route, 20_000);
     fixture.options.authorizer = Arc::new(DeferredWrite);
-    let code = r#"
-await tools.write_file({path:"prior.txt",content:"completed"});
-await tools.write_file({path:"guarded.txt",content:"needs approval"});
-await tools.write_file({path:"later.txt",content:"do not dispatch"});
-"#;
+    let command = command_args(false);
+    let code = format!(
+        r#"
+await tools.write_file({{path:"prior.txt",content:"completed"}});
+await tools.run_command({command});
+await tools.write_file({{path:"guarded.txt",content:"needs approval"}});
+await tools.write_file({{path:"later.txt",content:"do not dispatch"}});
+"#
+    );
     let (start, _finish) = model_fixture(
         &server,
         route,
@@ -848,6 +870,7 @@ await tools.write_file({path:"later.txt",content:"do not dispatch"});
     submit(&session);
     let (_, receipt) = first_result(&mut observer).await;
     let id = job_id(&receipt);
+    fixture.release();
     let job = session.wait_job(AGENT, id).await.unwrap();
     assert_eq!(JobStatus::Failed, job.status);
     let result = job.result.unwrap();

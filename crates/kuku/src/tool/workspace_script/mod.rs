@@ -118,7 +118,7 @@ pub(crate) fn definition() -> ToolDefinition {
             "type":"object",
             "properties":{
                 "code":{"type":"string","minLength":1,"description":"JavaScript async function body with a JSON return value."},
-                "background":{"type":"boolean","default":false,"description":"Return a Session Job immediately."}
+                "background":{"type":"boolean","default":false,"description":"Return a Job handle if the script is still running after one second."}
             },
             "required":["code"],
             "additionalProperties":false
