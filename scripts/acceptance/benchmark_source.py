@@ -13,6 +13,10 @@ def add_benchmark_arguments(parser):
     parser.add_argument("--case", required=True)
     parser.add_argument("--mode", choices=("preflight", "live"), default="preflight")
     parser.add_argument("--sdk-binary", type=Path)
+    parser.add_argument("--pi-prefix", type=Path, help="compare with an isolated Pi npm install on direct DeepSeek")
+    parser.add_argument("--node-binary", type=Path, help="Linux Node.js executable for --pi-prefix")
+    parser.add_argument("--require-resource-evidence", action="store_true",
+                        help="require kernel cgroup CPU, memory peak, OOM and harness RSS evidence")
     parser.add_argument("--config", type=Path)
     parser.add_argument("--connection")
     parser.add_argument("--provider", choices=("openrouter", "deepseek"), default="openrouter",

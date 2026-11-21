@@ -246,6 +246,43 @@ SDK 在写入结果前采集 Linux `getrusage(RUSAGE_SELF)`，得到本进程峰
 
 [小样本结果与 Session 诊断](../../../scripts/acceptance/results/frontier-sample.md)保留探索阶段的各次尝试及统一配置下的复测。
 
+### 严格的本地 Kuku–Pi 对照
+
+每道入选题先跑一个 Pi 对照。优先选能拉开 harness 差异的题，再用工作负载不同的第二题检验改动能否泛化。比较耗时和 CPU 时，两家在同一台空闲机器上依次运行。复测时交替先跑的一方，保留每次结果，包括失败。下面的对照使用无界面入口。TUI 观察另记一轮。
+
+使用支持 cgroup v2 和 `memory.peak` 的 Linux Docker，以及与 Pi 兼容的 Linux Node.js 可执行文件（Pi 1.5.2 要求 22.19 或更高）。每次从原题固定镜像启动新容器。两家使用原始题面和判分器、直连 DeepSeek Chat Completions 的 `deepseek-flash` 和 `max` 推理档，以及相同的请求、时间和费用上限。容器限额为 1 CPU、2 GiB 内存，关闭 swap。资源验收要求能读取内核计数器和 harness RSS，且 agent 执行阶段没有 cgroup OOM 事件。
+
+将对照版本装进 Git 忽略目录，用 release 模式构建 Kuku runner。保留 npm lockfile，之后可以用 `npm ci` 复现依赖树。将 `KUKU_TEST_DEEPSEEK_API_KEY=...` 放进 `keys` 所指的私有文件，付费执行前用已授权的总额初始化台账。
+
+```sh
+pi_ref="$PWD/benchmarks/tools/pi-1.5.2"
+npm install --prefix "$pi_ref" --registry=https://registry.npmjs.org --save-exact \
+  --ignore-scripts --no-audit --no-fund @earendil-works/pi-coding-agent@1.5.2
+cargo build --release --locked -p kuku --example session_task
+
+ledger="$PWD/benchmarks/acceptance/paired-budget.json"
+keys="$HOME/.config/kuku/frontier.env"
+case_id=large-scale-text-editing
+python3 scripts/acceptance/run.py budget init --ledger "$ledger" \
+  --authorization local-paired-frontier --limit-usd 1.50
+
+paired_run() {
+  run_id="$1"
+  shift
+  python3 scripts/acceptance/run.py --run-id "$run_id" benchmark \
+    --suite frontier --case "$case_id" --mode live --provider deepseek --require-resource-evidence \
+    --max-output-tokens 131072 --case-cap-usd 0.75 --ledger "$ledger" --secrets "$keys" "$@"
+}
+paired_run vim-kuku --sdk-binary target/release/examples/session_task || test "$?" -eq 1
+paired_run vim-pi --pi-prefix "$pi_ref" || test "$?" -eq 1
+
+python3 scripts/acceptance/benchmark_compare.py \
+  --kuku benchmarks/acceptance/vim-kuku --pi benchmarks/acceptance/vim-pi \
+  > benchmarks/acceptance/vim-comparison.json
+```
+
+导出工具先核对题目文件摘要、Docker 镜像 ID、模型路由和运行限额。对照报告包含原始评分和测试数、agent 与判分耗时、模型请求数与 token 用量、估算美元费用，以及资源验收、harness RSS、容器内存峰值、CPU 秒数和 OOM 事件。容器内存峰值取启动到判分前的内核高水位，覆盖计入 cgroup 的 harness、工具子进程和采样开销。harness RSS 统计主进程的驻留页面，包含共享映射。CPU 秒数取 agent 执行前后两次内核读数的差值。分享对照 JSON 时附上轮次、主机和构建模式。需要精确复现依赖树时附上 Pi lockfile。凭据、原始 Prompt、工具输出和 Session 文件留在本机。
+
 ## 资源测量
 
 ```bash

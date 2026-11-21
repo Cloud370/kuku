@@ -15,7 +15,6 @@ import platform
 import re
 import shutil
 import signal
-import ssl
 import subprocess
 import sys
 import tarfile
@@ -25,7 +24,10 @@ import time
 import uuid
 import zipfile
 
-from benchmark_resources import ResourceSampler, include_final_process_usage
+from benchmark_resources import (CASE_RESOURCE_LIMITS, ResourceSampler, case_resource_evidence, include_final_process_usage,
+                                 read_case_cgroup, validate_case_limits)
+from benchmark_runtime import (attempt_passed, bundle_binary, bundle_ca, file_hashes,
+                               fresh_verifier_directory, reward, verifier_summary)
 from evidence import FailureSummary, inspect_sdk
 
 
@@ -273,11 +275,6 @@ def tree_state():
     }
 
 
-def file_hashes(directory):
-    return {str(path.relative_to(directory)): hashlib.sha256(path.read_bytes()).hexdigest()
-            for path in sorted(directory.rglob("*")) if path.is_file() and ".git" not in path.parts}
-
-
 def config_record(path):
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -310,71 +307,6 @@ def prepare_source(manifest, directory, case=None):
     return checkout(ROOT, manifest, directory, case)
 
 
-def bundle_binary(binary, directory):
-    destination = directory / "runtime"
-    destination.mkdir()
-    shutil.copy2(binary, destination / "session_task")
-    result = subprocess.run(["ldd", str(binary)], capture_output=True, text=True)
-    libraries = re.findall(r"(?:=>\s+)?(/[^\s()]+)", result.stdout)
-    for path in libraries:
-        shutil.copy2(path, destination / Path(path).name)
-    loader = next((Path(path).name for path in libraries if "ld-linux" in path), None)
-    if not libraries and "statically linked" not in result.stdout + result.stderr:
-        raise ValueError("cannot resolve SDK runtime libraries; provide a Linux executable")
-    command = ["/kuku/runtime/session_task"]
-    if loader:
-        command = [f"/kuku/runtime/{loader}", "--library-path", "/kuku/runtime", *command]
-    return command, file_hashes(destination)
-
-
-def bundle_ca(directory, source=None):
-    if source is None:
-        explicit = os.environ.get("SSL_CERT_FILE")
-        candidates = [explicit] if explicit else ["/etc/ssl/certs/ca-certificates.crt",
-                                                "/etc/pki/tls/certs/ca-bundle.crt",
-                                                ssl.get_default_verify_paths().cafile]
-        source = next((Path(name) for name in candidates if name and Path(name).is_file()), None)
-    if source is None or not source.is_file() or source.stat().st_size == 0:
-        raise ValueError("a nonempty host CA bundle is required for the Linux SDK runtime")
-    target = directory / "ca-certificates.crt"
-    shutil.copyfile(source, target)
-    target.chmod(0o444)
-    return {"source": str(source.resolve()), "sha256": config_record(target)["sha256"],
-            "runtime_path": "/kuku/runtime/ca-certificates.crt",
-            "environment": {"SSL_CERT_FILE": "/kuku/runtime/ca-certificates.crt"}}
-
-
-def reward(logs):
-    path = logs / "verifier" / "reward.txt"
-    if not path.exists():
-        return None
-    try:
-        return float(path.read_text(encoding="utf-8").strip())
-    except ValueError:
-        return None
-
-
-def verifier_summary(logs):
-    path = logs / "verifier" / "ctrf.json"
-    if not path.exists() or path.stat().st_size > 1024 * 1024:
-        return None
-    try:
-        report = json.loads(path.read_text(encoding="utf-8"))
-        summary = report["results"]["summary"]
-        return summary if isinstance(summary, dict) else None
-    except (ValueError, KeyError, TypeError):
-        return None
-
-
-def fresh_verifier_directory(logs):
-    path = logs / "verifier"
-    if path.is_symlink() or (path.exists() and not path.is_dir()):
-        path.unlink()
-    elif path.exists():
-        shutil.rmtree(path)
-    path.mkdir()
-
-
 def retain_task_artifacts(case, container, attempt):
     destination = attempt / "artifacts"
     destination.mkdir()
@@ -403,49 +335,53 @@ def retain_task_artifacts(case, container, attempt):
     return records
 
 
-def attempt_passed(mode, execution, verification, value, summary):
-    if execution["exit_code"] != 0 or execution.get("timed_out") or execution.get("capture_incomplete"):
-        return False
-    if verification["exit_code"] != 0 or verification.get("timed_out") or verification.get("capture_incomplete"):
-        return False
-    if not summary or summary.get("tests", 0) <= 0:
-        return False
-    if mode == "negative":
-        return value == 0.0 and summary.get("failed", 0) > 0
-    return value == 1.0 and summary.get("tests") == summary.get("passed") and all(
-        summary.get(field) == 0 for field in ("failed", "skipped", "pending", "other"))
-
-
 def benchmark_attempt(args, case, source, image, directory, mode, secrets, *, sdk_timeout_sec=None, on_sdk_finished=None):
     attempt = directory / mode
     logs = attempt / "logs"
     (logs / "verifier").mkdir(parents=True)
     (logs / "agent").mkdir()
     container = "kuku-acceptance-" + uuid.uuid4().hex[:12]
-    command = ["docker", "run", "-d", "--name", container, "--cpus", "1", "--memory", "2048m",
+    memory = f"{CASE_RESOURCE_LIMITS['memory_bytes'] // 1024**2}m"
+    command = ["docker", "run", "-d", "--name", container,
+               "--cpus", str(CASE_RESOURCE_LIMITS["cpus"]), "--memory", memory,
                "--mount", f"type=bind,source={logs},target=/logs"]
-    sdk_command = None
+    runner_command = None
+    pi = mode == "live" and getattr(args, "pi_prefix", None) is not None
+    strict = mode == "live" and (pi or getattr(args, "require_resource_evidence", False))
+    if strict:
+        command += ["--memory-swap", memory]
     record = {"mode": mode, "resources": {"scope": "benchmark_container_including_sdk_and_tools"}}
+    if strict:
+        record["resource_requirements"] = CASE_RESOURCE_LIMITS.copy()
     env = os.environ.copy()
     env.update(secrets)
     if mode == "live":
-        sdk_command, record["runtime_files"] = bundle_binary(args.sdk_binary.resolve(), attempt)
-        record["runtime_ca"] = bundle_ca(attempt / "runtime")
-        record["runtime_files"]["ca-certificates.crt"] = record["runtime_ca"]["sha256"]
         data_dir = attempt / "session-data"
         data_dir.mkdir()
+        if pi:
+            from benchmark_pi import inspect_pi, prepare_pi
+            instruction = (source / "instruction.md").read_text(encoding="utf-8")
+            runner_command, pi_args, config_path = prepare_pi(args, attempt, instruction, record)
+            command += ["--workdir", case["workspace"], *pi_args]
+            record["harness"] = "pi"
+        else:
+            runner_command, record["runtime_files"] = bundle_binary(args.sdk_binary.resolve(), attempt)
+            config_path = "/kuku/config.toml"
+            record["session_id"] = "benchmark-" + uuid.uuid4().hex[:12]
+            runner_command += ["--workspace", case["workspace"], "--prompt-file", "/kuku/instruction.md",
+                               "--config", config_path, "--data-dir", "/kuku/data",
+                               "--session-id", record["session_id"], "--agent", "main",
+                               "--connection", args.connection, "--output", "/logs/agent/result.json", *args.sdk_args]
+            command += ["--mount", f"type=bind,source={source / 'instruction.md'},target=/kuku/instruction.md,readonly"]
+            record["harness"] = "kuku"
+        record["runtime_ca"] = bundle_ca(attempt / "runtime")
+        record["runtime_files"]["ca-certificates.crt"] = record["runtime_ca"]["sha256"]
         command += ["--mount", f"type=bind,source={attempt / 'runtime'},target=/kuku/runtime,readonly",
                     "--mount", f"type=bind,source={data_dir},target=/kuku/data",
-                    "--mount", f"type=bind,source={args.config.resolve()},target=/kuku/config.toml,readonly",
-                    "--mount", f"type=bind,source={source / 'instruction.md'},target=/kuku/instruction.md,readonly"]
+                    "--mount", f"type=bind,source={args.config.resolve()},target={config_path},readonly"]
         for name in secrets:
             command += ["--env", name]
         command += ["--env", "SSL_CERT_FILE=" + record["runtime_ca"]["runtime_path"]]
-        record["session_id"] = "benchmark-" + uuid.uuid4().hex[:12]
-        sdk_command += ["--workspace", case["workspace"], "--prompt-file", "/kuku/instruction.md",
-                        "--config", "/kuku/config.toml", "--data-dir", "/kuku/data",
-                        "--session-id", record["session_id"], "--agent", "main",
-                        "--connection", args.connection, "--output", "/logs/agent/result.json", *args.sdk_args]
         record["session_data"] = str(data_dir)
     command += [image, "sleep", "infinity"]
     created = False
@@ -458,26 +394,46 @@ def benchmark_attempt(args, case, source, image, directory, mode, secrets, *, sd
             record["execution"] = capture(["docker", "exec", container, "bash", "/solution/solve.sh"],
                                            attempt, "oracle", timeout=case["timeout_sec"])
         elif mode == "live":
+            if strict:
+                try:
+                    before = read_case_cgroup(container)
+                    validate_case_limits(before)
+                except ValueError as error:
+                    record.update(passed=False, failure_kind="resource_evidence",
+                                  resource_evidence={"passed": False, "reasons": [str(error)]})
+                    return record
             sampler = ResourceSampler(container)
             sampler.start()
             try:
                 record["execution"] = capture([
                     "docker", "exec", container, "sh", "-c",
-                    'printf "%s\\n" "$$" > /logs/agent/sdk.pid; exec "$@"', "sh", *sdk_command,
-                ], attempt, "sdk", timeout=sdk_timeout_sec or case["timeout_sec"], secrets=secrets.values())
+                    'printf "%s\\n" "$$" > /logs/agent/sdk.pid; exec "$@"', "sh", *runner_command,
+                ], attempt, "pi" if pi else "sdk", timeout=sdk_timeout_sec or case["timeout_sec"],
+                                               secrets=secrets.values())
             finally:
                 if on_sdk_finished is not None:
                     on_sdk_finished()
                 record["resources"] = sampler.finish()
-            record["sdk_result"] = str(logs / "agent" / "result.json")
-            include_final_process_usage(record["resources"], Path(record["sdk_result"]))
-            record["sdk_evidence"] = inspect_sdk(Path(record["sdk_result"]), data_dir, args.connection,
-                                                  "/kuku/data", record["session_id"], args.require_streaming,
-                                                  require_fixed_limits=args.suite == "legacy", require_output_limit=True)
+            process_result = logs / "agent" / "result.json"
+            include_final_process_usage(record["resources"], process_result)
+            if strict:
+                try:
+                    record["resource_evidence"] = case_resource_evidence(before, read_case_cgroup(container), record["resources"])
+                except ValueError as error:
+                    record["resource_evidence"] = {"passed": False, "reasons": [str(error)], "before": before}
+            if pi:
+                evidence_key = "agent_evidence"
+                record[evidence_key] = inspect_pi(data_dir, instruction)
+            else:
+                evidence_key = "sdk_evidence"
+                record["sdk_result"] = str(process_result)
+                record[evidence_key] = inspect_sdk(process_result, data_dir, args.connection,
+                                                    "/kuku/data", record["session_id"], args.require_streaming,
+                                                    require_fixed_limits=args.suite == "legacy", require_output_limit=True)
         else:
             record["execution"] = {"exit_code": 0, "scope": "untouched environment; no Agent or oracle"}
         if record["execution"].get("timed_out"):
-            record.update(passed=False, failure_kind="runtime", verification={"skipped": "SDK/oracle timed out"})
+            record.update(passed=False, failure_kind="runtime", verification={"skipped": "runner timed out"})
             return record
         if mode == "live":
             record["task_artifacts"] = retain_task_artifacts(case, container, attempt)
@@ -491,13 +447,17 @@ def benchmark_attempt(args, case, source, image, directory, mode, secrets, *, sd
         record["verifier_summary"] = verifier_summary(logs)
         record["task_passed"] = attempt_passed(mode, record["execution"], record["verification"],
                                                record["reward"], record["verifier_summary"])
-        record["passed"] = record["task_passed"] and (mode != "live" or record["sdk_evidence"]["passed"])
+        agent_passed = mode != "live" or record[evidence_key]["passed"]
+        resources_passed = not strict or record["resource_evidence"]["passed"]
+        record["passed"] = record["task_passed"] and agent_passed and resources_passed
         if record["reward"] is None or not record["verifier_summary"] or record["verification"]["timed_out"]:
             record["failure_kind"] = "infrastructure"
         elif record["execution"]["exit_code"] != 0:
             record["failure_kind"] = "runtime"
-        elif mode == "live" and not record["sdk_evidence"]["passed"]:
-            record["failure_kind"] = "sdk_evidence"
+        elif not agent_passed:
+            record["failure_kind"] = evidence_key
+        elif not resources_passed:
+            record["failure_kind"] = "resource_evidence"
         elif mode == "live" and any(item["status"] != "retained" for item in record["task_artifacts"]):
             record.update(passed=False, failure_kind="artifact_retention")
         elif not record["passed"]:
@@ -905,11 +865,18 @@ def main():
         return 0
     paid = args.group == "live" or (args.group == "benchmark" and args.mode == "live")
     metered = paid and args.group == "benchmark" and args.suite == "frontier"
+    if args.group == "benchmark":
+        if args.pi_prefix and (not metered or args.provider != "deepseek" or args.require_streaming):
+            raise ValueError("--pi-prefix selects direct DeepSeek Frontier live with Pi Session evidence")
+        if args.node_binary and not args.pi_prefix:
+            raise ValueError("--node-binary requires --pi-prefix")
+        if args.require_resource_evidence and not paid:
+            raise ValueError("--require-resource-evidence applies to live benchmark measurements")
     secrets = {}
     if paid:
         if metered:
-            if not args.sdk_binary or args.config or args.connection or args.sdk_args:
-                raise ValueError("Frontier live requires --sdk-binary and generates its own config and connection")
+            if bool(args.sdk_binary) == bool(args.pi_prefix) or args.config or args.connection or args.sdk_args:
+                raise ValueError("Frontier live requires exactly one runner (--sdk-binary or --pi-prefix) and generates its config")
             if args.reserve_usd is not None or args.reservation_reason:
                 raise ValueError("Frontier live uses --case-cap-usd for its host-metered budget")
             limits = (args.case_cap_usd, args.max_output_tokens, args.max_requests, args.agent_timeout_sec)

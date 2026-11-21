@@ -246,6 +246,43 @@ The SDK samples its own Linux `getrusage(RUSAGE_SELF)` immediately before writin
 
 The [sample results and session findings](../../../scripts/acceptance/results/frontier-sample.md) include the exploratory attempts and the shared-protocol rerun.
 
+### Strict local Kuku–Pi comparison
+
+Use one Pi reference run per selected task. Start with a task that distinguishes the harnesses, and use a second task with a different workload to check whether a proposed improvement generalizes. Run the two harnesses sequentially on the same idle host when comparing elapsed time and CPU. For repeats, alternate which harness goes first and retain every attempt, including failures. Use the headless commands below for the comparison. Record TUI observation runs separately.
+
+Use Linux Docker with cgroup v2 and `memory.peak`, and a Linux Node.js executable compatible with Pi (22.19 or newer for Pi 1.5.2). Each run starts a fresh container from the original pinned task. Both harnesses use the original prompt and verifier, direct DeepSeek Chat Completions, `deepseek-flash` at `max`, and identical request, time and spend ceilings. The strict container limits are one CPU, 2 GiB of memory and no swap. Resource acceptance requires readable kernel counters, a harness RSS observation and zero cgroup OOM events during the agent phase.
+
+Install the reference in an ignored directory and build the Kuku runner in release mode. Keep the npm lockfile to reproduce that dependency tree with `npm ci`. Put `KUKU_TEST_DEEPSEEK_API_KEY=...` in the private file referenced by `keys`, and initialize the ledger with your authorized total before a paid run.
+
+```sh
+pi_ref="$PWD/benchmarks/tools/pi-1.5.2"
+npm install --prefix "$pi_ref" --registry=https://registry.npmjs.org --save-exact \
+  --ignore-scripts --no-audit --no-fund @earendil-works/pi-coding-agent@1.5.2
+cargo build --release --locked -p kuku --example session_task
+
+ledger="$PWD/benchmarks/acceptance/paired-budget.json"
+keys="$HOME/.config/kuku/frontier.env"
+case_id=large-scale-text-editing
+python3 scripts/acceptance/run.py budget init --ledger "$ledger" \
+  --authorization local-paired-frontier --limit-usd 1.50
+
+paired_run() {
+  run_id="$1"
+  shift
+  python3 scripts/acceptance/run.py --run-id "$run_id" benchmark \
+    --suite frontier --case "$case_id" --mode live --provider deepseek --require-resource-evidence \
+    --max-output-tokens 131072 --case-cap-usd 0.75 --ledger "$ledger" --secrets "$keys" "$@"
+}
+paired_run vim-kuku --sdk-binary target/release/examples/session_task || test "$?" -eq 1
+paired_run vim-pi --pi-prefix "$pi_ref" || test "$?" -eq 1
+
+python3 scripts/acceptance/benchmark_compare.py \
+  --kuku benchmarks/acceptance/vim-kuku --pi benchmarks/acceptance/vim-pi \
+  > benchmarks/acceptance/vim-comparison.json
+```
+
+The exporter checks the task file digest, Docker image ID, model route and limits before pairing the attempts. Compare verifier reward and tests, agent and verifier wall time, model requests, token counts and estimated USD, then resource acceptance, harness RSS, container peak memory, CPU seconds and OOM events. Container peak is the kernel high-water mark from startup to the pre-verifier snapshot and includes memory charged to the cgroup for the harness, tool subprocesses and measurement overhead. Harness RSS covers the primary process's resident pages, including shared mappings. CPU seconds are the delta between snapshots around agent execution. Share the comparison JSON together with the rounds, host and build profile used for the test. Include the Pi lockfile if readers need to reproduce the exact dependency tree. Keep credentials, raw prompts, tool output and Session files private.
+
 ## Resource measurements
 
 ```bash
