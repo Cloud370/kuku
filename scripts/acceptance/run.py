@@ -883,6 +883,8 @@ def main():
     if args.group == "benchmark":
         if args.cpus <= 0:
             raise ValueError("--cpus must be positive")
+        if args.model is not None and (not metered or args.provider != "deepseek"):
+            raise ValueError("--model selects a direct DeepSeek model for Frontier live")
         if args.pi_prefix and (not metered or args.provider != "deepseek" or args.require_streaming):
             raise ValueError("--pi-prefix selects direct DeepSeek Frontier live with Pi Session evidence")
         if args.node_binary and not args.pi_prefix:

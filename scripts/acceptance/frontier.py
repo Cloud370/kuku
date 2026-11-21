@@ -712,7 +712,7 @@ def run_live(args, case, source, image, directory, secrets):
     if not key:
         raise ValueError(f"Frontier live requires the {provider} credential")
     router = provider == "openrouter"
-    route = route_for(provider, model=ROUTER_MODEL if router else "deepseek-flash", effort="max",
+    route = route_for(provider, model=ROUTER_MODEL if router else getattr(args, "model", None), effort="max",
                       upstream=(upstream or "deepseek"), key=key, verify_catalog=router)
     output_tokens = route.completion_limit if args.max_output_tokens is None else args.max_output_tokens
     if output_tokens is None:

@@ -22,6 +22,7 @@ def add_benchmark_arguments(parser):
     parser.add_argument("--connection")
     parser.add_argument("--provider", choices=("openrouter", "deepseek"), default="openrouter",
                         help="Frontier live API service (default: openrouter)")
+    parser.add_argument("--model", help="priced model for direct DeepSeek Frontier live (default: deepseek-flash)")
     parser.add_argument("--upstream", help="exact OpenRouter endpoint tag for Frontier live")
     parser.add_argument("--case-cap-usd", type=money, default=0.75)
     parser.add_argument("--max-output-tokens", type=int, help="Frontier live output ceiling (default: the selected route's limit)")

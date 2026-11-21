@@ -375,6 +375,7 @@ class AcceptanceTests(unittest.TestCase):
             args = parser.parse_args([*base, "--suite", "frontier", "--mode", "live", *flags])
             self.assertEqual((args.provider, args.upstream), expected)
             self.assertIsNone(args.max_requests)
+            self.assertIsNone(args.model)
         for limit in (22, 48):
             args = parser.parse_args([*base, "--suite", "frontier", "--max-requests", str(limit)])
             self.assertEqual(args.max_requests, limit)
@@ -425,7 +426,8 @@ class AcceptanceTests(unittest.TestCase):
         creds = {"KUKU_TEST_KEY": "fixture"}
         image = "sha256:fixture-image"
         args = ["run.py", "--output", str(self.directory), "benchmark", "--suite", "frontier",
-                "--mode", "live", "--case", "large-scale-text-editing", "--sdk-binary", "/fixture/sdk"]
+                "--mode", "live", "--case", "large-scale-text-editing", "--sdk-binary", "/fixture/sdk",
+                "--provider", "deepseek", "--model", "deepseek-v4-pro"]
 
         def capture(command, directory, label, **kwargs):
             if label == "image-build":
@@ -444,11 +446,22 @@ class AcceptanceTests(unittest.TestCase):
         budget.assert_not_called()
         parsed, case, source, built, directory, secrets = fake.call_args.args
         self.assertEqual(parsed.run_id, directory.name)
-        self.assertEqual((parsed.provider, parsed.upstream), ("openrouter", None))
+        self.assertEqual((parsed.provider, parsed.model, parsed.upstream), ("deepseek", "deepseek-v4-pro", None))
         self.assertEqual((parsed.case_cap_usd, parsed.max_output_tokens, parsed.max_requests), (0.75, None, None))
         self.assertEqual(parsed.agent_timeout_sec, 1200)
         self.assertEqual(source, self.directory / "source" / "tasks" / case["id"])
         self.assertEqual((built, secrets), (image, creds))
+
+    def test_benchmark_model_override_requires_live_direct_deepseek(self):
+        base = ["run.py", "benchmark", "--case", "regex-log", "--model", "deepseek-v4-pro"]
+        for flags in (
+            ["--suite", "frontier", "--provider", "deepseek"],
+            ["--suite", "frontier", "--mode", "live", "--provider", "openrouter"],
+            ["--mode", "live", "--provider", "deepseek"],
+        ):
+            with self.subTest(flags=flags), mock.patch.object(sys, "argv", [*base, *flags]):
+                with self.assertRaisesRegex(ValueError, "direct DeepSeek model for Frontier live"):
+                    ACCEPTANCE.main()
 
     def test_legacy_paid_benchmark_keeps_finite_request_and_output_limits_and_disables_retries(self):
         config = self.directory / "config.toml"

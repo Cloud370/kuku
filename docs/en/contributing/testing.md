@@ -244,6 +244,8 @@ printf '%s\n' log-summary-date-ranges cancel-async-tasks regex-log large-scale-t
 
 If account data policy excludes the requested provider, use a separately named trial with a compatible pinned endpoint such as `--upstream baseten`. Record the route change alongside the result. OpenRouter may report cost in the completed stream before the generation receipt becomes available. Add `--refresh-receipts "$keys"` to the report command below to fetch available generation receipts for those attempts. The report reuses verified receipts offline and counts each charge once.
 
+For a direct DeepSeek comparison, use `--provider deepseek` and a private file containing `KUKU_TEST_DEEPSEEK_API_KEY`. The default is `deepseek-flash`. Use `--model deepseek-v4-pro` to test Pro under the same task and verifier. The meter records the selected model and prices it before starting the run.
+
 Download the official snapshot and generate a shareable report. Supply each case's attempts in chronological order, including every failure. Each local result separates the upstream reward, SDK completion, model cost and verifier duration. Pi's official figures use the same model version and include four trials per task, audited scoring, Runta and Baseten. For cache comparisons use the recorded service provider and observed cached input divided by observed total input, with coverage and the initial request identified. Private session files, credentials and raw request payloads stay out of the public report. [Official results](https://frontierharness.org/live/) · [OpenRouter routing](https://openrouter.ai/docs/guides/routing/provider-selection)
 
 ```sh
