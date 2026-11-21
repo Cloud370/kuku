@@ -98,7 +98,7 @@ fn responses_recovery_keeps_original_request_as_exact_prefix() {
         .as_array()
         .unwrap();
 
-    assert_eq!(original["instructions"], recovered["instructions"]);
+    assert_eq!("developer", original_input[0]["role"]);
     assert_eq!(
         &original_input[..original_input.len() - 1],
         &recovered_input[..recovered_input.len() - 1]
@@ -129,9 +129,10 @@ fn render_responses_body_basic_text() {
     let body = render_responses_body(&request);
 
     assert_eq!("gpt-5.4", body["model"].as_str().unwrap());
+    assert_eq!("developer", body["input"][0]["role"]);
     assert_eq!(
         "You are the agent running inside kuku, a file-native software engineering runtime.",
-        body["instructions"].as_str().unwrap()
+        body["input"][0]["content"][0]["text"].as_str().unwrap()
     );
     assert_eq!(100, body["max_output_tokens"].as_u64().unwrap());
     assert!(body["input"].is_array());

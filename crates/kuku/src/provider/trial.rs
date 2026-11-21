@@ -21,6 +21,8 @@ use super::types::{
     ResolvedProvider, SecretString,
 };
 
+mod tools;
+
 /// Output budget for one opt-in setup test.
 pub const TRIAL_OUTPUT_TOKENS: u32 = 4096;
 const TRIAL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -44,6 +46,10 @@ pub enum ModelTrial {
     ImageInput {
         service_tier: Option<String>,
     },
+    /// Check a synthetic function call and the reply to its supplied result.
+    Tools {
+        service_tier: Option<String>,
+    },
 }
 
 /// Timing-independent trial evidence a host can retain or render.
@@ -60,6 +66,12 @@ pub struct TrialResult {
     pub usage: Option<ProviderUsage>,
     pub provider_report: Option<ProviderReport>,
     pub cost: RequestCost,
+    /// Whether a requested synthetic tool round trip completed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_round_trip: Option<bool>,
+    /// Cost evidence for a follow-up request that supplied a synthetic tool result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation_cost: Option<RequestCost>,
 }
 
 /// Test only the selected connection and model with synthetic input.
@@ -130,11 +142,19 @@ async fn trial_request(
 ) -> std::result::Result<TrialResult, TrialProblem> {
     let capabilities = crate::adapter::inspect_connection_model(connection, model)?;
     let mut challenge = None;
+    let tool_trial = matches!(&trial, ModelTrial::Tools { .. });
+    if tool_trial
+        && connection.format == crate::config::ProviderFormat::OpenAiChat
+        && super::setup_requires_responses_for_tools(connection, model)
+    {
+        return Err(Error::InvalidArgument("This route needs Responses for tools.".into()).into());
+    }
     let (effort, service_tier) = match trial {
         ModelTrial::Text {
             effort,
             service_tier,
         } => (effort, service_tier),
+        ModelTrial::Tools { service_tier } => (None, service_tier),
         ModelTrial::ImageInput { service_tier } => {
             let colors = std::array::from_fn(|_| fastrand::usize(..COLORS.len()));
             challenge = Some((colors, color_grid(colors)?));
@@ -164,6 +184,9 @@ async fn trial_request(
         ..ResolvedProvider::default()
     };
     let mut body = trial_body(&config, challenge.as_ref().map(|(_, data)| data.as_str()));
+    if tool_trial {
+        tools::set_challenge(config.kind, &mut body);
+    }
     apply_settings(&config, &mut body);
     body.as_object_mut()
         .expect("trial body")
@@ -172,7 +195,7 @@ async fn trial_request(
         body["provider"] = serde_json::to_value(config.options.routing.clone().unwrap_or_default())
             .map_err(|_| Error::InvalidArgument("Invalid routing for the model trial.".into()))?;
     }
-    let prepared = PreparedProviderRequest {
+    let mut prepared = PreparedProviderRequest {
         kind: config.kind,
         connection_name: config.connection_name.clone(),
         model: model.into(),
@@ -181,8 +204,32 @@ async fn trial_request(
         settings: config.settings.clone(),
         correlation_id: None,
     };
+    let response = receive_trial(&config, &prepared).await?;
+    let mut result = interpret_trial(
+        connection,
+        model,
+        &response,
+        challenge.map(|(colors, _)| colors),
+    )?;
+    if tool_trial {
+        result.tool_round_trip = Some(false);
+        let answer = format!("kuku-{:016x}", fastrand::u64(..));
+        if tools::continue_call(config.kind, &mut prepared.body, &response, &answer) {
+            let reply = receive_trial(&config, &prepared).await?;
+            let continuation = interpret_trial(connection, model, &reply, None)?;
+            result.continuation_cost = Some(continuation.cost);
+            result.tool_round_trip = Some(tools::replied_with(config.kind, &reply, &answer));
+        }
+    }
+    Ok(result)
+}
+
+async fn receive_trial(
+    config: &ResolvedProvider,
+    prepared: &PreparedProviderRequest,
+) -> std::result::Result<Value, TrialProblem> {
     let mut error_body = String::new();
-    let response = super::transport::send_trial(&config, &prepared, &mut error_body)
+    let response = super::transport::send_trial(config, prepared, &mut error_body)
         .await
         .map_err(|failure| TrialProblem {
             route_missing: matches!(failure.status, Some(404 | 405 | 501)),
@@ -213,13 +260,7 @@ async fn trial_request(
         }
         bytes.extend_from_slice(&chunk);
     }
-    let response: Value = serde_json::from_slice(&bytes).map_err(|_| invalid_receipt())?;
-    Ok(interpret_trial(
-        connection,
-        model,
-        &response,
-        challenge.map(|(colors, _)| colors),
-    )?)
+    serde_json::from_slice(&bytes).map_err(|_| invalid_receipt().into())
 }
 
 fn trial_body(config: &ResolvedProvider, image: Option<&str>) -> Value {
@@ -354,6 +395,8 @@ fn interpret_trial(
         usage,
         provider_report: report,
         cost,
+        tool_round_trip: None,
+        continuation_cost: None,
     })
 }
 
