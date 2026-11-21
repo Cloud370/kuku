@@ -462,7 +462,6 @@ def setup_probe_progress(binary, bridge, directory):
                     absent=("Retry in",), rows=20,
                 )["screen"]
                 assert save_results.splitlines()[-2].startswith("│Esc previous step")
-                terminal.request("resize", rows=32, cols=110)
                 terminal.press("\x1b[B\x1b[B\r")
                 terminal.expect("› Thinking")
                 terminal.press("\r")
