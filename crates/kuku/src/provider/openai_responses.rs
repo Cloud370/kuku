@@ -119,6 +119,13 @@ fn input_text_parts(text_parts: &[String]) -> Value {
 pub(crate) fn render_body(request: &ProviderRequest<'_>) -> Value {
     let mut input_items = Vec::new();
 
+    if !request.assembly.system_prompt.is_empty() {
+        input_items.push(json!({
+            "type": "message",
+            "role": "developer",
+            "content": [{"type":"input_text", "text": request.assembly.system_prompt}],
+        }));
+    }
     for message in &request.assembly.prelude_messages {
         input_items.extend(convert_to_input_items(message));
     }
@@ -136,7 +143,6 @@ pub(crate) fn render_body(request: &ProviderRequest<'_>) -> Value {
 
     let mut body = json!({
         "model": request.model,
-        "instructions": request.assembly.system_prompt,
         "input": input_items,
     });
 

@@ -71,6 +71,7 @@ pub(super) enum ReviewAction {
     Thinking,
     Output,
     Advanced,
+    TestTools,
     RepairCredential,
     TrialResults,
     ViewRequests,
@@ -92,6 +93,7 @@ impl ReviewAction {
             Self::Thinking => "Thinking",
             Self::Output => "Output",
             Self::Advanced => "Model capabilities",
+            Self::TestTools => "Test tools",
             Self::RepairCredential => "Paste API key",
             Self::TrialResults => "Model tests",
             Self::ViewRequests => "View requests",
@@ -419,7 +421,7 @@ impl SetupState {
             SetupStep::Review | SetupStep::ReviewSettings => match key.code {
                 KeyCode::Up | KeyCode::Left => self.move_review(-1, mode),
                 KeyCode::Down | KeyCode::Right | KeyCode::Tab => self.move_review(1, mode),
-                KeyCode::Enter => self.choose_review(mode),
+                KeyCode::Enter => self.choose_review(mode, settings),
                 _ => {}
             },
         }
@@ -826,6 +828,9 @@ impl SetupState {
                 ReviewAction::ApiType,
                 ReviewAction::Advanced,
             ];
+            if self.authorized && self.credential_ready() && !self.trials.pending() {
+                choices.push(ReviewAction::TestTools);
+            }
             if mode == SetupMode::FirstRun && self.credential_ready() && !self.trials.pending() {
                 choices.push(ReviewAction::SaveAndExit);
             }
@@ -863,7 +868,7 @@ impl SetupState {
         choices
     }
 
-    fn choose_review(&mut self, mode: SetupMode) {
+    fn choose_review(&mut self, mode: SetupMode, settings: &Settings) {
         let choices = self.review_choices(mode);
         let Some(action) = choices.get(self.review_selection).copied() else {
             self.review_selection = 0;
@@ -871,6 +876,7 @@ impl SetupState {
             return;
         };
         match action {
+            ReviewAction::TestTools => self.test_tools(settings),
             ReviewAction::SaveAndContinue | ReviewAction::SaveAndExit | ReviewAction::Save => {
                 self.save(action);
             }

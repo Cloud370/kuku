@@ -43,6 +43,9 @@ pub(crate) enum ContextControl {
     Reconnect {
         endpoint: Option<String>,
     },
+    CacheWarning {
+        since_turn: u64,
+    },
     Messages,
 }
 

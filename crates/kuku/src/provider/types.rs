@@ -157,6 +157,12 @@ pub struct ProviderSettings {
 pub struct ProviderCapabilities {
     /// Endpoint family that interprets these settings.
     pub profile: ProviderProfile,
+    /// Whether the gateway accepts the Anthropic cache-control extension on the selected route.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub prompt_cache_control: bool,
+    /// Whether the selected route is known to accept native tool calls.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<bool>,
     /// Supported native reasoning values, including none when available.
     pub reasoning_efforts: Vec<String>,
     /// Results from trial requests to this generation endpoint.

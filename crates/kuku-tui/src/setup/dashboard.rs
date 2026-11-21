@@ -56,7 +56,7 @@ impl<'a> ModelChecks<'a> {
         let group = match &row.probe {
             Probe::ApiType { .. }
             | Probe::Trial {
-                check: ModelTrial::Text { .. },
+                check: ModelTrial::Text { .. } | ModelTrial::Tools { .. },
                 ..
             } => &mut self.text,
             Probe::Thinking { .. } => &mut self.thinking,

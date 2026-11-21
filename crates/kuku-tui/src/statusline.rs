@@ -99,7 +99,7 @@ impl StatusLine {
             .map(|snapshot| &snapshot.agent.usage);
         let custom = self.fields.is_some();
         let compact = !custom && width < COMPACT_STATUS_WIDTH;
-        let segments: Vec<_> = self
+        let mut segments: Vec<_> = self
             .fields()
             .iter()
             .filter(|field| {
@@ -111,6 +111,11 @@ impl StatusLine {
                     .map(|segment| (*field, segment))
             })
             .collect();
+        if !self.fields().contains(&Field::Cache) {
+            if let Some(warning) = cache_warning(app) {
+                segments.push((Field::Cache, warning));
+            }
+        }
         if width <= PHONE_WIDTH && height >= TWO_ROW_MIN_HEIGHT {
             let split = if custom {
                 custom_row_break(&segments, width)
@@ -331,11 +336,13 @@ impl Field {
                 usage.is_some_and(UsageTotals::output_tokens_complete),
                 "out",
             ),
-            Self::Cache => Segment::measurement(
-                usage.and_then(UsageTotals::cache_hit_percent),
-                "Cache hit —",
-                |percent| format!("Cache hit {percent:.0}%"),
-            ),
+            Self::Cache => cache_warning(app).unwrap_or_else(|| {
+                Segment::measurement(
+                    usage.and_then(UsageTotals::cache_hit_percent),
+                    "Cache hit —",
+                    |percent| format!("Cache hit {percent:.0}%"),
+                )
+            }),
             Self::Cost => {
                 let session_costs = app
                     .pane()
@@ -366,6 +373,18 @@ impl Field {
         };
         Some(segment)
     }
+}
+
+fn cache_warning(app: &App) -> Option<Segment> {
+    let warning = app.cache_warning()?;
+    Some(Segment::labels(
+        vec![
+            format!("⚠ Cache hit {}%", warning.latest_percent),
+            "⚠ Cache".into(),
+        ],
+        WARNING,
+        Priority::Attention,
+    ))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

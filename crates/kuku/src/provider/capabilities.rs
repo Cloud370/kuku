@@ -18,6 +18,10 @@ pub(crate) fn resolve_capabilities(
     let profile = profile_for(base_url, options.profile);
     let (reasoning, services): (&[&str], &[&str]) = match profile {
         ProviderProfile::DeepSeek => (&["none", "low", "high", "max"], &[]),
+        ProviderProfile::Anthropic if native_sonnet_55(model) => (
+            &["low", "medium", "high", "xhigh", "max"],
+            &["auto", "standard_only"],
+        ),
         ProviderProfile::Anthropic if adaptive_claude(model) => {
             let reasoning = if model.contains("opus-4-7") || model.contains("opus-4-8") {
                 &["none", "low", "medium", "high", "xhigh", "max"][..]
@@ -35,6 +39,14 @@ pub(crate) fn resolve_capabilities(
             if model.starts_with("anthropic/") && adaptive_claude(model) =>
         {
             (&["none", "low", "medium", "high", "xhigh", "max"], &[])
+        }
+        ProviderProfile::OpenAi
+            if openai_gpt_62(model) || model_version(model, "gpt-6.1-terra") =>
+        {
+            (
+                &["low", "medium", "high", "xhigh", "max"],
+                &["auto", "default", "priority"],
+            )
         }
         ProviderProfile::OpenAi if model.starts_with("gpt-5") => (
             &["low", "medium", "high"],
@@ -107,6 +119,11 @@ pub(crate) fn resolve_capabilities(
             }
         }
     }
+    if (profile == ProviderProfile::Anthropic && native_sonnet_55(model))
+        || (profile == ProviderProfile::OpenAi && openai_gpt_62(model))
+    {
+        reasoning_efforts.retain(|effort| effort != "none");
+    }
     let declared_services = resolve.field(
         |entry| entry.service_tiers.as_ref(),
         |entry| entry.service_tiers.as_ref(),
@@ -132,6 +149,12 @@ pub(crate) fn resolve_capabilities(
     };
     ProviderCapabilities {
         profile,
+        prompt_cache_control: profile == ProviderProfile::OpenRouter
+            && model
+                .trim_start_matches('~')
+                .starts_with("anthropic/claude-"),
+        tool_calls: (profile == ProviderProfile::OpenAi && requires_responses_for_tools(model))
+            .then_some(kind == ProviderKind::OpenAiResponses),
         reasoning_efforts,
         thinking_test,
         reasoning_source,
@@ -247,17 +270,32 @@ pub(crate) fn resolve_settings(
             think.and_then(|level| portable_reasoning(level, capabilities)),
         ),
     };
-    validate_choice(
-        connection,
-        "service_tier",
-        service.as_deref(),
-        &capabilities.service_tiers,
-    )?;
+    let native_service = service
+        .as_deref()
+        .filter(|_| capabilities.profile == ProviderProfile::OpenRouter)
+        .map(|tier| normalized_tier(Some(tier)))
+        .filter(|tier| {
+            capabilities
+                .service_tiers
+                .iter()
+                .any(|allowed| normalized_tier(Some(allowed)) == *tier)
+        });
+    if native_service.is_none() {
+        validate_choice(
+            connection,
+            "service_tier",
+            service.as_deref(),
+            &capabilities.service_tiers,
+        )?;
+    }
+    let resolved_service = native_service
+        .map(str::to_owned)
+        .or_else(|| service.clone());
     Ok(ProviderSettings {
         requested_reasoning_effort,
         reasoning_effort,
         requested_service_tier: service.clone(),
-        service_tier: service,
+        service_tier: resolved_service,
     })
 }
 
@@ -297,6 +335,39 @@ fn adaptive_claude(model: &str) -> bool {
         .any(|name| model.contains(name))
 }
 
+fn model_version(model: &str, name: &str) -> bool {
+    model == name
+        || model
+            .strip_prefix(name)
+            .is_some_and(|suffix| suffix.starts_with('-'))
+}
+
+fn native_sonnet_55(model: &str) -> bool {
+    model_version(model, "claude-sonnet-5-5") || model_version(model, "claude-sonnet-5.5")
+}
+
+fn openai_gpt_62(model: &str) -> bool {
+    model_version(model, "gpt-6.2-sol") || model_version(model, "gpt-6.2-astra")
+}
+
+/// Whether a known official route requires Responses to call tools.
+pub fn setup_requires_responses_for_tools(
+    connection: &crate::config::ProviderConfig,
+    model: &str,
+) -> bool {
+    let endpoint = connection
+        .options
+        .endpoint_url
+        .as_deref()
+        .unwrap_or(&connection.base_url);
+    profile_for(endpoint, connection.options.profile) == ProviderProfile::OpenAi
+        && requires_responses_for_tools(model)
+}
+
+fn requires_responses_for_tools(model: &str) -> bool {
+    openai_gpt_62(model) || model_version(model, "gpt-6.1-terra")
+}
+
 fn validate_choice(
     connection: &str,
     setting: &str,
@@ -320,4 +391,76 @@ fn validate_choice(
 
 fn strings(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| (*value).to_string()).collect()
+}
+
+pub(super) fn normalized_tier(tier: Option<&str>) -> &str {
+    match tier {
+        None | Some("standard") => "default",
+        Some("fast") => "priority",
+        Some(tier) => tier,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gateway_cache_control_applies_to_claude_names_and_aliases_only() {
+        for kind in [
+            ProviderKind::OpenAiCompatible,
+            ProviderKind::OpenAiResponses,
+            ProviderKind::Anthropic,
+        ] {
+            for (model, supported) in [
+                ("anthropic/claude-haiku-5.5", true),
+                ("~anthropic/claude-sonnet-latest", true),
+                ("openai/gpt-6-luna", false),
+            ] {
+                let caps = resolve_capabilities(
+                    "https://openrouter.ai/api/v1",
+                    model,
+                    kind,
+                    &ProviderOptions::default(),
+                );
+                assert_eq!(supported, caps.prompt_cache_control);
+            }
+        }
+    }
+
+    #[test]
+    fn official_models_resolve_supported_efforts_and_preserve_provider_default() {
+        for (endpoint, model, kind) in [
+            (
+                "https://api.openai.com/v1",
+                "gpt-6.2-sol",
+                ProviderKind::OpenAiResponses,
+            ),
+            (
+                "https://api.openai.com/v1",
+                "gpt-6.2-astra",
+                ProviderKind::OpenAiResponses,
+            ),
+            (
+                "https://api.anthropic.com/v1",
+                "claude-sonnet-5-5",
+                ProviderKind::Anthropic,
+            ),
+        ] {
+            let caps = resolve_capabilities(endpoint, model, kind, &ProviderOptions::default());
+            assert_eq!(
+                vec!["low", "medium", "high", "xhigh", "max"],
+                caps.selectable_reasoning_efforts().collect::<Vec<_>>()
+            );
+            let explicit =
+                resolve_settings("fixture", &caps, Some("xhigh".into()), None, None).unwrap();
+            assert_eq!(Some("xhigh"), explicit.reasoning_effort.as_deref());
+            let portable =
+                resolve_settings("fixture", &caps, None, Some(ThinkLevel::Low), None).unwrap();
+            assert_eq!(Some("low"), portable.reasoning_effort.as_deref());
+            let default = resolve_settings("fixture", &caps, None, None, None).unwrap();
+            assert_eq!(None, default.reasoning_effort);
+            assert!(resolve_settings("fixture", &caps, Some("none".into()), None, None).is_err());
+        }
+    }
 }

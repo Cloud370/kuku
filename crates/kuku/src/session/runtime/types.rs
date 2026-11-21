@@ -528,8 +528,23 @@ pub struct TurnSummary {
     pub output_tokens: Option<u64>,
     /// Token-weighted cache-read percentage over attempts with paired counts.
     pub cache_hit_percent: Option<f64>,
+    /// The Turn reused a comparable prefix and had a low cache-read rate.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub low_cache_hit: bool,
     /// Number of committed tool calls, including calls waiting for authorization.
     pub tool_calls: u64,
+}
+
+/// Two or more consecutive comparable Turns with low measured cache reads.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CacheWarning {
+    /// The first Turn that raised this warning episode.
+    pub since_turn: u64,
+    /// Whole percent shown in the footer for the latest comparable Turn.
+    pub latest_percent: u8,
+    /// Cache reads and input tokens from the last two comparable Turns.
+    pub read_tokens: u64,
+    pub input_tokens: u64,
 }
 
 /// Queryable state of an agent without consuming its output.
@@ -560,6 +575,9 @@ pub struct AgentSnapshot {
     /// Final wall time for the latest Turn, present only after terminal settlement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_elapsed_ms: Option<u64>,
+    /// Measured low cache reads on the current route, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_warning: Option<CacheWarning>,
     /// Durable identity of the observed execution, including a pending wait or cleanup.
     #[serde(default)]
     pub execution_id: Option<u64>,

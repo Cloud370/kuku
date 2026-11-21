@@ -29,6 +29,11 @@ pub(crate) fn prepare_provider_request(
             "This Agent requests image output. The built-in runtime supports text output only.",
         ));
     }
+    if config.capabilities.tool_calls == Some(false) && !request.assembly.tools.is_empty() {
+        return Err(invalid_request(
+            "This OpenAI model requires Responses for tool calls. Switch the model route to Responses.",
+        ));
+    }
     validate_replay(config, request)?;
     let url = request_url(config)?;
     let mut body = match config.kind {
@@ -38,12 +43,6 @@ pub(crate) fn prepare_provider_request(
     };
     body["stream"] = json!(true);
     apply_settings(config, &mut body);
-    if config.kind == ProviderKind::OpenAiCompatible
-        && config.capabilities.profile == ProviderProfile::OpenRouter
-        && config.model.starts_with("anthropic/claude-")
-    {
-        body["cache_control"] = json!({"type": "ephemeral"});
-    }
     let correlation_id = correlation.map(correlation_id);
     if let Some(cache_key) = prompt_cache_key(config, correlation, &url) {
         body["prompt_cache_key"] = json!(cache_key);
@@ -136,6 +135,8 @@ pub(super) fn apply_settings(config: &ResolvedProvider, body: &mut Value) {
     }
     if config.capabilities.profile == ProviderProfile::DeepSeek {
         object.remove("cache_control");
+    } else if config.capabilities.prompt_cache_control {
+        body["cache_control"] = json!({"type": "ephemeral"});
     }
     if let Some(effort) = config.settings.reasoning_effort.as_deref() {
         match config.kind {
@@ -391,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn openrouter_claude_chat_requests_automatic_prompt_caching() {
+    fn openrouter_claude_protocols_request_automatic_prompt_caching() {
         let workspace = tempfile::tempdir().unwrap();
         let correlation = ProviderCorrelation {
             session_id: "session".into(),
@@ -400,25 +401,30 @@ mod tests {
             workspace: workspace.path().into(),
         };
 
-        for model in ["anthropic/claude-sonnet-5.5", "anthropic/claude-sonnet-4.5"] {
-            let config = provider_config(
+        for model in [
+            "anthropic/claude-sonnet-5.5",
+            "~anthropic/claude-sonnet-latest",
+        ] {
+            for kind in [
                 ProviderKind::OpenAiCompatible,
-                ProviderProfile::OpenRouter,
-                model,
-            );
-            let prepared = prepared_request(&config, Some(&correlation));
-
-            assert_eq!(json!({"type": "ephemeral"}), prepared.body["cache_control"]);
-            assert_eq!(
-                prepared.correlation_id.as_deref(),
-                prepared.body["session_id"].as_str()
-            );
-            assert!(prepared.body.get("prompt_cache_key").is_none());
+                ProviderKind::OpenAiResponses,
+                ProviderKind::Anthropic,
+            ] {
+                let mut config = provider_config(kind, ProviderProfile::OpenRouter, model);
+                config.capabilities.prompt_cache_control = true;
+                let prepared = prepared_request(&config, Some(&correlation));
+                assert_eq!(json!({"type": "ephemeral"}), prepared.body["cache_control"]);
+                assert_eq!(model, prepared.body["model"]);
+                assert_eq!(
+                    prepared.correlation_id.as_deref(),
+                    prepared.body["session_id"].as_str()
+                );
+            }
         }
     }
 
     #[test]
-    fn automatic_chat_cache_control_is_scoped_to_openrouter_claude_models() {
+    fn gateway_cache_control_is_scoped_to_supported_routes() {
         let cases = [
             (
                 ProviderKind::OpenAiCompatible,
@@ -453,7 +459,7 @@ mod tests {
             (
                 ProviderKind::OpenAiResponses,
                 ProviderProfile::OpenRouter,
-                "anthropic/claude-sonnet-5.5",
+                "openai/gpt-6.2-sol",
             ),
         ];
 
@@ -464,6 +470,24 @@ mod tests {
                 prepared.body.get("cache_control").is_none(),
                 "unexpected cache_control for {kind:?}, {profile:?}, {model}"
             );
+        }
+    }
+
+    #[test]
+    fn responses_starts_with_the_standard_developer_item() {
+        for (profile, model) in [
+            (ProviderProfile::OpenAi, "gpt-6.2-sol"),
+            (ProviderProfile::OpenAi, "gpt-6.2-astra"),
+            (ProviderProfile::Compatible, "fixture"),
+        ] {
+            let config = provider_config(ProviderKind::OpenAiResponses, profile, model);
+            let request = prepared_request(&config, None);
+            assert!(request.body.get("instructions").is_none());
+            let input = request.body["input"].as_array().unwrap();
+            assert_eq!(input.len(), 2);
+            assert_eq!(input[0]["role"], "developer");
+            assert_eq!(input[0]["content"][0]["text"], "fixed system");
+            assert_eq!(input[1]["role"], "user");
         }
     }
 
