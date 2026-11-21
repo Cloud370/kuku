@@ -27,6 +27,7 @@ const MAX_EXCEPTION_BYTES: usize = 2048;
 const MAX_METHOD_DEFINITION_BYTES: usize = 64 * 1024;
 const MAX_OUTPUT_LINE_BYTES: usize = 128 * 1024;
 const TOOLS_INSTALLER: &str = include_str!("tools.js");
+const CONSOLE_INSTALLER: &str = include_str!("console.js");
 
 pub(super) struct Request {
     pub(super) ordinal: usize,
@@ -145,13 +146,26 @@ struct Worker<'js> {
 impl<'js> Worker<'js> {
     fn run(&self, source: String, methods: Vec<ToolDefinition>) -> Result<Value, Failure> {
         self.check_running()?;
+        let console = self.console().map_err(|error| self.describe(error))?;
         let result = self
             .start(source, methods)
             .and_then(|promise| self.complete(promise));
         self.pending.borrow_mut().closed = true;
+        let result = result.and_then(|value| {
+            if value.is_undefined() {
+                console.call(()).map_err(|error| self.describe(error))
+            } else {
+                Ok(value)
+            }
+        });
         let result = result.and_then(|value| self.return_value(value));
         self.check_running()?;
         result
+    }
+
+    fn console(&self) -> rquickjs::Result<Function<'js>> {
+        let install: Function = self.ctx.eval(CONSOLE_INSTALLER)?;
+        install.call((self.execution.limits.result_bytes,))
     }
 
     fn start(

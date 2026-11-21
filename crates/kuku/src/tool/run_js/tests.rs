@@ -655,6 +655,62 @@ fn facts(result: &ToolResultEnvelope) -> WorkspaceScriptFacts {
     WorkspaceScriptFacts::from_structured(result.structured.as_ref().unwrap()).unwrap()
 }
 
+#[tokio::test]
+async fn console_log_returns_text_after_host_actions() {
+    let result = run(
+        r#"
+        const read = await tools.read_file({path: "input"});
+        console.log("rows", {found: read.result.count});
+        console.log("中文 🦉");
+        "#,
+        TestHost {
+            operations: vec![ScriptOperation::ReadFile],
+            callback: |_, _| async { ToolResultEnvelope::ok("read", "", json!({"count": 3})) },
+        },
+        WorkspaceScriptLimits::default(),
+    )
+    .await;
+    assert_eq!("ok", result.status, "{}", result.model_content);
+    let recorded = facts(&result);
+    assert_eq!("rows {\"found\":3}\n中文 🦉", recorded.value);
+    assert_eq!(1, recorded.actions.len());
+    assert_eq!(WorkspaceScriptActionStatus::Ok, recorded.actions[0].status);
+}
+
+#[tokio::test]
+async fn console_log_respects_the_result_bound_and_explicit_returns() {
+    for (source, expected) in [
+        (r#"console.log("\u0000".repeat(1024));"#, None),
+        (
+            r#"console.log("large payload".repeat(1024)); return null;"#,
+            Some(Value::Null),
+        ),
+    ] {
+        let result = run(
+            source,
+            TestHost {
+                operations: vec![],
+                callback: |_, _| async { panic!("logging must stay in the worker") },
+            },
+            WorkspaceScriptLimits {
+                result_bytes: 128,
+                ..WorkspaceScriptLimits::default()
+            },
+        )
+        .await;
+        assert_eq!("ok", result.status, "{}", result.model_content);
+        assert!(result.model_content.len() <= 128);
+        let value = facts(&result).value;
+        if let Some(expected) = expected {
+            assert_eq!(expected, value);
+        } else {
+            let text = value.as_str().unwrap();
+            assert!(text.starts_with('\0'));
+            assert!(text.ends_with("[console output truncated]"));
+        }
+    }
+}
+
 async fn run<F, Fut>(
     code: &str,
     host: TestHost<F>,

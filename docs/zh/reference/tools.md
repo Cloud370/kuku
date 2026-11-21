@@ -115,7 +115,7 @@ Session 的默认预览上限为 8 KiB，包含摘要和保留输出引用。即
 
 大多数宿主方法返回 `{status, result, truncated}`。确认 `status: "ok"` 后，从 `result` 读取结构化数据。动作失败时会附带 `error`。将列表或分页当作完整结果之前，检查 `truncated`。例如，`tools.read_file({path})` 提供原始 `result.raw_text`、SHA-256 `content_hash`，以及从 `start_byte` 到 `end_byte` 的左闭右开字节范围。脚本可用已观察的范围继续编辑，无需把文件内容返回给模型。同一文件版本的读取覆盖全文后，还可以覆盖或移除该文件。在同一次调用中，脚本也可以编辑或覆盖由自身写入完整内容且已确认成功的确切版本。动作仍需经过宿主授权与版本检查。
 
-脚本可以返回较小的 JSON 值，为模型提供所需的证据。处理大输出时，用 `tools.output_lines({id, stream: "stdout"})` 逐行遍历，只保留计算所需的状态。原始字节可以通过[保留输出](#保留的工具输出)读取。JavaScript 变量只在当次调用中存在。可以把选中的结果存为[命名值](#命名会话值)，也可以按用户要求把交付物写入工作区。
+脚本可以返回较小的 JSON 值，为模型提供所需的证据。脚本结束时若没有返回值，`console.log(...values)` 可交付有界文本。显式返回值优先，包括 `null`。处理大输出时，用 `tools.output_lines({id, stream: "stdout"})` 逐行遍历，只保留计算所需的状态。原始字节可以通过[保留输出](#保留的工具输出)读取。JavaScript 变量只在当次调用中存在。可以把选中的结果存为[命名值](#命名会话值)，也可以按用户要求把交付物写入工作区。
 
 `await tools.run_command({program, args?, cwd?})` 等待命令结束。要让脚本在后台运行，在外层 `run_js` 调用上设置 `background: true`。进程退出时，只要有整数退出码，就返回 `{exit_code, duration_ms, capture_complete, output_ref, stdout, stderr}`，包括非零退出码。拒绝派发、启动失败、超时或取消等情况会抛出错误。错误提供 `status`，并在可用时附带 `termination`、`signal` 或 `output_ref`。
 
