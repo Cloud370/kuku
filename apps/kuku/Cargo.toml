@@ -24,7 +24,7 @@ kuku-tui = { path = "../../crates/kuku-tui" }
 clap = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 axum = { workspace = true }
-rust-embed = { version = "8", optional = true, features = [] }
+rust-embed = { version = "8", optional = true, features = ["debug-embed"] }
 
 [[test]]
 name = "interactive_pty"

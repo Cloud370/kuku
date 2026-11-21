@@ -543,8 +543,9 @@ def run_benchmark(args, directory, record, secrets):
     record["passed"] = all(attempt["passed"] for attempt in record["attempts"])
 
 
-def selected_commands(group):
-    contract = ["cargo", "test", "--workspace", "--no-fail-fast", "--timings", "--features", "kuku/test_support"]
+def selected_commands(group, embedded_web_assets=False):
+    features = "kuku/test_support,kuku-app/embedded-web-assets" if embedded_web_assets else "kuku/test_support"
+    contract = ["cargo", "test", "--workspace", "--no-fail-fast", "--timings", "--features", features]
     if os.name == "nt":
         contract += ["--", "--test-threads=1"]
     if group == "contract":
@@ -737,7 +738,21 @@ def run_interactive(args, directory, record):
 
         version = checked([str(binary), "--version"], "installed-version", timeout=30, cwd=scratch_dir)
         record["binary"]["version"] = Path(version["log"]).read_text(encoding="utf-8").strip()
-        bridge_source = build_bridge()
+        bridge_cache = args.bridge_cache.resolve() if args.bridge_cache else None
+        if bridge_cache and bridge_cache.is_file():
+            bridge_source = bridge_cache
+            record["bridge_build"] = {"cached": True}
+        else:
+            bridge_source = build_bridge()
+            if bridge_cache:
+                bridge_cache.parent.mkdir(parents=True, exist_ok=True)
+                with tempfile.NamedTemporaryFile(dir=bridge_cache.parent, delete=False) as staged:
+                    staged_cache = Path(staged.name)
+                try:
+                    shutil.copy2(bridge_source, staged_cache)
+                    staged_cache.replace(bridge_cache)
+                finally:
+                    staged_cache.unlink(missing_ok=True)
         bridge = scratch_dir / f"interactive_pty{EXE}"
         shutil.copy2(bridge_source, bridge)
         record["bridge"] = config_record(bridge)
@@ -777,7 +792,9 @@ def parser():
     root.add_argument("--output", type=Path, default=OUTPUT, help="ignored local evidence directory")
     root.add_argument("--run-id", default=None, help="unique evidence/reservation id; never reuse for a paid rerun")
     sub = root.add_subparsers(dest="group", required=True)
-    for group in ("contract", "protocol", "integration", "list"):
+    sub.add_parser("contract").add_argument("--embedded-web-assets", action="store_true",
+                                            help="compile the app with prepared Web assets for debug acceptance")
+    for group in ("protocol", "integration", "list"):
         sub.add_parser(group)
     interactive = sub.add_parser("interactive", help="accept an installed kuku with a local provider and a native PTY")
     product = interactive.add_mutually_exclusive_group()
@@ -787,6 +804,7 @@ def parser():
     interactive.add_argument("--scratch-base", type=Path, help="temporary installation and workspaces outside the checkout")
     interactive.add_argument("--browser", action="store_true", help="also exercise the embedded WebUI with Playwright Chromium")
     interactive.add_argument("--native-smoke", action="store_true", help="exercise composer actions, first run, model editing and paste on the native terminal")
+    interactive.add_argument("--bridge-cache", type=Path, help="reuse or populate the native PTY helper at this keyed cache path")
     scenario = interactive.add_mutually_exclusive_group()
     scenario.add_argument("--desktop", action="store_true", help="also exercise an isolated Linux or Windows graphical terminal")
     scenario.add_argument("--live", action="store_true", help="run the budgeted release-archive and real-model handoff")
@@ -948,7 +966,8 @@ def main():
                                                   args.connection, args.container_data, require_streaming=args.require_streaming)
             record["passed"] = record["sdk_evidence"]["passed"]
         else:
-            commands = selected_commands(args.group) if not paid else [args.command[1:] if args.command[:1] == ["--"] else args.command]
+            commands = (selected_commands(args.group, getattr(args, "embedded_web_assets", False))
+                        if not paid else [args.command[1:] if args.command[:1] == ["--"] else args.command])
             if not all(commands):
                 raise ValueError("live requires a public SDK/CLI command after --")
             env = command_environment(secrets)
