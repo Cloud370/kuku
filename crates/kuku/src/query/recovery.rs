@@ -168,6 +168,17 @@ async fn dispatch_recovery(
     });
     let provider_request = request.request();
     let handoff_active = pending.handoff_triggered;
+    let pricing = crate::provider::prepare::request_url(&resolved).map_or_else(
+        |_| crate::provider::cost::RequestPricing::default(),
+        |url| {
+            crate::provider::cost::RequestPricing::new(
+                &resolved.options,
+                &resolved.model,
+                &url,
+                resolved.settings.service_tier.as_deref(),
+            )
+        },
+    );
     match crate::provider::stream_provider(&resolved, &provider_request, trace).await {
         Ok(stream) => Ok(PendingStep::Streaming(Box::new(StreamingChunkState {
             model_permit: None,
@@ -178,7 +189,7 @@ async fn dispatch_recovery(
             provider_attempt: 1,
             stream_failure: None,
             accounting: super::types::RequestAccounting {
-                pricing: resolved.options.model_pricing.get(&resolved.model).cloned(),
+                pricing,
                 ..Default::default()
             },
             accumulated_text: String::new(),

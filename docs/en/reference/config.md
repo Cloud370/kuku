@@ -63,6 +63,7 @@ On Chat and Responses, omit `max_output_tokens` to use the upstream default. Nat
 | `models_url` | string | Optional full URL for standard model discovery |
 | `proxy` | table | Connection network path for discovery, trials and model requests |
 | `model_pricing` | table | USD accounting preferences keyed by exact model ID |
+| `model_price_catalogs` | table | Public OpenRouter endpoint quotes saved by model setup |
 | `model_capabilities` | table | Model-list declarations, manual overrides, and accepted thinking values keyed by exact model ID |
 | `api_key` | string | `$ENV_VAR_NAME`, a literal key, or `file:<absolute-path>` |
 | `auth` | `bearer`\|`x-api-key` | Override authentication independently of `format` |
@@ -78,7 +79,9 @@ Use either `base_url` or `endpoint_url`. For example, the DeepSeek Chat base URL
 
 Set `proxy.mode` to `environment` (the default), `direct`, or `explicit`. For `explicit`, set `proxy.url` to an `http://`, `socks5://`, or `socks5h://` address. SOCKS5 resolves DNS on the client. SOCKS5H resolves it at the proxy. An authenticated proxy uses `proxy.auth.username` and one of `proxy.auth.password_env` or `proxy.auth.password_file`. The latter takes an absolute path and uses the same private-file checks as a model key.
 
-Each `model_pricing` entry sets `mode` to `automatic`, `configured`, or `usage-only`. Configured rates use USD per million tokens and apply to the connection and model named in the table. Set `input`, `output`, `cache_read`, and `cache_write` as applicable. Use `cache_write_5m` and `cache_write_1h` when the provider reports separate write durations. Amounts use the provider receipt when available, or an estimate from matching rates and complete usage. OpenRouter lookup shows the exact route quotes. The attempt's stored estimate retains its rate basis.
+Each `model_pricing` entry applies to the connection and exact model named in the table. The default `automatic` mode uses a provider receipt when available. It can estimate from OpenRouter quotes saved during setup when the response identifies one matching endpoint and service tier. Running setup again refreshes those quotes. The `configured` mode adds manual rates for a direct connection's standard tier. Use `routed` to enter separate rate rows for distinct serving endpoints or tiers. Use the provider's full endpoint tag when known and omit it for a direct connection. `usage-only` records tokens and leaves the monetary amount unknown.
+
+Rates use USD per million tokens. Set `input`, `output`, `cache_read`, and `cache_write` as applicable. Use `cache_write_5m` and `cache_write_1h` when the provider reports separate write durations. The estimate keeps the selected rates and their source. Missing usage or several possible prices leaves the amount unknown.
 
 ```toml
 [provider.gateway.proxy]
@@ -90,6 +93,15 @@ mode = "configured"
 input = 0.2
 output = 1.0
 cache_read = 0.05
+
+[provider.direct.model_pricing."example/model"]
+mode = "routed"
+
+[[provider.direct.model_pricing."example/model".routes]]
+service_tier = "priority"
+input = 0.4
+output = 2.0
+cache_read = 0.1
 ```
 
 A model capability entry has independent `discovered` and `manual` declarations. The supported fields are `reasoning_efforts`, `reasoning_default`, `input_modalities`, `output_modalities`, and `interfaces`. A `protocols` table can declare protocol-specific fields such as `anthropic_messages.system_prompt_update`. The resolver labels sources, keeps omitted values unknown, and preserves manual values across refreshes. An Agent can request image output when the route declares it or leaves output unknown. The built-in adapters support text and refuse image execution before dispatch. [DeepSeek model list](https://api-docs.deepseek.com/api/list-models/) · [OpenRouter model list](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties)

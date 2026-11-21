@@ -281,9 +281,7 @@ impl ConfigFile {
                 .validate()
                 .map_err(|error| Error::ConfigLoad(format!("provider '{name}': {error}")))?;
             for (model, pricing) in &entry.options.model_pricing {
-                if model.trim().is_empty()
-                    || matches!(pricing, super::ModelPricing::Configured { rates } if !rates.valid())
-                {
+                if model.trim().is_empty() || !pricing.valid() {
                     return Err(Error::ConfigLoad(format!(
                         "provider '{name}': invalid USD pricing for model '{model}'"
                     )));

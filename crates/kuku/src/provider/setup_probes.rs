@@ -2,14 +2,12 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::config::{
-    resolve_request_url, ModelPricing, ModelThinkingTest, ProviderConfig, ProviderFormat,
-};
-use crate::{CapabilitySource, Error, Result};
+use crate::config::{resolve_request_url, ModelThinkingTest, ProviderConfig, ProviderFormat};
+use crate::{Error, Result};
 
 use super::capabilities::thinking_scope;
 use super::setup_api::{check_setup_api, DECLARED_ORDER};
-use super::setup_reasoning::{bounded_levels, check_reasoning, reply_accepted};
+use super::setup_reasoning::{check_reasoning, reply_accepted};
 use super::trial::{trial_with_route_evidence, TrialProblem};
 use super::types::ProviderFailureKind;
 use super::{
@@ -22,106 +20,10 @@ const IN_FLIGHT: usize = 2;
 const MAX_MODEL_IN_FLIGHT: usize = 6;
 const MAX_RATE_LIMIT_RETRIES: u8 = 2;
 
-/// A selected model with the settings to check at its actual endpoint.
-#[derive(Debug, Clone)]
-pub struct TrialSelection {
-    pub model: String,
-    pub effort: Option<String>,
-    pub service_tier: Option<String>,
-}
+mod plan;
+mod pricing;
 
-/// Plan baseline, media, thinking and pricing tests. Calling this does not dispatch requests.
-pub fn plan_model_trials(
-    connection: Arc<ProviderConfig>,
-    models: impl IntoIterator<Item = TrialSelection>,
-) -> Vec<Probe> {
-    let mut requests = Vec::new();
-    let mut images = Vec::new();
-    let mut thinking = Vec::new();
-    for TrialSelection {
-        model,
-        effort,
-        service_tier,
-    } in models
-    {
-        if matches!(
-            connection.options.model_pricing.get(&model),
-            None | Some(ModelPricing::Automatic)
-        ) {
-            if let Some(url) = openrouter_quote_url(&connection, &model) {
-                requests.push(Probe::Quotes {
-                    connection: Arc::clone(&connection),
-                    model: model.clone(),
-                    url,
-                    service_tier: service_tier.clone(),
-                });
-            }
-        }
-        let capabilities = crate::adapter::inspect_connection_model(&connection, &model).ok();
-        let image = capabilities
-            .as_ref()
-            .and_then(|caps| caps.input_modalities.as_ref())
-            .is_none_or(|media| media.value.iter().any(|item| item == "image"));
-        requests.push(Probe::Trial {
-            connection: Arc::clone(&connection),
-            model: model.clone(),
-            check: ModelTrial::Text {
-                effort: effort.clone(),
-                service_tier: service_tier.clone(),
-            },
-        });
-        if image {
-            images.push(Probe::Trial {
-                connection: Arc::clone(&connection),
-                model: model.clone(),
-                check: ModelTrial::ImageInput {
-                    service_tier: service_tier.clone(),
-                },
-            });
-        }
-        let declared = capabilities
-            .as_ref()
-            .filter(|caps| {
-                matches!(
-                    caps.reasoning_source,
-                    Some(
-                        CapabilitySource::ModelList
-                            | CapabilitySource::ProtocolModelList
-                            | CapabilitySource::Manual
-                            | CapabilitySource::ProtocolManual
-                    )
-                )
-            })
-            .map(|caps| bounded_levels(caps.reasoning_efforts.iter().map(String::as_str)));
-        let mut checks = declared.filter(|levels| !levels.is_empty()).map_or_else(
-            || vec![ReasoningCheck::Discover],
-            |levels| levels.into_iter().map(ReasoningCheck::Level).collect(),
-        );
-        if let Some(effort) = effort {
-            checks.retain(|check| *check != ReasoningCheck::Level(effort.clone()));
-        }
-        thinking.push(
-            checks
-                .into_iter()
-                .map(|check| Probe::Thinking {
-                    connection: Arc::clone(&connection),
-                    model: model.clone(),
-                    check,
-                    service_tier: service_tier.clone(),
-                })
-                .collect::<std::collections::VecDeque<_>>(),
-        );
-    }
-    while thinking.iter().any(|checks| !checks.is_empty()) {
-        requests.extend(
-            thinking
-                .iter_mut()
-                .filter_map(std::collections::VecDeque::pop_front),
-        );
-    }
-    requests.extend(images);
-    requests
-}
+pub use plan::{plan_model_trials, TrialSelection};
 
 /// One request in a setup plan.
 #[derive(PartialEq)]
@@ -637,34 +539,6 @@ impl ProbeBatch {
         (!test.accepted.is_empty() || !test.rejected.is_empty()).then_some(test)
     }
 
-    /// Service tiers advertised by the public catalog for the selected model.
-    pub fn advertised_service_tiers(
-        &self,
-        connection: &ProviderConfig,
-        model: &str,
-    ) -> Option<Vec<String>> {
-        self.selected_rows()
-            .find_map(|row| match (&row.probe, &row.progress) {
-                (
-                    Probe::Quotes {
-                        connection: tested,
-                        model: id,
-                        ..
-                    },
-                    ProbeProgress::Finished(_, Ok(ProbeResult::Quotes(quotes))),
-                ) if id == model
-                    && openrouter_quote_url(tested, id)
-                        == openrouter_quote_url(connection, model) =>
-                {
-                    super::openrouter_catalog::service_tiers(
-                        quotes,
-                        connection.options.routing.as_ref(),
-                    )
-                }
-                _ => None,
-            })
-    }
-
     pub fn pending(&self) -> bool {
         !self.tasks.is_empty() || self.next_retry().is_some()
     }
@@ -742,6 +616,7 @@ impl ProbeBatch {
             let checks = self.follow_up_thinking(index, &result);
             self.rows[index].progress = ProbeProgress::Finished(elapsed, result);
             self.rows[index].failure_status = status;
+            self.update_price_estimates(index);
             self.add_rows(checks);
         } else if joined.is_err_and(|error| !error.is_cancelled()) {
             self.tasks.abort_all();

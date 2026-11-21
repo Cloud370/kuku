@@ -575,6 +575,7 @@ fn save_with_lookup(
         .map_err(|error| invalid_config(&error))?;
     let provider_name = super::connection_name::for_save(settings, choice, &connection);
     state.update_capabilities(&mut connection);
+    state.update_price_catalogs(&mut connection);
     if !settings.existing {
         edit_table(&mut document, "provider")?.clear();
         edit_table(&mut document, "model")?.clear();
@@ -633,6 +634,23 @@ fn save_with_lookup(
             "model_pricing",
             Item::Value(Value::InlineTable(pricing.into_table().into_inline_table())),
         );
+    }
+    let catalogs = &connection.options.model_price_catalogs;
+    if original.map_or(!catalogs.is_empty(), |old| {
+        &old.options.model_price_catalogs != catalogs
+    }) {
+        if catalogs.is_empty() {
+            provider.remove("model_price_catalogs");
+        } else {
+            let catalogs = toml_edit::ser::to_document(catalogs)
+                .map_err(|_| invalid_config("could not encode route price quotes"))?;
+            provider.insert(
+                "model_price_catalogs",
+                Item::Value(Value::InlineTable(
+                    catalogs.into_table().into_inline_table(),
+                )),
+            );
+        }
     }
     if let ConnectionChoice::Preset(preset) = choice {
         if let toml::Value::String(profile) = toml::Value::try_from(preset.profile())

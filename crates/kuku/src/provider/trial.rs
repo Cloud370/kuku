@@ -13,7 +13,7 @@ use crate::event::ModelStopReason;
 use crate::{Error, Result};
 
 use super::capabilities::resolve_settings;
-use super::cost::{request_cost, RequestCost};
+use super::cost::{RequestCost, RequestPricing};
 use super::prepare::{apply_settings, request_url};
 use super::report::{normalize_usage, ReportAccumulator};
 use super::types::{
@@ -72,6 +72,10 @@ pub struct TrialResult {
     /// Cost evidence for a follow-up request that supplied a synthetic tool result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continuation_cost: Option<RequestCost>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation_usage: Option<ProviderUsage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation_report: Option<ProviderReport>,
 }
 
 /// Test only the selected connection and model with synthetic input.
@@ -205,9 +209,15 @@ async fn trial_request(
         correlation_id: None,
     };
     let response = receive_trial(&config, &prepared).await?;
-    let mut result = interpret_trial(
-        connection,
+    let pricing = RequestPricing::new(
+        &config.options,
         model,
+        &prepared.url,
+        prepared.settings.service_tier.as_deref(),
+    );
+    let mut result = interpret_trial(
+        connection.format,
+        &pricing,
         &response,
         challenge.map(|(colors, _)| colors),
     )?;
@@ -216,8 +226,10 @@ async fn trial_request(
         let answer = format!("kuku-{:016x}", fastrand::u64(..));
         if tools::continue_call(config.kind, &mut prepared.body, &response, &answer) {
             let reply = receive_trial(&config, &prepared).await?;
-            let continuation = interpret_trial(connection, model, &reply, None)?;
+            let continuation = interpret_trial(connection.format, &pricing, &reply, None)?;
             result.continuation_cost = Some(continuation.cost);
+            result.continuation_usage = continuation.usage;
+            result.continuation_report = continuation.provider_report;
             result.tool_round_trip = Some(tools::replied_with(config.kind, &reply, &answer));
         }
     }
@@ -299,13 +311,13 @@ fn trial_body(config: &ResolvedProvider, image: Option<&str>) -> Value {
 }
 
 fn interpret_trial(
-    connection: &ProviderConfig,
-    model: &str,
+    format: crate::config::ProviderFormat,
+    pricing: &RequestPricing,
     response: &Value,
     expected: Option<[usize; 4]>,
 ) -> Result<TrialResult> {
     use crate::config::ProviderFormat;
-    let (text, reasoning_block, reason) = match connection.format {
+    let (text, reasoning_block, reason) = match format {
         ProviderFormat::OpenAiChat => {
             let message = response
                 .pointer("/choices/0/message")
@@ -354,7 +366,7 @@ fn interpret_trial(
         report
             .raw_usage
             .as_ref()
-            .map(|raw| normalize_usage(connection.format, raw))
+            .map(|raw| normalize_usage(format, raw))
     });
     let observed_reasoning = reasoning_block
         || [
@@ -375,11 +387,7 @@ fn interpret_trial(
     let image_match = expected_colors
         .as_ref()
         .map(|expected| observed_colors.as_slice() == expected.as_slice());
-    let cost = request_cost(
-        connection.options.model_pricing.get(model),
-        usage.as_ref(),
-        report.as_ref(),
-    );
+    let cost = pricing.cost(usage.as_ref(), report.as_ref());
     Ok(TrialResult {
         text_returned: !text.trim().is_empty(),
         observed_reasoning,
@@ -397,6 +405,8 @@ fn interpret_trial(
         cost,
         tool_round_trip: None,
         continuation_cost: None,
+        continuation_usage: None,
+        continuation_report: None,
     })
 }
 
@@ -477,7 +487,7 @@ mod tests {
     use crate::config::{ApiKey, ProviderConfig, ProviderFormat};
     use crate::event::ModelStopReason;
 
-    use super::{interpret_trial, recognized_colors};
+    use super::{interpret_trial, recognized_colors, RequestPricing};
 
     #[test]
     fn chat_trial_distinguishes_a_cut_off_reply_from_a_wrong_image_answer() {
@@ -491,7 +501,13 @@ mod tests {
             "message": {"content": null, "reasoning_content": "working"},
             "finish_reason": "length"
         }]});
-        let result = interpret_trial(&connection, "fixture", &limit, Some([0, 1, 2, 3])).unwrap();
+        let result = interpret_trial(
+            connection.format,
+            &RequestPricing::default(),
+            &limit,
+            Some([0, 1, 2, 3]),
+        )
+        .unwrap();
         assert_eq!(Some(ModelStopReason::Length), result.stop_reason);
         assert!(!result.text_returned);
         assert!(result.observed_reasoning);
@@ -501,7 +517,13 @@ mod tests {
             "message": {"content": [{"type": "text", "text": "red, green, blue, yellow"}]},
             "finish_reason": "stop"
         }]});
-        let result = interpret_trial(&connection, "fixture", &reply, Some([0, 1, 2, 3])).unwrap();
+        let result = interpret_trial(
+            connection.format,
+            &RequestPricing::default(),
+            &reply,
+            Some([0, 1, 2, 3]),
+        )
+        .unwrap();
         assert_eq!(Some(ModelStopReason::EndTurn), result.stop_reason);
         assert!(result.text_returned);
         assert_eq!(Some(true), result.image_match);

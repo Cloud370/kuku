@@ -19,6 +19,22 @@ impl ReportAccumulator {
         update_string(&mut self.report.model, response.get("model"));
         update_string(&mut self.report.provider, response.get("provider"));
         update_string(&mut self.report.service_tier, response.get("service_tier"));
+        if let Some(routing) = response.get("openrouter_metadata") {
+            if let Some(is_byok) = routing.get("is_byok").and_then(Value::as_bool) {
+                self.report.is_byok = Some(is_byok);
+            }
+            if let Some(endpoints) = routing
+                .pointer("/endpoints/available")
+                .and_then(Value::as_array)
+            {
+                let mut selected = endpoints
+                    .iter()
+                    .filter(|endpoint| endpoint["selected"] == true);
+                if let Some(endpoint) = selected.next().filter(|_| selected.next().is_none()) {
+                    update_string(&mut self.report.provider, endpoint.get("provider"));
+                }
+            }
+        }
         update_string(
             &mut self.report.reasoning_effort,
             response
@@ -152,6 +168,29 @@ mod tests {
     use serde_json::json;
 
     use super::{normalize_usage, ProviderFormat, ReportAccumulator};
+
+    #[test]
+    fn reads_the_selected_openrouter_provider_from_responses_metadata() {
+        let mut reports = ReportAccumulator::default();
+        let report = reports
+            .observe(&json!({
+                "model": "openai/gpt-6-luna",
+                "service_tier": "default",
+                "openrouter_metadata": {
+                    "is_byok": false,
+                    "endpoints": { "available": [
+                        { "provider": "OpenAI", "selected": false },
+                        { "provider": "Azure", "selected": true }
+                    ]}
+                },
+                "usage": { "input_tokens": 100, "output_tokens": 10 }
+            }))
+            .unwrap()
+            .unwrap();
+        assert_eq!(Some("Azure"), report.provider.as_deref());
+        assert_eq!(Some("default"), report.service_tier.as_deref());
+        assert_eq!(Some(false), report.is_byok);
+    }
 
     #[test]
     fn total_input_has_the_same_meaning_in_all_protocols() {

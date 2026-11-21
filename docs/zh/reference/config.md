@@ -63,6 +63,7 @@ Chat 和 Responses 省略 `max_output_tokens` 时使用上游默认值。Anthrop
 | `models_url` | string | 可选的标准模型发现完整 URL |
 | `proxy` | table | 模型发现、试跑和正式请求共用的网络路径 |
 | `model_pricing` | table | 按精确模型 ID 配置的美元计费规则 |
+| `model_price_catalogs` | table | 模型设置保存的 OpenRouter 公开路由报价 |
 | `model_capabilities` | table | 按模型 ID 记录列表声明、手工覆盖及试跑确认可传的思考档位 |
 | `api_key` | string | `$ENV_VAR_NAME`、直接填写的 key，或 `file:<绝对路径>` |
 | `auth` | `bearer`\|`x-api-key` | 独立于 `format` 覆盖认证方式 |
@@ -80,7 +81,9 @@ Chat 和 Responses 省略 `max_output_tokens` 时使用上游默认值。Anthrop
 
 `proxy.mode` 可设为 `environment`（默认）、`direct` 或 `explicit`。显式代理的 `proxy.url` 使用 `http://`、`socks5://` 或 `socks5h://`。SOCKS5 在本机解析域名，SOCKS5H 在代理端解析。需要认证时填写 `proxy.auth.username`，再指定 `proxy.auth.password_env` 或 `proxy.auth.password_file` 之一。密码文件必须使用绝对路径，与模型密钥文件执行同样的权限检查。
 
-`model_pricing` 中的 `mode` 可选 `automatic`、`configured` 或 `usage-only`。配置的费率只用于表名对应的连接和模型，单位是每百万 token 的美元单价。按需填写 `input`、`output`、`cache_read` 和 `cache_write`。供应商单独回报缓存写入时长时，可填写 `cache_write_5m` 和 `cache_write_1h`。费用优先取上游回执，其次用适用费率和完整用量估算。OpenRouter 查询显示具体路由的报价。请求记录会保留估算时采用的费率。
+`model_pricing` 中的每条规则适用于表名对应的连接和精确模型。默认的 `automatic` 模式优先采用上游回执。当响应能唯一匹配实际端点和服务档时，也可以用模型设置保存的 OpenRouter 报价估算。重新运行模型设置可以刷新报价。`configured` 为直连的标准档配置手工费率。不同端点或服务档有独立费率时，用 `routed` 分别填写。上游提供完整端点标签时使用该标签，直连可省略。`usage-only` 保留 token 用量，费用记为未知。
+
+费率单位为每百万 token 的美元单价。按需填写 `input`、`output`、`cache_read` 和 `cache_write`。供应商单独回报缓存写入时长时，可填写 `cache_write_5m` 和 `cache_write_1h`。估算记录会保留采用的费率及其来源。用量不完整或有多个可能的费率时，费用记为未知。
 
 ```toml
 [provider.gateway.proxy]
@@ -92,6 +95,15 @@ mode = "configured"
 input = 0.2
 output = 1.0
 cache_read = 0.05
+
+[provider.direct.model_pricing."example/model"]
+mode = "routed"
+
+[[provider.direct.model_pricing."example/model".routes]]
+service_tier = "priority"
+input = 0.4
+output = 2.0
+cache_read = 0.1
 ```
 
 模型能力分别保存在 `discovered` 和 `manual` 下。字段包括 `reasoning_efforts`、`reasoning_default`、`input_modalities`、`output_modalities` 和 `interfaces`。`protocols` 可声明特定协议的字段，例如 `anthropic_messages.system_prompt_update`。解析结果标注来源，未声明的值保持未知，刷新时保留手工值。模型声明支持图像输出或输出能力未知时，Agent 可以保存图像输出设置。内置适配器支持文本，并在发送请求前拒绝执行图像输出。[DeepSeek 模型列表](https://api-docs.deepseek.com/api/list-models/) · [OpenRouter 模型列表](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties)

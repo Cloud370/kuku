@@ -925,7 +925,7 @@ impl SetupState {
                     .and_then(|model| self.model_pricing.get(model))
                     .map_or(0, |pricing| match pricing {
                         ModelPricing::Automatic => 0,
-                        ModelPricing::Configured { .. } => 1,
+                        ModelPricing::Configured { .. } | ModelPricing::Routed { .. } => 1,
                         ModelPricing::UsageOnly => 2,
                     });
                 self.step = SetupStep::Pricing;

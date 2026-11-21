@@ -1,26 +1,17 @@
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio_stream::StreamExt;
 use url::Url;
 
+pub use crate::config::RouteQuote;
 use crate::config::{resolve_request_url, OpenRouterRouting, ProviderConfig, TokenRates};
 use crate::{Error, Result};
 
 use super::capabilities::normalized_tier;
+use super::prepare::is_official_openrouter;
 
-/// An advertised quote for one OpenRouter route. Rates are in USD per million tokens.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RouteQuote {
-    pub tag: String,
-    pub provider: String,
-    pub author_route: bool,
-    pub service_tier: Option<String>,
-    pub rates: TokenRates,
-}
-
-fn same_endpoint(tag: &str, endpoint: &str) -> bool {
+pub(super) fn same_endpoint(tag: &str, endpoint: &str) -> bool {
     tag == endpoint
         || match (tag.rsplit_once('/'), endpoint.rsplit_once('/')) {
             (Some((tag_base, "fast")), Some((endpoint_base, "priority")))
@@ -118,14 +109,12 @@ pub fn openrouter_quote_url(connection: &ProviderConfig, model: &str) -> Option<
         connection.options.endpoint_url.as_deref(),
     )
     .ok()?;
-    let mut url = Url::parse(&url).ok()?;
-    if url.scheme() != "https"
-        || !matches!(
-            url.host_str(),
-            Some("openrouter.ai" | "us.openrouter.ai" | "eu.openrouter.ai")
-        )
-        || url.port_or_known_default() != Some(443)
-    {
+    quote_url_for_request(&url, model)
+}
+
+pub(super) fn quote_url_for_request(request_url: &str, model: &str) -> Option<String> {
+    let mut url = Url::parse(request_url).ok()?;
+    if !is_official_openrouter(&url) {
         return None;
     }
     let (author, slug) = model.split_once('/')?;
