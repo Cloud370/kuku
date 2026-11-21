@@ -6,7 +6,8 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
-use kuku_client::{Connection, ConnectionOptions, Error};
+use kuku_client::local::BuildPolicy;
+use kuku_client::{Client, Connection, ConnectionOptions, Error};
 
 #[derive(Parser)]
 #[command(name = "kuku", version = kuku_server::BUILD_VERSION, about = "file-native agent runtime")]
@@ -52,7 +53,16 @@ impl ConnectionArgs {
 
     /// Connect to the selected service and resolve its workspace.
     pub async fn connect(&self) -> Result<Connection, Error> {
-        self.options().connect().await
+        self.options()
+            .connect_for_build(BuildPolicy::Start(kuku_server::BUILD_VERSION))
+            .await
+    }
+
+    /// Connect to the selected service without scoping operations to a workspace.
+    pub async fn client(&self) -> Result<Client, Error> {
+        self.options()
+            .client_for_build(BuildPolicy::Start(kuku_server::BUILD_VERSION))
+            .await
     }
 
     /// Resolve local management without starting a service.
@@ -143,7 +153,7 @@ impl ServerCommandArgs {
     }
 }
 
-/// Operations on an existing service.
+/// Operations on a managed or remote service.
 #[derive(Subcommand)]
 pub enum ServerCommand {
     /// Show the service version, configuration, and running work.

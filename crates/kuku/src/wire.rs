@@ -21,6 +21,10 @@ pub fn to_wire(event: &UiEvent) -> Option<serde_json::Value> {
             ModelPhase::Streaming => "streaming",
             ModelPhase::ToolArguments => "tool_arguments",
         }})),
+        UiEvent::ModelOutputUsage { output_tokens } => Some(json!({
+            "type": "model_output_usage",
+            "output_tokens": output_tokens,
+        })),
         UiEvent::ToolStart {
             id,
             tool,

@@ -7,7 +7,7 @@ import threading
 import time
 from urllib.parse import urlencode
 
-from interactive_fixture import InstalledClient, Response, TOOL_BRIEF, TOOL_OUTPUT, eventually, json_response, run_cases
+from interactive_fixture import is_composer_heading, InstalledClient, Response, TOOL_BRIEF, TOOL_OUTPUT, eventually, json_response, run_cases
 from interactive_model_recovery import assert_live_elapsed, assert_testing_navigation, assert_wide_setup, recovery_cases
 from interactive_rendering import has_selected_queued_input
 
@@ -278,10 +278,10 @@ def shared_model_editor(binary, bridge, directory):
             terminal.press("\r")
             terminal.expect("› Model tests", also=("Save models", "API URL", "gamma"))
             terminal.press("\x1b[A\r")
-            terminal.expect("Tier · gamma")
+            terminal.expect("gamma", state="Model route")
             terminal.press("gamma")
-            match = terminal.expect("/ gamma", also=("› Tier · gamma",))["screen"]
-            terminal.click_text(match, "Tier · gamma")
+            match = terminal.expect("/ gamma", also=("›gamma",))["screen"]
+            terminal.click_text(match, "›gamma")
             terminal.expect("Use in this Session", also=("Edit", "Set as default"))
             terminal.press("\x1b[B\r")
             terminal.expect("Set up a model")
@@ -298,7 +298,7 @@ def shared_model_editor(binary, bridge, directory):
             terminal.press("\r")
             terminal.expect("› Model tests", also=("Save models", "API URL", "delta"))
             terminal.press("\x1b[A\r")
-            terminal.expect("Tier · gamma", also=("delta",))
+            terminal.expect("gamma", state="Model route", also=("delta",))
             terminal.press("\x1b")
             terminal.expect(draft, absent=("Connected", "F2 Restart", "Model route"))
             assert len(list((client.home / "credentials").iterdir())) == 1
@@ -312,10 +312,10 @@ def shared_model_editor(binary, bridge, directory):
             assert next(item for item in catalog["tiers"] if item["name"] == "gamma")["model"] == "delta"
 
             terminal.press("\x0c")
-            terminal.expect("Tier · gamma", also=("delta",))
+            terminal.expect("gamma", state="Model route", also=("delta",))
             terminal.press("gamma")
-            match = terminal.expect("/ gamma", also=("› Tier · gamma",))["screen"]
-            terminal.click_text(match, "Tier · gamma")
+            match = terminal.expect("/ gamma", also=("›gamma",))["screen"]
+            terminal.click_text(match, "›gamma")
             terminal.expect("Use in this Session")
             terminal.press("\r")
             terminal.expect(draft, also=("delta",), absent=("Model route", "Model settings"))
@@ -580,9 +580,9 @@ def persistent_model_default(client):
     with client.terminal(workspace) as terminal:
         terminal.expect("New session", state="Ready")
         terminal.press("/model\r")
-        models = terminal.expect("Tier · light", also=(chosen,))["screen"]
+        models = terminal.expect("light", also=(chosen,))["screen"]
         initial_models = models
-        tier_click = terminal.click_text(models, "Tier · light")
+        tier_click = terminal.click_text(models, "light")
         tier_selected = terminal.expect("Use in this Session", also=(chosen,))["screen"]
         terminal.press("\r")
         tier_return = terminal.expect("New session", state="Ready", also=(chosen,),
@@ -599,7 +599,7 @@ def persistent_model_default(client):
         def open_default_confirmation():
             terminal.press("/model\r")
             models = terminal.expect("Model route", also=(
-                "Set current model as default", "Tier · light", chosen,
+                "Set current model as default", "light", chosen,
             ))["screen"]
             clicked = terminal.click_text(models, "Set current model as default")
             try:
@@ -773,7 +773,7 @@ def keyboard_queue_withdrawal(client):
         terminal.submit(prompt)
         response = client.provider.next(prompt)
         with response.streaming_text("Keyboard queue check in progress", "\n\nKeyboard queue check finished"):
-            terminal.expect("Keyboard queue check in progress", state="Streaming")
+            terminal.expect("Keyboard queue check in progress", state="↓  Reply")
             for text in (kept, withdrawn):
                 terminal.type(text)
                 terminal.press("\x1b\r")
@@ -803,7 +803,9 @@ def keyboard_queue_withdrawal(client):
                 return value if [entry["receipt"]["command_id"] for entry in value] == [ids[kept]] else None
 
             remaining = eventually("keyboard withdrawal to leave the other input queued", remaining_input)
-            composer = restored[restored.index("To main"):]
+            rows = restored.splitlines()
+            heading = next(index for index, row in enumerate(rows) if is_composer_heading(row))
+            composer = "\n".join(rows[heading:])
             assert withdrawn in composer, restored
             terminal.press("\x03")
             terminal.type(draft)
@@ -837,24 +839,14 @@ def paginated_rewind(client):
         terminal.press("\x1b")
         terminal.expect("Press Esc again")
         terminal.press("\x1b")
-        screen = terminal.expect("Rewind to message", also=(
+        terminal.expect("Rewind to message", also=(
             prompts[-1], "↑ at the top loads earlier messages",
-        ))["screen"]
-        for steps in range(40):
-            if re.search(r"› Turn 1(?:\s|$)", screen) and prompts[0] in screen:
-                return steps, screen
-            terminal.press("\x1b[5~")
-
-            def moved():
-                value = terminal.request("screen")["screen"]
-                return value if value != screen and "Loading earlier messages…" not in value else None
-
-            try:
-                screen = eventually("rewind selection to advance toward the earliest message", moved)
-            except AssertionError as error:
-                screen = terminal.request("screen")["screen"]
-                raise AssertionError(f"{error}\nLast terminal screen:\n{screen}") from error
-        raise AssertionError(f"Could not select the earliest committed message:\n{screen}")
+        ))
+        for turn in range(len(prompts) - 1, 0, -1):
+            terminal.press("\x1b[A")
+            screen = terminal.expect(f"› Turn {turn} ", also=(prompts[turn - 1],),
+                                     absent=("Loading earlier messages…",))["screen"]
+        return len(prompts) - 1, screen
 
     with client.terminal(workspace) as terminal:
         terminal.expect("New session", state="Ready")
@@ -877,7 +869,7 @@ def paginated_rewind(client):
         cancelled_steps, cancelled = oldest_message(terminal)
         assert cancelled_steps > 0
         terminal.press("\x1b")
-        terminal.expect("To main", state="Finished")
+        terminal.expect("Finished", absent=("Rewind to message",))
         assert history() == before, "Browsing and cancelling rewind changed durable history"
         client.provider.assert_idle()
         confirmed_steps, selected = oldest_message(terminal)

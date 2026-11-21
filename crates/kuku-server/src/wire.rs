@@ -557,6 +557,8 @@ pub(crate) fn reply_preview_frame(
         "truncated": reply.truncated,
         "reasoning_preview": reply.reasoning_preview,
         "reasoning_preview_truncated": reply.reasoning_preview_truncated,
+        "output_bytes": reply.output_bytes,
+        "output_tokens": reply.output_tokens,
     });
     let mut frame = live_payload(event, agent, reply.execution_id, reply.turn, cursor);
     if let Some(number) = turn_number {

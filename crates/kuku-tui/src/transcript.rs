@@ -24,6 +24,7 @@ mod rewind;
 mod row;
 use row::Row;
 mod rewound;
+mod stream;
 mod tool;
 mod turn_summary;
 mod window;
@@ -33,7 +34,7 @@ use self::body::Body;
 pub(crate) use self::details::DetailKey;
 use self::details::{DetailRecord, Details};
 use self::job::job_notice;
-use self::message::{paint_card, render_assistant_source, render_record, render_user};
+use self::message::{render_assistant_source, render_record, render_user};
 pub(crate) use self::messages::{MessageId, MessageInfo, MessageKind, SelectedMessage};
 use self::rewound::RewindGroupState;
 pub(crate) use self::rewound::{RewindGroupAction, RewindGroupChoice, RewindGroupRequest};
@@ -66,7 +67,9 @@ pub(crate) struct Anchor {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AnchorLine {
+    Gap,
     Turn,
+    Note(usize),
     Group(usize),
     RewindEntry { event_id: u64, line: usize },
     Body(usize),
@@ -244,7 +247,6 @@ impl Transcript {
 
     pub(crate) fn show_latest(&mut self) {
         self.reply_position = None;
-        self.notes = None;
         self.focused_rewind_group = None;
         self.reading = None;
         self.restore = None;
@@ -270,14 +272,10 @@ impl Transcript {
         self.reading.is_some()
     }
 
-    pub(crate) fn reading_has_new_content(&self) -> Option<bool> {
-        self.reading.as_ref().map(|reading| reading.unseen)
-    }
-
     pub(crate) fn history_hint(&self) -> Option<bool> {
         self.reading
             .as_ref()
-            .filter(|reading| reading.manual && self.notes.is_none())
+            .filter(|reading| reading.manual)
             .map(|reading| reading.unseen)
     }
 
@@ -307,12 +305,16 @@ impl Transcript {
         height: usize,
     ) -> Option<HistoryRequest> {
         self.link_recent_agent_cards();
+        if let Some(notes) = &mut self.notes {
+            notes.fit(width);
+        }
         let layout = Layout {
             width,
             tools: self.details,
             assistant: self.assistant_view,
             agents: &self.agent_cards,
             items: &self.detail_items,
+            notes: self.notes.as_ref(),
         };
         if self.reading.is_none() {
             if amount > 0
@@ -576,6 +578,7 @@ impl Record {
         layout: Layout<'_>,
         retry_heading: bool,
         retry_end: bool,
+        user_turn: Option<window::TurnHeading>,
     ) -> (&Key, &[Row], Option<DetailRecord<'_>>) {
         let Layout {
             width,
@@ -583,6 +586,7 @@ impl Record {
             assistant,
             agents,
             items,
+            ..
         } = layout;
         let source_selected = match assistant {
             #[cfg(test)]
@@ -606,6 +610,18 @@ impl Record {
                 &source.as_ref().expect("rendered Markdown source").1,
                 None,
             );
+        }
+        if let (Key::Preview(_), Body::Assistant(text)) = (&self.key, &self.body) {
+            if !text.trim().is_empty() {
+                let thinking = !self.reasoning_preview.is_empty();
+                let stream = self.rendered.streaming.get_or_insert_with(Box::default);
+                let rows = stream.render(text, thinking, width);
+                return (
+                    &self.key,
+                    rows,
+                    thinking.then_some(DetailRecord::Reasoning(&self.reasoning_preview)),
+                );
+            }
         }
         let (card, mode, facts) = match &self.body {
             Body::Tool(tool) => {
@@ -631,6 +647,7 @@ impl Record {
             agent_revision: facts.map_or(0, |facts| facts.paint_revision),
             retry_heading,
             retry_end,
+            user_turn,
         };
         if self
             .rendered
@@ -647,23 +664,26 @@ impl Record {
                         ),
                         None => "You".to_owned(),
                     };
-                    render_user(&title, text, width)
+                    render_user(&title, text, width, user_turn)
                 }
-                Body::Assistant(text) => {
-                    if self.reasoning_only()
-                        && !matches!(self.key, Key::Preview(_))
-                        && details != ToolDetails::GroupMember
-                    {
-                        Vec::new()
-                    } else {
-                        preview::render_assistant(
-                            text,
-                            !self.reasoning_preview.is_empty(),
-                            matches!(self.key, Key::Preview(_)),
-                            width,
-                        )
-                    }
+                Body::Assistant(_) if cache_key.in_timeline && self.reasoning_only() => {
+                    render_rows(
+                        vec![Line::styled(
+                            "View thinking ›",
+                            crate::theme::emphasis(crate::theme::MODEL),
+                        )],
+                        width,
+                        1,
+                        body_inset(width),
+                    )
+                    .collect()
                 }
+                Body::Assistant(text) => preview::render_assistant(
+                    text,
+                    !self.reasoning_preview.is_empty(),
+                    matches!(self.key, Key::Preview(_)),
+                    width,
+                ),
                 Body::Interrupted(text) => {
                     message::render_markdown_record("Interrupted", WARNING, text, width)
                 }
@@ -680,7 +700,7 @@ impl Record {
                 }
                 Body::TurnSummary => Vec::new(),
                 Body::Tool(tool) => card.as_ref().map_or_else(
-                    || tool.render(width, mode),
+                    || tool.render(width, mode, cache_key.in_timeline),
                     |card| card.render(width, mode, facts, cache_key.in_timeline),
                 ),
             };
@@ -710,6 +730,7 @@ struct PreviewLayout {
     agent_revision: u64,
     retry_heading: bool,
     retry_end: bool,
+    user_turn: Option<window::TurnHeading>,
 }
 
 fn body_inset(width: usize) -> u16 {

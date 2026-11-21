@@ -18,7 +18,6 @@ impl Tool {
         &self,
         change: &FileChange,
         width: usize,
-        inset: u16,
         details: ToolDetails,
     ) -> Vec<Row> {
         let frame = crate::theme::CardFrame::new(width);
@@ -31,6 +30,7 @@ impl Tool {
         let title = join_details([self.title().as_ref(), status, single_line(path).as_str()]);
         let color = if change.unconfirmed { WARNING } else { ACCENT };
         let mut rows = vec![Row::plain(frame.title(&title, color))];
+        let body_width = frame.content_width();
         let mut clipped = false;
         if details != ToolDetails::Collapsed {
             let limit = if details == ToolDetails::Inspection {
@@ -38,7 +38,7 @@ impl Tool {
             } else {
                 MAX_CHANGE_ROWS
             };
-            let lines = change.lines(path, frame.content_width(), limit);
+            let lines = change.lines(path, body_width, limit);
             clipped = lines.len() > limit;
             rows.extend(
                 lines
@@ -47,6 +47,11 @@ impl Tool {
                     .map(|line| Row::plain(frame.line(line))),
             );
         }
+        if details == ToolDetails::Inspection {
+            let mut arguments = Vec::new();
+            self.render_arguments(&mut arguments, body_width, 0);
+            rows.extend(arguments.into_iter().map(|row| row.framed(&frame)));
+        }
         let footer = if clipped {
             format!("{} · …", change.stats)
         } else {
@@ -54,9 +59,6 @@ impl Tool {
         };
         Row::pad_framed_body(&mut rows, &frame);
         rows.push(Row::plain(frame.foot(&footer)));
-        if details == ToolDetails::Inspection {
-            self.render_arguments(&mut rows, width, inset);
-        }
         rows.push(Row::plain(Line::default()));
         rows
     }

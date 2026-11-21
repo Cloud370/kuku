@@ -24,13 +24,6 @@ impl CardFrame {
         }
     }
 
-    pub(crate) fn agent(width: usize) -> Self {
-        Self {
-            surface: code_surface().bg(super::AGENT_SURFACE),
-            ..Self::new(width)
-        }
-    }
-
     fn edge(&self) -> Style {
         self.surface.fg(MUTED)
     }
@@ -53,6 +46,21 @@ impl CardFrame {
 
     pub(crate) fn title(&self, label: &str, color: Color) -> Line<'static> {
         self.caption(label, '╭', '╮', self.surface.patch(emphasis(color)))
+    }
+
+    pub(crate) fn title_width(&self) -> usize {
+        self.width
+            - if !self.bordered {
+                0
+            } else if self.padding.left > 0 {
+                5
+            } else {
+                2
+            }
+    }
+
+    pub(crate) fn title_line(&self, label: Line<'static>) -> Line<'static> {
+        self.caption_line(label, '╭', '╮')
     }
 
     pub(crate) fn agent_action(width: usize) -> Option<(&'static str, Range<usize>)> {
@@ -94,22 +102,30 @@ impl CardFrame {
     }
 
     fn caption(&self, label: &str, left: char, right: char, style: Style) -> Line<'static> {
+        let label = Line::styled(shorten(label, self.title_width()), style);
+        self.caption_line(label, left, right)
+    }
+
+    fn caption_line(&self, mut label: Line<'static>, left: char, right: char) -> Line<'static> {
+        let room = self.title_width();
+        debug_assert!(label.width() <= room);
+        let base = self.surface.patch(label.style);
+        for span in &mut label.spans {
+            span.style = base.patch(span.style);
+        }
+        label.style = Style::new();
         if !self.bordered {
-            return Line::from(Span::styled(shorten(label, self.width), style));
+            return label;
         }
         let (prefix, tail) = if self.padding.left > 0 {
             (format!("{left}─ "), " ")
         } else {
             (left.to_string(), "")
         };
-        let room = self.width - prefix.width() - tail.width() - 1;
-        let label = shorten(label, room);
         let fill = "─".repeat(room - label.width());
-        Line::from(vec![
-            Span::styled(prefix, self.edge()),
-            Span::styled(label, style),
-            Span::styled(format!("{tail}{fill}{right}"), self.edge()),
-        ])
+        label.spans.insert(0, Span::styled(prefix, self.edge()));
+        label.push_span(Span::styled(format!("{tail}{fill}{right}"), self.edge()));
+        label
     }
 
     pub(crate) fn line(&self, line: Line<'static>) -> Line<'static> {

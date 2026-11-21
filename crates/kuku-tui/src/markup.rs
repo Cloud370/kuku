@@ -14,6 +14,8 @@ mod document;
 mod inline;
 mod links;
 pub(crate) use links::{LinkDestination, LinkLayout};
+mod stream;
+pub(crate) use stream::MarkdownStream;
 mod table;
 
 pub(crate) use code::file_source;
@@ -43,12 +45,7 @@ fn parse_markdown(
     limit: usize,
     link_layout: Option<LinkLayout>,
 ) -> Markdown {
-    let source = if text.contains("\r\n") {
-        Cow::Owned(text.replace("\r\n", "\n"))
-    } else {
-        Cow::Borrowed(text)
-    };
-    let clean = replace_tabs(&terminal_text(&source));
+    let clean = clean_markdown(text);
     let mut output = Markdown {
         width: width.max(1),
         limit,
@@ -58,6 +55,15 @@ fn parse_markdown(
     };
     output.parse(&document::repair_fences(&clean));
     output
+}
+
+fn clean_markdown(text: &str) -> String {
+    let source = if text.contains("\r\n") {
+        Cow::Owned(text.replace("\r\n", "\n"))
+    } else {
+        Cow::Borrowed(text)
+    };
+    replace_tabs(&terminal_text(&source))
 }
 
 pub(crate) fn render_literal(text: &str, style: Style) -> Vec<Line<'static>> {
@@ -170,6 +176,10 @@ impl Markdown {
             }
             self.event(event);
         }
+        self.finish_parse();
+    }
+
+    fn finish_parse(&mut self) {
         self.finish();
         self.lines.truncate(self.limit.saturating_add(1));
     }
@@ -603,7 +613,7 @@ mod tests {
         assert!(before_fence.iter().any(|line| line.contains("中文 │ a|b")));
         assert!(before_fence
             .iter()
-            .any(|line| line.starts_with("│  let 值 ")));
+            .any(|line| line.starts_with("│ let 值 ")));
         assert!(before_fence.iter().any(|line| line.starts_with('╰')));
 
         source.push_str(" = 1;\n```\n\nFinished.");
@@ -612,7 +622,7 @@ mod tests {
             1,
             complete
                 .iter()
-                .filter(|line| line.starts_with("│  let 值 = 1; "))
+                .filter(|line| line.starts_with("│ let 值 = 1; "))
                 .count()
         );
         assert_eq!(
@@ -632,7 +642,7 @@ mod tests {
         assert!(plain[0].starts_with("╭─ text "));
         assert!(plain
             .iter()
-            .any(|line| line.starts_with("│  | 项目 | Result | Cost | ")));
+            .any(|line| line.starts_with("│ | 项目 | Result | Cost | ")));
         assert!(plain.iter().any(|line| line == "Ordinary paragraph."));
         assert!(plain.iter().all(|line| !line.starts_with('┌')));
     }
@@ -674,8 +684,8 @@ mod tests {
             LIMIT,
         ));
         assert_eq!(format!("╭{}╮", "─".repeat(width - 2)), plain[0]);
-        assert!(plain[2].starts_with("│  # Literal "));
-        assert!(plain[3].starts_with("│      second "));
+        assert!(plain[2].starts_with("│ # Literal "));
+        assert!(plain[3].starts_with("│     second "));
     }
 
     #[test]
@@ -692,7 +702,8 @@ mod tests {
         let plain = rows(&lines);
         assert!(plain[0].starts_with("╭─ rust "));
         assert!(!plain[0].contains("linenos"));
-        assert!(plain[4].starts_with("│     let still a comment */"));
+        assert!(plain[4].starts_with("│    let still a comment */"));
+        assert!(plain[6].trim_matches('│').trim().is_empty());
         assert!(plain[7].starts_with('╰'));
         assert!(lines[..8].iter().all(|line| line.width() == 48));
         assert!(lines[..8].iter().all(|line| line
@@ -917,12 +928,12 @@ mod tests {
                 .filter(|line| line.contains("Markdown preview"))
                 .count()
         );
-        assert!(plain.iter().any(|line| line.contains("│  ```markdown ")));
+        assert!(plain.iter().any(|line| line.contains("│ ```markdown ")));
         assert!(plain
             .iter()
-            .any(|line| line.contains("│  # Source, not a heading ")));
+            .any(|line| line.contains("│ # Source, not a heading ")));
         assert!(plain.iter().any(|line| line == "Rendered heading"));
-        assert!(plain.iter().any(|line| line.contains("│  # Inner source ")));
+        assert!(plain.iter().any(|line| line.contains("│ # Inner source ")));
     }
 
     #[test]

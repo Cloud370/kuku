@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -13,7 +13,7 @@ use crate::config::StatusLineSettings;
 use crate::contextual::{ContextFocus, ContextHit};
 use crate::editor::Editor;
 use crate::jobs::{job_status_label, Job, Restarted, Selection, Update};
-use crate::menu::{Choice, ChoiceKind, Picker, Prompt};
+use crate::menu::{Choice, ChoiceKind, CommandMenu, Picker, Prompt};
 use crate::output::OutputViewer;
 use crate::selection::TextSelection;
 use crate::statusline::StatusLineEditor;
@@ -21,6 +21,7 @@ use crate::transcript::{HistoryRequest, Transcript};
 use model_default::PendingDefaultSave;
 
 mod activity;
+pub(crate) mod agent_setup;
 pub(crate) mod agents;
 mod auth_repair;
 mod background_jobs;
@@ -34,19 +35,20 @@ mod notice;
 mod pending;
 mod reading;
 mod rewind;
+mod thinking;
 mod timing;
 mod values;
 
-pub(crate) use activity::{Activity, ServiceStatus, SubmissionStatus};
+pub(crate) use activity::{Activity, OutputTokens, ServiceStatus, SubmissionStatus};
 use activity::{ExecutionProgress, Watch};
 use agents::AgentActivities;
-pub(crate) use background_jobs::JobCommand;
 use delivery::{Deliveries, PendingQueueAction};
 pub(crate) use delivery::{DeliveryRow, QueueAction};
 use navigation::AgentNavigation;
 pub(crate) use notice::Notice;
 pub(crate) use pending::{PendingItem, PendingStage};
 pub(crate) use reading::KeyboardFocus;
+pub(crate) use thinking::ThinkingPicker;
 pub(crate) use timing::TurnTiming;
 
 const DEFAULT_AGENT: &str = "main";
@@ -121,6 +123,7 @@ pub(crate) struct Pane {
     pub(crate) pending_selected_reply_copy: Option<u64>,
     pub(crate) initial_config: AgentConfig,
     initial_model: Option<ModelSelection>,
+    initial_thinking_refresh: bool,
     config_receipt: Option<(u64, Box<AgentConfig>)>,
     pub(crate) model_problem: Option<String>,
     pub(crate) opening: bool,
@@ -184,24 +187,22 @@ impl Pane {
     pub(crate) fn reasoning(
         &self,
     ) -> Option<(&kuku::ProviderSettings, &kuku::ProviderCapabilities)> {
-        if self.config_receipt.is_some() {
+        if self.waiting_for_configuration() {
             return None;
         }
-        if let Some(snapshot) = &self.snapshot {
-            snapshot
-                .pending_selection
-                .as_ref()
-                .or(snapshot.selection.as_ref())
-                .map(|selection| (&selection.settings, &selection.capabilities))
-        } else {
-            self.initial_model
-                .as_ref()
-                .map(|selection| (&selection.settings, &selection.capabilities))
-        }
+        self.snapshot
+            .as_ref()
+            .and_then(|snapshot| {
+                snapshot
+                    .pending_selection
+                    .as_ref()
+                    .map(|model| (&model.settings, &model.capabilities))
+            })
+            .or_else(|| self.effective_reasoning())
     }
 
     pub(crate) fn waiting_for_configuration(&self) -> bool {
-        self.config_receipt.is_some()
+        self.config_receipt.is_some() || self.initial_thinking_refresh
     }
 
     pub(crate) fn effective_model_identity(&self) -> Option<(&str, &str, Option<&str>)> {
@@ -237,13 +238,24 @@ impl Pane {
         }
     }
 
-    pub(crate) fn next_model_label(&self) -> Option<String> {
+    pub(crate) fn next_model_label(&self, width: usize) -> Option<String> {
+        if self.next_thinking().is_some() {
+            return None;
+        }
         let model = self.snapshot.as_ref()?.pending_selection.as_ref()?;
-        Some(model_label(
-            &model.connection,
-            &model.model,
-            model.settings.reasoning_effort.as_deref(),
+        let route = crate::text::single_line(&format!("{}/{}", model.connection, model.model));
+        let effort = crate::text::effort_label(model.settings.reasoning_effort.as_deref());
+        let prefix = "Next model request · ";
+        Some(format!(
+            "{prefix}{}",
+            crate::text::with_suffix(&route, &effort, width.saturating_sub(prefix.len()))
         ))
+    }
+
+    fn model_route_changed(&self, config: &AgentConfig) -> bool {
+        let current = self.config();
+        (&config.tier, &config.connection, &config.model)
+            != (&current.tier, &current.connection, &current.model)
     }
 
     fn set_snapshot(&mut self, snapshot: Box<Snapshot>) -> Option<u64> {
@@ -301,10 +313,21 @@ fn model_label(connection: &str, model: &str, effort: Option<&str>) -> String {
 #[derive(Debug)]
 pub(crate) enum Modal {
     Help,
-    Picker(Picker),
-    Prompt(Prompt),
+    Picker(Box<Picker>),
+    Prompt(Box<Prompt>),
     Output(Box<OutputViewer>),
     StatusLineEditor(StatusLineEditor),
+    ExitConfirmation,
+}
+
+impl Modal {
+    pub(crate) fn composer_anchored(&self) -> bool {
+        match self {
+            Self::Picker(picker) => picker.kind.composer_anchored(),
+            Self::ExitConfirmation => true,
+            Self::Help | Self::Prompt(_) | Self::Output(_) | Self::StatusLineEditor(_) => false,
+        }
+    }
 }
 
 pub(crate) struct App {
@@ -312,6 +335,7 @@ pub(crate) struct App {
     pub(crate) panes: HashMap<Address, Pane>,
     pub(crate) related_agents: AgentActivities,
     pub(crate) workspace: PathBuf,
+    pub(crate) startup_skills: StartupSkills,
     pub(crate) endpoint: Option<String>,
     pub(crate) remote: bool,
     pub(crate) model_editor: Option<Box<crate::setup::ModelEditor>>,
@@ -320,9 +344,12 @@ pub(crate) struct App {
     pub(crate) connecting: bool,
     pub(crate) restarting: bool,
     pub(crate) notice: Option<Notice>,
+    pub(crate) alias_hint: Option<Notice>,
+    pub(crate) taught_commands: HashSet<CommandMenu>,
     pub(crate) modal: Option<Modal>,
     pub(crate) statusline_settings: StatusLineSettings,
     pub(crate) text_selection: TextSelection,
+    pub(crate) modal_selection: TextSelection,
     pub(crate) pending: HashMap<String, PendingItem>,
     pub(crate) withdrawal_drafts: HashMap<(Target, String), String>,
     pub(crate) rewind_drafts: HashMap<String, RewindDraft>,
@@ -336,6 +363,7 @@ pub(crate) struct App {
     pub(crate) contextual_hits: Vec<ContextHit>,
     pub(crate) reading_area: Rect,
     pub(crate) composer_area: Rect,
+    pub(crate) recipient_area: Rect,
     pub(crate) modal_editor_width: usize,
     pub(crate) modal_page: usize,
     pub(crate) modal_info_rows: usize,
@@ -357,6 +385,14 @@ pub(crate) struct App {
     pub(crate) rewind_restore_files: bool,
 }
 
+#[derive(Debug, Default)]
+pub(crate) enum StartupSkills {
+    #[default]
+    Loading,
+    Ready(Vec<String>),
+    Unavailable,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct RewindDraft {
     pub(crate) address: Address,
@@ -374,15 +410,19 @@ impl App {
             cached: VecDeque::from([active.clone()]),
             active,
             workspace,
+            startup_skills: StartupSkills::default(),
             remote,
             endpoint,
             connection_problem: None,
             connecting: true,
             restarting: false,
             notice: None,
+            alias_hint: None,
+            taught_commands: HashSet::new(),
             modal: None,
             statusline_settings: StatusLineSettings::default(),
             text_selection: TextSelection::default(),
+            modal_selection: TextSelection::default(),
             pending: HashMap::new(),
             withdrawal_drafts: HashMap::new(),
             rewind_drafts: HashMap::new(),
@@ -396,6 +436,7 @@ impl App {
             contextual_hits: Vec::new(),
             reading_area: Rect::ZERO,
             composer_area: Rect::ZERO,
+            recipient_area: Rect::ZERO,
             modal_editor_width: 60,
             modal_page: 6,
             modal_info_rows: 4,
@@ -551,6 +592,7 @@ impl App {
             .as_ref()
             .and_then(Notice::deadline)
             .into_iter()
+            .chain(self.alias_hint.as_ref().and_then(Notice::deadline))
             .chain(self.pane().cleanup_at)
             .chain(
                 self.model_editor
@@ -561,14 +603,9 @@ impl App {
     }
 
     pub(crate) fn tick(&mut self) -> bool {
-        let expired = self
-            .notice
-            .as_ref()
-            .and_then(Notice::deadline)
-            .is_some_and(|at| at <= Instant::now());
-        if expired {
-            self.notice = None;
-        }
+        let now = Instant::now();
+        let expired = Notice::expire(&mut self.notice, now);
+        let alias_expired = Notice::expire(&mut self.alias_hint, now);
         if self
             .pane()
             .cleanup_at
@@ -581,7 +618,7 @@ impl App {
             .model_editor
             .as_mut()
             .is_some_and(|editor| editor.poll_probes());
-        expired || probes
+        expired || alias_expired || probes
     }
 
     pub(crate) fn update(&mut self, update: Update) {
@@ -609,9 +646,7 @@ impl App {
                 )));
             }
             Update::WatchFailed(selection, error) if selection == self.selection() => {
-                self.drop_watch(Watch::Failed(format!(
-                    "kuku service live updates unavailable · {error} · Ctrl+R to reconnect"
-                )));
+                self.watch_failed(error);
             }
             Update::Observation(selection, event) if selection == self.selection() => {
                 self.observe(event)
@@ -644,6 +679,8 @@ impl App {
                     }
                 }
             }
+            Update::ThinkingDefaults(ticket, defaults) => self.thinking_defaults(ticket, defaults),
+            Update::AgentModels(ticket, result) => self.agent_models_loaded(ticket, result),
             Update::ModelEditorOpened(ticket, result) => self.model_editor_opened(ticket, result),
             Update::ModelEditorSaved(ticket, editor, result) => {
                 self.model_editor_saved(ticket, editor, result)
@@ -684,6 +721,14 @@ impl App {
                 Err(error) => self.problem(format!("Client storage · {error} · Ctrl+R to recheck")),
             },
             Update::DefaultModel(version, result) => self.default_model_updated(version, result),
+            Update::StartupSkills(generation, result)
+                if generation == self.generation && !self.pane().exists =>
+            {
+                self.startup_skills = match result {
+                    Ok(names) => StartupSkills::Ready(names),
+                    Err(_) => StartupSkills::Unavailable,
+                };
+            }
             Update::Output(selection, id, result) if selection == self.selection() => {
                 if let Some(Modal::Output(viewer)) = &mut self.modal {
                     if viewer.id == id {
@@ -718,6 +763,7 @@ impl App {
             | Update::Observation(..)
             | Update::Refreshed(..)
             | Update::BackgroundJobCancelled(..)
+            | Update::StartupSkills(..)
             | Update::Output(..) => {}
         }
         self.sync_pending_picker();
@@ -760,16 +806,6 @@ impl App {
         self.effects.push(Job::Pending);
     }
 
-    fn connect_failed(&mut self, error: Error) {
-        self.connecting = false;
-        let recovery = if self.remote {
-            "Check the kuku service URL and token, then press Ctrl+R"
-        } else {
-            "Use Ctrl+R to reconnect, /server for status, or /restart"
-        };
-        self.connection_problem = Some(format!("kuku service connection · {error}\n{recovery}"));
-    }
-
     fn begin_observing(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         self.model_version = self.model_version.wrapping_add(1);
@@ -791,6 +827,8 @@ impl App {
         } else {
             self.effects.push(Job::StopObserving);
             self.preview_model();
+            self.startup_skills = StartupSkills::Loading;
+            self.effects.push(Job::StartupSkills(self.generation));
         }
     }
 

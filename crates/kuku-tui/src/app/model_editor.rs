@@ -15,7 +15,7 @@ impl App {
             vec![
                 Choice::new(
                     "Add model or connection",
-                    "Choose a saved connection or configure a new endpoint",
+                    "",
                     ChoiceKind::EditModel(SetupIntent::Add),
                 ),
                 save_default,
@@ -45,7 +45,7 @@ impl App {
                 ChoiceKind::ConfirmModelSetting(SavedModelSetting::Default(tier.name.clone())),
             ));
         }
-        let mut header = format!("{} · {} · {}", tier.name, tier.connection, tier.model);
+        let mut header = format!("{} · {} · {}", tier.model, tier.connection, tier.name);
         if let Some(settings) = tier.settings {
             header.push_str(&format!(
                 "
@@ -162,19 +162,10 @@ Agent requests image · built-in adapter supports text",
             self.problem("Change persistent model settings on the service host.");
             return;
         }
-        let header = match &change {
-            SavedModelSetting::Default(tier) => {
-                format!("Save {tier} as the persistent default for new Sessions?")
-            }
-            SavedModelSetting::Thinking { model, effort, .. } => format!(
-                "Save thinking for {model}? {}",
-                if effort == "provider-default" {
-                    "Omit effort in model requests".into()
-                } else {
-                    format!("Send {effort} in model requests")
-                },
-            ),
+        let SavedModelSetting::Default(tier) = &change else {
+            unreachable!("thinking defaults confirm beside the composer");
         };
+        let header = format!("Save {tier} as the persistent default for new Sessions?");
         let picker = self.picker(
             PickerKind::ModelActions,
             vec![

@@ -12,9 +12,9 @@ For a tagged release, choose the new release’s manifest and use the installer 
 
 ## Reconnect to the managed service
 
-Replacing the installed client leaves the running service and its work active. If the client and server protocol versions match, open the Session from the new client. Use `kuku server status` to see the running build and active work.
+Launch the new executable as usual. For each data directory, the installed client reuses a managed service of the same build or replaces an idle service from an older release. Starting a different build of the same release selects that build. A client from an older release reports the newer running build. Use a separate data directory to run releases side by side.
 
-If the client reports a protocol mismatch, wait for active work and tool cleanup to settle, then run `kuku server restart` using the new binary. A busy service reports what is still active so you can retry later. The orderly restart releases Session writers and preserves committed history, waiting requests and queued inputs. [Run the server](run-the-server.md) · [Sessions](../how-it-works/sessions.md)
+When a service is busy, the TUI waits for the work to finish and connects automatically. An open TUI reports the new build when a version change disconnects its Session and keeps its own build on reconnect. Use `kuku server status` to see the running build and active work. An orderly replacement preserves committed history, waiting requests and queued inputs. [Run the server](run-the-server.md) · [Sessions](../how-it-works/sessions.md)
 
 ## Check your configuration
 

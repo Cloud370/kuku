@@ -1,13 +1,12 @@
 use crossterm::event::{KeyCode, KeyEvent};
 
-use crate::app::{App, JobCommand, Modal};
-use crate::jobs::Job;
+use crate::app::{App, Modal};
 use crate::keys::Shortcut;
 use crate::menu::{ChoiceKind, PickerKind};
 
 impl App {
     pub(super) fn picker_key(&mut self, key: KeyEvent) {
-        if self.rewind_picker_key(key) {
+        if self.thinking_picker_key(key) || self.rewind_picker_key(key) {
             return;
         }
         let page = self.modal_page as isize;
@@ -30,18 +29,6 @@ impl App {
         }
         match key {
             key if Shortcut::ENTER.matches(key) => {
-                if matches!(picker.kind, PickerKind::Commands) {
-                    if let Some(command) = JobCommand::parse(picker.query.text()) {
-                        if matches!(command, JobCommand::Invalid) {
-                            picker.problem = Some("Use /jobs or /jobs cancel <id>".into());
-                            return;
-                        }
-                        self.modal = None;
-                        self.effects.push(Job::ClosePicker);
-                        self.run_job_command(command);
-                        return;
-                    }
-                }
                 if let Some(choice) = picker.selected_choice() {
                     let kind = picker.kind.clone();
                     let ticket = picker.ticket.id;
@@ -51,12 +38,7 @@ impl App {
             key if Shortcut::TAB.matches(key) && picker.kind.completes_text() => {
                 match (&picker.kind, picker.selected_choice()) {
                     (PickerKind::Commands, Some(ChoiceKind::Command(command))) => {
-                        let completed = format!("/{}", command.name());
-                        if picker.query.text() != completed {
-                            picker.query.set_text(completed);
-                            picker.selected = 0;
-                            self.search(false);
-                        }
+                        self.complete_command(command);
                     }
                     (PickerKind::Commands, Some(choice @ ChoiceKind::Skill(_)))
                     | (PickerKind::Paths(_), Some(choice @ ChoiceKind::Path(_))) => {
@@ -67,8 +49,8 @@ impl App {
                     _ => {}
                 }
             }
-            key if Shortcut::UP.matches(key) => picker.move_by(-1),
-            key if Shortcut::DOWN.matches(key) => picker.move_by(1),
+            key if Shortcut::UP.matches(key) => picker.cycle_by(-1),
+            key if Shortcut::DOWN.matches(key) => picker.cycle_by(1),
             key if Shortcut::PAGE_UP.matches(key)
                 && matches!(picker.kind, PickerKind::Server | PickerKind::ModelDefault) =>
             {
@@ -84,10 +66,22 @@ impl App {
             _ if picker.kind.searchable()
                 && super::edit(&mut picker.query, key, self.modal_editor_width, false) =>
             {
-                picker.selected = 0;
-                self.search(false);
+                self.picker_query_changed();
             }
             _ => {}
+        }
+    }
+
+    pub(super) fn picker_query_changed(&mut self) {
+        let Some(Modal::Picker(picker)) = &mut self.modal else {
+            return;
+        };
+        if picker.kind == PickerKind::Commands && !picker.query.text().starts_with('/') {
+            self.close_picker();
+            self.focus_composer();
+        } else {
+            picker.selected = 0;
+            self.search(false);
         }
     }
 }

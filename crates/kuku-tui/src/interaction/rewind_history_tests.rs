@@ -160,7 +160,12 @@ fn boundary_loads_one_page_and_preserves_selection_through_two_older_pages() {
     let mut app = app();
     assert_eq!(102, selected(&app));
     assert_eq!(vec![100, 101, 102], ids(&app));
-    top(&mut app);
+    press(&mut app, KeyCode::Down);
+    assert_eq!(102, selected(&app));
+    press(&mut app, KeyCode::Up);
+    assert_eq!(101, selected(&app));
+    press(&mut app, KeyCode::Up);
+    assert_eq!(100, selected(&app));
     for _ in 0..10 {
         press(&mut app, KeyCode::Up);
     }
@@ -195,6 +200,10 @@ fn boundary_loads_one_page_and_preserves_selection_through_two_older_pages() {
     assert!(picker(&app).header.contains("All earlier messages loaded"));
     top(&mut app);
     assert_eq!(20, selected(&app));
+    press(&mut app, KeyCode::Up);
+    assert_eq!(20, selected(&app));
+    press(&mut app, KeyCode::Down);
+    assert_eq!(40, selected(&app));
     assert!(app.effects.is_empty());
 }
 

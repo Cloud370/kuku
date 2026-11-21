@@ -1,7 +1,8 @@
 use std::collections::HashSet;
 
+use kuku_client::local::LocalError;
 use kuku_client::{
-    Action, AgentProgress, AgentStatus, HistoryEntry, HistoryKind, InputStatus, ModelPhase,
+    Action, AgentProgress, AgentStatus, Error, HistoryEntry, HistoryKind, InputStatus, ModelPhase,
     Observation, ReplyPreview, RetryMetadata, RetryStopReason,
 };
 use serde_json::Value;
@@ -99,6 +100,34 @@ pub(super) struct ExecutionProgress {
     output: Option<ModelPhase>,
     tools: HashSet<String>,
     terminal_error: bool,
+    output_meter: OutputMeter,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct OutputMeter {
+    bytes: u64,
+    reported: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OutputTokens {
+    Estimated(u64),
+    Reported(u64),
+}
+
+impl OutputMeter {
+    fn preview(bytes: Option<u64>, tokens: Option<u64>, text: &str, truncated: bool) -> Self {
+        Self {
+            bytes: bytes.unwrap_or(if truncated { 0 } else { text.len() as u64 }),
+            reported: tokens,
+        }
+    }
+
+    fn tokens(self) -> Option<OutputTokens> {
+        self.reported
+            .map(OutputTokens::Reported)
+            .or_else(|| (self.bytes > 0).then_some(OutputTokens::Estimated(self.bytes.div_ceil(4))))
+    }
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -170,6 +199,7 @@ impl ExecutionProgress {
             "runtime.step_prepared" => {
                 *self = Self {
                     request: ModelRequest::Waiting,
+                    tools: std::mem::take(&mut self.tools),
                     ..Self::default()
                 };
             }
@@ -188,6 +218,7 @@ impl ExecutionProgress {
                 } else {
                     *self = Self {
                         request,
+                        tools: std::mem::take(&mut self.tools),
                         terminal_error: stopped,
                         ..Self::default()
                     };
@@ -231,11 +262,18 @@ impl ExecutionProgress {
                     self.request = ModelRequest::Waiting;
                 }
                 self.clear_stream();
+                self.output_meter = OutputMeter::default();
             }
             Some("model_recovery") => {
                 self.request = ModelRequest::Retrying(crate::retry_notice::live_recovery(event));
                 self.terminal_error = false;
                 self.clear_stream();
+                self.output_meter = OutputMeter::default();
+            }
+            Some("model_output_usage") => {
+                if let Some(count) = event["output_tokens"].as_u64() {
+                    self.output_meter.reported = Some(count);
+                }
             }
             Some("thinking" | "reasoning_preview")
                 if event
@@ -259,6 +297,12 @@ impl ExecutionProgress {
                         self.request = ModelRequest::None;
                     }
                     self.output = Some(phase);
+                    self.output_meter = OutputMeter::preview(
+                        event["output_bytes"].as_u64(),
+                        event["output_tokens"].as_u64(),
+                        event["content"].as_str().unwrap_or_default(),
+                        event["truncated"].as_bool().unwrap_or_default(),
+                    );
                 }
             }
             Some("text")
@@ -270,6 +314,10 @@ impl ExecutionProgress {
                     self.request = ModelRequest::None;
                 }
                 self.output = Some(ModelPhase::Streaming);
+                let bytes = event["content"]
+                    .as_str()
+                    .map_or(0, |text| text.len() as u64);
+                self.output_meter.bytes = self.output_meter.bytes.saturating_add(bytes);
             }
             _ => {}
         }
@@ -319,7 +367,10 @@ impl ExecutionProgress {
 
     fn retain_terminal_notice(&mut self) {
         if !self.terminal_error {
-            *self = Self::default();
+            *self = Self {
+                output_meter: self.output_meter,
+                ..Self::default()
+            };
         } else {
             self.output = None;
             self.tools.clear();
@@ -507,12 +558,44 @@ impl App {
             }
             Observation::Lagged { .. } => {
                 pane.progress.clear_stream();
+                pane.progress.output_meter = OutputMeter::default();
                 pane.transcript.clear_preview();
                 let cursor = pane.last_event;
                 self.related_agents.invalidate(cursor);
                 self.request_refresh(SnapshotRefresh::Progress);
             }
             Observation::Heartbeat => {}
+        }
+    }
+
+    pub(super) fn connect_failed(&mut self, error: Error) {
+        self.connecting = matches!(error, Error::Local(LocalError::BuildDeferred { .. }));
+        let notice = match error {
+            Error::Local(LocalError::BuildDeferred { .. }) => {
+                "Waiting for the previous version to finish.\nThis window will connect automatically."
+                    .into()
+            }
+            Error::Local(LocalError::BuildMismatch { running, .. }) => {
+                format!("kuku {running} is already running.\nOpen that version to continue.")
+            }
+            _ if self.remote => format!(
+                "kuku service connection · {error}\nCheck the service URL and token, then press Ctrl+R"
+            ),
+            _ => format!(
+                "kuku service connection · {error}\nUse Ctrl+R to reconnect, /server for status, or /restart"
+            ),
+        };
+        self.connection_problem = Some(notice);
+    }
+
+    pub(super) fn watch_failed(&mut self, error: Error) {
+        if matches!(error, Error::Local(LocalError::BuildMismatch { .. })) {
+            self.drop_watch(Watch::Detached);
+            self.connect_failed(error);
+        } else {
+            self.drop_watch(Watch::Failed(format!(
+                "kuku service live updates unavailable · {error} · Ctrl+R to reconnect"
+            )));
         }
     }
 
@@ -671,6 +754,12 @@ impl Pane {
     pub(super) fn apply_reply_preview(&mut self, reply: ReplyPreview) {
         self.latest_reply_cursor = self.live_floor;
         self.progress.output = Some(reply.phase);
+        self.progress.output_meter = OutputMeter::preview(
+            reply.output_bytes,
+            reply.output_tokens,
+            &reply.text,
+            reply.truncated,
+        );
         self.transcript.replace_reply_preview(
             reply.execution_id,
             Some(reply.turn),
@@ -724,6 +813,39 @@ impl Pane {
             Activity::Configuration
         } else {
             Activity::Ready
+        }
+    }
+
+    pub(crate) fn composer_activity(&self) -> Activity {
+        let activity = self.activity();
+        if activity == Activity::RunningTools {
+            return match self.progress.output {
+                Some(ModelPhase::Streaming) => Activity::Streaming,
+                Some(ModelPhase::Thinking) => Activity::Thinking,
+                Some(ModelPhase::ToolArguments) => Activity::ToolArguments,
+                None => activity,
+            };
+        }
+        activity
+    }
+
+    pub(crate) fn parallel_tools(&self) -> usize {
+        self.progress.tools.len()
+    }
+
+    pub(crate) fn composer_output_tokens(&self, activity: Activity) -> Option<OutputTokens> {
+        match activity {
+            Activity::Finished => self
+                .current_request_usage()
+                .and_then(|usage| usage.latest_request.as_ref())
+                .and_then(|sample| sample.output_tokens)
+                .map(OutputTokens::Reported)
+                .or_else(|| self.progress.output_meter.tokens()),
+            Activity::Streaming
+            | Activity::Thinking
+            | Activity::RunningTools
+            | Activity::ToolArguments => self.progress.output_meter.tokens(),
+            _ => None,
         }
     }
 

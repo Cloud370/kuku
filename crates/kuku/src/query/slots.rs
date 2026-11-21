@@ -549,7 +549,8 @@ pub(crate) fn map_ui_to_tool_event(event: crate::query::UiEvent) -> Option<ToolE
         UiEvent::TurnStart { .. }
         | UiEvent::Log { .. }
         | UiEvent::Cancelled { .. }
-        | UiEvent::ModelProgress { .. } => None,
+        | UiEvent::ModelProgress { .. }
+        | UiEvent::ModelOutputUsage { .. } => None,
     }
 }
 

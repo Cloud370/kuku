@@ -30,7 +30,7 @@ mod transcript;
 mod ui;
 
 /// Run the interactive Session client using the supplied connection and workspace selection.
-pub async fn run(options: ConnectionOptions) -> io::Result<()> {
+pub async fn run(options: ConnectionOptions, build: &'static str) -> io::Result<()> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -40,7 +40,7 @@ pub async fn run(options: ConnectionOptions) -> io::Result<()> {
     if !onboarding::run_if_needed(&options).await? {
         return Ok(());
     }
-    terminal::run(options).await
+    terminal::run(options, build).await
 }
 
 /// Open shared provider and credential settings from the CLI.

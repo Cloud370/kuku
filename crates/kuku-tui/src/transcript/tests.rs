@@ -298,33 +298,48 @@ fn roles_and_file_details_are_readable_without_styles_at_narrow_widths() {
     for width in [17, 72] {
         let view = transcript.project(width, 32);
         let plain: Vec<_> = view.lines.iter().map(ToString::to_string).collect();
-        assert_eq!(
-            if width == 17 {
-                "│ You / Turn 1"
-            } else {
-                "│  You   /   Turn 1"
-            },
-            plain[0]
-        );
-        let (body, inset) = if width == 17 { (1, 2) } else { (2, 3) };
+        let (title, body, inset, heading) = if width == 17 {
+            (0, 1, 2, "│ You · Turn 1")
+        } else {
+            assert_eq!("│", plain[0].trim_end());
+            assert_eq!(view.lines[0].style.bg, Some(crate::theme::SURFACE));
+            assert_eq!(view.row_insets[0], width as u16);
+            (1, 3, 2, "│ You  ·  Turn 1")
+        };
+        assert_eq!(heading, plain[title]);
         assert_eq!(
             "看一下 e\u{301} 👩‍💻",
             plain[body].trim_start_matches('│').trim_start()
         );
         assert_eq!(inset, view.row_insets[body]);
+        if width == 72 {
+            assert_eq!("│", plain[body + 1].trim_end());
+            assert_eq!(view.lines[body + 1].style.bg, Some(crate::theme::SURFACE));
+            assert_eq!(view.row_insets[body + 1], width as u16);
+        }
+        let gap = body + if width == 72 { 2 } else { 1 };
+        assert!(plain[gap].is_empty());
+        assert!(view.lines[gap].style.bg.is_none());
         assert!(plain.windows(2).any(|pair| {
             pair[0] == "Assistant"
                 && pair[1].trim_start() == "我来检查"
                 && pair[1].starts_with("  ")
         }));
+        assert!(plain.iter().any(|row| row.starts_with("╭─ Read file")));
+        assert!(plain.iter().any(|row| row.contains("error")));
         assert!(plain
             .iter()
-            .any(|row| row.trim_start().starts_with("Read file")));
-        assert!(plain.iter().any(|row| row.contains("error")));
-        assert!(plain.iter().any(|row| row.trim_start() == "中文.txt"));
-        assert!(plain.iter().any(|row| row.trim_start() == "文件丢失"));
+            .any(|row| row.trim_matches('│').trim() == "中文.txt"));
+        assert!(plain
+            .iter()
+            .any(|row| row.trim_matches('│').trim() == "文件丢失"));
         assert!(view.lines.iter().all(|line| line.width() <= width));
     }
+
+    assert_eq!(
+        "│ You · Turn 1",
+        transcript.project(14, 40).lines[0].to_string()
+    );
 
     let compact: Vec<_> = transcript
         .project(8, 40)
@@ -490,13 +505,13 @@ fn history_page_join_only_marks_genuine_turn_boundaries_and_preserves_the_anchor
     assert_eq!(
         vec!["1", "2"],
         all.iter()
-            .filter_map(|row| row.strip_prefix("│  You   /   Turn ").or_else(|| row
+            .filter_map(|row| row.strip_prefix("│ You  ·  Turn ").or_else(|| row
                 .strip_prefix("Turn ")
                 .and_then(|tail| tail.split_once("  ─"))
                 .map(|(number, _)| number)))
             .collect::<Vec<_>>()
     );
-    assert_eq!("│  Inspect the file", all[2]);
+    assert_eq!("│ Inspect the file", all[3]);
 }
 
 #[test]
@@ -624,10 +639,10 @@ fn source_keeps_nested_fences_and_both_renderings_are_cached_until_the_reply_cha
     let preview = rows(&mut transcript);
     let cached_preview = transcript.recent.records[0]
         .rendered
-        .preview
+        .streaming
         .as_ref()
         .unwrap()
-        .1
+        .rows()
         .as_ptr();
 
     assert!(transcript.toggle_source());
@@ -641,12 +656,18 @@ fn source_keeps_nested_fences_and_both_renderings_are_cached_until_the_reply_cha
     assert!(!raw.contains('\u{001b}'));
     let cache = &transcript.recent.records[0].rendered;
     let cached_source = cache.source.as_ref().unwrap().1.as_ptr();
-    assert_eq!(cached_preview, cache.preview.as_ref().unwrap().1.as_ptr());
+    assert_eq!(
+        cached_preview,
+        cache.streaming.as_ref().unwrap().rows().as_ptr()
+    );
 
     assert!(!transcript.toggle_source());
     assert_eq!(preview, rows(&mut transcript));
     let cache = &transcript.recent.records[0].rendered;
-    assert_eq!(cached_preview, cache.preview.as_ref().unwrap().1.as_ptr());
+    assert_eq!(
+        cached_preview,
+        cache.streaming.as_ref().unwrap().rows().as_ptr()
+    );
     assert_eq!(cached_source, cache.source.as_ref().unwrap().1.as_ptr());
 
     assert!(transcript.toggle_source());
@@ -656,7 +677,12 @@ fn source_keeps_nested_fences_and_both_renderings_are_cached_until_the_reply_cha
         Some(1),
         &json!({"type":"text","content":"````\n"}),
     );
-    assert!(transcript.recent.records[0].rendered.preview.is_none());
+    let cache = &transcript.recent.records[0].rendered;
+    assert!(cache.source.is_none());
+    assert_eq!(
+        cached_preview,
+        cache.streaming.as_ref().unwrap().rows().as_ptr()
+    );
     assert!(rows(&mut transcript)
         .iter()
         .any(|row| row.trim_start() == "````"));

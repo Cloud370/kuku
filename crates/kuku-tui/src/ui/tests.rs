@@ -38,18 +38,17 @@ fn activity_screen(app: &mut App, width: u16, height: u16, step: Option<u128>) -
     terminal
         .draw(|frame| visible = render_at(frame, app, activity))
         .unwrap();
-    let text = terminal
-        .backend()
-        .buffer()
-        .content
-        .iter()
-        .map(|cell| cell.symbol())
-        .collect::<Vec<_>>()
-        .chunks(usize::from(width))
-        .map(|row| row.concat())
+    let text = buffer_rows(terminal.backend().buffer())
         .collect::<Vec<_>>()
         .join("\n");
     (text, visible)
+}
+
+fn buffer_rows(buffer: &Buffer) -> impl Iterator<Item = String> + '_ {
+    buffer
+        .content
+        .chunks(usize::from(buffer.area.width))
+        .map(|row| row.iter().map(|cell| cell.symbol()).collect())
 }
 
 fn app() -> App {
@@ -346,21 +345,38 @@ fn clicking_the_queue_focuses_its_inline_editor_and_saves_the_exact_replacement(
 #[test]
 fn blank_welcome_scales_down_and_active_session_uses_one_branded_row() {
     let mut app = app();
+    app.pane_mut().initial_config.tier = Some("work".into());
+    app.startup_skills =
+        crate::app::StartupSkills::Ready(vec!["review-workspace".into(), "format-code".into()]);
     for width in [64, 118] {
-        let welcome = screen(&mut app, width, 28);
-        let rows: Vec<_> = welcome.lines().collect();
+        let mut terminal = Terminal::new(TestBackend::new(width, 28)).unwrap();
+        let frame = terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let rows: Vec<_> = buffer_rows(frame.buffer).collect();
+        let x = usize::from(app.composer_area.x);
         assert_eq!("", rows[0].trim());
-        assert_eq!("⢎⡱  kuku", rows[1].trim());
-        let indent = " ".repeat(rows[1].split_once("kuku").unwrap().0.width());
-        assert_eq!(format!("{indent}New session"), rows[2].trim_end());
-        assert!(rows[4].starts_with(&format!("{indent}Enter sends your first prompt")));
-        if width == 64 {
-            assert!(rows[5].starts_with(&format!("{indent}/resume opens a saved session")));
-        } else {
-            assert!(rows[4].contains("/resume opens a saved session"));
-            assert!(rows[5].contains("Workspace: /workspace"));
-            assert!(rows[6].contains("/model: Set current model as default to persist the route."));
+        for (row, text) in [
+            (1, "⢎⡱  kuku · New session"),
+            (3, "Workspace  /workspace"),
+            (4, "Model      Tier work"),
+            (6, "Skills   /skill: Browse"),
+            (7, "  review-workspace · format-code"),
+        ] {
+            assert_eq!(format!("{}{text}", " ".repeat(x)), rows[row].trim_end());
+            assert!(
+                frame.buffer.content[row * usize::from(width)..(row + 1) * usize::from(width)]
+                    .iter()
+                    .all(|cell| cell.bg == ratatui::style::Color::Reset)
+            );
         }
+        assert!(rows[9]
+            .trim_start()
+            .starts_with("Enter sends your first prompt"));
+        let shortcuts_row = 10 + usize::from(width == 64);
+        assert!(rows[shortcuts_row - 1].contains("/resume opens a saved session"));
+        assert_eq!(
+            "/ Actions · Ctrl+L Model · Ctrl+T Think · Ctrl+P Help",
+            rows[shortcuts_row].trim()
+        );
     }
 
     let short = screen(&mut app, 29, 6);
@@ -383,7 +399,7 @@ fn blank_welcome_shows_the_shortened_workspace_path() {
     let welcome = screen(&mut app, 118, 28);
     let workspace = welcome
         .lines()
-        .find(|line| line.contains("Workspace: "))
+        .find(|line| line.trim_start().starts_with("Workspace "))
         .unwrap();
     assert!(workspace.contains('…'));
     assert!(workspace.trim_end().ends_with("actual-workspace"));
@@ -431,11 +447,13 @@ fn switching_agent_keeps_drafts_and_read_position_and_ignores_old_observer() {
         rewind_groups: Vec::new(),
         next_before: Some(1),
     };
-    app.update(Update::Loaded(
-        main_selection.clone(),
-        snapshot(&app, "running", json!(null), json!(null)),
-        page,
-    ));
+    let mut main_state = snapshot(&app, "running", json!(null), json!(null));
+    main_state.agents = serde_json::from_value(json!([
+        {"address":"main", "status":"running", "pending_inputs":0},
+        {"address":"reviewer", "status":"idle", "pending_inputs":0},
+    ]))
+    .unwrap();
+    app.update(Update::Loaded(main_selection.clone(), main_state, page));
     event(&mut app, Event::Paste("main-draft".into()));
     screen(&mut app, 79, 22);
     key(&mut app, KeyCode::PageUp, KeyModifiers::NONE);
@@ -455,7 +473,7 @@ fn switching_agent_keeps_drafts_and_read_position_and_ignores_old_observer() {
         },
     ));
     let other = screen(&mut app, 79, 22);
-    assert!(other.contains("To reviewer"));
+    assert!(other.contains("Send to reviewer"));
     assert!(other.contains("review-notes"));
     assert!(!other.contains("obsolete main stream"));
     app.select(main, true, "Example".into());

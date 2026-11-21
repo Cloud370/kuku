@@ -77,8 +77,7 @@ impl CodeBlock {
         if output.len() == limit {
             return output;
         }
-        let padding = frame.padding_line().filter(|_| !self.text.is_empty());
-        output.extend(padding.iter().cloned());
+        output.extend(frame.padding_line().filter(|_| !self.text.is_empty()));
         let mut highlighter = self
             .language
             .as_deref()
@@ -100,9 +99,8 @@ impl CodeBlock {
         }
         if self.text.is_empty() && output.len() < limit {
             output.push(frame.line(Line::default()));
-        }
-        if output.len() < limit {
-            output.extend(padding);
+        } else if output.len() + 1 < limit {
+            output.extend(frame.padding_line());
         }
         if frame.bordered() && output.len() < limit {
             output.push(frame.border('╰', '╯'));
@@ -140,6 +138,7 @@ pub(crate) fn file_source(text: &str, language: &str) -> Vec<Line<'static>> {
         .collect()
 }
 
+#[derive(Debug, Clone, Copy)]
 pub(super) struct SyntaxBudget {
     bytes: usize,
     lines: usize,

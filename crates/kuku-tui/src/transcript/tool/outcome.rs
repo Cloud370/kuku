@@ -78,6 +78,7 @@ pub(super) struct Outcome {
     pub(super) script: Option<Box<ScriptPreview>>,
     pub(super) file_read: Option<FileRead>,
     pub(super) receipt: Option<Receipt>,
+    pub(super) agent_model: Option<Box<super::super::agent::AgentModel>>,
     pub(super) observation: Option<Observation>,
     pub(super) change: Option<FileChange>,
     pub(super) attention: bool,
@@ -151,6 +152,9 @@ impl Outcome {
             script: ScriptPreview::from_result(structured),
             file_read: FileRead::from_result(structured, truncated),
             receipt: succeeded.then(|| agent_receipt(structured)).flatten(),
+            agent_model: succeeded
+                .then(|| serde_json::from_value(structured["model_selection"].clone()).ok())
+                .flatten(),
             observation: succeeded
                 .then(|| {
                     Observation::from_result(

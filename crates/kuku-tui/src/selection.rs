@@ -30,6 +30,7 @@ pub(crate) enum ClickTarget {
     },
     Transcript,
     Composer,
+    Recipient,
     JumpLatest,
     Messages,
 }
@@ -79,11 +80,11 @@ impl TextSelection {
     pub(crate) fn transcript_cell(&self, mouse: MouseEvent) -> Option<(usize, usize)> {
         let (area, _) = self.transcript_insets.as_ref()?;
         let point = Position::new(mouse.column, mouse.row);
-        if !area.contains(point) || mouse.row == area.y {
+        if !area.contains(point) {
             return None;
         }
         Some((
-            usize::from(mouse.row - area.y - 1),
+            usize::from(mouse.row - area.y),
             usize::from(mouse.column - area.x),
         ))
     }

@@ -241,7 +241,7 @@ impl Session {
         if state.agents.len() >= self.inner.options.limits.max_agents {
             return Err(Error::InvalidArgument("session agent limit reached".into()));
         }
-        let config = self.resolve_defaults(address, config)?;
+        let config = self.resolve_agent_preset(address, config)?;
         self.validate_config(&config)?;
         self.commit(
             &mut state,

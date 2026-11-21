@@ -7,9 +7,10 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{Activity, App, ServiceStatus, SubmissionStatus};
 use crate::text::{
-    compact_token_count, shorten, shorten_middle, single_line, single_line_path, tail_start,
+    compact_token_count, effort_label, shorten, shorten_middle, single_line, single_line_path,
+    tail_start, with_suffix,
 };
-use crate::theme::{emphasis, ERROR, EXECUTION, MODEL, MUTED, USAGE, WARNING};
+use crate::theme::{emphasis, ACCENT, ERROR, EXECUTION, MODEL, MUTED, USAGE, WARNING};
 
 mod editor;
 
@@ -20,6 +21,7 @@ const WIDE_SEPARATOR: &str = "  ";
 const GROUP_GAP: &str = "    ";
 const COMPACT_DETAILS_WIDTH: usize = 12;
 const COMPACT_MODEL_WIDTH: usize = 28;
+const MAX_EFFORT_WIDTH: usize = 12;
 const COMPACT_STATUS_WIDTH: usize = 96;
 const PHONE_WIDTH: usize = 60;
 const TWO_ROW_MIN_HEIGHT: u16 = 10;
@@ -161,10 +163,24 @@ impl StatusLine {
             .fields
             .as_ref()
             .is_some_and(|fields| fields.contains(&Field::Input));
-        if !input_in_footer {
-            if let Some(input) = input(app, notice.is_none()) {
-                return Some(Span::styled(input.fit(width), input.style));
-            }
+        let input = (!input_in_footer)
+            .then(|| input(app, notice.is_none()))
+            .flatten();
+        if let Some(input) = input
+            .as_ref()
+            .filter(|input| input.priority >= Priority::Submission)
+        {
+            return Some(Span::styled(input.fit(width), input.style));
+        }
+        if let Some(effort) = app.pane().next_thinking() {
+            let label = format!("Next {}", effort_label(effort));
+            return Some(Span::styled(
+                shorten(&label, width),
+                Style::new().fg(ACCENT),
+            ));
+        }
+        if let Some(input) = input {
+            return Some(Span::styled(input.fit(width), input.style));
         }
         notice.map(|notice| {
             Span::styled(
@@ -257,19 +273,27 @@ impl Field {
             ),
             Self::Model => {
                 let pane = app.pane();
-                let (id, route) = match pane.effective_model_identity() {
+                let (id, route, effort, slot) = match pane.effective_model_identity() {
                     Some((id, connection, effort)) => {
                         let id = single_line(id);
+                        let effort = shorten(&effort_label(effort), MAX_EFFORT_WIDTH);
                         let route = custom.then(|| {
                             let connection = single_line(connection);
-                            match effort {
-                                Some(effort) => {
-                                    format!("{id} ({connection} · {})", single_line(effort))
-                                }
-                                None => format!("{id} ({connection})"),
-                            }
+                            format!("{id} ({connection} · {effort})")
                         });
-                        (id, route)
+                        let slot = pane
+                            .effective_reasoning()
+                            .and_then(|(_, caps)| {
+                                caps.selectable_reasoning_efforts()
+                                    .map(|level| {
+                                        effort_label(Some(level)).width().min(MAX_EFFORT_WIDTH)
+                                    })
+                                    .max()
+                            })
+                            .map_or(effort.width(), |width| {
+                                width.max(effort.width()).max("Default".width())
+                            });
+                        (id, route, Some(effort), slot)
                     }
                     None => {
                         let label = pane.effective_model_label().unwrap_or_else(|| {
@@ -279,10 +303,10 @@ impl Field {
                                 "Model pending".into()
                             }
                         });
-                        (single_line(&label), None)
+                        (single_line(&label), None, None, 0)
                     }
                 };
-                Segment::model(id, route)
+                Segment::model(id, route, effort, slot)
             }
             Self::Context => Segment::measurement(
                 app.pane()
@@ -318,9 +342,8 @@ impl Field {
                     .snapshot
                     .as_ref()
                     .and_then(|snapshot| snapshot.session_costs.as_ref());
-                let (scope, reported, estimated, unknown) = if let Some(costs) = session_costs {
+                let (reported, estimated, unknown) = if let Some(costs) = session_costs {
                     (
-                        "Session",
                         costs.reported_nanodollars,
                         costs.estimated_nanodollars,
                         costs.unknown_requests,
@@ -328,21 +351,12 @@ impl Field {
                 } else {
                     let usage = usage?;
                     (
-                        "Agent",
                         usage.costs.reported_nanodollars,
                         usage.costs.estimated_nanodollars,
                         usage.unknown_cost_requests(),
                     )
                 };
-                Segment::details(
-                    format!(
-                        "{scope} cost · reported {symbol}{:.7} · estimated {symbol}{:.7} · {unknown} unknown",
-                        reported as f64 / 1_000_000_000.0,
-                        estimated as f64 / 1_000_000_000.0,
-                        symbol = "$",
-                    ),
-                    Priority::Metric,
-                )
+                Segment::metric(compact_cost(reported, estimated, unknown), "—")
             }
             Self::Throughput => Segment::measurement(
                 usage.and_then(UsageTotals::average_output_tokens_per_second),
@@ -374,7 +388,12 @@ enum SegmentText {
     Labels(Vec<String>),
     Details(String),
     Workspace(String),
-    Model { id: String, route: Option<String> },
+    Model {
+        id: String,
+        route: Option<String>,
+        effort: Option<String>,
+        effort_slot: usize,
+    },
 }
 
 struct Segment {
@@ -384,9 +403,19 @@ struct Segment {
 }
 
 impl Segment {
-    fn model(id: String, route: Option<String>) -> Self {
+    fn model(
+        id: String,
+        route: Option<String>,
+        effort: Option<String>,
+        effort_slot: usize,
+    ) -> Self {
         Self {
-            text: SegmentText::Model { id, route },
+            text: SegmentText::Model {
+                id,
+                route,
+                effort,
+                effort_slot,
+            },
             style: Style::default().fg(MODEL),
             priority: Priority::Model,
         }
@@ -450,10 +479,19 @@ impl Segment {
     fn compact_width(&self, row_width: usize) -> usize {
         match &self.text {
             SegmentText::Labels(labels) => labels[0].width(),
-            SegmentText::Model { id, .. } => id
-                .width()
-                .min(COMPACT_MODEL_WIDTH)
-                .min((row_width / 3).max(1)),
+            SegmentText::Model {
+                id,
+                effort,
+                effort_slot,
+                ..
+            } => {
+                let effort_width = effort
+                    .as_ref()
+                    .map_or(0, |_| SEPARATOR.width() + effort_slot);
+                (id.width() + effort_width)
+                    .min(COMPACT_MODEL_WIDTH)
+                    .min((row_width / 3).max(effort_width + 1))
+            }
             SegmentText::Details(text) | SegmentText::Workspace(text) => {
                 text.width().min(COMPACT_DETAILS_WIDTH)
             }
@@ -469,11 +507,31 @@ impl Segment {
                 .cloned()
                 .unwrap_or_else(|| shorten(&labels[0], width)),
             SegmentText::Details(text) => shorten_middle(text, width),
-            SegmentText::Model { id, route } => route
-                .as_ref()
-                .filter(|route| route.width() <= width)
-                .cloned()
-                .unwrap_or_else(|| shorten_middle(id, width)),
+            SegmentText::Model {
+                id,
+                route,
+                effort,
+                effort_slot,
+            } => {
+                let pad = effort.as_ref().map_or(0, |effort| {
+                    effort_slot
+                        .saturating_sub(effort.width())
+                        .min(width.saturating_sub(SEPARATOR.width() + effort.width() + 1))
+                });
+                let available = width - pad;
+                let mut text = route
+                    .as_ref()
+                    .filter(|route| route.width() <= available)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        effort.as_ref().map_or_else(
+                            || shorten_middle(id, available),
+                            |effort| with_suffix(id, effort, available),
+                        )
+                    });
+                text.push_str(&" ".repeat(pad));
+                text
+            }
             SegmentText::Workspace(text) => {
                 if text.width() <= width {
                     text.clone()
@@ -670,6 +728,42 @@ fn tokens(value: Option<u64>, complete: bool, direction: &str) -> Segment {
         format!("{bound}{} {direction}", compact_token_count(count))
     });
     Segment::metric(label, &format!("— {direction}"))
+}
+
+fn compact_cost(reported: u64, estimated: u64, unknown: u64) -> Option<String> {
+    let total = u128::from(reported) + u128::from(estimated);
+    if total == 0 && unknown != 0 {
+        return None;
+    }
+    let prefix = if estimated != 0 {
+        "~"
+    } else if unknown != 0 {
+        "≥"
+    } else {
+        ""
+    };
+    if (1..1_000).contains(&total) {
+        return Some(
+            match prefix {
+                "~" => "~$0.000001",
+                "≥" => ">$0",
+                _ => "<$0.000001",
+            }
+            .into(),
+        );
+    }
+    let precision = if total < 1_000_000 { 6 } else { 3 };
+    let unit = 10u128.pow(9 - precision as u32);
+    let total = if prefix == "≥" {
+        total / unit * unit
+    } else {
+        total
+    };
+    let amount = format!("{:.precision$}", total as f64 / 1_000_000_000.0);
+    Some(format!(
+        "{prefix}${}",
+        amount.trim_end_matches('0').trim_end_matches('.')
+    ))
 }
 
 fn tokens_per_second(rate: f64) -> String {

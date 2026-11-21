@@ -637,6 +637,34 @@ impl ProbeBatch {
         (!test.accepted.is_empty() || !test.rejected.is_empty()).then_some(test)
     }
 
+    /// Service tiers advertised by the public catalog for the selected model.
+    pub fn advertised_service_tiers(
+        &self,
+        connection: &ProviderConfig,
+        model: &str,
+    ) -> Option<Vec<String>> {
+        self.selected_rows()
+            .find_map(|row| match (&row.probe, &row.progress) {
+                (
+                    Probe::Quotes {
+                        connection: tested,
+                        model: id,
+                        ..
+                    },
+                    ProbeProgress::Finished(_, Ok(ProbeResult::Quotes(quotes))),
+                ) if id == model
+                    && openrouter_quote_url(tested, id)
+                        == openrouter_quote_url(connection, model) =>
+                {
+                    super::openrouter_catalog::service_tiers(
+                        quotes,
+                        connection.options.routing.as_ref(),
+                    )
+                }
+                _ => None,
+            })
+    }
+
     pub fn pending(&self) -> bool {
         !self.tasks.is_empty() || self.next_retry().is_some()
     }

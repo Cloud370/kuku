@@ -18,6 +18,43 @@ pub struct RouteQuote {
     pub rates: TokenRates,
 }
 
+pub(super) fn service_tiers(
+    quotes: &[RouteQuote],
+    routing: Option<&OpenRouterRouting>,
+) -> Option<Vec<String>> {
+    if quotes.is_empty() {
+        return None;
+    }
+    let matches = |tag: &str, endpoint: &str| {
+        tag == endpoint
+            || tag
+                .strip_prefix(endpoint)
+                .is_some_and(|suffix| suffix.starts_with('/'))
+    };
+    let mut values: Vec<_> = quotes
+        .iter()
+        .filter(|quote| {
+            routing.is_none_or(|routing| {
+                (routing.only.is_empty() || routing.only.iter().any(|tag| matches(&quote.tag, tag)))
+                    && (routing.allow_fallbacks != Some(false)
+                        || routing
+                            .order
+                            .first()
+                            .is_none_or(|tag| matches(&quote.tag, tag)))
+            })
+        })
+        .map(|quote| match quote.service_tier.as_deref() {
+            None | Some("standard") => "default",
+            Some("fast") => "priority",
+            Some(value) => value,
+        })
+        .map(str::to_owned)
+        .collect();
+    values.sort_unstable();
+    values.dedup();
+    Some(values)
+}
+
 /// Pick a quote to display, honoring a preferred endpoint and requested service tier.
 /// The returned quote describes its own route even when runtime fallback is enabled.
 pub fn route_quote_for_display<'a>(
@@ -197,7 +234,7 @@ mod tests {
 
     use crate::config::OpenRouterRouting;
 
-    use super::{parse_quotes, route_quote_for_display};
+    use super::{parse_quotes, route_quote_for_display, service_tiers};
 
     #[test]
     fn author_matching_keeps_full_service_tiers_and_write_rates() {
@@ -228,6 +265,14 @@ mod tests {
             ..OpenRouterRouting::default()
         };
         assert_eq!(
+            Some(vec!["default".into(), "priority".into()]),
+            service_tiers(&results, None)
+        );
+        assert_eq!(
+            Some(vec!["priority".into()]),
+            service_tiers(&results, Some(&pinned))
+        );
+        assert_eq!(
             "anthropic/fast",
             route_quote_for_display(&results, Some(&pinned), None)
                 .unwrap()
@@ -235,10 +280,15 @@ mod tests {
         );
         let google = json!({"data": {"id": "google/gemini-4-neon", "endpoints": [
             {"tag":"google-vertex/global","provider_name":"Google","pricing":{"prompt":"0.000003"}},
-            {"tag":"google-ai-studio/flex","provider_name":"Google AI Studio","pricing":{"prompt":"0.0000015"}}
+            {"tag":"google-ai-studio/flex","provider_name":"Google AI Studio","service_tier":"flex","pricing":{"prompt":"0.0000015"}}
         ]}});
         let results = parse_quotes(&google, "google/gemini-4-neon").unwrap();
         assert!(results.iter().all(|route| route.author_route));
         assert_eq!(Some(1.5), results[1].rates.input);
+        assert_eq!(
+            Some(vec!["default".into(), "flex".into()]),
+            service_tiers(&results, None)
+        );
+        assert_eq!(None, service_tiers(&[], None));
     }
 }

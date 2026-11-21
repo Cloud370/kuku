@@ -20,6 +20,7 @@ use super::{
 
 const MAX_ACTIVITY_BYTES: usize = 4 * 1024;
 const MAX_SECTION_ROWS: usize = 4;
+const MAX_TIMELINE_TEXT_WIDTH: usize = 96;
 const INSTRUCTION_PREVIEW_ROWS: usize = 3;
 const MAX_CHOICE_CELLS: usize = 120;
 
@@ -181,7 +182,11 @@ pub(super) struct AgentRequest {
     kind: AgentAction,
     target: String,
     task: String,
+    preset: Option<String>,
 }
+
+mod model;
+pub(super) use model::AgentModel;
 
 impl AgentRequest {
     pub(super) fn from_call(tool: &str, args: &Value) -> Option<Self> {
@@ -197,6 +202,10 @@ impl AgentRequest {
         Some(Self {
             kind,
             target: capped(Some(target), MAX_ACTIVITY_BYTES),
+            preset: args["preset"]
+                .as_str()
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned),
             task: capped(
                 args[task].as_str(),
                 if matches!(kind, AgentAction::Create) {
@@ -211,6 +220,7 @@ impl AgentRequest {
     pub(super) fn card<'a>(
         &'a self,
         receipt: Option<&'a Receipt>,
+        model: Option<&'a AgentModel>,
         tool_status: &'a str,
         error: &'a str,
     ) -> AgentCard<'a> {
@@ -226,6 +236,8 @@ impl AgentRequest {
             task_label: self.kind.task_label(),
             error,
             receipt_cursor: receipt.map(|receipt| receipt.event_id),
+            model,
+            preset: self.preset.as_deref(),
         }
     }
 }
@@ -260,6 +272,8 @@ pub(super) struct AgentCard<'a> {
     task: &'a str,
     task_label: &'static str,
     error: &'a str,
+    model: Option<&'a AgentModel>,
+    preset: Option<&'a str>,
 }
 
 impl AgentCard<'_> {
@@ -277,8 +291,9 @@ impl AgentCard<'_> {
         open: bool,
         facts: Option<&AgentFacts>,
         checks: usize,
+        creation: Option<&AgentCard<'_>>,
     ) -> Vec<Row> {
-        let frame = CardFrame::agent(width);
+        let frame = CardFrame::new(width);
         let title = format!("Agent {}", single_line(self.address));
         let mut rows = vec![Row::plain(
             frame.agent_title(&title, self.receipt_cursor.is_some()),
@@ -287,48 +302,41 @@ impl AgentCard<'_> {
             (facts.status.label(), activity_style(facts.status))
         });
         let space = frame.content_width();
-        rows.push(Row::plain(
-            frame.line(Line::styled(shorten(label, space), color)),
-        ));
-        let reply = facts.and_then(|facts| first_content_line(&facts.preview));
-        let (caption, excerpt) = match reply {
-            Some(text) if facts.is_some_and(|facts| facts.status == Activity::Failed) => {
-                ("Error  ", text)
+        let mut status = Line::styled(shorten(label, space), color);
+        let excerpt = facts
+            .and_then(|facts| first_content_line(&facts.preview))
+            .or_else(|| {
+                facts
+                    .is_none_or(|facts| {
+                        !matches!(facts.status, Activity::Finished | Activity::Failed)
+                    })
+                    .then(|| first_content_line(self.task))
+                    .flatten()
+            });
+        if let Some(excerpt) = excerpt {
+            let remaining = space.saturating_sub(status.width() + 3);
+            if remaining > 3 {
+                status.push_span(Span::styled(" · ", Style::new().fg(MUTED)));
+                status.push_span(Span::raw(shorten(
+                    &single_line(excerpt.trim_start_matches('#').trim_start()),
+                    remaining.min(ACTIVITY_EXCERPT_CELLS),
+                )));
             }
-            Some(text) => ("Reply  ", text),
-            None => ("Task  ", first_content_line(self.task).unwrap_or_default()),
-        };
-        if !excerpt.is_empty() {
-            let prefix = if space >= caption.len() + 4 {
-                caption
-            } else {
-                ""
-            };
-            let excerpt = excerpt
-                .trim_start_matches('#')
-                .strip_prefix(' ')
-                .unwrap_or(excerpt);
-            rows.push(Row::plain(frame.line(Line::from(vec![
-                Span::styled(prefix, emphasis(MUTED)),
-                Span::raw(shorten(
-                    &single_line(excerpt),
-                    (space - prefix.len()).min(ACTIVITY_EXCERPT_CELLS),
-                )),
-            ]))));
+        }
+        rows.push(Row::plain(frame.line(status)));
+        if let Some(line) = creation
+            .filter(|_| !open)
+            .and_then(|card| card.model_label(space))
+        {
+            rows.push(Row::plain(frame.line(line)));
         }
         let marker = if open { "▾" } else { "▸" };
-        let timeline = if checks == 0 {
-            format!("{marker} Timeline")
-        } else {
-            format!(
-                "{marker} Timeline · {} calls · {checks} status {}",
-                checks + 2,
-                if checks == 1 { "check" } else { "checks" }
-            )
-        };
+        let timeline = format!("{marker} Timeline · {} calls", checks + 2);
         Row::pad_framed_body(&mut rows, &frame);
-        rows.push(Row::plain(frame.foot(&timeline)));
-        if !open {
+        if open {
+            rows.push(Row::plain(frame.divider(&timeline)));
+        } else {
+            rows.push(Row::plain(frame.foot(&timeline)));
             rows.push(Row::plain(Line::default()));
         }
         rows
@@ -347,7 +355,7 @@ impl AgentCard<'_> {
         facts: Option<&AgentFacts>,
         in_timeline: bool,
     ) -> Vec<Row> {
-        let frame = CardFrame::agent(width);
+        let frame = CardFrame::new(width);
         let width = if in_timeline {
             width
         } else {
@@ -360,14 +368,25 @@ impl AgentCard<'_> {
             0
         };
         let expanded = details == ToolDetails::Expanded;
-        let header = self.header(width.saturating_sub(usize::from(inset)), facts, in_timeline);
+        let section_width = if in_timeline {
+            width.min(MAX_TIMELINE_TEXT_WIDTH + usize::from(body_inset))
+        } else {
+            width
+        };
+        let header = self.header(
+            width.saturating_sub(usize::from(inset)),
+            facts.filter(|_| !in_timeline),
+        );
         let mut rows: Vec<_> = render_rows(header, width, 3, inset).collect();
         if let Some(row) = rows.first_mut().filter(|_| in_timeline && inset != 0) {
             let marker = if expanded { "▾ " } else { "▸ " };
             row.line.spans[0] = Span::styled(marker, emphasis(MODEL));
         }
+        if let Some(line) = self.model_label(width.saturating_sub(usize::from(body_inset))) {
+            rows.extend(render_rows(vec![line], width, 1, body_inset));
+        }
         let preview = facts.map_or("", |facts| facts.preview.as_str());
-        if !in_timeline || !expanded {
+        if !in_timeline {
             if matches!(self.kind, AgentAction::Create)
                 && self.error.is_empty()
                 && !self.task.trim().is_empty()
@@ -421,23 +440,28 @@ impl AgentCard<'_> {
                 &mut rows,
                 self.task_label,
                 self.task,
-                width,
+                section_width,
                 body_inset,
                 task_rows,
             );
-            let label = match facts.map(|facts| facts.status) {
-                Some(Activity::Streaming) => "Live Agent reply",
-                Some(Activity::Failed) => "Latest Agent error",
-                _ => "Latest Agent reply",
-            };
-            render_section(
-                &mut rows,
-                label,
-                preview,
-                width,
-                body_inset,
-                MAX_SECTION_ROWS,
-            );
+            if !in_timeline || matches!(self.kind, AgentAction::Send) {
+                let label = match facts.map(|facts| facts.status) {
+                    Some(Activity::Streaming) => "Live Agent reply",
+                    Some(Activity::Failed) => "Latest Agent error",
+                    _ => "Latest Agent reply",
+                };
+                if rows.len() > summary_rows && !preview.trim().is_empty() {
+                    rows.push(Row::plain(Line::default()));
+                }
+                render_section(
+                    &mut rows,
+                    label,
+                    preview,
+                    section_width,
+                    body_inset,
+                    MAX_SECTION_ROWS,
+                );
+            }
             if !self.error.is_empty() {
                 rows.extend(render_rows(
                     render_literal(self.error, Style::new().fg(ERROR)),
@@ -476,23 +500,16 @@ impl AgentCard<'_> {
             }
             rows = framed;
         }
-        rows.push(Row::plain(Line::default()));
+        if !in_timeline || expanded {
+            rows.push(Row::plain(Line::default()));
+        }
         rows
     }
 
-    fn header(
-        &self,
-        width: usize,
-        facts: Option<&AgentFacts>,
-        include_address: bool,
-    ) -> Vec<Line<'static>> {
-        let title = format!("Agent {}", single_line(self.address));
+    fn header(&self, width: usize, facts: Option<&AgentFacts>) -> Vec<Line<'static>> {
         let action = single_line(self.action);
         let style = Style::new().fg(MUTED);
         let mut inline = Line::default();
-        if include_address {
-            inline.push_span(Span::styled(format!("{title} · "), emphasis(MODEL)));
-        }
         inline.push_span(Span::styled(action.clone(), style));
         if let Some(facts) = facts {
             inline.push_span(Span::styled(
@@ -503,11 +520,7 @@ impl AgentCard<'_> {
         if inline.width() <= width {
             return vec![inline];
         }
-        let mut lines = Vec::new();
-        if include_address {
-            lines.push(Line::styled(shorten(&title, width), emphasis(MODEL)));
-        }
-        lines.push(Line::styled(shorten(&action, width), style));
+        let mut lines = vec![Line::styled(shorten(&action, width), style)];
         if let Some(facts) = facts {
             lines.push(Line::styled(
                 shorten(facts.status.label(), width),
@@ -551,6 +564,9 @@ fn render_section(
         width.saturating_sub(usize::from(inset)),
         limit,
     ));
+    if let Some(last) = source.iter().rposition(|line| line.width() > 0) {
+        source.truncate(last + 1);
+    }
     rows.extend(render_rows(source, width, limit, inset));
 }
 
@@ -835,8 +851,10 @@ mod tests {
         assert_eq!(1, agent_choices(&transcript).len());
         assert!(transcript.toggle_detail(earlier));
         let rendered = lines(&transcript.project(82, 25)).join("\n");
-        assert!(rendered.contains("Requested instructions"));
-        assert!(rendered.contains("Requested task"));
+        assert!(rendered.contains("▸ Created") && rendered.contains("▸ Input delivered"));
+        assert!(
+            !rendered.contains("Requested instructions") && !rendered.contains("Requested task")
+        );
     }
 
     #[test]
@@ -861,19 +879,16 @@ mod tests {
             .unwrap();
         assert!(view[header + 2].contains("Streaming reply"));
         assert!(toggle_row(&mut transcript, header + 2));
-        let expanded = transcript.project(82, 27);
-        let rendered = lines(&expanded).join("\n");
+        let opened = transcript.project(82, 27);
+        let rendered = lines(&opened).join("\n");
+        assert!(rendered.contains("▸ Created") && rendered.contains("▸ Input delivered"));
         assert!(
-            rendered.contains("Requested instructions") && rendered.contains("Live Agent reply")
+            !rendered.contains("Requested instructions") && !rendered.contains("Live Agent reply")
         );
-        let second = lines(&expanded)
+        let second = lines(&opened)
             .iter()
             .position(|line| line.contains("Input delivered"))
             .unwrap();
-        assert!(toggle_row(&mut transcript, second));
-        assert!(!lines(&transcript.project(82, 27))
-            .join("\n")
-            .contains("Live Agent reply"));
         assert!(toggle_row(&mut transcript, second));
         let expanded = transcript.project(60, 25);
         let rendered = lines(&expanded).join("\n");
@@ -888,9 +903,10 @@ mod tests {
         );
         let settled = lines(&transcript.project(60, 25)).join("\n");
         assert!(
-            settled.contains("Input delivered · Now Finished")
+            settled.contains("Finished · Completed checks")
                 && settled.contains("Latest Agent reply")
                 && settled.contains("Completed checks")
+                && !settled.contains("Now Finished")
         );
         assert!(!settled.contains("通过"));
         transcript.sync_agent_activity(7, []);

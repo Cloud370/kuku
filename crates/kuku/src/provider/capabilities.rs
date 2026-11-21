@@ -107,6 +107,29 @@ pub(crate) fn resolve_capabilities(
             }
         }
     }
+    let declared_services = resolve.field(
+        |entry| entry.service_tiers.as_ref(),
+        |entry| entry.service_tiers.as_ref(),
+    );
+    let (service_tiers, service_tier_source) = match declared_services {
+        Some(declared)
+            if matches!(
+                declared.source,
+                CapabilitySource::Manual | CapabilitySource::ProtocolManual
+            ) =>
+        {
+            (declared.value, Some(declared.source))
+        }
+        _ if options.service_tiers.is_some() => (
+            options.service_tiers.clone().unwrap_or_default(),
+            Some(CapabilitySource::Manual),
+        ),
+        Some(declared) => (declared.value, Some(declared.source)),
+        None => (
+            strings(services),
+            (!services.is_empty()).then_some(CapabilitySource::AdapterProfile),
+        ),
+    };
     ProviderCapabilities {
         profile,
         reasoning_efforts,
@@ -126,10 +149,8 @@ pub(crate) fn resolve_capabilities(
         ),
         interfaces: resolve.field(|entry| entry.interfaces.as_ref(), |_| None),
         system_prompt_update: resolve.field(|_| None, |entry| entry.system_prompt_update.as_ref()),
-        service_tiers: options
-            .service_tiers
-            .clone()
-            .unwrap_or_else(|| strings(services)),
+        service_tiers,
+        service_tier_source,
         ..ProviderCapabilities::default()
     }
 }

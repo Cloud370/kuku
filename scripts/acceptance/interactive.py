@@ -10,6 +10,8 @@ import re
 import sys
 from urllib.parse import urlencode, urlsplit
 
+from interactive_composer import agent_setup, composer_actions, startup_info
+from interactive_stream import profile_markdown_stream
 from interactive_lifecycle import first_run_credential_repair, lifecycle_cases, shared_model_editor, verify_restored_tool
 from interactive_rendering import (
     check_agent_reading_position,
@@ -46,20 +48,16 @@ def installed_upgrade(client, previous, current):
     install(current, prefix, client.env)
     assert config_record(client.binary)["sha256"] == target_hash
     version, _ = client.cli(workspace, "--version")
-    stdout, _ = client.cli(workspace, "server", "restart", success=False)
-    deferred = json.loads(stdout)
-    assert deferred["state"] == "deferred" and deferred["service"]["busy"]
-    assert deferred["service"]["version"] == original_version
-    client.assert_current_service(original)
-    client.release_tool(workspace)
-    client.completed_tool(workspace, "upgrade-gated-tool").text(output)
-    eventually("old service to complete the tool", lambda: client.snapshot(workspace, session)["last_output"] == output)
-    eventually("old service to become idle", lambda: not client.status()["busy"])
-    client.verify_tool(workspace)
-    client.cli(workspace, "server", "restart")
-    assert client.connection()["instance_id"] != original["instance_id"]
-    assert version.strip() == "kuku " + client.status()["version"]
     with client.terminal(workspace) as terminal:
+        terminal.expect("Waiting for the previous version to finish")
+        client.assert_current_service(original)
+        client.release_tool(workspace)
+        client.completed_tool(workspace, "upgrade-gated-tool").text(output)
+        eventually("old service to complete the tool", lambda: client.snapshot(workspace, session)["last_output"] == output)
+        client.verify_tool(workspace)
+        terminal.expect("New session", state="Ready")
+        assert client.connection()["instance_id"] != original["instance_id"]
+        assert version.strip() == "kuku " + client.status()["version"]
         terminal.resume(prompt)
         terminal.expect(output)
         terminal.exit_cleanly()
@@ -147,7 +145,7 @@ def two_workspaces_and_disconnect(client):
                 "input_tokens": 44_500, "cache_read_input_tokens": 133_500,
                 "cache_creation_input_tokens": 0, "output_tokens": 205,
             }):
-                partial = right.expect("基础测试", state="Streaming")["screen"]
+                partial = right.expect("基础测试", state="↓  Reply")["screen"]
                 assert "Summary saved." not in partial and "| ---" not in partial, partial
                 assert any("基础测试" in row and "通过" in row for row in partial.splitlines()), partial
             right.expect("Summary saved.")
@@ -196,9 +194,9 @@ def two_workspaces_and_disconnect(client):
         left.expect("Draft", absent=("Connected", "F2 Restart"))
         left.press("\r")
         call = client.provider.next(prompt)
-        left.expect("Waiting for model", absent=("Connected", "F2 Restart"))
+        left.expect("Waiting", absent=("Connected", "F2 Restart"))
         client.gated_tool(workspace, call, tool_id)
-        left.expect("Running tools", absent=("Connected", "F2 Restart"))
+        left.expect("Tools", absent=("Connected", "F2 Restart"))
         session = client.session(workspace)
         assert session != client.session(other)
         assert client.status()["busy"], "Running tool is absent from service status"
@@ -249,7 +247,7 @@ def fast_markdown_stream(client):
         terminal.expect("New session", state="Ready")
         terminal.submit(prompt)
         with client.provider.next(prompt).streaming_text(first, last, chunk_size=2):
-            terminal.expect("0159:", state="Streaming")
+            terminal.expect("0159:", state="↓  Reply")
             terminal.type(draft)
         terminal.expect("Final marker", state="Finished")
         assert draft in terminal.request("screen")["screen"]
@@ -333,7 +331,7 @@ def preserve_draft_after_interrupt(client):
         prefix = "This part reached the screen."
         tail = "Late cancelled text"
         with cancelled.streaming_text(prefix, tail):
-            terminal.expect(prefix, state="Streaming")
+            terminal.expect(prefix, state="↓  Reply")
             terminal.type(draft)
             terminal.press("\x1b")
             stopped_screen = terminal.expect(draft, state="Stopped")["screen"]
@@ -376,7 +374,7 @@ def editable_multiline_paste(client):
         discarded = "draft to clear with Ctrl+C"
         terminal.type(discarded)
         terminal.press("\x03")
-        view = eventually(
+        eventually(
             "Ctrl+C clears the first-prompt draft",
             lambda: (
                 result
@@ -388,15 +386,12 @@ def editable_multiline_paste(client):
         )
 
         terminal.press("/qui\t")
-
-        def completed_quit():
-            view = terminal.request("screen")
-            assert view["exit_code"] is None, "Tab must leave the client open"
-            return view["screen"].count("/quit") == 2
-
-        eventually("Tab to complete /quit in the open actions menu", completed_quit)
+        completed = terminal.expect("/quit", absent=("Actions and Skills",))
+        assert completed["exit_code"] is None and completed["screen"].count("/quit") == 1
         terminal.press("\x03")
-        terminal.expect("Search…")
+        terminal.expect("Enter sends your first prompt", absent=("/quit",))
+        terminal.press("/")
+        terminal.expect("Actions and Skills")
 
         assert terminal.request("screen")["bracketed_paste"], "The client must request bracketed paste"
         framed = f"\x1b[200~{paste}\x1b[201~"
@@ -404,10 +399,10 @@ def editable_multiline_paste(client):
             terminal.press("\x1b" + framed)
         else:
             terminal.press("\x1b")
-            eventually("the action picker to close", lambda: "Search…" not in terminal.request("screen")["screen"])
+            eventually("the action picker to close", lambda: "Actions and Skills" not in terminal.request("screen")["screen"])
             terminal.press(framed)
         draft = terminal.expect("target 中文X")["screen"]
-        assert "Search…" not in draft, "Escape must have closed the action picker"
+        assert "Actions and Skills" not in draft, "Escape must have closed the action picker"
         assert client.sessions(workspace) == [], "Pasting a line break must leave the draft unsent"
         client.provider.assert_idle(duration=0.25)
 
@@ -460,7 +455,7 @@ def wait_restart_and_recover_crash(client, workspace, session, title):
         terminal.resume(title)
         terminal.submit(started)
         crashed_call = client.provider.next(started)
-        terminal.expect("Waiting for model", absent=("Connected", "F2 Restart"))
+        terminal.expect("Waiting", absent=("Connected", "F2 Restart"))
         client.kill(restarted)
         terminal.expect("Reconnecting to kuku service", also=("Ctrl+R",))
     crashed_call.text("Uncommitted response after crash")
@@ -589,9 +584,9 @@ def lost_first_receipt(client):
 
 
 def open_reviewer(terminal):
-    screen = terminal.expect("Open agent →", state="To main")["screen"]
+    screen = terminal.expect("Open agent →", state="main ▾")["screen"]
     terminal.click_text(screen, "Open agent →")
-    terminal.expect("To reviewer")
+    terminal.expect("reviewer ▾")
     return screen
 
 
@@ -605,7 +600,7 @@ def delegated_agent_cards(client):
     reply = f"{initial}\n\n{conclusion}"
     parent_reply = "Parent finished and left the review running"
     card = "╭─ Agent reviewer"
-    delivery = "Agent reviewer · Input delivered"
+    delivery = "Input delivered"
     screens = []
 
     with client.terminal(workspace) as terminal:
@@ -625,12 +620,12 @@ def delegated_agent_cards(client):
         screens.append(("Switching to the active reviewer with a parent draft", menu))
         terminal.type("reviewer draft to keep")
         terminal.press("\x1b[1;3D")
-        original_draft = terminal.expect("parent draft to keep", state="To main")["screen"]
+        original_draft = terminal.expect("parent draft to keep", state="main ▾")["screen"]
         assert "reviewer draft to keep" not in original_draft
         terminal.press("\x1b[1;3D")
-        terminal.expect("reviewer draft to keep", state="To reviewer")
+        terminal.expect("reviewer draft to keep", state="reviewer ▾")
         terminal.press("\x1b[1;3D")
-        terminal.expect("parent draft to keep", state="To main")
+        terminal.expect("parent draft to keep", state="main ▾")
         terminal.press("\x03")
         client.provider.assert_idle()
 
@@ -643,11 +638,11 @@ def delegated_agent_cards(client):
             ))
             terminal.expect(card, state="Streaming reply", also=(initial,))
             open_reviewer(terminal)
-            attached = terminal.expect(initial, state="Streaming reply")["screen"]
+            attached = terminal.expect(initial, state="Reply")["screen"]
             assert attached.count(initial) == 1 and "reviewer draft to keep" in attached, attached
             screens.append(("Attaching to a reviewer mid-reply", attached))
             terminal.press("\x1b[1;3D")
-            terminal.expect(card, state="To main", also=(initial, "Streaming reply"))
+            terminal.expect(card, state="main ▾", also=(initial, "Streaming reply"))
             terminal.press("\x0f")
             expanded = terminal.expect("Live Agent reply")["screen"]
             assert "Requested instructions" in expanded and "Requested task" in expanded and task in expanded, expanded
@@ -705,6 +700,8 @@ def dense_transcript(client, reference=False):
     workspace = client.workspace("dense-transcript")
     scenario = DenseTranscript(client, workspace)
     screens = []
+    tool_state = "Running tools" if reference else "↳  Tools"
+    reply_state = "Streaming reply" if reference else "↓  Reply"
     tool_heading = re.compile(
         r"(?:Read-only activity · \d+ calls|Read (?:file|\d+ files)|Find files|Search text|"
         r"Write file|Edit file|Run command|Tool [a-z_]+)"
@@ -730,9 +727,7 @@ def dense_transcript(client, reference=False):
 
     def running_view(screen, height):
         rows = screen.split("\n")
-        return len(rows) == height and (
-            "Running tools" in rows[-1] or any("To main · Running" in row for row in rows[-8:])
-        )
+        return len(rows) == height and any(tool_state in row for row in rows[-8:])
 
     def measure_tools(terminal):
         height = 144
@@ -756,7 +751,7 @@ def dense_transcript(client, reference=False):
             )
         except AssertionError as error:
             raise AssertionError(
-                f"{error}\n36-row running-tools screen before resize to 32:\n{before_resize}"
+                f"{error}\nWide running-tools screen before resize to 32:\n{before_resize}"
             ) from error
         screens.append(("32-row running-tools screen before PageUp", before_page_up))
         try:
@@ -794,8 +789,10 @@ def dense_transcript(client, reference=False):
         assert row_of(restored, scenario.activity_group) == anchor and scenario.draft in restored, restored
 
         terminal.click_text(restored, "Read file · error")
-        error = terminal.expect("Requested arguments")["screen"]
-        assert f"path does not exist: {scenario.missing}" in error and "To main · Running" in error and scenario.draft in error, error
+        terminal.expect("Requested arguments")
+        terminal.request("resize", rows=44, cols=140)
+        error = terminal.expect(f"path does not exist: {scenario.missing}",
+                                also=("Requested arguments", "Tools", scenario.draft), rows=44)["screen"]
         screens.append(("Independent failed call with its exact error", error))
         terminal.click_text(error, "Read file · error")
         terminal.press("\x1b[1;5F")
@@ -805,11 +802,12 @@ def dense_transcript(client, reference=False):
         terminal.request("resize", rows=32, cols=140)
         terminal.submit(scenario.prompt)
         with scenario.running_tool():
-            terminal.expect("Running tools")
+            terminal.expect(tool_state)
             terminal.type(scenario.draft)
             measurements = measure_tools(terminal)
-            terminal.request("resize", rows=36, cols=140)
-            wide = read_while(terminal, lambda value: running_view(value, 36)
+            overview_height = 36 if reference else 48
+            terminal.request("resize", rows=overview_height, cols=140)
+            wide = read_while(terminal, lambda value: running_view(value, overview_height)
                               and scenario.missing in value and scenario.draft in value,
                               "the wide tool turn")
             screens.append(("Dense tool turn with a running command and local draft", wide))
@@ -818,18 +816,18 @@ def dense_transcript(client, reference=False):
                 terminal.request("resize", rows=32, cols=140)
                 inspect_tools(terminal, wide)
             terminal.request("resize", rows=26, cols=74)
+            running_card = "Run command · running" if reference else "╰─ running"
             narrow = read_while(terminal, lambda value: running_view(value, 26) and scenario.missing in value
-                                and scenario.draft in value,
+                                and scenario.draft in value and running_card in value,
                                 "the narrow tool turn")
-            assert scenario.draft in narrow and ("╰─ running" in narrow or reference and "Run command · running" in narrow), narrow
             screens.append(("Narrow tool turn with the same draft", narrow))
             terminal.request("resize", rows=32, cols=140)
         with scenario.streaming_reply():
-            wide = terminal.expect(scenario.source, state="Streaming", also=(scenario.draft, scenario.heading), rows=32)["screen"]
+            wide = terminal.expect(scenario.source, state=reply_state, also=(scenario.draft, scenario.heading), rows=32)["screen"]
             assert scenario.heading in wide and scenario.draft in wide and scenario.end not in wide and "rust" in wide, wide
             screens.append(("Wide Chinese report while the Rust fence is open", wide))
             terminal.request("resize", rows=26, cols=74)
-            narrow = terminal.expect(scenario.source, state="Streaming", also=(scenario.draft,), rows=26)["screen"]
+            narrow = terminal.expect(scenario.source, state=reply_state, also=(scenario.draft,), rows=26)["screen"]
             assert scenario.draft in narrow and scenario.end not in narrow, narrow
             screens.append(("Narrow Chinese report while the Rust fence is open", narrow))
         complete = terminal.expect(scenario.end, state="Finished", also=(scenario.draft,), rows=26)["screen"]
@@ -850,6 +848,7 @@ def markdown_document(client, document=None, reference=False):
     workspace = client.workspace("markdown-document")
     outer = f"╭─ {document.label} "
     preview = "Markdown preview"
+    reply_state = "Streaming reply" if reference else "↓  Reply"
     frames = {}
 
     def check_preview(screen, complete):
@@ -869,11 +868,11 @@ def markdown_document(client, document=None, reference=False):
         terminal.submit(document.prompt)
         with document.stream(client.provider) as (opened, inner):
             assert opened.arrived.wait(10), "The provider opener must arrive before its body"
-            frames["opener"] = terminal.expect(outer if reference else preview, state="Streaming")["screen"]
+            frames["opener"] = terminal.expect(outer if reference else preview, state=reply_state)["screen"]
             assert document.intro in frames["opener"] and document.code_anchor not in frames["opener"], frames["opener"]
             opened.release.set()
             assert inner.arrived.wait(10), "The provider must pause with the inner fence still open"
-            frames["partial"] = terminal.expect(document.code_anchor, state="Streaming")["screen"]
+            frames["partial"] = terminal.expect(document.code_anchor, state=reply_state)["screen"]
             assert document.trailer not in frames["partial"], frames["partial"]
             if not reference:
                 check_preview(frames["partial"], complete=False)
@@ -934,6 +933,7 @@ def main():
     parser.add_argument("--directory", required=True, type=Path)
     parser.add_argument("--browser", action="store_true")
     parser.add_argument("--native-smoke", action="store_true")
+    parser.add_argument("--stream-profile", action="store_true")
     parser.add_argument("--upgrade", nargs=2, type=Path, metavar=("OLD_ARCHIVE", "NEW_ARCHIVE"))
     parser.add_argument("--named-output", action="store_true", help="exercise keyboard naming and reopening")
     options = parser.parse_args()
@@ -946,8 +946,14 @@ def main():
         with InstalledClient(options.binary, options.bridge, options.directory / name) as client:
             operation(client)
 
+    if options.stream_profile:
+        native("stream-profile", profile_markdown_stream)
+        return
     if options.native_smoke:
         run_cases([
+            ("startup-info", lambda: native("startup-info", startup_info)),
+            ("composer-actions", lambda: native("composer-actions", composer_actions)),
+            ("agent-setup", lambda: native("agent-setup", agent_setup)),
             ("paste", lambda: native("paste", editable_multiline_paste)),
             ("first-run", lambda: first_run_credential_repair(options.binary, options.bridge, options.directory / "settings")),
             ("model-setup", lambda: shared_model_editor(options.binary, options.bridge, options.directory / "model-setup")),
@@ -964,6 +970,8 @@ def main():
                      client, *two_workspaces_and_disconnect(client))),
                  ("fast-stream", fast_markdown_stream),
                  ("statusline", configure_statusline),
+                 ("startup-info", startup_info),
+                 ("composer-actions", composer_actions),
                  ("interrupt", preserve_draft_after_interrupt),
                  ("paste", editable_multiline_paste),
                  ("remote-and-script", lambda client: remote_authorization_and_script_json(

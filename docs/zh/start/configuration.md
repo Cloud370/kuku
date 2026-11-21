@@ -28,7 +28,7 @@ $KUKU_HOME/config.toml
 
 模型列表和搜索结果均按供应商返回的顺序显示。打字搜索，方向键移动，Enter 确认单选。按 Space 勾选多个模型，再用 Enter 确认整组。新配置选中多个模型时，可指定其中一个作为默认。确认模型后在后台试跑。设置页显示请求地址、模型进度和测试状态。测试期间可打开 **View requests**，测试完成后可打开 **Model tests** 查看逐条请求。打开 **Settings** 可修改思考、输出、模型能力和计费方式。**Costs** 可设置费率。在状态栏添加 **Request cost** 可查看费用汇总。[代理与费率配置](../reference/config.md#providername)
 
-在 Session 中打开 `/model` 或按 Ctrl+L。**Add model or connection** 和 **Edit** 打开同一个表单。选用已有连接时可复用保存的凭据。**Use in this Session** 修改所选 Agent 的路由，**Set as default** 将路由保存为新 Session 的默认值。`/thinking` 分别提供 Session 覆盖和模型持久设置。[配置参考](../reference/config.md)
+在 Session 中打开 `/model` 或按 Ctrl+L。**Add model or connection** 和 **Edit** 打开同一个表单。选用已有连接时可复用保存的凭据。**Use in this Session** 修改所选 Agent 的路由，**Set as default** 将路由保存为新 Session 的默认值。[终端思考设置](../reference/cli.md#斜杠命令) · [配置参考](../reference/config.md)
 
 ## 设置模型连接
 

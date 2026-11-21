@@ -102,8 +102,11 @@ impl StatusLineEditor {
             return;
         }
         match key.code {
-            KeyCode::Up => self.move_selection(-1),
-            KeyCode::Down => self.move_selection(1),
+            KeyCode::Up | KeyCode::Down => {
+                let count = Field::all().count() as isize;
+                let step = if key.code == KeyCode::Up { -1 } else { 1 };
+                self.selected = (self.selected as isize + step).rem_euclid(count) as usize;
+            }
             KeyCode::Left => self.reorder(-1),
             KeyCode::Right => self.reorder(1),
             KeyCode::Char(' ') => self.toggle(),

@@ -8,7 +8,8 @@ import sys
 from unittest.mock import patch
 from urllib.parse import urlencode
 
-from interactive_fixture import InstalledClient, Response, StreamPause, eventually, run_cases
+from interactive_fixture import InstalledClient, Response, StreamPause, eventually, is_composer_heading, run_cases
+from interactive_responses import responses_reasoning
 
 RUNNING_STATUS_ROWS_FROM_BOTTOM = 6
 
@@ -19,7 +20,8 @@ def rendered_running_transcript(screen, height, markers):
     return (
         len(rows) == height
         and status_row >= 0
-        and "To main · Running" in rows[status_row]
+        and is_composer_heading(rows[status_row])
+        and any(label in rows[status_row] for label in ("Tools", "Running"))
         and all(marker in screen for marker in markers)
     )
 
@@ -50,7 +52,7 @@ def select_message_action(terminal, screen, action):
             (
                 index
                 for index, line in enumerate(rows)
-                if any(line.rstrip().endswith(f"› {label}") for label in labels)
+                if any(line.rstrip(" │┃─╮╯").endswith(f"› {label}") for label in labels)
             ),
             None,
         )
@@ -66,7 +68,7 @@ def select_message_action(terminal, screen, action):
     def visible_actions(value):
         visible = []
         for line in action_rows(value):
-            line = line.rstrip()
+            line = line.rstrip(" │┃─╮╯")
             for label in labels:
                 if line.endswith(label) or line.endswith(f"› {label}"):
                     visible.append(label)
@@ -75,7 +77,7 @@ def select_message_action(terminal, screen, action):
 
     def selected_action(value):
         for line in action_rows(value):
-            line = line.rstrip()
+            line = line.rstrip(" │┃─╮╯")
             for label in labels:
                 if line.endswith(f"› {label}"):
                     return label
@@ -132,7 +134,7 @@ def queued_input_click_position(screen, text):
         return None
     end = next(
         (index for index, line in enumerate(lines[start + 1 :], start + 1)
-         if "To main" in line or "To reviewer" in line),
+         if is_composer_heading(line)),
         len(lines),
     )
     for index in range(start + 1, end):
@@ -242,6 +244,7 @@ def rendering_cases(binary, bridge, directory):
                           for shell in ("powershell.exe", "pwsh.exe") if shutil.which(shell))
     cases = [(name, lambda name=name, operation=operation: configured(name, operation))
              for name, operation in operations]
+    cases.append(("responses-reasoning", lambda: responses_reasoning(binary, bridge, directory / "responses-reasoning")))
     cases.extend((name, lambda name=name, operation=operation: configured(name, operation, True))
                  for name, operation in (("reasoning", published_reasoning), ("mixed-table", scroll_mixed_table)))
     run_cases(cases)
@@ -258,7 +261,8 @@ def targeted_delegation(client):
         create = client.provider.next(prompt)
         schema = next(tool["input_schema"] for tool in create.request["tools"]
                       if tool["name"] == "create_agent")
-        assert set(schema["properties"]) == {"address", "instructions", "tools", "tier", "preset", "workspace"}
+        assert set(schema["properties"]) == {"address", "instructions", "tools", "tier", "preset", "workspace",
+                                            "reasoning_effort", "service_tier"}
         create.tool("create_agent", "create-writer", address="writer", tools=[])
         client.provider.next("create-writer").tool("send_message", "dispatch", to="writer", message=task)
         first, second = client.provider.next(), client.provider.next()
@@ -268,7 +272,8 @@ def targeted_delegation(client):
         assert "<kuku_delegation>" not in json.dumps(child.request["messages"])
         assert "<kuku_memory_guidance>" not in json.dumps(child.request["messages"])
         parent.tool("list_agents", "collect", wait_for="writer")
-        terminal.expect("╭─ Agent writer", state="Timeline")
+        waiting = terminal.expect("Agent check · writer · Waiting", also=("╭─ Agent writer", "Timeline", "Thinking · None"),
+                                  absent=("· Fast", "· Ultra Fast"))["screen"]
         client.provider.assert_idle(0.35)
         child.text(result)
         collected = client.provider.next("collect")
@@ -276,7 +281,14 @@ def targeted_delegation(client):
                     if isinstance(block, dict) and block.get("tool_use_id") == "collect")
         content = tool["content"]
         reply, = json.loads(content if isinstance(content, str) else content[0]["text"])
-        assert reply == {"address": "writer", "status": "idle", "last_output": result}, reply
+        assert reply == {"address": "writer", "status": "idle", "last_output": result,
+                         "last_request": {"model": child.request["model"]}}, reply
+        timeline = terminal.expect("Timeline · 3 calls", also=("Finished · Proof of delivery",))["screen"]
+        terminal.click_text(timeline, "Timeline")
+        checked = terminal.expect("Agent check · writer (Idle, reply available)")["screen"]
+        target_column = lambda screen: next(row.index("writer") for row in screen.splitlines() if "Agent check · writer" in row)
+        assert target_column(waiting) == target_column(checked), checked
+        terminal.click_text(checked, "Timeline")
         collected.text("Received the delegated document.\n\n```python\nprint('Proof of delivery')\n```")
         terminal.expect("Received the delegated document.", state="3 tools")
         for columns in (44, 100, 174):
@@ -291,7 +303,7 @@ def targeted_delegation(client):
                 gutter = 1 if columns < 72 else 2 if columns < 110 else 3
                 transcript_width = columns - 2 * gutter
                 body_inset = 2
-                right_padding = 2 if transcript_width < 80 else 3
+                right_padding = 1 if transcript_width < 80 else 2
                 right_edge = columns - gutter - 1
                 return (agent.index("╭") == gutter and agent.index("╮") == right_edge
                         and code.index("╭") == gutter + body_inset
@@ -303,10 +315,13 @@ def targeted_delegation(client):
             action = "Open →" if columns == 44 else "Open agent →"
             scene = terminal.expect(action, state="╭─ Agent writer")["screen"]
             terminal.click_text(scene, action)
-            back = terminal.expect("F2 Back", state="To writer", also=("Proof of delivery",))["screen"]
+            back = terminal.expect("F2 Back", state="writer ▾", also=("Proof of delivery",))["screen"]
+            assert "Agent writer" in back.splitlines()[1], back
+            assert any("To writer ▾" in row or "Send to writer ▾" in row for row in back.splitlines()), back
             terminal.click_text(back, "F2 Back")
             terminal.press("\r")
-            terminal.expect("To main", state="Received the delegated document.")
+            main = terminal.expect("main ▾", state="Received the delegated document.")["screen"]
+            assert "Agent main" in main.splitlines()[1], main
         terminal.exit_cleanly()
     client.provider.assert_idle()
 
@@ -607,7 +622,7 @@ def published_reasoning(client):
                                           ((len(start), waiting), (len(start + public), published))))
         try:
             assert waiting.arrived.wait(8)
-            screen = terminal.expect("To main · Thinking")["screen"]
+            screen = terminal.expect("Thinking")["screen"]
             assert "View thinking" not in screen and hidden not in screen
             waiting.release.set()
             assert published.arrived.wait(8)
@@ -615,15 +630,15 @@ def published_reasoning(client):
             flow_row = next(i for i, row in enumerate(compact.splitlines()) if "Thinking" in row and "Check" in row)
             header_row = flow_row - 1
             assert "Assistant" in compact.splitlines()[header_row] and "View thinking" in compact.splitlines()[header_row]
-            assert not any("Check" in row for row in compact.splitlines() if "To main" in row)
+            assert not any("Check" in row for row in compact.splitlines() if is_composer_heading(row))
             terminal.click_text(compact, "View thinking")
             reader = terminal.expect("Comparing the published results.", state="Esc back")["screen"]
             assert hidden not in reader and "Esc back" in reader.splitlines()[header_row] and "Enter steer" in reader
             terminal.press("\x1b")
-            terminal.expect("View thinking", state="To main · Thinking")
+            terminal.expect("View thinking", state="Thinking")
             with client.terminal(workspace) as attached:
                 attached.resume(prompt)
-                restored = attached.expect("View thinking", state="To main · Thinking")["screen"]
+                restored = attached.expect("View thinking", state="Thinking")["screen"]
                 assert hidden not in restored
                 attached.exit_cleanly()
         finally:
@@ -642,20 +657,28 @@ def published_reasoning(client):
         reopened.press("\x0f")
         quiet = reopened.expect(answer, state="View thinking")["screen"]
         assert "Comparing the published results." not in quiet
+        reopened.request("resize", rows=17, cols=100)
+        quiet = reopened.expect(answer, state="View thinking")["screen"]
         operate_on_assistant(reopened, quiet, answer, "Thinking")
-        notes = reopened.expect("Comparing the published results.", state="Esc back", also=(answer,))["screen"]
+        notes = reopened.expect("Comparing the published results.", state="Esc back", rows=17)["screen"]
         assert hidden not in settled and hidden not in notes
-        answer_row = next(i for i, row in enumerate(notes.splitlines()) if answer in row)
-        note_row = next(i for i, row in enumerate(notes.splitlines(), 1) if "Checking the totals." in row)
-        reopened.press(f"\x1b[<65;5;{note_row}M")
-        scrolled = reopened.expect("Note 6", state="Esc back")["screen"]
-        assert "Checking the totals." not in scrolled and answer in scrolled.splitlines()[answer_row]
-        reopened.press("\x1b[B")
-        down = reopened.expect("Note 7", state="Esc back")["screen"]
-        assert answer in down.splitlines()[answer_row]
-        reopened.press("\x1b")
+        outside_notes = len(notes.splitlines())
+        note_row = next(i for i, row in enumerate(notes.splitlines()) if "Note 5" in row)
+        last_note = max(int(row.rsplit("Note ", 1)[1].strip()) for row in notes.splitlines() if "│ Note " in row)
+        reopened.press(f"\x1b[<65;5;{outside_notes}M")
+        scrolled = reopened.expect(f"Note {last_note + 3}", also=("Note 5", "Reading history"), rows=17)["screen"]
+        moved = next(i for i, row in enumerate(scrolled.splitlines()) if "Note 5" in row)
+        assert moved == note_row - 3, scrolled
+        assert "View thinking" not in scrolled
+        reopened.press("\x1b[6~")
+        reopened.press("\x1b[6~")
+        reopened.expect("Note 20", also=(answer,))
+        reopened.press("\x1b[5~")
+        reopened.press("\x1b[5~")
+        expanded = reopened.expect("Comparing the published results.", state="Esc back")["screen"]
+        reopened.click_text(expanded, "Thinking ▾")
         restored = reopened.expect(answer, state="Assistant   View thinking")["screen"]
-        assert "Esc back" not in restored and "Note 7" not in restored
+        assert "Esc back" not in restored and "Note 5" not in restored
 
         reopened.exit_cleanly()
 
@@ -674,25 +697,19 @@ def check_agent_reading_position(client, terminal):
     beginning = "Streaming checkpoint update"
     new_content = "Another checkpoint arrived while reading"
 
+    def queue_and_composer(screen):
+        rows = screen.splitlines()
+        start = next((index for index, line in enumerate(rows) if "Pending inputs" in line), None)
+        end = next((index for index, line in enumerate(rows) if is_composer_heading(line)), None)
+        if start is None or end is None or start >= end:
+            return [], []
+        return rows[start:end], rows[end:]
+
     def composer_lines(screen):
-        start = screen.find("Pending inputs")
-        positions = [
-            position for label in ("To main", "To reviewer")
-            if (position := screen.find(label, start)) >= 0
-        ]
-        if start < 0 or not positions:
-            return []
-        return screen[min(positions):].splitlines()
+        return queue_and_composer(screen)[1]
 
     def queued_row_contains(screen, text):
-        start = screen.find("Pending inputs")
-        positions = [
-            position for label in ("To main", "To reviewer")
-            if (position := screen.find(label, start)) >= 0
-        ]
-        if start < 0 or not positions:
-            return False
-        lines = screen[start:min(positions)].splitlines()
+        lines, _ = queue_and_composer(screen)
         for index, line in enumerate(lines):
             if "Queued ·" not in line:
                 continue
@@ -725,7 +742,7 @@ def check_agent_reading_position(client, terminal):
 
     terminal.submit(follow_up)
     with client.provider.next(follow_up).streaming_text(beginning, f"\n\n{new_content}", "\n\nCheckpoint stream finished") as pauses:
-        terminal.expect(beginning, state="Streaming")
+        terminal.expect(beginning, state="↓  Reply")
         terminal.type(original)
         terminal.press("\x1b\r")
         terminal.expect(original, state="Queued · next Turn")
@@ -825,7 +842,7 @@ def check_reading_focus(terminal, markers, stream_pause, new_content, queued):
     assert anchor in updated.splitlines()[row] and new_content not in updated, updated
     terminal.type("draft at checkpoint")
     terminal.press("\x1b[1;3C")
-    assert "Switch Agent" not in terminal.expect("To reviewer")["screen"]
+    assert "Switch Agent" not in terminal.expect("reviewer ▾")["screen"]
     terminal.press("\x1b[1;3D")
     restored = terminal.expect("draft at checkpoint", state="Reading history · Editing")["screen"]
     restored_lines = restored.splitlines()

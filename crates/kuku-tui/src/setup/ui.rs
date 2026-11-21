@@ -4,7 +4,7 @@ use std::time::Duration;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
@@ -12,7 +12,7 @@ use ratatui::{Frame, Terminal};
 
 use crate::editor::Editor;
 use crate::text::{shorten_middle, single_line};
-use crate::theme::{emphasis, focused_row, ACCENT, MUTED, SUCCESS, WARNING};
+use crate::theme::{compact_padding, emphasis, focused_row, ACCENT, MUTED, SUCCESS, WARNING};
 
 use super::config::Settings;
 use super::dashboard::TestOverview;
@@ -150,7 +150,9 @@ fn render_step(
         state.step,
         SetupStep::Review | SetupStep::ReviewSettings | SetupStep::TrialResults
     ) {
-        area.inner(Margin::new(2, 1))
+        Block::default()
+            .padding(compact_padding(2, true))
+            .inner(area)
     } else {
         area
     };

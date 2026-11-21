@@ -16,7 +16,7 @@ async fn main() {
 
 async fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
     match cli.command {
-        None => kuku_tui::run(cli.target.options()).await?,
+        None => kuku_tui::run(cli.target.options(), kuku_server::BUILD_VERSION).await?,
         Some(Command::ManagedServer(args)) => {
             let mut args = args.into_server_args(&cli.target);
             args.managed = true;
@@ -33,7 +33,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             }
         },
         Some(Command::Web(args)) => {
-            let connection = cli.target.options().connect().await?;
+            let connection = cli.target.connect().await?;
             let session = args.session.as_deref();
             let agent = args.agent.as_deref();
             let url = if connection.local.is_some() {

@@ -2,12 +2,13 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use kuku_client::local::BuildPolicy;
 use kuku_client::local::{RestartOutcome, SESSION_PROTOCOL_VERSION};
 use kuku_client::{
     Acknowledgement, AgentConfig, Client, Command, Connection, ConnectionOptions, Error,
     HistoryKind, HistoryPage, JobSnapshot, JobStatus, ModelCatalog, ModelSelection, NamedValue,
     NamedValueKind, NamedValueSource, Observation, OutputChunk, RewindGroupPage, SessionStatus,
-    Snapshot, SubscriptionUpdate, Target,
+    Snapshot, Target,
 };
 use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinSet};
@@ -22,9 +23,11 @@ use crate::setup::{
 use crate::text::single_line;
 use crate::transcript::{HistoryRequest, RewindGroupRequest, HISTORY_PAGE, REWIND_GROUP_PAGE};
 
+mod connect;
+mod observe;
+
 const UPDATE_CAPACITY: usize = 64;
 const SEARCH_DELAY: Duration = Duration::from_millis(70);
-const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Selection {
@@ -80,6 +83,8 @@ pub(crate) enum Job {
     RewindSource(Selection, Ticket, u64),
     RewindGroupHistory(Selection, RewindGroupRequest),
     Find(Ticket, Search),
+    AgentModels(u64),
+    ThinkingDefaults(u64, AgentConfig, ResolvedModel),
     ClosePicker,
     PrepareDefault {
         ticket: u64,
@@ -99,6 +104,7 @@ pub(crate) enum Job {
     Discard(Command),
     Pending,
     Model(AgentConfig, u64),
+    StartupSkills(u64),
     Output(Selection, u64, String, u64),
     PrepareRestart(u64),
     Restart(Box<kuku_client::local::ServiceIdentity>),
@@ -133,6 +139,8 @@ pub(crate) enum Update {
         Result<RewindGroupPage, Error>,
     ),
     Found(Ticket, Result<(Vec<Choice>, String), Error>),
+    AgentModels(u64, Result<ModelCatalog, Error>),
+    ThinkingDefaults(u64, crate::setup::ThinkingDefaults),
     PreparedDefault(u64, Selection, Result<PreparedDefaultSave, String>),
     SavedDefault(u64, Selection, Result<(), String>),
     Saved(Command, Result<(), Error>),
@@ -143,6 +151,7 @@ pub(crate) enum Update {
     Discarded(String, Result<(), Error>),
     Pending(Result<Vec<Command>, Error>),
     DefaultModel(u64, Result<ModelSelection, Error>),
+    StartupSkills(u64, Result<Vec<String>, Error>),
     Output(Selection, u64, Result<OutputChunk, Error>),
     RestartPrepared(u64, Result<kuku_client::local::ServiceIdentity, Error>),
     Restarted(Result<Restarted, Error>),
@@ -162,8 +171,10 @@ enum Message {
 
 pub(crate) struct Jobs {
     options: ConnectionOptions,
+    build: BuildPolicy<'static>,
     connection: Option<Connection>,
     tasks: JoinSet<()>,
+    connector: Option<AbortHandle>,
     observer: Option<AbortHandle>,
     finder: Option<AbortHandle>,
     sender: mpsc::Sender<Message>,
@@ -171,12 +182,14 @@ pub(crate) struct Jobs {
 }
 
 impl Jobs {
-    pub(crate) fn new(options: ConnectionOptions) -> Self {
+    pub(crate) fn new(options: ConnectionOptions, build: &'static str) -> Self {
         let (sender, receiver) = mpsc::channel(UPDATE_CAPACITY);
         Self {
             options,
+            build: BuildPolicy::Start(build),
             connection: None,
             tasks: JoinSet::new(),
+            connector: None,
             observer: None,
             finder: None,
             sender,
@@ -226,21 +239,16 @@ impl Jobs {
                     )
                 });
             }
-            Job::Connect => {
-                Self::abort(&mut self.observer);
-                let options = self.options.clone();
-                let sender = self.sender.clone();
-                self.tasks.spawn(async move {
-                    let result = options.connect().await;
-                    let _ = sender.send(Message::Connection(Box::new(result))).await;
-                });
-            }
+            Job::Connect => self.connect(),
             Job::Observe(selection) => {
                 Self::abort(&mut self.observer);
                 if let Some(connection) = &self.connection {
-                    let client = connection.client.clone();
-                    let sender = self.sender.clone();
-                    self.observer = Some(self.tasks.spawn(watch(client, selection, sender)));
+                    self.observer = Some(self.tasks.spawn(observe::watch(
+                        connection.clone(),
+                        self.build,
+                        selection,
+                        self.sender.clone(),
+                    )));
                 }
             }
             Job::StopObserving => Self::abort(&mut self.observer),
@@ -250,6 +258,23 @@ impl Jobs {
                 let connection = self.connection.clone();
                 self.finder = Some(self.spawn(async move {
                     Update::Found(ticket, find(&options, connection.as_ref(), query).await)
+                }));
+            }
+            Job::ThinkingDefaults(ticket, config, route) => {
+                Self::abort(&mut self.finder);
+                let options = self.options.clone();
+                let connection = self.connection.clone();
+                self.finder = Some(self.spawn(async move {
+                    Update::ThinkingDefaults(
+                        ticket,
+                        crate::setup::thinking_defaults(
+                            &options,
+                            connection.as_ref(),
+                            config,
+                            route,
+                        )
+                        .await,
+                    )
                 }));
             }
             Job::ClosePicker => Self::abort(&mut self.finder),
@@ -378,6 +403,7 @@ impl Jobs {
         match message {
             Message::Connection(result) => match *result {
                 Ok(connection) => {
+                    self.build = self.build.for_reconnect();
                     let endpoint = connection.client.endpoint().to_owned();
                     let workspace = connection.workspace.clone();
                     self.connection = Some(connection);
@@ -497,6 +523,14 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
         Job::Model(config, version) => {
             Update::DefaultModel(version, client.resolve_model(&config).await)
         }
+        Job::AgentModels(ticket) => Update::AgentModels(ticket, client.models().await),
+        Job::StartupSkills(generation) => {
+            let result = client
+                .skills(&connection.workspace, None)
+                .await
+                .map(|skills| skills.into_iter().map(|skill| skill.name).collect());
+            Update::StartupSkills(generation, result)
+        }
         Job::PrepareDefault { .. } | Job::SaveDefault { .. } => {
             unreachable!("default-save jobs are handled before connected jobs")
         }
@@ -521,6 +555,7 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
         | Job::Observe(_)
         | Job::StopObserving
         | Job::Find(_, _)
+        | Job::ThinkingDefaults(..)
         | Job::ClosePicker
         | Job::PrepareRestart(_)
         | Job::Restart(_)
@@ -551,77 +586,6 @@ fn history_entry_text(
         .find(|entry| entry.id == id && entry.kind == kind && entry.agent == target.agent)
         .and_then(|entry| entry.text)
         .ok_or_else(|| Error::Protocol("the selected message is missing from history".into()))
-}
-
-async fn watch(client: Client, selection: Selection, sender: mpsc::Sender<Message>) {
-    loop {
-        let error = observe(&client, &selection, &sender).await;
-        if !matches!(
-            error,
-            Error::Transport(_)
-                | Error::ObservationEnded
-                | Error::HttpStatus(502..=504)
-                | Error::Service {
-                    status: 502..=504,
-                    ..
-                }
-        ) {
-            push(&sender, Update::WatchFailed(selection, error)).await;
-            return;
-        }
-        if !push(
-            &sender,
-            Update::WatchReconnecting(selection.clone(), error.to_string()),
-        )
-        .await
-        {
-            return;
-        }
-        tokio::time::sleep(RECONNECT_DELAY).await;
-    }
-}
-
-async fn observe(client: &Client, selection: &Selection, sender: &mpsc::Sender<Message>) -> Error {
-    let target = &selection.target;
-    let snapshot = match client.observation_snapshot(target).await {
-        Ok(snapshot) => snapshot,
-        Err(error) => return error,
-    };
-    let page = match client
-        .history(
-            target,
-            Some(snapshot.cursor.saturating_add(1)),
-            HISTORY_PAGE,
-        )
-        .await
-    {
-        Ok(page) => page,
-        Err(error) => return error,
-    };
-    let mut subscription = client.subscribe_with_agent_activity(target, snapshot.cursor);
-    if !push(
-        sender,
-        Update::Loaded(selection.clone(), Box::new(snapshot), page),
-    )
-    .await
-    {
-        return Error::ObservationEnded;
-    }
-    loop {
-        let update = match subscription.next_update().await {
-            Ok(SubscriptionUpdate::Connected) => Update::WatchConnected(selection.clone()),
-            Ok(SubscriptionUpdate::Reconnecting(error)) => {
-                Update::WatchReconnecting(selection.clone(), error)
-            }
-            Ok(SubscriptionUpdate::Observation(event)) => {
-                Update::Observation(selection.clone(), event)
-            }
-            Err(error) => return error,
-        };
-        if !push(sender, update).await {
-            return Error::ObservationEnded;
-        }
-    }
 }
 
 async fn push(sender: &mpsc::Sender<Message>, update: Update) -> bool {
@@ -774,8 +738,12 @@ pub(crate) fn job_status_label(status: JobStatus) -> &'static str {
 
 fn model_choices(catalog: ModelCatalog) -> (Vec<Choice>, String) {
     let mut choices = Vec::new();
+    let mut default = catalog.default_tier.clone();
     for tier in catalog.tiers {
-        let mut detail = format!("{} · {}", tier.connection, tier.model);
+        let mut detail = format!("{} · {}", tier.model, tier.connection);
+        if tier.name == catalog.default_tier {
+            default.clone_from(&tier.model);
+        }
         if let Some(purpose) = tier
             .purpose
             .as_ref()
@@ -786,13 +754,14 @@ fn model_choices(catalog: ModelCatalog) -> (Vec<Choice>, String) {
         if let Some(error) = &tier.error {
             detail.push_str(&format!(" · {}", error.message));
         }
+        let label = tier.name.clone();
         choices.push(Choice::new(
-            format!("Tier · {}", tier.name),
+            label,
             detail,
             ChoiceKind::ModelActions(Box::new(tier)),
         ));
     }
-    (choices, format!("Default route · {}", catalog.default_tier))
+    (choices, format!("Default · {default}"))
 }
 
 async fn service_status(

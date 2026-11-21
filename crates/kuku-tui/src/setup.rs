@@ -15,7 +15,10 @@ use std::io::{self, IsTerminal};
 use kuku::config::{ProviderFormat, ProviderProfile};
 use kuku_client::ConnectionOptions;
 
-pub(crate) use editor::{save_setting, ModelEditor, ModelEditorAction, SavedModelSetting};
+pub(crate) use editor::{
+    save_setting, thinking_defaults, ModelEditor, ModelEditorAction, SavedModelSetting,
+    ThinkingDefaults, ThinkingSaveTarget,
+};
 pub(crate) use repair::{CredentialRepair, CredentialRepairAction};
 pub(crate) use repair_backend::{
     apply as apply_credential_repair, prepare as prepare_credential_repair,

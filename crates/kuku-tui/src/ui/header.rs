@@ -5,19 +5,28 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, ServiceStatus};
+use crate::app::{App, ServiceStatus, StartupSkills};
 use crate::contextual::ContextControl;
 use crate::keys::Shortcut;
 use crate::markup::{render_literal, wrap};
 use crate::text::{shorten, shorten_middle, single_line, single_line_path};
-use crate::theme::{emphasis, ACCENT, KUKU_MARK, MUTED, WARNING};
+use crate::theme::{emphasis, ACCENT, KUKU_MARK, MODEL, MUTED, TURN_CARD, WARNING};
 
 const BRAND: &str = "kuku";
 const SEPARATOR: &str = " · ";
-const WELCOME_WIDTH: u16 = 56;
-const WELCOME_HEIGHT: u16 = 7;
+const WELCOME_WIDTH: u16 = 52;
+const WELCOME_HEIGHT: u16 = 9;
+const WELCOME_MAX_WIDTH: u16 = 86;
+const WELCOME_LABEL_WIDTH: usize = 11;
+const WELCOME_SKILL_ROWS: usize = 2;
+const WELCOME_SKILL_INDENT: &str = "  ";
 const SESSION_PREFIX_WIDTH: usize = 39;
 const TITLE_RESERVE: usize = 9;
+const MIN_AGENT_TITLE: u16 = 22;
+
+pub(super) fn session_rows(app: &App, height: u16) -> u16 {
+    1 + u16::from(height >= 5 && app.visible_recipient().is_some())
+}
 
 pub(super) fn render_session(
     frame: &mut Frame<'_>,
@@ -26,6 +35,18 @@ pub(super) fn render_session(
     following: bool,
     tool_hint: Option<&str>,
 ) -> Option<Rect> {
+    let mut recipient = app.visible_recipient().map(single_line);
+    if area.height > 1 {
+        if let Some(name) = recipient.take() {
+            render_agent(
+                frame,
+                Rect::new(area.x, area.y + 1, area.width, 1),
+                &name,
+                app,
+            );
+        }
+    }
+    let area = Rect { height: 1, ..area };
     let width = usize::from(area.width);
     let messages_label = if width >= 72 {
         " Messages "
@@ -54,7 +75,8 @@ pub(super) fn render_session(
         let chip_width = u16::try_from(super::contextual::label(control).width())
             .unwrap_or(u16::MAX)
             .min(right.saturating_sub(area.x));
-        if chip_width == 0 {
+        let remaining = right.saturating_sub(area.x).saturating_sub(chip_width + 1);
+        if chip_width == 0 || (recipient.is_some() && remaining < MIN_AGENT_TITLE) {
             continue;
         }
         right = right.saturating_sub(chip_width);
@@ -72,6 +94,18 @@ pub(super) fn render_session(
     };
     let content_width = usize::from(title_area.width);
     let mut line = wordmark(content_width >= SESSION_PREFIX_WIDTH);
+    if let Some(name) = recipient {
+        let available = content_width.saturating_sub(line.width() + SEPARATOR.width());
+        let prefix = if available >= 10 { "Agent " } else { "" };
+        let name = shorten_middle(&name, available - prefix.width());
+        let color = if app.is_subagent() { MODEL } else { ACCENT };
+        append(
+            &mut line,
+            &format!("{prefix}{name}"),
+            content_width,
+            emphasis(color),
+        );
+    }
     let id: String = single_line(&app.active.session).chars().take(8).collect();
     let identity = if content_width >= SESSION_PREFIX_WIDTH {
         format!("Session {id}")
@@ -87,13 +121,15 @@ pub(super) fn render_session(
     let title = single_line(&app.pane().title);
     let room = content_width.saturating_sub(line.width() + TITLE_RESERVE);
     let primary_hint = following.then_some(tool_hint).flatten();
-    let navigation = if app
-        .pane()
-        .snapshot
-        .as_ref()
-        .is_some_and(|snapshot| snapshot.agents.len() > 1)
+    let switch_hint = "Alt+←/→ Switch · /agents";
+    let navigation = if switch_hint.width() <= room
+        && app
+            .pane()
+            .snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.agents.len() > 1)
     {
-        "Alt+←/→ Switch · /agents"
+        switch_hint
     } else {
         "/agents"
     };
@@ -125,44 +161,147 @@ pub(super) fn render_session(
     messages_area
 }
 
+fn render_agent(frame: &mut Frame<'_>, area: Rect, name: &str, app: &App) {
+    let color = if app.is_subagent() { MODEL } else { ACCENT };
+    let width = usize::from(area.width);
+    let prefix = if width >= 14 { "│  Agent " } else { "│ " };
+    let mut line = Line::styled(shorten(prefix, width), Style::new().fg(color));
+    line.push_span(Span::styled(
+        shorten_middle(name, width.saturating_sub(line.width())),
+        emphasis(color),
+    ));
+    frame.render_widget(Paragraph::new(line).style(Style::new().bg(TURN_CARD)), area);
+}
+
 pub(super) fn render_welcome(frame: &mut Frame<'_>, area: Rect, app: &App, show_problem: bool) {
     let spacious = area.width >= WELCOME_WIDTH && area.height >= WELCOME_HEIGHT;
-    let (body, mut lines) = if spacious {
-        let brand = wordmark(true);
-        let text_column = (brand.width() - BRAND.width()) as u16;
-        let heading = Rect::new(area.x, area.y + 1, area.width, 1);
-        frame.render_widget(Paragraph::new(brand), heading);
-        let body = Rect::new(
-            area.x + text_column,
-            area.y + 2,
-            area.width - text_column,
-            area.height - 2,
-        );
-        (
-            body,
-            vec![
-                Line::styled("New session", emphasis(Color::Reset)),
-                Line::default(),
-            ],
-        )
-    } else {
-        let mut identity = wordmark(area.width >= 25);
-        append(
-            &mut identity,
-            "New session",
-            usize::from(area.width),
-            emphasis(Color::Reset),
-        );
-        (area, vec![identity])
+    let top = u16::from(spacious);
+    let area = Rect {
+        y: area.y + top,
+        height: area.height - top,
+        width: area.width.min(WELCOME_MAX_WIDTH),
+        ..area
     };
-    let width = usize::from(body.width);
-    if let Some(line) = empty_notice(app, width, show_problem).into_iter().next() {
-        lines.push(line);
+    let (width, height) = (usize::from(area.width), usize::from(area.height));
+    let mut identity = wordmark(width >= 25);
+    append(&mut identity, "New session", width, emphasis(Color::Reset));
+    let mut lines = vec![identity];
+    if let Some(notice) = empty_notice(app, width, show_problem).into_iter().next() {
+        lines.push(notice);
     }
-    let remaining = usize::from(body.height).saturating_sub(lines.len());
-    let workspace = format!("Workspace: {}", single_line_path(&app.workspace));
-    lines.extend(welcome_actions(width, remaining, &workspace));
-    frame.render_widget(Paragraph::new(lines), body);
+    let actions = welcome_actions(width, height.saturating_sub(lines.len()));
+    let remaining = height.saturating_sub(lines.len() + actions.len());
+    let separated = spacious && remaining >= 4;
+    let details_rows = remaining.saturating_sub(2 * usize::from(separated));
+    if details_rows >= 2 && width >= 22 {
+        if separated {
+            lines.push(Line::default());
+        }
+        lines.extend(welcome_details(app, width, details_rows, separated));
+        if separated {
+            lines.push(Line::default());
+        }
+    }
+    lines.extend(actions);
+    if spacious && lines.len() < height {
+        let shortcuts = welcome_shortcuts();
+        if shortcuts.width() <= width {
+            lines.push(shortcuts);
+        }
+    }
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+fn welcome_details(app: &App, width: usize, rows: usize, separated: bool) -> Vec<Line<'static>> {
+    let content_width = width.saturating_sub(WELCOME_LABEL_WIDTH);
+    let workspace = single_line_path(&app.workspace);
+    let mut details = vec![welcome_field(
+        "Workspace",
+        Line::raw(shorten_middle(&workspace, content_width)),
+    )];
+    let pane = app.pane();
+    let model = pane
+        .effective_model_identity()
+        .map(|(model, connection, _)| format!("{connection}/{model}"))
+        .or_else(|| pane.effective_model_label());
+    if let Some(model) = model.filter(|_| rows >= 3) {
+        details.push(welcome_field(
+            "Model",
+            Line::styled(
+                shorten_middle(&single_line(&model), content_width),
+                Style::new().fg(MODEL),
+            ),
+        ));
+    }
+    let separate_skills = separated && rows.saturating_sub(details.len()) >= 3;
+    if separate_skills {
+        details.push(Line::default());
+        let mut title = Line::styled("Skills", emphasis(ACCENT));
+        if matches!(&app.startup_skills, StartupSkills::Ready(names) if !names.is_empty()) {
+            title.push_span(Span::raw("   "));
+            title.push_span(Span::styled("/skill:", emphasis(Color::Reset)));
+            title.push_span(Span::styled(" Browse", Style::new().fg(MUTED)));
+        }
+        details.push(title);
+    }
+    let slots = rows.saturating_sub(details.len()).min(WELCOME_SKILL_ROWS);
+    let names_width = if separate_skills {
+        width.saturating_sub(WELCOME_SKILL_INDENT.width())
+    } else {
+        content_width
+    };
+    let skills = match &app.startup_skills {
+        StartupSkills::Loading if app.available() || app.connecting => "Loading…".into(),
+        StartupSkills::Loading | StartupSkills::Unavailable => "Unavailable".into(),
+        StartupSkills::Ready(names) if names.is_empty() => "None found".into(),
+        StartupSkills::Ready(names) => names
+            .iter()
+            .map(|name| single_line(name))
+            .collect::<Vec<_>>()
+            .join(SEPARATOR),
+    };
+    let mut skills = wrap(render_literal(&skills, Style::default()), names_width);
+    if skills.len() > slots {
+        skills.truncate(slots);
+        if let Some(last) = skills.last_mut() {
+            let suffix = if separate_skills { "" } else { " /skill:" };
+            let text = shorten(
+                &format!("{} …", last.to_string().trim_end()),
+                names_width.saturating_sub(suffix.width()),
+            );
+            *last = Line::from(vec![
+                Span::raw(text),
+                Span::styled(suffix, Style::default().fg(MUTED)),
+            ]);
+        }
+    }
+    if separate_skills {
+        details.extend(skills.into_iter().map(|skill| {
+            let mut line = Line::raw(WELCOME_SKILL_INDENT);
+            line.extend(skill.spans);
+            line
+        }));
+    } else {
+        details.extend(
+            skills
+                .into_iter()
+                .enumerate()
+                .map(|(index, value)| welcome_field(if index == 0 { "Skills" } else { "" }, value)),
+        );
+    }
+    details
+}
+
+fn welcome_field(label: &str, value: Line<'static>) -> Line<'static> {
+    let label = Span::styled(
+        format!("{label:<WELCOME_LABEL_WIDTH$}"),
+        Style::default().fg(MUTED),
+    );
+    Line::from(
+        std::iter::once(label)
+            .chain(value.spans)
+            .collect::<Vec<_>>(),
+    )
 }
 
 pub(super) fn empty_notice(app: &App, width: usize, show_problem: bool) -> Vec<Line<'static>> {
@@ -196,7 +335,10 @@ fn wordmark(mark: bool) -> Line<'static> {
     line
 }
 
-fn welcome_actions(width: usize, rows: usize, workspace: &str) -> Vec<Line<'static>> {
+fn welcome_actions(width: usize, rows: usize) -> Vec<Line<'static>> {
+    if rows == 0 {
+        return Vec::new();
+    }
     let muted = Style::default().fg(MUTED);
     let action = Style::default().fg(Color::Reset);
     let send = if width >= 31 {
@@ -215,28 +357,37 @@ fn welcome_actions(width: usize, rows: usize, workspace: &str) -> Vec<Line<'stat
     ]);
     let command = Span::styled("/resume", action);
     let caption = Span::styled(resume, muted);
-    let mut actions =
-        if input.width() + SEPARATOR.width() + command.width() + caption.width() <= width {
-            input.push_span(Span::styled(SEPARATOR, muted));
-            input.push_span(command);
-            input.push_span(caption);
-            vec![input]
-        } else if rows <= 1 {
-            vec![Line::styled(
-                shorten("Enter to send · /resume", width),
-                muted,
-            )]
-        } else {
-            vec![input, Line::from(vec![command, caption])]
-        };
-    if width >= 70 && rows.saturating_sub(actions.len()) >= 2 {
-        actions.push(Line::styled(shorten_middle(workspace, width), muted));
-        actions.push(Line::styled(
-            "/model: Set current model as default to persist the route.",
+    if input.width() + SEPARATOR.width() + command.width() + caption.width() <= width {
+        input.push_span(Span::styled(SEPARATOR, muted));
+        input.push_span(command);
+        input.push_span(caption);
+        vec![input]
+    } else if rows <= 1 {
+        vec![Line::styled(
+            shorten("Enter to send · /resume", width),
             muted,
-        ));
+        )]
+    } else {
+        vec![input, Line::from(vec![command, caption])]
     }
-    actions
+}
+
+fn welcome_shortcuts() -> Line<'static> {
+    let muted = Style::new().fg(MUTED);
+    let mut line = Line::default();
+    for (key, action) in [
+        ("/", "Actions"),
+        (Shortcut::MODEL.label, "Model"),
+        (Shortcut::CYCLE_THINKING.label, "Think"),
+        (Shortcut::ACTIONS.label, "Help"),
+    ] {
+        if !line.spans.is_empty() {
+            line.push_span(Span::styled(SEPARATOR, muted));
+        }
+        line.push_span(Span::styled(key, emphasis(Color::Reset)));
+        line.push_span(Span::styled(format!(" {action}"), muted));
+    }
+    line
 }
 
 fn append(line: &mut Line<'static>, label: &str, width: usize, style: Style) {
