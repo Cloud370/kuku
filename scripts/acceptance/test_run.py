@@ -480,6 +480,8 @@ class AcceptanceTests(unittest.TestCase):
         self.assertIn("--workspace", command)
         self.assertIn("--no-fail-fast", command)
         self.assertIn("kuku/test_support", command)
+        self.assertIn("kuku/test_support,kuku-app/embedded-web-assets",
+                      ACCEPTANCE.selected_commands("contract", embedded_web_assets=True)[0])
         self.assertEqual(ACCEPTANCE.selected_commands("integration")[-1], command)
         for suite in ACCEPTANCE.PROTOCOL_TESTS:
             self.assertIn(suite, ACCEPTANCE.selected_commands("protocol")[0])
