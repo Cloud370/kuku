@@ -32,6 +32,32 @@ def bundle_binary(binary, directory, filename="session_task"):
     return command, file_hashes(destination)
 
 
+def bundle_prompts(source, destination):
+    if not source.is_dir():
+        raise ValueError("expected a Prompt override directory")
+    assets = [source / "system.md"]
+    for name in ("agents", "blocks", "memory", "runtime", "tools"):
+        directory = source / name
+        if directory.is_symlink():
+            raise ValueError("Prompt override subdirectories must be local directories")
+        assets.extend(directory.glob("*.md"))
+    assets = [asset for asset in assets if asset.exists() or asset.is_symlink()]
+    if not 0 < len(assets) <= 256:
+        raise ValueError("expected between 1 and 256 Prompt override assets")
+    for asset in assets:
+        if asset.is_symlink() or not asset.is_file():
+            raise ValueError("Prompt override assets must be regular files")
+        with asset.open("rb") as handle:
+            content = handle.read(128 * 1024 + 1)
+        if len(content) > 128 * 1024:
+            raise ValueError("Prompt override asset exceeds 128 KiB")
+        content.decode("utf-8")
+        target = destination / asset.relative_to(source)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+    return file_hashes(destination)
+
+
 def bundle_ca(directory, source=None):
     if source is None:
         explicit = os.environ.get("SSL_CERT_FILE")

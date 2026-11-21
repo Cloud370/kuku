@@ -304,6 +304,8 @@ python3 scripts/acceptance/benchmark_compare.py \
 
 对照报告累计宿主计量代理接纳的所有请求的转发耗时和序列化请求体字节数，包含重试。转发耗时涵盖上游连接和响应传输。有任一请求缺少相应读数时，该项总量留空。首个输出时间的中位数按已观测的请求计算，并附样本数。
 
+对照 Prompt 版本时复用同一份 release `session_task`，给每条 Frontier 真实试跑传入包含覆盖文件的 `--prompts-dir`。选择器为 Prompt 资源留存快照，在试跑记录中写入 SHA-256 摘要，并以只读方式挂载快照。缺少的资源由 SDK 提供嵌入的默认版本。使用 `benchmark_compare.py --baseline RUN_DIRECTORY --candidate RUN_DIRECTORY` 核对 SDK 二进制、运行时包、两份不同的 Prompt 快照，以及双方一致的题目、provider 设置和资源限额。
+
 ## 资源测量
 
 ```bash

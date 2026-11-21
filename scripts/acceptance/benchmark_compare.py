@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export a matched local Frontier Kuku/Pi comparison as shareable JSON."""
+"""Export a matched Frontier harness or SDK Prompt comparison as shareable JSON."""
 
 import argparse
 from hashlib import sha256
@@ -15,6 +15,13 @@ from run import manifest_case
 
 REQUIRED_LIMITS = ('max_request_bytes', 'max_output_tokens', 'agent_timeout_sec', 'provider_context_tokens')
 TOKEN_FIELDS = ('prompt_tokens', 'completion_tokens', 'prompt_cache_hit_tokens', 'prompt_cache_miss_tokens')
+
+
+def digest_map(value):
+    files = object_value(value)
+    if files and all(hex_digest(digest, 64) for digest in files.values()):
+        return sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
+    return None
 
 
 def relay_summary(rows):
@@ -58,17 +65,17 @@ def attempt(directory, harness):
              'model_requested': 'deepseek-flash', 'effort': 'max'}
     if any(meter.get(key) != value for key, value in route.items()):
         raise EvidenceError('paired runs require direct DeepSeek Chat with max reasoning')
-    files = object_value(benchmark.get('task_files_sha256'))
+    task_digest = digest_map(benchmark.get('task_files_sha256'))
     image_id = benchmark.get('image_id')
     limits = object_value(meter.get('limits'))
     cap = money(meter.get('case_cap_usd'))
-    if (not files or not all(hex_digest(value, 64) for value in files.values())
+    if (not task_digest
             or not isinstance(image_id, str) or not re.fullmatch(r'sha256:[0-9a-f]{64}', image_id)
             or not cap or any(not count(limits.get(key)) for key in REQUIRED_LIMITS)
             or ('max_requests' not in limits or (limits['max_requests'] is not None and not count(limits['max_requests'])))):
         raise EvidenceError('missing task, image, budget or provider limit evidence')
     shared = {'case': case, 'source_revision': TASK_COMMIT, 'image_id': image_id,
-              'task_files_sha256': sha256(json.dumps(files, sort_keys=True).encode()).hexdigest(),
+              'task_files_sha256': task_digest,
               'provider': route, 'case_cap_usd': cap, 'container_limits': requirements,
               'model_limits': {key: limits[key] for key in (*REQUIRED_LIMITS, 'max_requests')}}
     resources = object_value(result.get('resource_evidence'))
@@ -86,6 +93,8 @@ def attempt(directory, harness):
         'provenance': {
             'checkout_commit': hex_digest(object_value(record.get('tree')).get('commit'), 40),
             'kuku_binary_sha256': hex_digest(runtime_files.get('session_task'), 64),
+            'kuku_runtime_sha256': digest_map(runtime_files) if harness == 'kuku' else None,
+            'prompt_overrides_sha256': digest_map(result.get('prompt_overrides')),
             'pi_version': version if isinstance(version, str) and re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version) else None,
             'pi_lock_sha256': hex_digest(package.get('lock_sha256'), 64),
             'pi_cli_sha256': hex_digest(package.get('cli_sha256'), 64),
@@ -110,22 +119,47 @@ def attempt(directory, harness):
     }
 
 
-def compare(kuku, pi):
-    shared, left = attempt(kuku, 'kuku')
-    pi_shared, right = attempt(pi, 'pi')
-    mismatches = [field for field in shared if shared[field] != pi_shared[field]]
+def require_matching(left, right):
+    mismatches = [field for field in left if left[field] != right[field]]
     if mismatches:
         raise EvidenceError('paired configuration differs in ' + ', '.join(mismatches))
+
+
+def compare(kuku, pi):
+    shared, left = attempt(kuku, 'kuku')
+    other, right = attempt(pi, 'pi')
+    require_matching(shared, other)
     return {'schema_version': 1, 'configuration': shared, 'attempts': [left, right]}
+
+
+def compare_prompts(baseline, candidate):
+    shared, left = attempt(baseline, 'kuku')
+    other, right = attempt(candidate, 'kuku')
+    require_matching(shared, other)
+    before, after = left['provenance'], right['provenance']
+    for key in ('kuku_binary_sha256', 'kuku_runtime_sha256'):
+        if not before[key] or before[key] != after[key]:
+            raise EvidenceError('Prompt comparison requires the same SDK binary and packaged runtime')
+    if (not before['prompt_overrides_sha256'] or not after['prompt_overrides_sha256']
+            or before['prompt_overrides_sha256'] == after['prompt_overrides_sha256']):
+        raise EvidenceError('Prompt comparison requires two distinct recorded Prompt override snapshots')
+    return {'schema_version': 1, 'configuration': shared,
+            'attempts': [{'arm': 'baseline', **left}, {'arm': 'candidate', **right}]}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--kuku', required=True, type=Path, metavar='RUN_DIRECTORY')
-    parser.add_argument('--pi', required=True, type=Path, metavar='RUN_DIRECTORY')
+    for name in ('kuku', 'pi', 'baseline', 'candidate'):
+        parser.add_argument(f'--{name}', type=Path, metavar='RUN_DIRECTORY')
     args = parser.parse_args()
     try:
-        print(json.dumps(compare(args.kuku, args.pi), indent=2, allow_nan=False))
+        if args.kuku and args.pi and not (args.baseline or args.candidate):
+            report = compare(args.kuku, args.pi)
+        elif args.baseline and args.candidate and not (args.kuku or args.pi):
+            report = compare_prompts(args.baseline, args.candidate)
+        else:
+            parser.error('provide --kuku and --pi or --baseline and --candidate')
+        print(json.dumps(report, indent=2, allow_nan=False))
     except EvidenceError as error:
         parser.exit(2, f'error: {error}\n')
 

@@ -27,7 +27,7 @@ import zipfile
 
 from benchmark_resources import (CASE_RESOURCE_LIMITS, ResourceSampler, case_resource_evidence, include_final_process_usage,
                                  read_case_cgroup, validate_case_limits)
-from benchmark_runtime import (attempt_passed, bundle_binary, bundle_ca, file_hashes,
+from benchmark_runtime import (attempt_passed, bundle_binary, bundle_ca, bundle_prompts, file_hashes,
                                fresh_verifier_directory, reward, verifier_summary)
 from evidence import FailureSummary, inspect_sdk
 
@@ -380,6 +380,9 @@ def benchmark_attempt(args, case, source, image, directory, mode, secrets, *, sd
             record["harness"] = "pi"
         else:
             runner_command, record["runtime_files"] = bundle_binary(args.sdk_binary.resolve(), attempt)
+            if prompts_dir := getattr(args, "prompts_dir", None):
+                record["prompt_overrides"] = bundle_prompts(prompts_dir, attempt / "runtime" / "prompts")
+                runner_command += ["--prompts-dir", "/kuku/runtime/prompts"]
             config_path = "/kuku/config.toml"
             record["session_id"] = "benchmark-" + uuid.uuid4().hex[:12]
             runner_command += ["--workspace", case["workspace"], "--prompt-file", "/kuku/instruction.md",
@@ -889,6 +892,8 @@ def main():
             raise ValueError("--pi-prefix selects direct DeepSeek Frontier live with Pi Session evidence")
         if args.node_binary and not args.pi_prefix:
             raise ValueError("--node-binary requires --pi-prefix")
+        if args.prompts_dir and (not metered or not args.sdk_binary or args.pi_prefix):
+            raise ValueError("--prompts-dir requires a live Frontier SDK runner")
         if args.require_resource_evidence and not paid:
             raise ValueError("--require-resource-evidence applies to live benchmark measurements")
     secrets = {}

@@ -304,6 +304,8 @@ The exporter checks the task file digest, Docker image ID, model route and limit
 
 The paired report includes the sum of host meter relay time and serialized request body bytes across all admitted attempts, including retries. Relay time covers outbound connection and response transfer. The report leaves either total empty when an attempt is missing the corresponding measurement. Median time to first output uses the measured requests and includes its sample count.
 
+To compare Prompt variants, reuse the same release `session_task` and give each live Frontier attempt a `--prompts-dir` containing its overrides. The selector snapshots the Prompt assets, records their SHA-256 digests in the attempt, and mounts the snapshot read-only. The SDK supplies embedded defaults for missing assets. Use `benchmark_compare.py --baseline RUN_DIRECTORY --candidate RUN_DIRECTORY` to check the SDK binary, runtime bundle, distinct Prompt snapshots, and matching task, provider settings and resource limits.
+
 ## Resource measurements
 
 ```bash

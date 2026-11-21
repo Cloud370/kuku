@@ -231,6 +231,20 @@ class AcceptanceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ACCEPTANCE.bundle_ca(self.directory, self.directory / "missing.pem")
 
+    def test_prompt_bundle_snapshots_only_catalog_assets(self):
+        source = self.directory / "source"
+        (source / "blocks").mkdir(parents=True)
+        (source / "notes").mkdir()
+        guidance = source / "blocks" / "tool-guidance.md"
+        guidance.write_bytes(b"Plain guidance.\n")
+        (source / "notes" / "scratch.md").write_bytes(b"irrelevant")
+        (source / "blocks" / "scratch.txt").write_bytes(b"irrelevant")
+        target = self.directory / "snapshot"
+        digest = hashlib.sha256(guidance.read_bytes()).hexdigest()
+        self.assertEqual(ACCEPTANCE.bundle_prompts(source, target), {str(Path("blocks") / "tool-guidance.md"): digest})
+        guidance.write_bytes(b"Changed after snapshot.\n")
+        self.assertEqual((target / "blocks" / "tool-guidance.md").read_bytes(), b"Plain guidance.\n")
+
     def test_log_is_bounded_and_redacts_secrets_across_the_retained_boundary(self):
         secret = "test-secret-" + "z" * 80
         program = ("import sys;sys.stdout.write('prefix'*20000+" + repr(secret)

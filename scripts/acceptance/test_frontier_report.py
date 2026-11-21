@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from benchmark_compare import compare
+from benchmark_compare import compare, compare_prompts
 from benchmark_resources import CASE_RESOURCE_LIMITS
 from frontier_report import (CASES, DATASET, DELAYED_RECEIPTS, MODEL_ID, PRIVATE_RECEIPTS,
                             SDK_REQUEST_BYTES_ERROR, TASK_COMMIT, EvidenceError, build_report, cohort_efficiency, main, official_report,
@@ -45,6 +45,22 @@ def write_json(path, value):
 
 
 class PairedReportTests(unittest.TestCase):
+    def test_prompt_pair_requires_unchanged_runtime_and_distinct_snapshots(self):
+        provenance = {'kuku_binary_sha256': SDK_SHA, 'kuku_runtime_sha256': SDK_SHA,
+                      'prompt_overrides_sha256': '2' * 64}
+        left = ({'case': 'regex-log'}, {'provenance': provenance})
+        right = ({'case': 'regex-log'}, {'provenance': {**provenance, 'prompt_overrides_sha256': '3' * 64}})
+        with patch('benchmark_compare.attempt', side_effect=[left, right]):
+            report = compare_prompts(Path('old'), Path('new'))
+        self.assertEqual([arm['arm'] for arm in report['attempts']], ['baseline', 'candidate'])
+        with patch('benchmark_compare.attempt', side_effect=[left, left]):
+            with self.assertRaisesRegex(EvidenceError, 'distinct recorded Prompt'):
+                compare_prompts(Path('old'), Path('new'))
+        right[1]['provenance']['kuku_runtime_sha256'] = '4' * 64
+        with patch('benchmark_compare.attempt', side_effect=[left, right]):
+            with self.assertRaisesRegex(EvidenceError, 'same SDK binary and packaged runtime'):
+                compare_prompts(Path('old'), Path('new'))
+
     def test_exports_matched_evidence_even_for_verifier_failure(self):
         case = 'regex-log'
         benchmark = {'case': {'id': case}, 'suite': 'frontier', 'source': {'revision': TASK_COMMIT},
