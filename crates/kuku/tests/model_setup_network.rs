@@ -3,12 +3,14 @@ use std::time::Duration;
 
 use kuku::adapter::{
     discover_models, model_list_targets, trial_model, ModelTrial, Probe, ProbeBatch, ProbeProgress,
-    ProbeResult, RequestCost,
+    ProbeResult, RequestCost, TRIAL_OUTPUT_TOKENS, TRIAL_RETRY_OUTPUT_TOKENS,
 };
 use kuku::config::{ApiKey, ProviderConfig, ProviderFormat, ProviderOptions, ProviderProxy};
+use kuku::event::ModelStopReason;
+use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 fn connection(base_url: String, proxy: ProviderProxy) -> ProviderConfig {
     ProviderConfig {
@@ -23,6 +25,10 @@ fn connection(base_url: String, proxy: ProviderProxy) -> ProviderConfig {
 }
 
 async fn read_request(stream: &mut TcpStream) -> String {
+    read_request_with_body(stream).await.0
+}
+
+async fn read_request_with_body(stream: &mut TcpStream) -> (String, Vec<u8>) {
     let mut reader = BufReader::new(stream);
     let mut request = String::new();
     let mut first = String::new();
@@ -47,7 +53,82 @@ async fn read_request(stream: &mut TcpStream) -> String {
         .unwrap_or(0);
     let mut body = vec![0; bytes];
     reader.read_exact(&mut body).await.unwrap();
-    first
+    (first, body)
+}
+
+#[tokio::test]
+async fn setup_retry_keeps_the_input_and_both_cost_receipts() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let cfg = connection(
+        format!("http://{}/v1", listener.local_addr().unwrap()),
+        ProviderProxy::Direct,
+    );
+    let (retry_arrived, retry_seen) = oneshot::channel();
+    let (release_retry, resume) = oneshot::channel();
+    let mock = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let (start, body) = read_request_with_body(&mut stream).await;
+        assert!(start.starts_with("POST /v1/chat/completions "));
+        let first: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(TRIAL_OUTPUT_TOKENS, first["max_tokens"]);
+        response(&mut stream, &json!({
+            "choices": [{"message": {"content": null, "reasoning_content": "working"}, "finish_reason": "length"}],
+            "usage": {"prompt_tokens": 12, "completion_tokens": 768, "cost": 0.000004}
+        }).to_string()).await;
+
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let (start, body) = read_request_with_body(&mut stream).await;
+        assert!(start.starts_with("POST /v1/chat/completions "));
+        let second: Value = serde_json::from_slice(&body).unwrap();
+        let mut expected = first;
+        expected["max_tokens"] = json!(TRIAL_RETRY_OUTPUT_TOKENS);
+        assert_eq!(expected, second);
+        retry_arrived.send(()).unwrap();
+        resume.await.unwrap();
+        response(
+            &mut stream,
+            &json!({
+                "choices": [{"message": {"content": "377"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 3, "cost": 0.000008}
+            })
+            .to_string(),
+        )
+        .await;
+    });
+    let mut probes = ProbeBatch::start(vec![Probe::Trial {
+        connection: Arc::new(cfg),
+        model: "fixture".into(),
+        check: ModelTrial::Text {
+            effort: None,
+            service_tier: None,
+        },
+    }]);
+    tokio::time::timeout(Duration::from_secs(3), retry_seen)
+        .await
+        .unwrap()
+        .unwrap();
+    let before = probes.rows()[0].initial_attempt_before_retry().unwrap();
+    assert_eq!(Some(ModelStopReason::Length), before.stop_reason);
+    assert_eq!(RequestCost::Reported { nanodollars: 4_000 }, before.cost);
+    release_retry.send(()).unwrap();
+    assert!(tokio::time::timeout(Duration::from_secs(3), probes.next())
+        .await
+        .unwrap());
+    let ProbeProgress::Finished(_, Ok(ProbeResult::Trial(result))) = &probes.rows()[0].progress
+    else {
+        panic!("the retry should complete the setup test");
+    };
+    assert!(result.text_returned);
+    assert_eq!(2, result.attempts.len());
+    assert_eq!(
+        RequestCost::Reported { nanodollars: 4_000 },
+        result.attempts[0].cost
+    );
+    assert_eq!(
+        RequestCost::Reported { nanodollars: 8_000 },
+        result.attempts[1].cost
+    );
+    mock.await.unwrap();
 }
 
 async fn response(stream: &mut TcpStream, body: &str) {

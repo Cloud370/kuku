@@ -1,4 +1,7 @@
-use kuku::adapter::{ModelTrial, Probe, ProbeBatch, ProbeProgress, ProbeResult, RequestCost};
+use kuku::adapter::{
+    ModelTrial, Probe, ProbeBatch, ProbeProgress, ProbeResult, ProbeRow, RequestCost,
+    TRIAL_RETRY_OUTPUT_TOKENS,
+};
 use kuku::config::ProviderProxy;
 use kuku::event::ModelStopReason;
 use ratatui::{layout::Rect, Frame};
@@ -61,7 +64,7 @@ pub(super) fn render(
     }
     *row += 1;
     for request in batch.rows().iter().skip(visible.start).take(visible.len()) {
-        let (label, mut detail, color) = probe_detail(&request.probe, &request.progress);
+        let (label, mut detail, color) = probe_detail(request);
         if let Some(models) = &request.cached_models {
             if !matches!(request.progress, ProbeProgress::Finished(_, Ok(_))) {
                 detail = format!("{} cached models · {detail}", models.len());
@@ -134,22 +137,38 @@ pub(super) fn review_status(batch: &ProbeBatch) -> (String, bool) {
 
 pub(super) fn cost_summary(batch: &ProbeBatch) -> Option<String> {
     let (mut reported, mut estimated, mut unknown) = (None, None, 0);
+    let mut add = |cost: &RequestCost| match cost {
+        RequestCost::Reported { .. } => {
+            *reported.get_or_insert(0.0) += cost.usd().unwrap_or_default()
+        }
+        RequestCost::Estimated { .. } => {
+            *estimated.get_or_insert(0.0) += cost.usd().unwrap_or_default()
+        }
+        RequestCost::Unknown => unknown += 1,
+    };
     for row in batch.rows() {
         if !matches!(row.probe, kuku::adapter::Probe::Trial { .. }) {
             continue;
         }
         match &row.progress {
-            ProbeProgress::Finished(_, Ok(ProbeResult::Trial(trial))) => match trial.cost {
-                RequestCost::Reported { .. } => {
-                    *reported.get_or_insert(0.0) += trial.cost.usd().unwrap_or_default()
+            ProbeProgress::Finished(_, Ok(ProbeResult::Trial(trial))) => {
+                if trial.attempts.is_empty() {
+                    add(&trial.cost);
                 }
-                RequestCost::Estimated { .. } => {
-                    *estimated.get_or_insert(0.0) += trial.cost.usd().unwrap_or_default()
+                for attempt in &trial.attempts {
+                    add(&attempt.cost);
                 }
-                RequestCost::Unknown => unknown += 1,
-            },
+            }
             ProbeProgress::Finished(_, Err(_)) | ProbeProgress::Canceled { sent: true } => {
-                unknown += 1
+                if let Some(attempt) = row.initial_attempt_before_retry() {
+                    add(&attempt.cost);
+                }
+                add(&RequestCost::Unknown);
+            }
+            ProbeProgress::Waiting(_) => {
+                if let Some(attempt) = row.initial_attempt_before_retry() {
+                    add(&attempt.cost);
+                }
             }
             _ => {}
         }
@@ -171,18 +190,19 @@ pub(super) fn cost_summary(batch: &ProbeBatch) -> Option<String> {
     (!parts.is_empty()).then(|| format!("Cost · {}", parts.join(" · ")))
 }
 
-fn probe_detail(
-    probe: &Probe,
-    progress: &ProbeProgress,
-) -> (&'static str, String, ratatui::style::Color) {
-    match progress {
+fn probe_detail(row: &ProbeRow) -> (&'static str, String, ratatui::style::Color) {
+    match &row.progress {
         ProbeProgress::Queued => ("·", "Queued".into(), MUTED),
         ProbeProgress::Waiting(started) => (
             "…",
-            format!(
-                "Waiting for response · {:.1}s",
-                started.elapsed().as_secs_f64()
-            ),
+            if row.initial_attempt_before_retry().is_some() {
+                format!("Reply cut off · Retrying with {TRIAL_RETRY_OUTPUT_TOKENS} tokens")
+            } else {
+                format!(
+                    "Waiting for response · {:.1}s",
+                    started.elapsed().as_secs_f64()
+                )
+            },
             ACCENT,
         ),
         ProbeProgress::Canceled { sent } => (
@@ -204,7 +224,7 @@ fn probe_detail(
                     ("✓", format!("Found {} models", models.len()), SUCCESS)
                 }
                 Ok(ProbeResult::Quotes(quotes)) => {
-                    let example = match probe {
+                    let example = match &row.probe {
                         Probe::Quotes {
                             connection,
                             service_tier,
@@ -236,6 +256,17 @@ fn probe_detail(
                     }
                 }
                 Ok(ProbeResult::Trial(trial)) => {
+                    if let Some(failure) = trial
+                        .attempts
+                        .last()
+                        .and_then(|attempt| attempt.failure.as_deref())
+                    {
+                        return (
+                            "!",
+                            format!("Retry failed · {}", crate::text::single_line(failure)),
+                            WARNING,
+                        );
+                    }
                     let detail = match trial.image_match {
                         Some(true) => "Image verified".into(),
                         Some(false) => {
@@ -268,6 +299,11 @@ fn probe_detail(
                             }
                             None => "Text reply received".into(),
                         },
+                    };
+                    let detail = if trial.attempts.len() > 1 {
+                        format!("{detail} · 2 tries")
+                    } else {
+                        detail
                     };
                     if trial.image_match == Some(false) || !trial.text_returned {
                         ("!", detail, WARNING)

@@ -27,7 +27,10 @@ pub use openrouter_catalog::{
 pub use setup_probes::{
     plan_model_trials, Probe, ProbeBatch, ProbeProgress, ProbeResult, ProbeRow, TrialSelection,
 };
-pub use trial::{trial_model, ModelTrial, TrialResult, TRIAL_OUTPUT_TOKENS};
+pub use trial::{
+    trial_model, ModelTrial, TrialAttempt, TrialResult, TRIAL_OUTPUT_TOKENS,
+    TRIAL_RETRY_OUTPUT_TOKENS,
+};
 pub use types::{
     CapabilitySource, DeclaredCapability, Provider, ProviderCapabilities, ProviderReport,
     ProviderSettings, ProviderUsage,
