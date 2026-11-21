@@ -10,7 +10,7 @@ from unittest.mock import patch
 from benchmark_compare import compare
 from benchmark_resources import CASE_RESOURCE_LIMITS
 from frontier_report import (CASES, DATASET, DELAYED_RECEIPTS, MODEL_ID, PRIVATE_RECEIPTS,
-                             SDK_REQUEST_BYTES_ERROR, TASK_COMMIT, EvidenceError, build_report, main, official_report,
+                            SDK_REQUEST_BYTES_ERROR, TASK_COMMIT, EvidenceError, build_report, cohort_efficiency, main, official_report,
                              resource_summary, session_summary)
 
 
@@ -143,6 +143,17 @@ def generation_receipt(identifier, **changes):
 
 
 class FrontierReportTests(unittest.TestCase):
+    def test_official_time_per_pass_includes_failed_and_audited_attempts(self):
+        attempts = [
+            dict(outcome='pass', lookup=0, cost_usd=0.1, run_seconds=10),
+            dict(outcome='pass', lookup=1, cost_usd=0.1, run_seconds=20),
+            dict(outcome='timeout', lookup=0, cost_usd=0.1, run_seconds=90),
+            dict(outcome='infra', lookup=0, cost_usd=0.1, run_seconds=80),
+        ]
+        self.assertEqual(cohort_efficiency(attempts)['agent_verifier_seconds_per_pass'], 120)
+        attempts[1]['run_seconds'] = None
+        self.assertIsNone(cohort_efficiency(attempts)['agent_verifier_seconds_per_pass'])
+
     def test_workspace_script_counts_distinguish_local_js_host_actions_and_missing_receipts(self):
         with tempfile.TemporaryDirectory() as temporary:
             live_root = Path(temporary) / 'live'

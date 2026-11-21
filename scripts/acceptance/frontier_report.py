@@ -163,6 +163,7 @@ def cohort_efficiency(rows):
     costs = [number(row['cost_usd']) for row in scored]
     seconds = [number(row['run_seconds']) for row in scored]
     complete_cost = bool(scored) and all(value is not None for value in costs)
+    complete_time = bool(scored) and all(value is not None for value in seconds)
     return {
         **counts,
         'mean_inference_cost_usd': average(costs),
@@ -170,6 +171,7 @@ def cohort_efficiency(rows):
         'priced_attempts': sum(value is not None for value in costs),
         'median_agent_verifier_seconds': middle(seconds),
         'mean_agent_verifier_seconds': average(seconds),
+        'agent_verifier_seconds_per_pass': round(sum(seconds) / counts['passes'], 8) if complete_time and counts['passes'] else None,
         'timed_attempts': sum(value is not None for value in seconds),
     }
 
@@ -878,7 +880,8 @@ def build_report(feed, attempts, official_live_sha256=None, *, receipt_key=None)
             'comparison': 'The historical official Runta/Baseten baseline and local kuku observations come from different environments.',
             'ordering': 'For each case, the first supplied attempt is first and each later attempt is a rerun.',
             'official_scoring': 'Flagged passes score as failures. Infrastructure outcomes are excluded.',
-            'official_time': 'Agent plus verifier time, excluding queue wait, across scored attempts with timing.',
+            'official_time': ('Agent plus verifier time, excluding queue wait. Time per pass divides total time across all '
+                              'scored attempts by audited passes. It requires timing on every scored attempt.'),
             'official_cost': 'Mean inference USD from the official feed. Sandbox charges are excluded.',
             'local_time': 'SDK execution inside the container and verifier wall times are measured separately.',
             'local_performance': ('Proxy timing starts before the outbound connection. First output is the first nonempty text, '
