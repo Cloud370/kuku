@@ -85,9 +85,9 @@ mod tests {
     fn connection_names_use_only_the_host_and_non_default_port() {
         assert_eq!(
             from_url(
-                "https://fixture:fixture@neartoken.cc:443/v1/chat/completions?example=fixture"
+                "https://fixture:fixture@relay.example.invalid:443/v1/chat/completions?example=fixture"
             ),
-            Some("neartoken.cc".into())
+            Some("relay.example.invalid".into())
         );
         assert_eq!(from_url("http://[::1]:8080/v1"), Some("[::1]:8080".into()));
         assert_eq!(from_url("not a URL"), None);
