@@ -271,7 +271,7 @@ def targeted_delegation(client):
         assert "<kuku_delegation>" not in json.dumps(child.request["messages"])
         assert "<kuku_memory_guidance>" not in json.dumps(child.request["messages"])
         parent.tool("list_agents", "collect", wait_for="writer")
-        terminal.expect("╭─ Agent writer", state="Timeline")
+        waiting = terminal.expect("Agent check · writer · Waiting", also=("╭─ Agent writer", "Timeline"))["screen"]
         client.provider.assert_idle(0.35)
         child.text(result)
         collected = client.provider.next("collect")
@@ -280,6 +280,12 @@ def targeted_delegation(client):
         content = tool["content"]
         reply, = json.loads(content if isinstance(content, str) else content[0]["text"])
         assert reply == {"address": "writer", "status": "idle", "last_output": result}, reply
+        timeline = terminal.expect("Timeline · 3 calls · 1 status check")["screen"]
+        terminal.click_text(timeline, "Timeline")
+        checked = terminal.expect("Agent check · writer (Idle, reply available)")["screen"]
+        target_column = lambda screen: next(row.index("writer") for row in screen.splitlines() if "Agent check · writer" in row)
+        assert target_column(waiting) == target_column(checked), checked
+        terminal.click_text(checked, "Timeline")
         collected.text("Received the delegated document.\n\n```python\nprint('Proof of delivery')\n```")
         terminal.expect("Received the delegated document.", state="3 tools")
         for columns in (44, 100, 174):

@@ -287,6 +287,11 @@ impl Tool {
     }
 
     pub(super) fn render(&self, width: usize, details: ToolDetails) -> Vec<Row> {
+        if details != ToolDetails::Inspection {
+            if let Some(rows) = self.render_agent_check(width) {
+                return rows;
+            }
+        }
         let has_frame = self.name == "run_command"
             || self.file_change().is_some()
             || self
@@ -301,6 +306,32 @@ impl Tool {
         })
     }
 
+    fn render_agent_check(&self, width: usize) -> Option<Vec<Row>> {
+        let (summary, color) = match self.state.outcome() {
+            None if self.name == "list_agents" && !self.invocation.is_empty() => (
+                format!("{} · Waiting", single_line(&self.invocation)),
+                MODEL,
+            ),
+            Some(outcome) if outcome.status == "ok" => {
+                let result = self.observation()?;
+                let color = if result.attention { WARNING } else { MUTED };
+                (result.single_agent()?.to_owned(), color)
+            }
+            _ => return None,
+        };
+        let inset = body_inset(width);
+        let columns = width.saturating_sub(usize::from(inset));
+        let caption = "Agent check · ";
+        let line = Line::from(vec![
+            Span::styled(shorten(caption, columns), Style::new().fg(MUTED)),
+            Span::styled(
+                shorten(&summary, columns.saturating_sub(caption.width())),
+                Style::new().fg(color),
+            ),
+        ]);
+        Some(render_rows(vec![line, Line::default()], width, 2, inset).collect())
+    }
+
     fn render_content(&self, width: usize, details: ToolDetails) -> Vec<Row> {
         let inspecting = details == ToolDetails::Inspection;
         let expanded = inspecting || details == ToolDetails::Expanded;
@@ -308,21 +339,6 @@ impl Tool {
         let inset = heading_inset + body_inset(width.saturating_sub(usize::from(heading_inset)));
         let caption = self.file_caption();
         if details == ToolDetails::GroupMember {
-            if let Some((result, agent)) = self
-                .observation()
-                .and_then(|result| result.single_agent().map(|agent| (result, agent)))
-            {
-                let columns = width.saturating_sub(usize::from(heading_inset));
-                let label = shorten(&format!("Agent check · {agent}"), columns);
-                let color = if result.attention { WARNING } else { MUTED };
-                return render_rows(
-                    vec![Line::styled(label, Style::new().fg(color)), Line::default()],
-                    width,
-                    2,
-                    heading_inset,
-                )
-                .collect();
-            }
             let target = self.session_caption().map_or_else(
                 || caption.unwrap_or_else(|| single_line(cap(self.invocation(), MAX_LABEL_BYTES))),
                 |summary| join_details([self.invocation.as_str(), summary]),
@@ -367,25 +383,6 @@ impl Tool {
                 ));
                 return finish_card(rows);
             }
-        }
-        if self.name == "list_agents"
-            && !self.invocation.is_empty()
-            && self.state.outcome().is_none()
-            && !inspecting
-        {
-            let label = format!("Waiting for {}", single_line(&self.invocation));
-            return finish_card(
-                render_rows(
-                    vec![Line::styled(
-                        shorten(&label, width.saturating_sub(usize::from(heading_inset))),
-                        emphasis(MODEL),
-                    )],
-                    width,
-                    1,
-                    heading_inset,
-                )
-                .collect(),
-            );
         }
         let outcome = self.state.outcome();
         let command = outcome.and_then(|outcome| outcome.command_preview.as_ref());

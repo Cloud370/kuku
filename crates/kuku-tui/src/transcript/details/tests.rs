@@ -294,6 +294,41 @@ fn collapsed_delegation_expand_reopens_group_without_closing_agent_inspection() 
 }
 
 #[test]
+fn a_targeted_agent_check_keeps_its_row_and_surface_when_it_finishes() {
+    let mut journal = Journal::default();
+    journal.push(
+        7,
+        "main",
+        json!({
+            "type":"tool_call", "tool":"list_agents", "tool_call_id":"check",
+            "args":{"wait_for":"v4flash-tester"}
+        }),
+    );
+    journal.push(
+        7,
+        "main",
+        json!({
+            "type":"tool_result", "tool_call_id":"check", "status":"ok",
+            "summary":"session operation committed",
+            "structured":[{"address":"v4flash-tester","status":"idle"}]
+        }),
+    );
+    let result = journal.0.pop().unwrap();
+    let mut transcript = journal.load();
+    let waiting = transcript.project(90, 10);
+    let row = line(&waiting, "Agent check · v4flash-tester · Waiting");
+    assert!(waiting.lines[row].style.bg.is_none());
+    let check = transcript.detail_at(row).unwrap().clone();
+    transcript.apply(result, None);
+    let settled = transcript.project(90, 10);
+    assert_eq!(line(&settled, "Agent check · v4flash-tester (Idle)"), row);
+    assert!(settled.lines[row].style.bg.is_none());
+    assert_eq!(transcript.detail_at(row), Some(&check));
+    assert!(transcript.toggle_detail(&check));
+    assert!(text(&transcript.project(90, 20)).contains("Requested arguments"));
+}
+
+#[test]
 fn summaries_do_not_merge_across_prose_turns_addresses_or_missing_metadata() {
     let mut journal = Journal::default();
     journal.read(7, "main", "same.txt");
