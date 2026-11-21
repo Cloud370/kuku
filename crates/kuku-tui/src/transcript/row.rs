@@ -18,11 +18,18 @@ impl Row {
         }
     }
 
+    pub(super) fn frame_padding(frame: &crate::theme::CardFrame) -> Option<Self> {
+        frame.padding_line().map(|line| {
+            let width = line.width();
+            Self::padding(line, width)
+        })
+    }
+
     pub(super) fn pad_framed_body(rows: &mut Vec<Self>, frame: &crate::theme::CardFrame) {
         if rows.len() > 1 {
-            if let Some(line) = frame.top_padding_line() {
-                let width = line.width();
-                rows.insert(1, Self::padding(line, width));
+            if let Some(padding) = Self::frame_padding(frame) {
+                rows.insert(1, padding.clone());
+                rows.push(padding);
             }
         }
     }

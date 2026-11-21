@@ -87,9 +87,10 @@ pub(crate) fn panel_padding(area: Rect) -> Padding {
     compact_padding(sides, area.height >= 14)
 }
 
-pub(crate) fn compact_padding(sides: u16, top: bool) -> Padding {
+pub(crate) fn compact_padding(sides: u16, vertical: bool) -> Padding {
     let sides = (2 * sides + 1) / 3;
-    Padding::new(sides, sides, u16::from(top), 0)
+    let vertical = u16::from(vertical);
+    Padding::new(sides, sides, vertical, vertical)
 }
 
 pub(crate) const MODEL: Color = Color::Rgb(175, 165, 223);

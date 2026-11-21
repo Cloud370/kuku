@@ -59,6 +59,9 @@ pub(super) fn render_user(
         .into_iter()
         .map(decorate),
     );
+    if padding.bottom > 0 {
+        rows.push(spacer());
+    }
     rows.push(Row::plain(Line::default()));
     rows
 }
@@ -144,8 +147,12 @@ pub(super) fn padded_panel(
             row.inset += padding.left;
         }
     }
+    let spacer = || Row::padding(Line::styled(" ", style), width);
+    if padding.bottom > 0 {
+        rows.insert(end, spacer());
+    }
     if padding.top > 0 {
-        rows.insert(0, Row::padding(Line::styled(" ", style), width));
+        rows.insert(0, spacer());
     }
     rows
 }

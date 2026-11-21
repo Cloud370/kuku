@@ -63,6 +63,8 @@ Pin the Turn summary above the composer. Follow the latest Turn during output an
 
 Keep the activity line visually stable. Combine related phases and suppress flicker from brief changes while showing errors and requests for attention immediately. When reading earlier output, keep the return-to-latest action beside the composer. Clicking it or pressing Ctrl+End or Alt+Up resumes following the output.
 
+At ordinary terminal sizes, leave one row of padding inside the bottom edge of the composer, panels and transcript cards. Paint that row with the same background as the content. Keep the gap between cards separate from the padding.
+
 Lead the default status line with the effective model. Group identity and usage in wide default footers, and preserve field order on narrow terminals and in user-configured layouts. Pair color with text for waiting, failure and actions that need attention. Preview status line changes in the editor and keep the saved order in terminal-local preferences. Share spacing, selection and focus styles across the composer and dialogs. Leave space around the composer and footer at ordinary terminal heights. Separate the `To <agent>` recipient from the editable text with clear spacing and keep the Agent name readable on narrow terminals. Pointer input lets users browse and select in Agent, model and execution-detail dialogs. Operations with execution side effects require explicit confirmation with Enter. At narrow widths, give priority to readable transcript and editable input.
 
 | Task | Product behavior |

@@ -15,8 +15,13 @@ fn spacious_composer_and_picker_use_responsive_insets() {
     let wide_frame = wide.draw(|frame| render(frame, &mut app)).unwrap();
     let (wide_x, wide_y) = cell(wide_frame.buffer, "甲");
     assert_eq!(wide_x, 6);
-    assert_ne!(
+    assert_eq!(
         wide_frame.buffer[(wide_x, wide_y + 1)].bg,
+        crate::theme::SURFACE
+    );
+    assert_eq!(wide_frame.buffer[(wide_x, wide_y + 1)].symbol(), " ");
+    assert_ne!(
+        wide_frame.buffer[(wide_x, wide_y + 2)].bg,
         crate::theme::SURFACE
     );
     let compact_frame = compact.draw(|frame| render(frame, &mut app)).unwrap();

@@ -313,9 +313,13 @@ fn roles_and_file_details_are_readable_without_styles_at_narrow_widths() {
         );
         assert_eq!(inset, view.row_insets[body]);
         if width == 72 {
-            assert!(plain[body + 1].is_empty());
-            assert!(view.lines[body + 1].style.bg.is_none());
+            assert_eq!("│", plain[body + 1].trim_end());
+            assert_eq!(view.lines[body + 1].style.bg, Some(crate::theme::SURFACE));
+            assert_eq!(view.row_insets[body + 1], width as u16);
         }
+        let gap = body + if width == 72 { 2 } else { 1 };
+        assert!(plain[gap].is_empty());
+        assert!(view.lines[gap].style.bg.is_none());
         assert!(plain.windows(2).any(|pair| {
             pair[0] == "Assistant"
                 && pair[1].trim_start() == "我来检查"

@@ -47,7 +47,7 @@ impl CardFrame {
         usize::from(self.bordered) + usize::from(self.padding.left)
     }
 
-    pub(crate) fn top_padding_line(&self) -> Option<Line<'static>> {
+    pub(crate) fn padding_line(&self) -> Option<Line<'static>> {
         (self.padding.top > 0).then(|| self.line(Line::default()))
     }
 

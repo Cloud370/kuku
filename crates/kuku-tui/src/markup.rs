@@ -703,9 +703,10 @@ mod tests {
         assert!(plain[0].starts_with("╭─ rust "));
         assert!(!plain[0].contains("linenos"));
         assert!(plain[4].starts_with("│    let still a comment */"));
-        assert!(plain[6].starts_with('╰'));
-        assert!(lines[..7].iter().all(|line| line.width() == 48));
-        assert!(lines[..7].iter().all(|line| line
+        assert!(plain[6].trim_matches('│').trim().is_empty());
+        assert!(plain[7].starts_with('╰'));
+        assert!(lines[..8].iter().all(|line| line.width() == 48));
+        assert!(lines[..8].iter().all(|line| line
             .spans
             .iter()
             .all(|span| { line.style.patch(span.style).bg == Some(CODE_BACKGROUND) })));

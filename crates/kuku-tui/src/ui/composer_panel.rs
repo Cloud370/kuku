@@ -41,7 +41,7 @@ pub(super) fn render(
                         .as_ref()
                         .is_some_and(|thinking| thinking.declared.is_some()),
                 ) + picker.header.lines().count().min(3) as u16;
-                items + 3 + extra
+                items + 4 + extra
             }
         },
         _ => unreachable!("the modal is anchored to the composer"),
@@ -126,7 +126,7 @@ pub(super) fn render_help(frame: &mut Frame<'_>, area: Rect) -> Rect {
 
 fn render_panel(frame: &mut Frame<'_>, area: Rect, text_x: u16) -> Rect {
     let indent = text_x.saturating_sub(area.x).min(area.width);
-    let mut padding = compact_padding(2, area.height >= 4);
+    let mut padding = compact_padding(2, area.height >= 5);
     let mut block = Block::new().style(surface());
     let border = area.width >= 4 && indent > 0;
     if border {
