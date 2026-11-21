@@ -5,6 +5,7 @@ use crate::execution::{CommandInvocation, CommandOutputRange, CommandOutputSumma
 mod formats;
 mod git_status;
 mod go_test;
+mod node_test;
 mod rules;
 mod typescript;
 use formats::{Format, Observation};
@@ -26,6 +27,7 @@ enum Evidence {
     Lines(BoundedLines),
     GitStatus(git_status::Status),
     GoTest(go_test::Report),
+    NodeTest(node_test::Report),
 }
 
 struct BoundedLines {
@@ -65,6 +67,7 @@ impl Collector {
         let evidence = match format {
             Format::GitStatus => Evidence::GitStatus(git_status::Status::default()),
             Format::GoTest => Evidence::GoTest(go_test::Report::default()),
+            Format::NodeTestSpec => Evidence::NodeTest(node_test::Report::default()),
             _ => Evidence::Lines(BoundedLines {
                 format,
                 lines: EvidenceLines::default(),
@@ -139,6 +142,7 @@ impl Collector {
             Evidence::Lines(lines) => lines.observe(line, source, self.rule),
             Evidence::GitStatus(status) => status.observe(line, source),
             Evidence::GoTest(report) => report.observe(line, source),
+            Evidence::NodeTest(report) => report.observe(line, source),
         };
     }
 
@@ -150,6 +154,7 @@ impl Collector {
             Evidence::Lines(lines) => lines.summarize(self.rule, exit_code),
             Evidence::GitStatus(status) => status.summarize(self.rule, exit_code),
             Evidence::GoTest(report) => report.summarize(self.rule, exit_code),
+            Evidence::NodeTest(report) => report.summarize(self.rule, exit_code),
         }
     }
 }

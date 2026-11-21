@@ -221,6 +221,7 @@ mod tests {
                 "cargo-humans",
                 "git-status",
                 "go-test-human",
+                "node-test-spec",
                 "pytest-human",
                 "tsc-diagnostics"
             ]

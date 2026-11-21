@@ -68,6 +68,11 @@ description = "Go test package results and plain diagnostics"
 match_command = '^go test(?: |$)'
 strip_ansi = true
 
+[filters.node-test-spec]
+description = "Node.js spec test totals and diagnostics"
+match_command = '^node(?:js)? --test(?: |$)'
+strip_ansi = true
+
 [filters.git-status]
 description = "Line-oriented Git short or porcelain v1 status"
 match_command = '^git status(?: |$)'

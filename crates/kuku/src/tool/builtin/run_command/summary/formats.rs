@@ -11,6 +11,7 @@ pub(super) enum Format {
     Cargo,
     Pytest,
     GoTest,
+    NodeTestSpec,
     TypeScript,
     GitStatus,
 }
@@ -40,6 +41,7 @@ impl Format {
             "cargo" if cargo_human_args(args) => Self::Cargo,
             "pytest" if pytest_human_args(args) => Self::Pytest,
             "go" if go_test_human_args(args) => Self::GoTest,
+            "node" | "nodejs" if node_test_spec_args(args) => Self::NodeTestSpec,
             "tsc" if typescript_args(args) => Self::TypeScript,
             "git" if git_status_args(args) => Self::GitStatus,
             name if python_launcher(name) => match args.as_slice() {
@@ -74,9 +76,39 @@ impl Format {
                     Observation::Finished
                 }
             }),
-            Self::Pytest | Self::GoTest | Self::TypeScript | Self::GitStatus => None,
+            Self::Pytest
+            | Self::GoTest
+            | Self::NodeTestSpec
+            | Self::TypeScript
+            | Self::GitStatus => None,
         }
     }
+}
+
+fn node_test_spec_args(args: &[String]) -> bool {
+    let Some((mode, options)) = args.split_first() else {
+        return false;
+    };
+    if mode != "--test" {
+        return false;
+    }
+    let mut reporters = 0;
+    let mut options = options.iter().take_while(|arg| arg.as_str() != "--");
+    while let Some(option) = options.next() {
+        match option.as_str() {
+            "--test-reporter" if options.next().map(String::as_str) == Some("spec") => {
+                reporters += 1;
+            }
+            "--test-reporter=spec" => reporters += 1,
+            arg if arg.starts_with("--test-reporter")
+                || matches!(arg, "--watch" | "--experimental-test-coverage") =>
+            {
+                return false;
+            }
+            _ => {}
+        }
+    }
+    reporters <= 1
 }
 
 fn go_test_human_args(args: &[String]) -> bool {

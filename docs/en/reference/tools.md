@@ -93,6 +93,8 @@ Long plain TypeScript compiler reports can group repeated errors by exact code a
 
 Long plain `go test` reports can count package results while retaining test failures and compiler diagnostics with their source ranges. JSON, verbose and unrecognized reports use the generic preview.
 
+Long `node --test` spec reports can summarize test counts and retain failing assertions, TODO diagnostics, and their source ranges. Other reporters and unrecognized reports use the generic preview.
+
 Long Git short status and line-oriented porcelain v1 can group rows by staged, unstaged, conflicting, untracked and ignored state. The view keeps counts, representative rows with Git quoting, and a hint for filtering each raw status row in `run_js`. Other Git status formats use the generic preview. [Git status formats](https://git-scm.com/docs/git-status#_output)
 
 The default Session preview is bounded to 8 KiB, including its summary and retained reference. A complete capture can still have a truncated preview. For a long, failed command with complete capture, the generic preview includes the end of stderr or stdout when stderr is empty. Recognized test counts and selected build or test lines can accompany the excerpt. Missing executables, start failures, timeouts, and cancellation have separate termination values. Recognized Rust test and pytest summaries carry program-reported counts and bounded evidence. [SDK execution facts](sdk.md#workspace-execution)

@@ -14,6 +14,99 @@ fn cargo(args: &[&str]) -> CommandInvocation {
     }
 }
 
+fn node(args: &[&str]) -> CommandInvocation {
+    CommandInvocation::Program {
+        program: "node".into(),
+        args: args.iter().map(|arg| (*arg).into()).collect(),
+    }
+}
+
+#[test]
+fn node_spec_folds_passing_rows_and_preserves_diagnostic_ranges() {
+    let invocation = node(&["--test", "--test-reporter", "spec", "fixture.cjs"]);
+    let report = concat!(
+        "▶ routes\n",
+        "  ✔ confirms the route (1ms)\n",
+        "  ✔ another passing case (2ms)\n",
+        "  ✖ reports a mismatch (3ms)\n",
+        "ℹ tests 4\nℹ suites 1\nℹ pass 2\nℹ fail 1\nℹ cancelled 0\nℹ skipped 0\nℹ todo 1\n",
+        "ℹ duration_ms 25.7\n",
+        "✖ failing tests:\n",
+        "test at fixture.cjs:7:3\n",
+        "✖ reports a mismatch (3ms)\n",
+        "  AssertionError: route selection mismatch\n",
+        "      at TestContext.<anonymous> (/app/fixture.cjs:8:12)\n",
+        "      at Test.runInAsyncScope (node:async_hooks:227:14)\n",
+        "      at Array.map (<anonymous>) {\n",
+        "  ⚠ repair empty cache # TODO\n"
+    );
+    let error = "node: fixture warning\n";
+    let mut collector = Collector::new(&invocation).unwrap();
+    collector.observe(OutputStream::Stdout, 0, report.as_bytes());
+    collector.observe(OutputStream::Stderr, report.len() as u64, error.as_bytes());
+    let summary = collector.summarize(1).unwrap();
+    assert!(summary.text.contains("4 total, 2 passed, 1 failed"));
+    assert!(summary.text.contains("Suites: 1"));
+    assert!(summary.text.contains("1 todo"));
+    assert!(!summary.text.contains("confirms the route"));
+    assert!(!summary.text.contains("another passing case"));
+    assert!(summary
+        .text
+        .contains("AssertionError: route selection mismatch"));
+    assert!(summary.text.contains("/app/fixture.cjs:8:12"));
+    assert!(!summary.text.contains("node:async_hooks"));
+    assert!(!summary.text.contains("Array.map"));
+    assert!(summary.text.contains("Full stack traces are available"));
+    assert!(summary.text.contains("repair empty cache # TODO"));
+    assert_eq!(1, summary.text.matches("reports a mismatch").count());
+    assert!(summary.text.contains("node: fixture warning"));
+    let CommandOutputSummary::Rule { rule, ranges } = summary.source;
+    assert_eq!("node-test-spec", rule);
+    assert!(ranges.iter().any(|span| {
+        span.stream == OutputStream::Stdout
+            && report[span.offset as usize..span.end_offset as usize]
+                .contains("route selection mismatch")
+    }));
+    assert!(ranges
+        .iter()
+        .any(|span| { span.stream == OutputStream::Stderr && span.offset == report.len() as u64 }));
+}
+
+#[test]
+fn node_spec_requires_complete_consistent_counts_and_human_reporter() {
+    for args in [
+        &["--test", "--test-reporter=tap"][..],
+        &["--test", "--test-reporter", "junit"],
+        &["--test", "--test-reporter=spec", "--test-reporter=spec"],
+        &["--test", "--test-reporter-destination=output.txt"],
+        &["--test", "--experimental-test-coverage"],
+        &["fixture.cjs", "--test"],
+    ] {
+        assert!(Collector::new(&node(args)).is_none(), "{args:?}");
+    }
+    let passing = concat!(
+        "✔ passes (1ms)\n",
+        "ℹ tests 2\nℹ suites 0\nℹ pass 1\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 1\n",
+        "ℹ duration_ms 8\n\n✖ failing tests:\n  ⚠ expected todo diagnostic\n"
+    );
+    let cases = [
+        (passing.into(), 0, true),
+        (passing.into(), 1, false),
+        (passing.replace("tests 2", "tests 3"), 0, false),
+        (passing.replace("ℹ suites 0\n", ""), 0, false),
+        (
+            "TAP version 13\nok 1 - passes\n# tests 1\n".into(),
+            0,
+            false,
+        ),
+    ];
+    for (report, exit, expected) in cases {
+        let mut collector = Collector::new(&node(&["--test", "fixture.cjs"])).unwrap();
+        collector.observe(OutputStream::Stdout, 0, report.as_bytes());
+        assert_eq!(expected, collector.summarize(exit).is_some(), "{report}");
+    }
+}
+
 #[test]
 fn split_line_uses_merged_offsets_and_keeps_its_original_pipe() {
     let mut collector = Collector::new(&cargo(&["check"])).unwrap();
