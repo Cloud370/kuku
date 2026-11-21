@@ -1,5 +1,6 @@
 """Check composer actions with the installed client and its native terminal."""
 
+import json
 from urllib.parse import urlencode
 
 from interactive_fixture import eventually
@@ -7,9 +8,15 @@ from interactive_fixture import eventually
 
 def startup_info(client):
     workspace = client.workspace("work-startup-info")
+    resources = workspace / ".claude"
+    config = client.home / "config.toml"
+    text = config.read_text(encoding="utf-8")
+    path = json.dumps(str(resources), ensure_ascii=False)
+    config.write_text(text.replace("[discovery]\n", f"[discovery]\nextra_project_paths = [{path}]\n"),
+                      encoding="utf-8")
 
     def add_skill(name):
-        folder = workspace / ".claude" / "skills" / name
+        folder = resources / "skills" / name
         folder.mkdir(parents=True)
         (folder / "SKILL.md").write_text(
             f"---\nname: {name}\ndescription: A startup discovery fixture.\n---\n\nUse this when requested.\n",
@@ -19,7 +26,8 @@ def startup_info(client):
     add_skill("preview-review")
     with client.terminal(workspace) as terminal:
         terminal.request("resize", rows=28, cols=60)
-        terminal.expect("preview-review", also=("Workspace", "Skills", "New session", "claude-sonnet-4-6 · None"))
+        terminal.expect("preview-review", also=("Workspace", "work-startup-info", "Skills",
+                                                  "New session", "test-anthropic/claude-sonnet-4-6"))
         add_skill("refresh-on-new")
         terminal.press("/new\r")
         terminal.expect("refresh-on-new", also=("preview-review", "New session"))
@@ -33,7 +41,6 @@ def startup_info(client):
 
 
 def composer_actions(client):
-    startup_info(client)
     workspace = client.workspace("work-composer")
     config = client.home / "config.toml"
     old = config.read_text(encoding="utf-8")
