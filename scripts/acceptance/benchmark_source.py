@@ -88,7 +88,10 @@ def prepare_pinned(sources, spec, directory, case):
     task = Path(spec["task_root"]) / case["id"]
     patterns = tuple(f"/{task.as_posix()}/{name}" for name in (
         ".gitignore", "README.md", "instruction.md", "task.toml", "environment/", "tests/"))
-    with locked(checkout.with_suffix(".lock")):
+    if checkout.exists():
+        check_pinned(checkout, revision, task, patterns)
+        return checkout
+    with locked(checkout.with_suffix(".lock"), wait_seconds=3600):
         if not checkout.exists():
             with tempfile.TemporaryDirectory(prefix=f".{case['id']}-", dir=cache) as temporary:
                 staging = Path(temporary) / "source"

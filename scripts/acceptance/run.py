@@ -5,6 +5,7 @@ import argparse
 import contextlib
 import csv
 import datetime
+import errno
 import hashlib
 import io
 import json
@@ -57,7 +58,7 @@ def write_json(path, value):
 
 
 @contextlib.contextmanager
-def locked(path):
+def locked(path, *, wait_seconds=0):
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a+b") as handle:
         if os.name == "nt":
@@ -66,10 +67,22 @@ def locked(path):
             handle.write(b"0")
             handle.flush()
             handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
         else:
             import fcntl
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        deadline = time.monotonic() + wait_seconds
+        while True:
+            try:
+                if os.name == "nt":
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as error:
+                contended = isinstance(error, BlockingIOError) or (
+                    os.name == "nt" and error.errno in (errno.EACCES, errno.EDEADLK))
+                if not contended or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.05)
         try:
             yield
         finally:

@@ -400,16 +400,21 @@ class AcceptanceTests(unittest.TestCase):
         spec = {"repository": upstream.as_uri(), "revision": git("rev-parse", "HEAD"),
                 "cache_key": "frontier-fixture", "task_root": "tasks"}
 
-        def prepare(case_id):
-            return prepare_source(self.directory, {"source": spec}, self.directory / "logs" / case_id, {"id": case_id})
+        def prepare(case_id, attempt=0):
+            logs = self.directory / "logs" / f"{case_id}-{attempt}"
+            return prepare_source(self.directory, {"source": spec}, logs, {"id": case_id})
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            first, second = executor.map(prepare, ("one", "two"))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [executor.submit(prepare, case_id, attempt) for case_id in ("one", "two") for attempt in (1, 2)]
+            first, first_peer, second, second_peer = [future.result() for future in futures]
+        self.assertEqual(first, first_peer)
+        self.assertEqual(second, second_peer)
         self.assertNotEqual(first, second)
         self.assertFalse((first / "tasks" / "two").exists())
         self.assertFalse((first / "tasks" / "one" / "solution").exists())
         self.assertTrue((second / "tasks" / "two" / "tests" / "test.sh").is_file())
-        self.assertEqual(prepare("one"), first)
+        with ACCEPTANCE.locked(first.with_suffix(".lock")):
+            self.assertEqual(prepare("one"), first)
         (first / "tasks" / "one" / "instruction.md").write_text("edited")
         with self.assertRaisesRegex(ValueError, "benchmark source is modified"):
             prepare("one")
