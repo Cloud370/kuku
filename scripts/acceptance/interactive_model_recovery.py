@@ -239,11 +239,11 @@ def repair_connection(binary, bridge, directory, issue):
             return catalog("fixture-model")
         key = headers.get("authorization")
         requests.append((path, key))
+        if path != "/v1/chat/completions":
+            return json_response({"error": {"message": "fixture URL missing"}}, 404)
         if key == "Bearer fixture-rejected-key":
             return json_response({"error": {"message": "fixture key invalid"}}, 401)
-        if path.startswith("/missing/"):
-            return json_response({"error": {"message": "fixture URL missing"}}, 404)
-        assert path == "/v1/chat/completions" and key == "Bearer fixture-repair-key"
+        assert key == "Bearer fixture-repair-key"
         return text_reply()
 
     instance.provider.dispatch = dispatch
