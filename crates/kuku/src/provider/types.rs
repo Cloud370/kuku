@@ -188,11 +188,9 @@ impl ProviderCapabilities {
                 Some(CapabilitySource::Manual | CapabilitySource::ProtocolManual)
             )
         });
-        let options = test
-            .filter(|test| !test.accepted.is_empty())
-            .map_or(self.reasoning_efforts.as_slice(), |test| {
-                test.accepted.as_slice()
-            });
+        let options = test.map_or(self.reasoning_efforts.as_slice(), |test| {
+            test.accepted.as_slice()
+        });
         options.iter().map(String::as_str).filter(move |value| {
             test.is_none_or(|test| !test.rejected.iter().any(|level| level == value))
         })

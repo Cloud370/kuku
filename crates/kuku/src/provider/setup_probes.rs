@@ -195,9 +195,9 @@ fn model_completion<T>(
     match result {
         Err(problem) if problem.rate_limited => ProbeCompletion::RateLimited {
             retry_after: problem.retry_after,
-            error: problem.error,
+            error: *problem.error,
         },
-        result => ProbeCompletion::Finished(result.map(receipt).map_err(|problem| problem.error)),
+        result => ProbeCompletion::Finished(result.map(receipt).map_err(|problem| *problem.error)),
     }
 }
 
@@ -338,8 +338,15 @@ impl ProbeBatch {
                 ..
             } => {
                 baseline == model
-                    && before.api_key == connection.api_key
-                    && before.options.proxy == connection.options.proxy
+                    && match &row.progress {
+                        ProbeProgress::Finished(_, Ok(ProbeResult::ApiType(evidence))) => {
+                            let mut verified = before.as_ref().clone();
+                            verified.format = evidence.format;
+                            verified.base_url.clone_from(&evidence.base_url);
+                            same_connection(connection, &verified)
+                        }
+                        _ => same_connection(connection, before),
+                    }
             }
             _ => false,
         });

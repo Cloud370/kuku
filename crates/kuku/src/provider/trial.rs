@@ -70,11 +70,11 @@ pub async fn trial_model(
 ) -> Result<TrialResult> {
     trial_with_route_evidence(connection, model, trial)
         .await
-        .map_err(|problem| problem.error)
+        .map_err(|problem| *problem.error)
 }
 
 pub(super) struct TrialProblem {
-    pub error: Error,
+    pub error: Box<Error>,
     pub route_missing: bool,
     pub status: Option<u16>,
     pub parameter_error: String,
@@ -85,7 +85,7 @@ pub(super) struct TrialProblem {
 impl From<Error> for TrialProblem {
     fn from(error: Error) -> Self {
         Self {
-            error,
+            error: Box::new(error),
             route_missing: false,
             status: None,
             parameter_error: String::new(),
@@ -185,7 +185,7 @@ async fn trial_request(
             parameter_error: error_body,
             retry_after: failure.retry_after,
             rate_limited: failure.kind == ProviderFailureKind::RateLimited,
-            error: trial_error(failure),
+            error: Box::new(trial_error(failure)),
         })?;
     if response
         .response
