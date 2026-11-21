@@ -4,9 +4,10 @@ import difflib
 import json
 import re
 import threading
+import time
 from urllib.parse import urlencode
 
-from interactive_fixture import InstalledClient, TOOL_BRIEF, TOOL_OUTPUT, eventually, json_response, run_cases
+from interactive_fixture import InstalledClient, Response, TOOL_BRIEF, TOOL_OUTPUT, eventually, json_response, run_cases
 from interactive_rendering import has_selected_queued_input
 
 
@@ -356,7 +357,9 @@ def setup_probe_progress(binary, bridge, directory):
     key = "fixture-probe-only-key"
     instance = InstalledClient(binary, bridge, directory)
     slow_catalog_started = threading.Event()
-    slow_trial_started = threading.Event()
+    beta_started = threading.Event()
+    release_beta = threading.Event()
+    runtime_requests = []
     release = threading.Event()
     trials = []
 
@@ -370,21 +373,39 @@ def setup_probe_progress(binary, bridge, directory):
             return json_response({}, 404)
         if method == "GET" and path == "/v1/models":
             assert slow_catalog_started.wait(8)
-            return json_response({"data": [{"id": "alpha"}, {"id": "beta"}]})
+            return json_response({"data": [
+                {"id": "alpha", "input_modalities": ["text"]},
+                {"id": "beta", "input_modalities": ["text"], "reasoning_efforts": ["low"]},
+            ]})
         if method == "GET" and path == "/api/v1/models":
             return json_response({}, 404)
         assert (method, path) == ("POST", "/v1/chat/completions")
         body = json.loads(body)
-        parts = body["messages"][0]["content"]
-        image = any(part["type"] == "image_url" for part in parts)
-        trials.append((body["model"], image))
-        if image:
-            slow_trial_started.set()
-            release.wait(20)
-        elif body["model"] == "beta":
-            release.wait(20)
+        model, effort = body["model"], body.get("reasoning_effort")
+        if body.get("stream"):
+            runtime_requests.append((model, effort))
+            chunks = [
+                {"choices": [{"index": 0, "delta": {"content": "Saved effort sent."}}]},
+                {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+            ]
+            return Response(200, ("".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks) + "data: [DONE]\n\n").encode(), "text/event-stream")
+        assert body["max_tokens"] == 4096
+        trials.append((model, effort, time.monotonic()))
+        if model == "beta" and effort is None:
+            beta_started.set()
+            release_beta.wait(20)
+        if effort == "__kuku_unknown_effort__":
+            return json_response({"error": {"param": "reasoning_effort", "allowed_values": ["none", "high"]}}, 400)
+        if model == "alpha" and effort == "none" and sum(row[:2] == ("alpha", "none") for row in trials) == 1:
+            assert beta_started.wait(8)
+            return json_response({"error": {"type": "rate_limit_error", "message": "fixture rate limit"}}, 429)
+        if effort == "high":
+            return json_response({"error": {"param": "reasoning_effort", "message": "high is unsupported"}}, 422)
+        message = {"content": "377"}
+        if effort == "none":
+            message["reasoning_content"] = "fixture reasoning"
         return json_response({
-            "choices": [{"message": {"content": "377"}}],
+            "choices": [{"message": message, "finish_reason": "stop"}],
             "usage": {"prompt_tokens": 20, "completion_tokens": 2, "cost": 0.000008},
         })
 
@@ -415,27 +436,36 @@ def setup_probe_progress(binary, bridge, directory):
                 terminal.press("alpha \x01beta \r")
                 terminal.expect("Choose the default model")
                 terminal.press("\r")
-                terminal.expect(
-                    "Save setup",
-                    also=("1/4 finished", "Save stops tests", f"{endpoint}/v1/chat/completions"),
-                    absent=("Ready to try",),
-                )
+                terminal.expect("Save setup", also=(f"{endpoint}/v1/chat/completions",))
                 terminal.press("\x1b[B\r")
-                progress = terminal.expect(
-                    "API found",
-                    also=("Waiting for response", "Queued", "Esc previous step"),
-                )["screen"]
-                terminal.press("\r")
+                progress = terminal.expect("Retry in", also=("none · alpha", "Waiting for response", "API listed 2 values", "Esc previous step"))["screen"]
+                assert not any(row[:2] == ("beta", "low") for row in trials)
+                release_beta.set()
+                finished = terminal.expect("6/6 finished", also=("Usable · none · alpha · Thinking seen", "Rejected · high · alpha", "Usable · low · beta"))["screen"]
+                terminal.press("\x1b")
                 terminal.expect("Save setup", also=("› Save and continue",))
-                assert slow_trial_started.is_set() and trials.count(("alpha", False)) == 1
+                terminal.press("\x1b[B\x1b[B\r")
+                terminal.expect("› Thinking")
+                terminal.press("\r")
+                terminal.expect("1 usable", also=("none · send to provider",), absent=("high",))
+                terminal.press("\x1b[B\r")
+                terminal.expect("Model capabilities")
+                terminal.press("\x1b")
+                terminal.expect("› Save and continue")
                 terminal.press("\r")
                 terminal.expect("New session", state="Ready")
-                assert ("beta", True) not in trials, trials
+                terminal.submit("Verify the saved thinking setting")
+                terminal.expect("Saved effort sent.", state="Finished")
+                assert runtime_requests == [("alpha", "none")]
+                assert sum(row[:2] == ("alpha", None) for row in trials) == 1
+                retry_times = [stamp for model, effort, stamp in trials if (model, effort) == ("alpha", "none")]
+                assert len(retry_times) == 2 and retry_times[1] - retry_times[0] >= 2
                 terminal.exit_cleanly()
-            report = {"discovery": discovery, "trials": progress, "requests": trials}
+            report = {"discovery": discovery, "countdown": progress, "results": finished, "requests": [(m, e) for m, e, _ in trials], "runtime": runtime_requests}
             (client.directory / "probe-progress.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     finally:
         release.set()
+        release_beta.set()
 
 
 def persistent_model_default(client):

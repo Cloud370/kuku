@@ -1,9 +1,10 @@
 mod config {
     pub use kuku::config::{
         resolve_request_url, ApiKey, Config, DiscoveryConfig, HandoffConfig, LogsConfig,
-        MediaAdapterSupport, ModelCapabilityDeclaration, ModelCapabilityEntry, PluginConfig,
-        ProtocolCapabilityDeclaration, ProviderConfig, ProviderFormat, ProviderOptions,
-        ProviderProfile, RequestedOutput, ResolvedThinking, ThinkLevel, TierConfig, UpdateConfig,
+        MediaAdapterSupport, ModelCapabilityDeclaration, ModelCapabilityEntry, ModelThinkingTest,
+        PluginConfig, ProtocolCapabilityDeclaration, ProviderConfig, ProviderFormat,
+        ProviderOptions, ProviderProfile, RequestedOutput, ResolvedThinking, ThinkLevel,
+        TierConfig, UpdateConfig,
     };
 }
 

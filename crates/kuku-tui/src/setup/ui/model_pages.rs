@@ -183,11 +183,15 @@ pub(super) fn render_model_settings(
             }
         }
         SetupStep::TrialResults => {
-            let visible = usize::from(area.height.saturating_sub(6) / 4).max(1);
-            let start = state
-                .models
-                .cursor
-                .min(state.trials.rows().len().saturating_sub(visible));
+            let proxy_lines = u16::from(matches!(
+                state.proxy,
+                kuku::config::ProviderProxy::Explicit { .. }
+            ));
+            let visible = super::super::probes::visible_trials(
+                &state.trials,
+                state.models.cursor,
+                area.height.saturating_sub(5 + proxy_lines),
+            );
             super::super::probes::render(
                 frame,
                 area,
@@ -195,7 +199,7 @@ pub(super) fn render_model_settings(
                 "Model tests",
                 &state.proxy,
                 &state.trials,
-                start..start + visible,
+                visible,
             );
             *row += 1;
             if let Ok(url) = state.request_url() {
@@ -227,6 +231,24 @@ pub(super) fn render_model_settings(
         }
         SetupStep::Thinking => {
             line(frame, area, row, "Thinking", ACCENT);
+            let capabilities = state.capabilities(settings);
+            if let Some(test) = capabilities
+                .as_ref()
+                .and_then(|caps| caps.thinking_test.as_ref())
+            {
+                let usable = test
+                    .accepted
+                    .iter()
+                    .filter(|level| !test.rejected.contains(level))
+                    .count();
+                line(
+                    frame,
+                    area,
+                    row,
+                    &format!("{usable} usable · See Model tests"),
+                    MUTED,
+                );
+            }
             if let Some(default) = state
                 .capabilities(settings)
                 .and_then(|caps| caps.reasoning_default)
@@ -246,7 +268,7 @@ pub(super) fn render_model_settings(
             for (index, effort) in state.thinking_choices(settings).iter().enumerate() {
                 let label = match effort.as_str() {
                     "provider-default" => "Provider default · omit effort",
-                    "none" => "Disable thinking · none",
+                    "none" => "none · send to provider",
                     _ => effort,
                 };
                 option(frame, area, row, label, index == state.models.cursor);

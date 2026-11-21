@@ -65,4 +65,37 @@ pub struct ModelCapabilityEntry {
     pub discovered: Option<ModelCapabilityDeclaration>,
     /// Explicit values supplied by the user and retained on refresh.
     pub manual: Option<ModelCapabilityDeclaration>,
+    /// Thinking values tested through the configured generation endpoint.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_test: Option<ModelThinkingTest>,
+}
+
+/// An endpoint-scoped record of values the generation API accepted or rejected.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ModelThinkingTest {
+    pub scope: String,
+    pub accepted: Vec<String>,
+    pub rejected: Vec<String>,
+}
+
+impl ModelThinkingTest {
+    /// Apply confirmed observations while leaving the existing wire options loadable.
+    pub fn merge(&mut self, tested: Self) {
+        if self.scope != tested.scope {
+            *self = tested;
+            return;
+        }
+        for value in tested.accepted {
+            self.rejected.retain(|level| *level != value);
+            if !self.accepted.contains(&value) {
+                self.accepted.push(value);
+            }
+        }
+        for value in tested.rejected {
+            if !self.rejected.contains(&value) {
+                self.rejected.push(value);
+            }
+        }
+    }
 }

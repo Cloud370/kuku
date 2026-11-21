@@ -63,7 +63,7 @@ On Chat and Responses, omit `max_output_tokens` to use the upstream default. Nat
 | `models_url` | string | Optional full URL for standard model discovery |
 | `proxy` | table | Connection network path for discovery, trials and model requests |
 | `model_pricing` | table | USD accounting preferences keyed by exact model ID |
-| `model_capabilities` | table | Model-list declarations and manual overrides keyed by exact model ID |
+| `model_capabilities` | table | Model-list declarations, manual overrides, and accepted thinking values keyed by exact model ID |
 | `api_key` | string | `$ENV_VAR_NAME`, a literal key, or `file:<absolute-path>` |
 | `auth` | `bearer`\|`x-api-key` | Override authentication independently of `format` |
 | `profile` | string | `auto` (default), `openai`, `anthropic`, `deepseek`, `openrouter`, or `compatible` |

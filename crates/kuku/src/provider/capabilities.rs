@@ -1,8 +1,9 @@
 use crate::config::{
     ModelCapabilityDeclaration, ModelCapabilityEntry, ProtocolCapabilityDeclaration,
-    ProviderOptions, ProviderProfile, ThinkLevel,
+    ProviderFormat, ProviderOptions, ProviderProfile, ThinkLevel,
 };
 use crate::error::{Error, Result};
+use sha2::{Digest, Sha256};
 
 use super::types::{
     CapabilitySource, DeclaredCapability, ProviderCapabilities, ProviderKind, ProviderSettings,
@@ -95,9 +96,21 @@ pub(crate) fn resolve_capabilities(
     {
         reasoning_efforts.insert(0, "none".into());
     }
+    let thinking_test = declaration
+        .and_then(|entry| entry.thinking_test.as_ref())
+        .filter(|test| test.scope == thinking_scope(base_url, kind.format(), options))
+        .cloned();
+    if let Some(test) = &thinking_test {
+        for level in &test.accepted {
+            if !reasoning_efforts.contains(level) {
+                reasoning_efforts.push(level.clone());
+            }
+        }
+    }
     ProviderCapabilities {
         profile,
         reasoning_efforts,
+        thinking_test,
         reasoning_source,
         reasoning_default: resolve.field(
             |entry| entry.reasoning_default.as_ref(),
@@ -119,6 +132,22 @@ pub(crate) fn resolve_capabilities(
             .unwrap_or_else(|| strings(services)),
         ..ProviderCapabilities::default()
     }
+}
+
+pub(super) fn thinking_scope(
+    endpoint: &str,
+    format: ProviderFormat,
+    options: &ProviderOptions,
+) -> String {
+    let route = serde_json::to_vec(&(
+        endpoint,
+        format,
+        options.profile,
+        &options.routing,
+        &options.proxy,
+    ))
+    .expect("serializable thinking route");
+    format!("{:x}", Sha256::digest(route))
 }
 
 pub(crate) fn profile_for(endpoint: &str, configured: ProviderProfile) -> ProviderProfile {

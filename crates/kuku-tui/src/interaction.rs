@@ -592,12 +592,9 @@ impl App {
         )];
         let route = self.resolved_model_route().ok();
         let default = kuku::config::ThinkLevel::ProviderDefault.as_str();
-        for effort in std::iter::once(default)
-            .chain(capabilities.reasoning_efforts.iter().map(String::as_str))
-        {
+        for effort in std::iter::once(default).chain(capabilities.selectable_reasoning_efforts()) {
             let label = match effort {
                 "provider-default" => "Provider default",
-                "none" => "Disable thinking",
                 _ => effort,
             };
             let wire = if effort == default {

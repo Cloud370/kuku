@@ -1,8 +1,8 @@
 mod config {
     pub use kuku::config::{
-        resolve_request_url, ApiKey, MediaAdapterSupport, PromptCacheScope, ProviderAuth,
-        ProviderFormat, ProviderOptions, ProviderProfile, ProviderProxy, RequestedOutput,
-        ResolvedThinking, ThinkLevel,
+        resolve_request_url, ApiKey, MediaAdapterSupport, ModelThinkingTest, PromptCacheScope,
+        ProviderAuth, ProviderFormat, ProviderOptions, ProviderProfile, ProviderProxy,
+        RequestedOutput, ResolvedThinking, ThinkLevel,
     };
 }
 

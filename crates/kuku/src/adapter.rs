@@ -15,8 +15,8 @@ pub use crate::provider::{
     discover_models, model_list_targets, openrouter_quote_url, openrouter_quotes,
     plan_model_trials, route_quote_for_display, setup_api_candidates, setup_endpoint_format,
     setup_model_list_targets, trial_model, DiscoveredModel, ModelListTarget, ModelTrial, Probe,
-    ProbeBatch, ProbeProgress, ProbeResult, ProbeRow, RequestCost, RouteQuote, SetupApiEvidence,
-    TrialResult, TrialSelection, TRIAL_OUTPUT_TOKENS,
+    ProbeBatch, ProbeProgress, ProbeResult, ProbeRow, ReasoningCheck, ReasoningCheckResult,
+    RequestCost, RouteQuote, SetupApiEvidence, TrialResult, TrialSelection, TRIAL_OUTPUT_TOKENS,
 };
 use crate::{ProviderCapabilities, ProviderSettings, Result};
 

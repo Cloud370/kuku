@@ -14,6 +14,7 @@ pub(crate) mod replay;
 pub(crate) mod report;
 mod setup_api;
 mod setup_probes;
+mod setup_reasoning;
 pub(crate) mod sse;
 pub(crate) mod trace;
 pub(crate) mod transport;
@@ -31,6 +32,7 @@ pub use setup_api::{setup_api_candidates, setup_endpoint_format, SetupApiEvidenc
 pub use setup_probes::{
     plan_model_trials, Probe, ProbeBatch, ProbeProgress, ProbeResult, ProbeRow, TrialSelection,
 };
+pub use setup_reasoning::{ReasoningCheck, ReasoningCheckResult};
 pub use trial::{trial_model, ModelTrial, TrialResult, TRIAL_OUTPUT_TOKENS};
 pub use types::{
     CapabilitySource, DeclaredCapability, Provider, ProviderCapabilities, ProviderReport,

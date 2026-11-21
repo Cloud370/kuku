@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use kuku::adapter::{
     discover_models, model_list_targets, trial_model, ModelTrial, Probe, ProbeBatch, ProbeProgress,
-    ProbeResult, RequestCost, TRIAL_OUTPUT_TOKENS,
+    ProbeResult, ReasoningCheck, ReasoningCheckResult, RequestCost, TRIAL_OUTPUT_TOKENS,
 };
 use kuku::config::{ApiKey, ProviderConfig, ProviderFormat, ProviderOptions, ProviderProxy};
 use serde_json::Value;
@@ -105,6 +105,61 @@ async fn api_discovery_tries_another_route_after_an_explicit_404() {
         ProbeProgress::Finished(_, Err(error)) => panic!("API discovery failed: {error}"),
         _ => panic!("Missing API discovery result"),
     }
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn thinking_test_waits_for_retry_after_and_persists_request_acceptance() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let route = Arc::new(connection(
+        format!("http://{}/v1", listener.local_addr().unwrap()),
+        ProviderProxy::Direct,
+    ));
+    let server = tokio::spawn(async move {
+        for attempt in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let (_, body) = read_request_with_body(&mut stream).await;
+            assert_eq!(
+                serde_json::from_slice::<Value>(&body).unwrap()["reasoning_effort"],
+                "none"
+            );
+            if attempt == 0 {
+                stream.write_all(b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+            } else {
+                response(&mut stream, r#"{"choices":[{"message":{"content":"377","reasoning_content":"fixture"},"finish_reason":"stop"}]}"#).await;
+            }
+        }
+    });
+    let mut batch = ProbeBatch::start(vec![Probe::Thinking {
+        connection: Arc::clone(&route),
+        model: "fixture".into(),
+        check: ReasoningCheck::Level("none".into()),
+        service_tier: None,
+    }]);
+    assert!(batch.next().await);
+    let ProbeProgress::RetryWaiting { until, sent: true } = batch.rows()[0].progress else {
+        panic!("expected a scheduled retry")
+    };
+    assert!(until.saturating_duration_since(std::time::Instant::now()) <= Duration::from_secs(1));
+    assert!(batch.pending());
+    tokio::time::timeout(Duration::from_secs(4), async {
+        while batch.next().await {}
+    })
+    .await
+    .unwrap();
+    let ProbeProgress::Finished(
+        _,
+        Ok(ProbeResult::Thinking(ReasoningCheckResult::Accepted(reply))),
+    ) = &batch.rows()[0].progress
+    else {
+        panic!("expected a completed thinking probe")
+    };
+    assert!(reply.observed_reasoning);
+    let test = batch.thinking_test(&route, "fixture").unwrap();
+    assert_eq!(test.accepted, ["none"]);
+    let mut other_endpoint = route.as_ref().clone();
+    other_endpoint.base_url.push_str("/other");
+    assert!(batch.thinking_test(&other_endpoint, "fixture").is_none());
     server.await.unwrap();
 }
 

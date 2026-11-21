@@ -3,9 +3,9 @@ use url::Url;
 use crate::config::{
     resolve_request_url, ModelCapabilityDeclaration, ProviderConfig, ProviderFormat,
 };
-use crate::{Error, Result};
+use crate::Error;
 
-use super::trial::trial_with_route_evidence;
+use super::trial::{trial_with_route_evidence, TrialProblem};
 use super::{ModelTrial, TrialResult};
 
 const DECLARED_ORDER: [ProviderFormat; 3] = [
@@ -85,7 +85,7 @@ pub(super) async fn check_setup_api(
     connection: &ProviderConfig,
     model: &str,
     formats: &[ProviderFormat],
-) -> Result<SetupApiEvidence> {
+) -> Result<SetupApiEvidence, TrialProblem> {
     let mut attempted = Vec::new();
     let mut attempted_routes = Vec::new();
     let mut candidate = connection.clone();
@@ -137,14 +137,13 @@ pub(super) async fn check_setup_api(
                 Ok(_) => {
                     return Err(Error::InvalidArgument(
                         "The API response contained no test result.".into(),
-                    ));
+                    )
+                    .into());
                 }
                 Err(problem) if problem.route_missing => {}
-                Err(problem) => return Err(problem.error),
+                Err(problem) => return Err(problem),
             }
         }
     }
-    Err(Error::InvalidArgument(
-        "No API type answered for this model.".into(),
-    ))
+    Err(Error::InvalidArgument("No API type answered for this model.".into()).into())
 }

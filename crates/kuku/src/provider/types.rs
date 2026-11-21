@@ -159,6 +159,8 @@ pub struct ProviderCapabilities {
     pub profile: ProviderProfile,
     /// Supported native reasoning values, including none when available.
     pub reasoning_efforts: Vec<String>,
+    /// Results from trial requests to this generation endpoint.
+    pub thinking_test: Option<crate::config::ModelThinkingTest>,
     /// Supported native service tiers.
     pub service_tiers: Vec<String>,
     /// Source of the known native reasoning options.
@@ -175,6 +177,26 @@ pub struct ProviderCapabilities {
     pub system_prompt_update: Option<DeclaredCapability<String>>,
     /// Media representation implemented by the runtime.
     pub media_adapter: MediaAdapterSupport,
+}
+
+impl ProviderCapabilities {
+    /// Values to offer in a selector. Explicit manual options remain user-controlled.
+    pub fn selectable_reasoning_efforts(&self) -> impl Iterator<Item = &str> {
+        let test = self.thinking_test.as_ref().filter(|_| {
+            !matches!(
+                self.reasoning_source,
+                Some(CapabilitySource::Manual | CapabilitySource::ProtocolManual)
+            )
+        });
+        let options = test
+            .filter(|test| !test.accepted.is_empty())
+            .map_or(self.reasoning_efforts.as_slice(), |test| {
+                test.accepted.as_slice()
+            });
+        options.iter().map(String::as_str).filter(move |value| {
+            test.is_none_or(|test| !test.rejected.iter().any(|level| level == value))
+        })
+    }
 }
 
 /// Origin and scope of a normalized model capability.

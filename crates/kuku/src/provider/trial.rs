@@ -17,8 +17,8 @@ use super::cost::{request_cost, RequestCost};
 use super::prepare::{apply_settings, request_url};
 use super::report::{normalize_usage, ReportAccumulator};
 use super::types::{
-    PreparedProviderRequest, ProviderKind, ProviderReport, ProviderUsage, ResolvedProvider,
-    SecretString,
+    PreparedProviderRequest, ProviderFailureKind, ProviderKind, ProviderReport, ProviderUsage,
+    ResolvedProvider, SecretString,
 };
 
 /// Output budget for one opt-in setup test.
@@ -76,6 +76,10 @@ pub async fn trial_model(
 pub(super) struct TrialProblem {
     pub error: Error,
     pub route_missing: bool,
+    pub status: Option<u16>,
+    pub parameter_error: String,
+    pub retry_after: Option<Duration>,
+    pub rate_limited: bool,
 }
 
 impl From<Error> for TrialProblem {
@@ -83,6 +87,10 @@ impl From<Error> for TrialProblem {
         Self {
             error,
             route_missing: false,
+            status: None,
+            parameter_error: String::new(),
+            retry_after: None,
+            rate_limited: false,
         }
     }
 }
@@ -92,15 +100,28 @@ pub(super) async fn trial_with_route_evidence(
     model: &str,
     trial: ModelTrial,
 ) -> std::result::Result<TrialResult, TrialProblem> {
-    tokio::time::timeout(TRIAL_TIMEOUT, trial_request(connection, model, trial))
-        .await
-        .map_err(|_| Error::InvalidArgument("Model trial timed out.".into()))?
+    run_trial(connection, model, trial, None).await
+}
+
+pub(super) async fn run_trial(
+    connection: &ProviderConfig,
+    model: &str,
+    trial: ModelTrial,
+    probe_effort: Option<&str>,
+) -> std::result::Result<TrialResult, TrialProblem> {
+    tokio::time::timeout(
+        TRIAL_TIMEOUT,
+        trial_request(connection, model, trial, probe_effort),
+    )
+    .await
+    .map_err(|_| Error::InvalidArgument("Model trial timed out.".into()))?
 }
 
 async fn trial_request(
     connection: &ProviderConfig,
     model: &str,
     trial: ModelTrial,
+    probe_effort: Option<&str>,
 ) -> std::result::Result<TrialResult, TrialProblem> {
     let capabilities = crate::adapter::inspect_connection_model(connection, model)?;
     let mut challenge = None;
@@ -122,7 +143,10 @@ async fn trial_request(
             )
         }
     };
-    let settings = resolve_settings("trial", &capabilities, effort, None, service_tier)?;
+    let mut settings = resolve_settings("trial", &capabilities, effort, None, service_tier)?;
+    if let Some(effort) = probe_effort {
+        settings.reasoning_effort = Some(effort.to_owned());
+    }
     let config = ResolvedProvider {
         connection_name: "trial".into(),
         model: model.into(),
@@ -152,10 +176,15 @@ async fn trial_request(
         settings: config.settings.clone(),
         correlation_id: None,
     };
-    let response = super::transport::send_trial(&config, &prepared)
+    let mut error_body = String::new();
+    let response = super::transport::send_trial(&config, &prepared, &mut error_body)
         .await
         .map_err(|failure| TrialProblem {
             route_missing: matches!(failure.status, Some(404 | 405 | 501)),
+            status: failure.status,
+            parameter_error: error_body,
+            retry_after: failure.retry_after,
+            rate_limited: failure.kind == ProviderFailureKind::RateLimited,
             error: trial_error(failure),
         })?;
     if response
@@ -167,7 +196,7 @@ async fn trial_request(
     {
         return Err(TrialProblem {
             route_missing: true,
-            error: invalid_receipt(),
+            ..TrialProblem::from(invalid_receipt())
         });
     }
     let mut stream = response.response.bytes_stream();

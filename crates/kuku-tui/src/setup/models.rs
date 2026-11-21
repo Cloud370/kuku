@@ -224,8 +224,22 @@ impl SetupState {
         if self.probe_deadline().is_none_or(|at| at > now) {
             return false;
         }
+        let thinking_selection = (self.step == SetupStep::Thinking)
+            .then(|| {
+                self.thinking_choices(settings)
+                    .get(self.models.cursor)
+                    .cloned()
+            })
+            .flatten();
         self.discovery.poll();
         self.trials.poll();
+        if let Some(selected) = thinking_selection {
+            self.models.cursor = self
+                .thinking_choices(settings)
+                .iter()
+                .position(|choice| *choice == selected)
+                .unwrap_or(0);
+        }
         if self.step == SetupStep::ModelSource
             && self.models.cursor == 0
             && self.models.found.is_empty()
@@ -262,7 +276,15 @@ impl SetupState {
         } else {
             Vec::new()
         };
-        if self.trials.rows().iter().map(|row| &row.probe).ne(&plan) {
+        if plan.is_empty()
+            || self
+                .trials
+                .rows()
+                .iter()
+                .take(plan.len())
+                .map(|row| &row.probe)
+                .ne(&plan)
+        {
             self.trials = ProbeBatch::start(plan);
             self.probe_repaint_at = Some(std::time::Instant::now());
         }
@@ -318,6 +340,7 @@ impl SetupState {
                         .rows()
                         .iter()
                         .skip(1)
+                        .take(remaining.len())
                         .map(|row| &row.probe)
                         .eq(&remaining)
                     {
@@ -364,7 +387,7 @@ impl SetupState {
         let Ok(mut connection) = self.connection(settings) else {
             return Vec::new();
         };
-        self.update_capabilities(&mut connection);
+        self.update_model_declarations(&mut connection);
         let original = self.route_name(settings).and_then(|name| {
             let route = settings.resolved.tier(name)?;
             let effort = inspect_model(
@@ -437,6 +460,25 @@ impl SetupState {
     }
 
     pub(super) fn update_capabilities(&self, connection: &mut ProviderConfig) {
+        self.update_model_declarations(connection);
+        for model in self.model_ids().into_iter().flatten() {
+            let Some(test) = self.trials.thinking_test(connection, &model) else {
+                continue;
+            };
+            let entry = connection
+                .options
+                .model_capabilities
+                .entry(model)
+                .or_default();
+            if let Some(previous) = &mut entry.thinking_test {
+                previous.merge(test);
+            } else {
+                entry.thinking_test = Some(test);
+            }
+        }
+    }
+
+    fn update_model_declarations(&self, connection: &mut ProviderConfig) {
         if self
             .models
             .discovered_from
@@ -486,11 +528,11 @@ impl SetupState {
 
     pub(super) fn thinking_choices(&self, settings: &Settings) -> Vec<String> {
         std::iter::once(ThinkLevel::ProviderDefault.as_str().to_owned())
-            .chain(
-                self.capabilities(settings)
-                    .into_iter()
-                    .flat_map(|caps| caps.reasoning_efforts),
-            )
+            .chain(self.capabilities(settings).into_iter().flat_map(|caps| {
+                caps.selectable_reasoning_efforts()
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            }))
             .collect()
     }
 

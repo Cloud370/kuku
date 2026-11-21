@@ -22,21 +22,22 @@ pub(crate) async fn send_prepared(
     prepared: &PreparedProviderRequest,
     trace_metadata: Option<ProviderTraceMetadata>,
 ) -> Result<TransportResponse, ProviderFailure> {
-    send(config, prepared, trace_metadata, false).await
+    send(config, prepared, trace_metadata, None).await
 }
 
 pub(super) async fn send_trial(
     config: &ResolvedProvider,
     prepared: &PreparedProviderRequest,
+    error_body: &mut String,
 ) -> Result<TransportResponse, ProviderFailure> {
-    send(config, prepared, None, true).await
+    send(config, prepared, None, Some(error_body)).await
 }
 
 async fn send(
     config: &ResolvedProvider,
     prepared: &PreparedProviderRequest,
     trace_metadata: Option<ProviderTraceMetadata>,
-    trial: bool,
+    trial_error_body: Option<&mut String>,
 ) -> Result<TransportResponse, ProviderFailure> {
     let expected_url = super::prepare::request_url(config)?;
     if config.connection_name != prepared.connection_name
@@ -75,7 +76,7 @@ async fn send(
         .post(&prepared.url)
         .headers(headers)
         .json(&prepared.body);
-    if trial {
+    if trial_error_body.is_some() {
         request = request.redirect(wreq::redirect::Policy::none());
     }
     let response = request.send().await.map_err(|error| {
@@ -124,6 +125,9 @@ async fn send(
                 .push_str(&format!(" (Retry-After: {}s)", delay.as_secs_f64().ceil()));
         }
         failure.provider_request_id = request_id;
+        if let Some(capture) = trial_error_body {
+            *capture = body;
+        }
         return Err(failure);
     }
     Ok(TransportResponse { response, trace })

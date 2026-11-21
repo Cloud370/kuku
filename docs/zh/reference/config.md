@@ -63,7 +63,7 @@ Chat 和 Responses 省略 `max_output_tokens` 时使用上游默认值。Anthrop
 | `models_url` | string | 可选的标准模型发现完整 URL |
 | `proxy` | table | 模型发现、试跑和正式请求共用的网络路径 |
 | `model_pricing` | table | 按精确模型 ID 配置的美元计费规则 |
-| `model_capabilities` | table | 按模型 ID 记录列表声明和手工覆盖 |
+| `model_capabilities` | table | 按模型 ID 记录列表声明、手工覆盖及试跑确认可传的思考档位 |
 | `api_key` | string | `$ENV_VAR_NAME`、直接填写的 key，或 `file:<绝对路径>` |
 | `auth` | `bearer`\|`x-api-key` | 独立于 `format` 覆盖认证方式 |
 | `profile` | string | `auto`（默认）、`openai`、`anthropic`、`deepseek`、`openrouter` 或 `compatible` |
