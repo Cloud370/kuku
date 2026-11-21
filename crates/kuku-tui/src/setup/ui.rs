@@ -150,13 +150,7 @@ fn render_step(
     match state.step {
         SetupStep::Consent => {
             line(frame, area, &mut row, "Set up a model", ACCENT);
-            line(
-                frame,
-                area,
-                &mut row,
-                "Tests may cost money. Cut-off replies can retry once.",
-                WARNING,
-            );
+            line(frame, area, &mut row, "Tests may cost money.", WARNING);
             for (index, name) in ["Find and test models", "Edit config file"]
                 .iter()
                 .enumerate()

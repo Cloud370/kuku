@@ -21,12 +21,9 @@ use super::types::{
     SecretString,
 };
 
-/// Initial output limit for a setup test.
-pub const TRIAL_OUTPUT_TOKENS: u32 = 768;
-/// Output limit when a setup test retries an incomplete answer.
-pub const TRIAL_RETRY_OUTPUT_TOKENS: u32 = 4096;
-const TRIAL_TIMEOUT: Duration = Duration::from_secs(20);
-const TRIAL_RETRY_TIMEOUT: Duration = Duration::from_secs(30);
+/// Output budget for one opt-in setup test.
+pub const TRIAL_OUTPUT_TOKENS: u32 = 4096;
+const TRIAL_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_TRIAL_RESPONSE: usize = 512 * 1024;
 const COLORS: [(&str, [u8; 3]); 6] = [
     ("red", [255, 0, 0]),
@@ -37,7 +34,7 @@ const COLORS: [(&str, [u8; 3]); 6] = [
     ("black", [0, 0, 0]),
 ];
 
-/// One opted-in, bounded test of the selected model.
+/// One opted-in, bounded request sent against the selected model.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelTrial {
     Text {
@@ -47,16 +44,6 @@ pub enum ModelTrial {
     ImageInput {
         service_tier: Option<String>,
     },
-}
-
-/// Usage and completion evidence for one request in a setup test.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TrialAttempt {
-    pub output_limit: u32,
-    pub usage: Option<ProviderUsage>,
-    pub cost: RequestCost,
-    pub stop_reason: Option<ModelStopReason>,
-    pub failure: Option<String>,
 }
 
 /// Timing-independent trial evidence a host can retain or render.
@@ -72,11 +59,7 @@ pub struct TrialResult {
     pub observed_colors: Vec<String>,
     pub usage: Option<ProviderUsage>,
     pub provider_report: Option<ProviderReport>,
-    /// Cost of the response represented by the outcome fields.
     pub cost: RequestCost,
-    /// Each physical request, in dispatch order, including a failed retry.
-    #[serde(default)]
-    pub attempts: Vec<TrialAttempt>,
 }
 
 /// Test only the selected connection and model with synthetic input.
@@ -85,14 +68,15 @@ pub async fn trial_model(
     model: &str,
     trial: ModelTrial,
 ) -> Result<TrialResult> {
-    trial_model_with_retry(connection, model, trial, |_| {}).await
+    tokio::time::timeout(TRIAL_TIMEOUT, trial_request(connection, model, trial))
+        .await
+        .map_err(|_| Error::InvalidArgument("Model trial timed out.".into()))?
 }
 
-pub(super) async fn trial_model_with_retry(
+async fn trial_request(
     connection: &ProviderConfig,
     model: &str,
     trial: ModelTrial,
-    retry_started: impl FnOnce(TrialAttempt),
 ) -> Result<TrialResult> {
     let capabilities = crate::adapter::inspect_connection_model(connection, model)?;
     let mut challenge = None;
@@ -135,7 +119,7 @@ pub(super) async fn trial_model_with_retry(
         body["provider"] = serde_json::to_value(config.options.routing.clone().unwrap_or_default())
             .map_err(|_| Error::InvalidArgument("Invalid routing for the model trial.".into()))?;
     }
-    let mut prepared = PreparedProviderRequest {
+    let prepared = PreparedProviderRequest {
         kind: config.kind,
         connection_name: config.connection_name.clone(),
         model: model.into(),
@@ -144,86 +128,7 @@ pub(super) async fn trial_model_with_retry(
         settings: config.settings.clone(),
         correlation_id: None,
     };
-    let expected = challenge.map(|(colors, _)| colors);
-    let mut first = trial_request(&config, &prepared, connection, expected, TRIAL_TIMEOUT).await?;
-    let attempt = attempt_receipt(&first, TRIAL_OUTPUT_TOKENS);
-    first.attempts.push(attempt.clone());
-    if first.stop_reason != Some(ModelStopReason::Length)
-        || first.image_match.unwrap_or(first.text_returned)
-    {
-        return Ok(first);
-    }
-
-    let cap = match config.kind {
-        ProviderKind::OpenAiResponses => "max_output_tokens",
-        ProviderKind::OpenAiCompatible if prepared.body.get("max_completion_tokens").is_some() => {
-            "max_completion_tokens"
-        }
-        ProviderKind::OpenAiCompatible | ProviderKind::Anthropic => "max_tokens",
-    };
-    prepared.body[cap] = json!(TRIAL_RETRY_OUTPUT_TOKENS);
-    retry_started(attempt);
-    match trial_request(
-        &config,
-        &prepared,
-        connection,
-        expected,
-        TRIAL_RETRY_TIMEOUT,
-    )
-    .await
-    {
-        Ok(mut retry) => {
-            first
-                .attempts
-                .push(attempt_receipt(&retry, TRIAL_RETRY_OUTPUT_TOKENS));
-            retry.attempts = first.attempts;
-            Ok(retry)
-        }
-        Err(error) => {
-            first.attempts.push(TrialAttempt {
-                output_limit: TRIAL_RETRY_OUTPUT_TOKENS,
-                usage: None,
-                cost: RequestCost::Unknown,
-                stop_reason: None,
-                failure: Some(error.to_string()),
-            });
-            Ok(first)
-        }
-    }
-}
-
-fn attempt_receipt(result: &TrialResult, output_limit: u32) -> TrialAttempt {
-    TrialAttempt {
-        output_limit,
-        usage: result.usage.clone(),
-        cost: result.cost.clone(),
-        stop_reason: result.stop_reason.clone(),
-        failure: None,
-    }
-}
-
-async fn trial_request(
-    config: &ResolvedProvider,
-    prepared: &PreparedProviderRequest,
-    connection: &ProviderConfig,
-    expected: Option<[usize; 4]>,
-    timeout: Duration,
-) -> Result<TrialResult> {
-    tokio::time::timeout(
-        timeout,
-        read_trial_response(config, prepared, connection, expected),
-    )
-    .await
-    .map_err(|_| Error::InvalidArgument("Model trial timed out.".into()))?
-}
-
-async fn read_trial_response(
-    config: &ResolvedProvider,
-    prepared: &PreparedProviderRequest,
-    connection: &ProviderConfig,
-    expected: Option<[usize; 4]>,
-) -> Result<TrialResult> {
-    let response = super::transport::send_trial(config, prepared)
+    let response = super::transport::send_trial(&config, &prepared)
         .await
         .map_err(trial_error)?;
     let mut stream = response.response.bytes_stream();
@@ -236,7 +141,12 @@ async fn read_trial_response(
         bytes.extend_from_slice(&chunk);
     }
     let response: Value = serde_json::from_slice(&bytes).map_err(|_| invalid_receipt())?;
-    interpret_trial(connection, &config.model, &response, expected)
+    interpret_trial(
+        connection,
+        model,
+        &response,
+        challenge.map(|(colors, _)| colors),
+    )
 }
 
 fn trial_body(config: &ResolvedProvider, image: Option<&str>) -> Value {
@@ -371,7 +281,6 @@ fn interpret_trial(
         usage,
         provider_report: report,
         cost,
-        attempts: Vec::new(),
     })
 }
 

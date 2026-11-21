@@ -1,13 +1,12 @@
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::config::{ModelPricing, ProviderConfig};
 use crate::Result;
 
-use super::trial::trial_model_with_retry;
 use super::{
-    discover_models, openrouter_quote_url, openrouter_quotes, DiscoveredModel, ModelListTarget,
-    ModelTrial, RouteQuote, TrialAttempt, TrialResult,
+    discover_models, openrouter_quote_url, openrouter_quotes, trial_model, DiscoveredModel,
+    ModelListTarget, ModelTrial, RouteQuote, TrialResult,
 };
 use tokio::task::JoinSet;
 
@@ -112,14 +111,6 @@ pub struct ProbeRow {
     pub probe: Probe,
     pub progress: ProbeProgress,
     pub cached_models: Option<Arc<[DiscoveredModel]>>,
-    initial_attempt: Option<Arc<OnceLock<TrialAttempt>>>,
-}
-
-impl ProbeRow {
-    /// The first request's evidence once a test sends its bounded retry.
-    pub fn initial_attempt_before_retry(&self) -> Option<&TrialAttempt> {
-        self.initial_attempt.as_ref()?.get()
-    }
 }
 
 /// Owns a setup batch. Dropping it cancels in-flight and queued work.
@@ -139,8 +130,6 @@ impl ProbeBatch {
                         Probe::Catalog(target) => super::discovery::cached_models(target),
                         _ => None,
                     },
-                    initial_attempt: matches!(probe, Probe::Trial { .. })
-                        .then(|| Arc::new(OnceLock::new())),
                     probe,
                     progress: ProbeProgress::Queued,
                 })
@@ -164,7 +153,7 @@ impl ProbeBatch {
                 active[lane] += 1;
                 let started = Instant::now();
                 row.progress = ProbeProgress::Waiting(started);
-                let future = row.probe.run(row.initial_attempt.clone());
+                let future = row.probe.run();
                 self.tasks.spawn(async move {
                     let result = future.await;
                     (index, started.elapsed(), result)
@@ -264,10 +253,7 @@ impl Probe {
         usize::from(matches!(self, Self::Trial { .. }))
     }
 
-    fn run(
-        &self,
-        initial_attempt: Option<Arc<OnceLock<TrialAttempt>>>,
-    ) -> impl std::future::Future<Output = Result<ProbeResult>> + Send + 'static {
+    fn run(&self) -> impl std::future::Future<Output = Result<ProbeResult>> + Send + 'static {
         let probe = match self {
             Self::Catalog(target) => Self::Catalog(target.clone()),
             Self::Quotes {
@@ -305,13 +291,9 @@ impl Probe {
                     connection,
                     model,
                     check,
-                } => trial_model_with_retry(&connection, &model, check, |attempt| {
-                    if let Some(receipt) = initial_attempt {
-                        let _ = receipt.set(attempt);
-                    }
-                })
-                .await
-                .map(|result| ProbeResult::Trial(Box::new(result))),
+                } => trial_model(&connection, &model, check)
+                    .await
+                    .map(|result| ProbeResult::Trial(Box::new(result))),
             }
         }
     }

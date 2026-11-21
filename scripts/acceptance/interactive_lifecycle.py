@@ -104,8 +104,6 @@ def first_run_credential_repair(binary, bridge, directory):
     instance = InstalledClient(binary, bridge, directory)
     key = "fixture-repaired-credential"
     authenticated = []
-    image_limits = []
-    finish_image_retry = threading.Event()
     original_dispatch = instance.provider.dispatch
 
     def dispatch(method, path, headers, body):
@@ -115,16 +113,9 @@ def first_run_credential_repair(binary, bridge, directory):
         request = json.loads(body)
         if not request.get("stream"):
             assert request.get("thinking") == {"type": "disabled"}
+            assert request["max_tokens"] == 4096, request["max_tokens"]
             if any(part["type"] == "image" for part in request["messages"][0]["content"]):
-                cap = request["max_tokens"]
-                image_limits.append(cap)
-                if cap == 4096:
-                    finish_image_retry.wait(12)
-                return json_response({
-                    "content": [], "stop_reason": "max_tokens",
-                    "usage": {"input_tokens": 12, "output_tokens": cap,
-                              "cost": 0.000004 if cap == 768 else 0.000008},
-                })
+                return json_response({"content": [], "stop_reason": "max_tokens"})
             return json_response({"content": [{"type": "text", "text": "377"}]})
         authenticated.append(True)
         return original_dispatch(method, path, headers, body)
@@ -157,13 +148,11 @@ def first_run_credential_repair(binary, bridge, directory):
             terminal.press("\x1b[B\r")
             terminal.expect("Model ID")
             terminal.press("\r")
-            terminal.expect("Save and continue", also=("1/2 finished",))
+            terminal.expect("Save and continue", also=("2/2 finished", "1 to check"))
             terminal.press("\x1b[B\r")
-            terminal.expect("Retrying with 4096 tokens", also=("$0.0000040 reported",))
-            finish_image_retry.set()
             terminal.expect(
                 "Image not verified",
-                also=("hit output limit", "2 tries", "Text reply received", "$0.0000120 reported"),
+                also=("hit output limit", "Text reply received", "Cost · Unknown"),
             )
             terminal.press("\r")
             terminal.expect("› Save and continue")
@@ -177,7 +166,6 @@ def first_run_credential_repair(binary, bridge, directory):
             reply = terminal.expect("First reply used the repaired settings.", state="Finished")["screen"]
             terminal.exit_cleanly()
         assert authenticated == [True]
-        assert image_limits == [768, 4096], image_limits
         assert key not in config.read_text()
         credential_files = list((client.home / "credentials").iterdir())
         assert len(credential_files) == 1
@@ -187,7 +175,6 @@ def first_run_credential_repair(binary, bridge, directory):
             "masked_credential_screen": masked,
             "first_reply_screen": reply,
             "authenticated_requests": len(authenticated),
-            "image_trial_limits": image_limits,
             "model": call.request["model"],
         }, ensure_ascii=False, indent=2), encoding="utf-8")
         print("First-run credential repair kept the key masked and used it for the first reply.")
