@@ -98,7 +98,7 @@ impl PreparedAction {
             risk: self.definition.risk.clone(),
             summary: display_summary(self.operation.name(), &self.args, Some(256)),
             candidate: self.candidate.clone(),
-            source: "workspace_script".into(),
+            source: "run_js".into(),
         };
         let facts: WorkspaceScriptFacts =
             serde_json::from_value(partial.structured.clone().unwrap_or(Value::Null))?;

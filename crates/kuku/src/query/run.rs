@@ -765,7 +765,7 @@ impl Run {
             super::provider::ensure_resolved(&mut pending)?;
             super::runtime_tools::validate_prepared(&pending, &tool_call)?;
         }
-        let (granted_tool, candidate) = if waiting.request.source == "workspace_script" {
+        let (granted_tool, candidate) = if waiting.request.source == "run_js" {
             (
                 waiting.request.tool.clone(),
                 waiting.request.candidate.clone(),

@@ -10,10 +10,9 @@ use crate::tool::ToolDefinition;
 use crate::{Error, OutputStream, Result};
 
 const COMMAND_SIGNATURE: &str = concat!(
-    "await workspace.run_command(args) returns {exit_code: number, stdout: CommandStream, ",
-    "stderr: CommandStream, capture_complete: boolean, output_ref: {id: string, offset: number, bytes: number}}. ",
-    "Include program with optional literal args, or command with the advertised shell options. cwd and timeout are optional. ",
-    "A normal nonzero exit returns its code. Launch errors, denial, timeout and cancellation throw. "
+    "tools.run_command({program,args?,cwd?,timeout?} or {command,shell?,cwd?,timeout?}) ",
+    "returns {exit_code,duration_ms,capture_complete,output_ref,stdout,stderr}. ",
+    "A process exit resolves with its code. Launch errors, denial, timeout and cancellation throw. "
 );
 
 const STREAM_SIGNATURE: &str = concat!(
@@ -28,7 +27,7 @@ pub(super) fn describe_script_command(definition: &mut ToolDefinition, can_read:
         properties.remove("preview_bytes");
     }
     let access = if can_read {
-        "Larger reads require host authorization for read_output. For raw or partial bytes, use workspace.output_chunks({id:run.output_ref.id}). "
+        "Larger reads require host authorization for read_output. For raw or partial bytes, use tools.output_chunks({id:run.output_ref.id}). "
     } else {
         "Larger captures still return a reference. This Agent has no read_output access. "
     };

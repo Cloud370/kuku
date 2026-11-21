@@ -26,7 +26,7 @@ use super::{ScriptExecution, ScriptOperation};
 const MAX_EXCEPTION_BYTES: usize = 2048;
 const MAX_METHOD_DEFINITION_BYTES: usize = 64 * 1024;
 const MAX_OUTPUT_LINE_BYTES: usize = 128 * 1024;
-const WORKSPACE_INSTALLER: &str = include_str!("workspace.js");
+const TOOLS_INSTALLER: &str = include_str!("tools.js");
 
 pub(super) struct Request {
     pub(super) ordinal: usize,
@@ -160,18 +160,18 @@ impl<'js> Worker<'js> {
         definitions: Vec<ToolDefinition>,
     ) -> Result<Promise<'js>, Failure> {
         let prepare = || -> rquickjs::Result<Promise<'js>> {
-            let workspace = self.workspace(definitions)?;
+            let tools = self.tools(definitions)?;
             let constructor: Function = self.ctx.eval("(async function () {}).constructor")?;
             let body = format!("\"use strict\";\n{source}");
-            let script: Function = constructor.call(("workspace", body))?;
-            script.call((workspace,))
+            let script: Function = constructor.call(("tools", body))?;
+            script.call((tools,))
         };
         prepare().map_err(|error| self.describe(error))
     }
 
-    fn workspace(&self, definitions: Vec<ToolDefinition>) -> rquickjs::Result<Object<'js>> {
-        let workspace = Object::new(self.ctx.clone())?;
-        workspace.set_prototype(None)?;
+    fn tools(&self, definitions: Vec<ToolDefinition>) -> rquickjs::Result<Object<'js>> {
+        let tools = Object::new(self.ctx.clone())?;
+        tools.set_prototype(None)?;
         let mut available = Vec::new();
         for op in ScriptOperation::ALL {
             let Some(definition) = definitions
@@ -188,26 +188,20 @@ impl<'js> Worker<'js> {
                 requests: self.requests.clone(),
             };
             let call = Function::new(self.ctx.clone(), move |ctx, args| bridge.send(ctx, args))?;
-            workspace.set(op.name(), call)?;
+            tools.set(op.name(), call)?;
             available.push(definition);
         }
         let definitions = bounded_json(&available, MAX_METHOD_DEFINITION_BYTES).map_err(|_| {
             Exception::throw_range(
                 &self.ctx,
-                "workspace method definitions exceed their byte limit",
+                "tools method definitions exceed their byte limit",
             )
         })?;
         let definitions = self.ctx.json_parse(definitions)?;
         let encode = Function::new(self.ctx.clone(), encode_text)?;
         let decode = Function::new(self.ctx.clone(), decode_line)?;
-        let install: Function = self.ctx.eval(WORKSPACE_INSTALLER)?;
-        install.call((
-            workspace,
-            definitions,
-            encode,
-            decode,
-            MAX_OUTPUT_LINE_BYTES,
-        ))
+        let install: Function = self.ctx.eval(TOOLS_INSTALLER)?;
+        install.call((tools, definitions, encode, decode, MAX_OUTPUT_LINE_BYTES))
     }
 
     fn complete(&self, promise: Promise<'js>) -> Result<JsValue<'js>, Failure> {

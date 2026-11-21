@@ -46,7 +46,7 @@ impl ModelAdapter for ScriptModel {
                     ModelEvent::ToolCallStart {
                         index: 0,
                         id: "script".into(),
-                        name: "workspace_script".into(),
+                        name: "run_js".into(),
                     },
                     ModelEvent::ToolCallArgDelta {
                         index: 0,
@@ -157,10 +157,10 @@ async fn script_checks_final_authority_and_keeps_host_outcomes_after_js_returns(
         &work,
         &data,
         r#"
-const one = await workspace.write_file({path:"allowed.txt",content:"before"});
-const two = await workspace.write_file({path:"forbidden.txt",content:"denied"});
-const read = await workspace.read_file({path:"allowed.txt"});
-await workspace.edit_file({path:"allowed.txt",old_text:read.result.raw_text,new_text:"after"});
+const one = await tools.write_file({path:"allowed.txt",content:"before"});
+const two = await tools.write_file({path:"forbidden.txt",content:"denied"});
+const read = await tools.read_file({path:"allowed.txt"});
+await tools.edit_file({path:"allowed.txt",old_text:read.result.raw_text,new_text:"after"});
 return {denied:two.status,first:one.status};
 "#,
     ))
@@ -189,8 +189,8 @@ async fn cancel_after_twelve_writes_preserves_exact_receipts_on_reopen() {
         &data,
         r#"
 for (let i=1; i<=40; i++) {
-  const result = await workspace.write_file({path:`part-${i}`,content:String(i)});
-  if (result.status !== "ok") throw new Error(result.summary);
+  const result = await tools.write_file({path:`part-${i}`,content:String(i)});
+  if (result.status !== "ok") throw new Error(result.error);
   if (i === 12) while(true) {}
 }
 "#,
@@ -241,10 +241,10 @@ async fn deferred_script_action_reopens_without_its_worker_or_replaying_the_pref
             &work,
             &data,
             r#"
-await workspace.write_file({path:"prefix",content:"once"});
-await workspace.read_file({path:"approval.txt"});
-await workspace.edit_file({path:"approval.txt", old_text:"before",new_text:"approved"});
-await workspace.write_file({path:"after-approval",content:"should not run"});
+await tools.write_file({path:"prefix",content:"once"});
+await tools.read_file({path:"approval.txt"});
+await tools.edit_file({path:"approval.txt", old_text:"before",new_text:"approved"});
+await tools.write_file({path:"after-approval",content:"should not run"});
 "#,
         );
         options.session_id = Some("approvaltest".into());
@@ -296,9 +296,9 @@ async fn cancelling_a_reopened_script_approval_retains_completed_actions() {
         &work,
         &data,
         r#"
-await workspace.write_file({path:"prefix",content:"done"});
-await workspace.read_file({path:"approval.txt"});
-await workspace.edit_file({path:"approval.txt",old_text:"before",new_text:"changed"});
+await tools.write_file({path:"prefix",content:"done"});
+await tools.read_file({path:"approval.txt"});
+await tools.edit_file({path:"approval.txt",old_text:"before",new_text:"changed"});
 "#,
     );
     options.session_id = Some("cancelapproval".into());
@@ -366,7 +366,7 @@ async fn next_step_input_stops_further_file_writes_at_dispatch_boundary() {
         &work,
         &data,
         r#"
-for (let i=1;i<=40;i++) await workspace.write_file({path:`part-${i}`,content:String(i)});
+for (let i=1;i<=40;i++) await tools.write_file({path:`part-${i}`,content:String(i)});
 "#,
     );
     options.authorizer = gate.clone();
@@ -408,20 +408,20 @@ async fn derived_output_is_streamed_and_abandoned_drafts_release_their_storage()
         &work,
         &data,
         r#"
-const original = (await workspace.create_output({})).result.id;
-await workspace.append_output({id:original, text:"line 甲\nline 乙\n"});
-await workspace.finish_output({id:original});
-const output = (await workspace.create_output({})).result.id;
-for await (const {text} of workspace.output_lines({id:original})) {
-  await workspace.append_output({id:output, text:text.toUpperCase()+"\n"});
+const original = (await tools.create_output({})).result.id;
+await tools.append_output({id:original, text:"line 甲\nline 乙\n"});
+await tools.finish_output({id:original});
+const output = (await tools.create_output({})).result.id;
+for await (const {text} of tools.output_lines({id:original})) {
+  await tools.append_output({id:output, text:text.toUpperCase()+"\n"});
 }
-const saved = await workspace.finish_output({id:output});
-const bound = await workspace.save_value({name:"upper",output_id:saved.result.output_ref.id});
-if (bound.status!=="ok") throw new Error(bound.summary);
-const names = await workspace.list_values({});
-if (names.status!=="ok") throw new Error(names.summary);
-const draft = (await workspace.create_output({})).result.id;
-await workspace.append_output({id:draft, text:"x".repeat(32768)});
+const saved = await tools.finish_output({id:output});
+const bound = await tools.save_value({name:"upper",output_id:saved.result.output_ref.id});
+if (bound.status!=="ok") throw new Error(bound.error);
+const names = await tools.list_values({});
+if (names.status!=="ok") throw new Error(names.error);
+const draft = (await tools.create_output({})).result.id;
+await tools.append_output({id:draft, text:"x".repeat(32768)});
 return {original, saved:saved.result.output_ref.id, draft};
 "#,
     );
@@ -489,16 +489,16 @@ async fn deferred_draft_actions_are_blocked_before_dispatch_without_pending_appr
         &work,
         &data,
         r#"
-const base = (await workspace.create_output({})).result.id;
-await workspace.append_output({id:base,text:"previously published"});
-await workspace.finish_output({id:base});
-const create = await workspace.create_output({});
-const id = (await workspace.create_output({})).result.id;
-const append = await workspace.append_output({id,text:"deferred"});
-const deny = await workspace.append_output({id,text:"denied"});
-const allowed = await workspace.append_output({id,text:"allowed"});
-const finish = await workspace.finish_output({id});
-const published = await workspace.finish_output({id});
+const base = (await tools.create_output({})).result.id;
+await tools.append_output({id:base,text:"previously published"});
+await tools.finish_output({id:base});
+const create = await tools.create_output({});
+const id = (await tools.create_output({})).result.id;
+const append = await tools.append_output({id,text:"deferred"});
+const deny = await tools.append_output({id,text:"denied"});
+const allowed = await tools.append_output({id,text:"allowed"});
+const finish = await tools.finish_output({id});
+const published = await tools.finish_output({id});
 return {base, id, statuses:[create.status,append.status,deny.status,allowed.status,finish.status,published.status]};
 "#,
     );
@@ -559,14 +559,14 @@ return {base, id, statuses:[create.status,append.status,deny.status,allowed.stat
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reusing_a_tool_call_id_in_the_next_model_step_cannot_redispatch_the_old_action() {
-    const CODE: &str = r#"return await workspace.write_file({path:"original",content:"once"});"#;
+    const CODE: &str = r#"return await tools.write_file({path:"original",content:"once"});"#;
     let work = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let mut options = options(&work, &data, CODE);
     options.model_adapter = Some(Arc::new(ScriptModel {
         code: CODE,
         repeated_id_code: Some(
-            r#"return await workspace.write_file({path:"replacement",content:"invalid call"});"#,
+            r#"return await tools.write_file({path:"replacement",content:"invalid call"});"#,
         ),
     }));
     let host = options.workspace_host.clone();
@@ -919,22 +919,22 @@ async fn script_single_edits_work_across_actions_and_executions() {
         vec![
             vec![(
                 "script",
-                "workspace_script",
+                "run_js",
                 json!({"code":r#"
-const first = await workspace.write_file({path:"owned.txt",content:"alpha"});
-const second = await workspace.write_file({path:"owned.txt",content:"beta"});
-const edit = await workspace.edit_file({path:"owned.txt",old_text:"beta",new_text:"gamma"});
-const followUp = await workspace.edit_file({path:"owned.txt",old_text:"gamma",new_text:"delta"});
-const independent = await workspace.write_file({path:"vm.txt",content:"observed"});
+const first = await tools.write_file({path:"owned.txt",content:"alpha"});
+const second = await tools.write_file({path:"owned.txt",content:"beta"});
+const edit = await tools.edit_file({path:"owned.txt",old_text:"beta",new_text:"gamma"});
+const followUp = await tools.edit_file({path:"owned.txt",old_text:"gamma",new_text:"delta"});
+const independent = await tools.write_file({path:"vm.txt",content:"observed"});
 return [first.status,second.status,edit.status,followUp.status,independent.status];
 "#}),
             )],
             vec![(
                 "new-vm",
-                "workspace_script",
+                "run_js",
                 json!({"code":r#"
-const overwrite = await workspace.write_file({path:"vm.txt",content:"rejected"});
-const edit = await workspace.edit_file({path:"vm.txt",old_text:"observed",new_text:"different VM"});
+const overwrite = await tools.write_file({path:"vm.txt",content:"rejected"});
+const edit = await tools.edit_file({path:"vm.txt",old_text:"observed",new_text:"different VM"});
 return [overwrite.result.reason_code,edit.status];
 "#}),
             )],

@@ -244,10 +244,7 @@ pub(super) async fn dispatch(
         let slot = super::slots::spawn_job_control(session, &pending, &queued, event_tx);
         return start_slot(pending, queued, slot);
     }
-    if matches!(
-        queued.tool_call.name.as_str(),
-        "run_command" | "workspace_script"
-    ) {
+    if matches!(queued.tool_call.name.as_str(), "run_command" | "run_js") {
         return start_job_capable_slot(pending, queued, event_tx, active);
     }
     let prior_events = crate::context::runtime::read_agent_events(
@@ -420,7 +417,7 @@ pub(super) fn is_inline(name: &str) -> bool {
 }
 
 pub(super) fn reject(pending: PendingRun, queued: QueuedToolCall) -> Result<PendingStep> {
-    if queued.tool_call.name == "workspace_script" {
+    if queued.tool_call.name == "run_js" {
         if let Some(result) = super::workspace_script::declined(&pending, &queued.tool_call.id)? {
             return finish_inline(pending, queued, result);
         }
@@ -753,7 +750,7 @@ async fn prepare(
         )
         .map_err(|result| Error::InvalidArgument(result.model_content))?;
     }
-    if queued.tool_call.name == "workspace_script"
+    if queued.tool_call.name == "run_js"
         && queued
             .tool_call
             .args

@@ -22,7 +22,7 @@ DEEPSEEK = {
     "deepseek-v4-pro": ("DeepSeek-V4-Pro-0813", "0.044", "1.32", "3.96"),
 }
 KNOWN_EFFORTS = ("minimal", "low", "medium", "high", "xhigh", "max")
-REQUIRED_WORKSPACE_TOOLS = {"run_command", "workspace_script", "read_output", "save_value",
+REQUIRED_WORKSPACE_TOOLS = {"run_command", "run_js", "read_output", "save_value",
                             "read_file", "edit_file", "create_agent"}
 
 

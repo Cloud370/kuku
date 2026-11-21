@@ -56,7 +56,7 @@ pub(super) struct JobReplay {
 
 enum JobCall {
     Execution {
-        tool: &'static str,
+        tool: String,
         dispatched: bool,
     },
     Wait {
@@ -84,12 +84,8 @@ impl JobReplay {
                 ..
             } => {
                 let call = match tool.as_str() {
-                    "run_command" => JobCall::Execution {
-                        tool: "run_command",
-                        dispatched: false,
-                    },
-                    "workspace_script" => JobCall::Execution {
-                        tool: "workspace_script",
+                    "run_command" | "run_js" | "workspace_script" => JobCall::Execution {
+                        tool: tool.clone(),
                         dispatched: false,
                     },
                     "wait_job" => JobCall::Wait {

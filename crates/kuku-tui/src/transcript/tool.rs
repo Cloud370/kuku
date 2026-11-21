@@ -624,7 +624,7 @@ impl Tool {
         if outcome.command_preview.is_some() {
             "run_command"
         } else if outcome.script.is_some() {
-            "workspace_script"
+            "run_js"
         } else if let Some(change) = &outcome.change {
             change.tool()
         } else if outcome.file_read.is_some() {
@@ -794,7 +794,7 @@ pub(super) fn tool_title(name: &str) -> Cow<'_, str> {
         "edit_file" => "Edit file",
         "remove_file" => "Remove file",
         "run_command" => "Run command",
-        "workspace_script" => "Workspace script",
+        "run_js" => "Run JavaScript",
         "read_output" => "Read saved output",
         "create_output" => "Start output",
         "append_output" => "Append output",

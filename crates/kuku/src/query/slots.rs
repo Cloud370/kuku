@@ -17,7 +17,7 @@ pub(crate) fn requires_workspace_ordering(tool_name: &str) -> bool {
     matches!(
         tool_name,
         "read_file"
-            | "workspace_script"
+            | "run_js"
             | "stat_file"
             | "remove_file"
             | "edit_file"

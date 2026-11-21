@@ -58,18 +58,23 @@ async fn script_exposes_only_the_named_methods_and_supports_standard_async_javas
     let host = TestHost {
         operations: vec![ScriptOperation::ReadFile],
         callback: |call: ScriptCall, _| async move {
-            ToolResultEnvelope::ok("read", "", json!({"raw_text":call.args["path"]}))
+            ToolResultEnvelope::ok(
+                "read",
+                "model-only view",
+                json!({"raw_text":call.args["path"]}),
+            )
         },
     };
     let result = run(
         r#"
         const args = {path: "中文 🦉"};
-        const read = await workspace.read_file(args);
+        const read = await tools.read_file(args);
         return {
-            names: workspace.methods.map(({name}) => name),
+            names: tools.methods.map(({name}) => name),
             text: read.result.raw_text,
-            available: [typeof workspace.call, typeof workspace.run_command, typeof require,
-                typeof process, typeof fetch, typeof workspace.output_lines],
+            available: [typeof tools.call, typeof tools.run_command, typeof require,
+                typeof process, typeof fetch, typeof tools.output_lines, typeof workspace],
+            reply_keys: Object.keys(read).sort(),
         };
         "#,
         host,
@@ -82,7 +87,8 @@ async fn script_exposes_only_the_named_methods_and_supports_standard_async_javas
         json!({
             "names": ["read_file"],
             "text": "中文 🦉",
-            "available": ["undefined", "undefined", "undefined", "undefined", "undefined", "undefined"],
+            "available": ["undefined", "undefined", "undefined", "undefined", "undefined", "undefined", "undefined"],
+            "reply_keys": ["result", "status", "truncated"],
         }),
         facts.value
     );
@@ -98,18 +104,18 @@ async fn script_exposes_only_the_named_methods_and_supports_standard_async_javas
 async fn named_value_methods_forward_direct_tool_arguments() {
     let result = run(
         r#"
-        const literal = await workspace.save_value({name: "report", value: {passed: 7}, replace: true});
-        const output = await workspace.save_value({name: "log", output_id: "retained"});
-        const page = await workspace.list_values({prefix: "log", after: "log", limit: 2});
-        const defaultPage = await workspace.list_values();
+        const literal = await tools.save_value({name: "report", value: {passed: 7}, replace: true});
+        const output = await tools.save_value({name: "log", output_id: "retained"});
+        const page = await tools.list_values({prefix: "log", after: "log", limit: 2});
+        const defaultPage = await tools.list_values();
         return {
-            methods: workspace.methods.map(({name}) => name),
+            methods: tools.methods.map(({name}) => name),
             literal: literal.result,
             output: output.result,
             page: page.result,
             defaultPage: defaultPage.result,
-            sendMessage: typeof workspace.send_message,
-            askUser: typeof workspace.ask_user,
+            sendMessage: typeof tools.send_message,
+            askUser: typeof tools.ask_user,
         };
         "#,
         TestHost {
@@ -168,8 +174,8 @@ async fn independent_host_promises_run_concurrently_and_keep_request_order() {
     let worker = tokio::spawn(run(
         r#"
         const results = await Promise.all([
-            workspace.read_file({path: "first"}),
-            workspace.read_file({path: "second"}),
+            tools.read_file({path: "first"}),
+            tools.read_file({path: "second"}),
         ]);
         return results.map(({result}) => result.path);
         "#,
@@ -191,8 +197,8 @@ async fn independent_host_promises_run_concurrently_and_keep_request_order() {
 async fn slow_host_replies_do_not_consume_the_javascript_budget() {
     let result = run(
         r#"
-        const slow = await workspace.read_file({path: "slow"});
-        const followUp = await workspace.read_file({path: "follow-up"});
+        const slow = await tools.read_file({path: "slow"});
+        const followUp = await tools.read_file({path: "follow-up"});
         return [slow.result.path, followUp.result.path];
         "#,
         TestHost {
@@ -224,7 +230,7 @@ async fn ready_host_replies_progress_while_microtasks_are_queued() {
         let finished = false;
         const again = () => { if (!finished) Promise.resolve().then(again); };
         Promise.resolve().then(again);
-        const read = await workspace.read_file({path: "loop"});
+        const read = await tools.read_file({path: "loop"});
         finished = true;
         return read.result.path;
         "#,
@@ -250,7 +256,7 @@ async fn host_queue_bounds_reject_individual_promises_before_dispatch() {
     let result =
         run(
             r#"
-        const pending = [1,2,3].map(n => workspace.read_file({n}));
+        const pending = [1,2,3].map(n => tools.read_file({n}));
         return (await Promise.allSettled(pending)).map(({status}) => status);
         "#,
             TestHost {
@@ -279,8 +285,8 @@ async fn read_evidence_becomes_available_only_after_the_reply_reaches_javascript
         r#"
         const reads = [];
         for (const size of [2048, 5]) {
-            const [read] = await Promise.allSettled([workspace.read_file({size})]);
-            const write = await workspace.write_file({path: "file.txt", content: "updated"});
+            const [read] = await Promise.allSettled([tools.read_file({size})]);
+            const write = await tools.write_file({path: "file.txt", content: "updated"});
             reads.push([read.status, write.result.observed_reads]);
         }
         return reads;
@@ -330,8 +336,8 @@ async fn read_evidence_becomes_available_only_after_the_reply_reaches_javascript
 async fn cancellation_waits_for_host_cleanup_and_keeps_the_observed_result() {
     let capacity = WorkspaceExecutionHost::new(1, 1).unwrap();
     for code in [
-        "await workspace.run_command({program:'loop'});",
-        "workspace.run_command({program:'loop'}); while (true) {}",
+        "await tools.run_command({program:'loop'});",
+        "tools.run_command({program:'loop'}); while (true) {}",
     ] {
         let started = Arc::new(Notify::new());
         let entered = started.clone();
@@ -382,8 +388,8 @@ async fn returning_with_pending_host_work_cancels_it_and_waits_for_cleanup() {
     let entered = Arc::new(Notify::new());
     let result = run(
         r#"
-        workspace.read_file({path: "abandoned"});
-        await workspace.read_file({path: "ready"});
+        tools.read_file({path: "abandoned"});
+        await tools.read_file({path: "ready"});
         return true;
         "#,
         TestHost {
@@ -481,7 +487,7 @@ async fn the_javascript_budget_interrupts_busy_loops_and_unending_microtasks() {
 async fn pending_host_work_does_not_pause_a_runnable_microtask_queue() {
     let result = run(
         r#"
-        workspace.run_command({program: "blocked"});
+        tools.run_command({program: "blocked"});
         while (true) await Promise.resolve();
         "#,
         TestHost {
@@ -516,7 +522,7 @@ async fn the_javascript_budget_is_not_reset_by_host_progress() {
             while (Date.now() < stop) {}
         };
         spin();
-        await workspace.read_file({path: "slow"});
+        await tools.read_file({path: "slow"});
         spin();
         return true;
         "#,
@@ -590,7 +596,7 @@ async fn output_lines_join_interleaved_utf8_and_pin_the_first_resolved_output() 
     let result = run(
         r#"
         const lines = [];
-        for await (const item of workspace.output_lines({name: "sample", limit: 6})) {
+        for await (const item of tools.output_lines({name: "sample", limit: 6})) {
             const {text, stream, offset, next_offset, bytes, lossy_utf8} = item;
             lines.push({text, stream, offset, next_offset, bytes, lossy_utf8});
         }

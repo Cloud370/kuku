@@ -290,7 +290,7 @@ fn script_message_selects_retained_action_output_and_saves_its_reference() {
     app.pane_mut().transcript.apply(
         serde_json::from_value(json!({
             "id":78,"agent":"main","turn":7,"type":"tool_result",
-            "tool":"workspace_script","tool_call_id":"script-outputs","status":"ok",
+            "tool":"run_js","tool_call_id":"script-outputs","status":"ok",
             "summary":"Script completed","model_content":"Bounded script summary","truncated":true,
             "structured":{
                 "kind":"workspace_script_result","value":null,

@@ -17,7 +17,7 @@ This page describes the default public Session tool surface used by CLI and serv
 | `write_file` | `path`, `content` | `expected_version`, `brief` | `edit` |
 | `remove_file` | `path` | `expected_version`, `brief` | `edit` |
 | `run_command` | `command` or `program` | `args`, `cwd`, `shell` (required for command text if no default is listed), `timeout`, `preview_bytes`, `background`, `brief` | `command` |
-| `workspace_script` | `code` | `background` | `execute` |
+| `run_js` | `code` | `background` | `execute` |
 | `list_jobs` | none | `before` | `session` |
 | `wait_job` | `job_id` | none | `session` |
 | `cancel_job` | `job_id` | none | `session` |
@@ -91,7 +91,7 @@ The default Session preview is bounded to 8 KiB, including its summary and retai
 
 ## Session Jobs
 
-A top-level `run_command` or `workspace_script` returns its outcome if it settles within the foreground observation window, which defaults to 10 seconds. If it is still running, the tool returns a handle with `structured.kind: "job"` and `structured.job_id`. Use `background: true` to obtain the handle immediately and continue independent work.
+A top-level `run_command` or `run_js` returns its outcome if it settles within the foreground observation window, which defaults to 10 seconds. If it is still running, the tool returns a handle with `structured.kind: "job"` and `structured.job_id`. Use `background: true` to obtain the handle immediately and continue independent work.
 
 [Job lifetime and result delivery](../how-it-works/sessions.md#background-jobs) · [Permissions](../how-it-works/permissions.md)
 
@@ -101,42 +101,39 @@ A top-level `run_command` or `workspace_script` returns its outcome if it settle
 
 Use the command's retained output reference to inspect its capture. [Job API for embedding hosts](sdk.md#workspace-execution)
 
-## Workspace scripts
+## JavaScript tool composition
 
-`workspace_script({code})` runs an async JavaScript function body with top-level `await` in a disposable, embedded QuickJS worker. Use `background: true` on the outer tool call to start a [Session Job](#session-jobs). Use standard JavaScript, including `JSON`, regular expressions and `Promise.all` for independent operations. Compose dependent actions with `await` when their inputs follow directly from earlier results. Return a short observation when the next decision needs model judgment. The methods on `workspace` depend on the Agent's selected tools. `workspace.methods` lists the available definitions.
+`run_js({code})` runs an async JavaScript function body with top-level `await` in a disposable, embedded QuickJS worker. Use `background: true` on the outer tool call to start a [Session Job](#session-jobs). Use standard JavaScript, including `JSON`, regular expressions and `Promise.all` for independent operations. Compose dependent actions with `await` when their inputs follow directly from earlier results. Return a short observation when the next decision needs model judgment. The methods on `tools` reflect the Agent's selected tools. `tools.methods` lists the available host methods and input schemas.
 
-Most host methods return `{status, summary, truncated, result, model_content}`. Check each action's `status` and read structured data from `result`. For example, `workspace.read_file({path})` exposes raw file text in `result.raw_text`, the SHA-256 `content_hash` and the half-open byte range from `start_byte` to `end_byte`. A script can use these observed ranges for a subsequent edit without returning file contents to the model. Complete read coverage of the same file version also supports overwrite and removal. A script can edit or overwrite the exact version of its own confirmed full write within the same invocation. The actions still pass through host authorization and version checks.
+Most host methods return `{status, result, truncated}`. Check for `status: "ok"` before using the structured `result`. An unsuccessful action includes an `error` message. Check `truncated` before treating a listing or page as complete. For example, `tools.read_file({path})` exposes raw file text in `result.raw_text`, the SHA-256 `content_hash` and the half-open byte range from `start_byte` to `end_byte`. A script can use these observed ranges for a subsequent edit without returning file contents to the model. Complete read coverage of the same file version also supports overwrite and removal. A script can edit or overwrite the exact version of its own confirmed full write within the same invocation. The actions still pass through host authorization and version checks.
 
-Return a small JSON value to give the model the evidence it needs. To process large captures, iterate `workspace.output_lines({id, stream: "stdout"})` and keep only the state needed for the computation. The original bytes remain available through [retained output](#retained-tool-output). Each call owns its JavaScript variables until it finishes. Persist selected results as a [named value](#named-session-values) or write a requested deliverable to the workspace.
+Return a small JSON value to give the model the evidence it needs. To process large captures, iterate `tools.output_lines({id, stream: "stdout"})` and keep only the state needed for the computation. The original bytes remain available through [retained output](#retained-tool-output). Each call owns its JavaScript variables until it finishes. Persist selected results as a [named value](#named-session-values) or write a requested deliverable to the workspace.
 
-`await workspace.run_command(args)` waits for the command to settle. It accepts the command arguments above except `background`. A process exit with an integer code resolves to `{exit_code, capture_complete, output_ref, stdout, stderr}`, including on nonzero exit. Actions such as a denied dispatch, a launch failure, a timeout or cancellation reject with an error. Check the error's `status`, `termination` and `output_ref` when available.
+`await tools.run_command(args)` waits for the command to settle. It accepts the command arguments above except `background` and `preview_bytes`. A process exit with an integer code resolves to `{exit_code, duration_ms, capture_complete, output_ref, stdout, stderr}`, including on nonzero exit. Actions such as a denied dispatch, a launch failure, a timeout or cancellation reject with an error. The error includes `status` and carries `termination`, `signal`, or `output_ref` when available.
 
-For either stream, `await run.stdout.text()` reads the complete decoded text up to 1 MiB, and `await run.stdout.json()` parses that text as JSON. Use `for await (const line of run.stderr.lines())` to stream decoded text without LF or CRLF terminators. Lines can contain up to 128 KiB each. The helpers reject incomplete or lossy output. Use `workspace.output_chunks({id: run.output_ref.id})` to inspect retained partial output or raw bytes. Reads that page through retained output use the authorized `read_output` method.
+For either stream, `await run.stdout.text()` reads the complete decoded text up to 1 MiB, and `await run.stdout.json()` parses that text as JSON. Use `for await (const line of run.stderr.lines())` to stream decoded text without LF or CRLF terminators. Lines can contain up to 128 KiB each. The helpers reject incomplete or lossy output. Use `tools.output_chunks({id: run.output_ref.id})` to inspect retained partial output or raw bytes. Reads that page through retained output use the authorized `read_output` method.
 
-For example, count warnings on stderr in a Rust build.
+For example, check a Git working tree and return a count derived from the complete status output.
 
 ```javascript
-const run = await workspace.run_command({command: "cargo check"});
-if (!run.capture_complete) {
-  return {exit_code: run.exit_code, capture_complete: false, output_ref: run.output_ref};
+const run = await tools.run_command({program: "git", args: ["status", "--porcelain"]});
+const {exit_code, duration_ms, capture_complete, output_ref} = run;
+if (exit_code !== 0 || !capture_complete) {
+  return {exit_code, duration_ms, capture_complete, output_ref};
 }
-
-let warnings = 0;
-for await (const line of run.stderr.lines()) {
-  if (line.startsWith("warning:")) warnings++;
-}
-return {exit_code: run.exit_code, warnings, output_ref: run.output_ref};
+const entries = (await run.stdout.text()).split("\n").filter(Boolean).length;
+return {exit_code, duration_ms, entries, output_ref};
 ```
 
 `output_chunks({id, offset?, limit?, search?})` iterates the bounded output pages with original stream segments and raw bytes. The default scan window is 65,536 bytes, with at most 80,000 bytes per request. `output_lines({id, stream?, offset?, limit?})` iterates decoded lines without their trailing newline and takes unfiltered pages. Both accept `name` in place of `id` and keep reading the original output ID once the iterator resolves the name. Each line carries its stream, byte offsets and completeness flags. Script host methods report denied, failed and cancelled actions independently of the script's return value.
 
-For a large derived result, take `result.id` from `await workspace.create_output({})`, then `await workspace.append_output({id, text})` for each batch of UTF-8 text. Check each action's status. Call `await workspace.finish_output({id})` and check `result.capture_complete` before relying on the new `result.output_ref`. The original capture remains available independently.
+For a large derived result, take `result.id` from `await tools.create_output({})`, then `await tools.append_output({id, text})` for each batch of UTF-8 text. Check each action's status. Call `await tools.finish_output({id})` and check `result.capture_complete` before relying on the new `result.output_ref`. The original capture remains available independently.
 
 An output draft belongs to the current script invocation. See the [authorization rules for draft actions](../how-it-works/permissions.md).
 
 ## Retained Tool Output
 
-`read_output` reads a retained output by ID or the current Agent's named value by exact name. It accepts Session references and uses the SDK's bounded reader. Every call passes host authorization. The limits below apply to the direct tool. For the script reader's schema, see `workspace.methods`.
+`read_output` reads a retained output by ID or the current Agent's named value by exact name. It accepts Session references and uses the SDK's bounded reader. Every call passes host authorization. The limits below apply to the direct tool. For the script reader's schema, see `tools.methods`.
 
 | Argument | Contract |
 |---|---|
@@ -162,7 +159,7 @@ Use `save_value({name, output_id})` to give an existing capture a durable name w
 
 Use `list_values({prefix?, after?, limit?})` to discover names, kinds, and references. The result contains `values` and `next_after`. It returns at most 32 entries in name order. Pass `next_after` as `after` to continue. Read contents on demand with `read_output({name})`. Bindings belong to the current Agent and survive closing and reopening the Session. Saving the same source again is idempotent. Supply `replace: true` to bind an existing name to a new source.
 
-When these tools are available to a script, call `await workspace.save_value({name, value})` to retain a computed value or pass `output_id` to bind a retained output. Use `await workspace.list_values()` to discover the current Agent's names. Both methods use the same arguments and authorization as their direct tools.
+When these tools are available to a script, call `await tools.save_value({name, value})` to retain a computed value or pass `output_id` to bind a retained output. Use `await tools.list_values()` to discover the current Agent's names. Both methods use the same arguments and authorization as their direct tools.
 
 Use `send_message({to, message, values: ["build_log"]})` to give the recipient a fixed reference to the value along with its task. You can share up to eight exact names or whole-output references in one message. A later replacement of `build_log` leaves the delivered reference intact. The recipient can read that reference by its shared ID.
 
@@ -180,7 +177,7 @@ Every tool returns the same top-level shape:
 
 Snapshot-related errors from file changes retain `structured.kind: "error"` and add a recovery-oriented `reason_code` such as `snapshot_required`, `full_snapshot_required`, `snapshot_stale`, or `old_text_not_visible`.
 
-Within one advancing Agent, kuku serializes the `read_file`, `stat_file`, `edit_file`, `write_file`, `remove_file`, `remember_memory`, `forget_memory`, `run_command`, and `workspace_script` slots. Other read-only tools can overlap them. Different Agents can advance concurrently in the same Session. Snapshot hash checks protect file operations against changes between reads and writes, including changes by external processes.
+Within one advancing Agent, kuku serializes the `read_file`, `stat_file`, `edit_file`, `write_file`, `remove_file`, `remember_memory`, `forget_memory`, `run_command`, and `run_js` slots. Other read-only tools can overlap them. Different Agents can advance concurrently in the same Session. Snapshot hash checks protect file operations against changes between reads and writes, including changes by external processes.
 
 ## Notes By Tool
 

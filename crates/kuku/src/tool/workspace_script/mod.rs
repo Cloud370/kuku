@@ -24,10 +24,9 @@ pub(crate) use runtime::execute;
 const MAX_SCRIPT_ACTIONS: usize = 2048;
 const MAX_SCRIPT_RESULT_BYTES: usize = 64 * 1024;
 const SCRIPT_DESCRIPTION: &str = concat!(
-    "Compose dependent workspace actions in one QuickJS function body with top-level await. Return a small JSON value. ",
-    "workspace.methods lists the available host methods and their input schemas. ",
-    "QuickJS supplies ECMAScript built-ins. Node and browser APIs such as TextEncoder are unavailable. ",
-    "Slow top-level scripts become Session Jobs. Use background:true on workspace_script to return a Job immediately."
+    "Compose dependent tool calls in JavaScript with top-level await and return a small JSON value. ",
+    "Call tools.<name>(args). tools.methods lists the available host methods and their input schemas. ",
+    "Standard JavaScript built-ins are available. Node and browser APIs are unavailable. Slow scripts become Session Jobs."
 );
 
 /// Bounds one disposable workspace JavaScript worker and its host operations.
@@ -113,7 +112,7 @@ impl WorkspaceScriptLimits {
 
 pub(crate) fn definition() -> ToolDefinition {
     ToolDefinition {
-        name: "workspace_script".into(),
+        name: "run_js".into(),
         description: SCRIPT_DESCRIPTION.into(),
         input_schema: json!({
             "type":"object",
@@ -151,10 +150,7 @@ pub(crate) fn method_definitions(
 }
 
 pub(crate) fn describe_selected_tools(tools: &mut [ToolDefinition]) {
-    let Some(index) = tools
-        .iter()
-        .position(|tool| tool.name == "workspace_script")
-    else {
+    let Some(index) = tools.iter().position(|tool| tool.name == "run_js") else {
         return;
     };
     let methods =
@@ -162,9 +158,9 @@ pub(crate) fn describe_selected_tools(tools: &mut [ToolDefinition]) {
     let mut description = format!("{SCRIPT_DESCRIPTION}\n");
     if let Some(command) = methods.iter().find(|method| method.name == "run_command") {
         description.push_str(&command.description);
-        description.push_str("For example, use `const run = await workspace.run_command({program:'git',args:['--version']}); return {exit:run.exit_code, version:(await run.stdout.text()).trim()};`.\n");
+        description.push_str("Example: `const r = await tools.run_command({program:'git',args:['status','--porcelain']}); return {exit_code:r.exit_code, output_ref:r.output_ref, lines:r.exit_code === 0 && r.capture_complete ? (await r.stdout.text()).split('\\n').filter(Boolean).length : null};`.\n");
     }
-    description.push_str("The following methods return Promise<{status, summary, result, truncated, model_content}>. Check status before using result. ");
+    description.push_str("Other host methods return {status,result,truncated,error?}. Check status === 'ok' before reading result. ");
     for op in ScriptOperation::ALL {
         if methods.iter().any(|method| method.name == op.name()) {
             description.push_str(method_result(op));
@@ -178,8 +174,8 @@ fn method_result(operation: ScriptOperation) -> &'static str {
     match operation {
         Op::FindFiles => "find_files({path?,pattern?,max_depth?}) returns result.entries. ",
         Op::ReadFile => "read_file({path,offset?,limit?}) returns result.raw_text, content_hash, start_byte, end_byte and is_full_file_snapshot. ",
-        Op::SearchText => "search_text({pattern,path?,view?,...}) returns result.matches, has_more and next_offset. ",
-        Op::EditFile => "edit_file({path,old_text,new_text,...}) returns result.replacement_count and content_hash_after. ",
+        Op::SearchText => "search_text({pattern,path?,include?,view?,offset?,limit?,context?}) returns result.matches, has_more and next_offset. ",
+        Op::EditFile => "edit_file({path,old_text,new_text,replace_all?,expected_version?,brief?}) returns result.replacement_count and content_hash_after. ",
         Op::WriteFile => "write_file({path,content,expected_version?,brief?}) returns result.content_hash_after and bytes_written. ",
         Op::StatFile => "stat_file({path,version?}) returns result.exists, entry_kind and optional content_hash. ",
         Op::RemoveFile => "remove_file({path,expected_version?,brief?}) returns result.bytes_removed. ",

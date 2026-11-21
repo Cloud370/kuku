@@ -515,7 +515,7 @@ pub(crate) fn cancelled_deferred_script(continuation: Value) -> Result<ToolResul
 pub(super) fn cancelled_permission(
     waiting: &super::types::PendingPermission,
 ) -> Result<ToolResultEnvelope> {
-    if waiting.request.source == "workspace_script" {
+    if waiting.request.source == "run_js" {
         if let Some(action) = deferred::load(&waiting.pending, &waiting.request.tool_call_id)? {
             return Ok(action.cancel());
         }

@@ -428,22 +428,22 @@ def named_output_cards(client):
         reference = result["output_ref"]
         page_range = f"0–{reference['bytes']} / {reference['bytes']} bytes"
         after_command.tool(
-            "workspace_script", "summarize-log",
-            code=f"""const chunk = await workspace.read_output({{id: {json.dumps(reference['id'])}}});
-await workspace.write_file({{path: "summary.txt", content: chunk.result.segments[0].text}});
-await workspace.run_command({{shell: {json.dumps(shell)}, command: {json.dumps(command)}, cwd: ".", timeout: 5}});
-await workspace.run_command({{program: "kuku-deliberately-missing-fixture"}});""",
+            "run_js", "summarize-log",
+            code=f"""const chunk = await tools.read_output({{id: {json.dumps(reference['id'])}}});
+await tools.write_file({{path: "summary.txt", content: chunk.result.segments[0].text}});
+await tools.run_command({{shell: {json.dumps(shell)}, command: {json.dumps(command)}, cwd: ".", timeout: 5}});
+await tools.run_command({{program: "kuku-deliberately-missing-fixture"}});""",
         )
         client.provider.next("summarize-log").text("Replay inspected.")
         display = terminal.expect("Replay inspected.", also=(
-            "exit 7", "Workspace script · partial", "1 file change", "Wrote summary.txt", "program missing",
+            "exit 7", "Run JavaScript · partial", "1 file change", "Wrote summary.txt", "program missing",
         ))["screen"]
         assert (workspace / "summary.txt").read_text(encoding="utf-8") == log + "\n"
         operate_on_message(terminal, display, "Tool · run_command", None, "Full output")
         terminal.expect(log, state="S Name", also=(page_range,))
         terminal.press("\x1b")
         display = terminal.expect("Replay inspected.")["screen"]
-        operate_on_message(terminal, display, "Tool · workspace_script", None, "Full output")
+        operate_on_message(terminal, display, "Tool · run_js", None, "Full output")
         outputs = terminal.expect("Outputs for selected message")["screen"]
         terminal.click_text(outputs, "Script action 3 · Run command")
         terminal.expect(log, state="S Name", also=(page_range,))

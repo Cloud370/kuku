@@ -1,24 +1,26 @@
-(function install(workspace, methods, encode, decode, lineLimit) {
+(function install(tools, methods, encode, decode, lineLimit) {
     for (const {name} of methods) {
-        const call = workspace[name];
-        workspace[name] = async (args = {}) => call(args);
+        const call = tools[name];
+        tools[name] = async (args = {}) => call(args);
     }
-    workspace.methods = Object.freeze(methods);
-    const read = workspace.read_output;
+    tools.methods = Object.freeze(methods);
+    const read = tools.read_output;
     const readSchema = methods.find(({name}) => name === "read_output")?.input_schema;
     const defaultLimit = Math.min(65536, readSchema?.properties?.limit?.maximum ?? 8192);
     const textLimit = 1024 * 1024;
 
-    if (workspace.run_command) {
-        const run = workspace.run_command;
-        workspace.run_command = async (args) => {
+    if (tools.run_command) {
+        const run = tools.run_command;
+        tools.run_command = async (args) => {
             const response = await run(args);
             const facts = response.result;
             if (response.status !== "ok" || facts?.termination !== "exited" || !Number.isInteger(facts.exit_code)) {
-                const detail = response.model_content || response.summary;
+                const detail = response.error ?? (facts?.signal == null
+                    ? "exit code unavailable" : `process terminated by signal ${facts.signal}`);
                 const error = new Error(`run_command: ${detail}`);
                 error.status = response.status === "ok" ? "error" : response.status;
                 error.termination = facts?.termination;
+                error.signal = facts?.signal;
                 error.output_ref = facts?.output_ref;
                 throw error;
             }
@@ -27,6 +29,7 @@
             const inline = facts.inline_pipes;
             return Object.freeze({
                 exit_code: facts.exit_code,
+                duration_ms: facts.duration_ms,
                 output_ref,
                 capture_complete,
                 stdout: commandStream("stdout", facts.stdout_bytes, output_ref, capture_complete, inline?.stdout),
@@ -37,8 +40,8 @@
 
     async function* output_chunks({offset = 0, limit = defaultLimit, ...source}) {
         while (true) {
-            const {status, summary, result, model_content} = await read({...source, offset, limit});
-            if (status !== "ok") throw new Error(model_content || summary);
+            const {status, error, result} = await read({...source, offset, limit});
+            if (status !== "ok") throw new Error(error);
             yield result;
             if (!result.has_more) return;
             if (result.next_offset <= offset) throw new Error("read_output did not advance");
@@ -103,7 +106,7 @@
     }
 
     function commandStream(stream, size, reference, captureComplete, inline) {
-        const rawHint = read ? " Use workspace.output_chunks for raw bytes." : " Give the retained output reference to the host for inspection.";
+        const rawHint = read ? " Use tools.output_chunks for raw bytes." : " Give the retained output reference to the host for inspection.";
 
         function failure(reason) {
             const error = new Error(`${stream}: ${reason}`);
@@ -113,7 +116,7 @@
 
         function checkCapture() {
             if (!captureComplete) failure(`capture is incomplete.${rawHint}`);
-            if (size > 0 && !inline && !read) failure("workspace.read_output is required to read retained command output");
+            if (size > 0 && !inline && !read) failure("tools.read_output is required to read retained command output");
         }
 
         async function* chunks() {
@@ -201,8 +204,8 @@
     }
 
     if (read) {
-        workspace.output_chunks = output_chunks;
-        workspace.output_lines = output_lines;
+        tools.output_chunks = output_chunks;
+        tools.output_lines = output_lines;
     }
-    return Object.freeze(workspace);
+    return Object.freeze(tools);
 })

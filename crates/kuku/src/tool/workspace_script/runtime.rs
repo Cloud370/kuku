@@ -167,10 +167,10 @@ impl Worker {
 #[derive(Serialize)]
 struct HostReply<'a> {
     status: &'a str,
-    summary: &'a str,
     truncated: bool,
     result: Option<&'a Value>,
-    model_content: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<&'a str>,
 }
 
 enum Finish {
@@ -237,7 +237,9 @@ async fn buffer_response(
                 matches!(
                     key.as_str(),
                     "exit_code"
+                        | "duration_ms"
                         | "termination"
+                        | "signal"
                         | "output_ref"
                         | "capture_complete"
                         | "stdout_bytes"
@@ -248,27 +250,24 @@ async fn buffer_response(
         }
     }
     let observation = observation.filter(|_| envelope.status == "ok");
-    let model_content = if envelope.status == "ok"
-        && matches!(op, ScriptOperation::ReadFile | ScriptOperation::ReadOutput)
-    {
-        ""
-    } else {
-        envelope.model_content.as_str()
-    };
+    let error = (envelope.status != "ok").then(|| {
+        if envelope.model_content.is_empty() {
+            envelope.summary.as_str()
+        } else {
+            envelope.model_content.as_str()
+        }
+    });
     let mut response = HostReply {
         status: &envelope.status,
-        summary: &envelope.summary,
         truncated: envelope.truncated,
         result: envelope.structured.as_ref(),
-        model_content,
+        error,
     };
     let limit = execution.limits.host_bytes;
     let json = match bounded_json(&response, limit) {
         Ok(json) => json,
         Err(_) => {
-            response.model_content = cap_str(model_content, MAX_HOST_MESSAGE_BYTES);
-            response.summary = cap_str(response.summary, MAX_HOST_MESSAGE_BYTES);
-            response.truncated = true;
+            response.error = error.map(|message| cap_str(message, MAX_HOST_MESSAGE_BYTES));
             bounded_json(&response, limit).map_err(|_| {
                 "workspace host response exceeds its byte limit; read a smaller range or page"
             })?

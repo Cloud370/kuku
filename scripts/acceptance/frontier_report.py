@@ -639,7 +639,7 @@ def session_summary(live, sdk):
                 event_agent = event.get('conversation') or event.get('agent') or 'main'
                 if event.get('kind') == 'tool.call':
                     calls += 1
-                    if event.get('tool') == 'workspace_script':
+                    if event.get('tool') in ('run_js', 'workspace_script'):
                         script_calls += 1
                         call_id = event.get('tool_call_id')
                         if isinstance(call_id, str) and call_id:

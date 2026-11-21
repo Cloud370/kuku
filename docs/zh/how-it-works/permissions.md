@@ -12,6 +12,6 @@
 
 对 `run_command`，运行时在授权前解析工作目录和调用形式，包括默认值。项目策略匹配包含规范化 `cwd` 和 `invocation` 的 JSON 字符串。`invocation` 带有 `mode`，并提供字面的 `program` 和 `args`，或所选的 `shell` 和 `command` 文本。授权覆盖整次调用。需要操作系统隔离时，由宿主提供。
 
-宿主分别授权 `workspace_script` 及每个脚本宿主动作。延后外层工具调用的授权时，运行时在启动 worker 前进入等待。延后前台脚本内可持久准备的动作时，worker 停止并释放 JavaScript 状态。Session 保存已准备的动作及已观察到的事实。批准后重新核对并派发该动作一次，模型随后根据返回的事实继续。派生输出草稿需要即时授权。`create_output`、`append_output` 或 `finish_output` 收到 `Defer` 时会在派发前返回 `blocked`。
+宿主分别授权 `run_js` 及每个脚本宿主动作。延后外层工具调用的授权时，运行时在启动 worker 前进入等待。延后前台脚本内可持久准备的动作时，worker 停止并释放 JavaScript 状态。Session 保存已准备的动作及已观察到的事实。批准后重新核对并派发该动作一次，模型随后根据返回的事实继续。派生输出草稿需要即时授权。`create_output`、`append_output` 或 `finish_output` 收到 `Defer` 时会在派发前返回 `blocked`。
 
 将运行中的调用转入 [Session Job](sessions.md#后台-job) 时，已授权的执行继续运行。脚本内后续动作仍需经过宿主授权。如果已分离的脚本有动作需要延后审批，Job 在派发该动作前停止，并报告已经观察到的事实。

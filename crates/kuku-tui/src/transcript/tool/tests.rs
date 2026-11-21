@@ -74,7 +74,7 @@ fn script_card_reports_completed_effects_and_unknown_actions_from_host_facts() {
         .collect::<Vec<_>>()
         .join("\n");
     for evidence in [
-        "Workspace script · partial",
+        "Run JavaScript · partial",
         "7/9 host actions completed",
         "1 file change",
         "Wrote report.txt",
