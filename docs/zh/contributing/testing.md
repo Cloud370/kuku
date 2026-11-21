@@ -176,6 +176,33 @@ Linux／Docker 预检将固定源码检出到已忽略的 `benchmarks/sources/`�
 
 SDK 运行时，入口分别采样 SDK RSS／RSS 高水位、CPU 时间和线程数，以及整个容器的 CPU、内存、进程数和 I/O。采样与输出日志均有界；未采样值保持 `null`，不把整容器数据归因于 SDK。下方专门的资源调用程序测量其余生命周期边界。
 
+### 共同观察 TUI 运行（可选）
+
+在交互终端中提交任务并观察 Agent 的执行。有 tmux 时，可以用命名会话让其他人接入同一个 TUI，也可以抓取当前画面。在待测 checkout 或 worktree 中运行：
+
+```sh
+cargo build --locked -p kuku-app --bin kuku
+tmux new-session -d -s kuku-review -c "$PWD" \
+  "$PWD/target/debug/kuku" --workspace "$PWD"
+tmux set-option -t kuku-review mouse on
+tmux attach-session -t kuku-review
+```
+
+从已接入的 tmux 客户端用 `tmux switch-client -t kuku-review` 切换。在 TUI 中用滚轮或 Page Up 和 Page Down 翻页，按 Ctrl+End 回到最新输出。普通接入方式会传递这些输入。并发跑多个案例时，各用一个会话名。不同 worktree 需要独立受管服务时，为各自的 TUI 指定 `--data-dir`，并用 `--config` 选择配置。
+
+通过 Session 日志或 `kuku events SESSION_ID` 查看任务进度、工具结果和请求边界。运行事件命令时沿用相同的连接和工作区选项。用 `tmux capture-pane -p -t kuku-review` 核对画面呈现。将有用的画面文本随运行证据留存。
+
+跑上游 benchmark 时，将 kuku 服务放在固定的任务容器里。若容器内已可运行且已配置 kuku，可以用宿主机的 tmux 接入容器内的 TUI。将 `benchmark_container` 设为正在运行的任务容器的名称：
+
+```sh
+tmux new-session -d -s kuku-benchmark \
+  docker exec -it "$benchmark_container" kuku --workspace /app
+tmux set-option -t kuku-benchmark mouse on
+tmux attach-session -t kuku-benchmark
+```
+
+宿主机上的 TUI 也可用 `--remote` 连到容器服务，并用 `--workspace` 指定容器内的路径。粘贴原题面，等 Agent 和 Job 都结束后再运行原 verifier。判分隔离和验收证据沿用上面的原始 benchmark 流程。[终端操作](../reference/cli.md#终端界面) · [远程连接](../guides/run-the-server.md#显式启动服务)
+
 ## FrontierHarness 公开小样本
 
 `frontier` 套件在[题目清单](../../../scripts/acceptance/cases.json)中固定 FrontierHarness Eval v1.1.0 的四道题，覆盖日志汇总、异步取消、正则表达式和 Vim 大文件编辑。每题使用上游题面、镜像构建上下文和原始判分器。在有 Git、Docker、Python 3.10+ 和仓库指定 Rust 工具链的 Linux 上，先用空提交确认判分器能识别失败。构建和评分依赖需要网络，这一步没有模型费用。[数据集来源](https://hub.harborframework.com/datasets/frontier-harness-eval/frontier-harness-eval)

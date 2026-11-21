@@ -176,6 +176,33 @@ When the caller reports `streaming`, the inspector validates its counters, first
 
 While the SDK runs, the selector samples SDK RSS/high-water RSS, CPU time and thread count separately from aggregate container CPU, memory, processes and I/O. Samples and output logs are bounded. Unsampled values stay `null`; do not attribute whole-container measurements to the SDK. The focused resource caller below measures the other lifecycle boundaries.
 
+### Watch a TUI run together (optional)
+
+Use an interactive terminal to submit the task and watch the Agent work. When tmux is available, a named session lets someone join the same TUI and lets you capture the current viewport. From the checkout or worktree under test:
+
+```sh
+cargo build --locked -p kuku-app --bin kuku
+tmux new-session -d -s kuku-review -c "$PWD" \
+  "$PWD/target/debug/kuku" --workspace "$PWD"
+tmux set-option -t kuku-review mouse on
+tmux attach-session -t kuku-review
+```
+
+From an already attached tmux client, use `tmux switch-client -t kuku-review`. In the TUI, use the mouse wheel or Page Up and Page Down to scroll, and Ctrl+End to return to the latest output. Normal attachment forwards these inputs. Use a different session name for each concurrent case. When different worktrees need independent managed services, give each TUI its own `--data-dir` and select its configuration with `--config`.
+
+Use the Session journal or `kuku events SESSION_ID` with the same connection and workspace options for task progress, tool results and request boundaries. Use `tmux capture-pane -p -t kuku-review` to check how those facts appear on screen. Keep any captured text with the run evidence.
+
+For an upstream benchmark, run the kuku service in the pinned task container. If kuku is already available and configured in that container, run the TUI there through the host's tmux. Set `benchmark_container` to the running task container's name:
+
+```sh
+tmux new-session -d -s kuku-benchmark \
+  docker exec -it "$benchmark_container" kuku --workspace /app
+tmux set-option -t kuku-benchmark mouse on
+tmux attach-session -t kuku-benchmark
+```
+
+A TUI on the host can also connect to the container service with `--remote` and the container's path as `--workspace`. Paste the original instructions, then run the original verifier after the Agent and its Jobs settle. Use the original benchmark procedure above for verifier isolation and evidence. [Terminal controls](../reference/cli.md#terminal-interface) · [Remote connection](../guides/run-the-server.md#start-an-explicit-server)
+
 ## FrontierHarness public sample
 
 The `frontier` suite pins four tasks from FrontierHarness Eval v1.1.0 in the [case manifest](../../../scripts/acceptance/cases.json). They cover log aggregation, async cancellation, regular expressions and large-file Vim editing. Each task uses the upstream prompt, image build context and grader. On Linux with Git, Docker, Python 3.10+ and the repository's Rust toolchain, first check that an empty submission fails the original grader. This step requires network access for build and grader dependencies and uses no model credits. [Dataset provenance](https://hub.harborframework.com/datasets/frontier-harness-eval/frontier-harness-eval)
