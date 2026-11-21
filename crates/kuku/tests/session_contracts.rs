@@ -358,6 +358,21 @@ async fn create_agent_uses_default_routing_and_rejects_invalid_tool_configuratio
             },
         )
         .unwrap();
+    let mistake = session
+        .create_agent(
+            "mistaken-preset",
+            "mistaken-reviewer",
+            AgentConfig {
+                preset: Some("flex".into()),
+                tier: Some("balanced".into()),
+                instructions: Some("Reply with OK.".into()),
+                tools: Some(Vec::new()),
+                ..AgentConfig::default()
+            },
+        )
+        .unwrap_err();
+    assert!(mistake.to_string().contains("preset 'flex' was not found"));
+    assert!(session.agent("mistaken-reviewer").is_err());
     session
         .send(Input::new("input", "main", "Configure two reviewers"))
         .unwrap();

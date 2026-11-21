@@ -1,3 +1,4 @@
+mod agent_status;
 pub(super) mod jobs;
 pub(crate) mod output;
 pub(crate) mod values;
@@ -497,7 +498,7 @@ pub(crate) fn definitions() -> Vec<ToolDefinition> {
             }),
         ),
         definition("send_message", "Deliver a message and any selected value references to an existing agent. Returns a durable receipt; query or receive its later result separately.", serde_json::json!({"type":"object","properties":{"to":{"type":"string"},"message":{"type":"string"},"wake":{"type":"boolean","description":"Defaults true. False only enqueues the message."},"values":values::handoff_schema()},"required":["to","message"]})),
-        definition("list_agents", "List compact Agent states. When you need a delegated result, pass wait_for with the recipient address once. Waits up to 30 seconds for its current execution and returns its settled reply or current state.", serde_json::json!({"type":"object","properties":{"wait_for":{"type":"string","minLength":1}}})),
+        definition("list_agents", "List compact Agent states. When you need a delegated result, pass wait_for with the recipient address once. Waits up to 30 seconds for its current execution and returns its settled reply and available model request facts, or current state.", serde_json::json!({"type":"object","properties":{"wait_for":{"type":"string","minLength":1}}})),
     ]
 }
 
@@ -579,13 +580,13 @@ pub(super) async fn execute(
                 }
                 let waited = session.wait_for_agent(address).await;
                 let snapshot = current_agent_after_wait(waited, || session.agent(address))?;
-                serde_json::json!([agent_listing(snapshot, true)])
+                serde_json::json!([agent_status::listing(snapshot, Some(session.events_path()))])
             } else {
                 serde_json::Value::Array(
                     session
                         .agents()
                         .into_iter()
-                        .map(|agent| agent_listing(agent, false))
+                        .map(|agent| agent_status::listing(agent, None))
                         .collect(),
                 )
             }
@@ -622,31 +623,6 @@ pub(super) fn runtime_session(pending: &PendingRun) -> Result<crate::Session> {
         .runtime_execution
         .expect("session runtime owns this execution");
     super::provider::runtime_session(pending, execution)
-}
-
-fn agent_listing(agent: crate::AgentSnapshot, include_reply: bool) -> serde_json::Value {
-    let mut item = serde_json::json!({"address": agent.address, "status": agent.status});
-    if agent.pending_inputs > 0 {
-        item["pending_inputs"] = agent.pending_inputs.into();
-    }
-    if agent.permission.is_some() {
-        item["needs_approval"] = true.into();
-    }
-    if agent.question.is_some() {
-        item["needs_reply"] = true.into();
-    }
-    if let Some(error) = agent.last_error {
-        item["last_error"] = error.into();
-    } else if agent.status == crate::AgentStatus::Idle {
-        if let Some(output) = agent.last_output {
-            if include_reply {
-                item["last_output"] = output.into();
-            } else {
-                item["reply_available"] = true.into();
-            }
-        }
-    }
-    item
 }
 
 fn current_agent_after_wait<T>(
