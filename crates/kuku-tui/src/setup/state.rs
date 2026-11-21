@@ -73,7 +73,7 @@ pub(super) enum ReviewAction {
     Advanced,
     RepairCredential,
     TrialResults,
-    ViewProgress,
+    ViewRequests,
     FixModels,
     UseAnotherDefault,
     Pricing,
@@ -94,7 +94,7 @@ impl ReviewAction {
             Self::Advanced => "Model capabilities",
             Self::RepairCredential => "Paste API key",
             Self::TrialResults => "Model tests",
-            Self::ViewProgress => "View progress",
+            Self::ViewRequests => "View requests",
             Self::FixModels => "Fix failed models",
             Self::UseAnotherDefault => "Use another default",
             Self::Pricing => "Costs",
@@ -816,7 +816,7 @@ impl SetupState {
         }
         let mut choices = Vec::new();
         if self.trials.pending() {
-            choices.push(ReviewAction::ViewProgress);
+            choices.push(ReviewAction::ViewRequests);
         } else {
             if mode == SetupMode::FirstRun && !self.credential_ready() {
                 choices.push(if self.can_store_key {
@@ -885,7 +885,7 @@ impl SetupState {
                 self.step = SetupStep::Credential;
                 self.problem = None;
             }
-            ReviewAction::TrialResults | ReviewAction::ViewProgress => {
+            ReviewAction::TrialResults | ReviewAction::ViewRequests => {
                 self.models.cursor =
                     super::probes::first_check_to_review(&self.trials).unwrap_or(0);
                 self.step = SetupStep::TrialResults;

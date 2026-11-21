@@ -15,6 +15,7 @@ use crate::text::{shorten_middle, single_line};
 use crate::theme::{emphasis, focused_row, ACCENT, MUTED, SUCCESS, WARNING};
 
 use super::config::Settings;
+use super::dashboard::TestOverview;
 use super::state::{ReviewAction, SetupIntent, SetupState, SetupStep, StopTests};
 use super::{CredentialSource, Finish, SetupMode};
 
@@ -410,8 +411,9 @@ fn render_review(
             None,
         );
     }
+    let overview = TestOverview::new(&state.trials, &models);
     if state.trials.selected_rows().next().is_some() {
-        super::probes::render_model_progress(frame, area, row, &state.trials, &models);
+        overview.render_progress(frame, area, row);
         let progress = super::probes::review_status(&state.trials);
         let color = testing.then_some(ACCENT);
         summary_row(frame, area, row, "Requests", &progress, color);
@@ -422,15 +424,7 @@ fn render_review(
     let room = area.height.saturating_sub(*row + reserved);
     let gap = u16::from(usize::from(room) > models.len().saturating_add(2));
     let connection = state.connection(settings).ok();
-    super::probes::render_model_overview(
-        frame,
-        area,
-        row,
-        &state.trials,
-        &models,
-        connection.as_ref(),
-        room - gap,
-    );
+    overview.render_table(frame, area, row, connection.as_ref(), room - gap);
     *row += gap;
     let primary_failed = state.primary_failed();
     review_menu(frame, area, row, state, mode, |action| match action {

@@ -39,15 +39,15 @@ def assert_testing_navigation(terminal, config):
     terminal.press("\r")
     terminal.expect("Model tests", also=("6 running",))
     terminal.press("\x1b")
-    terminal.expect("› View progress")
+    terminal.expect("› View requests")
     choose(terminal, 2, "Save early")
     terminal.expect("Save before tests finish?", also=("› Keep testing", "Stop tests and save"))
     terminal.press("\r")
-    terminal.expect("› View progress", also=("6 running",))
+    terminal.expect("› View requests", also=("6 running",))
     terminal.press("\x1b")
     terminal.expect("Go back before tests finish?", also=("› Keep testing", "Stop tests and go back"))
     terminal.press("\x1b")
-    terminal.expect("› View progress", also=("6 running",))
+    terminal.expect("› View requests", also=("6 running",))
     assert config.read_text() == ""
 
 
@@ -94,7 +94,7 @@ def save_early(binary, bridge, directory):
                 start_custom(terminal, f"{endpoint}/v1/chat/completions", "fixture-save-early-key")
                 terminal.expect("Choose models", also=("fixture-model",))
                 terminal.press("\r")
-                terminal.expect("› View progress", also=("Save early", "0/1 models done"))
+                terminal.expect("› View requests", also=("Save early", "50%", "Try low"))
                 assert started.wait(5)
                 choose(terminal, 2, "Save early")
                 terminal.expect("Save before tests finish?", also=("› Keep testing",))

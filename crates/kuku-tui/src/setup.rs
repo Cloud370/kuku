@@ -1,5 +1,6 @@
 mod config;
 mod connection_name;
+mod dashboard;
 mod editor;
 mod models;
 mod probes;
