@@ -234,7 +234,6 @@ impl SetupState {
         let review_action = self.selected_review_action(mode);
         self.discovery.poll();
         self.trials.poll();
-        self.restore_review_action(mode, review_action);
         if let Some(selected) = thinking_selection {
             self.models.cursor = self
                 .thinking_choices(settings)
@@ -251,6 +250,7 @@ impl SetupState {
         if self.step == SetupStep::CheckingApi {
             self.update_api_check(settings);
         }
+        self.restore_review_action(mode, review_action);
         self.probe_repaint_at = Some(now + std::time::Duration::from_millis(100));
         true
     }

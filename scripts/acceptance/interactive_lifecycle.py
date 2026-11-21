@@ -8,7 +8,7 @@ import time
 from urllib.parse import urlencode
 
 from interactive_fixture import InstalledClient, Response, TOOL_BRIEF, TOOL_OUTPUT, eventually, json_response, run_cases
-from interactive_model_recovery import assert_testing_navigation, assert_wide_setup, recovery_cases
+from interactive_model_recovery import assert_live_elapsed, assert_testing_navigation, assert_wide_setup, recovery_cases
 from interactive_rendering import has_selected_queued_input
 
 
@@ -151,9 +151,7 @@ def first_run_credential_repair(binary, bridge, directory):
             terminal.press("\x1b[B\r")
             terminal.expect("Model ID")
             terminal.press("\r")
-            terminal.expect("› Save and continue", also=("2/2 finished", "Ready", "Image unverified", "Model tests"), absent=("Fix failed models",))
-            terminal.press("\x1b[B")
-            terminal.expect("› Model tests")
+            terminal.expect("› Model tests", also=("2/2 finished", "Ready", "Image unverified", "Save and continue"), absent=("Fix failed models",))
             terminal.press("\r")
             terminal.expect(
                 "Not verified · output limit",
@@ -240,15 +238,17 @@ def shared_model_editor(binary, bridge, directory):
             terminal.press("\r")
             terminal.request("resize", rows=20, cols=60)
             save_review = terminal.expect(
-                "Save setup", also=("Default", "beta", "API URL", "Settings", "› Save and continue"),
+                "Save setup", also=("Default", "beta", "API URL", "Settings", "› Model tests"),
                 absent=("Model capabilities", "Save and exit"),
             )["screen"]
-            terminal.press("\x1b[B\x1b[B\r")
+            terminal.press("\x1b[B\r")
             settings_review = terminal.expect(
                 "Model capabilities", also=("Provider default", "Costs", "Save and exit"),
                 absent=("API URL",),
             )["screen"]
             terminal.press("\x1b")
+            terminal.expect("› Model tests")
+            terminal.press("\x1b[A")
             terminal.expect("› Save and continue")
             terminal.press("\r")
             terminal.expect("New session", state="Ready", absent=("Connected", "F2 Restart"))
@@ -276,8 +276,8 @@ def shared_model_editor(binary, bridge, directory):
             terminal.expect("Model ID")
             terminal.type("gamma")
             terminal.press("\r")
-            terminal.expect("Save models", also=("API URL", "gamma"))
-            terminal.press("\r")
+            terminal.expect("› Model tests", also=("Save models", "API URL", "gamma"))
+            terminal.press("\x1b[A\r")
             terminal.expect("Tier · gamma")
             terminal.press("gamma")
             match = terminal.expect("/ gamma", also=("› Tier · gamma",))["screen"]
@@ -296,8 +296,8 @@ def shared_model_editor(binary, bridge, directory):
             terminal.press("\x01")
             terminal.type("delta")
             terminal.press("\r")
-            terminal.expect("Save models", also=("API URL", "delta"))
-            terminal.press("\r")
+            terminal.expect("› Model tests", also=("Save models", "API URL", "delta"))
+            terminal.press("\x1b[A\r")
             terminal.expect("Tier · gamma", also=("delta",))
             terminal.press("\x1b")
             terminal.expect(draft, absent=("Connected", "F2 Restart", "Model route"))
@@ -481,18 +481,22 @@ def setup_probe_progress(binary, bridge, directory):
                 )["screen"]
                 assert all(event.wait(5) for event in held_requests.values()), trials
                 assert rate_request_started.wait(5), trials
-                assert model_cells(save_activity, "alpha") == ("Ready", "… none, high", "Not tested"), save_activity
+                text, thinking, image = model_cells(save_activity, "alpha")
+                assert text == "Ready" and re.fullmatch(r"none\+1 \d+s", thinking) and image == "Not tested", save_activity
                 for model, effort in (("beta", "low"), ("gamma", "medium")):
-                    assert model_cells(save_activity, model) == ("Testing", f"Try {effort}", "Not tested"), save_activity
+                    text, thinking, image = model_cells(save_activity, model)
+                    assert text.startswith("Testing ") and re.search(rf"{effort} \d+s$", thinking) and image == "Not tested", save_activity
                 assert save_activity.splitlines()[-2].startswith("│Esc previous step")
                 overall(save_activity, 25, 6)
+                ticking = assert_live_elapsed(terminal, save_activity)
                 wide = assert_wide_setup(terminal)
                 assert_testing_navigation(terminal, config)
                 allow_rate_limit.set()
                 save_retry = terminal.expect("Retry ", also=("5 running", "2 waiting"), rows=20)["screen"]
                 release_beta_effort.set()
                 partial = terminal.expect("Testing models", also=("low", "4 running", "2 waiting"), rows=20)["screen"]
-                assert model_cells(partial, "beta") == ("Testing", "low", "Not tested"), partial
+                text, thinking, image = model_cells(partial, "beta")
+                assert text.startswith("Testing ") and thinking == "low" and image == "Not tested", partial
                 assert model_cells(save_retry, "alpha")[1].startswith("Retry "), save_retry
                 overall(partial, 41, 10)
                 assert overview_layout(save_activity) == overview_layout(save_retry) == overview_layout(partial)
@@ -547,7 +551,7 @@ def setup_probe_progress(binary, bridge, directory):
                 retry_times = [stamp for model, effort, stamp in trials if (model, effort) == ("alpha", "none")]
                 assert len(retry_times) == 2 and retry_times[1] - retry_times[0] >= 2
                 terminal.exit_cleanly()
-            report = {"discovery": discovery, "save_activity": save_activity, "wide": wide, "save_retry": save_retry, "save_partial": partial, "save_results": save_results, "countdown": progress, "results": finished, "confirmed_in_flight": 6, "requests": [(m, e) for m, e, _ in trials], "runtime": runtime_requests}
+            report = {"discovery": discovery, "save_activity": save_activity, "ticking": ticking, "wide": wide, "save_retry": save_retry, "save_partial": partial, "save_results": save_results, "countdown": progress, "results": finished, "confirmed_in_flight": 6, "requests": [(m, e) for m, e, _ in trials], "runtime": runtime_requests}
             (client.directory / "probe-progress.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     finally:
         release.set()

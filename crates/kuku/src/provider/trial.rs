@@ -23,7 +23,7 @@ use super::types::{
 
 /// Output budget for one opt-in setup test.
 pub const TRIAL_OUTPUT_TOKENS: u32 = 4096;
-const TRIAL_TIMEOUT: Duration = Duration::from_secs(60);
+const TRIAL_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_TRIAL_RESPONSE: usize = 512 * 1024;
 const COLORS: [(&str, [u8; 3]); 6] = [
     ("red", [255, 0, 0]),

@@ -3,9 +3,11 @@ use std::time::Duration;
 
 use kuku::adapter::{
     discover_models, model_list_targets, trial_model, ModelTrial, Probe, ProbeBatch, ProbeProgress,
-    ProbeResult, ReasoningCheck, ReasoningCheckResult, RequestCost, TRIAL_OUTPUT_TOKENS,
+    ProbeResult, ReasoningCheck, ReasoningCheckResult, RequestCost, SetupTextCheck,
+    TRIAL_OUTPUT_TOKENS,
 };
 use kuku::config::{ApiKey, ProviderConfig, ProviderFormat, ProviderOptions, ProviderProxy};
+use kuku::ProviderFailureKind;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
@@ -60,6 +62,46 @@ async fn response(stream: &mut TcpStream, body: &str) {
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     ).as_bytes()).await.unwrap();
+}
+
+#[tokio::test]
+async fn model_trial_times_out_after_thirty_seconds() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    let mut batch = ProbeBatch::start(vec![Probe::Trial {
+        connection: Arc::new(connection(base, ProviderProxy::Direct)),
+        model: "fixture".into(),
+        check: ModelTrial::Text {
+            effort: None,
+            service_tier: None,
+        },
+    }]);
+    let (mut stream, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    let request = tokio::time::timeout(Duration::from_secs(5), read_request(&mut stream))
+        .await
+        .unwrap();
+    assert!(request.starts_with("POST /v1/chat/completions "));
+
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(29)).await;
+    assert_eq!(batch.text_check("fixture"), SetupTextCheck::Testing);
+    assert!(!batch.poll());
+    tokio::time::advance(Duration::from_secs(1)).await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(500), batch.next())
+            .await
+            .unwrap()
+    );
+    assert!(matches!(
+        batch.text_check("fixture"),
+        SetupTextCheck::Failed {
+            kind: Some(ProviderFailureKind::Timeout),
+            ..
+        }
+    ));
 }
 
 #[tokio::test]

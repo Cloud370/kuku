@@ -81,8 +81,32 @@ def assert_wide_setup(terminal):
     terminal.press("\x1b")
     terminal.expect("› View requests", rows=25)
     terminal.request("resize", rows=20, cols=60)
-    terminal.expect("… none, high", rows=20)
+    terminal.expect("none+1", rows=20)
     return wide
+
+
+def assert_live_elapsed(terminal, initial):
+    def elapsed_time(screen):
+        row = next((line for line in screen.splitlines() if line.strip(" │").startswith("beta ")), "")
+        match = re.search(r"\bTesting (\d+)s", row)
+        return int(match[1]) if match else -1
+
+    before = elapsed_time(initial)
+    assert before >= 0, initial
+
+    def ticking():
+        screen = terminal.request("screen")["screen"]
+        if "25%" in screen and "2 done" in screen and elapsed_time(screen) > before:
+            return screen
+
+    return eventually("request time advancing before another result arrives", ticking)
+
+
+def open_focused_results(terminal):
+    terminal.expect("› Model tests")
+    terminal.press("\r")
+    terminal.expect("Model tests", also=("Enter returns",))
+    terminal.press("\x1b")
 
 
 def start_custom(terminal, address, key):
@@ -171,14 +195,15 @@ def recover_models(binary, bridge, directory):
             terminal.press("alpha \x01beta \x01gamma \r")
             terminal.expect("Choose the default model")
             choose(terminal, 0, "alpha")
-            first = terminal.expect("Save setup", also=("› Save and exit", "Keep unverified settings",
+            first = terminal.expect("Save setup", also=("› Model tests", "Save and exit", "Keep unverified settings",
                 "Use another default", "Fix failed models", "Text failed", "URL/model absent"))["screen"]
             assert "Save and continue" not in first
             initial_requests = Counter(requests)
+            open_focused_results(terminal)
             choose(terminal, 3, "Use another default")
             terminal.expect("Use another default", also=("› beta",), absent=("alpha", "gamma"))
             choose(terminal, 0, "beta")
-            terminal.expect("› Save and continue")
+            open_focused_results(terminal)
             assert Counter(requests) == initial_requests
 
             choose(terminal, 3, "Fix failed models")
@@ -186,11 +211,12 @@ def recover_models(binary, bridge, directory):
             choose(terminal, 0, "alpha")
             terminal.expect("Fix model", also=("› Retry this model", "Skip this model"))
             choose(terminal, 0, "Retry this model")
-            retried = terminal.expect("Save setup", also=("› Save and continue", "Fix failed models"))["screen"]
+            retried = terminal.expect("Save setup", also=("› Model tests", "Fix failed models"))["screen"]
             assert re.search(r"alpha\s+│\s+Ready", retried), retried
             final_requests = Counter(requests)
             assert final_requests[("alpha", None)] == 2, requests
             assert all(final_requests[item] == count for item, count in initial_requests.items() if item[0] != "alpha"), requests
+            open_focused_results(terminal)
             choose(terminal, 3, "Fix failed models")
             terminal.expect("Fix model", also=("gamma", "Change API URL", "Skip this model"))
             choose(terminal, 2, "Skip this model")
@@ -230,7 +256,8 @@ def repair_connection(binary, bridge, directory, issue):
             terminal.expect("Choose models", also=("fixture-model",))
             terminal.press("\r")
             reason = "Key rejected" if issue == "key" else "URL/model absent"
-            terminal.expect("› Save and exit", also=(reason, "Fix failed models"))
+            terminal.expect("› Model tests", also=("Save and exit", reason, "Fix failed models"))
+            open_focused_results(terminal)
             choose(terminal, 3, "Fix failed models")
             if issue == "key":
                 choose(terminal, 0, "Change API key")
@@ -245,6 +272,6 @@ def repair_connection(binary, bridge, directory, issue):
                 terminal.press("\x01")
                 terminal.type(fixed)
                 terminal.press("\r")
-            terminal.expect("Save setup", also=("› Save and continue", "fixture-model", "Ready"), absent=("Fix failed models",))
+            terminal.expect("Save setup", also=("Save and continue", "fixture-model", "Ready"), absent=("Fix failed models",))
             assert ("/v1/chat/completions", "Bearer fixture-repair-key") in requests
             terminal.exit_cleanly("\x03")

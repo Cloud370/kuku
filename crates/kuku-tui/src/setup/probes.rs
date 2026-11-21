@@ -6,6 +6,7 @@ use kuku::adapter::{
 };
 use kuku::config::ProviderProxy;
 use kuku::event::ModelStopReason;
+use kuku::{Error, ProviderFailureKind};
 use ratatui::layout::Rect;
 use ratatui::Frame;
 
@@ -272,7 +273,8 @@ fn activity_counts(batch: &ProbeBatch) -> [usize; 4] {
     let mut counts = [0; 4];
     for row in batch.selected_rows() {
         let stage = match row.progress {
-            ProbeProgress::Finished(..) | ProbeProgress::Canceled { .. } => 0,
+            ProbeProgress::Finished(..) => 0,
+            ProbeProgress::Canceled { .. } => continue,
             ProbeProgress::Waiting(_) => 1,
             ProbeProgress::Queued => 2,
             ProbeProgress::RetryWaiting { .. } => 3,
@@ -289,8 +291,9 @@ fn activity_summary(batch: &ProbeBatch) -> String {
 
 pub(super) fn review_status(batch: &ProbeBatch) -> String {
     if batch.pending() {
-        let [_, running, queued, waiting] = activity_counts(batch);
+        let [done, running, queued, waiting] = activity_counts(batch);
         [
+            (done, "done"),
             (running, "running"),
             (queued, "queued"),
             (waiting, "waiting"),
@@ -328,8 +331,22 @@ pub(super) fn finished(progress: &ProbeProgress) -> bool {
     )
 }
 
+pub(super) fn timed_out(progress: &ProbeProgress) -> bool {
+    matches!(
+        progress,
+        ProbeProgress::Finished(
+            _,
+            Err(Error::Provider {
+                kind: ProviderFailureKind::Timeout,
+                ..
+            })
+        )
+    )
+}
+
 fn review_reason(row: &ProbeRow) -> Option<&'static str> {
     match &row.progress {
+        progress if timed_out(progress) => Some("Timed out"),
         ProbeProgress::Finished(_, Ok(ProbeResult::Trial(trial)))
             if trial.image_match == Some(false) =>
         {
@@ -414,6 +431,7 @@ fn probe_detail(
     progress: &ProbeProgress,
 ) -> (&'static str, String, ratatui::style::Color) {
     match progress {
+        progress if timed_out(progress) => ("!", "Timed out".into(), WARNING),
         ProbeProgress::Queued => ("·", "Queued".into(), MUTED),
         ProbeProgress::Waiting(started) => (
             "…",

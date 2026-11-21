@@ -15,7 +15,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::text::shorten_middle;
 use crate::theme::{ACCENT, MUTED, SUCCESS, WARNING};
 
-use super::probes::{finished, seconds_until};
+use super::probes::{finished, seconds_until, timed_out};
 use super::recovery::text_problem;
 use super::ui::line;
 
@@ -26,7 +26,7 @@ type Cell = (String, Color);
 
 enum CheckActivity {
     Paused { seconds: u64, sent: bool },
-    Running,
+    Running { seconds: u64 },
     Queued,
 }
 
@@ -37,7 +37,7 @@ impl CheckActivity {
                 let verb = if sent { "Retry" } else { "Start" };
                 (format!("{verb} {seconds}s"), WARNING)
             }
-            Self::Running => ("Testing".into(), ACCENT),
+            Self::Running { seconds } => (format!("Testing {seconds}s"), ACCENT),
             Self::Queued => ("Queued".into(), MUTED),
         }
     }
@@ -123,8 +123,17 @@ impl CheckGroup<'_> {
                 sent,
             });
         }
-        if self.running().next().is_some() {
-            return Some(CheckActivity::Running);
+        if let Some(started) = self
+            .running()
+            .filter_map(|row| match row.progress {
+                ProbeProgress::Waiting(started) => Some(started),
+                _ => None,
+            })
+            .min()
+        {
+            return Some(CheckActivity::Running {
+                seconds: started.elapsed().as_secs(),
+            });
         }
         self.0
             .iter()
@@ -142,6 +151,8 @@ impl CheckGroup<'_> {
     fn idle_cell(&self, unverified: Color) -> Cell {
         if self.0.is_empty() {
             ("Not tested".into(), MUTED)
+        } else if self.0.iter().any(|row| timed_out(&row.progress)) {
+            ("Timed out".into(), WARNING)
         } else if self
             .0
             .iter()
@@ -171,7 +182,9 @@ impl CheckGroup<'_> {
         let usable = levels.join(", ");
         if let Some(activity) = self.activity() {
             let (activity, color) = match activity {
-                CheckActivity::Running => (self.thinking_activity(width), ACCENT),
+                CheckActivity::Running { seconds } => {
+                    (self.thinking_activity(width, seconds), ACCENT)
+                }
                 activity => activity.cell(),
             };
             if levels.is_empty() {
@@ -206,13 +219,20 @@ impl CheckGroup<'_> {
         (format!("{} usable", levels.len()), SUCCESS)
     }
 
-    fn thinking_activity(&self, width: usize) -> String {
+    fn thinking_activity(&self, width: usize, seconds: u64) -> String {
+        let time = format!(" {seconds}s");
+        let width = width.saturating_sub(time.len());
         let mut running = self.running().filter_map(|row| match &row.probe {
             Probe::Thinking { check, .. } => Some(check),
             _ => None,
         });
         let Some(ReasoningCheck::Level(first)) = running.next() else {
-            return "Find levels".into();
+            let label = if width >= "Find levels".len() {
+                "Find levels"
+            } else {
+                "Finding"
+            };
+            return format!("{label}{time}");
         };
         let levels = std::iter::once(first.as_str())
             .chain(running.filter_map(|check| match check {
@@ -223,17 +243,19 @@ impl CheckGroup<'_> {
         let names = levels.join(", ");
         let label = format!("Try {names}");
         if label.width() <= width {
-            return label;
+            return format!("{label}{time}");
         }
         let active = format!("… {names}");
         if active.width() <= width {
-            return active;
+            return format!("{active}{time}");
         }
-        let compact = format!("Try {first} +{}", levels.len() - 1);
-        if levels.len() > 1 && compact.width() <= width {
-            return compact;
+        if levels.len() > 1 {
+            let compact = format!("{first}+{}", levels.len() - 1);
+            if compact.width() <= width {
+                return format!("{compact}{time}");
+            }
         }
-        format!("{} running", levels.len())
+        format!("{} tests{time}", levels.len())
     }
 
     fn text_cell(&self, status: SetupTextCheck) -> Cell {
@@ -384,7 +406,7 @@ impl<'a> TestOverview<'a> {
 
 fn columns(area: Rect, models: &[String]) -> [Rect; 4] {
     let text = 16;
-    let image = 10;
+    let image = 11;
     let spacing = if area.width >= 66 { 3 } else { 2 };
     let padding = 3 * spacing;
     let name_limit = area

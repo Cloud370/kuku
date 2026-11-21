@@ -277,6 +277,7 @@ impl SetupState {
         if self.finish.is_some() {
             return;
         }
+        let previous = self.step;
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => self.key(key, settings, mode),
             Event::Paste(text) => {
@@ -298,6 +299,11 @@ impl SetupState {
                 self.problem = None;
             }
             _ => {}
+        }
+        if self.step == SetupStep::Review
+            && !matches!(previous, SetupStep::Review | SetupStep::TrialResults)
+        {
+            self.restore_review_action(mode, None);
         }
     }
 
@@ -766,12 +772,23 @@ impl SetupState {
     }
 
     pub(super) fn restore_review_action(&mut self, mode: SetupMode, action: Option<ReviewAction>) {
+        if self.step != SetupStep::Review {
+            return;
+        }
+        let action = if !self.trials.pending() {
+            match action {
+                Some(ReviewAction::SaveEarly) => Some(ReviewAction::TrialResults),
+                Some(ReviewAction::ViewRequests) | None
+                    if super::probes::review_detail_hint(&self.trials).is_some() =>
+                {
+                    Some(ReviewAction::TrialResults)
+                }
+                other => other,
+            }
+        } else {
+            action
+        };
         if let Some(action) = action {
-            let action = if action == ReviewAction::SaveEarly && !self.trials.pending() {
-                ReviewAction::TrialResults
-            } else {
-                action
-            };
             self.review_selection = self
                 .review_choices(mode)
                 .iter()
