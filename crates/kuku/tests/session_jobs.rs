@@ -627,6 +627,7 @@ async fn explicit_background_returns_before_foreground_deadline_and_can_be_cance
         submit(&session);
         let (start_cursor, receipt) = first_result(&mut observer).await;
         let id = job_id(&receipt);
+        assert_eq!("cancel", receipt["on_session_close"]);
         let job = session.job(AGENT, id).unwrap();
         assert_eq!(JobStatus::Running, job.status);
         assert_eq!(start_cursor, job.started_at);
@@ -676,7 +677,17 @@ async fn explicit_background_returns_before_foreground_deadline_and_can_be_cance
         assert_eq!(Some(cancelled_ms), job.elapsed_ms);
         assert_one_completion(&reopened, id);
         reopened.close().await.unwrap();
-        wire_requests(route);
+        let requests = wire_requests(route);
+        let continuation = requests.iter().find(|body| !first_request(body)).unwrap();
+        let tool_result = continuation["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| message["role"] == "tool" && message["tool_call_id"] == CALL)
+            .expect("model continuation carries the running Job receipt");
+        let facts: Value = serde_json::from_str(tool_result["content"].as_str().unwrap()).unwrap();
+        assert_eq!(id, facts["job_id"]);
+        assert_eq!("cancel", facts["on_session_close"]);
     }
 }
 

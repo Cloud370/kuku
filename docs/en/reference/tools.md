@@ -97,7 +97,7 @@ The default Session preview is bounded to 8 KiB, including its summary and retai
 
 ## Session Jobs
 
-A top-level `run_command` or `run_js` returns its outcome when it settles within the observation window. The default foreground window is 10 seconds. Use `background: true` for a one-second window and continue independent work if the call returns a Job. If execution is still running at the boundary, the tool returns a handle with `structured.kind: "job"` and `structured.job_id`.
+A top-level `run_command` or `run_js` returns its outcome when it settles within the observation window. The default foreground window is 10 seconds. Use `background: true` for a one-second window and continue independent work if the call returns a Job. If execution is still running at the boundary, the tool returns a handle with `structured.kind: "job"` and `structured.job_id`. The handle includes `on_session_close: "cancel"` in both the model result and the structured facts.
 
 [Job lifetime and result delivery](../how-it-works/sessions.md#background-jobs) · [Permissions](../how-it-works/permissions.md)
 

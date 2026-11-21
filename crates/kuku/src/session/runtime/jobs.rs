@@ -486,6 +486,7 @@ impl Session {
             "kind": "job",
             "job_id": id,
             "status": JobStatus::Running,
+            "on_session_close": "cancel",
             "tool": request.tool,
             "title": title,
             "elapsed_ms": elapsed_ms(request.started),
