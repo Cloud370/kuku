@@ -138,7 +138,7 @@ async fn minimum_size_renders_the_working_connection_choices() {
 }
 
 #[tokio::test]
-async fn minimum_size_shows_review_actions_in_both_modes() {
+async fn minimum_size_keeps_save_and_settings_separate() {
     let directory = tempfile::tempdir().unwrap();
     let settings = Settings::load(options(directory.path())).await.unwrap();
     let mut state = SetupState::new(&settings);
@@ -148,17 +148,25 @@ async fn minimum_size_shows_review_actions_in_both_modes() {
         .stored_key
         .set_text("fixture-only-not-a-real-key".into());
 
+    state.model.set_text("fixture".into());
+    state.address.set_text("https://fixture.test/v1".into());
     let init = screen(&settings, &mut state, SetupMode::Init, 60, 20);
-    assert!(!init.contains("Save and continue"));
     assert!(init.contains("Save and exit"));
-    assert!(init.contains("Back"));
-    assert!(init.contains("Cancel"));
+    assert!(init.contains("API URL"));
+    assert!(init.contains("Settings"));
+    assert!(!init.contains("Model capabilities"));
 
     let first_run = screen(&settings, &mut state, SetupMode::FirstRun, 60, 20);
-    assert!(first_run.contains("Save and continue"));
-    assert!(first_run.contains("Save and exit"));
-    assert!(first_run.contains("Back"));
-    assert!(first_run.contains("Cancel"));
+    assert!(first_run.contains("› Save and continue"));
+    assert!(!first_run.contains("Save and exit"));
+    assert!(!first_run.contains("Configured USD rates"));
+
+    state.step = SetupStep::ReviewSettings;
+    let settings_page = screen(&settings, &mut state, SetupMode::FirstRun, 60, 20);
+    assert!(settings_page.contains("Thinking"));
+    assert!(settings_page.contains("Costs"));
+    assert!(settings_page.contains("Model capabilities"));
+    assert!(settings_page.contains("Save and exit"));
 }
 
 #[tokio::test]
@@ -354,7 +362,7 @@ async fn unsafe_storage_shows_environment_guidance_and_never_defaults_to_save() 
 }
 
 #[tokio::test]
-async fn review_keyboard_choices_dispatch_each_action() {
+async fn review_settings_return_to_save_and_keep_the_secondary_exit() {
     let directory = tempfile::tempdir().unwrap();
     let settings = Settings::load(options(directory.path())).await.unwrap();
     let mut state = SetupState::new(&settings);
@@ -363,71 +371,26 @@ async fn review_keyboard_choices_dispatch_each_action() {
     state
         .stored_key
         .set_text("fixture-only-not-a-real-key".into());
+    let key = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+    let mode = SetupMode::FirstRun;
 
-    for (index, action) in [
-        ReviewAction::SaveAndContinue,
-        ReviewAction::SaveAndExit,
-        ReviewAction::Back,
-        ReviewAction::Cancel,
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        state.step = SetupStep::Review;
-        state.review_selection = index;
-        state.finish = None;
-        state.handle(
-            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-            &settings,
-            SetupMode::FirstRun,
-        );
-        match action {
-            ReviewAction::SaveAndContinue => {
-                assert_eq!(Some(Finish::SaveAndContinue), state.finish)
-            }
-            ReviewAction::SaveAndExit => assert_eq!(Some(Finish::SaveAndExit), state.finish),
-            ReviewAction::RepairCredential => unreachable!(),
-            ReviewAction::Back => assert_eq!(SetupStep::ModelSource, state.step),
-            ReviewAction::Cancel => assert_eq!(Some(Finish::Cancel), state.finish),
-            ReviewAction::Save
-            | ReviewAction::Thinking
-            | ReviewAction::Output
-            | ReviewAction::Advanced
-            | ReviewAction::TrialResults
-            | ReviewAction::Pricing => unreachable!(),
-        }
-    }
+    state.handle(key(KeyCode::Down), &settings, mode);
+    state.handle(key(KeyCode::Enter), &settings, mode);
+    assert_eq!(SetupStep::ReviewSettings, state.step);
 
-    for (index, action) in [
-        ReviewAction::SaveAndExit,
-        ReviewAction::Back,
-        ReviewAction::Cancel,
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        state.step = SetupStep::Review;
-        state.review_selection = index;
-        state.finish = None;
-        state.handle(
-            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-            &settings,
-            SetupMode::Init,
-        );
-        match action {
-            ReviewAction::SaveAndExit => assert_eq!(Some(Finish::SaveAndExit), state.finish),
-            ReviewAction::RepairCredential => unreachable!(),
-            ReviewAction::Back => assert_eq!(SetupStep::ModelSource, state.step),
-            ReviewAction::Cancel => assert_eq!(Some(Finish::Cancel), state.finish),
-            ReviewAction::Save
-            | ReviewAction::Thinking
-            | ReviewAction::Output
-            | ReviewAction::Advanced
-            | ReviewAction::TrialResults
-            | ReviewAction::Pricing => unreachable!(),
-            ReviewAction::SaveAndContinue => unreachable!(),
-        }
-    }
+    state.handle(key(KeyCode::Enter), &settings, mode);
+    assert_eq!(SetupStep::Thinking, state.step);
+    state.handle(key(KeyCode::Enter), &settings, mode);
+    assert_eq!(SetupStep::ReviewSettings, state.step);
+    state.handle(key(KeyCode::Esc), &settings, mode);
+    assert_eq!(SetupStep::Review, state.step);
+    assert_eq!(0, state.review_selection);
+
+    state.handle(key(KeyCode::Down), &settings, mode);
+    state.handle(key(KeyCode::Enter), &settings, mode);
+    state.handle(key(KeyCode::Up), &settings, mode);
+    state.handle(key(KeyCode::Enter), &settings, mode);
+    assert_eq!(Some(Finish::SaveAndExit), state.finish);
 }
 
 #[tokio::test]

@@ -575,7 +575,7 @@ impl SetupState {
         if matches!(key.code, KeyCode::Enter | KeyCode::Tab) {
             self.reasoning = choices.get(self.models.cursor).cloned();
             self.reasoning_changed = true;
-            self.step = SetupStep::Review;
+            self.step = SetupStep::ReviewSettings;
         } else {
             self.models.move_cursor(key.code, choices.len());
         }
@@ -589,7 +589,7 @@ impl SetupState {
                 RequestedOutput::Image
             };
             self.output_changed = true;
-            self.step = SetupStep::Review;
+            self.step = SetupStep::ReviewSettings;
         } else {
             self.models.move_cursor(key.code, 2);
         }
@@ -602,7 +602,7 @@ impl SetupState {
         {
             Some(ModelPricing::UsageOnly) => "Usage only",
             Some(ModelPricing::Configured { .. }) => "Configured USD rates",
-            Some(ModelPricing::Automatic) | None => "Automatic · provider receipt when available",
+            Some(ModelPricing::Automatic) | None => "Automatic",
         }
     }
 
@@ -612,7 +612,7 @@ impl SetupState {
             return;
         }
         let Some(model) = self.primary_model() else {
-            self.step = SetupStep::Review;
+            self.step = SetupStep::ReviewSettings;
             return;
         };
         if self.models.cursor != 1 {
@@ -622,7 +622,7 @@ impl SetupState {
                 ModelPricing::UsageOnly
             };
             self.model_pricing.insert(model, mode);
-            self.step = SetupStep::Review;
+            self.step = SetupStep::ReviewSettings;
             return;
         }
         let rates = match self.model_pricing.get(&model) {
@@ -685,7 +685,7 @@ impl SetupState {
                     },
                 );
                 self.problem = None;
-                self.step = SetupStep::Review;
+                self.step = SetupStep::ReviewSettings;
             }
             _ => {
                 if let Some(field) = self.rate_fields.get_mut(self.models.cursor) {

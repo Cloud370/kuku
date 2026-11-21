@@ -110,7 +110,10 @@ def first_run_credential_repair(binary, bridge, directory):
         assert headers.get("x-api-key") == key, "Repaired credential did not reach the provider"
         if method == "GET":
             return json_response({}, 404)
-        if not json.loads(body).get("stream"):
+        request = json.loads(body)
+        if not request.get("stream"):
+            if any(part["type"] == "image" for part in request["messages"][0]["content"]):
+                return json_response({"content": [], "stop_reason": "max_tokens"})
             return json_response({"content": [{"type": "text", "text": "377"}]})
         authenticated.append(True)
         return original_dispatch(method, path, headers, body)
@@ -143,9 +146,9 @@ def first_run_credential_repair(binary, bridge, directory):
             terminal.press("\x1b[B\r")
             terminal.expect("Model ID")
             terminal.press("\r")
-            terminal.expect("Save and continue", also=("Tests · 2/2 finished",))
-            terminal.press("\x1b[B\x1b[B\r")
-            terminal.expect("Image not verified", also=("Expected", "Got no colors"))
+            terminal.expect("Save and continue", also=("2/2 finished", "1 to check"))
+            terminal.press("\x1b[B\r")
+            terminal.expect("Image not verified", also=("hit output limit", "Cost · Unknown"))
             terminal.press("\r")
             terminal.expect("› Save and continue")
             terminal.press("\r")
@@ -216,7 +219,19 @@ def shared_model_editor(binary, bridge, directory):
             terminal.press("alpha \x01beta \r")
             terminal.expect("Choose the default model", also=("alpha", "beta"))
             terminal.press("\x1b[B\r")
-            terminal.expect("Default model · beta", also=("Provider default",))
+            terminal.request("resize", rows=20, cols=60)
+            save_review = terminal.expect(
+                "Save setup", also=("Default", "beta", "API URL", "Settings", "› Save and continue"),
+                absent=("Model capabilities", "Save and exit"),
+            )["screen"]
+            terminal.press("\x1b[B\x1b[B\r")
+            settings_review = terminal.expect(
+                "Model capabilities", also=("Provider default", "Costs", "Save and exit"),
+                absent=("API URL",),
+            )["screen"]
+            terminal.press("\x1b")
+            terminal.expect("› Save and continue")
+            terminal.request("resize", rows=32, cols=110)
             terminal.press("\r")
             terminal.expect("New session", state="Ready", absent=("Connected", "F2 Restart"))
             terminal.submit("Use the first saved default")
@@ -242,7 +257,7 @@ def shared_model_editor(binary, bridge, directory):
             terminal.expect("Model ID")
             terminal.type("gamma")
             terminal.press("\r")
-            terminal.expect("Save models", also=("Model · gamma",))
+            terminal.expect("Save models", also=("API URL", "gamma"))
             terminal.press("\r")
             terminal.expect("Tier · gamma")
             terminal.press("gamma")
@@ -262,7 +277,7 @@ def shared_model_editor(binary, bridge, directory):
             terminal.press("\x01")
             terminal.type("delta")
             terminal.press("\r")
-            terminal.expect("Save models", also=("Model · delta",))
+            terminal.expect("Save models", also=("API URL", "delta"))
             terminal.press("\r")
             terminal.expect("Tier · gamma", also=("delta",))
             terminal.press("\x1b")
@@ -317,6 +332,10 @@ def shared_model_editor(binary, bridge, directory):
             terminal.expect(draft, state="Finished", absent=("Connected", "F2 Restart"))
             terminal.exit_cleanly("\x03\x03")
         assert ("GET", "/gateway/models") in addresses and ("POST", "/gateway/messages") in addresses
+        (client.directory / "review-layout.json").write_text(
+            json.dumps({"save": save_review, "settings": settings_review}, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
 
 
 def setup_probe_progress(binary, bridge, directory):
@@ -383,13 +402,13 @@ def setup_probe_progress(binary, bridge, directory):
                 terminal.press("\r")
                 terminal.expect(
                     "Save setup",
-                    also=("Tests · 1/4 finished", "Save stops tests", f"{endpoint}/v1/chat/completions"),
+                    also=("1/4 finished", "Save stops tests", f"{endpoint}/v1/chat/completions"),
                     absent=("Ready to try",),
                 )
-                terminal.press("\x1b[B\x1b[B\r")
+                terminal.press("\x1b[B\r")
                 progress = terminal.expect(
                     "Text reply received",
-                    also=("Waiting for response", "Queued", "Enter returns to save"),
+                    also=("Waiting for response", "Queued", "Enter or Esc back"),
                 )["screen"]
                 terminal.press("\r")
                 terminal.expect("Save setup", also=("› Save and continue",))

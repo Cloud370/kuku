@@ -4,17 +4,18 @@ use std::time::Duration;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::{Frame, Terminal};
 
 use crate::editor::Editor;
-use crate::theme::{ACCENT, MUTED, SUCCESS, WARNING};
+use crate::text::{shorten_middle, single_line};
+use crate::theme::{emphasis, focused_row, ACCENT, MUTED, SUCCESS, WARNING};
 
 use super::config::Settings;
-use super::state::{SetupIntent, SetupState, SetupStep};
+use super::state::{ReviewAction, SetupIntent, SetupState, SetupStep};
 use super::{CredentialSource, Finish, SetupMode};
 
 mod model_pages;
@@ -119,9 +120,13 @@ pub(super) fn render(
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(inner);
     render_step(frame, chunks[0], settings, state, mode);
+    let keys = if state.step == SetupStep::TrialResults {
+        "↑/↓ scroll · Enter or Esc back"
+    } else {
+        "↑/↓ move · Enter choose · Esc back · Ctrl+C cancel"
+    };
     frame.render_widget(
-        Paragraph::new("↑/↓ move · Enter choose · Esc back · Ctrl+C exit")
-            .style(Style::default().fg(MUTED)),
+        Paragraph::new(keys).style(Style::default().fg(MUTED)),
         chunks[1],
     );
 }
@@ -133,6 +138,14 @@ fn render_step(
     state: &mut SetupState,
     mode: SetupMode,
 ) {
+    let area = if matches!(
+        state.step,
+        SetupStep::Review | SetupStep::ReviewSettings | SetupStep::TrialResults
+    ) {
+        area.inner(Margin::new(2, 1))
+    } else {
+        area
+    };
     let mut row = 0;
     match state.step {
         SetupStep::Consent => {
@@ -298,6 +311,9 @@ fn render_step(
             }
         }
         SetupStep::Review => render_review(frame, area, &mut row, settings, state, mode),
+        SetupStep::ReviewSettings => {
+            render_review_settings(frame, area, &mut row, settings, state, mode)
+        }
         SetupStep::Protocol
         | SetupStep::Address
         | SetupStep::AddressKind
@@ -327,16 +343,13 @@ fn render_review(
     state: &SetupState,
     mode: SetupMode,
 ) {
-    line(frame, area, row, "Save setup", ACCENT);
-    if let Ok(url) = state.request_url() {
-        line(
-            frame,
-            area,
-            row,
-            &format!("Request · {}", super::probes::display_url(&url)),
-            MUTED,
-        );
-    }
+    render_line(
+        frame,
+        area,
+        row,
+        Line::styled("Save setup", emphasis(ACCENT)),
+    );
+    *row += 1;
     let model = state.primary_model().unwrap_or_default();
     let count = state.models.selected.len().saturating_sub(1);
     let selection = if count > 0 {
@@ -345,46 +358,45 @@ fn render_review(
         model
     };
     let role = if state.intent == SetupIntent::Default {
-        "Default model"
+        "Default"
     } else {
         "Model"
     };
-    line(frame, area, row, &format!("{role} · {selection}"), MUTED);
-    let output = match state.output {
-        kuku::config::RequestedOutput::Text => "text",
-        kuku::config::RequestedOutput::Image => "image (adapter supports text)",
-    };
-    let unchanged_model = state.route_name(settings).and_then(|route| settings.resolved.tier(route))
-        .zip(state.primary_model())
-        .is_some_and(|(route, model)| route.model == model &&
-            matches!(state.choice(), super::ConnectionChoice::Existing(name) if route.provider == *name));
-    let effort = (unchanged_model || state.reasoning_changed)
-        .then_some(state.reasoning.as_deref())
-        .flatten()
-        .filter(|effort| *effort != "provider-default");
-    let thinking = effort.unwrap_or("Provider default");
-    line(
-        frame,
-        area,
-        row,
-        &format!("Thinking · {thinking}    Output · {output}"),
-        MUTED,
-    );
-    if !state.trials.rows().is_empty() {
-        let progress = super::probes::progress(&state.trials);
-        let hint = if state.trials.pending() {
-            " · Save stops tests"
-        } else {
-            ""
-        };
-        line(
+    summary_row(frame, area, row, role, &selection, None);
+    if let Ok(url) = state.request_url() {
+        summary_row(
             frame,
             area,
             row,
-            &format!("Tests · {progress}{hint}"),
-            ACCENT,
+            "API URL",
+            &super::probes::display_url(&url),
+            None,
         );
     }
+    if !state.trials.rows().is_empty() {
+        let (progress, attention) = super::probes::review_status(&state.trials);
+        summary_row(
+            frame,
+            area,
+            row,
+            "Tests",
+            &progress,
+            attention.then_some(WARNING),
+        );
+    }
+    render_review_warnings(frame, area, row, settings, state, mode);
+    *row += 1;
+    review_menu(frame, area, row, state, mode, |_| None);
+}
+
+fn render_review_warnings(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    row: &mut u16,
+    settings: &Settings,
+    state: &SetupState,
+    mode: SetupMode,
+) {
     if let super::ConnectionChoice::Existing(name) = state.choice() {
         if state.connection(settings).is_ok_and(|connection| {
             settings.resolved.provider(name).is_some_and(|previous| {
@@ -422,35 +434,96 @@ fn render_review(
         };
         line(frame, area, row, guidance, WARNING);
     }
-    line(
+}
+
+fn render_review_settings(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    row: &mut u16,
+    settings: &Settings,
+    state: &SetupState,
+    mode: SetupMode,
+) {
+    render_line(frame, area, row, Line::styled("Settings", emphasis(ACCENT)));
+    *row += 1;
+    let unchanged_model = state.route_name(settings).and_then(|route| settings.resolved.tier(route))
+        .zip(state.primary_model())
+        .is_some_and(|(route, model)| route.model == model &&
+            matches!(state.choice(), super::ConnectionChoice::Existing(name) if route.provider == *name));
+    let effort = (unchanged_model || state.reasoning_changed)
+        .then_some(state.reasoning.as_deref())
+        .flatten()
+        .filter(|effort| *effort != "provider-default");
+    let output = match state.output {
+        kuku::config::RequestedOutput::Text => "Text",
+        kuku::config::RequestedOutput::Image => "Image requested",
+    };
+    review_menu(frame, area, row, state, mode, |action| match action {
+        ReviewAction::Thinking => Some(effort.unwrap_or("Provider default")),
+        ReviewAction::Output => Some(output),
+        ReviewAction::Pricing => Some(state.pricing_label()),
+        _ => None,
+    });
+}
+
+fn summary_row(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    row: &mut u16,
+    label: &str,
+    value: &str,
+    color: Option<ratatui::style::Color>,
+) {
+    const LABEL_WIDTH: usize = 10;
+    let value = shorten_middle(
+        &single_line(value),
+        usize::from(area.width).saturating_sub(LABEL_WIDTH),
+    );
+    let style = color.map_or_else(Style::default, |color| Style::default().fg(color));
+    render_line(
         frame,
         area,
         row,
-        &format!("Cost · {}", state.pricing_label()),
-        MUTED,
+        Line::from(vec![
+            Span::styled(format!("{label:<LABEL_WIDTH$}"), Style::default().fg(MUTED)),
+            Span::styled(value, style),
+        ]),
     );
-    let visible = usize::from(
-        area.height
-            .saturating_sub(*row + u16::from(state.problem.is_some())),
-    )
-    .max(1);
-    let start = state
-        .review_selection
-        .saturating_sub(visible.saturating_sub(1));
-    for (index, action) in state
-        .review_choices(mode)
-        .iter()
-        .enumerate()
-        .skip(start)
-        .take(visible)
-    {
-        option(
-            frame,
-            area,
-            row,
-            action.label(),
-            index == state.review_selection,
+}
+
+fn review_menu<'a>(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    row: &mut u16,
+    state: &SetupState,
+    mode: SetupMode,
+    value: impl Fn(ReviewAction) -> Option<&'a str>,
+) {
+    for (index, action) in state.review_choices(mode).into_iter().enumerate() {
+        if *row
+            >= area
+                .height
+                .saturating_sub(u16::from(state.problem.is_some()))
+        {
+            break;
+        }
+        let selected = index == state.review_selection;
+        let marker = if selected { "› " } else { "  " };
+        let label = action.label();
+        let text = match value(action) {
+            Some(value) => format!("{marker}{label:<19} {}", single_line(value)),
+            None => format!("{marker}{label}"),
+        };
+        let style = if selected {
+            focused_row().add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        frame.render_widget(
+            Paragraph::new(text).style(style),
+            Rect::new(area.x, area.y + *row, area.width, 1),
         );
+        *row += 1;
     }
 }
 

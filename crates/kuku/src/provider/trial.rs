@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 use tokio_stream::StreamExt;
 
 use crate::config::{ProviderConfig, ProviderProfile};
+use crate::event::ModelStopReason;
 use crate::{Error, Result};
 
 use super::capabilities::resolve_settings;
@@ -50,6 +51,8 @@ pub struct TrialResult {
     pub text_returned: bool,
     pub observed_reasoning: bool,
     pub reported_effort: Option<String>,
+    /// Completion reason reported by the selected protocol, when available.
+    pub stop_reason: Option<ModelStopReason>,
     pub image_match: Option<bool>,
     pub expected_colors: Option<[String; 4]>,
     pub observed_colors: Vec<String>,
@@ -187,16 +190,21 @@ fn interpret_trial(
     expected: Option<[usize; 4]>,
 ) -> Result<TrialResult> {
     use crate::config::ProviderFormat;
-    let (text, reasoning_block) = match connection.format {
+    let (text, reasoning_block, reason) = match connection.format {
         ProviderFormat::OpenAiChat => {
             let message = response
                 .pointer("/choices/0/message")
                 .ok_or_else(invalid_receipt)?;
             (
-                message["content"].as_str().unwrap_or_default().to_owned(),
+                match &message["content"] {
+                    Value::String(text) => text.clone(),
+                    Value::Array(parts) => texts(parts.iter(), "text"),
+                    _ => String::new(),
+                },
                 ["reasoning", "reasoning_content", "reasoning_details"]
                     .iter()
                     .any(|name| present_content(&message[*name])),
+                response.pointer("/choices/0/finish_reason"),
             )
         }
         ProviderFormat::OpenAiResponses => {
@@ -208,6 +216,7 @@ fn interpret_trial(
             (
                 texts(content, "output_text"),
                 output.iter().any(|item| item["type"] == "reasoning"),
+                response.pointer("/incomplete_details/reason"),
             )
         }
         ProviderFormat::Anthropic => {
@@ -220,6 +229,7 @@ fn interpret_trial(
                         Some("thinking" | "redacted_thinking")
                     )
                 }),
+                response.get("stop_reason"),
             )
         }
     };
@@ -261,6 +271,9 @@ fn interpret_trial(
         reported_effort: report
             .as_ref()
             .and_then(|report| report.reasoning_effort.clone()),
+        stop_reason: reason
+            .and_then(Value::as_str)
+            .and_then(ModelStopReason::from_wire),
         image_match,
         expected_colors,
         observed_colors,
@@ -342,7 +355,40 @@ fn png_chunk(png: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
 
 #[cfg(test)]
 mod tests {
-    use super::recognized_colors;
+    use serde_json::json;
+
+    use crate::config::{ApiKey, ProviderConfig, ProviderFormat};
+    use crate::event::ModelStopReason;
+
+    use super::{interpret_trial, recognized_colors};
+
+    #[test]
+    fn chat_trial_distinguishes_a_cut_off_reply_from_a_wrong_image_answer() {
+        let connection = ProviderConfig {
+            format: ProviderFormat::OpenAiChat,
+            base_url: "https://fixture.test/v1".into(),
+            api_key: ApiKey::Env("FIXTURE_KEY".into()),
+            options: Default::default(),
+        };
+        let limit = json!({"choices": [{
+            "message": {"content": null, "reasoning_content": "working"},
+            "finish_reason": "length"
+        }]});
+        let result = interpret_trial(&connection, "fixture", &limit, Some([0, 1, 2, 3])).unwrap();
+        assert_eq!(Some(ModelStopReason::Length), result.stop_reason);
+        assert!(!result.text_returned);
+        assert!(result.observed_reasoning);
+        assert_eq!(Some(false), result.image_match);
+
+        let reply = json!({"choices": [{
+            "message": {"content": [{"type": "text", "text": "red, green, blue, yellow"}]},
+            "finish_reason": "stop"
+        }]});
+        let result = interpret_trial(&connection, "fixture", &reply, Some([0, 1, 2, 3])).unwrap();
+        assert_eq!(Some(ModelStopReason::EndTurn), result.stop_reason);
+        assert!(result.text_returned);
+        assert_eq!(Some(true), result.image_match);
+    }
 
     #[test]
     fn accepts_position_labels_and_keeps_extra_colors_for_mismatch() {

@@ -1,5 +1,6 @@
 use kuku::adapter::{ModelTrial, Probe, ProbeBatch, ProbeProgress, ProbeResult, RequestCost};
 use kuku::config::ProviderProxy;
+use kuku::event::ModelStopReason;
 use ratatui::{layout::Rect, Frame};
 
 use crate::theme::{ACCENT, MUTED, SUCCESS, WARNING};
@@ -12,7 +13,7 @@ fn label_for(probe: &Probe) -> String {
         Probe::Quotes { model, .. } => format!("{model} · route pricing"),
         Probe::Trial { model, check, .. } => match check {
             ModelTrial::Text { effort, .. } => format!(
-                "{model} · thinking {}",
+                "{model} · text · {}",
                 effort.as_deref().unwrap_or("provider default")
             ),
             ModelTrial::ImageInput { .. } => format!("{model} · image input"),
@@ -49,12 +50,16 @@ pub(super) fn render(
         &format!("{heading} · {}", progress(batch)),
         ACCENT,
     );
-    let network = match proxy {
-        ProviderProxy::Environment => "Proxy from environment".to_owned(),
-        ProviderProxy::Direct => "No proxy".to_owned(),
-        ProviderProxy::Explicit { url, .. } => display_url(url),
-    };
-    line(frame, area, row, &format!("Network · {network}"), MUTED);
+    if let ProviderProxy::Explicit { url, .. } = proxy {
+        line(
+            frame,
+            area,
+            row,
+            &format!("Proxy · {}", display_url(url)),
+            MUTED,
+        );
+    }
+    *row += 1;
     for request in batch.rows().iter().skip(visible.start).take(visible.len()) {
         let (label, mut detail, color) = probe_detail(&request.probe, &request.progress);
         if let Some(models) = &request.cached_models {
@@ -74,13 +79,9 @@ pub(super) fn render(
             if let Some(expected) = trial
                 .expected_colors
                 .as_ref()
-                .filter(|_| trial.image_match == Some(false))
+                .filter(|_| trial.image_match == Some(false) && !trial.observed_colors.is_empty())
             {
-                let got = if trial.observed_colors.is_empty() {
-                    "no colors".into()
-                } else {
-                    trial.observed_colors.join(", ")
-                };
+                let got = trial.observed_colors.join(", ");
                 line(
                     frame,
                     area,
@@ -108,25 +109,66 @@ pub(super) fn progress(batch: &ProbeBatch) -> String {
     format!("{completed}/{} finished", batch.rows().len())
 }
 
-pub(super) fn amounts(batch: &ProbeBatch) -> (f64, f64, usize) {
-    let mut totals = (0.0, 0.0, 0);
+pub(super) fn review_status(batch: &ProbeBatch) -> (String, bool) {
+    let progress = progress(batch);
+    if batch.pending() {
+        return (format!("{progress} · Save stops tests"), false);
+    }
+    let unresolved = batch
+        .rows()
+        .iter()
+        .filter(|row| match &row.progress {
+            ProbeProgress::Finished(_, Ok(ProbeResult::Trial(trial))) => {
+                trial.image_match == Some(false) || !trial.text_returned
+            }
+            ProbeProgress::Finished(_, Err(_)) => true,
+            _ => false,
+        })
+        .count();
+    if unresolved == 0 {
+        (progress, false)
+    } else {
+        (format!("{progress} · {unresolved} to check"), true)
+    }
+}
+
+pub(super) fn cost_summary(batch: &ProbeBatch) -> Option<String> {
+    let (mut reported, mut estimated, mut unknown) = (None, None, 0);
     for row in batch.rows() {
         if !matches!(row.probe, kuku::adapter::Probe::Trial { .. }) {
             continue;
         }
         match &row.progress {
             ProbeProgress::Finished(_, Ok(ProbeResult::Trial(trial))) => match trial.cost {
-                RequestCost::Reported { .. } => totals.0 += trial.cost.usd().unwrap_or_default(),
-                RequestCost::Estimated { .. } => totals.1 += trial.cost.usd().unwrap_or_default(),
-                RequestCost::Unknown => totals.2 += 1,
+                RequestCost::Reported { .. } => {
+                    *reported.get_or_insert(0.0) += trial.cost.usd().unwrap_or_default()
+                }
+                RequestCost::Estimated { .. } => {
+                    *estimated.get_or_insert(0.0) += trial.cost.usd().unwrap_or_default()
+                }
+                RequestCost::Unknown => unknown += 1,
             },
             ProbeProgress::Finished(_, Err(_)) | ProbeProgress::Canceled { sent: true } => {
-                totals.2 += 1
+                unknown += 1
             }
             _ => {}
         }
     }
-    totals
+    let mut parts = Vec::new();
+    if let Some(amount) = reported {
+        parts.push(format!("${amount:.7} reported"));
+    }
+    if let Some(amount) = estimated {
+        parts.push(format!("${amount:.7} estimated"));
+    }
+    if unknown > 0 {
+        parts.push(if parts.is_empty() {
+            "Unknown".into()
+        } else {
+            format!("{unknown} unknown")
+        });
+    }
+    (!parts.is_empty()).then(|| format!("Cost · {}", parts.join(" · ")))
 }
 
 fn probe_detail(
@@ -196,35 +238,41 @@ fn probe_detail(
                 Ok(ProbeResult::Trial(trial)) => {
                     let detail = match trial.image_match {
                         Some(true) => "Image verified".into(),
-                        Some(false) => "Image not verified".into(),
+                        Some(false) => {
+                            let reason = if trial.stop_reason == Some(ModelStopReason::Length) {
+                                "hit output limit"
+                            } else if !trial.text_returned && trial.observed_reasoning {
+                                "thinking only"
+                            } else if !trial.text_returned {
+                                "no answer"
+                            } else if trial.observed_colors.is_empty() {
+                                "no color names"
+                            } else {
+                                "colors differ"
+                            };
+                            format!("Image not verified · {reason}")
+                        }
+                        None if !trial.text_returned
+                            && trial.stop_reason == Some(ModelStopReason::Length) =>
+                        {
+                            "Hit output limit".into()
+                        }
+                        None if !trial.text_returned && trial.observed_reasoning => {
+                            "Thinking only · no answer".into()
+                        }
+                        None if !trial.text_returned => "No answer".into(),
                         None => match &trial.reported_effort {
-                            Some(effort) => format!("Upstream reported effort {effort}"),
+                            Some(effort) => format!("Thinking level · {effort}"),
                             None if trial.observed_reasoning => {
-                                "Reasoning observed · effort unknown".into()
+                                "Thinking seen · level not reported".into()
                             }
-                            None if trial.text_returned => {
-                                "Text reply received · effort unknown".into()
-                            }
-                            None => "Response contained no text reply".into(),
+                            None => "Text reply received".into(),
                         },
                     };
-                    let cost = match &trial.cost {
-                        RequestCost::Reported { .. } => {
-                            format!("reported ${:.7}", trial.cost.usd().unwrap_or_default())
-                        }
-                        RequestCost::Estimated { .. } => {
-                            format!("estimated ${:.7}", trial.cost.usd().unwrap_or_default())
-                        }
-                        RequestCost::Unknown => "cost unknown".into(),
-                    };
-                    if trial.image_match == Some(false)
-                        || (trial.image_match.is_none()
-                            && !trial.text_returned
-                            && !trial.observed_reasoning)
-                    {
-                        ("!", format!("{detail} · {cost}"), WARNING)
+                    if trial.image_match == Some(false) || !trial.text_returned {
+                        ("!", detail, WARNING)
                     } else {
-                        ("✓", format!("{detail} · {cost}"), SUCCESS)
+                        ("✓", detail, SUCCESS)
                     }
                 }
                 Err(error) => ("!", crate::text::single_line(&error.to_string()), WARNING),

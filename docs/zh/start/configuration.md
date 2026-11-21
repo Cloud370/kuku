@@ -24,7 +24,7 @@ $KUKU_HOME/config.toml
 
 选择已有连接、预设或自定义连接，再确认协议、供应商 URL、网络路径和密钥。网络可选择跟随代理环境变量、直连，或使用 HTTP、SOCKS5、SOCKS5H。裸域名有多个标准候选路径时，设置会并发查询，逐条显示进度和结果，找到可用目录就自动打开模型列表。目录无法读取时，可以直接填写已知的模型 ID。
 
-打字搜索，方向键移动，Enter 确认单选。按 Space 勾选多个模型，再用 Enter 确认整组。新配置选中多个模型时，可指定其中一个作为默认。确认模型后直接进入保存页，同时在后台试跑。可以查看进度，也可以打开 **Model tests** 查看逐条请求。随时保存即可开始使用，保存时会停止剩余试跑。保存页同时显示请求地址、思考、输出和费用来源。**Cost and rates** 可设置费率。在状态栏添加 **Request cost** 可查看费用汇总。[代理与费率配置](../reference/config.md#providername)
+打字搜索，方向键移动，Enter 确认单选。按 Space 勾选多个模型，再用 Enter 确认整组。新配置选中多个模型时，可指定其中一个作为默认。确认模型后直接进入保存页，同时在后台试跑。可以查看进度，也可以打开 **Model tests** 查看逐条请求。随时保存即可开始使用，保存时会停止剩余试跑。保存页显示模型、请求地址和测试状态。打开 **Settings** 可修改思考、输出、模型能力和计费方式。**Costs** 可设置费率。在状态栏添加 **Request cost** 可查看费用汇总。[代理与费率配置](../reference/config.md#providername)
 
 在 Session 中打开 `/model` 或按 Ctrl+L。**Add model or connection** 和 **Edit** 打开同一个表单。选用已有连接时可复用保存的凭据。**Use in this Session** 修改所选 Agent 的路由，**Set as default** 将路由保存为新 Session 的默认值。`/thinking` 分别提供 Session 覆盖和模型持久设置。[配置参考](../reference/config.md)
 

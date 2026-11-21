@@ -163,7 +163,7 @@ pub(super) fn render_model_settings(
             }
         }
         SetupStep::TrialResults => {
-            let visible = usize::from(area.height.saturating_sub(5) / 4).max(1);
+            let visible = usize::from(area.height.saturating_sub(6) / 4).max(1);
             let start = state
                 .models
                 .cursor
@@ -177,15 +177,16 @@ pub(super) fn render_model_settings(
                 &state.trials,
                 start..start + visible,
             );
-            let (reported, estimated, unknown) = super::super::probes::amounts(&state.trials);
-            line(
-                frame,
-                area,
-                row,
-                &format!("Reported ${reported:.7} · estimated ${estimated:.7} · {unknown} unknown"),
-                MUTED,
-            );
-            line(frame, area, row, "Enter returns to save", ACCENT);
+            *row += 1;
+            if let Ok(url) = state.request_url() {
+                let url = super::super::probes::display_url(&url);
+                let url =
+                    crate::text::shorten_middle(&url, usize::from(area.width.saturating_sub(10)));
+                line(frame, area, row, &format!("API URL · {url}"), MUTED);
+            }
+            if let Some(cost) = super::super::probes::cost_summary(&state.trials) {
+                line(frame, area, row, &cost, MUTED);
+            }
         }
         SetupStep::DefaultModel => {
             line(frame, area, row, "Choose the default model", ACCENT);
@@ -376,7 +377,8 @@ pub(super) fn render_model_settings(
         | SetupStep::Model
         | SetupStep::CredentialSource
         | SetupStep::Credential
-        | SetupStep::Review => unreachable!("handled by render_step"),
+        | SetupStep::Review
+        | SetupStep::ReviewSettings => unreachable!("handled by render_step"),
     }
 }
 

@@ -35,6 +35,7 @@ pub(super) enum SetupStep {
     CredentialSource,
     Credential,
     Review,
+    ReviewSettings,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,6 +43,7 @@ pub(super) enum ReviewAction {
     SaveAndContinue,
     SaveAndExit,
     Save,
+    Settings,
     Thinking,
     Output,
     Advanced,
@@ -49,7 +51,6 @@ pub(super) enum ReviewAction {
     TrialResults,
     Pricing,
     Back,
-    Cancel,
 }
 
 impl ReviewAction {
@@ -58,14 +59,14 @@ impl ReviewAction {
             Self::SaveAndContinue => "Save and continue",
             Self::SaveAndExit => "Save and exit",
             Self::Save => "Save models",
+            Self::Settings => "Settings",
             Self::Thinking => "Thinking",
-            Self::Output => "Requested output",
-            Self::Advanced => "Advanced model capabilities",
+            Self::Output => "Output",
+            Self::Advanced => "Model capabilities",
             Self::RepairCredential => "Paste API key",
             Self::TrialResults => "Model tests",
-            Self::Pricing => "Cost and rates",
+            Self::Pricing => "Costs",
             Self::Back => "Back",
-            Self::Cancel => "Cancel",
         }
     }
 }
@@ -350,7 +351,7 @@ impl SetupState {
                 _ => {}
             },
             SetupStep::Credential => self.edit_credential(key, settings),
-            SetupStep::Review => match key.code {
+            SetupStep::Review | SetupStep::ReviewSettings => match key.code {
                 KeyCode::Up | KeyCode::Left => self.move_review(-1, mode),
                 KeyCode::Down | KeyCode::Right | KeyCode::Tab => self.move_review(1, mode),
                 KeyCode::Enter => self.choose_review(mode),
@@ -491,7 +492,8 @@ impl SetupState {
             | SetupStep::Rates
             | SetupStep::Advanced
             | SetupStep::Override
-            | SetupStep::Review => {}
+            | SetupStep::Review
+            | SetupStep::ReviewSettings => {}
         }
     }
 
@@ -528,7 +530,7 @@ impl SetupState {
                     SetupStep::Credential
                 }
             }
-            SetupStep::TrialResults => {
+            SetupStep::TrialResults | SetupStep::ReviewSettings => {
                 self.review_selection = 0;
                 SetupStep::Review
             }
@@ -543,7 +545,7 @@ impl SetupState {
                 }
             }
             SetupStep::Thinking | SetupStep::Output | SetupStep::Advanced | SetupStep::Pricing => {
-                SetupStep::Review
+                SetupStep::ReviewSettings
             }
             SetupStep::Rates => SetupStep::Pricing,
             SetupStep::Override => SetupStep::Advanced,
@@ -637,34 +639,38 @@ impl SetupState {
     }
 
     pub(super) fn review_choices(&self, mode: SetupMode) -> Vec<ReviewAction> {
-        let mut choices = Vec::new();
-        if mode == SetupMode::FirstRun {
-            if self.credential_ready() {
-                choices.push(ReviewAction::SaveAndContinue);
-            } else if self.can_store_key {
-                choices.push(ReviewAction::RepairCredential);
-            } else {
-                choices.push(ReviewAction::Back);
+        if self.step == SetupStep::ReviewSettings {
+            let mut choices = vec![
+                ReviewAction::Thinking,
+                ReviewAction::Output,
+                ReviewAction::Pricing,
+                ReviewAction::Advanced,
+            ];
+            if mode == SetupMode::FirstRun && self.credential_ready() {
+                choices.push(ReviewAction::SaveAndExit);
             }
+            return choices;
         }
-        choices.push(if mode == SetupMode::Session {
-            ReviewAction::Save
-        } else {
-            ReviewAction::SaveAndExit
-        });
+        let mut choices = Vec::new();
+        match mode {
+            SetupMode::FirstRun if self.credential_ready() => {
+                choices.push(ReviewAction::SaveAndContinue);
+            }
+            SetupMode::FirstRun => {
+                choices.push(if self.can_store_key {
+                    ReviewAction::RepairCredential
+                } else {
+                    ReviewAction::Back
+                });
+                choices.push(ReviewAction::SaveAndExit);
+            }
+            SetupMode::Init => choices.push(ReviewAction::SaveAndExit),
+            SetupMode::Session => choices.push(ReviewAction::Save),
+        }
         if !self.trials.rows().is_empty() {
             choices.push(ReviewAction::TrialResults);
         }
-        if !choices.contains(&ReviewAction::Back) {
-            choices.push(ReviewAction::Back);
-        }
-        choices.push(ReviewAction::Cancel);
-        choices.extend([
-            ReviewAction::Thinking,
-            ReviewAction::Output,
-            ReviewAction::Advanced,
-            ReviewAction::Pricing,
-        ]);
+        choices.push(ReviewAction::Settings);
         choices
     }
 
@@ -684,6 +690,10 @@ impl SetupState {
                 } else {
                     Finish::SaveAndContinue
                 });
+            }
+            ReviewAction::Settings => {
+                self.review_selection = 0;
+                self.step = SetupStep::ReviewSettings;
             }
             ReviewAction::Thinking => {
                 self.models.cursor = 0;
@@ -719,7 +729,6 @@ impl SetupState {
                 self.step = SetupStep::Pricing;
             }
             ReviewAction::Back => self.previous(),
-            ReviewAction::Cancel => self.finish = Some(Finish::Cancel),
         }
     }
 }
