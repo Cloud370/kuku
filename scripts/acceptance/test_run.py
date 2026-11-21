@@ -366,12 +366,15 @@ class AcceptanceTests(unittest.TestCase):
         manifest, case = ACCEPTANCE.manifest_case("large-scale-text-editing", "frontier")
         self.assertEqual([item["id"] for item in manifest["cases"]], [
             "log-summary-date-ranges", "cancel-async-tasks", "regex-log", "large-scale-text-editing",
-            "nginx-request-logging", "sqlite-with-gcov", "kv-store-grpc", "gcode-to-text",
+            "nginx-request-logging", "sqlite-with-gcov", "kv-store-grpc", "gcode-to-text", "pypi-server",
         ])
         self.assertEqual(case["artifacts"], ["/app/apply_macros.vim"])
         _, gcode = ACCEPTANCE.manifest_case("gcode-to-text", "frontier")
         self.assertEqual((gcode["workspace"], gcode["artifacts"], gcode["timeout_sec"]),
                          ("/app", ["/app/out.txt"], 900))
+        _, package_server = ACCEPTANCE.manifest_case("pypi-server", "frontier")
+        self.assertEqual((package_server["workspace"], package_server["artifacts"], package_server["timeout_sec"]),
+                         ("/app", [], 900))
         legacy, legacy_case = ACCEPTANCE.manifest_case("cancel-async-tasks")
         frontier, frontier_case = ACCEPTANCE.manifest_case("cancel-async-tasks", "frontier")
         self.assertEqual(legacy_case, frontier_case)

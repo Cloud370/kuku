@@ -54,7 +54,8 @@
         "nginx-request-logging",
         "sqlite-with-gcov",
         "kv-store-grpc",
-        "gcode-to-text"
+        "gcode-to-text",
+        "pypi-server"
       ],
       "additional_cases": [
         {
@@ -90,6 +91,13 @@
           "role": "inspect and transform printer toolpaths with a checked text artifact",
           "workspace": "/app",
           "artifacts": ["/app/out.txt"],
+          "timeout_sec": 900
+        },
+        {
+          "id": "pypi-server",
+          "role": "build a Python package and serve it from a working local package index",
+          "workspace": "/app",
+          "artifacts": [],
           "timeout_sec": 900
         }
       ]
