@@ -8,6 +8,21 @@ import tempfile
 from run import capture, locked, money, require_success
 
 
+def validate_benchmark_arguments(args, metered, paid):
+    if args.cpus <= 0:
+        raise ValueError("--cpus must be positive")
+    if args.model is not None and (not metered or args.provider != "deepseek"):
+        raise ValueError("--model selects a direct DeepSeek model for Frontier live")
+    if args.pi_prefix and (not metered or args.provider != "deepseek" or args.require_streaming):
+        raise ValueError("--pi-prefix selects direct DeepSeek Frontier live with Pi Session evidence")
+    if args.node_binary and not args.pi_prefix:
+        raise ValueError("--node-binary requires --pi-prefix")
+    if args.prompts_dir and (not metered or not args.sdk_binary or args.pi_prefix):
+        raise ValueError("--prompts-dir requires a live Frontier SDK runner")
+    if args.require_resource_evidence and not paid:
+        raise ValueError("--require-resource-evidence applies to live benchmark measurements")
+
+
 def add_benchmark_arguments(parser):
     parser.add_argument("--suite", choices=("legacy", "frontier"), default="legacy")
     parser.add_argument("--case", required=True)

@@ -16,8 +16,10 @@ class PiEvidenceTests(unittest.TestCase):
     def test_original_prompt_and_completed_tool_continuation_are_required(self):
         messages = [
             {"role": "user", "content": [{"type": "text", "text": "original prompt"}]},
-            {"role": "assistant", "content": [{"type": "toolCall", "id": "fixture"}], "stopReason": "toolUse"},
+            {"role": "assistant", "content": [{"type": "toolCall", "id": "fixture"},
+                                               {"type": "toolCall", "id": "other"}], "stopReason": "toolUse"},
             {"role": "toolResult", "toolCallId": "fixture"},
+            {"role": "toolResult", "toolCallId": "other"},
             {"role": "assistant", "content": [], "stopReason": "stop"},
         ]
         with tempfile.TemporaryDirectory() as temporary:
@@ -29,7 +31,10 @@ class PiEvidenceTests(unittest.TestCase):
                 session.write_text("".join(json.dumps({"type": "message", "message": entry}) + "\n" for entry in entries))
 
             write(messages)
-            self.assertTrue(inspect_pi(data, "original prompt")["passed"])
+            report = inspect_pi(data, "original prompt")
+            self.assertTrue(report["passed"])
+            self.assertEqual(report["tool_batches"],
+                             {"without_tools": 1, "single_call": 0, "multiple_calls": 1, "max_calls": 2})
             self.assertFalse(inspect_pi(data, "different prompt")["passed"])
             write(messages[:2] + messages[3:])
             self.assertFalse(inspect_pi(data, "original prompt")["passed"])
@@ -386,6 +391,8 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(result["usage"]["input_tokens"], 200)
         self.assertEqual(result["session_usage"]["input_tokens"], 250)
         self.assertEqual(result["other_agents"], ["reviewer"])
+        self.assertEqual(result["tool_batches"],
+                         {"without_tools": 1, "single_call": 1, "multiple_calls": 0, "max_calls": 1})
 
     def streaming(self):
         self.fixture.report["elapsed_ms"] = 10

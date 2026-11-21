@@ -884,18 +884,8 @@ def main():
     paid = args.group == "live" or (args.group == "benchmark" and args.mode == "live")
     metered = paid and args.group == "benchmark" and args.suite == "frontier"
     if args.group == "benchmark":
-        if args.cpus <= 0:
-            raise ValueError("--cpus must be positive")
-        if args.model is not None and (not metered or args.provider != "deepseek"):
-            raise ValueError("--model selects a direct DeepSeek model for Frontier live")
-        if args.pi_prefix and (not metered or args.provider != "deepseek" or args.require_streaming):
-            raise ValueError("--pi-prefix selects direct DeepSeek Frontier live with Pi Session evidence")
-        if args.node_binary and not args.pi_prefix:
-            raise ValueError("--node-binary requires --pi-prefix")
-        if args.prompts_dir and (not metered or not args.sdk_binary or args.pi_prefix):
-            raise ValueError("--prompts-dir requires a live Frontier SDK runner")
-        if args.require_resource_evidence and not paid:
-            raise ValueError("--require-resource-evidence applies to live benchmark measurements")
+        from benchmark_source import validate_benchmark_arguments
+        validate_benchmark_arguments(args, metered, paid)
     secrets = {}
     if paid:
         if metered:

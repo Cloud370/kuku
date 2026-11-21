@@ -212,6 +212,12 @@ def usage_summary(requests, usages, reports, session_scope=False):
             "reported_providers": sorted(providers), "cost_ledger_basis": "conservative_upper_bound"}
 
 
+def tool_batch_summary(sizes):
+    return {"without_tools": sizes[0], "single_call": sizes[1],
+            "multiple_calls": sum(count for size, count in sizes.items() if size > 1),
+            "max_calls": max(sizes, default=0)}
+
+
 def streaming_summary(report, requests, records, text_bytes, thinking_bytes):
     source = report.get("streaming")
     if source is None:
@@ -252,6 +258,7 @@ class SessionFacts:
         self.steps, self.responses, self.usages = {}, {}, {}
         self.session_steps, self.session_usages, self.session_reports = {}, {}, []
         self.regenerations = {}
+        self.tool_calls_per_response = Counter()
         self.calls, self.results, self.result_events, self.tool_prepared, self.dispatched = {}, {}, {}, {}, set()
         self.segments, self.admitted_results = {}, set()
         self.context_candidates, self.context_sources, self.staged_tool_blocks = {}, {}, 0
@@ -358,6 +365,7 @@ class SessionFacts:
                                "args_hash": fingerprint(event.get("args")), "event_id": identity,
                                "id_hash": fingerprint(event.get("tool_call_id")), "tool_hash": fingerprint(event.get("tool"))}
             self.counts["tool_calls"] += 1
+            self.tool_calls_per_response[request] += 1
         elif kind == "runtime.tool_prepared":
             require(key in self.calls and key not in self.tool_prepared, "tool preparation has no unique model call")
             require(event.get("definition", {}).get("schema", {}).get("name") == self.calls[key].get("tool"),
@@ -553,6 +561,7 @@ class SessionFacts:
                 "SDK token totals differ from durable normalized usage")
         return {"passed": True, "agent": self.agent, "session_id": self.session_id,
                 "facts": dict(self.counts), "last_event_id": self.last_id, "cleanup_closed": True,
+                "tool_batches": tool_batch_summary(Counter(self.tool_calls_per_response[key] for key in self.responses)),
                 "output_references": self.outputs, "usage": usage, "usage_scope": "selected_agent",
                 "session_usage": usage_summary(self.session_steps, self.session_usages, self.session_reports, True),
                 "other_agents": sorted(self.created - {self.agent}), "limits": limits,

@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 
 from benchmark_runtime import bundle_binary
+from evidence import tool_batch_summary
 from run import config_record
 
 
@@ -85,6 +86,7 @@ def inspect_pi(data_dir, instruction):
     last_assistant = None
     last_result = -1
     pending = Counter()
+    sizes = Counter()
     calls = results = 0
     try:
         with path.open("rb") as stream:
@@ -103,10 +105,13 @@ def inspect_pi(data_dir, instruction):
                     continue
                 if message.get("role") == "assistant":
                     last_assistant = (index, message.get("stopReason"))
+                    batch_size = 0
                     for block in message["content"]:
                         if block.get("type") == "toolCall":
                             pending[block["id"]] += 1
-                            calls += 1
+                            batch_size += 1
+                    sizes[batch_size] += 1
+                    calls += batch_size
                 elif message.get("role") == "toolResult":
                     call_id = message["toolCallId"]
                     if pending[call_id] <= 0:
@@ -119,5 +124,6 @@ def inspect_pi(data_dir, instruction):
     terminal, stop_reason = last_assistant or (-1, None)
     completed = delivered and stop_reason == "stop" and 0 < calls == results and terminal > last_result
     return {"passed": completed, "submitted_exact_instruction": delivered, "tool_calls": calls,
+            "tool_batches": tool_batch_summary(sizes),
             "tool_results": results, "terminal_stop_reason": stop_reason,
             "session_file": str(path.relative_to(data_dir))}

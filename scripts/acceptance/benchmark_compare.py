@@ -84,6 +84,7 @@ def attempt(directory, harness):
     runtime_files = object_value(result.get('runtime_files'))
     agent = object_value(result.get('agent_evidence' if harness == 'pi' else 'sdk_evidence'))
     tool_facts = agent if harness == 'pi' else object_value(agent.get('facts'))
+    tool_batches = object_value(agent.get('tool_batches'))
     memory_events = object_value(resources.get('memory_event_deltas'))
     version = package.get('version')
     return shared, {
@@ -106,6 +107,8 @@ def attempt(directory, harness):
         'upstream_requests': count(accounting.get('upstream_requests')),
         'provider_relay': relay_summary(meter.get('attempts', [])),
         'tool_calls': count(tool_facts.get('tool_calls')),
+        'tool_batches': {key: count(tool_batches.get(key))
+                         for key in ('without_tools', 'single_call', 'multiple_calls', 'max_calls')} if tool_batches else None,
         'usage': {key: count(object_value(accounting.get('usage')).get(key)) for key in TOKEN_FIELDS},
         'token_estimate_usd': money(accounting.get('token_estimate_usd')),
         'accounted_usd': money(accounting.get('accounted_usd')),
