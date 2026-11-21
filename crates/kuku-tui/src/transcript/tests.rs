@@ -624,10 +624,10 @@ fn source_keeps_nested_fences_and_both_renderings_are_cached_until_the_reply_cha
     let preview = rows(&mut transcript);
     let cached_preview = transcript.recent.records[0]
         .rendered
-        .preview
+        .streaming
         .as_ref()
         .unwrap()
-        .1
+        .rows()
         .as_ptr();
 
     assert!(transcript.toggle_source());
@@ -641,12 +641,18 @@ fn source_keeps_nested_fences_and_both_renderings_are_cached_until_the_reply_cha
     assert!(!raw.contains('\u{001b}'));
     let cache = &transcript.recent.records[0].rendered;
     let cached_source = cache.source.as_ref().unwrap().1.as_ptr();
-    assert_eq!(cached_preview, cache.preview.as_ref().unwrap().1.as_ptr());
+    assert_eq!(
+        cached_preview,
+        cache.streaming.as_ref().unwrap().rows().as_ptr()
+    );
 
     assert!(!transcript.toggle_source());
     assert_eq!(preview, rows(&mut transcript));
     let cache = &transcript.recent.records[0].rendered;
-    assert_eq!(cached_preview, cache.preview.as_ref().unwrap().1.as_ptr());
+    assert_eq!(
+        cached_preview,
+        cache.streaming.as_ref().unwrap().rows().as_ptr()
+    );
     assert_eq!(cached_source, cache.source.as_ref().unwrap().1.as_ptr());
 
     assert!(transcript.toggle_source());
@@ -656,7 +662,12 @@ fn source_keeps_nested_fences_and_both_renderings_are_cached_until_the_reply_cha
         Some(1),
         &json!({"type":"text","content":"````\n"}),
     );
-    assert!(transcript.recent.records[0].rendered.preview.is_none());
+    let cache = &transcript.recent.records[0].rendered;
+    assert!(cache.source.is_none());
+    assert_eq!(
+        cached_preview,
+        cache.streaming.as_ref().unwrap().rows().as_ptr()
+    );
     assert!(rows(&mut transcript)
         .iter()
         .any(|row| row.trim_start() == "````"));

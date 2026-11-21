@@ -11,6 +11,7 @@ import sys
 from urllib.parse import urlencode, urlsplit
 
 from interactive_composer import composer_actions
+from interactive_stream import profile_markdown_stream
 from interactive_lifecycle import first_run_credential_repair, lifecycle_cases, shared_model_editor, verify_restored_tool
 from interactive_rendering import (
     check_agent_reading_position,
@@ -932,6 +933,7 @@ def main():
     parser.add_argument("--directory", required=True, type=Path)
     parser.add_argument("--browser", action="store_true")
     parser.add_argument("--native-smoke", action="store_true")
+    parser.add_argument("--stream-profile", action="store_true")
     parser.add_argument("--upgrade", nargs=2, type=Path, metavar=("OLD_ARCHIVE", "NEW_ARCHIVE"))
     parser.add_argument("--named-output", action="store_true", help="exercise keyboard naming and reopening")
     options = parser.parse_args()
@@ -944,6 +946,9 @@ def main():
         with InstalledClient(options.binary, options.bridge, options.directory / name) as client:
             operation(client)
 
+    if options.stream_profile:
+        native("stream-profile", profile_markdown_stream)
+        return
     if options.native_smoke:
         run_cases([
             ("composer-actions", lambda: native("composer-actions", composer_actions)),

@@ -6,8 +6,8 @@ use crate::text::shorten;
 use crate::theme::{card_padding, emphasis, MUTED, SURFACE_TEXT};
 
 use super::{
-    append_bounded, body_inset, Body, Key, RenderCache, Row, Transcript, DISPLAY_LIMIT_NOTICE,
-    MAX_BODY_BYTES, MAX_VISUAL_ROWS,
+    append_bounded, body_inset, render_rows, Body, Key, RenderCache, Row, Transcript,
+    DISPLAY_LIMIT_NOTICE, MAX_BODY_BYTES, MAX_VISUAL_ROWS,
 };
 
 #[derive(Debug)]
@@ -39,7 +39,8 @@ impl Transcript {
                     });
                     if let Body::Assistant(body) = &mut record.body {
                         if append_bounded(body, text, MAX_BODY_BYTES) {
-                            record.rendered = RenderCache::default();
+                            record.rendered.preview = None;
+                            record.rendered.source = None;
                             self.mark_unseen();
                         }
                     }
@@ -278,8 +279,42 @@ pub(super) fn render_assistant(
     live: bool,
     width: usize,
 ) -> Vec<Row> {
-    let mut rows = Vec::new();
     let has_reply = !text.trim().is_empty();
+    let mut rows = assistant_header(has_thinking, has_reply, live, width);
+    if has_reply {
+        let (mut lines, links) =
+            crate::markup::linked_markdown(text, assistant_width(width), MAX_VISUAL_ROWS);
+        if lines.last().is_some_and(|line| !line.spans.is_empty()) {
+            lines.push(Line::default());
+        }
+        rows.extend(assistant_body(lines, &links, width, MAX_VISUAL_ROWS));
+    }
+    rows
+}
+
+pub(super) fn assistant_width(width: usize) -> usize {
+    width.saturating_sub(usize::from(body_inset(width)) + usize::from(card_padding(width).right))
+}
+
+pub(super) fn assistant_body<'a>(
+    lines: Vec<Line<'static>>,
+    links: &'a crate::markup::LinkLayout,
+    width: usize,
+    limit: usize,
+) -> impl Iterator<Item = Row> + 'a {
+    render_rows(lines, width, limit, body_inset(width)).map(|mut row| {
+        row.links = links.resolve(&mut row.line);
+        row
+    })
+}
+
+pub(super) fn assistant_header(
+    has_thinking: bool,
+    has_reply: bool,
+    live: bool,
+    width: usize,
+) -> Vec<Row> {
+    let mut rows = Vec::new();
     let role = if width >= 9 { "Assistant" } else { "AI" };
     let placeholder = live && !has_reply;
     let joined = (has_reply || placeholder) && has_thinking && width >= 16;
@@ -300,20 +335,9 @@ pub(super) fn render_assistant(
         }
         rows.push(Row::plain(Line::styled("Thinking", Style::new().fg(MUTED))));
         rows.push(Row::plain(Line::default()));
-    }
-    if has_reply {
-        let body_inset = body_inset(width);
-        let body_width =
-            width.saturating_sub(usize::from(body_inset) + usize::from(card_padding(width).right));
-        rows.extend({
-            let (lines, links) = crate::markup::linked_markdown(text, body_width, MAX_VISUAL_ROWS);
-            let mut rendered =
-                super::message::render_record(role, SURFACE_TEXT, lines, width, body_inset);
-            for row in &mut rendered {
-                row.links = links.resolve(&mut row.line);
-            }
-            rendered.into_iter().skip(usize::from(joined))
-        });
+    } else if has_reply && !joined {
+        let title = Line::styled(role, emphasis(SURFACE_TEXT));
+        rows.extend(render_rows(vec![title], width, MAX_VISUAL_ROWS, 0));
     }
     rows
 }

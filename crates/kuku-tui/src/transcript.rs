@@ -24,6 +24,7 @@ mod rewind;
 mod row;
 use row::Row;
 mod rewound;
+mod stream;
 mod tool;
 mod turn_summary;
 mod window;
@@ -606,6 +607,18 @@ impl Record {
                 &source.as_ref().expect("rendered Markdown source").1,
                 None,
             );
+        }
+        if let (Key::Preview(_), Body::Assistant(text)) = (&self.key, &self.body) {
+            if !text.trim().is_empty() {
+                let thinking = !self.reasoning_preview.is_empty();
+                let stream = self.rendered.streaming.get_or_insert_with(Box::default);
+                let rows = stream.render(text, thinking, width);
+                return (
+                    &self.key,
+                    rows,
+                    thinking.then_some(DetailRecord::Reasoning(&self.reasoning_preview)),
+                );
+            }
         }
         let (card, mode, facts) = match &self.body {
             Body::Tool(tool) => {

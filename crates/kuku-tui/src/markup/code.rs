@@ -140,6 +140,7 @@ pub(crate) fn file_source(text: &str, language: &str) -> Vec<Line<'static>> {
         .collect()
 }
 
+#[derive(Debug, Clone, Copy)]
 pub(super) struct SyntaxBudget {
     bytes: usize,
     lines: usize,

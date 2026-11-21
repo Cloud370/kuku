@@ -12,6 +12,7 @@ use super::{
 pub(super) struct RenderCache {
     pub(super) preview: Option<(super::PreviewLayout, Vec<Row>)>,
     pub(super) source: Option<(usize, Vec<Row>)>,
+    pub(super) streaming: Option<Box<super::stream::StreamingReply>>,
 }
 
 impl Clone for Record {

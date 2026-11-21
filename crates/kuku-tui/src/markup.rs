@@ -14,6 +14,8 @@ mod document;
 mod inline;
 mod links;
 pub(crate) use links::{LinkDestination, LinkLayout};
+mod stream;
+pub(crate) use stream::MarkdownStream;
 mod table;
 
 pub(crate) use code::file_source;
@@ -43,12 +45,7 @@ fn parse_markdown(
     limit: usize,
     link_layout: Option<LinkLayout>,
 ) -> Markdown {
-    let source = if text.contains("\r\n") {
-        Cow::Owned(text.replace("\r\n", "\n"))
-    } else {
-        Cow::Borrowed(text)
-    };
-    let clean = replace_tabs(&terminal_text(&source));
+    let clean = clean_markdown(text);
     let mut output = Markdown {
         width: width.max(1),
         limit,
@@ -58,6 +55,15 @@ fn parse_markdown(
     };
     output.parse(&document::repair_fences(&clean));
     output
+}
+
+fn clean_markdown(text: &str) -> String {
+    let source = if text.contains("\r\n") {
+        Cow::Owned(text.replace("\r\n", "\n"))
+    } else {
+        Cow::Borrowed(text)
+    };
+    replace_tabs(&terminal_text(&source))
 }
 
 pub(crate) fn render_literal(text: &str, style: Style) -> Vec<Line<'static>> {
@@ -170,6 +176,10 @@ impl Markdown {
             }
             self.event(event);
         }
+        self.finish_parse();
+    }
+
+    fn finish_parse(&mut self) {
         self.finish();
         self.lines.truncate(self.limit.saturating_add(1));
     }

@@ -81,6 +81,13 @@ The native smoke scenario checks composer actions at 60 and 120 columns, includi
 
 For terminal layout comparisons, use the same fixture inputs and grid sizes for both builds. The installed scenario checks `/statusline` preview, saving, reopening and defaults, and exercises navigation among working Agents with unsent drafts. The dense transcript fixture uses at least 20 calls in one Turn, including successful operations, a missing file and a gated command. It captures wide and narrow terminal grids during tool execution and an open code fence, then verifies the completed Chinese report, retained tool facts and the unsent draft. Read the bounded `installed-interactive.log` for the terminal frames and checks. [Terminal scenarios](../../../scripts/acceptance/interactive.py)
 
+For a local streaming comparison, run the same replay against both native release binaries with a different scratch directory for each run. The profile records the source hash, first visible text and burst input echo, and late-chunk paint samples at 60 and 120 columns. The paint measurements begin at the local fixture's flush. The Rust profile measures Markdown layout directly and reports how many bytes and rows the renderer reused. [Native replay](../../../scripts/acceptance/interactive_stream.py)
+
+```bash
+python3 scripts/acceptance/interactive.py --stream-profile --binary KUKU_BINARY --bridge NATIVE_PTY_HELPER --directory SCRATCH_DIR
+cargo test --release -p kuku-tui stream_layout_profile -- --ignored --nocapture
+```
+
 Use `--desktop` on Linux with Docker to add the Xfce Terminal and IBus Pinyin scenario. The selector builds the desktop image from Ubuntu packages and runs it in an isolated Xvfb session with only loopback networking. It drives Chinese composition, editable multiline paste, **Messages → Copy**, and terminal font zoom through the GUI. On a cold build, Docker needs access to the Ubuntu image and package repositories. The installed executable and the selector's native test helper must run in the image. `desktop/result.json` records package versions, terminal grid sizes, submitted and copied fixture text, and hashes for the bounded screenshots.
 
 The desktop scenario reuses the dense transcript fixture to capture wide and narrow views and verify copying the report's source text. Keep those screenshots with `desktop/result.json`, alongside the action menu, model selector and status line editor captures when collected. [Desktop scenarios](../../../scripts/acceptance/desktop)
