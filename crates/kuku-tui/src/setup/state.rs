@@ -23,6 +23,7 @@ pub(super) enum SetupStep {
     ProxyAddress,
     ModelSource,
     Discover,
+    CheckingApi,
     TrialResults,
     DefaultModel,
     Model,
@@ -44,6 +45,7 @@ pub(super) enum ReviewAction {
     SaveAndExit,
     Save,
     Settings,
+    ApiType,
     Thinking,
     Output,
     Advanced,
@@ -60,6 +62,7 @@ impl ReviewAction {
             Self::SaveAndExit => "Save and exit",
             Self::Save => "Save models",
             Self::Settings => "Settings",
+            Self::ApiType => "API type",
             Self::Thinking => "Thinking",
             Self::Output => "Output",
             Self::Advanced => "Model capabilities",
@@ -83,6 +86,9 @@ pub(super) struct SetupState {
     pub(super) selected: usize,
     pub(super) intent: SetupIntent,
     pub(super) protocol: ProviderFormat,
+    pub(super) protocol_fixed: bool,
+    pub(super) protocol_picker_from_review: bool,
+    pub(super) model_review_from: SetupStep,
     pub(super) full_url: bool,
     pub(super) address: Editor,
     pub(super) models_url: String,
@@ -137,6 +143,9 @@ impl SetupState {
             step: SetupStep::Consent,
             intent,
             protocol: ProviderFormat::OpenAiChat,
+            protocol_fixed: true,
+            protocol_picker_from_review: false,
+            model_review_from: SetupStep::ModelSource,
             full_url: false,
             address: Editor::default(),
             models_url: String::new(),
@@ -237,6 +246,9 @@ impl SetupState {
                     return;
                 };
                 editor.insert(&text);
+                if self.step == SetupStep::Address && !text.is_empty() {
+                    self.full_url = false;
+                }
                 if self.step == SetupStep::Discover {
                     self.models.cursor = 0;
                 }
@@ -274,6 +286,9 @@ impl SetupState {
             if let Some(editor) = self.editor_mut() {
                 editor.set_text(String::new());
             }
+            if self.step == SetupStep::Address {
+                self.full_url = false;
+            }
             if self.step == SetupStep::Credential
                 && self.credential_source == CredentialSource::Environment
             {
@@ -289,7 +304,7 @@ impl SetupState {
                     if self.models.cursor == 0 {
                         self.authorized = true;
                         self.step = if matches!(self.intent, SetupIntent::Edit(_)) {
-                            SetupStep::Protocol
+                            SetupStep::Address
                         } else {
                             SetupStep::Connection
                         };
@@ -311,13 +326,18 @@ impl SetupState {
                 KeyCode::Tab | KeyCode::Enter => self.advance(settings),
                 _ => {}
             },
-            SetupStep::Protocol => self.choose_protocol(key),
+            SetupStep::Protocol => self.choose_protocol(key, settings),
             SetupStep::Address => self.edit_address(key),
             SetupStep::AddressKind => self.choose_address_kind(key),
             SetupStep::Network => self.choose_network(key),
             SetupStep::ProxyAddress => self.edit_proxy(key),
             SetupStep::ModelSource => self.choose_source(key, settings),
             SetupStep::Discover => self.choose_discovered(key, settings),
+            SetupStep::CheckingApi => {
+                if key.code == KeyCode::Enter && !self.trials.pending() {
+                    self.open_protocol_picker(false);
+                }
+            }
             SetupStep::TrialResults => self.trial_input(key),
             SetupStep::DefaultModel => self.choose_default(key, settings),
             SetupStep::Model => self.edit_model(key, settings),
@@ -432,7 +452,7 @@ impl SetupState {
                 {
                     self.start_discovery(settings);
                 } else {
-                    self.step = SetupStep::Protocol;
+                    self.step = SetupStep::Address;
                 }
             }
             SetupStep::Model => self.advance_from_model(settings),
@@ -484,6 +504,7 @@ impl SetupState {
             | SetupStep::ProxyAddress
             | SetupStep::ModelSource
             | SetupStep::Discover
+            | SetupStep::CheckingApi
             | SetupStep::TrialResults
             | SetupStep::DefaultModel
             | SetupStep::Thinking
@@ -509,13 +530,17 @@ impl SetupState {
     }
 
     pub(super) fn previous(&mut self) {
-        self.problem = None;
+        if self.step != SetupStep::Protocol || self.protocol_picker_from_review {
+            self.problem = None;
+        }
         self.models.cursor = 0;
         self.step = match self.step {
             SetupStep::Consent => return,
             SetupStep::ManualConfig | SetupStep::Connection => SetupStep::Consent,
-            SetupStep::Protocol => SetupStep::Connection,
-            SetupStep::Address => SetupStep::Protocol,
+            SetupStep::Protocol if self.protocol_picker_from_review => SetupStep::ReviewSettings,
+            SetupStep::Protocol => SetupStep::CheckingApi,
+            SetupStep::Address if matches!(self.intent, SetupIntent::Edit(_)) => SetupStep::Consent,
+            SetupStep::Address => SetupStep::Connection,
             SetupStep::AddressKind | SetupStep::Network => SetupStep::Address,
             SetupStep::ProxyAddress => SetupStep::Network,
             SetupStep::CredentialSource => SetupStep::Network,
@@ -535,15 +560,11 @@ impl SetupState {
                 SetupStep::Review
             }
             SetupStep::Model | SetupStep::Discover => SetupStep::ModelSource,
-            SetupStep::DefaultModel => SetupStep::ModelSource,
-            SetupStep::Review => {
+            SetupStep::CheckingApi | SetupStep::Review => {
                 self.trials.stop();
-                if self.models.found.is_empty() {
-                    SetupStep::ModelSource
-                } else {
-                    SetupStep::Discover
-                }
+                self.model_review_from
             }
+            SetupStep::DefaultModel => SetupStep::Discover,
             SetupStep::Thinking | SetupStep::Output | SetupStep::Advanced | SetupStep::Pricing => {
                 SetupStep::ReviewSettings
             }
@@ -571,6 +592,7 @@ impl SetupState {
             |tier| matches!(&choice, ConnectionChoice::Existing(name) if *name == tier.provider),
         );
         self.protocol = settings.protocol_for(&choice);
+        self.protocol_fixed = choice != ConnectionChoice::Custom;
         let (address, full_url, models_url) = settings.address_for(&choice);
         self.address.set_text(address);
         self.full_url = full_url;
@@ -644,6 +666,7 @@ impl SetupState {
                 ReviewAction::Thinking,
                 ReviewAction::Output,
                 ReviewAction::Pricing,
+                ReviewAction::ApiType,
                 ReviewAction::Advanced,
             ];
             if mode == SetupMode::FirstRun && self.credential_ready() {
@@ -694,6 +717,9 @@ impl SetupState {
             ReviewAction::Settings => {
                 self.review_selection = 0;
                 self.step = SetupStep::ReviewSettings;
+            }
+            ReviewAction::ApiType => {
+                self.open_protocol_picker(true);
             }
             ReviewAction::Thinking => {
                 self.models.cursor = 0;

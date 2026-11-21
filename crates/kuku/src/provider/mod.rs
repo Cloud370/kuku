@@ -12,6 +12,7 @@ mod openrouter_catalog;
 pub(crate) mod prepare;
 pub(crate) mod replay;
 pub(crate) mod report;
+mod setup_api;
 mod setup_probes;
 pub(crate) mod sse;
 pub(crate) mod trace;
@@ -20,10 +21,13 @@ mod trial;
 pub(crate) mod types;
 
 pub use cost::RequestCost;
-pub use discovery::{discover_models, model_list_targets, DiscoveredModel, ModelListTarget};
+pub use discovery::{
+    discover_models, model_list_targets, setup_model_list_targets, DiscoveredModel, ModelListTarget,
+};
 pub use openrouter_catalog::{
     openrouter_quote_url, openrouter_quotes, route_quote_for_display, RouteQuote,
 };
+pub use setup_api::{setup_api_candidates, setup_endpoint_format, SetupApiEvidence};
 pub use setup_probes::{
     plan_model_trials, Probe, ProbeBatch, ProbeProgress, ProbeResult, ProbeRow, TrialSelection,
 };

@@ -138,7 +138,7 @@ impl Settings {
     }
 
     pub(super) fn connection_choices(&self) -> Vec<ConnectionChoice> {
-        let mut choices = Vec::new();
+        let mut choices = vec![ConnectionChoice::Custom];
         if self.existing {
             choices.extend(
                 self.raw
@@ -153,7 +153,6 @@ impl Settings {
                 .into_iter()
                 .map(ConnectionChoice::Preset),
         );
-        choices.push(ConnectionChoice::Custom);
         choices
     }
 
@@ -187,7 +186,7 @@ impl Settings {
                 return ConnectionChoice::Existing(tier.provider.clone());
             }
         }
-        ConnectionChoice::Preset(ProviderPreset::Anthropic)
+        ConnectionChoice::Custom
     }
 
     pub(super) fn choice_label(&self, choice: &ConnectionChoice) -> String {

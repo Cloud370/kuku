@@ -5,11 +5,13 @@ use ratatui::{layout::Rect, Frame};
 
 use crate::theme::{ACCENT, MUTED, SUCCESS, WARNING};
 
+use super::models::protocol_label;
 use super::ui::line;
 
 fn label_for(probe: &Probe) -> String {
     match probe {
         Probe::Catalog(target) => format!("GET {}", display_url(&target.url)),
+        Probe::ApiType { model, .. } => format!("{model} · API type"),
         Probe::Quotes { model, .. } => format!("{model} · route pricing"),
         Probe::Trial { model, check, .. } => match check {
             ModelTrial::Text { effort, .. } => format!(
@@ -121,6 +123,9 @@ pub(super) fn review_status(batch: &ProbeBatch) -> (String, bool) {
             ProbeProgress::Finished(_, Ok(ProbeResult::Trial(trial))) => {
                 trial.image_match == Some(false) || !trial.text_returned
             }
+            ProbeProgress::Finished(_, Ok(ProbeResult::ApiType(evidence))) => {
+                !evidence.trial.text_returned
+            }
             ProbeProgress::Finished(_, Err(_)) => true,
             _ => false,
         })
@@ -135,23 +140,26 @@ pub(super) fn review_status(batch: &ProbeBatch) -> (String, bool) {
 pub(super) fn cost_summary(batch: &ProbeBatch) -> Option<String> {
     let (mut reported, mut estimated, mut unknown) = (None, None, 0);
     for row in batch.rows() {
-        if !matches!(row.probe, kuku::adapter::Probe::Trial { .. }) {
+        if !matches!(row.probe, Probe::Trial { .. } | Probe::ApiType { .. }) {
             continue;
         }
-        match &row.progress {
-            ProbeProgress::Finished(_, Ok(ProbeResult::Trial(trial))) => match trial.cost {
-                RequestCost::Reported { .. } => {
-                    *reported.get_or_insert(0.0) += trial.cost.usd().unwrap_or_default()
-                }
-                RequestCost::Estimated { .. } => {
-                    *estimated.get_or_insert(0.0) += trial.cost.usd().unwrap_or_default()
-                }
-                RequestCost::Unknown => unknown += 1,
-            },
+        let cost = match &row.progress {
+            ProbeProgress::Finished(_, Ok(ProbeResult::Trial(trial))) => &trial.cost,
+            ProbeProgress::Finished(_, Ok(ProbeResult::ApiType(evidence))) => &evidence.trial.cost,
             ProbeProgress::Finished(_, Err(_)) | ProbeProgress::Canceled { sent: true } => {
-                unknown += 1
+                unknown += 1;
+                continue;
             }
-            _ => {}
+            _ => continue,
+        };
+        match cost {
+            RequestCost::Reported { .. } => {
+                *reported.get_or_insert(0.0) += cost.usd().unwrap_or_default()
+            }
+            RequestCost::Estimated { .. } => {
+                *estimated.get_or_insert(0.0) += cost.usd().unwrap_or_default()
+            }
+            RequestCost::Unknown => unknown += 1,
         }
     }
     let mut parts = Vec::new();
@@ -202,6 +210,22 @@ fn probe_detail(
                 }
                 Ok(ProbeResult::Catalog(models)) => {
                     ("✓", format!("Found {} models", models.len()), SUCCESS)
+                }
+                Ok(ProbeResult::ApiType(evidence)) => {
+                    let api = protocol_label(evidence.format);
+                    let status = if evidence.trial.text_returned {
+                        "Text reply received"
+                    } else if evidence.trial.observed_reasoning {
+                        "Thinking only"
+                    } else {
+                        "No text reply"
+                    };
+                    let detail = format!("API found · {api} · {status}");
+                    if evidence.trial.text_returned {
+                        ("✓", detail, SUCCESS)
+                    } else {
+                        ("!", detail, WARNING)
+                    }
                 }
                 Ok(ProbeResult::Quotes(quotes)) => {
                     let example = match probe {

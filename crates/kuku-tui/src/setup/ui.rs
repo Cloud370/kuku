@@ -120,10 +120,10 @@ pub(super) fn render(
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(inner);
     render_step(frame, chunks[0], settings, state, mode);
-    let keys = if state.step == SetupStep::TrialResults {
-        "↑/↓ scroll · Enter or Esc back"
-    } else {
-        "↑/↓ move · Enter choose · Esc back · Ctrl+C cancel"
+    let keys = match state.step {
+        SetupStep::Consent => "↑/↓ move · Enter choose · Esc exit",
+        SetupStep::TrialResults => "↑/↓ scroll · Enter returns · Esc previous step",
+        _ => "↑/↓ move · Enter choose · Esc previous step · Ctrl+C exit",
     };
     frame.render_widget(
         Paragraph::new(keys).style(Style::default().fg(MUTED)),
@@ -321,6 +321,7 @@ fn render_step(
         | SetupStep::ProxyAddress
         | SetupStep::ModelSource
         | SetupStep::Discover
+        | SetupStep::CheckingApi
         | SetupStep::TrialResults
         | SetupStep::DefaultModel
         | SetupStep::Thinking

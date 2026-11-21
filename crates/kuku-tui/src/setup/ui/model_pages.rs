@@ -16,26 +16,32 @@ pub(super) fn render_model_settings(
     match state.step {
         SetupStep::Protocol => {
             line(frame, area, row, "API type", ACCENT);
-            for format in PROTOCOLS {
+            for (index, format) in PROTOCOLS.into_iter().enumerate() {
                 option(
                     frame,
                     area,
                     row,
                     protocol_label(format),
-                    format == state.protocol,
+                    index == state.models.cursor,
                 );
             }
         }
         SetupStep::Address => {
             line(frame, area, row, "API URL", ACCENT);
             if state.address.text().is_empty() {
-                let placeholder = state.default_base_url();
+                let placeholder = if state.protocol_fixed {
+                    state.default_base_url()
+                } else {
+                    "https://your-provider.example"
+                };
                 line(frame, area, row, &format!("> {placeholder}"), MUTED);
                 frame.set_cursor_position((area.x + 2, area.y + *row - 1));
             } else {
                 field(frame, area, row, &mut state.address);
             }
-            if let Ok(url) = state.request_url() {
+            if !state.protocol_fixed && !state.recognized_request_url() {
+                line(frame, area, row, "API type · Auto", MUTED);
+            } else if let Ok(url) = state.request_url() {
                 line(
                     frame,
                     area,
@@ -162,6 +168,20 @@ pub(super) fn render_model_settings(
                 );
             }
         }
+        SetupStep::CheckingApi => {
+            super::super::probes::render(
+                frame,
+                area,
+                row,
+                "Checking API type",
+                &state.proxy,
+                &state.trials,
+                0..1,
+            );
+            if !state.trials.pending() {
+                line(frame, area, row, "Enter to choose API type", ACCENT);
+            }
+        }
         SetupStep::TrialResults => {
             let visible = usize::from(area.height.saturating_sub(6) / 4).max(1);
             let start = state
@@ -197,8 +217,7 @@ pub(super) fn render_model_settings(
                 .saturating_sub(visible.saturating_sub(1));
             for (index, model) in state
                 .models
-                .selected
-                .iter()
+                .selected_in_catalog_order()
                 .enumerate()
                 .skip(start)
                 .take(visible)

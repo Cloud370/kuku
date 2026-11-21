@@ -133,7 +133,7 @@ def first_run_credential_repair(binary, bridge, directory):
             client.provider.assert_idle()
             terminal.press("\r")
             terminal.expect("Choose a provider", also=("Existing · test-anthropic",))
-            terminal.press("\r\r\r\r")
+            terminal.press("\r\r\r")
             terminal.expect("Paste your API key")
             terminal.press("\x1b")
             missing = terminal.expect("API key source", also=("not detected", "› Paste API key"))["screen"]
@@ -190,7 +190,7 @@ def shared_model_editor(binary, bridge, directory):
         assert headers.get("x-api-key") == key
         addresses.append((method, path))
         if method == "GET" and path == "/gateway/models":
-            return json_response({"data": [{"id": "alpha"}, {"id": "beta"}]})
+            return json_response({"data": [{"id": "beta"}, {"id": "alpha"}, {"id": "beta"}]})
         if not json.loads(body).get("stream"):
             return json_response({"content": [{"type": "text", "text": "377"}]})
         return original_dispatch(method, "/v1/messages" if path == "/gateway/messages" else path, headers, body)
@@ -203,12 +203,15 @@ def shared_model_editor(binary, bridge, directory):
         workspace = client.workspace("work-model-setup")
         with client.terminal(workspace) as terminal:
             terminal.request("resize", rows=32, cols=110)
-            terminal.expect("Set up a model")
+            terminal.expect("Set up a model", also=("Esc exit",))
             terminal.press("\r")
-            terminal.expect("New custom connection")
-            terminal.press("\x1b[A\r")
-            terminal.expect("API type")
-            terminal.press("\x1b[A\r")
+            providers = terminal.expect("› New custom connection", also=("Esc previous step",))["screen"]
+            assert providers.index("New custom connection") < providers.index("Preset")
+            terminal.press("\r")
+            terminal.expect("API URL", also=("Esc previous step",))
+            terminal.press("\x1b")
+            terminal.expect("› New custom connection")
+            terminal.press("\r")
             terminal.expect("API URL")
             terminal.type(f"{endpoint}/gateway/messages")
             terminal.expect(f"Request · {endpoint}/gateway/messages")
@@ -220,10 +223,16 @@ def shared_model_editor(binary, bridge, directory):
             terminal.expect(f"{key[:7]}{'•' * (len(key) - 12)}{key[-5:]}", absent=(key,))
             assert addresses == []
             terminal.press("\r")
-            terminal.expect("Choose models")
+            catalog = terminal.expect("Choose models", also=("beta", "alpha"))["screen"]
+            assert catalog.index("beta") < catalog.index("alpha") and catalog.count("beta") == 1
             terminal.press("alpha \x01beta \r")
-            terminal.expect("Choose the default model", also=("alpha", "beta"))
-            terminal.press("\x1b[B\r")
+            defaults = terminal.expect("Choose the default model", also=("› beta", "alpha"))["screen"]
+            assert defaults.index("beta") < defaults.index("alpha")
+            terminal.press("\x1b")
+            terminal.expect("Choose models", also=("2 selected", "Esc previous step"))
+            terminal.press("\r")
+            terminal.expect("Choose the default model")
+            terminal.press("\r")
             terminal.request("resize", rows=20, cols=60)
             save_review = terminal.expect(
                 "Save setup", also=("Default", "beta", "API URL", "Settings", "› Save and continue"),
@@ -272,8 +281,8 @@ def shared_model_editor(binary, bridge, directory):
             terminal.press("\x1b[B\r")
             terminal.expect("Set up a model")
             terminal.press("\r")
-            terminal.expect("API type")
-            terminal.press("\r\r\r")
+            terminal.expect("API URL")
+            terminal.press("\r\r")
             terminal.expect("Leave blank to keep your saved key.")
             terminal.press("\r")
             terminal.expect("Keep current model")
@@ -352,6 +361,8 @@ def setup_probe_progress(binary, bridge, directory):
     trials = []
 
     def dispatch(method, path, headers, body):
+        if method == "GET" and "x-api-key" in headers:
+            return json_response({}, 401)
         assert headers.get("authorization") == f"Bearer {key}"
         if method == "GET" and path == "/models":
             slow_catalog_started.set()
@@ -360,6 +371,8 @@ def setup_probe_progress(binary, bridge, directory):
         if method == "GET" and path == "/v1/models":
             assert slow_catalog_started.wait(8)
             return json_response({"data": [{"id": "alpha"}, {"id": "beta"}]})
+        if method == "GET" and path == "/api/v1/models":
+            return json_response({}, 404)
         assert (method, path) == ("POST", "/v1/chat/completions")
         body = json.loads(body)
         parts = body["messages"][0]["content"]
@@ -370,8 +383,6 @@ def setup_probe_progress(binary, bridge, directory):
             release.wait(20)
         elif body["model"] == "beta":
             release.wait(20)
-        else:
-            assert slow_trial_started.wait(8)
         return json_response({
             "choices": [{"message": {"content": "377"}}],
             "usage": {"prompt_tokens": 20, "completion_tokens": 2, "cost": 0.000008},
@@ -391,16 +402,15 @@ def setup_probe_progress(binary, bridge, directory):
                 terminal.press("\x1b")
                 terminal.expect("Set up a model")
                 terminal.press("\r")
-                terminal.expect("New custom connection")
-                terminal.press("\x1b[A\r")
-                terminal.expect("API type")
+                terminal.expect("› New custom connection")
                 terminal.press("\r")
-                terminal.expect("API URL")
+                terminal.expect("API URL", also=("API type · Auto",))
                 terminal.type(endpoint)
                 terminal.press("\r\x1b[B\r")
                 terminal.expect("Paste your API key")
                 terminal.press(f"\x1b[200~{key}\x1b[201~\r")
-                discovery = terminal.expect("Choose models", also=("1/2 finished", "alpha", "beta"))["screen"]
+                discovery = terminal.expect("Choose models", also=("alpha", "beta"))["screen"]
+                assert slow_catalog_started.is_set()
                 assert not trials
                 terminal.press("alpha \x01beta \r")
                 terminal.expect("Choose the default model")
@@ -412,12 +422,12 @@ def setup_probe_progress(binary, bridge, directory):
                 )
                 terminal.press("\x1b[B\r")
                 progress = terminal.expect(
-                    "Text reply received",
-                    also=("Waiting for response", "Queued", "Enter or Esc back"),
+                    "API found",
+                    also=("Waiting for response", "Queued", "Esc previous step"),
                 )["screen"]
                 terminal.press("\r")
                 terminal.expect("Save setup", also=("› Save and continue",))
-                assert ("alpha", False) in trials and ("alpha", True) in trials
+                assert slow_trial_started.is_set() and trials.count(("alpha", False)) == 1
                 terminal.press("\r")
                 terminal.expect("New session", state="Ready")
                 assert ("beta", True) not in trials, trials

@@ -1,12 +1,13 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::config::{ModelPricing, ProviderConfig};
+use crate::config::{ModelPricing, ProviderConfig, ProviderFormat};
 use crate::Result;
 
+use super::setup_api::check_setup_api;
 use super::{
     discover_models, openrouter_quote_url, openrouter_quotes, trial_model, DiscoveredModel,
-    ModelListTarget, ModelTrial, RouteQuote, TrialResult,
+    ModelListTarget, ModelTrial, RouteQuote, SetupApiEvidence, TrialResult,
 };
 use tokio::task::JoinSet;
 
@@ -72,6 +73,11 @@ pub fn plan_model_trials(
 #[derive(PartialEq)]
 pub enum Probe {
     Catalog(Box<ModelListTarget>),
+    ApiType {
+        connection: Arc<ProviderConfig>,
+        model: String,
+        candidates: Vec<ProviderFormat>,
+    },
     Quotes {
         connection: Arc<ProviderConfig>,
         model: String,
@@ -94,6 +100,7 @@ impl From<ModelListTarget> for Probe {
 /// Structured response returned by one setup request.
 pub enum ProbeResult {
     Catalog(Vec<DiscoveredModel>),
+    ApiType(Box<SetupApiEvidence>),
     Quotes(Vec<RouteQuote>),
     Trial(Box<TrialResult>),
 }
@@ -122,22 +129,22 @@ pub struct ProbeBatch {
 
 impl ProbeBatch {
     pub fn start(probes: Vec<Probe>) -> Self {
-        let mut batch = Self {
-            rows: probes
-                .into_iter()
-                .map(|probe| ProbeRow {
-                    cached_models: match &probe {
-                        Probe::Catalog(target) => super::discovery::cached_models(target),
-                        _ => None,
-                    },
-                    probe,
-                    progress: ProbeProgress::Queued,
-                })
-                .collect(),
-            ..Self::default()
-        };
-        batch.schedule();
+        let mut batch = Self::default();
+        batch.append(probes);
         batch
+    }
+
+    /// Continue with more work while keeping progress and results of earlier requests.
+    pub fn append(&mut self, probes: Vec<Probe>) {
+        self.rows.extend(probes.into_iter().map(|probe| ProbeRow {
+            cached_models: match &probe {
+                Probe::Catalog(target) => super::discovery::cached_models(target),
+                _ => None,
+            },
+            probe,
+            progress: ProbeProgress::Queued,
+        }));
+        self.schedule();
     }
 
     fn schedule(&mut self) {
@@ -250,12 +257,21 @@ impl ProbeBatch {
 
 impl Probe {
     fn lane(&self) -> usize {
-        usize::from(matches!(self, Self::Trial { .. }))
+        usize::from(matches!(self, Self::Trial { .. } | Self::ApiType { .. }))
     }
 
     fn run(&self) -> impl std::future::Future<Output = Result<ProbeResult>> + Send + 'static {
         let probe = match self {
             Self::Catalog(target) => Self::Catalog(target.clone()),
+            Self::ApiType {
+                connection,
+                model,
+                candidates,
+            } => Self::ApiType {
+                connection: Arc::clone(connection),
+                model: model.clone(),
+                candidates: candidates.clone(),
+            },
             Self::Quotes {
                 connection,
                 model,
@@ -282,6 +298,13 @@ impl Probe {
                 Self::Catalog(target) => discover_models(&target.connection)
                     .await
                     .map(ProbeResult::Catalog),
+                Self::ApiType {
+                    connection,
+                    model,
+                    candidates,
+                } => check_setup_api(&connection, &model, &candidates)
+                    .await
+                    .map(|evidence| ProbeResult::ApiType(Box::new(evidence))),
                 Self::Quotes {
                     connection, model, ..
                 } => openrouter_quotes(&connection, &model)

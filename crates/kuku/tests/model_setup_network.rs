@@ -62,6 +62,52 @@ async fn response(stream: &mut TcpStream, body: &str) {
     ).as_bytes()).await.unwrap();
 }
 
+#[tokio::test]
+async fn api_discovery_tries_another_route_after_an_explicit_404() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut first, _) = listener.accept().await.unwrap();
+        assert!(read_request(&mut first)
+            .await
+            .starts_with("POST /v1/responses "));
+        first
+            .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let (mut second, _) = listener.accept().await.unwrap();
+        let (request, body) = read_request_with_body(&mut second).await;
+        assert!(request.starts_with("POST /v1/chat/completions "));
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["model"], "fixture-model");
+        assert_eq!(body["max_tokens"], TRIAL_OUTPUT_TOKENS);
+        response(
+            &mut second,
+            r#"{"choices":[{"message":{"content":"377"},"finish_reason":"stop"}]}"#,
+        )
+        .await;
+    });
+    let candidates = vec![ProviderFormat::OpenAiResponses, ProviderFormat::OpenAiChat];
+    let mut batch = ProbeBatch::start(vec![Probe::ApiType {
+        connection: Arc::new(connection(base, ProviderProxy::Direct)),
+        model: "fixture-model".into(),
+        candidates: candidates.clone(),
+    }]);
+    tokio::time::timeout(Duration::from_secs(5), batch.next())
+        .await
+        .unwrap();
+    match &batch.rows()[0].progress {
+        ProbeProgress::Finished(_, Ok(ProbeResult::ApiType(evidence))) => {
+            assert_eq!(evidence.attempted, candidates);
+            assert_eq!(evidence.format, ProviderFormat::OpenAiChat);
+            assert!(evidence.trial.text_returned);
+        }
+        ProbeProgress::Finished(_, Err(error)) => panic!("API discovery failed: {error}"),
+        _ => panic!("Missing API discovery result"),
+    }
+    server.await.unwrap();
+}
+
 async fn socks_connection(stream: &mut TcpStream, remote_dns: bool) {
     let mut hello = [0; 2];
     stream.read_exact(&mut hello).await.unwrap();

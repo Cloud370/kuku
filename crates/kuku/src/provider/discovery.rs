@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -10,7 +10,7 @@ use wreq::header::HeaderValue;
 
 use crate::config::{
     resolve_models_url, resolve_request_url, ModelCapabilityDeclaration,
-    ProtocolCapabilityDeclaration, ProviderAuth, ProviderConfig,
+    ProtocolCapabilityDeclaration, ProviderAuth, ProviderConfig, ProviderFormat,
 };
 use crate::{Error, Result};
 
@@ -74,6 +74,36 @@ pub fn model_list_targets(
                 url,
                 connection: candidate,
             });
+        }
+    }
+    Ok(targets)
+}
+
+/// Try standard directory paths and both supported credential styles for an unclassified connection.
+pub fn setup_model_list_targets(
+    connection: &ProviderConfig,
+    infer_base_path: bool,
+) -> Result<Vec<ModelListTarget>> {
+    if connection.options.models_url.is_some() || connection.options.endpoint_url.is_some() {
+        return model_list_targets(connection, infer_base_path);
+    }
+    let mut targets = model_list_targets(connection, infer_base_path)?;
+    if let Ok(base) = Url::parse(&connection.base_url) {
+        if infer_base_path && base.path() == "/" && base.query().is_none() {
+            let mut prefixed = connection.clone();
+            prefixed.base_url = format!("{}/api/v1", connection.base_url.trim_end_matches('/'));
+            for target in model_list_targets(&prefixed, false)? {
+                if !targets.iter().any(|existing| existing.url == target.url) {
+                    targets.push(target);
+                }
+            }
+        }
+    }
+    let mut anthropic = connection.clone();
+    anthropic.format = ProviderFormat::Anthropic;
+    for target in model_list_targets(&anthropic, false)? {
+        if !targets.iter().any(|existing| existing == &target) {
+            targets.push(target);
         }
     }
     Ok(targets)
@@ -204,10 +234,12 @@ struct ListModel {
     name: Option<String>,
     effort: Option<Effort>,
     reasoning: Option<Reasoning>,
+    reasoning_efforts: Option<Vec<String>>,
     input_modalities: Option<Vec<String>>,
     output_modalities: Option<Vec<String>>,
     architecture: Option<Architecture>,
     endpoints: Option<Vec<String>>,
+    supported_endpoint_types: Option<Vec<String>>,
     api_capabilities: Option<BTreeMap<String, ProtocolCapabilityDeclaration>>,
 }
 
@@ -232,7 +264,8 @@ struct Architecture {
 fn parse_model_list(bytes: &[u8]) -> Result<Vec<DiscoveredModel>> {
     let list = serde_json::from_slice::<List>(bytes)
         .map_err(|_| discovery_error("endpoint did not return a standard model list"))?;
-    let mut models = BTreeMap::new();
+    let mut models = Vec::with_capacity(list.data.len());
+    let mut seen = HashSet::new();
     for model in list.data {
         if model.id.is_empty()
             || model.id.starts_with('$')
@@ -241,6 +274,9 @@ fn parse_model_list(bytes: &[u8]) -> Result<Vec<DiscoveredModel>> {
                 .chars()
                 .any(|character| character.is_whitespace() || character.is_control())
         {
+            continue;
+        }
+        if !seen.insert(model.id.clone()) {
             continue;
         }
         let architecture = model.architecture.unwrap_or_default();
@@ -252,23 +288,29 @@ fn parse_model_list(bytes: &[u8]) -> Result<Vec<DiscoveredModel>> {
             supported_levels: None,
             default_level: None,
         });
-        models.insert(
-            model.id.clone(),
-            DiscoveredModel {
-                id: model.id,
-                name: model.name,
-                capabilities: ModelCapabilityDeclaration {
-                    reasoning_efforts: effort.supported_levels.or(reasoning.supported_efforts),
-                    reasoning_default: effort.default_level.or(reasoning.default_effort),
-                    input_modalities: model.input_modalities.or(architecture.input_modalities),
-                    output_modalities: model.output_modalities.or(architecture.output_modalities),
-                    interfaces: model.endpoints,
-                    protocols: model.api_capabilities.unwrap_or_default(),
-                },
+        let mut interfaces = model.endpoints.unwrap_or_default();
+        for value in model.supported_endpoint_types.into_iter().flatten() {
+            if !interfaces.contains(&value) {
+                interfaces.push(value);
+            }
+        }
+        models.push(DiscoveredModel {
+            id: model.id,
+            name: model.name,
+            capabilities: ModelCapabilityDeclaration {
+                reasoning_efforts: effort
+                    .supported_levels
+                    .or(reasoning.supported_efforts)
+                    .or(model.reasoning_efforts),
+                reasoning_default: effort.default_level.or(reasoning.default_effort),
+                input_modalities: model.input_modalities.or(architecture.input_modalities),
+                output_modalities: model.output_modalities.or(architecture.output_modalities),
+                interfaces: (!interfaces.is_empty()).then_some(interfaces),
+                protocols: model.api_capabilities.unwrap_or_default(),
             },
-        );
+        });
     }
-    Ok(models.into_values().collect())
+    Ok(models)
 }
 
 fn discovery_error(message: &str) -> Error {
@@ -288,17 +330,26 @@ mod tests {
             "api_capabilities":{"anthropic_messages":{"system_prompt_update":"in-history"}}},
             {"id":"router/model","reasoning":{"supported_efforts":["none","max"],"default_effort":"max"},
             "architecture":{"input_modalities":["text"],"output_modalities":["text","image"]},
-            "endpoints":["/api/v1/responses"]}
+            "endpoints":["/api/v1/responses"]},
+            {"id":"ids-only","reasoning_efforts":["low"]},
+            {"id":"declared","reasoning_efforts":["low","high"],"supported_endpoint_types":["openai"]}
         ]}"#).unwrap();
-        assert_eq!(None, models[1].capabilities.reasoning_efforts);
-        assert_eq!(None, models[1].capabilities.output_modalities);
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            ["ids-only", "deepseek-flash", "router/model", "declared"]
+        );
+        assert_eq!(None, models[0].capabilities.reasoning_efforts);
+        assert_eq!(None, models[0].capabilities.output_modalities);
         assert_eq!(
             Some("high"),
-            models[0].capabilities.reasoning_default.as_deref()
+            models[1].capabilities.reasoning_default.as_deref()
         );
         assert_eq!(
             Some("in-history"),
-            models[0].capabilities.protocols["anthropic_messages"]
+            models[1].capabilities.protocols["anthropic_messages"]
                 .system_prompt_update
                 .as_deref()
         );
@@ -309,6 +360,14 @@ mod tests {
         assert_eq!(
             Some(vec!["/api/v1/responses".into()]),
             models[2].capabilities.interfaces
+        );
+        assert_eq!(
+            Some(vec!["low".into(), "high".into()]),
+            models[3].capabilities.reasoning_efforts
+        );
+        assert_eq!(
+            Some(vec!["openai".into()]),
+            models[3].capabilities.interfaces
         );
     }
 }

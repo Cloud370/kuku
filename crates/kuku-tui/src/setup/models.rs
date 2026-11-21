@@ -4,7 +4,8 @@ use std::sync::Arc;
 use crossterm::event::{KeyCode, KeyEvent};
 use kuku::adapter::{
     inspect_connection_model, inspect_model, model_list_targets, plan_model_trials,
-    DiscoveredModel, Probe, ProbeBatch, TrialSelection,
+    setup_api_candidates, setup_endpoint_format, setup_model_list_targets, DiscoveredModel,
+    ModelTrial, Probe, ProbeBatch, ProbeProgress, ProbeResult, TrialSelection,
 };
 use kuku::config::{
     resolve_request_url, ApiKey, ModelCapabilityDeclaration, ModelPricing, ProviderConfig,
@@ -65,6 +66,16 @@ impl Models {
         })
     }
 
+    pub(super) fn selected_in_catalog_order(&self) -> impl Iterator<Item = &str> {
+        self.found
+            .iter()
+            .filter(|model| self.selected.contains(&model.id))
+            .map(|model| model.id.as_str())
+            .chain(self.selected.iter().filter_map(|id| {
+                (!self.found.iter().any(|model| model.id == *id)).then_some(id.as_str())
+            }))
+    }
+
     pub(super) fn move_cursor(&mut self, code: KeyCode, count: usize) {
         let direction = match code {
             KeyCode::Up | KeyCode::Left => -1,
@@ -111,8 +122,8 @@ impl SetupState {
 
     pub(super) fn request_url(&self) -> Result<String, String> {
         let (base, full) = self.address_parts();
-        resolve_request_url(self.protocol, &base, full.as_deref())
-            .map_err(|error| error.to_string())
+        let format = setup_endpoint_format(self.address.text()).unwrap_or(self.protocol);
+        resolve_request_url(format, &base, full.as_deref()).map_err(|error| error.to_string())
     }
 
     pub(super) fn connection_options(&self, settings: &Settings) -> ProviderOptions {
@@ -161,8 +172,13 @@ impl SetupState {
             return;
         }
         let targets = self.connection(settings).and_then(|connection| {
-            model_list_targets(&connection, !self.address.text().trim().is_empty())
-                .map_err(|error| error.to_string())
+            let infer_path = !self.address.text().trim().is_empty();
+            if self.protocol_fixed {
+                model_list_targets(&connection, infer_path)
+            } else {
+                setup_model_list_targets(&connection, infer_path)
+            }
+            .map_err(|error| error.to_string())
         });
         match targets {
             Ok(targets) => {
@@ -176,7 +192,7 @@ impl SetupState {
         }
     }
 
-    fn accept_discovery(&mut self, settings: &Settings) {
+    fn accept_discovery(&mut self) {
         if !self.models.found.is_empty() {
             self.models.cursor = 0;
             self.step = SetupStep::Discover;
@@ -186,9 +202,11 @@ impl SetupState {
             return;
         };
         let connection = target.connection.clone();
-        if self.connection(settings).ok().as_ref() != Some(&connection) {
+        if self.address_parts().0 != connection.base_url && !self.full_url {
             self.address.set_text(connection.base_url.clone());
-            self.full_url = false;
+        }
+        if !self.protocol_fixed {
+            self.protocol = connection.format;
         }
         self.models.found = found.to_vec();
         self.models.discovered_from = Some(connection);
@@ -212,15 +230,33 @@ impl SetupState {
             && self.models.cursor == 0
             && self.models.found.is_empty()
         {
-            self.accept_discovery(settings);
+            self.accept_discovery();
+        }
+        if self.step == SetupStep::CheckingApi {
+            self.accept_api_check(settings);
         }
         self.probe_repaint_at = Some(now + std::time::Duration::from_millis(100));
         true
     }
 
     fn review_models(&mut self, settings: &Settings) {
+        if matches!(
+            self.step,
+            SetupStep::Model | SetupStep::Discover | SetupStep::DefaultModel
+        ) {
+            self.model_review_from = self.step;
+        }
         self.review_selection = 0;
         self.discovery.stop();
+        if !self.protocol_fixed {
+            if self.authorized && self.credential_ready() {
+                self.start_api_check(settings);
+            } else {
+                self.step = SetupStep::CheckingApi;
+                self.problem = Some("Supply an API key to check the API type.".into());
+            }
+            return;
+        }
         let plan = if self.authorized && self.credential_ready() {
             self.planned_trials(settings)
         } else {
@@ -231,6 +267,97 @@ impl SetupState {
             self.probe_repaint_at = Some(std::time::Instant::now());
         }
         self.step = SetupStep::Review;
+    }
+
+    fn start_api_check(&mut self, settings: &Settings) {
+        self.step = SetupStep::CheckingApi;
+        let Some(model) = self.primary_model() else {
+            return;
+        };
+        let connection = match self.connection(settings) {
+            Ok(connection) => connection,
+            Err(problem) => {
+                self.problem = Some(problem);
+                self.trials = ProbeBatch::default();
+                return;
+            }
+        };
+        let candidates = setup_api_candidates(
+            connection.format,
+            self.models
+                .found
+                .iter()
+                .filter(|found| self.models.selected.contains(&found.id))
+                .map(|found| &found.capabilities),
+        );
+        if candidates.is_empty() {
+            self.problem = Some("The selected models list different API types.".into());
+            self.trials = ProbeBatch::default();
+            return;
+        }
+        if let Some(row) = self.trials.rows().first() {
+            if let (
+                Probe::ApiType {
+                    connection: before,
+                    model: tested,
+                    ..
+                },
+                ProbeProgress::Finished(_, Ok(ProbeResult::ApiType(evidence))),
+            ) = (&row.probe, &row.progress)
+            {
+                let mut confirmed = before.as_ref().clone();
+                confirmed.format = evidence.format;
+                confirmed.base_url.clone_from(&evidence.base_url);
+                if *tested == model
+                    && confirmed == connection
+                    && candidates.contains(&evidence.format)
+                {
+                    let remaining = self.remaining_trials(settings);
+                    if self
+                        .trials
+                        .rows()
+                        .iter()
+                        .skip(1)
+                        .map(|row| &row.probe)
+                        .eq(&remaining)
+                    {
+                        self.step = SetupStep::Review;
+                        return;
+                    }
+                }
+            }
+        }
+        self.trials = ProbeBatch::start(vec![Probe::ApiType {
+            connection: Arc::new(connection),
+            model,
+            candidates,
+        }]);
+        self.probe_repaint_at = Some(std::time::Instant::now());
+    }
+
+    fn accept_api_check(&mut self, settings: &Settings) {
+        let Some(row) = self.trials.rows().first() else {
+            return;
+        };
+        let ProbeProgress::Finished(_, Ok(ProbeResult::ApiType(evidence))) = &row.progress else {
+            return;
+        };
+        self.protocol = evidence.format;
+        if !self.full_url && self.address_parts().0 != evidence.base_url {
+            self.address.set_text(evidence.base_url.clone());
+        }
+        if let Some(discovered) = &mut self.models.discovered_from {
+            discovered.format = self.protocol;
+        }
+        self.trials.append(self.remaining_trials(settings));
+        self.step = SetupStep::Review;
+    }
+
+    fn remaining_trials(&self, settings: &Settings) -> Vec<Probe> {
+        let primary = self.primary_model();
+        self.planned_trials(settings).into_iter().filter(|probe| {
+            !matches!(probe, Probe::Trial { model, check: ModelTrial::Text { effort: None, service_tier: None }, .. } if Some(model) == primary.as_ref())
+        }).collect()
     }
 
     fn planned_trials(&self, settings: &Settings) -> Vec<Probe> {
@@ -286,7 +413,11 @@ impl SetupState {
         if self.models.selected.is_empty() {
             Ok(vec![self.model_text()?])
         } else {
-            Ok(self.models.selected.iter().cloned().collect())
+            Ok(self
+                .models
+                .selected_in_catalog_order()
+                .map(str::to_owned)
+                .collect())
         }
     }
 
@@ -296,7 +427,12 @@ impl SetupState {
             .as_ref()
             .filter(|id| self.models.selected.contains(*id))
             .cloned()
-            .or_else(|| self.models.selected.iter().next().cloned())
+            .or_else(|| {
+                self.models
+                    .selected_in_catalog_order()
+                    .next()
+                    .map(str::to_owned)
+            })
             .or_else(|| self.model_text().ok())
     }
 
@@ -358,40 +494,58 @@ impl SetupState {
             .collect()
     }
 
-    pub(super) fn choose_protocol(&mut self, key: KeyEvent) {
-        if matches!(key.code, KeyCode::Enter | KeyCode::Tab) {
-            self.step = SetupStep::Address;
-        } else {
-            let index = PROTOCOLS
-                .iter()
-                .position(|format| *format == self.protocol)
-                .expect("supported protocol");
-            self.models.cursor = index;
-            self.models.move_cursor(key.code, PROTOCOLS.len());
+    pub(super) fn open_protocol_picker(&mut self, from_review: bool) {
+        self.protocol_picker_from_review = from_review;
+        self.models.cursor = PROTOCOLS
+            .iter()
+            .position(|format| *format == self.protocol)
+            .expect("supported protocol");
+        self.step = SetupStep::Protocol;
+    }
+
+    pub(super) fn choose_protocol(&mut self, key: KeyEvent, settings: &Settings) {
+        if key.code == KeyCode::Enter {
             self.protocol = PROTOCOLS[self.models.cursor];
+            self.protocol_fixed = true;
+            if let Some(discovered) = &mut self.models.discovered_from {
+                discovered.format = self.protocol;
+            }
+            self.problem = None;
+            self.review_models(settings);
+        } else {
+            self.models.move_cursor(key.code, PROTOCOLS.len());
         }
     }
 
     pub(super) fn recognized_request_url(&self) -> bool {
-        url::Url::parse(self.address.text().trim()).is_ok_and(|url| {
-            url.query().is_some()
-                || url
-                    .path()
-                    .trim_end_matches('/')
-                    .ends_with(self.protocol.request_suffix())
-        })
+        url::Url::parse(self.address.text().trim())
+            .is_ok_and(|url| url.query().is_some() || setup_endpoint_format(url.as_str()).is_some())
     }
 
     pub(super) fn edit_address(&mut self, key: KeyEvent) {
         if key.code != KeyCode::Enter {
+            let entered = self.address.text().to_owned();
             edit_field(&mut self.address, key);
+            if self.address.text() != entered {
+                self.full_url = false;
+            }
             self.problem = None;
             return;
         }
         let entered = self.address.text().trim();
         if entered.is_empty() {
+            if matches!(self.choice(), ConnectionChoice::Custom) {
+                self.problem = Some("Enter the provider API URL.".into());
+                return;
+            }
             self.full_url = false;
         } else if let Ok(url) = url::Url::parse(entered) {
+            if let Some(format) = setup_endpoint_format(entered) {
+                self.protocol = format;
+                self.protocol_fixed = true;
+            } else if matches!(self.choice(), ConnectionChoice::Custom) {
+                self.protocol_fixed = false;
+            }
             self.full_url |= self.recognized_request_url();
             let path = url.path().trim_end_matches('/');
             let last = path.rsplit('/').next().unwrap_or_default();
@@ -494,7 +648,7 @@ impl SetupState {
             return;
         }
         match choices.get(self.models.cursor).copied() {
-            Some("Choose from list") => self.accept_discovery(settings),
+            Some("Choose from list") => self.accept_discovery(),
             Some("Enter model ID") => {
                 self.discovery.stop();
                 self.problem = None;
@@ -504,6 +658,7 @@ impl SetupState {
                 Ok(model) => {
                     self.models.add_manual(model);
                     self.trials = ProbeBatch::default();
+                    self.model_review_from = SetupStep::ModelSource;
                     self.step = SetupStep::Review;
                     self.review_selection = 0;
                 }
@@ -574,7 +729,12 @@ impl SetupState {
 
     pub(super) fn choose_default(&mut self, key: KeyEvent, settings: &Settings) {
         if key.code == KeyCode::Enter {
-            self.models.default = self.models.selected.iter().nth(self.models.cursor).cloned();
+            let model = self
+                .models
+                .selected_in_catalog_order()
+                .nth(self.models.cursor)
+                .map(str::to_owned);
+            self.models.default = model;
             self.models.cursor = 0;
             self.review_models(settings);
         } else {

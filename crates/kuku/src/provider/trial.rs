@@ -68,6 +68,30 @@ pub async fn trial_model(
     model: &str,
     trial: ModelTrial,
 ) -> Result<TrialResult> {
+    trial_with_route_evidence(connection, model, trial)
+        .await
+        .map_err(|problem| problem.error)
+}
+
+pub(super) struct TrialProblem {
+    pub error: Error,
+    pub route_missing: bool,
+}
+
+impl From<Error> for TrialProblem {
+    fn from(error: Error) -> Self {
+        Self {
+            error,
+            route_missing: false,
+        }
+    }
+}
+
+pub(super) async fn trial_with_route_evidence(
+    connection: &ProviderConfig,
+    model: &str,
+    trial: ModelTrial,
+) -> std::result::Result<TrialResult, TrialProblem> {
     tokio::time::timeout(TRIAL_TIMEOUT, trial_request(connection, model, trial))
         .await
         .map_err(|_| Error::InvalidArgument("Model trial timed out.".into()))?
@@ -77,7 +101,7 @@ async fn trial_request(
     connection: &ProviderConfig,
     model: &str,
     trial: ModelTrial,
-) -> Result<TrialResult> {
+) -> std::result::Result<TrialResult, TrialProblem> {
     let capabilities = crate::adapter::inspect_connection_model(connection, model)?;
     let mut challenge = None;
     let (effort, service_tier) = match trial {
@@ -130,23 +154,38 @@ async fn trial_request(
     };
     let response = super::transport::send_trial(&config, &prepared)
         .await
-        .map_err(trial_error)?;
+        .map_err(|failure| TrialProblem {
+            route_missing: matches!(failure.status, Some(404 | 405 | 501)),
+            error: trial_error(failure),
+        })?;
+    if response
+        .response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("text/html"))
+    {
+        return Err(TrialProblem {
+            route_missing: true,
+            error: invalid_receipt(),
+        });
+    }
     let mut stream = response.response.bytes_stream();
     let mut bytes = Vec::new();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|_| invalid_receipt())?;
         if bytes.len().saturating_add(chunk.len()) > MAX_TRIAL_RESPONSE {
-            return Err(invalid_receipt());
+            return Err(invalid_receipt().into());
         }
         bytes.extend_from_slice(&chunk);
     }
     let response: Value = serde_json::from_slice(&bytes).map_err(|_| invalid_receipt())?;
-    interpret_trial(
+    Ok(interpret_trial(
         connection,
         model,
         &response,
         challenge.map(|(colors, _)| colors),
-    )
+    )?)
 }
 
 fn trial_body(config: &ResolvedProvider, image: Option<&str>) -> Value {
