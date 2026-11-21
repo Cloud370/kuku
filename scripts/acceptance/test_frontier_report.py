@@ -108,12 +108,16 @@ class PairedReportTests(unittest.TestCase):
             report = compare(kuku, pi)
             self.assertEqual([result['reward'] for result in report['attempts']], [0, 0])
             self.assertNotIn(SECRET, json.dumps(report))
+            journal = kuku / 'live' / 'session-data' / 'p' / 'app' / 'sessions' / 'fixture' / 'events.jsonl'
+            journal.parent.mkdir(parents=True)
+            journal.write_text(json.dumps({'kind': 'tool.call', 'tool': 'read_output', 'args': {'id': SECRET}}) + '\n')
             rows = [
                 {'seconds': 0.25, 'request_bytes': 40, 'body': SECRET},
                 {'seconds': 1.25, 'request_bytes': 42, 'timing': {'request_to_first_output_delta_seconds': 0.5}},
                 {'seconds': 2.0, 'request_bytes': 45, 'timing': {'request_to_first_output_delta_seconds': 1.0}},
             ]
-            write_json(kuku / 'meter.json', {**meter, 'attempts': rows})
+            write_json(kuku / 'meter.json', {**meter, 'attempts': rows,
+                                           'rejections': [{'reason': 'case USD cap', 'private': SECRET}]})
             write_json(pi / 'meter.json', {**meter, 'attempts': [{**rows[1], 'seconds': None}]})
             report = compare(kuku, pi)
             self.assertEqual(report['attempts'][0]['provider_relay'], {
@@ -121,6 +125,9 @@ class PairedReportTests(unittest.TestCase):
                 'first_output_samples': 2, 'first_output_p50_seconds': 0.75,
             })
             self.assertIsNone(report['attempts'][1]['provider_relay']['elapsed_seconds'])
+            self.assertEqual(report['attempts'][0]['tool_calls'], 1)
+            self.assertEqual(report['attempts'][0]['tool_call_source'], 'session_journal')
+            self.assertEqual(report['attempts'][0]['case_cap_rejections'], 1)
             self.assertNotIn(SECRET, json.dumps(report))
             write_json(pi / 'meter.json', {**meter, 'case_cap_usd': '1.00'})
             with self.assertRaisesRegex(EvidenceError, 'case_cap_usd'):

@@ -499,8 +499,8 @@ class EvidenceTests(unittest.TestCase):
         fixture = self.fixture
         index = next(i for i, event in enumerate(fixture.records) if event["kind"] == "runtime.model_usage")
         retry = {"kind": "runtime.model_retry", "agent": "main", "turn": fixture.turn,
-                 "request_id": "request-1", "attempt": 2}
-        fixture.records[index:index] = [retry, dict(retry)]
+                 "request_id": "request-1", "attempt": 2, "failed_attempt": 1, "max_attempts": 6, "will_retry": True}
+        fixture.records[index:index] = [{**retry, "phase": "waiting"}, {**retry, "phase": "started"}]
         fixture.renumber()
         fixture.report["limits"]["automatic_retries"] = 1
         fixture.totals.update(model_requests=3, unreported_requests=1)
@@ -512,6 +512,24 @@ class EvidenceTests(unittest.TestCase):
             self.assertEqual(1, usage["unreported_requests"])
             self.assertIsNone(usage["input_tokens"])
             self.assertEqual(200, usage["reported_partial"]["input_tokens"])
+
+    def test_terminal_first_attempt_has_a_valid_stop_fact_before_or_after_usage(self):
+        fixture = self.fixture
+        fixture.report["runtime_completed"] = False
+        original = copy.deepcopy(fixture.records)
+        usage = next(i for i, event in enumerate(original) if event["kind"] == "runtime.model_usage")
+        for already_reported in (False, True):
+            with self.subTest(already_reported=already_reported):
+                stop = {"kind": "runtime.model_retry", "agent": "main", "turn": fixture.turn,
+                        "request_id": "request-1", "attempt": 1, "failed_attempt": 1, "max_attempts": 6,
+                        "phase": "stopped", "will_retry": False}
+                index = usage + int(already_reported)
+                fixture.records = copy.deepcopy(original)
+                fixture.records[index:index] = [stop]
+                fixture.renumber()
+                evidence = fixture.inspect()
+                self.assertFalse(evidence["passed"])
+                self.assertEqual("SDK runtime did not complete successfully", evidence["error"])
 
     def test_completed_tool_argument_regeneration_counts_both_prepared_requests(self):
         fixture = self.fixture

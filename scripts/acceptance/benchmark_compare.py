@@ -9,7 +9,7 @@ import re
 
 from benchmark_resources import CASE_RESOURCE_LIMITS
 from frontier_report import (FAILURE_KINDS, TASK_COMMIT, TEST_FIELDS, EvidenceError, allowed, boolean,
-                             count, hex_digest, middle, money, number, object_value, read_object)
+                             count, hex_digest, middle, money, number, object_value, read_object, session_summary)
 from run import manifest_case
 
 
@@ -97,6 +97,16 @@ def attempt(directory, harness):
     agent = object_value(result.get('agent_evidence' if harness == 'pi' else 'sdk_evidence'))
     tool_facts = agent if harness == 'pi' else object_value(agent.get('facts'))
     tool_batches = object_value(agent.get('tool_batches'))
+    tool_calls = count(tool_facts.get('tool_calls'))
+    tool_call_source = 'runner_inspection' if tool_calls is not None else None
+    if harness == 'kuku' and tool_calls is None:
+        observed, _ = session_summary(directory / 'live', agent)
+        tool_calls = count(observed.get('tool_calls'))
+        if tool_calls is not None:
+            tool_call_source = 'session_journal'
+    rejections = meter.get('rejections')
+    case_cap_rejections = (sum(object_value(entry).get('reason') == 'case USD cap' for entry in rejections)
+                           if isinstance(rejections, list) else None)
     memory_events = object_value(resources.get('memory_event_deltas'))
     version = package.get('version')
     return shared, {
@@ -118,7 +128,9 @@ def attempt(directory, harness):
         'tests': {key: count(object_value(result.get('verifier_summary')).get(key)) for key in TEST_FIELDS},
         'upstream_requests': count(accounting.get('upstream_requests')),
         'provider_relay': relay_summary(meter.get('attempts', [])),
-        'tool_calls': count(tool_facts.get('tool_calls')),
+        'case_cap_rejections': case_cap_rejections,
+        'tool_calls': tool_calls,
+        'tool_call_source': tool_call_source,
         'tool_batches': {key: count(tool_batches.get(key))
                          for key in ('without_tools', 'single_call', 'multiple_calls', 'max_calls')} if tool_batches else None,
         'usage': {key: count(object_value(accounting.get('usage')).get(key)) for key in TOKEN_FIELDS},

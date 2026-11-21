@@ -16,6 +16,7 @@ import sys
 from urllib.parse import urlencode
 
 from benchmark_resources import EXTERNAL_PROCESS_IO, FINAL_PROCESS_IO, complete_process_io, peak_rss_kib
+from evidence import EVENT_LINE_BYTES, EVENT_RECORD_LIMIT
 from paid_model import upstream_json, usd
 from run import load_secrets, locked, write_json
 
@@ -635,8 +636,10 @@ def session_summary(live, sdk):
     agent = sdk.get('agent') or 'main'
     provider_error_turn, provider_error_kind = None, None
     try:
-        with candidates[0].open(encoding='utf-8') as source:
-            for line in source:
+        with candidates[0].open('rb') as source:
+            for index, line in enumerate(iter(lambda: source.readline(EVENT_LINE_BYTES + 1), b''), 1):
+                if index > EVENT_RECORD_LIMIT or len(line) > EVENT_LINE_BYTES or not line.endswith(b'\n'):
+                    return tools, result
                 event = object_value(json.loads(line))
                 event_agent = event.get('conversation') or event.get('agent') or 'main'
                 if event.get('kind') == 'tool.call':

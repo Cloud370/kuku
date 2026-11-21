@@ -13,6 +13,8 @@ RESULT_VIEW_FIELDS = ("tool_call_id", "status", "summary", "model_content", "tru
 STREAM_COUNTERS = ("model_text_chunks", "model_thinking_chunks", "tool_output_chunks", "model_text_bytes",
                    "model_thinking_bytes", "tool_output_bytes", "model_request_events", "committed_events", "lagged_updates")
 MAX_STAGED_TOOL_BLOCKS = 16_384
+EVENT_LINE_BYTES = 1024 * 1024
+EVENT_RECORD_LIMIT = 100_000
 
 
 class FailureSummary:
@@ -398,10 +400,23 @@ class SessionFacts:
             step["regenerated"] = True
             self.regenerations[agent_turn] = False
             return
-        require(step and session_request not in self.session_usages, "retry has no active prepared request")
-        attempt = event.get("attempt", 2)
-        require(type(attempt) is int and attempt >= 2, "retry attempt must be an integer of at least two")
-        if attempt > step.get("last_attempt", 1):
+        require(step and not step.get("retry_stopped"), "retry has no active prepared request")
+        phase = event.get("phase")
+        retrying = phase in ("waiting", "started")
+        require((retrying or phase == "stopped") and event.get("will_retry") is retrying,
+                "invalid model retry phase")
+        attempt, failed, maximum = (event.get(field) for field in ("attempt", "failed_attempt", "max_attempts"))
+        require(all(type(value) is int and value > 0 for value in (attempt, failed, maximum))
+                and failed == step.get("last_attempt", 1)
+                and attempt == failed + int(retrying) and attempt <= maximum, "invalid model retry attempt")
+        if phase == "stopped":
+            step["retry_stopped"] = True
+            return
+        require(session_request not in self.session_usages, "retry has no active prepared request")
+        if phase == "waiting":
+            step["waiting_attempt"] = attempt
+        else:
+            require(step.pop("waiting_attempt", None) == attempt, "started retry was not scheduled")
             step["last_attempt"] = attempt
             step["retry_count"] = step.get("retry_count", 0) + 1
 
@@ -596,12 +611,12 @@ def inspect_sdk(result_path, data_dir, connection=None, container_data=None, ses
                 "events path does not belong to the reported Session")
         facts, digest, records = SessionFacts(agent, path, connection), hashlib.sha256(), 0
         with path.open("rb") as handle:
-            while line := handle.readline(1024 * 1024 + 1):
-                require(len(line) <= 1024 * 1024 and line.endswith(b"\n"), "event log has an oversized record or incomplete tail")
+            while line := handle.readline(EVENT_LINE_BYTES + 1):
+                require(len(line) <= EVENT_LINE_BYTES and line.endswith(b"\n"), "event log has an oversized record or incomplete tail")
                 digest.update(line)
                 if line.strip():
                     records += 1
-                    require(records <= 100_000, "event log exceeds the diagnostic record limit")
+                    require(records <= EVENT_RECORD_LIMIT, "event log exceeds the diagnostic record limit")
                     facts.accept(json.loads(line))
         inspected.update(facts.finish(report, require_fixed_limits, require_output_limit), events_path=str(path),
                          events_sha256=digest.hexdigest(), records=records)
