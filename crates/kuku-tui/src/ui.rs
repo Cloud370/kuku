@@ -170,6 +170,7 @@ pub(crate) fn render_at(
     let row_insets = render_transcript(
         frame,
         transcript,
+        composer_content,
         app,
         banner_area.height == 0,
         &activity_frame,
@@ -393,6 +394,7 @@ pub(crate) fn render_at(
 fn render_transcript(
     frame: &mut Frame<'_>,
     area: Rect,
+    composer_content: Rect,
     app: &mut App,
     show_service_problem: bool,
     activity: &ActivityFrame,
@@ -427,7 +429,13 @@ fn render_transcript(
     }
     if view.lines.is_empty() && !app.pane().exists {
         app.text_selection.set_messages_area(None);
-        header::render_welcome(frame, area, app, show_service_problem);
+        let welcome = Rect::new(
+            composer_content.x,
+            area.y,
+            composer_content.width,
+            area.height,
+        );
+        header::render_welcome(frame, welcome, app, show_service_problem);
         return Vec::new();
     }
     if view.lines.is_empty() && height > 0 {

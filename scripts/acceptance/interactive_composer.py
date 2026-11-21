@@ -29,6 +29,15 @@ def startup_info(client):
         terminal.expect("preview-review", also=("Workspace", "work-startup-info", "Skills",
                                                   "New session", "test-anthropic/claude-sonnet-4-6",
                                                   "/skill: Browse", "Ctrl+L Model", "Ctrl+T Think", "Ctrl+P Help"))
+        terminal.request("resize", rows=32, cols=132)
+        draft = "check the welcome column"
+        terminal.type(draft)
+        screen = terminal.expect(draft, also=("Workspace", "preview-review"), rows=32)["screen"]
+        workspace_row = next(line for line in screen.splitlines() if line.strip().startswith("Workspace "))
+        draft_row = next(line for line in screen.splitlines() if draft in line)
+        assert workspace_row.index("Workspace") == draft_row.index(draft), screen
+        terminal.press("\x03")
+        terminal.expect("New session", absent=(draft,))
         add_skill("refresh-on-new")
         terminal.press("/new\r")
         terminal.expect("refresh-on-new", also=("preview-review", "New session"))

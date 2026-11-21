@@ -38,18 +38,17 @@ fn activity_screen(app: &mut App, width: u16, height: u16, step: Option<u128>) -
     terminal
         .draw(|frame| visible = render_at(frame, app, activity))
         .unwrap();
-    let text = terminal
-        .backend()
-        .buffer()
-        .content
-        .iter()
-        .map(|cell| cell.symbol())
-        .collect::<Vec<_>>()
-        .chunks(usize::from(width))
-        .map(|row| row.concat())
+    let text = buffer_rows(terminal.backend().buffer())
         .collect::<Vec<_>>()
         .join("\n");
     (text, visible)
+}
+
+fn buffer_rows(buffer: &Buffer) -> impl Iterator<Item = String> + '_ {
+    buffer
+        .content
+        .chunks(usize::from(buffer.area.width))
+        .map(|row| row.iter().map(|cell| cell.symbol()).collect())
 }
 
 fn app() -> App {
@@ -350,28 +349,30 @@ fn blank_welcome_scales_down_and_active_session_uses_one_branded_row() {
     app.startup_skills =
         crate::app::StartupSkills::Ready(vec!["review-workspace".into(), "format-code".into()]);
     for width in [64, 118] {
-        let welcome = screen(&mut app, width, 28);
-        let rows: Vec<_> = welcome.lines().collect();
+        let mut terminal = Terminal::new(TestBackend::new(width, 28)).unwrap();
+        let frame = terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let rows: Vec<_> = buffer_rows(frame.buffer).collect();
+        let x = usize::from(app.composer_area.x);
         assert_eq!("", rows[0].trim());
-        assert_eq!("│", rows[1].trim());
-        assert_eq!("│ ⢎⡱  kuku · New session", rows[2].trim());
-        assert_eq!("│ Workspace  /workspace", rows[4].trim());
-        assert_eq!("│ Model      Tier work", rows[5].trim());
-        assert_eq!("│", rows[6].trim());
-        assert_eq!("│ Skills   /skill: Browse", rows[7].trim());
-        assert_eq!("│ review-workspace · format-code", rows[8].trim());
-        assert!(rows[10]
+        for (row, text) in [
+            (1, "⢎⡱  kuku · New session"),
+            (3, "Workspace  /workspace"),
+            (4, "Model      Tier work"),
+            (6, "Skills   /skill: Browse"),
+            (7, "  review-workspace · format-code"),
+        ] {
+            assert_eq!(format!("{}{text}", " ".repeat(x)), rows[row].trim_end());
+            assert!(
+                frame.buffer.content[row * usize::from(width)..(row + 1) * usize::from(width)]
+                    .iter()
+                    .all(|cell| cell.bg == ratatui::style::Color::Reset)
+            );
+        }
+        assert!(rows[9]
             .trim_start()
             .starts_with("Enter sends your first prompt"));
-        let shortcuts_row = if width == 64 {
-            assert!(rows[11]
-                .trim_start()
-                .starts_with("/resume opens a saved session"));
-            12
-        } else {
-            assert!(rows[10].contains("/resume opens a saved session"));
-            11
-        };
+        let shortcuts_row = 10 + usize::from(width == 64);
+        assert!(rows[shortcuts_row - 1].contains("/resume opens a saved session"));
         assert_eq!(
             "/ Actions · Ctrl+L Model · Ctrl+T Think · Ctrl+P Help",
             rows[shortcuts_row].trim()
@@ -398,7 +399,7 @@ fn blank_welcome_shows_the_shortened_workspace_path() {
     let welcome = screen(&mut app, 118, 28);
     let workspace = welcome
         .lines()
-        .find(|line| line.trim_start().starts_with("│ Workspace "))
+        .find(|line| line.trim_start().starts_with("Workspace "))
         .unwrap();
     assert!(workspace.contains('…'));
     assert!(workspace.trim_end().ends_with("actual-workspace"));

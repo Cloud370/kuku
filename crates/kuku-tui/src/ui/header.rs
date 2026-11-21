@@ -1,7 +1,7 @@
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
@@ -10,15 +10,16 @@ use crate::contextual::ContextControl;
 use crate::keys::Shortcut;
 use crate::markup::{render_literal, wrap};
 use crate::text::{shorten, shorten_middle, single_line, single_line_path};
-use crate::theme::{compact_padding, emphasis, surface, ACCENT, KUKU_MARK, MODEL, MUTED, WARNING};
+use crate::theme::{emphasis, ACCENT, KUKU_MARK, MODEL, MUTED, WARNING};
 
 const BRAND: &str = "kuku";
 const SEPARATOR: &str = " · ";
-const WELCOME_WIDTH: u16 = 56;
+const WELCOME_WIDTH: u16 = 52;
 const WELCOME_HEIGHT: u16 = 9;
 const WELCOME_MAX_WIDTH: u16 = 86;
 const WELCOME_LABEL_WIDTH: usize = 11;
 const WELCOME_SKILL_ROWS: usize = 2;
+const WELCOME_SKILL_INDENT: &str = "  ";
 const SESSION_PREFIX_WIDTH: usize = 39;
 const TITLE_RESERVE: usize = 9;
 
@@ -129,67 +130,45 @@ pub(super) fn render_session(
 }
 
 pub(super) fn render_welcome(frame: &mut Frame<'_>, area: Rect, app: &App, show_problem: bool) {
-    let card = area.width >= WELCOME_WIDTH && area.height >= WELCOME_HEIGHT;
-    let block = if card {
-        Block::new()
-            .style(surface())
-            .borders(Borders::LEFT)
-            .border_style(Style::new().fg(ACCENT))
-            .padding(compact_padding(2, true))
-    } else {
-        Block::new()
-    };
+    let spacious = area.width >= WELCOME_WIDTH && area.height >= WELCOME_HEIGHT;
+    let top = u16::from(spacious);
     let area = Rect {
-        y: area.y + u16::from(card),
-        height: area.height - u16::from(card),
+        y: area.y + top,
+        height: area.height - top,
         width: area.width.min(WELCOME_MAX_WIDTH),
         ..area
     };
-    let inner = block.inner(area);
-    let width = usize::from(inner.width);
+    let (width, height) = (usize::from(area.width), usize::from(area.height));
     let mut identity = wordmark(width >= 25);
     append(&mut identity, "New session", width, emphasis(Color::Reset));
     let mut lines = vec![identity];
     if let Some(notice) = empty_notice(app, width, show_problem).into_iter().next() {
         lines.push(notice);
     }
-    let mut action_lines =
-        welcome_actions(width, usize::from(inner.height).saturating_sub(lines.len()));
-    let remaining = usize::from(inner.height).saturating_sub(lines.len() + action_lines.len());
-    let action_gap = u16::from(card && remaining >= 4);
-    let details_rows = remaining.saturating_sub(usize::from(action_gap) + usize::from(card));
+    let actions = welcome_actions(width, height.saturating_sub(lines.len()));
+    let remaining = height.saturating_sub(lines.len() + actions.len());
+    let separated = spacious && remaining >= 4;
+    let details_rows = remaining.saturating_sub(2 * usize::from(separated));
     if details_rows >= 2 && width >= 22 {
-        if card {
+        if separated {
             lines.push(Line::default());
         }
-        lines.extend(welcome_details(app, width, details_rows, card));
-    }
-    let body = Rect {
-        height: lines.len().min(usize::from(inner.height)) as u16,
-        ..inner
-    };
-    let panel = Rect {
-        height: body.bottom().saturating_sub(area.y),
-        ..area
-    };
-    frame.render_widget(block, panel);
-    frame.render_widget(Paragraph::new(lines), body);
-    let y = body.bottom() + action_gap;
-    let actions = Rect {
-        y,
-        height: area.bottom().saturating_sub(y),
-        ..inner
-    };
-    if card && action_lines.len() < usize::from(actions.height) {
-        let shortcuts = welcome_shortcuts();
-        if shortcuts.width() <= width {
-            action_lines.push(shortcuts);
+        lines.extend(welcome_details(app, width, details_rows, separated));
+        if separated {
+            lines.push(Line::default());
         }
     }
-    frame.render_widget(Paragraph::new(action_lines), actions);
+    lines.extend(actions);
+    if spacious && lines.len() < height {
+        let shortcuts = welcome_shortcuts();
+        if shortcuts.width() <= width {
+            lines.push(shortcuts);
+        }
+    }
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
-fn welcome_details(app: &App, width: usize, rows: usize, card: bool) -> Vec<Line<'static>> {
+fn welcome_details(app: &App, width: usize, rows: usize, separated: bool) -> Vec<Line<'static>> {
     let content_width = width.saturating_sub(WELCOME_LABEL_WIDTH);
     let workspace = single_line_path(&app.workspace);
     let mut details = vec![welcome_field(
@@ -210,7 +189,7 @@ fn welcome_details(app: &App, width: usize, rows: usize, card: bool) -> Vec<Line
             ),
         ));
     }
-    let separate_skills = card && rows.saturating_sub(details.len()) >= 3;
+    let separate_skills = separated && rows.saturating_sub(details.len()) >= 3;
     if separate_skills {
         details.push(Line::default());
         let mut title = Line::styled("Skills", emphasis(ACCENT));
@@ -223,7 +202,7 @@ fn welcome_details(app: &App, width: usize, rows: usize, card: bool) -> Vec<Line
     }
     let slots = rows.saturating_sub(details.len()).min(WELCOME_SKILL_ROWS);
     let names_width = if separate_skills {
-        width
+        width.saturating_sub(WELCOME_SKILL_INDENT.width())
     } else {
         content_width
     };
@@ -253,7 +232,11 @@ fn welcome_details(app: &App, width: usize, rows: usize, card: bool) -> Vec<Line
         }
     }
     if separate_skills {
-        details.extend(skills);
+        details.extend(skills.into_iter().map(|skill| {
+            let mut line = Line::raw(WELCOME_SKILL_INDENT);
+            line.extend(skill.spans);
+            line
+        }));
     } else {
         details.extend(
             skills
