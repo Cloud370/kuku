@@ -1,6 +1,6 @@
 # Performance
 
-In our Linux probes, `kuku` used **16.5 MiB RSS** at idle and reopened a sealed **509 MiB** Session in **157 ms**. The setups and trade-offs are below.
+In our Linux probes, the idle `kuku` server used **16.5 MiB RSS**, and the SDK's `Session::open` reopened a sealed **509 MiB** Session in **157 ms**.
 
 ## Idle processes
 
@@ -24,9 +24,11 @@ The medians are from three fresh processes per program on the same WSL2 Linux x8
 | Journal reads at reopen | 4,073 | **12** |
 | Journal bytes read at reopen | 509 MiB | **274 KiB** |
 | Steady short turn | 192 ms | 188 ms |
-| Recent history page | 0.49 ms | 1.68 ms |
+| SDK's latest 40 events (`events_before`) | 0.49 ms | 1.68 ms |
 
 These figures measure the SDK process. Active Agents, loaded context, and tool subprocesses add memory in a real workload. The wall times come from three paired fresh-process runs on Linux with a warm OS page cache, the same size-optimized release profile, and a fixed SDK model adapter. The read counts come from a separate syscall trace. The synthetic history contains repeated logs, which compress especially well. First sealing took about 3 s. Sealed history pages decompress the frames they traverse. Linux process-kill tests on both sides of publication preserved all 198,454 original committed events. [Evidence and conditions](https://github.com/Cloud370/kuku/issues/151#issuecomment-7075736730) · [Opt-in Session probe](../contributing/testing.md#long-session-profile)
+
+TUI resume also fetches a transcript page from the server. That endpoint currently replays the full journal to resolve Agent ownership and rewind visibility before returning the page.
 
 ## Download and installation
 
