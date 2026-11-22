@@ -24,6 +24,13 @@ const SHORT_OUTPUT_LINES: u64 = 40;
 const SHAPE_SAMPLE_BYTES: usize = 96;
 const SHAPE_FIELDS: usize = 6;
 const SHAPE_FIELD_BYTES: usize = 24;
+const MIN_UNQUOTED_SAMPLE_COLUMNS: usize = 3;
+
+#[derive(Debug, PartialEq, Eq)]
+enum LineFormat {
+    JsonObject,
+    Delimited { separator: char, columns: usize },
+}
 
 pub(super) fn render_command_result(
     request: &CommandRequest,
@@ -305,13 +312,20 @@ fn append_output_shape(
             continue;
         }
         body.push_str(&format!("\n{label}: {bytes} observed bytes"));
-        if let Some((description, json_lines)) =
+        if let Some((description, format)) =
             stream_shape(chunk, stream, bytes, facts.capture_complete)
         {
             body.push_str(". ");
             body.push_str(&description);
-            if json_lines && access == ModelOutputAccess::Script {
-                body.push_str(&format!("\nFor {label} records in run_js, iterate tools.output_lines({{id, stream:{label:?}}}). Check line.truncated and line.lossy_utf8 before JSON.parse(line.text)."));
+            if let (ModelOutputAccess::Script, Some(format)) = (access, format) {
+                body.push_str(&format!("\nFor {label} records in run_js, iterate tools.output_lines({{id, stream:{label:?}}}). Check line.truncated and line.lossy_utf8 before "));
+                match format {
+                    LineFormat::JsonObject => body.push_str("JSON.parse(line.text)."),
+                    LineFormat::Delimited { separator, columns } => {
+                        let separator = json!(separator);
+                        body.push_str(&format!("using line.text. A row that follows the sample has {columns} fields after line.text.split({separator})."));
+                    }
+                }
             }
         }
     }
@@ -322,7 +336,7 @@ fn stream_shape(
     stream: OutputStream,
     observed_bytes: u64,
     capture_complete: bool,
-) -> Option<(String, bool)> {
+) -> Option<(String, Option<LineFormat>)> {
     let bytes: Vec<_> = chunk
         .segments
         .iter()
@@ -338,13 +352,11 @@ fn stream_shape(
     (!lossy && !text.is_empty()).then(|| output_shape(&text, complete))
 }
 
-fn output_shape(prefix: &str, complete: bool) -> (String, bool) {
+fn output_shape(prefix: &str, complete: bool) -> (String, Option<LineFormat>) {
     if complete {
         match serde_json::from_str::<Value>(prefix) {
-            Ok(Value::Object(fields)) => return (json_object_shape("JSON object", &fields), false),
-            Ok(Value::Array(items)) => {
-                return (format!("JSON array, {} items", items.len()), false)
-            }
+            Ok(Value::Object(fields)) => return (json_object_shape("JSON object", &fields), None),
+            Ok(Value::Array(items)) => return (format!("JSON array, {} items", items.len()), None),
             _ => {}
         }
     }
@@ -354,35 +366,67 @@ fn output_shape(prefix: &str, complete: bool) -> (String, bool) {
         .map(|line| line.trim_end_matches(['\r', '\n']))
         .filter(|line| !line.trim().is_empty());
     let (Some(first), Some(second)) = (lines.next(), lines.next()) else {
-        return ("text".into(), false);
+        return ("text".into(), None);
     };
     if let (Ok(Value::Object(fields)), Ok(Value::Object(_))) =
         (serde_json::from_str(first), serde_json::from_str(second))
     {
         return (
             json_object_shape("first two lines are JSON objects", &fields),
-            true,
+            Some(LineFormat::JsonObject),
         );
     }
     let columns = first.split('\t').count();
     if columns > 1 && second.split('\t').count() == columns {
+        let unquoted = !first.contains('"') && !second.contains('"');
         return (
             format!("{columns} tab-separated fields in each of the first two lines"),
-            false,
+            unquoted.then_some(LineFormat::Delimited {
+                separator: '\t',
+                columns,
+            }),
         );
     }
-    let samples = [first, second].map(|line| {
+    let samples = line_samples([first, second]);
+    if let Some(third) = lines.next() {
+        if let Some((separator, label, columns)) = delimited_sample([first, second, third]) {
+            return (
+                format!("{columns} {label}-separated fields in each of the first three nonblank lines, sample {samples}"),
+                Some(LineFormat::Delimited { separator, columns }),
+            );
+        }
+    }
+    (
+        format!("multiline text, first two nonblank lines {samples}"),
+        None,
+    )
+}
+
+fn delimited_sample(lines: [&str; 3]) -> Option<(char, &'static str, usize)> {
+    if lines.iter().any(|line| line.contains('"')) {
+        return None;
+    }
+    let mut matching =
+        [('|', "pipe"), (',', "comma")]
+            .into_iter()
+            .filter_map(|(separator, name)| {
+                let columns = lines[0].split(separator).count();
+                (columns >= MIN_UNQUOTED_SAMPLE_COLUMNS
+                    && lines[1..]
+                        .iter()
+                        .all(|line| line.split(separator).count() == columns))
+                .then_some((separator, name, columns))
+            });
+    let shape = matching.next()?;
+    matching.next().is_none().then_some(shape)
+}
+
+fn line_samples(lines: [&str; 2]) -> Value {
+    json!(lines.map(|line| {
         let end = line.floor_char_boundary(line.len().min(SHAPE_SAMPLE_BYTES / 2));
         let suffix = if end < line.len() { "…" } else { "" };
         format!("{}{suffix}", &line[..end])
-    });
-    (
-        format!(
-            "multiline text, first two nonblank lines {}",
-            json!(samples)
-        ),
-        false,
-    )
+    }))
 }
 
 fn json_object_shape(kind: &str, fields: &serde_json::Map<String, Value>) -> String {
@@ -595,7 +639,7 @@ fn truncate_utf8(content: &mut String, limit: usize) {
 #[cfg(test)]
 mod tests {
     use super::super::output::{OutputLimits, OutputWriter};
-    use super::{output_shape, read_output, stream_shape, OutputRead, OutputStream};
+    use super::{output_shape, read_output, stream_shape, LineFormat, OutputRead, OutputStream};
 
     #[tokio::test]
     async fn output_shape_rejoins_streams_before_decoding_and_sampling() {
@@ -627,7 +671,7 @@ mod tests {
         assert_eq!(
             Some((
                 "first two lines are JSON objects, 1 fields, sample keys [\"name\"]".into(),
-                true,
+                Some(LineFormat::JsonObject),
             )),
             stream_shape(&output, OutputStream::Stdout, stdout_bytes as u64, true),
         );
@@ -643,9 +687,38 @@ mod tests {
             (
                 r#"multiline text, first two nonblank lines ["project/","project/src/lib.rs"]"#
                     .into(),
-                false,
+                None,
             ),
             output_shape("project/\n\nproject/src/lib.rs\nproject/src/partial", false),
         );
+    }
+
+    #[test]
+    fn delimiter_shape_uses_only_complete_unquoted_samples() {
+        for (text, separator, description) in [
+            (
+                "one|two|three\na|b|c\nx|y|z\npartial",
+                '|',
+                "pipe-separated",
+            ),
+            ("1,2,3\n4,5,6\n7,8,9\npartial", ',', "comma-separated"),
+        ] {
+            let (shape, format) = output_shape(text, false);
+            assert!(shape.contains(description));
+            assert_eq!(
+                Some(LineFormat::Delimited {
+                    separator,
+                    columns: 3
+                }),
+                format
+            );
+        }
+        for text in [
+            "a,b,c\nd,e,f\ng,h",
+            "a,b,c\n\"quoted,value\",z\ng,h,i\n",
+            "a|b|c,d,e\na|b|c,d,e\na|b|c,d,e\n",
+        ] {
+            assert_eq!(None, output_shape(text, false).1);
+        }
     }
 }

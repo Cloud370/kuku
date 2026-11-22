@@ -435,6 +435,43 @@ async fn model_receives_short_output_and_an_extraction_hint_for_large_output() {
 }
 
 #[tokio::test]
+async fn large_delimited_output_gives_an_extraction_hint_and_keeps_the_original_rows() {
+    for (separator, shape) in [('|', "pipe-separated"), (',', "comma-separated")] {
+        let server = MockServer::start_async().await;
+        let workspace = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let payload = (0..120)
+            .map(|row| format!("record-{row}{separator}active{separator}50\n"))
+            .collect::<String>();
+        let (session, id) = captured(
+            &server,
+            workspace.path(),
+            data.path(),
+            payload.as_bytes(),
+            Arc::new(ReadPolicy::default()),
+        )
+        .await;
+        let (status, content, _) = stored_result(&session, "command");
+        assert_eq!("ok", status);
+        assert!(content.contains(&format!(
+            "3 {shape} fields in each of the first three nonblank lines"
+        )));
+        assert!(content.contains(&format!("record-1{separator}active{separator}50")));
+        assert!(content.contains(r#"tools.output_lines({id, stream:"stdout"})"#));
+        assert!(content.contains(&format!("line.text.split({})", json!(separator))));
+        let page = chunk(&session, &id, 0, 8192, None);
+        let raw = page
+            .segments
+            .iter()
+            .flat_map(|segment| segment.as_bytes())
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(payload.as_bytes(), raw);
+        session.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
 async fn script_search_resolves_a_named_capture_and_uses_the_read_output_permission() {
     let server = MockServer::start_async().await;
     let workspace = tempfile::tempdir().unwrap();
