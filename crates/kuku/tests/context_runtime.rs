@@ -242,6 +242,17 @@ async fn reopen_replays_frozen_assets_and_exact_admitted_inputs_after_source_cha
             format!("{:x}", Sha256::digest(serde_json::to_vec(body).unwrap())),
             step["body_hash"]
         );
+        let prefix = admitted
+            .iter()
+            .take(step["prefix_context_head"].as_u64().unwrap() as usize)
+            .map(|value| {
+                serde_json::from_value::<CanonicalMessage>(value["message"].clone()).unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            format!("{:x}", Sha256::digest(serde_json::to_vec(&prefix).unwrap())),
+            step["history_prefix_hash"]
+        );
         let mut messages = vec![json!({"role":"system","content":segments[0]["system_prompt"]})];
         let prelude: Vec<CanonicalMessage> =
             serde_json::from_value(segments[0]["prelude"].clone()).unwrap();

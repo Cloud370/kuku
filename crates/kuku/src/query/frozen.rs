@@ -362,13 +362,11 @@ pub(super) fn record_prepared(
     let wire = prepared.body.as_bytes();
     let body_hash = format!("{:x}", Sha256::digest(wire));
     let prefix_hash = segment_prefix_hash(&context.segment)?;
-    let history_prefix = context
-        .messages
-        .iter()
-        .take(context.prefix_context_head)
-        .map(|admitted| &admitted.message)
-        .collect::<Vec<_>>();
-    let history_prefix_hash = content_hash(&history_prefix)?;
+    let history_prefix_hash = pending
+        .context_cursor
+        .as_ref()
+        .expect("runtime context cursor exists")
+        .history_prefix_hash(context.prefix_context_head);
     let payload = EventPayload::Unknown(
         json!({"kind":"runtime.step_prepared","ts":now_timestamp()?,"agent":pending.conversation.as_str(),"turn":pending.turn,"request_id":request_id,
         "segment":context.segment.id,"context_head":context.messages.len(),"current_input":context.current_input,"source_head":context.source_head,

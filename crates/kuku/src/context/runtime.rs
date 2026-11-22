@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+use sha2::{Digest, Sha256};
+
 use crate::context::{CanonicalMessage, MessageBlock, Role, ToolSchema};
 use crate::conversation::address::ConversationAddress;
 use crate::event::{EventPayload, EventStore, StoredEvent};
@@ -105,6 +107,38 @@ pub(crate) struct AdmittedMessage {
     pub(crate) admitted_at: u64,
 }
 
+#[derive(Debug, Clone)]
+struct PrefixEncoding {
+    hasher: Sha256,
+    bytes: usize,
+}
+
+impl Default for PrefixEncoding {
+    fn default() -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(b"[");
+        Self { hasher, bytes: 0 }
+    }
+}
+
+impl PrefixEncoding {
+    fn append(&mut self, message: &CanonicalMessage) -> Result<()> {
+        let encoded = serde_json::to_vec(message)?;
+        if self.bytes != 0 {
+            self.hasher.update(b",");
+        }
+        self.hasher.update(&encoded);
+        self.bytes = self.bytes.saturating_add(encoded.len());
+        Ok(())
+    }
+
+    fn fingerprint(&self) -> String {
+        let mut hasher = self.hasher.clone();
+        hasher.update(b"]");
+        format!("{:x}", hasher.finalize())
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct ContextCursor {
     pub(crate) after: u64,
@@ -121,7 +155,9 @@ pub(crate) struct ContextCursor {
     tail: Vec<StoredEvent>,
     pending_admissions: Vec<StoredEvent>,
     pending_source_head: Option<u64>,
-    retained_bytes: usize,
+    admitted_encoding: PrefixEncoding,
+    tail_bytes: usize,
+    pending_bytes: usize,
     approved_segment: u64,
 }
 
@@ -250,7 +286,7 @@ impl ContextCursor {
                 if self.pending_admissions.is_empty() {
                     self.pending_source_head = None;
                 }
-                self.recount()?;
+                self.recount_after_rewind()?;
                 return Ok(());
             }
         }
@@ -305,7 +341,9 @@ impl ContextCursor {
                             self.tail.clear();
                             self.pending_admissions.clear();
                             self.pending_source_head = None;
-                            self.retained_bytes = 0;
+                            self.admitted_encoding = PrefixEncoding::default();
+                            self.tail_bytes = 0;
+                            self.pending_bytes = 0;
                         }
                         return Ok(());
                     }
@@ -336,10 +374,10 @@ impl ContextCursor {
                             })
                         {
                             self.pending_admissions.clear();
+                            self.pending_bytes = 0;
                             self.pending_source_head = source_head;
-                            self.recount()?;
                         }
-                        self.reserve(&event, max_bytes)?;
+                        self.pending_bytes += self.charge_event(&event, max_bytes)?;
                         self.pending_admissions.push(event);
                         return Ok(());
                     }
@@ -348,8 +386,7 @@ impl ContextCursor {
                     {
                         self.confirm_admissions(value)?;
                         let source_head = value["source_head"].as_u64().unwrap_or(event.id);
-                        self.tail.retain(|event| event.id > source_head);
-                        self.recount()?;
+                        self.drop_consumed_tail(source_head)?;
                         return Ok(());
                     }
                     Some(_) | None => {}
@@ -373,7 +410,7 @@ impl ContextCursor {
             }
         }
         if let Some(event) = project_source(event, agent, self.latest_turn) {
-            self.reserve(&event, max_bytes)?;
+            self.tail_bytes += self.charge_event(&event, max_bytes)?;
             self.tail.push(event);
         }
         Ok(())
@@ -440,6 +477,7 @@ impl ContextCursor {
                 ));
             }
         }
+        self.pending_bytes = 0;
         for event in std::mem::take(&mut self.pending_admissions)
             .into_iter()
             .take(count)
@@ -460,6 +498,7 @@ impl ContextCursor {
                 .map(serde_json::from_value)
                 .transpose()?
                 .unwrap_or_else(|| MessageOrigin::of(&message));
+            self.admitted_encoding.append(&message)?;
             self.admitted.push(AdmittedMessage {
                 turn: value["turn"].as_u64().or(self.latest_turn).unwrap_or(0),
                 origin,
@@ -482,41 +521,78 @@ impl ContextCursor {
         admitted: Vec<AdmittedMessage>,
         source_head: u64,
     ) -> Result<()> {
+        let reused = self
+            .segment
+            .as_ref()
+            .is_some_and(|active| active.id == segment.id);
+        let prefix_len = if reused { self.admitted.len() } else { 0 };
+        let suffix = admitted.get(prefix_len..).ok_or_else(|| {
+            Error::InvalidEventStream("new context is shorter than the committed prefix".into())
+        })?;
+        if !reused {
+            self.admitted_encoding = PrefixEncoding::default();
+        }
+        for message in suffix {
+            self.admitted_encoding.append(&message.message)?;
+        }
         self.approved_segment = segment.id;
         self.catalog = Some(segment.catalog.clone());
         self.segment = Some(segment);
         self.admitted = admitted;
         self.pending_admissions.clear();
+        self.pending_bytes = 0;
         self.pending_source_head = None;
-        self.tail.retain(|event| event.id > source_head);
-        self.recount()
+        self.drop_consumed_tail(source_head)
     }
 
-    fn reserve(&mut self, value: &impl serde::Serialize, max_bytes: usize) -> Result<()> {
-        self.retained_bytes = self
-            .retained_bytes
-            .saturating_add(serde_json::to_vec(value)?.len());
-        if self.retained_bytes > max_bytes.saturating_mul(MAX_SELECTION_BYTES_FACTOR) {
+    pub(crate) fn history_prefix_hash(&self, head: usize) -> String {
+        if head == 0 {
+            return PrefixEncoding::default().fingerprint();
+        }
+        debug_assert_eq!(self.admitted.len(), head);
+        self.admitted_encoding.fingerprint()
+    }
+
+    fn retained_bytes(&self) -> usize {
+        self.admitted_encoding
+            .bytes
+            .saturating_add(self.tail_bytes)
+            .saturating_add(self.pending_bytes)
+    }
+
+    fn charge_event(&self, event: &StoredEvent, max_bytes: usize) -> Result<usize> {
+        let bytes = serde_json::to_vec(event)?.len();
+        if self.retained_bytes().saturating_add(bytes)
+            > max_bytes.saturating_mul(MAX_SELECTION_BYTES_FACTOR)
+        {
             return Err(Error::InvalidArgument(
                 "active context selection exceeds its request-byte budget".into(),
             ));
         }
+        Ok(bytes)
+    }
+
+    fn drop_consumed_tail(&mut self, source_head: u64) -> Result<()> {
+        self.tail.retain(|event| event.id > source_head);
+        self.tail_bytes = encoded_events_size(&self.tail)?;
         Ok(())
     }
 
-    fn recount(&mut self) -> Result<()> {
-        self.retained_bytes = 0;
+    fn recount_after_rewind(&mut self) -> Result<()> {
+        self.admitted_encoding = PrefixEncoding::default();
         for admitted in &self.admitted {
-            self.retained_bytes += serde_json::to_vec(&admitted.message)?.len();
+            self.admitted_encoding.append(&admitted.message)?;
         }
-        for event in &self.tail {
-            self.retained_bytes += serde_json::to_vec(event)?.len();
-        }
-        for event in &self.pending_admissions {
-            self.retained_bytes += serde_json::to_vec(event)?.len();
-        }
+        self.tail_bytes = encoded_events_size(&self.tail)?;
+        self.pending_bytes = encoded_events_size(&self.pending_admissions)?;
         Ok(())
     }
+}
+
+fn encoded_events_size(events: &[StoredEvent]) -> Result<usize> {
+    events.iter().try_fold(0usize, |bytes, event| {
+        Ok(bytes.saturating_add(serde_json::to_vec(event)?.len()))
+    })
 }
 
 struct SegmentCommit {
