@@ -10,6 +10,7 @@ mod media;
 mod observe;
 mod receipts;
 mod record;
+mod recovery;
 mod retention;
 mod selection;
 mod turns;
@@ -154,17 +155,15 @@ impl Session {
         }
         let lease = SessionLease::acquire(events_path.clone())?;
         let output_dir = retention::output_dir(&events_path)?;
-        let mut state = State {
-            outputs: retention::OutputStore::recover(&output_dir)?,
-            ..State::default()
-        };
-        let mut job_replay = jobs::JobReplay::default();
-        let mut startup =
-            crate::context::runtime::StartupCache::new(options.limits.max_request_bytes);
-        let mut writer = EventStore::open_replaying(&events_path, |event| {
-            startup.observe(&event);
-            reduce_event(&mut state, &mut job_replay, event)
-        })?;
+        let (mut writer, checkpoint) = recovery::open(
+            &events_path,
+            &output_dir,
+            &id,
+            options.limits.max_request_bytes,
+        )?;
+        let recovery::Projection {
+            mut state, startup, ..
+        } = checkpoint;
         creation::prepare_journal(
             &mut writer,
             &mut state,
@@ -806,20 +805,53 @@ impl Session {
                 }
             }
         }
-        let _values = self.inner.value_writes.lock().await;
-        let mut state = self.inner.state.lock().unwrap();
-        if let Some(message) = state.cleanup_failures.values().next() {
-            failure.get_or_insert_with(|| Error::InvalidEventStream(message.clone()));
+        let writer = {
+            let _values = self.inner.value_writes.lock().await;
+            let mut state = self.inner.state.lock().unwrap();
+            if let Some(message) = state.cleanup_failures.values().next() {
+                failure.get_or_insert_with(|| Error::InvalidEventStream(message.clone()));
+            }
+            if let Err(error) = self.commit(&mut state, Record::SessionClosed) {
+                failure.get_or_insert(error);
+            }
+            state.closed = true;
+            let writer = self.inner.writer.lock().unwrap().take();
+            if let Some(writer) = &writer {
+                state.closed_cursor = writer.last_id();
+                writer.changed().notify_waiters();
+            }
+            self.inner.startup.lock().unwrap().clear();
+            writer
+        };
+        if let Some(writer) = writer {
+            if failure.is_none()
+                && self.inner.settlement_failure.get().is_none()
+                && writer.needs_packing()
+            {
+                let id = self.id().to_owned();
+                let max_bytes = self.inner.options.limits.max_request_bytes;
+                let events = self.events_path().to_owned();
+                let pack = tokio::task::spawn_blocking(move || {
+                    recovery::pack(writer, &events, &id, max_bytes)
+                })
+                .await;
+                match pack {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => recovery::report_pack_failure(
+                        &self.inner.options.data_dir,
+                        self.id(),
+                        error,
+                    ),
+                    Err(error) => recovery::report_pack_failure(
+                        &self.inner.options.data_dir,
+                        self.id(),
+                        error,
+                    ),
+                }
+            } else {
+                drop(writer);
+            }
         }
-        if let Err(error) = self.commit(&mut state, Record::SessionClosed) {
-            failure.get_or_insert(error);
-        }
-        state.closed = true;
-        if let Some(writer) = self.inner.writer.lock().unwrap().take() {
-            state.closed_cursor = writer.last_id();
-            writer.changed().notify_waiters();
-        }
-        self.inner.startup.lock().unwrap().clear();
         self.inner.lease.lock().unwrap().take();
         match (
             self.inner.settlement_failure.get(),
@@ -866,13 +898,8 @@ fn load_state(events_path: &Path) -> Result<(State, u64)> {
     replay_state(events_path, State::default())
 }
 
-fn replay_state(events_path: &Path, mut state: State) -> Result<(State, u64)> {
-    let mut job_replay = jobs::JobReplay::default();
-    let cursor = EventStore::visit_path(events_path, |event| {
-        reduce_event(&mut state, &mut job_replay, event)
-    })?;
-    state.mark_interrupted();
-    Ok((state, cursor))
+fn replay_state(events_path: &Path, state: State) -> Result<(State, u64)> {
+    recovery::read_state(events_path, state)
 }
 
 fn reduce_event(

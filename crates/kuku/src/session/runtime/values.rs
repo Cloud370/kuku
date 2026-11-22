@@ -73,7 +73,7 @@ pub(super) struct NamedBinding {
     digest: Option<String>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct ValueState {
     names: HashMap<String, BTreeMap<String, NamedBinding>>,
     grants: HashMap<String, HashSet<String>>,

@@ -1,10 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::conversation::address::ConversationAddress;
-use crate::conversation::{reduce_conversations, TurnTerminal};
 use crate::error::Result;
-use crate::event::{self, EventPayload, EventStore, StoredEvent};
+use crate::event::EventStore;
 use crate::session::SessionStatus;
 
 #[derive(Debug, Clone)]
@@ -59,26 +57,17 @@ fn collect_sessions(
             continue;
         }
         let session_id = entry.file_name().to_string_lossy().into_owned();
-        let replay = EventStore::replay(&events_path);
-        let (title, created_at, turn_count) = match &replay {
-            Ok(events) => journal_metadata(events),
-            Err(_) => (
-                event::scan::scan_first_user_input(&events_path).unwrap_or_default(),
-                event::scan::scan_session_meta(&events_path).unwrap_or_default(),
-                event::scan::scan_turn_count(&events_path),
-            ),
-        };
-        let lock_path = entry.path().join("lock");
-        let status = session_status(&lock_path, replay.as_deref().unwrap_or_default());
+        let summary = EventStore::journal_summary(&events_path).unwrap_or_default();
+        let status = session_status(&entry.path().join("lock"), summary.main_completed);
 
         let (mtime, size) = file_stat(&events_path);
 
         summaries.push(SessionSummary {
             session_id,
             workspace: workspace.to_path_buf(),
-            title,
-            created_at,
-            turn_count,
+            title: summary.title.unwrap_or_default(),
+            created_at: summary.created_at,
+            turn_count: summary.turns,
             status,
             mtime,
             size,
@@ -87,37 +76,7 @@ fn collect_sessions(
     Ok(())
 }
 
-fn journal_metadata(events: &[StoredEvent]) -> (String, String, u64) {
-    let mut title = None;
-    let mut created = None;
-    let mut turns = 0;
-    for event in events {
-        match &event.payload {
-            EventPayload::MessageUser {
-                text,
-                job_delivery: false,
-                ..
-            } if title.is_none() => title = Some(text.as_str()),
-            EventPayload::SessionCreated { created_at, .. } => created = Some(created_at.as_str()),
-            EventPayload::Unknown(value)
-                if created.is_none()
-                    && value["kind"] == "runtime.operation"
-                    && value["record"]["operation"] == "session_claimed" =>
-            {
-                created = value["record"]["claim"]["created_at"].as_str();
-            }
-            EventPayload::TurnStarted { .. } => turns += 1,
-            _ => {}
-        }
-    }
-    (
-        title.unwrap_or_default().to_owned(),
-        created.unwrap_or_default().to_owned(),
-        turns,
-    )
-}
-
-fn session_status(lock_path: &Path, events: &[event::StoredEvent]) -> SessionStatus {
+fn session_status(lock_path: &Path, completed: bool) -> SessionStatus {
     if let Ok(content) = fs::read_to_string(lock_path) {
         let pid_str = content.lines().next().unwrap_or("");
         if let Ok(pid) = pid_str.parse::<i32>() {
@@ -126,33 +85,10 @@ fn session_status(lock_path: &Path, events: &[event::StoredEvent]) -> SessionSta
             }
         }
     }
-    let main = reduce_conversations(events)
-        .into_iter()
-        .find(|conversation| conversation.address == ConversationAddress::MAIN);
-    match main {
-        Some(conversation) if conversation.active_turn.is_some() => SessionStatus::Interrupted,
-        Some(conversation)
-            if matches!(
-                conversation.last_terminal,
-                Some((_, TurnTerminal::Completed))
-            ) =>
-        {
-            SessionStatus::Done
-        }
-        Some(conversation)
-            if matches!(
-                conversation.last_terminal,
-                Some((_, TurnTerminal::Interrupted))
-            ) =>
-        {
-            SessionStatus::Interrupted
-        }
-        _ => match event::scan::scan_last_event_type(
-            &lock_path.parent().unwrap().join("events.jsonl"),
-        ) {
-            Some("turn.completed") => SessionStatus::Done,
-            _ => SessionStatus::Interrupted,
-        },
+    if completed {
+        SessionStatus::Done
+    } else {
+        SessionStatus::Interrupted
     }
 }
 

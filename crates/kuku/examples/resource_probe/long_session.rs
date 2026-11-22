@@ -3,7 +3,7 @@ mod process_resources;
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -21,6 +21,7 @@ use super::{common, micros, native_call, number, phase, required, statistics, An
 
 const SESSION_ID: &str = "long-session-resource-probe";
 const JOURNAL_MIB: u64 = 1024 * 1024;
+const REQUEST_CAP: usize = 768_000;
 const HISTORY_BATCHES: u64 = 9;
 const BASELINE: &str = "Inspect command output and retain this rewind marker";
 const REOPEN: &str = "Check the persisted workspace after reopen";
@@ -257,7 +258,7 @@ fn options(
     );
     options.session_id = Some(SESSION_ID.into());
     options.model_adapter = Some(model);
-    options.limits.max_request_bytes = 480_000;
+    options.limits.max_request_bytes = REQUEST_CAP;
     options.limits.max_retained_output_bytes = 256 * JOURNAL_MIB;
     Ok(options)
 }
@@ -266,6 +267,8 @@ fn options(
 struct Fixture {
     events_path: PathBuf,
     journal_bytes: u64,
+    #[serde(default)]
+    physical_journal_bytes: Option<u64>,
     retained_output_bytes: u64,
     checkpoint_count: u64,
     turn_count: u64,
@@ -363,7 +366,10 @@ pub(super) async fn generate(args: &BTreeMap<String, String>) -> Result<Value, A
             _ => None,
         })
         .ok_or("command did not produce retained output")?;
+    let close = Instant::now();
     session.close().await?;
+    let close_us = micros(close);
+    drop(session);
     let shape = shape(&path)?;
     let checkpoint_count = shape
         .get("checkpoint")
@@ -380,7 +386,8 @@ pub(super) async fn generate(args: &BTreeMap<String, String>) -> Result<Value, A
             Ok::<_, std::io::Error>(size + entry?.metadata()?.len())
         })?;
     let fixture = Fixture {
-        journal_bytes: fs::metadata(&path)?.len(),
+        journal_bytes: shape.values().map(|entry| entry.1).sum(),
+        physical_journal_bytes: Some(fs::metadata(&path)?.len()),
         events_path: path,
         retained_output_bytes,
         checkpoint_count,
@@ -390,21 +397,16 @@ pub(super) async fn generate(args: &BTreeMap<String, String>) -> Result<Value, A
         shape,
     };
     Ok(
-        json!({"schema_version":1,"passed":true,"paid":false,"generation_us":micros(start),"fixture":fixture}),
+        json!({"schema_version":1,"passed":true,"paid":false,"generation_us":micros(start),"close_us":close_us,"fixture":fixture}),
     )
 }
 
 fn shape(path: &Path) -> Result<BTreeMap<String, (u64, u64)>, AnyError> {
-    let mut reader = BufReader::new(File::open(path)?);
-    let mut line = String::new();
     let mut shape = BTreeMap::<String, (u64, u64)>::new();
-    loop {
-        line.clear();
-        let bytes = reader.read_line(&mut line)?;
-        if bytes == 0 {
-            return Ok(shape);
-        }
-        let value: Value = serde_json::from_str(&line)?;
+    EventStore::visit_committed(path, 0, |event| {
+        let raw = serde_json::to_vec(&event)?;
+        let bytes = raw.len() + 1;
+        let value: Value = serde_json::from_slice(&raw)?;
         let category = match value["kind"].as_str() {
             Some("runtime.compaction_finished") if value["status"] == "completed" => "checkpoint",
             Some("runtime.context_segment") if value["reason"] == "compaction" => {
@@ -424,19 +426,40 @@ fn shape(path: &Path) -> Result<BTreeMap<String, (u64, u64)>, AnyError> {
         let (count, total) = shape.entry(category.into()).or_default();
         *count += 1;
         *total += bytes as u64;
-    }
+        Ok(true)
+    })?;
+    Ok(shape)
+}
+
+pub(super) async fn prepare(args: &BTreeMap<String, String>) -> Result<Value, AnyError> {
+    let options = options(args, Arc::new(FixtureModel::default()))?;
+    let phase_file = Path::new(required(args, "phase-file")?);
+    let (start, resources) = begin(phase_file, "raw_reopen")?;
+    let session = Session::open(options).await?;
+    let open = measurement(start, resources);
+    let path = session.events_path();
+    let before_bytes = fs::metadata(path)?.len();
+    let (start, resources) = begin(phase_file, "seal")?;
+    session.close().await?;
+    let seal = measurement(start, resources);
+    let after_bytes = fs::metadata(path)?.len();
+    assert!(after_bytes < before_bytes);
+    Ok(json!({
+        "schema_version":1,"paid":false,"passed":true,"events_path":path,
+        "before_bytes":before_bytes,"after_bytes":after_bytes,"open":open,"seal":seal
+    }))
 }
 
 pub(super) async fn measure(args: &BTreeMap<String, String>) -> Result<Value, AnyError> {
     let report: Value = serde_json::from_reader(File::open(required(args, "fixture")?)?)?;
-    let fixture: Fixture = serde_json::from_value(report["fixture"].clone())?;
+    let mut fixture: Fixture = serde_json::from_value(report["fixture"].clone())?;
+    fixture.physical_journal_bytes = Some(fs::metadata(&fixture.events_path)?.len());
     let phase_file = Path::new(required(args, "phase-file")?);
     let model = Arc::new(FixtureModel {
         inspect_only: true,
         ..Default::default()
     });
-    let mut options = options(args, model.clone())?;
-    options.limits.max_request_bytes = 768_000;
+    let options = options(args, model.clone())?;
     let mut timings = BTreeMap::new();
     let (start, resources) = begin(phase_file, "reopen")?;
     let session = Session::open(options).await?;
@@ -586,7 +609,7 @@ pub(super) async fn measure(args: &BTreeMap<String, String>) -> Result<Value, An
     phase(phase_file, "completed")?;
     Ok(json!({
         "schema_version":1,"passed":true,"paid":false,
-        "generation_request_cap_bytes":480_000,"measurement_request_cap_bytes":768_000,
+        "request_cap_bytes":REQUEST_CAP,
         "filesystem_cache":"fresh process; operating system page cache not flushed",
         "fixture":fixture,"timings":timings,"first_turn":first,
         "steady_turns":steady,"steady_turn_wall_us":statistics(&steady_us),

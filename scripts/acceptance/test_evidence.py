@@ -1,15 +1,39 @@
 import copy
+import gzip
 import hashlib
 import json
 from pathlib import Path, PureWindowsPath
+import struct
 import subprocess
 import sys
 import tempfile
 import unittest
+import zlib
 from unittest.mock import patch
 
 from benchmark_pi import inspect_pi
-from evidence import comparison_path, inspect_sdk, SessionFacts
+from evidence import comparison_path, inspect_sdk, session_events, SessionFacts
+
+
+class SessionArchiveEvidenceTests(unittest.TestCase):
+    def test_logical_digest_covers_split_frames_and_plain_tail(self):
+        history = b'{"id":1}\n{"id":2}\n'
+        tail = b'{"id":3}\n'
+        blocks = [history[:6], history[6:]]
+        encoded = [gzip.compress(block) for block in blocks]
+        table = b"".join(struct.pack("<II", len(block), len(frame)) for block, frame in zip(blocks, encoded))
+        header = struct.pack("<8sIIQQ", b"KUKUJNL1", len(blocks), 0, 2, 0)
+        prefix = header + struct.pack("<I", zlib.crc32(table, zlib.crc32(header))) + table
+        digest = hashlib.sha256(history + tail).hexdigest()
+        with tempfile.TemporaryDirectory() as directory:
+            journal = Path(directory) / "events.jsonl"
+            journal.write_bytes(prefix + b"".join(encoded) + tail)
+            self.assertEqual(list(session_events(journal, digest)), [{"id": 1}, {"id": 2}, {"id": 3}])
+            broken = bytearray(encoded[0])
+            broken[-8] ^= 1
+            journal.write_bytes(prefix + broken + encoded[1] + tail)
+            with self.assertRaisesRegex(ValueError, "damaged Session archive frame"):
+                list(session_events(journal))
 
 
 class PiEvidenceTests(unittest.TestCase):

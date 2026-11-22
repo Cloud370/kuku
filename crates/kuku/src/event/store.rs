@@ -7,6 +7,7 @@ use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
 
+use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 
 use crate::error::{Error, Result};
@@ -14,15 +15,21 @@ use crate::util::fs_sync;
 
 use super::types::{EventPayload, StoredEvent};
 
+mod archive;
 mod codec;
 mod index;
+mod packing;
 mod reader;
+mod recovery;
 mod reverse;
 
+use archive::Layout;
 use codec::serialize_record;
 use index::JournalIndex;
-pub(crate) use index::{ContextMarks, HistoryMarks, RouteSelectors};
+pub(crate) use index::{ContextMarks, HistoryMarks, JournalSummary, RouteSelectors};
 use reader::EventReader;
+pub(crate) use recovery::Replay;
+use recovery::{Checkpoint, ReplayVisitor};
 
 const MAX_RECORD_BYTES: usize = 1024 * 1024;
 const MAX_PAGE_BYTES: usize = 1024 * 1024;
@@ -32,7 +39,7 @@ const SCAN_BUFFER_BYTES: usize = 128 * 1024;
 
 type StoreRegistry = Mutex<HashMap<PathBuf, StoreEntry>>;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize, Deserialize)]
 struct EventOffset {
     id: u64,
     offset: u64,
@@ -88,9 +95,11 @@ impl WriterRelease {
 
 struct Writer {
     journal: Option<LockedJournal>,
+    layout: Layout,
     file_lock: Option<fslock::LockFile>,
     index: Vec<EventOffset>,
     event_count: usize,
+    turn_count: u64,
     facts: JournalIndex,
     committed_len: u64,
     last_id: u64,
@@ -124,23 +133,43 @@ impl Drop for LockedJournal {
 }
 
 impl Writer {
-    fn open(
-        path: &Path,
-        file: File,
-        visit: &mut impl FnMut(StoredEvent) -> Result<()>,
-    ) -> Result<Self> {
+    fn open(path: &Path, visit: &mut Option<&mut ReplayVisitor<'_>>) -> Result<Self> {
         let file_lock = acquire_file_lock(path)?;
+        archive::clear_staging(path)?;
+        let file = fs_sync::write_options()
+            .read(true)
+            .create(true)
+            .truncate(false)
+            .open(path)?;
         let journal = LockedJournal::writer(file, path)?;
+        let layout = Layout::read(&journal.file)?;
+        let end = layout.logical_len(journal.file.metadata()?.len());
+        let checkpoint = recovery::load(&layout, &journal.file, path);
+        let (mut index, mut facts, mut event_count, mut turn_count, mut last_id, start) =
+            match checkpoint {
+                Some(checkpoint) if recovery::offer(&checkpoint, visit)? => (
+                    checkpoint.index,
+                    checkpoint.facts,
+                    checkpoint.event_count,
+                    layout.prefix_turns,
+                    layout.prefix_head,
+                    layout.prefix_bytes,
+                ),
+                _ => (Vec::new(), JournalIndex::default(), 0, 0, 0, 0),
+            };
         let mut reader = EventReader::new(
-            BufReader::with_capacity(SCAN_BUFFER_BYTES, &journal.file),
+            BufReader::with_capacity(SCAN_BUFFER_BYTES, layout.reader(&journal.file, end, start)),
             path,
-            0,
+            start,
         );
-        let mut facts = JournalIndex::default();
-        let mut index = Vec::new();
-        let mut event_count = 0_usize;
-        let mut last_id = 0;
         while let Some(record) = reader.next()? {
+            if record.event.id <= last_id {
+                return Err(Error::InvalidEventStream(format!(
+                    "{}: event {} follows event {last_id}",
+                    path.display(),
+                    record.event.id
+                )));
+            }
             if event_count.is_multiple_of(INDEX_STRIDE) {
                 index.push(EventOffset {
                     id: record.event.id,
@@ -148,24 +177,32 @@ impl Writer {
                 });
             }
             event_count += 1;
+            turn_count += u64::from(matches!(
+                record.event.payload,
+                EventPayload::TurnStarted { .. }
+            ));
             last_id = record.event.id;
             facts.observe_location(&record.event, record.offset, record.bytes);
-            visit(record.event)?;
+            if let Some(visit) = visit.as_mut() {
+                visit(Replay::Event(record.event))?;
+            }
         }
         let committed_len = reader.committed_len();
         let incomplete_tail = reader.incomplete_tail();
         drop(reader);
         if incomplete_tail {
-            journal.file.set_len(committed_len)?;
+            journal.file.set_len(layout.tail_offset(committed_len)?)?;
             journal.file.sync_data()?;
         }
         journal.file.sync_all()?;
         fs_sync::sync_parent(path)?;
         Ok(Self {
             journal: Some(journal),
+            layout,
             file_lock: Some(file_lock),
             index,
             event_count,
+            turn_count,
             facts,
             committed_len,
             last_id,
@@ -199,9 +236,11 @@ impl Writer {
         let file = &mut self.journal.as_mut().unwrap().file;
         let result = injected_failure.map_or_else(
             || {
-                file.seek(SeekFrom::Start(self.committed_len))
-                    .and_then(|_| file.write_all(records))
-                    .and_then(|()| fs_sync::sync_file(file))
+                file.seek(SeekFrom::Start(
+                    self.layout.tail_offset(self.committed_len)?,
+                ))
+                .and_then(|_| file.write_all(records))
+                .and_then(|()| fs_sync::sync_file(file))
             },
             Err,
         );
@@ -229,38 +268,37 @@ impl Writer {
         self.facts
             .observe_location(event, self.committed_len, bytes);
         self.event_count += 1;
+        self.turn_count += u64::from(matches!(event.payload, EventPayload::TurnStarted { .. }));
         self.committed_len += bytes as u64;
         self.last_id = event.id;
     }
 
     fn replay(&mut self, path: &Path) -> Result<Vec<StoredEvent>> {
         self.ensure_healthy(path)?;
-        let file = &mut self.journal.as_mut().unwrap().file;
-        file.seek(SeekFrom::Start(0))?;
-        read_all(file.take(self.committed_len), path)
+        let file = &self.journal.as_ref().unwrap().file;
+        read_all(self.layout.reader(file, self.committed_len, 0), path)
     }
 
     #[cfg(feature = "test_support")]
     fn committed_bytes(&mut self, path: &Path) -> Result<Vec<u8>> {
         self.ensure_healthy(path)?;
-        let file = &mut self.journal.as_mut().unwrap().file;
+        let mut file = &self.journal.as_ref().unwrap().file;
         let position = file.stream_position()?;
-        let result = (|| -> io::Result<Vec<u8>> {
-            file.seek(SeekFrom::Start(0))?;
+        let result = (|| {
+            let mut reader = self.layout.reader(file, self.committed_len, 0);
             let mut bytes = Vec::new();
-            (&mut *file)
-                .take(self.committed_len)
-                .read_to_end(&mut bytes)?;
+            reader.read_to_end(&mut bytes)?;
             if bytes.len() as u64 != self.committed_len {
                 return Err(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
                     "committed journal prefix was truncated",
-                ));
+                )
+                .into());
             }
             Ok(bytes)
         })();
         file.seek(SeekFrom::Start(position))?;
-        Ok(result?)
+        result
     }
 
     fn offset_at(&self, after: u64) -> u64 {
@@ -276,11 +314,27 @@ impl Writer {
         if limit == 0 || after >= self.last_id {
             return Ok(Vec::new());
         }
-        let start = self.offset_at(after);
-        let file = &mut self.journal.as_mut().unwrap().file;
-        file.seek(SeekFrom::Start(start))?;
-        let file = file.take(self.committed_len - start);
-        read_page_from(file, path, start, after, limit)
+        let mut start = self.offset_at(after);
+        if after >= self.layout.prefix_head {
+            start = start.max(self.layout.prefix_bytes);
+        }
+        let file = &self.journal.as_ref().unwrap().file;
+        read_page_from(
+            self.layout.reader(file, self.committed_len, start),
+            path,
+            start,
+            after,
+            limit,
+        )
+    }
+
+    fn offset_before(&self, before: Option<u64>) -> u64 {
+        before
+            .and_then(|id| {
+                self.index
+                    .get(self.index.partition_point(|entry| entry.id < id))
+            })
+            .map_or(self.committed_len, |entry| entry.offset)
     }
 
     fn read_before(
@@ -290,13 +344,11 @@ impl Writer {
         limit: usize,
     ) -> Result<Vec<StoredEvent>> {
         self.ensure_healthy(path)?;
-        let checkpoint = before.and_then(|id| {
-            self.index
-                .get(self.index.partition_point(|entry| entry.id < id))
-        });
-        let end = checkpoint.map_or(self.committed_len, |entry| entry.offset);
+        let end = self.offset_before(before);
         reverse::read_before(
-            &mut self.journal.as_mut().unwrap().file,
+            &mut self
+                .layout
+                .reader(&self.journal.as_ref().unwrap().file, end, 0),
             path,
             end,
             before,
@@ -310,15 +362,27 @@ impl Writer {
         after: u64,
         visit: impl FnMut(StoredEvent) -> Result<()>,
     ) -> Result<u64> {
+        let mut visit = visit;
+        self.scan_after(path, after, |event| visit(event).map(|()| true))
+    }
+
+    fn scan_after(
+        &self,
+        path: &Path,
+        after: u64,
+        visit: impl FnMut(StoredEvent) -> Result<bool>,
+    ) -> Result<u64> {
         self.ensure_healthy(path)?;
         if after >= self.last_id {
             return Ok(after);
         }
-        let start = self.offset_at(after);
-        let file = &mut self.journal.as_mut().unwrap().file;
-        file.seek(SeekFrom::Start(start))?;
-        visit_events(
-            file.take(self.committed_len - start),
+        let mut start = self.offset_at(after);
+        if after >= self.layout.prefix_head {
+            start = start.max(self.layout.prefix_bytes);
+        }
+        let file = &self.journal.as_ref().unwrap().file;
+        scan_events(
+            self.layout.reader(file, self.committed_len, start),
             path,
             start,
             after,
@@ -341,22 +405,19 @@ impl EventStore {
 
     pub(crate) fn open_replaying(
         path: &Path,
-        mut visit: impl FnMut(StoredEvent) -> Result<()>,
+        mut visit: impl FnMut(Replay<'_>) -> Result<bool>,
     ) -> Result<Self> {
         Self::open_inner(path, Some(&mut visit))
     }
 
-    fn open_inner(
-        path: &Path,
-        mut visit: Option<&mut dyn FnMut(StoredEvent) -> Result<()>>,
-    ) -> Result<Self> {
+    fn open_inner(path: &Path, mut visit: Option<&mut ReplayVisitor<'_>>) -> Result<Self> {
         let absolute = std::env::current_dir()?.join(path);
         let mut stores = registry().lock().unwrap();
         if let Ok(key) = fs::canonicalize(&absolute) {
             if let Some(inner) = find_active_store(&stores, &key) {
                 drop(stores);
                 if let Some(visit) = visit {
-                    inner.writer.lock().unwrap().visit_after(&key, 0, visit)?;
+                    inner.writer.lock().unwrap().visit_recovery(&key, visit)?;
                 }
                 return Ok(Self { inner });
             }
@@ -368,27 +429,12 @@ impl EventStore {
         if let Some(inner) = find_active_store(&stores, &key) {
             drop(stores);
             if let Some(visit) = visit {
-                inner.writer.lock().unwrap().visit_after(&key, 0, visit)?;
+                inner.writer.lock().unwrap().visit_recovery(&key, visit)?;
             }
             return Ok(Self { inner });
         }
-        let file = fs_sync::write_options()
-            .read(true)
-            .create(true)
-            .truncate(false)
-            .open(&key)?;
-        let path = fs::canonicalize(key)?;
-        if let Some(inner) = find_active_store(&stores, &path) {
-            drop(stores);
-            if let Some(visit) = visit {
-                inner.writer.lock().unwrap().visit_after(&path, 0, visit)?;
-            }
-            return Ok(Self { inner });
-        }
-        let writer = Writer::open(&path, file, &mut |event| match visit.as_mut() {
-            Some(visit) => visit(event),
-            None => Ok(()),
-        })?;
+        let path = key;
+        let writer = Writer::open(&path, &mut visit)?;
         let release = Arc::new(WriterRelease::default());
         let inner = Arc::new(StoreInner {
             path: path.clone(),
@@ -489,7 +535,16 @@ impl EventStore {
         }
         let _file_lock = acquire_file_lock(&path)?;
         let journal = LockedJournal::reader(&path)?;
-        read_page_from(&journal.file, &path, 0, after, limit)
+        let layout = Layout::read(&journal.file)?;
+        let end = layout.logical_len(journal.file.metadata()?.len());
+        let start = recovery::page_start(&layout, &journal.file, &path, after);
+        read_page_from(
+            layout.reader(&journal.file, end, start),
+            &path,
+            start,
+            after,
+            limit,
+        )
     }
 
     /// Read a bounded chronological page before a cursor, or the latest page when omitted.
@@ -514,12 +569,44 @@ impl EventStore {
                 .read_before(&path, before, limit);
         }
         let _file_lock = acquire_file_lock(&path)?;
-        let mut journal = LockedJournal::reader(&path)?;
-        let mut end = journal.file.metadata()?.len();
+        let journal = LockedJournal::reader(&path)?;
+        let layout = Layout::read(&journal.file)?;
+        let mut end = layout.logical_len(journal.file.metadata()?.len());
+        let mut reader = layout.reader(&journal.file, end, 0);
         if let Some(before) = before {
-            end = reverse::find_page_end(&mut journal.file, &path, end, before)?;
+            end = reverse::find_page_end(&mut reader, &path, end, before)?;
         }
-        reverse::read_before(&mut journal.file, &path, end, before, limit)
+        reverse::read_before(&mut reader, &path, end, before, limit)
+    }
+
+    /// Visit committed events newest first, stopping when the callback returns false.
+    pub fn visit_committed_before(
+        path: &Path,
+        before: Option<u64>,
+        mut visit: impl FnMut(StoredEvent) -> Result<bool>,
+    ) -> Result<()> {
+        let Some(path) = existing_path(path)? else {
+            return Ok(());
+        };
+        let stores = registry().lock().unwrap();
+        if let Some(inner) = find_active_store(&stores, &path) {
+            drop(stores);
+            let writer = inner.writer.lock().unwrap();
+            writer.ensure_healthy(&path)?;
+            let end = writer.offset_before(before);
+            let file = &writer.journal.as_ref().unwrap().file;
+            let mut reader = writer.layout.reader(file, writer.committed_len, end);
+            return reverse::visit_before(&mut reader, &path, end, before, |event, _| visit(event));
+        }
+        let journal = LockedJournal::reader(&path)?;
+        drop(stores);
+        let layout = Layout::read(&journal.file)?;
+        let end = layout.logical_len(journal.file.metadata()?.len());
+        let mut reader = layout.reader(&journal.file, end, 0);
+        let end = before.map_or(Ok(end), |id| {
+            reverse::find_page_end(&mut reader, &path, end, id)
+        })?;
+        reverse::visit_before(&mut reader, &path, end, before, |event, _| visit(event))
     }
 
     /// Read the last committed event ID without opening or repairing the writer.
@@ -548,7 +635,9 @@ impl EventStore {
         }
         let _file_lock = acquire_file_lock(&path)?;
         let journal = LockedJournal::reader(&path)?;
-        read_all(&journal.file, &path)
+        let layout = Layout::read(&journal.file)?;
+        let end = layout.logical_len(journal.file.metadata()?.len());
+        read_all(layout.reader(&journal.file, end, 0), &path)
     }
 
     #[cfg(feature = "test_support")]
@@ -566,6 +655,34 @@ impl EventStore {
         writer.committed_bytes(&path)
     }
 
+    /// Visit committed events after an exclusive cursor, stopping when the callback returns false.
+    pub fn visit_committed(
+        path: &Path,
+        after: u64,
+        visit: impl FnMut(StoredEvent) -> Result<bool>,
+    ) -> Result<u64> {
+        let Some(path) = existing_path(path)? else {
+            return Ok(after);
+        };
+        let stores = registry().lock().unwrap();
+        if let Some(inner) = find_active_store(&stores, &path) {
+            drop(stores);
+            return inner.writer.lock().unwrap().scan_after(&path, after, visit);
+        }
+        let journal = LockedJournal::reader(&path)?;
+        let layout = Layout::read(&journal.file)?;
+        let end = layout.logical_len(journal.file.metadata()?.len());
+        let start = recovery::page_start(&layout, &journal.file, &path, after);
+        drop(stores);
+        scan_events(
+            layout.reader(&journal.file, end, start),
+            &path,
+            start,
+            after,
+            visit,
+        )
+    }
+
     pub(crate) fn visit_path(
         path: &Path,
         visit: impl FnMut(StoredEvent) -> Result<()>,
@@ -576,23 +693,40 @@ impl EventStore {
     pub(crate) fn visit_after_path(
         path: &Path,
         after: u64,
-        visit: impl FnMut(StoredEvent) -> Result<()>,
+        mut visit: impl FnMut(StoredEvent) -> Result<()>,
     ) -> Result<u64> {
+        Self::visit_committed(path, after, |event| visit(event).map(|()| true))
+    }
+
+    pub(crate) fn journal_summary(path: &Path) -> Result<JournalSummary> {
         let Some(path) = existing_path(path)? else {
-            return Ok(after);
+            return Ok(JournalSummary::default());
         };
         let stores = registry().lock().unwrap();
         if let Some(inner) = find_active_store(&stores, &path) {
             drop(stores);
-            return inner
-                .writer
-                .lock()
-                .unwrap()
-                .visit_after(&path, after, visit);
+            return Ok(inner.writer.lock().unwrap().facts.summary.clone());
         }
-        let _file_lock = acquire_file_lock(&path)?;
-        let journal = LockedJournal::reader(&path)?;
-        visit_events(&journal.file, &path, 0, after, visit)
+        let file = File::open(&path)?;
+        drop(stores);
+        let layout = Layout::read(&file)?;
+        let end = layout.logical_len(file.metadata()?.len());
+        let (mut summary, start) = recovery::load(&layout, &file, &path)
+            .map(|checkpoint| (checkpoint.facts.summary, layout.prefix_bytes))
+            .unwrap_or_default();
+        let mut reader = EventReader::new(
+            BufReader::with_capacity(SCAN_BUFFER_BYTES, layout.reader(&file, end, start)),
+            &path,
+            start,
+        );
+        loop {
+            match reader.next() {
+                Ok(Some(record)) => summary.observe(&record.event),
+                Ok(None) => return Ok(summary),
+                Err(Error::InvalidEventStream(_)) => {}
+                Err(error) => return Err(error),
+            }
+        }
     }
 
     pub(crate) fn context_marks(path: &Path, address: &str) -> Result<ContextMarks> {
@@ -616,12 +750,7 @@ impl EventStore {
         }
         let _file_lock = acquire_file_lock(&path)?;
         let journal = LockedJournal::reader(&path)?;
-        let mut facts = JournalIndex::default();
-        visit_events(&journal.file, &path, 0, 0, |event| {
-            facts.observe(&event);
-            Ok(())
-        })?;
-        select(&facts)
+        select(&read_index(&path, &journal.file)?)
     }
 
     pub(crate) fn rewind_facts(
@@ -649,7 +778,8 @@ impl EventStore {
         let facts = &writer.facts.files;
         let start = facts.partition_point(|fact| fact.location.id <= after);
         let end = facts.partition_point(|fact| fact.location.id < before);
-        let file = &mut writer.journal.as_mut().unwrap().file;
+        let file = &writer.journal.as_ref().unwrap().file;
+        let mut file = writer.layout.reader(file, writer.committed_len, 0);
         let mut buffer = Vec::new();
         for fact in &facts[start..end.max(start)] {
             file.seek(SeekFrom::Start(fact.location.offset))?;
@@ -758,6 +888,25 @@ fn patch_event_id(payload: &mut EventPayload, event_id: u64) -> Result<()> {
     Ok(())
 }
 
+fn read_index(path: &Path, file: &File) -> Result<JournalIndex> {
+    let layout = Layout::read(file)?;
+    let end = layout.logical_len(file.metadata()?.len());
+    let (mut facts, start, after) = recovery::load(&layout, file, path)
+        .map(|checkpoint| (checkpoint.facts, layout.prefix_bytes, layout.prefix_head))
+        .unwrap_or_default();
+    visit_events(
+        layout.reader(file, end, start),
+        path,
+        start,
+        after,
+        |event| {
+            facts.observe(&event);
+            Ok(())
+        },
+    )?;
+    Ok(facts)
+}
+
 fn read_all(file: impl Read, path: &Path) -> Result<Vec<StoredEvent>> {
     let mut reader = EventReader::new(BufReader::new(file), path, 0);
     let mut events = Vec::new();
@@ -774,6 +923,18 @@ fn visit_events(
     after: u64,
     mut visit: impl FnMut(StoredEvent) -> Result<()>,
 ) -> Result<u64> {
+    scan_events(file, path, offset, after, |event| {
+        visit(event).map(|()| true)
+    })
+}
+
+fn scan_events(
+    file: impl Read,
+    path: &Path,
+    offset: u64,
+    after: u64,
+    mut visit: impl FnMut(StoredEvent) -> Result<bool>,
+) -> Result<u64> {
     let mut reader = EventReader::new(
         BufReader::with_capacity(SCAN_BUFFER_BYTES, file),
         path,
@@ -783,7 +944,9 @@ fn visit_events(
     while let Some(record) = reader.next()? {
         if record.event.id > after {
             head = record.event.id;
-            visit(record.event)?;
+            if !visit(record.event)? {
+                break;
+            }
         }
     }
     Ok(head)

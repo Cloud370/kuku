@@ -1,5 +1,5 @@
 use std::fs::{File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::time::Duration;
 
@@ -549,4 +549,123 @@ fn stores_open_below_unmodified_unlistable_ancestors() {
     drop(managed_store);
     assert_eq!(1, EventStore::replay(&direct).unwrap().len());
     assert_eq!(1, EventStore::replay(&managed).unwrap().len());
+}
+
+#[test]
+fn packed_history_crosses_frames_supports_cursors_and_repairs_only_the_tail() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("events.jsonl");
+    let mut store = EventStore::open(&path).unwrap();
+    for _ in 0..4 {
+        store
+            .append(EventPayload::Unknown(serde_json::json!({
+                "kind": "runtime.test", "text": "pack me ".repeat(90_000)
+            })))
+            .unwrap();
+    }
+    let original = std::fs::read(&path).unwrap();
+    assert!(original.len() > 2 * 1024 * 1024);
+    assert!(store
+        .inner
+        .writer
+        .lock()
+        .unwrap()
+        .pack(&path, &"checkpoint")
+        .unwrap());
+    assert!(std::fs::metadata(&path).unwrap().len() < original.len() as u64 / 10);
+    assert_eq!(5, store.append(payload()).unwrap().id);
+    drop(store);
+
+    let mut read_ids = Vec::new();
+    EventStore::visit_committed(&path, 2, |event| {
+        read_ids.push(event.id);
+        Ok(true)
+    })
+    .unwrap();
+    assert_eq!(read_ids, [3, 4, 5]);
+    read_ids.clear();
+    EventStore::visit_committed_before(&path, Some(5), |event| {
+        read_ids.push(event.id);
+        Ok(read_ids.len() < 3)
+    })
+    .unwrap();
+    assert_eq!(read_ids, [4, 3, 2]);
+
+    let sealed_len = std::fs::metadata(&path).unwrap().len();
+    OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap()
+        .write_all(br#"{"id":"#)
+        .unwrap();
+    let staging = path.with_file_name("events.jsonl.pack.tmp");
+    std::fs::write(&staging, "abandoned pre-publication file").unwrap();
+    let mut seen = Vec::new();
+    let mut reopened = EventStore::open_replaying(&path, |item| {
+        match item {
+            super::Replay::Checkpoint(value) => assert_eq!(value.get(), "\"checkpoint\""),
+            super::Replay::Event(event) => seen.push(event.id),
+        }
+        Ok(true)
+    })
+    .unwrap();
+    assert_eq!(seen, [5]);
+    assert_eq!(sealed_len, std::fs::metadata(&path).unwrap().len());
+    assert!(!staging.exists());
+    assert_eq!(6, reopened.append(payload()).unwrap().id);
+    assert_eq!(EventStore::replay(&path).unwrap()[0].id, 1);
+}
+
+#[test]
+fn corrupt_inline_checkpoint_falls_back_to_committed_events() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("events.jsonl");
+    let mut store = EventStore::open(&path).unwrap();
+    for _ in 0..40 {
+        store.append(payload()).unwrap();
+    }
+    assert!(store
+        .inner
+        .writer
+        .lock()
+        .unwrap()
+        .pack(&path, &"checkpoint")
+        .unwrap());
+    drop(store);
+
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    file.seek(SeekFrom::Start(8)).unwrap();
+    let mut count = [0; 4];
+    file.read_exact(&mut count).unwrap();
+    let checkpoint = 36 + u64::from(u32::from_le_bytes(count)) * 8;
+    file.seek(SeekFrom::Start(checkpoint)).unwrap();
+    file.write_all(b"X").unwrap();
+    file.sync_all().unwrap();
+    drop(file);
+    let mut seen = Vec::new();
+    let store = EventStore::open_replaying(&path, |item| {
+        match item {
+            super::Replay::Checkpoint(_) => panic!("damaged checkpoint was accepted"),
+            super::Replay::Event(event) => seen.push(event.id),
+        }
+        Ok(true)
+    })
+    .unwrap();
+    assert_eq!(seen, (1..=40).collect::<Vec<_>>());
+    assert_eq!(store.last_id(), 40);
+}
+
+#[test]
+fn unknown_or_truncated_archive_header_is_never_treated_as_a_torn_json_line() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("events.jsonl");
+    for damaged in [b"KUKU".as_slice(), b"XUKUJNL1"] {
+        std::fs::write(&path, damaged).unwrap();
+        assert!(EventStore::open(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), damaged);
+    }
 }

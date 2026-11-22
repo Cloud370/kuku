@@ -28,7 +28,7 @@ A targeted stop of the observed Agent execution leaves detached Jobs running. `S
 
 ## Storage and context
 
-The [session layout](../reference/file-layout.md#session-layout) contains one authoritative `events.jsonl` journal and retained outputs. One shared writer holds an operating-system lock and incrementally appends synchronized records. Opening repairs an incomplete tail and rejects damaged committed history.
+The [session layout](../reference/file-layout.md#session-layout) contains one authoritative `events.jsonl` journal and retained outputs. One shared writer holds an operating-system lock and incrementally appends synchronized records. Opening repairs an incomplete tail. A sealed prefix can restore runtime state from its inline checkpoint and replay only later records. If the checkpoint cannot be used, opening replays the history. Packed event frames are checked when read.
 
 Agent creation/configuration, delivery/acceptance, prepared steps, authorization, dispatch, results, waits, replies, and settlements are separate facts. See [Agent loop](agent-loop.md) for model terminal states and bounded output-limit recovery. A completed turn or model claim does not prove business success; inspect actual files, command results, and the task judge.
 

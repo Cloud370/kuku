@@ -6,6 +6,8 @@ import json
 import math
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
+import struct
+import zlib
 
 
 TOKEN_FIELDS = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
@@ -188,17 +190,53 @@ def recorded_session_journal(root, sdk):
     return candidate
 
 
+def journal_lines(journal):
+    with journal.open("rb") as source:
+        magic = source.read(8)
+        if magic != b"KUKUJNL1":
+            source.seek(0)
+        else:
+            header = magic + source.read(28)
+            require(len(header) == 36, "truncated Session archive header")
+            count, checkpoint_bytes, head, _, checksum = struct.unpack_from("<IIQQI", header, 8)
+            require(0 < count <= 262_144 and checkpoint_bytes <= 32 * EVENT_LINE_BYTES and head > 0,
+                    "invalid Session archive limits")
+            table = source.read(count * 8)
+            require(len(table) == count * 8 and zlib.crc32(table, zlib.crc32(header[:32])) == checksum,
+                    "damaged Session archive directory")
+            source.seek(checkpoint_bytes, 1)
+            pending = b""
+            for raw_bytes, encoded_bytes in struct.iter_unpack("<II", table):
+                require(0 < raw_bytes <= EVENT_LINE_BYTES and 0 < encoded_bytes <= EVENT_LINE_BYTES + 65_536,
+                        "invalid Session archive frame length")
+                frame = source.read(encoded_bytes)
+                require(len(frame) == encoded_bytes, "truncated Session archive frame")
+                decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+                try:
+                    decoded = decoder.decompress(frame, raw_bytes + 1)
+                except zlib.error as error:
+                    raise ValueError("damaged Session archive frame") from error
+                require(decoder.eof and not decoder.unused_data and len(decoded) == raw_bytes,
+                        "damaged Session archive frame")
+                records = (pending + decoded).split(b"\n")
+                pending = records.pop()
+                require(len(pending) <= EVENT_LINE_BYTES, "oversized Session archive record")
+                for record in records:
+                    yield record + b"\n"
+            require(not pending, "Session archive ends inside an event")
+        yield from iter(lambda: source.readline(EVENT_LINE_BYTES + 1), b"")
+
+
 def session_events(journal, expected_sha256=None):
     digest = hashlib.sha256() if expected_sha256 is not None else None
-    with journal.open('rb') as source:
-        for index, line in enumerate(iter(lambda: source.readline(EVENT_LINE_BYTES + 1), b''), 1):
-            require(index <= EVENT_RECORD_LIMIT and len(line) <= EVENT_LINE_BYTES and line.endswith(b'\n'),
-                    'saved Session journal exceeds its read bounds or has an incomplete tail')
-            if digest is not None:
-                digest.update(line)
-            event = json.loads(line)
-            require(isinstance(event, dict), 'saved Session journal contains a non-object event')
-            yield event
+    for index, line in enumerate(journal_lines(journal), 1):
+        require(index <= EVENT_RECORD_LIMIT and len(line) <= EVENT_LINE_BYTES and line.endswith(b'\n'),
+                'saved Session journal exceeds its read bounds or has an incomplete tail')
+        if digest is not None:
+            digest.update(line)
+        event = json.loads(line)
+        require(isinstance(event, dict), 'saved Session journal contains a non-object event')
+        yield event
     require(digest is None or digest.hexdigest() == expected_sha256,
             'saved Session journal differs from its SDK evidence digest')
 
@@ -747,14 +785,13 @@ def inspect_sdk(result_path, data_dir, connection=None, container_data=None, ses
         require(path.name == "events.jsonl" and path.parent.name == report.get("session_id"),
                 "events path does not belong to the reported Session")
         facts, digest, records = SessionFacts(agent, path, connection), hashlib.sha256(), 0
-        with path.open("rb") as handle:
-            while line := handle.readline(EVENT_LINE_BYTES + 1):
-                require(len(line) <= EVENT_LINE_BYTES and line.endswith(b"\n"), "event log has an oversized record or incomplete tail")
-                digest.update(line)
-                if line.strip():
-                    records += 1
-                    require(records <= EVENT_RECORD_LIMIT, "event log exceeds the diagnostic record limit")
-                    facts.accept(json.loads(line))
+        for line in journal_lines(path):
+            require(len(line) <= EVENT_LINE_BYTES and line.endswith(b"\n"), "event log has an oversized record or incomplete tail")
+            digest.update(line)
+            if line.strip():
+                records += 1
+                require(records <= EVENT_RECORD_LIMIT, "event log exceeds the diagnostic record limit")
+                facts.accept(json.loads(line))
         inspected["durable_cleanup_closed"] = facts.durable_cleanup_closed(report)
         inspected.update(facts.finish(report, require_fixed_limits, require_output_limit), events_path=str(path),
                          events_sha256=digest.hexdigest(), records=records)

@@ -661,26 +661,29 @@ pub(crate) fn read_frozen_catalog(path: &Path, agent: &str) -> Result<Option<Pro
         .transpose()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 enum SnapshotKey {
     Read(String, u64),
     Write(u64, String),
 }
 
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 struct SnapshotCache {
+    #[serde(with = "crate::event::checkpoint_map")]
     entries: BTreeMap<SnapshotKey, FileSnapshot>,
     visible_writes: BTreeSet<u64>,
     segment: Option<u64>,
     pending: Option<WriteAdmissions>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 struct FileSnapshot {
     accessed: u64,
     event: StoredEvent,
     event_bytes: usize,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 struct WriteAdmissions {
     segment: u64,
     source_head: u64,

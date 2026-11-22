@@ -6,6 +6,7 @@ use crate::{Error, Result};
 
 use super::{belongs, SnapshotCache, MAX_SELECTION_BYTES_FACTOR};
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct StartupCache {
     after: u64,
     budget: usize,
@@ -13,6 +14,7 @@ pub(crate) struct StartupCache {
     agents: BTreeMap<String, AgentStartup>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 struct AgentStartup {
     selection: Selection,
     failure: Option<String>,
@@ -26,6 +28,10 @@ impl StartupCache {
             session: None,
             agents: BTreeMap::new(),
         }
+    }
+
+    pub(crate) fn accepts_limit(&self, max_bytes: usize) -> bool {
+        self.budget == max_bytes.saturating_mul(MAX_SELECTION_BYTES_FACTOR)
     }
 
     pub(crate) fn clear(&mut self) {
@@ -165,6 +171,7 @@ fn startup_owner(payload: &EventPayload) -> Option<StartupOwner<'_>> {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Selection {
     latest_turn: Option<u64>,
     metadata: BTreeMap<String, StoredEvent>,

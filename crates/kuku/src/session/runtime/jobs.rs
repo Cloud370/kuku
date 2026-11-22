@@ -22,7 +22,7 @@ pub(super) const JOB_DELIVERY_PREFIX: &str = "job-completion:";
 const MAX_JOB_SUMMARY_BYTES: usize = 1024;
 const RECENT_JOB_COUNT: usize = 64;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub(crate) enum JobControl {
     Wait,
     Cancel,
@@ -74,24 +74,27 @@ pub(super) struct JobWorker {
     pub(super) join: JoinHandle<Result<()>>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct JobIndex {
     sequence: u64,
     agents: HashMap<String, AgentJobs>,
+    #[serde(skip)]
     active_since: HashMap<u64, Instant>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 struct AgentJobs {
     running: BTreeSet<u64>,
     jobs: BTreeMap<u64, JobSnapshot>,
 }
 
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct JobReplay {
+    #[serde(with = "crate::event::checkpoint_map")]
     calls: HashMap<(String, u64, String), JobCall>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 enum JobCall {
     Execution {
         tool: String,

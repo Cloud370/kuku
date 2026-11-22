@@ -1,9 +1,11 @@
 use std::collections::{BTreeMap, HashMap};
 
+use serde::{Deserialize, Serialize};
+
 use super::{EventOffset, EventPayload, StoredEvent};
 use crate::{Error, Result};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize, Deserialize)]
 pub(crate) struct SegmentMark {
     pub(crate) id: u64,
     pub(crate) turn: Option<u64>,
@@ -34,6 +36,7 @@ impl RouteSelectors {
     }
 }
 
+#[derive(Serialize, Deserialize)]
 pub(super) struct FileFact {
     pub(super) location: EventOffset,
     pub(super) bytes: usize,
@@ -45,30 +48,80 @@ pub(crate) struct HistoryMarks {
     pub(crate) turn_owners: HashMap<u64, TurnOwners>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct TurnOwners {
     pub(crate) first: String,
     pub(crate) last: String,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone, Serialize, Deserialize)]
+pub(crate) struct JournalSummary {
+    pub(crate) title: Option<String>,
+    pub(crate) created_at: String,
+    pub(crate) turns: u64,
+    pub(crate) main_completed: bool,
+}
+
+impl JournalSummary {
+    pub(super) fn observe(&mut self, event: &StoredEvent) {
+        match &event.payload {
+            EventPayload::TurnStarted { conversation, .. } => {
+                self.turns += 1;
+                if conversation == "main" {
+                    self.main_completed = false;
+                }
+            }
+            EventPayload::TurnCompleted { conversation, .. }
+            | EventPayload::TurnCancelled { conversation, .. }
+            | EventPayload::TurnInterrupted { conversation, .. }
+                if conversation == "main" =>
+            {
+                self.main_completed = matches!(event.payload, EventPayload::TurnCompleted { .. });
+            }
+            EventPayload::MessageUser {
+                text,
+                job_delivery: false,
+                ..
+            } if self.title.is_none() => {
+                self.title = Some(text.clone());
+            }
+            EventPayload::SessionCreated { created_at, .. } => {
+                self.created_at.clone_from(created_at)
+            }
+            EventPayload::Unknown(value)
+                if value["kind"] == "runtime.operation"
+                    && value["record"]["operation"] == "session_claimed"
+                    && self.created_at.is_empty() =>
+            {
+                if let Some(created_at) = value["record"]["claim"]["created_at"].as_str() {
+                    self.created_at = created_at.into();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+#[derive(Default, Serialize, Deserialize)]
 pub(super) struct JournalIndex {
+    pub(super) summary: JournalSummary,
     agents: HashMap<String, AgentFacts>,
     rewinds: Vec<StoredEvent>,
     turn_owners: HashMap<u64, TurnOwners>,
     pub(super) files: Vec<FileFact>,
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 struct AgentFacts {
     turns: HashMap<u64, (bool, Option<u64>)>,
     messages: Vec<u64>,
     admissions: Vec<u64>,
     turn: Option<u64>,
+    #[serde(with = "crate::event::checkpoint_map")]
     configurations: HashMap<RouteSelectors, u64>,
     candidate: Option<SegmentMark>,
     segments: Vec<SegmentMark>,
-    invalid_rewind: Option<&'static str>,
+    invalid_rewind: Option<String>,
 }
 
 impl JournalIndex {
@@ -98,6 +151,7 @@ impl JournalIndex {
 
     pub(super) fn observe(&mut self, event: &StoredEvent) {
         use crate::event::history::{event_conversation, event_turn};
+        self.summary.observe(event);
         if let (Some(turn), Some(owner)) = (
             event_turn(&event.payload),
             event_conversation(&event.payload),
@@ -117,7 +171,9 @@ impl JournalIndex {
         match &event.payload {
             EventPayload::TurnStarted {
                 conversation, turn, ..
-            } => self.agent(conversation).turn = Some(*turn),
+            } => {
+                self.agent(conversation).turn = Some(*turn);
+            }
             EventPayload::TurnCompleted {
                 conversation, turn, ..
             }
@@ -126,7 +182,9 @@ impl JournalIndex {
             }
             | EventPayload::TurnInterrupted {
                 conversation, turn, ..
-            } => self.agent(conversation).turns.entry(*turn).or_default().0 = true,
+            } => {
+                self.agent(conversation).turns.entry(*turn).or_default().0 = true;
+            }
             EventPayload::MessageUser { conversation, .. } => {
                 self.agent(conversation).messages.push(event.id);
             }
@@ -187,8 +245,8 @@ impl JournalIndex {
         let Some(agent) = self.agents.get(address) else {
             return Ok(ContextMarks::default());
         };
-        if let Some(error) = agent.invalid_rewind {
-            return Err(Error::InvalidEventStream(error.into()));
+        if let Some(error) = &agent.invalid_rewind {
+            return Err(Error::InvalidEventStream(error.clone()));
         }
         Ok(ContextMarks {
             segment: agent.segments.last().copied(),
@@ -309,7 +367,7 @@ impl AgentFacts {
 
     fn rewind(&mut self, target: Option<u64>, error: &'static str) {
         let Some(target) = target else {
-            self.invalid_rewind.get_or_insert(error);
+            self.invalid_rewind.get_or_insert_with(|| error.into());
             return;
         };
         self.segments

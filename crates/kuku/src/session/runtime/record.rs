@@ -228,7 +228,7 @@ impl Record {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(super) struct QueuedDelivery {
     pub(super) queued_at: u64,
     pub(super) receipt: Receipt,
@@ -237,22 +237,24 @@ pub(super) struct QueuedDelivery {
     pub(super) accepted_turn: Option<u64>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(super) struct ManualCompaction {
     pub(super) execution: u64,
     pub(super) previous_status: AgentStatus,
     pub(super) finished: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(super) struct AgentState {
     pub(super) snapshot: AgentSnapshot,
     pub(super) inbox: VecDeque<QueuedDelivery>,
     pub(super) accepted: Vec<QueuedDelivery>,
     pub(super) last_question_turn: Option<u64>,
     question_replies: HashSet<String>,
+    #[serde(skip)]
     pub(super) reply_preview: Option<ReplyPreview>,
     pub(super) permission_reply: Option<(String, bool)>,
+    #[serde(skip)]
     pub(super) active_epoch: Option<u64>,
     pub(super) stopped_at: Option<u64>,
     pub(super) model_usage: AgentUsage,
@@ -314,7 +316,7 @@ impl AgentState {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct State {
     pub(super) agents: BTreeMap<String, AgentState>,
     pub(super) turns: TurnIndex,
@@ -333,7 +335,7 @@ pub(super) struct State {
     pub(super) jobs: JobIndex,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(super) struct RetainedModelImage {
     pub(super) agent: String,
     pub(super) turn: u64,

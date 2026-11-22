@@ -14,14 +14,14 @@ mod cache;
 use cache::{CacheHistory, TurnCache};
 
 /// Per-Agent Turn numbering and terminal statistics derived from committed facts.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct TurnIndex {
     by_agent: HashMap<String, Vec<IndexedTurn>>,
     summaries: HashMap<u64, (u64, TurnSummary)>,
     cache: HashMap<String, CacheHistory>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct IndexedTurn {
     id: u64,
     start: Option<u64>,
@@ -30,7 +30,7 @@ struct IndexedTurn {
     cache: TurnCache,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct TurnEnd {
     event_id: u64,
     explicit_stop: bool,

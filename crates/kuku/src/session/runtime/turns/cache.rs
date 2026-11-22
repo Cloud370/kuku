@@ -2,14 +2,14 @@ use serde_json::Value;
 
 use super::{CacheWarning, UsageTotals};
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct Prefix {
     segment: u64,
     digest: String,
     service_tier: Option<String>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct TurnCache {
     prepared: bool,
     prefix: Option<Prefix>,
@@ -35,7 +35,7 @@ impl TurnCache {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct CacheHistory {
     prefix: Option<Prefix>,
     warmed: u8,

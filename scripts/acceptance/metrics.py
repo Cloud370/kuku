@@ -7,6 +7,7 @@ import os
 import platform
 from pathlib import Path
 import re
+import shutil
 from statistics import median
 import sys
 import threading
@@ -316,7 +317,9 @@ def run_metrics(args, directory, record):
                            Path(__file__).with_name("run.py"), Path(__file__),
                            ROOT / "crates/kuku/tests/common/mod.rs")]
     binary_name = "resource_probe.exe" if sys.platform == "win32" else "resource_probe"
-    binary = target / args.profile / "examples" / binary_name
+    built_binary = target / args.profile / "examples" / binary_name
+    binary = directory / binary_name
+    shutil.copy2(built_binary, binary)
     record["binary"] = config_record(binary)
     phase_file, result_file = directory / "phase.json", directory / "caller.json"
     command = prefix + [str(binary), "--workspace", str(directory / "workspace"), "--data-dir", str(directory / "session-data"),

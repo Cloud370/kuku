@@ -42,8 +42,9 @@ async fn main() -> Result<(), AnyError> {
     let output = PathBuf::from(required(&args, "output")?);
     let report = match args.get("long-session").map(String::as_str) {
         Some("generate") => long_session::generate(&args).await?,
+        Some("prepare") => long_session::prepare(&args).await?,
         Some("measure") => long_session::measure(&args).await?,
-        Some(_) => return Err("expected generate or measure for --long-session".into()),
+        Some(_) => return Err("expected generate, prepare or measure for --long-session".into()),
         None => probe(&args).await?,
     };
     if let Some(parent) = output.parent() {

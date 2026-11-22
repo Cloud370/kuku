@@ -372,7 +372,7 @@ python3 scripts/acceptance/run.py metrics --profile release --long-session-mib 5
 
 This opt-in workload builds a Session of at least 500 MiB of committed events. The fixed model adapter drives batched tool calls, reasoning, command capture, file reads and real context checkpoints through the public SDK. It uses synthetic data and makes zero network model requests. Use a smaller size to check the fixture and selector quickly. The selector retains the generated journal and output captures in the ignored run directory, so check available disk space before a large run.
 
-`fixture.json` reports journal bytes, retained-output bytes, checkpoint count and the record mix. A fresh process verifies reopen, paginated history and retained output, first and subsequent turns, checkpoint undo, and message rewind. `caller.json` records wall time, available process CPU and I/O deltas, observed peak RSS, and the preparation times and serialized bytes for each measured request. Reopen uses the existing OS page cache. Compare runs at the same size, release profile and process limits.
+`fixture.json` reports logical and on-disk journal bytes, retained-output bytes, checkpoint count, the record mix and clean-close time. The generation and verification phases use the same request limit so a packed journal can use its checkpoint. A fresh process verifies reopen, paginated history and retained output, first and subsequent turns, checkpoint undo, and message rewind. `caller.json` records wall time, available process CPU and I/O deltas, observed peak RSS, and the preparation times and serialized bytes for each measured request. Reopen uses the existing OS page cache. Compare runs at the same size, release profile and process limits.
 
 ## Live protocol acceptance
 

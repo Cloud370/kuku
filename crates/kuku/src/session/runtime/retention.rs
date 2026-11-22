@@ -15,13 +15,13 @@ use super::jobs::JobIndex;
 use super::record::Record;
 use super::{ensure_open, Session, SessionInner};
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct OutputStore {
     entries: HashMap<String, OutputEntry>,
     charged_bytes: u64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct OutputEntry {
     owner: Option<String>,
     origin: Option<CaptureOrigin>,
@@ -30,7 +30,7 @@ struct OutputEntry {
     writing: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(super) struct CaptureOrigin {
     pub(super) turn: u64,
     pub(super) tool_call_id: String,
@@ -148,6 +148,15 @@ impl Session {
 }
 
 impl OutputStore {
+    pub(super) fn restore_ownership(&mut self, checkpoint: Self) {
+        for (id, previous) in checkpoint.entries {
+            if let Some(current) = self.entries.get_mut(&id) {
+                current.owner = previous.owner;
+                current.origin = previous.origin;
+            }
+        }
+    }
+
     pub(super) fn one(id: &str, metadata: fs::Metadata) -> Self {
         Self {
             charged_bytes: metadata.len(),

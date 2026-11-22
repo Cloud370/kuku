@@ -10,10 +10,11 @@ use crate::{Error, ProviderUsage, Result};
 use super::record::{timestamp, Record, State};
 use super::{CostTotals, ModelUsageSample, Session, UsageTotals};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(super) struct SummaryRequest {
     id: String,
     turn: u64,
+    #[serde(skip)]
     started: Option<Instant>,
 }
 
@@ -39,7 +40,7 @@ impl SummaryRequest {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct AgentUsage {
     turn: Option<u64>,
     settled: bool,
@@ -48,7 +49,7 @@ pub(super) struct AgentUsage {
     totals: UsageTotals,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 struct ModelAttempt {
     context_window_tokens: Option<u32>,
     retry: Option<u64>,

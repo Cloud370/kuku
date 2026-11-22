@@ -11,11 +11,24 @@ pub(super) fn sample() -> Option<serde_json::Value> {
         return io.map(|io| serde_json::json!({"process_io": io}));
     }
     let usage = unsafe { usage.assume_init() };
+    let status = std::fs::read_to_string("/proc/self/status").ok();
+    let peak_rss = status
+        .as_deref()
+        .and_then(|status| {
+            status.lines().find_map(|line| {
+                line.strip_prefix("VmHWM:")?
+                    .split_whitespace()
+                    .next()?
+                    .parse()
+                    .ok()
+            })
+        })
+        .unwrap_or(usage.ru_maxrss);
     let seconds = |time: libc::timeval| time.tv_sec as f64 + time.tv_usec as f64 / 1_000_000.0;
     Some(serde_json::json!({
         "user_cpu_seconds": seconds(usage.ru_utime),
         "system_cpu_seconds": seconds(usage.ru_stime),
-        "peak_rss_kib": usage.ru_maxrss,
+        "peak_rss_kib": peak_rss,
         "input_blocks": usage.ru_inblock,
         "output_blocks": usage.ru_oublock,
         "process_io": io,

@@ -81,6 +81,8 @@ Keep a finished user turn together or record its outcome in the checkpoint, incl
 
 Start with one authoritative append-only log and one writer per Session, with cross-process exclusion and stale-owner fencing. Bounded record sizes and external output permit streaming recovery. Small disposable indexes can serve Agent lookup, command deduplication, or event positions; choose additional persisted indexes/checkpoints against actual recovery and lookup measurements.
 
+Sessions keep one authoritative journal. On eligible clean closes, the same file can be published with an inline recovery checkpoint and independently decodable gzip frames for committed history. Subsequent records append to its plain tail. Frame and checkpoint metadata live in the journal. A damaged or unusable recovery projection can be rebuilt from readable facts, and reads verify the history frames they open.
+
 Define the commit unit and acknowledgement barriers explicitly. Referenced output must exist durably before its confirmed reference; an action's dispatch intent precedes the effect, and settlement precedes confirmation. Recover only identifiable incomplete tails; reject corruption of committed history. A required write failure stops dependent execution.
 
 A requested action, an action known to have been dispatched, and a confirmed result are different facts. If a side effect may already have happened, report an unknown outcome. A provider/tool adapter may reconcile or use a supported external idempotency mechanism; generic retry must not repeat arbitrary effects. Reject stale execution callbacks after cancellation/replacement using the bound execution identity.
