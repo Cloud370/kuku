@@ -452,6 +452,7 @@ impl Query {
         let cleanup_context = Some((events_path.clone(), turn));
         let pending = PendingRun {
             context_cursor: None,
+            failed_compaction: None,
             session_id: session_id.clone(),
             conversation: conversation.clone(),
             query: self,

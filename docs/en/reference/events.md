@@ -18,6 +18,7 @@ Outputs one JSON record per line to `stdout` and prints the next-page flag/curso
 | `runtime.operation` | Durable state transitions keyed by `record.operation`: `session_claimed`, `agent_created`, `agent_configured`, `input_delivered`, `inputs_accepted`, `input_withdrawal`, `turn_settled`, `execution_started`, `agent_stopped`, `agent_resumed`, plus pending requests and replies. |
 | `turn.started`, `message.user`, `model.response`, `model.error` | Turn inputs and provider outcomes (`job_delivery: true` on `message.user` marks background Job feedback). `turn.completed`, `turn.interrupted`, and `turn.cancelled` mark terminal states. |
 | `runtime.context_segment`, `runtime.context_admitted`, `runtime.step_prepared` | Frozen static context, newly admitted messages, and prepared Step bounds (`body_hash` identifies the encoded request). |
+| `runtime.checkpoint_file_changes` | A batch of recorded file changes added by a checkpoint, linked by `segment`. The model receives a bounded preview. |
 | `runtime.provider_report`, `runtime.model_usage`, `runtime.provider_replay` | Provider metadata, token counters, and protocol-native continuation payloads when available. |
 | `runtime.model_retry` | `waiting`, `started`, and `stopped` retry phases for a prepared request (see payload schema below). |
 | `model.recovery` | One-time output-limit recovery retry for a direct `Query` or child-Agent query (`attempt`, `max_attempts`, `reason`, `from_request_id`, `to_request_id`, and recovery-notice provenance). |

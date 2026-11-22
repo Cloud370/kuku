@@ -67,6 +67,7 @@ fn old_catalog_date_fallback_does_not_change_the_frozen_prefix() {
         identity_slot: 1,
         handoff_prelude: None,
         checkpoint_files: Default::default(),
+        checkpoint_files_omitted: false,
         workspace: "/workspace".into(),
     };
     let prefix_hash = segment_prefix_hash(&segment).unwrap();
@@ -121,6 +122,7 @@ fn legacy_policy_date_ignores_incidental_memory_dates_in_both_prelude_orders() {
             identity_slot: slot,
             handoff_prelude: None,
             checkpoint_files: Default::default(),
+            checkpoint_files_omitted: false,
             workspace: String::new(),
         };
         assert!(!legacy_project_policy_has_date(&segment, "2026-05-19"));

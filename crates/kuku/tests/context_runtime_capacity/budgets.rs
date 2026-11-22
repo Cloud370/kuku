@@ -78,12 +78,21 @@ async fn a_large_request_with_token_headroom_only_obeys_an_explicit_byte_limit()
 
 #[tokio::test]
 async fn checkpoint_can_use_model_output_limit_and_store_over_sixteen_kib() {
+    checkpoint_with_output_ceiling(200_000).await;
+}
+
+#[tokio::test]
+async fn a_generation_ceiling_equal_to_the_window_still_allows_compaction() {
+    checkpoint_with_output_ceiling(32_768).await;
+}
+
+async fn checkpoint_with_output_ceiling(context_window: u32) {
     let server = MockServer::start_async().await;
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let (mut config, path) = options(&server, workspace.path(), data.path());
     let tier = config.config.tiers.get_mut("balanced").unwrap();
-    tier.context_window = 200_000;
+    tier.context_window = context_window;
     tier.max_output_tokens = Some(32_768);
 
     let checkpoint = "# Completed work\nVerified facts and retained pointers.\n".repeat(330);
@@ -97,7 +106,7 @@ async fn checkpoint_can_use_model_output_limit_and_store_over_sixteen_kib() {
                         .get("max_tokens")
                         .or_else(|| body.get("max_completion_tokens"))
                         .and_then(serde_json::Value::as_u64)
-                        == Some(32_768)
+                        .is_some_and(|limit| (4097..=32_768).contains(&limit))
             });
             then.status(200)
                 .body(response(json!({"content":checkpoint}), "stop"));
@@ -144,6 +153,105 @@ async fn checkpoint_can_use_model_output_limit_and_store_over_sixteen_kib() {
     session.close().await.unwrap();
     main.assert_hits_async(2).await;
     summary.assert_hits_async(1).await;
+}
+
+#[tokio::test]
+async fn one_small_tool_result_does_not_retry_a_failed_pressure_checkpoint() {
+    let server = MockServer::start_async().await;
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let (mut config, path) = options(&server, workspace.path(), data.path());
+    config.config.handoff.enabled = true;
+    config.config.handoff.threshold = 0.25;
+    config
+        .config
+        .tiers
+        .get_mut("balanced")
+        .unwrap()
+        .context_window = 60_000;
+    std::fs::write(workspace.path().join("guide.txt"), "verified contents").unwrap();
+    let reply = |message, reason| {
+        common::openai_sse_response(json!({
+            "id":"pressure", "model":"context-fixture",
+            "choices":[{"message":message,"finish_reason":reason}],
+            "usage":{"prompt_tokens":18000,"completion_tokens":10}
+        }))
+    };
+    let previous = server
+        .mock_async(|when, then| {
+            when.method(POST).path(&path).matches(|request| {
+                last_user(&request_body(request))
+                    .is_some_and(|text| text.starts_with("Prior context:"))
+            });
+            then.status(200)
+                .body(reply(json!({"content":"Prior work complete."}), "stop"));
+        })
+        .await;
+    let summary = server
+        .mock_async(|when, then| {
+            when.method(POST).path(&path).matches(|request| {
+                last_user(&request_body(request))
+                    .is_some_and(|text| text.starts_with("Write a checkpoint"))
+            });
+            then.status(200)
+                .body(response(json!({"content":" "}), "stop"));
+        })
+        .await;
+    let read = server
+        .mock_async(|when, then| {
+            when.method(POST).path(&path).matches(|request| {
+                let body = request_body(request);
+                last_user(&body) == Some("Read the guide.")
+                    && !body.to_string().contains("verified contents")
+            });
+            then.status(200).body(reply(
+                json!({"tool_calls":[{"id":"small-read","type":"function",
+            "function":{"name":"read_file","arguments":"{\"path\":\"guide.txt\"}"}}]}),
+                "tool_calls",
+            ));
+        })
+        .await;
+    let finish = server
+        .mock_async(|when, then| {
+            when.method(POST).path(&path).matches(|request| {
+                let body = request_body(request);
+                last_user(&body) == Some("Read the guide.")
+                    && body.to_string().contains("verified contents")
+            });
+            then.status(200)
+                .body(reply(json!({"content":"Guide verified."}), "stop"));
+        })
+        .await;
+    let session = Session::open(config).await.unwrap();
+    session.create_agent("create", "main", agent()).unwrap();
+    session
+        .send(Input::new(
+            "old",
+            "main",
+            format!(
+                "Prior context: {}",
+                "retained source material ".repeat(1050)
+            ),
+        ))
+        .unwrap();
+    idle(&session, "main").await;
+    session
+        .send(Input::new("read", "main", "Read the guide."))
+        .unwrap();
+    idle(&session, "main").await;
+    assert_eq!(
+        Some("Guide verified."),
+        session.agent("main").unwrap().last_output.as_deref()
+    );
+    let journal = EventStore::replay(session.events_path()).unwrap();
+    let completed = facts(&journal, "runtime.compaction_finished", "main");
+    assert_eq!(1, completed.len());
+    assert_eq!("failed", completed[0]["status"]);
+    session.close().await.unwrap();
+    previous.assert_hits_async(1).await;
+    summary.assert_hits_async(1).await;
+    read.assert_hits_async(1).await;
+    finish.assert_hits_async(1).await;
 }
 
 fn page_results(body: &Value) -> Vec<(&str, &str)> {

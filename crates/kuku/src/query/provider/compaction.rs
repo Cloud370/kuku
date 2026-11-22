@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 use tokio_stream::StreamExt;
 
 use crate::context::{CanonicalMessage, MessageBlock};
+use crate::event::store::MAX_RECORD_BYTES;
 use crate::event::{EventPayload, ModelStopReason};
 use crate::provider::chunk::ProviderChunk;
 use crate::provider::cost::RequestPricing;
@@ -20,7 +21,8 @@ use crate::Result;
 
 use super::dispatch::prepare_request;
 
-const CHECKPOINT_HEADROOM_TOKENS: u32 = 512;
+const COMPACTION_RELIEF_TOKENS: u32 = 512;
+const MIN_RETRY_MATERIAL_TOKENS: u32 = 512;
 
 pub(super) enum Outcome {
     Keep,
@@ -43,26 +45,19 @@ pub(super) fn needed(
     resolved: &ResolvedProvider,
 ) -> bool {
     let handoff = pending.config.handoff();
-    let budget = input_budget(resolved);
+    let budget = pending
+        .request_base
+        .as_ref()
+        .expect("prepared task request")
+        .context_headroom(resolved)
+        .input_budget();
     handoff.enabled
         && budget > 0
-        && f64::from(context.estimated_input_tokens) >= f64::from(budget) * handoff.threshold
+        && context.estimated_input_tokens >= pressure_threshold(budget, handoff.threshold)
 }
 
-fn input_budget(resolved: &ResolvedProvider) -> u32 {
-    let headroom = crate::notice::compute_context_headroom(
-        resolved.max_context_tokens,
-        resolved.max_output_tokens,
-        None,
-    );
-    resolved
-        .max_context_tokens
-        .saturating_sub(
-            resolved
-                .max_output_tokens
-                .unwrap_or(headroom.reserved_output_tokens),
-        )
-        .saturating_sub(headroom.reserved_margin_tokens)
+fn pressure_threshold(budget: u32, threshold: f64) -> u32 {
+    (f64::from(budget) * threshold).ceil() as u32
 }
 
 pub(super) async fn compact(
@@ -84,23 +79,40 @@ pub(super) async fn compact(
         .request_base
         .as_ref()
         .expect("prepared task request");
-    let context_limit = task.context_limit(resolved);
-    let budget = input_budget(resolved);
+    let headroom = task.context_headroom(resolved);
+    let context_limit = headroom.total_budget();
+    let budget = headroom.input_budget();
     let before_tokens = task.estimated_input_tokens();
     let recent_tokens = budget.min(context.estimated_input_tokens) / 4;
     let Some(cut) = context.checkpoint_cut(pending.turn, recent_tokens, closed_turn) else {
         return Ok(Outcome::Keep);
     };
-    let must_fit = context.estimated_input_tokens >= budget || rejected_request.is_some();
-    let minimum_savings = if manual || must_fit {
-        1
+    let pressure = matches!(trigger, Trigger::Pressure);
+    let mut minimum_savings = 1;
+    let material_tokens = if pressure {
+        let tokens = context.new_checkpoint_material_tokens(cut, pending.turn);
+        if pending.failed_compaction.as_ref().is_some_and(|failure| {
+            context.matches_failed_compaction(failure)
+                && tokens
+                    < failure
+                        .material_tokens
+                        .saturating_add(MIN_RETRY_MATERIAL_TOKENS)
+        }) {
+            return Ok(Outcome::Keep);
+        }
+        let threshold = pressure_threshold(budget, pending.config.handoff().threshold);
+        if threshold > 0 && context.estimated_input_tokens < budget {
+            let relief = COMPACTION_RELIEF_TOKENS.min(threshold / 20);
+            minimum_savings = context
+                .estimated_input_tokens
+                .saturating_sub(threshold.saturating_sub(relief))
+                .max(1);
+        }
+        tokens
     } else {
-        (before_tokens / 10).max(CHECKPOINT_HEADROOM_TOKENS)
+        0
     };
-    if !manual
-        && !must_fit
-        && context.new_checkpoint_material_tokens(cut, pending.turn) < minimum_savings
-    {
+    if pressure && material_tokens < minimum_savings.max(COMPACTION_RELIEF_TOKENS) {
         return Ok(Outcome::Keep);
     }
     let Some(instruction) = task.checkpoint_instruction().map(str::to_owned) else {
@@ -111,12 +123,7 @@ pub(super) async fn compact(
     candidate.record_checkpoint_files(cut, pending, closed_turn)?;
     let empty_checkpoint = task.render_checkpoint(&candidate.summary_with_files(""))?;
     candidate.apply_checkpoint(&mut next, cut, pending.turn, empty_checkpoint, closed_turn);
-    let reserve = if manual || must_fit {
-        0
-    } else {
-        CHECKPOINT_HEADROOM_TOKENS
-    };
-    if before_tokens.saturating_sub(next.estimated_input_tokens()) < minimum_savings + reserve {
+    if before_tokens.saturating_sub(next.estimated_input_tokens()) < minimum_savings {
         return Ok(Outcome::Keep);
     }
 
@@ -237,6 +244,7 @@ pub(super) async fn compact(
         "estimated_input_tokens_before":before_tokens,
         "stop_reason":summary.stop.as_ref(),
     });
+    let mut record_too_large = false;
     if completed && !waiting_for_input && summary.usable() {
         let summary_with_files = candidate.summary_with_files(summary.text.trim());
         let text = next.render_checkpoint(&summary_with_files)?;
@@ -248,22 +256,28 @@ pub(super) async fn compact(
                 && after_tokens <= budget
                 && before_tokens.saturating_sub(after_tokens) >= minimum_savings
             {
-                finish["elapsed_ms"] = u64::try_from(started.elapsed().as_millis())
+                let mut confirmation = finish.clone();
+                confirmation["elapsed_ms"] = u64::try_from(started.elapsed().as_millis())
                     .unwrap_or(u64::MAX)
                     .into();
-                finish["status"] = "completed".into();
-                finish["after_bytes"] = bytes.into();
-                finish["estimated_input_tokens_after"] = after_tokens.into();
+                confirmation["status"] = "completed".into();
+                confirmation["after_bytes"] = bytes.into();
+                confirmation["estimated_input_tokens_after"] = after_tokens.into();
                 if let Some(tokens) = summary.usage.as_ref().and_then(|usage| usage.output_tokens) {
-                    finish["summary_output_tokens"] = tokens.into();
+                    confirmation["summary_output_tokens"] = tokens.into();
                 }
-                finish["checkpointed_messages"] = candidate.checkpointed_messages().into();
-                finish["summary"] = summary_with_files.into();
-                if let Err(error) = candidate.record_checkpoint(pending, finish.clone()) {
-                    if matches!(error, crate::Error::ExecutionNotActive(current) if current == execution)
-                    {
+                confirmation["checkpointed_messages"] = candidate.checkpointed_messages().into();
+                confirmation["summary"] = summary_with_files.into();
+                match candidate.record_checkpoint(pending, confirmation) {
+                    Ok(true) => {
+                        *context = candidate;
+                        pending.failed_compaction = None;
+                        pending.request_base = Some(next);
+                        return Ok(Outcome::Replace(Box::new(body)));
+                    }
+                    Ok(false) => record_too_large = true,
+                    Err(crate::Error::ExecutionNotActive(current)) if current == execution => {
                         finish["status"] = "cancelled".into();
-                        finish["summary"] = serde_json::Value::Null;
                         session.commit_compaction_accounting(
                             &agent,
                             execution,
@@ -271,11 +285,8 @@ pub(super) async fn compact(
                         )?;
                         return Ok(Outcome::Cancelled);
                     }
-                    return Err(error);
+                    Err(error) => return Err(error),
                 }
-                *context = candidate;
-                pending.request_base = Some(next);
-                return Ok(Outcome::Replace(Box::new(body)));
             }
         }
     }
@@ -288,7 +299,12 @@ pub(super) async fn compact(
             Some("New input arrived".into()),
         )
     } else {
-        (Outcome::Failed, "failed", Some(summary.failure()))
+        let reason = if record_too_large {
+            "The checkpoint exceeds the Session journal record limit".into()
+        } else {
+            summary.failure()
+        };
+        (Outcome::Failed, "failed", Some(reason))
     };
     finish["elapsed_ms"] = u64::try_from(started.elapsed().as_millis())
         .unwrap_or(u64::MAX)
@@ -296,6 +312,9 @@ pub(super) async fn compact(
     finish["status"] = status.into();
     finish["reason"] = reason.into();
     if status == "failed" {
+        if pressure {
+            pending.failed_compaction = Some(context.failed_compaction(material_tokens));
+        }
         finish["continues_with_previous_context"] = (matches!(trigger, Trigger::Pressure)
             && wire_limit.is_none_or(|limit| before_bytes <= limit))
         .into();
@@ -319,6 +338,11 @@ impl Summary {
         while let Some(chunk) = stream.next().await {
             match chunk {
                 Ok(ProviderChunk::TextDelta { text }) => {
+                    if text.len() > MAX_RECORD_BYTES.saturating_sub(self.text.len()) {
+                        self.problem =
+                            Some("The checkpoint exceeds the Session journal record limit".into());
+                        break;
+                    }
                     if self.problem.is_none() {
                         self.text.push_str(&text);
                     }

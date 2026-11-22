@@ -430,6 +430,14 @@ pub(super) struct PendingRun {
     pub(super) recovery_count: u8,
     pub(super) tool_argument_retries: u8,
     pub(super) context_cursor: Option<Box<crate::context::runtime::ContextCursor>>,
+    pub(super) failed_compaction: Option<FailedCompaction>,
+}
+
+#[derive(Debug)]
+pub(super) struct FailedCompaction {
+    pub(super) segment: u64,
+    pub(super) signature: String,
+    pub(super) material_tokens: u32,
 }
 
 #[derive(Debug, Clone, Default)]

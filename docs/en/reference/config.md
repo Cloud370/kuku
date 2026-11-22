@@ -123,7 +123,7 @@ cache_read = 0.1
 | `threshold` | float | `0.95` |
 | `keep_turns` | integer | `2` |
 
-The `threshold` is the share of available input tokens that triggers automatic compaction. Set it between `0.0` and `1.0`. The runtime reserves room for output before applying the threshold. It commits a new context segment when the summary frees usable space. Manual `/compact` remains available. For a standalone SDK `Query`, `keep_turns` sets how many recent turns remain after a handoff.
+The `threshold` is the share of available input tokens that triggers automatic compaction. Set it between `0.0` and `1.0`. The runtime accounts for reasoning overhead and reserves bounded output room before applying the threshold. The model's generation ceiling applies separately. It commits a new context segment when the summary frees usable space. After a failed automatic attempt, it waits for additional material before repeating that attempt. Manual `/compact` remains available. For a standalone SDK `Query`, `keep_turns` sets how many recent turns remain after a handoff.
 
 ## `logs`
 

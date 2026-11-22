@@ -52,6 +52,7 @@ pub(super) fn make_test_pending(
 ) -> PendingRun {
     PendingRun {
         context_cursor: None,
+        failed_compaction: None,
         session_id: "test".to_string(),
         query: crate::query::types::Query::new("test"),
         conversation: crate::conversation::address::ConversationAddress::MAIN,

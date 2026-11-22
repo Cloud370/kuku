@@ -533,6 +533,7 @@ mod tests {
         }
         PendingRun {
             context_cursor: None,
+            failed_compaction: None,
             session_id: "test".to_string(),
             query,
             conversation: crate::conversation::address::ConversationAddress::MAIN,

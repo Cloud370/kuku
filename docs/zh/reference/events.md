@@ -18,6 +18,7 @@ kuku events SESSION_ID --limit 20 --json
 | `runtime.operation` | 按 `record.operation` 区分的持久状态变更：`session_claimed`、`agent_created`、`agent_configured`、`input_delivered`、`inputs_accepted`、`input_withdrawal`、`turn_settled`、`execution_started`、`agent_stopped`、`agent_resumed`，以及待决请求与回复。 |
 | `turn.started`、`message.user`、`model.response`、`model.error` | Turn 输入与模型结果（带 `job_delivery: true` 的 `message.user` 表示后台 Job 反馈）。`turn.completed`、`turn.interrupted`、`turn.cancelled` 表示终态。 |
 | `runtime.context_segment`、`runtime.context_admitted`、`runtime.step_prepared` | 冻结的静态上下文、新接纳消息与确认边界的 Step 准备记录（`body_hash` 标识编码后的请求）。 |
+| `runtime.checkpoint_file_changes` | 压缩检查点新增的一批文件变动记录，通过 `segment` 关联检查点。模型收到有界预览。 |
 | `runtime.provider_report`、`runtime.model_usage`、`runtime.provider_replay` | Provider 元数据、token 计数及协议原生续接载荷（若可用）。 |
 | `runtime.model_retry` | 已准备请求的 `waiting`、`started`、`stopped` 重试阶段（载荷字段见下表）。 |
 | `model.recovery` | 直接 `Query` 或子 Agent 查询遇到输出上限时的一次恢复重试（含 `attempt`、`max_attempts`、`reason`、`from_request_id`、`to_request_id` 及恢复提示来源）。 |

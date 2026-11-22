@@ -5,10 +5,22 @@ use crate::context::runtime::AdmittedMessage;
 use crate::context::{CanonicalMessage, MessageBlock};
 use crate::event::{EventPayload, EventStore};
 use crate::query::request::estimated_message_tokens;
-use crate::query::types::PendingRun;
+use crate::query::types::{FailedCompaction, PendingRun};
 use crate::Result;
 
 impl ContextCommit {
+    pub(in crate::query) fn failed_compaction(&self, material_tokens: u32) -> FailedCompaction {
+        FailedCompaction {
+            segment: self.segment.id,
+            signature: self.segment.signature.clone(),
+            material_tokens,
+        }
+    }
+
+    pub(in crate::query) fn matches_failed_compaction(&self, failure: &FailedCompaction) -> bool {
+        failure.segment == self.segment.id && failure.signature == self.segment.signature
+    }
+
     pub(in crate::query) fn checkpoint_source_head(&self) -> u64 {
         self.source_head
     }
@@ -21,11 +33,15 @@ impl ContextCommit {
         &mut self,
         pending: &mut PendingRun,
         completion: serde_json::Value,
-    ) -> Result<()> {
-        self.segment.id = super::commit_context(pending, self.clone(), completion)?;
+    ) -> Result<bool> {
+        let Some(segment) = super::commit_context(pending, self.clone(), completion, true)? else {
+            return Ok(false);
+        };
+        self.segment.id = segment;
+        self.checkpoint_file_delta = Default::default();
         self.new_segment = false;
         self.prefix_context_head = self.messages.len();
-        Ok(())
+        Ok(true)
     }
 
     pub(in crate::query) fn checkpoint_cut(
@@ -170,7 +186,7 @@ impl ContextCommit {
         }
 
         let agent = pending.conversation.as_str();
-        let files = &mut self.segment.checkpoint_files;
+        let files = &mut self.checkpoint_file_delta;
         EventStore::visit_committed(&pending.events_path, first.saturating_sub(1), |event| {
             if event.id > last {
                 return Ok(false);
@@ -194,11 +210,15 @@ impl ContextCommit {
             }
             Ok(true)
         })?;
+        self.segment.checkpoint_files_omitted |=
+            self.segment.checkpoint_files.update_preview(files)?;
         Ok(())
     }
 
     pub(in crate::query) fn summary_with_files(&self, summary: &str) -> String {
-        self.segment.checkpoint_files.append_to(summary)
+        self.segment
+            .checkpoint_files
+            .append_to(summary, self.segment.checkpoint_files_omitted)
     }
 
     pub(in crate::query) fn apply_checkpoint(

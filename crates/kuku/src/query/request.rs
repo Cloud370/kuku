@@ -203,6 +203,17 @@ impl OwnedRequestBase {
             .max_context_tokens
             .saturating_sub(self.think_level.overhead_tokens())
     }
+
+    pub(super) fn context_headroom(
+        &self,
+        resolved: &crate::provider::types::ResolvedProvider,
+    ) -> crate::notice::ContextHeadroom {
+        crate::notice::compute_context_headroom(
+            self.context_limit(resolved),
+            self.max_output_tokens,
+            None,
+        )
+    }
 }
 
 pub(super) fn estimated_message_tokens<'a>(

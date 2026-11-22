@@ -85,17 +85,30 @@ pub(crate) struct ContextHeadroom {
     pub(crate) tier: ContextBudgetTier,
 }
 
+impl ContextHeadroom {
+    pub(crate) fn total_budget(&self) -> u32 {
+        self.max_context_tokens
+            .saturating_sub(self.reserved_margin_tokens)
+    }
+
+    pub(crate) fn input_budget(&self) -> u32 {
+        self.total_budget()
+            .saturating_sub(self.reserved_output_tokens)
+    }
+}
+
 pub(crate) fn compute_context_headroom(
     max_context_tokens: u32,
     max_output_tokens: Option<u32>,
     estimated_input_tokens: Option<u32>,
 ) -> ContextHeadroom {
+    let reserved_margin_tokens = CONTEXT_MARGIN_TOKENS.min(max_context_tokens / 4);
+    let total = max_context_tokens - reserved_margin_tokens;
     let reserved_output_tokens = max_output_tokens
         .unwrap_or(CONTEXT_OUTPUT_RESERVE_TOKENS)
-        .min(CONTEXT_OUTPUT_RESERVE_TOKENS);
-    let budget = max_context_tokens
-        .saturating_sub(reserved_output_tokens)
-        .saturating_sub(CONTEXT_MARGIN_TOKENS);
+        .min(CONTEXT_OUTPUT_RESERVE_TOKENS)
+        .min(total / 2);
+    let budget = total - reserved_output_tokens;
     let remaining_input_tokens = estimated_input_tokens.map(|used| budget.saturating_sub(used));
     let tier = match remaining_input_tokens {
         Some(remaining) if budget == 0 || remaining < budget / 3 => ContextBudgetTier::Tight,
@@ -107,7 +120,7 @@ pub(crate) fn compute_context_headroom(
     ContextHeadroom {
         max_context_tokens,
         reserved_output_tokens,
-        reserved_margin_tokens: CONTEXT_MARGIN_TOKENS,
+        reserved_margin_tokens,
         estimated_input_tokens,
         remaining_input_tokens,
         tier,
@@ -173,7 +186,7 @@ mod tests {
 
     #[test]
     fn headroom_maps_an_exhausted_context_with_known_usage_to_tight() {
-        let headroom = compute_context_headroom(10_000, None, Some(128));
+        let headroom = compute_context_headroom(10_000, None, Some(5_000));
         assert_eq!(Some(0), headroom.remaining_input_tokens);
         assert_eq!(ContextBudgetTier::Tight, headroom.tier);
     }
