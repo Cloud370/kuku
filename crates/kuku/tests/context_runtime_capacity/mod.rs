@@ -700,6 +700,237 @@ async fn manual_compaction_only_summarizes_the_selected_agents_completed_work() 
 }
 
 #[tokio::test]
+async fn undo_after_reopen_restores_only_the_preceding_checkpoint() {
+    const KEEP: &str = "KEEP_ORIGINAL_USER";
+    const BEFORE_REOPEN: &str = "CHECKPOINT_B_BEFORE_REOPEN";
+    const AFTER_REOPEN: &str = "CHECKPOINT_B_AFTER_REOPEN";
+    const AFTER_UNDO: &str = "CHECKPOINT_A_AFTER_UNDO";
+    const REWOUND: &str = "REWOUND_BEFORE_BOTH";
+    const FIRST: &str = "## Delivered and verified\nCHECKPOINT_A_SUMMARY. Phase A was delivered.";
+    const SECOND: &str =
+        "## Delivered and verified\nCHECKPOINT_B_SUMMARY. Phases A and B were delivered.";
+
+    let server = MockServer::start_async().await;
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let (mut config, path) = options(&server, workspace.path(), data.path());
+    config.limits.max_request_bytes = WIRE_LIMIT;
+    let normal = server
+        .mock_async(|when, then| {
+            when.method(POST).path(&path).matches(|request| {
+                let body = request_body(request);
+                let last = last_user(&body).unwrap_or_default();
+                let effect = last.starts_with("A_OLD") || last.starts_with("B_OLD");
+                !last.starts_with("Write a checkpoint for the same agent")
+                    && (!effect
+                        || body["messages"].as_array().unwrap().last().unwrap()["role"] == "tool")
+                    && common::capture_http_request(request)
+            });
+            then.status(200).body(response(
+                json!({"content":"Verified and delivered."}),
+                "stop",
+            ));
+        })
+        .await;
+    let mut writes = Vec::new();
+    for (prompt, call, file) in [("A_OLD", "a-write", "a.txt"), ("B_OLD", "b-write", "b.txt")] {
+        let matcher: fn(&HttpMockRequest) -> bool = if prompt == "A_OLD" {
+            |request| first_request_for_effect(request, "A_OLD")
+        } else {
+            |request| first_request_for_effect(request, "B_OLD")
+        };
+        let result = json!({"tool_calls":[{"id":call,"type":"function","function":{
+            "name":"write_file","arguments":json!({"path":file,"content":prompt}).to_string()
+        }}]});
+        writes.push(
+            server
+                .mock_async(|when, then| {
+                    when.method(POST).path(&path).matches(matcher);
+                    then.status(200).body(response(result, "tool_calls"));
+                })
+                .await,
+        );
+    }
+    let mut summaries = Vec::new();
+    for (has_predecessor, checkpoint) in [(false, FIRST), (true, SECOND)] {
+        let matcher: fn(&HttpMockRequest) -> bool = if has_predecessor {
+            |request| checkpoint_request_with_predecessor(request, true)
+        } else {
+            |request| checkpoint_request_with_predecessor(request, false)
+        };
+        summaries.push(
+            server
+                .mock_async(|when, then| {
+                    when.method(POST).path(&path).matches(matcher);
+                    then.status(200)
+                        .body(response(json!({"content":checkpoint}), "stop"));
+                })
+                .await,
+        );
+    }
+
+    let session = Session::open(config.clone()).await.unwrap();
+    let mut selected = agent();
+    selected.tools = Some(vec!["write_file".into()]);
+    session.create_agent("create", "main", selected).unwrap();
+    send_and_settle(&session, KEEP, KEEP).await;
+    let mut target = String::new();
+    for (phase, turns) in [
+        ("a", ["A_OLD", "A_RECENT", "A_TAIL"]),
+        ("b", ["B_OLD", "B_RECENT", "B_TAIL"]),
+    ] {
+        for turn in turns {
+            let text = format!("{turn} {}", "evidence ".repeat(700));
+            send_and_settle(&session, turn, &text).await;
+            if turn == "A_OLD" {
+                target = text;
+            }
+        }
+        let before = session.agent("main").unwrap();
+        session
+            .compact_command(&format!("compact-{phase}"), "main")
+            .unwrap();
+        idle(&session, "main").await;
+        let after = session.agent("main").unwrap();
+        assert_eq!(None, after.last_error);
+        assert_eq!(before.turn, after.turn);
+        assert_eq!(before.last_output, after.last_output);
+    }
+    send_and_settle(&session, BEFORE_REOPEN, BEFORE_REOPEN).await;
+    let journal = session.events_path().to_path_buf();
+    config.session_id = Some(session.id().into());
+    session.close().await.unwrap();
+
+    let reopened = Session::open(config).await.unwrap();
+    send_and_settle(&reopened, AFTER_REOPEN, AFTER_REOPEN).await;
+    let undo = reopened
+        .restore_context_command("undo-latest", "main")
+        .unwrap();
+    assert_eq!(
+        undo.event_id,
+        reopened
+            .restore_context_command("undo-latest", "main")
+            .unwrap()
+            .event_id
+    );
+    send_and_settle(&reopened, AFTER_UNDO, AFTER_UNDO).await;
+    let target_id = EventStore::replay(&journal).unwrap().into_iter().find(|event| {
+        matches!(&event.payload, EventPayload::MessageUser { text, .. } if text == &target)
+    }).unwrap().id;
+    reopened
+        .rewind_message("rewind-both", "main", target_id, &target, false)
+        .unwrap();
+    assert!(reopened
+        .restore_context_command("undo-after-rewind", "main")
+        .is_err());
+    send_and_settle(&reopened, REWOUND, REWOUND).await;
+    reopened.close().await.unwrap();
+
+    let events = EventStore::replay(&journal).unwrap();
+    let compactions = facts(&events, "runtime.compaction_finished", "main");
+    assert_eq!(2, compactions.len());
+    for (entry, expected) in compactions.iter().zip([FIRST, SECOND]) {
+        assert_eq!("completed", entry["status"]);
+        assert_eq!(expected, entry["summary"]);
+        assert!(entry["after_bytes"].as_u64().unwrap() < entry["before_bytes"].as_u64().unwrap());
+        assert!(entry["after_bytes"].as_u64().unwrap() < WIRE_LIMIT as u64);
+    }
+    for mock in [writes, summaries].into_iter().flatten() {
+        mock.assert_hits_async(1).await;
+    }
+    normal.assert_hits_async(11).await;
+    let bodies: Vec<_> = common::take_http_requests(&path)
+        .into_iter()
+        .filter(|body| {
+            !last_user(body)
+                .unwrap_or_default()
+                .starts_with("Write a checkpoint for the same agent")
+        })
+        .collect();
+    let steps = facts(&events, "runtime.step_prepared", "main");
+    assert_eq!(13, bodies.len());
+    assert_eq!(bodies.len(), steps.len());
+    assert!(steps
+        .iter()
+        .all(|step| step["request_bytes"].as_u64().unwrap() <= WIRE_LIMIT as u64));
+    let request = |text: &str| {
+        let index = bodies
+            .iter()
+            .position(|body| last_user(body).is_some_and(|last| last.starts_with(text)))
+            .unwrap();
+        (&bodies[index], &steps[index]["segment"])
+    };
+    let message_prefix = |earlier: &Value, later: &Value| {
+        assert!(later["messages"]
+            .as_array()
+            .unwrap()
+            .starts_with(earlier["messages"].as_array().unwrap()));
+    };
+    let (before_reopen, active_b) = request(BEFORE_REOPEN);
+    let (after_reopen, reopened_b) = request(AFTER_REOPEN);
+    let (after_undo, restored_a) = request(AFTER_UNDO);
+    let (rewound, restored_original) = request(REWOUND);
+    assert_eq!(&compactions[1]["segment"], active_b);
+    assert_eq!(active_b, reopened_b);
+    message_prefix(before_reopen, after_reopen);
+    let reopened_text = after_reopen.to_string();
+    assert_eq!(1, reopened_text.matches("CHECKPOINT_B_SUMMARY").count());
+    assert!(!reopened_text.contains("CHECKPOINT_A_SUMMARY"));
+    assert_eq!(&compactions[0]["segment"], restored_a);
+    message_prefix(request("B_TAIL").0, after_undo);
+    let messages = after_undo["messages"].as_array().unwrap();
+    let last_reopened_turn = messages
+        .iter()
+        .position(|entry| entry["role"] == "user" && entry["content"] == AFTER_REOPEN)
+        .unwrap();
+    assert_eq!("assistant", messages[last_reopened_turn + 1]["role"]);
+    assert_eq!(
+        "Verified and delivered.",
+        messages[last_reopened_turn + 1]["content"]
+    );
+    let after_undo = after_undo.to_string();
+    assert_eq!(1, after_undo.matches("CHECKPOINT_A_SUMMARY").count());
+    assert!(!after_undo.contains("CHECKPOINT_B_SUMMARY"));
+    assert_eq!(request(KEEP).1, restored_original);
+    message_prefix(request(KEEP).0, rewound);
+    let rewound = rewound.to_string();
+    assert!(rewound.contains("Verified and delivered."));
+    assert!(
+        !rewound.contains("<kuku_checkpoint>")
+            && !rewound.contains("A_OLD")
+            && !rewound.contains("B_OLD")
+    );
+    for (id, path, text) in [("a-write", "a.txt", "A_OLD"), ("b-write", "b.txt", "B_OLD")] {
+        assert_eq!(1, events.iter().filter(|event| {
+            matches!(&event.payload, EventPayload::ToolResult { tool_call_id, status, .. } if tool_call_id == id && status == "ok")
+        }).count());
+        assert_eq!(
+            text,
+            std::fs::read_to_string(workspace.path().join(path)).unwrap()
+        );
+    }
+}
+
+fn first_request_for_effect(request: &HttpMockRequest, prompt: &str) -> bool {
+    let body = request_body(request);
+    last_user(&body).is_some_and(|text| text.starts_with(prompt))
+        && body["messages"].as_array().unwrap().last().unwrap()["role"] == "user"
+        && common::capture_http_request(request)
+}
+
+fn checkpoint_request_with_predecessor(request: &HttpMockRequest, expected: bool) -> bool {
+    let body = request_body(request);
+    last_user(&body).is_some_and(|text| text.starts_with("Write a checkpoint for the same agent"))
+        && body.to_string().contains("CHECKPOINT_A_SUMMARY") == expected
+        && common::capture_http_request(request)
+}
+
+async fn send_and_settle(session: &Session, command: &str, text: &str) {
+    session.send(Input::new(command, "main", text)).unwrap();
+    idle(session, "main").await;
+}
+
+#[tokio::test]
 async fn reopening_records_a_terminal_outcome_for_an_abandoned_compaction() {
     let server = MockServer::start_async().await;
     let workspace = tempfile::tempdir().unwrap();
