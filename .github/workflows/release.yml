@@ -119,6 +119,32 @@ jobs:
             echo "is_prerelease=false" >> $GITHUB_OUTPUT
           fi
 
+      - name: Prepare release notes
+        id: notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body > existing-release-notes.md 2>/dev/null &&
+            grep -q '[^[:space:]]' existing-release-notes.md; then
+            exit 0
+          fi
+
+          if [ -f CHANGELOG.md ]; then
+            awk -v heading="## [${RELEASE_TAG#v}]" '
+              /^## / {
+                if (selected) exit
+                selected = $0 == heading || index($0, heading " - ") == 1
+                next
+              }
+              selected { print }
+            ' CHANGELOG.md > release-notes.md
+            if grep -q '[^[:space:]]' release-notes.md; then
+              echo "path=release-notes.md" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+          echo "generate=true" >> "$GITHUB_OUTPUT"
+
       - name: Generate latest.json
         working-directory: artifacts
         run: |
@@ -162,6 +188,8 @@ jobs:
           tag_name: ${{ steps.tag.outputs.tag }}
           name: ${{ steps.tag.outputs.tag }}
           prerelease: ${{ steps.prerelease.outputs.is_prerelease }}
+          body_path: ${{ steps.notes.outputs.path }}
+          generate_release_notes: ${{ steps.notes.outputs.generate == 'true' }}
           files: |
             artifacts/kuku-linux-x86_64.tar.gz
             artifacts/kuku-darwin-aarch64.tar.gz

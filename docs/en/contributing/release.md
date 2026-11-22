@@ -33,12 +33,14 @@ Example progression:
 
 ## Release steps
 
-1. Update `CHANGELOG.md` for the target version.
+1. Update `CHANGELOG.md` with a `## [VERSION]` or `## [VERSION] - YYYY-MM-DD` heading for the target version, without the leading `v`. Summarize user-visible changes and include measured results when they help explain the release.
 2. Run the full CI matrix with `platform=all` on the release candidate and verify the result. [Testing](testing.md#verification-selection)
 3. Run `cargo release <version>`.
 4. Let CI build artifacts and publish the GitHub Release.
 
 `cargo release` updates workspace versions, creates the release commit, creates the `v<version>` tag, and pushes both.
+
+On first publication, the Release workflow puts that version's summary at the top of the GitHub Release and appends GitHub's generated changelog. A release without a matching section gets the generated changelog. Rerunning the workflow preserves an existing release description.
 
 ## Build paths
 
