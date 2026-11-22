@@ -11,10 +11,10 @@ import re
 
 from benchmark_resources import CASE_RESOURCE_LIMITS
 from benchmark_runtime import verifier_passed
-from evidence import tool_batch_summary
+from evidence import session_events, session_journal, tool_batch_summary
 from frontier_report import (FAILURE_KINDS, TASK_COMMIT, TEST_FIELDS, EvidenceError, allowed, boolean,
                              count, cpu_throttling_summary, hex_digest, middle, money, number, object_value, read_object,
-                             session_events, session_journal, session_summary)
+                             session_summary)
 from run import manifest_case
 
 
@@ -97,11 +97,12 @@ def artifact_observation(live, attempt, original_verifier_passed):
         expected[path] = 'sha256:' + digest
     found = {}
     first, last = None, None
+    sdk = object_value(attempt.get('sdk_evidence'))
     try:
-        journal = session_journal(live)
+        journal = session_journal(live, sdk)
         if journal is None:
             return None
-        for event in session_events(journal):
+        for event in session_events(journal, sdk.get('events_sha256')):
             kind = event.get('kind')
             if kind == 'runtime.step_prepared' and first is None:
                 first = journal_time(event)

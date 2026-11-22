@@ -17,7 +17,7 @@ from urllib.parse import urlencode
 
 from benchmark_resources import (CPU_THROTTLING_FIELDS, EXTERNAL_PROCESS_IO, FINAL_PROCESS_IO,
                                  complete_process_io, peak_rss_kib)
-from evidence import EVENT_LINE_BYTES, EVENT_RECORD_LIMIT, SessionCapacityEvidence
+from evidence import SessionCapacityEvidence, session_events, session_journal
 from paid_model import upstream_json, usd
 from run import load_secrets, locked, write_json
 
@@ -611,31 +611,6 @@ def meter_summary(meter, rows, delayed):
     }
 
 
-def session_journal(live):
-    session_root = live / 'session-data'
-    resolved_session_root = session_root.resolve()
-    if resolved_session_root != live.resolve() / 'session-data':
-        return None
-    candidates = sorted(session_root.glob('p/*/sessions/*/events.jsonl'))
-    if len(candidates) != 1:
-        return None
-    candidate = candidates[0]
-    if candidate.resolve() != resolved_session_root / candidate.relative_to(session_root):
-        return None
-    return candidate
-
-
-def session_events(journal):
-    with journal.open('rb') as source:
-        for index, line in enumerate(iter(lambda: source.readline(EVENT_LINE_BYTES + 1), b''), 1):
-            if index > EVENT_RECORD_LIMIT or len(line) > EVENT_LINE_BYTES or not line.endswith(b'\n'):
-                raise EvidenceError('saved Session journal exceeds its read bounds or has an incomplete tail')
-            event = json.loads(line)
-            if not isinstance(event, dict):
-                raise EvidenceError('saved Session journal contains a non-object event')
-            yield event
-
-
 def script_action_count(receipt):
     actions = receipt.get('actions')
     return len(actions) if receipt.get('kind') == 'workspace_script_result' and isinstance(actions, list) else None
@@ -649,7 +624,7 @@ def session_summary(live, sdk):
     terminal = 'turn.completed' if (count(facts.get('turns_completed')) or 0) > 0 else None
     result = {'terminal_event': terminal, 'interrupt_reason': None, 'durable_turn_settled': None,
               'settled_status': None, 'sdk_error_kind': None, 'sdk_error_detail': None, 'context_capacity': None}
-    journal = session_journal(live)
+    journal = session_journal(live, sdk)
     if journal is None:
         return tools, result
     statuses = Counter()
@@ -663,7 +638,7 @@ def session_summary(live, sdk):
     capacity = SessionCapacityEvidence(agent)
     provider_error_turn, provider_error_kind = None, None
     try:
-        for event in session_events(journal):
+        for event in session_events(journal, sdk.get('events_sha256')):
             capacity.observe(event)
             event_agent = event.get('conversation') or event.get('agent') or 'main'
             if event.get('kind') == 'tool.call':

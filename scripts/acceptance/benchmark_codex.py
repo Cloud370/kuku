@@ -8,7 +8,7 @@ import re
 import shutil
 
 from benchmark_runtime import bundle_binary
-from frontier_report import EvidenceError, session_events
+from evidence import session_events
 from run import config_record
 
 
@@ -122,7 +122,7 @@ def inspect_codex(data_dir, instruction):
                 results += 1
             elif row["type"] == "event_msg" and event_type in ("task_complete", "turn_complete"):
                 complete = isinstance(event.get("last_agent_message"), str)
-    except (OSError, AttributeError, TypeError, ValueError, KeyError, EvidenceError) as error:
+    except (OSError, AttributeError, TypeError, ValueError, KeyError) as error:
         return {"passed": False, "error": type(error).__name__}
     return {"passed": delivered and complete and 0 < calls == results,
             "submitted_exact_instruction": delivered, "terminal_turn_complete": complete,

@@ -150,6 +150,59 @@ def under(directory, path):
     return resolved
 
 
+def session_journal(live, sdk):
+    try:
+        root = live.resolve() / 'session-data'
+        if root.resolve() != root:
+            return None
+        if 'events_path' in sdk:
+            candidate = recorded_session_journal(root, sdk)
+        else:
+            candidates = root.glob('p/*/sessions/*/events.jsonl')
+            candidate = next(candidates, None)
+            if candidate is None or next(candidates, None) is not None:
+                return None
+        return candidate if candidate.resolve() == candidate and candidate.is_file() else None
+    except (OSError, TypeError, ValueError, RuntimeError):
+        return None
+
+
+def recorded_session_journal(root, sdk):
+    reported = sdk['events_path']
+    path_type = PureWindowsPath if PureWindowsPath(reported).is_absolute() else PurePosixPath
+    reported = comparison_path(path_type(reported))
+    current = comparison_path(path_type(str(root)))
+    recorded_root = comparison_path(path_type(sdk.get('data_dir', str(root))))
+    require(reported.is_absolute() and '..' not in reported.parts, 'invalid recorded Session path')
+    base = recorded_root if recorded_root.is_absolute() else current
+    parts = reported.relative_to(base).parts
+    require(len(parts) >= 5 and parts[0] == 'p'
+            and parts[-3:] == ('sessions', sdk.get('session_id'), 'events.jsonl'),
+            'journal does not belong to the recorded Session')
+    if base != current:
+        digest = sdk.get('events_sha256')
+        require(isinstance(digest, str) and re.fullmatch(r'[a-f0-9]{64}', digest),
+                'relocated Session requires a recorded journal digest')
+    candidate = root.joinpath(*parts)
+    require(candidate.relative_to(root).parts == parts, 'invalid retained Session location')
+    return candidate
+
+
+def session_events(journal, expected_sha256=None):
+    digest = hashlib.sha256() if expected_sha256 is not None else None
+    with journal.open('rb') as source:
+        for index, line in enumerate(iter(lambda: source.readline(EVENT_LINE_BYTES + 1), b''), 1):
+            require(index <= EVENT_RECORD_LIMIT and len(line) <= EVENT_LINE_BYTES and line.endswith(b'\n'),
+                    'saved Session journal exceeds its read bounds or has an incomplete tail')
+            if digest is not None:
+                digest.update(line)
+            event = json.loads(line)
+            require(isinstance(event, dict), 'saved Session journal contains a non-object event')
+            yield event
+    require(digest is None or digest.hexdigest() == expected_sha256,
+            'saved Session journal differs from its SDK evidence digest')
+
+
 def json_file(path):
     require(path.stat().st_size <= 4 * 1024 * 1024, "SDK report exceeds the evidence read limit")
     return json.loads(path.read_text(encoding="utf-8"))

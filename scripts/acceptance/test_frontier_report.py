@@ -60,7 +60,8 @@ class PairedReportTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             live = Path(temporary)
-            journal = live / 'session-data' / 'p' / 'app' / 'sessions' / 'fixture' / 'events.jsonl'
+            root = live / 'session-data'
+            journal = root / 'p/app/nested/repo/sessions/fixture/events.jsonl'
             journal.parent.mkdir(parents=True)
             prepared = event('runtime.step_prepared', 1)
             committed = event('tool.result', 3, status='ok', structured=write_a)
@@ -72,6 +73,10 @@ class PairedReportTests(unittest.TestCase):
 
             def write(events):
                 journal.write_text(''.join(json.dumps(row) + '\n' for row in events))
+                attempt['sdk_evidence'] = {
+                    'data_dir': str(root), 'session_id': 'fixture', 'events_path': str(journal),
+                    'events_sha256': sha256(journal.read_bytes()).hexdigest(),
+                }
 
             write([prepared, committed, rejected, completed])
             incomplete = artifact_observation(live, attempt, True)
@@ -255,7 +260,7 @@ def local_evidence(directory, passed, *, ledger=False):
         'execution': {'seconds': 3.2, 'timed_out': False, 'command': [SECRET]},
         'verification': {'seconds': 1.3, 'timed_out': False, 'log': SECRET},
         'verifier_summary': {'tests': 3, 'passed': 3 if passed else 0, 'test_names': [SECRET]},
-        'sdk_evidence': {'events_path': SECRET},
+        'sdk_evidence': {},
     })
     usage = {'prompt_tokens': 15, 'completion_tokens': 7, 'prompt_cache_hit_tokens': 10,
              'prompt_cache_miss_tokens': 5, 'reasoning_tokens': 4}
@@ -371,6 +376,56 @@ class FrontierReportTests(unittest.TestCase):
                 event('runtime.operation', record={'operation': 'job_finished', 'agent': 'main',
                                                    'job_id': 'job-1', 'result': receipt})
                 self.assertEqual((3, 3), counts())
+
+    def test_nested_session_uses_the_recorded_journal_and_checks_relocated_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            live = Path(temporary) / 'moved/live'
+            root = live / 'session-data'
+            relative = Path('p/app/nested/repo/sessions/sample/events.jsonl')
+            journal = root / relative
+            journal.parent.mkdir(parents=True)
+            events = [
+                {'kind': 'tool.call', 'tool': 'run_js', 'tool_call_id': 'a'},
+                {'kind': 'tool.result', 'tool_call_id': 'a', 'status': 'ok', 'structured': {
+                    'kind': 'workspace_script_result', 'actions': [{'tool': 'read_file'}, {'tool': 'run_command'}],
+                }},
+            ]
+            raw = ''.join(json.dumps(row) + '\n' for row in events).encode()
+            journal.write_bytes(raw)
+            decoy = root / 'p/app/sessions/sample/events.jsonl'
+            decoy.parent.mkdir(parents=True)
+            decoy.write_text('{"kind":"tool.call","tool":"read_file"}\n')
+            old_root = Path(temporary) / 'original/live/session-data'
+            sdk = {'data_dir': str(old_root), 'events_path': str(old_root / relative),
+                   'session_id': 'sample', 'events_sha256': sha256(raw).hexdigest()}
+
+            def counts(locator):
+                tools, _ = session_summary(live, locator)
+                return tools['workspace_script_calls'], tools['workspace_script_host_actions']
+
+            self.assertEqual((0, 0), counts({}))
+            self.assertEqual((1, 2), counts(sdk))
+            self.assertEqual((1, 2), counts({**sdk, 'data_dir': str(root), 'events_path': str(journal)}))
+            for change in (
+                {'session_id': 'other'},
+                {'events_path': str(old_root.parent / relative)},
+                {'events_path': str(old_root / 'p/../p' / relative)},
+                {'events_sha256': None},
+                {'events_sha256': SDK_SHA},
+            ):
+                with self.subTest(change=change):
+                    self.assertEqual((None, None), counts({**sdk, **change}))
+            journal.write_bytes(raw.replace(b'run_command', b'write_file'))
+            self.assertEqual((None, None), counts(sdk))
+            journal.write_bytes(raw)
+            alias_relative = Path('p/app/alias/sessions/sample/events.jsonl')
+            alias = root / alias_relative
+            alias.parent.mkdir(parents=True)
+            try:
+                alias.symlink_to(journal)
+            except (OSError, NotImplementedError):
+                return
+            self.assertEqual((None, None), counts({**sdk, 'events_path': str(old_root / alias_relative)}))
 
     def test_audit_scoring_cost_and_time(self):
         report = official_report(official_feed())
