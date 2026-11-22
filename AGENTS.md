@@ -45,6 +45,7 @@ Release builds use `x86_64-unknown-linux-musl` via `cross` (fully static, no gli
 - **`cargo check` is fine mid-edit.** It validates without modifying files. Never `cargo fix`.
 - **Pipe long output through `head` or `tail`.** `cargo test | tail -30` shows failures without burning context on passing tests. Same for `grep -rn` in large repos.
 - **Verify the changed behavior.** Follow [Testing](docs/en/contributing/testing.md) for required Rust integration checks, explicit feature/live-test selection, and documentation-only checks. Reuse valid results instead of rerunning solely for commit or push.
+- **For collaborative TUI debugging, consider tmux.** See [Watch a TUI run together](docs/en/contributing/testing.md#watch-a-tui-run-together-optional) for an optional workflow to reproduce, edit, rebuild, and compare with a developer.
 
 ## Workflow
 

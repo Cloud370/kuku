@@ -197,19 +197,21 @@ SDK 运行时，入口分别采样 SDK RSS／RSS 高水位、CPU 时间和线程
 
 ### 共同观察 TUI 运行（可选）
 
-在交互终端中提交任务并观察 Agent 的执行。有 tmux 时，可以用命名会话让其他人接入同一个 TUI，也可以抓取当前画面。在待测 checkout 或 worktree 中运行：
+一起调试 TUI 时，开发者和编码 Agent 可以接入同一个命名 tmux 会话，共同复现、修改和验证交互。在待测 checkout 或 worktree 中运行：
 
 ```sh
 cargo build --locked -p kuku-app --bin kuku
 tmux new-session -d -s kuku-review -c "$PWD" \
   "$PWD/target/debug/kuku" --workspace "$PWD"
 tmux set-option -t kuku-review mouse on
-tmux attach-session -t kuku-review
+tmux capture-pane -p -t kuku-review
 ```
 
-从已接入的 tmux 客户端用 `tmux switch-client -t kuku-review` 切换。在 TUI 中用滚轮或 Page Up 和 Page Down 翻页，按 Ctrl+End 回到最新输出。普通接入方式会传递这些输入。并发跑多个案例时，各用一个会话名。不同 worktree 需要独立受管服务时，为各自的 TUI 指定 `--data-dir`，并用 `--config` 选择配置。
+等界面显示 `Ready`，进到要验收的页面，抓一张当前画面确认状态。例如验收恢复会话时，先打开 `/resume` 并停在选择页。普通终端用 `tmux attach -t kuku-review` 接入，已经在 tmux 里则用 `tmux switch-client -t kuku-review`。在 TUI 中用滚轮或 Page Up 和 Page Down 翻页，按 Ctrl+End 回到最新输出。
 
-通过 Session 日志或 `kuku events SESSION_ID` 查看任务进度、工具结果和请求边界。运行事件命令时沿用相同的连接和工作区选项。用 `tmux capture-pane -p -t kuku-review` 核对画面呈现。将有用的画面文本随运行证据留存。
+开发者操作复现，Agent 抓取同一个窗格的画面并核对对应事件。在编码会话里讨论并修改，从修改后的 checkout 重新构建。新版本在另一个 tmux 窗口启动，使用自己的测试数据副本和数据目录。保留原窗口，双方可以来回对照同一个操作，再继续迭代。共享窗格里的键盘输入由双方轮流操作。
+
+每个并发案例用独立的会话名。不同 worktree 或不同版本做并排对照时，各自指定 `--data-dir` 和 `--config` 来隔离受管服务。查任务进度、工具结果或请求边界时，沿用相同连接和工作区选项，先用 `kuku events SESSION_ID --limit 40` 读取一小段事件。需要核对界面时用 `capture-pane`，相关画面随验收证据留存。测试选择器方向键时准备至少两个可选项。颜色丢失时，检查启动环境的 `TERM` 和 `NO_COLOR`，用 `infocmp` 确认终端能力。
 
 跑上游 benchmark 时，将 kuku 服务放在固定的任务容器里。若容器内已可运行且已配置 kuku，可以用宿主机的 tmux 接入容器内的 TUI。将 `benchmark_container` 设为正在运行的任务容器的名称：
 

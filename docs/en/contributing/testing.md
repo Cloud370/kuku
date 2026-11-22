@@ -197,19 +197,21 @@ While the SDK runs, the selector samples SDK RSS/high-water RSS, CPU time and th
 
 ### Watch a TUI run together (optional)
 
-Use an interactive terminal to submit the task and watch the Agent work. When tmux is available, a named session lets someone join the same TUI and lets you capture the current viewport. From the checkout or worktree under test:
+For collaborative TUI debugging, a named tmux session gives the developer and coding Agent the same terminal to reproduce, change, and verify an interaction together. Run from the checkout or worktree under test:
 
 ```sh
 cargo build --locked -p kuku-app --bin kuku
 tmux new-session -d -s kuku-review -c "$PWD" \
   "$PWD/target/debug/kuku" --workspace "$PWD"
 tmux set-option -t kuku-review mouse on
-tmux attach-session -t kuku-review
+tmux capture-pane -p -t kuku-review
 ```
 
-From an already attached tmux client, use `tmux switch-client -t kuku-review`. In the TUI, use the mouse wheel or Page Up and Page Down to scroll, and Ctrl+End to return to the latest output. Normal attachment forwards these inputs. Use a different session name for each concurrent case. When different worktrees need independent managed services, give each TUI its own `--data-dir` and select its configuration with `--config`.
+Wait for `Ready`, navigate to the screen under review, and capture the pane once to verify it. For a resume check, open `/resume` and leave the picker ready. Share `tmux attach -t kuku-review` for a regular shell, or `tmux switch-client -t kuku-review` for a shell already inside tmux. Use the mouse wheel or Page Up and Page Down to scroll in the TUI, and Ctrl+End to return to the latest output.
 
-Use the Session journal or `kuku events SESSION_ID` with the same connection and workspace options for task progress, tool results and request boundaries. Use `tmux capture-pane -p -t kuku-review` to check how those facts appear on screen. Keep any captured text with the run evidence.
+Let the developer drive the reproduction while the Agent captures the same pane and checks the corresponding events. Discuss the change in the coding session, then rebuild from the edited checkout. Start the new build in another tmux window with its own fixture copy and data directory. Keep the original window available so both can compare the same interaction and iterate. Take turns sending keystrokes to a shared pane.
+
+Use one session name per concurrent case. To isolate worktrees or compare builds side by side, also use a separate `--data-dir` and an explicit `--config` for each managed service. For progress, tool results, and request boundaries, use a bounded `kuku events SESSION_ID --limit 40` query with the same connection and workspace options. Switch to `capture-pane` to check the actual presentation and keep relevant captures with the evidence. When checking picker navigation, prepare at least two choices. If colors are missing, check the launcher's `TERM` and `NO_COLOR` and confirm the terminal's capabilities with `infocmp`.
 
 For an upstream benchmark, run the kuku service in the pinned task container. If kuku is already available and configured in that container, run the TUI there through the host's tmux. Set `benchmark_container` to the running task container's name:
 
