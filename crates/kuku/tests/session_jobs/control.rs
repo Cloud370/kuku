@@ -2,7 +2,7 @@ use httpmock::prelude::{HttpMockRequest, MockServer, POST};
 use serde_json::{json, Value};
 
 use kuku::event::EventPayload;
-use kuku::{AgentStatus, JobStatus, Session, WorkspaceScriptFacts};
+use kuku::{AgentStatus, JobStatus, OutputRead, Session, WorkspaceScriptFacts};
 
 use super::{
     command_args, committed, common, first_request, job_completed_event, submit, wait_until,
@@ -22,7 +22,7 @@ async fn explicit_job_control_uses_one_bounded_terminal_receipt() {
 for (let i = 0; i < {ACTION_COUNT}; i++) await tools.stat_file({{path:"stdout.txt"}});
 return {{proof:"file checks completed"}};"#,
     );
-    let failing_script = format!(
+    let large_return = format!(
         r#"const command = await tools.run_command({command});
 return (await command.stdout.text()).repeat(2000);"#,
     );
@@ -37,12 +37,12 @@ return (await command.stdout.text()).repeat(2000);"#,
             "file checks completed",
         ),
         (
-            "/failed-wait-script",
+            "/saved-return-wait-script",
             "run_js",
-            json!({"code":failing_script,"background":true}),
+            json!({"code":large_return,"background":true}),
             "wait_job",
-            JobStatus::Failed,
-            "script result exceeds",
+            JobStatus::Completed,
+            "run_js saved its JSON return",
         ),
         (
             "/failed-wait-command",
@@ -127,17 +127,24 @@ return (await command.stdout.text()).repeat(2000);"#,
         let observed = session.job(AGENT, "job-1").unwrap();
         assert_eq!(status, observed.status);
         let full_result = observed.result.unwrap().structured.unwrap();
-        if status == JobStatus::Completed {
+        let saved_return = if tool == "run_js" {
             let script = WorkspaceScriptFacts::from_structured(&full_result).unwrap();
-            assert_eq!(ACTION_COUNT + 1, script.actions.len());
-        } else {
-            let reference = if tool == "run_command" {
-                &full_result["output_ref"]["id"]
+            if let Some(output) = script.output_ref {
+                assert_eq!(1, script.actions.len());
+                assert!(proof.contains(&output.id), "{proof}");
+                assert!(output.bytes > PREPARED_LIMIT as u64);
+                Some(output)
             } else {
-                &full_result["actions"][0]["result"]["output_ref"]["id"]
-            };
-            assert!(proof.contains(reference.as_str().unwrap()), "{proof}");
-        }
+                assert_eq!(ACTION_COUNT + 1, script.actions.len());
+                None
+            }
+        } else {
+            assert!(
+                proof.contains(full_result["output_ref"]["id"].as_str().unwrap()),
+                "{proof}"
+            );
+            None
+        };
         wait_until(|| session.agent(AGENT).unwrap().status == AgentStatus::Idle).await;
         for mock in mocks {
             mock.assert_hits_async(1).await;
@@ -162,6 +169,21 @@ return (await command.stdout.text()).repeat(2000);"#,
         let reopened = Session::open(options).await.unwrap();
         assert_eq!(0, reopened.agent(AGENT).unwrap().pending_inputs);
         assert_eq!(status, reopened.job(AGENT, "job-1").unwrap().status);
+        if let Some(output) = saved_return {
+            let last_byte = reopened
+                .read_output(
+                    &output.id,
+                    &OutputRead {
+                        offset: output.bytes - 1,
+                        limit: 1,
+                        search: None,
+                    },
+                )
+                .unwrap();
+            assert!(last_byte.complete && !last_byte.capture_truncated && !last_byte.has_more);
+            assert_eq!(output.bytes, last_byte.total_bytes);
+            assert_eq!(b"\"", last_byte.segments[0].as_bytes());
+        }
         reopened.close().await.unwrap();
     }
 }
