@@ -1,6 +1,6 @@
 use crate::config::{
-    ModelCapabilityDeclaration, ModelCapabilityEntry, ProtocolCapabilityDeclaration,
-    ProviderFormat, ProviderOptions, ProviderProfile, ThinkLevel,
+    MediaAdapterSupport, ModelCapabilityDeclaration, ModelCapabilityEntry,
+    ProtocolCapabilityDeclaration, ProviderFormat, ProviderOptions, ProviderProfile, ThinkLevel,
 };
 use crate::error::{Error, Result};
 use sha2::{Digest, Sha256};
@@ -147,6 +147,20 @@ pub(crate) fn resolve_capabilities(
             (!services.is_empty()).then_some(CapabilitySource::AdapterProfile),
         ),
     };
+    let input_modalities = resolve.field(
+        |entry| entry.input_modalities.as_ref(),
+        |entry| entry.input_modalities.as_ref(),
+    );
+    let media_adapter = if kind == ProviderKind::OpenAiResponses
+        && profile == ProviderProfile::DeepSeek
+        && input_modalities
+            .as_ref()
+            .is_some_and(|input| input.value.iter().any(|modality| modality == "image"))
+    {
+        MediaAdapterSupport::ResponsesImageToolResults
+    } else {
+        MediaAdapterSupport::TextOnly
+    };
     ProviderCapabilities {
         profile,
         prompt_cache_control: profile == ProviderProfile::OpenRouter
@@ -162,10 +176,7 @@ pub(crate) fn resolve_capabilities(
             |entry| entry.reasoning_default.as_ref(),
             |entry| entry.reasoning_default.as_ref(),
         ),
-        input_modalities: resolve.field(
-            |entry| entry.input_modalities.as_ref(),
-            |entry| entry.input_modalities.as_ref(),
-        ),
+        input_modalities,
         output_modalities: resolve.field(
             |entry| entry.output_modalities.as_ref(),
             |entry| entry.output_modalities.as_ref(),
@@ -174,7 +185,7 @@ pub(crate) fn resolve_capabilities(
         system_prompt_update: resolve.field(|_| None, |entry| entry.system_prompt_update.as_ref()),
         service_tiers,
         service_tier_source,
-        ..ProviderCapabilities::default()
+        media_adapter,
     }
 }
 

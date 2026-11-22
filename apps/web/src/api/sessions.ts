@@ -90,7 +90,7 @@ interface ModelCapabilities {
   output_modalities?: Declaration<string[]> | null;
   interfaces?: Declaration<string[]> | null;
   system_prompt_update?: Declaration<string> | null;
-  media_adapter: "text_only";
+  media_adapter: "text_only" | "responses_image_tool_results";
 }
 
 interface ModelSelection {

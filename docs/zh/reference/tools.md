@@ -8,6 +8,7 @@
 |---|---|---|---|
 | `find_files` | none | `path`, `pattern`, `max_depth` | `read` |
 | `read_file` | `path` | `offset`, `limit` | `read` |
+| `view_image` | `path` | 无 | `read` |
 | `stat_file` | `path` | `version` | `read` |
 | `read_output` | `id` 或 `name` | `offset`, `limit`, `search` | `read` |
 | `search_text` | `pattern` | `path`, `include`, `view`, `offset`, `limit`, `context` | `read` |
@@ -27,6 +28,8 @@
 | `forget_memory` | `scope`, `text` | none | `edit` |
 
 工具指引按 Agent 实际可用的能力组装。只回复的 Agent 不加载工具流程。委派和记忆写入指引只发给具备相应工具的 Agent。编辑和写入中的 `brief` 是可选的显示标签。
+
+Session 在内置 DeepSeek Responses 路由上为声明支持图像输入的模型提供 `view_image`。它读取工作区中最大 1 MiB 的 PNG 或 JPEG，沿用文件读取的路径授权。模型请求按时间从近到远附带最多四张不同图像，以剩余请求字节预算为限。省略图像时，工具结果仍显示对应快照。 [DeepSeek Responses 图像输入](https://api-docs.deepseek.com/zh-cn/guides/responses_api/#image-input)
 
 条件 Skill 工具：
 

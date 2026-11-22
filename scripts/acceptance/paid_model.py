@@ -83,6 +83,8 @@ class Route:
     output_rate: Decimal
     price_source: str
     excluded_upstreams: tuple[str, ...] = ()
+    input_modalities: tuple[str, ...] = ()
+    reasoning_efforts: tuple[str, ...] = ()
 
     def __post_init__(self):
         limit = self.completion_limit
@@ -125,6 +127,7 @@ class Route:
             "wire": self.wire, "model": self.model, "reasoning_effort": self.effort,
             "upstream": self.upstream, "upstream_provider": self.upstream_name,
             "catalog_upstream_model": self.upstream_model, "provider_context_tokens": self.context,
+            "input_modalities": list(self.input_modalities),
             "max_requests_including_retries": limits.requests, "max_bytes": limits.request_bytes,
             "max_output_tokens": limits.output_tokens, "price_source": self.price_source,
             "price_usd_per_million_tokens": {
@@ -167,6 +170,12 @@ require_parameters = true
 prompt = {float(self.prompt_rate * MILLION)}
 completion = {float(self.output_rate * MILLION)}
 """
+        if self.input_modalities:
+            template += f"""
+[provider.{self.connection}.model_capabilities.{quote(self.model)}.discovered]
+input_modalities = {quote(list(self.input_modalities))}
+reasoning_efforts = {quote(list(self.reasoning_efforts))}
+"""
         return prefix + template + """
 [discovery]
 auto_discover = false
@@ -193,7 +202,9 @@ def route_for(name, *, model=None, effort="low", upstream=None, key=None, verify
         connection = "deepseek-responses" if wire == "openai-responses" else "deepseek-chat"
         return Route(name, host, connection, wire, model, effort, "deepseek", "DeepSeek",
                      version, selected["context_window"], selected.get("max_output_tokens"),
-                     usd(miss) / MILLION, usd(hit) / MILLION, Decimal(0), usd(output) / MILLION, DEEPSEEK_PRICING)
+                     usd(miss) / MILLION, usd(hit) / MILLION, Decimal(0), usd(output) / MILLION, DEEPSEEK_PRICING,
+                     input_modalities=tuple(selected.get("input_modalities") or ()),
+                     reasoning_efforts=tuple(levels))
     if name != "openrouter":
         raise ValueError("Unknown paid acceptance service")
     model = model or "openai/gpt-6-luna"

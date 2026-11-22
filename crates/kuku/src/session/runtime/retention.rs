@@ -105,7 +105,7 @@ impl Session {
         let mut state = self.inner.state.lock().unwrap();
         ensure_open(&state)?;
         state.agent(agent)?;
-        let mut pinned = state.values.pinned_outputs();
+        let mut pinned = state.pinned_outputs();
         if state.jobs.has_active() {
             pinned.extend(state.outputs.job_pins(&state.jobs));
         }

@@ -5,6 +5,7 @@ mod controls;
 mod creation;
 mod driver;
 mod jobs;
+mod media;
 mod observe;
 mod receipts;
 mod record;
@@ -172,7 +173,7 @@ impl Session {
         state.outputs.collect(
             &output_dir,
             options.limits.output_retention_secs,
-            &state.values.pinned_outputs(),
+            &state.pinned_outputs(),
         )?;
         let (live, _) = broadcast::channel(options.limits.observation_capacity);
         let model_capacity = Arc::new(Semaphore::new(options.limits.max_model_requests));

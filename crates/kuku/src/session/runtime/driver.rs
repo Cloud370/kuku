@@ -385,7 +385,8 @@ impl Session {
             query = query.bootstrap_skill(name, definition.instructions.clone());
         }
         query.agent_instructions = config.instructions.clone();
-        query.tool_registry_override = Some(self.selected_tools(&config)?);
+        query.tool_registry_override =
+            Some(self.selected_tools(&config, &self.resolve_model(&config)?)?);
         Ok(query)
     }
 

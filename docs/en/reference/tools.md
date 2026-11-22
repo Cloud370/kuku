@@ -8,6 +8,7 @@ This page describes the default public Session tool surface used by CLI and serv
 |---|---|---|---|
 | `find_files` | none | `path`, `pattern`, `max_depth` | `read` |
 | `read_file` | `path` | `offset`, `limit` | `read` |
+| `view_image` | `path` | none | `read` |
 | `stat_file` | `path` | `version` | `read` |
 | `read_output` | `id` or `name` | `offset`, `limit`, `search` | `read` |
 | `search_text` | `pattern` | `path`, `include`, `view`, `offset`, `limit`, `context` | `read` |
@@ -27,6 +28,8 @@ This page describes the default public Session tool surface used by CLI and serv
 | `forget_memory` | `scope`, `text` | none | `edit` |
 
 Tool guidance follows the actual tool selection. Reply-only Agents receive no tool workflow. Collaboration and memory-writing instructions are included only for Agents with the corresponding capabilities. The optional `brief` on file edits and writes is a display label.
+
+`view_image` is offered by Session on the built-in DeepSeek Responses route when the model declares image input. It accepts a workspace PNG or JPEG up to 1 MiB and applies the same path authorization as file reads. Model requests include up to four distinct recent images that fit the remaining request byte budget, newest first. A tool result whose image is omitted still names the snapshot. [DeepSeek Responses image input](https://api-docs.deepseek.com/guides/responses_api/#image-input)
 
 Conditional skill tools:
 

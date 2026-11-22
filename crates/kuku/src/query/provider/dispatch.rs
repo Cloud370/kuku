@@ -81,16 +81,30 @@ pub(super) async fn dispatch_provider_step(
         workspace: pending.workspace.clone(),
     };
     let prepare_started = Instant::now();
-    let prepared =
-        crate::provider::prepare_provider_request(&resolved_config, &request, Some(&correlation))
-            .map_err(|failure| crate::Error::Provider {
-            kind: failure.kind,
-            message: failure.message,
-            provider: Some(resolved_config.connection_name.clone()),
-            model: Some(resolved_config.model.clone()),
-        })?;
-    let request_bytes = serde_json::to_vec(&prepared.body)?.len();
     let max_request_bytes = pending.query.runtime_limits.max_request_bytes;
+    let prepared = if pending.query.runtime_execution.is_some()
+        && pending.query.model_adapter.is_none()
+    {
+        crate::provider::prepare::prepare_provider_request_with_media(
+            &resolved_config,
+            &request,
+            &correlation,
+            max_request_bytes,
+            |image| {
+                super::super::runtime_tools::runtime_session(&pending)?
+                    .read_model_image(pending.conversation.as_str(), image)
+            },
+        )
+    } else {
+        crate::provider::prepare_provider_request(&resolved_config, &request, Some(&correlation))
+    }
+    .map_err(|failure| crate::Error::Provider {
+        kind: failure.kind,
+        message: failure.message,
+        provider: Some(resolved_config.connection_name.clone()),
+        model: Some(resolved_config.model.clone()),
+    })?;
+    let request_bytes = serde_json::to_vec(&prepared.body)?.len();
     if request_bytes > max_request_bytes {
         return Err(crate::Error::InvalidArgument(format!(
             "prepared model request exceeds the configured byte limit ({request_bytes} bytes, limit {max_request_bytes} bytes)"

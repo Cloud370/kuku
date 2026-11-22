@@ -1,5 +1,6 @@
 mod agent_status;
 pub(super) mod jobs;
+mod media;
 pub(crate) mod output;
 pub(crate) mod values;
 
@@ -248,6 +249,12 @@ pub(super) async fn dispatch(
     if matches!(queued.tool_call.name.as_str(), "run_command" | "run_js") {
         return start_job_capable_slot(pending, queued, event_tx, active);
     }
+    if queued.tool_call.name == "view_image" {
+        let session = runtime_session(&pending)?;
+        mark_dispatched(&pending, &queued)?;
+        let slot = media::spawn(session, &pending, &queued, event_tx);
+        return start_slot(pending, queued, slot);
+    }
     let prior_events = match queued.tool_call.name.as_str() {
         "find_files" | "search_text" | "stat_file" => Vec::new(),
         _ => crate::context::runtime::read_agent_events(
@@ -479,9 +486,21 @@ fn output_admission_failed(
     )
 }
 
+pub(crate) fn supported(
+    config: &crate::provider::types::ResolvedProvider,
+    builtin_adapter: bool,
+    name: &str,
+) -> bool {
+    name != "view_image"
+        || (builtin_adapter
+            && config.capabilities.media_adapter
+                == crate::config::MediaAdapterSupport::ResponsesImageToolResults)
+}
+
 pub(crate) fn definitions() -> Vec<ToolDefinition> {
     vec![
         crate::tool::run_js::definition(),
+        crate::tool::builtin::view_image_definition(),
         output::definition(),
         values::save_definition(),
         values::list_definition(),

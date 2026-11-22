@@ -1,4 +1,6 @@
 mod common;
+#[path = "session_workspace/media.rs"]
+mod media;
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};

@@ -38,7 +38,9 @@ fn prepare_workspace_path(
     let optional_path = args.get("path").and_then(Value::as_str);
     let resolved = match tool {
         "find_files" | "search_text" => resolve_path(workspace, optional_path.unwrap_or(".")),
-        "read_file" | "edit_file" => resolve_path(workspace, required_path(tool, args)?),
+        "read_file" | "edit_file" | "view_image" => {
+            resolve_path(workspace, required_path(tool, args)?)
+        }
         "write_file" | "stat_file" => resolve_stat_path(workspace, required_path(tool, args)?),
         "remove_file" => resolve_remove_path(workspace, required_path(tool, args)?),
         _ => return Ok(None),

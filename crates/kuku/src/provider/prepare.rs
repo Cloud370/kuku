@@ -3,6 +3,7 @@ use sha2::{Digest, Sha256};
 
 use crate::config::{PromptCacheScope, ProviderAuth, ProviderFormat, ProviderProfile};
 use crate::context::MessageBlock;
+use crate::execution::ModelImage;
 
 use super::types::{
     PreparedProviderRequest, ProviderCorrelation, ProviderFailure, ProviderFailureKind,
@@ -13,6 +14,39 @@ pub(crate) fn prepare_provider_request(
     config: &ResolvedProvider,
     request: &ProviderRequest<'_>,
     correlation: Option<&ProviderCorrelation>,
+) -> Result<PreparedProviderRequest, ProviderFailure> {
+    prepare(config, request, correlation, None)
+}
+
+pub(crate) fn prepare_provider_request_with_media(
+    config: &ResolvedProvider,
+    request: &ProviderRequest<'_>,
+    correlation: &ProviderCorrelation,
+    limit: usize,
+    load: impl FnMut(&ModelImage) -> crate::Result<Vec<u8>>,
+) -> Result<PreparedProviderRequest, ProviderFailure> {
+    let mut load = load;
+    prepare(
+        config,
+        request,
+        Some(correlation),
+        Some(Media {
+            limit,
+            load: &mut load,
+        }),
+    )
+}
+
+struct Media<'a> {
+    limit: usize,
+    load: &'a mut dyn FnMut(&ModelImage) -> crate::Result<Vec<u8>>,
+}
+
+fn prepare(
+    config: &ResolvedProvider,
+    request: &ProviderRequest<'_>,
+    correlation: Option<&ProviderCorrelation>,
+    media: Option<Media<'_>>,
 ) -> Result<PreparedProviderRequest, ProviderFailure> {
     if request.model != config.model {
         return Err(invalid_request(
@@ -36,10 +70,18 @@ pub(crate) fn prepare_provider_request(
     }
     validate_replay(config, request)?;
     let url = request_url(config)?;
+    let mut images = Vec::new();
+    let media = media.filter(|_| {
+        config.capabilities.media_adapter
+            == crate::config::MediaAdapterSupport::ResponsesImageToolResults
+    });
     let mut body = match config.kind {
         ProviderKind::Anthropic => super::anthropic::render_body(request),
         ProviderKind::OpenAiCompatible => super::openai_compat::render_body(request),
-        ProviderKind::OpenAiResponses => super::openai_responses::render_body(request),
+        ProviderKind::OpenAiResponses => super::openai_responses::render_body_with_images(
+            request,
+            media.as_ref().map(|_| &mut images),
+        ),
     };
     body["stream"] = json!(true);
     apply_settings(config, &mut body);
@@ -53,6 +95,9 @@ pub(crate) fn prepare_provider_request(
         }
         body["provider"] = serde_json::to_value(config.options.routing.clone().unwrap_or_default())
             .map_err(|_| invalid_request("could not encode OpenRouter routing options"))?;
+    }
+    if let Some(media) = media {
+        super::openai_responses::attach_tool_images(&mut body, images, media.limit, media.load);
     }
     Ok(PreparedProviderRequest {
         kind: config.kind,

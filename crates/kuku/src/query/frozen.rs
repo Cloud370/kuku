@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -21,6 +20,10 @@ use super::helpers::{
 };
 use super::request::OwnedRequestBase;
 use super::types::PendingRun;
+
+mod admission;
+
+use admission::{append_input_skills, model_history, select_turns};
 
 pub(super) struct PreparedContext {
     pub(super) request: OwnedRequestBase,
@@ -276,10 +279,7 @@ pub(super) fn prepare(pending: &mut PendingRun) -> Result<PreparedContext> {
     let assembly = ContextAssembly {
         system_prompt: segment.system_prompt.clone(),
         prelude_messages: segment.prelude.clone(),
-        history: messages
-            .iter()
-            .map(|admitted| admitted.message.clone())
-            .collect(),
+        history: model_history(&messages, pending.turn),
         tools: segment.tools.clone(),
         prompt_asset_sources: Vec::new(),
         project_instruction_sources: Vec::new(),
@@ -650,74 +650,6 @@ fn check_route_snapshot(
         )));
     }
     Ok(RouteSnapshot::Current { route_changed })
-}
-
-fn select_turns(messages: &mut Vec<AdmittedMessage>, through: u64, keep: usize) {
-    let retained = messages
-        .iter()
-        .filter(|message| message.turn <= through)
-        .map(|message| message.turn)
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .rev()
-        .take(keep)
-        .collect::<BTreeSet<_>>();
-    messages.retain(|message| message.turn > through || retained.contains(&message.turn));
-}
-
-fn append_input_skills(
-    pending: &mut PendingRun,
-    messages: &mut Vec<AdmittedMessage>,
-) -> Result<Vec<String>> {
-    let admitted_at = messages
-        .iter()
-        .rev()
-        .find(|message| message.turn == pending.turn && message.origin == MessageOrigin::Input)
-        .map_or(0, |message| message.admitted_at);
-    let mut names = std::mem::take(&mut pending.query.input_skills);
-    if names.is_empty() {
-        return Ok(names);
-    }
-    if pending.query.disable_skills {
-        return Err(Error::InvalidArgument(
-            "selected input skill cannot load while skills are disabled".into(),
-        ));
-    }
-    let mut seen = BTreeSet::new();
-    names.retain(|name| seen.insert(name.clone()));
-    let discovered = names
-        .iter()
-        .any(|name| {
-            pending
-                .skill_registry
-                .as_ref()
-                .is_none_or(|registry| registry.get(name).is_none())
-        })
-        .then(|| {
-            crate::skill::session::build_registry_snapshot_for_host(
-                &pending.kuku_home,
-                &pending.workspace,
-                &pending.config,
-            )
-        })
-        .transpose()?;
-    for name in &names {
-        let definition = pending
-            .skill_registry
-            .as_ref()
-            .and_then(|registry| registry.get(name))
-            .or_else(|| discovered.as_ref().and_then(|registry| registry.get(name)))
-            .ok_or_else(|| {
-                Error::InvalidArgument(format!("selected input skill '{name}' was not found"))
-            })?;
-        messages.push(AdmittedMessage {
-            turn: pending.turn,
-            origin: MessageOrigin::Runtime,
-            message: CanonicalMessage::user_text(definition.instructions.clone()),
-            admitted_at,
-        });
-    }
-    Ok(names)
 }
 
 fn append_dynamic(

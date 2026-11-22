@@ -20,6 +20,8 @@ pub enum MediaAdapterSupport {
     /// Built-in adapters currently send and receive text.
     #[default]
     TextOnly,
+    /// Send input images in Responses tool results for a declared image-capable model.
+    ResponsesImageToolResults,
 }
 
 /// The scope of a capability value is the configured connection and model unless a protocol is named.

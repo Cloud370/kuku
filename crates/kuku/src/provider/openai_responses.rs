@@ -3,184 +3,30 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use crate::config::ProviderFormat;
-use crate::context::{CanonicalMessage, MessageBlock, Role};
 use crate::event::ModelStopReason;
 
 use super::chunk::ProviderChunk;
-use super::replay::{native_replay, validate_replay_size, ReplayBudget, MAX_REPLAY_ITEMS};
+use super::replay::{validate_replay_size, ReplayBudget, MAX_REPLAY_ITEMS};
 use super::report::ReportAccumulator;
 use super::sse::{parse_sse_frame, stream_sse_events};
 use super::trace::ProviderTraceDirection;
 use super::transport::{send_prepared, TransportResponse};
 use super::types::{PreparedProviderRequest, ProviderFailure, ProviderRequest, ResolvedProvider};
 
+#[path = "openai_responses/media.rs"]
+mod media;
 #[path = "openai_responses/reasoning.rs"]
 mod reasoning;
+#[path = "openai_responses/render.rs"]
+mod render;
 
+pub(super) use media::{attach_tool_images, redact_tool_images};
 use reasoning::{PublishedReasoning, ReasoningText};
+#[cfg(test)]
+pub(crate) use render::render_body;
+pub(crate) use render::render_body_with_images;
 
 const TRUNCATED_STREAM_MESSAGE: &str = "provider stream ended before response.completed";
-
-fn convert_to_input_items(message: &CanonicalMessage) -> Vec<Value> {
-    if message.role == Role::Assistant {
-        if let Some(items) = native_replay(message, ProviderFormat::OpenAiResponses)
-            .and_then(|value| value.get("output"))
-            .and_then(Value::as_array)
-        {
-            return items.clone();
-        }
-    }
-    match message.role {
-        Role::User => {
-            let mut items = Vec::new();
-            let mut text_parts = Vec::new();
-
-            for block in &message.blocks {
-                match block {
-                    MessageBlock::Text(text) => text_parts.push(text.clone()),
-                    MessageBlock::ToolResult(result) => {
-                        if !text_parts.is_empty() {
-                            items.push(json!({
-                                "type": "message",
-                                "role": "user",
-                                "content": input_text_parts(&text_parts),
-                            }));
-                            text_parts.clear();
-                        }
-                        items.push(json!({
-                            "type": "function_call_output",
-                            "call_id": result.tool_call_id,
-                            "output": result.model_content,
-                        }));
-                    }
-                    MessageBlock::ToolUse(_)
-                    | MessageBlock::Thinking(_)
-                    | MessageBlock::ProviderReplay { .. } => {}
-                }
-            }
-
-            if !text_parts.is_empty() {
-                items.push(json!({
-                    "type": "message",
-                    "role": "user",
-                    "content": input_text_parts(&text_parts),
-                }));
-            }
-
-            items
-        }
-        Role::Assistant => {
-            let mut items = Vec::new();
-            let text = message
-                .blocks
-                .iter()
-                .filter_map(|block| match block {
-                    MessageBlock::Text(text) => Some(text.as_str()),
-                    MessageBlock::ToolUse(_)
-                    | MessageBlock::ToolResult(_)
-                    | MessageBlock::Thinking(_) => None,
-                    MessageBlock::ProviderReplay { .. } => None,
-                })
-                .collect::<Vec<_>>()
-                .join("");
-
-            if !text.is_empty() {
-                items.push(json!({
-                    "type": "message",
-                    "role": "assistant",
-                    "content": text,
-                }));
-            }
-
-            items.extend(message.blocks.iter().filter_map(|block| match block {
-                MessageBlock::ToolUse(tool_use) => Some(json!({
-                    "type": "function_call",
-                    "call_id": tool_use.id,
-                    "name": tool_use.name,
-                    "arguments": serde_json::to_string(&tool_use.args).expect("tool arguments are JSON"),
-                })),
-                MessageBlock::Text(_) | MessageBlock::ToolResult(_) | MessageBlock::Thinking(_) | MessageBlock::ProviderReplay { .. } => {
-                    None
-                }
-            }));
-
-            items
-        }
-    }
-}
-
-fn input_text_parts(text_parts: &[String]) -> Value {
-    json!(text_parts
-        .iter()
-        .map(|text| json!({"type": "input_text", "text": text}))
-        .collect::<Vec<_>>())
-}
-
-pub(crate) fn render_body(request: &ProviderRequest<'_>) -> Value {
-    let mut input_items = Vec::new();
-
-    if !request.assembly.system_prompt.is_empty() {
-        input_items.push(json!({
-            "type": "message",
-            "role": "developer",
-            "content": [{"type":"input_text", "text": request.assembly.system_prompt}],
-        }));
-    }
-    for message in &request.assembly.prelude_messages {
-        input_items.extend(convert_to_input_items(message));
-    }
-    if let Some(summary) = &request.assembly.handoff_summary {
-        let template = &request.catalog.runtime["handoff-context"].text;
-        let content = template.replace("{{handoff_summary}}", summary);
-        input_items.push(json!({
-            "role": "user",
-            "content": content,
-        }));
-    }
-    for message in &request.assembly.history {
-        input_items.extend(convert_to_input_items(message));
-    }
-
-    let mut body = json!({
-        "model": request.model,
-        "input": input_items,
-    });
-
-    if let Some(max_tokens) = request.max_output_tokens {
-        body["max_output_tokens"] = json!(max_tokens);
-    }
-    if let Some(temperature) = request.temperature {
-        body["temperature"] = json!(temperature);
-    }
-    if request.think_level != crate::config::ThinkLevel::Off {
-        let effort = match request.think_level.as_str() {
-            "low" => "low",
-            "medium" => "medium",
-            "high" => "xhigh",
-            _ => "medium",
-        };
-        body["reasoning"] = json!({
-            "effort": effort,
-        });
-    }
-    if !request.assembly.tools.is_empty() {
-        body["tools"] = json!(request
-            .assembly
-            .tools
-            .iter()
-            .map(|schema| {
-                json!({
-                    "type": "function",
-                    "name": schema.name,
-                    "description": schema.description,
-                    "parameters": schema.input_schema,
-                })
-            })
-            .collect::<Vec<_>>());
-    }
-
-    body
-}
 
 pub(crate) async fn stream(
     config: &ResolvedProvider,

@@ -1,0 +1,58 @@
+use std::io::Read;
+use std::path::Path;
+
+use serde_json::{json, Value};
+
+use crate::execution::{ImageMime, MAX_MODEL_IMAGE_BYTES};
+use crate::tool::{ToolDefinition, ToolResultEnvelope};
+
+use super::common::{file_read_error, required_path, resolve_path, FileCancellation, StableFile};
+
+pub(crate) fn view_image_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "view_image".into(),
+        description: "Look at a workspace PNG or JPEG as an image. Use this to inspect screenshots, diagrams, or text in an image. Supply its path. Images must be at most 1 MiB and fit the model request budget.".into(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {"path": {"type": "string", "description": "Image path in the workspace."}},
+            "required": ["path"],
+            "additionalProperties": false,
+        }),
+        read_only: true,
+        max_result_chars: 1024,
+        risk: "read".into(),
+    }
+}
+
+pub(crate) fn read_image(
+    args: &Value,
+    workspace: &Path,
+    cancelled: &FileCancellation<'_>,
+) -> Result<(ImageMime, Vec<u8>), ToolResultEnvelope> {
+    let path = required_path("view_image", args)?;
+    let resolved = resolve_path(workspace, path)?;
+    if workspace.join(path) != resolved.path {
+        return Err(ToolResultEnvelope::blocked(
+            "image target changed after authorization",
+            "request the image at its new path",
+        ));
+    }
+    let mut file = StableFile::open(&resolved.path, cancelled)
+        .map_err(|error| file_read_error(&resolved.path, error))?;
+    let mut bytes = Vec::new();
+    (&mut file)
+        .take((MAX_MODEL_IMAGE_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .and_then(|_| file.verify(&resolved.path))
+        .map_err(|error| file_read_error(&resolved.path, error))?;
+    if bytes.len() > MAX_MODEL_IMAGE_BYTES {
+        return Err(ToolResultEnvelope::error(
+            "image exceeds 1 MiB",
+            "reduce its size before viewing it",
+        ));
+    }
+    let mime = ImageMime::detect(&bytes).ok_or_else(|| {
+        ToolResultEnvelope::error("unsupported image", "view_image accepts PNG and JPEG files")
+    })?;
+    Ok((mime, bytes))
+}

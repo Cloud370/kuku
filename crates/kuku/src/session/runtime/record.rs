@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::event::{EventPayload, StoredEvent};
-use crate::execution::OutputReference;
+use crate::execution::{ModelImage, OutputReference};
 use crate::{Error, Result};
 
 use super::jobs::{JobCompletion, JobIndex, JOB_DELIVERY_PREFIX};
@@ -81,6 +81,11 @@ pub(super) enum Record {
     NamedValueSaved {
         agent: String,
         binding: NamedBinding,
+    },
+    ModelImageSaved {
+        agent: String,
+        turn: u64,
+        image: ModelImage,
     },
     OutputsPinned {
         agent: String,
@@ -297,10 +302,29 @@ pub(super) struct State {
     pub(super) cleanup_failures: BTreeMap<String, String>,
     pub(super) outputs: OutputStore,
     pub(super) values: ValueState,
+    pub(super) model_images: HashMap<String, RetainedModelImage>,
     pub(super) jobs: JobIndex,
 }
 
+#[derive(Debug)]
+pub(super) struct RetainedModelImage {
+    pub(super) agent: String,
+    pub(super) turn: u64,
+    pub(super) image: ModelImage,
+}
+
 impl State {
+    pub(super) fn pinned_outputs(&self) -> HashSet<String> {
+        let mut pinned = self.values.pinned_outputs();
+        pinned.extend(self.model_images.iter().filter_map(|(id, retained)| {
+            let current = self.agents.get(&retained.agent)?.snapshot.turn?;
+            (current == retained.turn
+                || self.turns.previous(&retained.agent, current) == Some(retained.turn))
+            .then(|| id.clone())
+        }));
+        pinned
+    }
+
     pub(super) fn acknowledge_job_result(&mut self, agent: &str, job_id: &str) -> Result<()> {
         let command_id = format!("{JOB_DELIVERY_PREFIX}{job_id}");
         let agent = self.agent_mut(agent)?;
@@ -397,6 +421,12 @@ impl State {
             Record::NamedValueSaved { agent, binding } => {
                 self.outputs.claim(&agent, &binding.value.reference.id);
                 self.values.save(agent, binding);
+            }
+            Record::ModelImageSaved { agent, turn, image } => {
+                let id = image.output.id.clone();
+                self.outputs.claim(&agent, &id);
+                self.model_images
+                    .insert(id, RetainedModelImage { agent, turn, image });
             }
             Record::OutputsPinned { agent, turn, ids } => {
                 self.pin_current_turn(agent, turn, ids)?;

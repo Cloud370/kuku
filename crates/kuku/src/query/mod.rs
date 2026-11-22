@@ -19,7 +19,9 @@ mod tool_response;
 mod types;
 
 pub(crate) use run_js::cancelled_deferred_script;
-pub(crate) use runtime_tools::definitions as runtime_tool_definitions;
+pub(crate) use runtime_tools::{
+    definitions as runtime_tool_definitions, supported as runtime_tool_supported,
+};
 
 pub use types::{
     ModelPhase, ModelRecoveryInfo, PermissionChoice, PermissionRequest, Query, Run, RunOutput,

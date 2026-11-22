@@ -78,6 +78,8 @@ Use one bounded reader for direct tools and JS. Offer line iteration and byte ch
 
 A URL download returns a Session output reference that the same Agent can inspect with the output reader. Keep the downloaded bytes out of the project tree unless the user requests a file.
 
+Image inspection uses the selected model and protocol's native tool-result media. Authorize the normalized workspace path and save a bounded snapshot in Session output storage. Context admits the image type and immutable reference. Request preparation loads eligible references from the current and previous turn within the remaining wire budget, and the adapter renders them for its protocol. Older results contribute their text. Retention pins the recent snapshots and applies the regular expiry policy to older ones. Verify replay after the workspace file changes and after close and reopen, and check refusal before reading a protected or denied path. See [tool reference](../reference/tools.md).
+
 | Data | Lifetime and visibility |
 |---|---|
 | Script locals, functions and promises | One invocation. Release the heap when the worker is disposed. |

@@ -10,6 +10,7 @@ mod remove_file;
 pub(crate) mod run_command;
 mod search_text;
 mod stat_file;
+mod view_image;
 mod write_file;
 
 #[cfg(test)]
@@ -26,6 +27,7 @@ pub(crate) use remove_file::{remove_file, remove_file_for_executor};
 pub(crate) use run_command::{run_command, CommandEvent};
 pub(crate) use search_text::search_text;
 pub(crate) use stat_file::stat_file;
+pub(crate) use view_image::{read_image, view_image_definition};
 pub(crate) use write_file::{write_file, write_file_for_executor};
 
 pub(crate) fn agent_definition() -> crate::tool::ToolDefinition {

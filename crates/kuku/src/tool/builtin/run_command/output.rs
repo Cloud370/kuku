@@ -433,6 +433,39 @@ pub(crate) fn read_open_output(
     read_open_output_view(file, output_id, request, None)
 }
 
+pub(crate) fn read_complete_stdout_bytes(
+    file: fs::File,
+    expected_bytes: usize,
+) -> io::Result<Vec<u8>> {
+    let mut file = io::BufReader::new(file);
+    let metadata = decode_header(&mut file)?;
+    if !metadata.complete
+        || metadata.quota_truncated
+        || metadata.stored_bytes != expected_bytes as u64
+    {
+        return Err(invalid_output(
+            "retained output is incomplete or has an unexpected size",
+        ));
+    }
+    let mut bytes = vec![0; expected_bytes];
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let Some((OutputStream::Stdout, count)) = read_frame_header(&mut file, &metadata)? else {
+            return Err(invalid_output("expected a retained stdout frame"));
+        };
+        let end = offset + count;
+        let target = bytes
+            .get_mut(offset..end)
+            .ok_or_else(|| invalid_output("unexpected output frame extent"))?;
+        file.read_exact(target)?;
+        offset = end;
+    }
+    if file.read(&mut [0])? != 0 {
+        return Err(invalid_output("unexpected data after retained output"));
+    }
+    Ok(bytes)
+}
+
 pub(super) fn read_stderr(
     output_dir: &Path,
     output_id: &str,

@@ -16,7 +16,9 @@ use super::UiEvent;
 
 pub(crate) fn workspace_access(tool_name: &str) -> WorkspaceAccess {
     match tool_name {
-        "read_file" | "stat_file" | "find_files" | "search_text" => WorkspaceAccess::Read,
+        "read_file" | "stat_file" | "find_files" | "search_text" | "view_image" => {
+            WorkspaceAccess::Read
+        }
         "run_js" | "remove_file" | "edit_file" | "write_file" | "remember_memory"
         | "forget_memory" | "run_command" | "agent" => WorkspaceAccess::Exclusive,
         _ => WorkspaceAccess::Independent,

@@ -64,11 +64,15 @@ async fn send(
         prepared.model.clone(),
     );
     if let Some(trace) = &trace {
+        let mut body = prepared.body.clone();
+        if prepared.kind == ProviderKind::OpenAiResponses {
+            super::openai_responses::redact_tool_images(&mut body);
+        }
         trace.record(
             ProviderTraceDirection::Request,
             Some(&prepared.url),
             Some(&headers),
-            json!({"body": prepared.body}),
+            json!({"body": body}),
         );
     }
     let mut request = super::http_client::api_client(&config.options.proxy)

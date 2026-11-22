@@ -3,9 +3,12 @@
 use serde::{Deserialize, Serialize};
 
 mod file;
+mod media;
 mod receipt;
 
 pub use receipt::{WorkspaceActionDetails, WorkspaceActionReceipt, WorkspaceActionState};
+
+pub(crate) use media::{ImageMime, ModelImage, MAX_MODEL_IMAGE_BYTES};
 
 pub use file::{FileCommitState, FileMutationFacts, FileMutationKind};
 

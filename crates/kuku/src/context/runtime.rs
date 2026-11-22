@@ -639,7 +639,10 @@ fn project_source(
         ..
     } = &mut event.payload
     {
-        *structured = None;
+        *structured = structured
+            .as_ref()
+            .and_then(crate::execution::ModelImage::from_tool_result)
+            .map(|image| image.model_facts());
         files_read.clear();
         files_changed.clear();
         commands_run.clear();

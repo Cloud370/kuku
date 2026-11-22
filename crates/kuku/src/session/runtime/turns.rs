@@ -61,6 +61,16 @@ impl TurnIndex {
         Some(position as u64 + 1)
     }
 
+    pub(super) fn previous(&self, address: &str, turn: u64) -> Option<u64> {
+        let (position, _) = self.indexed(address, turn)?;
+        Some(
+            self.by_agent
+                .get(address)?
+                .get(position.checked_sub(1)?)?
+                .id,
+        )
+    }
+
     /// Return the durable first admission time in Unix milliseconds.
     pub fn started_at_ms(&self, address: &str, turn: u64) -> Option<u64> {
         self.indexed(address, turn)?.1.start
