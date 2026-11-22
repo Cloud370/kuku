@@ -8,6 +8,7 @@ use std::time::Duration;
 use httpmock::prelude::{HttpMockRequest, MockServer, POST};
 use httpmock::Mock;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use kuku::config::{ProviderFormat, ProviderProfile, ThinkLevel};
 use kuku::event::{EventPayload, EventStore, ModelStopReason, StoredEvent};
@@ -437,6 +438,19 @@ async fn transient_provider_retry_sends_identical_request_body_bytes() {
     assert_eq!(bodies[0], bodies[1]);
 
     let events = EventStore::replay(session.events_path()).unwrap();
+    let prepared = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::Unknown(value) if value["kind"] == "runtime.step_prepared" => Some(value),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(1, prepared.len());
+    assert_eq!(prepared[0]["request_bytes"], json!(bodies[0].len()));
+    assert_eq!(
+        prepared[0]["body_hash"],
+        format!("{:x}", Sha256::digest(&bodies[0]))
+    );
     assert!(events.iter().any(|event| matches!(
         &event.payload,
         EventPayload::Unknown(value) if value["kind"] == "runtime.model_retry"

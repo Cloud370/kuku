@@ -17,8 +17,8 @@ use super::cost::{RequestCost, RequestPricing};
 use super::prepare::{apply_settings, request_url};
 use super::report::{normalize_usage, ReportAccumulator};
 use super::types::{
-    PreparedProviderRequest, ProviderFailureKind, ProviderKind, ProviderReport, ProviderUsage,
-    ResolvedProvider, SecretString,
+    PreparedBody, PreparedProviderRequest, ProviderFailureKind, ProviderKind, ProviderReport,
+    ProviderUsage, ResolvedProvider, SecretString,
 };
 
 mod tools;
@@ -204,7 +204,7 @@ async fn trial_request(
         connection_name: config.connection_name.clone(),
         model: model.into(),
         url: request_url(&config).map_err(trial_error)?,
-        body,
+        body: PreparedBody::from_json(body),
         settings: config.settings.clone(),
         correlation_id: None,
     };
@@ -224,7 +224,9 @@ async fn trial_request(
     if tool_trial {
         result.tool_round_trip = Some(false);
         let answer = format!("kuku-{:016x}", fastrand::u64(..));
-        if tools::continue_call(config.kind, &mut prepared.body, &response, &answer) {
+        let mut continuation = prepared.body.as_json().clone();
+        if tools::continue_call(config.kind, &mut continuation, &response, &answer) {
+            prepared.body = PreparedBody::from_json(continuation);
             let reply = receive_trial(&config, &prepared).await?;
             let continuation = interpret_trial(connection.format, &pricing, &reply, None)?;
             result.continuation_cost = Some(continuation.cost);

@@ -69,17 +69,24 @@ pub(super) async fn dispatch_provider_step(
     }
 
     let handoff_active = pending.handoff_triggered;
-    let request = pending
-        .request_base
-        .as_ref()
-        .expect("request base captured")
-        .request();
     let correlation = crate::provider::types::ProviderCorrelation {
         session_id: pending.session_id.clone(),
         agent_address: pending.conversation.as_str().into(),
         connection_name: resolved_config.connection_name.clone(),
         workspace: pending.workspace.clone(),
     };
+    let capacity = match &pending.query.model_capacity {
+        Some(capacity) => Some(capacity.clone().acquire_owned().await.map_err(|_| {
+            crate::Error::InvalidArgument("session model capacity is closed".into())
+        })?),
+        None => None,
+    };
+    super::require_runtime_execution(&pending)?;
+    let request = pending
+        .request_base
+        .as_ref()
+        .expect("request base captured")
+        .request();
     let prepare_started = Instant::now();
     let max_request_bytes = pending.query.runtime_limits.max_request_bytes;
     let prepared = if pending.query.runtime_execution.is_some()
@@ -104,7 +111,7 @@ pub(super) async fn dispatch_provider_step(
         provider: Some(resolved_config.connection_name.clone()),
         model: Some(resolved_config.model.clone()),
     })?;
-    let request_bytes = serde_json::to_vec(&prepared.body)?.len();
+    let request_bytes = prepared.body.as_bytes().len();
     if request_bytes > max_request_bytes {
         return Err(crate::Error::InvalidArgument(format!(
             "prepared model request exceeds the configured byte limit ({request_bytes} bytes, limit {max_request_bytes} bytes)"
@@ -114,13 +121,6 @@ pub(super) async fn dispatch_provider_step(
         .elapsed()
         .as_micros()
         .min(u128::from(u64::MAX)) as u64;
-    let capacity = match &pending.query.model_capacity {
-        Some(capacity) => Some(capacity.clone().acquire_owned().await.map_err(|_| {
-            crate::Error::InvalidArgument("session model capacity is closed".into())
-        })?),
-        None => None,
-    };
-    super::require_runtime_execution(&pending)?;
     crate::query::budget::reserve(&pending.query)?;
     if let Some(context) = frozen_context {
         crate::query::frozen::record_prepared(

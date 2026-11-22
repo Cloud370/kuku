@@ -6,8 +6,8 @@ use crate::context::MessageBlock;
 use crate::execution::ModelImage;
 
 use super::types::{
-    PreparedProviderRequest, ProviderCorrelation, ProviderFailure, ProviderFailureKind,
-    ProviderKind, ProviderRequest, ResolvedProvider,
+    PreparedBody, PreparedProviderRequest, ProviderCorrelation, ProviderFailure,
+    ProviderFailureKind, ProviderKind, ProviderRequest, ResolvedProvider,
 };
 
 pub(crate) fn prepare_provider_request(
@@ -104,7 +104,7 @@ fn prepare(
         connection_name: config.connection_name.clone(),
         model: config.model.clone(),
         url,
-        body,
+        body: PreparedBody::from_json(body),
         settings: config.settings.clone(),
         correlation_id,
     })
@@ -467,11 +467,14 @@ mod tests {
                 let mut config = provider_config(kind, ProviderProfile::OpenRouter, model);
                 config.capabilities.prompt_cache_control = true;
                 let prepared = prepared_request(&config, Some(&correlation));
-                assert_eq!(json!({"type": "ephemeral"}), prepared.body["cache_control"]);
-                assert_eq!(model, prepared.body["model"]);
+                assert_eq!(
+                    json!({"type": "ephemeral"}),
+                    prepared.body.as_json()["cache_control"]
+                );
+                assert_eq!(model, prepared.body.as_json()["model"]);
                 assert_eq!(
                     prepared.correlation_id.as_deref(),
-                    prepared.body["session_id"].as_str()
+                    prepared.body.as_json()["session_id"].as_str()
                 );
             }
         }
@@ -521,7 +524,7 @@ mod tests {
             let config = provider_config(kind, profile, model);
             let prepared = prepared_request(&config, None);
             assert!(
-                prepared.body.get("cache_control").is_none(),
+                prepared.body.as_json().get("cache_control").is_none(),
                 "unexpected cache_control for {kind:?}, {profile:?}, {model}"
             );
         }
@@ -536,8 +539,8 @@ mod tests {
         ] {
             let config = provider_config(ProviderKind::OpenAiResponses, profile, model);
             let request = prepared_request(&config, None);
-            assert!(request.body.get("instructions").is_none());
-            let input = request.body["input"].as_array().unwrap();
+            assert!(request.body.as_json().get("instructions").is_none());
+            let input = request.body.as_json()["input"].as_array().unwrap();
             assert_eq!(input.len(), 2);
             assert_eq!(input[0]["role"], "developer");
             assert_eq!(input[0]["content"][0]["text"], "fixed system");
@@ -553,7 +556,10 @@ mod tests {
             "anthropic/claude-sonnet-5.5",
         );
         let prepared = prepared_request(&openrouter, None);
-        assert_eq!(json!({"type": "ephemeral"}), prepared.body["cache_control"]);
+        assert_eq!(
+            json!({"type": "ephemeral"}),
+            prepared.body.as_json()["cache_control"]
+        );
 
         for (kind, model) in [
             (ProviderKind::OpenAiCompatible, "deepseek-chat"),
@@ -561,7 +567,7 @@ mod tests {
         ] {
             let deepseek = provider_config(kind, ProviderProfile::DeepSeek, model);
             let prepared = prepared_request(&deepseek, None);
-            assert!(prepared.body.get("cache_control").is_none());
+            assert!(prepared.body.as_json().get("cache_control").is_none());
         }
     }
 
@@ -600,14 +606,17 @@ mod tests {
         let first = prepare_provider_request(&config, &request, Some(&correlation)).unwrap();
         let repeated = prepare_provider_request(&config, &request, Some(&correlation)).unwrap();
         assert_eq!(first, repeated);
-        assert_eq!("low", first.body["reasoning"]["effort"]);
-        assert_eq!(true, first.body["provider"]["require_parameters"]);
+        assert_eq!("low", first.body.as_json()["reasoning"]["effort"]);
+        assert_eq!(true, first.body.as_json()["provider"]["require_parameters"]);
         assert_eq!(
             first.correlation_id.as_deref(),
-            first.body["session_id"].as_str()
+            first.body.as_json()["session_id"].as_str()
         );
         request.assembly.system_prompt = "later system".into();
-        assert_eq!("fixed system", first.body["messages"][0]["content"]);
+        assert_eq!(
+            "fixed system",
+            first.body.as_json()["messages"][0]["content"]
+        );
         let other = prepare_provider_request(
             &config,
             &request,
@@ -618,9 +627,12 @@ mod tests {
         )
         .unwrap();
         assert_ne!(first.correlation_id, other.correlation_id);
-        let encoded = serde_json::to_string(&first).unwrap();
-        assert!(!encoded.contains("api_key"));
-        assert_eq!(first, serde_json::from_str(&encoded).unwrap());
+        let encoded = first.body.as_bytes();
+        assert!(!std::str::from_utf8(encoded).unwrap().contains("api_key"));
+        assert_eq!(
+            *first.body.as_json(),
+            serde_json::from_slice::<Value>(encoded).unwrap()
+        );
     }
 
     fn response_cache_key(
@@ -642,6 +654,7 @@ mod tests {
         prepare_provider_request(config, &request, correlation)
             .unwrap()
             .body
+            .as_json()
             .get("prompt_cache_key")
             .and_then(Value::as_str)
             .map(str::to_string)
@@ -809,13 +822,17 @@ mod tests {
             thinking: Default::default(),
         };
         let chat = prepare_provider_request(&config, &request, None).unwrap();
-        assert_eq!("disabled", chat.body["thinking"]["type"]);
-        assert!(chat.body.get("reasoning_effort").is_none());
+        assert_eq!("disabled", chat.body.as_json()["thinking"]["type"]);
+        assert!(chat.body.as_json().get("reasoning_effort").is_none());
         config.kind = ProviderKind::OpenAiResponses;
         let responses = prepare_provider_request(&config, &request, None).unwrap();
-        assert_eq!(false, responses.body["store"]);
-        assert_eq!("none", responses.body["reasoning"]["effort"]);
-        assert!(responses.body.get("previous_response_id").is_none());
+        assert_eq!(false, responses.body.as_json()["store"]);
+        assert_eq!("none", responses.body.as_json()["reasoning"]["effort"]);
+        assert!(responses
+            .body
+            .as_json()
+            .get("previous_response_id")
+            .is_none());
     }
 
     #[test]
@@ -856,7 +873,7 @@ mod tests {
         ] {
             config.capabilities.profile = profile;
             let prepared = prepare_provider_request(&config, &request, None).unwrap();
-            let tool = &prepared.body["tools"][0];
+            let tool = &prepared.body.as_json()["tools"][0];
             assert_eq!("function", tool["type"]);
             assert_eq!(expected_strict, tool["strict"].as_bool());
             assert_eq!(schema, tool["parameters"]);
@@ -864,6 +881,8 @@ mod tests {
         config.kind = ProviderKind::OpenAiCompatible;
         config.capabilities.profile = ProviderProfile::OpenAi;
         let chat = prepare_provider_request(&config, &request, None).unwrap();
-        assert!(chat.body["tools"][0]["function"].get("strict").is_none());
+        assert!(chat.body.as_json()["tools"][0]["function"]
+            .get("strict")
+            .is_none());
     }
 }

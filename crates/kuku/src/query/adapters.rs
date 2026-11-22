@@ -43,7 +43,7 @@ pub(super) async fn model_stream(
         protocol: crate::adapter::protocol(prepared.kind),
         model: prepared.model.clone(),
         endpoint: prepared.url.clone(),
-        body: prepared.body.clone(),
+        body: prepared.body.as_json().clone(),
         settings: prepared.settings.clone(),
         correlation_id: prepared.correlation_id.clone(),
     };

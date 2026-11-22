@@ -1,6 +1,9 @@
 use std::fmt;
 use std::path::PathBuf;
 
+use bytes::Bytes;
+use serde_json::Value;
+
 use crate::config::{
     ApiKey, MediaAdapterSupport, ProviderOptions, ProviderProfile, RequestedOutput,
 };
@@ -239,15 +242,38 @@ pub(crate) struct ProviderCorrelation {
     pub(crate) workspace: PathBuf,
 }
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PreparedProviderRequest {
     pub(crate) kind: ProviderKind,
     pub(crate) connection_name: String,
     pub(crate) model: String,
     pub(crate) url: String,
-    pub(crate) body: serde_json::Value,
+    pub(crate) body: PreparedBody,
     pub(crate) settings: ProviderSettings,
     pub(crate) correlation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PreparedBody {
+    json: Value,
+    bytes: Bytes,
+}
+
+impl PreparedBody {
+    pub(crate) fn from_json(json: Value) -> Self {
+        let bytes = serde_json::to_vec(&json)
+            .expect("provider request body is JSON")
+            .into();
+        Self { json, bytes }
+    }
+
+    pub(crate) fn as_json(&self) -> &Value {
+        &self.json
+    }
+
+    pub(crate) fn as_bytes(&self) -> &Bytes {
+        &self.bytes
+    }
 }
 
 /// Optional settings and usage reported by the serving provider.
