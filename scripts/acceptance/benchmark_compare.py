@@ -2,6 +2,7 @@
 """Export a matched Frontier harness, Prompt, or reasoning comparison as shareable JSON."""
 
 import argparse
+from collections import Counter
 from datetime import datetime
 from hashlib import sha256
 import json
@@ -10,6 +11,7 @@ import re
 
 from benchmark_resources import CASE_RESOURCE_LIMITS
 from benchmark_runtime import verifier_passed
+from evidence import tool_batch_summary
 from frontier_report import (FAILURE_KINDS, TASK_COMMIT, TEST_FIELDS, EvidenceError, allowed, boolean,
                              count, hex_digest, middle, money, number, object_value, read_object,
                              session_events, session_journal, session_summary)
@@ -34,6 +36,7 @@ def relay_summary(rows):
     request_bytes = [value for row in rows if (value := count(row.get('request_bytes'))) is not None]
     first_output = [value for row in rows if (value := number(object_value(row.get('timing')).get(
         'request_to_first_output_delta_seconds'))) is not None]
+    emitted = [value for row in rows if (value := count(row.get('emitted_tool_calls'))) is not None]
     return {
         'admitted_attempts': len(rows),
         'timed_attempts': len(elapsed),
@@ -41,6 +44,9 @@ def relay_summary(rows):
         'request_body_bytes': sum(request_bytes) if request_bytes and len(request_bytes) == len(rows) else None,
         'first_output_samples': len(first_output),
         'first_output_p50_seconds': middle(first_output),
+        'emitted_tool_calls': sum(emitted) if emitted else None,
+        'emitted_tool_batches': {'observed_responses': len(emitted), **tool_batch_summary(Counter(emitted))}
+        if emitted else None,
     }
 
 

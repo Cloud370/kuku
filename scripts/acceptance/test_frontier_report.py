@@ -162,7 +162,8 @@ class PairedReportTests(unittest.TestCase):
             report = compare(kuku, pi)
             self.assertEqual(report['attempts'][0]['provider_relay'], {
                 'admitted_attempts': 3, 'timed_attempts': 3, 'elapsed_seconds': 3.5, 'request_body_bytes': 127,
-                'first_output_samples': 2, 'first_output_p50_seconds': 0.75,
+            'first_output_samples': 2, 'first_output_p50_seconds': 0.75,
+            'emitted_tool_calls': None, 'emitted_tool_batches': None,
             })
             self.assertIsNone(report['attempts'][1]['provider_relay']['elapsed_seconds'])
             self.assertEqual(report['attempts'][0]['tool_calls'], 1)

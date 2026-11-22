@@ -308,6 +308,8 @@ The exporter checks the task file digest, Docker image ID, model route and limit
 
 The paired report includes the sum of host meter relay time and serialized request body bytes across all admitted attempts, including retries that started. Relay time covers outbound connection and response transfer. The report leaves either total empty when an attempt is missing the corresponding measurement. Median time to first output uses the measured requests and includes its sample count. Meter rejections include a separate count for the case spend cap.
 
+The meter also counts function and custom calls emitted in complete model replies. The paired report gives the number of observed replies and their batch distribution alongside the separate runner dispatch evidence. A stream with missing or partial evidence adds no observation.
+
 ### Strict local Kuku–Codex comparison
 
 Pin an isolated Codex npm install and put the single `deepseek-flash` entry from DeepSeek's documented model catalog in `deepseek-flash-models.json` inside that install prefix. [Official Codex model catalog](https://api-docs.deepseek.com/quick_start/agent_integrations/codex/#option-2-edit-the-configuration-file-manually)

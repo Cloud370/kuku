@@ -42,7 +42,7 @@ DIRECT_RESPONSES_FIELDS = (RESPONSES_FIELDS - {"provider"}) | {
 }
 RESPONSE_DELTAS = {"response.output_text.delta": "text", "response.refusal.delta": "text",
                    "response.reasoning_text.delta": "reasoning", "response.reasoning_summary_text.delta": "reasoning",
-                   "response.function_call_arguments.delta": "tool_argument"}
+                   "response.function_call_arguments.delta": "tool_argument", "response.custom_tool_call_input.delta": "tool_argument"}
 PROXY_TIMING = ("request_to_response_headers_seconds", "request_to_first_body_byte_seconds",
                 "request_to_first_output_delta_seconds", "request_to_first_text_delta_seconds",
                 "request_to_first_reasoning_delta_seconds", "request_to_first_tool_argument_delta_seconds",
@@ -171,8 +171,39 @@ def text_input(items, responses, *, allow_apply_patch=False):
     return True
 
 
-def output_deltas(event, router):
-    if router:
+def observe_tool_calls(observation, event, responses):
+    if responses:
+        if event.get("type") == "response.completed":
+            output = (event.get("response") or {}).get("output")
+            if isinstance(output, list) and all(isinstance(item, dict) for item in output):
+                observation["emitted_tool_calls"] = sum(
+                    item.get("type") in ("function_call", "custom_tool_call") for item in output)
+        return
+    indices = observation.setdefault("chat_tool_indices", set())
+    if indices is None:
+        return
+    for choice in event.get("choices", []):
+        for call in (choice.get("delta") or {}).get("tool_calls") or []:
+            index = call.get("index") if isinstance(call, dict) else None
+            if type(index) is not int or index < 0:
+                observation["chat_tool_indices"] = None
+                return
+            indices.add(index)
+
+
+def emitted_tool_calls(observation, responses):
+    status = observation.get("response_status")
+    if responses:
+        return observation.get("emitted_tool_calls") if status == "response.completed" else None
+    if observation.get("stream_done") and status in ("stop", "tool_calls"):
+        indices = observation.get("chat_tool_indices")
+        if indices is not None and (indices or status == "stop"):
+            return len(indices)
+    return None
+
+
+def output_deltas(event, responses):
+    if responses:
         kind = RESPONSE_DELTAS.get(event.get("type"))
         if kind and isinstance(event.get("delta"), str) and event["delta"]:
             yield kind
@@ -394,6 +425,7 @@ class CaseMeter(RequestBoundary):
         try:
             event = json.loads(line[5:])
             super().observe(observation, line, event=event)
+            observe_tool_calls(observation, event, self.route.responses)
             if arrival is not None:
                 timing = observation["timing"]
                 for kind in output_deltas(event, self.route.responses):
@@ -623,6 +655,10 @@ class CaseMeter(RequestBoundary):
             basis, charge = "request_upper_bound", ceiling
             row["route_mismatch"] = route_mismatch
             row["exceeded_reserved_bound"] = exceeded
+        if accepted_model and not route_mismatch and row.get("http_status") == 200 and row.get("response_ended"):
+            count = emitted_tool_calls(observation, route.responses)
+            if count is not None:
+                row["emitted_tool_calls"] = count
         row.update(basis=basis, accounted_usd=str(charge))
         complete_tokens = counts.get(output_field) if basis in ("provider_reported", "token_estimate") and not row.get("provider_cancelled") else None
         receipt_tokens = receipt[output_field] if row.get("receipt_matches_route") and valid_counts(receipt, output_field) else None

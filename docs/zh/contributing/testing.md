@@ -308,6 +308,8 @@ python3 scripts/acceptance/benchmark_compare.py \
 
 对照报告累计宿主计量代理接纳的所有请求的转发耗时和序列化请求体字节数，也计入已发起的重试。转发耗时涵盖上游连接和响应传输。有任一请求缺少相应读数时，该项总量留空。首个输出时间的中位数按已观测的请求计算，并附样本数。计量代理拒绝的请求中，因单题预算被拒绝的请求会单独计数。
 
+计量代理也会统计完整模型回复发出的函数及自定义工具调用。对照报告给出已观测的回复数和批量分布，并保留运行器独立记录的派发证据。流缺少完整证据时，该项留空。
+
 ### 本地严格 Kuku–Codex 对照
 
 在独立目录安装固定版本的 Codex npm 包。把 DeepSeek 官方模型目录中的 `deepseek-flash` 条目单独保存在安装目录的 `deepseek-flash-models.json` 中。[官方 Codex 模型目录](https://api-docs.deepseek.com/quick_start/agent_integrations/codex/#option-2-edit-the-configuration-file-manually)

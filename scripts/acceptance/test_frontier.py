@@ -18,6 +18,7 @@ from unittest import mock
 from urllib.parse import urlsplit
 
 from frontier import CaseMeter, ROUTER_MODEL, ROUTER_MODEL_VERSION, TOKEN_VARIABLE, WIRE_BYTES, run_live
+from benchmark_compare import relay_summary
 from interactive_fixture import local_request, serve
 from paid_model import Route, RunLimits, route_for
 from run import Budget
@@ -207,6 +208,49 @@ class FrontierTests(unittest.TestCase):
         self.assertEqual(1280, accounting["usage"]["prompt_cache_hit_tokens"])
         self.assertEqual(720, accounting["usage"]["prompt_cache_miss_tokens"])
         self.assertIsNone(accounting["provider_billed_usd"])
+
+    def test_meter_counts_emitted_chat_calls_once_across_argument_deltas(self):
+        meter = self.meter()
+        first = {"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "id": "first", "function": {"name": "read_file"}},
+            {"index": 1, "id": "second", "function": {"name": "stat_file"}},
+        ]}}]}
+        more_arguments = {"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "function": {"arguments": "{\"path\":\"a\"}"}},
+            {"index": 1, "function": {"arguments": "{\"path\":\"b\"}"}},
+        ]}}]}
+        terminal = {"model": DIRECT.model, "choices": [{"finish_reason": "tool_calls", "delta": {}}],
+                    "usage": {"prompt_tokens": 100, "completion_tokens": 150,
+                              "prompt_cache_hit_tokens": 60, "prompt_cache_miss_tokens": 40}}
+        reply = StreamReply(first, more_arguments, terminal)
+        reply.seek(0, os.SEEK_END)
+        reply.write(b"data: [DONE]\n\n")
+        reply.seek(0)
+        connection = mock.Mock()
+        connection.getresponse.return_value = reply
+        with mock.patch("frontier.http.client.HTTPSConnection", return_value=connection), serve(meter.handler()) as endpoint:
+            self.assertEqual(200, request(endpoint, DIRECT, DIRECT_PAYLOAD).status)
+        self.assertEqual(2, meter.attempts[0]["emitted_tool_calls"])
+
+    def test_meter_counts_complete_responses_outputs_but_not_partial_replies(self):
+        meter = self.meter(DIRECT_RESPONSES)
+        complete = {"model": DIRECT.model, "reasoning": {"effort": "max"},
+                    "usage": {"input_tokens": 100, "output_tokens": 120, "input_tokens_details": {"cached_tokens": 60}},
+                    "output": [{"type": kind} for kind in ("reasoning", "function_call", "custom_tool_call")]}
+        connection = mock.Mock()
+        connection.getresponse.side_effect = [
+            StreamReply({"type": "response.completed", "response": complete}),
+            StreamReply({"type": "response.completed", "response": {**complete, "output": [{"type": "message"}]}}),
+            StreamReply({"type": "response.incomplete", "response": complete}),
+        ]
+        with mock.patch("frontier.http.client.HTTPSConnection", return_value=connection), serve(meter.handler()) as endpoint:
+            self.assertEqual([200, 200, 200],
+                             [request(endpoint, DIRECT_RESPONSES, DIRECT_RESPONSES_PAYLOAD).status for _ in range(3)])
+        self.assertEqual([2, 0, None], [row.get("emitted_tool_calls") for row in meter.attempts])
+        summary = relay_summary(meter.attempts)
+        self.assertEqual(2, summary["emitted_tool_calls"])
+        self.assertEqual({"observed_responses": 2, "without_tools": 1, "single_call": 0,
+                          "multiple_calls": 1, "max_calls": 2}, summary["emitted_tool_batches"])
 
     def test_direct_responses_admits_only_local_tools_and_fixed_effort(self):
         meter = self.meter(DIRECT_RESPONSES)
