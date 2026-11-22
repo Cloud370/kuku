@@ -18,6 +18,7 @@
                     ? "exit code unavailable" : `process terminated by signal ${facts.signal}`);
                 const error = new Error(`run_command: ${detail}`);
                 error.status = response.status === "ok" ? "error" : response.status;
+                error.program = facts?.program;
                 error.termination = facts?.termination;
                 error.signal = facts?.signal;
                 error.output_ref = facts?.output_ref;

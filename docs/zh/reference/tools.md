@@ -126,7 +126,7 @@ Session 的默认预览上限为 8 KiB，包含摘要和保留输出引用。即
 
 脚本可以返回较小的 JSON 值，为模型提供所需的证据。脚本结束时若没有返回值，`console.log(...values)` 可交付有界文本。显式返回值优先，包括 `null`。处理大输出时，用 `tools.output_lines({id, stream: "stdout"})` 逐行遍历，只保留计算所需的状态。原始字节可以通过[保留输出](#保留的工具输出)读取。JavaScript 变量只在当次调用中存在。可以把选中的结果存为[命名值](#命名会话值)，也可以按用户要求把交付物写入工作区。
 
-`await tools.run_command({program, args?, cwd?})` 等待命令结束。要让脚本在后台运行，在外层 `run_js` 调用上设置 `background: true`。进程退出时，只要有整数退出码，就返回 `{exit_code, duration_ms, capture_complete, output_ref, stdout, stderr}`，包括非零退出码。拒绝派发、启动失败、超时或取消等情况会抛出错误。错误提供 `status`，并在可用时附带 `termination`、`signal` 或 `output_ref`。
+`await tools.run_command({program, args?, cwd?})` 等待命令结束。要让脚本在后台运行，在外层 `run_js` 调用上设置 `background: true`。进程退出时，只要有整数退出码，就返回 `{exit_code, duration_ms, capture_complete, output_ref, stdout, stderr}`，包括非零退出码。拒绝派发、启动失败、超时或取消等情况会抛出错误。错误提供 `status`，并在可用时附带 `termination`、`signal` 或 `output_ref`。原生程序启动失败时还会附带长度受限的 `program`，它可以与结束原因一起出现在脚本的恢复信息中。
 
 两个流的方法相同。`await run.stdout.text()` 读取完整的解码文本，上限为 1 MiB，`await run.stdout.json()` 将同一文本解析为 JSON。用 `for await (const line of run.stderr.lines())` 逐行读取去掉 LF 或 CRLF 的解码文本，单行上限为 128 KiB。遇到捕获不完整或有损解码时，这些方法会报错。需要查看已保留的部分输出或原始字节时，使用 `tools.output_chunks({id: run.output_ref.id})`。保留输出的分页读取经过 `read_output` 授权。
 

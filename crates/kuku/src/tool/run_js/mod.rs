@@ -105,9 +105,7 @@ impl WorkspaceScriptLimits {
             || self.derived_outputs == 0
             || self.derived_bytes < 4096
         {
-            return Err(
-                "invalid workspace script heap, stack, time, byte or operation limits".into(),
-            );
+            return Err("invalid run_js heap, stack, time, byte or operation limits".into());
         }
         Ok(())
     }

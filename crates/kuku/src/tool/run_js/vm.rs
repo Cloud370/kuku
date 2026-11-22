@@ -469,10 +469,7 @@ struct Bridge<'js> {
 impl<'js> Bridge<'js> {
     fn send(&self, ctx: Ctx<'js>, args: JsValue<'js>) -> rquickjs::Result<Promise<'js>> {
         let Some(state) = self.pending.upgrade() else {
-            return Err(Exception::throw_message(
-                &ctx,
-                "workspace script has finished",
-            ));
+            return Err(Exception::throw_message(&ctx, "run_js has finished"));
         };
         self.check_admission(&ctx, &state.borrow())?;
         if !args.is_object() || args.is_array() {
@@ -496,9 +493,10 @@ impl<'js> Bridge<'js> {
                 "workspace host request queue exceeds its byte limit",
             ));
         }
-        let permit = self.requests.try_reserve().map_err(|_| {
-            Exception::throw_message(&ctx, "workspace script request queue is unavailable")
-        })?;
+        let permit = self
+            .requests
+            .try_reserve()
+            .map_err(|_| Exception::throw_message(&ctx, "run_js request queue is unavailable"))?;
         let (promise, resolve, reject) = ctx.promise()?;
         pending.issued += 1;
         pending.bytes += json.len();
@@ -522,21 +520,15 @@ impl<'js> Bridge<'js> {
 
     fn check_admission(&self, ctx: &Ctx<'js>, pending: &Pending<'js>) -> rquickjs::Result<()> {
         if pending.closed || self.execution.is_cancelled() || self.budget.expired(Instant::now()) {
-            return Err(Exception::throw_message(
-                ctx,
-                "workspace script has stopped",
-            ));
+            return Err(Exception::throw_message(ctx, "run_js has stopped"));
         }
         if pending.issued >= self.execution.limits.actions {
-            return Err(Exception::throw_range(
-                ctx,
-                "workspace script action limit reached",
-            ));
+            return Err(Exception::throw_range(ctx, "run_js action limit reached"));
         }
         if pending.requests.len() >= self.execution.limits.queued_operations {
             return Err(Exception::throw_range(
                 ctx,
-                "workspace script host queue limit reached",
+                "run_js host queue limit reached",
             ));
         }
         Ok(())
@@ -545,9 +537,7 @@ impl<'js> Bridge<'js> {
 
 fn json_bytes<'js>(ctx: &Ctx<'js>, value: JsValue<'js>) -> rquickjs::Result<JsCString<'js>> {
     ctx.json_stringify(value)?
-        .ok_or_else(|| {
-            Exception::throw_type(ctx, "workspace script value is not JSON-serializable")
-        })?
+        .ok_or_else(|| Exception::throw_type(ctx, "run_js return value is not JSON-serializable"))?
         .to_cstring()
 }
 

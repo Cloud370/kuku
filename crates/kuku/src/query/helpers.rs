@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
@@ -430,7 +432,47 @@ pub(super) fn next_turn(events: &[crate::event::StoredEvent]) -> u64 {
 }
 
 pub(super) fn platform_label() -> &'static str {
-    std::env::consts::OS
+    static LABEL: OnceLock<String> = OnceLock::new();
+    LABEL.get_or_init(|| {
+        let linux_release = if cfg!(target_os = "linux") {
+            std::fs::read_to_string("/etc/os-release")
+                .or_else(|_| std::fs::read_to_string("/usr/lib/os-release"))
+                .ok()
+        } else {
+            None
+        };
+        format_platform(
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            linux_release.as_deref(),
+        )
+    })
+}
+
+fn format_platform(os: &str, arch: &str, linux_release: Option<&str>) -> String {
+    if let Some((release, distribution)) =
+        linux_release.and_then(|release| release_value(release, "ID=").map(|id| (release, id)))
+    {
+        if let Some(version) = release_value(release, "VERSION_ID=") {
+            return format!("{os} ({arch}, {distribution} {version})");
+        }
+        return format!("{os} ({arch}, {distribution})");
+    }
+    format!("{os} ({arch})")
+}
+
+fn release_value<'a>(release: &'a str, key: &str) -> Option<&'a str> {
+    release
+        .lines()
+        .find_map(|line| line.strip_prefix(key))
+        .map(|value| value.trim().trim_matches(['"', '\'']))
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 64
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        })
 }
 
 pub(super) fn current_date_string() -> String {
@@ -535,6 +577,33 @@ pub(super) fn extract_input_tokens(kind: &ProviderKind, usage: &serde_json::Valu
 mod tests {
     use super::extract_input_tokens;
     use crate::provider::types::ProviderKind;
+
+    #[test]
+    fn platform_label_adds_architecture_and_only_the_reported_linux_release_fields() {
+        for (os, arch, release, expected) in [
+            (
+                "linux",
+                "aarch64",
+                Some("NAME=\"Alpine Linux\"\nID=alpine\nVERSION_ID=3.23.8"),
+                "linux (aarch64, alpine 3.23.8)",
+            ),
+            (
+                "linux",
+                "x86_64",
+                Some("ID='ubuntu'\nVERSION_ID=\"24.04\""),
+                "linux (x86_64, ubuntu 24.04)",
+            ),
+            (
+                "linux",
+                "x86_64",
+                Some("ID=arch\nVERSION_ID=\"invalid value\""),
+                "linux (x86_64, arch)",
+            ),
+            ("macos", "aarch64", None, "macos (aarch64)"),
+        ] {
+            assert_eq!(super::format_platform(os, arch, release), expected);
+        }
+    }
 
     #[test]
     fn missing_blank_or_unreadable_override_restores_base_files() {
