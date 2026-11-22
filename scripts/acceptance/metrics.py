@@ -320,8 +320,10 @@ def run_metrics(args, directory, record):
     record["binary"] = config_record(binary)
     phase_file, result_file = directory / "phase.json", directory / "caller.json"
     command = prefix + [str(binary), "--workspace", str(directory / "workspace"), "--data-dir", str(directory / "session-data"),
-               "--phase-file", str(phase_file), "--output", str(result_file),
-               "--idle-agents", str(args.idle_agents), "--appends", str(args.appends),
+                        "--phase-file", str(phase_file)]
+    if args.long_session_mib is not None:
+        return run_long_session(args, directory, record, command, environment, phase_file, result_file)
+    command += ["--output", str(result_file), "--idle-agents", str(args.idle_agents), "--appends", str(args.appends),
                "--concurrent-agents", str(args.concurrent_agents), "--output-bytes", str(args.output_bytes),
                "--output-quota", str(args.output_quota), "--repeated-tasks", str(args.repeated_tasks),
                "--script-workers", str(args.script_workers), "--script-host-operations", str(args.script_host_operations),
@@ -363,3 +365,38 @@ def run_metrics(args, directory, record):
     else:
         record["missing_measurements"].append("script_host_operation_peak")
     record["measurements_complete"] = not record["missing_measurements"]
+
+
+def run_long_session(args, directory, record, command, environment, phase_file, result_file):
+    from run import ROOT, capture, config_record, require_success
+
+    fixture_file = directory / "fixture.json"
+    record["sources"].extend(config_record(ROOT / path) for path in (
+        "crates/kuku/examples/resource_probe/long_session.rs",
+        "crates/kuku/examples/support/process_resources.rs",
+    ))
+    record["long_session_mib"] = args.long_session_mib
+    record["generation"] = require_success(capture(
+        command + ["--long-session", "generate", "--long-session-mib", str(args.long_session_mib),
+                   "--output", str(fixture_file)],
+        directory, "fixture", timeout=7200, env=environment,
+    ))
+    record["fixture"] = str(fixture_file)
+    sampler = ProcessSampler(phase_file)
+    try:
+        record["execution"] = capture(
+            command + ["--long-session", "measure", "--fixture", str(fixture_file),
+                       "--output", str(result_file)],
+            directory, "caller", timeout=600, env=environment, on_start=sampler.start,
+        )
+    finally:
+        record["resources"] = sampler.finish()
+    require_success(record["execution"])
+    caller = json.loads(result_file.read_text(encoding="utf-8"))
+    record["caller_result"] = str(result_file)
+    record["measurements"] = caller["timings"]
+    record["missing_measurements"] = [
+        name for name, timing in caller["timings"].items() if timing["resources"] is None
+    ]
+    record["measurements_complete"] = not record["missing_measurements"]
+    record["passed"] = (caller["passed"] is True and not record["resources"]["capture_incomplete"])

@@ -364,6 +364,16 @@ Linux `/proc` 和 Windows 进程 API 分别采样 SDK 调用进程和工具后�
 
 用 `--pressure-rounds 3` 可以在同一个调用进程里对比多轮峰值和空闲阶段。在 Linux 上，如果能读取 `/proc/<pid>/smaps_rollup`，选择器也会记录匿名内存与文件映射内存。
 
+### 大型会话压测
+
+```bash
+python3 scripts/acceptance/run.py metrics --profile release --long-session-mib 500
+```
+
+需主动选择该负载。它生成事件日志至少为 500 MiB 的会话。固定模型适配器通过公开 SDK 执行批量工具调用、推理输出、命令捕获、文件读取和上下文压缩。全部数据为合成数据，模型网络请求为零。可用较小尺寸快速检查负载和测试入口。生成的事件日志和保留输出会留在被 Git 忽略的运行目录里，开始大规模测试前应检查可用磁盘空间。
+
+`fixture.json` 记录事件日志字节数、保留输出字节数、压缩次数和事件构成。新进程验证重开、历史分页和保留输出读取、首轮及后续轮次、撤销压缩与消息回退。`caller.json` 记录耗时、可用的进程 CPU 与 I/O 增量、实测 RSS 峰值，以及每次受测请求的准备时间和序列化字节数。重开沿用操作系统页面缓存。比较不同运行时应使用相同的负载尺寸、发布构建模式和进程限制。
+
 ## 真实协议验收
 
 用户选定直连 DeepSeek 的 `deepseek-flash` 用于 benchmark 和三种线路协议检查。第二模型家族使用 OpenRouter 的 [`openai/gpt-6-luna`](https://openrouter.ai/openai/gpt-6-luna)，固定标准 OpenAI 提供商，通过 OpenAI Responses API 调用。这条 OpenRouter 路线用固定小任务检查协议兼容。下表保留两家服务公开的通用路线，不要求穷举每个模型／服务／协议组合。这些是测试连接输入，不是新冻结的 SDK 配置名称。

@@ -825,6 +825,7 @@ def parser():
     metrics.add_argument("--script-workers", type=int, default=2)
     metrics.add_argument("--script-host-operations", type=int, default=4)
     metrics.add_argument("--pressure-rounds", type=int, default=1, help="repeat shared-host stress and idle recovery in the same caller")
+    metrics.add_argument("--long-session-mib", type=int, help="select a historical Session journal of 4–512 MiB instead of the small workload")
     metrics.add_argument("--cpu-count", type=int, help="limit the caller and its descendants to this many available CPUs on Linux")
     metrics.add_argument("--address-space-mib", type=int, help="apply a per-process Linux address-space bound to the caller and descendants")
     inspect = sub.add_parser("inspect", help="check existing durable SDK evidence without model requests")
