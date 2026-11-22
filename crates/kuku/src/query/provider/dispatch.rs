@@ -3,7 +3,9 @@ use std::time::{Duration, Instant};
 use crate::error::Result;
 use crate::event::{EventPayload, EventStore};
 use crate::log::LogLevel;
-use crate::provider::types::{PreparedProviderRequest, ProviderFailure, ResolvedProvider};
+use crate::provider::types::{
+    PreparedProviderRequest, ProviderCorrelation, ProviderFailure, ResolvedProvider,
+};
 use crate::query::helpers::{append_model_error, append_turn_interrupted, now_timestamp};
 use crate::query::tool_exec::record_plugin_hooks;
 use crate::query::types::{PendingRun, PendingStep, RequestTiming, StreamingChunkState, UiEvent};
@@ -30,7 +32,7 @@ pub(super) async fn dispatch_provider_step(
     mut pending: PendingRun,
     resolved_config: ResolvedProvider,
     existing_events: Vec<crate::event::StoredEvent>,
-    frozen_context: Option<crate::query::frozen::ContextCommit>,
+    mut frozen_context: Option<crate::query::frozen::ContextCommit>,
 ) -> Result<PendingStep> {
     run_model_pre_request_hooks(&mut pending).await?;
     let request_id = format!("req_{}", pending.request_num);
@@ -69,7 +71,7 @@ pub(super) async fn dispatch_provider_step(
     }
 
     let handoff_active = pending.handoff_triggered;
-    let correlation = crate::provider::types::ProviderCorrelation {
+    let correlation = ProviderCorrelation {
         session_id: pending.session_id.clone(),
         agent_address: pending.conversation.as_str().into(),
         connection_name: resolved_config.connection_name.clone(),
@@ -82,35 +84,25 @@ pub(super) async fn dispatch_provider_step(
         None => None,
     };
     super::require_runtime_execution(&pending)?;
-    let request = pending
-        .request_base
-        .as_ref()
-        .expect("request base captured")
-        .request();
     let prepare_started = Instant::now();
     let max_request_bytes = pending.query.runtime_limits.max_request_bytes;
-    let prepared = if pending.query.runtime_execution.is_some()
-        && pending.query.model_adapter.is_none()
+    let mut prepared = prepare_body(&pending, &resolved_config, &correlation)?;
+    let initial_bytes = prepared.body.as_bytes().len();
+    if initial_bytes > max_request_bytes
+        && crate::query::helpers::resolved_tool_available(&pending, "read_output")
     {
-        crate::provider::prepare::prepare_provider_request_with_media(
-            &resolved_config,
-            &request,
-            &correlation,
-            max_request_bytes,
-            |image| {
-                super::super::runtime_tools::runtime_session(&pending)?
-                    .read_model_image(pending.conversation.as_str(), image)
-            },
-        )
-    } else {
-        crate::provider::prepare_provider_request(&resolved_config, &request, Some(&correlation))
+        if let Some(context) = &mut frozen_context {
+            let reclaim_bytes =
+                (initial_bytes - max_request_bytes).saturating_add(max_request_bytes / 8);
+            let request = pending
+                .request_base
+                .as_mut()
+                .expect("request base captured");
+            if context.reference_output_pages(request, pending.turn, reclaim_bytes)? {
+                prepared = prepare_body(&pending, &resolved_config, &correlation)?;
+            }
+        }
     }
-    .map_err(|failure| crate::Error::Provider {
-        kind: failure.kind,
-        message: failure.message,
-        provider: Some(resolved_config.connection_name.clone()),
-        model: Some(resolved_config.model.clone()),
-    })?;
     let request_bytes = prepared.body.as_bytes().len();
     if request_bytes > max_request_bytes {
         return Err(crate::Error::InvalidArgument(format!(
@@ -268,6 +260,38 @@ pub(super) async fn dispatch_provider_step(
             ))
         }
     }
+}
+
+fn prepare_body(
+    pending: &PendingRun,
+    resolved: &ResolvedProvider,
+    correlation: &ProviderCorrelation,
+) -> Result<PreparedProviderRequest> {
+    let request = pending
+        .request_base
+        .as_ref()
+        .expect("request base captured")
+        .request();
+    if pending.query.runtime_execution.is_some() && pending.query.model_adapter.is_none() {
+        crate::provider::prepare::prepare_provider_request_with_media(
+            resolved,
+            &request,
+            correlation,
+            pending.query.runtime_limits.max_request_bytes,
+            |image| {
+                super::super::runtime_tools::runtime_session(pending)?
+                    .read_model_image(pending.conversation.as_str(), image)
+            },
+        )
+    } else {
+        crate::provider::prepare::prepare_provider_request(resolved, &request, Some(correlation))
+    }
+    .map_err(|failure| crate::Error::Provider {
+        kind: failure.kind,
+        message: failure.message,
+        provider: Some(resolved.connection_name.clone()),
+        model: Some(resolved.model.clone()),
+    })
 }
 
 async fn dispatch_prepared(

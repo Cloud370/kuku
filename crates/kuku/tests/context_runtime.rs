@@ -2,6 +2,8 @@ mod common;
 
 #[path = "context_runtime_order/mod.rs"]
 mod prelude_order;
+#[path = "context_runtime_capacity/mod.rs"]
+mod request_capacity;
 
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};

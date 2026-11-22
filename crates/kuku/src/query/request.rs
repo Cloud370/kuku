@@ -75,6 +75,10 @@ impl OwnedRequestBase {
         }
     }
 
+    pub(super) fn replace_history(&mut self, history: Vec<crate::context::CanonicalMessage>) {
+        self.assembly.history = history;
+    }
+
     pub(super) fn recovery_request(&self) -> crate::error::Result<RecoveredRequest> {
         let mut assembly = self.assembly.clone();
         let message = assembly

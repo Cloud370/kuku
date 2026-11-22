@@ -5,6 +5,7 @@ use crate::tool::builtin::run_command::output::search::{
     OutputSearch, DEFAULT_MATCHES, MAX_LITERAL_BYTES, MAX_MATCHES,
 };
 use crate::tool::builtin::run_command::output::validate_output_id;
+use crate::tool::builtin::run_command::output::OutputChunk;
 use crate::tool::{ToolDefinition, ToolResultEnvelope};
 use crate::{Error, OutputRead, OutputStream, Result, Session, MAX_VALUE_NAME_BYTES};
 
@@ -34,6 +35,32 @@ const LOCAL_BOUNDS: PageBounds = PageBounds {
     scan: MAX_LOCAL_READ_BYTES,
     result: DEFAULT_LOCAL_RESULT_BYTES,
 };
+
+pub(crate) fn archived_page_reference(content: &str) -> Option<String> {
+    let page: OutputChunk = serde_json::from_str(content).ok()?;
+    let limit = page.next_offset.checked_sub(page.offset)?;
+    if !page.complete
+        || page.filtered
+        || page.capture_truncated
+        || page.cleanup_incomplete
+        || page.next_offset > page.total_bytes
+        || !(1..=MODEL_BOUNDS.scan as u64).contains(&limit)
+        || validate_output_id(&page.output_id).is_err()
+    {
+        return None;
+    }
+    Some(
+        json!({
+            "kind": "retained_output_page_reference",
+            "reason": "request_byte_budget",
+            "reread": {
+                "tool": "read_output",
+                "arguments": {"id": page.output_id, "offset": page.offset, "limit": limit}
+            }
+        })
+        .to_string(),
+    )
+}
 
 pub(super) fn definition() -> ToolDefinition {
     definition_with_bounds(MODEL_BOUNDS)

@@ -71,6 +71,8 @@ Independent initialization supplies only the material the caller selected. Reusi
 
 Retain Prompt assets and the prepared provider-visible content needed for faithful reconstruction. Store admitted content and tool-result views once, with references and request boundaries rather than a full transcript copy on each Step. Historical replay does not re-read mutable workspace files or re-render today's Prompt templates. A context handoff records its predecessor and selected material and commits the successor before switching. If handoff fails, preserve the previous explainable state.
 
+When a request reaches its byte budget, a successor can replace earlier complete output pages with references to their exact byte ranges. Keep the latest tool results, their call pairing, current inputs, and provider-native replay. Commit the successor only after checking the encoded request against the same limit. The original pages stay in the Session evidence. Reading a referenced range still goes through the normal authorization and retention checks.
+
 ## Persistence, effects, and durable waiting
 
 Start with one authoritative append-only log and one writer per Session, with cross-process exclusion and stale-owner fencing. Bounded record sizes and external output permit streaming recovery. Small disposable indexes can serve Agent lookup, command deduplication, or event positions; choose additional persisted indexes/checkpoints against actual recovery and lookup measurements.

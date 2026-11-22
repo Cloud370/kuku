@@ -22,6 +22,7 @@ use super::request::OwnedRequestBase;
 use super::types::PendingRun;
 
 mod admission;
+mod capacity;
 
 use admission::{append_input_skills, model_history, select_turns};
 
@@ -38,6 +39,7 @@ pub(super) struct ContextCommit {
     prefix_context_head: usize,
     new_segment: bool,
     reason: &'static str,
+    output_pages_referenced: usize,
     context_prepare_us: u64,
     events_read: u64,
     input_skills: Vec<String>,
@@ -311,6 +313,7 @@ pub(super) fn prepare(pending: &mut PendingRun) -> Result<PreparedContext> {
             cursor.admitted.len()
         },
         new_segment,
+        output_pages_referenced: 0,
         reason: if previous.is_none() {
             "initial"
         } else if handoff_changed {
@@ -346,7 +349,7 @@ pub(super) fn record_prepared(
     let predecessor = cursor.segment.as_ref().map(|segment| segment.id);
     if context.new_segment {
         context.segment.id = writer.append(EventPayload::Unknown(json!({"kind":"runtime.context_segment","ts":now_timestamp()?,"agent":pending.conversation.as_str(),
-            "signature":context.segment.signature,"predecessor":predecessor,"configuration":context.segment.configuration,"handoff":context.segment.handoff,"reason":context.reason,
+            "signature":context.segment.signature,"predecessor":predecessor,"configuration":context.segment.configuration,"handoff":context.segment.handoff,"reason":context.reason,"output_pages_referenced":context.output_pages_referenced,
             "connection":context.segment.connection,"protocol":context.segment.protocol,"model":context.segment.model,"endpoint":context.segment.endpoint,
             "capabilities":context.segment.capabilities,"route_selectors":context.segment.route_selectors,
             "system_prompt":context.segment.system_prompt,"prelude":context.segment.prelude,"tools":context.segment.tools,"catalog":context.segment.catalog,
