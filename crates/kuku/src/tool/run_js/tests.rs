@@ -54,6 +54,38 @@ where
 }
 
 #[tokio::test]
+async fn script_syntax_errors_locate_user_code_before_any_host_action() {
+    for (code, location) in [
+        (
+            "await tools.read_file({path:'a'});\nconst bad = [)]",
+            "script line 2, column 14",
+        ),
+        (
+            "await tools.read_file({path:'a'});\r\nconst bad = [)]",
+            "script line 2, column 14",
+        ),
+        ("return [", "at the end of the script"),
+    ] {
+        let output = run(
+            code,
+            TestHost {
+                operations: vec![ScriptOperation::ReadFile],
+                callback: |_, _| async { panic!("compilation must not dispatch host actions") },
+            },
+            WorkspaceScriptLimits::default(),
+        )
+        .await;
+        assert_eq!("error", output.status);
+        assert!(
+            output.model_content.contains(location),
+            "{}",
+            output.model_content
+        );
+        assert!(facts(&output).actions.is_empty());
+    }
+}
+
+#[tokio::test]
 async fn script_exposes_only_the_named_methods_and_supports_standard_async_javascript() {
     let host = TestHost {
         operations: vec![ScriptOperation::ReadFile],

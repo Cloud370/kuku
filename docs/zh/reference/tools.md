@@ -115,6 +115,8 @@ Session 的默认预览上限为 8 KiB，包含摘要和保留输出引用。即
 
 `run_js({code})` 在一次性的嵌入式 QuickJS worker 中运行 JavaScript 异步函数体，支持顶层 `await`。给外层工具调用传入 `background: true` 可启动 [Session Job](#session-job)。可以使用标准 JavaScript，包括 `JSON`、正则表达式及用于独立操作的 `Promise.all`。后一动作的参数能由前一结果直接计算时，使用 `await` 在脚本内连续执行。下一步需要模型判断时，返回简短的观察结果。`tools` 提供该 Agent 可在脚本中调用的方法。`tools.methods` 列出宿主方法和参数 schema。
 
+语法错误有定位信息时，行号和列号对应提交的 `code`。
+
 大多数宿主方法返回 `{status, result, truncated}`。确认 `status: "ok"` 后，从 `result` 读取结构化数据。动作失败时会附带 `error`。将列表或分页当作完整结果之前，检查 `truncated`。例如，`tools.read_file({path})` 提供原始 `result.raw_text`、SHA-256 `content_hash`，以及从 `start_byte` 到 `end_byte` 的左闭右开字节范围。脚本可用已观察的范围继续编辑，无需把文件内容返回给模型。同一文件版本的读取覆盖全文后，还可以覆盖或移除该文件。在同一次调用中，脚本也可以编辑或覆盖由自身写入完整内容且已确认成功的确切版本。动作仍需经过宿主授权与版本检查。
 
 脚本可以返回较小的 JSON 值，为模型提供所需的证据。脚本结束时若没有返回值，`console.log(...values)` 可交付有界文本。显式返回值优先，包括 `null`。处理大输出时，用 `tools.output_lines({id, stream: "stdout"})` 逐行遍历，只保留计算所需的状态。原始字节可以通过[保留输出](#保留的工具输出)读取。JavaScript 变量只在当次调用中存在。可以把选中的结果存为[命名值](#命名会话值)，也可以按用户要求把交付物写入工作区。

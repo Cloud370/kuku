@@ -26,6 +26,8 @@ use super::{ScriptExecution, ScriptOperation};
 const MAX_EXCEPTION_BYTES: usize = 2048;
 const MAX_METHOD_DEFINITION_BYTES: usize = 64 * 1024;
 const MAX_OUTPUT_LINE_BYTES: usize = 128 * 1024;
+// NOTE: QuickJS's AsyncFunction constructor adds two lines before the strict-mode directive.
+const SCRIPT_WRAPPER_LINES: usize = 3;
 const TOOLS_INSTALLER: &str = include_str!("tools.js");
 const CONSOLE_INSTALLER: &str = include_str!("console.js");
 
@@ -173,14 +175,18 @@ impl<'js> Worker<'js> {
         source: String,
         definitions: Vec<ToolDefinition>,
     ) -> Result<Promise<'js>, Failure> {
-        let prepare = || -> rquickjs::Result<Promise<'js>> {
-            let tools = self.tools(definitions)?;
-            let constructor: Function = self.ctx.eval("(async function () {}).constructor")?;
-            let body = format!("\"use strict\";\n{source}");
-            let script: Function = constructor.call(("tools", body))?;
-            script.call((tools,))
-        };
-        prepare().map_err(|error| self.describe(error))
+        let tools = self
+            .tools(definitions)
+            .map_err(|error| self.describe(error))?;
+        let constructor: Function = self
+            .ctx
+            .eval("(async function () {}).constructor")
+            .map_err(|error| self.describe(error))?;
+        let body = format!("\"use strict\";\n{source}");
+        let script: Function = constructor
+            .call(("tools", body))
+            .map_err(|error| self.describe_at(error, Some(&source)))?;
+        script.call((tools,)).map_err(|error| self.describe(error))
     }
 
     fn tools(&self, definitions: Vec<ToolDefinition>) -> rquickjs::Result<Object<'js>> {
@@ -307,6 +313,10 @@ impl<'js> Worker<'js> {
     }
 
     fn describe(&self, error: Error) -> Failure {
+        self.describe_at(error, None)
+    }
+
+    fn describe_at(&self, error: Error, compiling: Option<&str>) -> Failure {
         self.pending.borrow_mut().closed = true;
         if let Err(stopped) = self.check_running() {
             return stopped;
@@ -315,6 +325,9 @@ impl<'js> Worker<'js> {
             return runtime_error(error);
         }
         let exception = self.ctx.catch();
+        let location = compiling
+            .zip(exception.as_exception())
+            .and_then(|(source, error)| compilation_location(source, error));
         let message = if let Some(error) = exception.as_exception() {
             error.as_object().get("message").ok()
         } else {
@@ -334,8 +347,36 @@ impl<'js> Worker<'js> {
                         .unwrap_or_else(|_| "JavaScript exception".into())
                 }
             });
-        Failure::Error(message.unwrap_or_else(|| "JavaScript threw an exception".into()))
+        let mut message = message.unwrap_or_else(|| "JavaScript threw an exception".into());
+        if let Some(location) = location {
+            message.push_str(&format!(" ({location})"));
+        }
+        Failure::Error(message)
     }
+}
+
+fn compilation_location(source: &str, error: &Exception<'_>) -> Option<String> {
+    let stack = error.stack()?;
+    let coordinates = stack
+        .lines()
+        .next()?
+        .trim_start()
+        .strip_prefix("at <input>:")?;
+    let (line, column) = coordinates.split_once(':')?;
+    let line = line
+        .parse::<usize>()
+        .ok()?
+        .checked_sub(SCRIPT_WRAPPER_LINES)?;
+    let column = column.parse::<usize>().ok()?;
+    if line == 0 || column == 0 {
+        return None;
+    }
+    let lines =
+        source.split(['\n', '\r', '\u{2028}', '\u{2029}']).count() - source.matches("\r\n").count();
+    if line > lines {
+        return Some("at the end of the script".into());
+    }
+    Some(format!("script line {line}, column {column}"))
 }
 
 struct Bridge<'js> {
