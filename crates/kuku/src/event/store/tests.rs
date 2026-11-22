@@ -12,16 +12,12 @@ fn payload() -> EventPayload {
 }
 
 fn corrupt_committed_prefix(store: &EventStore, path: &Path) {
-    let writer = store.inner.writer.lock().unwrap();
-    let file = &writer.journal.as_ref().unwrap().file;
-    // NOTE: Windows locks also prevent the deliberate external corruption used by these probes.
-    file.unlock().unwrap();
-    let corrupted = OpenOptions::new()
+    let _writer = store.inner.writer.lock().unwrap();
+    OpenOptions::new()
         .write(true)
         .open(path)
-        .and_then(|mut file| file.write_all(b"!"));
-    super::fs_sync::lock_writer(file, path).unwrap();
-    corrupted.unwrap();
+        .and_then(|mut file| file.write_all(b"!"))
+        .unwrap();
 }
 
 fn replace_writer_file(store: &EventStore, file: File) {
@@ -60,6 +56,106 @@ fn releasing_a_journal_reader_allows_writes_with_a_duplicate_handle_open() {
     let mut writer = EventStore::open(&path).unwrap();
     assert_eq!(1, writer.append(payload()).unwrap().id);
     drop(duplicate);
+}
+
+#[test]
+fn a_closed_scan_can_overlap_reopen_and_only_sees_its_committed_prefix() {
+    for packed in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("events.jsonl");
+        let mut writer = EventStore::open(&path).unwrap();
+        for _ in 0..40 {
+            writer.append(payload()).unwrap();
+        }
+        if packed {
+            assert!(writer
+                .inner
+                .writer
+                .lock()
+                .unwrap()
+                .pack(&path, &())
+                .unwrap());
+        }
+        drop(writer);
+        OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"{\"id\":41,\"kind\":\"runtime.incomplete")
+            .unwrap();
+
+        let mut seen = Vec::new();
+        assert_eq!(
+            40,
+            EventStore::visit_committed(&path, 0, |event| {
+                if seen.is_empty() {
+                    let mut writer = EventStore::open(&path)?;
+                    assert_eq!(41, writer.append(payload())?.id);
+                }
+                seen.push(event.id);
+                Ok(true)
+            })
+            .unwrap()
+        );
+        assert_eq!((1..=40).collect::<Vec<_>>(), seen);
+        assert_eq!(41, EventStore::read_head(&path).unwrap());
+    }
+}
+
+#[test]
+fn active_scans_and_unrelated_writer_recovery_do_not_serialize_writes() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("events.jsonl");
+    let other = temp.path().join("other.jsonl");
+    let mut writer = EventStore::open(&path).unwrap();
+    writer.append(payload()).unwrap();
+    let (committed, receive) = std::sync::mpsc::channel();
+    assert_eq!(
+        1,
+        EventStore::visit_committed(&path, 0, |_| {
+            let mut writer = writer.clone();
+            let committed = committed.clone();
+            std::thread::spawn(move || committed.send(writer.append(payload()).unwrap().id));
+            assert_eq!(2, receive.recv_timeout(Duration::from_secs(5)).unwrap());
+            Ok(true)
+        })
+        .unwrap()
+    );
+    drop(writer);
+
+    let (opened, receive) = std::sync::mpsc::channel();
+    let mut pending = Some((opened, other));
+    let _writer = EventStore::open_replaying(&path, |_| {
+        if let Some((opened, other)) = pending.take() {
+            std::thread::spawn(move || opened.send(EventStore::open(other).is_ok()));
+            assert!(receive.recv_timeout(Duration::from_secs(5)).unwrap());
+        }
+        Ok(true)
+    })
+    .unwrap();
+}
+
+#[test]
+fn a_snapshot_retains_its_prefix_during_archive_replacement() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("events.jsonl");
+    let mut writer = EventStore::open(&path).unwrap();
+    for _ in 0..40 {
+        writer.append(payload()).unwrap();
+    }
+    let path = writer.inner.path.clone();
+    let snapshot = super::read_source(&path).unwrap().snapshot(&path).unwrap();
+    let mut locked = writer.inner.writer.lock().unwrap();
+    assert!(locked.pack(&path, &()).unwrap());
+    drop(locked);
+    writer.append(payload()).unwrap();
+    let old = super::read_all(
+        snapshot.layout.reader(&snapshot.file, snapshot.end, 0),
+        &path,
+    )
+    .unwrap();
+    assert_eq!(40, old.last().unwrap().id);
+    assert_eq!(41, EventStore::read_head(&path).unwrap());
 }
 
 #[test]
@@ -303,11 +399,8 @@ fn static_pages_do_not_open_a_writer_or_repair_an_incomplete_tail() {
     assert_eq!(2, EventStore::read_page(&path, 1, 256).unwrap()[0].id);
     assert!(EventStore::read_page(&path, 2, 256).unwrap().is_empty());
     assert_eq!(contents.as_bytes(), std::fs::read(&path).unwrap());
-    assert!(super::find_active_store(
-        &super::registry().lock().unwrap(),
-        &std::fs::canonicalize(&path).unwrap(),
-    )
-    .is_none());
+    let slot = super::store_slot(&std::fs::canonicalize(&path).unwrap());
+    assert!(super::find_active_store(slot.lock().unwrap().as_ref()).is_none());
     let missing = temp.path().join("missing").join("events.jsonl");
     assert!(EventStore::read_page(&missing, 0, 256).unwrap().is_empty());
     assert!(!missing.parent().unwrap().exists());
@@ -657,6 +750,19 @@ fn corrupt_inline_checkpoint_falls_back_to_committed_events() {
     .unwrap();
     assert_eq!(seen, (1..=40).collect::<Vec<_>>());
     assert_eq!(store.last_id(), 40);
+    assert!(store.needs_packing());
+    assert!(store.pack_closed(40, &"rebuilt checkpoint").unwrap());
+    drop(store);
+    let store = EventStore::open_replaying(&path, |item| {
+        let super::Replay::Checkpoint(saved) = item else {
+            panic!("history replayed after the checkpoint was repaired");
+        };
+        assert_eq!("\"rebuilt checkpoint\"", saved.get());
+        Ok(true)
+    })
+    .unwrap();
+    assert_eq!(store.last_id(), 40);
+    assert!(!store.needs_packing());
 }
 
 #[test]

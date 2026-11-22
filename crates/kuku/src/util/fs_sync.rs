@@ -18,13 +18,33 @@ pub(crate) fn write_options() -> OpenOptions {
     options
 }
 
+#[cfg(not(windows))]
 pub(crate) fn lock_writer(file: &File, path: &Path) -> io::Result<()> {
     file.try_lock().map_err(|error| lock_error(path, error))
 }
 
+#[cfg(not(windows))]
 pub(crate) fn lock_reader(file: &File, path: &Path) -> io::Result<()> {
     file.try_lock_shared()
         .map_err(|error| lock_error(path, error))
+}
+
+pub(crate) fn lock_journal(file: &File, path: &Path, exclusive: bool) -> io::Result<()> {
+    #[cfg(windows)]
+    return windows::lock_journal(file, exclusive).map_err(|error| lock_error(path, error));
+    #[cfg(not(windows))]
+    if exclusive {
+        lock_writer(file, path)
+    } else {
+        lock_reader(file, path)
+    }
+}
+
+pub(crate) fn unlock_journal(file: &File) -> io::Result<()> {
+    #[cfg(windows)]
+    return windows::unlock_journal(file);
+    #[cfg(not(windows))]
+    file.unlock()
 }
 
 pub(crate) fn create_dir_all(path: &Path) -> io::Result<()> {
@@ -82,6 +102,13 @@ pub(crate) fn rename(from: &Path, to: &Path) -> io::Result<()> {
     }
 }
 
+pub(crate) fn replace_journal(from: &Path, to: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    return windows::replace_journal(from, to);
+    #[cfg(not(windows))]
+    rename(from, to)
+}
+
 fn lock_error(path: &Path, error: fs::TryLockError) -> io::Error {
     match error {
         fs::TryLockError::WouldBlock => io::Error::new(
@@ -129,7 +156,20 @@ mod windows {
     use std::fs;
     use std::io;
     use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
     use std::path::Path;
+    use std::ptr;
+
+    use windows_sys::Win32::Foundation::{
+        ERROR_ACCESS_DENIED, ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION, GENERIC_WRITE,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileRenameInfoEx, LockFileEx, SetFileInformationByHandle, UnlockFileEx, DELETE,
+        FILE_FLAG_WRITE_THROUGH, FILE_RENAME_INFO, LOCKFILE_EXCLUSIVE_LOCK,
+        LOCKFILE_FAIL_IMMEDIATELY,
+    };
+    use windows_sys::Win32::System::IO::{OVERLAPPED, OVERLAPPED_0, OVERLAPPED_0_0};
 
     const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
     const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
@@ -137,6 +177,50 @@ mod windows {
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn MoveFileExW(from: *const u16, to: *const u16, flags: u32) -> i32;
+    }
+
+    fn journal_lock_offset() -> OVERLAPPED {
+        // NOTE: Windows locks are mandatory. Fence journal handles beyond the data range.
+        OVERLAPPED {
+            Anonymous: OVERLAPPED_0 {
+                Anonymous: OVERLAPPED_0_0 {
+                    Offset: u32::MAX - 1,
+                    OffsetHigh: i32::MAX as u32,
+                },
+            },
+            ..OVERLAPPED::default()
+        }
+    }
+
+    pub(super) fn lock_journal(file: &fs::File, exclusive: bool) -> Result<(), fs::TryLockError> {
+        let mut position = journal_lock_offset();
+        let flags = LOCKFILE_FAIL_IMMEDIATELY
+            | if exclusive {
+                LOCKFILE_EXCLUSIVE_LOCK
+            } else {
+                0
+            };
+        // SAFETY: The File and synchronous OVERLAPPED storage remain live during the call.
+        if unsafe { LockFileEx(file.as_raw_handle(), flags, 0, 1, 0, &mut position) } != 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        Err(
+            if error.raw_os_error() == Some(ERROR_LOCK_VIOLATION as i32) {
+                fs::TryLockError::WouldBlock
+            } else {
+                fs::TryLockError::Error(error)
+            },
+        )
+    }
+
+    pub(super) fn unlock_journal(file: &fs::File) -> io::Result<()> {
+        let mut position = journal_lock_offset();
+        // SAFETY: The same handle and byte range used during locking are live for this call.
+        if unsafe { UnlockFileEx(file.as_raw_handle(), 0, 1, 0, &mut position) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
     }
 
     pub(super) fn rename(from: &Path, to: &Path) -> io::Result<()> {
@@ -154,6 +238,52 @@ mod windows {
             return Err(io::Error::last_os_error());
         }
         Ok(())
+    }
+
+    pub(super) fn replace_journal(from: &Path, to: &Path) -> io::Result<()> {
+        match rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if matches!(
+                    error.raw_os_error().map(|code| code as u32),
+                    Some(ERROR_ACCESS_DENIED | ERROR_SHARING_VIOLATION)
+                ) => {}
+            Err(error) => return Err(error),
+        }
+        const REPLACE_IF_EXISTS: u32 = 1;
+        const POSIX_SEMANTICS: u32 = 2;
+        let target = absolute_name(to)?;
+        let name_bytes = std::mem::size_of_val(target.as_slice());
+        let size = (std::mem::offset_of!(FILE_RENAME_INFO, FileName) + name_bytes)
+            .max(std::mem::size_of::<FILE_RENAME_INFO>());
+        let size_u32 = u32::try_from(size)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "journal path is too long"))?;
+        let mut data = vec![0_usize; size.div_ceil(std::mem::size_of::<usize>())];
+        let info = data.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+        let file = fs::OpenOptions::new()
+            .access_mode(DELETE | GENERIC_WRITE)
+            .custom_flags(FILE_FLAG_WRITE_THROUGH)
+            .open(from)?;
+        // SAFETY: The aligned buffer covers the header and NUL-terminated target name.
+        let renamed = unsafe {
+            (*info).Anonymous.Flags = REPLACE_IF_EXISTS | POSIX_SEMANTICS;
+            (*info).FileNameLength = (name_bytes - std::mem::size_of::<u16>()) as u32;
+            ptr::copy_nonoverlapping(
+                target.as_ptr(),
+                ptr::addr_of_mut!((*info).FileName).cast(),
+                target.len(),
+            );
+            SetFileInformationByHandle(
+                file.as_raw_handle(),
+                FileRenameInfoEx,
+                info.cast(),
+                size_u32,
+            )
+        };
+        if renamed == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        file.sync_all()
     }
 
     fn absolute_name(path: &Path) -> io::Result<Vec<u16>> {
@@ -189,7 +319,7 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::{
-        create_dir_all, lock_reader, lock_writer, rename, sync_file, sync_parent, write_options,
+        create_dir_all, lock_journal, rename, sync_file, sync_parent, unlock_journal, write_options,
     };
 
     static NEXT_TEST: AtomicU64 = AtomicU64::new(0);
@@ -256,18 +386,18 @@ mod tests {
     }
 
     #[test]
-    fn file_locks_follow_hardlink_aliases() {
+    fn journal_locks_follow_hardlink_aliases_and_release_explicitly() {
         if let Some(path) = std::env::var_os("KUKU_FS_SYNC_LOCK_CHILD") {
             let path = PathBuf::from(path);
             let writer = write_options().read(true).append(true).open(&path).unwrap();
             assert_eq!(
                 std::io::ErrorKind::WouldBlock,
-                lock_writer(&writer, &path).unwrap_err().kind()
+                lock_journal(&writer, &path, true).unwrap_err().kind()
             );
             let reader = File::open(&path).unwrap();
             assert_eq!(
                 std::io::ErrorKind::WouldBlock,
-                lock_reader(&reader, &path).unwrap_err().kind()
+                lock_journal(&reader, &path, false).unwrap_err().kind()
             );
             return;
         }
@@ -281,7 +411,7 @@ mod tests {
             .create_new(true)
             .open(&path)
             .unwrap();
-        lock_writer(&writer, &path).unwrap();
+        lock_journal(&writer, &path, true).unwrap();
         writer.write_all(b"record\n").unwrap();
         sync_file(&writer).unwrap();
         sync_parent(&path).unwrap();
@@ -297,25 +427,25 @@ mod tests {
             "child failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        writer.unlock().unwrap();
+        unlock_journal(&writer).unwrap();
         drop(writer);
 
         let reader = File::open(&alias).unwrap();
-        lock_reader(&reader, &alias).unwrap();
+        lock_journal(&reader, &alias, false).unwrap();
         let other_reader = File::open(&path).unwrap();
-        lock_reader(&other_reader, &path).unwrap();
+        lock_journal(&other_reader, &path, false).unwrap();
         let writer = write_options().read(true).append(true).open(&path).unwrap();
         assert_eq!(
             std::io::ErrorKind::WouldBlock,
-            lock_writer(&writer, &path).unwrap_err().kind()
+            lock_journal(&writer, &path, true).unwrap_err().kind()
         );
-        reader.unlock().unwrap();
+        unlock_journal(&reader).unwrap();
         drop(reader);
-        assert!(lock_writer(&writer, &path).is_err());
-        other_reader.unlock().unwrap();
+        assert!(lock_journal(&writer, &path, true).is_err());
+        unlock_journal(&other_reader).unwrap();
         drop(other_reader);
-        lock_writer(&writer, &path).unwrap();
-        writer.unlock().unwrap();
+        lock_journal(&writer, &path, true).unwrap();
+        unlock_journal(&writer).unwrap();
         drop(writer);
         fs::remove_dir_all(root).unwrap();
     }

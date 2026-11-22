@@ -8,7 +8,7 @@ use kuku::session::{MessageRewind, SessionHistory};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::{events, manager, Params, SessionTarget};
+use super::{events, journal_task, manager, Params, SessionTarget};
 use crate::error_mapping::{ApiError, Result};
 use crate::run_manager::TurnLookup;
 use crate::wire::history_entry_for_agent;
@@ -31,23 +31,27 @@ pub(super) async fn history(
     target.require_exists()?;
     let limit = query.limit.unwrap_or(events::HISTORY_DEFAULT_LIMIT);
     events::validate_limit(limit)?;
-    let head = EventStore::read_head(&target.path)?;
-    let (history, turns) = manager(&state).await.history(&target.path, head)?;
-    let rewind = history
-        .rewinds()
-        .iter()
-        .find(|item| item.event_id == rewind_event_id && item.agent == query.agent)
-        .ok_or_else(|| {
-            ApiError::new(
-                StatusCode::NOT_FOUND,
-                "rewind_group_not_found",
-                "rewind group not found for this Agent",
-            )
-        })?;
-    let (entries, next_before) = group_page(&history, rewind, query.before, limit, &turns)?;
-    let response = json!({"ok":true,"entries":entries,"next_before":next_before});
-    events::validate_response_bytes(&response)?;
-    Ok(Json(response))
+    let manager = manager(&state).await;
+    journal_task(move || {
+        let head = EventStore::read_head(&target.path)?;
+        let (history, turns) = manager.history(&target.path, head)?;
+        let rewind = history
+            .rewinds()
+            .iter()
+            .find(|item| item.event_id == rewind_event_id && item.agent == query.agent)
+            .ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::NOT_FOUND,
+                    "rewind_group_not_found",
+                    "rewind group not found for this Agent",
+                )
+            })?;
+        let (entries, next_before) = group_page(&history, rewind, query.before, limit, &turns)?;
+        let response = json!({"ok":true,"entries":entries,"next_before":next_before});
+        events::validate_response_bytes(&response)?;
+        Ok(Json(response))
+    })
+    .await
 }
 
 fn group_page(

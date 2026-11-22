@@ -33,6 +33,7 @@ pub struct RunManager {
 struct Registry {
     slots: Mutex<HashMap<PathBuf, Arc<Slot>>>,
     closed_history: Mutex<VecDeque<Arc<CachedHistory>>>,
+    catalog_reads: Arc<Semaphore>,
     changed: watch::Sender<()>,
     permits: Arc<Semaphore>,
 }
@@ -126,6 +127,7 @@ impl RunManager {
             inner: Arc::new(Registry {
                 slots: Mutex::new(HashMap::new()),
                 closed_history: Mutex::new(VecDeque::new()),
+                catalog_reads: Arc::new(Semaphore::new(1)),
                 changed: watch::channel(()).0,
                 permits: Arc::new(Semaphore::new(max_concurrent)),
             }),
@@ -196,6 +198,15 @@ impl RunManager {
         let slots = self.inner.slots.lock().unwrap();
         let session = slots.get(path)?.session.lock().unwrap().clone();
         session
+    }
+
+    pub(crate) async fn catalog_permit(&self) -> OwnedSemaphorePermit {
+        self.inner
+            .catalog_reads
+            .clone()
+            .acquire_owned()
+            .await
+            .unwrap()
     }
 
     pub(crate) fn turn_lookup(&self, path: &Path, minimum_cursor: u64) -> Result<TurnLookup> {

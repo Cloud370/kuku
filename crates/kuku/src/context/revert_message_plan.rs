@@ -91,13 +91,13 @@ pub(crate) fn plan_file_rewind(
     target: u64,
 ) -> Result<VerifiedFileRewind> {
     let (plan, versions) = EventStore::with_file_history(path, |mut history| {
-        let visibility = RewindVisibility::new(&history.controls());
+        let visibility = RewindVisibility::new(&history.take_controls());
         if visibility.hidden_start(address, target).is_some() {
             return Err(Error::InvalidArgument(
                 "Files can be restored only when going back within the current history".into(),
             ));
         }
-        let owners = history.owners();
+        let owners = history.take_owners();
         let mut plan = FilePlan::new(workspace)?;
         let mut versions = HashMap::<PathBuf, FileVersions>::new();
         history.visit(target, u64::MAX, |event| {

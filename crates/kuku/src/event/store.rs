@@ -2,7 +2,7 @@
 //! Open log paths must remain stable during a writer's lifetime.
 
 use std::collections::HashMap;
-use std::fs::{self, File};
+use std::fs;
 use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
@@ -19,19 +19,28 @@ mod archive;
 mod codec;
 mod file_history;
 mod index;
+mod message_index;
 mod packing;
 mod reader;
 mod recovery;
 mod reverse;
+mod snapshot;
 
 use archive::Layout;
 use codec::serialize_record;
 use index::JournalIndex;
-pub(crate) use index::{ContextMarks, HistoryMarks, JournalSummary, RouteSelectors, TurnOwners};
-pub use index::{MessageRewind, UserMessagePreview};
+pub use index::MessageRewind;
+pub(crate) use index::{
+    ContextMarks, HistoryMarks, JournalSummary, RouteSelectors, TurnOwnerIndex,
+};
+pub(crate) use message_index::MessagePreviews;
+pub use message_index::UserMessagePreview;
 use reader::EventReader;
 pub(crate) use recovery::Replay;
 use recovery::{Checkpoint, ReplayVisitor};
+use snapshot::{
+    read_after_source, read_before_source, read_source, JournalSnapshot, LockedJournal, ReadSource,
+};
 
 const MAX_RECORD_BYTES: usize = 1024 * 1024;
 const MAX_PAGE_BYTES: usize = 1024 * 1024;
@@ -39,7 +48,8 @@ const MAX_PAGE_RECORDS: usize = 256;
 const INDEX_STRIDE: usize = 128;
 const SCAN_BUFFER_BYTES: usize = 128 * 1024;
 
-type StoreRegistry = Mutex<HashMap<PathBuf, StoreEntry>>;
+type StoreRegistry = Mutex<HashMap<PathBuf, Weak<StoreSlot>>>;
+type StoreSlot = Mutex<Option<StoreEntry>>;
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
 struct EventOffset {
@@ -52,6 +62,7 @@ struct StoreInner {
     writer: Mutex<Writer>,
     changed: Arc<Notify>,
     release: Arc<WriterRelease>,
+    _slot: Arc<StoreSlot>,
 }
 
 impl Drop for StoreInner {
@@ -83,10 +94,6 @@ impl WriterRelease {
         self.changed.notify_all();
     }
 
-    fn is_finished(&self) -> bool {
-        *self.finished.lock().unwrap()
-    }
-
     fn wait(&self) {
         let mut finished = self.finished.lock().unwrap();
         while !*finished {
@@ -97,7 +104,7 @@ impl WriterRelease {
 
 struct Writer {
     journal: Option<LockedJournal>,
-    layout: Layout,
+    layout: Arc<Layout>,
     file_lock: Option<fslock::LockFile>,
     index: Vec<EventOffset>,
     event_count: usize,
@@ -106,32 +113,9 @@ struct Writer {
     committed_len: u64,
     last_id: u64,
     poison: Option<String>,
+    refresh_checkpoint: bool,
     #[cfg(test)]
     fail_next_write: bool,
-}
-
-struct LockedJournal {
-    file: File,
-}
-
-impl LockedJournal {
-    fn writer(file: File, path: &Path) -> Result<Self> {
-        fs_sync::lock_writer(&file, path)?;
-        Ok(Self { file })
-    }
-
-    fn reader(path: &Path) -> Result<Self> {
-        let file = File::open(path)?;
-        fs_sync::lock_reader(&file, path)?;
-        Ok(Self { file })
-    }
-}
-
-impl Drop for LockedJournal {
-    fn drop(&mut self) {
-        // NOTE: A duplicated or inherited handle can outlive this owner.
-        let _ = self.file.unlock();
-    }
 }
 
 impl Writer {
@@ -146,10 +130,14 @@ impl Writer {
         let journal = LockedJournal::writer(file, path)?;
         let layout = Layout::read(&journal.file)?;
         let end = layout.logical_len(journal.file.metadata()?.len());
-        let checkpoint = recovery::load(&layout, &journal.file, path);
+        let checkpoint = match recovery::load(&layout, &journal.file, path) {
+            Some(saved) if recovery::offer(&saved, visit)? => Some(saved),
+            _ => None,
+        };
+        let refresh_checkpoint = layout.has_checkpoint() && checkpoint.is_none();
         let (mut index, mut facts, mut event_count, mut turn_count, mut last_id, start) =
             match checkpoint {
-                Some(checkpoint) if recovery::offer(&checkpoint, visit)? => (
+                Some(checkpoint) => (
                     checkpoint.index,
                     checkpoint.facts,
                     checkpoint.event_count,
@@ -200,7 +188,7 @@ impl Writer {
         fs_sync::sync_parent(path)?;
         Ok(Self {
             journal: Some(journal),
-            layout,
+            layout: Arc::new(layout),
             file_lock: Some(file_lock),
             index,
             event_count,
@@ -209,6 +197,7 @@ impl Writer {
             committed_len,
             last_id,
             poison: None,
+            refresh_checkpoint,
             #[cfg(test)]
             fail_next_write: false,
         })
@@ -275,12 +264,6 @@ impl Writer {
         self.last_id = event.id;
     }
 
-    fn replay(&mut self, path: &Path) -> Result<Vec<StoredEvent>> {
-        self.ensure_healthy(path)?;
-        let file = &self.journal.as_ref().unwrap().file;
-        read_all(self.layout.reader(file, self.committed_len, 0), path)
-    }
-
     #[cfg(feature = "test_support")]
     fn committed_bytes(&mut self, path: &Path) -> Result<Vec<u8>> {
         self.ensure_healthy(path)?;
@@ -339,25 +322,6 @@ impl Writer {
             .map_or(self.committed_len, |entry| entry.offset)
     }
 
-    fn read_before(
-        &mut self,
-        path: &Path,
-        before: Option<u64>,
-        limit: usize,
-    ) -> Result<Vec<StoredEvent>> {
-        self.ensure_healthy(path)?;
-        let end = self.offset_before(before);
-        reverse::read_before(
-            &mut self
-                .layout
-                .reader(&self.journal.as_ref().unwrap().file, end, 0),
-            path,
-            end,
-            before,
-            limit,
-        )
-    }
-
     fn visit_after(
         &mut self,
         path: &Path,
@@ -414,28 +378,21 @@ impl EventStore {
 
     fn open_inner(path: &Path, mut visit: Option<&mut ReplayVisitor<'_>>) -> Result<Self> {
         let absolute = std::env::current_dir()?.join(path);
-        let mut stores = registry().lock().unwrap();
-        if let Ok(key) = fs::canonicalize(&absolute) {
-            if let Some(inner) = find_active_store(&stores, &key) {
-                drop(stores);
-                if let Some(visit) = visit {
-                    inner.writer.lock().unwrap().visit_recovery(&key, visit)?;
-                }
-                return Ok(Self { inner });
-            }
-        }
-        if let Some(parent) = absolute.parent() {
-            fs_sync::create_dir_all(parent)?;
-        }
-        let key = canonical_store_path(&absolute)?;
-        if let Some(inner) = find_active_store(&stores, &key) {
-            drop(stores);
+        let path = if let Some(path) = existing_path(&absolute)? {
+            path
+        } else {
+            fs_sync::create_dir_all(absolute.parent().unwrap())?;
+            canonical_store_path(&absolute)?
+        };
+        let slot = store_slot(&path);
+        let mut entry = slot.lock().unwrap();
+        if let Some(inner) = find_active_store(entry.as_ref()) {
+            drop(entry);
             if let Some(visit) = visit {
-                inner.writer.lock().unwrap().visit_recovery(&key, visit)?;
+                inner.writer.lock().unwrap().visit_recovery(&path, visit)?;
             }
             return Ok(Self { inner });
         }
-        let path = key;
         let writer = Writer::open(&path, &mut visit)?;
         let release = Arc::new(WriterRelease::default());
         let inner = Arc::new(StoreInner {
@@ -443,15 +400,12 @@ impl EventStore {
             writer: Mutex::new(writer),
             changed: Arc::new(Notify::new()),
             release: Arc::clone(&release),
+            _slot: slot.clone(),
         });
-        stores.retain(|_, store| !store.release.is_finished());
-        stores.insert(
-            path,
-            StoreEntry {
-                writer: Arc::downgrade(&inner),
-                release,
-            },
-        );
+        *entry = Some(StoreEntry {
+            writer: Arc::downgrade(&inner),
+            release,
+        });
         Ok(Self { inner })
     }
 
@@ -530,18 +484,9 @@ impl EventStore {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(error) => return Err(error.into()),
         };
-        let stores = registry().lock().unwrap();
-        if let Some(inner) = find_active_store(&stores, &path) {
-            drop(stores);
-            return inner.writer.lock().unwrap().read_after(&path, after, limit);
-        }
-        let _file_lock = acquire_file_lock(&path)?;
-        let journal = LockedJournal::reader(&path)?;
-        let layout = Layout::read(&journal.file)?;
-        let end = layout.logical_len(journal.file.metadata()?.len());
-        let start = recovery::page_start(&layout, &journal.file, &path, after);
+        let (journal, start) = read_after_source(&path, after)?;
         read_page_from(
-            layout.reader(&journal.file, end, start),
+            journal.layout.reader(&journal.file, journal.end, start),
             &path,
             start,
             after,
@@ -561,25 +506,8 @@ impl EventStore {
         let Some(path) = existing_path(path.as_ref())? else {
             return Ok(Vec::new());
         };
-        let stores = registry().lock().unwrap();
-        if let Some(inner) = find_active_store(&stores, &path) {
-            drop(stores);
-            return inner
-                .writer
-                .lock()
-                .unwrap()
-                .read_before(&path, before, limit);
-        }
-        let journal = LockedJournal::reader(&path)?;
-        drop(stores);
-        let layout = Layout::read(&journal.file)?;
-        let mut end = layout.logical_len(journal.file.metadata()?.len());
-        let mut reader = layout.reader(&journal.file, end, 0);
-        if let Some(before) =
-            before.filter(|id| end != layout.prefix_bytes || *id <= layout.prefix_head)
-        {
-            end = reverse::find_page_end(&mut reader, &path, end, before)?;
-        }
+        let (journal, end) = read_before_source(&path, before)?;
+        let mut reader = journal.layout.reader(&journal.file, end, 0);
         reverse::read_before(&mut reader, &path, end, before, limit)
     }
 
@@ -600,26 +528,8 @@ impl EventStore {
         let Some(path) = existing_path(path)? else {
             return Ok(());
         };
-        let stores = registry().lock().unwrap();
-        if let Some(inner) = find_active_store(&stores, &path) {
-            drop(stores);
-            let writer = inner.writer.lock().unwrap();
-            writer.ensure_healthy(&path)?;
-            let end = writer.offset_before(before);
-            let file = &writer.journal.as_ref().unwrap().file;
-            let mut reader = writer.layout.reader(file, writer.committed_len, end);
-            return reverse::visit_before(&mut reader, &path, end, before, visit);
-        }
-        let journal = LockedJournal::reader(&path)?;
-        drop(stores);
-        let layout = Layout::read(&journal.file)?;
-        let end = layout.logical_len(journal.file.metadata()?.len());
-        let mut reader = layout.reader(&journal.file, end, 0);
-        let end = before
-            .filter(|id| end != layout.prefix_bytes || *id <= layout.prefix_head)
-            .map_or(Ok(end), |id| {
-                reverse::find_page_end(&mut reader, &path, end, id)
-            })?;
+        let (journal, end) = read_before_source(&path, before)?;
+        let mut reader = journal.layout.reader(&journal.file, journal.end, 0);
         reverse::visit_before(&mut reader, &path, end, before, visit)
     }
 
@@ -642,29 +552,22 @@ impl EventStore {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(error) => return Err(error.into()),
         };
-        let stores = registry().lock().unwrap();
-        if let Some(inner) = find_active_store(&stores, &path) {
-            drop(stores);
-            return inner.writer.lock().unwrap().replay(&path);
-        }
-        let _file_lock = acquire_file_lock(&path)?;
-        let journal = LockedJournal::reader(&path)?;
-        let layout = Layout::read(&journal.file)?;
-        let end = layout.logical_len(journal.file.metadata()?.len());
-        read_all(layout.reader(&journal.file, end, 0), &path)
+        let journal = read_source(&path)?.snapshot(&path)?;
+        read_all(journal.layout.reader(&journal.file, journal.end, 0), &path)
     }
 
     #[cfg(feature = "test_support")]
     pub(crate) fn read_active_journal_for_test(path: &Path) -> Result<Vec<u8>> {
         let path = fs::canonicalize(path)?;
-        let stores = registry().lock().unwrap();
-        let inner = find_active_store(&stores, &path).ok_or_else(|| {
+        let slot = store_slot(&path);
+        let entry = slot.lock().unwrap();
+        let inner = find_active_store(entry.as_ref()).ok_or_else(|| {
             Error::InvalidArgument(format!(
                 "event store {} has no active writer",
                 path.display()
             ))
         })?;
-        drop(stores);
+        drop(entry);
         let mut writer = inner.writer.lock().unwrap();
         writer.committed_bytes(&path)
     }
@@ -678,18 +581,9 @@ impl EventStore {
         let Some(path) = existing_path(path)? else {
             return Ok(after);
         };
-        let stores = registry().lock().unwrap();
-        if let Some(inner) = find_active_store(&stores, &path) {
-            drop(stores);
-            return inner.writer.lock().unwrap().scan_after(&path, after, visit);
-        }
-        let journal = LockedJournal::reader(&path)?;
-        let layout = Layout::read(&journal.file)?;
-        let end = layout.logical_len(journal.file.metadata()?.len());
-        let start = recovery::page_start(&layout, &journal.file, &path, after);
-        drop(stores);
+        let (journal, start) = read_after_source(&path, after)?;
         scan_events(
-            layout.reader(&journal.file, end, start),
+            journal.layout.reader(&journal.file, journal.end, start),
             &path,
             start,
             after,
@@ -709,15 +603,13 @@ impl EventStore {
         let Some(path) = existing_path(path)? else {
             return Ok(JournalSummary::default());
         };
-        let stores = registry().lock().unwrap();
-        if let Some(inner) = find_active_store(&stores, &path) {
-            drop(stores);
-            return Ok(inner.writer.lock().unwrap().facts.summary.clone());
-        }
-        let file = File::open(&path)?;
-        drop(stores);
-        let layout = Layout::read(&file)?;
-        let end = layout.logical_len(file.metadata()?.len());
+        let journal = match read_source(&path)? {
+            ReadSource::Active(inner) => {
+                return Ok(inner.writer.lock().unwrap().facts.summary.clone())
+            }
+            ReadSource::Closed(journal) => journal,
+        };
+        let JournalSnapshot { file, layout, end } = journal;
         let (mut summary, start) = recovery::load(&layout, &file, &path)
             .map(|checkpoint| (checkpoint.facts.summary, layout.prefix_bytes))
             .unwrap_or_default();
@@ -753,16 +645,15 @@ impl EventStore {
         let Some(path) = existing_path(path)? else {
             return select(&JournalIndex::default(), 0);
         };
-        let stores = registry().lock().unwrap();
-        if let Some(inner) = find_active_store(&stores, &path) {
-            drop(stores);
-            let writer = inner.writer.lock().unwrap();
-            writer.ensure_healthy(&path)?;
-            return select(&writer.facts, writer.last_id);
-        }
-        let journal = LockedJournal::reader(&path)?;
-        drop(stores);
-        let (facts, cursor) = read_index(&path, &journal.file)?;
+        let journal = match read_source(&path)? {
+            ReadSource::Active(inner) => {
+                let writer = inner.writer.lock().unwrap();
+                writer.ensure_healthy(&path)?;
+                return select(&writer.facts, writer.last_id);
+            }
+            ReadSource::Closed(journal) => journal,
+        };
+        let (facts, cursor) = read_index(&path, &journal)?;
         select(&facts, cursor)
     }
 
@@ -799,11 +690,19 @@ fn registry() -> &'static StoreRegistry {
     STORES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn find_active_store(
-    stores: &HashMap<PathBuf, StoreEntry>,
-    path: &Path,
-) -> Option<Arc<StoreInner>> {
-    let entry = stores.get(path)?;
+fn store_slot(path: &Path) -> Arc<StoreSlot> {
+    let mut stores = registry().lock().unwrap();
+    if let Some(slot) = stores.get(path).and_then(Weak::upgrade) {
+        return slot;
+    }
+    let slot = Arc::new(StoreSlot::default());
+    stores.retain(|_, store| store.strong_count() != 0);
+    stores.insert(path.to_owned(), Arc::downgrade(&slot));
+    slot
+}
+
+fn find_active_store(entry: Option<&StoreEntry>) -> Option<Arc<StoreInner>> {
+    let entry = entry?;
     if let Some(inner) = entry.writer.upgrade() {
         return Some(inner);
     }
@@ -873,14 +772,17 @@ fn patch_event_id(payload: &mut EventPayload, event_id: u64) -> Result<()> {
     Ok(())
 }
 
-fn read_index(path: &Path, file: &File) -> Result<(JournalIndex, u64)> {
-    let layout = Layout::read(file)?;
-    let end = layout.logical_len(file.metadata()?.len());
-    let (mut facts, start, after) = recovery::load(&layout, file, path)
+fn read_index(path: &Path, journal: &JournalSnapshot) -> Result<(JournalIndex, u64)> {
+    let JournalSnapshot { file, layout, end } = journal;
+    let (mut facts, start, after) = recovery::load(layout, file, path)
         .map(|checkpoint| (checkpoint.facts, layout.prefix_bytes, layout.prefix_head))
         .unwrap_or_default();
     let mut cursor = after;
-    let mut reader = EventReader::new(BufReader::new(layout.reader(file, end, start)), path, start);
+    let mut reader = EventReader::new(
+        BufReader::new(layout.reader(file, *end, start)),
+        path,
+        start,
+    );
     while let Some(record) = reader.next()? {
         if record.event.id > after {
             cursor = record.event.id;
