@@ -163,9 +163,10 @@ fn line_count(count: usize) -> Line<'static> {
 
 pub(crate) fn append_line_count(title: &mut Line<'static>, width: usize, count: usize) {
     let count = line_count(count);
-    let padding = width.saturating_sub(title.width() + count.width());
-    if padding >= 2 {
-        title.push_span(" ".repeat(padding));
+    let separator = if title.width() == 0 { "" } else { " · " };
+    let separator = Span::styled(separator, TranscriptTone::Label.style());
+    if title.width() + separator.width() + count.width() <= width {
+        title.push_span(separator);
         title.extend(count.spans);
     }
 }

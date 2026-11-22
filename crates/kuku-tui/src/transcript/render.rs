@@ -2,9 +2,10 @@ use crate::keys::Shortcut;
 use crate::theme::CardFrame;
 
 use super::details::{DetailRecord, VisibleDetail};
+use super::timing::connector_column;
+use super::window::BlockGap;
 use super::{
-    body_inset, message, preview, Block, Key, Layout, ToolDetails, Transcript, TranscriptView,
-    TurnSurface,
+    message, preview, Block, Key, Layout, ToolDetails, Transcript, TranscriptView, TurnSurface,
 };
 
 impl Transcript {
@@ -44,9 +45,7 @@ impl Transcript {
         let limit = height;
         let group_frame = CardFrame::timeline(width);
         let mut turn_surface = TurnSurface {
-            connector_column: group_frame.bordered().then(|| {
-                group_frame.content_inset() + usize::from(body_inset(group_frame.content_width()))
-            }),
+            connector_column: connector_column(&group_frame),
             rows: Vec::new(),
             connectors: Vec::new(),
         };
@@ -90,17 +89,21 @@ impl Transcript {
                 skip = skip.saturating_sub(group.rows.len());
                 continue;
             }
-            if block.turn_gap {
+            let turn_start =
+                lines.len() + usize::from(block.gap == Some(BlockGap::Turn) && skip == 0);
+            if block.gap.is_some() {
                 if skip == 0 {
                     lines.push(ratatui::text::Line::default());
                     row_insets.push(Default::default());
                 }
                 skip = skip.saturating_sub(1);
                 if lines.len() == limit {
+                    if turn_start < lines.len() {
+                        turn_surface.rows.push(turn_start..lines.len());
+                    }
                     break;
                 }
             }
-            let turn_start = lines.len();
             if let Some(turn) = block.heading {
                 if skip == 0 {
                     lines.push(message::render_turn(turn, width));

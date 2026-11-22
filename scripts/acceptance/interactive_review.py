@@ -104,6 +104,8 @@ def replay_release_review(client, *, markers=(), settlements=()):
             frames = []
             seen = set()
             expected = set(markers) | {later for later, _ in settlements}
+            newer_cards = set()
+            newer_statistics = set()
 
             def observe(previous=None):
                 frame = terminal.request("screen", styled=True)
@@ -116,11 +118,20 @@ def replay_release_review(client, *, markers=(), settlements=()):
                 frames.append({key: frame[key] for key in ("screen", "styled")})
                 seen.update(marker for marker in markers if marker in screen)
                 for later, metrics in settlements:
-                    if any(later in row for row in lines) and any(metrics in row for row in lines):
-                        later_row = next(i for i, row in enumerate(lines) if later in row)
-                        metrics_row = next(i for i, row in enumerate(lines) if metrics in row)
-                        assert later_row < metrics_row, f"{metrics} must end its Turn"
+                    card = next((i for i, row in enumerate(lines) if later in row), None)
+                    stats = next((i for i, row in enumerate(lines)
+                                  if metrics in row and "Reading history" not in row), None)
+                    if card is not None and stats is not None:
+                        assert card < stats, f"{metrics} must end its Turn"
                         seen.add(later)
+                    elif card is not None and metrics in newer_statistics:
+                        seen.add(later)
+                    elif stats is not None:
+                        assert later not in newer_cards, f"{metrics} must end its Turn"
+                    if card is not None:
+                        newer_cards.add(later)
+                    if stats is not None:
+                        newer_statistics.add(metrics)
                 reached_first_turn = any(LOCATE in row for row in lines[1:])
                 if seen >= expected and (expected or reached_first_turn):
                     break

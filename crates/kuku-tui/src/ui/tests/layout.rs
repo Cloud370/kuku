@@ -17,9 +17,10 @@ fn turns_share_the_user_surface_and_edit_aligned_card_connectors() {
             "added_lines": 1, "removed_lines": 1, "preview": "-先\n+后", "preview_line_numbers": [7, 7],
         }}}),
         json!({"id": 4, "type": "compaction", "turn": 1, "request_id": "compact-1", "status": "completed", "elapsed_ms": 2340, "ts": "2026-11-23T01:00:04Z"}),
-        json!({"id": 5, "type": "assistant", "turn": 1, "text": "乙\n\n```rust\nfn main() {}\n```"}),
-        json!({"id": 6, "type": "user", "turn": 2, "turn_number": 2, "text": "丙"}),
-        json!({"id": 7, "type": "assistant", "turn": 2, "text": "丁"}),
+        json!({"id": 5, "type": "assistant", "turn": 1, "text": "乙\n\n```rust\nfn main() {}\n```", "ts": "2026-11-23T01:00:07Z"}),
+        json!({"id": 6, "type": "turn_summary", "turn": 1, "turn_summary": {"tool_calls": 1}}),
+        json!({"id": 7, "type": "user", "turn": 2, "turn_number": 2, "text": "丙"}),
+        json!({"id": 8, "type": "assistant", "turn": 2, "text": "丁"}),
     ] {
         entry["agent"] = json!("main");
         if entry["turn"] == 1 {
@@ -35,11 +36,15 @@ fn turns_share_the_user_surface_and_edit_aligned_card_connectors() {
     let session = crate::theme::session_area(buffer.area);
     let left = session.x;
     let x = left + 4;
+    let (_, compaction) = text_position(buffer, "Context compacted");
+    let (_, edit) = text_position(buffer, "guide.md");
+    let (_, reply) = text_position(buffer, "Assistant");
+    let card_spacers = [edit - 1, compaction - 1, reply - 1];
     let (_, first_prompt) = text_position(buffer, "Turn 1");
     let (_, last_reply) = cell(buffer, "丁");
     for y in first_prompt..=last_reply {
         let blank = (session.left()..session.right()).all(|x| buffer[(x, y)].symbol() == " ");
-        let background = if blank {
+        let background = if blank && !card_spacers.contains(&y) {
             Color::Reset
         } else {
             crate::theme::SURFACE
@@ -67,12 +72,9 @@ fn turns_share_the_user_surface_and_edit_aligned_card_connectors() {
         assert_eq!(color, buffer[(column - 2, row)].fg);
         assert_eq!(" ", buffer[(column - 1, row)].symbol());
     }
-    let (_, compaction) = text_position(buffer, "Context compacted");
-    assert_eq!("╭", buffer[(left, compaction)].symbol());
-    let (_, edit) = text_position(buffer, "guide.md");
-    let (_, reply) = text_position(buffer, "Assistant");
     for heading in [edit, compaction, reply] {
-        let gap = heading - 1;
+        let gap = heading - 2;
+        assert!((session.left()..session.right()).all(|x| buffer[(x, heading - 1)].symbol() == " "));
         assert_eq!("╭", buffer[(left, heading)].symbol());
         assert_ne!("│", buffer[(x, heading)].symbol());
         assert_eq!(" ", buffer[(left, gap)].symbol());
@@ -85,8 +87,9 @@ fn turns_share_the_user_surface_and_edit_aligned_card_connectors() {
         (reply, "01:00:04Z · T+4s · 2.3s"),
     ] {
         let (column, row) = text_position(buffer, metric);
-        assert_eq!((x + 2, heading - 1), (column, row));
+        assert_eq!((x + 2, heading - 2), (column, row));
     }
+    assert!(super::buffer_rows(buffer).all(|row| !row.contains("01:00:07Z")));
     let (_, second_turn) = text_position(buffer, "Turn 2");
     assert_eq!(" ", buffer[(x, second_turn - 1)].symbol());
     assert_eq!(Color::Reset, buffer[(x, second_turn - 1)].bg);

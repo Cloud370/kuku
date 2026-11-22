@@ -6,9 +6,35 @@ use serde_json::Value;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime, UtcOffset};
 
 use crate::text::format_elapsed;
-use crate::theme::TranscriptTone;
+use crate::theme::{CardFrame, TranscriptTone};
 
-use super::{Record, Row};
+use super::window::BlockGap;
+use super::{body_inset, Block, Record, Row};
+
+pub(super) fn connector_column(frame: &CardFrame) -> Option<usize> {
+    frame
+        .bordered()
+        .then(|| frame.content_inset() + usize::from(body_inset(frame.content_width())))
+}
+
+pub(super) fn space_timed_cards(blocks: &mut [Block<'_>], width: usize) {
+    let inset = connector_column(&CardFrame::timeline(width)).map_or(1, |column| column + 2);
+    let mut previous_timed_turn = None;
+    for block in blocks.iter_mut().filter(|block| block.height() != 0) {
+        if previous_timed_turn.is_some() && previous_timed_turn == block.turn && block.gap.is_none()
+        {
+            block.gap = Some(BlockGap::Card);
+        }
+        let trailing = block
+            .footer
+            .last()
+            .or_else(|| block.body_rows().next_back())
+            .or_else(|| block.group.as_ref()?.rows.last());
+        previous_timed_turn = block.turn.filter(|_| {
+            trailing.is_some_and(|row| row.line.spans.is_empty()) && block.timing.fits(width, inset)
+        });
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct CardTiming {
@@ -87,6 +113,14 @@ impl CardTiming {
             }
             u64::try_from(elapsed.whole_milliseconds()).ok()
         })
+    }
+
+    fn fits(self, width: usize, inset: usize) -> bool {
+        if self.end.or(self.start).is_some() {
+            width.saturating_sub(inset) >= "00:00:00Z".len()
+        } else {
+            self.measured_ms.is_some() && self.line(width, inset).is_some()
+        }
     }
 
     pub(super) fn line(self, width: usize, inset: usize) -> Option<Line<'static>> {

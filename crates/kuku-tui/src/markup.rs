@@ -685,7 +685,7 @@ mod tests {
         let source = "```\n  # 甲乙\n\n    **Literal**\n```";
         let width = 20;
         let plain = rows(&render_markdown(source, width, LIMIT));
-        assert!(plain[0].ends_with(" 3 lines ╮"));
+        assert!(plain[0].starts_with("╭─ 3 lines "));
         assert_eq!(width, plain[0].width());
         assert!(plain[1].starts_with("│   # 甲乙 "));
         assert_eq!(format!("│{}│", " ".repeat(width - 2)), plain[2]);
@@ -707,9 +707,9 @@ mod tests {
         );
         let explicit = rows(&render_markdown("```python", 32, LIMIT));
         assert!(explicit[0].starts_with("╭─ python "));
-        assert!(explicit[0].ends_with(" 0 lines ╮"));
+        assert!(explicit[0].starts_with("╭─ python · 0 lines "));
         let unfinished = rows(&render_markdown("```python\nfirst\n\nlast", 32, LIMIT));
-        assert!(unfinished[0].ends_with(" 3 lines ╮"));
+        assert!(unfinished[0].starts_with("╭─ python · 3 lines "));
     }
 
     #[test]
@@ -720,7 +720,7 @@ mod tests {
             width,
             LIMIT,
         ));
-        assert!(plain[0].ends_with(" 2 lines ╮"));
+        assert!(plain[0].starts_with("╭─ 2 lines "));
         assert!(plain[2].starts_with("│ # Literal "));
         assert!(plain[3].starts_with("│     second "));
     }
@@ -773,7 +773,7 @@ mod tests {
             let lines = render_markdown(source, width, 1);
             let title = lines.first().unwrap();
             assert_eq!(width, title.width());
-            assert!(title.to_string().ends_with(" 1 line ╮"));
+            assert!(title.to_string().starts_with("╭─ text · 1 line "));
         }
         let narrow = render_markdown(source, 8, LIMIT);
         assert!(narrow[0].to_string().contains("text"));
@@ -854,10 +854,11 @@ mod tests {
             let plain = rows(&lines);
             assert_eq!("Before example", plain.first().unwrap());
             assert!(plain.iter().any(|line| line == "After example"));
-            assert!(plain
-                .iter()
-                .any(|line| line.starts_with("Markdown preview · Messages")
-                    && line.ends_with(&format!("{} lines", DOCUMENT.lines().count()))));
+            assert!(plain.iter().any(|line| line
+                == &format!(
+                    "Markdown preview · Messages · {} lines",
+                    DOCUMENT.lines().count()
+                )));
             assert!(plain.iter().any(|line| line.starts_with('┌')));
             assert!(plain.iter().any(|line| line.contains("隔离 │ 通过")));
             assert!(plain.iter().any(|line| line == "• 检查结果"));

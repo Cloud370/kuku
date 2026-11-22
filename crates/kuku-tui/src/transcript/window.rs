@@ -361,18 +361,14 @@ impl Window {
         let mut previous_turn = None;
         let mut retry_turn = None;
         let mut follows_reply = false;
-        let mut reply_timing = CardTiming::default();
         let mut blocks = std::iter::from_fn(move || {
             let (index, position, record) = records.next()?;
             let footer_summary = record.turn_summary.as_ref().filter(|_| follows_reply);
-            let timing = if footer_summary.is_some() {
-                reply_timing
-            } else if matches!(record.body, Body::TurnSummary) {
+            let timing = if record.turn_summary.is_some() {
                 CardTiming::default()
             } else {
                 record.timing
             };
-            reply_timing = record.timing;
             follows_reply = group_frame.bordered()
                 && record.has_reply()
                 && record.turn_summary.is_none()
@@ -400,7 +396,7 @@ impl Window {
                         .filter(|&number| number > 0)
                         .map_or(TurnHeading::Unnumbered, TurnHeading::Numbered)
                 });
-            let turn_gap = heading.is_some() && previous_turn.is_some();
+            let gap = (heading.is_some() && previous_turn.is_some()).then_some(BlockGap::Turn);
             previous_turn = record.turn.or(previous_turn);
             if current
                 .as_ref()
@@ -503,7 +499,7 @@ impl Window {
                 position,
                 heading,
                 turn: previous_turn,
-                turn_gap,
+                gap,
                 timing,
                 thinking,
                 group,
@@ -524,7 +520,7 @@ impl Window {
                 position: group.position(),
                 heading: None,
                 turn: None,
-                turn_gap: false,
+                gap: None,
                 timing: CardTiming::default(),
                 thinking: false,
                 group: None,
@@ -538,6 +534,7 @@ impl Window {
             });
         }
         blocks.sort_by_key(|block| block.position);
+        super::timing::space_timed_cards(&mut blocks, layout.width);
         blocks
     }
 
@@ -801,7 +798,7 @@ pub(super) struct Block<'a> {
     pub(super) position: u64,
     pub(super) heading: Option<TurnHeading>,
     pub(super) turn: Option<u64>,
-    pub(super) turn_gap: bool,
+    pub(super) gap: Option<BlockGap>,
     pub(super) timing: CardTiming,
     pub(super) thinking: bool,
     pub(super) group: Option<GroupHeading>,
@@ -812,6 +809,12 @@ pub(super) struct Block<'a> {
     pub(super) rewind_group: Option<&'a RewindGroupState>,
     pub(super) grouped: bool,
     pub(super) collapsed: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum BlockGap {
+    Turn,
+    Card,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -831,7 +834,7 @@ impl Block<'_> {
         for block in blocks {
             if let Some(group) = &block.group {
                 group_row = Some((
-                    start + usize::from(block.turn_gap) + usize::from(block.heading.is_some()),
+                    start + usize::from(block.gap.is_some()) + usize::from(block.heading.is_some()),
                     group.rows.len(),
                 ));
             } else if !block.grouped {
@@ -840,7 +843,7 @@ impl Block<'_> {
             if block.key == &anchor.key {
                 return match anchor.line {
                     AnchorLine::Gap => start,
-                    AnchorLine::Turn => start + usize::from(block.turn_gap),
+                    AnchorLine::Turn => start + usize::from(block.gap.is_some()),
                     AnchorLine::RewindEntry { event_id, line } => block
                         .rewind_group
                         .and_then(|group| group.row_for_entry(event_id, line))
@@ -914,9 +917,9 @@ impl Block<'_> {
     pub(super) fn anchor_at(blocks: &[Self], mut row: usize) -> Option<Anchor> {
         for block in blocks {
             if row < block.height() {
-                let heading_row = usize::from(block.turn_gap);
+                let heading_row = usize::from(block.gap.is_some());
                 let prefix = block.prefix_height();
-                let line = if row == 0 && block.turn_gap {
+                let line = if row == 0 && block.gap.is_some() {
                     AnchorLine::Gap
                 } else if row == heading_row && block.heading.is_some() {
                     AnchorLine::Turn
@@ -928,7 +931,7 @@ impl Block<'_> {
                         })
                 } else if row < prefix {
                     AnchorLine::Group(row.saturating_sub(
-                        usize::from(block.turn_gap) + usize::from(block.heading.is_some()),
+                        usize::from(block.gap.is_some()) + usize::from(block.heading.is_some()),
                     ))
                 } else if row >= prefix + block.body_height() {
                     AnchorLine::Footer(row - prefix - block.body_height())
@@ -963,14 +966,14 @@ impl Block<'_> {
         self.note.len().saturating_sub(1)
     }
 
-    pub(super) fn body_rows(&self) -> impl Iterator<Item = &Row> {
+    pub(super) fn body_rows(&self) -> impl DoubleEndedIterator<Item = &Row> {
         self.note
             .iter()
             .chain(self.rows.iter().skip(usize::from(!self.note.is_empty())))
     }
 
     fn prefix_height(&self) -> usize {
-        usize::from(self.turn_gap)
+        usize::from(self.gap.is_some())
             + usize::from(self.heading.is_some())
             + self.group.as_ref().map_or(0, |group| group.rows.len())
     }

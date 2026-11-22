@@ -97,7 +97,7 @@ rows share these roles with the Turn statistics and host actions inside `run_js`
 - Use the normal foreground for paths, command text and result content. Use muted
   text for labels, units and dividers. Use the usage accent for measured values such
   as token counts, elapsed time, line ranges, cache hit rates and tool counts.
-- Show the source line count on the right of code and Markdown preview titles
+- Show the source line count beside the code language label or Markdown preview title
   when there is room. Count the source before wrapping or limiting the preview.
 - Use cyan for output field names and violet for data types. Keep output counts
   in the usage accent and units in the muted label color.
@@ -107,6 +107,8 @@ rows share these roles with the Turn statistics and host actions inside `run_js`
 - End a settled Turn with its statistics. Keep them in the reply footer when
   the reply is the last card. Show them after any later answer or compaction
   attached to that Turn.
+- Leave a blank row between the timing line and the next card in the same Turn.
+  End the Turn at its statistics.
 - Put recorded card timestamps and available elapsed times in the existing gaps.
   Show timestamps in UTC. For a group of calls, show the elapsed interval from
   the first request to the last result when all calls have both timestamps.
