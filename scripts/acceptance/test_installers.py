@@ -131,3 +131,28 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(b"old executable", self.installed.read_bytes())
         self.assertFalse(self.archive.exists())
         self.assertEqual([], list(self.installed.parent.glob(".install*")))
+
+    @unittest.skipIf(os.name == "nt", "Unix installer")
+    def test_path_hint_activates_kuku_in_the_calling_bash(self):
+        shell_home = self.home / "home with ' and spaces"
+        shell_home.mkdir()
+        profile = shell_home / ".bashrc"
+        profile.touch()
+        env = dict(os.environ, HOME=str(shell_home), KUKU_HOME="", SHELL="/bin/bash")
+        result = subprocess.run(
+            ["bash", "--noprofile", "--norc", "-ec", """
+                log=$(sh "$1" --source "$2")
+                printf '%s\\n' "$log"
+                installed="$HOME/.kuku/bin/kuku"
+                test "$(command -v kuku || true)" != "$installed"
+                activation=$(printf '%s\\n' "$log" | sed -n '/^To use kuku in this terminal, run:$/ {n; s/^  //; p;}')
+                test -n "$activation"
+                eval "$activation"
+                test "$(command -v kuku)" = "$installed"
+            """, "installer-test", str(SCRIPTS / "install.sh"), self.source],
+            env=env, capture_output=True, text=True, timeout=24,
+        )
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual(PAYLOAD, (shell_home / ".kuku" / "bin" / "kuku").read_bytes())
+        command = result.stdout.split("To use kuku in this terminal, run:\n  ", 1)[1].splitlines()[0]
+        self.assertIn(command + "\n", profile.read_text())

@@ -17,6 +17,8 @@ For a tagged release, choose its `latest.json` asset from the release list. From
 
 The installer shows the download size when available, displays progress in interactive terminals, and retries transient download failures. A reinstall can reuse a cached archive that matches the release checksum. [Download and installation measurements](../how-it-works/performance.md#download-and-installation)
 
+On Linux and macOS, the installer saves the PATH entry in your shell configuration. If the install directory is missing from the current terminal's PATH, it prints the command to activate it in that terminal. Run it before starting `kuku`.
+
 ## Run the first task
 
 Use a writable home or set `KUKU_HOME` to a writable directory. The quickstart covers configuration, opening the terminal interface, and continuing a task from another client. [Quickstart](quickstart.md)
