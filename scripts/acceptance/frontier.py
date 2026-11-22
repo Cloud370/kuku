@@ -810,6 +810,9 @@ def ledger_edit(operation, *arguments):
 
 
 def run_live(args, case, source, image, directory, secrets):
+    from benchmark_source import MAX_FRONTIER_REQUEST_BYTES, frontier_request_bytes
+
+    requested_bytes = getattr(args, "max_request_bytes", None)
     pi_prefix = getattr(args, "pi_prefix", None)
     codex_prefix = getattr(args, "codex_prefix", None)
     node_binary = getattr(args, "node_binary", None)
@@ -832,7 +835,8 @@ def run_live(args, case, source, image, directory, secrets):
     output_tokens = route.completion_limit if args.max_output_tokens is None else args.max_output_tokens
     if output_tokens is None:
         raise ValueError("The selected provider route did not declare an output token limit. Set --max-output-tokens.")
-    limits = RunLimits(args.max_requests, WIRE_BYTES, output_tokens, byte_ceiling=WIRE_BYTES,
+    limits = RunLimits(args.max_requests, frontier_request_bytes(requested_bytes), output_tokens,
+                       byte_ceiling=MAX_FRONTIER_REQUEST_BYTES,
                        output_ceiling=route.completion_limit)
     timeout = args.agent_timeout_sec if args.agent_timeout_sec is not None else case["timeout_sec"]
     if timeout <= 0 or (not (pi_prefix or codex_prefix) and not args.sdk_binary.is_file()):
@@ -862,7 +866,7 @@ def run_live(args, case, source, image, directory, secrets):
                 config.write_text(route.config(endpoint, limits, context_window=route.context), encoding="utf-8")
             sdk_args = ["--reasoning-effort", route.effort, "--timeout", str(timeout),
                         "--max-output-tokens", str(limits.output_tokens), "--max-agents", "16",
-                        "--max-context-tokens", str(route.context), "--max-request-bytes", str(WIRE_BYTES)]
+                        "--max-context-tokens", str(route.context), "--max-request-bytes", str(limits.request_bytes)]
             if limits.requests is not None:
                 sdk_args.extend(["--max-requests", str(limits.requests)])
             max_command_seconds = getattr(args, "max_command_seconds", None)
@@ -871,6 +875,7 @@ def run_live(args, case, source, image, directory, secrets):
             caller = SimpleNamespace(sdk_binary=args.sdk_binary, config=config, connection=route.connection,
                                      require_streaming=args.require_streaming, sdk_args=sdk_args, suite="frontier",
                                      max_command_seconds=max_command_seconds,
+                                     max_request_bytes=requested_bytes,
                                      prompts_dir=getattr(args, "prompts_dir", None),
                                      cpus=getattr(args, "cpus", 1),
                                      pi_prefix=pi_prefix, node_binary=node_binary, pi_model=route.model, pi_effort=route.effort,

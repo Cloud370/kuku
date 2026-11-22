@@ -608,7 +608,9 @@ class FrontierTests(unittest.TestCase):
             self.assertIn(f"context_window = {ROUTER.context}", config)
             self.assertIn(f"max_output_tokens = {directory.name}", config)
             flags = dict(zip(caller.sdk_args[::2], caller.sdk_args[1::2]))
-            self.assertEqual(flags["--max-request-bytes"], str(WIRE_BYTES))
+            expected_bytes = 524288 if directory.name == "131072" else WIRE_BYTES
+            self.assertEqual(flags["--max-request-bytes"], str(expected_bytes))
+            self.assertEqual(caller.max_request_bytes, 524288 if directory.name == "131072" else None)
             self.assertEqual(flags["--max-context-tokens"], str(ROUTER.context))
             self.assertEqual(flags["--max-output-tokens"], directory.name)
             self.assertEqual(flags.get("--max-requests"), "48" if directory.name == "131072" else None)
@@ -628,6 +630,7 @@ class FrontierTests(unittest.TestCase):
             directory.mkdir()
             args = SimpleNamespace(provider="openrouter", upstream=None, sdk_binary=binary, ledger=ledger.path,
                                    max_requests=None if output is None else 48, max_output_tokens=output,
+                                   max_request_bytes=524288 if output is not None else None,
                                    case_cap_usd=1.5, agent_timeout_sec=None,
                                    require_streaming=True, require_resource_evidence=True, run_id=None)
             result = run_live(args, case, directory, "fake-image", directory, {ROUTER.credential: KEY, DIRECT.credential: "unused"})
@@ -650,6 +653,7 @@ class FrontierTests(unittest.TestCase):
             self.assertEqual(meter["sdk_binary_sha256"], "b" * 64)
         self.assertEqual([meter["limits"]["max_requests"] for _, meter in outputs], [48, None])
         self.assertEqual([meter["limits"]["max_output_tokens"] for _, meter in outputs], [131072, ROUTER.completion_limit])
+        self.assertEqual([meter["limits"]["max_request_bytes"] for _, meter in outputs], [524288, WIRE_BYTES])
 
     def test_cap_below_one_provider_ceiling_fails_before_docker_or_reservation(self):
         ledger = Budget(self.directory / "shared.json")

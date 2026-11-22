@@ -433,7 +433,8 @@ def benchmark_attempt(args, case, source, image, directory, mode, secrets, *, sd
                 record[evidence_key] = inspect_sdk(process_result, data_dir, args.connection,
                                                     "/kuku/data", record["session_id"], args.require_streaming,
                                                     require_fixed_limits=args.suite == "legacy", require_output_limit=True,
-                                                    expected_max_command_seconds=record["max_command_seconds"])
+                                                    expected_max_command_seconds=record["max_command_seconds"],
+                                                    expected_max_request_bytes=getattr(args, "max_request_bytes", None))
         else:
             record["execution"] = {"exit_code": 0, "scope": "untouched environment; no Agent or oracle"}
         sdk = record.get("sdk_evidence", {})

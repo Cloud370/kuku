@@ -8,6 +8,17 @@ import tempfile
 from run import capture, locked, money, require_success
 
 
+MAX_FRONTIER_REQUEST_BYTES = 4 * 1024 * 1024
+
+
+def frontier_request_bytes(requested):
+    if requested is None:
+        return MAX_FRONTIER_REQUEST_BYTES
+    if not 4096 <= requested <= MAX_FRONTIER_REQUEST_BYTES:
+        raise ValueError("Frontier request byte limit must be between 4096 and 4194304")
+    return requested
+
+
 def validate_benchmark_arguments(args, metered, paid):
     if args.cpus <= 0:
         raise ValueError("--cpus must be positive")
@@ -17,6 +28,9 @@ def validate_benchmark_arguments(args, metered, paid):
         raise ValueError("--wire selects a direct DeepSeek wire format for a Frontier SDK run")
     if args.reasoning_effort is not None and (not metered or args.provider != "deepseek"):
         raise ValueError("--reasoning-effort selects a direct DeepSeek reasoning setting for Frontier live")
+    if args.max_request_bytes is not None and not metered:
+        raise ValueError("--max-request-bytes selects a request budget for Frontier live")
+    frontier_request_bytes(args.max_request_bytes)
     if args.pi_prefix and (not metered or args.provider != "deepseek" or args.require_streaming):
         raise ValueError("--pi-prefix selects direct DeepSeek Frontier live with Pi Session evidence")
     if args.codex_prefix and (not metered or args.provider != "deepseek" or args.require_streaming
@@ -59,6 +73,7 @@ def add_benchmark_arguments(parser):
     parser.add_argument("--upstream", help="exact OpenRouter endpoint tag for Frontier live")
     parser.add_argument("--case-cap-usd", type=money, default=0.75)
     parser.add_argument("--max-output-tokens", type=int, help="Frontier live output ceiling (default: the selected route's limit)")
+    parser.add_argument("--max-request-bytes", type=int, help="Frontier live request byte limit (default: 4 MiB)")
     parser.add_argument("--max-requests", type=int, help="optional total upstream attempt limit for Frontier live")
     parser.add_argument("--agent-timeout-sec", type=int)
     parser.add_argument("--max-command-seconds", type=int, help="optional per-command deadline for Frontier SDK live")

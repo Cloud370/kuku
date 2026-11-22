@@ -43,6 +43,7 @@ def relay_summary(rows):
         'timed_attempts': len(elapsed),
         'elapsed_seconds': round(sum(elapsed), 6) if elapsed and len(elapsed) == len(rows) else None,
         'request_body_bytes': sum(request_bytes) if request_bytes and len(request_bytes) == len(rows) else None,
+        'peak_request_body_bytes': max(request_bytes) if request_bytes and len(request_bytes) == len(rows) else None,
         'first_output_samples': len(first_output),
         'first_output_p50_seconds': middle(first_output),
         'emitted_tool_calls': sum(emitted) if emitted else None,
@@ -178,11 +179,11 @@ def attempt(directory, harness):
     agent = object_value(result.get('sdk_evidence' if harness == 'kuku' else 'agent_evidence'))
     tool_facts = object_value(agent.get('facts')) if harness == 'kuku' else agent
     tool_batches = object_value(agent.get('tool_batches'))
+    journal_tools, journal_result = session_summary(directory / 'live', agent) if harness == 'kuku' else ({}, {})
     tool_calls = count(tool_facts.get('tool_calls'))
     tool_call_source = 'runner_inspection' if tool_calls is not None else None
     if harness == 'kuku' and tool_calls is None:
-        observed, _ = session_summary(directory / 'live', agent)
-        tool_calls = count(observed.get('tool_calls'))
+        tool_calls = count(journal_tools.get('tool_calls'))
         if tool_calls is not None:
             tool_call_source = 'session_journal'
     rejections = meter.get('rejections')
@@ -218,6 +219,7 @@ def attempt(directory, harness):
         'agent_seconds': number(object_value(result.get('execution')).get('seconds')),
         'agent_timed_out': True if sdk_deadline else runner_timeout,
         'sdk_task_deadline_elapsed': sdk_deadline,
+        'sdk_error_detail': journal_result.get('sdk_error_detail'),
         'supervisor_timed_out': runner_timeout,
         'verifier_seconds': number(verification.get('seconds')),
         'original_verifier_passed': original_verifier_passed,
@@ -229,6 +231,8 @@ def attempt(directory, harness):
         'case_cap_rejections': case_cap_rejections,
         'tool_calls': tool_calls,
         'tool_call_source': tool_call_source,
+        'workspace_script_calls': journal_tools.get('workspace_script_calls'),
+        'workspace_script_host_actions': journal_tools.get('workspace_script_host_actions'),
         'tool_batches': {key: count(tool_batches.get(key))
                          for key in ('without_tools', 'single_call', 'multiple_calls', 'max_calls')} if tool_batches else None,
         'usage': {key: count(object_value(accounting.get('usage')).get(key)) for key in TOKEN_FIELDS},

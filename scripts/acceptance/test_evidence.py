@@ -187,6 +187,17 @@ class Fixture:
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_request_byte_limit_must_match_the_selected_sdk_setting(self):
+        limits = self.fixture.report["limits"]
+        for reported in (None, True, 65535):
+            with self.subTest(reported=reported):
+                limits["max_request_bytes"] = reported
+                evidence = self.fixture.inspect(expected_max_request_bytes=65536)
+                self.assertFalse(evidence["passed"])
+                self.assertIn("selected request byte limit", evidence["error"])
+        limits["max_request_bytes"] = 65536
+        self.assertTrue(self.fixture.inspect(expected_max_request_bytes=65536)["passed"])
+
     def test_command_deadline_must_match_the_selected_sdk_setting(self):
         for setting in (None, True, 59):
             with self.subTest(setting=setting):

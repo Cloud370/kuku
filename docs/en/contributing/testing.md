@@ -326,6 +326,8 @@ Use the same shared flags as in the Pi example, plus `--wire openai-responses` o
 
 When the runner's inspection recorded tool calls per response, the paired export reports how many responses contained zero, one, or multiple calls. This describes the model's batches. If SDK validation failed, the exporter can report the observed tool-call count from the saved Session journal and identifies that source. Measure actual execution overlap separately with tool start and settlement evidence.
 
+For Kuku, the paired export also counts `run_js` calls and host actions from their final receipts, including completed Jobs. Missing script receipts leave the host-action count unknown.
+
 When the original verifier passes, the paired report can match durable file mutation hashes to the retained Kuku artifacts. This also covers an Agent that reached its runtime deadline. The report records matching artifact coverage and uses Session journal timestamps for the interval from the first prepared request to the final hashes and then to the last completed Turn. If the journal interval exceeds the measured Agent duration, the report keeps the match counts and flags the clock discrepancy. The verifier still runs at the end of the attempt.
 
 To compare Prompt variants, reuse the same release `session_task` and give each live Frontier attempt a `--prompts-dir` containing its overrides. The selector snapshots the Prompt assets, records their SHA-256 digests in the attempt, and mounts the snapshot read-only. The SDK supplies embedded defaults for missing assets. Use `benchmark_compare.py --baseline RUN_DIRECTORY --candidate RUN_DIRECTORY` to check the SDK binary, runtime bundle, distinct Prompt snapshots, and matching task, provider settings and resource limits.
@@ -335,6 +337,8 @@ Use `--reasoning-effort high` on a live direct DeepSeek attempt to test a differ
 To compare SDK builds, use `benchmark_compare.py --compare-sdk --baseline RUN_DIRECTORY --candidate RUN_DIRECTORY`. The exporter requires distinct binaries and runtime bundle hashes, the same recorded model version, matching case and limits, and matching external Prompt overrides. Treat embedded Prompt changes as part of the SDK build. Use the Prompt comparison above to isolate wording changes.
 
 For a host deadline experiment, use `--max-command-seconds N` on a live Frontier SDK attempt. This sets the SDK process deadline for each command, including commands launched from `run_js` and commands that become Jobs. The task's whole-agent deadline and verifier are separate. The selector checks the applied limit in the SDK report, and paired exports require a matching process deadline. Omit the option for the SDK default of no per-command deadline.
+
+Use `--max-request-bytes 524288` to exercise the default Session request budget in a live Frontier run. The relay and Kuku runner use the selected limit, and the selector checks the SDK report. An omitted option preserves the 4 MiB benchmark limit. Pair trials with the same byte limit.
 
 ## Resource measurements
 

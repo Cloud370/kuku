@@ -526,7 +526,8 @@ class AcceptanceTests(unittest.TestCase):
         image = "sha256:fixture-image"
         args = ["run.py", "--output", str(self.directory), "benchmark", "--suite", "frontier",
                 "--mode", "live", "--case", "large-scale-text-editing", "--sdk-binary", "/fixture/sdk",
-                "--provider", "deepseek", "--model", "deepseek-flash", "--reasoning-effort", "high"]
+                "--provider", "deepseek", "--model", "deepseek-flash", "--reasoning-effort", "high",
+                "--max-request-bytes", "524288"]
 
         def capture(command, directory, label, **kwargs):
             if label == "image-build":
@@ -547,6 +548,7 @@ class AcceptanceTests(unittest.TestCase):
         self.assertEqual(parsed.run_id, directory.name)
         self.assertEqual((parsed.provider, parsed.model, parsed.upstream), ("deepseek", "deepseek-flash", None))
         self.assertEqual(parsed.reasoning_effort, "high")
+        self.assertEqual(parsed.max_request_bytes, 524288)
         self.assertEqual((parsed.case_cap_usd, parsed.max_output_tokens, parsed.max_requests), (0.75, None, None))
         self.assertEqual(parsed.agent_timeout_sec, 1200)
         self.assertEqual(source, self.directory / "source" / "tasks" / case["id"])
@@ -564,6 +566,15 @@ class AcceptanceTests(unittest.TestCase):
                         mock.patch.object(sys, "argv", [*base, *flags, *option]):
                     with self.assertRaisesRegex(ValueError, f"{option[0]} selects a direct DeepSeek"):
                         ACCEPTANCE.main()
+
+    def test_benchmark_request_byte_limit_requires_live_frontier_and_valid_bounds(self):
+        baseline = ["run.py", "benchmark", "--case", "regex-log", "--suite", "frontier"]
+        for flags, error in ((["--max-request-bytes", "524288"], "selects a request budget for Frontier live"),
+                             (["--mode", "live", "--max-request-bytes", "4095"], "between 4096 and 4194304"),
+                             (["--mode", "live", "--max-request-bytes", "4194305"], "between 4096 and 4194304")):
+            with self.subTest(flags=flags), mock.patch.object(sys, "argv", [*baseline, *flags]):
+                with self.assertRaisesRegex(ValueError, error):
+                    ACCEPTANCE.main()
 
     def test_benchmark_deadline_requires_live_sdk_and_positive_seconds(self):
         base = ["run.py", "benchmark", "--suite", "frontier", "--case", "regex-log"]

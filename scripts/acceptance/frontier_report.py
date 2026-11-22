@@ -53,6 +53,7 @@ USAGE_FIELDS = {
 }
 SETTLED_STATUSES = {'idle', 'running', 'waiting', 'stopped', 'interrupted'}
 SDK_REQUEST_BYTES_ERROR = 'invalid argument: prepared model request exceeds the configured byte limit'
+SDK_REQUEST_BYTES_PATTERN = re.compile(re.escape(SDK_REQUEST_BYTES_ERROR) + r'(?: \([0-9]+ bytes, limit [0-9]+ bytes\))?')
 TEST_FIELDS = ('tests', 'passed', 'failed', 'skipped', 'pending', 'other')
 MEMORY_FIELDS = ('peak_rss_kib', 'mean_rss_kib', 'samples', 'observed_seconds', 'window_seconds', 'coverage_ratio')
 SELF_USAGE_FIELDS = ('user_cpu_seconds', 'system_cpu_seconds', 'peak_rss_kib', 'input_blocks', 'output_blocks')
@@ -634,6 +635,11 @@ def session_events(journal):
             yield event
 
 
+def script_action_count(receipt):
+    actions = receipt.get('actions')
+    return len(actions) if receipt.get('kind') == 'workspace_script_result' and isinstance(actions, list) else None
+
+
 def session_summary(live, sdk):
     facts = object_value(sdk.get('facts'))
     tools = {**{key: count(facts.get(key)) for key in ('tool_calls', 'tool_results', 'tool_errors')},
@@ -649,6 +655,7 @@ def session_summary(live, sdk):
     calls = 0
     script_calls = script_actions = 0
     pending_scripts = set()
+    pending_script_jobs = set()
     script_evidence_complete = True
     observed = {**result, 'durable_turn_settled': False}
     agent = sdk.get('agent') or 'main'
@@ -674,8 +681,15 @@ def session_summary(live, sdk):
                 if call in pending_scripts:
                     pending_scripts.remove(call)
                     receipt = object_value(event.get('structured'))
-                    if receipt.get('kind') == 'workspace_script_result' and isinstance(receipt.get('actions'), list):
-                        script_actions += len(receipt['actions'])
+                    action_count = script_action_count(receipt)
+                    job_id = receipt.get('job_id')
+                    if action_count is not None:
+                        script_actions += action_count
+                    elif receipt.get('kind') == 'job' and isinstance(job_id, str) and job_id:
+                        job = (event_agent, job_id)
+                        if job in pending_script_jobs:
+                            script_evidence_complete = False
+                        pending_script_jobs.add(job)
                     else:
                         script_evidence_complete = False
             if event_agent == agent:
@@ -691,6 +705,16 @@ def session_summary(live, sdk):
                     provider_error_turn = count(event.get('turn'))
                     provider_error_kind = observed['interrupt_reason']
             operation = object_value(event.get('record')) if event.get('kind') == 'runtime.operation' else {}
+            if operation.get('operation') == 'job_finished':
+                job = (operation.get('agent'), operation.get('job_id'))
+                if job in pending_script_jobs:
+                    pending_script_jobs.remove(job)
+                    receipt = object_value(object_value(operation.get('result')).get('structured'))
+                    action_count = script_action_count(receipt)
+                    if action_count is None:
+                        script_evidence_complete = False
+                    else:
+                        script_actions += action_count
             if operation.get('operation') == 'turn_settled' and operation.get('address') == agent:
                 error = operation.get('error')
                 error_kind = None
@@ -702,14 +726,16 @@ def session_summary(live, sdk):
                 observed.update(durable_turn_settled=True,
                                 settled_status=allowed(operation.get('status'), SETTLED_STATUSES),
                                 sdk_error_kind=error_kind,
-                                sdk_error_detail='request_bytes_limit' if error == SDK_REQUEST_BYTES_ERROR else None)
+                                sdk_error_detail='request_bytes_limit' if isinstance(error, str)
+                                and SDK_REQUEST_BYTES_PATTERN.fullmatch(error) else None)
     except (OSError, UnicodeError, ValueError, TypeError):
         return tools, result
     results = sum(statuses.values())
     tools = {'tool_calls': calls, 'tool_results': results, 'tool_errors': statuses['error'],
              'non_ok_results': results - statuses['ok'] if not statuses['unknown'] else None,
              'workspace_script_calls': script_calls,
-             'workspace_script_host_actions': script_actions if script_evidence_complete and not pending_scripts else None}
+             'workspace_script_host_actions': script_actions
+             if script_evidence_complete and not pending_scripts and not pending_script_jobs else None}
     return tools, observed
 
 

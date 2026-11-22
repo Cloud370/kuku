@@ -181,7 +181,11 @@ class PairedReportTests(unittest.TestCase):
             self.assertNotIn(SECRET, json.dumps(report))
             journal = kuku / 'live' / 'session-data' / 'p' / 'app' / 'sessions' / 'fixture' / 'events.jsonl'
             journal.parent.mkdir(parents=True)
-            journal.write_text(json.dumps({'kind': 'tool.call', 'tool': 'read_output', 'args': {'id': SECRET}}) + '\n')
+            journal.write_text(''.join(json.dumps(event) + '\n' for event in (
+                {'kind': 'tool.call', 'tool': 'read_output', 'args': {'id': SECRET}},
+                {'kind': 'runtime.operation', 'record': {'operation': 'turn_settled', 'address': 'main',
+                 'error': SDK_REQUEST_BYTES_ERROR}},
+            )))
             rows = [
                 {'seconds': 0.25, 'request_bytes': 40, 'body': SECRET},
                 {'seconds': 1.25, 'request_bytes': 42, 'timing': {'request_to_first_output_delta_seconds': 0.5}},
@@ -193,6 +197,7 @@ class PairedReportTests(unittest.TestCase):
             report = compare(kuku, pi)
             self.assertEqual(report['attempts'][0]['provider_relay'], {
                 'admitted_attempts': 3, 'timed_attempts': 3, 'elapsed_seconds': 3.5, 'request_body_bytes': 127,
+                'peak_request_body_bytes': 45,
                 'first_output_samples': 2, 'first_output_p50_seconds': 0.75,
                 'emitted_tool_calls': None, 'emitted_tool_batches': None,
                 'reasoning_output_tokens': None, 'reasoning_usage_samples': 0,
@@ -200,6 +205,10 @@ class PairedReportTests(unittest.TestCase):
             self.assertIsNone(report['attempts'][1]['provider_relay']['elapsed_seconds'])
             self.assertEqual(report['attempts'][0]['tool_calls'], 1)
             self.assertEqual(report['attempts'][0]['tool_call_source'], 'session_journal')
+            self.assertEqual(report['attempts'][0]['workspace_script_calls'], 0)
+            self.assertEqual(report['attempts'][0]['workspace_script_host_actions'], 0)
+            self.assertEqual(report['attempts'][0]['sdk_error_detail'], 'request_bytes_limit')
+            self.assertIsNone(report['attempts'][1]['workspace_script_calls'])
             self.assertEqual(report['attempts'][0]['case_cap_rejections'], 1)
             self.assertNotIn(SECRET, json.dumps(report))
             write_json(pi / 'meter.json', {**meter, 'case_cap_usd': '1.00'})
@@ -328,6 +337,16 @@ class FrontierReportTests(unittest.TestCase):
                       structured={'kind': 'workspace_script_result',
                                   'actions': [{'tool': 'run_command'}, {'tool': 'read_output'}]})
                 self.assertEqual((2, 2), counts())
+                event('tool.call', tool='run_js', tool_call_id='c')
+                event('tool.result', tool_call_id='c', status='ok', structured={'kind': 'job', 'job_id': 'job-1'})
+                self.assertEqual((3, None), counts())
+                receipt = {'structured': {'kind': 'workspace_script_result', 'actions': [{'tool': 'read_file'}]}}
+                event('runtime.operation', record={'operation': 'job_finished', 'agent': 'reviewer',
+                                                   'job_id': 'job-1', 'result': receipt})
+                self.assertEqual((3, None), counts())
+                event('runtime.operation', record={'operation': 'job_finished', 'agent': 'main',
+                                                   'job_id': 'job-1', 'result': receipt})
+                self.assertEqual((3, 3), counts())
 
     def test_audit_scoring_cost_and_time(self):
         report = official_report(official_feed())
@@ -544,7 +563,7 @@ class FrontierReportTests(unittest.TestCase):
             events = next((live / 'session-data').glob('p/*/sessions/*/events.jsonl'))
             events.write_text(json.dumps({'kind': 'runtime.operation', 'record': {
                 'operation': 'turn_settled', 'address': 'main', 'status': 'interrupted',
-                'error': SDK_REQUEST_BYTES_ERROR, 'output': SECRET,
+                'error': f'{SDK_REQUEST_BYTES_ERROR} (579681 bytes, limit 524288 bytes)', 'output': SECRET,
             }}) + '\n', encoding='utf-8')
             attempt = build_report(official_feed(), [[case, directory]])['local_attempts'][0]
             self.assertFalse(attempt['result']['task_passed'])
