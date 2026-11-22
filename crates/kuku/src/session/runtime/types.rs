@@ -212,7 +212,7 @@ pub struct RuntimeLimits {
     /// Maximum number of active named bindings across the session's agents.
     #[serde(default = "default_named_values")]
     pub max_named_values: usize,
-    /// Maximum bytes in a direct file preview or first retained-output preview.
+    /// Maximum bytes in a direct file read or search page, or first retained-output preview.
     pub max_preview_bytes: usize,
     /// Maximum transient observations retained for slow subscribers.
     pub observation_capacity: usize,

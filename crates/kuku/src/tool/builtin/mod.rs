@@ -25,7 +25,7 @@ pub(crate) use query_session::query_session;
 pub(crate) use read_file::{read_file, read_file_for_executor};
 pub(crate) use remove_file::{remove_file, remove_file_for_executor};
 pub(crate) use run_command::{run_command, CommandEvent};
-pub(crate) use search_text::search_text;
+pub(crate) use search_text::{search_text, search_text_for_executor};
 pub(crate) use stat_file::stat_file;
 pub(crate) use view_image::{read_image, view_image_definition};
 pub(crate) use write_file::{write_file, write_file_for_executor};

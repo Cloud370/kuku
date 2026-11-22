@@ -66,7 +66,7 @@ fn registry(agent_enabled: bool, skills_enabled: bool, session: bool) -> Vec<Too
         ),
         tool(
             "search_text",
-            "Search file contents with a regex pattern. Use view=files, lines, or count.",
+            "Search file contents with a regex. Use view=files, lines, or count. Use the returned offset to continue a bounded page.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -75,13 +75,13 @@ fn registry(agent_enabled: bool, skills_enabled: bool, session: bool) -> Vec<Too
                     "include": {"type": "string", "description": "File-name glob filter."},
                     "view": {"type": "string", "enum": ["files", "lines", "count"], "description": "Result view. Defaults to files."},
                     "offset": {"type": "integer", "description": "Skip the first N matches (default: 0)."},
-                    "limit": {"type": "integer", "description": "Maximum matches to return (default: 100)."},
-                    "context": {"type": "integer", "description": "Show N lines before and after each match (view=lines only, default: 0)."}
+                    "limit": {"type": "integer", "minimum": 1, "description": "Maximum matches to return (default: 100)."},
+                    "context": {"type": "integer", "description": "Nearby lines before and after each match, as space allows (view=lines only, default: 0)."}
                 },
                 "required": ["pattern"]
             }),
             true,
-            80_000,
+            65_536,
             "read",
         ),
         tool(

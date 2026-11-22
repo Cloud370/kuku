@@ -94,7 +94,9 @@ impl WorkspaceActions {
                     let cancelled = || execution.is_cancelled();
                     match op {
                         Op::FindFiles => builtin::find_files(&args, &workspace, &cancelled),
-                        Op::SearchText => builtin::search_text(&args, &workspace, &cancelled),
+                        Op::SearchText => {
+                            builtin::search_text_for_executor(&args, &workspace, &cancelled)
+                        }
                         Op::StatFile => builtin::stat_file(&args, &workspace, &cancelled),
                         Op::ReadFile => {
                             let (result, read) = builtin::read_file_for_executor(

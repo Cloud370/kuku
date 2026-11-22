@@ -50,7 +50,7 @@ pub(crate) fn dispatch_workspace_file(
             preview_bytes,
             cancelled,
         ),
-        "search_text" => builtin::search_text(args, workspace, cancelled),
+        "search_text" => builtin::search_text(args, workspace, preview_bytes, cancelled),
         "stat_file" => builtin::stat_file(args, workspace, cancelled),
         "edit_file" => builtin::edit_file(args, workspace, conversation, prior_events, cancelled),
         "write_file" => builtin::write_file(args, workspace, conversation, prior_events, cancelled),

@@ -207,7 +207,7 @@ return {exit_code, duration_ms, entries, output_ref};
 - `find_files` 默认列出直接子项，给出 `pattern` glob 时递归搜索。`max_depth` 可覆盖默认值，`0` 列出直接子项，`1` 再深入一层目录。相对目录路径以 `/` 结尾，扫描跳过常见构建目录。长列表会说明总数和如何缩小查询。
 - `read_file` 从 `offset` 指定的行开始返回带行号的分页内容，行号从 1 起算。可用 `limit` 限制行数。每页还受运行时预览上限约束，默认 8 KiB。达到字节上限时，结果会给出续读位置。如果起始行本身超出上限，结果会标明显示的是该行前缀，并在有后续行时给出下一行的位置。前缀不算已读取的完整行。同一文件版本的分页合计覆盖全文时，可作为后续写入所需的完整读取证据。
 - `stat_file` 返回路径类型（`file`、`directory`、`other` 或 `missing`）、是否存在及可用的文件大小。设置 `version: true` 时会流式读取普通文件的字节并计算 SHA-256 `content_hash`，结果只提供哈希，不包含文件正文。
-- `search_text` 基于正则，支持 `files`、`lines` 和 `count` 视图。结构化 `matches` 提供路径和行号，`lines` 还提供有界文本。通过 `next_offset` 续读。可将匹配的原文用于编辑，也可读取相邻行以补充上下文。
+- `search_text` 基于正则，支持 `files`、`lines` 和 `count` 视图。`offset` 按命中行从 0 开始计数。直接调用的每页结果受运行时预览上限约束，默认 8 KiB。结构化 `matches` 提供路径和行号，`lines` 还提供有界文本。传入 `next_offset` 继续同一个搜索。在 `lines` 视图中，命中行优先于 `context` 请求的相邻行。相邻行被省略时，结果会给出提示。`count` 按文件汇总当前页的命中。
 - `fetch_url` 下载最大 50 MiB 的 HTTP(S) 响应正文。即使服务器返回错误响应，结果也会包含 HTTP 状态码。在 Session 内，完整正文必须能存入可用的输出配额。下载完成后，发起请求的 Agent 可将 `output_ref.id` 传给 `read_output` 读取正文。取消下载会丢弃已接收的部分。独立查询返回临时文件路径。工具会拒绝带内嵌密码的 URL。
 - `query_session` 会过滤 Session 账本，默认排除 rolled-back 事件，并截断单条事件内容。
 - `edit_file` 可直接替换已知的 `old_text`，只要它在当前文件中仅出现一次。文件其他部分的修改会保留。若原文出现多次，工具可接受在当前版本已观察范围内的唯一匹配。多个位置都符合时，提供更多相邻原文来定位。`replace_all=true` 需要掌握该版本的整文件内容。只有在匹配 CRLF 文件确有需要时，LF 输入才会映射为 CRLF，并保持替换文本的换行风格。写入时文件哈希仍须一致。
