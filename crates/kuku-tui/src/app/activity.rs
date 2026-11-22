@@ -605,7 +605,7 @@ impl App {
             self.connect_failed(error);
         } else {
             self.drop_watch(Watch::Failed(format!(
-                "kuku service live updates unavailable · {error} · Ctrl+R to reconnect"
+                "kuku service live updates unavailable · Ctrl+R to reconnect · {error}"
             )));
         }
     }

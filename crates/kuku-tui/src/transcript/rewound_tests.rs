@@ -96,6 +96,8 @@ fn rewind_group_expands_in_place_without_entering_active_transcript_state() {
             line: AnchorLine::Group(0),
         },
         newer: VecDeque::new(),
+        rebase_after_page: false,
+        visible_through: None,
         unseen: false,
         manual: true,
     });
@@ -435,6 +437,8 @@ fn rewind_group_visual_cap_is_explicit() {
             line: AnchorLine::Group(usize::MAX),
         },
         newer: VecDeque::new(),
+        rebase_after_page: false,
+        visible_through: None,
         unseen: false,
         manual: true,
     });
@@ -494,6 +498,8 @@ fn rewind_group_page_window_is_bounded_and_marks_discarded_newer_entries() {
             line: AnchorLine::Group(0),
         },
         newer: VecDeque::new(),
+        rebase_after_page: false,
+        visible_through: None,
         unseen: false,
         manual: true,
     });
@@ -563,7 +569,7 @@ fn group_only_history_window_trims_and_can_page_back_to_newer_groups() {
         next_before: Some(1),
     });
 
-    let request = window.trim_back().unwrap();
+    let request = window.trim_back(None).unwrap();
 
     assert_eq!(super::MAX_RECORDS, window.rewind_groups.len());
     assert_eq!(

@@ -1,19 +1,41 @@
-use std::path::Path;
-
 use kuku_client::{FileCommitState, FileMutationFacts};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 use unicode_width::UnicodeWidthStr;
 
-use crate::markup::{file_source, render_diff, render_markdown, wrap_with_indent};
+use crate::markup::{
+    file_source, number_gutter, number_line, render_literal, wrap_bounded, wrap_with_indent,
+};
 use crate::text::{cap, shorten, shorten_middle, single_line};
-use crate::theme::{ACCENT, MUTED, SUCCESS, WARNING};
+use crate::theme::{TranscriptTone, ERROR, MUTED, SUCCESS, WARNING};
+use crate::transcript::MAX_VISUAL_ROWS;
 
 use super::{
-    body_inset, join_details, render_rows, Row, Tool, ToolDetails, MAX_CHANGE_ROWS,
-    MAX_INSPECTION_ROWS, MAX_PREVIEW_BYTES,
+    tool_operation_color, Row, Tool, ToolDetails, ToolView, MAX_CHANGE_ROWS, MAX_INSPECTION_ROWS,
+    MAX_PREVIEW_BYTES,
 };
+
+mod diff;
+use diff::Presentation;
+
+#[derive(Debug, Clone, Default)]
+pub(crate) enum OutputFormat {
+    #[default]
+    Text,
+    Json,
+    Change(FileChange),
+}
+
+impl ToolView {
+    pub(crate) fn formatted_lines(&self, width: usize) -> Option<Vec<Line<'static>>> {
+        match &self.format {
+            OutputFormat::Text => None,
+            OutputFormat::Json => Some(file_source(&self.details, "json")),
+            OutputFormat::Change(change) => Some(change.lines(width, MAX_VISUAL_ROWS)),
+        }
+    }
+}
 
 impl Tool {
     pub(super) fn render_change(
@@ -22,70 +44,41 @@ impl Tool {
         width: usize,
         details: ToolDetails,
     ) -> Vec<Row> {
-        if matches!(
+        let path = self.invocation();
+        let mut rows = vec![compact_change_row(change, path, width)];
+        if change.unconfirmed {
+            rows.push(Row::caption("Durability unconfirmed", "", WARNING, width));
+        }
+        rows.extend(match details {
+            ToolDetails::Collapsed | ToolDetails::CompactFile => change.compact_preview(width),
+            ToolDetails::Inspection | ToolDetails::ExpandedFile => change.expanded_rows(width),
+            _ => change.preview_rows(
+                width,
+                Presentation::Expanded(MAX_CHANGE_ROWS),
+                MAX_CHANGE_ROWS,
+            ),
+        });
+        if details == ToolDetails::Inspection {
+            self.render_arguments(&mut rows, width, 0);
+        }
+        if !matches!(
             details,
             ToolDetails::CompactFile | ToolDetails::ExpandedFile
         ) {
-            let open = details == ToolDetails::ExpandedFile;
-            let path = self.invocation();
-            let mut rows = vec![compact_change_row(change, path, width)];
-            if open {
-                let inset = body_inset(width);
-                let preview = change.lines(path, width - usize::from(inset), MAX_INSPECTION_ROWS);
-                rows.extend(render_rows(preview, width, MAX_INSPECTION_ROWS + 1, inset));
-            }
-            return rows;
+            rows.push(Row::plain(Line::default()));
         }
-        let frame = crate::theme::CardFrame::new(width);
-        let path = self.invocation();
-        let status = if change.unconfirmed {
-            "applied · durability unconfirmed"
-        } else {
-            self.state.label().0
-        };
-        let title = join_details([self.title().as_ref(), status, single_line(path).as_str()]);
-        let color = if change.unconfirmed { WARNING } else { ACCENT };
-        let mut rows = vec![Row::plain(frame.title(&title, color))];
-        let body_width = frame.content_width();
-        let mut clipped = false;
-        if details != ToolDetails::Collapsed {
-            let limit = if details == ToolDetails::Inspection {
-                MAX_INSPECTION_ROWS
-            } else {
-                MAX_CHANGE_ROWS
-            };
-            let lines = change.lines(path, body_width, limit);
-            clipped = lines.len() > limit;
-            rows.extend(
-                lines
-                    .into_iter()
-                    .take(limit)
-                    .map(|line| Row::plain(frame.line(line))),
-            );
-        }
-        if details == ToolDetails::Inspection {
-            let mut arguments = Vec::new();
-            self.render_arguments(&mut arguments, body_width, 0);
-            rows.extend(arguments.into_iter().map(|row| row.framed(&frame)));
-        }
-        let footer = if clipped {
-            format!("{} · …", change.stats)
-        } else {
-            change.stats.clone()
-        };
-        Row::pad_framed_body(&mut rows, &frame);
-        rows.push(Row::plain(frame.foot(&footer)));
-        rows.push(Row::plain(Line::default()));
         rows
     }
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct FileChange {
+pub(crate) struct FileChange {
     tool: &'static str,
     preview: String,
+    created: bool,
     preview_line_numbers: Vec<u64>,
-    pub(super) stats: String,
+    first_changed_line: Option<u64>,
+    stats: ChangeStats,
     pub(super) unconfirmed: bool,
     diff: bool,
     truncated: bool,
@@ -97,40 +90,13 @@ impl FileChange {
         let content = result["raw_text_after"].as_str();
         let truncated = truncated || result["raw_text_after_truncated"] == true;
         let mut change = match kind {
-            "file_write" => {
-                let stats = result["line_count"].as_u64().map_or_else(
-                    || "Written".to_owned(),
-                    |count| format!("{count} {} written", plural(count, "line", "lines")),
-                );
-                Some(Self::new("write_file", content, stats, false, truncated))
-            }
-            "file_edit" => {
-                let change = &result["change"];
-                let added = change["added_lines"].as_u64()?;
-                let removed = change["removed_lines"].as_u64()?;
-                let stats = if added == 0 && removed == 0 {
-                    "No lines changed".to_owned()
-                } else {
-                    format!("+{added} −{removed}")
-                };
-                let mut edit = Self::new(
-                    "edit_file",
-                    change["preview"].as_str(),
-                    stats,
-                    true,
-                    change["preview_truncated"].as_bool().unwrap_or(false),
-                );
-                edit.preview_line_numbers = change["preview_line_numbers"]
-                    .as_array()
-                    .and_then(|values| values.iter().map(Value::as_u64).collect())
-                    .unwrap_or_default();
-                Some(edit)
-            }
+            "file_write" => Some(Self::from_write(result, content, truncated)),
+            "file_edit" => Some(Self::from_diff("edit_file", &result["change"])),
             "file_remove" => {
-                let stats = result["bytes_removed"].as_u64().map_or_else(
+                let stats = ChangeStats::Text(result["bytes_removed"].as_u64().map_or_else(
                     || "Removed".to_owned(),
                     |bytes| format!("{bytes} {} removed", plural(bytes, "byte", "bytes")),
-                );
+                ));
                 Some(Self::new("remove_file", None, stats, false, false))
             }
             _ => None,
@@ -140,8 +106,93 @@ impl FileChange {
         Some(change)
     }
 
+    fn from_write(result: &Value, content: Option<&str>, truncated: bool) -> Self {
+        let created = result["created"].as_bool().unwrap_or_else(|| {
+            result
+                .get("content_hash_before")
+                .is_some_and(Value::is_null)
+        });
+        let count = result["line_count"].as_u64();
+        if created {
+            let stats = count.map_or_else(
+                || ChangeStats::Text(String::new()),
+                |added| ChangeStats::Diff { added, removed: 0 },
+            );
+            let mut change = Self::new("write_file", content, stats, true, truncated);
+            let source = std::mem::take(&mut change.preview);
+            for (index, line) in source.lines().enumerate() {
+                if index != 0 {
+                    change.preview.push('\n');
+                }
+                change.preview.push('+');
+                change.preview.push_str(line);
+                change.preview_line_numbers.push(index as u64 + 1);
+            }
+            change.created = true;
+            return change;
+        }
+        let change = &result["change"];
+        if change["first_changed_line"].is_u64()
+            || (change["added_lines"].is_u64() && change["removed_lines"].is_u64())
+        {
+            return Self::from_diff("write_file", change);
+        }
+        let stats = count.map_or_else(
+            || ChangeStats::Text(String::new()),
+            ChangeStats::WrittenLines,
+        );
+        Self::new("write_file", content, stats, false, truncated)
+    }
+
+    fn from_diff(tool: &'static str, change: &Value) -> Self {
+        let stats = match (
+            change["added_lines"].as_u64(),
+            change["removed_lines"].as_u64(),
+        ) {
+            (Some(added), Some(removed)) => ChangeStats::Diff { added, removed },
+            _ => ChangeStats::Text(String::new()),
+        };
+        let mut diff = Self::new(
+            tool,
+            change["preview"].as_str(),
+            stats,
+            true,
+            change["preview_truncated"] == true,
+        );
+        diff.preview_line_numbers = change["preview_line_numbers"]
+            .as_array()
+            .map(|values| {
+                values
+                    .iter()
+                    .map(|line| line.as_u64().unwrap_or(0))
+                    .collect()
+            })
+            .unwrap_or_default();
+        diff.first_changed_line = change["first_changed_line"]
+            .as_u64()
+            .filter(|line| *line > 0);
+        diff
+    }
+
     pub(super) fn tool(&self) -> &'static str {
         self.tool
+    }
+
+    pub(super) fn verb(&self) -> &'static str {
+        match self.tool {
+            "write_file" if self.created => "Added",
+            "write_file" if !self.diff => "Wrote",
+            "remove_file" => "Removed",
+            _ => "Edited",
+        }
+    }
+
+    fn color(&self) -> ratatui::style::Color {
+        match self.tool {
+            "write_file" if self.created => SUCCESS,
+            "remove_file" => ERROR,
+            _ => tool_operation_color(self.tool),
+        }
     }
 
     pub(super) fn diff(&self) -> Option<&str> {
@@ -150,44 +201,145 @@ impl FileChange {
             .filter(|diff| !diff.is_empty())
     }
 
-    pub(super) fn lines(&self, path: &str, width: usize, limit: usize) -> Vec<Line<'static>> {
-        let text = self
-            .preview
-            .strip_suffix("\r\n")
-            .or_else(|| self.preview.strip_suffix('\n'))
-            .unwrap_or(&self.preview);
-        let language = Path::new(path)
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .unwrap_or("");
-        let mut gutter = 0;
-        let mut lines = if text.is_empty() {
-            Vec::new()
-        } else if self.diff {
-            let (lines, gutter_width) = numbered_diff(text, &self.preview_line_numbers, width);
-            gutter = gutter_width;
-            lines
-        } else if language.eq_ignore_ascii_case("md") || language.eq_ignore_ascii_case("markdown") {
-            let mut lines = render_markdown(text, width, limit);
-            if lines.last().is_some_and(|line| line.spans.is_empty()) {
-                lines.pop();
-            }
-            lines
-        } else {
-            file_source(text, language)
+    pub(super) fn expanded_rows(&self, width: usize) -> Vec<Row> {
+        self.preview_rows(
+            width,
+            Presentation::Expanded(MAX_INSPECTION_ROWS),
+            MAX_INSPECTION_ROWS,
+        )
+    }
+
+    pub(super) fn compact_preview(&self, width: usize) -> Vec<Row> {
+        self.preview_rows(width, Presentation::Compact, 2)
+    }
+
+    fn preview_rows(&self, width: usize, presentation: Presentation, limit: usize) -> Vec<Row> {
+        let columns = Row::detail_width(width);
+        let diff = self.diff();
+        let lines = match (diff, presentation) {
+            (Some(text), _) => diff::render(
+                text,
+                &self.preview_line_numbers,
+                columns,
+                presentation,
+                self.truncated,
+            ),
+            (None, Presentation::Compact) => self.write_preview(columns, limit),
+            (None, Presentation::Expanded(_)) => self.lines(columns, limit),
         };
+        let mut rows = lines
+            .into_iter()
+            .map(|line| Row::plain(line).with_detail_rule(width))
+            .collect::<Vec<_>>();
+        if diff.is_some() && matches!(presentation, Presentation::Expanded(_)) && !rows.is_empty() {
+            rows.insert(0, Row::plain(Line::default()));
+            rows.push(Row::plain(Line::default()));
+        }
+        rows
+    }
+
+    fn write_preview(&self, width: usize, limit: usize) -> Vec<Line<'static>> {
+        if width == 0 {
+            return Vec::new();
+        }
+        let digits = self.line_number_width(width);
+        let room = width - number_gutter(digits);
+        let mut end = 0;
+        let shown = self
+            .preview
+            .split_inclusive('\n')
+            .filter(|line| {
+                end += line.len();
+                !line.trim().is_empty()
+            })
+            .take(limit)
+            .count();
+        let has_more = self.truncated || !self.preview[end..].trim().is_empty();
+        Self::write_source(&self.preview[..end])
+            .into_iter()
+            .enumerate()
+            .filter(|(_, line)| {
+                line.spans
+                    .iter()
+                    .any(|span| !span.content.trim().is_empty())
+            })
+            .enumerate()
+            .map(|(index, (source, line))| {
+                let omitted = line.width() > room || (has_more && index + 1 == shown);
+                let max_cols = room - usize::from(omitted);
+                let mut line = if max_cols == 0 {
+                    Line::default()
+                } else if line.width() > max_cols {
+                    wrap_bounded(vec![line], max_cols, 1)
+                        .into_iter()
+                        .next()
+                        .unwrap_or_default()
+                } else {
+                    line
+                };
+                if omitted {
+                    line.push_span(Span::styled("…", Style::new().fg(MUTED)));
+                }
+                number_line(line, source + 1, digits)
+            })
+            .collect()
+    }
+
+    fn write_source(text: &str) -> Vec<Line<'static>> {
+        if text.is_empty() {
+            return Vec::new();
+        }
+        let text = text
+            .strip_suffix("\r\n")
+            .or_else(|| text.strip_suffix('\n'))
+            .unwrap_or(text);
+        render_literal(text, Style::new())
+    }
+
+    fn line_number_width(&self, width: usize) -> usize {
+        let digits = self.preview.lines().count().to_string().len();
+        if width >= digits + 7 {
+            digits
+        } else {
+            0
+        }
+    }
+
+    pub(super) fn stats(&self) -> String {
+        self.stats.text()
+    }
+
+    fn lines(&self, width: usize, limit: usize) -> Vec<Line<'static>> {
+        if self.diff {
+            return diff::render(
+                &self.preview,
+                &self.preview_line_numbers,
+                width,
+                Presentation::Expanded(limit),
+                self.truncated,
+            );
+        }
+        if self.preview.is_empty() {
+            return Vec::new();
+        }
+        let digits = self.line_number_width(width);
+        let mut lines = Self::write_source(&self.preview)
+            .into_iter()
+            .enumerate()
+            .map(|(index, line)| number_line(line, index + 1, digits))
+            .collect::<Vec<_>>();
         if self.truncated {
             if let Some(last) = lines.last_mut() {
                 last.push_span(Span::styled("…", Style::new().fg(MUTED)));
             }
         }
-        wrap_with_indent(lines, width, limit, &" ".repeat(gutter))
+        wrap_with_indent(lines, width, limit, &" ".repeat(number_gutter(digits)))
     }
 
     fn new(
         tool: &'static str,
         content: Option<&str>,
-        stats: String,
+        stats: ChangeStats,
         diff: bool,
         truncated: bool,
     ) -> Self {
@@ -196,7 +348,9 @@ impl FileChange {
         Self {
             tool,
             preview: head.to_owned(),
+            created: false,
             preview_line_numbers: Vec::new(),
+            first_changed_line: None,
             stats,
             unconfirmed: false,
             diff,
@@ -213,62 +367,70 @@ fn plural(count: u64, one: &'static str, many: &'static str) -> &'static str {
     }
 }
 
-fn numbered_diff(text: &str, numbers: &[u64], width: usize) -> (Vec<Line<'static>>, usize) {
-    let mut lines = render_diff(text);
-    let digits = numbers.iter().copied().max().unwrap_or(0).to_string().len();
-    let gutter = digits + 4;
-    if numbers.is_empty() || width < gutter + 2 {
-        return (lines, 0);
-    }
-    for (line, number) in lines.iter_mut().zip(numbers) {
-        if let Some(span) = line.spans.first_mut() {
-            if let Some(marker @ ('-' | '+')) = span.content.chars().next() {
-                span.content = span.content[1..].to_owned().into();
-                line.spans.insert(
-                    0,
-                    Span::styled(
-                        format!("{marker}{number:<digits$} │ "),
-                        Style::new().fg(MUTED),
-                    ),
-                );
-            }
-        }
-    }
-    (lines, gutter)
+#[derive(Debug, Clone)]
+enum ChangeStats {
+    Diff { added: u64, removed: u64 },
+    WrittenLines(u64),
+    Text(String),
 }
 
-fn compact_change_row(change: &FileChange, path: &str, width: usize) -> Row {
-    let (action, color) = match change.tool {
-        "write_file" => ("Wrote", SUCCESS),
-        "remove_file" => ("Removed", WARNING),
-        _ => ("Edited", SUCCESS),
-    };
-    let action = if width >= 36 {
-        format!("{action:<8} ")
-    } else {
-        format!("{action} ")
-    };
-    let stats = format!("  {}", change.stats);
-    let stats = shorten(
-        &stats,
-        width.saturating_sub(action.width() + 2).min(width / 2),
-    );
-    let path = shorten_middle(
-        &single_line(path),
-        width.saturating_sub(action.width() + stats.width()),
-    );
-    let padding = if width >= 60 {
-        22usize
-            .saturating_sub(path.width())
-            .min(width.saturating_sub(action.width() + path.width() + stats.width()))
-    } else {
-        0
-    };
-    let line = Line::from(vec![
-        Span::styled(shorten(&action, width), Style::new().fg(color)),
-        Span::raw(path),
-        Span::raw(" ".repeat(padding)),
-        Span::styled(stats, Style::new().fg(MUTED)),
-    ]);
-    Row::plain(line)
+impl ChangeStats {
+    fn text(&self) -> String {
+        match self {
+            Self::Diff { added, removed } => format!("+{added} -{removed}"),
+            Self::WrittenLines(count) => format!("{count} {}", plural(*count, "line", "lines")),
+            Self::Text(text) => text.clone(),
+        }
+    }
+
+    fn spans(&self, text: String) -> Vec<Span<'static>> {
+        let muted = Style::new().fg(MUTED);
+        let mut spans = vec![Span::styled(" (", muted)];
+        spans.extend(match self {
+            Self::Diff { added, removed } => vec![
+                Span::styled(format!("+{added}"), Style::new().fg(SUCCESS)),
+                Span::styled(" ", muted),
+                Span::styled(format!("-{removed}"), Style::new().fg(ERROR)),
+            ],
+            Self::WrittenLines(count) => {
+                Row::metric(
+                    "",
+                    count.to_string(),
+                    plural(*count, " line", " lines"),
+                    TranscriptTone::Value,
+                )
+                .spans
+            }
+            Self::Text(_) => vec![Span::styled(text, muted)],
+        });
+        spans.push(Span::styled(")", muted));
+        spans
+    }
+}
+
+pub(super) fn compact_change_row(change: &FileChange, path: &str, width: usize) -> Row {
+    let verb = shorten(&format!("{:<9}", change.verb()), width);
+    let room = width.saturating_sub(verb.width());
+    let stats = change.stats.text();
+    let stats_width = stats.width() + 3;
+    let show_stats = !stats.is_empty() && stats_width < room;
+    let room = room - usize::from(show_stats) * stats_width;
+    let position = change
+        .first_changed_line
+        .filter(|_| change.preview.is_empty())
+        .map(|line| format!(" · line {line}"))
+        .filter(|position| room > position.width() + 1)
+        .unwrap_or_default();
+    let path = shorten_middle(&single_line(path), room - position.width());
+    let mut spans = vec![
+        Span::styled(verb, Style::new().fg(change.color())),
+        Span::styled(path, Style::new().bold()),
+    ];
+    if show_stats {
+        spans.extend(change.stats.spans(stats));
+    }
+    if !position.is_empty() {
+        spans.push(Span::styled(position, Style::new().fg(MUTED)));
+    }
+    Row::plain(Line::from(spans))
 }

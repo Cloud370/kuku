@@ -18,7 +18,7 @@ mod stream;
 pub(crate) use stream::MarkdownStream;
 mod table;
 
-pub(crate) use code::{code_card, file_source};
+pub(crate) use code::file_source;
 use code::{CodeBlock, SyntaxBudget};
 use table::Table;
 
@@ -98,6 +98,40 @@ pub(crate) fn wrap_bounded(
     limit: usize,
 ) -> Vec<Line<'static>> {
     wrap_with_indent(lines, width, limit, "")
+}
+
+pub(crate) fn number_gutter(digits: usize) -> usize {
+    digits + usize::from(digits != 0)
+}
+
+pub(crate) fn number_line(mut line: Line<'static>, number: usize, digits: usize) -> Line<'static> {
+    if digits > 0 {
+        line.spans.insert(
+            0,
+            Span::styled(format!("{number:>digits$} "), Style::new().fg(MUTED)),
+        );
+    }
+    line
+}
+
+pub(crate) fn wrap_numbered(
+    lines: Vec<Line<'static>>,
+    width: usize,
+    limit: usize,
+    first: usize,
+    total: usize,
+) -> Vec<Line<'static>> {
+    let end = first.saturating_add(lines.len().saturating_sub(1));
+    let digits = end.max(total).to_string().len();
+    if width < digits + 3 {
+        return wrap_bounded(lines, width, limit);
+    }
+    let numbered = lines
+        .into_iter()
+        .enumerate()
+        .map(|(index, line)| number_line(line, first + index, digits))
+        .collect();
+    wrap_with_indent(numbered, width, limit, &" ".repeat(number_gutter(digits)))
 }
 
 pub(crate) fn wrap_with_indent(

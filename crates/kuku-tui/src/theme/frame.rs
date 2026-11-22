@@ -1,4 +1,6 @@
-use super::{card_padding, code_surface, emphasis, MUTED};
+use super::{
+    card_padding, code_surface, emphasis, transcript_background, TranscriptTone, MUTED, TURN_RULE,
+};
 use crate::text::shorten;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
@@ -12,6 +14,7 @@ pub(crate) struct CardFrame {
     bordered: bool,
     padding: Padding,
     surface: Style,
+    border_color: Color,
 }
 
 impl CardFrame {
@@ -19,13 +22,24 @@ impl CardFrame {
         Self {
             width,
             surface: code_surface(),
+            border_color: MUTED,
             bordered: width >= MIN_FRAME_WIDTH,
             padding: card_padding(width),
         }
     }
 
+    pub(crate) fn timeline(width: usize) -> Self {
+        Self {
+            width,
+            surface: TranscriptTone::Text.style().patch(transcript_background()),
+            border_color: TURN_RULE,
+            bordered: width >= 18,
+            padding: Padding::horizontal(u16::from(width >= 12)),
+        }
+    }
+
     fn edge(&self) -> Style {
-        self.surface.fg(MUTED)
+        self.surface.fg(self.border_color)
     }
 
     pub(crate) fn bordered(&self) -> bool {
@@ -49,14 +63,10 @@ impl CardFrame {
     }
 
     pub(crate) fn title_width(&self) -> usize {
-        self.width
-            - if !self.bordered {
-                0
-            } else if self.padding.left > 0 {
-                5
-            } else {
-                2
-            }
+        if !self.bordered {
+            return self.content_width();
+        }
+        self.width - if self.padding.left > 0 { 5 } else { 2 }
     }
 
     pub(crate) fn title_line(&self, label: Line<'static>) -> Line<'static> {
@@ -78,6 +88,16 @@ impl CardFrame {
         let Some((action, columns)) = Self::agent_action(self.width).filter(|_| confirmed) else {
             return self.title(label, color);
         };
+        if !self.bordered {
+            let space = columns.start.saturating_sub(self.content_inset());
+            let label = shorten(label, space.saturating_sub(2));
+            let fill = " ".repeat(space.saturating_sub(label.width()));
+            return self.line(Line::from(vec![
+                Span::styled(label, emphasis(color)),
+                Span::raw(fill),
+                Span::styled(action, Style::new().fg(color).underlined()),
+            ]));
+        }
         let label = shorten(label, columns.start.saturating_sub(5));
         let fill = columns.start - 5 - label.width();
         Line::from(vec![
@@ -89,12 +109,12 @@ impl CardFrame {
         ])
     }
 
-    pub(crate) fn status_foot(&self, label: &str, color: Color) -> Line<'static> {
-        self.caption(label, '╰', '╯', self.surface.fg(color))
-    }
-
     pub(crate) fn foot(&self, label: &str) -> Line<'static> {
         self.caption(label, '╰', '╯', self.surface.fg(MUTED))
+    }
+
+    pub(crate) fn foot_line(&self, label: Line<'static>) -> Line<'static> {
+        self.caption_line(label, '╰', '╯')
     }
 
     pub(crate) fn divider(&self, label: &str) -> Line<'static> {
@@ -108,21 +128,24 @@ impl CardFrame {
 
     fn caption_line(&self, mut label: Line<'static>, left: char, right: char) -> Line<'static> {
         let room = self.title_width();
-        debug_assert!(label.width() <= room);
+        debug_assert!(label.width() <= self.content_width());
         let base = self.surface.patch(label.style);
         for span in &mut label.spans {
             span.style = base.patch(span.style);
         }
         label.style = Style::new();
         if !self.bordered {
-            return label;
+            return self.line(label);
         }
         let (prefix, tail) = if self.padding.left > 0 {
-            (format!("{left}─ "), " ")
+            (
+                format!("{left}─ "),
+                if label.width() > room { "" } else { " " },
+            )
         } else {
             (left.to_string(), "")
         };
-        let fill = "─".repeat(room - label.width());
+        let fill = "─".repeat(self.width - prefix.width() - tail.width() - label.width() - 1);
         label.spans.insert(0, Span::styled(prefix, self.edge()));
         label.push_span(Span::styled(format!("{tail}{fill}{right}"), self.edge()));
         label
@@ -158,9 +181,9 @@ impl CardFrame {
     }
 
     pub(crate) fn border(&self, left: char, right: char) -> Line<'static> {
-        Line::styled(
+        Line::from(Span::styled(
             format!("{left}{}{right}", "─".repeat(self.width - 2)),
             self.edge(),
-        )
+        ))
     }
 }

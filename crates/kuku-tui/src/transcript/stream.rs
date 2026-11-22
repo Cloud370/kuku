@@ -1,8 +1,7 @@
-use ratatui::text::Line;
-
 use crate::markup::MarkdownStream;
+use crate::theme::CardFrame;
 
-use super::preview::{assistant_body, assistant_header, assistant_width};
+use super::preview::{assistant_body, assistant_header, assistant_width, trim_assistant_end};
 use super::{Row, MAX_VISUAL_ROWS};
 
 #[derive(Debug, Default)]
@@ -40,10 +39,8 @@ impl StreamingReply {
         let mut tail = self
             .markdown
             .render_tail(text, assistant_width(width), MAX_VISUAL_ROWS);
-        if tail.lines.last().is_some_and(|line| !line.spans.is_empty()) {
-            tail.lines.push(Line::default());
-        }
-        let unstable = tail.lines.split_off(tail.stable_lines);
+        let mut unstable = tail.lines.split_off(tail.stable_lines);
+        trim_assistant_end(&mut unstable);
         self.rows.extend(assistant_body(
             tail.lines,
             &tail.links,
@@ -59,6 +56,8 @@ impl StreamingReply {
                 MAX_VISUAL_ROWS - self.stable_rows,
             ));
         }
+        self.rows
+            .extend(Row::frame_end(&CardFrame::timeline(width)));
         &self.rows
     }
 }

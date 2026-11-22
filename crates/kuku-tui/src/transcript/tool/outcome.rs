@@ -1,15 +1,16 @@
 use kuku_client::Receipt;
-use ratatui::style::Color;
+use ratatui::style::{Color, Style};
+use ratatui::text::{Line, Span};
 use serde_json::{Map, Value};
 
 use crate::text::cap;
-use crate::theme::{ACCENT, ERROR, MUTED, SUCCESS, WARNING};
+use crate::theme::{TranscriptTone, ACCENT, ERROR, MUTED, SUCCESS, WARNING};
 
 use super::command::CommandPreview;
 use super::file_change::FileChange;
 use super::script::ScriptPreview;
 use super::session::Observation;
-use super::{capped, MAX_DETAIL_BYTES, MAX_LABEL_BYTES};
+use super::{capped, Row, MAX_DETAIL_BYTES, MAX_LABEL_BYTES};
 
 #[derive(Debug, Clone, Default)]
 pub(super) enum State {
@@ -205,20 +206,20 @@ pub(super) struct FileRead {
 }
 
 impl FileRead {
-    pub(super) fn group_caption(&self) -> String {
+    pub(super) fn group_caption(&self) -> Line<'static> {
         if self.total > 0
             && self.start == 1
             && self.count == self.total
             && !self.truncated
             && !self.cached
         {
-            String::new()
+            Line::default()
         } else {
-            self.caption()
+            self.caption_line()
         }
     }
 
-    fn from_result(structured: &Value, truncated: bool) -> Option<Self> {
+    pub(super) fn from_result(structured: &Value, truncated: bool) -> Option<Self> {
         if structured["kind"].as_str() != Some("file_content") {
             return None;
         }
@@ -232,6 +233,10 @@ impl FileRead {
     }
 
     pub(super) fn caption(&self) -> String {
+        self.caption_line().to_string()
+    }
+
+    pub(super) fn caption_line(&self) -> Line<'static> {
         let Self {
             start,
             count,
@@ -239,20 +244,28 @@ impl FileRead {
             cached,
             truncated,
         } = *self;
-        let mut caption = match (total, count) {
-            (0, _) => "empty file".to_owned(),
-            (_, 0) => format!("no lines at {start} of {total}"),
-            (_, 1) => format!("line {start} of {total}"),
-            _ => {
-                let end = start.saturating_add(count - 1);
-                format!("lines {start}–{end} of {total}")
-            }
+        let muted = Style::new().fg(MUTED);
+        let mut caption = if total == 0 {
+            Line::from(Span::styled("empty file", muted))
+        } else {
+            let (label, position) = match count {
+                0 => ("no lines at ", start.to_string()),
+                1 => ("line ", start.to_string()),
+                _ => {
+                    let end = start.saturating_add(count - 1);
+                    ("lines ", format!("{start}–{end}"))
+                }
+            };
+            let mut line = Row::metric(label, position, " of ", TranscriptTone::Value);
+            line.extend(Row::metric("", total.to_string(), "", TranscriptTone::Value).spans);
+            line
         };
         if cached {
-            caption.push_str(" · cached");
+            caption.push_span(Span::styled(" · cached", muted));
         }
         if truncated {
-            caption.push_str(" · truncated");
+            caption.push_span(Span::styled(" · ", muted));
+            caption.push_span(Span::styled("truncated", Style::new().fg(WARNING)));
         }
         caption
     }

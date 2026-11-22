@@ -196,7 +196,7 @@ def two_workspaces_and_disconnect(client):
         call = client.provider.next(prompt)
         left.expect("Waiting", absent=("Connected", "F2 Restart"))
         client.gated_tool(workspace, call, tool_id)
-        left.expect("Tools", absent=("Connected", "F2 Restart"))
+        left.expect("Running tools", absent=("Connected", "F2 Restart"))
         session = client.session(workspace)
         assert session != client.session(other)
         assert client.status()["busy"], "Running tool is absent from service status"
@@ -607,7 +607,7 @@ def delegated_agent_cards(client):
     conclusion = "Reviewer confirmed the totals"
     reply = f"{initial}\n\n{conclusion}"
     parent_reply = "Parent finished and left the review running"
-    card = "╭─ Agent reviewer"
+    card = "Agent reviewer"
     delivery = "Input delivered"
     screens = []
 
@@ -714,8 +714,8 @@ def dense_transcript(client, reference=False):
         r"(?:Read-only activity · \d+ calls|Read (?:file|\d+ files)|Find files|Search text|"
         r"Write file|Edit file|Run command|Tool [a-z_]+)"
         r"(?: ×\d+)? · (?:ok|error|running)\b"
-        r"|^\s*(?:│\s*)?(?:\d+ file reads|Wrote\s+|Edited\s+)"
-        rf"|╭─ (?:Run command|{re.escape(TOOL_PROGRAM)})\b"
+        r"|^\s*(?:(?:│|╭─)\s*)?(?:\d+ file reads|Wrote\s+|Edited\s+)"
+        rf"|^\s*╭─ {re.escape(TOOL_PROGRAM)}\b.* · running\b"
     )
 
     def row_of(screen, text):
@@ -745,8 +745,13 @@ def dense_transcript(client, reference=False):
                             "the full tool transcript in a tall terminal")
         lines = screen.splitlines()
         headings = [index for index, line in enumerate(lines) if tool_heading.search(line)]
-        assert len(headings) == (21 if reference else 5), screen
         last = next(index for index, line in enumerate(lines) if TOOL_PROGRAM in line)
+        if reference:
+            assert len(headings) == 21, screen
+        else:
+            first = next(index for index, line in enumerate(lines) if scenario.activity_group in line)
+            assert lines[first].lstrip().startswith(f"╭─ {scenario.activity_group}"), screen
+            assert all(not row.lstrip().startswith("╭─") for row in lines[first + 1:last + 1]), screen
         assert last >= headings[-1], screen
         return {"summary_rows": len(headings), "tool_rows": last - headings[0] + 1}
 
@@ -794,12 +799,12 @@ def dense_transcript(client, reference=False):
                               "the group to return to the same reading position")
         assert row_of(restored, scenario.activity_group) == anchor and scenario.draft in restored, restored
 
-        terminal.click_text(restored, "Read file · error")
+        terminal.click_text(restored, scenario.missing)
         terminal.expect("Requested arguments")
         terminal.request("resize", rows=44, cols=140)
         error = terminal.expect(f"path does not exist: {scenario.missing}",
                                 also=("Requested arguments", tool_state, scenario.draft), rows=44)["screen"]
-        screens.append(("Independent failed call with its exact error", error))
+        screens.append(("Grouped failed call with its exact error", error))
         terminal.click_text(error, "Read file · error")
         terminal.press("\x1b[1;5F")
 
@@ -821,9 +826,10 @@ def dense_transcript(client, reference=False):
                 assert all(text in wide for text in (scenario.activity_group, *scenario.file_cards)), wide
                 inspect_tools(terminal, wide)
             terminal.request("resize", rows=26, cols=74)
-            running_card = "Run command · running" if reference else "╰─ running"
+            running_card = "Run command · running" if reference else TOOL_PROGRAM
             narrow = read_while(terminal, lambda value: running_view(value, 26) and scenario.missing in value
-                                and scenario.draft in value and running_card in value,
+                                and scenario.draft in value
+                                and any(running_card in line and "running" in line for line in value.splitlines()),
                                 "the narrow tool turn")
             screens.append(("Narrow tool turn with the same draft", narrow))
             terminal.request("resize", rows=32, cols=140)
@@ -835,7 +841,10 @@ def dense_transcript(client, reference=False):
             narrow = terminal.expect(scenario.source, state=reply_state, also=(scenario.draft,), rows=26)["screen"]
             assert scenario.draft in narrow and scenario.end not in narrow, narrow
             screens.append(("Narrow Chinese report while the Rust fence is open", narrow))
-        complete = terminal.expect(scenario.end, state="Finished", also=(scenario.draft,), rows=26)["screen"]
+        if not reference:
+            terminal.request("resize", rows=32, cols=74)
+        complete = terminal.expect(scenario.end, state="Finished", also=(scenario.draft,),
+                                   rows=26 if reference else 32)["screen"]
         assert all(text in complete for text in (scenario.draft, "验证项目", "十二项通过", "dense-literal verification saved")), complete
         screens.append(("Complete report and unchanged draft", complete))
         verification = scenario.verify()

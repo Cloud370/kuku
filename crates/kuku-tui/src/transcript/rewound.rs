@@ -398,7 +398,12 @@ impl RewindGroupState {
             Row {
                 line,
                 inset: inset as u16,
+                right_inset: 0,
                 links: Vec::new(),
+                script_detail: None,
+                output: None,
+                command_arguments: None,
+                inline_output: None,
             }
         }));
         self.row_entries.extend(
@@ -532,6 +537,8 @@ impl Transcript {
                 line: AnchorLine::Group(0),
             },
             newer: std::collections::VecDeque::new(),
+            rebase_after_page: false,
+            visible_through: None,
             unseen: false,
             manual: true,
         });

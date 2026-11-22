@@ -217,7 +217,7 @@ fn completed_job_opens_retained_output_from_its_message() {
     assert!(matches!(&app.modal, Some(Modal::Output(viewer))
         if viewer.tool.name == "job-1" && viewer.tool.summary.contains("command exited 7")));
     assert!(app.effects.iter().any(|effect| matches!(effect,
-        Job::Output(selection, _, id, 0) if selection == &app.selection() && id == "saved-job-output")));
+        Job::Output(selection, _, id, 0, _) if selection == &app.selection() && id == "saved-job-output")));
 }
 
 #[test]
@@ -256,7 +256,7 @@ fn tool_actions_expand_the_selected_call_and_open_saved_or_complete_inline_outpu
     ));
     assert!(app.effects.iter().any(|effect| matches!(
         effect,
-        Job::Output(selection, _, id, 0)
+        Job::Output(selection, _, id, 0, _)
             if selection == &app.selection() && id == "saved-exact-output"
     )));
 
@@ -349,7 +349,7 @@ fn script_message_selects_retained_action_output_and_saves_its_reference() {
     assert!(matches!(&app.modal, Some(Modal::Output(viewer))
         if viewer.tool.output_id.as_deref() == Some("second-output")));
     assert!(app.effects.iter().any(|effect| matches!(effect,
-        Job::Output(target, _, id, 0) if target == &app.selection() && id == "second-output")));
+        Job::Output(target, _, id, 0, _) if target == &app.selection() && id == "second-output")));
     press(&mut app, KeyCode::Char('s'));
     app.paste("script-result");
     press(&mut app, KeyCode::Enter);

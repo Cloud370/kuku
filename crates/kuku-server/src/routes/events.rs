@@ -658,6 +658,7 @@ mod tests {
                     "kind":"runtime.compaction_finished", "agent":"main", "turn":1, "request_id":"compact-1",
                     "status":"completed", "summary":"Retained in rewind", "elapsed_ms":2000,
                     "estimated_input_tokens_before":10000, "estimated_input_tokens_after":5000, "checkpointed_messages":6,
+                    "summary_output_tokens":3376,
                 })),
             },
             StoredEvent {
@@ -679,6 +680,7 @@ mod tests {
         let entry = crate::wire::history_entry_for_agent(&events[2], &turns, "main").unwrap();
         assert_eq!(entry["type"], "compaction");
         assert_eq!(entry["text"], "Retained in rewind");
+        assert_eq!(entry["summary_output_tokens"], 3376);
     }
 
     #[test]

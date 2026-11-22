@@ -12,6 +12,7 @@ from urllib.parse import urlencode
 from interactive_fixture import InstalledClient, Response, StreamPause, eventually, is_composer_heading, run_cases
 from interactive_responses import responses_reasoning
 
+
 def rendered_running_transcript(screen, height, markers):
     rows = screen.splitlines()
     return (
@@ -104,7 +105,8 @@ def select_message_action(terminal, screen, action):
 
 def has_standalone_assistant_rail(frame):
     assistant_row = next(
-        (index for index, line in enumerate(frame) if line.strip() == "Assistant"),
+        (index for index, line in enumerate(frame)
+         if line.strip() == "Assistant" or line.lstrip().startswith("╭─ Assistant ")),
         None,
     )
     start = assistant_row + 1 if assistant_row is not None else 0
@@ -259,7 +261,7 @@ def targeted_delegation(client):
         assert "<kuku_delegation>" not in json.dumps(child.request["messages"])
         assert "<kuku_memory_guidance>" not in json.dumps(child.request["messages"])
         parent.tool("list_agents", "collect", wait_for="writer")
-        waiting = terminal.expect("Agent check · writer · Waiting", also=("╭─ Agent writer", "Timeline", "Thinking · None"),
+        waiting = terminal.expect("Agent check · writer · Waiting", also=("Agent writer", "Timeline", "Thinking · None"),
                                   absent=("· Fast", "· Ultra Fast"))["screen"]
         client.provider.assert_idle(0.35)
         child.text(result)
@@ -273,34 +275,35 @@ def targeted_delegation(client):
         timeline = terminal.expect("Timeline · 3 calls", also=("Finished · Proof of delivery",))["screen"]
         terminal.click_text(timeline, "Timeline")
         checked = terminal.expect("Agent check · writer (Idle, reply available)")["screen"]
-        target_column = lambda screen: next(row.index("writer") for row in screen.splitlines() if "Agent check · writer" in row)
+        def target_column(screen):
+            row = next(row for row in screen.splitlines() if "Agent check · writer" in row)
+            return row.index("writer") - row.index("Agent check")
         assert target_column(waiting) == target_column(checked), checked
         terminal.click_text(checked, "Timeline")
         collected.text("Received the delegated document.\n\n```python\nprint('Proof of delivery')\n```")
         terminal.expect("Received the delegated document.", state="3 tools")
         for columns in (44, 100, 174):
             terminal.request("resize", cols=columns, rows=34)
-            def nested_borders():
+            def aligned_cards():
                 screen = terminal.request("screen")["screen"]
-                rows = [next((r for r in screen.splitlines() if title in r and "╮" in r), "")
-                        for title in ("╭─ Agent writer", "╭─ python")]
-                if not all(rows):
+                agent = next((row for row in screen.splitlines()
+                              if row.lstrip().startswith("╭─ Agent writer") and "Open" in row), "")
+                code = next((row for row in screen.splitlines() if "╭─ python" in row and "╮" in row), "")
+                if not agent or not code:
                     return False
-                agent, code = rows
                 gutter = 1 if columns < 72 else 2 if columns < 110 else 3
-                transcript_width = columns - 2 * gutter
-                body_inset = 2
-                right_padding = 1 if transcript_width < 80 else 2
-                right_edge = columns - gutter - 1
-                return (agent.index("╭") == gutter and agent.index("╮") == right_edge
-                        and code.index("╭") == gutter + body_inset
-                        and code.index("╮") == right_edge - right_padding)
+                transcript_width = min(120, columns - 2 * gutter)
+                gutter = (columns - transcript_width) // 2
+                return (agent.index("╭") == gutter
+                        and agent.index("→") == gutter + transcript_width - 3
+                        and code.index("╭") == gutter + 2
+                        and code.index("╮") == gutter + transcript_width - 3)
             try:
-                eventually(f"Agent and nested code borders match layout at {columns} columns", nested_borders)
+                eventually(f"Agent card and code block align at {columns} columns", aligned_cards)
             except AssertionError as error:
                 raise AssertionError(terminal.request("screen")["screen"]) from error
             action = "Open →" if columns == 44 else "Open agent →"
-            scene = terminal.expect(action, state="╭─ Agent writer")["screen"]
+            scene = terminal.expect(action, state="Agent writer")["screen"]
             terminal.click_text(scene, action)
             back = terminal.expect("F2 Back", state="writer ▾", also=("Proof of delivery",))["screen"]
             assert "Agent writer" in back.splitlines()[1], back
@@ -323,19 +326,24 @@ def file_change_cards(client):
         client.provider.next(prompt).tool("write_file", "greeting", path="hello.py", content='print("Hello")\n')
         client.provider.next("greeting").tool("read_file", "verify", path="hello.py")
         client.provider.next("verify").tool("edit_file", "update", path="hello.py", old_text='"Hello"', new_text='"Welcome"')
-        client.provider.next("update").tool("write_file", "summary", path="notes.md", content="# Report\n\n- Checked the greeting.\n")
+        client.provider.next("update").tool("write_file", "summary", path="notes.md", content="# Report\n\n- Prepared the example.\n- Ran the check.\n- Checked the greeting.\n")
         client.provider.next("summary").text("Saved the example.")
         edit = "Edited   hello.py"
-        write = "Wrote    notes.md"
-        screen = terminal.expect("Saved the example.", also=("1 file read · 3 file changes", "Wrote    hello.py", edit, write))["screen"]
-        assert "Checked the greeting." not in screen, screen
+        write = "Added    notes.md"
+        screen = terminal.expect("Saved the example.", also=(
+            "1 file read · 3 file changes", "Added    hello.py", f"{edit} (+1 -1)", f"{write} (+5 -0)",
+            "3 + - Prepared the example.", "5 + - Checked the greeting.",
+            '1 - print("Hello")', '1 + print("Welcome")',
+        ))["screen"]
+        blank_row = re.compile(r"\b2 \+ +│")
+        assert not blank_row.search(screen), screen
         terminal.click_text(screen, edit)
-        changed = terminal.expect('-1 │ print("Hello")', also=('+1 │ print("Welcome")', edit, "+1 −1", write))["screen"]
+        changed = terminal.expect('1 - print("Hello")', also=('1 + print("Welcome")', edit, "(+1 -1)", write))["screen"]
         assert "Requested arguments · edit_file" not in changed, changed
         assert "Read hello.py" not in changed, changed
         terminal.click_text(changed, write)
-        written = terminal.expect("Checked the greeting.", also=(write, "3 lines written"))["screen"]
-        assert "# Report" not in written, written
+        written = terminal.expect("│ 2 + ", also=(f"{write} (+5 -0)", "5 + - Checked the greeting."))["screen"]
+        assert "# Report" in written and blank_row.search(written), written
         settled = terminal.expect("Saved the example.", state="Finished")["screen"]
         assert "Input accepted" not in settled and "Finished 0s" not in settled, settled
         assert (workspace / "hello.py").read_text() == 'print("Welcome")\n'
@@ -383,7 +391,9 @@ def markdown_inline_elements(client):
         terminal.request("resize", cols=36, rows=38)
         screen = terminal.expect("中文勾选项", also=("保留待办项", "B Manual", "H₂O", "Msg"), rows=38)["screen"]
         operate_on_assistant(terminal, screen, "<sup>", "Source")
-        terminal.expect("x<sup>2</sup>", also=("H<sub>2</sub>O",))
+        terminal.expect("x<sup>2</sup>")
+        terminal.request("resize", cols=70, rows=38)
+        terminal.expect("x<sup>2</sup>", also=("H<sub>2</sub>O",), rows=38)
         terminal.exit_cleanly()
 
 
@@ -391,6 +401,8 @@ def named_output_cards(client):
     workspace = client.workspace("work-named-output")
     pasted = "Checks to retain\n第一行: status recorded"
     log = "retained-screen-proof"
+    host_log = "host-command-evidence"
+    edited_text = "verified summary text\nfirst check passed\nsecond check passed\nlast check passed"
     prompt = "Capture one replay diagnostic"
     with client.terminal(workspace) as terminal:
         terminal.request("resize", rows=42, cols=108)
@@ -422,28 +434,135 @@ def named_output_cards(client):
         assert result["capture_complete"] and not result["output_preview_truncated"], result
         reference = result["output_ref"]
         page_range = f"0–{reference['bytes']} / {reference['bytes']} bytes"
+        host_invocation = {**invocation, "args": [arg.replace(log, host_log) for arg in invocation["args"]]}
         after_command.tool(
             "run_js", "summarize-log",
             title="Summarize saved replay",
             code=f"""const chunk = await tools.read_output({{id: {json.dumps(reference['id'])}}});
 await tools.write_file({{path: "summary.txt", content: chunk.result.segments[0].text}});
-await tools.run_command({json.dumps(invocation)});
-await tools.run_command({{program: "kuku-deliberately-missing-fixture"}});""",
+await tools.run_command({json.dumps(host_invocation)});
+try {{ await tools.run_command({{program: "kuku-deliberately-missing-fixture"}}); }} catch {{}}
+await tools.read_file({{path: "summary.txt"}});
+await tools.edit_file({{path: "summary.txt", old_text: {json.dumps(log)}, new_text: {json.dumps(edited_text)}}});
+await tools.read_output({{id: {json.dumps(reference['id'])}, offset: 9, limit: 6}});
+return {{verified: {{path: "summary.txt", ok: true}}}};""",
         )
         client.provider.next("summarize-log").text("Replay inspected.")
         display = terminal.expect("Replay inspected.", also=(
-            "Capture replay output", "exit 7", "Summarize saved replay · partial",
-            "1 file change", "Wrote summary.txt", "program missing",
+            "Capture replay output", "exit 7", "Summarize saved replay", "2 file changes",
+            "Edited   summary.txt (+4 -1)", "Added    summary.txt (+1 -0)", "1 - " + log,
         ))["screen"]
-        assert (workspace / "summary.txt").read_text(encoding="utf-8") == log + "\n"
+        terminal.click_text(display, "Capture replay output")
+        display = terminal.expect("View output", also=("Capture replay output", "View arguments"),
+                                  absent=("Requested arguments",))["screen"]
+        terminal.click_text(display, "View arguments")
+        display = terminal.expect("Hide arguments", also=(f"Program    {invocation['program']}", "Arguments", "Directory"),
+                                  absent=("Requested arguments",))["screen"]
+        terminal.click_text(display, "Hide arguments")
+        display = terminal.expect("View output", also=("Capture replay output", "View arguments"),
+                                  absent=("Hide arguments",))["screen"]
+        terminal.click_text(display, "View output")
+        inline = terminal.expect("Hide output", also=(log, page_range), absent=("S Name",))["screen"]
+        assert any(line.strip(" │") == f"1 {log}" for line in inline.splitlines()), inline
+        terminal.click_text(inline, "Hide output")
+        display = terminal.expect("View output", also=("Capture replay output",), absent=("Hide output",))["screen"]
+        terminal.click_text(display, "Capture replay output")
+        display = terminal.expect("Summarize saved replay", absent=("View output",))["screen"]
+        title = "Script   Summarize saved replay"
+        closed_rows = display.splitlines()
+        title_row = next(i for i, line in enumerate(closed_rows) if title in line)
+        assert "partial" not in closed_rows[title_row], display
+        terminal.click_text(display, title)
+        display = terminal.expect("program missing", also=(
+            "│   │ Status · partial", "Actions · 5/7 completed",
+            "Added    summary.txt", "Edited   summary.txt", "Output · 1 field",
+            "verified · 2 fields", "Input · JavaScript", "const chunk =",
+        ), absent=("return {verified:", '"verified": {'))["screen"]
+        positions = display.splitlines()
+        assert closed_rows[title_row] == positions[title_row], display
+        returned = next(i for i, line in enumerate(positions) if "Output · 1 field" in line)
+        first_action = next(i for i, line in enumerate(positions) if "Added    summary.txt" in line)
+        source = next(i for i, line in enumerate(positions) if "Input · JavaScript" in line)
+        host = next(i for i, line in enumerate(positions) if "Actions ·" in line)
+        assert source < host < first_action < returned, display
+        assert positions[source].index("Input ·") == positions[host].index("Actions ·"), display
+        assert positions[host].index("Actions ·") == positions[returned].index("Output ·"), display
+        assert positions[first_action].index("Added ") > positions[host].index("Actions ·"), display
+        assert "│   │   │ verified · 2 fields" in positions[returned + 1], display
+        closed_row = returned
+        terminal.click_text(display, "Output · 1 field")
+        display = terminal.expect('"verified": {', also=('"path": "summary.txt"', "Output · 1 field"),
+                                  absent=("return {verified:",))["screen"]
+        rows = display.splitlines()
+        returned = next(i for i, line in enumerate(rows) if "Output · 1 field" in line)
+        assert returned == closed_row and "│   │ Output" in rows[returned], display
+        assert "│   │   │ 1 {" in rows[returned + 1], display
+        terminal.click_text(display, "Input · JavaScript")
+        display = terminal.expect("return {verified:", also=("Input · JavaScript",),
+                                  absent=('"verified": {',))["screen"]
+        terminal.click_text(display, "Input · JavaScript")
+        terminal.expect("Input · JavaScript", also=("const chunk =",), absent=("return {verified:",))
+        read_row = "output bytes 9..15"
+        display = terminal.expect(read_row, also=("Output · 1 field",))["screen"]
+        terminal.click_text(display, read_row)
+        viewer = terminal.expect("Read saved output", state="S Name", also=(
+            f"9–15 / {reference['bytes']} bytes",))["screen"]
+        assert any(line.strip() == "screen" for line in viewer.splitlines()), viewer
+        assert log not in viewer, viewer
+        terminal.press("\x1b")
+        display = terminal.expect(read_row, also=("Output · 1 field",), absent=("S Name",))["screen"]
+        host_command = f"Run {invocation['program']} ["
+
+        def host_preview_visible(screen):
+            rows = screen.splitlines()
+            for index, row in enumerate(rows):
+                if host_command not in row:
+                    continue
+                detail = rows[index + 1:index + 6]
+                if (any(line.count("│") >= 2 and "Output · 1 line" in line for line in detail)
+                        and any(line.count("│") >= 2 and "View output" in line for line in detail)):
+                    return True
+            return False
+
+        def screen_with_host_expansion(expanded):
+            screen = terminal.request("screen")["screen"]
+            if host_command in screen and host_preview_visible(screen) == expanded:
+                return screen
+
+        terminal.click_text(display, host_command)
+        try:
+            display = eventually("the selected host command output preview", lambda: screen_with_host_expansion(True))
+        except AssertionError as error:
+            raise AssertionError(terminal.request("screen")["screen"]) from error
+        terminal.click_text(display, "View output")
+        inline = terminal.expect("Hide output", also=(host_log, page_range), absent=("S Name",))["screen"]
+        assert any(line.strip(" │") == f"1 {host_log}" for line in inline.splitlines()), inline
+        terminal.click_text(inline, "Hide output")
+        display = eventually("the host command still expanded after hiding output",
+                             lambda: screen_with_host_expansion(True))
+        terminal.click_text(display, host_command)
+        display = eventually("the collapsed host command", lambda: screen_with_host_expansion(False))
+        def has_write_preview(screen):
+            rows = screen.splitlines()
+            return any("Added    summary.txt" in row and log in after for row, after in zip(rows, rows[1:]))
+        assert has_write_preview(display), display
+        terminal.click_text(display, "Edited   summary.txt")
+        display = terminal.expect("4 + last check passed", also=("1 - " + log, "Edited   summary.txt"))["screen"]
+        edit_row = next(i for i, line in enumerate(display.splitlines()) if "Edited   summary.txt" in line)
+        assert "1 - " + log in display.splitlines()[edit_row + 2] and has_write_preview(display), display
+        terminal.click_text(display, "Edited   summary.txt")
+        display = terminal.expect(
+            "Edited   summary.txt", also=("1 - " + log,), absent=("4 + last check passed",),
+        )["screen"]
+        assert (workspace / "summary.txt").read_text(encoding="utf-8") == edited_text + "\n"
         operate_on_message(terminal, display, "Tool · run_command", None, "Full output")
         terminal.expect(log, state="S Name", also=(page_range,))
         terminal.press("\x1b")
-        display = terminal.expect("Replay inspected.")["screen"]
+        display = terminal.expect("Edited   summary.txt", absent=("S Name",))["screen"]
         operate_on_message(terminal, display, "Tool · run_js", None, "Full output")
         outputs = terminal.expect("Outputs for selected message")["screen"]
         terminal.click_text(outputs, "Script action 3 · Run command")
-        terminal.expect(log, state="S Name", also=(page_range,))
+        terminal.expect(host_log, state="S Name", also=(page_range,))
         entries = client.request("GET", f"/sessions/{session}/history?{query}").as_json()["entries"]
         script_result = next(entry["structured"] for entry in entries
                              if entry["type"] == "tool_result" and entry["tool_call_id"] == "summarize-log")
@@ -473,7 +592,7 @@ await tools.run_command({{program: "kuku-deliberately-missing-fixture"}});""",
         terminal.press("baseline\r")
         terminal.expect("Attach to draft", also=("Read saved value",))
         terminal.press("\x1b[B\r")
-        restored = terminal.expect(log, state="baseline", also=(page_range,))["screen"]
+        restored = terminal.expect(host_log, state="baseline", also=(page_range,))["screen"]
         terminal.press("\x1b")
         eventually("closing the saved output viewer", lambda: (
             "Enter steer" in (screen := terminal.request("screen")["screen"])
@@ -490,7 +609,7 @@ await tools.run_command({{program: "kuku-deliberately-missing-fixture"}});""",
         assert reference["id"] in json.dumps(call.request["messages"][-1]), call.request["messages"][-1]
         call.tool("read_output", "read-baseline", id=reference["id"])
         recalled = client.provider.next("read-baseline")
-        recalled.expect(log)
+        recalled.expect(host_log)
         recalled.text("Verified the saved replay output.")
         terminal.expect("Verified the saved replay output.", state="Finished")
         terminal.exit_cleanly()
@@ -529,14 +648,16 @@ def windows_diagnostic(client):
         assert diagnostic in json.dumps(result.request, ensure_ascii=False)
         result.text("Check complete.")
         screen = terminal.expect(diagnostic, also=("Check complete.", "exit 1"))["screen"]
-        assert "␍" not in screen and "�" not in screen and "command exited" not in screen and "Saved output" not in screen
+        assert "␍" not in screen and "�" not in screen and "command exited" not in screen and "View output" not in screen
         rows = screen.splitlines()
-        header = next(i for i, line in enumerate(rows) if "╭─ cmd.exe " in line)
-        assert command in rows[header] and "exit 1" not in rows[header] and not rows[header + 1].strip(" │"), screen
-        assert diagnostic in rows[header + 2] and not rows[header + 3].strip(" │"), screen
-        assert "exit 1" in rows[header + 4], screen
+        header = next(i for i, line in enumerate(rows) if line.lstrip().startswith("╭─ cmd.exe "))
+        assert command in rows[header] and "exit 1" in rows[header], screen
+        assert diagnostic in rows[header + 1] and rows[header + 2].lstrip().startswith("╰"), screen
         terminal.click_text(screen, "cmd.exe ")
-        terminal.expect("Requested arguments", state=diagnostic)
+        expanded = terminal.expect("View arguments", state=diagnostic)["screen"]
+        terminal.click_text(expanded, "View arguments")
+        expanded = terminal.expect("Hide arguments", also=("Program    cmd.exe", "Arguments", "Directory"))["screen"]
+        terminal.click_text(expanded, "Hide arguments")
         terminal.exit_cleanly()
 
 
@@ -873,7 +994,9 @@ def scroll_mixed_table(client):
         finished = terminal.expect("Turn 1", state="Finished")["screen"].splitlines()
         editor_row = next(i for i, row in enumerate(finished) if "Enter steer" in row)
         turn_row = next(i for i, row in enumerate(finished) if "Turn 1" in row and "in" in row)
-        assert finished[turn_row].index("Turn 1") == finished[editor_row].index("Enter steer"), finished
+        last_reply = next(row for row in finished if "After table 15" in row)
+        left = last_reply.index("│")
+        assert finished[turn_row].index("╰") == left, finished
         terminal.type("preserve draft")
         def rows():
             return [line.rstrip() for line in terminal.request("screen")["screen"].splitlines()]
@@ -883,7 +1006,8 @@ def scroll_mixed_table(client):
             terminal.press("\x1b[<64;10;10M")
             frame = eventually("the table viewport to scroll", lambda: (r if (r := rows()) != old else None))
             saw_border |= any("┌" in line for line in frame)
-            assert all("│" not in line for line in frame if "Before table" in line or "After table" in line), frame
+            assert all(line.strip().startswith("│") and line.strip().endswith("│")
+                       for line in frame if "Before table" in line or "After table" in line), frame
             assert not has_standalone_assistant_rail(frame), frame
             if any("Before table 01" in line for line in frame):
                 break

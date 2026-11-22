@@ -204,22 +204,24 @@ pub(crate) fn history_entry_for_agent(
     let mut entry = match &event.payload {
         EventPayload::MessageUser {
             turn,
+            ts,
             text,
             from,
             job_delivery: false,
             ..
         } => {
-            json!({"type":"user","turn":turn,"text":text,"from":from})
+            json!({"ts":ts,"type":"user","turn":turn,"text":text,"from":from})
         }
         EventPayload::ModelResponse {
             turn,
+            ts,
             text,
             request_id,
             thinking,
             ..
         } if !text.is_empty() || thinking.as_ref().is_some_and(|text| !text.is_empty()) => {
             let mut entry =
-                json!({"type":"assistant","turn":turn,"text":text,"request_id":request_id});
+                json!({"ts":ts,"type":"assistant","turn":turn,"text":text,"request_id":request_id});
             if let Some(summary) = thinking.as_ref().filter(|text| !text.is_empty()) {
                 entry["reasoning_preview"] = json!(summary);
             }
@@ -227,29 +229,32 @@ pub(crate) fn history_entry_for_agent(
         }
         EventPayload::ModelError {
             turn,
+            ts,
             kind,
             message,
             request_id,
             ..
         } => {
-            json!({"type":"error","turn":turn,"code":kind,"text":message,"request_id":request_id})
+            json!({"ts":ts,"type":"error","turn":turn,"code":kind,"text":message,"request_id":request_id})
         }
-        EventPayload::ModelRecovery { turn, .. } => json!({
-            "type":"retry",
+        EventPayload::ModelRecovery { turn, ts, .. } => json!({
+            "ts":ts,"type":"retry",
             "turn":turn,
             "retry":retry_metadata(&event.payload)?,
         }),
         EventPayload::ToolCall {
             turn,
+            ts,
             tool_call_id,
             tool,
             args,
             ..
         } => {
-            json!({"type":"tool_call","turn":turn,"tool_call_id":tool_call_id,"tool":tool,"args":args})
+            json!({"ts":ts,"type":"tool_call","turn":turn,"tool_call_id":tool_call_id,"tool":tool,"args":args})
         }
         EventPayload::ToolResult {
             turn,
+            ts,
             tool_call_id,
             status,
             summary,
@@ -258,7 +263,7 @@ pub(crate) fn history_entry_for_agent(
             structured,
             ..
         } => json!({
-            "type":"tool_result",
+            "ts":ts,"type":"tool_result",
             "turn":turn,
             "tool_call_id":tool_call_id,
             "status":status,
@@ -270,20 +275,22 @@ pub(crate) fn history_entry_for_agent(
         }),
         EventPayload::TurnCancelled {
             turn,
+            ts,
             reason,
             stop_event_id: None,
             ..
         } if !turns.explicitly_stopped(agent, *turn) => {
-            json!({"type":"status","turn":turn,"status":"cancelled","text":reason})
+            json!({"ts":ts,"type":"status","turn":turn,"status":"cancelled","text":reason})
         }
         EventPayload::TurnInterrupted {
             turn,
+            ts,
             reason,
             partial_reply,
             ..
         } if !turns.explicitly_stopped(agent, *turn) => {
             let mut entry =
-                json!({"type":"status","turn":turn,"status":"interrupted","text":reason});
+                json!({"ts":ts,"type":"status","turn":turn,"status":"interrupted","text":reason});
             if let Some(reply) = partial_reply {
                 entry["partial_reply"] = json!(reply.text);
                 entry["truncated"] = json!(reply.truncated);
@@ -351,6 +358,7 @@ pub(crate) fn history_entry_for_agent(
                 "elapsed_ms":value["elapsed_ms"],
                 "estimated_input_tokens_before":value["estimated_input_tokens_before"],
                 "estimated_input_tokens_after":value["estimated_input_tokens_after"],
+                "summary_output_tokens":value["summary_output_tokens"],
                 "checkpointed_messages":value["checkpointed_messages"],
                 "text":value["summary"],
             })
@@ -368,6 +376,13 @@ pub(crate) fn history_entry_for_agent(
         .and_then(|turn| turns.number(agent, turn))
     {
         entry["turn_number"] = json!(number);
+    }
+    if entry.get("ts").is_none() {
+        if let EventPayload::Unknown(value) = &event.payload {
+            if let Some(ts) = value["ts"].as_str() {
+                entry["ts"] = json!(ts);
+            }
+        }
     }
     Some(entry)
 }
@@ -703,10 +718,9 @@ mod retry_tests {
                 job_delivery,
             },
         };
-        assert_eq!(
-            "user",
-            history_entry(&message(false), &turns).unwrap()["type"]
-        );
+        let entry = history_entry(&message(false), &turns).unwrap();
+        assert_eq!(entry["type"], "user");
+        assert_eq!(entry["ts"], "2026-01-01T00:00:00Z");
         assert!(history_entry(&message(true), &turns).is_none());
     }
 

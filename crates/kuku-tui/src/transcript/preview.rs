@@ -3,11 +3,11 @@ use ratatui::text::{Line, Span};
 use serde_json::Value;
 
 use crate::text::shorten;
-use crate::theme::{card_padding, emphasis, MUTED, SURFACE_TEXT};
+use crate::theme::{emphasis, MUTED, SURFACE_TEXT};
 
 use super::{
-    append_bounded, body_inset, render_rows, Body, Key, RenderCache, Row, Transcript,
-    DISPLAY_LIMIT_NOTICE, MAX_BODY_BYTES, MAX_VISUAL_ROWS,
+    append_bounded, render_rows, Body, Key, RenderCache, Row, Transcript, DISPLAY_LIMIT_NOTICE,
+    MAX_BODY_BYTES, MAX_VISUAL_ROWS,
 };
 
 #[derive(Debug)]
@@ -155,6 +155,8 @@ impl Transcript {
                 window: self.recent.clone(),
                 anchor: position.top,
                 newer: Default::default(),
+                rebase_after_page: false,
+                visible_through: None,
                 unseen: true,
                 manual: false,
             });
@@ -285,16 +287,21 @@ pub(super) fn render_assistant(
     if has_reply {
         let (mut lines, links) =
             crate::markup::linked_markdown(text, assistant_width(width), MAX_VISUAL_ROWS);
-        if lines.last().is_some_and(|line| !line.spans.is_empty()) {
-            lines.push(Line::default());
-        }
+        trim_assistant_end(&mut lines);
         rows.extend(assistant_body(lines, &links, width, MAX_VISUAL_ROWS));
+        rows.extend(Row::frame_end(&crate::theme::CardFrame::timeline(width)));
     }
     rows
 }
 
+pub(super) fn trim_assistant_end(lines: &mut Vec<Line<'static>>) {
+    while lines.last().is_some_and(|line| line.spans.is_empty()) {
+        lines.pop();
+    }
+}
+
 pub(super) fn assistant_width(width: usize) -> usize {
-    width.saturating_sub(usize::from(body_inset(width)) + usize::from(card_padding(width).right))
+    crate::theme::CardFrame::timeline(width).content_width()
 }
 
 pub(super) fn assistant_body<'a>(
@@ -303,9 +310,10 @@ pub(super) fn assistant_body<'a>(
     width: usize,
     limit: usize,
 ) -> impl Iterator<Item = Row> + 'a {
-    render_rows(lines, width, limit, body_inset(width)).map(|mut row| {
+    let frame = crate::theme::CardFrame::timeline(width);
+    render_rows(lines, frame.content_width(), limit, 0).map(move |mut row| {
         row.links = links.resolve(&mut row.line);
-        row
+        row.framed(&frame)
     })
 }
 
@@ -315,6 +323,8 @@ pub(super) fn assistant_header(
     live: bool,
     width: usize,
 ) -> Vec<Row> {
+    let frame = crate::theme::CardFrame::timeline(width);
+    let width = frame.content_width();
     let mut rows = Vec::new();
     let role = if width >= 9 { "Assistant" } else { "AI" };
     let placeholder = live && !has_reply;
@@ -335,10 +345,23 @@ pub(super) fn assistant_header(
             rows.push(Row::plain(Line::styled(role, emphasis(SURFACE_TEXT))));
         }
         rows.push(Row::plain(Line::styled("Thinking", Style::new().fg(MUTED))));
-        rows.push(Row::plain(Line::default()));
     } else if has_reply && !joined {
         let title = Line::styled(role, emphasis(SURFACE_TEXT));
         rows.extend(render_rows(vec![title], width, MAX_VISUAL_ROWS, 0));
+    }
+    let mut rows: Vec<_> = rows
+        .into_iter()
+        .enumerate()
+        .map(|(index, row)| {
+            if index == 0 {
+                row.framed_title(&frame)
+            } else {
+                row.framed(&frame)
+            }
+        })
+        .collect();
+    if placeholder || (has_thinking && !has_reply) {
+        rows.extend(Row::frame_end(&frame));
     }
     rows
 }

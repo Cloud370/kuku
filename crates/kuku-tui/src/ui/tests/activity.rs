@@ -254,9 +254,9 @@ fn selected_recipient_stays_visible_at_the_top_and_beside_the_draft() {
                 row(to.y)
             );
             assert_eq!(buffer.cell((to.x, to.y)).unwrap().fg, accent);
-            let edge = crate::theme::horizontal_gutter(width);
-            assert_eq!(buffer.cell((edge, to.y)).unwrap().fg, accent);
-            let right = width - edge - 1;
+            let session = crate::theme::session_area(buffer.area);
+            assert_eq!(buffer.cell((session.left(), to.y)).unwrap().fg, accent);
+            let right = session.right() - 1;
             assert_eq!(buffer.cell((right, to.y)).unwrap().bg, background);
             assert_eq!(
                 buffer.cell((right, app.composer_area.y)).unwrap().bg,

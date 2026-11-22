@@ -23,7 +23,7 @@ pub(super) struct ThinkingRead {
 impl ThinkingRead {
     pub(super) fn fit(&mut self, width: usize) {
         let width = if self.in_timeline {
-            CardFrame::new(width).content_width()
+            CardFrame::timeline(width).content_width()
         } else {
             width
         };
@@ -71,7 +71,12 @@ impl ThinkingRead {
                             Span::styled(text, Style::new().fg(MUTED)),
                         ]),
                         inset: gutter.width() as u16,
+                        right_inset: 0,
                         links: Vec::new(),
+                        script_detail: None,
+                        output: None,
+                        command_arguments: None,
+                        inline_output: None,
                     }),
             )
             .collect();

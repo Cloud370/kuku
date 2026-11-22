@@ -1,4 +1,27 @@
-use super::Tool;
+use crate::theme::CardFrame;
+
+use super::{Record, Row, Tool};
+
+pub(super) fn preview(records: &[Record], frame: &CardFrame) -> Vec<Row> {
+    let mut rows: Vec<Row> = Vec::new();
+    for row in records
+        .iter()
+        .rev()
+        .filter_map(Record::tool)
+        .filter_map(|tool| tool.inspection_preview(frame.content_width()))
+    {
+        if rows.iter().all(|previous| previous.line != row.line) {
+            rows.push(row);
+            if rows.len() == 2 {
+                break;
+            }
+        }
+    }
+    rows.into_iter()
+        .rev()
+        .map(|row| row.framed(frame))
+        .collect()
+}
 
 pub(super) const INSPECTIONS: [(&str, &str, &str); 9] = [
     ("read_file", "file read", "file reads"),

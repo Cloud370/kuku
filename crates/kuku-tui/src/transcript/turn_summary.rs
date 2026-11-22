@@ -6,7 +6,7 @@ use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
 use crate::text::{compact_token_count, format_elapsed};
-use crate::theme::{emphasis, MUTED, TURN_CARD, USAGE, WARNING};
+use crate::theme::{emphasis, CardFrame, TranscriptTone, MUTED, TURN_CARD, USAGE};
 
 use super::Transcript;
 use crate::text::shorten;
@@ -49,7 +49,7 @@ impl Transcript {
             .filter_map(|record| record.turn_summary.as_ref())
             .next()
         {
-            let metrics = render_metrics(summary, width.saturating_sub(line.width() + 3), MUTED);
+            let metrics = render_metrics(summary, width.saturating_sub(line.width() + 3));
             if metrics.width() > 0 {
                 line.push_span("   ");
                 line.extend(metrics.spans);
@@ -60,18 +60,9 @@ impl Transcript {
 }
 
 pub(super) fn inline(summary: &TurnSummary, number: Option<u64>, width: usize) -> super::Row {
-    let area = ratatui::layout::Rect::new(0, 0, width as u16, 1);
-    let inset = usize::from(crate::theme::composer_padding(area).left) + usize::from(width >= 4);
     let label = number.map_or_else(|| "Turn".to_owned(), |number| format!("Turn {number}"));
-    let mut line = Line::from(Span::styled(
-        format!(
-            "{}{}",
-            " ".repeat(inset.min(width)),
-            shorten(&label, width.saturating_sub(inset))
-        ),
-        Style::new().fg(MUTED),
-    ));
-    let metrics = render_metrics(summary, width.saturating_sub(line.width() + 3), MUTED);
+    let mut line = Line::styled(shorten(&label, width), Style::new().fg(MUTED));
+    let metrics = render_metrics(summary, width.saturating_sub(line.width() + 3));
     if metrics.width() > 0 {
         line.push_span("   ");
         line.extend(metrics.spans);
@@ -79,56 +70,73 @@ pub(super) fn inline(summary: &TurnSummary, number: Option<u64>, width: usize) -
     super::Row::plain(line)
 }
 
-fn render_metrics(
+pub(super) fn footer(
     summary: &TurnSummary,
-    width: usize,
-    color: ratatui::style::Color,
-) -> Line<'static> {
+    number: Option<u64>,
+    frame: &CardFrame,
+) -> Vec<super::Row> {
+    vec![
+        inline(summary, number, frame.content_width()).framed_footer(frame),
+        super::Row::plain(Line::default()),
+    ]
+}
+
+fn render_metrics(summary: &TurnSummary, width: usize) -> Line<'static> {
+    use super::Row;
     let tools = if summary.tool_calls == 1 {
-        "tool"
+        " tool"
     } else {
-        "tools"
+        " tools"
     };
-    let labels = [
-        (
-            summary
-                .elapsed_ms
-                .map(|millis| format_elapsed(Duration::from_millis(millis))),
-            color,
-        ),
-        (
-            summary
-                .input_tokens
-                .map(|count| format!("{} in", compact_token_count(count))),
-            color,
-        ),
-        (
-            summary
-                .output_tokens
-                .map(|count| format!("{} out", compact_token_count(count))),
-            color,
-        ),
-        (
-            summary
-                .cache_hit_percent
-                .filter(|rate| (0.0..=100.0).contains(rate))
-                .map(cache_hit),
-            if summary.low_cache_hit {
-                WARNING
-            } else {
-                color
-            },
-        ),
-        (Some(format!("{} {tools}", summary.tool_calls)), color),
+    let metrics = [
+        summary.elapsed_ms.map(|millis| {
+            Row::metric(
+                "",
+                format_elapsed(Duration::from_millis(millis)),
+                "",
+                TranscriptTone::Value,
+            )
+        }),
+        summary
+            .input_tokens
+            .map(|count| Row::metric("", compact_token_count(count), " in", TranscriptTone::Value)),
+        summary.output_tokens.map(|count| {
+            Row::metric(
+                "",
+                compact_token_count(count),
+                " out",
+                TranscriptTone::Value,
+            )
+        }),
+        summary
+            .cache_hit_percent
+            .filter(|rate| (0.0..=100.0).contains(rate))
+            .map(|rate| {
+                Row::metric(
+                    "Cache ",
+                    cache_hit(rate),
+                    "",
+                    if summary.low_cache_hit {
+                        TranscriptTone::Warning
+                    } else {
+                        TranscriptTone::Value
+                    },
+                )
+            }),
+        Some(Row::metric(
+            "",
+            summary.tool_calls.to_string(),
+            tools,
+            TranscriptTone::Value,
+        )),
     ];
     let muted = Style::new().fg(MUTED);
     let mut line = Line::default();
-    for (label, color) in labels {
-        let Some(label) = label else { continue };
+    for metric in metrics.into_iter().flatten() {
         let separator = if line.spans.is_empty() { "" } else { " · " };
-        if line.width() + separator.width() + label.width() <= width {
+        if line.width() + separator.width() + metric.width() <= width {
             line.push_span(Span::styled(separator, muted));
-            line.push_span(Span::styled(label, Style::new().fg(color)));
+            line.extend(metric.spans);
         }
     }
     line
@@ -136,7 +144,7 @@ fn render_metrics(
 
 fn cache_hit(rate: f64) -> String {
     let rate = format!("{rate:.1}");
-    format!("Cache {}%", rate.strip_suffix(".0").unwrap_or(&rate))
+    format!("{}%", rate.strip_suffix(".0").unwrap_or(&rate))
 }
 
 #[cfg(test)]
@@ -168,14 +176,14 @@ mod tests {
         let summary = serde_json::from_value(json!({"elapsed_ms":1337, "input_tokens":1000,
             "cache_hit_percent":37.0,"low_cache_hit":true,"tool_calls":0}))
         .unwrap();
-        let line = super::render_metrics(&summary, 80, super::MUTED);
+        let line = super::render_metrics(&summary, 80);
         let yellow: Vec<_> = line
             .spans
             .iter()
-            .filter(|span| span.style.fg == Some(super::WARNING))
+            .filter(|span| span.style.fg == Some(super::TranscriptTone::Warning.color()))
             .map(|span| span.content.as_ref())
             .collect();
-        assert_eq!(yellow, ["Cache 37%"]);
+        assert_eq!(yellow, ["37%"]);
     }
 
     #[test]
@@ -208,11 +216,11 @@ mod tests {
         let rendered = rows(&mut transcript, 64);
         let header = rendered
             .iter()
-            .position(|line| line == "Interrupted")
+            .position(|line| crate::transcript::tests::card_text(line) == "Interrupted")
             .unwrap();
         let body = rendered
             .iter()
-            .position(|line| line == "Partial result")
+            .position(|line| crate::transcript::tests::card_text(line) == "Partial result")
             .unwrap();
         assert!(header < body);
         assert_eq!(
@@ -223,7 +231,7 @@ mod tests {
         let raw = rows(&mut transcript, 64);
         assert!(raw
             .iter()
-            .any(|line| line.trim_start() == "## Partial result"));
+            .any(|line| crate::transcript::tests::card_text(line) == "## Partial result"));
         assert_eq!(
             "Turn 2   1 tool",
             transcript.turn_dock(64).unwrap().to_string()

@@ -15,15 +15,15 @@ use tokio::task::{AbortHandle, JoinSet};
 
 use crate::menu::{Choice, ChoiceKind, Ticket};
 use crate::model_default::{self, PreparedDefaultSave, ResolvedModel};
-use crate::output::OUTPUT_PAGE_BYTES;
 use crate::setup::{
     CredentialRepairApplied, CredentialRepairPlan, CredentialRepairRequest,
     PreparedCredentialRepair, SavedCredentialRepair,
 };
 use crate::text::{format_elapsed, single_line};
-use crate::transcript::{HistoryRequest, RewindGroupRequest, HISTORY_PAGE, REWIND_GROUP_PAGE};
+use crate::transcript::{HistoryRequest, RewindGroupRequest, REWIND_GROUP_PAGE};
 
 mod connect;
+mod history;
 mod observe;
 
 const UPDATE_CAPACITY: usize = 64;
@@ -108,7 +108,7 @@ pub(crate) enum Job {
     Pending,
     Model(AgentConfig, u64),
     StartupSkills(u64),
-    Output(Selection, u64, String, u64),
+    Output(Selection, u64, String, u64, usize),
     PrepareRestart(u64),
     Restart(Box<kuku_client::local::ServiceIdentity>),
     Web(Option<Target>),
@@ -460,9 +460,7 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
             Update::Refreshed(selection, result)
         }
         Job::History(selection, request) => {
-            let result = client
-                .history(&selection.target, request.before_option(), HISTORY_PAGE)
-                .await;
+            let result = history::load(client, &selection.target, request).await;
             Update::History(selection, request, result)
         }
         Job::RewindHistory(selection, ticket, before) => {
@@ -566,9 +564,9 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
         Job::PrepareDefault { .. } | Job::SaveDefault { .. } => {
             unreachable!("default-save jobs are handled before connected jobs")
         }
-        Job::Output(selection, id, output_id, offset) => {
+        Job::Output(selection, id, output_id, offset, limit) => {
             let result = client
-                .output(&selection.target, &output_id, offset, OUTPUT_PAGE_BYTES)
+                .output(&selection.target, &output_id, offset, limit)
                 .await;
             Update::Output(selection, id, result)
         }

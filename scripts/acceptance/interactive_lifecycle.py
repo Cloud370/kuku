@@ -37,23 +37,26 @@ def lifecycle_checks(binary, bridge, directory):
 
 
 def verify_restored_tool(terminal, job, history):
+    def titles(screen):
+        return [line for line in screen.splitlines() if line.lstrip(" ╭─│").startswith(TOOL_PROGRAM)]
+
     if job is not None:
         terminal.press("\x0f")
         terminal.expect("Ctrl+O show")
         terminal.press("\x1b[5~")
         screen = terminal.expect(TOOL_PROGRAM, also=("started in background", "Background job",
                                                  f"{job['id']} · Completed"))["screen"]
-        assert screen.count(f"╭─ {TOOL_PROGRAM}") == 1 and screen.count("Background job") == 1, screen
+        assert len(titles(screen)) == 1 and screen.count("Background job") == 1, screen
         terminal.press("\x1b[6~")
         terminal.press("\x0f")
         terminal.expect(TOOL_OUTPUT)
         return
     screen = terminal.expect(TOOL_PROGRAM)["screen"]
-    assert screen.count(f"╭─ {TOOL_PROGRAM}") == 1 and "╰─ ok" in screen, f"{screen}\nCommitted tool: {history}"
+    assert len(titles(screen)) == 1 and "· ok · exit 0" in screen, f"{screen}\nCommitted tool: {history}"
     assert "--gated-tool" in screen and TOOL_OUTPUT in screen
     terminal.press("\x0f")
     collapsed = terminal.expect("Ctrl+O show")["screen"]
-    assert "Saved output" not in collapsed and "--gated-tool" in collapsed, collapsed
+    assert "View output" not in collapsed and "--gated-tool" in collapsed, collapsed
     terminal.press("\x0f")
     terminal.expect(TOOL_PROGRAM, also=(TOOL_OUTPUT,))
 

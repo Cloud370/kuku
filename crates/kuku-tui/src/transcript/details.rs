@@ -1,24 +1,25 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::ops::Range;
 
-use ratatui::style::Style;
-use ratatui::text::{Line, Span};
-use unicode_width::UnicodeWidthStr;
-
-use crate::markup::render_literal;
 use crate::text::shorten;
-use crate::theme::{emphasis, CardFrame, ACCENT, MUTED, SUCCESS};
 
-use super::agent::{AgentCard, AgentCards};
-use super::tool::{tool_title, Tool};
+use super::agent::AgentCard;
+use super::tool::Tool;
 use super::{
-    body_inset, render_rows, Key, Record, RewindGroupAction, RewindGroupChoice, Row, ToolDetails,
-    Transcript, MAX_RECORDS,
+    render_rows, Key, Record, RewindGroupAction, RewindGroupChoice, Row, ToolDetails, Transcript,
+    MAX_RECORDS,
 };
 
+mod activity;
+pub(super) use activity::footer as activity_footer;
+mod groups;
+pub(super) use groups::{groups, GroupHeading};
+use groups::{GroupKind, GroupSummary};
 mod inspection;
+mod output;
 pub(super) use inspection::inspection_composition;
-use inspection::INSPECTIONS;
+pub(crate) use output::InlineOutputEffect;
+pub(super) use output::{InlineOutput, InlineOutputAction, OutputTarget};
 
 const GROUP_DETAIL_ROWS: usize = 2;
 
@@ -29,6 +30,10 @@ pub(crate) struct DetailKey {
 }
 
 impl DetailKey {
+    pub(crate) fn is_inline_output(&self) -> bool {
+        matches!(self.kind, DetailKind::InlineOutput(..))
+    }
+
     pub(crate) fn rewind_group_action(&self) -> Option<(u64, RewindGroupAction)> {
         let Key::RewindGroup(id) = &self.record else {
             return None;
@@ -63,13 +68,41 @@ impl DetailKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DetailKind {
     Agent,
+    CommandArguments,
     Compaction,
     Group,
+    Output(OutputTarget),
+    InlineOutput(OutputTarget, InlineOutputAction),
     Reasoning,
     RewindGroup,
     RewindGroupMore,
     RewindGroupRetry,
+    Script(ScriptDetail),
     Tool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ScriptDetail {
+    Action(usize),
+    Return,
+    Source,
+}
+
+impl ScriptDetail {
+    pub(super) fn action(self) -> Option<usize> {
+        match self {
+            Self::Action(index) => Some(index),
+            Self::Return | Self::Source => None,
+        }
+    }
+
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Action(_) => "Host action",
+            Self::Return => "Output",
+            Self::Source => "Input",
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -77,6 +110,9 @@ pub(super) struct Details {
     pub(super) visible: Vec<VisibleDetail>,
     groups: VecDeque<Key>,
     inspections: VecDeque<Key>,
+    command_arguments: VecDeque<Key>,
+    script_detail: Option<DetailKey>,
+    inline_output: Option<InlineOutput>,
 }
 
 impl Details {
@@ -104,11 +140,24 @@ impl Details {
         if self.inspections.contains(key) {
             if fallback == ToolDetails::CompactFile {
                 ToolDetails::ExpandedFile
+            } else if self.command_arguments.contains(key) {
+                ToolDetails::InspectionWithArguments
             } else {
                 ToolDetails::Inspection
             }
         } else {
             fallback
+        }
+    }
+
+    pub(super) fn script_detail(&self, record: &Key) -> Option<ScriptDetail> {
+        let key = self
+            .script_detail
+            .as_ref()
+            .filter(|key| key.for_record(record))?;
+        match key.kind {
+            DetailKind::Script(detail) => Some(detail),
+            _ => None,
         }
     }
 
@@ -127,6 +176,9 @@ impl Details {
     pub(super) fn clear_expansions(&mut self) {
         self.groups.clear();
         self.inspections.clear();
+        self.command_arguments.clear();
+        self.script_detail = None;
+        self.inline_output = None;
     }
 }
 
@@ -141,6 +193,38 @@ pub(super) struct VisibleDetail {
 }
 
 impl VisibleDetail {
+    pub(super) fn command_arguments(row: usize, key: &Key, open: bool) -> Self {
+        Self::new(
+            row..row + 1,
+            key,
+            DetailKind::CommandArguments,
+            Row::arguments_label(open).into(),
+            String::new(),
+            open,
+        )
+    }
+
+    pub(super) fn script_detail(
+        row: usize,
+        key: &Key,
+        tool: &Tool,
+        detail: ScriptDetail,
+        open: bool,
+    ) -> Option<Self> {
+        let (subject, description) = match detail {
+            ScriptDetail::Action(index) => tool.script_action_description(index)?,
+            _ => (detail.label(), ""),
+        };
+        Some(Self::new(
+            row..row + 1,
+            key,
+            DetailKind::Script(detail),
+            format!("{} {subject}", if open { "Collapse" } else { "Expand" }),
+            crate::text::single_line(description),
+            open,
+        ))
+    }
+
     pub(super) fn group(
         rows: Range<usize>,
         key: &Key,
@@ -266,7 +350,14 @@ impl Transcript {
             .iter()
             .find(|item| {
                 item.key.record == record.key
-                    && item.key.kind != DetailKind::Reasoning
+                    && !matches!(
+                        item.key.kind,
+                        DetailKind::Reasoning
+                            | DetailKind::Script(_)
+                            | DetailKind::Output(_)
+                            | DetailKind::InlineOutput(..)
+                            | DetailKind::CommandArguments
+                    )
                     && (!tool_message || item.key.kind != DetailKind::Group)
             })
             .map(|item| item.key.clone())
@@ -383,15 +474,33 @@ impl Transcript {
     }
 
     pub(crate) fn toggle_in_view(&mut self, key: &DetailKey, width: usize, height: usize) -> bool {
+        let retain_row = self
+            .detail_items
+            .rows_for(key)
+            .filter(|_| match key.kind {
+                DetailKind::Script(_) => true,
+                DetailKind::Tool => self
+                    .reading
+                    .as_ref()
+                    .map_or(&self.recent, |reading| &reading.window)
+                    .records
+                    .iter()
+                    .find(|record| key.for_record(&record.key))
+                    .and_then(Record::tool)
+                    .is_some_and(|tool| tool.name() == "run_js"),
+                _ => false,
+            })
+            .map(|rows| rows.start);
         if !self.toggle_detail(key) {
             return false;
         }
         let anchor = super::Anchor {
             key: key.record.clone(),
-            line: if key.kind == DetailKind::Group {
-                super::AnchorLine::Group(0)
-            } else {
-                super::AnchorLine::Body(0)
+            line: match key.kind {
+                DetailKind::Group => super::AnchorLine::Group(0),
+                DetailKind::Script(detail) => super::AnchorLine::Script(detail),
+                DetailKind::CommandArguments => super::AnchorLine::CommandArguments,
+                _ => super::AnchorLine::Body(0),
             },
         };
         let layout = super::Layout {
@@ -402,11 +511,41 @@ impl Transcript {
             items: &self.detail_items,
             notes: self.notes.as_ref(),
         };
+        if let Some(row) = retain_row {
+            if let Some(reading) = &mut self.reading {
+                let top = reading
+                    .window
+                    .position_of(&anchor, layout)
+                    .saturating_sub(row);
+                reading.anchor = reading.window.anchor_at(top, layout).unwrap_or(anchor);
+                return true;
+            }
+            let top = self.recent.position_of(&anchor, layout).saturating_sub(row);
+            if self.recent.row_count(layout).saturating_sub(height) != top {
+                let anchor = self.recent.anchor_at(top, layout).unwrap_or(anchor);
+                self.reading = Some(super::Reading {
+                    window: self.recent.clone(),
+                    anchor,
+                    newer: VecDeque::new(),
+                    rebase_after_page: false,
+                    visible_through: None,
+                    unseen: false,
+                    manual: true,
+                });
+            }
+            return true;
+        }
         if let Some(reading) = &mut self.reading {
             let opening = match key.kind {
                 DetailKind::Agent => self.agent_cards.is_open(&key.record),
                 DetailKind::Group => self.detail_items.groups.contains(&key.record),
-                DetailKind::Compaction => self.detail_items.inspections.contains(&key.record),
+                DetailKind::Tool | DetailKind::Compaction => {
+                    self.detail_items.inspections.contains(&key.record)
+                }
+                DetailKind::Script(_) => self.detail_items.script_detail.as_ref() == Some(key),
+                DetailKind::CommandArguments => {
+                    self.detail_items.command_arguments.contains(&key.record)
+                }
                 _ => false,
             };
             let reveal = self
@@ -432,6 +571,8 @@ impl Transcript {
                 window: self.recent.clone(),
                 anchor,
                 newer: VecDeque::new(),
+                rebase_after_page: false,
+                visible_through: None,
                 unseen: false,
                 manual: true,
             });
@@ -468,15 +609,47 @@ impl Transcript {
                         .position(|opened| opened == &key.record)
                     {
                         self.detail_items.inspections.remove(index);
+                        if self.detail_items.script_detail(&key.record).is_some() {
+                            self.detail_items.script_detail = None;
+                        }
+                        self.detail_items.close_inline_output(&key.record);
+                        self.detail_items
+                            .command_arguments
+                            .retain(|opened| opened != &key.record);
                     } else {
                         remember(&mut self.detail_items.inspections, &key.record);
                     }
                 }
                 true
             }
+            DetailKind::Script(_) if in_window => {
+                self.detail_items.close_inline_output(&key.record);
+                self.detail_items.script_detail =
+                    (self.detail_items.script_detail.as_ref() != Some(key)).then(|| key.clone());
+                true
+            }
+            DetailKind::CommandArguments
+                if in_window && self.detail_items.inspections.contains(&key.record) =>
+            {
+                if let Some(index) = self
+                    .detail_items
+                    .command_arguments
+                    .iter()
+                    .position(|opened| opened == &key.record)
+                {
+                    self.detail_items.command_arguments.remove(index);
+                } else {
+                    remember(&mut self.detail_items.command_arguments, &key.record);
+                }
+                true
+            }
             DetailKind::Tool
             | DetailKind::Compaction
             | DetailKind::Reasoning
+            | DetailKind::Output(_)
+            | DetailKind::InlineOutput(..)
+            | DetailKind::CommandArguments
+            | DetailKind::Script(_)
             | DetailKind::RewindGroup
             | DetailKind::RewindGroupMore
             | DetailKind::RewindGroupRetry => false,
@@ -521,11 +694,16 @@ impl Transcript {
             groups(&window.records)
                 .into_iter()
                 .find(|span| {
-                    window.records[span.range.clone()].iter().any(|record| {
-                        record.key == *key
-                            && !(span.summary.keeps_outcomes()
-                                && record.tool().is_some_and(Tool::workspace_outcome))
-                    })
+                    window.records[span.range.clone()]
+                        .iter()
+                        .enumerate()
+                        .any(|(index, record)| {
+                            record.key == *key
+                                && !span
+                                    .summary
+                                    .activity_preview()
+                                    .is_some_and(|preview| preview[index] > 0)
+                        })
                 })
                 .and_then(|span| {
                     let records = &window.records[span.range];
@@ -583,411 +761,6 @@ fn remember(expanded: &mut VecDeque<Key>, key: &Key) {
         expanded.pop_front();
     }
     expanded.push_back(key.clone());
-}
-
-pub(super) struct GroupSpan {
-    pub(super) range: Range<usize>,
-    pub(super) summary: GroupSummary,
-}
-
-pub(super) struct GroupSummary {
-    title: String,
-    composition: String,
-    listing: String,
-    preview: Option<String>,
-    kind: GroupKind,
-}
-
-impl GroupSummary {
-    pub(super) fn framed(&self) -> bool {
-        matches!(self.kind, GroupKind::Delegation { .. })
-    }
-
-    pub(super) fn keeps_outcomes(&self) -> bool {
-        matches!(self.kind, GroupKind::WorkspaceActivity { .. })
-    }
-}
-
-#[derive(PartialEq, Eq)]
-enum GroupKind {
-    Delegation {
-        creation: usize,
-        delivery: usize,
-        checks: usize,
-    },
-    Inspections,
-    WorkspaceActivity {
-        has_inspections: bool,
-    },
-}
-
-pub(super) struct GroupHeading {
-    agent_link: Option<String>,
-    summary: GroupSummary,
-    pub(super) open: bool,
-    pub(super) rows: Vec<Row>,
-}
-
-impl GroupHeading {
-    pub(super) fn expandable(&self) -> bool {
-        !matches!(
-            self.summary.kind,
-            GroupKind::WorkspaceActivity {
-                has_inspections: false
-            }
-        )
-    }
-
-    pub(super) fn from_span(
-        span: GroupSpan,
-        records: &[Record],
-        open: bool,
-        width: usize,
-        agents: &AgentCards,
-    ) -> Self {
-        let summary = span.summary;
-        if let GroupKind::Delegation {
-            creation,
-            delivery,
-            checks,
-        } = summary.kind
-        {
-            let latest = &records[delivery];
-            if let Some(card) = latest.tool().and_then(Tool::agent_card) {
-                let (_, facts) = agents.display(&latest.key, latest.position, card.address);
-                let creation = records[creation].tool().and_then(Tool::agent_card);
-                let rows = card.delegation_header(width, open, facts, checks, creation.as_ref());
-                return Self {
-                    agent_link: Some(card.address.to_owned()),
-                    summary,
-                    open,
-                    rows,
-                };
-            }
-        }
-        Self::new(summary, open, width)
-    }
-
-    pub(super) fn new(summary: GroupSummary, open: bool, width: usize) -> Self {
-        if !summary.framed() {
-            let label = if summary.composition.is_empty() || !summary.listing.is_empty() {
-                &summary.title
-            } else {
-                &summary.composition
-            };
-            let mut rows = vec![Row::plain(Line::styled(
-                shorten(label, width),
-                emphasis(ACCENT),
-            ))];
-            if !open {
-                for detail in [summary.preview.as_deref().unwrap_or(""), &summary.listing] {
-                    if !detail.is_empty() {
-                        rows.extend(
-                            render_rows(
-                                render_literal(detail, Style::default()),
-                                width.saturating_sub(usize::from(body_inset(width))),
-                                GROUP_DETAIL_ROWS,
-                                0,
-                            )
-                            .map(|row| row.with_rail(body_inset(width))),
-                        );
-                    }
-                }
-            }
-            return Self {
-                agent_link: None,
-                summary,
-                open,
-                rows,
-            };
-        }
-        let frame = CardFrame::new(width);
-        let columns = frame.title_width();
-        let marker = if open { "▾ " } else { "▸ " };
-        let status = " · ok";
-        let mut title = Line::default();
-        if columns > marker.width() {
-            title.push_span(Span::styled(marker, Style::new().fg(MUTED)));
-        }
-        let room = columns.saturating_sub(title.width());
-        let show_status = room > status.width();
-        title.push_span(Span::styled(
-            shorten(
-                &summary.title,
-                room - usize::from(show_status) * status.width(),
-            ),
-            emphasis(ACCENT),
-        ));
-        if show_status {
-            title.push_span(Span::styled(status, Style::new().fg(SUCCESS)));
-        }
-        let mut rows = vec![Row::plain(frame.title_line(title))];
-        let composition = match (open, summary.preview.as_deref()) {
-            (true, Some(_)) => "",
-            (false, Some(preview)) => preview,
-            (_, None) => &summary.composition,
-        };
-        let listing = if open { "" } else { &summary.listing };
-        if open || !composition.is_empty() || !listing.is_empty() {
-            rows.extend(Row::frame_padding(&frame));
-        }
-        for detail in [composition, listing] {
-            if !detail.is_empty() {
-                rows.extend(
-                    render_rows(
-                        render_literal(detail, Style::default()),
-                        frame.content_width(),
-                        GROUP_DETAIL_ROWS,
-                        0,
-                    )
-                    .map(|row| row.framed(&frame)),
-                );
-            }
-        }
-        if !open {
-            rows.extend(Row::frame_end(&frame));
-        }
-        Self {
-            agent_link: None,
-            summary,
-            open,
-            rows,
-        }
-    }
-}
-
-pub(super) fn groups(records: &[Record]) -> Vec<GroupSpan> {
-    let mut groups = Vec::new();
-    let mut index = 0;
-    while let Some(first) = records.get(index) {
-        let same_turn = |r: &Record| {
-            first.turn.is_some()
-                && first.owner.is_some()
-                && r.turn == first.turn
-                && r.owner == first.owner
-        };
-        let next_action = |after: usize| {
-            let mut next = after + 1;
-            while records
-                .get(next)
-                .is_some_and(|r| same_turn(r) && r.reasoning_only())
-            {
-                next += 1;
-            }
-            next
-        };
-        if let Some(create) = first
-            .tool()
-            .and_then(Tool::agent_card)
-            .filter(|card| card.created())
-        {
-            let next = next_action(index);
-            if let Some(send) = records
-                .get(next)
-                .filter(|r| same_turn(r))
-                .and_then(Record::tool)
-                .and_then(Tool::agent_card)
-                .filter(|card| card.delivered() && card.address == create.address)
-            {
-                let previous_end = groups.last().map_or(0, |group: &GroupSpan| group.range.end);
-                let mut start = index;
-                while start > previous_end
-                    && same_turn(&records[start - 1])
-                    && records[start - 1].reasoning_only()
-                {
-                    start -= 1;
-                }
-                let mut last = next;
-                let mut checks = 0;
-                loop {
-                    let check = next_action(last);
-                    if !records
-                        .get(check)
-                        .filter(|r| same_turn(r))
-                        .and_then(Record::tool)
-                        .is_some_and(|t| {
-                            t.checks_delegation(
-                                first.owner.as_deref().unwrap_or_default(),
-                                send.address,
-                            )
-                        })
-                    {
-                        break;
-                    }
-                    last = check;
-                    checks += 1;
-                }
-                groups.push(GroupSpan {
-                    range: start..last + 1,
-                    summary: GroupSummary {
-                        title: format!("Agent {}", send.address),
-                        composition: send.choice_summary(),
-                        listing: String::new(),
-                        preview: None,
-                        kind: GroupKind::Delegation {
-                            creation: index,
-                            delivery: next,
-                            checks,
-                        },
-                    },
-                });
-                index = last + 1;
-                continue;
-            }
-        }
-        let start = index;
-        if first.tool().is_some_and(workspace_activity) {
-            let count = 1 + records[start + 1..]
-                .iter()
-                .take_while(|record| {
-                    same_turn(record) && record.tool().is_some_and(workspace_activity)
-                })
-                .count();
-            let range = start..start + count;
-            let tools = || records[range.clone()].iter().filter_map(Record::tool);
-            let changes = tools().filter(|tool| tool.compact_file_change()).count();
-            let saved = tools().filter(|tool| tool.saved_script_return()).count();
-            if count > 1 && changes + saved > 0 {
-                let composition = inspection_composition(tools(), false);
-                let has_inspections = !composition.is_empty();
-                let steps = if changes == 1 {
-                    "1 file change".to_owned()
-                } else if changes > 1 {
-                    format!("{changes} file changes")
-                } else {
-                    String::new()
-                };
-                let title = [&composition, &steps]
-                    .into_iter()
-                    .filter(|part| !part.is_empty())
-                    .map(String::as_str)
-                    .collect::<Vec<_>>()
-                    .join(" · ");
-                let title = if title.is_empty() {
-                    format!("{saved} saved outputs")
-                } else {
-                    title
-                };
-                groups.push(GroupSpan {
-                    range: range.clone(),
-                    summary: GroupSummary {
-                        title,
-                        composition: String::new(),
-                        listing: String::new(),
-                        preview: None,
-                        kind: GroupKind::WorkspaceActivity { has_inspections },
-                    },
-                });
-                index = range.end;
-                continue;
-            }
-        }
-        if let Some(name) = group_name(first) {
-            loop {
-                let next = next_action(index);
-                let Some(next_name) = records
-                    .get(next)
-                    .filter(|r| same_turn(r))
-                    .and_then(group_name)
-                else {
-                    break;
-                };
-                if next > index + 1
-                    && !(name == "list_agents"
-                        && next_name == name
-                        && group_name(&records[index]) == Some(name))
-                {
-                    break;
-                }
-                index = next;
-            }
-            let script_batch = name == "run_js"
-                && first.tool().is_some_and(|tool| {
-                    INSPECTIONS
-                        .iter()
-                        .map(|(operation, _, _)| tool.inspection_count(operation))
-                        .fold(0, u64::saturating_add)
-                        > 1
-                });
-            if index > start || script_batch {
-                groups.push(GroupSpan {
-                    range: start..index + 1,
-                    summary: group_summary(name, &records[start..=index]),
-                });
-            }
-        }
-        index += 1;
-    }
-    groups
-}
-
-fn group_name(record: &Record) -> Option<&str> {
-    record.turn.filter(|&turn| turn > 0)?;
-    record.owner.as_ref()?;
-    record.tool()?.group_name()
-}
-
-fn workspace_activity(tool: &Tool) -> bool {
-    tool.workspace_outcome()
-        || tool
-            .group_name()
-            .is_some_and(|name| !matches!(name, "list_agents" | "query_session"))
-}
-
-fn group_summary(first: &str, records: &[Record]) -> GroupSummary {
-    let count = records.iter().filter_map(group_name).count();
-    let mixed = records
-        .iter()
-        .filter_map(group_name)
-        .any(|name| name != first || name == "run_js");
-    let title = if mixed {
-        format!("Read-only activity · {count} calls")
-    } else {
-        group_title(first, records)
-    };
-    let listing = records
-        .iter()
-        .rev()
-        .find(|record| group_name(record) == Some("list_agents"))
-        .and_then(|record| record.tool()?.agent_listing());
-    let composition = if mixed {
-        inspection_composition(records.iter().filter_map(Record::tool), listing.is_some())
-    } else {
-        String::new()
-    };
-    let preview = if mixed && count == 2 {
-        let results = records
-            .iter()
-            .filter_map(|record| record.tool()?.inspection_result())
-            .collect::<Vec<_>>();
-        (results.len() + usize::from(listing.is_some()) == count).then(|| results.join("\n"))
-    } else {
-        None
-    };
-    GroupSummary {
-        title,
-        composition,
-        listing: listing.unwrap_or_default(),
-        preview,
-        kind: GroupKind::Inspections,
-    }
-}
-
-fn group_title(name: &str, records: &[Record]) -> String {
-    let count = records.iter().filter_map(group_name).count();
-    if name == "read_file" {
-        let unique: HashSet<_> = records
-            .iter()
-            .filter_map(|record| record.tool()?.read_path())
-            .collect();
-        if unique.len() == count {
-            format!("Read {count} files")
-        } else {
-            format!("Read file ×{count}")
-        }
-    } else {
-        format!("{} ×{count}", tool_title(name))
-    }
 }
 
 #[cfg(test)]

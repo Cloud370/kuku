@@ -328,11 +328,11 @@ class DenseTranscript:
     heading = "工作区核对结果"
     source = "fn verified_total"
     end = "原始报告校验完成"
-    activity_group = "12 file reads · 3 file searches · 2 text searches · 2 file changes"
+    activity_group = "12 file reads · 2 file changes"
     missing = "samples/missing-proof.txt"
     read_target = "samples/read-12.txt"
     file_cards = (
-        "Wrote    generated.txt", "Edited   samples/read-01.txt", "1 line written", "+1 −1",
+        "Added    generated.txt (+1 -0)", "Edited   samples/read-01.txt (+1 -1)",
     )
     partial = (
         f"## {heading}\n\n"

@@ -1,14 +1,14 @@
 use kuku_client::HistoryEntry;
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use serde_json::Value;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use unicode_width::UnicodeWidthStr;
 
-use crate::text::{compact_token_count, single_line};
-use crate::theme::{ACCENT, MUTED, SUCCESS, WARNING};
+use crate::text::{compact_token_count, shorten, single_line};
+use crate::theme::{CardFrame, TranscriptTone, ACCENT, MUTED, SUCCESS, WARNING};
 
-use super::{body_inset, capped, message, Row, MAX_BODY_BYTES};
+use super::{capped, message, render_rows, Row, MAX_BODY_BYTES, MAX_VISUAL_ROWS};
 
 #[derive(Debug, Clone)]
 pub(super) enum Compaction {
@@ -18,9 +18,10 @@ pub(super) enum Compaction {
         provider_limit: bool,
     },
     Completed {
-        elapsed_ms: u64,
-        input_tokens: (u64, u64),
-        messages: u64,
+        elapsed_ms: Option<u64>,
+        input_tokens: Option<(u64, u64)>,
+        summary_output_tokens: Option<u64>,
+        messages: Option<u64>,
         summary: String,
     },
     Ended {
@@ -51,12 +52,12 @@ impl Compaction {
                 provider_limit: field("provider_limit").as_bool().unwrap_or(false),
             },
             "completed" => Self::Completed {
-                elapsed_ms: field("elapsed_ms").as_u64()?,
-                input_tokens: (
-                    field("estimated_input_tokens_before").as_u64()?,
-                    field("estimated_input_tokens_after").as_u64()?,
-                ),
-                messages: field("checkpointed_messages").as_u64()?,
+                elapsed_ms: field("elapsed_ms").as_u64(),
+                input_tokens: field("estimated_input_tokens_before")
+                    .as_u64()
+                    .zip(field("estimated_input_tokens_after").as_u64()),
+                summary_output_tokens: field("summary_output_tokens").as_u64(),
+                messages: field("checkpointed_messages").as_u64(),
                 summary: capped(entry.text.as_deref(), MAX_BODY_BYTES),
             },
             status @ ("failed" | "cancelled" | "interrupted") => Self::Ended {
@@ -125,10 +126,8 @@ impl Compaction {
         open: bool,
         elapsed_seconds: Option<u64>,
     ) -> Vec<Row> {
-        let rail = body_inset(width);
-        let body_width = width.saturating_sub(usize::from(rail));
         let (title, color, body) = match self {
-            Self::Queued => ("Compaction queued", MUTED, String::new()),
+            Self::Queued => ("Compaction queued", MUTED, Line::default()),
             Self::Running { provider_limit, .. } => (
                 if *provider_limit {
                     "Compacting context after provider limit"
@@ -136,54 +135,50 @@ impl Compaction {
                     "Compacting context"
                 },
                 ACCENT,
-                elapsed_seconds.map_or_else(String::new, |elapsed| format!("{elapsed}s elapsed")),
+                elapsed_seconds.map_or_else(Line::default, |elapsed| {
+                    Row::metric("", elapsed.to_string(), "s elapsed", TranscriptTone::Value)
+                }),
             ),
             Self::Completed {
                 elapsed_ms,
                 input_tokens,
+                summary_output_tokens,
                 messages,
                 summary,
             } => {
-                let counts = format!(
-                    "~{} → ~{}",
-                    compact_token_count(input_tokens.0),
-                    compact_token_count(input_tokens.1),
-                );
-                let unit = if "Context compacted ·  input tokens".width() + counts.width() <= width
-                {
-                    "input tokens"
-                } else {
-                    "tokens"
-                };
-                let mut rows = vec![
-                    Row::plain(Line::default()),
-                    Row::caption(
-                        "Context compacted",
-                        &format!("{counts} {unit}"),
-                        ACCENT,
-                        width,
-                    ),
-                ];
-                if open {
-                    let count = if *messages == 1 {
-                        "message"
-                    } else {
-                        "messages"
-                    };
-                    let details =
-                        format!("{} · {messages} {count} summarized", duration(*elapsed_ms));
-                    rows.push(Row::caption(&details, "", MUTED, body_width).with_rail(rail));
-                    if !summary.trim().is_empty() {
-                        rows.push(Row::plain(Line::default()).with_rail(rail));
-                        let mut body = message::markdown_body(summary, body_width, 0);
-                        if body.last().is_some_and(|row| row.line.spans.is_empty()) {
-                            body.pop();
-                        }
-                        rows.extend(body.into_iter().map(|row| row.with_rail(rail)));
-                    }
+                let frame = CardFrame::timeline(width);
+                let width = frame.content_width();
+                let mut heading = Row::caption("Context compacted", "", ACCENT, width);
+                let room = width - heading.line.width();
+                if let Some(elapsed) = elapsed_ms.filter(|_| room > 4) {
+                    let timing = Row::metric(" · ", duration(elapsed), "s", TranscriptTone::Value);
+                    heading.line.extend(Row::fit(timing, room).spans);
                 }
-                rows.push(Row::plain(Line::default()));
-                return rows;
+                let mut rows = vec![heading];
+                if let Some((before, after)) = input_tokens {
+                    rows.push(context_tokens(*before, *after, width));
+                }
+                if let Some(tokens) = summary_output_tokens {
+                    rows.push(summary_tokens(*tokens, width));
+                }
+                if let Some(count) = messages {
+                    let unit = if *count == 1 {
+                        " message summarized"
+                    } else {
+                        " messages summarized"
+                    };
+                    rows.push(Row::plain(Row::fit(
+                        Row::metric("", count.to_string(), unit, TranscriptTone::Value),
+                        width,
+                    )));
+                }
+                if open && !summary.trim().is_empty() {
+                    if rows.len() > 1 {
+                        rows.push(Row::plain(Line::default()));
+                    }
+                    rows.extend(message::markdown_body(summary, width));
+                }
+                return Row::card(rows, &frame);
             }
             Self::Ended {
                 elapsed_ms,
@@ -191,7 +186,9 @@ impl Compaction {
                 reason,
                 continues,
             } => {
-                let elapsed = elapsed_ms.map(duration);
+                let mut body = elapsed_ms.map_or_else(Line::default, |elapsed| {
+                    Row::metric("", duration(elapsed), "s", TranscriptTone::Value)
+                });
                 let diagnostic = (!reason.is_empty()).then(|| single_line(reason));
                 let next = matches!(outcome, End::Failed).then(|| {
                     if *continues {
@@ -201,11 +198,12 @@ impl Compaction {
                     }
                     .to_owned()
                 });
-                let body = [elapsed, diagnostic, next]
-                    .into_iter()
-                    .flatten()
-                    .collect::<Vec<_>>()
-                    .join(" · ");
+                for text in [diagnostic, next].into_iter().flatten() {
+                    if body.width() > 0 {
+                        body.push_span(Span::styled(" · ", TranscriptTone::Label.style()));
+                    }
+                    body.push_span(Span::styled(text, TranscriptTone::Text.style()));
+                }
                 match outcome {
                     End::Failed => ("Compaction failed", WARNING, body),
                     End::Interrupted => ("Compaction interrupted", MUTED, body),
@@ -215,13 +213,57 @@ impl Compaction {
             Self::Restored => (
                 "Context restored",
                 SUCCESS,
-                "Using the context from before the latest compaction.".into(),
+                Line::from("Using the context from before the latest compaction."),
             ),
         };
-        message::render_activity_record(title, color, &body, width)
+        let frame = CardFrame::timeline(width);
+        let width = frame.content_width();
+        let mut rows = vec![Row::caption(title, "", color, width)];
+        if body.width() > 0 {
+            rows.extend(render_rows(vec![body], width, MAX_VISUAL_ROWS, 0));
+        }
+        Row::card(rows, &frame)
     }
 }
 
+fn context_tokens(before: u64, after: u64, width: usize) -> Row {
+    let muted = TranscriptTone::Label.style();
+    let usage = TranscriptTone::Value.emphasized();
+    let before = format!("~{}", compact_token_count(before));
+    let after = format!("~{}", compact_token_count(after));
+    let arrow = " → ";
+    let mut line = Line::from(Span::styled(shorten(&before, width), usage));
+    let room = width.saturating_sub(line.width() + arrow.width());
+    if room > 0 {
+        line.push_span(Span::styled(arrow, muted));
+        line.push_span(Span::styled(shorten(&after, room), usage));
+        let room = width - line.width();
+        if let Some(unit) = [" input tokens", " tokens"]
+            .into_iter()
+            .find(|unit| unit.len() <= room)
+        {
+            line.push_span(Span::styled(unit, muted));
+        }
+    }
+    Row::plain(line)
+}
+
+fn summary_tokens(tokens: u64, width: usize) -> Row {
+    let count = shorten(&tokens.to_string(), width);
+    let room = width - count.width();
+    let unit = [" output tokens", " tokens", ""]
+        .into_iter()
+        .find(|unit| unit.len() <= room)
+        .unwrap_or_default();
+    let label = "Summary · ";
+    let label = if unit.len() + label.width() <= room {
+        label
+    } else {
+        ""
+    };
+    Row::plain(Row::metric(label, count, unit, TranscriptTone::Value))
+}
+
 fn duration(ms: u64) -> String {
-    format!("{:.1}s", ms as f64 / 1000.0)
+    format!("{:.1}", ms as f64 / 1000.0)
 }
