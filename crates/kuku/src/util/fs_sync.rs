@@ -100,6 +100,13 @@ pub(crate) fn rename(from: &Path, to: &Path) -> io::Result<()> {
     }
 }
 
+pub(crate) fn replace_journal(from: &Path, to: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    return windows::replace_journal(from, to);
+    #[cfg(not(windows))]
+    rename(from, to)
+}
+
 fn lock_error(path: &Path, error: fs::TryLockError) -> io::Error {
     match error {
         fs::TryLockError::WouldBlock => io::Error::new(
@@ -147,12 +154,18 @@ mod windows {
     use std::fs;
     use std::io;
     use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::fs::OpenOptionsExt;
     use std::os::windows::io::AsRawHandle;
     use std::path::Path;
+    use std::ptr;
 
-    use windows_sys::Win32::Foundation::ERROR_LOCK_VIOLATION;
+    use windows_sys::Win32::Foundation::{
+        ERROR_ACCESS_DENIED, ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION, GENERIC_WRITE,
+    };
     use windows_sys::Win32::Storage::FileSystem::{
-        LockFileEx, UnlockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
+        FileRenameInfoEx, LockFileEx, SetFileInformationByHandle, UnlockFileEx, DELETE,
+        FILE_FLAG_WRITE_THROUGH, FILE_RENAME_INFO, LOCKFILE_EXCLUSIVE_LOCK,
+        LOCKFILE_FAIL_IMMEDIATELY,
     };
     use windows_sys::Win32::System::IO::{OVERLAPPED, OVERLAPPED_0, OVERLAPPED_0_0};
 
@@ -223,6 +236,52 @@ mod windows {
             return Err(io::Error::last_os_error());
         }
         Ok(())
+    }
+
+    pub(super) fn replace_journal(from: &Path, to: &Path) -> io::Result<()> {
+        match rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if matches!(
+                    error.raw_os_error().map(|code| code as u32),
+                    Some(ERROR_ACCESS_DENIED | ERROR_SHARING_VIOLATION)
+                ) => {}
+            Err(error) => return Err(error),
+        }
+        const REPLACE_IF_EXISTS: u32 = 1;
+        const POSIX_SEMANTICS: u32 = 2;
+        let target = absolute_name(to)?;
+        let name_bytes = std::mem::size_of_val(target.as_slice());
+        let size = (std::mem::offset_of!(FILE_RENAME_INFO, FileName) + name_bytes)
+            .max(std::mem::size_of::<FILE_RENAME_INFO>());
+        let size_u32 = u32::try_from(size)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "journal path is too long"))?;
+        let mut data = vec![0_usize; size.div_ceil(std::mem::size_of::<usize>())];
+        let info = data.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+        let file = fs::OpenOptions::new()
+            .access_mode(DELETE | GENERIC_WRITE)
+            .custom_flags(FILE_FLAG_WRITE_THROUGH)
+            .open(from)?;
+        // SAFETY: The aligned buffer covers the header and NUL-terminated target name.
+        let renamed = unsafe {
+            (*info).Anonymous.Flags = REPLACE_IF_EXISTS | POSIX_SEMANTICS;
+            (*info).FileNameLength = (name_bytes - std::mem::size_of::<u16>()) as u32;
+            ptr::copy_nonoverlapping(
+                target.as_ptr(),
+                ptr::addr_of_mut!((*info).FileName).cast(),
+                target.len(),
+            );
+            SetFileInformationByHandle(
+                file.as_raw_handle(),
+                FileRenameInfoEx,
+                info.cast(),
+                size_u32,
+            )
+        };
+        if renamed == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        file.sync_all()
     }
 
     fn absolute_name(path: &Path) -> io::Result<Vec<u16>> {

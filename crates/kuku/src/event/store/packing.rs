@@ -179,7 +179,7 @@ impl Writer {
             return Ok(false);
         };
         drop(self.journal.take());
-        let publish = fs_sync::rename(&replacement.0, path);
+        let publish = fs_sync::replace_journal(&replacement.0, path);
         let reopen = (|| {
             let file = fs_sync::write_options().read(true).open(path)?;
             let journal = LockedJournal::writer(file, path)?;

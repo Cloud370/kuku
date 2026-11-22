@@ -136,6 +136,29 @@ fn active_scans_and_unrelated_writer_recovery_do_not_serialize_writes() {
 }
 
 #[test]
+fn a_snapshot_retains_its_prefix_during_archive_replacement() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("events.jsonl");
+    let mut writer = EventStore::open(&path).unwrap();
+    for _ in 0..40 {
+        writer.append(payload()).unwrap();
+    }
+    let path = writer.inner.path.clone();
+    let snapshot = super::read_source(&path).unwrap().snapshot(&path).unwrap();
+    let mut locked = writer.inner.writer.lock().unwrap();
+    assert!(locked.pack(&path, &()).unwrap());
+    drop(locked);
+    writer.append(payload()).unwrap();
+    let old = super::read_all(
+        snapshot.layout.reader(&snapshot.file, snapshot.end, 0),
+        &path,
+    )
+    .unwrap();
+    assert_eq!(40, old.last().unwrap().id);
+    assert_eq!(41, EventStore::read_head(&path).unwrap());
+}
+
+#[test]
 fn shared_open_and_append_do_not_rescan_committed_history() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("events.jsonl");
