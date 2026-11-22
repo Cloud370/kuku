@@ -35,9 +35,8 @@ TOOL_PROGRAM = f"./fixture-command{EXE}"
 
 
 def is_composer_heading(line):
-    recipient = r"(?:(?:Send to |To )?[a-z0-9_…-]+ ▾\s+)?"
     activity = r"(?:[\u2800-\u28ff]{2}|[↑…◇↓↳])\s+\S"
-    return bool(re.match(r"^\s*[│┃]\s+" + recipient + activity, line))
+    return bool(re.match(r"^\s*[│┃]\s+" + activity, line))
 
 
 def cleanup_path(path):

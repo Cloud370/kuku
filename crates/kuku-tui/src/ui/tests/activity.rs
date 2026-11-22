@@ -197,7 +197,7 @@ fn narrow_composer_preserves_the_distinguishing_end_of_the_agent_address() {
     let rows = screen(&mut app, 71, 25);
     let recipient = rows.lines().nth(20).unwrap();
     assert!(
-        recipient.contains("Send to reviewer")
+        recipient.contains("To review")
             && recipient.contains("-92 ▾")
             && recipient.contains("Ready"),
         "{recipient}"
@@ -221,7 +221,7 @@ fn selected_recipient_stays_visible_at_the_top_and_beside_the_draft() {
 
     for width in [32, 80, 128] {
         let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
-        let mut phase_column = None;
+        let mut recipient_start = None;
         for (address, accent, background) in [
             (
                 reviewer.clone(),
@@ -246,14 +246,25 @@ fn selected_recipient_stays_visible_at_the_top_and_beside_the_draft() {
                 row(1)
             );
             let to = app.recipient_area;
-            assert_eq!(to.x, app.composer_area.x);
+            let heading = row(to.y);
+            let phase = buffer.cell((app.composer_area.x, to.y)).unwrap();
             assert!(
-                row(to.y).contains(&format!("to {} ▾", address.agent))
-                    || row(to.y).contains(&format!("To {} ▾", address.agent)),
-                "{}",
-                row(to.y)
+                crate::theme::KUKU_MARK.starts_with(phase.symbol()),
+                "{heading}"
+            );
+            assert!(to.x > app.composer_area.x);
+            assert_eq!(to.x, *recipient_start.get_or_insert(to.x));
+            let label: String = (to.x..to.right())
+                .map(|x| buffer.cell((x, to.y)).unwrap().symbol())
+                .collect();
+            assert!(
+                label == format!("Send to {} ▾", address.agent)
+                    || label == format!("To {} ▾", address.agent)
+                    || (width == 32 && label.starts_with("To rev") && label.ends_with("… ▾")),
+                "{label:?} in {heading}"
             );
             assert_eq!(buffer.cell((to.x, to.y)).unwrap().fg, accent);
+            assert_eq!(buffer.cell((to.right() - 1, to.y)).unwrap().symbol(), "▾");
             let session = crate::theme::session_area(buffer.area);
             assert_eq!(buffer.cell((session.left(), to.y)).unwrap().fg, accent);
             let right = session.right() - 1;
@@ -262,12 +273,6 @@ fn selected_recipient_stays_visible_at_the_top_and_beside_the_draft() {
                 buffer.cell((right, app.composer_area.y)).unwrap().bg,
                 background
             );
-            let heading = row(to.y);
-            let column = heading
-                .find(crate::theme::KUKU_MARK)
-                .unwrap_or_else(|| panic!("{heading}"));
-            let expected = phase_column.get_or_insert(column);
-            assert_eq!(column, *expected);
         }
     }
 }

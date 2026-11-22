@@ -279,11 +279,20 @@ def targeted_delegation(client):
             terminal.click_text(scene, action)
             back = terminal.expect("F2 Back", state="writer ▾", also=("Proof of delivery",))["screen"]
             assert "Agent writer" in back.splitlines()[1], back
-            assert any("To writer ▾" in row or "Send to writer ▾" in row for row in back.splitlines()), back
+            writer_heading = next(row for row in back.splitlines() if "writer ▾" in row)
+            assert is_composer_heading(writer_heading), back
+            if columns == 100:
+                terminal.click_text(back, "writer ▾")
+                terminal.expect("Switch Agent", also=("Create Agent",))
+                terminal.press("\x1b")
+                back = terminal.expect("F2 Back", state="writer ▾", absent=("Switch Agent",))["screen"]
             terminal.click_text(back, "F2 Back")
             terminal.press("\r")
             main = terminal.expect("main ▾", state="Received the delegated document.")["screen"]
             assert "Agent main" in main.splitlines()[1], main
+            main_heading = next(row for row in main.splitlines() if "main ▾" in row)
+            assert is_composer_heading(main_heading), main
+            assert main_heading.index("⢎⡱") == writer_heading.index("⢎⡱"), main
         terminal.exit_cleanly()
     client.provider.assert_idle()
 
