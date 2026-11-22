@@ -12,6 +12,8 @@ On first preparation, the SDK loads the Prompt catalog, Agent instructions, work
 
 A readable, nonblank `AGENTS.override.md` at the selected workspace root supplies all project instructions from that directory, even if Git ignores it. Otherwise, kuku loads the readable `AGENTS.md` and `CLAUDE.md` in that order. The lookup stays within the selected root. Changes apply on fresh assembly. Resuming a Session reuses its committed prelude.
 
+The execution context includes the workspace root and the platform of the process that runs tools. The platform label includes the operating system and architecture. On Linux it also includes the distribution ID and version when the operating system reports them.
+
 ## Prepare the next Step
 
 Newly rendered frozen preludes put selected tool guidance (including delegation and memory-tool guidance) first, then Agent behavior, project policy (workspace instructions, workspace/platform and model tiers), and global/project Memory. Guidance remains conditional on the Agent's tools. Behavior precedes workspace policy because it can be shared across workspaces using the same Agent definition; different behavior still forms a distinct prefix. Recorded segments, snapshots and admitted messages retain their original order on resume, including policy-first segments. Successor segments that reuse a recorded prelude preserve its ordering and identity slot; only a freshly rendered prelude uses the new order.

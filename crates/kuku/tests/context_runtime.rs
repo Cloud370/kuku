@@ -315,6 +315,14 @@ async fn main_and_explore_share_the_pre_identity_prefix_with_distinct_tools() {
     let explore_messages = bodies[1]["messages"].as_array().unwrap();
     assert_eq!(&main_messages[..2], &explore_messages[..2]);
     assert_ne!(bodies[0]["messages"][2], bodies[1]["messages"][2]);
+    let platform = format!(
+        "Platform: {} ({}",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
+    for body in &bodies {
+        assert!(body["messages"].to_string().contains(&platform));
+    }
     let main_tools = request_tool_names(&bodies[0]);
     let explore_tools = request_tool_names(&bodies[1]);
     assert!(main_tools.iter().any(|name| name == "read_file"));
