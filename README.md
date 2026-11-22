@@ -12,6 +12,7 @@ Open `kuku` for interactive work in your terminal or use `kuku run` for scripts.
 ## Why kuku
 
 - File-native runtime: sessions, Memory, config, permissions, and Skills live on disk.
+- An idle Linux server used about **16 MiB RSS**. Large Sessions reopen from an inline journal checkpoint. [Performance measurements](docs/en/how-it-works/performance.md)
 - Readable architecture: the SDK owns runtime facts; host apps own presentation and transport.
 - Each Agent has its own address, inbox and context within a Session.
 - Each model request extends a committed context prefix. Reopening an Agent preserves the instructions and tool results its model already saw.

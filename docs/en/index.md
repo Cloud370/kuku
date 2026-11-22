@@ -2,6 +2,8 @@
 
 kuku is a file-native Rust Agent SDK in testing. Open `kuku` in your workspace to start a task in the terminal. Use the browser to return to the same Session. [Install](start/install.md) · [First task](start/quickstart.md) · [Run the server](guides/run-the-server.md)
 
+An idle Linux server used about **16 MiB RSS**. Large Sessions reopen from an inline journal checkpoint. [Performance measurements](how-it-works/performance.md)
+
 ## Sections
 
 - [Start](start/index.md) - install kuku, run it once, and set up configuration.

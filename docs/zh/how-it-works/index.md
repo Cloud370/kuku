@@ -8,6 +8,7 @@
 - [File-Native Model](file-native-model.md)
 - [Agent Loop](agent-loop.md)
 - [Sessions](sessions.md)
+- [性能实测](performance.md)
 - [Memory](memory.md)
 - [Agents and Skills](agents-and-skills.md)
 - [Permissions](permissions.md)

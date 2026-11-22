@@ -28,7 +28,7 @@ Session 用 Job 句柄跟踪已派发的命令或工作区脚本。Job 归发起
 
 ## 存储与上下文
 
-[Session 布局](../reference/file-layout.md#session-layout)包含唯一权威 `events.jsonl` 和保留输出。共享 writer 持有操作系统锁，增量追加并同步记录。打开时修复不完整尾部。已封存的历史可用内嵌检查点恢复状态，只重放后续记录。检查点不可用时，重放历史。压缩事件帧在读取时校验。
+[Session 布局](../reference/file-layout.md#session-layout)包含唯一权威 `events.jsonl` 和保留输出。共享 writer 持有操作系统锁，增量追加并同步记录。打开时修复不完整尾部。已封存的历史可用内嵌检查点恢复状态，只重放后续记录。检查点不可用时，重放历史。压缩事件帧在读取时校验。[重开耗时与内存实测](performance.md#重开大型-session)
 
 Agent 创建／配置、投递／接纳、Step 准备、授权、派发、结果、等待、回复与结算分别记录。模型终止状态与有界输出上限恢复见 [Agent 执行循环](agent-loop.md)。Turn 完成或模型措辞不证明业务成功，应检查实际文件、命令结果和判定器。
 
