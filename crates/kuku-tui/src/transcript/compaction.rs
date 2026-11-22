@@ -15,6 +15,7 @@ pub(super) enum Compaction {
     Queued,
     Running {
         started: Option<OffsetDateTime>,
+        provider_limit: bool,
     },
     Completed {
         elapsed_ms: u64,
@@ -47,6 +48,7 @@ impl Compaction {
                 started: field("ts")
                     .as_str()
                     .and_then(|date| OffsetDateTime::parse(date, &Rfc3339).ok()),
+                provider_limit: field("provider_limit").as_bool().unwrap_or(false),
             },
             "completed" => Self::Completed {
                 elapsed_ms: field("elapsed_ms").as_u64()?,
@@ -89,6 +91,7 @@ impl Compaction {
     pub(super) fn elapsed_seconds(&self) -> Option<u64> {
         let Self::Running {
             started: Some(started),
+            ..
         } = self
         else {
             return None;
@@ -115,8 +118,12 @@ impl Compaction {
     ) -> Vec<Row> {
         let (title, color, body) = match self {
             Self::Queued => ("Compaction queued", MUTED, String::new()),
-            Self::Running { .. } => (
-                "Compacting context",
+            Self::Running { provider_limit, .. } => (
+                if *provider_limit {
+                    "Compacting context after provider limit"
+                } else {
+                    "Compacting context"
+                },
                 ACCENT,
                 elapsed_seconds.map_or_else(String::new, |elapsed| format!("{elapsed}s elapsed")),
             ),

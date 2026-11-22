@@ -32,8 +32,9 @@ pub(super) enum Outcome {
 }
 
 #[derive(Clone, Copy)]
-pub(super) enum Trigger {
+pub(super) enum Trigger<'a> {
     Pressure,
+    ProviderOverflow { rejected_request: &'a str },
     Manual { closed_turn: bool },
 }
 
@@ -49,15 +50,24 @@ pub(super) async fn compact(
     resolved: &ResolvedProvider,
     correlation: &ProviderCorrelation,
     before_bytes: usize,
-    trigger: Trigger,
+    trigger: Trigger<'_>,
 ) -> Result<Outcome> {
     let manual = matches!(trigger, Trigger::Manual { .. });
     let closed_turn = matches!(trigger, Trigger::Manual { closed_turn: true });
+    let rejected_request = match trigger {
+        Trigger::ProviderOverflow { rejected_request } => Some(rejected_request),
+        _ => None,
+    };
     let limit = pending.query.runtime_limits.max_request_bytes;
-    let Some(cut) = context.checkpoint_cut(pending.turn, limit / 4, closed_turn)? else {
+    let recent_bytes = if rejected_request.is_some() {
+        limit.min(before_bytes) / 4
+    } else {
+        limit / 4
+    };
+    let Some(cut) = context.checkpoint_cut(pending.turn, recent_bytes, closed_turn)? else {
         return Ok(Outcome::Keep);
     };
-    let must_fit = before_bytes > limit;
+    let must_fit = before_bytes > limit || rejected_request.is_some();
     let minimum_savings = if manual || must_fit {
         before_bytes.saturating_sub(limit).max(1)
     } else {
@@ -92,6 +102,11 @@ pub(super) async fn compact(
         return Ok(Outcome::Keep);
     }
     let mut source = context.checkpoint_source(cut, pending.turn);
+    let summary_limit = if rejected_request.is_some() {
+        limit.min(before_bytes.saturating_sub((before_bytes / 32).max(1)))
+    } else {
+        limit
+    };
     let warm = task.checkpoint_request(
         source.clone(),
         instruction.clone(),
@@ -99,7 +114,7 @@ pub(super) async fn compact(
         SUMMARY_OUTPUT_LIMIT,
     );
     let prepared = match prepare_request(pending, resolved, correlation, &warm) {
-        Ok(prepared) if prepared.body.as_bytes().len() <= limit => prepared,
+        Ok(prepared) if prepared.body.as_bytes().len() <= summary_limit => prepared,
         _ => {
             for message in &mut source {
                 message.blocks.retain(|block| {
@@ -120,7 +135,7 @@ pub(super) async fn compact(
                 SUMMARY_OUTPUT_LIMIT,
             );
             match prepare_request(pending, resolved, correlation, &isolated) {
-                Ok(prepared) if prepared.body.as_bytes().len() <= limit => prepared,
+                Ok(prepared) if prepared.body.as_bytes().len() <= summary_limit => prepared,
                 _ => return Ok(Outcome::Keep),
             }
         }
@@ -151,6 +166,7 @@ pub(super) async fn compact(
         "turn":pending.turn, "request_id":request_id, "before_bytes":before_bytes,
         "request_bytes":prepared.body.as_bytes().len(), "source_head":context.checkpoint_source_head(),
         "connection":prepared.connection_name, "model":prepared.model, "manual":manual,
+        "rejected_request_id":rejected_request,
         "request_hash":format!("{:x}", Sha256::digest(prepared.body.as_bytes())),
     }))])?;
     let mut summary = Summary::default();

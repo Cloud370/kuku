@@ -8,6 +8,7 @@ use crate::{Error, Result};
 
 use super::boundary::TurnWork;
 use super::record::{timestamp, Record, State};
+use super::usage::UnfinishedSummary;
 use super::{ensure_open, Activation, AgentStatus, InputSource, Session, Worker};
 
 enum DriveFailure {
@@ -428,6 +429,7 @@ impl Session {
         if state.agent_mut(address)?.active_epoch != Some(epoch) {
             return Ok(());
         }
+        self.settle_open_summary(&mut state, address, UnfinishedSummary::Cancelled)?;
         let agent = state.agent(address)?;
         let cancellation_error = if agent.accepted.is_empty() {
             None
@@ -495,6 +497,11 @@ impl Session {
         if let Some(turn) = turn {
             self.interrupt_open_turn(address, turn, error.code())?;
         }
+        self.settle_open_summary(
+            &mut state,
+            address,
+            UnfinishedSummary::Interrupted("Execution ended before compaction settled"),
+        )?;
         self.commit(
             &mut state,
             Record::TurnSettled {

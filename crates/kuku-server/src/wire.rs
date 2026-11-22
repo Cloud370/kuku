@@ -356,6 +356,7 @@ pub(crate) fn history_entry(event: &StoredEvent, turns: &TurnLookup) -> Option<V
                 "ts":value["ts"],
                 "status":value["status"].as_str().unwrap_or("running"),
                 "reason":value["reason"],
+                "provider_limit":value["rejected_request_id"].is_string(),
                 "elapsed_ms":value["elapsed_ms"],
                 "before_bytes":value["before_bytes"],
                 "after_bytes":value["after_bytes"],

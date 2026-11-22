@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::Instant;
 
 use serde_json::Value;
 
@@ -8,6 +9,35 @@ use crate::{Error, ProviderUsage, Result};
 
 use super::record::{timestamp, Record, State};
 use super::{CostTotals, ModelUsageSample, Session, UsageTotals};
+
+#[derive(Debug, Clone)]
+pub(super) struct SummaryRequest {
+    id: String,
+    turn: u64,
+    started: Option<Instant>,
+}
+
+pub(super) enum UnfinishedSummary {
+    Cancelled,
+    Interrupted(&'static str),
+}
+
+impl SummaryRequest {
+    fn terminal(&self, address: &str, end: UnfinishedSummary) -> Result<EventPayload> {
+        let (status, reason) = match end {
+            UnfinishedSummary::Cancelled => ("cancelled", None),
+            UnfinishedSummary::Interrupted(reason) => ("interrupted", Some(reason)),
+        };
+        let elapsed_ms = self
+            .started
+            .and_then(|start| u64::try_from(start.elapsed().as_millis()).ok());
+        Ok(EventPayload::Unknown(serde_json::json!({
+            "kind":"runtime.compaction_finished", "ts": timestamp()?, "agent": address,
+            "turn": self.turn, "request_id": self.id, "status": status, "reason": reason,
+            "elapsed_ms": elapsed_ms,
+        })))
+    }
+}
 
 #[derive(Debug, Default)]
 pub(super) struct AgentUsage {
@@ -207,6 +237,19 @@ impl Session {
         self.append_model_facts(&mut state, address, [payload])
     }
 
+    pub(super) fn settle_open_summary(
+        &self,
+        state: &mut State,
+        address: &str,
+        end: UnfinishedSummary,
+    ) -> Result<()> {
+        if let Some(summary) = state.agent(address)?.summary_request.as_ref() {
+            let terminal = summary.terminal(address, end)?;
+            self.append_model_facts(state, address, [terminal])?;
+        }
+        Ok(())
+    }
+
     fn append_model_facts(
         &self,
         state: &mut State,
@@ -257,12 +300,18 @@ pub(super) fn reduce_model_fact(state: &mut State, payload: &EventPayload) -> Re
         return Ok(());
     };
     match kind {
-        "runtime.compaction_started" => agent.summary_request = Some((request.to_owned(), turn)),
+        "runtime.compaction_started" => {
+            agent.summary_request = Some(SummaryRequest {
+                id: request.to_owned(),
+                turn,
+                started: agent.active_epoch.map(|_| Instant::now()),
+            })
+        }
         "runtime.compaction_finished" => {
             if agent
                 .summary_request
                 .as_ref()
-                .is_some_and(|(id, _)| id == request)
+                .is_some_and(|summary| summary.id == request)
             {
                 agent.summary_request = None;
             }
@@ -336,11 +385,9 @@ pub(super) fn recover_compaction(writer: &mut EventStore, state: &mut State) -> 
         .collect::<Vec<_>>();
     let reason = "Compaction was interrupted before the Session reopened";
     for (address, manual, summary) in interrupted {
-        if let Some((request, turn)) = summary {
-            let event = writer.append(EventPayload::Unknown(serde_json::json!({
-                "kind":"runtime.compaction_finished", "ts":timestamp()?, "agent":address,
-                "turn":turn, "request_id":request, "status":"interrupted", "reason":reason,
-            })))?;
+        if let Some(summary) = summary {
+            let event = writer
+                .append(summary.terminal(&address, UnfinishedSummary::Interrupted(reason))?)?;
             reduce_model_fact(state, &event.payload)?;
         }
         if let Some((execution, status, finished)) = manual {

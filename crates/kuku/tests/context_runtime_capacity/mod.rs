@@ -52,6 +52,254 @@ fn page_data(index: usize) -> String {
 }
 
 #[tokio::test]
+async fn provider_context_rejection_resumes_the_turn_without_repeating_a_write() {
+    context_rejection(OverflowCase::Continue).await;
+}
+
+#[tokio::test]
+async fn another_context_rejection_after_compaction_stops_the_turn() {
+    context_rejection(OverflowCase::RejectedAgain).await;
+}
+
+#[tokio::test]
+async fn context_rejection_keeps_budget_for_a_replacement_before_attempting_compaction() {
+    context_rejection(OverflowCase::NoBudget).await;
+}
+
+#[tokio::test]
+async fn cancelling_overflow_compaction_settles_its_card_before_the_agent_stops() {
+    context_rejection(OverflowCase::Cancelled).await;
+}
+
+#[derive(Clone, Copy)]
+enum OverflowCase {
+    Continue,
+    RejectedAgain,
+    NoBudget,
+    Cancelled,
+}
+
+async fn context_rejection(case: OverflowCase) {
+    const PRIOR: &str = "OLD-UNCOMPRESSED-DETAIL";
+    const CURRENT: &str = "Continue the current task.";
+    const DONE: &str = "The current task resumed successfully.";
+    fn has_write_result(body: &Value) -> bool {
+        body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| message["role"] == "tool" && message["tool_call_id"] == "overflow-write")
+    }
+    let server = MockServer::start_async().await;
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let (mut config, path) = options(&server, workspace.path(), data.path());
+    config.config.handoff.enabled = true;
+    config.config.handoff.threshold = 0.98;
+    config.limits.max_request_bytes = 64 * 1024;
+    if matches!(case, OverflowCase::NoBudget) {
+        config.limits.max_requests_per_open = Some(4);
+    }
+    let session = Session::open(config).await.unwrap();
+    let mut agent = agent();
+    agent.tools = Some(vec!["write_file".into()]);
+    session.create_agent("create", "main", agent).unwrap();
+    let initial = server
+        .mock_async(|when, then| {
+            when.method(POST).path(&path).matches(|req| {
+                last_user(&request_body(req)).is_some_and(|text| text.starts_with(PRIOR))
+            });
+            then.status(200)
+                .body(response(json!({"content": EARLIER_REPLY}), "stop"));
+        })
+        .await;
+    let first_step = server
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path(&path)
+                .body_contains(PRIOR)
+                .matches(|req| {
+                    let body = request_body(req);
+                    last_user(&body) == Some(CURRENT) && !has_write_result(&body)
+                });
+            let arguments =
+                json!({"path":"result.txt","content":"written once","brief":"Write result"});
+            then.status(200).body(response(
+                json!({"tool_calls":[{"id":"overflow-write","type":"function",
+                    "function":{"name":"write_file","arguments":arguments.to_string()}}
+                ]}),
+                "tool_calls",
+            ));
+        })
+        .await;
+    let context_error = json!({"error":{"code":"context_length_exceeded","message":"The deployed context window is smaller."}});
+    let rejected = server
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path(&path)
+                .body_contains(PRIOR)
+                .matches(|req| {
+                    let body = request_body(req);
+                    last_user(&body) == Some(CURRENT)
+                        && has_write_result(&body)
+                        && req.body.as_deref().unwrap().len() < 48 * 1024
+                });
+            then.status(400).json_body(context_error.clone());
+        })
+        .await;
+    let summary = server
+        .mock_async(|when, then| {
+            when.method(POST).path(&path).matches(|req| {
+                last_user(&request_body(req))
+                    .is_some_and(|text| text.starts_with("Write a checkpoint"))
+            });
+            let delay = if matches!(case, OverflowCase::Cancelled) {
+                Duration::from_secs(2)
+            } else {
+                Duration::ZERO
+            };
+            then.status(200)
+                .delay(delay)
+                .body(response(json!({"content": CHECKPOINT}), "stop"));
+        })
+        .await;
+    let resumed = server
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path(&path)
+                .body_contains("<kuku_checkpoint>")
+                .matches(|req| {
+                    let body = request_body(req);
+                    last_user(&body) == Some(CURRENT)
+                        && has_write_result(&body)
+                        && !body.to_string().contains(PRIOR)
+                });
+            if matches!(case, OverflowCase::RejectedAgain) {
+                then.status(400).json_body(context_error.clone());
+            } else {
+                then.status(200)
+                    .body(response(json!({"content": DONE}), "stop"));
+            }
+        })
+        .await;
+    session
+        .send(Input::new(
+            "earlier",
+            "main",
+            format!("{PRIOR} {}", "earlier investigation ".repeat(400)),
+        ))
+        .unwrap();
+    idle(&session, "main").await;
+    session
+        .send(Input::new("continue", "main", CURRENT))
+        .unwrap();
+    if matches!(case, OverflowCase::Cancelled) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while summary.hits_async().await == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        session.cancel("main").await.unwrap();
+    }
+    let agent = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let snapshot = session.agent("main").unwrap();
+            if snapshot.status != AgentStatus::Running {
+                break snapshot;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let (expected_status, summaries, expected_replacement, missing_usage) = match case {
+        OverflowCase::Continue => {
+            assert_eq!(Some(DONE), agent.last_output.as_deref());
+            (AgentStatus::Idle, 1, 1, 1)
+        }
+        OverflowCase::RejectedAgain | OverflowCase::NoBudget => {
+            assert!(agent
+                .last_error
+                .as_deref()
+                .unwrap()
+                .contains("context_length_exceeded"));
+            let replacements = usize::from(matches!(case, OverflowCase::RejectedAgain));
+            (
+                AgentStatus::Interrupted,
+                replacements,
+                replacements,
+                1 + replacements as u64,
+            )
+        }
+        OverflowCase::Cancelled => (AgentStatus::Stopped, 1, 0, 2),
+    };
+    assert_eq!(expected_status, agent.status, "{:?}", agent.last_error);
+    assert_eq!(
+        (3 + summaries + expected_replacement) as u64,
+        agent.usage.model_requests
+    );
+    assert_eq!(missing_usage, agent.usage.unreported_requests);
+    assert_eq!(
+        "written once",
+        std::fs::read_to_string(workspace.path().join("result.txt")).unwrap()
+    );
+    let events = EventStore::replay(session.events_path()).unwrap();
+    let current = events
+        .iter()
+        .filter(|event| {
+            matches!(&event.payload,
+        EventPayload::MessageUser { text, .. } if text == CURRENT)
+        })
+        .count();
+    let writes = events
+        .iter()
+        .filter(|event| {
+            matches!(&event.payload,
+        EventPayload::ToolCall { tool_call_id, .. } if tool_call_id == "overflow-write")
+        })
+        .count();
+    assert_eq!((1, 1), (current, writes));
+    let steps = facts(&events, "runtime.step_prepared", "main");
+    assert_eq!(3 + expected_replacement, steps.len());
+    let rejection = facts(&events, "runtime.model_rejected", "main");
+    assert_eq!(1, rejection.len());
+    assert_eq!(steps[2]["request_id"], rejection[0]["request_id"]);
+    let compactions = facts(&events, "runtime.compaction_started", "main");
+    assert_eq!(summaries, compactions.len());
+    if matches!(case, OverflowCase::Cancelled) {
+        let finished = facts(&events, "runtime.compaction_finished", "main");
+        assert_eq!(1, finished.len());
+        assert_eq!("cancelled", finished[0]["status"]);
+        assert!(finished[0]["elapsed_ms"].as_u64().is_some());
+    }
+    if expected_replacement != 0 {
+        assert_eq!(steps[2]["turn"], steps[3]["turn"]);
+        assert_ne!(steps[2]["request_id"], steps[3]["request_id"]);
+        assert_ne!(steps[2]["segment"], steps[3]["segment"]);
+        assert!(
+            steps[3]["request_bytes"].as_u64().unwrap()
+                < steps[2]["request_bytes"].as_u64().unwrap()
+        );
+        assert_eq!(
+            rejection[0]["request_id"],
+            compactions[0]["rejected_request_id"]
+        );
+        assert_eq!(
+            "completed",
+            facts(&events, "runtime.compaction_finished", "main")[0]["status"]
+        );
+    }
+    initial.assert_hits_async(1).await;
+    first_step.assert_hits_async(1).await;
+    rejected.assert_hits_async(1).await;
+    summary.assert_hits_async(summaries).await;
+    resumed.assert_hits_async(expected_replacement).await;
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn compaction_preserves_recent_batches_and_rewind_restores_the_predecessor() {
     let server = MockServer::start_async().await;
     let workspace = tempfile::tempdir().unwrap();

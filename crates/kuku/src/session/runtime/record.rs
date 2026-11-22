@@ -15,7 +15,7 @@ use super::types::{
     AgentConfig, AgentSnapshot, AgentStatus, AgentView, Input, InputStatus, PendingInput,
     QuestionRequest, Receipt, UsageTotals,
 };
-use super::usage::AgentUsage;
+use super::usage::{AgentUsage, SummaryRequest};
 use super::values::{NamedBinding, ValueState};
 use super::TurnIndex;
 
@@ -257,7 +257,7 @@ pub(super) struct AgentState {
     pub(super) stopped_at: Option<u64>,
     pub(super) model_usage: AgentUsage,
     pub(super) manual_compaction: Option<ManualCompaction>,
-    pub(super) summary_request: Option<(String, u64)>,
+    pub(super) summary_request: Option<SummaryRequest>,
 }
 
 impl AgentState {

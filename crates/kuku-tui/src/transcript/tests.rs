@@ -43,12 +43,15 @@ fn compaction_progress_updates_the_same_card_and_reveals_the_checkpoint_on_reque
     let mut transcript = Transcript::default();
     let started = serde_json::from_value(json!({
         "id": 4, "agent": "main", "turn": 1, "type": "compaction",
-        "request_id": "compact-1", "status": "running", "ts": "2020-01-02T03:04:05Z",
+        "request_id": "compact-1", "status": "running", "provider_limit": true,
+        "ts": "2020-01-02T03:04:05Z",
     }))
     .unwrap();
     transcript.apply(started, None);
     let running = rows(&mut transcript).join("\n");
-    assert!(running.contains("Compacting context") && running.contains("elapsed"));
+    assert!(
+        running.contains("Compacting context after provider limit") && running.contains("elapsed")
+    );
 
     let completed = serde_json::from_value(json!({
         "id": 5, "agent": "main", "turn": 1, "type": "compaction",

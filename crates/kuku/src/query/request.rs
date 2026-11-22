@@ -89,12 +89,14 @@ impl OwnedRequestBase {
         &self,
         mut history: Vec<crate::context::CanonicalMessage>,
         instruction: String,
-        preserve_tools: bool,
+        reuse_prefix: bool,
         output_limit: u32,
     ) -> Self {
         let mut request = self.clone();
-        if !preserve_tools {
+        if !reuse_prefix {
             request.assembly.tools.clear();
+            request.assembly.prelude_messages.clear();
+            request.assembly.system_prompt.clear();
         }
         request.max_output_tokens = Some(
             self.max_output_tokens

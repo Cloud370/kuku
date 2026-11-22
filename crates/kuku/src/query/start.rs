@@ -708,8 +708,10 @@ fn resumed_model_request_count(
                 request_ids.insert(to_request_id.as_str());
             }
             EventPayload::Unknown(value)
-                if value["kind"] == "runtime.compaction_started"
-                    && value["agent"] == conversation.as_str()
+                if matches!(
+                    value["kind"].as_str(),
+                    Some("runtime.compaction_started" | "runtime.model_rejected")
+                ) && value["agent"] == conversation.as_str()
                     && value["turn"] == turn =>
             {
                 if let Some(id) = value["request_id"].as_str() {
@@ -782,6 +784,13 @@ fn resumed_request_num(
                 && event_matches_conversation(Some(event_conversation), conversation) =>
             {
                 Some(request_num_from_id(request_id))
+            }
+            EventPayload::Unknown(value)
+                if value["kind"] == "runtime.model_rejected"
+                    && value["agent"] == conversation.as_str()
+                    && value["turn"] == turn =>
+            {
+                value["request_id"].as_str().map(request_num_from_id)
             }
             _ => None,
         })

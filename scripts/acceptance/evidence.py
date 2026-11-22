@@ -286,6 +286,7 @@ class SessionFacts:
         self.steps, self.responses, self.usages = {}, {}, {}
         self.session_steps, self.session_usages, self.session_reports = {}, {}, []
         self.compactions = {}
+        self.rejected_requests, self.overflow_recoveries = set(), set()
         self.regenerations = {}
         self.tool_calls_per_response = Counter()
         self.calls, self.results, self.result_events, self.tool_prepared, self.dispatched = {}, {}, {}, {}, set()
@@ -361,6 +362,11 @@ class SessionFacts:
         elif kind == "runtime.compaction_started":
             self.compactions[request] = {"before_bytes": event.get("before_bytes"),
                                          "request_bytes": event.get("request_bytes")}
+            if (source := event.get("rejected_request_id")) is not None:
+                rejected = (request[0], source)
+                require(isinstance(source, str) and rejected in self.rejected_requests - self.overflow_recoveries,
+                        "compaction recovery does not name a unique rejected request in the same turn")
+                self.overflow_recoveries.add(rejected)
         elif kind == "runtime.compaction_finished" and event.get("status") == "completed":
             require(request in self.compactions and "after_bytes" not in self.compactions[request],
                     "compaction completion has no matching summary request")
@@ -377,11 +383,19 @@ class SessionFacts:
             self.steps[request] = self.session_steps[session_request]
             self.settings.append(fingerprint(event))
             self.counts["prepared_steps"] += 1
+        elif kind == "runtime.model_rejected":
+            require(request in self.steps and request not in self.responses and request not in self.rejected_requests,
+                    "rejected model request has no unique unanswered preparation")
+            require(event.get("reason") == "context_too_large"
+                    and event.get("attempt") == 1 + self.steps[request].get("retry_count", 0),
+                    "rejected model request has an invalid reason or attempt")
+            self.rejected_requests.add(request)
         elif kind in ("model.response", "runtime.model_usage", "runtime.provider_report"):
             if request in self.compactions and kind != "model.response":
                 self.compactions[request]["usage"] = self.session_usages.get(session_request)
                 return
-            require(request in self.steps and event.get("turn") == self.steps[request].get("turn"),
+            require(request in self.steps and request not in self.rejected_requests
+                    and event.get("turn") == self.steps[request].get("turn"),
                     "model response, usage or report has no matching prepared request")
             if kind == "model.response":
                 require(request not in self.responses, "request has duplicate model responses")
@@ -595,8 +609,10 @@ class SessionFacts:
                 "SDK provider settings or reports differ from durable facts")
         require(self.calls.keys() == self.results.keys() and bool(self.dispatched), "SDK tool calls are not fully paired or dispatched")
         require(self.results.keys() <= self.admitted_results, "completed tool results were not admitted for model continuation")
-        require(self.steps.keys() == self.responses.keys() == self.usages.keys(),
-                "prepared requests do not have paired model response and usage facts")
+        require(self.steps.keys() == self.responses.keys() | self.rejected_requests
+                and self.responses.keys() == self.usages.keys()
+                and self.rejected_requests == self.overflow_recoveries,
+                "prepared requests lack a response and usage or a recovered context rejection")
         require(all(self.regenerations.values()), "tool argument regeneration has no replacement request")
         limits = report.get("limits", {})
         max_requests, max_steps = limits.get("max_requests"), limits.get("max_steps")

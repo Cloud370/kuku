@@ -113,7 +113,12 @@ pub(crate) fn read_agent_events(
                 if value["agent"] == agent
                     && matches!(
                         value["kind"].as_str(),
-                        Some("runtime.tool_prepared" | "runtime.tool_dispatched")
+                        Some(
+                            "runtime.tool_prepared"
+                                | "runtime.tool_dispatched"
+                                | "runtime.model_rejected"
+                                | "runtime.compaction_started"
+                        )
                     ) =>
             {
                 value["turn"].as_u64()

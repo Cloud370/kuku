@@ -7,7 +7,7 @@ use crate::{Error, Result};
 use super::controls::command;
 use super::driver::Work;
 use super::record::{Command, ManualCompaction, Record, State};
-use super::usage::AgentUsage;
+use super::usage::{AgentUsage, UnfinishedSummary};
 use super::{ensure_open, Activation, AgentStatus, Receipt, Session, UsageTotals};
 
 impl Session {
@@ -124,6 +124,12 @@ impl Session {
                 .err()
                 .filter(|_| !cancelled)
                 .map(|error| error.to_string());
+            let summary_end = if cancelled {
+                UnfinishedSummary::Cancelled
+            } else {
+                UnfinishedSummary::Interrupted("Execution ended before compaction settled")
+            };
+            self.settle_open_summary(&mut state, address, summary_end)?;
             self.commit(
                 &mut state,
                 Record::CompactionSettled {

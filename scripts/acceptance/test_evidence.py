@@ -585,6 +585,43 @@ class EvidenceTests(unittest.TestCase):
         call["request_id"] = rejected
         self.assertIn("discarded model response admitted a tool call", fixture.inspect()["error"])
 
+    def test_context_rejection_and_checkpoint_preserve_missing_usage(self):
+        fixture = self.fixture
+        index = next(i for i, event in enumerate(fixture.records) if event["kind"] == "runtime.step_prepared")
+        source = "request-overflow"
+        checkpoint = "compact-overflow"
+        tags = dict(agent="main", turn=fixture.turn)
+        rejected = dict(fixture.records[index], request_id=source)
+        rejection = dict(tags, kind="runtime.model_rejected", request_id=source,
+                         reason="context_too_large", attempt=1)
+        start = dict(tags, kind="runtime.compaction_started", request_id=checkpoint,
+                     rejected_request_id=source, connection="fixture", model="fixture-model")
+        usage = dict(tags, kind="runtime.model_usage", request_id=checkpoint,
+                     usage={"input_tokens": 30, "output_tokens": 4, "cache_read_input_tokens": 5,
+                            "cache_creation_input_tokens": 0})
+        segment = dict(tags, kind="runtime.context_segment")
+        admitted = copy.deepcopy(fixture.records[index - 1])
+        finished = dict(tags, kind="runtime.compaction_finished", request_id=checkpoint,
+                        status="completed", context_head=1, after_bytes=4096)
+        fixture.records[index:index] = [rejected, rejection, start, usage, segment, admitted, finished]
+        fixture.renumber()
+        for event in fixture.records[fixture.records.index(admitted):]:
+            if "segment" in event or event is finished:
+                event["segment"] = segment["id"]
+        fixture.report["facts"].update(prepared_steps=3)
+        fixture.report["provider_settings"].insert(0, rejected)
+        fixture.totals.update(model_requests=4, unreported_requests=1, input_tokens=230,
+                              output_tokens=44, cache_read_input_tokens=25)
+        evidence = fixture.inspect()
+        self.assertTrue(evidence["passed"], evidence)
+        for totals in (evidence["usage"], evidence["session_usage"]):
+            self.assertEqual(4, totals["requests"])
+            self.assertEqual(1, totals["unreported_requests"])
+            self.assertIsNone(totals["input_tokens"])
+            self.assertEqual(230, totals["reported_partial"]["input_tokens"])
+        start["rejected_request_id"] = "other-request"
+        self.assertIn("unique rejected request", fixture.inspect()["error"])
+
     def test_zero_usage_for_nonempty_requests_does_not_establish_free_work(self):
         for event in self.fixture.records:
             if event["kind"] == "runtime.model_usage":
