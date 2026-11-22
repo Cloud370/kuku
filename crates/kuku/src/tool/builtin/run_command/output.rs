@@ -549,12 +549,14 @@ fn scan_output_frames(
 ) -> io::Result<u64> {
     let mut captured_bytes = 0;
     let file_bytes = file.metadata()?.len();
-    while file.stream_position()? < file_bytes {
+    let mut frame_start = HEADER_BYTES as u64;
+    while frame_start < file_bytes {
         let Some((stream, frame_bytes)) = read_frame_header(file, metadata)? else {
             break;
         };
-        let payload = file.stream_position()?;
-        if payload + frame_bytes as u64 > file_bytes {
+        let payload = frame_start + FRAME_HEADER_BYTES as u64;
+        let next_frame = payload + frame_bytes as u64;
+        if next_frame > file_bytes {
             if metadata.complete {
                 return Err(invalid_output("output frame exceeds file length"));
             }
@@ -562,6 +564,7 @@ fn scan_output_frames(
         }
         visit(file, stream, captured_bytes, frame_bytes, payload)?;
         captured_bytes += frame_bytes as u64;
+        frame_start = next_frame;
     }
     if metadata.complete && captured_bytes != metadata.stored_bytes {
         return Err(invalid_output(
@@ -635,29 +638,36 @@ impl OutputWindow {
         };
         let slot = stream as usize;
         let preceding = self.last_file_byte[slot];
-        self.last_file_byte[slot] = Some(payload + frame_bytes as u64 - 1);
+        let next_frame = payload + frame_bytes as u64;
+        self.last_file_byte[slot] = Some(next_frame - 1);
         self.stream_ends[slot] = frame_offset + frame_bytes as u64;
-        file.seek(SeekFrom::Current(skip as i64))?;
-        if keep > 0 {
-            let start = self.bytes.len();
-            self.bytes.resize(start + keep, 0);
-            file.read_exact(&mut self.bytes[start..])?;
-            if let Some(previous) = self.spans.last_mut().filter(|span| span.stream == stream) {
-                previous.range.end = start + keep;
-            } else {
-                self.spans.push(OutputSpan {
-                    stream,
-                    offset: frame_offset + skip as u64,
-                    range: start..start + keep,
-                    preceding_file_byte: if skip == 0 {
-                        preceding
-                    } else {
-                        Some(payload + skip as u64 - 1)
-                    },
-                });
-            }
+        if keep == 0 {
+            file.seek(SeekFrom::Start(next_frame))?;
+            return Ok(());
         }
-        file.seek(SeekFrom::Current((frame_bytes - skip - keep) as i64))?;
+        if skip != 0 {
+            file.seek(SeekFrom::Start(payload + skip as u64))?;
+        }
+        let start = self.bytes.len();
+        self.bytes.resize(start + keep, 0);
+        file.read_exact(&mut self.bytes[start..])?;
+        if let Some(previous) = self.spans.last_mut().filter(|span| span.stream == stream) {
+            previous.range.end = start + keep;
+        } else {
+            self.spans.push(OutputSpan {
+                stream,
+                offset: frame_offset + skip as u64,
+                range: start..start + keep,
+                preceding_file_byte: if skip == 0 {
+                    preceding
+                } else {
+                    Some(payload + skip as u64 - 1)
+                },
+            });
+        }
+        if skip + keep < frame_bytes {
+            file.seek(SeekFrom::Start(next_frame))?;
+        }
         Ok(())
     }
 }
