@@ -6,6 +6,7 @@ pub(crate) enum CommandMenu {
     Resume,
     Agents,
     Jobs,
+    Compact,
     Model,
     Thinking,
     StatusLine,
@@ -23,6 +24,7 @@ impl CommandMenu {
         Self::Resume,
         Self::Agents,
         Self::Jobs,
+        Self::Compact,
         Self::Model,
         Self::Thinking,
         Self::StatusLine,
@@ -77,6 +79,12 @@ impl CommandMenu {
             ),
             Self::Agents => ("agents", &["agent"], "Choose or create an Agent", None),
             Self::Jobs => ("jobs", &["job"], "List jobs · /jobs cancel <id>", None),
+            Self::Compact => (
+                "compact",
+                &["compress", "summarize"],
+                "Summarize earlier context",
+                None,
+            ),
             Self::Model => (
                 "model",
                 &["models"],

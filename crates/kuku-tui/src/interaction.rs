@@ -779,6 +779,8 @@ fn pending_label(item: &PendingItem) -> String {
         Action::ReplyQuestion { .. } => "Answer question".to_owned(),
         Action::ReplyPermission { .. } => "Respond to authorization".to_owned(),
         Action::Withdraw { .. } => "Withdraw input".to_owned(),
+        Action::Compact => "Compact context".to_owned(),
+        Action::RestoreContext => "Restore context".to_owned(),
         Action::Advance => "Continue Agent".to_owned(),
         Action::Cancel { .. } => "Interrupt execution".to_owned(),
     }

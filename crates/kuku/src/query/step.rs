@@ -295,20 +295,7 @@ pub(super) async fn finish_streaming(mut state: StreamingChunkState) -> Result<P
     }
 
     if let Some(ref u) = usage {
-        let accumulation = (|| -> Result<()> {
-            add_usage_total(&mut pending.cumulative.input_tokens, u.input_tokens)?;
-            add_usage_total(&mut pending.cumulative.output_tokens, u.output_tokens)?;
-            add_usage_total(
-                &mut pending.cumulative.cache_read_input_tokens,
-                u.cache_read_input_tokens,
-            )?;
-            add_usage_total(
-                &mut pending.cumulative.cache_creation_input_tokens,
-                u.cache_creation_input_tokens,
-            )?;
-            Ok(())
-        })();
-        if let Err(error) = accumulation {
+        if let Err(error) = accumulate_usage(&mut pending.cumulative, u) {
             append_turn_interrupted(
                 &pending.events_path,
                 &conversation,
@@ -548,6 +535,22 @@ fn persist_runtime_model_usage_log(
     }));
     let _ = pending.runtime_log_writer.push(record);
     Ok(())
+}
+
+pub(super) fn accumulate_usage(
+    cumulative: &mut super::types::CumulativeUsage,
+    usage: &crate::provider::types::ProviderUsage,
+) -> Result<()> {
+    add_usage_total(&mut cumulative.input_tokens, usage.input_tokens)?;
+    add_usage_total(&mut cumulative.output_tokens, usage.output_tokens)?;
+    add_usage_total(
+        &mut cumulative.cache_read_input_tokens,
+        usage.cache_read_input_tokens,
+    )?;
+    add_usage_total(
+        &mut cumulative.cache_creation_input_tokens,
+        usage.cache_creation_input_tokens,
+    )
 }
 
 fn add_usage_total(total: &mut Option<u64>, value: Option<u64>) -> Result<()> {

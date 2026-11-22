@@ -593,10 +593,12 @@ mod tests {
         ] {
             assert!(!labels.contains(&omitted));
         }
-        for retained in ["/new", "/resume", "/server", "/restart", "/quit"] {
+        for retained in [
+            "/new", "/resume", "/compact", "/server", "/restart", "/quit",
+        ] {
             assert!(labels.contains(&retained));
         }
-        assert_eq!(13, choices.len());
+        assert_eq!(14, choices.len());
     }
 
     #[test]

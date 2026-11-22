@@ -67,6 +67,8 @@ pub(crate) enum Command {
         #[serde(default)]
         restore_files: bool,
     },
+    Compact,
+    RestoreContext,
     Advance,
     Cancel {
         execution_id: u64,
@@ -313,6 +315,22 @@ pub(crate) fn history_entry(event: &StoredEvent, turns: &TurnLookup) -> Option<V
                     summary = Some(turns.summary_at(event.id)?);
                     json!({"type":"turn_summary"})
                 }
+                "compaction_reverted" => json!({
+                    "type":"compaction", "status":"restored", "request_id":format!("restore_{}", event.id),
+                }),
+                "compaction_requested" => json!({
+                    "type":"compaction", "status":"queued", "turn":record["turn"],
+                    "request_id":format!("compact_{}", event.id),
+                }),
+                "compaction_settled"
+                    if record["error"].is_string() || record["cancelled"] == true =>
+                {
+                    json!({
+                        "type":"compaction", "status":if record["cancelled"] == true { "cancelled" } else { "failed" },
+                        "request_id":format!("compact_{}", record["execution"].as_u64()?),
+                        "reason":record["error"],
+                    })
+                }
                 "agent_stopped" => {
                     summary = turns.summary_at(event.id);
                     interaction_entry(record)?
@@ -325,6 +343,26 @@ pub(crate) fn history_entry(event: &StoredEvent, turns: &TurnLookup) -> Option<V
             "turn":value["turn"],
             "retry":retry_metadata(&event.payload)?,
         }),
+        EventPayload::Unknown(value)
+            if matches!(
+                value["kind"].as_str(),
+                Some("runtime.compaction_started" | "runtime.compaction_finished")
+            ) =>
+        {
+            json!({
+                "type":"compaction",
+                "turn":value["turn"],
+                "request_id":value["request_id"],
+                "ts":value["ts"],
+                "status":value["status"].as_str().unwrap_or("running"),
+                "reason":value["reason"],
+                "elapsed_ms":value["elapsed_ms"],
+                "before_bytes":value["before_bytes"],
+                "after_bytes":value["after_bytes"],
+                "checkpointed_messages":value["checkpointed_messages"],
+                "text":value["summary"],
+            })
+        }
         _ => return None,
     };
     entry["id"] = json!(event.id);

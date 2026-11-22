@@ -84,6 +84,7 @@ Continue 回执提示只短暂显示，不会替换已有错误。窄屏的聚�
 |---|---|---|
 | `/new` | `/new-session` | 打开一份空白草稿，之前的 Session 仍可打开。 |
 | `/resume` | `/sessions` | 查找工作区中已有的 Session。 |
+| `/compact` | `/compress`、`/summarize` | 当前执行结束后，压缩所选 Agent 的较早上下文。对话区显示进度、耗时、请求大小和可展开的交接记录。失败后可用 `/compact retry` 重试，也可用 `/compact undo` 恢复压缩前的上下文并保留消息。 |
 | `/agents` | `/agent` | 搜索 Session 中的 Agent、切换接收者或新建 Agent。选择器显示活动、待决请求、队列数量和可用的任务摘录。 |
 | `/jobs` | `/job` | 列出所选 Agent 的后台任务，保留原始标题并显示当前状态。空间充足时，输入区会显示正在运行的数量。选中任务可取消或读取已有输出。用 `/jobs cancel <id>` 按 ID 取消。也可以从 `/messages` 里的完成条目打开保留的输出。 |
 | `/model` | `/models` | 选择、添加或编辑模型路由。Ctrl+L 打开同一个选择器。 |

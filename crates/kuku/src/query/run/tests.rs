@@ -389,7 +389,7 @@ fn assert_prepared_handoff_after_rewind(target_before_handoff: bool, expect_summ
     pending.turn = 3;
     pending.resolved = Some(test_resolved_runtime());
     pending.context_cursor = Some(Box::new(cursor));
-    let prepared = crate::query::frozen::prepare(&mut pending).unwrap();
+    let prepared = crate::query::frozen::prepare(&mut pending, false).unwrap();
     let request = prepared.request.request();
     let has_text = |messages: &[crate::context::CanonicalMessage], text: &str| {
         messages.iter().any(|message| {

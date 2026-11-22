@@ -84,6 +84,7 @@ Search by the command or any alias. The list shows the canonical spelling. Tab c
 |---|---|---|
 | `/new` | `/new-session` | Open a blank draft and keep the prior Session available. |
 | `/resume` | `/sessions` | Find a retained Session in the workspace. |
+| `/compact` | `/compress`, `/summarize` | Summarize earlier context for the selected Agent once its running work settles. The transcript shows progress, elapsed time, request sizes and an expandable checkpoint. Use `/compact retry` after a failure, or `/compact undo` to restore the previous context without removing messages. |
 | `/agents` | `/agent` | Search the Session's Agents, switch recipients or create an Agent. The selector shows activity, pending requests, queue counts and task excerpts when available. |
 | `/jobs` | `/job` | List the selected Agent's background jobs with their original title and current status. The input area shows the running count when there is room. Select a job to cancel it or read its available output. Use `/jobs cancel <id>` to cancel by ID. A completion entry in `/messages` can also open its retained output. |
 | `/model` | `/models` | Choose, add or edit model routes. Ctrl+L opens the same selector. |

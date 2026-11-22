@@ -541,6 +541,44 @@ mod tests {
     }
 
     #[test]
+    fn rewind_archives_compaction_progress_and_its_checkpoint() {
+        let events = vec![
+            user_event(1, "main", "selected"),
+            StoredEvent {
+                id: 2,
+                payload: EventPayload::Unknown(json!({
+                    "kind":"runtime.compaction_started", "agent":"main", "turn":1, "request_id":"compact-1",
+                })),
+            },
+            StoredEvent {
+                id: 3,
+                payload: EventPayload::Unknown(json!({
+                    "kind":"runtime.compaction_finished", "agent":"main", "turn":1, "request_id":"compact-1",
+                    "status":"completed", "summary":"Retained in rewind", "elapsed_ms":2000,
+                    "before_bytes":10000, "after_bytes":5000, "checkpointed_messages":6,
+                })),
+            },
+            StoredEvent {
+                id: 4,
+                payload: EventPayload::Unknown(json!({
+                    "kind":"runtime.operation", "record":{
+                        "operation":"message_rewind", "address":"main", "target_event_id":1,
+                    },
+                })),
+            },
+        ];
+        let turns = crate::run_manager::TurnLookup::Closed(std::sync::Arc::default());
+        let index = super::RewindIndex::new(&events, &turns);
+        let groups = index.groups_for_agent("main");
+        assert_eq!(3, groups[&1][0].entry_count);
+        let visible = history_visible_event_ids(&events);
+        assert!(!visible.contains(&2) && !visible.contains(&3));
+        let entry = crate::wire::history_entry_for_agent(&events[2], &turns, "main").unwrap();
+        assert_eq!(entry["type"], "compaction");
+        assert_eq!(entry["text"], "Retained in rewind");
+    }
+
+    #[test]
     fn history_response_byte_cap_includes_the_serialized_envelope() {
         let response = json!({
             "ok": true,

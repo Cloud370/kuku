@@ -70,6 +70,8 @@ Use `create: {}` for the configured default settings. Supply initial model setti
 | `reply_permission` | `request_id`, `allow` | Decide the exact pending authorization. |
 | `withdraw` | `input_command_id` | Withdraw a queued input or return its current status. |
 | `replace_queued` | `input_command_id`, `text` | Replace text before admission while preserving the queue position and timing. |
+| `compact` | | Compact earlier context for the selected idle or interrupted Agent. Follow `compaction` history entries for progress and outcome. Use a new command ID to retry a failed attempt. |
+| `restore_context` | | Undo the selected Agent's latest active compaction while keeping its visible messages. |
 | `advance` | | Explicitly resume an Agent. |
 | `cancel` | `execution_id` | Cancel the observed execution and await cleanup. |
 

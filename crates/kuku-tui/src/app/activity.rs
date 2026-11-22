@@ -674,9 +674,12 @@ impl Pane {
             return false;
         }
         self.live_floor = id;
-        let execution_started = operation == Some("execution_started");
+        let execution_started = matches!(
+            operation,
+            Some("execution_started" | "compaction_requested")
+        );
         match operation {
-            Some("execution_started") => {
+            Some("execution_started" | "compaction_requested") => {
                 if self.execution != Some(id) {
                     self.progress = ExecutionProgress::default();
                 }
@@ -687,7 +690,7 @@ impl Pane {
                 );
                 self.live_floor = id;
             }
-            Some("turn_settled") => {
+            Some("turn_settled" | "compaction_settled") => {
                 self.execution = None;
                 if !self.progress.preserve_reply_preview_on_settle() {
                     self.transcript.clear_preview();

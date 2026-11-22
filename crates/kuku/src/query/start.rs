@@ -75,14 +75,35 @@ fn synthetic_builder_config() -> crate::config::Config {
 
 impl Query {
     pub async fn start(self) -> Result<Run> {
-        self.start_session_with_lock(true).await
+        self.start_session_with_lock(true, false).await
     }
 
     pub(crate) async fn start_nested(self) -> Result<Run> {
-        self.start_session_with_lock(false).await
+        self.start_session_with_lock(false, false).await
     }
 
-    async fn start_session_with_lock(mut self, acquire_lock: bool) -> Result<Run> {
+    pub(crate) async fn compact_context(
+        self,
+        closed_turn: bool,
+        cancel: std::sync::Arc<tokio::sync::Notify>,
+    ) -> Result<()> {
+        let mut run = self.start_session_with_lock(false, true).await?;
+        let RunState::Pending(mut pending) =
+            std::mem::replace(&mut run.state, RunState::Done(None))
+        else {
+            return Err(Error::InvalidArgument(
+                "this Agent has work that must settle before compaction".into(),
+            ));
+        };
+        pending.cancel_token = cancel;
+        super::provider::compact_context(*pending, closed_turn).await
+    }
+
+    async fn start_session_with_lock(
+        mut self,
+        acquire_lock: bool,
+        compact_only: bool,
+    ) -> Result<Run> {
         self.validate()?;
 
         let kuku_home = match self.captured_kuku_home.take() {
@@ -212,7 +233,7 @@ impl Query {
         let agent_registry = self.agent_registry.clone();
         let tool_registry_override = self.tool_registry_override.clone();
 
-        let plugin_registry_opt = if config.plugin.enabled {
+        let plugin_registry_opt = if config.plugin.enabled && !compact_only {
             Some(
                 crate::plugin::PluginRegistry::builder()
                     .load_packages(&kuku_home, &workspace)?
@@ -222,7 +243,7 @@ impl Query {
             None
         };
 
-        if resumed_permission.is_none() {
+        if resumed_permission.is_none() && !compact_only {
             append_interrupted_active_turn(
                 &events_path,
                 &existing_events,
@@ -263,7 +284,7 @@ impl Query {
 
         let previous_skill_snapshot =
             previous_snapshot_before_turn(&existing_events, conversation.as_str(), turn);
-        let (skill_registry, previous_skill_registry) = if self.disable_skills {
+        let (skill_registry, previous_skill_registry) = if self.disable_skills || compact_only {
             (None, None)
         } else if let Some(snapshot) =
             restore_turn_snapshot(&existing_events, conversation.as_str(), turn)
@@ -501,7 +522,7 @@ impl Query {
     }
 
     pub async fn run(self) -> Result<RunOutput> {
-        let mut run = self.start_session_with_lock(true).await?;
+        let mut run = self.start_session_with_lock(true, false).await?;
         loop {
             match run.next().await? {
                 Some(UiEvent::PermissionRequested { .. }) => {
@@ -522,7 +543,7 @@ impl Query {
         self,
         choice: super::types::PermissionChoice,
     ) -> Result<RunOutput> {
-        let mut run = self.start_session_with_lock(true).await?;
+        let mut run = self.start_session_with_lock(true, false).await?;
         loop {
             match run.next().await? {
                 Some(UiEvent::PermissionRequested { request }) => {
@@ -685,6 +706,15 @@ fn resumed_model_request_count(
                 && event_matches_conversation(Some(event_conversation), conversation) =>
             {
                 request_ids.insert(to_request_id.as_str());
+            }
+            EventPayload::Unknown(value)
+                if value["kind"] == "runtime.compaction_started"
+                    && value["agent"] == conversation.as_str()
+                    && value["turn"] == turn =>
+            {
+                if let Some(id) = value["request_id"].as_str() {
+                    request_ids.insert(id);
+                }
             }
             _ => {}
         }

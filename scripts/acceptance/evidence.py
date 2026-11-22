@@ -285,6 +285,7 @@ class SessionFacts:
         self.counts = Counter()
         self.steps, self.responses, self.usages = {}, {}, {}
         self.session_steps, self.session_usages, self.session_reports = {}, {}, []
+        self.compactions = {}
         self.regenerations = {}
         self.tool_calls_per_response = Counter()
         self.calls, self.results, self.result_events, self.tool_prepared, self.dispatched = {}, {}, {}, {}, set()
@@ -314,7 +315,7 @@ class SessionFacts:
         request = (event.get("turn"), event.get("request_id"))
         agent_turn = (owner, request[0])
         session_request = (*agent_turn, request[1])
-        if kind == "runtime.step_prepared":
+        if kind in ("runtime.step_prepared", "runtime.compaction_started"):
             require(isinstance(request[1], str) and len(request[1]) <= 128 and len(self.session_steps) < 4096,
                     "prepared requests exceed the diagnostic identity/count limit")
             require(session_request not in self.session_steps, "Session contains duplicate prepared request identities")
@@ -322,7 +323,7 @@ class SessionFacts:
             require(all(isinstance(metadata[field], str) and len(metadata[field]) <= 512 for field in ("connection", "model")),
                     "prepared request routing metadata is invalid or oversized")
             self.session_steps[session_request] = metadata
-            if agent_turn in self.regenerations:
+            if kind == "runtime.step_prepared" and agent_turn in self.regenerations:
                 self.regenerations[agent_turn] = True
         elif kind == "runtime.model_retry":
             self.retry(event, agent_turn, session_request)
@@ -357,6 +358,15 @@ class SessionFacts:
             self.context_used[identity], self.context_pending[identity] = set(), {}
         elif kind == "runtime.context_admitted":
             self.stage_context(event)
+        elif kind == "runtime.compaction_started":
+            self.compactions[request] = {"before_bytes": event.get("before_bytes"),
+                                         "request_bytes": event.get("request_bytes")}
+        elif kind == "runtime.compaction_finished" and event.get("status") == "completed":
+            require(request in self.compactions and "after_bytes" not in self.compactions[request],
+                    "compaction completion has no matching summary request")
+            self.confirm_context(event)
+            self.compactions[request].update({field: event.get(field) for field in
+                                             ("after_bytes", "checkpointed_messages", "elapsed_ms")})
         elif kind == "runtime.step_prepared":
             require(isinstance(request[1], str) and request not in self.steps, "prepared request identity is missing or duplicated")
             self.confirm_context(event)
@@ -368,6 +378,9 @@ class SessionFacts:
             self.settings.append(fingerprint(event))
             self.counts["prepared_steps"] += 1
         elif kind in ("model.response", "runtime.model_usage", "runtime.provider_report"):
+            if request in self.compactions and kind != "model.response":
+                self.compactions[request]["usage"] = self.session_usages.get(session_request)
+                return
             require(request in self.steps and event.get("turn") == self.steps[request].get("turn"),
                     "model response, usage or report has no matching prepared request")
             if kind == "model.response":
@@ -604,7 +617,9 @@ class SessionFacts:
         if max_steps is not None:
             require(all(count <= max_steps for count in Counter(step.get("turn") for step in self.steps.values()).values()),
                     "durable model requests exceeded the declared per-turn limit")
-        usage = usage_summary(self.steps, self.usages, self.reports)
+        compaction_requests = {request: self.session_steps[(self.agent, *request)] for request in self.compactions}
+        compaction_usage = {request: facts["usage"] for request, facts in self.compactions.items() if "usage" in facts}
+        usage = usage_summary(self.steps | compaction_requests, self.usages | compaction_usage, self.reports)
         normalized = snapshot.get("usage", {})
         require(normalized.get("model_requests") == usage["requests"]
                 and normalized.get("unreported_requests") == usage["unreported_requests"],
@@ -616,6 +631,7 @@ class SessionFacts:
                 "tool_batches": tool_batch_summary(Counter(self.tool_calls_per_response[key] for key in self.responses)),
                 "output_references": self.outputs, "usage": usage, "usage_scope": "selected_agent",
                 "session_usage": usage_summary(self.session_steps, self.session_usages, self.session_reports, True),
+                "compactions": list(self.compactions.values()),
                 "other_agents": sorted(self.created - {self.agent}), "limits": limits,
                 "streaming": streaming_summary(report, len(self.steps), self.records, self.text_bytes, self.thinking_bytes),
                 "models": sorted({step["model"] for step in self.steps.values()}),

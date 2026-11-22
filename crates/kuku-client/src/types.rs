@@ -116,6 +116,10 @@ pub enum Action {
         /// Explicit opt-in to restore supported recorded file changes.
         restore_files: bool,
     },
+    /// Compact the selected idle Agent's conversation without creating a turn.
+    Compact,
+    /// Restore context before the selected Agent's latest active compaction.
+    RestoreContext,
     /// Explicitly let an Agent advance eligible work.
     Advance,
     /// Interrupt the specific execution the client observed.
@@ -483,6 +487,8 @@ pub enum HistoryKind {
     Error,
     /// A durable provider retry or model recovery decision.
     Retry,
+    /// Progress or a terminal outcome of context compaction.
+    Compaction,
     /// A display role introduced by a later service build.
     #[serde(other)]
     Other,

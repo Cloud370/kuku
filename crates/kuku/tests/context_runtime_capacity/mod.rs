@@ -1,14 +1,19 @@
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use super::{agent, common, facts, idle, options, response, HttpMockRequest, MockServer, POST};
 use kuku::event::{EventPayload, EventStore};
-use kuku::{Input, NamedValueSource, OutputRead, Session};
+use kuku::{AgentStatus, Input, NamedValueSource, OutputRead, Session};
 use serde_json::{json, Value};
 
 const WIRE_LIMIT: usize = 48 * 1024;
 const PAGE_BYTES: usize = 8192;
 const PAGE_COUNT: usize = 15;
 const QUERY: &str = "Scan the saved output pages.";
+const EARLIER: &str = "Previously answered request.";
+const EARLIER_REPLY: &str = "Previously delivered response.";
+const CHECKPOINT: &str = "## Delivered and verified\nThe earlier response was delivered.\n## Work in progress\nResume the scan if still open.";
+const AFTER_REWIND: &str = "What remained before the scan?";
 const FOLLOW_UP: &str = "Continue using the recorded references.";
 
 fn request_body(request: &HttpMockRequest) -> Value {
@@ -47,11 +52,12 @@ fn page_data(index: usize) -> String {
 }
 
 #[tokio::test]
-async fn a_bounded_request_references_consumed_output_pages_and_reopens_the_successor() {
+async fn compaction_preserves_recent_batches_and_rewind_restores_the_predecessor() {
     let server = MockServer::start_async().await;
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let (mut config, path) = options(&server, workspace.path(), data.path());
+    config.config.handoff.enabled = true;
     config.limits.max_request_bytes = WIRE_LIMIT;
     let session = Session::open(config.clone()).await.unwrap();
     let mut agent = agent();
@@ -63,6 +69,35 @@ async fn a_bounded_request_references_consumed_output_pages_and_reopens_the_succ
         .await
         .unwrap();
     std::fs::write(workspace.path().join("seed.txt"), "workspace fact").unwrap();
+
+    let earlier = server
+        .mock_async(|when, then| {
+            when.method(POST).path(&path).matches(|request| {
+                last_user(&request_body(request)) == Some(EARLIER)
+                    && common::capture_http_request(request)
+            });
+            then.status(200)
+                .header("content-type", "text/event-stream")
+                .body(response(json!({"content":EARLIER_REPLY}), "stop"));
+        })
+        .await;
+    let summaries = server
+        .mock_async(|when, then| {
+            when.method(POST).path(&path).matches(|request| {
+                last_user(&request_body(request)).is_some_and(|prompt| {
+                    prompt.starts_with("Write a checkpoint for the same agent")
+                        && prompt.contains("## Course corrections")
+                }) && common::capture_http_request(request)
+            });
+            then.status(200)
+                .header("content-type", "text/event-stream")
+                .body(response(json!({"content":CHECKPOINT}), "stop"));
+        })
+        .await;
+    session
+        .send(Input::new("earlier", "main", EARLIER))
+        .unwrap();
+    idle(&session, "main").await;
 
     let mut replies = Vec::new();
     for index in 0..=PAGE_COUNT {
@@ -94,7 +129,14 @@ async fn a_bounded_request_references_consumed_output_pages_and_reopens_the_succ
                         0 => {
                             when.matches(|request| page_results(&request_body(request)).is_empty())
                         }
-                        1 => when.body_contains(r#""tool_call_id":"stat-seed"}]"#),
+                        1 => when.matches(|request| {
+                            request_body(request)["messages"]
+                                .as_array()
+                                .unwrap()
+                                .last()
+                                .unwrap()["tool_call_id"]
+                                == "stat-seed"
+                        }),
                         _ => {
                             when.body_contains(format!(r#""tool_call_id":"page-{}"}}]"#, index - 1))
                         }
@@ -117,8 +159,36 @@ async fn a_bounded_request_references_consumed_output_pages_and_reopens_the_succ
                 .body(response(json!({"content":"Still available."}), "stop"));
         })
         .await;
+    let after_rewind = server
+        .mock_async(|when, then| {
+            when.method(POST).path(&path).matches(|request| {
+                last_user(&request_body(request)) == Some(AFTER_REWIND)
+                    && common::capture_http_request(request)
+            });
+            then.status(200)
+                .header("content-type", "text/event-stream")
+                .body(response(json!({"content":"History restored."}), "stop"));
+        })
+        .await;
     session.send(Input::new("scan", "main", QUERY)).unwrap();
+    let fallback = server
+        .mock_async(|when, then| {
+            when.method(POST).path(&path).matches(|request| {
+                let body = request_body(request);
+                let messages = body["messages"].as_array().unwrap();
+                eprintln!(
+                    "unmatched user {:?}; last tool ID {:?}; bytes {}",
+                    last_user(&body).map(|s| s.chars().take(100).collect::<String>()),
+                    messages.last().map(|m| m["tool_call_id"].clone()),
+                    request.body.as_deref().unwrap().len()
+                );
+                true
+            });
+            then.status(422);
+        })
+        .await;
     idle(&session, "main").await;
+    fallback.assert_hits_async(0).await;
     let journal = session.events_path().to_path_buf();
     config.session_id = Some(session.id().into());
     session.close().await.unwrap();
@@ -140,16 +210,31 @@ async fn a_bounded_request_references_consumed_output_pages_and_reopens_the_succ
         )
         .unwrap();
     assert_eq!(page_data(0), page.segments[0].text);
+    let target = EventStore::replay(&journal).unwrap().into_iter().find(|event| {
+        matches!(&event.payload, EventPayload::MessageUser { text, .. } if text == QUERY)
+    }).unwrap();
+    reopened
+        .rewind_message("rewind", "main", target.id, QUERY, false)
+        .unwrap();
+    reopened
+        .send(Input::new("after-rewind", "main", AFTER_REWIND))
+        .unwrap();
+    idle(&reopened, "main").await;
     reopened.close().await.unwrap();
     for reply in replies {
         reply.assert_hits_async(1).await;
     }
     follow_up.assert_hits_async(1).await;
 
+    earlier.assert_hits_async(1).await;
+    after_rewind.assert_hits_async(1).await;
+
     let bodies = common::take_http_requests(&path);
     let events = EventStore::replay(&journal).unwrap();
     let segments = facts(&events, "runtime.context_segment", "main");
     let steps = facts(&events, "runtime.step_prepared", "main");
+    let starts = facts(&events, "runtime.compaction_started", "main");
+    let completions = facts(&events, "runtime.compaction_finished", "main");
     let original_pages = events
         .iter()
         .filter_map(|event| match &event.payload {
@@ -164,60 +249,268 @@ async fn a_bounded_request_references_consumed_output_pages_and_reopens_the_succ
         })
         .collect::<BTreeMap<_, _>>();
     assert_eq!(PAGE_COUNT, original_pages.len());
-    assert_eq!(PAGE_COUNT + 2, bodies.len());
-    assert_eq!(bodies.len(), steps.len());
-    assert!(segments.len() > 2);
-    assert!(segments[1..].iter().all(|segment| {
-        segment["reason"] == "request_byte_budget"
-            && segment["output_pages_referenced"].as_u64().unwrap() > 0
-    }));
-    assert_eq!(
-        steps[PAGE_COUNT]["segment"],
-        steps[PAGE_COUNT + 1]["segment"]
-    );
-    assert_eq!(
-        page_results(&bodies[PAGE_COUNT]),
-        page_results(&bodies[PAGE_COUNT + 1])
-    );
-    let first_stat = bodies[1]["messages"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|message| message["tool_call_id"] == "stat-seed")
-        .unwrap();
-    assert!(bodies[PAGE_COUNT]["messages"]
-        .as_array()
-        .unwrap()
-        .contains(first_stat));
+    assert!(!starts.is_empty());
+    assert_eq!(starts.len(), completions.len());
+    summaries.assert_hits_async(starts.len()).await;
+    assert_eq!(PAGE_COUNT + 4, steps.len());
+    assert_eq!(bodies.len(), steps.len() + starts.len());
+    assert_eq!(segments.len(), 1 + completions.len());
 
-    for (index, (body, step)) in bodies.iter().zip(&steps).enumerate() {
-        let wire = serde_json::to_vec(body).unwrap();
-        assert!(wire.len() <= WIRE_LIMIT);
-        assert_eq!(wire.len(), step["request_bytes"].as_u64().unwrap() as usize);
-        let pages = page_results(body);
-        if let Some((id, payload)) = pages.last() {
-            assert_eq!(original_pages[id], *payload, "latest page changed");
+    for (started, finished) in starts.iter().zip(&completions) {
+        assert_eq!(started["request_id"], finished["request_id"]);
+        assert_eq!(finished["status"], "completed");
+        assert_eq!(finished["summary"], CHECKPOINT);
+        assert!(
+            finished["before_bytes"].as_u64().unwrap() > finished["after_bytes"].as_u64().unwrap()
+        );
+        assert!(finished["checkpointed_messages"].as_u64().unwrap() > 0);
+    }
+
+    let mut task_bodies = Vec::new();
+    for body in &bodies {
+        assert!(serde_json::to_vec(body).unwrap().len() <= WIRE_LIMIT);
+        if last_user(body).is_some_and(|prompt| prompt.starts_with("Write a checkpoint")) {
+            continue;
         }
-        for (id, payload) in pages {
-            if payload == original_pages[id] {
-                continue;
-            }
-            let reference: Value = serde_json::from_str(payload).unwrap();
-            let page_index = id.strip_prefix("page-").unwrap().parse::<usize>().unwrap();
-            assert_eq!(reference["kind"], "retained_output_page_reference");
-            assert_eq!(
-                reference["reread"],
-                json!({
-                    "tool":"read_output", "arguments":{"id":saved.reference.id,
-                    "offset":page_index * PAGE_BYTES,"limit":PAGE_BYTES}
-                })
-            );
+        task_bodies.push(body);
+    }
+    for (index, (body, step)) in task_bodies.iter().zip(&steps).enumerate() {
+        assert_eq!(
+            serde_json::to_vec(body).unwrap().len(),
+            step["request_bytes"].as_u64().unwrap() as usize
+        );
+        for (id, payload) in page_results(body) {
+            assert_eq!(original_pages[id], payload, "a retained page changed");
         }
-        if index > 0 && step["segment"] == steps[index - 1]["segment"] {
+        if index > 0 && index + 1 != steps.len() && step["segment"] == steps[index - 1]["segment"] {
             assert!(body["messages"]
                 .as_array()
                 .unwrap()
-                .starts_with(bodies[index - 1]["messages"].as_array().unwrap()));
+                .starts_with(task_bodies[index - 1]["messages"].as_array().unwrap()));
         }
     }
+    let resumed = task_bodies[task_bodies.len() - 2].to_string();
+    assert!(resumed.contains("The earlier response was delivered."));
+    assert!(!resumed.contains(EARLIER));
+    let restored = task_bodies.last().unwrap().to_string();
+    assert!(restored.contains(EARLIER) && restored.contains(EARLIER_REPLY));
+    assert!(!restored.contains("<kuku_checkpoint>") && !restored.contains(QUERY));
+    assert_eq!(steps[0]["segment"], steps.last().unwrap()["segment"]);
+}
+
+#[tokio::test]
+async fn manual_compaction_only_summarizes_the_selected_agents_completed_work() {
+    let server = MockServer::start_async().await;
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let (original, path) = options(&server, workspace.path(), data.path());
+    let model = server
+        .mock_async(|when, then| {
+            when.method(POST).path(&path).matches(|request| {
+                common::capture_http_request(request)
+                    && !request
+                        .body
+                        .as_ref()
+                        .unwrap()
+                        .windows(b"Write a checkpoint".len())
+                        .any(|window| window == b"Write a checkpoint")
+            });
+            then.status(200)
+                .body(response(json!({"content":"answer"}), "stop"));
+        })
+        .await;
+    let session = Session::open(original).await.unwrap();
+    session
+        .create_agent("create-main", "main", agent())
+        .unwrap();
+    session
+        .create_agent("create-reviewer", "reviewer", agent())
+        .unwrap();
+    let large_request = "MAIN_OLD. ".repeat(420);
+    for (command, target, text) in [
+        ("main-first", "main", large_request.as_str()),
+        ("review-first", "reviewer", "REVIEW_OLD"),
+        ("main-second", "main", "MAIN_RECENT"),
+    ] {
+        session.send(Input::new(command, target, text)).unwrap();
+        idle(&session, target).await;
+    }
+
+    let previous = session.agent("main").unwrap();
+    let rejected = server
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path(&path)
+                .body_contains("Write a checkpoint for the same agent");
+            then.status(502);
+        })
+        .await;
+    let first_attempt = session.compact_command("compress", "main").unwrap();
+    assert_eq!(
+        first_attempt.event_id,
+        session
+            .compact_command("compress", "main")
+            .unwrap()
+            .event_id
+    );
+    idle(&session, "main").await;
+    assert!(session
+        .restore_context_command("undo-failed", "main")
+        .is_err());
+    rejected.assert_hits_async(1).await;
+    rejected.delete_async().await;
+    let summary = server.mock_async(|when, then| {
+        when.method(POST).path(&path).body_contains("Write a checkpoint for the same agent");
+        then.status(200).delay(Duration::from_millis(150)).body(response(
+            json!({"content":"## Delivered and verified\nMAIN_SUMMARY, prior answer delivered.\n## Course corrections\nRecheck src/parser.rs at parse_range before editing."}),
+            "stop",
+        ));
+    }).await;
+    session.compact_command("retry", "main").unwrap();
+    assert_eq!(AgentStatus::Running, session.agent("main").unwrap().status);
+    idle(&session, "main").await;
+    let current = session.agent("main").unwrap();
+    assert_eq!(previous.turn, current.turn);
+    assert_eq!(previous.last_output, current.last_output);
+    assert_eq!(
+        previous.usage.model_requests + 2,
+        current.usage.model_requests
+    );
+    assert_eq!(None, current.last_error);
+
+    session
+        .send(Input::new("review-next", "reviewer", "REVIEW_NEXT"))
+        .unwrap();
+    idle(&session, "reviewer").await;
+    session
+        .send(Input::new("main-next", "main", "MAIN_NEXT"))
+        .unwrap();
+    idle(&session, "main").await;
+    let undo = session
+        .restore_context_command("undo-compaction", "main")
+        .unwrap();
+    assert_eq!(
+        undo.event_id,
+        session
+            .restore_context_command("undo-compaction", "main")
+            .unwrap()
+            .event_id
+    );
+    session
+        .send(Input::new("main-after-undo", "main", "MAIN_RESTORED"))
+        .unwrap();
+    idle(&session, "main").await;
+    let events = EventStore::replay(session.events_path()).unwrap();
+    session.close().await.unwrap();
+
+    model.assert_hits_async(6).await;
+    summary.assert_hits_async(1).await;
+    let bodies = common::take_http_requests(&path)
+        .into_iter()
+        .filter(|body| !body.to_string().contains("Write a checkpoint"))
+        .collect::<Vec<_>>();
+    assert_eq!(6, bodies.len());
+    assert!(bodies[3]["messages"]
+        .as_array()
+        .unwrap()
+        .starts_with(bodies[1]["messages"].as_array().unwrap()));
+    assert!(!bodies[3].to_string().contains("MAIN_SUMMARY"));
+    let main_body = bodies[4].to_string();
+    assert!(!main_body.contains("MAIN_OLD"));
+    assert!(main_body.contains("MAIN_SUMMARY") && main_body.contains("MAIN_RECENT"));
+    assert!(main_body.contains("src/parser.rs at parse_range"));
+    assert_eq!(1, main_body.matches("<kuku_runtime_date>").count());
+    let restored = bodies[5].to_string();
+    assert!(restored.contains("MAIN_OLD") && restored.contains("MAIN_NEXT"));
+    assert!(!restored.contains("MAIN_SUMMARY"));
+    let compactions = facts(&events, "runtime.compaction_finished", "main");
+    assert_eq!(compactions[0]["status"], "failed");
+    assert!(compactions[0]["reason"]
+        .as_str()
+        .unwrap()
+        .contains("Provider error"));
+    assert_eq!(compactions[1]["status"], "completed");
+    assert_eq!(
+        1,
+        facts(&events, "runtime.context_segment", "reviewer").len()
+    );
+    assert_eq!(2, facts(&events, "runtime.context_segment", "main").len());
+    assert_eq!(
+        6,
+        events
+            .iter()
+            .filter(|event| matches!(&event.payload, EventPayload::MessageUser { .. }))
+            .count()
+    );
+    assert_eq!(
+        6,
+        events
+            .iter()
+            .filter(|event| matches!(&event.payload, EventPayload::TurnStarted { .. }))
+            .count()
+    );
+}
+
+#[tokio::test]
+async fn reopening_records_a_terminal_outcome_for_an_abandoned_compaction() {
+    let server = MockServer::start_async().await;
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let (mut config, path) = options(&server, workspace.path(), data.path());
+    let ordinary = server
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path(&path)
+                .body_contains("Already answered");
+            then.status(200)
+                .body(response(json!({"content":"Delivered reply"}), "stop"));
+        })
+        .await;
+    let session = Session::open(config.clone()).await.unwrap();
+    session.create_agent("create", "main", agent()).unwrap();
+    session
+        .send(Input::new("complete", "main", "Already answered"))
+        .unwrap();
+    idle(&session, "main").await;
+    let before = session.agent("main").unwrap();
+    let journal = session.events_path().to_path_buf();
+    config.session_id = Some(session.id().into());
+    session.close().await.unwrap();
+
+    let mut journal_writer = EventStore::open(&journal).unwrap();
+    let request = journal_writer
+        .append(EventPayload::Unknown(json!({
+            "kind":"runtime.operation", "record":{
+                "operation":"compaction_requested", "address":"main", "turn":before.turn,
+                "command":{"command_id":"abandoned","fingerprint":"fixture"},
+            },
+        })))
+        .unwrap();
+    let request_id = format!("compact_{}", request.id);
+    journal_writer
+        .append(EventPayload::Unknown(json!({
+            "kind":"runtime.compaction_started", "agent":"main", "turn":before.turn,
+            "request_id":request_id,
+        })))
+        .unwrap();
+    drop(journal_writer);
+
+    let reopened = Session::open(config).await.unwrap();
+    let after = reopened.agent("main").unwrap();
+    assert_eq!(AgentStatus::Idle, after.status);
+    assert_eq!(before.turn, after.turn);
+    assert_eq!(before.last_output, after.last_output);
+    assert_eq!(
+        before.usage.unreported_requests + 1,
+        after.usage.unreported_requests
+    );
+    let events = EventStore::replay(&journal).unwrap();
+    let finished = facts(&events, "runtime.compaction_finished", "main");
+    assert_eq!(1, finished.len());
+    assert_eq!(request_id, finished[0]["request_id"]);
+    assert_eq!("interrupted", finished[0]["status"]);
+    assert!(finished[0]["reason"].as_str().unwrap().contains("reopened"));
+    assert!(reopened.restore_context_command("undo", "main").is_err());
+    reopened.close().await.unwrap();
+    ordinary.assert_hits_async(1).await;
 }

@@ -22,7 +22,7 @@ impl MessageId {
                 turn: *turn,
                 call_id: id.clone(),
             }),
-            super::Key::Preview(_) | super::Key::RewindGroup(_) => None,
+            super::Key::Preview(_) | super::Key::RewindGroup(_) | super::Key::Compaction(_) => None,
         }
     }
 
@@ -110,6 +110,7 @@ impl Transcript {
                     Body::Notice(..)
                     | Body::ModelError { .. }
                     | Body::Retry { .. }
+                    | Body::Compaction(_)
                     | Body::TurnSummary => return None,
                 };
                 let turn = record
@@ -160,9 +161,11 @@ impl Transcript {
                 job.output().into_iter().collect(),
                 false,
             ),
-            Body::Notice(..) | Body::ModelError { .. } | Body::Retry { .. } | Body::TurnSummary => {
-                return None
-            }
+            Body::Notice(..)
+            | Body::ModelError { .. }
+            | Body::Retry { .. }
+            | Body::Compaction(_)
+            | Body::TurnSummary => return None,
         };
         let (thinking, expandable) = self.message_action_keys(record);
         Some(MessageInfo {
@@ -270,6 +273,7 @@ impl Transcript {
                 | Body::Job(_)
                 | Body::ModelError { .. }
                 | Body::Retry { .. }
+                | Body::Compaction(_)
                 | Body::TurnSummary => None,
             })
             .collect()

@@ -70,6 +70,8 @@
 | `reply_permission` | `request_id`、`allow` | 决定精确的待决授权。 |
 | `withdraw` | `input_command_id` | 撤回排队输入或返回其当前状态。 |
 | `replace_queued` | `input_command_id`、`text` | 在接纳前替换文本，保留队列位置和投递时机。 |
+| `compact` | | 压缩所选空闲或已中断的 Agent 的较早上下文。通过 `compaction` 历史条目观察进度和结果。重试失败的压缩时使用新的命令 ID。 |
+| `restore_context` | | 撤销所选 Agent 最近一次仍生效的压缩，保留可见消息。 |
 | `advance` | | 显式继续 Agent 的工作。 |
 | `cancel` | `execution_id` | 取消观察到的那次执行并等待清理。 |
 

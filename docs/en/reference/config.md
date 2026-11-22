@@ -138,7 +138,7 @@ Any other string config value whose first character is `$` is treated as an envi
 | `threshold` | float | `0.7` |
 | `keep_turns` | integer | `2` |
 
-When estimated context usage crosses `threshold`, kuku injects a handoff instruction. The summary is persisted only if the model returns a handoff document; future context then keeps only the most recent `keep_turns` turns before that boundary.
+In a Session, `enabled` controls automatic context compaction. It can run when measured token usage crosses `threshold` or the request approaches its byte limit. The runtime checks that enough older material can be summarized and commits a successor only when it has usable savings. Manual `/compact` remains available. For a standalone SDK `Query`, `keep_turns` controls how many preceding turns remain after a model-generated handoff.
 
 ## `logs`
 

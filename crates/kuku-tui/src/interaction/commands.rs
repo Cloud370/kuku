@@ -9,6 +9,7 @@ use super::is_text;
 
 enum Invocation {
     Command(CommandMenu),
+    RestoreContext,
     CancelJob(String),
 }
 
@@ -18,6 +19,13 @@ impl Invocation {
         let Some(operation) = words.next() else {
             return Ok(Self::Command(command));
         };
+        if command == CommandMenu::Compact {
+            return match (operation, words.next()) {
+                ("undo", None) => Ok(Self::RestoreContext),
+                ("retry", None) => Ok(Self::Command(CommandMenu::Compact)),
+                _ => Err("Use /compact, /compact retry, or /compact undo".into()),
+            };
+        }
         if command != CommandMenu::Jobs {
             return Err(format!("Use /{}", command.name()));
         }
@@ -45,7 +53,8 @@ impl App {
         let Some((input, command)) = CommandInput::draft(text)
             .and_then(|input| input.command().map(|command| (input, command)))
             .filter(|(input, command)| {
-                *command == CommandMenu::Jobs || input.arguments.trim().is_empty()
+                matches!(command, CommandMenu::Jobs | CommandMenu::Compact)
+                    || input.arguments.trim().is_empty()
             })
         else {
             self.send(timing);
@@ -115,6 +124,14 @@ impl App {
         let command = match invocation {
             Invocation::Command(command) => command,
             Invocation::CancelJob(id) => return self.cancel_background_job(id),
+            Invocation::RestoreContext => {
+                if self.pane().exists {
+                    self.issue(self.active.clone(), kuku_client::Action::RestoreContext);
+                } else {
+                    self.problem("Open a conversation before restoring context");
+                }
+                return;
+            }
         };
         match command {
             CommandMenu::New => self.new_draft(),
@@ -124,6 +141,13 @@ impl App {
             }
             CommandMenu::Agents => self.open_agents(),
             CommandMenu::Jobs => self.open_jobs(),
+            CommandMenu::Compact => {
+                if self.pane().exists {
+                    self.issue(self.active.clone(), kuku_client::Action::Compact);
+                } else {
+                    self.problem("Open a conversation before compacting context");
+                }
+            }
             CommandMenu::Model => self.open_models(),
             CommandMenu::Thinking => self.open_thinking(),
             CommandMenu::StatusLine => self.open_statusline(),
@@ -139,5 +163,27 @@ impl App {
             CommandMenu::Web => {}
             CommandMenu::Quit => self.exit(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CommandInput, CommandMenu, Invocation};
+
+    #[test]
+    fn compaction_aliases_share_retry_and_undo() {
+        for alias in ["/compact", "/compress", "/summarize"] {
+            let input = CommandInput::draft(alias).unwrap();
+            assert_eq!(Some(CommandMenu::Compact), input.command());
+            assert!(matches!(
+                Invocation::parse(CommandMenu::Compact, " retry"),
+                Ok(Invocation::Command(CommandMenu::Compact))
+            ));
+            assert!(matches!(
+                Invocation::parse(CommandMenu::Compact, " undo"),
+                Ok(Invocation::RestoreContext)
+            ));
+        }
+        assert!(Invocation::parse(CommandMenu::Compact, " undo extra").is_err());
     }
 }

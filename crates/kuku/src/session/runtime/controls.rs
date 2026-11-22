@@ -679,7 +679,11 @@ fn cancelled_tool_result(
     })
 }
 
-fn command(command_id: &str, address: &str, intent: &impl serde::Serialize) -> Result<Command> {
+pub(super) fn command(
+    command_id: &str,
+    address: &str,
+    intent: &impl serde::Serialize,
+) -> Result<Command> {
     validate_key(command_id)?;
     validate_address(address)?;
     Ok(Command {

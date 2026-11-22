@@ -10,6 +10,7 @@ use crate::query::helpers::{append_model_error, append_turn_interrupted, now_tim
 use crate::query::tool_exec::record_plugin_hooks;
 use crate::query::types::{PendingRun, PendingStep, RequestTiming, StreamingChunkState, UiEvent};
 
+use super::compaction::{self, Outcome as CompactionOutcome};
 use super::retry::{
     preflight_stream, record_retry_event, retry_stop_reason, scheduled_retry_delay, PreflightError,
     RetryEvent, RetryPhase, RetryStopReason,
@@ -43,6 +44,70 @@ pub(super) async fn dispatch_provider_step(
         request_id: request_id.clone(),
     });
 
+    let handoff_active = pending.handoff_triggered;
+    let correlation = ProviderCorrelation {
+        session_id: pending.session_id.clone(),
+        agent_address: pending.conversation.as_str().into(),
+        connection_name: resolved_config.connection_name.clone(),
+        workspace: pending.workspace.clone(),
+    };
+    let capacity = match &pending.query.model_capacity {
+        Some(capacity) => Some(capacity.clone().acquire_owned().await.map_err(|_| {
+            crate::Error::InvalidArgument("session model capacity is closed".into())
+        })?),
+        None => None,
+    };
+    super::require_runtime_execution(&pending)?;
+    let prepare_started = Instant::now();
+    let max_request_bytes = pending.query.runtime_limits.max_request_bytes;
+    let mut prepared = prepare_body(&pending, &resolved_config, &correlation)?;
+    let request_prepare_us = prepare_started
+        .elapsed()
+        .as_micros()
+        .min(u128::from(u64::MAX)) as u64;
+    let initial_bytes = prepared.body.as_bytes().len();
+    if let Some(context) = frozen_context
+        .as_mut()
+        .filter(|context| compaction::needed(&pending, context, initial_bytes))
+    {
+        match Box::pin(compaction::compact(
+            &mut pending,
+            context,
+            &resolved_config,
+            &correlation,
+            initial_bytes,
+            compaction::Trigger::Pressure,
+        ))
+        .await?
+        {
+            CompactionOutcome::Keep | CompactionOutcome::Failed => {}
+            CompactionOutcome::Replace(body) => prepared = *body,
+            CompactionOutcome::Cancelled => return super::super::step::cancellation_step(pending),
+            CompactionOutcome::NewInput => {
+                return Ok(PendingStep::Pending {
+                    pending: Box::new(pending),
+                    slot: None,
+                    event: None,
+                });
+            }
+        }
+    }
+    let request_bytes = prepared.body.as_bytes().len();
+    if request_bytes > max_request_bytes {
+        return Err(crate::Error::InvalidArgument(format!(
+            "prepared model request exceeds the configured byte limit ({request_bytes} bytes, limit {max_request_bytes} bytes)"
+        )));
+    }
+    crate::query::budget::reserve(&pending.query)?;
+    if let Some(context) = frozen_context {
+        crate::query::frozen::record_prepared(
+            &mut pending,
+            &request_id,
+            &prepared,
+            context,
+            request_prepare_us,
+        )?;
+    }
     let mut lead_events = Vec::new();
     let provider_name = resolved_config.kind.as_str().to_string();
     let model_name = resolved_config.model.clone();
@@ -70,59 +135,6 @@ pub(super) async fn dispatch_provider_step(
         lead_events.push(UiEvent::TurnStart { turn: pending.turn });
     }
 
-    let handoff_active = pending.handoff_triggered;
-    let correlation = ProviderCorrelation {
-        session_id: pending.session_id.clone(),
-        agent_address: pending.conversation.as_str().into(),
-        connection_name: resolved_config.connection_name.clone(),
-        workspace: pending.workspace.clone(),
-    };
-    let capacity = match &pending.query.model_capacity {
-        Some(capacity) => Some(capacity.clone().acquire_owned().await.map_err(|_| {
-            crate::Error::InvalidArgument("session model capacity is closed".into())
-        })?),
-        None => None,
-    };
-    super::require_runtime_execution(&pending)?;
-    let prepare_started = Instant::now();
-    let max_request_bytes = pending.query.runtime_limits.max_request_bytes;
-    let mut prepared = prepare_body(&pending, &resolved_config, &correlation)?;
-    let initial_bytes = prepared.body.as_bytes().len();
-    if initial_bytes > max_request_bytes
-        && crate::query::helpers::resolved_tool_available(&pending, "read_output")
-    {
-        if let Some(context) = &mut frozen_context {
-            let reclaim_bytes =
-                (initial_bytes - max_request_bytes).saturating_add(max_request_bytes / 8);
-            let request = pending
-                .request_base
-                .as_mut()
-                .expect("request base captured");
-            if context.reference_output_pages(request, pending.turn, reclaim_bytes)? {
-                prepared = prepare_body(&pending, &resolved_config, &correlation)?;
-            }
-        }
-    }
-    let request_bytes = prepared.body.as_bytes().len();
-    if request_bytes > max_request_bytes {
-        return Err(crate::Error::InvalidArgument(format!(
-            "prepared model request exceeds the configured byte limit ({request_bytes} bytes, limit {max_request_bytes} bytes)"
-        )));
-    }
-    let request_prepare_us = prepare_started
-        .elapsed()
-        .as_micros()
-        .min(u128::from(u64::MAX)) as u64;
-    crate::query::budget::reserve(&pending.query)?;
-    if let Some(context) = frozen_context {
-        crate::query::frozen::record_prepared(
-            &mut pending,
-            &request_id,
-            &prepared,
-            context,
-            request_prepare_us,
-        )?;
-    }
     match dispatch_prepared(
         &mut pending,
         &resolved_config,
@@ -187,7 +199,7 @@ pub(super) async fn dispatch_provider_step(
             if matches!(
                 failure.kind,
                 crate::provider::types::ProviderFailureKind::ContextTooLarge
-            ) =>
+            ) && pending.query.runtime.is_none() =>
         {
             let user_input = existing_events
                 .iter()
@@ -270,8 +282,17 @@ fn prepare_body(
     let request = pending
         .request_base
         .as_ref()
-        .expect("request base captured")
-        .request();
+        .expect("request base captured");
+    prepare_request(pending, resolved, correlation, request)
+}
+
+pub(super) fn prepare_request(
+    pending: &PendingRun,
+    resolved: &ResolvedProvider,
+    correlation: &ProviderCorrelation,
+    request: &crate::query::request::OwnedRequestBase,
+) -> Result<PreparedProviderRequest> {
+    let request = request.request();
     if pending.query.runtime_execution.is_some() && pending.query.model_adapter.is_none() {
         crate::provider::prepare::prepare_provider_request_with_media(
             resolved,
@@ -304,8 +325,14 @@ async fn dispatch_prepared(
     super::require_runtime_execution(pending)?;
     let mut failed_attempt = 1;
     let mut started = Instant::now();
-    let mut result =
-        crate::query::adapters::model_stream(pending, resolved, prepared, trace.clone()).await;
+    let mut result = crate::query::adapters::model_stream(
+        pending,
+        request_id,
+        resolved,
+        prepared,
+        trace.clone(),
+    )
+    .await;
     loop {
         let failure = match result {
             Ok(stream) => match preflight_stream(stream, &pending.cancel_token).await {
@@ -391,8 +418,14 @@ async fn dispatch_prepared(
         )?;
         failed_attempt = next_attempt;
         started = Instant::now();
-        result =
-            crate::query::adapters::model_stream(pending, resolved, prepared, trace.clone()).await;
+        result = crate::query::adapters::model_stream(
+            pending,
+            request_id,
+            resolved,
+            prepared,
+            trace.clone(),
+        )
+        .await;
     }
 }
 

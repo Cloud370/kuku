@@ -972,6 +972,7 @@ impl App {
                     self.refresh_rewind_history();
                 }
             }
+            Action::Compact | Action::RestoreContext => {}
             Action::Advance => {
                 if active && !self.notice.as_ref().is_some_and(|notice| notice.error) {
                     self.confirmation("Continue request received");

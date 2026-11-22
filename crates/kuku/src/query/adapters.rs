@@ -27,6 +27,7 @@ pub(super) fn workspace_access(access: crate::ToolAccess) -> WorkspaceAccess {
 
 pub(super) async fn model_stream(
     pending: &mut PendingRun,
+    request_id: &str,
     resolved: &ResolvedProvider,
     prepared: &PreparedProviderRequest,
     trace: Option<crate::provider::trace::ProviderTraceMetadata>,
@@ -38,7 +39,7 @@ pub(super) async fn model_stream(
         session_id: pending.session_id.clone(),
         agent: pending.conversation.as_str().into(),
         turn: pending.turn,
-        request_id: format!("req_{}", pending.request_num),
+        request_id: request_id.into(),
         connection: prepared.connection_name.clone(),
         protocol: crate::adapter::protocol(prepared.kind),
         model: prepared.model.clone(),

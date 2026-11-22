@@ -138,7 +138,7 @@ Messages 默认使用 `x-api-key` 认证；OpenRouter 三种协议都使用 Bear
 | `threshold` | float | `0.7` |
 | `keep_turns` | integer | `2` |
 
-当估算的上下文使用量超过 `threshold` 时，kuku 会注入 handoff 指令。只有当模型返回 handoff 文档时，摘要才会被持久化；之后的上下文会在该边界前只保留最近的 `keep_turns` 轮。
+在 Session 中，`enabled` 控制自动上下文压缩。实测 token 使用量跨过 `threshold`，或请求接近字节上限时，可以触发压缩。运行时检查可摘要的历史量，只在能腾出有效空间时提交后继段。手动 `/compact` 仍然可用。对于独立 SDK `Query`，`keep_turns` 决定模型生成交接后保留多少个此前轮次。
 
 ## `logs`
 

@@ -78,6 +78,7 @@ pub(crate) enum MessageOrigin {
     Response,
     ToolResults,
     Runtime,
+    Checkpoint,
 }
 
 impl MessageOrigin {
@@ -158,89 +159,49 @@ impl ContextCursor {
     }
 
     fn read_assets(&mut self, path: &Path, agent: &str) -> Result<()> {
-        let mut candidate = None;
-        self.after = scan(path, self.after, |event| {
+        if let Some(segment) = committed_segments(path, agent, |_| {})?.0.last() {
+            let event = read_segment(path, segment.id)?;
             if let EventPayload::Unknown(value) = event.payload {
-                if value["agent"] == agent {
-                    if value["kind"] == "runtime.context_segment" {
-                        candidate = Some((event.id, value.get("catalog").cloned()));
-                    } else if value["kind"] == "runtime.step_prepared" {
-                        if let Some((_, catalog)) =
-                            candidate.as_ref().filter(|(id, _)| value["segment"] == *id)
-                        {
-                            self.catalog = catalog
-                                .as_ref()
-                                .filter(|value| !value.is_null())
-                                .map(|value| serde_json::from_value(value.clone()))
-                                .transpose()?;
-                        }
-                    }
-                }
+                self.catalog = value
+                    .get("catalog")
+                    .filter(|catalog| !catalog.is_null())
+                    .map(|catalog| serde_json::from_value(catalog.clone()))
+                    .transpose()?;
             }
-            Ok(())
-        })?;
+        }
         Ok(())
     }
 
     pub(crate) fn refresh(&mut self, path: &Path, agent: &str, max_bytes: usize) -> Result<()> {
         if self.after == 0 {
-            let mut latest = None;
-            let mut candidate = None;
-            let mut latest_turn = None;
-            let mut segment_turn = None;
-            let mut seen = 0;
-            scan(path, 0, |event| {
-                seen += 1;
-                if let EventPayload::TurnStarted {
-                    turn, conversation, ..
-                } = &event.payload
-                {
-                    if conversation == agent {
-                        latest_turn = Some(*turn);
-                    }
-                }
+            let (committed, seen) = committed_segments(path, agent, |event| {
                 if let EventPayload::Unknown(value) = &event.payload {
-                    if value["kind"] == "runtime.operation" {
-                        let record = &value["record"];
-                        match record["operation"].as_str() {
-                            Some("agent_created") if record["address"] == agent => {
-                                self.observe_configuration(event.id, &record["config"]);
-                            }
-                            Some("agent_configured") if record["address"] == agent => {
-                                self.observe_configuration(event.id, &record["config"]);
-                            }
-                            Some("input_delivered")
-                                if record["input"]["target"] == agent
-                                    && record["config"].is_object() =>
-                            {
-                                self.observe_configuration(event.id, &record["config"]);
-                            }
-                            _ => {}
-                        }
+                    let record = &value["record"];
+                    if value["kind"] != "runtime.operation" {
+                        return;
                     }
-                    if value["agent"] == agent {
-                        if value["kind"] == "runtime.context_segment" {
-                            candidate = Some((event.clone(), latest_turn));
+                    match record["operation"].as_str() {
+                        Some("agent_created" | "agent_configured")
+                            if record["address"] == agent =>
+                        {
+                            self.observe_configuration(event.id, &record["config"]);
                         }
-                        if value["kind"] == "runtime.step_prepared" {
-                            if let Some((segment, turn)) = candidate
-                                .as_ref()
-                                .filter(|(segment, _)| value["segment"] == segment.id)
-                            {
-                                segment_turn = *turn;
-                                latest = Some(segment.clone());
-                            }
+                        Some("input_delivered")
+                            if record["input"]["target"] == agent
+                                && record["config"].is_object() =>
+                        {
+                            self.observe_configuration(event.id, &record["config"]);
                         }
+                        _ => {}
                     }
                 }
-                Ok(())
             })?;
             self.events_read += seen;
-            if let Some(event) = latest {
-                self.after = event.id;
-                self.approved_segment = event.id;
-                self.latest_turn = segment_turn;
-                self.observe(event, agent, max_bytes)?;
+            if let Some(segment) = committed.last() {
+                self.after = segment.id;
+                self.approved_segment = segment.id;
+                self.latest_turn = segment.turn;
+                self.observe(read_segment(path, segment.id)?, agent, max_bytes)?;
             }
         }
         let mut seen = 0;
@@ -264,9 +225,7 @@ impl ContextCursor {
                 && record["operation"] == "message_rewind"
                 && record["address"] == agent
             {
-                let target_event_id = record["target_event_id"].as_u64().ok_or_else(|| {
-                    Error::InvalidEventStream("message rewind has no target event".into())
-                })?;
+                let target_event_id = rewind_target(record)?;
                 self.admitted.retain(|message| {
                     message.admitted_at < target_event_id || message.admitted_at >= event.id
                 });
@@ -384,7 +343,9 @@ impl ContextCursor {
                         self.pending_admissions.push(event);
                         return Ok(());
                     }
-                    Some("runtime.step_prepared") if value["segment"] == self.approved_segment => {
+                    _ if context_confirmation(value)
+                        && value["segment"] == self.approved_segment =>
+                    {
                         self.confirm_admissions(value)?;
                         let source_head = value["source_head"].as_u64().unwrap_or(event.id);
                         self.tail.retain(|event| event.id > source_head);
@@ -556,6 +517,101 @@ impl ContextCursor {
         }
         Ok(())
     }
+}
+
+struct SegmentCommit {
+    id: u64,
+    turn: Option<u64>,
+    checkpoint: bool,
+}
+
+pub(crate) fn latest_checkpoint_segment(path: &Path, agent: &str) -> Result<Option<u64>> {
+    let (segments, _) = committed_segments(path, agent, |_| {})?;
+    Ok(segments
+        .iter()
+        .rev()
+        .find(|segment| segment.checkpoint)
+        .map(|segment| segment.id))
+}
+
+fn read_segment(path: &Path, id: u64) -> Result<StoredEvent> {
+    EventStore::read_page(path, id - 1, 1)?
+        .pop()
+        .filter(|event| event.id == id)
+        .ok_or_else(|| Error::InvalidEventStream("committed context segment is missing".into()))
+}
+
+fn committed_segments(
+    path: &Path,
+    agent: &str,
+    mut visit: impl FnMut(&StoredEvent),
+) -> Result<(Vec<SegmentCommit>, u64)> {
+    let mut committed: Vec<SegmentCommit> = Vec::new();
+    let mut candidate = None;
+    let mut latest_turn = None;
+    let mut seen = 0;
+    scan(path, 0, |event| {
+        seen += 1;
+        visit(&event);
+        match &event.payload {
+            EventPayload::TurnStarted {
+                turn, conversation, ..
+            } if conversation == agent => {
+                latest_turn = Some(*turn);
+            }
+            EventPayload::Unknown(value) => {
+                let record = &value["record"];
+                if value["kind"] == "runtime.operation" && record["address"] == agent {
+                    let target = match record["operation"].as_str() {
+                        Some("message_rewind") => Some(rewind_target(record)?),
+                        Some("compaction_reverted") => {
+                            Some(record["segment"].as_u64().ok_or_else(|| {
+                                Error::InvalidEventStream("compaction rewind has no segment".into())
+                            })?)
+                        }
+                        _ => None,
+                    };
+                    if let Some(target) = target {
+                        committed.retain(|entry| entry.id < target);
+                        if candidate.is_some_and(|(id, _)| id >= target) {
+                            candidate = None;
+                        }
+                    }
+                }
+                if value["agent"] == agent {
+                    if value["kind"] == "runtime.context_segment" {
+                        candidate = Some((event.id, latest_turn));
+                    }
+                    if context_confirmation(value) {
+                        if let Some((id, turn)) =
+                            candidate.filter(|(id, _)| value["segment"] == *id)
+                        {
+                            committed.push(SegmentCommit {
+                                id,
+                                turn,
+                                checkpoint: value["kind"] == "runtime.compaction_finished",
+                            });
+                            candidate = None;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    })?;
+    Ok((committed, seen))
+}
+
+fn context_confirmation(value: &serde_json::Value) -> bool {
+    value["kind"] == "runtime.step_prepared"
+        || (value["kind"] == "runtime.compaction_finished" && value["status"] == "completed")
+}
+
+fn rewind_target(record: &serde_json::Value) -> Result<u64> {
+    record["target_event_id"]
+        .as_u64()
+        .ok_or_else(|| Error::InvalidEventStream("message rewind has no target event".into()))
 }
 
 fn scan(

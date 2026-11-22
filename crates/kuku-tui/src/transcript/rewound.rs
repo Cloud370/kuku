@@ -453,6 +453,7 @@ fn entry_text(entry: &HistoryEntry) -> Option<String> {
         HistoryKind::Status => format!("Status · {text}"),
         HistoryKind::Error => format!("Status · Error · {text}"),
         HistoryKind::Retry => format!("Status · Retry · {text}"),
+        HistoryKind::Compaction => format!("Context compaction · {text}"),
         HistoryKind::Other => return None,
     })
 }

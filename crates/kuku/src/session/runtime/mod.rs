@@ -1,6 +1,7 @@
 //! Session-owned execution, durable input delivery, and resumable observations.
 
 mod boundary;
+mod compaction;
 mod controls;
 mod creation;
 mod driver;
@@ -169,6 +170,7 @@ impl Session {
         if let Some(claim) = &state.creation {
             options.prompts_dir = claim.prompts_dir.clone();
         }
+        usage::recover_compaction(&mut writer, &mut state)?;
         state.mark_interrupted();
         state.outputs.collect(
             &output_dir,

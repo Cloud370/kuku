@@ -300,6 +300,7 @@ pub(super) fn tool_record(entry: &HistoryEntry) -> Option<OutputLine> {
         | HistoryKind::TurnSummary
         | HistoryKind::JobFinished
         | HistoryKind::Retry
+        | HistoryKind::Compaction
         | HistoryKind::Other => return None,
     };
     Some(record.with_conversation(Some(entry.agent.clone())))

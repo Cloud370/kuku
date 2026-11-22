@@ -118,6 +118,23 @@ pub(super) enum Record {
     ExecutionStarted {
         address: String,
     },
+    CompactionRequested {
+        command: Command,
+        address: String,
+        turn: u64,
+    },
+    CompactionSettled {
+        address: String,
+        execution: u64,
+        status: AgentStatus,
+        cancelled: bool,
+        error: Option<String>,
+    },
+    CompactionReverted {
+        command: Command,
+        address: String,
+        segment: u64,
+    },
     StepConfigured {
         address: String,
         config: AgentConfig,
@@ -221,6 +238,13 @@ pub(super) struct QueuedDelivery {
 }
 
 #[derive(Debug)]
+pub(super) struct ManualCompaction {
+    pub(super) execution: u64,
+    pub(super) previous_status: AgentStatus,
+    pub(super) finished: bool,
+}
+
+#[derive(Debug)]
 pub(super) struct AgentState {
     pub(super) snapshot: AgentSnapshot,
     pub(super) inbox: VecDeque<QueuedDelivery>,
@@ -232,6 +256,8 @@ pub(super) struct AgentState {
     pub(super) active_epoch: Option<u64>,
     pub(super) stopped_at: Option<u64>,
     pub(super) model_usage: AgentUsage,
+    pub(super) manual_compaction: Option<ManualCompaction>,
+    pub(super) summary_request: Option<(String, u64)>,
 }
 
 impl AgentState {
@@ -257,7 +283,7 @@ impl AgentState {
         self.snapshot.config = config;
     }
 
-    fn set_active_config(&mut self, config: Option<AgentConfig>) {
+    pub(super) fn set_active_config(&mut self, config: Option<AgentConfig>) {
         let requested = &self.snapshot.config;
         if self.snapshot.active_config.as_ref().unwrap_or(requested)
             != config.as_ref().unwrap_or(requested)
@@ -383,6 +409,8 @@ impl State {
                         active_epoch: None,
                         stopped_at: None,
                         model_usage: AgentUsage::default(),
+                        manual_compaction: None,
+                        summary_request: None,
                     },
                 );
             }
@@ -537,6 +565,25 @@ impl State {
                 snapshot.execution_id = Some(event_id);
                 snapshot.status = AgentStatus::Running;
                 snapshot.last_error = None;
+            }
+            Record::CompactionRequested {
+                command, address, ..
+            } => {
+                self.compaction_requested(event_id, command, address)?;
+            }
+            Record::CompactionSettled {
+                address,
+                status,
+                error,
+                ..
+            } => {
+                self.compaction_settled(&address, status, error)?;
+            }
+            Record::CompactionReverted {
+                command, address, ..
+            } => {
+                self.agent_mut(&address)?.snapshot.usage.latest_request = None;
+                self.remember_command(command, event_id, address);
             }
             Record::StepConfigured { address, config } => {
                 self.agent_mut(&address)?.set_active_config(Some(config));
@@ -871,7 +918,7 @@ impl State {
         Ok(())
     }
 
-    fn remember_command(&mut self, command: Command, event_id: u64, address: String) {
+    pub(super) fn remember_command(&mut self, command: Command, event_id: u64, address: String) {
         self.remember(command.command_id, command.fingerprint, event_id, address);
     }
 
