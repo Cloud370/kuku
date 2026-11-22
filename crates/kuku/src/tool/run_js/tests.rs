@@ -87,24 +87,48 @@ async fn script_syntax_errors_locate_user_code_before_any_host_action() {
 
 #[tokio::test]
 async fn script_runtime_errors_locate_submitted_code_and_preserve_awaited_actions() {
-    for (code, message, location, actions) in [
+    for (code, message, location, actions, missing_method) in [
         (
             "await tools.read_file({path:'notes'});\nconst result = 1;\nreturn tools.missing_method({result});",
             "not a function",
             "script line 3, column ",
             1,
+            Some("missing_method"),
+        ),
+        (
+            "const note = '前 🦉';\r\nconst after = '界'; return await tools.fetch_url({});",
+            "not a function",
+            "script line 2, column ",
+            0,
+            Some("fetch_url"),
+        ),
+        (
+            "const other = {tools: {fetch_url: null}}; return other.tools.fetch_url();",
+            "not a function",
+            "script line 1, column ",
+            0,
+            None,
+        ),
+        (
+            "return tools.methods();",
+            "not a function",
+            "script line 1, column ",
+            0,
+            None,
         ),
         (
             "function describe(item) {\n  return item.fields.map(String);\n}\nreturn describe({});",
             "cannot read property 'map' of undefined",
             "script line 2, column ",
             0,
+            None,
         ),
         (
             "const selector = {id:'capture',stream:'other'};\nreturn await tools.output_text(selector);",
             "output_text requires id or name and an optional stdout or stderr stream",
             "script line 2, column ",
             0,
+            None,
         ),
     ] {
         let host = TestHost {
@@ -121,6 +145,12 @@ async fn script_runtime_errors_locate_submitted_code_and_preserve_awaited_action
             "{}",
             output.model_content
         );
+        if let Some(name) = missing_method {
+            assert!(output.model_content.contains(&format!("does not expose tools.{name}")));
+            assert!(output.model_content.contains(&format!("call {name} separately")));
+        } else {
+            assert!(!output.model_content.contains("The run_js host does not expose"));
+        }
         assert_eq!(actions, facts(&output).actions.len());
     }
 }
@@ -184,6 +214,7 @@ async fn script_exposes_only_the_named_methods_and_supports_standard_async_javas
         return {
             names: tools.methods.map(({name}) => name),
             text: read.result.raw_text,
+            optional: tools.fetch_url?.() ?? null,
             available: [typeof tools.call, typeof tools.run_command, typeof require,
                 typeof process, typeof fetch, typeof tools.output_lines, typeof workspace],
             reply_keys: Object.keys(read).sort(),
@@ -199,6 +230,7 @@ async fn script_exposes_only_the_named_methods_and_supports_standard_async_javas
         json!({
             "names": ["read_file"],
             "text": "中文 🦉",
+            "optional": null,
             "available": ["undefined", "undefined", "undefined", "undefined", "undefined", "undefined", "undefined"],
             "reply_keys": ["result", "status", "truncated"],
         }),

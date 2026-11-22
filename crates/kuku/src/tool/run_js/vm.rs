@@ -3,6 +3,7 @@ mod allocation;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::fmt::Write;
 use std::rc::{Rc, Weak};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -24,10 +25,12 @@ use super::host::{bounded_json, cap_str};
 use super::{ScriptExecution, ScriptOperation};
 
 const MAX_EXCEPTION_BYTES: usize = 2048;
+const MAX_METHOD_HINT_NAME_BYTES: usize = 80;
 const MAX_METHOD_DEFINITION_BYTES: usize = 64 * 1024;
 const MAX_OUTPUT_LINE_BYTES: usize = 128 * 1024;
 // NOTE: QuickJS's AsyncFunction constructor adds two lines before the strict-mode directive.
 const SCRIPT_WRAPPER_LINES: usize = 3;
+const SCRIPT_LINE_ENDS: [char; 4] = ['\n', '\r', '\u{2028}', '\u{2029}'];
 const TOOLS_INSTALLER: &str = include_str!("tools.js");
 const CONSOLE_INSTALLER: &str = include_str!("console.js");
 
@@ -136,6 +139,11 @@ struct Continuation<'js> {
     bytes: usize,
 }
 
+struct Script<'js, 'source> {
+    source: &'source str,
+    tools: Object<'js>,
+}
+
 struct Worker<'js> {
     ctx: Ctx<'js>,
     execution: Arc<ScriptExecution>,
@@ -149,9 +157,11 @@ impl<'js> Worker<'js> {
     fn run(&self, source: &str, methods: Vec<ToolDefinition>) -> Result<Value, Failure> {
         self.check_running()?;
         let console = self.console().map_err(|error| self.describe(error))?;
+        let tools = self.tools(methods).map_err(|error| self.describe(error))?;
+        let script = Script { source, tools };
         let result = self
-            .start(source, methods)
-            .and_then(|promise| self.complete(promise, source));
+            .start(&script)
+            .and_then(|promise| self.complete(promise, &script));
         self.pending.borrow_mut().closed = true;
         let result = result.and_then(|value| {
             if value.is_undefined() {
@@ -160,7 +170,7 @@ impl<'js> Worker<'js> {
                 Ok(value)
             }
         });
-        let result = result.and_then(|value| self.return_value(value, source));
+        let result = result.and_then(|value| self.return_value(value, &script));
         self.check_running()?;
         result
     }
@@ -170,25 +180,17 @@ impl<'js> Worker<'js> {
         install.call((self.execution.limits.result_bytes,))
     }
 
-    fn start(
-        &self,
-        source: &str,
-        definitions: Vec<ToolDefinition>,
-    ) -> Result<Promise<'js>, Failure> {
-        let tools = self
-            .tools(definitions)
-            .map_err(|error| self.describe(error))?;
+    fn start(&self, script: &Script<'js, '_>) -> Result<Promise<'js>, Failure> {
         let constructor: Function = self
             .ctx
             .eval("(async function () {}).constructor")
             .map_err(|error| self.describe(error))?;
-        let body = format!("\"use strict\";\n{source}");
-        let script: Function = constructor
+        let body = format!("\"use strict\";\n{}", script.source);
+        let code: Function = constructor
             .call(("tools", body))
-            .map_err(|error| self.describe_at(error, Some(source)))?;
-        script
-            .call((tools,))
-            .map_err(|error| self.describe_at(error, Some(source)))
+            .map_err(|error| self.describe_at(error, Some(script)))?;
+        code.call((script.tools.clone(),))
+            .map_err(|error| self.describe_at(error, Some(script)))
     }
 
     fn tools(&self, definitions: Vec<ToolDefinition>) -> rquickjs::Result<Object<'js>> {
@@ -233,12 +235,16 @@ impl<'js> Worker<'js> {
         ))
     }
 
-    fn complete(&self, promise: Promise<'js>, source: &str) -> Result<JsValue<'js>, Failure> {
+    fn complete(
+        &self,
+        promise: Promise<'js>,
+        script: &Script<'js, '_>,
+    ) -> Result<JsValue<'js>, Failure> {
         loop {
             self.check_running()?;
             if let Some(result) = promise.result() {
                 self.pending.borrow_mut().closed = true;
-                let value = result.map_err(|error| self.describe_at(error, Some(source)))?;
+                let value = result.map_err(|error| self.describe_at(error, Some(script)))?;
                 if !self.pending.borrow().requests.is_empty() {
                     return Err(Failure::Error(
                         "script returned with pending host operations; await every host call"
@@ -296,12 +302,16 @@ impl<'js> Worker<'js> {
         }
     }
 
-    fn return_value(&self, value: JsValue<'js>, source: &str) -> Result<Value, Failure> {
+    fn return_value(
+        &self,
+        value: JsValue<'js>,
+        script: &Script<'js, '_>,
+    ) -> Result<Value, Failure> {
         if value.is_undefined() {
             return Ok(Value::Null);
         }
         let json =
-            json_bytes(&self.ctx, value).map_err(|error| self.describe_at(error, Some(source)))?;
+            json_bytes(&self.ctx, value).map_err(|error| self.describe_at(error, Some(script)))?;
         let max_bytes = self.execution.limits.result_bytes;
         if json.len() > max_bytes {
             return Err(Failure::Error(format!(
@@ -326,7 +336,7 @@ impl<'js> Worker<'js> {
         self.describe_at(error, None)
     }
 
-    fn describe_at(&self, error: Error, source: Option<&str>) -> Failure {
+    fn describe_at(&self, error: Error, script: Option<&Script<'js, '_>>) -> Failure {
         self.pending.borrow_mut().closed = true;
         if let Err(stopped) = self.check_running() {
             return stopped;
@@ -335,11 +345,11 @@ impl<'js> Worker<'js> {
             return runtime_error(error);
         }
         let exception = self.ctx.catch();
-        let location = source
+        let location = script
             .zip(exception.as_exception())
-            .and_then(|(source, error)| script_location(source, error))
-            .map(|location| format!(" ({location})"));
-        let message_budget = MAX_EXCEPTION_BYTES - location.as_ref().map_or(0, String::len);
+            .and_then(|(script, error)| script_location(script.source, error));
+        let location_text = location.map(ScriptLocation::render);
+        let message_budget = MAX_EXCEPTION_BYTES - location_text.as_ref().map_or(0, String::len);
         let message = if let Some(error) = exception.as_exception() {
             error.as_object().get("message").ok()
         } else {
@@ -360,14 +370,58 @@ impl<'js> Worker<'js> {
                 }
             });
         let mut message = message.unwrap_or_else(|| "JavaScript threw an exception".into());
-        if let Some(location) = location {
-            message.push_str(&location);
+        let method = if message == "not a function" {
+            location.zip(script).and_then(|(location, script)| {
+                let method = location.method_at_column()?;
+                matches!(script.tools.contains_key(method), Ok(false)).then_some(method)
+            })
+        } else {
+            None
+        };
+        if let Some(text) = location_text {
+            message.push_str(&text);
+        }
+        if let Some(method) = method {
+            let _ = write!(message, ". The run_js host does not expose tools.{method}. Check tools.methods or call {method} separately if offered as a top-level tool.");
         }
         Failure::Error(message)
     }
 }
 
-fn script_location(source: &str, error: &Exception<'_>) -> Option<String> {
+#[derive(Clone, Copy)]
+struct ScriptLocation<'a> {
+    line: usize,
+    column: usize,
+    text: Option<&'a str>,
+}
+
+impl<'a> ScriptLocation<'a> {
+    fn render(self) -> String {
+        if self.text.is_none() {
+            return " (at the end of the script)".into();
+        }
+        format!(" (script line {}, column {})", self.line, self.column)
+    }
+
+    fn method_at_column(self) -> Option<&'a str> {
+        let text = self.text?;
+        let byte = self.column - 1;
+        let before = text.get(..byte)?.strip_suffix("tools.")?;
+        if before
+            .chars()
+            .next_back()
+            .is_some_and(|ch| !ch.is_whitespace() && !"([{=,;?:!~+-*/%&|^<>".contains(ch))
+        {
+            return None;
+        }
+        let rest = text.get(byte..)?;
+        let end = rest.find(|ch: char| !(ch.is_ascii_alphanumeric() || matches!(ch, '_' | '$')))?;
+        (end > 0 && end <= MAX_METHOD_HINT_NAME_BYTES && rest[end..].trim_start().starts_with('('))
+            .then(|| &rest[..end])
+    }
+}
+
+fn script_location<'a>(source: &'a str, error: &Exception<'_>) -> Option<ScriptLocation<'a>> {
     let stack = error.stack()?;
     let (line, column) = stack.lines().find_map(|frame| {
         let frame = frame.trim_start().strip_prefix("at ")?;
@@ -383,12 +437,25 @@ fn script_location(source: &str, error: &Exception<'_>) -> Option<String> {
         let column = column.parse::<usize>().ok()?;
         (line > 0 && column > 0).then_some((line, column))
     })?;
-    let lines =
-        source.split(['\n', '\r', '\u{2028}', '\u{2029}']).count() - source.matches("\r\n").count();
-    if line > lines {
-        return Some("at the end of the script".into());
+    Some(ScriptLocation {
+        line,
+        column,
+        text: script_line(source, line),
+    })
+}
+
+fn script_line(mut source: &str, line: usize) -> Option<&str> {
+    for _ in 1..line {
+        let at = source.find(SCRIPT_LINE_ENDS)?;
+        let ending = &source[at..];
+        let len = if ending.starts_with("\r\n") {
+            2
+        } else {
+            ending.chars().next()?.len_utf8()
+        };
+        source = &ending[len..];
     }
-    Some(format!("script line {line}, column {column}"))
+    source.split(SCRIPT_LINE_ENDS).next()
 }
 
 struct Bridge<'js> {
