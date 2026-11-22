@@ -196,7 +196,9 @@ class PairedReportTests(unittest.TestCase):
             rows = [
                 {'seconds': 0.25, 'request_bytes': 40, 'body': SECRET},
                 {'seconds': 1.25, 'request_bytes': 42, 'timing': {'request_to_first_output_delta_seconds': 0.5}},
-                {'seconds': 2.0, 'request_bytes': 45, 'timing': {'request_to_first_output_delta_seconds': 1.0}},
+                {'request': 3, 'seconds': 2.0, 'request_bytes': 45, 'reasoning_output_tokens': 40,
+                 'timing': {'request_to_first_output_delta_seconds': 1.0,
+                            'request_to_first_tool_argument_delta_seconds': 1.75, 'private': SECRET}},
             ]
             write_json(kuku / 'meter.json', {**meter, 'attempts': rows,
                                            'rejections': [{'reason': 'case USD cap', 'private': SECRET}]})
@@ -206,10 +208,16 @@ class PairedReportTests(unittest.TestCase):
                 'admitted_attempts': 3, 'timed_attempts': 3, 'elapsed_seconds': 3.5, 'request_body_bytes': 127,
                 'peak_request_body_bytes': 45,
                 'first_output_samples': 2, 'first_output_p50_seconds': 0.75,
+                'slowest_observed_request': {
+                    'request': 3, 'seconds': 2.0, 'request_body_bytes': 45,
+                    'first_output_seconds': 1.0, 'first_text_seconds': None,
+                    'first_tool_arguments_seconds': 1.75, 'reasoning_output_tokens': 40,
+                },
                 'emitted_tool_calls': None, 'emitted_tool_batches': None,
-                'reasoning_output_tokens': None, 'reasoning_usage_samples': 0,
+                'reasoning_output_tokens': None, 'reasoning_usage_samples': 1,
             })
             self.assertIsNone(report['attempts'][1]['provider_relay']['elapsed_seconds'])
+            self.assertIsNone(report['attempts'][1]['provider_relay']['slowest_observed_request'])
             self.assertEqual(report['attempts'][0]['tool_calls'], 1)
             self.assertEqual(report['attempts'][0]['tool_call_source'], 'session_journal')
             self.assertEqual(report['attempts'][0]['workspace_script_calls'], 0)

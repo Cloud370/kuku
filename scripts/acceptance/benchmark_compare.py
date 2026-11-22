@@ -32,7 +32,20 @@ def digest_map(value):
 def relay_summary(rows):
     if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
         raise EvidenceError('paired meter must contain request rows')
-    elapsed = [value for row in rows if (value := number(row.get('seconds'))) is not None]
+    timed = [(seconds, row) for row in rows if (seconds := number(row.get('seconds'))) is not None]
+    slowest = None
+    if timed:
+        seconds, row = max(timed, key=lambda sample: sample[0])
+        timing = object_value(row.get('timing'))
+        slowest = {
+            'request': count(row.get('request')),
+            'seconds': seconds,
+            'request_body_bytes': count(row.get('request_bytes')),
+            'first_output_seconds': number(timing.get('request_to_first_output_delta_seconds')),
+            'first_text_seconds': number(timing.get('request_to_first_text_delta_seconds')),
+            'first_tool_arguments_seconds': number(timing.get('request_to_first_tool_argument_delta_seconds')),
+            'reasoning_output_tokens': count(row.get('reasoning_output_tokens')),
+        }
     request_bytes = [value for row in rows if (value := count(row.get('request_bytes'))) is not None]
     first_output = [value for row in rows if (value := number(object_value(row.get('timing')).get(
         'request_to_first_output_delta_seconds'))) is not None]
@@ -40,12 +53,13 @@ def relay_summary(rows):
     reasoning = [value for row in rows if (value := count(row.get('reasoning_output_tokens'))) is not None]
     return {
         'admitted_attempts': len(rows),
-        'timed_attempts': len(elapsed),
-        'elapsed_seconds': round(sum(elapsed), 6) if elapsed and len(elapsed) == len(rows) else None,
+        'timed_attempts': len(timed),
+        'elapsed_seconds': round(sum(seconds for seconds, _ in timed), 6) if timed and len(timed) == len(rows) else None,
         'request_body_bytes': sum(request_bytes) if request_bytes and len(request_bytes) == len(rows) else None,
         'peak_request_body_bytes': max(request_bytes) if request_bytes and len(request_bytes) == len(rows) else None,
         'first_output_samples': len(first_output),
         'first_output_p50_seconds': middle(first_output),
+        'slowest_observed_request': slowest,
         'emitted_tool_calls': sum(emitted) if emitted else None,
         'reasoning_output_tokens': sum(reasoning) if reasoning and len(reasoning) == len(rows) else None,
         'reasoning_usage_samples': len(reasoning),
