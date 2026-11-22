@@ -394,7 +394,7 @@ class AcceptanceTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in manifest["cases"]], [
             "log-summary-date-ranges", "cancel-async-tasks", "regex-log", "large-scale-text-editing",
             "nginx-request-logging", "sqlite-with-gcov", "kv-store-grpc", "gcode-to-text", "pypi-server",
-            "schemelike-metacircular-eval",
+            "schemelike-metacircular-eval", "code-from-image",
         ])
         self.assertEqual(case["artifacts"], ["/app/apply_macros.vim"])
         _, gcode = ACCEPTANCE.manifest_case("gcode-to-text", "frontier")
@@ -406,6 +406,9 @@ class AcceptanceTests(unittest.TestCase):
         _, scheme = ACCEPTANCE.manifest_case("schemelike-metacircular-eval", "frontier")
         self.assertEqual((scheme["workspace"], scheme["artifacts"], scheme["timeout_sec"]),
                          ("/app", ["/app/eval.scm"], 2400))
+        _, image = ACCEPTANCE.manifest_case("code-from-image", "frontier")
+        self.assertEqual((image["workspace"], image["artifacts"], image["timeout_sec"]),
+                         ("/app", ["/app/output.txt"], 1200))
         legacy, legacy_case = ACCEPTANCE.manifest_case("cancel-async-tasks")
         frontier, frontier_case = ACCEPTANCE.manifest_case("cancel-async-tasks", "frontier")
         self.assertEqual(legacy_case, frontier_case)

@@ -56,7 +56,8 @@
         "kv-store-grpc",
         "gcode-to-text",
         "pypi-server",
-        "schemelike-metacircular-eval"
+        "schemelike-metacircular-eval",
+        "code-from-image"
       ],
       "additional_cases": [
         {
@@ -107,6 +108,13 @@
           "workspace": "/app",
           "artifacts": ["/app/eval.scm"],
           "timeout_sec": 2400
+        },
+        {
+          "id": "code-from-image",
+          "role": "interpret a source image, implement its logic and verify exact output",
+          "workspace": "/app",
+          "artifacts": ["/app/output.txt"],
+          "timeout_sec": 1200
         }
       ]
     }
