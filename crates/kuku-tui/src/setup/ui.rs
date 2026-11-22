@@ -247,6 +247,61 @@ fn render_step(
                 MUTED,
             );
         }
+        SetupStep::CredentialSource if SetupState::offers_trial_workspace(settings, mode) => {
+            line(frame, area, &mut row, "Try kuku", ACCENT);
+            let trial_selected = state.trial_workspace_selected;
+            for (selected, label) in [
+                (trial_selected, "Use a trial workspace"),
+                (!trial_selected, "Use an environment variable"),
+            ] {
+                let (marker, color) = if selected {
+                    ("› ", ACCENT)
+                } else {
+                    ("  ", MUTED)
+                };
+                line(frame, area, &mut row, &format!("{marker}{label}"), color);
+            }
+            row += 1;
+            if trial_selected {
+                line(
+                    frame,
+                    area,
+                    &mut row,
+                    "Paste a key and open kuku in trial-workspace.",
+                    MUTED,
+                );
+                line(
+                    frame,
+                    area,
+                    &mut row,
+                    "Pasting here would put keys inside the workspace.",
+                    MUTED,
+                );
+            } else {
+                line(
+                    frame,
+                    area,
+                    &mut row,
+                    &format!("Key variable · {}", state.environment.text().trim()),
+                    MUTED,
+                );
+            }
+            row += 1;
+            line(
+                frame,
+                area,
+                &mut row,
+                "Existing project? Exit and run:",
+                MUTED,
+            );
+            line(
+                frame,
+                area,
+                &mut row,
+                "  kuku --workspace /path/to/project",
+                MUTED,
+            );
+        }
         SetupStep::CredentialSource => {
             line(frame, area, &mut row, "API key source", ACCENT);
             let environment_status = if state.environment_set() {
@@ -288,33 +343,9 @@ fn render_step(
                     Line::styled(format!("{marker}{label}"), style),
                 );
             }
-            let trial = SetupState::offers_trial_workspace(settings, mode);
-            if trial {
-                let (marker, color) = if state.trial_workspace_selected {
-                    ("› ", ACCENT)
-                } else {
-                    ("  ", MUTED)
-                };
-                line(
-                    frame,
-                    area,
-                    &mut row,
-                    &format!("{marker}Use a trial workspace"),
-                    color,
-                );
-            }
             if !can_paste {
                 for instruction in settings.storage_problem().lines() {
                     line(frame, area, &mut row, instruction, WARNING);
-                }
-                if trial {
-                    line(
-                        frame,
-                        area,
-                        &mut row,
-                        "Use trial-workspace in the data directory to paste.",
-                        MUTED,
-                    );
                 }
                 if settings.key_store_inside_workspace() {
                     line(

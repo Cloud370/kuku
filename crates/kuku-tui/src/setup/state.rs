@@ -307,8 +307,9 @@ impl SetupState {
         if self.step == SetupStep::Credential
             && matches!(previous, SetupStep::Network | SetupStep::ProxyAddress)
             && Self::offers_trial_workspace(settings, mode)
-            && !self.environment_set()
         {
+            self.credential_source = CredentialSource::Environment;
+            self.trial_workspace_selected = !self.environment_set();
             self.step = SetupStep::CredentialSource;
         }
         if self.step == SetupStep::Review

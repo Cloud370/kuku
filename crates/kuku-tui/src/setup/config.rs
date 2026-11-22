@@ -128,7 +128,7 @@ impl Settings {
             storage_error: None,
         };
         settings.storage_error = if settings.key_store_inside_workspace() {
-            Some("The key store is inside this workspace.")
+            Some("The key store is inside the workspace.")
         } else {
             settings.check_storage(false).err().map(|_| {
                 "The credentials directory is unsafe or inaccessible.\nUse Environment or choose a different --data-dir."
@@ -305,7 +305,6 @@ fn preferred_source(
     can_store_key: bool,
 ) -> CredentialSource {
     match key {
-        _ if !can_store_key => CredentialSource::Environment,
         Some(ApiKey::File(_) | ApiKey::Plaintext(_)) => CredentialSource::StoredKey,
         _ if environment_available => CredentialSource::Environment,
         _ if can_store_key => CredentialSource::StoredKey,

@@ -134,20 +134,22 @@ def first_run_credential_repair(binary, bridge, directory):
                 terminal.press("\r")
                 terminal.expect("Paste your API key")
             else:
-                for index, selected in enumerate(("Environment", "Use a trial workspace", "Environment")):
+                for index, selected in enumerate((
+                    "Use a trial workspace", "Use an environment variable", "Use a trial workspace"
+                )):
                     if index:
                         terminal.press("\x1b[B")
-                    view = terminal.expect("API key source", also=(
-                        f"› {selected}",
-                        "Paste API key · unavailable",
-                        "The key store is inside this workspace.",
-                        "Use trial-workspace in the data directory to paste.",
-                        "kuku --workspace /path/to/project",
-                        "Environment · not detected · OPENROUTER_API_KEY",
+                    explanation = (
+                        "Pasting here would put keys inside the workspace."
+                        if selected == "Use a trial workspace"
+                        else "Key variable · OPENROUTER_API_KEY"
+                    )
+                    view = terminal.expect("Try kuku", also=(
+                        f"› {selected}", explanation, "kuku --workspace /path/to/project",
                     ))["screen"]
-                    assert view.count("The key store is inside this workspace.") == 1, view
+                    assert view.count(explanation) == 1, view
                 assert not (login / ".kuku" / "trial-workspace").exists()
-                terminal.press("\x1b[B\r")
+                terminal.press("\r")
                 terminal.expect("Paste your API key")
                 assert (login / ".kuku" / "trial-workspace").is_dir()
             terminal.exit_cleanly("\x03")
@@ -186,9 +188,9 @@ def first_run_credential_repair(binary, bridge, directory):
             terminal.press("\r")
             terminal.expect("Choose a provider", also=("Existing · test-anthropic",))
             terminal.press("\r\r\r")
-            missing = terminal.expect("API key source", also=("not detected", "Use a trial workspace"))["screen"]
+            missing = terminal.expect("Try kuku", also=("› Use a trial workspace",))["screen"]
             client.provider.assert_idle()
-            terminal.press("\x1b[B\r")
+            terminal.press("\r")
             terminal.expect("Paste your API key")
             terminal.press(f"\x1b[200~{key}\x1b[201~")
             masked = terminal.expect(f"{key[:7]}{'•' * (len(key) - 12)}{key[-5:]}")["screen"]
