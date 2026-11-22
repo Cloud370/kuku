@@ -138,7 +138,7 @@ jobs:
           file=open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8'))"
       - name: Restore installed binary for this revision
         id: installed_cache
-        if: ${{ !cancelled() && steps.install_identity.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.install_identity.outcome == 'success' && matrix.installed != 'selected' }}
         continue-on-error: true
         uses: actions/cache/restore@v4
         with:
@@ -180,18 +180,20 @@ jobs:
           KUKU_INSTALLED_BINARY: ${{ runner.temp }}/kuku-ci-install/bin/kuku${{ runner.os == 'Windows' && '.exe' || '' }}
           KUKU_INSTALL_ROOT: ${{ runner.temp }}/kuku-ci-install
         run: |
-          if [[ "$INSTALLED_ACCEPTANCE" != full ]]; then
-            features=kuku/test_support
-            if [[ "$EMBED_WEB" == true ]]; then
-              features+=,embedded-web-assets
+          if [[ "$INSTALLED_ACCEPTANCE" == full ]]; then
+            cargo install --locked --timings --path apps/kuku --features embedded-web-assets --root "$KUKU_INSTALL_ROOT"
+          else
+            if [[ "${{ steps.contract.outcome }}" == success ]]; then
+              echo 'Using the application built by the workspace contract tests'
+            elif [[ "$EMBED_WEB" == true ]]; then
+              cargo build --locked --timings -p kuku-app --features embedded-web-assets
+            else
+              cargo build --locked --timings -p kuku-app
             fi
-            cargo build --locked --timings -p kuku-app --features "$features"
             python3 -c 'import os, shutil; from pathlib import Path
           destination = Path(os.environ["KUKU_INSTALLED_BINARY"])
           destination.parent.mkdir(parents=True, exist_ok=True)
           shutil.copy2(Path(os.environ["CARGO_TARGET_DIR"]) / "debug" / destination.name, destination)'
-          else
-            cargo install --locked --timings --path apps/kuku --features embedded-web-assets --root "$KUKU_INSTALL_ROOT"
           fi
       - name: Verify installed revision
         id: installed_revision
@@ -225,7 +227,7 @@ jobs:
         if: ${{ !cancelled() && steps.installed_revision.outcome == 'success' && matrix.browser }}
         run: |
           python3 -m pip install playwright==1.64.1
-          python3 -m playwright install --with-deps chromium
+          python3 -m playwright install --with-deps --only-shell chromium
       - name: Restore native PTY helper
         id: pty_cache
         if: ${{ !cancelled() && steps.installed_revision.outcome == 'success' }}

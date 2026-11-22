@@ -22,7 +22,7 @@ Windows workspace 选择器串行运行独立 Rust 测试用例（`--test-thread
 
 CI 使用 GitHub 的 PR 合并树和目标分支父提交比较改动，重命名的新旧路径均参与选择。同一 PR 的旧运行会被取消。浏览器验收只构建一次 Web 资源，前端改动时在同一次构建中运行 WebUI 检查。main 的前端改动也运行相同的 WebUI workflow。Rust 作业共用 debug profile，安装验收前校验程序版本。原生 PTY helper 使用 workspace 和 `kuku/test_support` 的 feature 解析。
 
-PR 安装验收尽可能复用 debug 程序及其已编译依赖。浏览器验收使用嵌入 Web 资源的程序。安装程序按提交、工具链和构建变体缓存，PTY helper 按源码、依赖锁文件、平台和编译器单独缓存。本地可用 `interactive --cases name[,name...]` 复测指定的安装场景。
+Linux PR 安装验收复用工作区契约测试编译出的 debug 程序，选中浏览器场景时该程序嵌入 Web 资源。Web 作业按锁文件、Node 版本和平台复用已安装的 npm 依赖，构建输入一致时复用 Web 产物。Web 改动仍运行完整检查，新构建与类型检查共用一次 TypeScript 检查。浏览器验收安装 Chromium headless shell。需要单独构建的安装程序按提交、工具链和构建变体缓存，PTY helper 按源码、依赖锁文件、平台和编译器单独缓存。本地可用 `interactive --cases name[,name...]` 复测指定的安装场景。
 
 每周定时运行和手动选择 `platform=all` 时，在 Linux、macOS 和 Windows 运行完整契约和安装验收，包括 Windows 桌面及 Linux 浏览器交接。手动触发也可选择 `linux`、`macos` 或 `windows` 单个平台。运行标题显示范围，main 推送、每周运行和不同手动范围使用独立并发组。
 
