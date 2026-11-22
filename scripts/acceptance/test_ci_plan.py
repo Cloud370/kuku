@@ -24,20 +24,39 @@ class CiPlanTests(TestCase):
     def test_web_pr_runs_browser_only_and_checks_frontend_in_the_web_build(self):
         jobs, _, verify_web = plan("pull_request", paths=("apps/web/src/main.ts",))
         self.assertTrue(verify_web)
-        self.assertEqual(1, len(jobs))
-        self.assertTrue(jobs[0]["web"])
-        self.assertTrue(jobs[0]["browser"])
-        self.assertEqual("browser", jobs[0]["cases"])
+        core, browser = jobs
+        self.assertEqual("workspace", core["contract"])
+        self.assertEqual("none", core["installed"])
+        self.assertFalse(core["web"])
+        self.assertTrue(browser["web"])
+        self.assertTrue(browser["browser"])
+        self.assertEqual("none", browser["contract"])
+        self.assertEqual("browser", browser["cases"])
+        self.assertNotEqual(core["artifact"], browser["artifact"])
 
     def test_session_http_pr_selects_browser_and_session_cases_once(self):
         jobs, _, verify_web = plan("pull_request",
                                    paths=("crates/kuku-server/src/routes/events.rs",))
-        self.assertEqual(1, len(jobs))
-        cases = jobs[0]["cases"].split(",")
+        core, browser = jobs
+        cases = core["cases"].split(",")
         self.assertIn("rewind-history", cases)
-        self.assertIn("browser", cases)
+        self.assertNotIn("browser", cases)
         self.assertEqual(len(set(cases)), len(cases))
+        self.assertFalse(core["web"])
+        self.assertEqual("browser", browser["cases"])
         self.assertFalse(verify_web)
+
+    def test_ci_changes_verify_independent_platform_and_browser_jobs(self):
+        jobs, tooling, _ = plan("pull_request", paths=(".github/workflows/ci-platform.yml",))
+        self.assertEqual(["ubuntu-latest", "macos-latest", "windows-latest"], tooling)
+        core, browser, macos, windows = jobs
+        self.assertEqual("workspace", core["contract"])
+        self.assertTrue(browser["web"])
+        self.assertFalse(core["web"])
+        for native in (macos, windows):
+            self.assertEqual("sdk", native["contract"])
+            self.assertEqual("smoke", native["installed"])
+            self.assertFalse(native["web"])
 
     def test_shared_file_lock_changes_run_native_sdk_checks_without_installing(self):
         jobs, _, _ = plan("pull_request", paths=("crates/kuku/src/util/fs_sync.rs",))

@@ -49,7 +49,8 @@ NATIVE_SDK = ("Cargo.toml", "Cargo.lock", ".cargo/*", "crates/kuku/build.rs",
               "crates/kuku/src/tool/builtin/run_command/*", "crates/kuku/tests/event_store.rs")
 NATIVE_TERMINAL = ("crates/kuku-tui/src/terminal*", "crates/kuku-client/src/local*",
                    "apps/kuku/*", "scripts/acceptance/desktop/*", ".github/workflows/release.yml")
-INSTALL_HARNESS = (".github/workflows/ci.yml", "scripts/acceptance/ci_plan.py",
+INSTALL_HARNESS = (".github/workflows/ci.yml", ".github/workflows/ci-platform.yml",
+                   "scripts/acceptance/ci_plan.py",
                    "scripts/acceptance/run.py", "scripts/acceptance/interactive.py",
                    "scripts/acceptance/interactive_fixture.py")
 
@@ -66,7 +67,8 @@ def platform_paths(paths, platform):
 def job(platform, contract, installed="none", cases=(), browser=False, web=False):
     os, terminal = PLATFORMS[platform]
     return dict(os=os, terminal=terminal, contract=contract, installed=installed,
-                cases=",".join(cases), browser=browser, web=web)
+                cases=",".join(cases), browser=browser, web=web,
+                artifact="browser-linux" if browser and contract == "none" else os)
 
 
 def plan(event, draft=False, platform="all", paths=()):
@@ -81,11 +83,9 @@ def plan(event, draft=False, platform="all", paths=()):
     harness = matches(paths, INSTALL_HARNESS)
     cases = dict.fromkeys(case for patterns, names in CASE_RULES if harness or matches(paths, patterns)
                           for case in names)
-    browser = harness or matches(paths, BROWSER)
-    if browser:
-        cases["browser"] = None
-    jobs = [job("linux", "workspace", "selected" if cases else "none",
-                cases=cases, browser=browser, web=browser)]
+    jobs = [job("linux", "workspace", "selected" if cases else "none", cases=cases)]
+    if harness or matches(paths, BROWSER):
+        jobs.append(job("linux", "none", "selected", cases=("browser",), browser=True, web=True))
     tooling = ["ubuntu-latest"]
     for name in ("macos", "windows"):
         relevant = platform_paths(paths, name)
@@ -114,8 +114,9 @@ def main():
     draft = args.draft == "true"
     paths = changed_paths() if args.event == "pull_request" and not draft else ()
     jobs, tooling, web_checks = plan(args.event, draft, args.platform, paths)
-    outputs = {"jobs": jobs, "tooling": tooling, "web": any(entry["web"] for entry in jobs),
-               "web_checks": web_checks}
+    outputs = {"platform_jobs": [entry for entry in jobs if not entry["web"]],
+               "web_jobs": [entry for entry in jobs if entry["web"]],
+               "tooling": tooling, "web_checks": web_checks}
     with args.output.open("a", encoding="utf-8") as stream:
         for name, value in outputs.items():
             print(f"{name}={json.dumps(value, separators=(',', ':'))}", file=stream)
