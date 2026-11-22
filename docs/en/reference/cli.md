@@ -50,7 +50,7 @@ Put options before the prompt in `kuku run`, because it consumes the remaining w
 | Enter | Send the draft. A busy Agent accepts it at the next safe model-request boundary, or in the next Turn if the current Turn settles first. |
 | Alt+Enter | Queue the draft for the next Turn. |
 | Shift+Enter or Ctrl+J | Insert a newline in the draft. |
-| Esc | Close a panel or dialog, or go back one step in a confirmation. Closing a question editor saves the answer draft by request ID. On the main screen, interrupt Running or cleanup work even with contextual, queue or request focus. In an idle empty composer, press Esc twice to open message rewind. |
+| Esc | Close a panel or dialog, or go back one step in a confirmation. Closing a question editor saves the answer draft by request ID. On the main screen, interrupt Running or cleanup work even with contextual, queue or request focus. In an idle empty composer, press Esc again after the hint to open message rewind. |
 | Ctrl+P or F1 | Show read-only shortcut help. The draft is preserved; Enter and clicks do not run actions from help. |
 | `/` in an empty composer, or after Ctrl+P | Search actions and Skills in a list above the composer. Choosing a Skill inserts an editable `/skill:NAME` prefix for the next send. |
 | `@` or Tab | Complete workspace-relative paths as draft text. |
@@ -72,7 +72,7 @@ Put options before the prompt in `kuku run`, because it consumes the remaining w
 
 In a selection dialog, click a row to highlight it. A click can switch the viewed Agent or Session, open a model ID editor, or show transcript details and retained output. The Messages header button opens the entry selector, where clicking an entry opens its actions and clicking an action runs it. Applying a tier or reasoning setting, deciding an authorization, withdrawing an input or restarting still requires Enter.
 
-In an idle empty composer, press Esc twice to choose a user message to rewind. At the earliest displayed message, Up or Page Up loads earlier history without losing the selected message. The selector shows loading or retry feedback. Its bounded window discards newer unselected messages when full; reopen rewind to return to recent messages. Enter reads the original text before opening confirmation for that exact message. If reading fails, Enter retries. Esc cancels without changing the draft or history. See [message rewind](../how-it-works/sessions.md#message-rewind) for the effect of confirmation and optional recorded-file restoration.
+When the Agent is idle and the composer is empty, use `/rewind` to choose a user message. You can also press Esc, wait for the hint, and press Esc again. At the earliest displayed message, Up or Page Up loads earlier history without losing the selected message. The selector shows loading or retry feedback. Its bounded window discards newer unselected messages when full; reopen rewind to return to recent messages. Enter reads the original text before opening confirmation for that exact message. If reading fails, Enter retries. Esc cancels without changing the draft or history. See [message rewind](../how-it-works/sessions.md#message-rewind) for the effect of confirmation and optional recorded-file restoration.
 
 Continue acknowledgements appear briefly and do not replace an existing error. Narrow focused-control hints keep the Esc action visible.
 
@@ -84,9 +84,10 @@ Search by the command or any alias. The list shows the canonical spelling. Tab c
 |---|---|---|
 | `/new` | `/new-session` | Open a blank draft and keep the prior Session available. |
 | `/resume` | `/sessions` | Find a retained Session in the workspace. |
+| `/rewind` | `/backtrack` | Select an earlier user message in the current Session and review the rewind before confirming. |
 | `/compact` | `/compress`, `/summarize` | Summarize earlier context for the selected Agent once its running work settles. The transcript shows progress, elapsed time, request sizes and an expandable checkpoint. Use `/compact retry` after a failure, or `/compact undo` to restore the previous context without removing messages. |
-| `/agents` | `/agent` | Search the Session's Agents, switch recipients or create an Agent. The selector shows activity, pending requests, queue counts and task excerpts when available. |
-| `/jobs` | `/job` | List the selected Agent's background jobs with their original title and current status. The input area shows the running count when there is room. Select a job to cancel it or read its available output. Use `/jobs cancel <id>` to cancel by ID. A completion entry in `/messages` can also open its retained output. |
+| `/agents` | `/agent`, `/subagents` | Search the Session's Agents, switch recipients or create an Agent. The selector shows activity, pending requests, queue counts and task excerpts when available. |
+| `/jobs` | `/job`, `/ps` | List the selected Agent's background jobs with their original title and current status. The input area shows the running count when there is room. Select a job to cancel it or read its available output. Use `/jobs cancel <id>` to cancel by ID. A completion entry in `/messages` can also open its retained output. |
 | `/model` | `/models` | Choose, add or edit model routes. Ctrl+L opens the same selector. |
 | `/thinking` | `/think`, `/effort` | Show the inherited model default and supported levels. A check marks the current selection. Enter applies the highlighted level to this Agent. **Use default** clears its override. On a writable local model route, press D on a level then Enter to save it as the model default while retaining explicit Agent overrides. |
 | `/statusline` | `/status-line` | Open **Status line settings** to preview, select, reorder and save footer fields. |
@@ -95,6 +96,7 @@ Search by the command or any alias. The list shows the canonical spelling. Tab c
 | `/server` | `/service` | Inspect the connected service. Ctrl+R reconnects. |
 | `/restart` | `/restart-service` | Confirm a managed local service restart. Active work defers it. |
 | `/web` | `/browser` | Open the conversation in the browser. |
+| `/help` | `/hotkeys` | Show keyboard shortcuts. |
 | `/quit` | `/exit`, `/q` | Leave the terminal client. Accepted work continues on the service. |
 
 ### Reading the transcript

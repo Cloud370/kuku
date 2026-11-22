@@ -382,7 +382,7 @@ pub(crate) struct App {
     resolved_workspace: bool,
     cached: VecDeque<Address>,
     navigation: AgentNavigation,
-    pub(crate) escape_armed_at: Option<Instant>,
+    pub(crate) rewind_armed: bool,
     pub(crate) rewind_restore_files: bool,
 }
 
@@ -456,7 +456,7 @@ impl App {
             quit_after_save: false,
             resolved_workspace: false,
             navigation: AgentNavigation::default(),
-            escape_armed_at: None,
+            rewind_armed: false,
             rewind_restore_files: false,
         }
     }

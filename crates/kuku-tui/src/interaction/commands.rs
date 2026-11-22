@@ -139,6 +139,7 @@ impl App {
                 self.picker(PickerKind::Sessions, self.unsent_drafts());
                 self.search(true);
             }
+            CommandMenu::Rewind => self.rewind_from_menu(),
             CommandMenu::Agents => self.open_agents(),
             CommandMenu::Jobs => self.open_jobs(),
             CommandMenu::Compact => {
@@ -161,6 +162,7 @@ impl App {
                 ));
             }
             CommandMenu::Web => {}
+            CommandMenu::Help => self.show_shortcut_help(),
             CommandMenu::Quit => self.exit(),
         }
     }

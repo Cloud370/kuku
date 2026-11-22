@@ -4,6 +4,7 @@ use crate::keys::Shortcut;
 pub(crate) enum CommandMenu {
     New,
     Resume,
+    Rewind,
     Agents,
     Jobs,
     Compact,
@@ -15,6 +16,7 @@ pub(crate) enum CommandMenu {
     Server,
     Restart,
     Web,
+    Help,
     Quit,
 }
 
@@ -22,6 +24,7 @@ impl CommandMenu {
     pub(crate) const ALL: &[Self] = &[
         Self::New,
         Self::Resume,
+        Self::Rewind,
         Self::Agents,
         Self::Jobs,
         Self::Compact,
@@ -33,6 +36,7 @@ impl CommandMenu {
         Self::Server,
         Self::Restart,
         Self::Web,
+        Self::Help,
         Self::Quit,
     ];
 
@@ -77,8 +81,19 @@ impl CommandMenu {
                 "Find a Session in this workspace",
                 None,
             ),
-            Self::Agents => ("agents", &["agent"], "Choose or create an Agent", None),
-            Self::Jobs => ("jobs", &["job"], "List jobs · /jobs cancel <id>", None),
+            Self::Rewind => ("rewind", &["backtrack"], "Rewind to a user message", None),
+            Self::Agents => (
+                "agents",
+                &["agent", "subagents"],
+                "Choose or create an Agent",
+                None,
+            ),
+            Self::Jobs => (
+                "jobs",
+                &["job", "ps"],
+                "List jobs · /jobs cancel <id>",
+                None,
+            ),
             Self::Compact => (
                 "compact",
                 &["compress", "summarize"],
@@ -123,6 +138,7 @@ impl CommandMenu {
                 None,
             ),
             Self::Web => ("web", &["browser"], "Open in the browser", None),
+            Self::Help => ("help", &["hotkeys"], "Show keyboard shortcuts", None),
             Self::Quit => ("quit", &["exit", "q"], "Leave the terminal", None),
         }
     }

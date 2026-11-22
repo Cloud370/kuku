@@ -167,7 +167,7 @@ fn f2_messages_separates_rewound_choices_and_preserves_restored_draft() {
     press(&mut app, KeyCode::Esc);
     assert!(app.composer_focused());
     assert!(!app.pane().contextual_focus.active);
-    assert_eq!(None, app.escape_armed_at);
+    assert!(!app.rewind_armed);
     assert_eq!(draft, app.pane().draft.text());
     assert_eq!(cursor, app.pane().draft.cursor());
 }
@@ -213,18 +213,18 @@ fn messages_and_group_escape_do_not_arm_rewind_until_composer_escapes() {
     press(&mut app, KeyCode::Esc);
     assert!(app.modal.is_none());
     assert!(app.composer_focused());
-    assert_eq!(None, app.escape_armed_at);
+    assert!(!app.rewind_armed);
 
     open_messages_with_f2(&mut app);
     choose_group_action(&mut app, RewindGroupAction::Toggle);
     press(&mut app, KeyCode::Esc);
     assert!(app.modal.is_none());
     assert!(app.composer_focused());
-    assert_eq!(None, app.escape_armed_at);
+    assert!(!app.rewind_armed);
 
     press(&mut app, KeyCode::Esc);
     assert!(app.modal.is_none());
-    assert!(app.escape_armed_at.is_some());
+    assert!(app.rewind_armed);
     press(&mut app, KeyCode::Esc);
     assert!(app.modal.is_some());
 }

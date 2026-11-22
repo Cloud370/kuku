@@ -82,6 +82,7 @@ impl ChoiceKind {
             self,
             Self::Command(
                 CommandMenu::Resume
+                    | CommandMenu::Rewind
                     | CommandMenu::Agents
                     | CommandMenu::Jobs
                     | CommandMenu::Model
@@ -91,6 +92,7 @@ impl ChoiceKind {
                     | CommandMenu::Values
                     | CommandMenu::Server
                     | CommandMenu::Restart
+                    | CommandMenu::Help
             ) | Self::Session { .. }
                 | Self::Agent { .. }
                 | Self::CreateAgent
@@ -594,11 +596,11 @@ mod tests {
             assert!(!labels.contains(&omitted));
         }
         for retained in [
-            "/new", "/resume", "/compact", "/server", "/restart", "/quit",
+            "/new", "/resume", "/rewind", "/compact", "/server", "/restart", "/quit",
         ] {
             assert!(labels.contains(&retained));
         }
-        assert_eq!(14, choices.len());
+        assert_eq!(16, choices.len());
     }
 
     #[test]
@@ -611,8 +613,11 @@ mod tests {
         for (alias, canonical) in [
             ("new-session", "/new"),
             ("sessions", "/resume"),
+            ("backtrack", "/rewind"),
             ("agent", "/agents"),
+            ("subagents", "/agents"),
             ("job", "/jobs"),
+            ("ps", "/jobs"),
             ("models", "/model"),
             ("think", "/thinking"),
             ("effort", "/thinking"),
@@ -623,6 +628,7 @@ mod tests {
             ("service", "/server"),
             ("restart-service", "/restart"),
             ("browser", "/web"),
+            ("hotkeys", "/help"),
             ("exit", "/quit"),
             ("q", "/quit"),
         ] {

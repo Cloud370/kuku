@@ -1,5 +1,3 @@
-use std::time::{Duration, Instant};
-
 use crossterm::event::KeyEvent;
 
 use crate::app::{App, Modal};
@@ -38,6 +36,24 @@ impl App {
         })
     }
 
+    pub(super) fn rewind_from_menu(&mut self) {
+        let pane = self.pane();
+        if !pane.exists {
+            self.problem("Open a Session before rewinding");
+        } else if self.escape_interrupts_running()
+            || pane
+                .snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.agent.status == kuku_client::AgentStatus::Waiting)
+        {
+            self.problem("Wait for the Agent to settle before rewinding");
+        } else if !pane.draft.text().is_empty() || !pane.value_attachments.is_empty() {
+            self.problem("Clear the draft before rewinding");
+        } else {
+            self.open_rewind_picker();
+        }
+    }
+
     pub(super) fn rewind_escape(&mut self) {
         let status = self
             .pane()
@@ -45,7 +61,7 @@ impl App {
             .as_ref()
             .map(|snapshot| snapshot.agent.status);
         if self.escape_interrupts_running() {
-            self.escape_armed_at = None;
+            self.rewind_armed = false;
             self.interrupt();
             self.deactivate_context_focus();
             self.focus_composer();
@@ -58,7 +74,7 @@ impl App {
                 crate::app::KeyboardFocus::Request | crate::app::KeyboardFocus::Queue
             )
         {
-            self.escape_armed_at = None;
+            self.rewind_armed = false;
             self.deactivate_context_focus();
             self.focus_composer();
             return;
@@ -67,25 +83,21 @@ impl App {
             && self.pane().transcript.is_reading()
             && !self.pane().draft.text().is_empty()
         {
-            self.escape_armed_at = None;
+            self.rewind_armed = false;
             self.deactivate_context_focus();
             self.focus_composer();
             return;
         }
         if !self.pane().draft.text().is_empty() {
-            self.escape_armed_at = None;
+            self.rewind_armed = false;
             return;
         }
-        let now = Instant::now();
-        if self
-            .escape_armed_at
-            .is_some_and(|armed| now.duration_since(armed) <= Duration::from_millis(500))
-        {
-            self.escape_armed_at = None;
+        if self.rewind_armed {
+            self.rewind_armed = false;
             self.open_rewind_picker();
         } else {
-            self.escape_armed_at = Some(now);
-            self.message("Press Esc again within 500 ms to rewind to a message");
+            self.rewind_armed = true;
+            self.confirmation("Press Esc again to rewind to a message");
         }
     }
 

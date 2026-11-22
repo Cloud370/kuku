@@ -504,7 +504,7 @@ fn escape_from_history_focus_returns_to_composer_with_multiline_draft() {
     );
     assert_eq!(draft, app.pane().draft.text());
     assert_eq!(cursor, app.pane().draft.cursor());
-    assert_eq!(None, app.escape_armed_at);
+    assert!(!app.rewind_armed);
     assert!(app.modal.is_none());
 }
 
@@ -665,7 +665,7 @@ fn double_escape_opens_rewind_picker_and_confirmation_is_cancelable_and_opt_in()
     let mut app = connected_app();
     press(&mut app, KeyCode::Esc);
     assert!(app.modal.is_none());
-    assert!(app.escape_armed_at.is_some());
+    assert!(app.rewind_armed);
 
     press(&mut app, KeyCode::Esc);
     assert!(matches!(&app.modal, Some(Modal::Picker(picker))

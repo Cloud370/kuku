@@ -648,3 +648,18 @@ fn original_source_from_a_previous_agent_cannot_open_confirmation() {
     assert!(app.pending.is_empty());
     assert!(!app.effects.iter().any(|job| matches!(job, Job::Save(_))));
 }
+
+#[test]
+fn rewind_command_opens_the_picker_without_dispatching_a_rewind() {
+    let mut app = connected_app();
+    app.pane_mut().exists = true;
+    app.pane_mut().transcript.replace_recent(page(&[17], None));
+    for character in "/rewind".chars() {
+        press(&mut app, KeyCode::Char(character));
+    }
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+        if matches!(picker.kind, PickerKind::Rewind) && picker.choice_count() == 1));
+    assert!(app.pending.is_empty());
+    assert!(app.pane().draft.text().is_empty());
+}

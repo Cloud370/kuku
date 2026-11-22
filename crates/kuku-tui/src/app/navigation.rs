@@ -24,7 +24,7 @@ struct PickerState {
 
 impl App {
     pub(crate) fn select(&mut self, address: Address, exists: bool, title: String) {
-        self.escape_armed_at = None;
+        self.rewind_armed = false;
         if address.session != self.active.session {
             self.navigation = AgentNavigation::default();
         } else if address != self.active && exists && self.pane().exists {
