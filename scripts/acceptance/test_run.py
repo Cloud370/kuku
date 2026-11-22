@@ -395,10 +395,12 @@ class AcceptanceTests(unittest.TestCase):
             "log-summary-date-ranges", "cancel-async-tasks", "regex-log", "large-scale-text-editing",
             "nginx-request-logging", "sqlite-with-gcov", "kv-store-grpc", "gcode-to-text", "pypi-server",
             "schemelike-metacircular-eval", "code-from-image", "db-wal-recovery", "adaptive-rejection-sampler",
+            "count-dataset-tokens",
         ])
         self.assertEqual(case["artifacts"], ["/app/apply_macros.vim"])
         for case_id, artifact in (("db-wal-recovery", "/app/recovered.json"),
-                                  ("adaptive-rejection-sampler", "/app/ars.R")):
+                                  ("adaptive-rejection-sampler", "/app/ars.R"),
+                                  ("count-dataset-tokens", "/app/answer.txt")):
             _, holdout = ACCEPTANCE.manifest_case(case_id, "frontier")
             self.assertEqual((holdout["workspace"], holdout["artifacts"], holdout["timeout_sec"]),
                              ("/app", [artifact], 900))

@@ -59,7 +59,8 @@
         "schemelike-metacircular-eval",
         "code-from-image",
         "db-wal-recovery",
-        "adaptive-rejection-sampler"
+        "adaptive-rejection-sampler",
+        "count-dataset-tokens"
       ],
       "additional_cases": [
         {
@@ -130,6 +131,13 @@
           "role": "implement and verify a numerical sampler under input and distribution constraints",
           "workspace": "/app",
           "artifacts": ["/app/ars.R"],
+          "timeout_sec": 900
+        },
+        {
+          "id": "count-dataset-tokens",
+          "role": "process a public dataset with a specified tokenizer and verify the aggregate",
+          "workspace": "/app",
+          "artifacts": ["/app/answer.txt"],
           "timeout_sec": 900
         }
       ]
