@@ -1,27 +1,34 @@
-use kuku_client::{Client, Error, HistoryPage, Target};
+use kuku_client::{Client, Error, ForwardHistoryPage, HistoryPage, Target};
 
 use crate::transcript::{HistoryRequest, HISTORY_PAGE};
+
+pub(crate) enum LoadedHistory {
+    Before(HistoryPage),
+    After(ForwardHistoryPage),
+}
+
+impl From<HistoryPage> for LoadedHistory {
+    fn from(page: HistoryPage) -> Self {
+        Self::Before(page)
+    }
+}
 
 pub(super) async fn load(
     client: &Client,
     target: &Target,
     request: HistoryRequest,
-) -> Result<HistoryPage, Error> {
-    let mut page = client
-        .history(target, request.before_option(), HISTORY_PAGE)
-        .await?;
-    let HistoryRequest::Newer { first, mut before } = request else {
-        return Ok(page);
-    };
-    while let Some(cursor) = page.next_before.filter(|&cursor| cursor > first) {
-        if cursor >= before {
-            return Err(Error::Protocol("history cursor did not advance".into()));
+) -> Result<LoadedHistory, Error> {
+    match request {
+        HistoryRequest::Newer(after) => {
+            let page = client.history_after(target, after, HISTORY_PAGE).await?;
+            if page.next_after.is_some_and(|cursor| cursor <= after) {
+                return Err(Error::Protocol("history cursor did not advance".into()));
+            }
+            Ok(LoadedHistory::After(page))
         }
-        let mut earlier = client.history(target, Some(cursor), HISTORY_PAGE).await?;
-        earlier.entries.append(&mut page.entries);
-        earlier.rewind_groups.append(&mut page.rewind_groups);
-        page = earlier;
-        before = cursor;
+        request => Ok(client
+            .history(target, request.before_option(), HISTORY_PAGE)
+            .await?
+            .into()),
     }
-    Ok(page)
 }

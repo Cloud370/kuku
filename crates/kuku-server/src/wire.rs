@@ -371,11 +371,13 @@ pub(crate) fn history_entry_for_agent(
         entry["turn"] = json!(turn);
         entry["turn_summary"] = json!(summary);
     }
-    if let Some(number) = entry["turn"]
-        .as_u64()
-        .and_then(|turn| turns.number(agent, turn))
-    {
-        entry["turn_number"] = json!(number);
+    if let Some(turn) = entry["turn"].as_u64() {
+        if let Some(number) = turns.number(agent, turn) {
+            entry["turn_number"] = json!(number);
+        }
+        if let Some(started_at) = turns.started_at_ms(agent, turn) {
+            entry["turn_started_at_ms"] = json!(started_at);
+        }
     }
     if entry.get("ts").is_none() {
         if let EventPayload::Unknown(value) = &event.payload {

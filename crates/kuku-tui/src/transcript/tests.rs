@@ -229,6 +229,44 @@ fn evicted_view_restores_its_saved_anchor_from_durable_history() {
     transcript.replace_recent(page(101, 141));
     transcript.apply_page(request, page(before - HISTORY_PAGE as u64, before));
     assert_eq!(anchored, rows(&mut transcript));
+    assert_eq!(
+        Some(HistoryRequest::Newer(before - 1)),
+        transcript.scroll(1000, 44, 16)
+    );
+}
+
+#[test]
+fn deep_history_pages_forward_past_the_old_backtrack_limit() {
+    use kuku_client::ForwardHistoryPage;
+
+    let newest = 140 * HISTORY_PAGE as u64;
+    let mut transcript = Transcript::default();
+    transcript.replace_recent(page(newest - HISTORY_PAGE as u64 + 1, newest + 1));
+    while let Some(HistoryRequest::Older(before)) = transcript.scroll(-1000, 44, 10) {
+        transcript.apply_page(
+            HistoryRequest::Older(before),
+            page(before.saturating_sub(HISTORY_PAGE as u64).max(1), before),
+        );
+    }
+    let mut fetched = 0;
+    while let Some(HistoryRequest::Newer(after)) = transcript.scroll(1000, 44, 10) {
+        assert!(after < newest);
+        let through = (after + HISTORY_PAGE as u64).min(newest);
+        transcript.apply_forward_page(
+            HistoryRequest::Newer(after),
+            ForwardHistoryPage {
+                page: page(after + 1, through + 1),
+                next_after: (through < newest).then_some(through),
+            },
+        );
+        assert_eq!(
+            Some(through),
+            transcript.reading.as_ref().unwrap().window.last_position()
+        );
+        fetched += 1;
+    }
+    assert!(fetched > 128);
+    assert!(!transcript.is_reading());
 }
 
 #[test]

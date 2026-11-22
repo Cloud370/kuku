@@ -176,6 +176,67 @@ fn script_card_reports_completed_effects_and_unknown_actions_from_host_facts() {
 }
 
 #[test]
+fn closed_script_card_previews_an_action_and_the_return_shape() {
+    let mut transcript = Transcript::default();
+    for event in [
+        json!({"id":1,"agent":"main","turn":1,"type":"tool_call","tool":"run_js","tool_call_id":"check",
+            "args":{"title":"Check workspace","code":"return await verify();"}}),
+        json!({"id":2,"agent":"main","turn":1,"type":"tool_result","tool_call_id":"check","status":"ok",
+        "structured":{"kind":"workspace_script_result","timed_out":false,
+            "cleanup_incomplete":false,"not_dispatched":0,
+            "value":{"verified":true},
+            "actions":[
+                {"id":"command","tool":"run_command","status":"ok","summary":"completed","truncated":false,
+                 "result":command_facts("verify", "log", 8, "private command output")},
+                {"id":"read","tool":"read_file","status":"ok","summary":"read guide.md","truncated":false,
+                 "result":{"kind":"file_content","path":"guide.md","start_line":1,"line_count":3,"total_lines":3}}
+            ]}}),
+    ] {
+        transcript.apply(serde_json::from_value(event).unwrap(), None);
+    }
+    let view = transcript.project(96, 20);
+    let screen = view
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    for row in [
+        "Status · ok · 2/2 actions completed",
+        "Run verify",
+        "Output · 1 field",
+    ] {
+        assert!(screen.contains(row), "{screen}");
+    }
+    for row in [
+        "guide.md",
+        "private command output",
+        "return await verify()",
+        "verified · true",
+    ] {
+        assert!(!screen.contains(row), "{screen}");
+    }
+    let title = view
+        .lines
+        .iter()
+        .position(|line| line.to_string().contains("Script   Check workspace"))
+        .unwrap();
+    let body = view
+        .lines
+        .iter()
+        .position(|line| line.to_string().contains("Run verify"))
+        .unwrap();
+    assert_eq!(transcript.detail_at(title), transcript.detail_at(body));
+    let action = transcript.detail_at(body).unwrap().clone();
+    assert!(transcript.toggle_in_view(&action, 96, 20));
+    assert!(transcript
+        .project(96, 20)
+        .lines
+        .iter()
+        .any(|line| line.to_string().contains("Input · JavaScript")));
+}
+
+#[test]
 fn script_details_show_source_inside_the_tool_card() {
     let mut transcript = Transcript::default();
     for event in [
@@ -198,6 +259,10 @@ fn script_details_show_source_inside_the_tool_card() {
         .lines
         .iter()
         .any(|line| line.to_string().contains("const marker")));
+    assert!(view
+        .lines
+        .iter()
+        .any(|line| line.to_string().contains("Output · Saved JSON")));
     let heading = view.lines[index].clone();
     for (text, color) in [
         ("Script", crate::theme::MODEL),

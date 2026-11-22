@@ -375,8 +375,77 @@ impl Tool {
         } else if inspect {
             body.extend(self.script_source_rows(columns, open));
         }
+        if !inspect && body.is_empty() {
+            body = self.compact_script_rows(columns);
+        }
         rows.extend(body.into_iter().map(|row| row.with_detail_rule(width)));
         finish_card(rows)
+    }
+
+    fn compact_script_rows(&self, width: usize) -> Vec<Row> {
+        let (mut status, color) = self.status_line();
+        let script = self
+            .state
+            .outcome()
+            .and_then(|outcome| outcome.script.as_deref());
+        if let Some(script) = script {
+            let (complete, total) = script.action_counts();
+            if total != 0 {
+                status.extend(
+                    Row::metric(
+                        " · ",
+                        format!("{complete}/{total}"),
+                        " actions completed",
+                        TranscriptTone::Value,
+                    )
+                    .spans,
+                );
+            }
+        }
+        let mut rows = vec![Row::caption("Status", "", MUTED, width).with_summary(status, width)];
+        if let Some(script) = script {
+            let actions = &script.facts.actions;
+            if let Some(action) = actions
+                .iter()
+                .find(|action| !completed(action))
+                .or_else(|| actions.first())
+            {
+                if let Some(command) = CommandPreview::from_result(&action.result) {
+                    let invocation = single_line(&command.invocation());
+                    rows.extend(
+                        command_action_heading(&command, &invocation, width)
+                            .into_iter()
+                            .take(1),
+                    );
+                } else {
+                    rows.push(Row::plain(Row::fit(action_detail(action), width)));
+                }
+            }
+            let output = if script.facts.output_ref.is_some() {
+                Some(Line::styled("Saved JSON", TranscriptTone::Type.style()))
+            } else {
+                (!script.facts.value.is_null()).then(|| value_summary(&script.facts.value))
+            };
+            if let Some(output) = output {
+                rows.push(Row::caption("Output", "", MUTED, width).with_summary(output, width));
+            }
+        }
+        if rows.len() == 1 {
+            let diagnostic = self.activity_diagnostic();
+            if matches!(color, ERROR | WARNING) && !diagnostic.trim().is_empty() {
+                rows.extend(render_preview(diagnostic, color, width, 1, 0));
+            } else if !self.script_source.is_empty() {
+                let lines = self.script_source.lines().count();
+                let summary = Row::metric(
+                    "JavaScript · ",
+                    lines.to_string(),
+                    if lines == 1 { " line" } else { " lines" },
+                    TranscriptTone::Value,
+                );
+                rows.push(Row::caption("Input", "", MUTED, width).with_summary(summary, width));
+            }
+        }
+        rows
     }
 
     fn render_script_details(
@@ -574,15 +643,7 @@ fn action_rows(
 ) -> Vec<Row> {
     if let Some(command) = CommandPreview::from_result(&action.result) {
         let invocation = single_line(&command.invocation());
-        let (state, color) = command.label();
-        let mut status = Line::from(Span::styled(state, tool_status(color)));
-        status.extend(command.elapsed_metric().spans);
-        let mut rows = Row::styled_status(
-            &format!("Run {invocation}"),
-            status,
-            tool_operation_color("run_command"),
-            width,
-        );
+        let mut rows = command_action_heading(&command, &invocation, width);
         rows[0].script_detail = Some(ScriptDetail::Action(index));
         if open {
             let output = has_output(action).then_some(OutputTarget::ScriptAction(index));
@@ -625,6 +686,18 @@ fn action_rows(
         rows.extend(change.compact_preview(width));
     }
     rows
+}
+
+fn command_action_heading(command: &CommandPreview, invocation: &str, width: usize) -> Vec<Row> {
+    let (state, color) = command.label();
+    let mut status = Line::from(Span::styled(state, tool_status(color)));
+    status.extend(command.elapsed_metric().spans);
+    Row::styled_status(
+        &format!("Run {invocation}"),
+        status,
+        tool_operation_color("run_command"),
+        width,
+    )
 }
 
 fn saved_read(action: &WorkspaceScriptActionFacts) -> Option<(&str, std::ops::Range<u64>)> {

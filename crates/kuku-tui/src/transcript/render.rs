@@ -183,8 +183,12 @@ impl Transcript {
                         lines.len() > first
                             && lines.last().is_some_and(|line| line.spans.is_empty()),
                     );
-                let headline_only = matches!(detail, DetailRecord::Reasoning(_))
-                    || matches!(detail, DetailRecord::Tool(tool) if tool.name() == "run_js");
+                let open_script = matches!(detail, DetailRecord::Tool(tool) if tool.name() == "run_js")
+                    && self
+                        .detail_items
+                        .tool_mode(block.key, ToolDetails::Collapsed)
+                        == ToolDetails::Inspection;
+                let headline_only = matches!(detail, DetailRecord::Reasoning(_)) || open_script;
                 let last = if headline_only {
                     last.min(first + usize::from(skip == 0))
                 } else {

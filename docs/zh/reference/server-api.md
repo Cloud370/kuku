@@ -24,7 +24,7 @@
 | `GET` | `/sessions/{id}/receipts/{command_id}` | 查找已提交的命令回执 |
 | `GET` | `/sessions/{id}/agents` | 查看工作区内该 Session 的 Agent 摘要 |
 | `GET` | `/sessions/{id}/snapshot` | 与已提交游标对应的 Agent 和队列状态 |
-| `GET` | `/sessions/{id}/history` | 读取游标之前的对话条目 |
+| `GET` | `/sessions/{id}/history` | 读取游标之前或之后的对话条目 |
 | `GET` | `/sessions/{id}/history/destinations` | 列出可以编辑消息或继续对话的轮次 |
 | `GET` | `/sessions/{id}/history/destinations/{event_id}/files` | 预览已结束的轮次之后可核验的工作区改动 |
 | `GET` | `/sessions/{id}/history/rewinds/{rewind_event_id}` | 只读查看一次已提交的消息回退，不改变活动历史 |
@@ -95,6 +95,8 @@
 1. 请求 `/snapshot?workspace=...&agent=...`。JSON 响应包含 `session_id`、`workspace`、已提交 `cursor`、所选 `agent` 快照、`agents` 摘要、`pending` 输入和模型 `selection`。模型设置解析失败时返回 `selection_error`。Agent 状态包含相应的执行标识以及待决问题或授权。每个待接纳条目都含有 `receipt` 和 `input`。Agent 不存在时返回 `404` 和 `agent_not_found`。`/agents?workspace=...` 可直接取得所有 Agent 摘要及游标。加上 `progress=true` 可请求快照游标处已观察到的执行阶段。`progress.phase` 可以是 `waiting_for_model`、`thinking`、`streaming`、`tool_arguments`、`running_tools`、`retrying_model`、`retry_stopped` 或 `retry_decision_unknown`。重试阶段会带有 `retry` 对象，包含持久化的尝试编号、失败类型或恢复原因、请求标识和可用策略元数据。停止重试时 `will_retry` 为 `false`。
 2. 请求 `/history?workspace=...&agent=...&before=CURSOR_PLUS_ONE&limit=...`，取得截至该快照、按升序排列的最新一页。用返回的 `next_before` 读取上一页。`before` 为排他游标。`entries` 只包含活动对话历史；单独的 `rewind_groups` 默认是空数组，包含 `rewind_event_id`、原始时间线位置 `target_event_id`、`agent`、以及可选的显示轮次 `turn_number`。组标题按目标消息的原始位置与活动条目共同分页，并计入页面条目数与字节上限。重试决定和模型恢复会以 `type:"retry"` 条目及结构化 `retry` 对象呈现；历史记录不代表重试仍在进行。 事件提供记录时间时，`ts` 为 RFC 3339 时间戳。
 3. 展开某组时按需请求 `/history/rewinds/{rewind_event_id}?workspace=...&agent=...&before=...&limit=...`。必须提供与该组匹配的 `agent`。`before` 是可选的排他游标，`limit` 与 `/history` 一样有界。响应包含 `entries` 和 `next_before`，并复用普通历史条目的显示投影。重叠范围中的每个条目只归属于同一 Agent 的第一个适用回退。只读分页不会把隐藏条目放回活动历史或模型上下文；后续回退也不会使早期回退组无法查看。
+
+向较新的历史翻页时，传入排他游标 `after`，用返回的 `next_after` 继续。扫描触及上限时，响应可能没有条目但仍包含续页游标。轮次的首次接纳时间可用时，历史条目包含 `turn_started_at_ms`，客户端可在任意页显示本轮累计用时。
 
 活动用户消息选择器可用 `/history?user_only=true`。该模式返回每条最多 512 个字符的消息预览，`rewind_groups` 为空数组。扫描达到字节预算时，页面可能没有填满，但仍有 `next_before` 可继续。读取完整原文时使用普通历史接口。
 4. 连接 `/observe?workspace=...&agent=...&after=CURSOR`，接收包含快照之后提交记录的 NDJSON。省略 `agent` 可以观察整个 Session。从已提交的条目更新续读游标。断开或落后时，从最后的已提交游标重连。对所选 Agent 设置 `include_agent_activity=true`，同一订阅即可收到其他 Agent 的活动。其增量文本及结算预览有长度上限，工具输出仅在切换到对应 Agent 后提供。重连后，Agent 摘要提供最近的输出或错误预览。

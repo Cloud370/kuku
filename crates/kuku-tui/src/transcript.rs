@@ -1,5 +1,3 @@
-use std::collections::VecDeque;
-
 use kuku_client::{HistoryEntry, HistoryKind, HistoryPage, TurnSummary};
 use ratatui::text::Line;
 use serde_json::Value;
@@ -49,7 +47,6 @@ pub(crate) const REWIND_GROUP_PAGE: usize = 12;
 pub(crate) const MAX_RECORDS: usize = HISTORY_PAGE * 3;
 const MAX_LIVE_RECORDS: usize = 32;
 pub(crate) const MAX_BODY_BYTES: usize = 64 * 1024;
-const MAX_BACKTRACK_PAGES: usize = 128;
 const MAX_VISUAL_ROWS: usize = 768;
 const DISPLAY_LIMIT_NOTICE: &str = "\n… Display limit reached";
 
@@ -86,20 +83,24 @@ enum AnchorLine {
 pub(crate) enum HistoryRequest {
     Recent,
     Older(u64),
-    Newer { first: u64, before: u64 },
+    Newer(u64),
     Restore(u64),
 }
 
 impl HistoryRequest {
+    #[cfg(test)]
     pub(crate) fn before(self) -> u64 {
         match self {
-            Self::Recent => 0,
-            Self::Older(before) | Self::Newer { before, .. } | Self::Restore(before) => before,
+            Self::Recent | Self::Newer(_) => 0,
+            Self::Older(before) | Self::Restore(before) => before,
         }
     }
 
     pub(crate) fn before_option(self) -> Option<u64> {
-        (self != Self::Recent).then(|| self.before())
+        match self {
+            Self::Older(before) | Self::Restore(before) => Some(before),
+            Self::Recent | Self::Newer(_) => None,
+        }
     }
 }
 
@@ -298,6 +299,7 @@ impl Transcript {
         self.restore = None;
     }
 
+    #[cfg(test)]
     pub(crate) fn reading_anchor(&self) -> Option<&Anchor> {
         self.reading.as_ref().map(|reading| &reading.anchor)
     }
@@ -375,7 +377,7 @@ impl Transcript {
             self.reading = Some(Reading {
                 window,
                 anchor,
-                newer: VecDeque::new(),
+                newer: None,
                 rebase_after_page: false,
                 visible_through: None,
                 unseen: false,
@@ -409,8 +411,15 @@ impl Transcript {
         if amount > 0 {
             let lookahead = (height / 4).max(3);
             if next.saturating_add(lookahead) >= bottom {
-                if let Some(request) = reading.newer.front() {
-                    return Some(*request);
+                if reading.newer.is_none() && reading.unseen {
+                    reading.newer = reading.window.last_position().filter(|after| {
+                        self.recent
+                            .last_position()
+                            .is_some_and(|recent| recent > *after)
+                    });
+                }
+                if let Some(after) = reading.newer {
+                    return Some(HistoryRequest::Newer(after));
                 }
             }
             if next >= bottom {
@@ -440,7 +449,7 @@ pub(crate) struct TurnSurface {
 struct Reading {
     window: Window,
     anchor: Anchor,
-    newer: VecDeque<HistoryRequest>,
+    newer: Option<u64>,
     rebase_after_page: bool,
     visible_through: Option<u64>,
     unseen: bool,

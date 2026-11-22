@@ -70,7 +70,8 @@ fn remote_message_rewind_discards_an_inflight_older_page() {
             entries: Vec::new(),
             rewind_groups: Vec::new(),
             next_before: Some(5),
-        }),
+        }
+        .into()),
     ));
 
     assert_eq!(Some(HistoryRequest::Recent), app.pane().history_in_flight);

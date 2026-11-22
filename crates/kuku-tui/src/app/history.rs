@@ -127,7 +127,7 @@ impl App {
         &mut self,
         selection: Selection,
         request: HistoryRequest,
-        result: Result<HistoryPage, Error>,
+        result: Result<crate::jobs::LoadedHistory, Error>,
     ) {
         if selection != self.selection() {
             return;
@@ -141,7 +141,12 @@ impl App {
         } else {
             self.pane_mut().history_in_flight = None;
             match result {
-                Ok(page) => self.pane_mut().transcript.apply_page(request, page),
+                Ok(crate::jobs::LoadedHistory::Before(page)) => {
+                    self.pane_mut().transcript.apply_page(request, page)
+                }
+                Ok(crate::jobs::LoadedHistory::After(page)) => {
+                    self.pane_mut().transcript.apply_forward_page(request, page)
+                }
                 Err(error) => self.problem(format!("History · {error} · scroll up to retry")),
             }
         }

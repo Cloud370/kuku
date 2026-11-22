@@ -1,5 +1,3 @@
-use std::collections::VecDeque;
-
 use kuku_client::{HistoryEntry, HistoryKind, HistoryPage, RewindGroup, RewindGroupPage};
 use serde_json::json;
 
@@ -95,7 +93,7 @@ fn rewind_group_expands_in_place_without_entering_active_transcript_state() {
             key: Key::RewindGroup(50),
             line: AnchorLine::Group(0),
         },
-        newer: VecDeque::new(),
+        newer: None,
         rebase_after_page: false,
         visible_through: None,
         unseen: false,
@@ -436,7 +434,7 @@ fn rewind_group_visual_cap_is_explicit() {
             key: Key::RewindGroup(50),
             line: AnchorLine::Group(usize::MAX),
         },
-        newer: VecDeque::new(),
+        newer: None,
         rebase_after_page: false,
         visible_through: None,
         unseen: false,
@@ -497,7 +495,7 @@ fn rewind_group_page_window_is_bounded_and_marks_discarded_newer_entries() {
             key: Key::RewindGroup(200),
             line: AnchorLine::Group(0),
         },
-        newer: VecDeque::new(),
+        newer: None,
         rebase_after_page: false,
         visible_through: None,
         unseen: false,
@@ -572,11 +570,5 @@ fn group_only_history_window_trims_and_can_page_back_to_newer_groups() {
     let request = window.trim_back(None).unwrap();
 
     assert_eq!(super::MAX_RECORDS, window.rewind_groups.len());
-    assert_eq!(
-        HistoryRequest::Newer {
-            first: super::MAX_RECORDS as u64 + 1,
-            before: super::MAX_RECORDS as u64 + 2,
-        },
-        request
-    );
+    assert_eq!(super::MAX_RECORDS as u64, request);
 }

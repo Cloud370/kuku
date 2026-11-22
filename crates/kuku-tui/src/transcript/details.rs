@@ -13,7 +13,7 @@ use super::{
 mod activity;
 pub(super) use activity::footer as activity_footer;
 mod groups;
-pub(super) use groups::{groups, GroupHeading};
+pub(super) use groups::{compact_file_rows, groups, GroupHeading};
 use groups::{GroupKind, GroupSummary};
 mod inspection;
 mod output;
@@ -526,7 +526,7 @@ impl Transcript {
                 self.reading = Some(super::Reading {
                     window: self.recent.clone(),
                     anchor,
-                    newer: VecDeque::new(),
+                    newer: None,
                     rebase_after_page: false,
                     visible_through: None,
                     unseen: false,
@@ -570,7 +570,7 @@ impl Transcript {
             self.reading = Some(super::Reading {
                 window: self.recent.clone(),
                 anchor,
-                newer: VecDeque::new(),
+                newer: None,
                 rebase_after_page: false,
                 visible_through: None,
                 unseen: false,

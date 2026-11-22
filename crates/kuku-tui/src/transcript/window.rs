@@ -4,7 +4,7 @@ use serde_json::Value;
 use crate::theme::CardFrame;
 
 use super::agent::AgentCards;
-use super::details::{groups, DetailRecord, Details, GroupHeading};
+use super::details::{compact_file_rows, groups, DetailRecord, Details, GroupHeading};
 use super::{
     Anchor, AnchorLine, AssistantView, Body, CardTiming, Key, Record, RewindGroupState, Row,
     ToolDetails, MAX_BODY_BYTES, MAX_LIVE_RECORDS, MAX_RECORDS,
@@ -38,17 +38,27 @@ impl Window {
     pub(super) fn from_page(page: HistoryPage) -> Self {
         let mut window = Self {
             older: page.next_before,
-            rewind_groups: page
-                .rewind_groups
-                .into_iter()
-                .map(RewindGroupState::new)
-                .collect(),
             ..Self::default()
         };
-        for record in page.entries.into_iter().filter_map(Record::from_entry) {
-            window.insert(record);
-        }
+        window.merge(page);
         window
+    }
+
+    pub(super) fn merge(&mut self, page: HistoryPage) {
+        for record in page.entries.into_iter().filter_map(Record::from_entry) {
+            self.insert_record(record);
+        }
+        self.sort_records();
+        self.reconcile_retry_errors();
+        self.add_rewind_groups(page.rewind_groups);
+    }
+
+    pub(super) fn last_position(&self) -> Option<u64> {
+        self.records
+            .iter()
+            .filter_map(|record| record.position)
+            .chain(self.rewind_groups.iter().map(RewindGroupState::position))
+            .max()
     }
 
     pub(super) fn contains(&self, key: &Key) -> bool {
@@ -96,13 +106,17 @@ impl Window {
     }
 
     pub(super) fn insert(&mut self, record: Record) {
+        self.insert_record(record);
+        self.sort_records();
+        self.reconcile_retry_errors();
+    }
+
+    fn insert_record(&mut self, record: Record) {
         if let Some(previous) = self.records.iter_mut().find(|old| old.key == record.key) {
             previous.merge(record);
         } else {
             self.records.push(record);
         }
-        self.sort_records();
-        self.reconcile_retry_errors();
     }
 
     pub(super) fn position_preview_before(&mut self, key: &Key, event: u64, turn: Option<u64>) {
@@ -965,34 +979,4 @@ impl Block<'_> {
 
 fn execution_matches(left: Option<u64>, right: Option<u64>) -> bool {
     left.is_none() || right.is_none() || left == right
-}
-
-fn compact_file_rows(records: &[Record]) -> Vec<bool> {
-    let mut compact = vec![false; records.len()];
-    let mut start = 0;
-    while start < records.len() {
-        let first = &records[start];
-        let eligible = |record: &&Record| {
-            first.turn.is_some()
-                && record.turn == first.turn
-                && record.owner == first.owner
-                && record
-                    .tool()
-                    .is_some_and(|tool| tool.compact_file_change() || tool.group_name().is_some())
-        };
-        let length = records[start..].iter().take_while(eligible).count();
-        let run = &records[start..start + length];
-        let changes = || {
-            run.iter()
-                .map(|record| record.tool().is_some_and(|tool| tool.compact_file_change()))
-        };
-        let multiple_changes = changes().filter(|&changed| changed).nth(1).is_some();
-        if length >= 3 || multiple_changes {
-            for (slot, changed) in compact[start..start + length].iter_mut().zip(changes()) {
-                *slot = changed;
-            }
-        }
-        start += length.max(1);
-    }
-    compact
 }

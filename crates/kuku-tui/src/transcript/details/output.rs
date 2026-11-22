@@ -1,5 +1,3 @@
-use std::collections::VecDeque;
-
 use kuku_client::OutputChunk;
 
 use crate::output::OutputViewer;
@@ -323,7 +321,7 @@ impl Transcript {
             self.reading = Some(Reading {
                 window: self.recent.clone(),
                 anchor,
-                newer: VecDeque::new(),
+                newer: None,
                 rebase_after_page: false,
                 visible_through: None,
                 unseen: false,

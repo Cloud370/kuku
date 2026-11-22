@@ -1,10 +1,8 @@
-use std::collections::VecDeque;
-
-use kuku_client::HistoryPage;
+use kuku_client::{ForwardHistoryPage, HistoryPage};
 
 use super::{
-    Anchor, AnchorLine, Block, HistoryRequest, Reading, Record, Transcript, Window, HISTORY_PAGE,
-    MAX_BACKTRACK_PAGES, MAX_RECORDS,
+    Anchor, AnchorLine, Block, HistoryRequest, Reading, Transcript, Window, HISTORY_PAGE,
+    MAX_RECORDS,
 };
 
 const MAX_READING_RECORDS: usize = MAX_RECORDS + 2 * HISTORY_PAGE;
@@ -24,10 +22,15 @@ impl Transcript {
                 let (_, anchor) = self.restore.take().expect("restoration requested");
                 let window = Window::from_page(page);
                 if window.contains(&anchor.key) {
+                    let newer = window.last_position().filter(|after| {
+                        self.recent
+                            .last_position()
+                            .is_none_or(|recent| recent > *after)
+                    });
                     self.reading = Some(Reading {
                         window,
                         anchor,
-                        newer: VecDeque::new(),
+                        newer,
                         rebase_after_page: false,
                         visible_through: None,
                         unseen: false,
@@ -40,43 +43,29 @@ impl Transcript {
         let Some(reading) = &mut self.reading else {
             return;
         };
-        match request {
-            HistoryRequest::Older(before) if reading.window.older == Some(before) => {
-                reading.rebase_after_page = true;
-                reading.window.older = page.next_before;
-                for record in page.entries.into_iter().filter_map(Record::from_entry) {
-                    reading.window.insert(record);
-                }
-                reading.window.add_rewind_groups(page.rewind_groups);
-                if let Some(request) = reading.window.trim_back(reading.visible_through) {
-                    reading.newer.push_front(request);
-                    reading.newer.truncate(MAX_BACKTRACK_PAGES);
-                }
+        if matches!(request, HistoryRequest::Older(before) if reading.window.older == Some(before))
+        {
+            reading.rebase_after_page = true;
+            reading.window.older = page.next_before;
+            reading.window.merge(page);
+            if let Some(after) = reading.window.trim_back(reading.visible_through) {
+                reading.newer = Some(after);
             }
-            HistoryRequest::Newer { first, .. } if reading.newer.front() == Some(&request) => {
-                reading.rebase_after_page = true;
-                reading.newer.pop_front();
-                for record in page
-                    .entries
-                    .into_iter()
-                    .filter(|entry| entry.id >= first)
-                    .filter_map(Record::from_entry)
-                {
-                    reading.window.insert(record);
-                }
-                reading.window.add_rewind_groups(
-                    page.rewind_groups
-                        .into_iter()
-                        .filter(|group| group.target_event_id >= first),
-                );
-                let limit = reading_window_limit(reading);
-                reading.window.trim_front_to(limit);
-            }
-            HistoryRequest::Older(_)
-            | HistoryRequest::Newer { .. }
-            | HistoryRequest::Restore(_)
-            | HistoryRequest::Recent => {}
         }
+    }
+
+    pub(crate) fn apply_forward_page(&mut self, request: HistoryRequest, page: ForwardHistoryPage) {
+        let Some(reading) = &mut self.reading else {
+            return;
+        };
+        if reading.newer.map(HistoryRequest::Newer) != Some(request) {
+            return;
+        }
+        reading.rebase_after_page = true;
+        reading.newer = page.next_after;
+        reading.window.merge(page.page);
+        let limit = reading_window_limit(reading);
+        reading.window.trim_front_to(limit);
     }
 }
 
@@ -142,7 +131,7 @@ pub(super) fn last_visible_card(blocks: &[Block<'_>], start: usize, height: usiz
 }
 
 impl Window {
-    pub(super) fn trim_back(&mut self, visible_through: Option<u64>) -> Option<HistoryRequest> {
+    pub(super) fn trim_back(&mut self, visible_through: Option<u64>) -> Option<u64> {
         let positions = self.positions();
         let live = self
             .records
@@ -157,15 +146,17 @@ impl Window {
             MAX_READING_RECORDS.saturating_sub(live),
         );
         let first = positions.get(keep)?.0;
-        let last = positions.last()?.0;
         self.records
             .retain(|record| record.position.is_none_or(|position| position < first));
         self.rewind_groups.retain(|group| group.position() < first);
         self.reconcile_retry_errors();
-        Some(HistoryRequest::Newer {
-            first,
-            before: last.saturating_add(1),
-        })
+        Some(
+            positions[..keep]
+                .iter()
+                .rev()
+                .find(|(id, _)| *id < first)
+                .map_or_else(|| first.saturating_sub(1), |(id, _)| *id),
+        )
     }
 }
 
@@ -177,13 +168,23 @@ impl Block<'_> {
             }
             return;
         };
-        if !blocks[index].collapsed
-            || !matches!(anchor.line, AnchorLine::Body(_) | AnchorLine::Note(_))
-        {
-            return;
-        }
-        let after = blocks[..=index].iter().map(Self::height).sum();
-        if let Some(next) = Self::anchor_at(blocks, after) {
+        let block = &blocks[index];
+        let end = match anchor.line {
+            AnchorLine::Group(_) if block.grouped && block.group.is_none() => {
+                let Some(member) = blocks[index..]
+                    .iter()
+                    .take_while(|block| block.grouped && block.group.is_none())
+                    .position(|block| block.body_height() > 0)
+                else {
+                    return;
+                };
+                index + member
+            }
+            AnchorLine::Body(_) | AnchorLine::Note(_) if block.collapsed => index + 1,
+            _ => return,
+        };
+        let row = blocks[..end].iter().map(Self::height).sum();
+        if let Some(next) = Self::anchor_at(blocks, row) {
             *anchor = next;
         }
     }

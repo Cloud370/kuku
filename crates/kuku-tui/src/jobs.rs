@@ -24,6 +24,7 @@ use crate::transcript::{HistoryRequest, RewindGroupRequest, REWIND_GROUP_PAGE};
 
 mod connect;
 mod history;
+pub(crate) use history::LoadedHistory;
 mod observe;
 
 const UPDATE_CAPACITY: usize = 64;
@@ -134,7 +135,7 @@ pub(crate) enum Update {
     WatchFailed(Selection, Error),
     Observation(Selection, Observation),
     Refreshed(Selection, Result<Box<Snapshot>, Error>),
-    History(Selection, HistoryRequest, Result<HistoryPage, Error>),
+    History(Selection, HistoryRequest, Result<LoadedHistory, Error>),
     RewindHistory(Selection, Ticket, u64, Result<HistoryPage, Error>),
     RewindSource(Selection, Ticket, u64, Result<String, Error>),
     HistoryJump(

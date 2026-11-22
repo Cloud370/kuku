@@ -536,7 +536,7 @@ impl Transcript {
                 key: Key::RewindGroup(rewind_event_id),
                 line: AnchorLine::Group(0),
             },
-            newer: std::collections::VecDeque::new(),
+            newer: None,
             rebase_after_page: false,
             visible_through: None,
             unseen: false,

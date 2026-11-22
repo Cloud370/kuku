@@ -514,6 +514,16 @@ pub struct HistoryPage {
     pub next_before: Option<u64>,
 }
 
+/// One bounded page of history read toward the latest committed event.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ForwardHistoryPage {
+    /// Displayable history in ascending event order.
+    #[serde(flatten)]
+    pub page: HistoryPage,
+    /// Exclusive scan cursor for more recent history, when available.
+    pub next_after: Option<u64>,
+}
+
 /// A continuation point and its membership in the current conversation branch.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HistoryDestination {

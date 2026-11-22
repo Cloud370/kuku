@@ -15,6 +15,7 @@ pub(super) struct CardTiming {
     start: Option<OffsetDateTime>,
     end: Option<OffsetDateTime>,
     measured_ms: Option<u64>,
+    turn_started_at_ms: Option<u64>,
 }
 
 impl CardTiming {
@@ -45,6 +46,10 @@ impl CardTiming {
             start,
             end,
             measured_ms,
+            turn_started_at_ms: entry
+                .details
+                .get("turn_started_at_ms")
+                .and_then(Value::as_u64),
         }
     }
 
@@ -52,6 +57,7 @@ impl CardTiming {
         self.start = self.start.or(incoming.start);
         self.end = self.end.max(incoming.end);
         self.measured_ms = self.measured_ms.or(incoming.measured_ms);
+        self.turn_started_at_ms = self.turn_started_at_ms.or(incoming.turn_started_at_ms);
     }
 
     pub(super) fn group(records: &[Record]) -> Self {
@@ -61,6 +67,7 @@ impl CardTiming {
             let member = record.timing;
             timing.start = timing.start.into_iter().chain(member.start).min();
             timing.end = timing.end.max(member.end.or(member.start));
+            timing.turn_started_at_ms = timing.turn_started_at_ms.or(member.turn_started_at_ms);
             complete &= member
                 .start
                 .zip(member.end)
@@ -83,29 +90,49 @@ impl CardTiming {
     }
 
     pub(super) fn line(self, width: usize, inset: usize) -> Option<Line<'static>> {
-        let mut line = self
-            .end
-            .or(self.start)
-            .map_or_else(Line::default, |timestamp| {
-                let stamp = timestamp.to_offset(UtcOffset::UTC);
-                Line::styled(
-                    format!(
-                        "{:02}:{:02}:{:02}Z",
-                        stamp.hour(),
-                        stamp.minute(),
-                        stamp.second()
-                    ),
-                    TranscriptTone::Label.style(),
-                )
-            });
-        if let Some(ms) = self.elapsed_ms() {
+        let timestamp = self.end.or(self.start);
+        let mut line = timestamp.map_or_else(Line::default, |timestamp| {
+            let stamp = timestamp.to_offset(UtcOffset::UTC);
+            Line::styled(
+                format!(
+                    "{:02}:{:02}:{:02}Z",
+                    stamp.hour(),
+                    stamp.minute(),
+                    stamp.second()
+                ),
+                TranscriptTone::Label.style(),
+            )
+        });
+        let duration = self.elapsed_ms().map(|ms| {
             let (value, unit) = match ms {
                 0..=999 => (ms.to_string(), "ms"),
                 1_000..=59_999 => (format!("{:.1}", ms as f64 / 1_000.0), "s"),
                 _ => (format_elapsed(Duration::from_millis(ms)), ""),
             };
-            let separator = if line.spans.is_empty() { "" } else { " · " };
-            let duration = Row::metric(separator, value, unit, TranscriptTone::Value);
+            let separator = if timestamp.is_some() { " · " } else { "" };
+            Row::metric(separator, value, unit, TranscriptTone::Value)
+        });
+        let turn_elapsed = self
+            .turn_started_at_ms
+            .zip(timestamp)
+            .and_then(|(start, stamp)| {
+                u64::try_from(stamp.unix_timestamp_nanos() / 1_000_000)
+                    .ok()?
+                    .checked_sub(start)
+            });
+        if let Some(ms) = turn_elapsed {
+            let offset = Row::metric(
+                " · T+",
+                format_elapsed(Duration::from_millis(ms)),
+                "",
+                TranscriptTone::Value,
+            );
+            let duration_width = duration.as_ref().map_or(0, Line::width);
+            if inset + line.width() + offset.width() + duration_width <= width {
+                line.extend(offset.spans);
+            }
+        }
+        if let Some(duration) = duration {
             if inset + line.width() + duration.width() <= width {
                 line.extend(duration.spans);
             }

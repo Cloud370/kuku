@@ -669,7 +669,7 @@ fn ordinary_reading_and_rewind_picker_pages_settle_independently() {
     app.update(Update::History(
         selection,
         ordinary,
-        Ok(page(&[70, 80, 90], None)),
+        Ok(page(&[70, 80, 90], None).into()),
     ));
     assert!(
         picker(&app).loading,

@@ -22,6 +22,9 @@ fn turns_share_the_user_surface_and_edit_aligned_card_connectors() {
         json!({"id": 7, "type": "assistant", "turn": 2, "text": "丁"}),
     ] {
         entry["agent"] = json!("main");
+        if entry["turn"] == 1 {
+            entry["turn_started_at_ms"] = json!(1_795_395_600_000u64);
+        }
         app.pane_mut()
             .transcript
             .apply(serde_json::from_value(entry).unwrap(), None);
@@ -77,9 +80,9 @@ fn turns_share_the_user_surface_and_edit_aligned_card_connectors() {
         assert_eq!(crate::theme::TURN_RULE, buffer[(x, gap)].fg);
     }
     for (heading, metric) in [
-        (edit, "01:00:00Z"),
-        (compaction, "01:00:01Z · 24ms"),
-        (reply, "01:00:04Z · 2.3s"),
+        (edit, "01:00:00Z · T+0s"),
+        (compaction, "01:00:01Z · T+1s · 24ms"),
+        (reply, "01:00:04Z · T+4s · 2.3s"),
     ] {
         let (column, row) = text_position(buffer, metric);
         assert_eq!((x + 2, heading - 1), (column, row));

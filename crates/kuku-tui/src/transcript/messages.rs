@@ -1,5 +1,3 @@
-use std::collections::VecDeque;
-
 use crate::jobs::Selection;
 use crate::text::{shorten, single_line};
 
@@ -197,7 +195,7 @@ impl Transcript {
                 key,
                 line: AnchorLine::Body(0),
             },
-            newer: VecDeque::new(),
+            newer: None,
             rebase_after_page: false,
             visible_through: None,
             unseen: false,

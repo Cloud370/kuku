@@ -309,6 +309,100 @@ fn loading_older_history_keeps_a_visible_batch_and_the_card_after_it() {
 }
 
 #[test]
+fn loading_an_earlier_batch_prefix_keeps_the_reader_at_the_visible_calls() {
+    let mut journal = Journal::default();
+    let edit = |journal: &mut Journal, path: &str| {
+        journal.tool(
+            "edit_file",
+            json!({"path":path}),
+            json!({"status":"ok","structured":{"kind":"file_edit","path":path,"change":{
+                "added_lines":1,"removed_lines":1,"preview":"-before\n+after","preview_line_numbers":[10,10],
+            }}}),
+        );
+    };
+    for index in 0..20 {
+        edit(&mut journal, &format!("earlier-{index}.txt"));
+    }
+    let boundary = journal.0.len();
+    journal.read(7, "main", "notes.txt");
+    edit(&mut journal, "currently-visible.txt");
+    journal.push(8, "main", json!({"type":"user","text":"Show the results."}));
+    let recent = journal.0.split_off(boundary);
+    let before = recent[0].id;
+    let mut transcript = Transcript::default();
+    transcript.replace_recent(HistoryPage {
+        entries: recent,
+        next_before: Some(before),
+        rewind_groups: Vec::new(),
+    });
+
+    let (width, height) = (90, 12);
+    let request = transcript.scroll(-1, width, height).unwrap();
+    let visible = transcript.project(width, height);
+    let edit_row = line(&visible, "currently-visible.txt");
+    assert!(edit_row <= 2, "{}", text(&visible));
+    transcript.apply_page(
+        request,
+        HistoryPage {
+            entries: journal.0,
+            next_before: None,
+            rewind_groups: Vec::new(),
+        },
+    );
+    let joined = transcript.project(width, height);
+    assert_eq!(
+        0,
+        line(&joined, "currently-visible.txt"),
+        "{}",
+        text(&joined)
+    );
+    assert!(text(&joined).contains("Show the results."));
+
+    transcript.scroll(-3, width, height);
+    assert!(text(&transcript.project(width, height)).contains("earlier-19.txt"));
+}
+
+#[test]
+fn loading_earlier_actions_keeps_a_folded_read_batch_visible() {
+    let mut journal = Journal::default();
+    journal.tool(
+        "run_command",
+        json!({"program":"check"}),
+        json!({"status":"error","summary":"check failed"}),
+    );
+    let boundary = journal.0.len();
+    for index in 0..4 {
+        journal.read(7, "main", &format!("reference-{index}.txt"));
+    }
+    journal.push(8, "main", json!({"type":"user","text":"Show the results."}));
+    let recent = journal.0.split_off(boundary);
+    let mut transcript = Transcript::default();
+    transcript.replace_recent(HistoryPage {
+        next_before: Some(recent[0].id),
+        entries: recent,
+        rewind_groups: Vec::new(),
+    });
+
+    let (width, height) = (90, 14);
+    let request = transcript.scroll(-1, width, height).unwrap();
+    assert!(text(&transcript.project(width, height)).contains("Read 4 files"));
+    transcript.apply_page(
+        request,
+        HistoryPage {
+            entries: journal.0,
+            next_before: None,
+            rewind_groups: Vec::new(),
+        },
+    );
+    let joined = text(&transcript.project(width, height));
+    assert!(
+        joined.lines().next().unwrap().contains("4 file reads"),
+        "{joined}"
+    );
+    assert!(joined.contains("Show the results."), "{joined}");
+}
+
+#[test]
 fn repeated_workspace_diagnostics_keep_single_preview_and_individual_calls() {
     let mut journal = Journal::default();
     let fail = serde_json::json!({
@@ -391,22 +485,17 @@ fn a_page_that_settles_the_top_row_keeps_reading_after_the_changed_group() {
         .next()
         .unwrap()
         .contains("result not loaded ×2"));
-    let request = HistoryRequest::Newer {
-        first: 3,
-        before: 5,
-    };
-    transcript
-        .reading
-        .as_mut()
-        .unwrap()
-        .newer
-        .push_back(request);
-    transcript.apply_page(
+    let request = HistoryRequest::Newer(2);
+    transcript.reading.as_mut().unwrap().newer = Some(2);
+    transcript.apply_forward_page(
         request,
-        HistoryPage {
-            entries: missing,
-            rewind_groups: Vec::new(),
-            next_before: None,
+        kuku_client::ForwardHistoryPage {
+            page: HistoryPage {
+                entries: missing,
+                rewind_groups: Vec::new(),
+                next_before: None,
+            },
+            next_after: None,
         },
     );
     let after = text(&transcript.project(width, height));
