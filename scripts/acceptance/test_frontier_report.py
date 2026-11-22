@@ -47,7 +47,7 @@ def write_json(path, value):
 class PairedReportTests(unittest.TestCase):
     def test_artifact_observation_uses_complete_matching_mutations(self):
         digests = {'/app/a': SDK_SHA, '/app/b': '2' * 64}
-        attempt = {'task_passed': True, 'task_artifacts': [
+        attempt = {'task_passed': True, 'execution': {'seconds': 10}, 'task_artifacts': [
             {'task_path': path, 'sha256': digest, 'status': 'retained'} for path, digest in digests.items()
         ]}
         write_a, write_b = (
@@ -74,16 +74,24 @@ class PairedReportTests(unittest.TestCase):
                 journal.write_text(''.join(json.dumps(row) + '\n' for row in events))
 
             write([prepared, committed, rejected, completed])
-            incomplete = artifact_observation(live, attempt)
+            incomplete = artifact_observation(live, attempt, True)
             self.assertEqual(incomplete['matched_artifacts'], 1)
             self.assertIsNone(incomplete['seconds_from_first_prepared_request'])
 
             write([prepared, committed, rejected, scripted, completed])
-            self.assertEqual(artifact_observation(live, attempt), {
+            self.assertEqual(artifact_observation(live, attempt, True), {
                 'clock': 'session_journal', 'retained_artifacts': 2, 'matched_artifacts': 2,
+                'clock_within_agent_duration': True,
                 'seconds_from_first_prepared_request': 6.0, 'seconds_to_last_completed_turn': 3.0,
             })
-            self.assertIsNone(artifact_observation(live, {**attempt, 'task_passed': False}))
+            self.assertIsNone(artifact_observation(live, attempt, False))
+
+            write([prepared, committed, rejected, scripted])
+            timed_out = {**attempt, 'task_passed': False, 'execution': {'seconds': 5}}
+            drift = artifact_observation(live, timed_out, True)
+            self.assertEqual(drift['matched_artifacts'], 2)
+            self.assertIs(drift['clock_within_agent_duration'], False)
+            self.assertIsNone(drift['seconds_from_first_prepared_request'])
 
     def test_effort_pair_checks_model_runtime_and_prompt(self):
         provider = {'model_version': MODEL_ID, 'effort': 'max'}

@@ -69,9 +69,9 @@ def artifact_mutations(event):
             if isinstance(action, dict) and action.get('status') == 'ok')
 
 
-def artifact_observation(live, attempt):
+def artifact_observation(live, attempt, original_verifier_passed):
     artifacts = attempt.get('task_artifacts')
-    if attempt.get('task_passed') is not True or not isinstance(artifacts, list) or not artifacts:
+    if original_verifier_passed is not True or not isinstance(artifacts, list) or not artifacts:
         return None
     expected = {}
     for artifact in map(object_value, artifacts):
@@ -105,7 +105,15 @@ def artifact_observation(live, attempt):
             return None
     except (OSError, ValueError, TypeError, KeyError, RuntimeError):
         return None
+    agent_seconds = number(object_value(attempt.get('execution')).get('seconds'))
+    within_duration = None
+    if start_seconds is not None and agent_seconds is not None:
+        within_duration = start_seconds + (tail_seconds or 0) <= agent_seconds + 0.001
+        if not within_duration:
+            start_seconds = None
+            tail_seconds = None
     return {'clock': 'session_journal', 'retained_artifacts': len(expected), 'matched_artifacts': len(found),
+            'clock_within_agent_duration': within_duration,
             'seconds_from_first_prepared_request': start_seconds, 'seconds_to_last_completed_turn': tail_seconds}
 
 
@@ -214,7 +222,8 @@ def attempt(directory, harness):
         'verifier_seconds': number(verification.get('seconds')),
         'original_verifier_passed': original_verifier_passed,
         'tests': {key: count(verifier_summary.get(key)) for key in TEST_FIELDS},
-        'final_artifact_observation': artifact_observation(directory / 'live', result) if harness == 'kuku' else None,
+        'final_artifact_observation': artifact_observation(directory / 'live', result, original_verifier_passed)
+        if harness == 'kuku' else None,
         'upstream_requests': count(accounting.get('upstream_requests')),
         'provider_relay': relay_summary(meter.get('attempts', [])),
         'case_cap_rejections': case_cap_rejections,
