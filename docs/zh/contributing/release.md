@@ -40,7 +40,7 @@ v0.MINOR.PATCH
 
 `cargo release` 会更新 workspace 版本、创建发布 commit、创建 `v<version>` tag，并 push 两者。
 
-首次发布时，Release 工作流把对应版本的摘要放在 GitHub Release 页面开头，再附上 GitHub 生成的变更列表。找不到对应段落时会发布生成的变更列表。重新运行工作流会保留现有发布说明。
+Release 工作流会先上传安装包和清单，再公开发布。首次发布时，它把对应版本的摘要放在 GitHub Release 页面开头，再附上 GitHub 生成的变更列表。找不到对应段落时会发布生成的变更列表。重跑可以继续发布已有草稿，并保留草稿中已填写的说明。
 
 ## Build paths
 

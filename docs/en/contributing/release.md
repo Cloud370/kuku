@@ -40,7 +40,7 @@ Example progression:
 
 `cargo release` updates workspace versions, creates the release commit, creates the `v<version>` tag, and pushes both.
 
-On first publication, the Release workflow puts that version's summary at the top of the GitHub Release and appends GitHub's generated changelog. A release without a matching section gets the generated changelog. Rerunning the workflow preserves an existing release description.
+The Release workflow attaches the packages and manifest before publishing. On first publication, it puts that version's summary at the top of the GitHub Release and appends GitHub's generated changelog. A release without a matching section gets the generated changelog. A rerun can finish an existing draft and preserves its written description.
 
 ## Build paths
 

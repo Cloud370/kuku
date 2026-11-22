@@ -9,6 +9,10 @@ on:
         description: "Tag to release (e.g. v0.1.0-alpha.1)"
         required: true
 
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -103,33 +107,28 @@ jobs:
 
       - name: Resolve tag
         id: tag
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
-          else
-            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-          fi
+          git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}" >/dev/null
+          printf 'tag=%s\n' "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
 
       - name: Determine prerelease
         id: prerelease
+        env:
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
         run: |
-          if echo "${{ steps.tag.outputs.tag }}" | grep -q '-'; then
+          if [[ "$RELEASE_TAG" == *-* ]]; then
             echo "is_prerelease=true" >> $GITHUB_OUTPUT
           else
             echo "is_prerelease=false" >> $GITHUB_OUTPUT
           fi
 
       - name: Prepare release notes
-        id: notes
         env:
-          GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.tag.outputs.tag }}
         run: |
-          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body > existing-release-notes.md 2>/dev/null &&
-            grep -q '[^[:space:]]' existing-release-notes.md; then
-            exit 0
-          fi
-
+          : > release-notes.md
           if [ -f CHANGELOG.md ]; then
             awk -v heading="## [${RELEASE_TAG#v}]" '
               /^## / {
@@ -139,16 +138,14 @@ jobs:
               }
               selected { print }
             ' CHANGELOG.md > release-notes.md
-            if grep -q '[^[:space:]]' release-notes.md; then
-              echo "path=release-notes.md" >> "$GITHUB_OUTPUT"
-            fi
           fi
-          echo "generate=true" >> "$GITHUB_OUTPUT"
 
       - name: Generate latest.json
         working-directory: artifacts
+        env:
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
         run: |
-          TAG="${{ steps.tag.outputs.tag }}"
+          TAG="$RELEASE_TAG"
           VERSION="${TAG#v}"
           NOTES="https://github.com/${{ github.repository }}/releases/tag/${TAG}"
           PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
@@ -182,17 +179,54 @@ jobs:
               desktop: {}
             }' > latest.json
 
-      - name: Create release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          name: ${{ steps.tag.outputs.tag }}
-          prerelease: ${{ steps.prerelease.outputs.is_prerelease }}
-          body_path: ${{ steps.notes.outputs.path }}
-          generate_release_notes: ${{ steps.notes.outputs.generate == 'true' }}
-          files: |
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+          IS_PRERELEASE: ${{ steps.prerelease.outputs.is_prerelease }}
+        run: |
+          files=(
             artifacts/kuku-linux-x86_64.tar.gz
             artifacts/kuku-darwin-aarch64.tar.gz
             artifacts/kuku-windows-x86_64.zip
             artifacts/sha256sums.txt
             artifacts/latest.json
+          )
+          for file in "${files[@]}"; do
+            test -s "$file"
+          done
+          flags=(--prerelease="$IS_PRERELEASE")
+          if [ "$IS_PRERELEASE" = true ]; then
+            flags+=(--latest=false)
+          fi
+
+          if gh release view "$RELEASE_TAG" --json isDraft,assets,body > existing-release.json 2> release-lookup.log; then
+            if ! jq -e '.isDraft' existing-release.json >/dev/null; then
+              for file in "${files[@]}"; do
+                if ! jq -e --arg name "${file##*/}" 'any(.assets[]; .name == $name)' existing-release.json >/dev/null; then
+                  echo "Published release $RELEASE_TAG is missing ${file##*/}." >&2
+                  exit 1
+                fi
+              done
+              echo "Release $RELEASE_TAG is already published with all assets."
+              exit 0
+            fi
+
+            if ! jq -e '.body | strings | test("\\S")' existing-release.json >/dev/null; then
+              printf '\n\n' >> release-notes.md
+              gh api --method POST "repos/$GH_REPO/releases/generate-notes" -f tag_name="$RELEASE_TAG" --jq .body >> release-notes.md
+              flags+=(--notes-file release-notes.md)
+            fi
+            gh release upload "$RELEASE_TAG" "${files[@]}" --clobber
+            gh release edit "$RELEASE_TAG" --draft=false "${flags[@]}"
+          elif grep -Fxq 'release not found' release-lookup.log; then
+            if grep -q '[^[:space:]]' release-notes.md; then
+              flags+=(--notes-file release-notes.md)
+            fi
+            gh release create "$RELEASE_TAG" "${files[@]}" --verify-tag --title "$RELEASE_TAG" --generate-notes "${flags[@]}"
+          else
+            cat release-lookup.log >&2
+            exit 1
+          fi
