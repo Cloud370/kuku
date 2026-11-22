@@ -22,6 +22,13 @@ pub(super) fn event_owner<'a>(
     event: &'a StoredEvent,
     turn_owners: &'a HashMap<u64, String>,
 ) -> Option<&'a str> {
+    event_owner_with(event, |turn| turn_owners.get(&turn).map(String::as_str))
+}
+
+pub(crate) fn event_owner_with<'a>(
+    event: &'a StoredEvent,
+    turn_owner: impl FnOnce(u64) -> Option<&'a str>,
+) -> Option<&'a str> {
     if let Some(owner) = super::conversation_event_conversation(&event.payload) {
         return Some(owner);
     }
@@ -33,9 +40,7 @@ pub(super) fn event_owner<'a>(
             return Some(owner);
         }
     }
-    super::conversation_event_turn(&event.payload)
-        .and_then(|turn| turn_owners.get(&turn))
-        .map(String::as_str)
+    super::conversation_event_turn(&event.payload).and_then(turn_owner)
 }
 
 /// Resolve event ownership using explicit Agent addresses and legacy turn ownership.

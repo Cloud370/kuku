@@ -589,7 +589,7 @@ impl RewindInputs {
         event: &StoredEvent,
         address: &str,
         target: u64,
-        visibility: &RewindVisibility<'_>,
+        visibility: &RewindVisibility,
     ) {
         match &event.payload {
             EventPayload::MessageUser { conversation, .. } if conversation == address => {

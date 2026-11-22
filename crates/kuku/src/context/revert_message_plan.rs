@@ -38,7 +38,7 @@ pub fn compute_message_rewind_plan(
 
 pub(crate) fn plan_journal_rewind(
     store: &EventStore,
-    visibility: &RewindVisibility<'_>,
+    visibility: &RewindVisibility,
     conversation: &str,
     target_event_id: u64,
     workspace: &Path,
@@ -81,7 +81,7 @@ impl FilePlan {
         &mut self,
         event: &StoredEvent,
         conversation: &str,
-        visibility: &RewindVisibility<'_>,
+        visibility: &RewindVisibility,
         owners: &HashMap<u64, String>,
     ) -> Result<()> {
         let Some(path) = revertable_path(event) else {
@@ -127,7 +127,7 @@ impl FilePlan {
     fn observe_snapshot(
         &mut self,
         event: &StoredEvent,
-        visibility: &RewindVisibility<'_>,
+        visibility: &RewindVisibility,
         owners: &HashMap<u64, String>,
     ) {
         if let Some((path, content)) = file_snapshot(event, &self.workspace) {

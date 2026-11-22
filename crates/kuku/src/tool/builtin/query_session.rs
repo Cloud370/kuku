@@ -203,7 +203,7 @@ impl Matches {
 fn visible_event(
     event: &StoredEvent,
     history: &HistoryMarks,
-    visibility: &RewindVisibility<'_>,
+    visibility: &RewindVisibility,
     legacy_target: Option<u64>,
 ) -> bool {
     let owner = event_conversation(&event.payload)

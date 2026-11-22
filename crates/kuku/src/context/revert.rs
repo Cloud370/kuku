@@ -19,6 +19,7 @@ mod apply;
 mod message_rewind;
 
 pub(crate) use apply::{apply_message_rewind_files, FileRevertTransaction};
+pub(crate) use message_rewind::event_owner_with;
 pub use message_rewind::event_owners;
 use message_rewind::{event_owner, event_turn_owners};
 #[path = "revert_message_plan.rs"]
@@ -78,22 +79,26 @@ pub fn filter_rolled_back_events(events: &[StoredEvent]) -> Vec<&StoredEvent> {
         .collect()
 }
 
-pub(crate) struct RewindVisibility<'a> {
+pub(crate) struct RewindVisibility {
     rollbacks: HashMap<String, ActiveRollback>,
-    rewinds: Vec<(u64, &'a str, u64)>,
+    rewinds: Vec<(u64, String, u64)>,
 }
 
-impl<'a> RewindVisibility<'a> {
-    pub(crate) fn new(controls: &'a [StoredEvent]) -> Self {
+impl RewindVisibility {
+    pub(crate) fn new(controls: &[StoredEvent]) -> Self {
         Self {
             rollbacks: active_conversation_rollbacks(controls),
-            rewinds: controls.iter().filter_map(message_rewind).collect(),
+            rewinds: controls
+                .iter()
+                .filter_map(message_rewind)
+                .map(|(id, agent, target)| (id, agent.to_owned(), target))
+                .collect(),
         }
     }
 
     pub(crate) fn includes(&self, event: &StoredEvent, owner: Option<&str>) -> bool {
         !self.rewinds.iter().any(|(id, address, target)| {
-            owner == Some(*address) && event.id >= *target && event.id < *id
+            owner == Some(address.as_str()) && event.id >= *target && event.id < *id
         }) && !event_conversation_key(&event.payload)
             .and_then(|conversation| self.rollbacks.get(conversation))
             .is_some_and(|rollback| event_hidden_by_rollback(&event.payload, event.id, rollback))

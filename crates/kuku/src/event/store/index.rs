@@ -44,8 +44,17 @@ pub(super) struct FileFact {
 
 #[derive(Default)]
 pub(crate) struct HistoryMarks {
+    pub(crate) cursor: u64,
     pub(crate) controls: Vec<StoredEvent>,
     pub(crate) turn_owners: HashMap<u64, TurnOwners>,
+    pub(crate) message_rewinds: Vec<MessageRewind>,
+}
+
+#[derive(Clone, Debug)]
+pub struct MessageRewind {
+    pub event_id: u64,
+    pub target_event_id: u64,
+    pub agent: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -202,14 +211,39 @@ impl JournalIndex {
             .collect()
     }
 
-    pub(super) fn history_marks(&self, include_owners: bool) -> HistoryMarks {
+    pub(super) fn history_marks(&self, include_owners: bool, cursor: u64) -> HistoryMarks {
         HistoryMarks {
+            cursor,
             controls: self.rewind_controls(),
             turn_owners: if include_owners || !self.rewinds.is_empty() {
                 self.turn_owners.clone()
             } else {
                 HashMap::new()
             },
+            message_rewinds: self
+                .rewinds
+                .iter()
+                .filter_map(|event| {
+                    let EventPayload::Unknown(value) = &event.payload else {
+                        return None;
+                    };
+                    let record = &value["record"];
+                    let agent = record["address"].as_str()?;
+                    let target_event_id = record["target_event_id"].as_u64()?;
+                    (target_event_id < event.id
+                        && self
+                            .agents
+                            .get(agent)?
+                            .messages
+                            .binary_search(&target_event_id)
+                            .is_ok())
+                    .then(|| MessageRewind {
+                        event_id: event.id,
+                        target_event_id,
+                        agent: agent.into(),
+                    })
+                })
+                .collect(),
         }
     }
 

@@ -839,6 +839,15 @@ impl State {
             .collect())
     }
 
+    pub(super) fn first_queued_text(&self) -> Option<&str> {
+        self.agents.values().find_map(|agent| {
+            agent.inbox.iter().find_map(|entry| {
+                (self.deliveries.get(&entry.input.command_id) == Some(&InputStatus::Queued))
+                    .then_some(entry.input.text.as_str())
+            })
+        })
+    }
+
     pub(super) fn view(&self, address: &str, cursor: u64) -> Result<AgentView> {
         Ok(AgentView {
             snapshot: self.snapshot(address)?,

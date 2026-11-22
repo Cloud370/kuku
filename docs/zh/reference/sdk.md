@@ -41,6 +41,8 @@
 
 `Session::read_agents` 从日志重建离线恢复状态，将没有终结事实的 `Running` 映射为 `Interrupted`，即使另一个运行时仍然活跃。查询当前活状态应使用已打开 Session 的 `agent` 或 `agents`。
 
+`SessionHistory::read_with_turns(events_path)` 一次读取历史可见性、Turn 编号和对应的已提交游标。用 `page_before` 分页读取事件，用 `includes` 判断事件是否属于当前历史，用 `rewind_page` 分页查看一次消息回退的内容。`Session::agents_with_cursor` 和 `Session::read_agents_with_cursor` 一次返回 Agent 列表和游标。`session_files` 从文件系统发现日志，`SessionFile::listing` 读取会话选择器需要的标题、状态和等待中的 Agent。
+
 ## 宿主适配器
 
 用 `SessionOptions.model_adapter` 设置 `Arc<dyn ModelAdapter>`，并向 `SessionOptions.tools` 添加 `Arc<dyn ToolAdapter>`。这些工具进入公开 SDK 的同一执行链；[外部调用测试](../../../crates/kuku/tests/adapter_runtime.rs) 覆盖实际文件动作、宿主拒绝、保留输出，以及取消时等待清理。

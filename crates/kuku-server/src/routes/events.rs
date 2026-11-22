@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::future::Future;
 use std::path::PathBuf;
@@ -12,8 +12,8 @@ use axum::extract::{Path, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
-use kuku::event::{EventPayload, EventStore, StoredEvent};
-use kuku::session::{Observation, OutputRead, Session};
+use kuku::event::{EventPayload, EventStore};
+use kuku::session::{Observation, OutputRead, Session, SessionHistory};
 use kuku_client::RewindGroup;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -21,7 +21,7 @@ use tokio::sync::{mpsc, watch};
 use tokio_stream::wrappers::{ReceiverStream, WatchStream};
 use tokio_stream::Stream;
 
-use super::rewind_history::RewindIndex;
+use super::rewind_history;
 use super::Params;
 use super::{manager, SessionTarget};
 use crate::error_mapping::{ApiError, Result};
@@ -130,34 +130,16 @@ pub(super) async fn history(
     validate_limit(limit)?;
     let cursor = EventStore::read_head(&target.path)?;
     let before = match cursor.checked_add(1) {
-        Some(end) => Some(query.before.map_or(end, |before| before.min(end))),
+        Some(end) => query.before.map(|before| before.min(end)),
         None => query.before,
     };
-    let events = EventStore::replay(&target.path)?;
-    let visible = history_visible_event_ids(&events);
-    let turns = manager(&state).await.turn_lookup(&target.path, cursor)?;
+    let (history, turns) = manager(&state).await.history(&target.path, cursor)?;
     let agent = query.agent.as_deref().unwrap_or("main");
-    let rewind_index = RewindIndex::new(&events, &turns);
-    let rewind_groups = rewind_index.groups_for_agent(agent);
-    let (entries, rewind_groups, next_before) = history_page(
-        &target.path,
-        agent,
-        before,
-        limit,
-        &turns,
-        &visible,
-        &rewind_groups,
-    )?;
+    let (entries, rewind_groups, next_before) =
+        history_page(agent, before, limit, &turns, &history)?;
     let response = json!({"ok":true,"entries":entries,"rewind_groups":rewind_groups,"next_before":next_before});
     validate_response_bytes(&response)?;
     Ok(Json(response))
-}
-
-fn history_visible_event_ids(events: &[StoredEvent]) -> HashSet<u64> {
-    kuku::context::revert::filter_rolled_back_events(events)
-        .into_iter()
-        .map(|event| event.id)
-        .collect()
 }
 
 pub(super) async fn observe(
@@ -267,13 +249,11 @@ pub(super) fn validate_response_bytes(response: &Value) -> Result<()> {
 }
 
 fn history_page(
-    path: &std::path::Path,
     agent: &str,
     mut before: Option<u64>,
     limit: usize,
     turns: &TurnLookup,
-    visible: &HashSet<u64>,
-    rewind_groups: &HashMap<u64, Vec<RewindGroup>>,
+    history: &SessionHistory,
 ) -> Result<(Vec<Value>, Vec<RewindGroup>, Option<u64>)> {
     let mut entries = Vec::new();
     let mut group_entries = Vec::new();
@@ -282,15 +262,20 @@ fn history_page(
     let mut items = 0;
     let max_item_bytes = HISTORY_PAGE_BYTES.saturating_sub(HISTORY_RESPONSE_OVERHEAD);
     'pages: loop {
-        let page = EventStore::read_page_before(path, before, READ_PAGE_SIZE)?;
+        let page = history.page_before(before, READ_PAGE_SIZE)?;
         if page.is_empty() {
             before = None;
             break;
         }
         for event in page.into_iter().rev() {
-            if let Some(groups) = rewind_groups.get(&event.id) {
-                for group in groups {
-                    let size = serde_json::to_vec(group).map_err(kuku::Error::from)?.len();
+            if let EventPayload::MessageUser { turn, .. } = &event.payload {
+                for rewind in history
+                    .rewinds()
+                    .iter()
+                    .filter(|rewind| rewind.target_event_id == event.id && rewind.agent == agent)
+                {
+                    let group = rewind_history::summary(history, turns, rewind, *turn)?;
+                    let size = serde_json::to_vec(&group).map_err(kuku::Error::from)?.len();
                     if size > max_item_bytes {
                         return Err(ApiError::new(
                             StatusCode::PAYLOAD_TOO_LARGE,
@@ -302,7 +287,7 @@ fn history_page(
                         break 'pages;
                     }
                     bytes += size;
-                    group_entries.push(group.clone());
+                    group_entries.push(group);
                     items += 1;
                     if items == limit {
                         before = Some(event.id);
@@ -310,7 +295,7 @@ fn history_page(
                     }
                 }
             }
-            let entry = (visible.contains(&event.id)
+            let entry = (history.includes(&event)
                 && event_agent(&event.payload).unwrap_or("main") == agent)
                 .then(|| history_entry(&event, turns))
                 .flatten();
@@ -511,7 +496,19 @@ mod tests {
     use kuku::event::{EventPayload, StoredEvent};
     use serde_json::json;
 
-    use super::{history_visible_event_ids, validate_response_bytes, HISTORY_PAGE_BYTES};
+    use super::{validate_response_bytes, HISTORY_PAGE_BYTES};
+
+    fn read_history(events: &[StoredEvent]) -> (tempfile::TempDir, kuku::session::SessionHistory) {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("events.jsonl");
+        let mut store = kuku::event::EventStore::open(&path).unwrap();
+        for event in events {
+            store.append(event.payload.clone()).unwrap();
+        }
+        drop(store);
+        let history = kuku::session::SessionHistory::read(&path).unwrap();
+        (root, history)
+    }
 
     fn user_event(id: u64, agent: &str, text: &str) -> StoredEvent {
         StoredEvent {
@@ -549,13 +546,9 @@ mod tests {
             user_event(5, "reviewer", "other Agent"),
         ];
 
-        let visible = history_visible_event_ids(&events);
-
-        assert!(!visible.contains(&1));
-        assert!(!visible.contains(&2));
-        assert!(visible.contains(&3));
-        assert!(visible.contains(&4));
-        assert!(visible.contains(&5));
+        let (_root, history) = read_history(&events);
+        let included: Vec<_> = events.iter().map(|event| history.includes(event)).collect();
+        assert_eq!(included, [false, false, true, true, true]);
     }
 
     #[test]
@@ -586,11 +579,11 @@ mod tests {
             },
         ];
         let turns = crate::run_manager::TurnLookup::Closed(std::sync::Arc::default());
-        let index = super::RewindIndex::new(&events, &turns);
-        let groups = index.groups_for_agent("main");
-        assert_eq!(3, groups[&1][0].entry_count);
-        let visible = history_visible_event_ids(&events);
-        assert!(!visible.contains(&2) && !visible.contains(&3));
+        let (_root, history) = read_history(&events);
+        let group =
+            super::rewind_history::summary(&history, &turns, &history.rewinds()[0], 1).unwrap();
+        assert_eq!(3, group.entry_count);
+        assert!(!history.includes(&events[1]) && !history.includes(&events[2]));
         let entry = crate::wire::history_entry_for_agent(&events[2], &turns, "main").unwrap();
         assert_eq!(entry["type"], "compaction");
         assert_eq!(entry["text"], "Retained in rewind");

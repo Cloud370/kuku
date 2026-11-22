@@ -4,6 +4,7 @@ use std::path::Path;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
+use crate::event::store::Replay;
 use crate::event::{EventPayload, EventStore, StoredEvent};
 use crate::Result;
 
@@ -40,19 +41,39 @@ impl TurnIndex {
     /// Rebuild the Turn index and its source cursor without acquiring a runtime writer.
     pub fn read(events_path: &Path) -> Result<(Self, u64)> {
         let mut index = Self::default();
-        let cursor = EventStore::visit_path(events_path, |event| {
-            let record = if matches!(&event.payload, EventPayload::Unknown(value)
-                if value["kind"] == "runtime.operation" && matches!(value["record"]["operation"].as_str(),
-                    Some("inputs_accepted" | "turn_settled" | "agent_stopped")))
-            {
-                Record::from_event(&event)?
-            } else {
-                None
-            };
-            index.observe(&event, record.as_ref());
-            Ok(())
-        })?;
+        let cursor = EventStore::visit_recovery_path(events_path, |item| index.replay(item))?;
         Ok((index, cursor))
+    }
+
+    pub(super) fn replay(&mut self, item: Replay<'_>) -> Result<bool> {
+        match item {
+            Replay::Checkpoint(raw) => {
+                #[derive(serde::Deserialize)]
+                struct Checkpoint {
+                    state: SavedState,
+                }
+                #[derive(serde::Deserialize)]
+                struct SavedState {
+                    turns: TurnIndex,
+                }
+                let Ok(saved) = serde_json::from_str::<Checkpoint>(raw.get()) else {
+                    return Ok(false);
+                };
+                *self = saved.state.turns;
+            }
+            Replay::Event(event) => {
+                let record = if matches!(&event.payload, EventPayload::Unknown(value)
+                    if value["kind"] == "runtime.operation" && matches!(value["record"]["operation"].as_str(),
+                        Some("inputs_accepted" | "turn_settled" | "agent_stopped")))
+                {
+                    Record::from_event(&event)?
+                } else {
+                    None
+                };
+                self.observe(&event, record.as_ref());
+            }
+        }
+        Ok(true)
     }
 
     /// Return the one-based display number for a known Turn belonging to an Agent.

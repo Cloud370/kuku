@@ -247,6 +247,17 @@ impl Session {
         Ok((state.snapshot(address)?, cursor))
     }
 
+    /// Return retained Agent snapshots and their committed cursor under one state lock.
+    pub fn agents_with_cursor(&self) -> Result<(Vec<AgentSnapshot>, u64)> {
+        let state = self.inner.state.lock().unwrap();
+        let cursor = if state.closed {
+            state.closed_cursor
+        } else {
+            self.current_cursor()?
+        };
+        Ok((state.snapshots(), cursor))
+    }
+
     /// Read a closed session's selected snapshot and pending inputs without opening runtime resources.
     pub fn read_view(events_path: &Path, address: &str) -> Result<AgentView> {
         let (state, cursor) = load_state(events_path)?;

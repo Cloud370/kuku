@@ -3,7 +3,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::context::runtime::StartupCache;
-use crate::event::store::Replay;
+use crate::event::store::{JournalSummary, Replay};
 use crate::event::EventStore;
 use crate::Result;
 
@@ -98,9 +98,21 @@ struct StateCheckpoint {
     jobs: JobReplay,
 }
 
-pub(super) fn read_state(events: &Path, mut state: State) -> Result<(State, u64)> {
+pub(super) fn read_state(events: &Path, state: State) -> Result<(State, u64)> {
+    recover_state(events, state, false).map(|(state, cursor, _)| (state, cursor))
+}
+
+pub(super) fn read_listing(events: &Path) -> Result<(State, JournalSummary)> {
+    recover_state(events, State::default(), true).map(|(state, _, summary)| (state, summary))
+}
+
+fn recover_state(
+    events: &Path,
+    mut state: State,
+    with_summary: bool,
+) -> Result<(State, u64, JournalSummary)> {
     let mut job_replay = JobReplay::default();
-    let cursor = EventStore::visit_recovery_path(events, |item| {
+    let visit = |item: Replay<'_>| {
         match item {
             Replay::Checkpoint(raw) => {
                 let Ok(mut saved) = serde_json::from_str::<StateCheckpoint>(raw.get()) else {
@@ -115,7 +127,15 @@ pub(super) fn read_state(events: &Path, mut state: State) -> Result<(State, u64)
             Replay::Event(event) => reduce_event(&mut state, &mut job_replay, event)?,
         }
         Ok(true)
-    })?;
+    };
+    let (cursor, summary) = if with_summary {
+        EventStore::visit_summary_path(events, visit)?
+    } else {
+        (
+            EventStore::visit_recovery_path(events, visit)?,
+            JournalSummary::default(),
+        )
+    };
     state.mark_interrupted();
-    Ok((state, cursor))
+    Ok((state, cursor, summary))
 }

@@ -28,7 +28,11 @@ The medians are from three fresh processes per program on the same WSL2 Linux x8
 
 These figures measure the SDK process. Active Agents, loaded context, and tool subprocesses add memory in a real workload. The wall times come from three paired fresh-process runs on Linux with a warm OS page cache, the same size-optimized release profile, and a fixed SDK model adapter. The read counts come from a separate syscall trace. The synthetic history contains repeated logs, which compress especially well. First sealing took about 3 s. Sealed history pages decompress the frames they traverse. Linux process-kill tests on both sides of publication preserved all 198,454 original committed events. [Evidence and conditions](https://github.com/Cloud370/kuku/issues/151#issuecomment-7075736730) · [Opt-in Session probe](../contributing/testing.md#long-session-profile)
 
-TUI resume also fetches a transcript page from the server. That endpoint currently replays the full journal to resolve Agent ownership and rewind visibility before returning the page.
+### TUI resume
+
+In a separate WSL2 run with the same logical history and a warm OS page cache, selecting the sealed **509 MiB** Session displayed its first transcript page in **50 ms** with a server peak of **20 MiB RSS**. An earlier build took **3.61 s** and peaked at **1.09 GiB RSS** on the same fixture.
+
+The server reads bounded event pages with SDK history visibility and Turn numbering. An unsealed journal needs an initial streaming scan to build the projection. On the unsealed fixture, selection to first transcript took **2.15 s** and the server peaked at **18.5 MiB RSS**.
 
 ## Download and installation
 

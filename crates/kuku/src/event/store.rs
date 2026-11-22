@@ -26,7 +26,8 @@ mod reverse;
 use archive::Layout;
 use codec::serialize_record;
 use index::JournalIndex;
-pub(crate) use index::{ContextMarks, HistoryMarks, JournalSummary, RouteSelectors};
+pub use index::MessageRewind;
+pub(crate) use index::{ContextMarks, HistoryMarks, JournalSummary, RouteSelectors, TurnOwners};
 use reader::EventReader;
 pub(crate) use recovery::Replay;
 use recovery::{Checkpoint, ReplayVisitor};
@@ -568,12 +569,14 @@ impl EventStore {
                 .unwrap()
                 .read_before(&path, before, limit);
         }
-        let _file_lock = acquire_file_lock(&path)?;
         let journal = LockedJournal::reader(&path)?;
+        drop(stores);
         let layout = Layout::read(&journal.file)?;
         let mut end = layout.logical_len(journal.file.metadata()?.len());
         let mut reader = layout.reader(&journal.file, end, 0);
-        if let Some(before) = before {
+        if let Some(before) =
+            before.filter(|id| end != layout.prefix_bytes || *id <= layout.prefix_head)
+        {
             end = reverse::find_page_end(&mut reader, &path, end, before)?;
         }
         reverse::read_before(&mut reader, &path, end, before, limit)
@@ -683,13 +686,6 @@ impl EventStore {
         )
     }
 
-    pub(crate) fn visit_path(
-        path: &Path,
-        visit: impl FnMut(StoredEvent) -> Result<()>,
-    ) -> Result<u64> {
-        Self::visit_after_path(path, 0, visit)
-    }
-
     pub(crate) fn visit_after_path(
         path: &Path,
         after: u64,
@@ -730,27 +726,33 @@ impl EventStore {
     }
 
     pub(crate) fn context_marks(path: &Path, address: &str) -> Result<ContextMarks> {
-        Self::with_index(path, |facts| facts.context_marks(address))
+        Self::with_index(path, |facts, _| facts.context_marks(address))
     }
 
     pub(crate) fn history_marks(path: &Path, include_owners: bool) -> Result<HistoryMarks> {
-        Self::with_index(path, |facts| Ok(facts.history_marks(include_owners)))
+        Self::with_index(path, |facts, cursor| {
+            Ok(facts.history_marks(include_owners, cursor))
+        })
     }
 
-    fn with_index<T>(path: &Path, select: impl FnOnce(&JournalIndex) -> Result<T>) -> Result<T> {
+    fn with_index<T>(
+        path: &Path,
+        select: impl FnOnce(&JournalIndex, u64) -> Result<T>,
+    ) -> Result<T> {
         let Some(path) = existing_path(path)? else {
-            return select(&JournalIndex::default());
+            return select(&JournalIndex::default(), 0);
         };
         let stores = registry().lock().unwrap();
         if let Some(inner) = find_active_store(&stores, &path) {
             drop(stores);
             let writer = inner.writer.lock().unwrap();
             writer.ensure_healthy(&path)?;
-            return select(&writer.facts);
+            return select(&writer.facts, writer.last_id);
         }
-        let _file_lock = acquire_file_lock(&path)?;
         let journal = LockedJournal::reader(&path)?;
-        select(&read_index(&path, &journal.file)?)
+        drop(stores);
+        let (facts, cursor) = read_index(&path, &journal.file)?;
+        select(&facts, cursor)
     }
 
     pub(crate) fn rewind_facts(
@@ -888,13 +890,13 @@ fn patch_event_id(payload: &mut EventPayload, event_id: u64) -> Result<()> {
     Ok(())
 }
 
-fn read_index(path: &Path, file: &File) -> Result<JournalIndex> {
+fn read_index(path: &Path, file: &File) -> Result<(JournalIndex, u64)> {
     let layout = Layout::read(file)?;
     let end = layout.logical_len(file.metadata()?.len());
     let (mut facts, start, after) = recovery::load(&layout, file, path)
         .map(|checkpoint| (checkpoint.facts, layout.prefix_bytes, layout.prefix_head))
         .unwrap_or_default();
-    visit_events(
+    let cursor = visit_events(
         layout.reader(file, end, start),
         path,
         start,
@@ -904,7 +906,7 @@ fn read_index(path: &Path, file: &File) -> Result<JournalIndex> {
             Ok(())
         },
     )?;
-    Ok(facts)
+    Ok((facts, cursor))
 }
 
 fn read_all(file: impl Read, path: &Path) -> Result<Vec<StoredEvent>> {

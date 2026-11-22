@@ -3,11 +3,24 @@ use std::path::Path;
 use serde::Serialize;
 
 use super::{
-    acquire_file_lock, existing_path, find_active_store, recovery, registry, visit_events,
-    Checkpoint, EventStore, Layout, LockedJournal, Replay, ReplayVisitor, Writer,
+    existing_path, find_active_store, recovery, registry, visit_events, Checkpoint, EventStore,
+    HistoryMarks, JournalIndex, JournalSummary, Layout, LockedJournal, Replay, ReplayVisitor,
+    Writer,
 };
 use crate::util::fs_sync;
 use crate::Result;
+
+enum Projection {
+    Runtime,
+    Summary,
+    History,
+}
+
+#[derive(Default)]
+struct ReadFacts {
+    history: HistoryMarks,
+    summary: JournalSummary,
+}
 
 impl EventStore {
     pub(crate) fn needs_packing(&self) -> bool {
@@ -28,38 +41,83 @@ impl EventStore {
 
     pub(crate) fn visit_recovery_path(
         path: &Path,
-        mut visit: impl FnMut(Replay<'_>) -> Result<bool>,
+        visit: impl FnMut(Replay<'_>) -> Result<bool>,
     ) -> Result<u64> {
+        Self::read_projection(path, Projection::Runtime, visit).map(|(cursor, _)| cursor)
+    }
+
+    pub(crate) fn visit_history_path(
+        path: &Path,
+        visit: impl FnMut(Replay<'_>) -> Result<bool>,
+    ) -> Result<HistoryMarks> {
+        Self::read_projection(path, Projection::History, visit).map(|(_, facts)| facts.history)
+    }
+
+    pub(crate) fn visit_summary_path(
+        path: &Path,
+        visit: impl FnMut(Replay<'_>) -> Result<bool>,
+    ) -> Result<(u64, JournalSummary)> {
+        Self::read_projection(path, Projection::Summary, visit)
+            .map(|(cursor, facts)| (cursor, facts.summary))
+    }
+
+    fn read_projection(
+        path: &Path,
+        projection: Projection,
+        mut visit: impl FnMut(Replay<'_>) -> Result<bool>,
+    ) -> Result<(u64, ReadFacts)> {
+        let mut result = ReadFacts::default();
         let Some(path) = existing_path(path)? else {
-            return Ok(0);
+            return Ok((0, result));
         };
         let stores = registry().lock().unwrap();
         if let Some(inner) = find_active_store(&stores, &path) {
             drop(stores);
-            return inner
-                .writer
-                .lock()
-                .unwrap()
-                .visit_recovery(&path, &mut visit);
+            let mut writer = inner.writer.lock().unwrap();
+            let cursor = writer.visit_recovery(&path, &mut visit)?;
+            match projection {
+                Projection::History => result.history = writer.facts.history_marks(true, cursor),
+                Projection::Summary => result.summary = writer.facts.summary.clone(),
+                Projection::Runtime => {}
+            }
+            return Ok((cursor, result));
         }
-        let _lock = acquire_file_lock(&path)?;
         let journal = LockedJournal::reader(&path)?;
+        drop(stores);
         let layout = Layout::read(&journal.file)?;
         let end = layout.logical_len(journal.file.metadata()?.len());
+        let mut facts = matches!(projection, Projection::History).then(JournalIndex::default);
         let (mut start, mut after) = (0, 0);
         if let Some(saved) = recovery::load(&layout, &journal.file, &path) {
             if visit(Replay::Checkpoint(&saved.runtime))? {
                 start = layout.prefix_bytes;
                 after = layout.prefix_head;
+                match projection {
+                    Projection::History => facts = Some(saved.facts),
+                    Projection::Summary => result.summary = saved.facts.summary,
+                    Projection::Runtime => {}
+                }
             }
         }
-        visit_events(
+        let cursor = visit_events(
             layout.reader(&journal.file, end, start),
             &path,
             start,
             after,
-            |event| visit(Replay::Event(event)).map(|_| ()),
-        )
+            |event| {
+                if let Some(facts) = &mut facts {
+                    facts.observe(&event);
+                }
+                if matches!(projection, Projection::Summary) {
+                    result.summary.observe(&event);
+                }
+                visit(Replay::Event(event)).map(|_| ())
+            },
+        )?;
+        if let Some(facts) = facts {
+            result.history = facts.history_marks(true, cursor);
+        }
+        Ok((cursor, result))
     }
 
     pub(crate) fn pack_closed(&self, head: u64, runtime: &impl Serialize) -> Result<bool> {

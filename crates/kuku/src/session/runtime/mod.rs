@@ -5,6 +5,7 @@ mod compaction;
 mod controls;
 mod creation;
 mod driver;
+mod history;
 mod jobs;
 mod media;
 mod observe;
@@ -34,6 +35,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::{broadcast, watch, Semaphore};
 use tokio::task::JoinHandle;
 
+use crate::event::store::JournalSummary;
 use crate::event::{EventStore, StoredEvent};
 use crate::execution::OutputReference;
 use crate::{Error, Result};
@@ -41,6 +43,7 @@ use crate::{Error, Result};
 pub use crate::tool::builtin::run_command::output::{
     OutputChunk, OutputRead, OutputSegment, OutputStream,
 };
+pub use history::{MessageRewind, SessionHistory};
 pub use observe::{Observation, ReplyPreview, ReplyPreviews, SessionObserver};
 pub use turns::TurnIndex;
 pub use types::{
@@ -552,8 +555,38 @@ impl Session {
 
     /// Reconstruct retained agent snapshots without opening model or runtime resources.
     pub fn read_agents(events_path: &Path) -> Result<Vec<AgentSnapshot>> {
-        let (state, _) = load_state(events_path)?;
-        Ok(state.snapshots())
+        Self::read_agents_with_cursor(events_path).map(|(agents, _)| agents)
+    }
+
+    /// Read retained Agent snapshots and their committed cursor in one pass.
+    pub fn read_agents_with_cursor(events_path: &Path) -> Result<(Vec<AgentSnapshot>, u64)> {
+        let (state, cursor) = load_state(events_path)?;
+        Ok((state.snapshots(), cursor))
+    }
+
+    pub(super) fn listing(
+        events_path: &Path,
+        open: Option<&Session>,
+    ) -> Result<(JournalSummary, Vec<AgentSnapshot>, Option<String>)> {
+        fn details(
+            state: &State,
+            summary: JournalSummary,
+        ) -> (JournalSummary, Vec<AgentSnapshot>, Option<String>) {
+            let pending_title = summary
+                .title
+                .as_ref()
+                .is_none_or(String::is_empty)
+                .then(|| state.first_queued_text().map(str::to_owned))
+                .flatten();
+            (summary, state.snapshots(), pending_title)
+        }
+
+        if let Some(session) = open.filter(|session| session.inner.events_path == events_path) {
+            let state = session.inner.state.lock().unwrap();
+            return Ok(details(&state, EventStore::journal_summary(events_path)?));
+        }
+        let (state, summary) = recovery::read_listing(events_path)?;
+        Ok(details(&state, summary))
     }
 
     /// Read retained output as a trusted host by bounded range, search, or incremental cursor.

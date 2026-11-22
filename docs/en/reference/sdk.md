@@ -41,6 +41,8 @@ When exposing retryable creation over a transport, `open_for_creation` checks th
 
 `Session::read_agents` reconstructs offline recovery state from the journal and maps an unterminated `Running` state to `Interrupted`, even while another runtime is active. Use an open Session's `agent` or `agents` methods for its current live state.
 
+Use `SessionHistory::read_with_turns(events_path)` to get history visibility, Turn numbering, and their committed cursor together. Use `page_before` for bounded event pages, `includes` to test active history, and `rewind_page` to page through a message rewind. Use `Session::agents_with_cursor` or `Session::read_agents_with_cursor` to read the roster and cursor together. `session_files` discovers journals from the filesystem, and `SessionFile::listing` reads the title, status, and waiting Agents for a picker.
+
 ## Host adapters
 
 Set `SessionOptions.model_adapter` to an `Arc<dyn ModelAdapter>` to supply a model transport, and append `Arc<dyn ToolAdapter>` values to `SessionOptions.tools` for additional tools. The [external-caller tests](../../../crates/kuku/tests/adapter_runtime.rs) exercise both through the public SDK with real file actions, host denial, retained output and awaited cancellation cleanup.
