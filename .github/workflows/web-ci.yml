@@ -5,14 +5,17 @@ on:
     paths:
       - "apps/web/**"
       - ".github/workflows/web-ci.yml"
-  pull_request:
-    branches: [main, feat/interactive-clients]
-    paths:
-      - "apps/web/**"
-      - ".github/workflows/web-ci.yml"
+  workflow_call:
+    inputs:
+      verify:
+        type: boolean
+        default: true
+      publish-assets:
+        type: boolean
+        default: false
 
 concurrency:
-  group: webui-${{ github.ref }}
+  group: webui-${{ github.ref }}-${{ github.event_name == 'push' && 'push' || github.run_id }}
   cancel-in-progress: true
 
 jobs:
@@ -29,10 +32,19 @@ jobs:
       - run: npm ci
         working-directory: apps/web
       - run: npm run typecheck
+        if: ${{ inputs.verify || github.event_name == 'push' }}
         working-directory: apps/web
       - run: npm run lint
+        if: ${{ inputs.verify || github.event_name == 'push' }}
         working-directory: apps/web
       - run: npm run test
+        if: ${{ inputs.verify || github.event_name == 'push' }}
         working-directory: apps/web
       - run: npm run build
         working-directory: apps/web
+      - uses: actions/upload-artifact@v4
+        if: ${{ inputs.publish-assets }}
+        with:
+          name: installed-web-assets
+          path: apps/web/dist
+          if-no-files-found: error

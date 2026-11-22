@@ -1,5 +1,5 @@
 name: CI
-run-name: CI · ${{ github.event_name == 'workflow_dispatch' && inputs.platform || 'all' }}
+run-name: CI · ${{ github.event_name == 'workflow_dispatch' && inputs.platform || github.event_name == 'schedule' && 'weekly full' || 'selected' }}
 
 on:
   push:
@@ -9,6 +9,8 @@ on:
       - "*.md"
       - "LICENSE"
       - ".gitignore"
+  schedule:
+    - cron: "23 4 * * 0"
   workflow_dispatch:
     inputs:
       platform:
@@ -27,12 +29,35 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_PROFILE_DEV_DEBUG: '0'
 
 concurrency:
-  group: ci-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && inputs.platform || 'all' }}
+  group: ci-${{ github.event_name }}-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && inputs.platform || 'all' }}
   cancel-in-progress: true
 
 jobs:
+  plan:
+    name: Select CI checks
+    runs-on: ubuntu-latest
+    outputs:
+      jobs: ${{ steps.select.outputs.jobs }}
+      tooling: ${{ steps.select.outputs.tooling }}
+      web: ${{ steps.select.outputs.web }}
+      web_checks: ${{ steps.select.outputs.web_checks }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      - name: Select checks for this revision
+        id: select
+        env:
+          CI_EVENT: ${{ github.event_name }}
+          CI_DRAFT: ${{ github.event.pull_request.draft && 'true' || 'false' }}
+          CI_PLATFORM: ${{ inputs.platform || 'all' }}
+        run: >-
+          python3 scripts/acceptance/ci_plan.py --event "$CI_EVENT"
+          --draft "$CI_DRAFT" --platform "$CI_PLATFORM" --output "$GITHUB_OUTPUT"
+
   fmt:
     runs-on: ubuntu-latest
     steps:
@@ -62,54 +87,37 @@ jobs:
       - run: cargo check -p kuku-app --features embedded-web-assets
 
   tooling:
+    needs: plan
     name: Acceptance tooling (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON((github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.draft)) && '["ubuntu-latest"]' || '["ubuntu-latest","macos-latest","windows-latest"]') }}
+        os: ${{ fromJSON(needs.plan.outputs.tooling) }}
     steps:
       - uses: actions/checkout@v7
       - run: python3 -m unittest discover -s scripts/acceptance -p "test_*.py"
 
   web-assets:
     name: Build shared Web assets
-    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && !github.event.pull_request.draft) }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: apps/web/.nvmrc
-          cache: npm
-          cache-dependency-path: apps/web/package-lock.json
-      - run: npm ci && npm run build
-        working-directory: apps/web
-      - uses: actions/upload-artifact@v4
-        with:
-          name: installed-web-assets
-          path: apps/web/dist
-          if-no-files-found: error
+    needs: plan
+    if: ${{ needs.plan.outputs.web == 'true' }}
+    uses: ./.github/workflows/web-ci.yml
+    with:
+      verify: ${{ needs.plan.outputs.web_checks == 'true' }}
+      publish-assets: true
 
   test:
-    name: ${{ github.event_name == 'pull_request' && matrix.os != 'ubuntu-latest' && 'Native smoke' || 'Contract' }} (${{ matrix.terminal }})
-    needs: [fmt, web-assets]
-    if: ${{ !cancelled() && needs.fmt.result == 'success' }}
+    name: ${{ matrix.contract == 'workspace' && 'Contract' || matrix.contract == 'sdk' && 'Native SDK' || 'Native smoke' }} (${{ matrix.terminal }})
+    needs: [fmt, plan, web-assets]
+    if: ${{ !cancelled() && needs.fmt.result == 'success' && needs.plan.result == 'success' }}
     env:
-      INSTALLED_ACCEPTANCE: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && !github.event.pull_request.draft) }}
-      PR_ACCEPTANCE: ${{ github.event_name == 'pull_request' && !github.event.pull_request.draft }}
-      NATIVE_SMOKE: ${{ github.event_name == 'pull_request' && matrix.os != 'ubuntu-latest' }}
-      CARGO_PROFILE_DEV_DEBUG: ${{ github.event_name == 'pull_request' && !github.event.pull_request.draft && '0' || '2' }}
+      INSTALLED_ACCEPTANCE: ${{ matrix.installed }}
+      EMBED_WEB: ${{ matrix.web }}
     strategy:
       fail-fast: false
       matrix:
-        include: >-
-          ${{ fromJSON(
-            (inputs.platform == 'linux' || github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.draft)) && '[{"os":"ubuntu-latest","terminal":"Linux PTY"}]' ||
-            inputs.platform == 'macos' && '[{"os":"macos-latest","terminal":"macOS PTY"}]' ||
-            inputs.platform == 'windows' && '[{"os":"windows-latest","terminal":"Windows ConPTY"}]' ||
-            '[{"os":"ubuntu-latest","terminal":"Linux PTY"},{"os":"macos-latest","terminal":"macOS PTY"},{"os":"windows-latest","terminal":"Windows ConPTY"}]'
-          ) }}
+        include: ${{ fromJSON(needs.plan.outputs.jobs) }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -123,7 +131,7 @@ jobs:
           python3 -c "print('Exact Rust dependency cache hit: ${{ steps.rust_cache.outputs.cache-hit }}')"
       - name: Fingerprint the installed build toolchain
         id: install_identity
-        if: ${{ !cancelled() && env.INSTALLED_ACCEPTANCE == 'true' }}
+        if: ${{ !cancelled() && env.INSTALLED_ACCEPTANCE != 'none' }}
         run: >-
           python3 -c "import hashlib, os, subprocess;
           print('compiler=' + hashlib.sha256(subprocess.check_output(['rustc', '-vV'])).hexdigest(),
@@ -135,20 +143,26 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/kuku-ci-install/bin
-          key: kuku-installed-v2-${{ env.PR_ACCEPTANCE == 'true' && 'debug' || 'release' }}-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}-${{ steps.install_identity.outputs.compiler }}
+          key: kuku-installed-v3-${{ env.INSTALLED_ACCEPTANCE == 'full' && 'release' || 'debug' }}-${{ runner.os }}-${{ runner.arch }}-${{ matrix.web && 'web' || 'plain' }}-${{ github.sha }}-${{ steps.install_identity.outputs.compiler }}
       - name: Download shared Web assets
         id: web_dist
-        if: ${{ !cancelled() && env.INSTALLED_ACCEPTANCE == 'true' && needs.web-assets.result == 'success' && (steps.installed_cache.outputs.cache-hit != 'true' || (env.PR_ACCEPTANCE == 'true' && env.NATIVE_SMOKE != 'true')) }}
+        if: ${{ !cancelled() && matrix.web && needs.web-assets.result == 'success' && (steps.installed_cache.outputs.cache-hit != 'true' || (matrix.contract == 'workspace' && matrix.installed == 'selected')) }}
         uses: actions/download-artifact@v4
         with:
           name: installed-web-assets
           path: apps/web/dist
       - name: Contract tests, including feature-gated runtime suites
         id: contract
-        if: ${{ !cancelled() && env.NATIVE_SMOKE != 'true' }}
+        if: ${{ !cancelled() && matrix.contract == 'workspace' }}
         run: >-
           python3 scripts/acceptance/run.py --run-id ci-contract contract
-          ${{ env.PR_ACCEPTANCE == 'true' && steps.web_dist.outcome == 'success' && '--embedded-web-assets' || '' }}
+          ${{ matrix.installed == 'selected' && steps.web_dist.outcome == 'success' && '--embedded-web-assets' || '' }}
+      - name: Native SDK contracts
+        if: ${{ !cancelled() && matrix.contract == 'sdk' }}
+        run: >-
+          cargo test --locked --timings --no-fail-fast -p kuku
+          --features test_support --lib --test event_store
+          ${{ runner.os == 'Windows' && '-- --test-threads=1' || '' }}
       - name: Upload contract evidence immediately
         if: ${{ !cancelled() && (steps.contract.outcome == 'success' || steps.contract.outcome == 'failure') }}
         continue-on-error: true
@@ -159,15 +173,19 @@ jobs:
           if-no-files-found: ignore
       - name: Prepare application binary for acceptance
         id: install
-        if: ${{ !cancelled() && steps.web_dist.outcome == 'success' && steps.installed_cache.outputs.cache-hit != 'true' }}
+        if: ${{ !cancelled() && env.INSTALLED_ACCEPTANCE != 'none' && (!matrix.web || steps.web_dist.outcome == 'success') && steps.installed_cache.outputs.cache-hit != 'true' }}
         shell: bash
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/target
           KUKU_INSTALLED_BINARY: ${{ runner.temp }}/kuku-ci-install/bin/kuku${{ runner.os == 'Windows' && '.exe' || '' }}
           KUKU_INSTALL_ROOT: ${{ runner.temp }}/kuku-ci-install
         run: |
-          if [[ "$PR_ACCEPTANCE" == true ]]; then
-            cargo build --locked --timings -p kuku-app --features embedded-web-assets,kuku/test_support
+          if [[ "$INSTALLED_ACCEPTANCE" != full ]]; then
+            features=kuku/test_support
+            if [[ "$EMBED_WEB" == true ]]; then
+              features+=,embedded-web-assets
+            fi
+            cargo build --locked --timings -p kuku-app --features "$features"
             python3 -c 'import os, shutil; from pathlib import Path
           destination = Path(os.environ["KUKU_INSTALLED_BINARY"])
           destination.parent.mkdir(parents=True, exist_ok=True)
@@ -194,7 +212,7 @@ jobs:
           key: ${{ steps.installed_cache.outputs.cache-primary-key }}
       - name: Prepare isolated Windows Terminal desktop
         id: windows_desktop
-        if: ${{ !cancelled() && steps.installed_revision.outcome == 'success' && env.NATIVE_SMOKE != 'true' && runner.os == 'Windows' }}
+        if: ${{ !cancelled() && steps.installed_revision.outcome == 'success' && matrix.installed == 'full' && runner.os == 'Windows' }}
         timeout-minutes: 5
         run: |
           python3 -m pip install --disable-pip-version-check Pillow==12.2.0
@@ -204,7 +222,7 @@ jobs:
           $preflight = Get-Content benchmarks/acceptance/windows-terminal-preflight.json -Raw | ConvertFrom-Json
           "terminal=$($preflight.terminal)" >> $env:GITHUB_OUTPUT
       - name: Prepare browser handoff
-        if: ${{ !cancelled() && steps.installed_revision.outcome == 'success' && runner.os == 'Linux' }}
+        if: ${{ !cancelled() && steps.installed_revision.outcome == 'success' && matrix.browser }}
         run: |
           python3 -m pip install playwright==1.64.1
           python3 -m playwright install --with-deps chromium
@@ -225,9 +243,10 @@ jobs:
           python3 scripts/acceptance/run.py --run-id ci-interactive interactive
           --binary "${{ runner.temp }}/kuku-ci-install/bin/kuku${{ runner.os == 'Windows' && '.exe' || '' }}"
           --bridge-cache "${{ runner.temp }}/kuku-ci-pty/interactive_pty${{ runner.os == 'Windows' && '.exe' || '' }}"
-          ${{ env.NATIVE_SMOKE == 'true' && '--native-smoke' || '' }}
-          ${{ runner.os == 'Windows' && env.NATIVE_SMOKE != 'true' && '--desktop --windows-terminal "$env:KUKU_ACCEPTANCE_WINDOWS_TERMINAL"' || '' }}
-          ${{ runner.os == 'Linux' && '--browser' || '' }}
+          ${{ matrix.installed == 'smoke' && '--native-smoke' || '' }}
+          ${{ matrix.cases != '' && format('--cases {0}', matrix.cases) || '' }}
+          ${{ runner.os == 'Windows' && matrix.installed == 'full' && '--desktop --windows-terminal "$env:KUKU_ACCEPTANCE_WINDOWS_TERMINAL"' || '' }}
+          ${{ matrix.installed == 'full' && matrix.browser && '--browser' || '' }}
       - name: Cache the validated native PTY helper
         if: ${{ !cancelled() && steps.interactive.outcome == 'success' && steps.pty_cache.outcome == 'success' && steps.pty_cache.outputs.cache-hit != 'true' }}
         continue-on-error: true
@@ -236,7 +255,7 @@ jobs:
           path: ${{ runner.temp }}/kuku-ci-pty
           key: ${{ steps.pty_cache.outputs.cache-primary-key }}
       - name: Upload bounded acceptance evidence
-        if: ${{ always() && env.INSTALLED_ACCEPTANCE == 'true' }}
+        if: ${{ always() && env.INSTALLED_ACCEPTANCE != 'none' }}
         uses: actions/upload-artifact@v4
         with:
           name: acceptance-${{ matrix.os }}
