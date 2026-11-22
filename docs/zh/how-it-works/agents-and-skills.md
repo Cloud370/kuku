@@ -1,13 +1,14 @@
 # Agent 与 Skill
 
-Agent 是一个 Session 中可以独立收件和执行任务的成员。Skill 为加载它的 Agent 提供指令或资源。同一个 Agent 需要按某种流程工作时，使用 Skill。任务需要独立上下文、模型或执行状态时，使用另一个 Agent。
+- 同一个 Agent 需要按某套固定流程做事时，用 **Skill**。
+- 子任务需要独立的上下文、模型或执行状态时，拆给另一个 **Agent**。
 
 ## 和另一个 Agent 协作
 
-CLI 默认使用 `main`。为新 Agent 选择 `reviewer` 这样的扁平地址，可以选用预设来设置初始指令、模型档和工具。把执行任务所需的材料发给它。再次使用同一地址会延续该 Agent 自己的历史。同一个工作目录中可以有多个 Agent 同时执行。
+CLI 默认使用 `main`。你可以按扁平地址（如 `reviewer`）新建 Agent，可选用预设来配好初始指令、Tier 和工具，再把任务所需的材料发过去。再次向同一地址发消息会延续它自己的历史。多个 Agent 可以在同一个工作区里并发执行。
 
-模型工具 `create_agent` 创建接收方，`send_message` 向已有地址发送输入并返回回执。接收方之后产生的结果可以通过 `list_agents` 或 Session 查询查看。CLI 的 `kuku agents list` 列出可选预设，`kuku list SESSION_ID` 列出该 Session 中实际存在的 Agent。[使用 Agent](../guides/use-agents.md) · [协作工具](../reference/tools.md#session-协作工具)
+运行期间，模型通过 `create_agent` 注册接收方、`send_message` 投递任务并拿到回执、`list_agents` 查看对方状态与最近落盘输出。CLI 里 `kuku agents list` 看的是可用预设，而 `kuku list SESSION_ID` 看的是该 Session 里实际已创建的 Agent。[使用 Agent](../guides/use-agents.md) · [协作工具](../reference/tools.md#session-协作工具)
 
 ## 加载 Skill
 
-通过 `list_skills` 和 `search_skills` 查找 Skill，通过 `use_skill` 将其加载到当前 Agent 的上下文。CLI 输入以已识别的 `/skill-name` 开头时，也可以为首个请求加载该 Skill。加载之后请求执行的动作仍遵循相同的工具授权规则。[使用 Skill](../guides/use-skills.md) · [工具权限](permissions.md)
+模型用 `list_skills` 和 `search_skills` 找 Skill，用 `use_skill` 加载进当前上下文；CLI 输入以已识别的 `/skill-name` 开头时也会在首轮直接加载。加载 Skill 后发起的任何工具调用，依然遵循完全相同的权限审批规则。[使用 Skill](../guides/use-skills.md) · [工具权限](permissions.md)

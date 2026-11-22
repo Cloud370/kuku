@@ -1,55 +1,39 @@
-# Use Skills
+# 使用 Skill
 
-Skill 会把指令加载到当前 Session 中。
+Skill 把可复用的工作流指令按需加载到当前 Session 中。
 
-## Add a Skill
+## 添加 Skill
 
-把每个 skill 目录放到以下位置之一：
+在以下任一路径建一个包含 `SKILL.md` 的目录：
 
-- `~/.kuku/skills/<name>/`
-- `<workspace>/.kuku/skills/<name>/`
+- `~/.kuku/skills/<name>/` — 个人工作流
+- `<workspace>/.kuku/skills/<name>/` — 仓库专用工作流
 
-这些是约定位置。启用 auto-discovery 时，kuku 也会扫描其他用户级和项目级 dot-directory 中的 `skills/`，例如 `.claude/skills`。
+开启自动发现后，kuku 还会扫描其他用户级和项目级点目录下的 `skills/`（例如 `.claude/skills/`）。如果 Skill 需要和 Hook 或其他扩展资源一起打包，放到 `.kuku/packages/` 下。[Skill 格式](../reference/skill-format.md) · [Package 格式](../reference/package-format.md)
 
-每个 skill 目录都必须包含 `SKILL.md`。完整格式见 [Skill Format](../reference/skill-format.md)。
-
-## Check Discovery
+## 检查是否被发现
 
 ```bash
 kuku skills list
 kuku skills show <name>
 ```
 
-如果某个 skill 缺失，请检查 [Config](../reference/config.md) 中的 `[discovery]`。
+如果列表里没看到，检查 [Config 参考](../reference/config.md) 中的 `[discovery]` 配置。
 
-## Use Skills During a Run
+## 运行时使用 Skill
 
-当默认 Skill Tool surface 启用时，kuku 可以：
+默认情况下，模型可以通过 `list_skills`、`search_skills` 和 `use_skill` 浏览并按需加载 Skill。
 
-- 使用 `list_skills` 浏览当前目录快照
-- 使用 `search_skills` 查找相关工作流
-- 使用 `use_skill` 按需加载完整的 skill 指令
-
-你也可以用带斜杠前缀的 Skill 名称启动 `kuku run`：
+也可以在 `kuku run` 里直接用斜杠前缀指定某个 Skill——kuku 会加载它，并把后面的文本作为你的提示词：
 
 ```bash
 kuku run "/tdd implement login"
 ```
 
-在这种形式下，kuku 会加载指定的 Skill，并把剩余文本当作用户 prompt 发送。
-
-如果要在某一次运行中禁用这个能力：
+单次运行想彻底关闭 Skill 工具和斜杠加载：
 
 ```bash
 kuku run --no-skills "task"
 ```
 
-`--no-skills` 会禁用默认的 Skill Tool surface，因此这次运行中 `list_skills`、`search_skills`、`use_skill` 以及斜杠前缀的 Skill 加载都不可用。
-
-Skill 可以指导模型如何工作，但不会扩展权限，也不会绕过 Tool 审批规则。
-
-## Decide Where a Skill Belongs
-
-- `~/.kuku/skills/` 适合个人工作流。
-- `<workspace>/.kuku/skills/` 适合仓库专用工作流。
-- 当 skill 需要随 hooks 或其他扩展资源一起发布时，使用 `.kuku/packages/`。参见 [Package Format](../reference/package-format.md)。
+Skill 只用来指导模型怎么做事，不会扩大权限，也不能绕过工具审批规则。

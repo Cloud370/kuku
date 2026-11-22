@@ -1,65 +1,39 @@
 # Manage Sessions
 
-Use `/resume` to reopen a conversation in your current workspace. Use `/agents` to choose who receives your next message. Each window keeps its own draft. [Terminal commands](../reference/cli.md#terminal-interface)
+In the TUI, use `/resume` to reopen a Session in the current workspace and `/agents` to pick which Agent receives your next message. Each window keeps its own draft. [Terminal interface](../reference/cli.md#terminal-interface)
 
-## Pick up an earlier conversation
+## Rewind or branch from history
 
-In the terminal, press Ctrl+G when the Agent is idle to open conversation history. If you go back from Turn 100 to Turn 90 and continue there, open the same list later and choose the saved Turn 100 to return. Both conversations are saved in the same Session. [Terminal controls](../reference/cli.md#edit-a-past-message-or-continue-from-history)
+When an Agent is idle in the TUI, press **Ctrl+G** to open its conversation history. If you roll back from Turn 100 to Turn 90 and continue from there, opening the same list later still lets you jump back to the saved Turn 100 — both branches stay in the same Session. [History controls](../reference/cli.md#rewinding-and-branching)
 
-## List Sessions
-
-Current workspace only:
+## List Sessions and Agents
 
 ```bash
-kuku list
+kuku list                                  # current workspace
+kuku list --all                            # all workspaces
+kuku list --workspace /path/to/workspace   # specific workspace
+kuku list <session-id>                     # Agents in one Session (address, status, queued inputs)
 ```
 
-All workspaces:
-
-```bash
-kuku list --all
-```
-
-One workspace explicitly:
-
-```bash
-kuku list --workspace /path/to/workspace
-```
-
-## List Agents In One Session
-
-```bash
-kuku list <session-id>
-```
-
-This shows each stable Agent address, execution status, and pending-input count.
-
-## Continue A Session
-
-Continue the `main` Agent:
+## Continue a Session or reply to a waiting Agent
 
 ```bash
 kuku run --session <session-id> "continue"
-```
-
-Or continue the latest session:
-
-```bash
 kuku run --continue "continue"
 ```
 
-Use `--agent reviewer` to create or continue another Agent in that Session. A new Agent starts with independent context; reopening an existing address retains its own context and model configuration.
+Pass `--agent reviewer` to create or address another Agent in the same Session. New Agents start with independent context; reopening an existing address keeps its own context and model settings.
 
-A waiting Agent requires its exact pending request:
+When an Agent is waiting for an answer or permission, reply with its exact `request_id`:
 
 ```bash
 kuku reply <session-id> <request-id> --agent reviewer --answer "the requested information"
 kuku reply <session-id> <request-id> --agent reviewer --allow
 ```
 
-Use `--deny` to reject authorization. A normal follow-up prompt never grants permission. Reply command identities make retries idempotent; stale request identities are rejected.
+Pass `--deny` to reject authorization. A regular follow-up prompt never grants permission. Replies carry a command ID so retries are idempotent, and stale request IDs are rejected.
 
-## Read Session Data
+## Inspect Session data
 
 ```bash
 kuku show <session-id>
@@ -69,24 +43,20 @@ kuku events <session-id>
 kuku events <session-id> --agent review
 ```
 
-- `kuku show` reads the last durable response for one Agent.
-- `kuku events` shows the latest 40 committed records. Use `--agent` or `--kind` to find specific events. Use `--all --json` to export the ledger. [Event inspection](../reference/cli.md#kuku-events)
-- inspection accepts `--workspace` and `--data-dir` when the Session lives elsewhere.
+- `kuku show` prints the latest durable response for an Agent.
+- `kuku events` shows the latest 40 committed records. Filter with `--agent` or `--kind`, or pass `--all --json` to export the full ledger. [Event inspection](../reference/cli.md#kuku-events)
+- Both accept `--workspace` and `--data-dir` for Sessions stored elsewhere.
 
-## Save and reuse a value
+## Save and reuse values
 
-To save a long paste before the first model request, open `/save` in the terminal, paste the text, and give it a name. To keep a command log, open its capture with `/tools` and press S in the viewer. After reopening with `/resume`, use `/values` to read the value or attach its saved reference to your next input. [Terminal commands](../reference/cli.md#terminal-interface)
+To keep a long paste before the first model request, run `/save` in the TUI, paste the text, and name it. To keep a command log, open its capture with `/tools` and press **S** in the viewer. After reopening with `/resume`, use `/values` to read a saved value or attach its reference to your next message. [Terminal interface](../reference/cli.md#terminal-interface)
 
-## Delete A Session
+## Delete a Session
 
 ```bash
 kuku delete <session-id>
 ```
 
-If the session belongs to another workspace, add `--workspace`.
+Add `--workspace` if the Session belongs to another workspace.
 
-## Related Pages
-
-- [CLI](../reference/cli.md)
-- [File Layout](../reference/file-layout.md)
-- [Events](../reference/events.md)
+Closing a Session preserves its committed context and pending requests. Queued inputs can be withdrawn while waiting in the queue, but become immutable once admitted into model context. [Sessions](../how-it-works/sessions.md) · [CLI](../reference/cli.md) · [File layout](../reference/file-layout.md) · [Events](../reference/events.md)

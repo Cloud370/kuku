@@ -2,24 +2,24 @@
 
 ## 入口模式
 
-- `kuku` 在交互终端打开全屏客户端。
-- `kuku run ...` 执行非交互任务，适用于脚本或没有交互终端的环境。
+- `kuku` 在交互终端打开全屏客户端（TUI）。
+- `kuku run ...` 执行非交互任务，适用于脚本或无 TTY 环境。
 
-终端、脚本和浏览器客户端都向服务提交任务。本地客户端复用所选数据目录的受管服务。[运行服务](../guides/run-the-server.md)
+TUI、`kuku run` 和浏览器界面都通过 kuku 服务提交任务。本地客户端复用所选数据目录的受管服务。[运行服务](../guides/run-the-server.md)
 
-首次运行交互设置与 `kuku init` 共用本地 provider 设置流程。`kuku init` 需要 TTY，可编辑有效的已有配置，并且不会为了配置而启动服务。不支持远程配置。参见[配置指南](../start/configuration.md)。
+首次运行向导与 `kuku init` 共用本地 Provider 配置流程。`kuku init` 需要 TTY，可编辑有效的已有配置，不会启动服务，也不配置远程服务。[配置 kuku](../start/configuration.md)
 
 ## 连接与工作区选项
 
 | 选项 | 含义 |
 |---|---|
-| `-w`、`--workspace <path>` | 命令和文件工具使用的工作区。本地默认使用解析后的当前目录，远程 Session 需要指定服务端机器上的绝对路径。 |
-| `--data-dir <path>` | 本地服务的数据目录。默认为 `$KUKU_HOME` 或 `~/.kuku`。使用 `--remote` 时，该选项选择客户端的本地存储目录。 |
-| `--config <path>` | 选择本地配置文件。远程配置在服务端机器上管理。 |
-| `--remote <url>` | 显式连接该服务地址。 |
-| `--token <token>` | 显式连接的服务访问令牌，也可设置 `KUKU_TOKEN`。 |
+| `-w`、`--workspace <path>` | 命令和文件工具的工作区。本地默认用解析后的当前目录；远程 Session 需指定服务端机器上的绝对路径。 |
+| `--data-dir <path>` | 本地服务的数据目录（默认 `$KUKU_HOME` 或 `~/.kuku`）。搭配 `--remote` 时用于客户端本地存储目录。 |
+| `--config <path>` | 指定本地配置文件。远程配置在服务端机器上管理。 |
+| `--remote <url>` | 显式连接远程服务地址。 |
+| `--token <token>` | 显式连接的服务访问令牌，也可通过 `KUKU_TOKEN` 设置。 |
 
-运行 `kuku run` 时把选项放在提示词之前。命令会将剩余的词作为提示词。
+使用 `kuku run` 时把选项放在提示词前面，其余参数会拼作提示词。
 
 ## 顶层命令
 
@@ -28,301 +28,238 @@
 | `kuku run <prompt...>` | 提交任务并观察执行 |
 | `kuku reply <session-id> <request-id>` | 回复持久问题或授权请求 |
 | `kuku show <session-id>` | 查看 Session 的最终输出 |
-| `kuku events <session-id>` | 查看持久 Session 事实 |
+| `kuku events <session-id>` | 查看持久 Session 事件 |
 | `kuku list` | 列出 Session |
 | `kuku pending ...` | 核对丢失回执的提交 |
 | `kuku delete <session-id>` | 删除 Session |
 | `kuku config ...` | 查看、验证或修改配置 |
-| `kuku init` | 打开共享的本地 provider 和凭据设置 |
+| `kuku init` | 打开本地 Provider 与凭据配置向导 |
 | `kuku prompts ...` | 查看或导出 Prompt 资产 |
-| `kuku agents ...` | 列出或查看 Agent 联系卡 |
+| `kuku agents ...` | 列出或查看 Agent 预设 |
 | `kuku skills ...` | 列出或查看 Skill |
 | `kuku server ...` | 显式启动 HTTP 服务 |
-| `kuku server status` | 检查服务身份和当前活动 |
-| `kuku server restart` | 在手头的工作结束后重启受管本地服务 |
+| `kuku server status` | 查看服务身份与当前活动 |
+| `kuku server restart` | 空闲时重启受管本地服务 |
 | `kuku web ...` | 打开所选服务的浏览器界面 |
 
 ## 终端界面
 
-### 发送、编辑或停止
+### 发送、编辑与停止
 
-| 你想做什么 | 怎么做 |
+| 操作 | 方式 |
 |---|---|
-| 发送消息，让 Agent 尽早处理 | 按 Enter。Agent 正在工作时，可能会在当前轮接到这条消息。 |
-| 让 Agent 下一轮再处理 | 按 Alt+Enter，把消息放进 **Pending inputs** 队列。 |
-| 改还在 **Pending inputs** 里的消息 | 点击消息，或在空白输入框里按 ↑ 选中。按 Enter 编辑，按 Delete 移出队列。 |
-| 停止当前轮 | Agent 正在工作时，在主界面按 Esc。已经显示的对话仍可查看。 |
+| 立即发送 | 按 `Enter`。Agent 正在工作时，可能在当前 Turn 收到这条消息。 |
+| 排队到下一轮 | 按 `Alt+Enter` 放进 **Pending inputs** 队列。 |
+| 编辑排队消息 | 点击消息，或在空白输入框按 `↑` 选中；`Enter` 编辑，`Delete` 移出队列。 |
+| 停止当前 Turn | Agent 运行时按 `Esc`，已显示的内容会保留。 |
 
-### 编辑过去的消息或接着聊
+### 回退与分支切换
 
-Agent 空闲时按 Ctrl+G，或输入 `/rewind`。`/jump` 也会打开同一个列表。目前的对话和已保存的轮次按时间一起排列，默认选中底部最新的一轮。往上翻会加载更早的轮次。
+Agent 空闲时按 `Ctrl+G` 或输入 `/rewind`（或 `/jump`）打开对话历史。当前主线和已保存分支按时间排列，默认选中最新一轮，向上翻可加载更早记录。
 
-选中已结束的一轮，按 Enter 打开确认页，再按 Enter 切换到这一轮结束时的对话，包括回答和工具结果。输入框为空时，原消息会填进去作为未发送的草稿。已有草稿会保留。在同一个列表里选标有 **Saved** 的轮次，即可切回之前的对话。
+选中已结束的 Turn 按两次 `Enter` 即可切回该轮结束时的对话（保留回答和工具结果）。输入框为空时会自动带入原消息作为草稿，已有草稿不受影响。在列表中选中标有 **Saved** 的条目可切回先前分支。
 
-默认保留当前文件。往回切到当前历史中的较早轮次时，可在确认页按 Space，查看可以恢复的文件和可用的增删行数。按 Enter 确认后，会切换对话并应用预览中的文件改动。预览没有找到可恢复文件时，直接按 Enter 即可切换对话并保留当前文件。[回退的影响](../how-it-works/sessions.md#消息回退)
+默认保留当前工作区文件。往回切到当前主线的较早 Turn 时，可在确认页按 `Space` 预览可恢复文件与增删行数，再按 `Enter` 一并切换对话并恢复文件。[消息回退机制](../how-it-works/sessions.md#消息回退)
 
-### 其他终端控件
+### 常用快捷键与控件
 
-| 按键或操作 | 行为 |
+| 按键或控件 | 行为 |
 |---|---|
-| Ctrl+C | 有草稿时清空，草稿为空时退出 TUI。正在执行的工作在服务端继续。编辑对话框中只清空当前输入框。 |
-| Shift+Enter 或 Ctrl+J | 在草稿中换行。 |
-| Esc | 关闭面板或弹窗，或退出聚焦的控件。关闭答复编辑器会保留答复草稿。Agent 空闲且输入框为空时，按 Esc 看到提示后，再按一次可打开对话历史。 |
-| Ctrl+P 或 F1 | 显示只读快捷键帮助并保留草稿；在帮助中按 Enter 或点击不会执行操作。 |
-| 草稿为空时按 `/`，或先按 Ctrl+P 再按 `/` | 在输入框上方搜索操作和 Skill。选中 Skill 会在草稿中加入可编辑的 `/skill:NAME` 前缀，用于下一次发送。 |
-| `@` 或 Tab | 将工作区相对路径补全到草稿。 |
-| Alt+← 或 Alt+→ | 直接切到上一个或下一个 Agent。`main` 排第一，其余按地址排序，到达首尾时循环。 |
-| 编辑器外按 F2 | 按顺序循环可见控件：请求、可用的认证修复、继续或停止、待确认投递恢复、上一个 Agent、服务操作，最后是 Messages。F2 或点击问题卡片会直接打开答复编辑器；Esc 按请求 ID 保存未提交答案，并保留主草稿。F2 或点击权限卡片会聚焦请求，供用户明确选择。Enter 执行已聚焦控件；点击其他有副作用的控件只聚焦。Running 或清理时 Esc 无论焦点为何都会打断；否则退出焦点。Ctrl+R 仍会重连。 |
-| 权限请求卡片 | 用 ←/→ 或点击明确选择 **Deny** 或 **Allow once**，再按 Enter。键盘拒绝路径是 F2、←、Enter。Waiting 时 Esc 离开焦点，不作答也不打断。 |
-| Ctrl+T | 循环切换所选模型支持的思考等级，对当前 Agent 在下一个安全请求边界生效，并保留草稿与阅读位置。 |
-| 认证修复 | 匹配的认证失败后，可通过 **Repair credentials** 更新实际失败的受管本地连接，并明确重启其服务；远程连接显示服务端修复指引。[恢复步骤](../start/configuration.md#认证失败后的恢复)。 |
-| 对话标题栏中的 **Messages**（窄窗口显示为 **Msg**） | 浏览当前 Agent 已加载对话中的用户、助手和工具条目。按 Enter 查看该条目可用的操作；按 Tab 或 ←/→ 选择操作，按 Enter 执行，按 Esc 返回条目列表且保留草稿。Full output 会打开已保存结果，或在没有保存结果时打开完整的内联结果。脚本有多份输出时，可继续选择要查看的单个动作。只读的回退历史组不是消息操作目标。 |
-| Ctrl+O | 一起展开或收起可见的对话预览，包括工具组和 Agent 卡片。 |
-| 在工具输出查看器中按 S | 给选中的保留输出命名。在命名提示中输入 `NAME --replace` 可更新已有名称。 |
-| 鼠标左键拖动 | 高亮选区，松开时将所选文字复制到剪贴板。 |
-| 鼠标滚轮、Page Up、Page Down | 滚动对话。 |
-| Ctrl+End，或阅读历史时按 Alt+↑ | 回到最新输出并恢复跟随。 |
-| 编辑区的 ↑、↓ | 在多行草稿内移动，到边缘后滚动对话。Ctrl+↑ 和 Ctrl+↓ 浏览已发送的提示词并返回草稿；队列焦点下则在可编辑的排队输入间移动。 |
-| 菜单中的方向键、Tab、Enter | 方向键移动高亮项，Tab 补全可编辑文本，Enter 执行选中的动作。 |
-| `exit` 或 `quit` | 单行草稿只有这一个小写词、可带首尾空格且没有附件时，Enter 或 Alt+Enter 会在草稿旁打开 **Exit kuku?**。按 Y 退出，按 Esc 继续编辑。 |
+| `Ctrl+C` | 有草稿时清空草稿；草稿为空时退出 TUI（服务端工作继续）。在编辑弹窗中只清空当前输入框。 |
+| `Shift+Enter` 或 `Ctrl+J` | 草稿中换行。 |
+| `Esc` | 关闭弹窗、退出聚焦控件，或运行/清理期间打断执行。关闭答复编辑器保留草稿；空闲且草稿为空时连按两次 `Esc` 打开对话历史。 |
+| `Ctrl+P` 或 `F1` | 打开只读快捷键帮助，保留当前草稿。 |
+| 空草稿按 `/`，或 `Ctrl+P` 后按 `/` | 搜索斜杠命令和 Skill；选中 Skill 会填入可编辑的 `/skill:NAME` 前缀。 |
+| `@` 或 `Tab` | 补全工作区相对路径。 |
+| `Alt+←` / `Alt+→` | 在 Agent 间循环切换（`main` 排第一，其余按地址排序）。 |
+| 编辑器外按 `F2` | 依次聚焦可见交互控件（待决请求、认证修复、继续/停止、待确认投递恢复、上一个 Agent、服务操作、**Messages**）。`F2` 或点击问题卡片打开答复编辑器；`F2` 或点击权限卡片聚焦请求，再用 `←`/`→` + `Enter` 选择 **Deny** / **Allow once**（键盘拒绝路径为 `F2`、`←`、`Enter`）。`Ctrl+R` 重连。 |
+| `Ctrl+T` | 切换当前模型支持的思考等级，在下一个安全请求边界生效。 |
+| **Repair credentials** | 出现匹配的认证失败后显示，用于更新受管本地连接并明确重启其服务；远程连接显示服务端修复步骤。[认证失败后的恢复](../start/configuration.md#认证失败后的恢复) |
+| **Messages**（窄屏 **Msg**） | 浏览当前 Agent 的用户、助手和工具条目并执行操作（`Full output` 打开保留输出或完整内联内容；多输出 JS 脚本可进一步选择单个动作）。 |
+| `Ctrl+O` | 一起展开或收起可见的对话预览（工具组和 Agent 卡片）。 |
+| 在输出查看器中按 `S` | 给选中的保留输出命名（`NAME --replace` 覆盖已有名称）。 |
+| 鼠标左键拖动 | 选中文字，松开即复制到剪贴板。 |
+| 滚轮、`Page Up` / `Page Down` | 滚动对话。 |
+| `Ctrl+End` 或 `Alt+↑` | 跳回最新输出并恢复自动跟随。 |
+| 编辑区 `↑` / `↓` | 多行草稿内移动，到达边缘后滚动对话。`Ctrl+↑` / `Ctrl+↓` 浏览已发送历史（或队列聚焦时浏览排队输入）。 |
+| `exit` 或 `quit` | 单行草稿只有这一个词且无附件时，发送会提示 **Exit kuku?**（`Y` 退出，`Esc` 继续编辑）。 |
 
-在选择弹窗中点击一行可高亮该项。点击也可切换正在查看的 Agent 或 Session、打开模型 ID 输入框，或查看对话详情和保留输出。点击标题栏的 **Messages** 可打开条目选择器，再点击条目进入其操作列表，点击操作即可执行。应用模型档或思考设置、决定授权或重启仍须按 Enter 确认。
-
-Continue 回执提示只短暂显示，不会替换已有错误。窄屏的聚焦控件提示也会保留完整 Esc 动作。
+弹窗中点击行可高亮；点击也可切换 Agent/Session、打开模型输入框或查看消息与输出。应用模型/思考设置、权限决定或服务重启仍需按 `Enter` 确认。
 
 ### 斜杠命令
 
-命令和别名都可以搜索，列表只使用主命令名。Tab 补全主命令并保留参数。选择条目或提交完整斜杠命令都会执行同一操作。每项操作首次直接使用别名时，输入框旁会提示主命令名。`/reload` 保留给配置重载。
+命令与别名均可搜索，`Tab` 补全主命令名并保留参数。`/reload` 保留给配置重载。
 
 | 命令 | 别名 | 行为 |
 |---|---|---|
-| `/new` | `/new-session` | 打开一份空白草稿，之前的 Session 仍可打开。 |
-| `/resume` | `/sessions` | 查找工作区中已有的 Session。 |
-| `/rewind` | `/backtrack`、`/jump` | 打开对话历史，切换到选中的轮次。 |
-| `/compact` | `/compress`、`/summarize` | 当前执行结束后，压缩所选 Agent 的较早上下文。对话区显示进度、耗时、请求大小和可展开的交接记录。失败后可用 `/compact retry` 重试，也可用 `/compact undo` 恢复压缩前的上下文并保留消息。 |
-| `/agents` | `/agent`、`/subagents` | 搜索 Session 中的 Agent、切换接收者或新建 Agent。选择器显示活动、待决请求、队列数量和可用的任务摘录。 |
-| `/jobs` | `/job`、`/ps` | 列出所选 Agent 的后台任务，保留原始标题并显示当前状态。空间充足时，输入区会显示正在运行的数量。选中任务可取消或读取已有输出。用 `/jobs cancel <id>` 按 ID 取消。也可以从 `/messages` 里的完成条目打开保留的输出。 |
-| `/model` | `/models` | 选择、添加或编辑模型路由。Ctrl+L 打开同一个选择器。 |
-| `/thinking` | `/think`、`/effort` | 显示继承的模型默认值和受支持的等级，勾号标记当前选择。Enter 将高亮项应用到当前 Agent。**Use default** 清除该 Agent 的覆盖设置。对于可写入的本地模型路由，在等级上按 D 后用 Enter 确认，即可保存为模型默认值并保留 Agent 的显式覆盖。 |
-| `/statusline` | `/status-line` | 打开 **Status line settings**，预览、选择、排序并保存状态栏字段。 |
-| `/save` | `/save-value` | 在发送前给粘贴文本或当前草稿命名。 |
-| `/values` | `/value`、`/saved-values` | 浏览保存值，选择一项读取或附到草稿。 |
-| `/server` | `/service` | 检查已连接的服务。按 Ctrl+R 重连。 |
-| `/restart` | `/restart-service` | 确认重启受管本地服务。有工作运行时会延后重启。 |
-| `/web` | `/browser` | 在浏览器中打开对话。 |
+| `/new` | `/new-session` | 打开空白草稿，旧 Session 仍可打开。 |
+| `/resume` | `/sessions` | 查找并切换当前工作区的已有 Session。 |
+| `/rewind` | `/backtrack`、`/jump` | 打开对话历史并切换到选中 Turn。 |
+| `/compact` | `/compress`、`/summarize` | 空闲时压缩当前 Agent 的较早上下文（支持 `/compact retry` 与 `/compact undo`）。 |
+| `/agents` | `/agent`、`/subagents` | 搜索 Session 中的 Agent、切换接收者或新建 Agent。 |
+| `/jobs` | `/job`、`/ps` | 列出当前 Agent 的后台 Job，读取实时输出或取消（`/jobs cancel <id>`）。 |
+| `/model` | `/models` | 选择、添加或编辑模型路由（`Ctrl+L` 相同）。 |
+| `/thinking` | `/think`、`/effort` | 设置当前 Agent 思考等级，选 **Use default** 清除覆盖，或在可写本地路由上按 `D` + `Enter` 设为模型默认。 |
+| `/statusline` | `/status-line` | 预览、开关、排序并保存状态栏字段到 `tui.toml`。 |
+| `/save` | `/save-value` | 发送前为粘贴内容或草稿命名保存。 |
+| `/values` | `/value`、`/saved-values` | 浏览保存值，读取或附到草稿。 |
+| `/server` | `/service` | 查看已连接的服务（`Ctrl+R` 重连）。 |
+| `/restart` | `/restart-service` | 确认重启受管本地服务（有任务运行时会延后）。 |
+| `/web` | `/browser` | 在浏览器中打开当前对话。 |
 | `/help` | `/hotkeys` | 查看键盘快捷键。 |
-| `/quit` | `/exit`、`/q` | 离开终端客户端。已接纳的工作在服务端继续。 |
+| `/quit` | `/exit`、`/q` | 退出 TUI（已接纳任务在服务端继续）。 |
 
 ### 阅读对话
 
-每轮包含用户消息、工具执行和助手正文。同一轮内连续成功的只读检查默认归组，显示读取、搜索和列表等调用的数量。文件修改、运行中的调用、失败和授权请求仍单独显示。**List Agents** 汇总参与者及其活动，**Query Session** 汇总匹配的事件。使用标题栏中的 **Messages** 可检查单次调用并操作所选条目。
-
-翻阅较早的输出时，点击输入区旁的 **Jump to latest** 可恢复跟随。
-
-轮次统计在回答末尾显示一次，随正文滚动。浏览历史时，当前轮次和返回入口浮在输入框上方，共用输入框的左边线和文字内边距。按可用宽度显示耗时、token、缓存命中率与工具次数。
-
-命令卡显示可执行程序及参数。调用带标题时，卡片在命令上方显示执行目的。底边显示观察到的执行状态和已知退出码。识别出测试报告时会显示程序报告的统计。点开卡片可查看记录的参数、捕获详情和可用证据。已完成的写入和编辑使用代码块样式。写入预览以实际记录的内容为准，源码按语言高亮，Markdown 使用正文渲染。编辑显示实际增删的行，卡片底边显示写入或变更的行数。
-
-工作区脚本卡显示已完成的宿主动作和观察到的文件变更。展开后可查看各动作结果，包括部分完成和结果未知的情况。在 **Messages** 中选择脚本，再选 **Full output**，即可查看单个脚本动作的保留捕获。
-
-已经发送但尚未处理的消息出现在 **Pending inputs**。Agent 接到消息后，消息会进入对话。重开 Session 时也可以找回仍待确认的发送。
-
-其他 Agent 投递的消息会显示发送者地址，例如 `From main`。开启一轮的消息也会显示这个地址。
-
-Markdown 边输出边排版，尚未闭合的代码围栏也可阅读。接入正在生成的回复时，终端可以显示已流出文本的有界前缀。已提交的回复会替换临时预览。
-
-Markdown 回复支持任务列表、嵌套引用和列表，以及行内的 `<sup>`、`<sub>` 和 `<br>`。列表折行后，续行与该项正文对齐。单击带下划线的 HTTP 或 HTTPS 链接可在默认浏览器打开其目标地址。拖过链接可以选中文字。代码和源码视图保留原文。
-
-打断正在流式输出的回复时，有界预览会保留在原轮次中，重新打开 Session 后也能看到。
-
-助手回复中标为 `md` 或 `markdown` 的围栏默认预览其中的文档，包括标题、列表、表格和代码块。标签不区分大小写。内部代码按标注的语言显示。普通代码围栏按原样显示内容，支持的语言带语法高亮。
-
-用户消息、命令、Agent、文件预览和代码块都在正文四周保留内边距，窄屏时缩小左右留白。Agent 卡片和代码块占满各自缩进层级的可用正文宽度，独立的 Agent 卡片有自己的边框，与相邻命令之间留一行空白。展开时 Details 入口保留在任务和回复详情上方。卡片顶部显示 Agent 名称。点已确认的 Agent 卡片右上角 **Open agent →** 可直接切换到它的会话视图，窄屏显示 **Open →**。创建指令在独立标签下换行，默认预览最多三行，较长指令可点 Details 阅读。任务和回复各用单行预览。同一 Agent 的创建和任务投递共用一张委派卡片，展开可检查各次操作。只涉及委派双方的状态查询收入该卡片的时间线；涉及其他 Agent 的查询另行汇总。已完成回复的思考阅读入口紧贴助手标题。
-
-模型思考时，助手回复的第一行会显示轻微动效；有公开思考内容时，这里按终端自己的节奏逐字显示一行摘录。回答从同一行接上。点击 **View thinking** 或选择条目的 **Thinking** 操作，可以在消息原来的位置阅读已收到的思考内容。阅读区最多显示五行，回答继续显示在下方。方向键或阅读区上的滚轮可翻阅思考，Esc 或再次点击标题可收起。复制和 Markdown 源码视图使用所选回复正文。工具调用前的思考可在 **Messages** 中查看。
+- **工具归组**：同一 Turn 内连续成功的只读检查默认合并为汇总行；文件修改、运行中调用、失败和授权请求单独显示。通过标题栏 **Messages** 可逐项检查调用和完整输出。
+- **工具卡片**：命令卡显示命令、可选标题、状态、退出码及识别出的测试统计；写入/编辑卡渲染代码高亮或增删差异；`run_js` 脚本卡汇总宿主动作和文件变更，展开可看单步结果与保留捕获。
+- **委派与队列**：其他 Agent 投递的消息标注发送者（如 `From main`）；同一 Agent 的创建与任务投递合并在委派卡内，带 **Open agent →** 快捷入口和可展开详情。已发未处理消息显示在 **Pending inputs**。
+- **流式与 Markdown**：边输出边排版（支持未闭合围栏、任务列表、嵌套引用/列表、行内 `<sup>`/`<sub>`/`<br>`、可点击 HTTP/HTTPS 链接以及默认渲染的 `md`/`markdown` 围栏）。打断流式输出时会在原 Turn 保留有界预览。
+- **思考过程**：模型思考时在回复顶部流式显示摘录。点击 **View thinking**（或在 **Messages** 里选 **Thinking**）可就地展开 5 行可滚动阅读区；工具调用前的思考也在 **Messages** 中查看。
+- **跳转与统计**：阅读历史时点 **Jump to latest** 恢复跟随；每轮回复末尾汇总耗时、token、缓存命中率与工具次数。
 
 ### 状态与用量
 
-空白会话显示 kuku 标题。空间充足时，会话名和操作提示在 kuku 名称下左对齐。开始工作后，会话标题缩为一行。默认状态栏最左侧显示生效模型和解析得到的思考等级，例如 `gemini-4-neon · High`。`Default` 表示由模型服务选择等级，实际值未知。待生效的设置显示在 **Next model request** 中。底栏还显示连接状态、所选 Agent 和工作区。手机宽度下，工作区、上下文用量和平均 TPS 移到第二行。窗口很矮时底栏收为一行，为草稿留出空间。点击草稿文字可将光标移到对应字的位置，自动折行后也可直接点击。耗时紧跟当前活动名称。
+底部状态栏默认显示生效模型与思考等级（如 `gemini-4-neon · High`；`Default` 表示由 Provider 自行决定）、连接状态、当前 Agent、工作区、上下文用量与平均 TPS。待生效的模型/思考设置显示在 **Next model request**。
 
-输入区上方的标记和文字显示所选 Agent 的状态。执行期间标记会变化，准备就绪或工作结束后静止。界面会平滑处理短暂的阶段变化，立即显示错误和待用户决定的事项。执行中每秒更新轮次耗时，切换阶段或 Agent 时沿用原起点。结束后，耗时归到轮次总结，已接纳输入的回执从输入区退场。可用 `/statusline` 将可选的 `execution` 字段加入底栏。输入区在草稿上方显示 `To <agent>` 收件人，并随输入伸展。`Draft` 表示本地文本，`Awaiting receipt`、`Input queued` 和 `Input accepted` 分别表示等待回执、已排队和已接纳。
+输入区上方显示收件人（`To <agent>`）、输入投递状态（`Draft`、`Awaiting receipt`、`Input queued`、`Input accepted`）、当前 Turn 实时耗时及执行状态：
 
-`Waiting for model` 表示模型请求正在等待。模型服务的思考、可见回复和工具参数陆续到达时，可在 `Thinking`、`Streaming reply` 和 `Writing tool arguments` 之间切换。`Running tools` 表示工具已经派发。`Waiting` 表示有待答问题或授权，`Failed` 表示执行错误。`Offline` 表示服务连接出现问题，`Updates unavailable` 表示实时对话订阅失败。重连或收不到更新时，`Last seen` 标明上次观察到的执行状态。
+- `Waiting for model`、`Thinking`、`Streaming reply`、`Writing tool arguments`、`Running tools`
+- `Waiting`（等待答复或授权）、`Failed`（执行出错）
+- `Offline`（连接异常）、`Updates unavailable`（实时流订阅失败），此时以 `Last seen` 标明上次观察状态
 
-在 `/statusline` 中用 ↑ 或 ↓ 选择字段，空格切换显示，← 或 → 移动已启用字段。按 R 预览默认布局，按 Enter 保存，按 Esc 返回之前的布局。保存后立即应用布局，并写入本地 `tui.toml` 供以后启动使用。如果设置了 `KUKU_TUI_STATUSLINE`，关闭编辑器后恢复环境变量指定的布局。[终端配置](config.md#终端偏好)
+可用 `/statusline` 交互编辑字段（写入 `tui.toml`），或用 `KUKU_TUI_STATUSLINE` 做单次覆盖。[终端偏好](config.md#终端偏好)
 
 | 字段 | 读数含义 |
 |---|---|
-| `Context …% used` | 最近一次已测请求的输入 token 数除以该次请求使用的上下文容量，反映最近一次实际发送的提示词占用。 |
-| `in`、`out` | 当前 Agent 历次请求的累计输入和输出 token。输入包含缓存部分。`≥` 表示仅部分请求有读数。 |
-| `Cache hit …%` | 对当前 Agent 同时报告两项计数的请求，累计缓存读取 token 占累计输入 token 的比例。`0%` 表示实测零命中，没有测得大于零的输入总量时显示横杠。 |
-| `TPS` | 当前 Agent 已完成且有输出与有效计时的请求，其总输出 token 数除以总请求耗时。耗时含首个 token 等待，工具执行与重试退避均不计入。 |
-
-`—` 表示当前没有可用读数。新请求准备好后，Context 等待该次请求上报用量，TPS 继续显示已有平均值。如只需身份、路径和用量，可在启动前设置 `KUKU_TUI_STATUSLINE=agent,workspace,context,tokens_in,tokens_out,cache,tps`。
+| `Context …% used` | 最近一次已测请求的输入 token 数除以该次请求的上下文窗口。 |
+| `in`、`out` | 当前 Agent 历次请求的累计输入（含缓存）与输出 token。`≥` 表示仅部分请求上报了读数。 |
+| `Cache hit …%` | 同时上报两项计数的请求中，累计缓存读取 token 占累计输入 token 的比例。`0%` 为实测零命中，无正输入读数时显示 `—`。 |
+| `TPS` | 已完成且有输出与有效计时的请求总输出 token 除以总请求耗时（含首 token 等待，不含工具执行与重试退避）。 |
 
 ## `kuku run`
 
 ```text
-kuku run [options] <prompt...>
+kuku run [OPTIONS] <PROMPT...>
 ```
 
-参数：
-
-| 参数 | 含义 |
+| 选项 | 含义 |
 |---|---|
-| `-y`, `--yes` | 显式选择默认的 trusted-local 策略 |
-| `--connection <name>` | 精确的已配置连接名称 |
-| `--model <id>` | 精确的模型标识 |
-| `--tier <name>` | 可复用的模型路由和设置 |
-| `--agent <address>` | Session 内稳定地址，默认 `main` |
-| `--command-id <id>` | 调用方指定的输入幂等标识 |
-| `--reasoning-effort <value>` | Provider 支持的思考设置 |
-| `--service-tier <value>` | Provider 支持的服务设置 |
-| `--max-output-tokens <n>` | 单次模型响应的 token 上限 |
-| `-s`, `--session <id>` | 继续指定 Session |
-| `-c`, `--continue` | 继续最近的 Session |
-| `--json` | 输出一行最终 JSON |
-| `--stream-json` | 实时输出 JSON 行 |
-| `--show-thinking` | 显示模型服务提供的公开思考文字或摘要 |
-| `--raw` | 纯文本输出 |
-| `--verbose` | 显示持久 Agent 快照、配置和用量 |
-| `--prompts-dir <dir>` | 创建 Session 时覆盖内嵌 Prompt 资产。使用 `--remote` 时，填写服务端已授权的绝对目录。 |
-| `--no-agents` | 禁用 `create_agent`、`send_message` 和 `list_agents`，保留 `ask_user` |
-| `--no-skills` | 禁用默认 Skill 工具 `list_skills`、`search_skills`、`use_skill` 及斜杠 Skill 加载 |
+| `-s`、`--session <id>` | 继续已有 Session |
+| `-a`、`--agent <name>` | 指定目标 Agent（默认 `main`） |
+| `-m`、`--model <spec>` | 为本次运行覆盖模型路由 |
+| `--json` | 每行输出一条 JSON |
+| `-o`、`--output <path>` | 将最终输出写入文件 |
+| `--no-wait` | 服务接纳输入后立即返回 |
+| `--auto-approve` | 本次运行自动批准权限请求 |
+| `--wait-for-reply` | 有持久请求等待外部回复时保持连接 |
+| `--timeout <seconds>` | 等待超时后退出（不取消服务端工作） |
 
-服务默认使用 SDK 的 trusted-local 策略。执行开始后，按 Ctrl-C 会请求取消观察到的执行并等待清理。客户端连接丢失时，服务会继续执行。新的 `run` 可以推进已停止的 Agent。等待中的 Agent 需要匹配的回复。请检查实际文件或命令结果，确认任务是否成功。
-
-Tier 名称使用 `--tier`。`--model` 选择精确模型标识，`--connection` 即使在多个连接共用协议时也只选择指定名称。显式 `--model` 覆盖 Tier 的模型，重开 Agent 时同时提供这两个参数也遵循此优先级。显式设置只影响所选 Agent。重开时不传选择参数，会保留该 Agent 的配置与独立上下文。切换模型路由会清除该 Agent 先前的 reasoning/service 覆盖值，再应用新的显式设置。
-
-使用 `--command-id` 重试同一输入时，返回原始持久回执和当前 Agent 状态。如果首次发送丢失了响应，客户端会为这条未确认命令保留生成的 Session ID。取得回执后，后续重试使用返回的 ID 作为 `--session`。重放时，`--json` 和 `--stream-json` 返回 `event: "acknowledged"`、`replayed: true`、`receipt` 和 `state`。新工作或配置使用新的命令标识。
-
-`--json` 输出最终 `type: "session"` 对象，含 `event`、`session_id`、`agent`、`status`、`turns`、`response`、`error`、`config`、`usage`、`permission`、`question` 和 `duration_ms`。`--stream-json` 另含瞬时进度和持久回执信息。子 Agent 查询因输出上限重试时，`--stream-json` 会输出 `type: "model_recovery"` 行，包含 conversation、turn、失败／重试请求 ID、原因和尝试次数。慢观察者可能丢失瞬时增量。最终响应来自已提交状态。Provider 用量及未知值遵循 [Session SDK](../how-it-works/sessions.md) 约定。
-
-Prompt 首项为合法 `/skill-name` 时，CLI 加载对应 Skill，将余下文本作为用户输入。`/tmp/foo` 等路径保持普通输入。`--no-skills` 关闭此快捷方式及默认 Skill 工具。
+`--json` 模式按行输出 `session`、`accepted`、`delta`、`tool.call`、`tool.result`、`request`、`turn.completed`、`turn.failed` 和 `error`。等待超时退出码为 `124`。[运行任务](../guides/run-a-task.md)
 
 ## `kuku reply`
 
 ```text
-kuku reply <session-id> <request-id> [--agent <address>] (--allow | --deny | --answer <text>)
+kuku reply <SESSION_ID> <REQUEST_ID> --allow
+kuku reply <SESSION_ID> <REQUEST_ID> --deny
+kuku reply <SESSION_ID> <REQUEST_ID> --answer "<text>"
+kuku reply <SESSION_ID> <REQUEST_ID> --answer-file <path>
+kuku reply <SESSION_ID> <REQUEST_ID> --answer-stdin
 ```
 
-回复必须匹配保留的请求，重开后同样如此。`--allow` 只授权绑定动作一次；`--deny` 拒绝；`--answer` 回答待决问题。普通 `run` 输入不会成为授权。`--command-id` 支持安全重试；已提交回复仅返回原回执和当前状态，不恢复工作或再次作出授权决定。过期或不匹配的请求明确失败。此命令也接受 `--config`、`--workspace`、`--data-dir`，观察续接并等待清理。
-
-回复固定输出 JSON 行，无需 `--json`：新的问题回复以 `AgentSnapshot` 结束；新的授权回复先输出 `permission_decision`，再输出快照。重复回复输出上文所述含 `receipt` 和 `state` 的 `acknowledged` Session 对象。回复不使用普通 `run` 的完成对象。
+答复持久授权请求或问题。同一回复已落盘时幂等成功返回。
 
 ## `kuku show`
 
 ```text
-kuku show <session-id> [--agent <address>] [--json] [--workspace <path>] [--data-dir <path>]
+kuku show <SESSION_ID> [--agent <name>] [--json]
 ```
 
-读取最后的持久响应。`--json` 返回 Agent 快照，包括待决问题或授权标识。其他客户端在 Session 中执行时，也可使用 `show` 和指定 Session 的 `list` 查询。
+打印 Session 或指定 Agent 的最终回复。
 
 ## `kuku events`
 
 ```text
-kuku events <session-id> [--agent <address>] [--kind <event-kind>] [--search <text>]
-kuku events --file <path> [--before <id> | --after <id>] [--limit <n>] [--json]
-kuku events <session-id> --all [--after <id>] --json
+kuku events <SESSION_ID> [--agent <name>] [--kind <kind>] [--after <id> | --before <id>] [--limit <n>] [--all] [--json]
+kuku events --file <EVENTS_JSONL> [--agent <name>] [--kind <kind>] [--after <id> | --before <id>] [--limit <n>] [--all] [--json]
 ```
 
-- 默认从最近提交的事件开始。用 `--before <id>` 向旧记录翻页，用 `--after <id>` 向新记录读取。两个游标都排除指定 ID。
-- `--limit` 默认返回 40 条匹配记录，允许 1–256 条。用 `--kind` 精确匹配事件类型，用 `--search` 按不区分大小写的子串搜索事件内容。续页参数和游标输出到 stderr。
-- `--all` 从旧到新流式读取全部匹配记录。`--json` 每行输出一条完整事件到 stdout，`--verbose` 给文本视图增加元数据。
-- `--file` 直接读取本地 Session 日志，也支持已压缩的文件。用 Session ID 时，`--workspace` 和 `--data-dir` 指定存储位置。由本地服务打开的 Session 通过该服务查询。`--remote` 查询指定服务。
-
-可观测性日志保存在 `$KUKU_HOME/logs/`。[文件布局](file-layout.md)
+查看持久 Session 事件。`--json` 每行输出一条记录到 `stdout`，翻页参数输出到 `stderr`。`--file` 离线读取本地日志（对已封存历史与开放尾部透明）。[Session 事件](events.md)
 
 ## `kuku list`
 
 ```text
-kuku list [--all] [--workspace <path>] [--data-dir <path>] [--json | --verbose]
-kuku list <session-id> [--workspace <path>] [--data-dir <path>] [--json]
+kuku list [--json]
 ```
 
-指定 Session ID 时，`list` 显示 Agent 地址、状态及待处理输入数量。`--json` 输出 Session 或 Agent 的 JSON 数组。Session 的大小为日志在磁盘上占用的文件字节数。
-
-## `kuku delete`
-
-```text
-kuku delete [--workspace <path>] <session-id>
-```
+列出所选工作区的 Session。
 
 ## `kuku pending`
 
 ```text
-kuku pending list
-kuku pending resend COMMAND_ID [--session SESSION_ID]
-kuku pending discard COMMAND_ID [--session SESSION_ID]
+kuku pending list [--json]
+kuku pending reconcile [--id <record-id>] [--json]
+kuku pending drop <record-id> [--json]
 ```
 
-`list` 向所选服务查询回执，并从本地待确认记录中移除已确认的条目。未确认条目可以用原命令标识和内容重发，也可以从客户端丢弃。丢弃会保留服务端已经提交的工作。如果不同 Session 有相同的命令标识，用 `--session` 区分。
+查看并核对因超时或断连而丢失回执的提交。
+
+## `kuku delete`
+
+```text
+kuku delete <SESSION_ID> [--force]
+```
+
+删除指定 Session。
 
 ## `kuku config`
 
 ```text
-kuku config [--config <path>] [show|validate|set|policy]
+kuku config path
+kuku config show
+kuku config validate
+kuku config set <key> <value>
+kuku config init
 ```
 
-子命令：
-
-| 子命令 | 语法 |
-|---|---|
-| show | `kuku config show` |
-| validate | `kuku config validate` |
-| models | `kuku config models` |
-| set | `kuku config set <key> <value>` |
-| policy allow | `kuku config policy allow <risk>` |
-| policy deny | `kuku config policy deny <risk>` |
-
-`config validate` 按服务创建 Session 时的规则逐档解析模型。失败时会标出对应的 tier，校验期间不会调用模型服务。
-
-`policy allow` 和 `policy deny` 当前只输出未实现提示，不修改 `policy.md`。
+`kuku config show` 会遮盖 API 密钥。`kuku config set` 修改标量配置项（如 `default_model`、`provider.<name>.model_pricing.<model>.mode`、`provider.<name>.proxy.mode`）。`kuku config init` 写入初始模板（非交互）；交互式 Provider 与凭据配置请用 `kuku init`。
 
 ## `kuku prompts`
 
 ```text
-kuku prompts [show [name] | export <dir>]
+kuku prompts list [--json]
+kuku prompts show <name> [--json]
+kuku prompts export <dir>
 ```
 
-`show` 可用名称：
+查看或导出内置 Prompt 资产。
 
-- `system`
-- `project-context`
-- `tool-guidance`
-- `runtime-context`
-
-## `kuku agents`
+## `kuku agents` 与 `kuku skills`
 
 ```text
-kuku agents [list | show <name>]
+kuku agents list
+kuku agents show <name>
+kuku skills list
+kuku skills show <name>
 ```
 
-## `kuku skills`
+列出和查看已发现的 Agent 预设与 Skill。
+
+## `kuku server` 与 `kuku web`
 
 ```text
-kuku skills [list | show <name>]
-```
-
-## `kuku server` 和 `kuku web`
-
-```text
-kuku server [--listen <addr>] [--config <path>] [--password <token>] [--max-concurrent-runs <n>]
+kuku server [--host <addr>] [--port <port>] [--password <secret>]
 kuku server status
 kuku server restart
-kuku web [--session <id> [--agent <address>]] [--print-url]
+kuku web [--session <id>] [--agent <name>] [--print-url]
 ```
 
-默认值：
+- `kuku server` 需指定 `--password` 或 `KUKU_SERVER_PASSWORD`。
+- `kuku web` 打开所选服务的浏览器界面（受管登录链接带短期一次性 ticket；`--print-url` 仅打印链接）。
+- `kuku server status` 返回 JSON 格式的服务状态（本地服务未运行时为 `{"state":"stopped"}`）。
+- `kuku server restart` 忙碌时退出码为 `1` 并输出 `state: "deferred"`，重启成功输出 `state: "restarted"`。
 
-- `--listen 127.0.0.1:17777`
-- `--max-concurrent-runs 16`
-
-显式启动服务需要 `--password` 或 `KUKU_SERVER_PASSWORD`。`kuku web` 会在浏览器中打开所选服务，可以把工作区、Session 和 Agent 选择传给页面。使用 `--print-url` 只打印链接。受管服务的登录链接带有短时一次性票据。
-
-`server status` 以 JSON 输出服务信息。本地服务未运行时返回 `{"state":"stopped"}`。服务忙时，`server restart` 以状态码 1 退出，并输出含 `state: "deferred"` 和当前 `service` 状态的 JSON。重启成功时返回 `state: "restarted"` 和替换后的服务状态。
-
-要从源码内嵌 Web 界面，安装 Node.js 24 和 npm 后在仓库根目录运行以下命令。
+从源码仓库构建内置 Web 界面（需要 Node.js 24 与 npm）：
 
 ```bash
 npm --prefix apps/web ci
@@ -330,4 +267,4 @@ npm --prefix apps/web run build
 cargo run --locked -p kuku-app --features embedded-web-assets -- web
 ```
 
-服务认证和请求格式见[运行服务](../guides/run-the-server.md)和 [Server API](server-api.md)。
+[运行服务](../guides/run-the-server.md) · [HTTP 服务 API](server-api.md)

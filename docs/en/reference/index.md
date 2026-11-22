@@ -1,23 +1,17 @@
 # Reference
 
-Use this section to look up exact facts: commands, config, environment variables, file layout, APIs, and formats.
+Exact lookups for commands, configuration, file layout, tools, events, APIs, and formats.
 
-## Pages
-
-- [CLI](cli.md)
-- [SDK](sdk.md)
-- [Config](config.md)
-- [Environment Variables](environment-variables.md)
-- [File Layout](file-layout.md)
-- [Tools](tools.md)
-- [Events](events.md)
-- [Agent Format](agent-format.md)
-- [Skill Format](skill-format.md)
-- [Package Format](package-format.md)
-- [Server API](server-api.md)
-- [Update Manifest](update-manifest.md)
-- [Glossary](glossary.md)
-
-## Start Here
-
-Start with [CLI](cli.md) for commands, [Config](config.md) for setup, or [Glossary](glossary.md) when you need a canonical term.
+- [CLI](cli.md) — TUI controls, slash commands, `kuku run`, and subcommands
+- [SDK](sdk.md) — Rust `Session` and `Query` APIs
+- [Config](config.md) — `config.toml`, provider settings, pricing, and `tui.toml`
+- [Environment variables](environment-variables.md) — runtime, auth, trace, and hook env vars
+- [File layout](file-layout.md) — `$KUKU_HOME`, project directories, journals, and extensions
+- [Tools](tools.md) — built-in file, shell, JS composition, Job, and Session tools
+- [Events](events.md) — `events.jsonl` record kinds and retry payloads
+- [Server API](server-api.md) — HTTP endpoints, auth, SSE observation, and history API
+- [Agent format](agent-format.md) — Markdown Agent presets
+- [Skill format](skill-format.md) — `SKILL.md` layout and frontmatter
+- [Package format](package-format.md) — `.kuku/packages/` bundles and hooks
+- [Update manifest](update-manifest.md) — `latest.json` schema for releases
+- [Glossary](glossary.md) — canonical product terms

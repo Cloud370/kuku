@@ -1,18 +1,14 @@
 # Guides
 
-Use this section when kuku already runs and you want to complete a specific task.
+Task-focused walkthroughs once kuku is installed and configured.
 
-## Pages
+- [Run a task](run-a-task.md) — one-shot runs, TUI controls, and JSON output
+- [Manage Sessions](manage-sessions.md) — resume, branch history, reply to requests, save values
+- [Use Agents](use-agents.md) — multi-Agent delegation and Markdown presets
+- [Use Skills](use-skills.md) — workspace and personal Skills, discovery, and slash invocation
+- [Manage Memory](manage-memory.md) — global and project Memory files
+- [Run the server](run-the-server.md) — managed local service, Web UI, and remote servers
+- [Debug CLI runs](debug-cli.md) — inspect snapshots, events, token usage, and provider traces
+- [Upgrade kuku](upgrade-kuku.md) — update binaries and reconnect the managed service
 
-- [Run a Task](run-a-task.md)
-- [Debug CLI Runs](debug-cli.md)
-- [Use Agents](use-agents.md)
-- [Use Skills](use-skills.md)
-- [Manage Memory](manage-memory.md)
-- [Manage Sessions](manage-sessions.md)
-- [Run the Server](run-the-server.md)
-- [Upgrade kuku](upgrade-kuku.md)
-
-## Start Here
-
-Start with [Run a Task](run-a-task.md) for the basic interactive flow, then move to the guide that matches your next task.
+If you are new to the day-to-day workflow, start with [Run a task](run-a-task.md).

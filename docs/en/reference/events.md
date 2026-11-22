@@ -1,54 +1,53 @@
 # Session events
 
-Each Session writes one `events.jsonl` journal. Stored rows have a Session-local increasing `id`, a `kind` and a timestamp `ts`. A cursor identifies committed history. Use the Agent address, Turn and request or tool-call ID when correlating work across Agents.
+Each Session writes one `events.jsonl` journal. Every row has a Session-local increasing `id`, a `kind`, and a timestamp `ts`. Cursors point to committed history; correlate work across Agents by combining Agent address, Turn, and request or tool-call ID.
 
-## Reading a page
+## Reading events
 
 ```bash
 kuku events SESSION_ID --limit 20 --json
 ```
 
-The CLI writes one JSON record per line to stdout. It prints the continuation argument to stderr. Pass `--before` to continue toward older records or select `--after` to start a forward scan. Add `--agent reviewer` or `--kind tool.result` to find matching facts. Use `--file <path> --all --json` to export a local journal, including sealed history. [CLI](cli.md#kuku-events) · [Server API](server-api.md)
+Outputs one JSON record per line to `stdout` and prints the next-page flag/cursor to `stderr`. Use `--before` for older records, `--after` to scan forward, `--agent` / `--kind` to filter, or `--file <path> --all --json` to export a local journal (including sealed history). [CLI](cli.md#kuku-events) · [Server API](server-api.md)
 
-## Facts recorded by the public Session SDK
+## Record kinds
 
 | Kind or group | What it records |
 |---|---|
 | `session.created`, `conversation.opened` | Session metadata and the opening of an Agent's conversation stream. |
-| `runtime.operation` | `record.operation` selects the state change. Examples include `session_claimed`, `agent_created`, `agent_configured`, `input_delivered`, `inputs_accepted`, `input_withdrawal` and `turn_settled`. `execution_started`, `agent_stopped` and `agent_resumed` track targeted execution control. Pending requests and their replies are also Session operations. |
-| `turn.started`, `message.user`, `model.response`, `model.error` | Input and provider outcomes for a Turn. A `message.user` with `job_delivery: true` carries background execution feedback. Model responses retain their normalized terminal state. `turn.completed`, `turn.interrupted` and `turn.cancelled` describe terminal outcomes. |
-| `model.recovery` | A one-time output-limit retry for a direct `Query` or child-Agent query, with the failed and retry request IDs and recovery-notice provenance. |
-| `runtime.context_segment`, `runtime.context_admitted`, `runtime.step_prepared` | Static context, newly admitted messages and the prepared Step confirming their bounds. `body_hash` identifies the encoded request. |
-| `runtime.provider_report`, `runtime.model_usage`, `runtime.provider_replay` | Provider-reported metadata, token counters or protocol-native continuation data when available. |
-| `runtime.model_retry` | The core records `waiting`, `started` and `stopped` phases for a prepared request. Missing legacy `phase` means `started`. `attempt` is the next one-based attempt while waiting or starting, and the final failed attempt when stopped; `failed_attempt`, `max_attempts`, `failed_kind`, `request_id`, `delay_ms`, `ts`, `will_retry`, `message`, `status` and `stop_reason` carry retry policy or diagnostic details. `waiting` is written before sleeping; `started` before redispatch. Usage counts `started` (including legacy events without a phase), not `waiting` or `stopped`. Only `will_retry` states whether another request will be sent; `delay_ms` applies only to `waiting`. `stop_reason` can be `non_retryable`, `attempt_limit`, `request_budget`, `disabled` or `stream_started`. |
-| `model.recovery` | A model-output recovery with its original `attempt`, `max_attempts`, `reason`, `from_request_id` and `to_request_id`, plus recovery-specific diagnostic details. |
-| `tool.call`, `runtime.tool_prepared`, `runtime.tool_dispatched`, `tool.result` | The request, its final arguments and definition, dispatch before the side effect, and the recorded outcome. A denied action can have a result without a dispatch. |
-| `permission.requested`, `permission.allow`, `permission.deny` | A deferred authorization or a decision about a particular tool call. `runtime.operation` carries the resumable Agent wait and correlated reply. |
-| `handoff` | A summary boundary used to prepare a successor context segment. |
+| `runtime.operation` | Durable state transitions keyed by `record.operation`: `session_claimed`, `agent_created`, `agent_configured`, `input_delivered`, `inputs_accepted`, `input_withdrawal`, `turn_settled`, `execution_started`, `agent_stopped`, `agent_resumed`, plus pending requests and replies. |
+| `turn.started`, `message.user`, `model.response`, `model.error` | Turn inputs and provider outcomes (`job_delivery: true` on `message.user` marks background Job feedback). `turn.completed`, `turn.interrupted`, and `turn.cancelled` mark terminal states. |
+| `runtime.context_segment`, `runtime.context_admitted`, `runtime.step_prepared` | Frozen static context, newly admitted messages, and prepared Step bounds (`body_hash` identifies the encoded request). |
+| `runtime.provider_report`, `runtime.model_usage`, `runtime.provider_replay` | Provider metadata, token counters, and protocol-native continuation payloads when available. |
+| `runtime.model_retry` | `waiting`, `started`, and `stopped` retry phases for a prepared request (see payload schema below). |
+| `model.recovery` | One-time output-limit recovery retry for a direct `Query` or child-Agent query (`attempt`, `max_attempts`, `reason`, `from_request_id`, `to_request_id`, and recovery-notice provenance). |
+| `tool.call`, `runtime.tool_prepared`, `runtime.tool_dispatched`, `tool.result` | Requested tool call, bound args/definition, pre-side-effect dispatch, and recorded result (denied calls have a result without a dispatch). |
+| `permission.requested`, `permission.allow`, `permission.deny` | Deferred authorization request and decision for a tool call; resumable wait/reply state lives in `runtime.operation`. |
+| `handoff` | Compaction summary boundary used to open a successor context segment. |
 
-Execution events may use `conversation` for the Agent address. Prepared Steps and provider reports use `agent`. Session operations carry the target inside `record`. Use the SDK's Agent snapshot when the needed result is current state. [Session records](../../../crates/kuku/src/session/runtime/record.rs) · [Session SDK](sdk.md)
+Field naming note: execution events may put the Agent address in `conversation`, prepared Steps and provider reports use `agent`, and Session operations place the target inside `record`. For current state, read an Agent snapshot instead of folding events manually. [Session records](../../../crates/kuku/src/session/runtime/record.rs) · [Session SDK](sdk.md)
 
-## Retry event payload
+## `runtime.model_retry` payload
 
-`runtime.model_retry` is an `EventPayload::Unknown` JSON object with this schema:
+`runtime.model_retry` is stored as an `EventPayload::Unknown` JSON object:
 
 | Field | Type | Meaning |
 |---|---|---|
 | `kind` | string | Always `runtime.model_retry`. |
-| `agent`, `request_id` | string | Agent address and prepared request identity. |
+| `agent`, `request_id` | string | Agent address and prepared request ID. |
 | `turn` | integer | Owning Turn. |
 | `failed_kind` | enum | `authentication`, `permission_denied`, `quota_exhausted`, `context_too_large`, `invalid_request`, `rate_limited`, `timeout`, `provider_unavailable`, `transport`, `internal`, `unknown`, or `invalid_response`. |
-| `phase` | enum, optional for legacy rows | `waiting`, `started`, or `stopped`; a missing phase is interpreted as legacy `started`. |
-| `failed_attempt`, `max_attempts`, `attempt` | integer | One-based attempt counters; `attempt` is the upcoming attempt in `waiting`/`started` and the failed attempt in `stopped`. `failed_attempt` is the prior failed call for retries and the current failed call when stopped. |
-| `delay_ms` | integer | Actual wait in `waiting`; zero in `started` and `stopped`. |
-| `will_retry` | boolean | True for `waiting`/`started`; false for `stopped`. |
-| `message` | string | Bounded, sanitized failure explanation without credentials or terminal controls. |
+| `phase` | enum (optional for legacy rows) | `waiting` (logged before sleep), `started` (before redispatch), or `stopped`. Missing legacy `phase` means `started`. |
+| `failed_attempt`, `max_attempts`, `attempt` | integer | One-based counters. `attempt` is the upcoming attempt in `waiting`/`started` and the final failed attempt in `stopped`; `failed_attempt` is the prior failed call when retrying and the current failed call when stopped. |
+| `delay_ms` | integer | Backoff wait in `waiting`; `0` in `started` and `stopped`. |
+| `will_retry` | boolean | `true` for `waiting`/`started`, `false` for `stopped`. |
+| `message` | string | Bounded, sanitized error text (no credentials or terminal escape codes). |
 | `status` | HTTP `u16` or null | HTTP status when known. |
-| `stop_reason` | enum or null | `non_retryable`, `attempt_limit`, `request_budget`, `disabled`, or `stream_started`; null before a stop. |
+| `stop_reason` | enum or null | `non_retryable`, `attempt_limit`, `request_budget`, `disabled`, or `stream_started`; `null` before stop. |
 | `ts` | timestamp string | Event timestamp. |
 
-Usage counts `started` rows and legacy rows without `phase`; `waiting` and `stopped` rows do not add model attempts.
+Attempt counters include `started` rows (and legacy rows without `phase`), not `waiting` or `stopped`.
 
-## Live output
+## Live deltas vs. committed records
 
-Text deltas and progress notifications can be transient. The journal records the settled response, tool results and retained output references. After reconnecting, read committed rows from the last cursor. A dispatched tool with no confirmed result may already have affected the workspace. [Sessions](../how-it-works/sessions.md) · [File layout](file-layout.md)
+Text deltas and progress notices are transient; the journal holds settled replies, tool results, and retained output references. After reconnecting, resume from your last committed cursor. A `runtime.tool_dispatched` without a matching `tool.result` means the action may already have modified the workspace. [Sessions](../how-it-works/sessions.md) · [File layout](file-layout.md)

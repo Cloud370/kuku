@@ -1,13 +1,15 @@
 # File-native execution
 
-Each Session has an `events.jsonl` journal and a directory for retained command output. The workspace contains the project files that tools read or change. The local service stores Sessions under kuku home by default. Local clients can select another service data directory with `--data-dir`. SDK callers set their own storage root. [File layout](../reference/file-layout.md)
+Every Session is backed by an `events.jsonl` journal and a directory of retained command outputs, while tools read and modify project files directly in your workspace. By default the local service stores Sessions under `$KUKU_HOME` (overridable via `--data-dir`), and direct SDK embedders choose their own storage root. [File layout](../reference/file-layout.md)
 
 ## What an Agent remembers
 
-Initial context includes the selected Prompt assets, Agent instructions, project instructions and Memory. The SDK records what the model actually received. On later Steps it reuses the committed prefix and adds newly admitted input and tool results. Editing `AGENTS.md` or `memory.md` after a run leaves the earlier conversation reconstructible. Each Agent has its own context even when two Agents work in the same directory. [Prompt assembly](../architecture/prompt-assembly.md)
+When an Agent starts a fresh context, kuku assembles the selected Prompt assets, Agent instructions, project instructions (`AGENTS.md` / `CLAUDE.md`), and Memory, and records exactly what the model received. Subsequent Steps reuse that committed prefix and append only newly admitted inputs and tool results. Editing `AGENTS.md` or `memory.md` later does not break reconstruction of earlier turns. Two Agents working in the same directory still keep completely separate contexts. [Prompt assembly](../architecture/prompt-assembly.md)
 
-## Reading and recovery
+## Reading, ownership, and recovery
 
-A client can read committed events by cursor or inspect an Agent's latest settled output. Live text fragments help display work in progress. If an observer disconnects, committed results remain available in the Session. Reopening repairs an incomplete journal tail and restores pending questions or authorizations. Work interrupted after an external action may have an unknown outcome.
+Clients read committed events by cursor or fetch an Agent's latest settled snapshot; live stream deltas only show in-flight progress. If a client disconnects, everything committed stays in the Session.
 
-The HTTP server owns execution for its clients, so closing a client leaves an active server task running. The current local CLI owns its own Session while it runs. [Sessions](sessions.md) · [Run the server](../guides/run-the-server.md)
+Reopening repairs any partial tail line in `events.jsonl` and restores pending questions or permission requests. If execution was interrupted *after* an external side effect was dispatched, that action's outcome is marked unknown so you or the Agent can check before retrying.
+
+The HTTP service (including the managed local service used by `kuku` and `kuku run`) owns Session execution for its clients, so closing a terminal leaves active tasks running. Direct Rust SDK embedders own the `Session` in-process instead. [Sessions](sessions.md) · [Run the server](../guides/run-the-server.md)

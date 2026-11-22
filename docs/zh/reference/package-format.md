@@ -1,15 +1,11 @@
-# Package Format
+# Package 格式
 
-package 会打包 hooks、skills 和相关资源。
+Package 用于打包 Hook、Skill 及配套资源。
 
-## 位置
+## 目录位置与结构
 
 - 用户级：`~/.kuku/packages/<name>/`
-- 项目级：`<workspace>/.kuku/packages/<name>/`
-
-同名时，项目级 package 会覆盖用户级 package。
-
-## 布局
+- 项目级：`<workspace>/.kuku/packages/<name>/`（同名时覆盖用户级）
 
 ```text
 .kuku/packages/<name>/
@@ -20,7 +16,7 @@ package 会打包 hooks、skills 和相关资源。
 └── bin/
 ```
 
-`kuku.toml` 是 package manifest，也是规范的事实来源。
+`kuku.toml` 是 Package 清单文件，也是唯一权威定义。
 
 ## `[package]`
 
@@ -33,10 +29,8 @@ homepage = "https://github.com/user/kuku-security"
 repository = "https://github.com/user/kuku-security"
 ```
 
-规则：
-
-- `name` 为必填，长度 1-64 个字符，只能包含小写字母、数字和连字符
-- `version` 为必填，且必须符合 semver
+- `name`（必填）：1–64 个字符，仅限小写字母、数字和连字符。
+- `version`（必填）：符合 SemVer 规范。
 
 ## `[[hooks]]`
 
@@ -50,7 +44,7 @@ chain = false
 env = ["MY_TOKEN"]
 ```
 
-或者：
+或绑定多个事件（使用 `events` 时不要再写 `event`）：
 
 ```toml
 [[hooks]]
@@ -58,77 +52,35 @@ events = ["tool.pre_execute", "tool.post_execute"]
 command = "hooks/audit-tool.sh"
 ```
 
-使用 `events` 时，`event` 必须不存在。
-
-## Hook 字段
-
-| Field | Required | Meaning |
+| 字段 | 必填 | 含义 |
 |---|---|---|
-| `event` or `events` | yes | 触发事件名或事件名列表 |
-| `command` | yes | 相对于 package 根目录的可执行路径 |
-| `matcher` | no | 布尔过滤表达式 |
-| `timeout_seconds` | no | 默认 30，硬上限 600 |
-| `chain` | no | hook 是否接收前一个 hook 的输出 |
-| `env` | no | 需要额外透传的环境变量名 |
+| `event` 或 `events` | 是 | 触发事件名或列表 |
+| `command` | 是 | 相对 Package 根目录的可执行路径 |
+| `matcher` | 否 | 布尔过滤表达式 |
+| `timeout_seconds` | 否 | 默认 `30`，硬上限 `600` |
+| `chain` | 否 | 是否接收前一个 Hook 的输出 |
+| `env` | 否 | 额外透传的环境变量名列表 |
 
-## 已实现的 Hook 事件
+**已实现事件**：`session.start`、`session.end`、`tool.pre_execute`、`tool.post_execute`、`model.pre_request`、`model.post_response`。
 
-- `session.start`
-- `session.end`
-- `tool.pre_execute`
-- `tool.post_execute`
-- `model.pre_request`
-- `model.post_response`
-
-## Matcher 语法
-
-运算符：
-
-- `==`
-- `!=`
-- `contains`
-- `&&`
-- `||`
-
-常用变量：
-
-- `event`
-- `tool_name`
-- `tool_call_id`
-- `args.<field>`
-- `status`
-- `summary`
-- `tier`
-- `text`
-- `stop_reason`
+**Matcher 语法**：支持运算符 `==`、`!=`、`contains`、`&&`、`||`；常用变量包括 `event`、`tool_name`、`tool_call_id`、`args.<field>`、`status`、`summary`、`tier`、`text`、`stop_reason`。
 
 ## Hook 协议
 
-stdin 是一个带最小上下文的 JSON 对象，其中包括 `event` 和 `session_dir`。
+- **stdin**：包含最小上下文（如 `event` 与 `session_dir`）的 JSON 对象。
+- **stdout**：合法 JSON 按结构化输出解析；纯文本自动包装为 `{"additional_context": "..."}`。
+- **退出码**：`0` 表示成功，`2` 表示阻止当前操作，其他非零码作为非阻断错误记录。
 
-stdout 规则：
+结构化 stdout 字段：
 
-- 有效 JSON：视为结构化输出
-- 非 JSON 文本：包装为 `{"additional_context": "..."}`
-
-退出码：
-
-| Code | Meaning |
+| 字段 | 含义 |
 |---|---|
-| `0` | success |
-| `2` | 阻止该操作 |
-| other | 非阻断性的 hook 错误 |
-
-## 结构化 Hook 输出
-
-| Field | Meaning |
-|---|---|
-| `block` | 阻止该操作 |
-| `updated_args` | 替换 Tool 参数 |
-| `updated_result` | 替换 Tool 结果 |
+| `block` | 阻止当前操作 |
+| `updated_args` | 替换工具参数 |
+| `updated_result` | 替换工具结果 |
 | `additional_context` | 向下一轮注入额外上下文 |
 | `permission_override` | 计划中的权限覆盖字段 |
 
 ## MCP
 
-`.mcp.json` 使用标准 MCP 格式。该集成目前仍处于计划阶段，还未作为稳定行为完整文档化。
+`.mcp.json` 采用标准 MCP 格式；运行时 MCP 集成仍在计划中，尚未定型。

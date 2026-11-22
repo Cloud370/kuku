@@ -2,111 +2,62 @@
 
 ## 配置文件位置
 
-默认情况下，kuku 使用：
+kuku 默认读取 `~/.kuku/config.toml`；如果设置了 `KUKU_HOME`，则读取 `$KUKU_HOME/config.toml`。
 
-```text
-~/.kuku/config.toml
-```
+用 `--config PATH` 可以临时指定配置文件，运行 `kuku server status` 可查看本地服务当前生效的路径。如果受管服务已经在跑，等它空闲后运行 `kuku server restart --config PATH` 即可切换配置。[文件布局](../reference/file-layout.md) · [运行服务](../guides/run-the-server.md)
 
-如果设置了 `KUKU_HOME`，服务默认读取以下文件。
+## 交互式配置
 
-```text
-$KUKU_HOME/config.toml
-```
+当配置缺失、为空，或者默认模型的凭据不可用时，运行 `kuku` 会在欢迎页引导你通过 `/model` 配好第一条线路；也可以直接在终端运行 `kuku init` 进入同一向导。向导不会覆盖已有配置，遇到格式错误的配置文件只会报错而保留原文件。
 
-本地服务默认读取所选数据目录下的 `config.toml`。通过 `--config` 可以选择其他文件。运行 `kuku server status` 查看生效路径。已运行的受管服务要切换配置文件时，在服务空闲后运行 `kuku server restart --config PATH`。[文件布局](../reference/file-layout.md) · [运行服务](../guides/run-the-server.md)
+向导提供两种方式：
 
-## TUI 首次运行设置
+- **Edit config file**：直接给出配置文件路径，不发任何模型请求。
+- **Find and test models**：拉取模型列表并做简短的文本、思考档位和可选图片试跑（单次上限 4,096 tokens、超时 30 秒，可能消耗 API 余额）。
 
-交互式 `kuku` 会在所选工作区打开主 TUI。配置缺失、为空，或默认模型凭据不可用时，欢迎界面会引导通过 `/model` 配置第一个模型线路。设置会保留已有配置，凭据仍按环境变量、文件或明文来源读取。保存可用配置后启动本地服务。已有服务继续使用当前的启动与设置流程。配置无效时会显示错误并保留原文件。也可以在交互终端运行 `kuku init` 直接打开同一个设置流程。
+你可以选预设、复用已有连接，或填写自定义 URL、代理方式（跟随环境代理、直连、HTTP、SOCKS5、SOCKS5H）和 API Key。对于自定义 Base URL，选好模型后向导会自动探测协议（优先 `Responses`，其次 `Chat Completions`、`Messages`），结果不明确时再让你手动挑；如果目录不可读，也可以直接手填模型 ID。
 
-选择一次 **Find and test models**，即可允许本次设置查询模型目录并发送简短的文本或图片试跑。每次试跑请求的输出上限为 4096 token，超时为 30 秒，可能消耗 API 余额。选择 **Edit config file** 会显示配置路径，供应商请求数为零。
+在模型列表里可以直接打字搜索、按 `Space` 多选、`Enter` 确认。试跑结果可以在 **Model tests** 里逐项查看，也可以进 **Settings** 调整思考档位、输出上限、能力标记与费率。想确认工具调用是否正常，点 **Settings → Test tools** 测一次合成工具调用——能正常回文本不代表支持工具调用；如果某条 Chat 线路需要走 Responses 才能调用工具，可在 **Settings → API type → Responses** 切换并重测再保存。
 
-设置会检查所选模型接受哪些思考档位，优先使用 API 声明的档位。API 类型确定后，文本、思考和图片测试可以同时进行。生成测试按每个所选模型两个名额计算，整批最多六个。设置页显示所选模型的整体进度。其他请求仍在运行时，已完成的请求也会推进进度条。总览会显示已完成的请求数以及正在运行的检查已耗时多久。测试出错或图片未验证时，结果页默认选中 **Model tests**。表格每个模型一行，分别显示文本、思考档位和图片的实时结果及重试时间。终端拉宽时，表格和请求详情的各列仍会靠在一起。**Ready** 表示模型已返回文本。文本测试失败时，可以通过 **Fix failed models** 重试、跳过该项，或在错误指向密钥或地址时修改它们。其他模型已返回文本时，可通过 **Use another default** 换默认模型。**Model tests** 保留逐条结果，包括可选的图片和思考测试。测试期间按 Enter 默认打开 **View requests**。选择 **Save early** 并确认后，才会保留已完成的结果并停止剩余测试。测试期间返回上一步也会先确认。每页底部会提示 Esc 的作用。
+在 Session 里随时可以输入 `/model` 或按 `Ctrl+L` 添加/修改连接，选择 **Use in this Session** 切换当前 Agent 的线路，或 **Set as default** 存为新 Session 的默认线路。[终端控制](../reference/cli.md#斜杠命令) · [配置参考](../reference/config.md)
 
-选择自定义连接、已有连接或预设，再填写供应商 URL、网络路径和密钥。自定义连接以 URL 的域名和非默认端口命名。同一域名和端口下的连接会用编号区分。已有连接和预设沿用其协议，标准请求 URL 可直接识别。选择模型后，新自定义 Base URL 会并发验证候选协议。优先使用 Responses，确认上游不支持时依次尝试采用 Chat Completions、Messages 的结果。无法确定时会显示 API 类型选项。网络可选择跟随代理环境变量、直连，或使用 HTTP、SOCKS5、SOCKS5H。裸域名有多个标准候选路径时，设置会并发查询，逐条显示进度和结果，找到可用目录就自动打开模型列表。目录无法读取时，可以直接填写已知的模型 ID。
+## Provider 与凭据
 
-模型列表和搜索结果均按供应商返回的顺序显示。打字搜索，方向键移动，Enter 确认单选。按 Space 勾选多个模型，再用 Enter 确认整组。新配置选中多个模型时，可指定其中一个作为默认。确认模型后在后台试跑。设置页显示请求地址、模型进度和测试状态。测试期间可打开 **View requests**，测试完成后可打开 **Model tests** 查看逐条请求。打开 **Settings** 可修改思考、输出、模型能力和计费方式。**Costs** 可设置费率。在状态栏添加 **Request cost** 可查看费用汇总。[代理与费率配置](../reference/config.md#providername)
+默认配置包含两个 Provider：
 
-打开 **Settings → Test tools** 可以测试所选路由上的合成工具调用及后续回复。文本回复只能确认文本能力。当 Chat 路由需要 Responses 才能调用工具时，通过 **Settings → API type → Responses** 切换并在保存前重新测试。
+- `provider.anthropic`：`api_key = "$ANTHROPIC_API_KEY"`
+- `provider.openai`：`api_key = "$OPENAI_API_KEY"`
 
-当前路由的前两个可比较 Turn 用于建立缓存基线。后续低于 50% 时，Turn 统计中的缓存命中率会标黄。连续两轮低命中会在状态栏提示，可用鼠标或 F2 打开，再选择 **Dismiss**。更换路由或重建上下文后重新建立基线。
+密钥推荐使用环境变量引用（`api_key = "$VARIABLE_NAME"`）或独立密钥文件（`api_key = "file:<绝对路径>"`）。在交互向导里粘贴的密钥会以仅所有者可读的明文文件存到 `$KUKU_HOME/credentials/`，TOML 里只写 `file:` 路径；文件未加密。[配置参考](../reference/config.md) · [文件布局](../reference/file-layout.md)
 
-在 Session 中打开 `/model` 或按 Ctrl+L。**Add model or connection** 和 **Edit** 打开同一个表单。选用已有连接时可复用保存的凭据。**Use in this Session** 修改所选 Agent 的路由，**Set as default** 将路由保存为新 Session 的默认值。[终端思考设置](../reference/cli.md#斜杠命令) · [配置参考](../reference/config.md)
-
-## 设置模型连接
-
-默认配置定义了两个 provider：
-
-- `provider.anthropic`，其中 `api_key = "$ANTHROPIC_API_KEY"`
-- `provider.openai`，其中 `api_key = "$OPENAI_API_KEY"`
-
-使用明确的 `api_key = "$VARIABLE_NAME"` 环境变量引用，或 `api_key = "file:<绝对路径>"`。交互式设置保存的新密钥位于服务数据目录，TOML 只记录绝对路径引用。文件是未加密明文。详见 [Config](../reference/config.md) 和[文件布局](../reference/file-layout.md)。
-
-环境变量由服务进程读取。如果在受管服务启动后修改了终端里的密钥，等服务空闲后从该终端运行 `kuku server restart`。使用远程连接时，在服务端机器上设置密钥。生效配置文件的修改通过校验后，服务会在打开 Session 时使用新配置。
-
-其他字符串设置也可以在 `config.toml` 中使用 `$ENV_VAR_NAME`。例如，`base_url = "$KUKU_ANTHROPIC_BASE_URL"` 会在加载配置时解析。
+环境变量由服务端进程读取，而不是终端客户端。如果本地服务启动后你才在终端里改了环境变量，等服务空闲后运行 `kuku server restart` 才会生效；连远程服务时请在服务端机器上配置密钥。`config.toml` 里其他字符串字段同样支持在加载时展开 `$ENV_VAR_NAME`（例如 `base_url = "$KUKU_ANTHROPIC_BASE_URL"`）。
 
 ### 认证失败后的恢复
 
-终端中的 provider 认证失败后，用 F2 选择 **Repair credentials** 并按 Enter。修复绑定实际失败的连接和模型。在受管本地服务中，在遮蔽输入框里输入替换密钥，按 Enter 检查，再确认 **Save credentials and restart local service** 应用变更。只修改该 provider 的 `api_key`，保留当前模型选择和其他配置。密钥使用与首次设置相同的私有文件存储，不进入主输入框或日志；保存不代表认证已经验证。
+在 TUI 里遇到认证失败时，按 `F2` 选择 **Repair credentials**。如果是受管本地服务，输入新密钥并确认 **Save credentials and restart local service** 即可只更新该 Provider 的 `api_key` 并重启服务（密钥同样存到 `$KUKU_HOME/credentials/`，保存时不做在线校验）。若服务当时正忙于其他任务，可等空闲后重试重启。重启完成后，终端会恢复原来的 Session、Agent 和草稿，你可以主动重试原输入（不会自动重发）。
 
-其他执行让服务保持忙碌时，**Credentials saved; service not restarted** 页面允许稍后重试安全重启。终端区分“已保存”和“已应用到当前 Session”，不会自动重试失败请求。确认使用同一配置的新服务实例启动后，终端恢复原 Session、Agent 和草稿。再通过 Continue 或界面中的恢复动作，明确重试保留的原输入，不必重新发送一份。
+远程或 token 认证的服务需要在服务端修复凭据并重启，TUI 不会为这类连接写本地密钥文件。
 
-远程或使用 token 的连接须在服务端修复凭据，必要时安全重启，再重连并继续；终端不会为这类连接写入本地凭据。
+## 模型档（Tier）
 
-## 模型档
-
-可选的命名路由示例：
-
-- `strong`
-- `balanced`
-- `light`
-
-每个模型档指定连接、模型、思考等级和 token 限额。`default_model = "balanced"` 选择默认 Tier。使用 `--tier <name>` 选择其他 Tier，或 `--connection <name> --model <model-id>` 精确指定连接和模型。
+命名 Tier 把连接、模型、思考档位和 token 限额打包在一起（例如 `strong`、`balanced`、`light`）。`default_model = "balanced"` 指定默认档；运行时可以用 `--tier <name>` 切档，或用 `--connection <name> --model <model-id>` 精确指定线路。
 
 ## 常用配置命令
 
-显示当前配置：
-
 ```bash
 kuku config show
-```
-
-校验文件：
-
-```bash
 kuku config validate
-```
-
-设置一个值：
-
-```bash
 kuku config set model.balanced.think high
 ```
 
-## 资源发现、上下文交接、日志、插件与更新
+## 其他配置分区
 
-主要的非 provider 分区有：
+除 Provider 之外的主要分区：
 
-- `[discovery]`，用于 Agent 和 Skill 自动发现
-- `[handoff]`，用于长 Session 摘要阈值
-- `[logs]`，用于可观测性日志保留策略
-- `[plugin]`，用于 package 扩展加载
-- `[update]`，用于 release 来源和 channel 设置
+- `[discovery]`：Agent 与 Skill 自动发现
+- `[handoff]`：长 Session 摘要阈值
+- `[logs]`：可观测性日志保留策略（默认常开，无关闭开关；默认 `max_age_days = 14`、`max_total_size_mb = 512`）
+- `[plugin]`：Package 扩展加载
+- `[update]`：发布清单来源与更新通道（默认 `source = "github"`、`channel = "stable"`）
 
-日志默认开启，且没有禁用开关。默认保留策略为 `max_age_days = 14` 和 `max_total_size_mb = 512`。
-
-准确的键定义见 [Config](../reference/config.md)。
-
-## 更新渠道
-
-默认的 update 分区使用：
-
-```toml
-[update]
-source = "github"
-channel = "stable"
-```
-
-这会控制 kuku 应当跟随哪个 release manifest。参见 [Update Manifest](../reference/update-manifest.md)。
+具体配置键见[配置参考](../reference/config.md)，更新清单格式见[更新清单](../reference/update-manifest.md)。

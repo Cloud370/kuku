@@ -1,10 +1,10 @@
 # Agent preset format
 
-An Agent file supplies defaults used when creating a Session Agent. A preset name selects the definition. A Session-local address selects the Agent for later messages. Two Agents can use the same preset and retain independent contexts.
+An Agent preset defines defaults for creating a Session Agent. The preset name selects the definition; a Session-local address identifies the Agent for later messages. Multiple Agents can share a preset while keeping independent contexts.
 
-## File and location
+## Location and shape
 
-Use `~/.kuku/agents/NAME.md` for a user preset or `<workspace>/.kuku/agents/NAME.md` for a project preset. Project definitions win on a name collision. Auto-discovery can add other locations. [Configuration](config.md)
+Put user presets in `~/.kuku/agents/NAME.md` and project presets in `<workspace>/.kuku/agents/NAME.md` (project wins on name conflict; auto-discovery can add extra directories). [Config](config.md)
 
 ```markdown
 ---
@@ -21,15 +21,15 @@ Identify one missing test case and explain the expected behavior.
 
 | Field | Meaning |
 |---|---|
-| Markdown body | Default Agent instructions. |
-| `name` | Preset name. Defaults to the filename stem. |
-| `description` | Optional catalog description. |
-| `tier` | Default configured tier. The loader also accepts `model` and defaults to `balanced`. |
-| `tools` | Explicit tool names. An empty list selects no tools. |
-| `tool_profile` | Tools to use when `tools` is omitted. Accepts `read`, `read_write` and `none`. The default is `read`. |
+| Markdown body | Default Agent instructions |
+| `name` | Preset name (defaults to the filename stem) |
+| `description` | Optional catalog description |
+| `tier` | Default model tier (`model` is also accepted; defaults to `balanced`) |
+| `tools` | Explicit tool names (`[]` gives no tools) |
+| `tool_profile` | Fallback tool set when `tools` is omitted: `read` (default), `read_write`, or `none` |
 
-The loader also parses `max_turns`, defaulting to 10. Public Session preset resolution applies instructions, tier and tools. Execution budgets come from the Session's runtime limits. [Preset resolution](../../../crates/kuku/src/session/runtime/selection.rs) · [SDK limits](sdk.md#limits-and-accounting)
+The loader also parses `max_turns` (default `10`). Public Session preset resolution applies instructions, tier, and tools; execution budgets come from the Session's runtime limits. [Preset resolution](../../../crates/kuku/src/session/runtime/selection.rs) · [SDK limits](sdk.md#limits-and-accounting)
 
-## Select the preset
+## Using a preset
 
-The model can call `create_agent` with `{"address":"reviewer","preset":"my-reviewer"}` and then `send_message` with `{"to":"reviewer","message":"Review the new tests"}`. Direct SDK callers set `AgentConfig.preset`. Explicit instructions, tier and tool selection override the corresponding preset defaults. [Session coordination tools](tools.md#session-coordination-tools)
+The model can call `create_agent` with `{"address":"reviewer","preset":"my-reviewer"}` and then `send_message` with `{"to":"reviewer","message":"Review the new tests"}`. Direct SDK callers set `AgentConfig.preset`. Explicit instructions, tier, and tool selection override preset defaults. [Session coordination tools](tools.md#session-coordination-tools)

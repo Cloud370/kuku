@@ -2,7 +2,7 @@
 
 ## 把任务交给第二个 Agent
 
-先启动一个 Session，从输出中复制它的 ID。以下命令都在同一工作目录运行，并把 `SESSION_ID` 换成该 ID。
+先启动一个 Session 并记下输出的 ID，在同一工作目录运行后续命令（把 `SESSION_ID` 替换为实际 ID）：
 
 ```bash
 kuku run "Inspect this project and summarize the test setup"
@@ -11,12 +11,17 @@ kuku list SESSION_ID
 kuku show SESSION_ID --agent reviewer
 ```
 
-第二条命令在需要时创建 `reviewer`。之后向同一 Session 和地址再次执行 `kuku run`，会延续它自己的历史。新 Agent 有独立上下文，委派时应把相关文件或已有发现发给它。
+第二条命令会按需创建 `reviewer`，之后对同一 Session 和地址再次执行 `kuku run` 会延续它自己的上下文。新 Agent 从干净上下文启动，委派任务时记得把相关文件路径或已有结论一起带给它。
 
-要向已有 Agent 分享保留的日志或结果，请让发送方先保存该值，再将名称放入 `send_message` 的 `values` 参数。接收方随任务收到准确的保存引用。见[命名会话值](../reference/tools.md#命名会话值)。
+如果要把一段保留的日志或大块结果转给其他 Agent，让发送方先命名保存，再把名称放进 `send_message` 的 `values` 参数，接收方会在任务里拿到精确引用。[命名会话值](../reference/tools.md#命名会话值)
 
-## 复用预设
+## 复用 Markdown 预设
 
-项目预设放在 `<workspace>/.kuku/agents/`，个人预设放在 `~/.kuku/agents/`。同名时优先使用项目定义。用 `kuku agents list` 查看目录，用 `kuku agents show NAME` 查看某个预设。[Agent 格式](../reference/agent-format.md)
+把 Agent 预设放到 `<workspace>/.kuku/agents/`（项目级）或 `~/.kuku/agents/`（个人级），同名时项目级优先。查看已发现的预设：
 
-运行中，模型可以调用 `create_agent` 指定新地址和 `preset`，再用 `send_message` 发送任务。通过 `list_agents` 查看接收方状态和最近已落盘的结果。使用 `--no-agents` 可以关闭当前运行的模型协作工具。[工具参考](../reference/tools.md) · [管理 Session](manage-sessions.md)
+```bash
+kuku agents list
+kuku agents show NAME
+```
+
+运行期间，模型可以用 `create_agent` 指定新地址和 `preset`，用 `send_message` 派发任务，用 `list_agents` 查看对方状态和最近落盘的输出。如果某次运行不想让模型创建或调度子 Agent，加上 `--no-agents` 即可。[Agent 格式](../reference/agent-format.md) · [工具参考](../reference/tools.md) · [管理 Session](manage-sessions.md)

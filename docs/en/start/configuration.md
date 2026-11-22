@@ -1,112 +1,63 @@
 # Configuration
 
-## Config File Location
+## Config file location
 
-By default, kuku uses:
+By default, kuku reads `~/.kuku/config.toml`, or `$KUKU_HOME/config.toml` when `KUKU_HOME` is set.
 
-```text
-~/.kuku/config.toml
-```
+Pass `--config PATH` to use another file, and run `kuku server status` to check which file the local service is actually using. To switch a running managed service to a different config file, wait until it is idle and run `kuku server restart --config PATH`. [File layout](../reference/file-layout.md) · [Run the server](../guides/run-the-server.md)
 
-If `KUKU_HOME` is set, the service looks for:
+## Interactive setup
 
-```text
-$KUKU_HOME/config.toml
-```
+When you run `kuku` with no valid config or missing credentials for the default model, the welcome screen points you to `/model` to configure your first route. You can open the same flow directly with `kuku init`. Existing configs are preserved, and malformed configs are reported rather than overwritten.
 
-The local service uses the selected data directory's `config.toml` by default. Choose another file with `--config`. Check the active path with `kuku server status`. To change the configuration path for an already running managed service, use `kuku server restart --config PATH` when the service is idle. [File layout](../reference/file-layout.md) · [Run the server](../guides/run-the-server.md)
+From setup, choose either:
 
-## First-run TUI setup
+- **Edit config file** — opens the config path without sending any provider requests.
+- **Find and test models** — discovers models from the provider and runs short text, thinking, and optional image checks (4,096-token output cap, 30 s timeout per test; may use API balance).
 
-Interactive `kuku` opens the main TUI in the selected workspace. With a missing or empty config, or an unavailable credential for the default model, the welcome view directs you to `/model` to configure the first route. Settings preserve an existing config and use the normal environment, file or plaintext credential resolver. The local service starts after a usable model configuration is saved. An active service keeps its existing startup and settings flow. A malformed config is reported without replacing it. Use `kuku init` to open the same settings directly from an interactive terminal.
+The wizard lets you pick a preset, reuse a saved connection, or enter a custom URL, network mode (system proxy env, direct, HTTP, SOCKS5, or SOCKS5H), and API key. For a custom base URL, setup probes eligible protocols (`Responses` → `Chat Completions` → `Messages`) after you select a model, and asks you to choose if results are ambiguous. If the model catalog cannot be read, you can still type a known model ID directly.
 
-Choose **Find and test models** once to allow model discovery and short text or image tests during setup. Each test request may use your API balance and has an output limit of 4096 tokens and a timeout of 30 seconds. **Edit config file** opens the config path with zero provider requests.
+Use the model picker to search and select one or more models (`Space` to multi-select, `Enter` to confirm), then review test outcomes in **Model tests** or adjust thinking, output limits, capabilities, and pricing under **Settings**. Run **Settings → Test tools** to verify synthetic tool calls on the route — a working text reply alone does not confirm tool support. If a Chat route requires Responses for tools, switch under **Settings → API type → Responses** and re-test before saving.
 
-Setup checks which thinking values each selected model accepts, starting with the values declared by the API. After setup knows the API type, text, thinking, and image checks can overlap. Generation tests share two slots per selected model, up to six slots. The setup screen shows overall progress across the selected models. Completed requests advance it while other requests are still running. The overview shows how many requests have finished and how long active checks have been running. When a check has an error or an unverified image result, the review screen focuses **Model tests**. The compact table gives each model separate Text, Thinking, and Image columns with live results and retry times, even in wide terminals. **Ready** means the model returned text. Open **Fix failed models** to retry a failed text check, skip that selection, or change the key or URL when the error points there. If another model returned text, **Use another default** lets you switch to it. **Model tests** contains individual results, including optional image and thinking checks. While tests run, Enter opens **View requests** by default. **Save early** asks for confirmation before it keeps completed results and stops pending requests. Going back from active tests also asks before stopping them. The footer shows what Esc does on each screen.
+Inside an active Session, run `/model` (or press `Ctrl+L`) to add or edit connections, switch the current Agent's route (**Use in this Session**), or save a new default (**Set as default**). [Terminal controls](../reference/cli.md#slash-commands) · [Config reference](../reference/config.md)
 
-Choose a custom connection, saved connection, or preset. Enter the provider URL, network path, and key. A custom connection takes its name from the URL host and any non-default port. Connections with the same host and port get distinct names. Setup uses the protocol from a saved connection, preset, or standard request URL. After model selection, setup tests the eligible protocols for a new custom base URL in parallel. It prefers Responses, then Chat Completions, then Messages when the preceding protocols are unsupported. An ambiguous result opens the API type picker. The network choices are the proxy environment, a direct connection, or an HTTP, SOCKS5, or SOCKS5H proxy. When a bare address has more than one standard candidate path, the editor checks them concurrently and opens the first usable model list automatically. The screen lists each request and its outcome. An unreadable catalog still allows a known model ID to be entered directly.
-
-Models stay in the order returned by the provider, including filtered search results. Type to search, use the arrows to move, and press Enter to select one. Space marks models for a multi-selection, and Enter accepts the marked set. Choose a default when creating a configuration with several models. Selecting models starts tests in the background. The review screen shows the request address, model progress, and test status. Open **View requests** during testing or **Model tests** afterward to see individual requests. Open **Settings** to change thinking, output, model capabilities, or costs. Set optional token rates from **Costs** and add **Request cost** to the terminal status line to see monetary totals. [Proxy and pricing configuration](../reference/config.md#providername)
-
-Choose **Settings → Test tools** to check a synthetic tool call and its reply on the selected route. A working text reply alone does not establish tool support. On a text-only Chat route that requires Responses for tools, choose **Settings → API type → Responses** to test the new route before saving.
-
-The Turn summary highlights cache reads below 50% after the first two comparable Turns on the current route. Two consecutive low Turns raise a yellow status-line notice. Open it with the mouse or F2 and select **Dismiss**. A new route or context starts a new baseline.
-
-In a Session, open `/model` or press Ctrl+L. **Add model or connection** and **Edit** open the shared form. An existing connection can be reused with its saved credential. **Use in this Session** changes the selected Agent. **Set as default** saves the route for new Sessions. [Terminal thinking controls](../reference/cli.md#slash-commands) · [Config reference](../reference/config.md)
-
-## Provider Setup
+## Providers and credentials
 
 The default config defines two providers:
 
 - `provider.anthropic` with `api_key = "$ANTHROPIC_API_KEY"`
 - `provider.openai` with `api_key = "$OPENAI_API_KEY"`
 
-Use an explicit `api_key = "$VARIABLE_NAME"` reference or `api_key = "file:<absolute-path>"`. The interactive settings flow stores new pasted keys under the service data directory and writes only the absolute file reference to TOML. These files are plaintext, not encrypted. See [Config](../reference/config.md) and [File layout](../reference/file-layout.md).
+Supply keys either as an environment reference (`api_key = "$VARIABLE_NAME"`) or a key file (`api_key = "file:<absolute-path>"`). When you paste a key into interactive setup, kuku writes it to an owner-only plaintext file under `$KUKU_HOME/credentials/` and puts only the `file:` reference in `config.toml`. These files are not encrypted. [Config reference](../reference/config.md) · [File layout](../reference/file-layout.md)
 
-Set the environment for the server process. If you change a key in your terminal after the managed service starts, run `kuku server restart` from that terminal when the service is idle. For a remote connection, configure the key on the server machine. After validating a change to the active config file, the service uses the new configuration when it opens Sessions.
-
-For other string settings, you can also use `$ENV_VAR_NAME` in `config.toml`. For example, `base_url = "$KUKU_ANTHROPIC_BASE_URL"` resolves during config load.
+Environment variables are resolved by the server process, not the terminal client. If you export a new key in your shell after the local service is already running, run `kuku server restart` once it is idle. For remote servers, set the key on the server machine. Other string fields in `config.toml` also expand `$ENV_VAR_NAME` on load (for example, `base_url = "$KUKU_ANTHROPIC_BASE_URL"`).
 
 ### Recover an authentication failure
 
-After a provider authentication failure in the terminal, choose **Repair credentials** with F2, then Enter. The repair is bound to that failed connection and model. On a managed local service, enter the replacement key in the masked editor and press Enter to review it. Confirm **Save credentials and restart local service** to apply the change. Only that provider's `api_key` changes; the current model choice and other configuration stay in place. The key uses the same private file storage as setup and is never copied to the composer or logs. Saving does not validate the key.
+If a provider request fails authentication in the TUI, press `F2` → **Repair credentials**. On a managed local service, paste the replacement key and confirm **Save credentials and restart local service**. Only that provider's `api_key` is updated; the key is stored in `$KUKU_HOME/credentials/` and is not validated on save. If the service is busy with another task, you can retry the restart once idle. After restart, kuku restores your Session, Agent, and draft so you can explicitly retry the original input.
 
-If another execution keeps the service busy, **Credentials saved; service not restarted** lets you retry the safe restart later. The terminal distinguishes saved credentials from credentials applied to the current Session; it does not retry the failed request. After restart is confirmed for the same config and a new service instance, the terminal restores the same Session, Agent and draft. Use Continue or the shown recovery action to retry the retained original input explicitly, without submitting it again.
+For remote or token-authenticated servers, fix the credentials on the server side and restart it there — the TUI never writes local key files for remote connections.
 
-For remote or token-authenticated connections, repair credentials on the server and restart it safely when required, then reconnect and continue. The terminal does not write local credentials for those connections.
+## Model tiers
 
-## Model Tiers
+Named tiers bundle a connection, model, thinking level, and token limits (for example `strong`, `balanced`, `light`). `default_model = "balanced"` sets the default. Override it per run with `--tier <name>`, or pick an exact route with `--connection <name> --model <model-id>`.
 
-Optional named route examples:
-
-- `strong`
-- `balanced`
-- `light`
-
-Each tier maps to one provider, one model, a thinking level, and token limits. `default_model = "balanced"` selects the default tier. Use `--tier <name>` to choose another tier, or `--connection <name> --model <model-id>` to select an exact connection and model.
-
-## Common Changes
-
-Show the current config:
+## Common config commands
 
 ```bash
 kuku config show
-```
-
-Validate the file:
-
-```bash
 kuku config validate
-```
-
-Set one value:
-
-```bash
 kuku config set model.balanced.think high
 ```
 
-## Discovery, Handoff, Logs, Plugins, and Updates
+## Other sections
 
-The main non-provider sections are:
+Non-provider sections in `config.toml`:
 
-- `[discovery]` for agent and skill auto-discovery
-- `[handoff]` for long-session summarization thresholds
-- `[logs]` for observability log retention
-- `[plugin]` for package extension loading
-- `[update]` for release source and channel settings
+- `[discovery]` — Agent and Skill auto-discovery
+- `[handoff]` — long-session summarization thresholds
+- `[logs]` — observability log retention (always on; defaults to `max_age_days = 14`, `max_total_size_mb = 512`)
+- `[plugin]` — package extension loading
+- `[update]` — release manifest source and channel (defaults to `source = "github"`, `channel = "stable"`)
 
-Logs are default-on with no disable switch. The default retention is `max_age_days = 14` and `max_total_size_mb = 512`.
-
-The exact keys live in [Config](../reference/config.md).
-
-## Update Channels
-
-The default update section uses:
-
-```toml
-[update]
-source = "github"
-channel = "stable"
-```
-
-This controls which release manifest kuku should follow. See [Update Manifest](../reference/update-manifest.md).
+See [Config reference](../reference/config.md) for exact keys and [Update Manifest](../reference/update-manifest.md) for release channels.

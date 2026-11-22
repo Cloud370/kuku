@@ -1,8 +1,8 @@
 # Use Agents
 
-## Give a task to a second Agent
+## Delegate to a second Agent
 
-Start a Session and copy its ID from the output. Use the same workspace for the following commands and replace `SESSION_ID` with that ID.
+Start a Session, copy its ID from the output, and reuse the same workspace for follow-up commands (replacing `SESSION_ID`):
 
 ```bash
 kuku run "Inspect this project and summarize the test setup"
@@ -11,12 +11,17 @@ kuku list SESSION_ID
 kuku show SESSION_ID --agent reviewer
 ```
 
-The second command creates `reviewer` if needed. Another `kuku run` to the same Session and address continues its history. Supply the relevant files or findings when delegating work. A new Agent starts with its own context.
+The second command creates `reviewer` on demand; later `kuku run` calls to the same Session and address continue its history. Because every new Agent starts with a clean context, pass along the relevant file paths or findings when delegating.
 
-To share a retained log or result with an existing Agent, ask the sender to save it under a name and include that name in the `values` argument of `send_message`. The received task includes the exact saved reference. [Named Session values](../reference/tools.md#named-session-values)
+To hand a retained log or large output to another Agent, have the sender save it under a name and pass that name in `send_message`'s `values` argument — the recipient receives the exact saved reference with its task. [Named Session values](../reference/tools.md#named-session-values)
 
-## Reuse a preset
+## Reuse Markdown presets
 
-Put a Markdown preset in `<workspace>/.kuku/agents/` for that project or `~/.kuku/agents/` for personal use. Project definitions take precedence over user definitions of the same name. Inspect the catalog with `kuku agents list` and `kuku agents show NAME`. [Agent format](../reference/agent-format.md)
+Save Agent presets as Markdown files in `<workspace>/.kuku/agents/` (project-scoped) or `~/.kuku/agents/` (personal). Project presets override personal presets of the same name. Inspect what is discovered with:
 
-During a run, a model can use `create_agent` with a new address and the selected `preset`, then `send_message` with the task. `list_agents` shows the recipient's state and latest settled output. Use `--no-agents` to disable those model-facing coordination tools for the run. [Tools](../reference/tools.md) · [Manage Sessions](manage-sessions.md)
+```bash
+kuku agents list
+kuku agents show NAME
+```
+
+During a run, the model can call `create_agent` with a new address and a `preset`, send work via `send_message`, and check status or latest settled output with `list_agents`. Pass `--no-agents` to turn off these multi-Agent tools for a single run. [Agent format](../reference/agent-format.md) · [Tools](../reference/tools.md) · [Manage Sessions](manage-sessions.md)

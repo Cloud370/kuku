@@ -1,41 +1,41 @@
 # Glossary
 
-## Core Runtime Terms
+## Core runtime
 
 | Term | Meaning |
 |---|---|
-| `Workspace` | The project root directory used for one run |
-| `kuku home` | Runtime home directory, default `~/.kuku` |
-| `Session` | One persisted execution history stored as a directory |
-| `Agent` | Stable address, independent context and pending work inside one Session |
-| `Turn` | A round of work admitted by an Agent, possibly spanning several model requests |
-| `Step` | One logical model request and the tool calls its response produces |
-| `events.jsonl` | Append-only session fact log |
-| `Memory` | Long-lived context stored in `memory.md` files |
+| `Workspace` | Project root directory used for a run |
+| `kuku home` | Runtime data directory (default `~/.kuku`) |
+| `Session` | Persisted execution history stored in one directory |
+| `Agent` | Named participant inside a Session with independent context and inbox |
+| `Turn` | One round of work admitted by an Agent (may span multiple model requests) |
+| `Step` | One logical model request and the tool calls its response triggers |
+| `events.jsonl` | Append-only Session fact journal |
+| `Memory` | Durable cross-Session notes stored in `memory.md` files |
 
-## Model and Context Terms
-
-| Term | Meaning |
-|---|---|
-| `provider` | The model API adapter |
-| `tier` | A named model preset such as `strong`, `balanced`, or `light` |
-| `think level` | Provider reasoning level: `off`, `low`, `medium`, or `high` |
-| `handoff` | A summary written when long history is compressed |
-
-## Extension Terms
+## Models and context
 
 | Term | Meaning |
 |---|---|
-| Agent preset | A discoverable definition supplying the initial instructions, tier and tools for an Agent |
-| `Skill` | A packaged instruction set loaded into the current session |
-| `package` | A bundle of hooks, skills, and related assets |
-| `hook` | An external process triggered by runtime lifecycle events |
+| `Provider` | Model API adapter and connection configuration |
+| `Tier` | Named model preset such as `strong`, `balanced`, or `light` |
+| `Think level` | Portable reasoning level: `off`, `low`, `medium`, or `high` |
+| `Handoff` | Compaction summary written to open a successor context segment |
 
-## Tooling Terms
+## Extensions
 
 | Term | Meaning |
 |---|---|
-| `tool` | A callable capability with a schema and risk level |
-| `risk` | Tool risk class, such as `read`, `edit`, `command` or `session` |
-| `permission` | A runtime authorization decision before tool execution |
-| `wire event` | Client-facing NDJSON event emitted by the server |
+| Agent preset | Discoverable Markdown file defining initial instructions, tier, and tools |
+| `Skill` | Packaged instruction set loaded into the current Session |
+| `Package` | Bundle of hooks, Skills, and related assets |
+| `Hook` | External process triggered by runtime lifecycle events |
+
+## Tooling and wire protocol
+
+| Term | Meaning |
+|---|---|
+| `Tool` | Callable capability with a JSON schema and risk class |
+| `Risk` | Tool risk class (`read`, `edit`, `command`, `session`, etc.) |
+| `Permission` | Runtime authorization decision before tool execution |
+| `Wire event` | Client-facing NDJSON event emitted by the HTTP server |

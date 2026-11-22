@@ -1,81 +1,76 @@
 # Sessions
 
-A `Session` owns the persistent history, agents, writer, command output, and active runtime resources for one group of agents. Embed the public SDK directly; no daemon or CLI subprocess is required. See the [SDK reference](../reference/sdk.md) for operations and the calling program.
+A `Session` owns the persistent journal, Agents, shared writer, retained command outputs, and live execution state for one workspace group. Embed the Rust SDK directly without a daemon or CLI subprocess. See [SDK reference](../reference/sdk.md) for the exact API.
 
 ## Identity and ownership
 
-Agents have stable, flat session-local addresses such as `main`, `reviewer`, or `agent-3`. Retained addresses cannot be reassigned. Creating an agent starts independent context; reusable behavior presets supply initial instructions and defaults without copying another agent's history. Explicit agent configuration affects only that agent.
+Agents have flat, stable Session-local addresses (`main`, `reviewer`, `agent-3`). Once created, an address is never reassigned. Every new Agent starts with a clean context — presets supply initial instructions, tier, and tools without copying another Agent's history. Explicit overrides apply only to that Agent.
 
-## Delivery and advancement
+## Delivery, scheduling, and observation
 
-Creation, configuration, delivery, replies and targeted execution controls accept caller command identities. The same command and content return the original durable receipt. Conflicting reuse fails. Delivery, model acceptance, and execution completion are separate facts.
+Creation, configuration, input delivery, replies, and targeted cancellation all take a caller-supplied `command_id`. Repeating the same ID and payload returns the original durable receipt; reusing an ID with different payload fails. Delivery, model admission, and Turn completion are recorded as separate facts.
 
-`Activation::Wake` requests advancement. `Activation::Enqueue` stores input for explicit host scheduling. A running Agent admits eligible inputs in receipt order at a safe boundary. `InputTiming::NextStep` allows the current Turn's next model request, after the in-flight response and dispatched tools settle. If the Turn settles first, the input remains eligible for the next Turn. `InputTiming::NextTurn` waits for the next Turn even when a later `NextStep` input can be admitted sooner. A technical retry reuses the prepared request and is limited to recognized transient provider failures before stream output begins; failures after output starts are not retried.
-
-By default a Turn continues through tool steps until the model completes, execution pauses or stops, or a resource limit applies.
-
-One execution chain advances per Agent, and different Agents can run concurrently. A targeted cancellation uses the observed execution identity. Queued inputs remain visible after cancellation. Explicit advancement or a fresh waking host input resumes stopped work. A queued input can be withdrawn by its receipt identity. A withdrawal racing with acceptance returns the actual state.
-
-Execution continues independently of observations. `agent_view` returns an Agent snapshot, queued inputs and the corresponding committed cursor. `events(after, limit)` returns bounded committed pages. `observe(after)` combines a durable reconnectable cursor with bounded transient updates identified by Agent and execution. Slow consumers receive a lag notice and retain access to durable results.
+- **Activation**: `Activation::Wake` schedules advancement; `Activation::Enqueue` stores the input until the host advances explicitly.
+- **Timing**: Running Agents admit eligible inputs in receipt order at safe boundaries. `InputTiming::NextStep` can enter before the next model request in the current Turn (once the in-flight response and dispatched tools settle), or in the next Turn if the current Turn finishes first. `InputTiming::NextTurn` always waits for the next Turn, even if a later `NextStep` input gets admitted earlier.
+- **Retries**: Technical retries reuse the prepared request and apply only to recognized transient provider errors *before* stream output starts. Once output begins, no automatic retry happens.
+- **Turn progression**: By default a Turn runs tool Steps until the model finishes, pauses/stops, or hits a configured resource limit.
+- **Concurrency & cancellation**: Each Agent has at most one active execution chain, while distinct Agents run concurrently. Targeted cancellation references the observed execution ID and leaves queued inputs visible (resume by advancing or sending a waking input). Queued inputs can be withdrawn by receipt ID; if withdrawal races with admission, it reports what actually happened.
+- **Observation**: Execution is decoupled from observers. `agent_view` returns a snapshot, queued inputs, and committed cursor; `events(after, limit)` pages through committed records; `observe(after)` combines a resumable durable cursor with bounded live deltas keyed by Agent and execution ID. Slow observers get a lag notice and can always fall back to durable reads.
 
 ## Background Jobs
 
-A Job gives the Session a handle for an already-dispatched command or workspace script. The Job belongs to the Agent that started it and can keep running after that Turn settles or a client disconnects. It still uses the execution host's resources. The foreground observation window controls when the tool returns a handle. An explicit process deadline still applies after the transfer. [Tool arguments and Job handles](../reference/tools.md#session-jobs)
+Long-running commands or workspace scripts can detach into a **Session Job**. A Job belongs to the Agent that started it, keeps running after the Turn finishes or clients disconnect (still using host resources), and honors any explicit process deadline. The foreground observation window decides when a tool returns a Job handle instead of blocking. [Tool arguments and Job handles](../reference/tools.md#session-jobs)
 
-Reaching the observation limit alone does not trigger a model request. The Session records the terminal outcome and delivers a bounded result with the available retained output ID to the owning Agent's inbox. A command Job with a nonzero exit code or a terminating signal is marked failed. The result becomes eligible at a safe boundary in its current or next Turn. The admitted message identifies the result as runtime feedback. Clients show the Job's own completion entry and use human or Agent input for message rewind targets. The Agent can act on the result without polling. A client can inspect or cancel a specific Job while the Session remains open. [Terminal controls](../reference/cli.md#terminal-interface) · [SDK methods](../reference/sdk.md#workspace-execution)
+Hitting the observation window does not trigger a model request by itself. When the Job ends, the Session records its terminal state (non-zero exit or signal = failed) and delivers a bounded completion receipt plus any retained output ID to the owning Agent's inbox. The Agent picks it up at the next safe boundary without polling; clients render it as runtime feedback (not as a human rewind target) and can inspect or cancel live Jobs while the Session is open. [Terminal controls](../reference/cli.md#terminal-interface) · [SDK methods](../reference/sdk.md#workspace-execution)
 
-A targeted stop of the observed Agent execution leaves detached Jobs running. `Session::cancel(agent)` stops that Agent and cancels its Jobs. Closing the Session cancels all live Jobs and waits for cleanup and durable writes. If the runtime stops before recording a terminal outcome, reopening records the unsettled Job as `interrupted`. Inspect its available effects before explicitly starting new work.
+- A targeted stop of an Agent's current execution leaves detached Jobs running.
+- `Session::cancel(agent)` stops that Agent **and** cancels its Jobs.
+- Closing a Session cancels all live Jobs and waits for cleanup and durable writes.
+- If the process dies before a Job settles, reopening marks it `interrupted` — check actual side effects before re-running.
 
-## Storage and context
+## Storage and journal sealing
 
-The [session layout](../reference/file-layout.md#session-layout) contains one authoritative `events.jsonl` journal and retained outputs. One shared writer holds an operating-system lock and incrementally appends synchronized records. Opening repairs an incomplete tail. A sealed prefix can restore runtime state from its inline checkpoint and replay only later records. Changing the model request byte limit preserves that runtime checkpoint. The SDK rebuilds the startup context at the active limit when execution needs it. If the checkpoint cannot be used, opening replays the history. Packed event frames are checked when read. [Measured reopen time and memory](performance.md#reopening-a-large-session)
+Each [Session directory](../reference/file-layout.md#session-layout) holds one authoritative `events.jsonl` and its retained outputs. A single shared writer holds an OS file lock and appends synchronized records. Opening repairs any truncated tail line. Sealed prefixes carry an inline runtime checkpoint so reopening restores state directly and replays only the uncompressed tail; changing the model request byte limit keeps the checkpoint usable (startup context rebuilds lazily at the active limit when needed). If a checkpoint is unusable, kuku falls back to full replay. Packed frames are integrity-checked on read. [Measured reopen time and memory](performance.md#reopening-a-large-session)
 
-### When the journal is compressed
+### When the journal compacts
 
-The runtime checks for journal compression after a clean Session close, once work and durable writes have settled. For SDK callers, this happens during `Session::close()`. The server also closes idle runtime Sessions after their work and Jobs settle. Exiting the TUI disconnects that client while the managed server can continue.
+kuku checks whether to seal `events.jsonl` on a clean Session close after all work and writes settle (`Session::close()` in the SDK, or when the server closes an idle Session — exiting a TUI only disconnects the client).
 
-- The first seal becomes eligible at **32 MiB** of committed journal data.
-- After sealing, the next seal becomes eligible when the uncompressed tail reaches both **32 MiB** and the on-disk size of the sealed prefix. A 65 MiB sealed prefix needs at least 65 MiB of new tail data.
-- The runtime publishes the replacement atomically if it is smaller. The full logical history remains available through [the event CLI](../reference/cli.md#kuku-events).
+- First seal triggers at **32 MiB** of committed journal data.
+- Subsequent seals require the uncompressed tail to reach **both** **32 MiB** and the current on-disk size of the sealed prefix (e.g. a 65 MiB prefix waits for at least 65 MiB of new tail).
+- The compressed file replaces the journal atomically only if it is smaller. Full logical history remains readable via [kuku events](../reference/cli.md#kuku-events).
 
-### Model context
+## Model context and compaction
 
-Agent creation/configuration, delivery/acceptance, prepared steps, authorization, dispatch, results, waits, replies, and settlements are separate facts. See [Agent loop](agent-loop.md) for model terminal states and bounded output-limit recovery. A completed turn or model claim does not prove business success; inspect actual files, command results, and the task judge.
+Provider-visible system text, prelude, tools, and admitted canonical messages are frozen into a **context segment**. Messages are admitted once per segment; each prepared Step records segment/message boundaries, resolved route/settings, correlation, and request hash without duplicating full wire requests. Reopening on the same route and capabilities keeps the committed prefix intact.
 
-Provider-visible system text, prelude, tools, and admitted canonical messages are frozen in a context segment. Messages are admitted once per segment; each prepared step records the segment and message boundary, selected connection/settings, correlation, and request hash. It does not append another full wire request. Reopening with the same route and capabilities keeps the committed prefix. Explicit context, tool, or handoff changes may establish a committed successor segment.
+- **Proactive compaction**: Near the byte or token limit, the runtime can ask the model for a bounded checkpoint of older work while preserving the current input and recent complete tool batches. The checkpoint records delivered replies and recovery evidence; original tool results and retained outputs stay accessible. The successor segment activates only after the checkpoint commits.
+- **Overflow fallback**: If a provider rejects a request for context size *before* streaming starts and auto-compaction is enabled, the Agent can make one compaction attempt and issue a smaller replacement request in the same Turn (the rejected call still counts against request budgets).
+- **Manual compaction & undo**: When idle, run `Session::compact_command` or `/compact` to summarize earlier context without starting a new Turn or reply. Failed or canceled attempts leave existing context untouched. `Session::restore_context_command` or `/compact undo` restores the context from before the latest active checkpoint while keeping later visible messages.
+- **Route & capability snapshots**: Each Agent segment snapshots its provider capabilities and non-secret route selectors (`connection`, `model`, `tier`). This is a per-Agent cache boundary, not a credential snapshot — API-key rotation works live without invalidating the segment. Passive changes to endpoint, protocol, model, profile, or capabilities fail closed before projection or dispatch (restore the recorded config to continue). To switch routes intentionally, record a durable change via `configure_agent` or a configured input, which opens a successor segment with a fresh cache prefix carrying portable text and tool history.
+- **Legacy segments**: Older segments lacking the newer snapshot fields match on their exact pre-snapshot signature plus recorded connection, protocol, model, and endpoint, keeping strict replay validation (signed native replay and portable text/tool history continue; ambiguous un-replayed thinking or changed legacy routes fail closed rather than fabricating metadata).
 
-As the request approaches its byte or token limit, the runtime can ask the model for a bounded checkpoint of older work. It keeps the current input and recent complete tool batches for continuation. The checkpoint records replies already delivered and evidence the Agent can use to resume. The original tool results and permitted retained output remain available. The successor becomes active only after the checkpoint and its admissions are committed.
-
-When the provider rejects the request for context size before streaming model content, an Agent with automatic compaction enabled can also make one checkpoint attempt. A successful checkpoint lets the Agent make one smaller replacement request in the same Turn with the already settled tool results. The rejected request still counts toward the request budget.
-
-Use `Session::compact_command` or the TUI's `/compact` to summarize earlier work once the Agent's running work has settled. The summary request creates no new Turn or reply. A failed or cancelled attempt leaves the committed context available for retry. `Session::restore_context_command` and `/compact undo` restore the context before the latest active checkpoint. Later visible messages remain available and the next request can compact again if it reaches the limit.
-
-Each Agent context segment snapshots the provider capabilities and non-secret query connection, model, and tier selectors used to prepare it. This per-Agent snapshot is the provider-context cache boundary, not a Session-wide capability lock or a credential snapshot. API-key rotation remains live and does not change the segment. A passive endpoint, protocol, model, connection-profile, or capability change stops before history projection, new context admission, or HTTP dispatch; it does not create a successor segment. Restore the recorded configuration to continue.
-
-A provider route transition requires a durable change to the selected connection, model, or tier, recorded through `configure_agent` or a configured input. An explicit route transition starts a successor segment with a fresh cache prefix. The prior segment and admissions remain intact, and the successor projects portable text and tool-call/result history.
-
-A legacy segment with neither new snapshot field is matched using its exact pre-snapshot signature and recorded effective connection, protocol, model, and endpoint. When they match, the original segment, signature, and admitted prefix remain unchanged; historical capabilities stay unknown. Strict replay validation still applies to the original history: signed native replay and portable text/tool history can continue, while unsigned or incompatible native replay is rejected. Assistant thinking without a durable provider-replay decision is ambiguous and fails closed. A changed legacy effective route or partial snapshot fails closed with guidance to restore the recorded route or start a new Session. Do not synthesize historical metadata or rewrite old signatures; a legitimate later context or handoff change creates a successor with current snapshots.
-
-Behavioral Prompt assets remain external or embedded versioned resources, separately from context selection and provider conversion. Protocol-native continuation data remains attached to its assistant response and cannot silently cross an incompatible protocol.
+Behavioral Prompt assets stay separate from context selection and provider translation. Protocol-native continuation data stays tied to its assistant response and never silently crosses incompatible protocols.
 
 ## Message rewind
 
-Switching to a finished turn restores the conversation through its end. The Session keeps the original history and remembers which history is current when reopened. The next model request reuses the frozen provider prefix and compaction results in effect at the selected turn. Providers manage cache lifetimes.
+Rewinding to a finished Turn restores the conversation up to the end of that Turn while keeping the original branch in the same Session (reopening remembers whichever branch is active). The next request reuses the frozen provider prefix and compaction state from that Turn; actual cache TTL depends on the provider.
 
-Optional file restoration applies to verified edits after the selected turn in the current history. kuku uses the journaled versions from direct calls to the built-in `write_file` and `edit_file` tools. It can restore earlier contents or remove a file those calls created. Script and shell changes stay on disk. If the recorded versions or current contents cannot be verified, kuku skips the file. Switching back to a saved conversation restores its conversation only. [Terminal controls](../reference/cli.md#edit-a-past-message-or-continue-from-history) · [History API](../reference/server-api.md#snapshot-history-and-observation)
+Optional file restore reverts only verifiable edits made *after* the chosen Turn in the current branch, using versions logged by direct built-in `write_file` and `edit_file` calls (restoring prior contents or removing files created by those calls). Shell and script changes stay on disk, and files whose logged or current content cannot be verified are skipped. Switching back to a previously saved branch restores conversation only. [Terminal controls](../reference/cli.md#rewinding-and-branching) · [History API](../reference/server-api.md#snapshot-history-and-observation)
 
 ## Waiting and replies
 
-For a pending authorization, use `reply_permission` with the exact request identity and Agent. [Tool authorization and deferred approval](permissions.md)
+- Pending permission: answer with `reply_permission` using the exact `request_id` and Agent. [Tool permissions](permissions.md)
+- `ask_user`: persists the question once, yields after the current tool batch, and resumes only on a matching `reply_question`.
 
-`ask_user` persists a question and returns a waiting handle once. The agent yields after its current tool batch. `reply_question` delivers correlated input only to the matching pending request. Reopening reconstructs waits; unrelated, conflicting duplicate, or stale replies do not authorize another action. Waiting does not poll a model or hold a model permit.
+Waiting Agents do not poll the model or hold a model concurrency permit. Unrelated, conflicting, or stale replies never authorize actions.
 
 ## Output and cleanup
 
-Command stdout/stderr stream from the first byte through bounded frames to a session-owned file. The first model view is a bounded preview or recognized build/test summary with a retained reference and explicit filtering/incompleteness flags. `read_output` supports bounded ranges, literal search, and incremental offsets. Exceeding quota keeps draining pipes and marks capture incomplete.
+Command `stdout`/`stderr` stream from the first byte into bounded frames in a Session-owned file. The model first sees a bounded preview (or recognized build/test summary) with a retained output reference and explicit truncation/filtering flags, and can inspect further via `read_output`. If output exceeds quota, kuku keeps draining the pipes and marks the capture incomplete.
 
-An Agent can give the capture a [named value](../reference/tools.md#named-session-values). Ordinary captures can age out. Naming an output or attaching it to a delivered input retains the referenced bytes for reuse on reopen. A replaced name leaves delivered references intact. Write long-lived deliverables to the workspace as ordinary files.
+Agents can bind captures to [named Session values](../reference/tools.md#named-session-values). Plain captures may age out, whereas named values and references attached to delivered inputs retain their bytes across reopens (updating a name leaves already-delivered references intact). Write long-lived deliverables as normal workspace files.
 
-Unix process groups and Windows Job objects provide process-tree cleanup for cancellation. Deliberate escape is outside the trusted local process boundary. Inherited pipes have a cleanup deadline. Known incomplete cleanup is persisted and makes cancellation or close report failure.
+Cancellation cleans up process trees via Unix process groups and Windows Job objects (deliberate sandbox escape is outside the trusted local boundary; inherited pipes have a cleanup deadline). Any known incomplete cleanup is persisted and causes cancel/close to return an error.
 
-`close().await` releases the writer after [cleanup](#background-jobs). Pending inputs and recoverable waits remain. Opening does not automatically activate Agents or replay interrupted effects. Provider traces remain optional diagnostic logs, separately from session facts.
+`Session::close().await` cancels live Jobs, waits for cleanup, and releases the writer lock. Reopening never auto-wakes Agents or replays interrupted side effects. Provider traces are optional diagnostic logs stored separately from Session facts.

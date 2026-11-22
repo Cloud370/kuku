@@ -1,54 +1,53 @@
 # Session 事件
 
-每个 Session 维护一份 `events.jsonl` 日志。每条记录都含有在 Session 内单调递增的 `id`、事件种类 `kind` 和时间戳 `ts`。游标标识已提交的历史位置。跨 Agent 对照执行时，同时使用 Agent 地址、Turn 编号及相应的请求或工具调用 ID。
+每个 Session 维护一份 `events.jsonl` 日志。每条记录都有 Session 内单调递增的 `id`、事件类型 `kind` 和时间戳 `ts`。游标标识已提交的历史位置；跨 Agent 排查时结合 Agent 地址、Turn 编号以及请求或工具调用 ID 关联。
 
-## 读取一页
+## 读取事件
 
 ```bash
 kuku events SESSION_ID --limit 20 --json
 ```
 
-CLI 将每条 JSON 事件写到 stdout，把续页参数写到 stderr。用 `--before` 继续向旧记录翻页，或用 `--after` 从指定游标向新记录读。可用 `--agent reviewer` 或 `--kind tool.result` 查找相关事件。`--file <path> --all --json` 可导出本地日志，包括已封存的历史。[CLI](cli.md#kuku-events) · [服务 API](server-api.md)
+每行输出一条完整 JSON 到 `stdout`，翻页参数与游标写到 `stderr`。用 `--before` 往旧记录翻，`--after` 往新记录读，`--agent` / `--kind` 过滤，或用 `--file <path> --all --json` 导出本地日志（含已封存历史）。[CLI](cli.md#kuku-events) · [HTTP 服务 API](server-api.md)
 
-## 公开 Session SDK 记录的事实
+## 记录类型
 
-| 事件或事件组 | 记录内容 |
+| 类型或分组 | 记录内容 |
 |---|---|
-| `session.created`、`conversation.opened` | Session 元数据，以及打开某个 Agent 的对话流。 |
-| `runtime.operation` | 状态变化由 `record.operation` 指定。例如 `session_claimed`、`agent_created`、`agent_configured`、`input_delivered`、`inputs_accepted`、`input_withdrawal` 和 `turn_settled`。`execution_started`、`agent_stopped` 和 `agent_resumed` 记录定向执行控制。待决请求和关联回复也通过 Session 操作记录。 |
-| `turn.started`、`message.user`、`model.response`、`model.error` | Turn 的输入和模型服务结果。带有 `job_delivery: true` 的 `message.user` 承载后台执行反馈。模型响应保留归一化后的终止状态。`turn.completed`、`turn.interrupted`、`turn.cancelled` 记录终止状态。 |
-| `model.recovery` | 直接 `Query` 或子 Agent 查询遇到输出上限后的一次重试，记录失败和重试请求 ID 及恢复通知来源。 |
-| `runtime.context_segment`、`runtime.context_admitted`、`runtime.step_prepared` | 静态上下文、新接纳的消息，以及确认消息边界的 Step 准备记录。`body_hash` 标识编码后的请求。 |
-| `runtime.provider_report`、`runtime.model_usage`、`runtime.provider_replay` | 模型服务实际回报的元数据、token 用量或可用的协议原生续接数据。 |
-| `runtime.model_retry` | 核心运行时为已准备请求记录 `waiting`、`started` 和 `stopped` 阶段。旧事件缺少 `phase` 时按 `started` 处理。等待或开始时，`attempt` 是下一次尝试的 1 起始编号；停止时是最终失败的尝试编号。`failed_attempt`、`max_attempts`、`failed_kind`、`request_id`、`delay_ms`、`ts`、`will_retry`、`message`、`status` 和 `stop_reason` 携带重试策略或诊断信息。`waiting` 在休眠前写入；`started` 在重新派发前写入。用量统计计入 `started`（包括没有 `phase` 的旧事件），不计入 `waiting` 或 `stopped`。只有 `will_retry` 表示是否会发送下一请求；`delay_ms` 仅适用于 `waiting`。`stop_reason` 可以是 `non_retryable`、`attempt_limit`、`request_budget`、`disabled` 或 `stream_started`。 |
-| `model.recovery` | 模型输出恢复事件，保留原有的 `attempt`、`max_attempts`、`reason`、`from_request_id` 和 `to_request_id`，以及恢复专属诊断详情。 |
-| `tool.call`、`runtime.tool_prepared`、`runtime.tool_dispatched`、`tool.result` | 调用请求、最终参数和工具定义、副作用前的派发记录、已落盘的结果。被拒绝的动作可以有工具结果而没有派发记录。 |
-| `permission.requested`、`permission.allow`、`permission.deny` | 某次工具调用的延后授权或决定。可恢复的 Agent 等待和关联回复记录在 `runtime.operation`。 |
-| `handoff` | 用于准备后继上下文段的摘要边界。 |
+| `session.created`、`conversation.opened` | Session 元数据及打开某个 Agent 的对话流。 |
+| `runtime.operation` | 按 `record.operation` 区分的持久状态变更：`session_claimed`、`agent_created`、`agent_configured`、`input_delivered`、`inputs_accepted`、`input_withdrawal`、`turn_settled`、`execution_started`、`agent_stopped`、`agent_resumed`，以及待决请求与回复。 |
+| `turn.started`、`message.user`、`model.response`、`model.error` | Turn 输入与模型结果（带 `job_delivery: true` 的 `message.user` 表示后台 Job 反馈）。`turn.completed`、`turn.interrupted`、`turn.cancelled` 表示终态。 |
+| `runtime.context_segment`、`runtime.context_admitted`、`runtime.step_prepared` | 冻结的静态上下文、新接纳消息与确认边界的 Step 准备记录（`body_hash` 标识编码后的请求）。 |
+| `runtime.provider_report`、`runtime.model_usage`、`runtime.provider_replay` | Provider 元数据、token 计数及协议原生续接载荷（若可用）。 |
+| `runtime.model_retry` | 已准备请求的 `waiting`、`started`、`stopped` 重试阶段（载荷字段见下表）。 |
+| `model.recovery` | 直接 `Query` 或子 Agent 查询遇到输出上限时的一次恢复重试（含 `attempt`、`max_attempts`、`reason`、`from_request_id`、`to_request_id` 及恢复提示来源）。 |
+| `tool.call`、`runtime.tool_prepared`、`runtime.tool_dispatched`、`tool.result` | 调用请求、绑定后的参数/定义、副作用前派发与落盘结果（被拒调用有结果无派发）。 |
+| `permission.requested`、`permission.allow`、`permission.deny` | 单次工具调用的延后授权请求与决定；可恢复的等待与回复记在 `runtime.operation` 中。 |
+| `handoff` | 用于开启后继上下文段的压缩摘要边界。 |
 
-执行事件可能用 `conversation` 表示 Agent 地址。准备记录和供应商回报用 `agent`。Session 操作把目标存在 `record` 内。需要当前状态时可直接读取 SDK 的 Agent 快照。[Session 记录定义](../../../crates/kuku/src/session/runtime/record.rs) · [Session SDK](sdk.md)
+字段位置说明：执行事件可能用 `conversation` 表示 Agent 地址，Step 准备与供应商回报用 `agent`，Session 操作把目标放在 `record` 里。查询当前状态建议直接读 Agent 快照，不必手工折叠事件。[Session 记录定义](../../../crates/kuku/src/session/runtime/record.rs) · [Session SDK](sdk.md)
 
-## Retry 事件载荷
+## `runtime.model_retry` 载荷
 
-`runtime.model_retry` 是 `EventPayload::Unknown` JSON 对象，结构如下：
+`runtime.model_retry` 以 `EventPayload::Unknown` JSON 对象存储：
 
 | 字段 | 类型 | 含义 |
 |---|---|---|
 | `kind` | 字符串 | 固定为 `runtime.model_retry`。 |
-| `agent`、`request_id` | 字符串 | Agent 地址和已准备请求的标识。 |
+| `agent`、`request_id` | 字符串 | Agent 地址与已准备请求 ID。 |
 | `turn` | 整数 | 所属 Turn。 |
 | `failed_kind` | 枚举 | `authentication`、`permission_denied`、`quota_exhausted`、`context_too_large`、`invalid_request`、`rate_limited`、`timeout`、`provider_unavailable`、`transport`、`internal`、`unknown` 或 `invalid_response`。 |
-| `phase` | 枚举，旧记录可省略 | `waiting`、`started` 或 `stopped`；缺少 phase 的旧记录按 `started` 解释。 |
-| `failed_attempt`、`max_attempts`、`attempt` | 整数 | 均为从 1 开始的尝试计数；`waiting`/`started` 中的 `attempt` 是即将进行的尝试，`stopped` 中则是已失败的尝试。`failed_attempt` 在重试时指前一次失败调用，在停止时指当前失败调用。 |
-| `delay_ms` | 整数 | `waiting` 中的实际等待时长；`started` 和 `stopped` 中为零。 |
-| `will_retry` | 布尔值 | `waiting`/`started` 为 true；`stopped` 为 false。 |
-| `message` | 字符串 | 有界且已清理的失败说明，不包含凭据或终端控制字符。 |
-| `status` | HTTP u16 或 null | 已知时为 HTTP 状态码。 |
-| `stop_reason` | 枚举或 null | `non_retryable`、`attempt_limit`、`request_budget`、`disabled` 或 `stream_started`；停止前为 null。 |
+| `phase` | 枚举（旧记录可省） | `waiting`（休眠前写入）、`started`（重派发前写入）或 `stopped`；旧记录缺省按 `started` 解释。 |
+| `failed_attempt`、`max_attempts`、`attempt` | 整数 | 从 1 开始的计数。`waiting`/`started` 中 `attempt` 为即将进行的尝试，`stopped` 中为最终失败的尝试；`failed_attempt` 重试时指前一次失败调用，停止时指当前失败调用。 |
+| `delay_ms` | 整数 | `waiting` 中的实际退避时长；`started` 和 `stopped` 为 `0`。 |
+| `will_retry` | 布尔值 | `waiting`/`started` 为 `true`，`stopped` 为 `false`。 |
+| `message` | 字符串 | 有界且已清理的失败说明（不含凭据或终端控制符）。 |
+| `status` | HTTP `u16` 或 null | 已知时为 HTTP 状态码。 |
+| `stop_reason` | 枚举或 null | `non_retryable`、`attempt_limit`、`request_budget`、`disabled` 或 `stream_started`；停止前为 `null`。 |
 | `ts` | 时间戳字符串 | 事件时间戳。 |
 
-用量统计会计入 `started` 和缺少 `phase` 的旧记录；`waiting` 与 `stopped` 不会增加模型尝试次数。
+尝试次数统计只计入 `started` 行（及缺少 `phase` 的旧记录），`waiting` 和 `stopped` 不增加尝试次数。
 
-## 实时输出
+## 实时增量与已提交记录
 
-文本增量和进度通知可以是临时的。日志保留最终响应、工具结果和输出引用。重连后从上次游标读取已提交的记录。已派发但结果尚未确认的工具可能已经改变了工作目录。[Session](../how-it-works/sessions.md) · [文件布局](file-layout.md)
+流式文本和进度通知都是临时的；日志保存最终回复、工具结果与输出引用。断线重连后从上次已提交游标续读即可。如果看到 `runtime.tool_dispatched` 但没有对应的 `tool.result`，说明该动作可能已经改过工作区。[Session 机制](../how-it-works/sessions.md) · [文件布局](file-layout.md)

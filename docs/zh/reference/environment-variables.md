@@ -1,49 +1,39 @@
-# Environment Variables
+# 环境变量
 
 ## 运行时变量
 
-| Variable | Meaning |
+| 变量 | 含义 |
 |---|---|
-| `KUKU_HOME` | 覆盖默认运行时 home 目录 |
-| `KUKU_TUI_STATUSLINE` | 用逗号分隔的字段列表覆盖本次终端的已保存状态栏布局。[终端偏好](config.md#终端偏好) |
-| `KUKU_TOKEN` | 用于显式连接服务的客户端令牌 |
-| `KUKU_SERVER_PASSWORD` | 通过 `kuku server` 显式启动服务时使用的令牌 |
-| `ANTHROPIC_API_KEY` | `provider.anthropic` 常用的 API key 来源 |
-| `OPENAI_API_KEY` | `provider.openai` 常用的 API key 来源 |
-| `DEEPSEEK_API_KEY` | `provider.deepseek` 常用的 API key 来源 |
-| `OPENROUTER_API_KEY` | `provider.openrouter` 常用的 API key 来源 |
-| `KUKU_PROVIDER_TRACE` | `1` 启用完整 trace，`0` 关闭 provider trace |
+| `KUKU_HOME` | 覆盖默认数据目录（默认 `~/.kuku`） |
+| `KUKU_TUI_STATUSLINE` | 本次 TUI 启动的状态栏字段列表，逗号分隔（`none` 隐藏）。[终端偏好](config.md#终端偏好) |
+| `KUKU_TOKEN` | 连接显式 `--remote` 服务时使用的 Bearer Token |
+| `KUKU_SERVER_PASSWORD` | 通过 `kuku server` 启动独立服务时设置的访问令牌 |
+| `ANTHROPIC_API_KEY` | `provider.anthropic` 默认使用的密钥变量 |
+| `OPENAI_API_KEY` | `provider.openai` 默认使用的密钥变量 |
+| `DEEPSEEK_API_KEY` | `provider.deepseek` 默认使用的密钥变量 |
+| `OPENROUTER_API_KEY` | `provider.openrouter` 默认使用的密钥变量 |
+| `KUKU_PROVIDER_TRACE` | `1` 开启完整请求 trace；`0` 关闭 |
 
-`config.toml` 也可以在字符串字段中使用 `$NAME` 引用环境变量。对于 `api_key`，`$NAME` 明确选择环境变量来源；`file:<绝对路径>` 明确选择私有文件。两种来源不会互相回退；其他字符串字段在配置加载时解析。
+`config.toml` 中任何以 `$` 开头的字符串字段都会在加载时展开对应环境变量；`api_key` 例外，会保留 `$NAME` 引用并在调用 Provider 时解析。`$NAME` 和 `file:<绝对路径>` 互相独立，不会自动回退。
 
-环境变量凭据必须非空。模型凭据和 `KUKU_PROVIDER_TRACE` 在服务端环境中设置。新客户端接入时，已运行的服务继续使用自己的环境变量。[配置指南](../start/configuration.md)
+模型凭据和 `KUKU_PROVIDER_TRACE` 由**服务端**进程读取（环境变量密钥不能为空）；新客户端连入已运行的服务时沿用服务端自身的环境。[配置 kuku](../start/configuration.md)
 
 ## Provider Trace 日志
 
-预发布版和未打标签的开发版默认记录协议诊断，稳定版默认关闭。诊断 JSONL 记录包含 Session、轮次和请求关联信息、模型和线路、HTTP 状态、SSE 顺序和结束标记，以及失败类别。思考条目记录类型、格式、索引和请求内的 ID 别名，未知类型和格式也用请求内别名表示。诊断模式省略请求和响应正文、响应内容、头信息及不透明的思考数据。
+预发布版和未打标签的开发版默认记录轻量级协议诊断，稳定版默认关闭。诊断 JSONL 记录 Session/Turn/请求关联、模型与线路、HTTP 状态、SSE 序号与结束标记、失败类别以及脱敏后的思考条目元数据，不包含请求/响应正文、请求头或不透明载荷。
 
-`KUKU_PROVIDER_TRACE=1` 记录完整的请求正文、头信息和原始 SSE。凭据头的值会脱敏，完整 trace 仍可能包含提示、工具结果和模型输出。嵌入式宿主可通过 `SessionOptions::provider_trace` 或 `Query::provider_trace` 显式选择模式。
+设置 `KUKU_PROVIDER_TRACE=1` 会记录完整请求正文、请求头和原始 SSE 帧。含密钥的请求头会自动脱敏，但提示词、工具结果和回复仍在正文里。嵌入 SDK 时可通过 `SessionOptions::provider_trace` 或 `Query::provider_trace` 显式指定策略。
 
-Provider trace 以轮转的 JSONL 分段保存在 `$KUKU_HOME/logs/provider-trace/` 下。它们遵循[日志保留规则](config.md#logs)，写入时还会遵守 64 MiB 或配置的日志总预算中较小的上限。每段上限为 8 MiB 或 trace 预算中较小的值，较旧的分段优先清除。
-
-## 未设置 `KUKU_HOME` 时的默认行为
-
-如果 `KUKU_HOME` 未设置，kuku 使用：
-
-```text
-~/.kuku
-```
+Trace 以轮转 JSONL 分段存放在 `$KUKU_HOME/logs/provider-trace/`，遵循[日志保留规则](config.md#logs)，同时受写入上限约束：总大小不超过 `min(64 MiB, 日志总预算)`，单段不超过 `min(8 MiB, trace 预算)`，超出时优先淘汰旧分段。
 
 ## Hook 进程变量
 
-当 kuku 运行 package hook 时，会为 hook 进程设置这些变量：
+kuku 执行 Package Hook 时会注入以下变量：
 
-| Variable | Meaning |
+| 变量 | 含义 |
 |---|---|
 | `KUKU_SESSION_DIR` | 当前 Session 目录的绝对路径 |
-| `KUKU_WORKSPACE` | 当前 workspace 的绝对路径 |
-| `KUKU_PACKAGE_DIR` | package 根目录的绝对路径 |
+| `KUKU_WORKSPACE` | 当前工作区的绝对路径 |
+| `KUKU_PACKAGE_DIR` | Package 根目录的绝对路径 |
 
-hook 进程还会继承 `PATH`、`HOME`、Windows 下的 `USERPROFILE`、`LANG` 和 `LC_ALL`。
-
-其他 secret 不会自动透传。
+Hook 进程同时继承 `PATH`、`HOME`、`USERPROFILE`（Windows）、`LANG` 和 `LC_ALL`；其他环境变量和密钥不会自动透传。

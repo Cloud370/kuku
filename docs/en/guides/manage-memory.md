@@ -1,42 +1,30 @@
 # Manage Memory
 
-Memory is long-lived context stored on disk.
+Memory is durable context stored as plain Markdown on disk and injected into future Sessions.
 
-## Know the Two Scopes
+## Two scopes
 
-- Global memory applies to all sessions.
-- Project memory applies only to one workspace.
+- **Global**: `$KUKU_HOME/memory.md` — applies to all Sessions.
+- **Project**: `$KUKU_HOME/p/<workspace>/memory.md` — applies only to one workspace.
 
-Paths are listed in [File Layout](../reference/file-layout.md).
+You can read or edit either file directly as plain text at any time. [File layout](../reference/file-layout.md)
 
-## Let the Agent Update Memory
+## Letting the Agent update Memory
 
-The runtime exposes two dedicated tools:
+The runtime exposes two built-in tools:
 
 - `remember_memory`
 - `forget_memory`
 
-Their exact arguments are defined in [Tools](../reference/tools.md).
+Their exact arguments are documented in [Tools](../reference/tools.md).
 
-## Review Memory Files
+## Keep Memory concise
 
-Read the current memory files directly when you want to inspect or edit them as text:
+Put stable preferences, durable project facts, and pointers that actually change future decisions in Memory. Keep these out:
 
-- global: `$KUKU_HOME/memory.md`
-- project: `$KUKU_HOME/p/<workspace>/memory.md`
+- one-off task notes
+- Session transcripts
+- secrets or credentials
+- rules already stated in `AGENTS.md` or `CLAUDE.md`
 
-## Keep Memory Small
-
-Good memory entries are stable guidance, durable facts, and pointers that change future decisions.
-
-Do not use memory for:
-
-- temporary task notes
-- session transcripts
-- secrets
-- facts already enforced by `AGENTS.md` or `CLAUDE.md`
-
-## Related Pages
-
-- [File Layout](../reference/file-layout.md)
-- [Glossary](../reference/glossary.md)
+See also [How Memory works](../how-it-works/memory.md) and [Glossary](../reference/glossary.md).

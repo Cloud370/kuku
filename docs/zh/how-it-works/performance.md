@@ -1,6 +1,6 @@
 # 性能实测
 
-在 Linux 实测中，`kuku` 空闲服务端占用 **16.5 MiB RSS**，SDK 的 `Session::open` 用 **157 ms** 重开了已封存的 **509 MiB** Session。
+在一台只有 **371 MiB 内存**的 ARM64 小设备上，kuku 打开了一个 **1,000 多轮**的会话，翻看旧消息，并接着聊了下去。
 
 ## 空闲进程
 
@@ -11,7 +11,7 @@
 | Pi 1.5.2 | RPC `get_state` 已响应 | 110.3 MiB | 107.8 MiB |
 | Claude Code 2.1.283 | 流式 JSON `initialize` 已响应 | 179.5 MiB | 177.4 MiB |
 
-每个程序都在同一台 WSL2 Linux x86-64 主机上各启动三次，取中位数。测试使用隔离的数据目录，不发送任务或模型请求，在各自就绪后一秒采样。kuku 使用带内嵌 Web UI 的 glibc release 和 `opt-level = 2`。Codex 使用发行版原生 musl CLI。Pi 使用 `--mode rpc --no-session --offline`。Claude Code 使用流式 JSON 输入输出的 print 模式，关闭会话持久化和非必要网络流量。这些数字对应表中列出的空闲模式。
+每个程序都在同一台 WSL2 Linux x86-64 主机上各自启动三次新进程取中位数，使用隔离的数据目录，不发送任务或模型请求，在各自就绪一秒后采样。kuku 使用带内嵌 Web UI 的 glibc release（`opt-level = 2`）；Codex 使用发行版原生 musl CLI；Pi 运行 `--mode rpc --no-session --offline`；Claude Code 使用流式 JSON 输入输出的 print 模式，关闭会话持久化与非必要网络流量。以上数字只对应表中列出的空闲模式。
 
 ## 重开大型 Session
 
@@ -33,6 +33,22 @@
 另一次 WSL2 实测使用了相同的逻辑历史和预热后的操作系统页面缓存。选中已封存的 **509 MiB** Session 后，**50 ms** 即可看到第一页对话，服务端峰值为 **20 MiB RSS**。旧版测同一份日志时耗时 **3.61 秒**，峰值为 **1.09 GiB RSS**。
 
 服务端通过 SDK 的历史视图处理可见性和 Turn 编号，并按页读取事件。未封存的日志首次读取时需要流式扫描来构建视图。实测选中未封存的会话到显示第一页耗时 **2.15 秒**，服务端峰值为 **18.5 MiB RSS**。
+
+## 低内存 ARM64 设备
+
+测试设备是四核 Snapdragon 410，Linux 报告 371 MiB 内存，配置了 256 MiB 交换空间。我们在终端打开会话，通过 HTTP 接口发送下一条消息，并在请求进行中翻看旧消息。本地模拟模型的回复出现在终端。Linux 的 OOM 终止计数始终为零。[测试版本](https://github.com/Cloud370/kuku/commit/327212582ee4025f8d9360934e494801fcbe7fef)
+
+这是一个长会话压力样本，包含 **1,071 轮对话、2,142 条可见消息、27,279 次工具调用和 189 次上下文压缩**。用户消息和助手最终回复按 `o200k_base` 估算约 **20.6 万 token**。完整日志包含约 19.8 万个事件，记录了工具结果、模型响应和上下文等内容。工具结果和上下文记录合计约占日志大小的 62%。这份日志封存前是 **509 MiB**，封存后在磁盘上占 **65 MiB**。[分词工具](https://github.com/openai/tiktoken)
+
+| 实测项目 | 结果 |
+| --- | ---: |
+| 服务端峰值常驻内存 | **21.6 MiB** |
+| 终端客户端峰值常驻内存 | **12.7 MiB** |
+| 请求进行中翻看较早对话，每页 40 条记录 | 每页 **72–153 ms** |
+| 日志未被系统缓存时列出会话 | **从磁盘读取 316 KiB**，写入为零 |
+| 保留缓存再次列出会话 | **磁盘读取和写入均为零** |
+
+首次列出会话前，仅请求 Linux 清除这个测试日志的缓存。磁盘 I/O 取服务端进程在 Linux 上的 `read_bytes` 和 `write_bytes` 计数。翻页数据来自一次测试中的四页普通对话记录。[Linux I/O 计数说明](https://docs.kernel.org/6.17/filesystems/proc.html#proc-pid-io-display-the-io-accounting-fields)
 
 ## 下载和安装
 

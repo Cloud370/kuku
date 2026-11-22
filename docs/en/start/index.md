@@ -1,13 +1,9 @@
-# Getting started
+# Getting Started
 
-Install the testing version, then run a first task from your own project directory.
-
-## Pages
+Install kuku, configure a model connection, and run your first task from a project directory.
 
 - [Install kuku](install.md)
-- [Run your first task](quickstart.md)
-- [Configure model connections](configuration.md)
+- [Quickstart](quickstart.md)
+- [Configuration](configuration.md)
 
-## Where to begin
-
-Start with [installation](install.md) on a new machine. If you already have the executable, follow the [quickstart](quickstart.md).
+Start with [Install](install.md) on a new machine, or jump to [Quickstart](quickstart.md) if `kuku` is already installed.
