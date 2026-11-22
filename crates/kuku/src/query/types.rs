@@ -497,10 +497,27 @@ pub(super) struct ResolvedRuntime {
     pub(super) registry: Vec<ToolDefinition>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) struct QueuedToolCall {
     pub(super) tool_call: ProviderToolCall,
     pub(super) display_summary: String,
+    pub(super) preparation: Option<ToolPreparation>,
+}
+
+impl QueuedToolCall {
+    pub(super) fn new(tool_call: ProviderToolCall, display_summary: String) -> Self {
+        Self {
+            tool_call,
+            display_summary,
+            preparation: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct ToolPreparation {
+    pub(super) args: serde_json::Value,
+    pub(super) definition: serde_json::Value,
 }
 
 #[derive(Debug)]

@@ -508,10 +508,9 @@ pub(super) async fn finish_streaming(mut state: StreamingChunkState) -> Result<P
     for tool_call in tool_calls {
         pending.admitted_tool_call_ids.insert(tool_call.id.clone());
         let display = display_summary(&tool_call.name, &tool_call.args, None);
-        pending.queued_tool_calls.push_back(QueuedToolCall {
-            tool_call,
-            display_summary: display,
-        });
+        pending
+            .queued_tool_calls
+            .push_back(QueuedToolCall::new(tool_call, display));
     }
 
     Ok(PendingStep::Pending {

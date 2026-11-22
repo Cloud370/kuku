@@ -20,7 +20,7 @@ use super::run::find_tool_definition;
 use super::tool_exec::{execute_tool_call, run_tool_pre_hooks};
 use super::types::{
     ExecSlot, PendingPermission, PendingRun, PendingStep, PermissionChoice, PermissionRequest,
-    QueuedToolCall, SlotEvent, ToolKind, UiEvent, WorkspaceAccess,
+    QueuedToolCall, SlotEvent, ToolKind, ToolPreparation, UiEvent, WorkspaceAccess,
 };
 
 pub(super) async fn advance(
@@ -714,17 +714,15 @@ fn normalize_create_agent_args(args: &mut serde_json::Value) {
     }
 }
 
-pub(super) fn validate_prepared(
-    pending: &PendingRun,
-    call: &crate::provider::types::ProviderToolCall,
-) -> Result<()> {
+pub(super) fn validate_prepared(pending: &PendingRun, queued: &QueuedToolCall) -> Result<()> {
+    let call = &queued.tool_call;
     let definition = find_tool_definition(pending, &call.name).ok_or_else(|| {
         Error::InvalidArgument(format!("tool '{}' is no longer available", call.name))
     })?;
-    let prepared = prepared_record(pending, &call.id)?.ok_or_else(|| {
+    let prepared = queued.preparation.as_ref().ok_or_else(|| {
         Error::InvalidEventStream("pending action has no durable prepared arguments".into())
     })?;
-    if prepared["args"] != call.args || prepared["definition"] != schema_value(definition) {
+    if prepared.args != call.args || prepared.definition != schema_value(definition) {
         return Err(Error::InvalidArgument(
             "pending action no longer matches its authorized tool definition and arguments".into(),
         ));
@@ -737,13 +735,13 @@ async fn prepare(
     queued: &mut QueuedToolCall,
     definition: &ToolDefinition,
 ) -> Result<Option<String>> {
-    if let Some(prepared) = prepared_record(pending, &queued.tool_call.id)? {
-        if prepared["definition"] != schema_value(definition) {
+    if let Some(prepared) = &queued.preparation {
+        if prepared.definition != schema_value(definition) {
             return Err(Error::InvalidArgument(
                 "prepared tool definition changed before dispatch".into(),
             ));
         }
-        queued.tool_call.args = prepared["args"].clone();
+        queued.tool_call.args.clone_from(&prepared.args);
         return Ok(None);
     }
     let result = run_tool_pre_hooks(
@@ -808,30 +806,17 @@ async fn prepare(
         )?,
         _ => {}
     }
-    EventStore::open(&pending.events_path)?.append(EventPayload::Unknown(serde_json::json!({"kind":"runtime.tool_prepared","ts":now_timestamp()?,"agent":pending.conversation.as_str(),"turn":pending.turn,"tool_call_id":queued.tool_call.id,"args":queued.tool_call.args,"definition":schema_value(definition)})))?;
+    let preparation = ToolPreparation {
+        args: queued.tool_call.args.clone(),
+        definition: schema_value(definition),
+    };
+    EventStore::open(&pending.events_path)?.append(EventPayload::Unknown(serde_json::json!({
+        "kind":"runtime.tool_prepared", "ts":now_timestamp()?, "agent":pending.conversation.as_str(),
+        "turn":pending.turn, "tool_call_id":queued.tool_call.id,
+        "args":preparation.args, "definition":preparation.definition,
+    })))?;
+    queued.preparation = Some(preparation);
     Ok(None)
-}
-
-fn prepared_record(pending: &PendingRun, id: &str) -> Result<Option<serde_json::Value>> {
-    let mut after = pending.turn.saturating_sub(1);
-    loop {
-        let events = EventStore::read_page(&pending.events_path, after, 64)?;
-        if events.is_empty() {
-            return Ok(None);
-        }
-        for event in events {
-            after = event.id;
-            if let EventPayload::Unknown(value) = event.payload {
-                if value["kind"] == "runtime.tool_prepared"
-                    && value["agent"] == pending.conversation.as_str()
-                    && value["turn"] == pending.turn
-                    && value["tool_call_id"] == id
-                {
-                    return Ok(Some(value));
-                }
-            }
-        }
-    }
 }
 
 fn mark_dispatched(pending: &PendingRun, queued: &QueuedToolCall) -> Result<()> {

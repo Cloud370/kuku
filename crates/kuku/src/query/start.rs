@@ -21,7 +21,8 @@ use super::helpers::{
     next_turn, now_timestamp, validate_existing_session,
 };
 use super::types::{
-    PendingPermission, PendingRun, Query, QueuedToolCall, Run, RunOutput, RunState, UiEvent,
+    PendingPermission, PendingRun, Query, QueuedToolCall, Run, RunOutput, RunState,
+    ToolPreparation, UiEvent,
 };
 
 struct StartupLockGuard {
@@ -384,19 +385,21 @@ impl Query {
                 .iter()
                 .filter(|open| is_undispatched_batch_call(open, &conversation, turn))
             {
-                resumed_state.queued_tool_calls.push_back(QueuedToolCall {
-                    display_summary: super::helpers::display_summary(
-                        &open.tool_call.name,
-                        &open.tool_call.args,
-                        None,
-                    ),
-                    tool_call: open.tool_call.clone(),
-                });
+                resumed_state
+                    .queued_tool_calls
+                    .push_back(QueuedToolCall::new(
+                        open.tool_call.clone(),
+                        super::helpers::display_summary(
+                            &open.tool_call.name,
+                            &open.tool_call.args,
+                            None,
+                        ),
+                    ));
             }
         }
         if self.runtime.is_some() {
             for queued in &mut resumed_state.queued_tool_calls {
-                if let Some(args) =
+                if let Some(preparation) =
                     existing_events
                         .iter()
                         .rev()
@@ -407,12 +410,16 @@ impl Query {
                                     && value["turn"] == turn
                                     && value["tool_call_id"] == queued.tool_call.id =>
                             {
-                                Some(value["args"].clone())
+                                Some(ToolPreparation {
+                                    args: value["args"].clone(),
+                                    definition: value["definition"].clone(),
+                                })
                             }
                             _ => None,
                         })
                 {
-                    queued.tool_call.args = args;
+                    queued.tool_call.args.clone_from(&preparation.args);
+                    queued.preparation = Some(preparation);
                 }
             }
         }
@@ -599,10 +606,10 @@ fn resumed_state(lifecycle: Option<&super::lifecycle::LifecycleState>, turn: u64
         } else {
             resumed_permission_requests.push_back(pending.request.clone());
         }
-        queued_tool_calls.push_back(QueuedToolCall {
-            tool_call: pending.tool_call.clone(),
-            display_summary: pending.request.summary.clone(),
-        });
+        queued_tool_calls.push_back(QueuedToolCall::new(
+            pending.tool_call.clone(),
+            pending.request.summary.clone(),
+        ));
     }
 
     ResumedState {

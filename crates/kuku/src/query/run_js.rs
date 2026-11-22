@@ -70,10 +70,7 @@ pub(super) fn spawn(
     let code = queued.tool_call.args["code"].as_str().map(str::to_owned);
     let cancel = Arc::new(Notify::new());
     let stop = cancel.clone();
-    let original = QueuedToolCall {
-        tool_call: queued.tool_call.clone(),
-        display_summary: queued.display_summary.clone(),
-    };
+    let original = queued.clone();
     tokio::spawn(async move {
         let outcome = match (continuation, code) {
             (Some(continuation), _) => {

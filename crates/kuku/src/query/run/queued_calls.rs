@@ -167,6 +167,7 @@ impl Run {
                 let QueuedToolCall {
                     tool_call,
                     display_summary,
+                    ..
                 } = pending.queued_tool_calls.remove(queue_index).unwrap();
                 let hook_result = run_tool_pre_hooks(
                     &mut *pending,
@@ -299,6 +300,7 @@ mod tests {
                 index: 0,
             },
             display_summary: "read visible.txt".to_string(),
+            preparation: None,
         });
         pending.queued_tool_calls.push_back(QueuedToolCall {
             tool_call: ProviderToolCall {
@@ -308,6 +310,7 @@ mod tests {
                 index: 1,
             },
             display_summary: "find files".to_string(),
+            preparation: None,
         });
         pending
             .resumed_permission_requests

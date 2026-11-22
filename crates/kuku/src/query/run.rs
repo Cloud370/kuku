@@ -761,13 +761,10 @@ impl Run {
             .queued_tool_calls
             .pop_front()
             .expect("PendingPermission implies a queued tool call");
-        let QueuedToolCall {
-            tool_call,
-            display_summary: queued_summary,
-        } = queued;
+        let tool_call = &queued.tool_call;
         if pending.query.runtime.is_some() {
             super::provider::ensure_resolved(&mut pending)?;
-            super::runtime_tools::validate_prepared(&pending, &tool_call)?;
+            super::runtime_tools::validate_prepared(&pending, &queued)?;
         }
         let (granted_tool, candidate) = if waiting.request.source == "run_js" {
             (
@@ -798,10 +795,6 @@ impl Run {
             &rule,
         )?;
         if pending.query.runtime.is_some() {
-            let queued = QueuedToolCall {
-                tool_call,
-                display_summary: queued_summary,
-            };
             let step = if matches!(choice, PermissionChoice::Deny) {
                 super::runtime_tools::reject(pending, queued)?
             } else {
@@ -815,6 +808,11 @@ impl Run {
             };
             return self.apply_pending_step(step).await;
         }
+        let QueuedToolCall {
+            tool_call,
+            display_summary: queued_summary,
+            ..
+        } = queued;
         let prior_events = EventStore::replay(&pending.events_path)?;
         if matches!(choice, PermissionChoice::Deny) {
             pending.record_tool_denied(&tool_call.name);
@@ -834,10 +832,9 @@ impl Run {
             }));
         }
         if query_workspace_access(&tool_call.name).conflicts_with(self.active_workspace_access()) {
-            pending.queued_tool_calls.push_front(QueuedToolCall {
-                tool_call,
-                display_summary: queued_summary,
-            });
+            pending
+                .queued_tool_calls
+                .push_front(QueuedToolCall::new(tool_call, queued_summary));
             self.state = RunState::Pending(Box::new(pending));
             return Ok(None);
         }

@@ -209,6 +209,7 @@ fn make_waiting_run(
             index: 0,
         },
         display_summary: "print hi".to_string(),
+        preparation: None,
     });
     let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);
     Run {
@@ -433,6 +434,7 @@ fn make_queued_run(events_path: std::path::PathBuf, dir: &std::path::Path) -> Ru
             index: 0,
         },
         display_summary: "print hi".to_string(),
+        preparation: None,
     });
     let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);
     Run {
@@ -495,6 +497,7 @@ fn make_skill_queued_run(
             index: 0,
         },
         display_summary: "review".to_string(),
+        preparation: None,
     });
     let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);
     Run {
