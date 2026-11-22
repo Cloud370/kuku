@@ -219,7 +219,8 @@ fn probe_payload(payload: &EventPayload, writer: &mut RecordWriter) -> serde_jso
             ts,
             conversation,
             turn,
-            reason
+            reason,
+            partial_reply
         },
         ConversationRollback {
             ts,

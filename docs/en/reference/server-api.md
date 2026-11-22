@@ -129,6 +129,8 @@ For a `user` entry, `agent` identifies the recipient. When trusted runtime input
 
 An explicit interruption can produce a `status` entry with `status: "interrupted"`, the `execution_id`, and the Turn identity and number when available. Its `text` holds up to 64 KiB of the interrupted reply, or is `null` if no visible text was retained. `truncated` indicates a longer partial reply. The raw journal can link its `turn.cancelled` event to the stop record with `stop_event_id`.
 
+If the provider stream fails after emitting text, its `turn.interrupted` history entry includes `partial_reply` with up to 64 KiB of UTF-8 text and a `truncated` flag. Render it as interrupted output and replace the live preview. The separate `model.error` entry carries the provider diagnostic.
+
 A settled Turn can have a `turn_summary` entry. When a Turn is explicitly interrupted, its interrupted `status` entry can carry the same summary. The `turn_summary` object has `tool_calls`, the count of committed tool calls including calls awaiting authorization. Available measurements include `elapsed_ms` from admission to settlement, `input_tokens` and `output_tokens` when all model requests reported the corresponding count, and `cache_hit_percent` over requests with paired cache-read and input counts.
 
 Agent snapshots and summaries can include `admitted_task` and `queued_task`. These nullable strings are bounded excerpts of the latest admitted task input and the latest task input still queued, respectively. Replies to questions are excluded from task excerpts. Use `pending_inputs`, `question` and `permission` for queue and decision state.

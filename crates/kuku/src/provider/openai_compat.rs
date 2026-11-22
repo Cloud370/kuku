@@ -275,6 +275,11 @@ impl OpenAiCompatSseParser {
             super::prepare::invalid_response("provider emitted malformed JSON event")
         })?;
 
+        if !data.is_object() {
+            return Err(super::prepare::invalid_response(
+                "provider SSE event is not an object",
+            ));
+        }
         if let Some(err) = data.get("error") {
             let code = super::error::select_provider_error_code(
                 err.get("code").and_then(Value::as_str),
@@ -376,7 +381,7 @@ impl OpenAiCompatSseParser {
             }
             None => {
                 if self.tool_calls.len() >= MAX_REPLAY_ITEMS {
-                    return Err(super::prepare::invalid_request(
+                    return Err(super::prepare::invalid_response(
                         "too many native tool calls",
                     ));
                 }
@@ -420,6 +425,14 @@ impl OpenAiCompatSseParser {
         repeated_finish: bool,
     ) -> Result<(), ProviderFailure> {
         let content = delta.get("reasoning_content").and_then(Value::as_str);
+        if delta
+            .get("reasoning_details")
+            .is_some_and(|details| !details.is_null() && !details.is_array())
+        {
+            return Err(super::prepare::invalid_response(
+                "provider reasoning_details is not an array",
+            ));
+        }
         let details = delta
             .get("reasoning_details")
             .and_then(Value::as_array)
@@ -486,32 +499,39 @@ impl OpenAiCompatSseParser {
     fn merge_reasoning_details(&mut self, details: &[Value]) -> Result<(), ProviderFailure> {
         for detail in details {
             self.replay_budget.add(detail)?;
-            let existing = self.reasoning_details.iter_mut().find(|value| {
-                match reasoning_index(detail).zip(reasoning_index(value)) {
-                    Some((incoming, prior)) => incoming == prior,
-                    None => {
-                        detail.get("id").and_then(nonempty_string).is_some()
-                            && detail.get("id") == value.get("id")
-                            && detail.get("type") == value.get("type")
-                    }
-                }
-            });
-            if let Some(existing) = existing {
-                if ["id", "type"].iter().any(|field| {
-                    existing
-                        .get(field)
-                        .and_then(nonempty_string)
-                        .zip(detail.get(field).and_then(nonempty_string))
-                        .is_some_and(|(prior, incoming)| prior != incoming)
-                }) {
-                    return Err(super::prepare::invalid_request(
-                        "provider changed native reasoning item identity",
+            let update = detail.as_object().ok_or_else(|| {
+                super::prepare::invalid_response("provider reasoning detail is not an object")
+            })?;
+            let mut candidates =
+                self.reasoning_details
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(position, prior)| {
+                        reasoning_match(prior, detail).map(|rank| (rank, position))
+                    });
+            if let Some((rank, position)) = candidates.clone().max_by_key(|&(rank, _)| rank) {
+                if candidates.any(|(other, candidate)| other == rank && candidate != position) {
+                    return Err(super::prepare::invalid_response(
+                        "provider reasoning fragment matches multiple items",
                     ));
                 }
-                if let (Some(target), Some(update)) = (existing.as_object_mut(), detail.as_object())
+                let existing = &mut self.reasoning_details[position];
+                if reasoning_index(existing)
+                    .zip(reasoning_index(detail))
+                    .is_some_and(|(prior, incoming)| prior != incoming)
+                    || reasoning_field_conflicts(existing, detail, "format")
+                    || reasoning_field_conflicts(existing, detail, "signature")
                 {
+                    return Err(super::prepare::invalid_response(
+                        "provider changed native reasoning item metadata",
+                    ));
+                }
+                if let Some(target) = existing.as_object_mut() {
                     for (key, value) in update {
                         let previous = target.get_mut(key);
+                        if (value.is_null() || value.as_str() == Some("")) && previous.is_some() {
+                            continue;
+                        }
                         if matches!(key.as_str(), "text" | "summary" | "data") {
                             if let (Some(Value::String(existing)), Some(fragment)) =
                                 (previous, value.as_str())
@@ -519,15 +539,13 @@ impl OpenAiCompatSseParser {
                                 existing.push_str(fragment);
                                 continue;
                             }
-                        } else if value.is_null() && previous.is_some() {
-                            continue;
                         }
                         target.insert(key.clone(), value.clone());
                     }
                 }
             } else {
                 if self.reasoning_details.len() >= MAX_REPLAY_ITEMS {
-                    return Err(super::prepare::invalid_request(
+                    return Err(super::prepare::invalid_response(
                         "too many native reasoning items",
                     ));
                 }
@@ -554,6 +572,44 @@ impl OpenAiCompatSseParser {
 
     fn take_chunks(&mut self) -> Vec<ProviderChunk> {
         std::mem::take(&mut self.chunks)
+    }
+}
+
+fn reasoning_field_conflicts(prior: &Value, incoming: &Value, field: &str) -> bool {
+    prior[field]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .zip(incoming[field].as_str().filter(|value| !value.is_empty()))
+        .is_some_and(|(left, right)| left != right)
+}
+
+fn reasoning_match(prior: &Value, incoming: &Value) -> Option<(bool, bool, bool, bool)> {
+    if reasoning_field_conflicts(prior, incoming, "id")
+        || reasoning_field_conflicts(prior, incoming, "type")
+    {
+        return None;
+    }
+    let same_id = prior
+        .get("id")
+        .and_then(nonempty_string)
+        .is_some_and(|id| incoming["id"].as_str() == Some(id));
+    let same_type = prior
+        .get("type")
+        .and_then(nonempty_string)
+        .is_some_and(|kind| incoming["type"].as_str() == Some(kind));
+    let indexes = reasoning_index(prior).zip(reasoning_index(incoming));
+    let same_index = indexes.is_some_and(|(left, right)| left == right);
+    if same_id
+        || same_index
+        || (indexes.is_none() && incoming.get("id").and_then(nonempty_string).is_none())
+    {
+        let same_format = prior
+            .get("format")
+            .and_then(nonempty_string)
+            .is_some_and(|format| incoming["format"].as_str() == Some(format));
+        Some((same_id, same_type, same_index, same_format))
+    } else {
+        None
     }
 }
 

@@ -291,6 +291,7 @@ async fn agent_conversation_sees_own_notices_and_incoming_messages_only() {
             ts: "t2".into(),
             conversation: "review".into(),
             turn: 2,
+            partial_reply: None,
             reason: "host_cancelled".into(),
         })
         .unwrap();

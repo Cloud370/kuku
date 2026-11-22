@@ -182,11 +182,12 @@ impl Transcript {
         let entry_turn = entry.turn;
         let error_position = (entry.kind == HistoryKind::Error).then_some((entry.id, entry_turn));
         let interrupted_execution = retry::interruption_execution(&entry);
-        let previous_preview = if entry.kind == HistoryKind::Assistant {
-            execution.or(self.current_execution)
-        } else {
-            interrupted_execution
-        };
+        let previous_preview =
+            if entry.kind == HistoryKind::Assistant || entry.details["partial_reply"].is_string() {
+                execution.or(self.current_execution)
+            } else {
+                interrupted_execution
+            };
         let mut record = Record::from_entry(entry);
         if let (Some(record), Some(execution)) = (&mut record, execution) {
             record.execution_id.get_or_insert(execution);
@@ -493,6 +494,13 @@ impl Record {
                     None => "Recorded",
                 };
                 Body::Notice("Decision", decision.to_owned(), ACCENT)
+            }
+            HistoryKind::Status if entry.details["partial_reply"].is_string() => {
+                let mut partial = capped(entry.details["partial_reply"].as_str(), MAX_BODY_BYTES);
+                if entry.details["truncated"] == true && !partial.ends_with(DISPLAY_LIMIT_NOTICE) {
+                    partial.push_str(DISPLAY_LIMIT_NOTICE);
+                }
+                Body::Interrupted(partial)
             }
             HistoryKind::Status if retry::interruption_execution(&entry).is_some() => {
                 if entry.details.get("truncated").and_then(Value::as_bool) == Some(true)

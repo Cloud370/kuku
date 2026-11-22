@@ -373,6 +373,7 @@ pub(super) fn append_turn_interrupted(
             ts: now_timestamp()?,
             conversation: conversation.as_str().to_string(),
             turn,
+            partial_reply: None,
             reason: reason.to_string(),
         },
     )

@@ -1,8 +1,8 @@
 use crate::error::{Error, Result};
-use crate::event::EventPayload;
+use crate::event::{EventPayload, EventStore, PartialReply};
 use crate::provider::types::ProviderFailure;
 
-use super::super::helpers::{append_model_error, append_turn_interrupted, now_timestamp};
+use super::super::helpers::now_timestamp;
 use super::super::provider::{record_retry_event, RetryEvent, RetryPhase, RetryStopReason};
 use super::super::types::StreamingChunkState;
 
@@ -43,51 +43,36 @@ pub(super) fn record_streaming_provider_error_facts(
         },
     )?;
 
-    let kind_name = kind.as_event_kind();
+    let kind = kind.as_event_kind();
     let turn = streaming.pending.turn;
+    let address = streaming.conversation.as_str();
+    let ts = now_timestamp()?;
+    let facts = [
+        EventPayload::ModelError {
+            conversation: Some(address.into()),
+            turn,
+            ts: ts.clone(),
+            request_id: streaming.request_id.clone(),
+            kind: kind.into(),
+            message: message.clone(),
+        },
+        EventPayload::TurnInterrupted {
+            conversation: address.into(),
+            turn,
+            ts: ts.clone(),
+            reason: kind.into(),
+            partial_reply: PartialReply::from_text(&streaming.accumulated_text),
+        },
+    ];
     if let Some(execution) = streaming.pending.query.runtime_execution {
-        let address = streaming.conversation.as_str();
+        let usage = EventPayload::Unknown(serde_json::json!({
+            "kind": "runtime.model_usage", "ts": ts, "agent": address, "turn": turn,
+            "request_id": streaming.request_id, "attempt": streaming.provider_attempt,
+            "cost": streaming.accounting.cost(None),
+        }));
         return super::super::provider::runtime_session(&streaming.pending, execution)?
-            .commit_model_facts(
-                address,
-                execution,
-                [
-                    EventPayload::Unknown(serde_json::json!({
-                        "kind": "runtime.model_usage", "ts": now_timestamp()?,
-                        "agent": address, "turn": turn,
-                        "request_id": streaming.request_id, "attempt": streaming.provider_attempt,
-                        "cost": streaming.accounting.cost(None),
-                    })),
-                    EventPayload::ModelError {
-                        conversation: Some(address.into()),
-                        turn,
-                        ts: now_timestamp()?,
-                        request_id: streaming.request_id.clone(),
-                        kind: kind_name.into(),
-                        message: message.clone(),
-                    },
-                    EventPayload::TurnInterrupted {
-                        conversation: address.into(),
-                        turn,
-                        ts: now_timestamp()?,
-                        reason: kind_name.into(),
-                    },
-                ],
-            );
+            .commit_model_facts(address, execution, std::iter::once(usage).chain(facts));
     }
-    let _ = append_model_error(
-        &streaming.pending.events_path,
-        &streaming.conversation,
-        turn,
-        streaming.request_id.clone(),
-        kind_name,
-        message,
-    );
-    let _ = append_turn_interrupted(
-        &streaming.pending.events_path,
-        &streaming.conversation,
-        turn,
-        kind_name,
-    );
+    EventStore::open(&streaming.pending.events_path)?.append_batch(|_| Ok(Vec::from(facts)))?;
     Ok(())
 }

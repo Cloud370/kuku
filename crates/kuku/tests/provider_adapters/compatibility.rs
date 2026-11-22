@@ -336,7 +336,14 @@ fn assert_tool_continuation(protocol: ProviderFormat, profile: ProviderProfile, 
                 assert_eq!("Checking files.", assistant["content"]);
                 assert!(assistant.get("reasoning_details").is_none());
             } else {
-                assert_eq!("cipher-fixture", assistant["reasoning_details"][0]["data"]);
+                assert_eq!(
+                    assistant["reasoning_details"],
+                    json!([
+                        {"index":0,"id":"encrypted","type":"reasoning.encrypted","data":"cipher-fixture"},
+                        {"index":0,"id":"signed","type":"reasoning.text","text":"Checking","signature":"opaque-signature"},
+                    ])
+                );
+                assert_eq!("Checking files.", assistant["content"]);
                 assert!(assistant.get("reasoning_content").is_none());
             }
             assert_eq!(2, assistant["tool_calls"].as_array().unwrap().len());
@@ -433,11 +440,13 @@ fn chat_fixture(turn: u8, model: &str, deepseek: bool) -> String {
             first["content"] = json!("Checking files.");
             second["reasoning_content"] = json!(" continued");
         } else {
-            first["reasoning"] = json!("fixture reasoning");
-            first["reasoning_details"] =
-                json!([{"index":0,"type":"reasoning.encrypted","data":"cipher-"}]);
-            second["reasoning_details"] =
-                json!([{"index":0,"type":"reasoning.encrypted","data":"fixture"}]);
+            first["content"] = json!("Checking files.");
+            second["reasoning_details"] = json!([
+                {"index":0,"id":"encrypted","type":"reasoning.encrypted","data":"cipher-"},
+                {"index":0,"id":"signed","type":"reasoning.text","text":"Checking"},
+                {"id":"encrypted","data":"fixture"},
+                {"index":0,"type":"reasoning.text","signature":"opaque-signature"},
+            ]);
         }
         chunk(first, Value::Null)
             + &chunk(second, Value::Null)

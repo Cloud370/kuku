@@ -557,6 +557,7 @@ impl Session {
                 ts: timestamp()?,
                 conversation: address.into(),
                 turn,
+                partial_reply: None,
                 reason: reason.into(),
             })?;
         }

@@ -276,10 +276,19 @@ pub(crate) fn history_entry_for_agent(
         } if !turns.explicitly_stopped(agent, *turn) => {
             json!({"type":"status","turn":turn,"status":"cancelled","text":reason})
         }
-        EventPayload::TurnInterrupted { turn, reason, .. }
-            if !turns.explicitly_stopped(agent, *turn) =>
-        {
-            json!({"type":"status","turn":turn,"status":"interrupted","text":reason})
+        EventPayload::TurnInterrupted {
+            turn,
+            reason,
+            partial_reply,
+            ..
+        } if !turns.explicitly_stopped(agent, *turn) => {
+            let mut entry =
+                json!({"type":"status","turn":turn,"status":"interrupted","text":reason});
+            if let Some(reply) = partial_reply {
+                entry["partial_reply"] = json!(reply.text);
+                entry["truncated"] = json!(reply.truncated);
+            }
+            entry
         }
         EventPayload::Unknown(value) if value["kind"] == "runtime.operation" => {
             let record = &value["record"];

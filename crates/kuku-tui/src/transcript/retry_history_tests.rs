@@ -633,3 +633,37 @@ fn explicit_stop_and_different_execution_interruption_remain_separate() {
         assert!(text.contains(message), "{text}");
     }
 }
+
+#[test]
+fn committed_provider_partial_reply_replaces_live_preview_and_reloads() {
+    let partial = "Visible before the decoder failed.";
+    for live in [false, true] {
+        let mut transcript = Transcript::default();
+        if live {
+            transcript.live(
+                12,
+                Some(7),
+                Some(2),
+                &json!({"type":"reply_preview","phase":"streaming","content":partial}),
+            );
+        }
+        let mut error = error_entry(10, 7, "req_1", "Malformed provider event");
+        error
+            .details
+            .insert("code".into(), json!("invalid_response"));
+        transcript.apply(error, None);
+        let mut interrupted = interruption_entry(11, 7, None, "invalid_response");
+        interrupted
+            .details
+            .insert("partial_reply".into(), json!(partial));
+        transcript.apply(interrupted, None);
+
+        let text = rendered(&mut transcript);
+        assert_eq!(text.matches(partial).count(), 1, "{text}");
+        assert!(
+            text.contains("Invalid model response · Reply interrupted"),
+            "{text}"
+        );
+        assert!(text.contains("Malformed provider event"), "{text}");
+    }
+}

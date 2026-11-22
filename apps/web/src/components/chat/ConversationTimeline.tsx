@@ -118,14 +118,25 @@ function transcriptMessage(entry: Entry) {
           {entry.allow ? "Allowed" : "Denied"} · {entry.request_id}
         </p>
       );
-    case "status":
-      return entry.status === "cancelled" && entry.turn !== undefined && entry.turn !== null ? (
-        <CancelledNotice turnNumber={entry.turn} />
-      ) : (
+    case "status": {
+      if (entry.status === "cancelled" && entry.turn !== undefined && entry.turn !== null) {
+        return <CancelledNotice turnNumber={entry.turn} />;
+      }
+      const notice = (
         <p className="text-xs text-[var(--color-text-muted)]">
           Interrupted{entry.text && ` · ${entry.text}`}
         </p>
       );
+      return entry.partial_reply ? (
+        <TurnCard role="agent">
+          {notice}
+          <TextContent text={entry.partial_reply} />
+          {entry.truncated && (
+            <p className="text-xs text-[var(--color-text-muted)]">Reply truncated</p>
+          )}
+        </TurnCard>
+      ) : notice;
+    }
     case "error":
       return (
         <ErrorNotice type="server" message={entry.text ?? entry.message}>
