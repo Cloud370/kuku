@@ -131,6 +131,14 @@ async fn checkpoint_can_use_model_output_limit_and_store_over_sixteen_kib() {
     assert_eq!(compaction.len(), 1);
     assert_eq!("completed", compaction[0]["status"]);
     assert_eq!("end_turn", compaction[0]["stop_reason"]);
+    assert!(
+        compaction[0]["estimated_input_tokens_before"]
+            .as_u64()
+            .unwrap()
+            > compaction[0]["estimated_input_tokens_after"]
+                .as_u64()
+                .unwrap()
+    );
     assert_eq!(Some(checkpoint.trim()), compaction[0]["summary"].as_str());
     session.close().await.unwrap();
     main.assert_hits_async(2).await;

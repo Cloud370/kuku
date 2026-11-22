@@ -234,7 +234,7 @@ pub(super) async fn compact(
     let mut finish = json!({
         "kind":"runtime.compaction_finished", "ts":now_timestamp()?, "agent":agent, "turn":pending.turn,
         "request_id":request_id, "elapsed_ms":elapsed_us/1000, "before_bytes":before_bytes,
-        "estimated_input_tokens_before":context.estimated_input_tokens,
+        "estimated_input_tokens_before":before_tokens,
         "stop_reason":summary.stop.as_ref(),
     });
     if completed && !waiting_for_input && summary.usable() {
