@@ -843,6 +843,17 @@ impl Pane {
         activity
     }
 
+    pub(crate) fn running_tool_name(&self) -> Option<&str> {
+        if self.progress.tools.len() != 1 {
+            return None;
+        }
+        self.progress
+            .tools
+            .iter()
+            .next()
+            .and_then(|id| self.transcript.tool_name(id))
+    }
+
     pub(crate) fn parallel_tools(&self) -> usize {
         self.progress.tools.len()
     }

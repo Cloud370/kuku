@@ -21,6 +21,7 @@ use super::{
 #[derive(Debug, Clone)]
 pub(super) struct ScriptPreview {
     facts: WorkspaceScriptFacts,
+    read_only: bool,
 }
 
 impl ScriptPreview {
@@ -29,7 +30,8 @@ impl ScriptPreview {
             return None;
         }
         let facts = WorkspaceScriptFacts::from_structured(structured).ok()?;
-        Some(Box::new(Self { facts }))
+        let read_only = is_read_only(&facts);
+        Some(Box::new(Self { facts, read_only }))
     }
 
     pub(super) fn label(&self, status: &str) -> Option<(&'static str, Color)> {
@@ -45,6 +47,19 @@ impl ScriptPreview {
         } else {
             None
         }
+    }
+
+    pub(super) fn read_only(&self) -> bool {
+        self.read_only
+    }
+
+    pub(super) fn inspection_count(&self, operation: &str) -> u64 {
+        self.facts
+            .actions
+            .iter()
+            .filter(|action| action.tool.name() == operation)
+            .map(action_count)
+            .fold(0, u64::saturating_add)
     }
 
     pub(super) fn summary(&self) -> String {
@@ -182,10 +197,10 @@ impl Tool {
         if details == ToolDetails::Inspection {
             self.render_arguments(&mut rows, width, inset);
         }
-        let limit = if details == ToolDetails::Inspection {
-            MAX_INSPECTION_ROWS
-        } else {
-            MAX_RESULT_ROWS
+        let limit = match details {
+            ToolDetails::Inspection => MAX_INSPECTION_ROWS,
+            ToolDetails::GroupMember => 1,
+            _ => MAX_RESULT_ROWS,
         };
         let actions = &script.facts.actions;
         let evidence = actions
@@ -197,13 +212,15 @@ impl Tool {
             .collect::<Vec<_>>()
             .join("\n");
         rows.extend(render_preview(&evidence, SURFACE_TEXT, width, limit, inset));
-        rows.extend(render_preview(
-            &script.returned_value(),
-            MUTED,
-            width,
-            1,
-            inset,
-        ));
+        if details != ToolDetails::GroupMember {
+            rows.extend(render_preview(
+                &script.returned_value(),
+                MUTED,
+                width,
+                1,
+                inset,
+            ));
+        }
         if !actions.is_empty() {
             let hint = if actions.iter().any(has_output) {
                 "Actions and saved output · Messages"
@@ -214,6 +231,26 @@ impl Tool {
         }
         finish_card(rows)
     }
+}
+
+fn is_read_only(facts: &WorkspaceScriptFacts) -> bool {
+    !facts.timed_out
+        && !facts.cleanup_incomplete
+        && facts.not_dispatched == 0
+        && !facts.actions.is_empty()
+        && facts.actions.iter().all(|action| {
+            completed(action)
+                && matches!(
+                    action.tool,
+                    WorkspaceScriptOperation::ReadFile
+                        | WorkspaceScriptOperation::FindFiles
+                        | WorkspaceScriptOperation::SearchText
+                        | WorkspaceScriptOperation::StatFile
+                        | WorkspaceScriptOperation::ReadOutput
+                        | WorkspaceScriptOperation::SearchOutput
+                        | WorkspaceScriptOperation::ListValues
+                )
+        })
 }
 
 fn important(action: &WorkspaceScriptActionFacts) -> bool {

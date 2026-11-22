@@ -16,12 +16,16 @@ use super::{
     MAX_RECORDS,
 };
 
-const INSPECTIONS: [(&str, &str, &str); 5] = [
+const INSPECTIONS: [(&str, &str, &str); 9] = [
     ("read_file", "file read", "file reads"),
     ("find_files", "file search", "file searches"),
     ("search_text", "text search", "text searches"),
     ("list_agents", "Agent listing", "Agent listings"),
     ("query_session", "Session query", "Session queries"),
+    ("stat_file", "file stat", "file stats"),
+    ("read_output", "output read", "output reads"),
+    ("search_output", "output search", "output searches"),
+    ("list_values", "value listing", "value listings"),
 ];
 const GROUP_DETAIL_ROWS: usize = 2;
 
@@ -798,7 +802,15 @@ pub(super) fn groups(records: &[Record]) -> Vec<GroupSpan> {
                 }
                 index = next;
             }
-            if index > start {
+            let script_batch = name == "run_js"
+                && first.tool().is_some_and(|tool| {
+                    INSPECTIONS
+                        .iter()
+                        .map(|(operation, _, _)| tool.inspection_count(operation))
+                        .fold(0, u64::saturating_add)
+                        > 1
+                });
+            if index > start || script_batch {
                 groups.push(GroupSpan {
                     range: start..index + 1,
                     summary: group_summary(name, &records[start..=index]),
@@ -821,7 +833,7 @@ fn group_summary(first: &str, records: &[Record]) -> GroupSummary {
     let mixed = records
         .iter()
         .filter_map(group_name)
-        .any(|name| name != first);
+        .any(|name| name != first || name == "run_js");
     let title = if mixed {
         format!("Read-only activity · {count} calls")
     } else {
@@ -840,8 +852,9 @@ fn group_summary(first: &str, records: &[Record]) -> GroupSummary {
             }
             let count = records
                 .iter()
-                .filter(|record| group_name(record) == Some(name))
-                .count();
+                .filter_map(Record::tool)
+                .map(|tool| tool.inspection_count(name))
+                .fold(0, u64::saturating_add);
             if count > 0 {
                 parts.push(format!("{count} {}", if count == 1 { one } else { many }));
             }

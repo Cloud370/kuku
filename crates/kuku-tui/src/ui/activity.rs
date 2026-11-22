@@ -17,10 +17,12 @@ mod motion;
 pub(crate) use clock::ActivityClock;
 use motion::Ring;
 
-const PHASE_SLOT: usize = 14;
+const PHASE_SLOT: usize = 23;
+const MIN_PHASE_SLOT: usize = 14;
+const PHASE_TIME_SLOT: usize = 9;
 const RECIPIENT_SLOT: usize = 30;
 const TOOLS_SLOT: usize = 4;
-const METER_SLOT: usize = 11;
+const METER_SLOT: usize = 14;
 const FEEDBACK_LIMIT: usize = 48;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +30,7 @@ enum ObservedActivity {
     Service(ServiceStatus),
     Agent(Activity),
     Sending,
+    Compacting,
 }
 
 impl ObservedActivity {
@@ -45,6 +48,13 @@ impl ObservedActivity {
                 )
             {
                 Self::Sending
+            } else if activity == Activity::Running
+                && app
+                    .pane()
+                    .transcript
+                    .compacting(app.pane().turn_timing().map(|timing| timing.turn))
+            {
+                Self::Compacting
             } else {
                 Self::Agent(activity)
             }
@@ -57,12 +67,22 @@ impl ObservedActivity {
         match self {
             Self::Service(service) => service.label(),
             Self::Sending => "Send",
-            Self::Agent(Activity::WaitingForModel) => "Waiting",
+            Self::Compacting => "Compacting context",
+            Self::Agent(Activity::WaitingForModel) => "Waiting for model",
             Self::Agent(Activity::Streaming) => "Reply",
-            Self::Agent(Activity::ToolArguments) => "Tool call",
-            Self::Agent(Activity::RunningTools) => "Tools",
+            Self::Agent(Activity::ToolArguments) => "Model tool arguments",
             Self::Agent(Activity::RetryingModel) => "Retrying",
             Self::Agent(activity) => activity.label(),
+        }
+    }
+
+    fn short_label(self) -> &'static str {
+        match self {
+            Self::Agent(Activity::WaitingForModel) => "Model wait",
+            Self::Agent(Activity::ToolArguments) => "Model args",
+            Self::Agent(Activity::RunningTools) => "Tools running",
+            Self::Compacting => "Compacting",
+            status => status.label(),
         }
     }
 
@@ -85,6 +105,7 @@ impl ObservedActivity {
 
     fn motion(self) -> Option<Activity> {
         match self {
+            Self::Compacting => Some(Activity::Running),
             Self::Agent(
                 activity @ (Activity::Running
                 | Activity::WaitingForModel
@@ -115,6 +136,7 @@ pub(crate) struct ActivityFrame {
     text_step: Option<u128>,
     thinking: String,
     elapsed: Option<u64>,
+    phase_elapsed: Option<u64>,
 }
 
 impl ActivityFrame {
@@ -162,6 +184,7 @@ impl ActivityFrame {
             text_step: step,
             thinking: String::new(),
             elapsed,
+            phase_elapsed: None,
         }
     }
 
@@ -178,13 +201,18 @@ impl ActivityFrame {
     }
 
     pub(super) fn still(self) -> Self {
-        Self::new(self.status, None, self.elapsed)
+        Self {
+            phase_elapsed: self.phase_elapsed,
+            ..Self::new(self.status, None, self.elapsed)
+        }
     }
 
     pub(super) fn agent_activity(&self, app: &App) -> Activity {
         match self.status {
             ObservedActivity::Agent(activity) => activity,
-            ObservedActivity::Service(_) | ObservedActivity::Sending => app.pane().activity(),
+            ObservedActivity::Service(_)
+            | ObservedActivity::Sending
+            | ObservedActivity::Compacting => app.pane().activity(),
         }
     }
 }
@@ -199,7 +227,7 @@ pub(super) fn render_heading(
     };
 
     let room = if width >= 24 {
-        (width - PHASE_SLOT).min(RECIPIENT_SLOT)
+        (width - MIN_PHASE_SLOT).min(RECIPIENT_SLOT)
     } else {
         width
     };
@@ -226,31 +254,60 @@ pub(super) fn render_heading(
 fn render_activity(app: &App, width: usize, frame: ActivityFrame) -> Line<'static> {
     let muted = Style::default().fg(MUTED);
     let feedback_limit = width
-        .saturating_sub(PHASE_SLOT + 1)
+        .saturating_sub(MIN_PHASE_SLOT + 1)
         .min(width / 3)
         .min(FEEDBACK_LIMIT);
     let feedback = app
         .displayed_statusline()
         .composer_feedback(app, feedback_limit);
     let left_width = width - feedback.as_ref().map_or(0, |feedback| feedback.width() + 1);
-    let render_metrics = left_width >= PHASE_SLOT + TOOLS_SLOT + METER_SLOT;
-    let phase_width = if render_metrics {
-        PHASE_SLOT
+    let key = Shortcut::CYCLE_THINKING.label;
+    let action = " think";
+    let key_width = 2 + key.width() + action.width();
+    let thinking = app.modal.is_none()
+        && app.available()
+        && app.pane().effective_reasoning().is_some_and(|(_, caps)| {
+            caps.selectable_reasoning_efforts()
+                .any(|level| level != ThinkLevel::ProviderDefault.as_str())
+        });
+    let status_width = if thinking && left_width >= MIN_PHASE_SLOT + key_width {
+        left_width - key_width
     } else {
         left_width
+    };
+    let metrics_width = TOOLS_SLOT + METER_SLOT;
+    let render_metrics = status_width >= MIN_PHASE_SLOT + metrics_width;
+    let show_phase_time = status_width >= PHASE_SLOT + PHASE_TIME_SLOT + metrics_width;
+    let phase_width = if render_metrics {
+        PHASE_SLOT.min(status_width - metrics_width)
+    } else {
+        status_width
     };
     let mut line = frame.ring.line(phase_width);
     if phase_width > line.width() {
         line.push_span(" ");
     }
+    let label_room = phase_width.saturating_sub(line.width());
+    let label = frame.status.label();
     let status = shorten(
-        frame.status.label(),
-        phase_width.saturating_sub(line.width()),
+        if label.width() <= label_room {
+            label
+        } else {
+            frame.status.short_label()
+        },
+        label_room,
     );
     line.push_span(Span::styled(status, Style::new().fg(frame.status.color())));
 
     if render_metrics {
-        line.push_span(" ".repeat(PHASE_SLOT - line.width()));
+        line.push_span(" ".repeat(phase_width - line.width()));
+        if show_phase_time {
+            let duration = frame.phase_elapsed.map_or_else(String::new, |seconds| {
+                format_elapsed(Duration::from_secs(seconds))
+            });
+            let duration = shorten(&duration, PHASE_TIME_SLOT - 1);
+            line.push_span(Span::styled(format!("{duration:<PHASE_TIME_SLOT$}"), muted));
+        }
         let activity = frame.agent_activity(app);
         let parallel = matches!(
             frame.status,
@@ -279,11 +336,25 @@ fn render_activity(app: &App, width: usize, frame: ActivityFrame) -> Line<'stati
                 .elapsed
                 .filter(|_| frame.status.clock_runs())
                 .map_or_else(String::new, |seconds| {
-                    format_elapsed(Duration::from_secs(seconds))
+                    format!("Turn {}", format_elapsed(Duration::from_secs(seconds)))
                 }),
         };
         let metric = shorten(&metric, METER_SLOT);
         line.push_span(Span::styled(format!("{metric:<METER_SLOT$}"), muted));
+    }
+
+    if frame.status == ObservedActivity::Agent(Activity::RunningTools) {
+        let tool = app.pane().running_tool_name();
+        if let Some(tool) = tool.filter(|_| status_width.saturating_sub(line.width()) > 8) {
+            let tool = shorten(tool, status_width - line.width() - 3);
+            line.push_span(Span::styled(format!(" · {tool}"), muted));
+        } else {
+            let count = app.pane().parallel_tools();
+            let summary = format!(" · {count}");
+            if count > 1 && status_width.saturating_sub(line.width()) >= summary.width() {
+                line.push_span(Span::styled(summary, muted));
+            }
+        }
     }
 
     if let Some(jobs) = app
@@ -295,23 +366,14 @@ fn render_activity(app: &App, width: usize, frame: ActivityFrame) -> Line<'stati
     {
         let label = if jobs == 1 { "job" } else { "jobs" };
         let summary = format!(" · {jobs} {label}");
-        if left_width.saturating_sub(line.width()) >= summary.width() {
+        if status_width.saturating_sub(line.width()) >= summary.width() {
             line.push_span(Span::styled(summary, muted));
-            if left_width.saturating_sub(line.width()) >= " · /jobs".width() {
+            if status_width.saturating_sub(line.width()) >= " · /jobs".width() {
                 line.push_span(Span::styled(" · /jobs", muted));
             }
         }
     }
 
-    let key = Shortcut::CYCLE_THINKING.label;
-    let action = " think";
-    let key_width = 2 + key.width() + action.width();
-    let thinking = app.modal.is_none()
-        && app.available()
-        && app.pane().effective_reasoning().is_some_and(|(_, caps)| {
-            caps.selectable_reasoning_efforts()
-                .any(|level| level != ThinkLevel::ProviderDefault.as_str())
-        });
     if thinking && left_width.saturating_sub(line.width()) >= key_width {
         line.push_span("  ");
         line.push_span(Span::styled(key, Style::new().fg(SURFACE_TEXT)));

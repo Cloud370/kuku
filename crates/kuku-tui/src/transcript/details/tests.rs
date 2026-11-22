@@ -957,3 +957,43 @@ fn global_scroll_keeps_expanded_thinking_with_its_message() {
     assert!(transcript.close_notes());
     assert_eq!(text(&transcript.project(90, 24)), text(&closed));
 }
+
+#[test]
+fn successful_script_reads_fold_with_direct_reads_and_partial_scripts_stay_visible() {
+    let mut journal = Journal::default();
+    journal.read(7, "main", "direct.txt");
+    let script = |status: &str, not_dispatched: usize| {
+        json!({
+            "status":status,
+            "structured":{
+                "kind":"workspace_script_result",
+                "value":{"raw":"script return preview"},
+                "actions":[
+                    {"id":"read","tool":"read_file","status":"ok","summary":"read script.txt","truncated":false,"result":{}},
+                    {"id":"search","tool":"search_text","status":"ok","summary":"searched source","truncated":false,"result":{}}
+                ],
+                "timed_out":false,
+                "cleanup_incomplete":false,
+                "not_dispatched":not_dispatched
+            }
+        })
+    };
+    journal.tool("run_js", json!({"title":"Inspect files"}), script("ok", 0));
+    journal.tool(
+        "run_js",
+        json!({"title":"Read with a failure"}),
+        script("error", 1),
+    );
+    let mut transcript = journal.load();
+    let compact = transcript.project(96, 40);
+    assert!(text(&compact).contains("2 file reads · 1 text search"));
+    assert!(text(&compact).contains("Read with a failure"));
+    let group = transcript
+        .detail_at(line(&compact, "2 file reads"))
+        .unwrap()
+        .clone();
+    assert!(transcript.toggle_detail(&group));
+    let expanded = text(&transcript.project(96, 40));
+    assert!(expanded.contains("direct.txt"));
+    assert!(expanded.contains("Inspect files"));
+}

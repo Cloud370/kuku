@@ -130,8 +130,7 @@ fn attached_activity_keeps_clock_tokens_and_draft_fixed_across_phases() {
         );
         let footer: String = row(27).iter().map(|cell| cell.symbol()).collect();
         let footer_label = match label {
-            "Waiting" => "Waiting for model",
-            "Tool call" => "Writing tool arguments",
+            "Model tool arguments" => "Writing tool arguments",
             other => other,
         };
         assert!(
@@ -146,8 +145,8 @@ fn attached_activity_keeps_clock_tokens_and_draft_fixed_across_phases() {
             app.composer_area,
         )
     };
-    let original = draw(&mut app, &mut clock, 0, "Waiting");
-    assert!(original.0.contains("8s"));
+    let original = draw(&mut app, &mut clock, 0, "Waiting for model");
+    assert!(original.0.contains("Turn 8s"));
     let live = |app: &mut App, clock: &mut ActivityClock, ms, event| {
         app.update(Update::Observation(
             selection.clone(),
@@ -163,7 +162,7 @@ fn attached_activity_keeps_clock_tokens_and_draft_fixed_across_phases() {
         clock.observe(app, first + Duration::from_millis(ms));
     };
     live(&mut app, &mut clock, 40, json!({"type":"thinking"}));
-    draw(&mut app, &mut clock, 45, "Waiting");
+    draw(&mut app, &mut clock, 45, "Waiting for model");
     live(
         &mut app,
         &mut clock,
@@ -171,10 +170,10 @@ fn attached_activity_keeps_clock_tokens_and_draft_fixed_across_phases() {
         json!({"type":"text","content":"Early text"}),
     );
     live(&mut app, &mut clock, 95, json!({"type":"thinking"}));
-    let current = draw(&mut app, &mut clock, 145, "Waiting");
+    let current = draw(&mut app, &mut clock, 145, "Waiting for model");
     assert_eq!((original.1, original.2), (current.1, current.2));
     live(&mut app, &mut clock, 160, json!({"type":"tool_arguments"}));
-    let tools = draw(&mut app, &mut clock, 2_100, "Tool call");
+    let tools = draw(&mut app, &mut clock, 2_100, "Model tool arguments");
     assert!(tools.0.contains("~3 tok"));
     assert_eq!(original.0.find("Draft"), tools.0.find("Draft"));
     assert_eq!((original.1, original.2), (tools.1, tools.2));
@@ -306,7 +305,11 @@ fn compact_heading_shows_only_real_parallel_tools_and_prefers_reported_output() 
         ));
     };
     let before = screen(&mut app, 60, 28);
-    assert!(before.contains("Tools") && !before.contains("↳1"));
+    assert!(
+        before.contains("Running tools") || before.contains("Tools running"),
+        "{before}"
+    );
+    assert!(!before.contains("↳1"));
     emit(
         &mut app,
         json!({"type":"text","content":"01234567890123456789"}),

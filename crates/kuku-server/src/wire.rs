@@ -346,6 +346,7 @@ pub(crate) fn history_entry_for_agent(
                 "ts":value["ts"],
                 "status":value["status"].as_str().unwrap_or("running"),
                 "reason":value["reason"],
+                "continues_with_previous_context":value["continues_with_previous_context"],
                 "provider_limit":value["rejected_request_id"].is_string(),
                 "elapsed_ms":value["elapsed_ms"],
                 "before_bytes":value["before_bytes"],

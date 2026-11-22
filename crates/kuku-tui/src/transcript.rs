@@ -135,6 +135,34 @@ pub(crate) struct Transcript {
 }
 
 impl Transcript {
+    pub(crate) fn compacting(&self, turn: Option<u64>) -> bool {
+        self.recent
+            .records
+            .iter()
+            .rev()
+            .find_map(|record| {
+                if record.turn != turn {
+                    return None;
+                }
+                match &record.body {
+                    Body::Compaction(entry) => Some(entry.running()),
+                    _ => None,
+                }
+            })
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn tool_name(&self, id: &str) -> Option<&str> {
+        self.recent
+            .records
+            .iter()
+            .rev()
+            .find_map(|record| match &record.key {
+                Key::Tool { id: call_id, .. } if id == call_id => record.tool().map(Tool::name),
+                _ => None,
+            })
+    }
+
     pub(crate) fn replace_recent(&mut self, page: HistoryPage) {
         self.readonly_epoch = self.readonly_epoch.wrapping_add(1);
         self.reset_pending_rewind_group_pages();

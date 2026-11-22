@@ -232,7 +232,7 @@ fn identical_pending_inputs_render_immediately_and_admission_wins_over_a_late_re
         first.command_id.clone(),
         Ok(queued_receipt(&first, 53)),
     ));
-    assert!(screen(&mut app, 92, 25).contains("Queued · steer"));
+    assert!(screen(&mut app, 92, 25).contains("Queued · next step"));
 
     app.pane_mut().draft.insert(text);
     key(&mut app, KeyCode::Enter, KeyModifiers::NONE);

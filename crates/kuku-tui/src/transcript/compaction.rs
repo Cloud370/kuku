@@ -28,6 +28,7 @@ pub(super) enum Compaction {
         elapsed_ms: Option<u64>,
         outcome: End,
         reason: String,
+        continues: bool,
     },
     Restored,
 }
@@ -65,6 +66,9 @@ impl Compaction {
                     _ => End::Interrupted,
                 },
                 reason: capped(field("reason").as_str(), 512),
+                continues: field("continues_with_previous_context")
+                    .as_bool()
+                    .unwrap_or(false),
             },
             "restored" => Self::Restored,
             _ => return None,
@@ -101,6 +105,10 @@ impl Compaction {
                 .whole_seconds()
                 .max(0) as u64,
         )
+    }
+
+    pub(super) fn running(&self) -> bool {
+        matches!(self, Self::Running { .. })
     }
 
     pub(super) fn summary(&self) -> Option<&str> {
@@ -169,12 +177,19 @@ impl Compaction {
                 elapsed_ms,
                 outcome,
                 reason,
+                continues,
             } => {
                 let elapsed = elapsed_ms.map(duration);
                 let diagnostic = (!reason.is_empty()).then(|| single_line(reason));
-                let retry = matches!(outcome, End::Failed)
-                    .then_some("Retry with /compact retry".to_owned());
-                let body = [elapsed, diagnostic, retry]
+                let next = matches!(outcome, End::Failed).then(|| {
+                    if *continues {
+                        "Continuing with previous context"
+                    } else {
+                        "Retry with /compact retry"
+                    }
+                    .to_owned()
+                });
+                let body = [elapsed, diagnostic, next]
                     .into_iter()
                     .flatten()
                     .collect::<Vec<_>>()

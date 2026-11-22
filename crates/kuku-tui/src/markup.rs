@@ -339,10 +339,7 @@ impl Markdown {
             style.fg(color).add_modifier(Modifier::UNDERLINED)
         });
         let style = match self.heading {
-            Some(HeadingLevel::H1 | HeadingLevel::H2) => style.add_modifier(Modifier::BOLD),
-            Some(HeadingLevel::H3 | HeadingLevel::H4 | HeadingLevel::H5 | HeadingLevel::H6) => {
-                style.add_modifier(Modifier::ITALIC)
-            }
+            Some(_) => style.add_modifier(Modifier::BOLD),
             None => style,
         };
         append(&mut self.current, &terminal_text(text), style);
@@ -774,19 +771,19 @@ mod tests {
 
     #[test]
     fn headings_use_spacing_and_typography() {
-        let lines = render_markdown("# First *part*\n\n### Detail\n\nBody", 30, LIMIT);
+        let lines = render_markdown("# First *part*\n\n### 中文 `config`\n\nBody", 30, LIMIT);
         assert_eq!(
-            ["First part", "", "Detail", "", "Body", ""],
+            ["First part", "", "中文 config", "", "Body", ""],
             rows(&lines).as_slice()
         );
         assert!(lines[0]
             .spans
             .iter()
             .all(|span| span.style.add_modifier.contains(Modifier::BOLD)));
-        assert!(lines[2].spans[0]
-            .style
-            .add_modifier
-            .contains(Modifier::ITALIC));
+        assert!(lines[2].spans.iter().all(|span| {
+            span.style.add_modifier.contains(Modifier::BOLD)
+                && !span.style.add_modifier.contains(Modifier::ITALIC)
+        }));
         assert!(lines[4].spans[0].style.add_modifier.is_empty());
     }
 

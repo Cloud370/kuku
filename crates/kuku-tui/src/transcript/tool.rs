@@ -240,14 +240,39 @@ impl Tool {
         let State::Recorded(outcome) = &self.state else {
             return None;
         };
-        (matches!(
-            self.name.as_str(),
+        if outcome.status != "ok"
+            || outcome.exit_code.is_some_and(|code| code != 0)
+            || outcome.attention
+            || self.observation().is_some_and(|value| value.attention)
+        {
+            return None;
+        }
+        let name = self.name.as_str();
+        match name {
             "read_file" | "find_files" | "search_text" | "list_agents" | "query_session"
-        ) && outcome.status == "ok"
-            && outcome.exit_code.is_none_or(|code| code == 0)
-            && !outcome.attention
-            && !self.observation().is_some_and(|value| value.attention))
-        .then_some(self.name.as_str())
+            | "stat_file" | "read_output" | "search_output" | "list_values" => Some(name),
+            "run_js"
+                if outcome
+                    .script
+                    .as_ref()
+                    .is_some_and(|script| script.read_only()) =>
+            {
+                Some(name)
+            }
+            _ => None,
+        }
+    }
+
+    pub(super) fn inspection_count(&self, operation: &str) -> u64 {
+        match self.group_name() {
+            Some("run_js") => self
+                .state
+                .outcome()
+                .and_then(|outcome| outcome.script.as_ref())
+                .map_or(0, |script| script.inspection_count(operation)),
+            Some(name) if name == operation => 1,
+            _ => 0,
+        }
     }
 
     pub(super) fn checks_delegation(&self, sender: &str, recipient: &str) -> bool {
@@ -626,7 +651,7 @@ impl Tool {
         }
     }
 
-    fn name(&self) -> &str {
+    pub(super) fn name(&self) -> &str {
         if !self.name.is_empty() {
             return &self.name;
         }
