@@ -12,7 +12,9 @@ use serde_json::Value;
 
 use crate::markup::{file_source, wrap_numbered};
 use crate::text::single_line;
-use crate::theme::{tool_status, TranscriptTone, ERROR, MUTED, SUCCESS, SURFACE_TEXT, WARNING};
+use crate::theme::{
+    append_line_count, tool_status, TranscriptTone, ERROR, MUTED, SUCCESS, SURFACE_TEXT, WARNING,
+};
 
 use super::command::CommandPreview;
 use super::file_change::{compact_change_row, FileChange};
@@ -275,7 +277,13 @@ impl Tool {
             preview
         };
         let language = Line::styled("JavaScript", TranscriptTone::Type.style());
-        script_section(ScriptDetail::Source, language, content, width)
+        script_section(
+            ScriptDetail::Source,
+            language,
+            content,
+            Some(self.script_source_lines),
+            width,
+        )
     }
 
     pub(in crate::transcript) fn script_action_description(
@@ -435,7 +443,7 @@ impl Tool {
             if matches!(color, ERROR | WARNING) && !diagnostic.trim().is_empty() {
                 rows.extend(render_preview(diagnostic, color, width, 1, 0));
             } else if !self.script_source.is_empty() {
-                let lines = self.script_source.lines().count();
+                let lines = self.script_source_lines;
                 let summary = Row::metric(
                     "JavaScript · ",
                     lines.to_string(),
@@ -537,16 +545,23 @@ impl ScriptPreview {
             return Vec::new();
         }
         let columns = Row::detail_width(width);
-        let content = if open {
+        let (content, count) = if open {
             let text = self.pretty_value().expect("non-null return value");
-            wrap_numbered(file_source(&text, "json"), columns, MAX_VISUAL_ROWS, 1, 0)
+            let rows = wrap_numbered(file_source(&text, "json"), columns, MAX_VISUAL_ROWS, 1, 0)
                 .into_iter()
                 .map(Row::plain)
-                .collect()
+                .collect();
+            (rows, Some(text.lines().count()))
         } else {
-            return_preview(value, columns)
+            (return_preview(value, columns), None)
         };
-        script_section(ScriptDetail::Return, value_summary(value), content, width)
+        script_section(
+            ScriptDetail::Return,
+            value_summary(value),
+            content,
+            count,
+            width,
+        )
     }
 }
 
@@ -554,9 +569,13 @@ fn script_section(
     detail: ScriptDetail,
     summary: Line<'static>,
     content: Vec<Row>,
+    lines: Option<usize>,
     width: usize,
 ) -> Vec<Row> {
     let mut heading = Row::linked_label(detail.label(), width).with_summary(summary, width);
+    if let Some(lines) = lines {
+        append_line_count(&mut heading.line, width, lines);
+    }
     heading.script_detail = Some(detail);
     std::iter::once(heading)
         .chain(content.into_iter().map(|row| row.with_detail_rule(width)))

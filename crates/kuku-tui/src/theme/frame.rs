@@ -1,5 +1,6 @@
 use super::{
-    card_padding, code_surface, emphasis, transcript_background, TranscriptTone, MUTED, TURN_RULE,
+    card_padding, code_surface, emphasis, line_count, transcript_background, TranscriptTone,
+    ACCENT, MUTED, TURN_RULE,
 };
 use crate::text::shorten;
 use ratatui::style::{Color, Style};
@@ -60,6 +61,39 @@ impl CardFrame {
 
     pub(crate) fn title(&self, label: &str, color: Color) -> Line<'static> {
         self.caption(label, '╭', '╮', self.surface.patch(emphasis(color)))
+    }
+
+    pub(crate) fn code_title(&self, language: Option<&str>, lines: usize) -> Line<'static> {
+        let label = language.unwrap_or_default();
+        if !self.bordered {
+            return self.title(label, ACCENT);
+        }
+        let count = line_count(lines);
+        let prefix = if language.is_some() && self.padding.left > 0 {
+            "╭─ "
+        } else {
+            "╭"
+        };
+        let after_type = if label.is_empty() { "" } else { " " };
+        let used = prefix.width() + label.width() + after_type.len() + count.width() + 3;
+        if self.width <= used {
+            return language
+                .map_or_else(|| self.border('╭', '╮'), |label| self.title(label, ACCENT));
+        }
+        let mut title = Line::from(vec![
+            Span::styled(prefix, self.edge()),
+            Span::styled(label.to_owned(), self.surface.patch(emphasis(ACCENT))),
+            Span::styled(
+                format!("{after_type}{} ", "─".repeat(self.width - used)),
+                self.edge(),
+            ),
+        ]);
+        title.extend(count.spans.into_iter().map(|span| {
+            let style = self.surface.patch(span.style);
+            span.style(style)
+        }));
+        title.push_span(Span::styled(" ╮", self.edge()));
+        title
     }
 
     pub(crate) fn title_width(&self) -> usize {

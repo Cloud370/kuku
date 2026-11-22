@@ -286,6 +286,7 @@ fn script_details_show_source_inside_the_tool_card() {
         .position(|line| line.to_string().contains("Input · JavaScript"))
         .unwrap();
     assert_eq!(source, index + 2);
+    assert!(view.lines[source].to_string().contains("4 lines"));
     assert!(view.lines[source + 1]
         .to_string()
         .contains("│   │   │ const marker"));
@@ -303,6 +304,7 @@ fn script_details_show_source_inside_the_tool_card() {
         .position(|line| line.contains("│   │ Input · JavaScript"))
         .unwrap();
     assert_eq!(source, index + 2);
+    assert!(view.lines[source].to_string().contains("4 lines"));
     assert!(text[source + 1].contains("│   │   │ const marker"));
     assert!(transcript.detail_at(source + 1).is_none());
     assert_eq!(

@@ -7,7 +7,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::text::{replace_tabs, shorten, terminal_text};
-use crate::theme::{ACCENT, ERROR, MUTED, SUCCESS};
+use crate::theme::{append_line_count, ACCENT, ERROR, MUTED, SUCCESS};
 
 mod code;
 mod document;
@@ -428,7 +428,9 @@ impl Markdown {
         } else {
             "Markdown"
         };
-        let mut rows = vec![Line::styled(shorten(label, width), Style::new().fg(MUTED))];
+        let mut title = Line::styled(shorten(label, width), Style::new().fg(MUTED));
+        append_line_count(&mut title, width, source.lines().count());
+        let mut rows = vec![title];
         if limit > 0 {
             let mut document = Markdown {
                 width,
@@ -683,7 +685,8 @@ mod tests {
         let source = "```\n  # 甲乙\n\n    **Literal**\n```";
         let width = 20;
         let plain = rows(&render_markdown(source, width, LIMIT));
-        assert_eq!(format!("╭{}╮", "─".repeat(width - 2)), plain[0]);
+        assert!(plain[0].ends_with(" 3 lines ╮"));
+        assert_eq!(width, plain[0].width());
         assert!(plain[1].starts_with("│   # 甲乙 "));
         assert_eq!(format!("│{}│", " ".repeat(width - 2)), plain[2]);
         assert!(plain[3].starts_with("│     **Literal** "));
@@ -704,6 +707,9 @@ mod tests {
         );
         let explicit = rows(&render_markdown("```python", 32, LIMIT));
         assert!(explicit[0].starts_with("╭─ python "));
+        assert!(explicit[0].ends_with(" 0 lines ╮"));
+        let unfinished = rows(&render_markdown("```python\nfirst\n\nlast", 32, LIMIT));
+        assert!(unfinished[0].ends_with(" 3 lines ╮"));
     }
 
     #[test]
@@ -714,7 +720,7 @@ mod tests {
             width,
             LIMIT,
         ));
-        assert_eq!(format!("╭{}╮", "─".repeat(width - 2)), plain[0]);
+        assert!(plain[0].ends_with(" 2 lines ╮"));
         assert!(plain[2].starts_with("│ # Literal "));
         assert!(plain[3].starts_with("│     second "));
     }
@@ -757,6 +763,21 @@ mod tests {
                 lines[row]
             );
         }
+    }
+
+    #[test]
+    fn code_title_counts_source_lines_before_wrapping_or_clipping_body() {
+        let source =
+            "```text\nThis source line will wrap across several rows of a narrow terminal.\n```";
+        for width in [20, 52] {
+            let lines = render_markdown(source, width, 1);
+            let title = lines.first().unwrap();
+            assert_eq!(width, title.width());
+            assert!(title.to_string().ends_with(" 1 line ╮"));
+        }
+        let narrow = render_markdown(source, 8, LIMIT);
+        assert!(narrow[0].to_string().contains("text"));
+        assert!(narrow.iter().all(|line| line.width() <= 8));
     }
 
     #[test]
@@ -835,7 +856,8 @@ mod tests {
             assert!(plain.iter().any(|line| line == "After example"));
             assert!(plain
                 .iter()
-                .any(|line| line == "Markdown preview · Messages"));
+                .any(|line| line.starts_with("Markdown preview · Messages")
+                    && line.ends_with(&format!("{} lines", DOCUMENT.lines().count()))));
             assert!(plain.iter().any(|line| line.starts_with('┌')));
             assert!(plain.iter().any(|line| line.contains("隔离 │ 通过")));
             assert!(plain.iter().any(|line| line == "• 检查结果"));

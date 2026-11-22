@@ -8,8 +8,8 @@ use syntect::parsing::{ParseState, Scope, ScopeStack, SyntaxSet};
 
 use crate::text::single_line;
 use crate::theme::{
-    code_surface, CardFrame, ACCENT, CODE_COMMENT, CODE_KEYWORD, CODE_LITERAL, CODE_NAME,
-    CODE_STRING, CODE_TEXT, ERROR,
+    code_surface, CardFrame, CODE_COMMENT, CODE_KEYWORD, CODE_LITERAL, CODE_NAME, CODE_STRING,
+    CODE_TEXT, ERROR,
 };
 
 use super::{append, document, wrap_bounded};
@@ -69,10 +69,9 @@ impl CodeBlock {
         let frame = CardFrame::new(width);
         let limit = limit.saturating_add(1);
         let mut output = match self.language.as_deref() {
-            Some(language) => vec![frame.title(language, ACCENT)],
             None if self.text.is_empty() => return Vec::new(),
-            None if frame.bordered() => vec![frame.border('╭', '╮')],
-            None => Vec::new(),
+            None if !frame.bordered() => Vec::new(),
+            language => vec![frame.code_title(language, self.text.lines().count())],
         };
         if output.len() == limit {
             return output;

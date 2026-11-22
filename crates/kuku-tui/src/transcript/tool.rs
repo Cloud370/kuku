@@ -63,6 +63,7 @@ pub(super) struct Tool {
     invocation: String,
     arguments: String,
     script_source: String,
+    script_source_lines: usize,
     request_title: String,
     start_summary: String,
     progress: String,
@@ -95,11 +96,12 @@ impl Tool {
 
         let args = entry.details.get("args").unwrap_or(&Value::Null);
         let invocation = invocation(&name, args);
-        let script_source = if name == "run_js" {
-            capped(args["code"].as_str(), MAX_DETAIL_BYTES)
+        let script_code = if name == "run_js" {
+            args["code"].as_str()
         } else {
-            String::new()
+            None
         };
+        let script_source = capped(script_code, MAX_DETAIL_BYTES);
         let arguments = if script_source.is_empty() {
             arguments_json(args)
         } else {
@@ -123,6 +125,7 @@ impl Tool {
             invocation,
             arguments,
             script_source,
+            script_source_lines: script_code.map_or(0, |code| code.lines().count()),
             request_title,
             agent_request,
             ..Self::default()
@@ -147,6 +150,7 @@ impl Tool {
         }
         if !incoming.script_source.is_empty() {
             self.script_source = incoming.script_source;
+            self.script_source_lines = incoming.script_source_lines;
         }
         if incoming.agent_request.is_some() {
             self.agent_request = incoming.agent_request;

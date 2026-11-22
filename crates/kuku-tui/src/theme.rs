@@ -4,6 +4,7 @@ pub(crate) use frame::CardFrame;
 
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::Padding;
 
 pub(crate) const ACCENT: Color = Color::Rgb(70, 161, 163);
@@ -147,6 +148,25 @@ impl TranscriptTone {
 
     pub(crate) fn emphasized(self) -> Style {
         self.style().add_modifier(Modifier::BOLD)
+    }
+}
+
+fn line_count(count: usize) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(count.to_string(), TranscriptTone::Value.emphasized()),
+        Span::styled(
+            if count == 1 { " line" } else { " lines" },
+            TranscriptTone::Label.style(),
+        ),
+    ])
+}
+
+pub(crate) fn append_line_count(title: &mut Line<'static>, width: usize, count: usize) {
+    let count = line_count(count);
+    let padding = width.saturating_sub(title.width() + count.width());
+    if padding >= 2 {
+        title.push_span(" ".repeat(padding));
+        title.extend(count.spans);
     }
 }
 

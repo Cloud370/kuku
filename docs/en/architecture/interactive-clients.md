@@ -97,6 +97,8 @@ rows share these roles with the Turn statistics and host actions inside `run_js`
 - Use the normal foreground for paths, command text and result content. Use muted
   text for labels, units and dividers. Use the usage accent for measured values such
   as token counts, elapsed time, line ranges, cache hit rates and tool counts.
+- Show the source line count on the right of code and Markdown preview titles
+  when there is room. Count the source before wrapping or limiting the preview.
 - Use cyan for output field names and violet for data types. Keep output counts
   in the usage accent and units in the muted label color.
 - Keep a script’s operation label and title in the same positions when it opens.
