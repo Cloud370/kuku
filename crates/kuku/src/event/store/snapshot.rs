@@ -6,9 +6,7 @@ use std::sync::Arc;
 use crate::util::fs_sync;
 use crate::Result;
 
-use super::{
-    find_active_store, recovery, reverse, store_slot, Layout, StoreInner, Writer, MAX_RECORD_BYTES,
-};
+use super::{find_active_store, recovery, reverse, store_slot, Layout, StoreInner, Writer};
 
 pub(super) struct LockedJournal {
     pub(super) file: File,
@@ -67,10 +65,9 @@ impl Writer {
 fn committed_end(mut file: &File, layout: &Layout) -> io::Result<u64> {
     let tail = layout.tail_offset(layout.prefix_bytes)?;
     let mut end = file.metadata()?.len();
-    let earliest = end.saturating_sub(MAX_RECORD_BYTES as u64).max(tail);
     let mut bytes = [0; 8192];
-    while end > earliest {
-        let len = (end - earliest).min(bytes.len() as u64) as usize;
+    while end > tail {
+        let len = (end - tail).min(bytes.len() as u64) as usize;
         let start = end - len as u64;
         file.seek(SeekFrom::Start(start))?;
         file.read_exact(&mut bytes[..len])?;
@@ -78,12 +75,6 @@ fn committed_end(mut file: &File, layout: &Layout) -> io::Result<u64> {
             return Ok(layout.logical_len(start + newline as u64 + 1));
         }
         end = start;
-    }
-    if end > tail {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "unterminated journal record exceeds the record size limit",
-        ));
     }
     Ok(layout.prefix_bytes)
 }
