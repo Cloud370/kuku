@@ -394,9 +394,14 @@ class AcceptanceTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in manifest["cases"]], [
             "log-summary-date-ranges", "cancel-async-tasks", "regex-log", "large-scale-text-editing",
             "nginx-request-logging", "sqlite-with-gcov", "kv-store-grpc", "gcode-to-text", "pypi-server",
-            "schemelike-metacircular-eval", "code-from-image",
+            "schemelike-metacircular-eval", "code-from-image", "db-wal-recovery", "adaptive-rejection-sampler",
         ])
         self.assertEqual(case["artifacts"], ["/app/apply_macros.vim"])
+        for case_id, artifact in (("db-wal-recovery", "/app/recovered.json"),
+                                  ("adaptive-rejection-sampler", "/app/ars.R")):
+            _, holdout = ACCEPTANCE.manifest_case(case_id, "frontier")
+            self.assertEqual((holdout["workspace"], holdout["artifacts"], holdout["timeout_sec"]),
+                             ("/app", [artifact], 900))
         _, gcode = ACCEPTANCE.manifest_case("gcode-to-text", "frontier")
         self.assertEqual((gcode["workspace"], gcode["artifacts"], gcode["timeout_sec"]),
                          ("/app", ["/app/out.txt"], 900))

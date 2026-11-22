@@ -57,7 +57,9 @@
         "gcode-to-text",
         "pypi-server",
         "schemelike-metacircular-eval",
-        "code-from-image"
+        "code-from-image",
+        "db-wal-recovery",
+        "adaptive-rejection-sampler"
       ],
       "additional_cases": [
         {
@@ -115,6 +117,20 @@
           "workspace": "/app",
           "artifacts": ["/app/output.txt"],
           "timeout_sec": 1200
+        },
+        {
+          "id": "db-wal-recovery",
+          "role": "diagnose a SQLite write-ahead log and recover verified records",
+          "workspace": "/app",
+          "artifacts": ["/app/recovered.json"],
+          "timeout_sec": 900
+        },
+        {
+          "id": "adaptive-rejection-sampler",
+          "role": "implement and verify a numerical sampler under input and distribution constraints",
+          "workspace": "/app",
+          "artifacts": ["/app/ars.R"],
+          "timeout_sec": 900
         }
       ]
     }
