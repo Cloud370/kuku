@@ -121,6 +121,7 @@ def first_run_credential_repair(binary, bridge, directory):
         with Terminal(bridge, binary, login, env, args) as terminal:
             terminal.expect("Find and test models")
             terminal.request("resize", rows=20, cols=60)
+            terminal.expect("Find and test models", rows=20)
             terminal.press("\r")
             terminal.expect("Choose a provider")
             terminal.press("\x1b[A")
