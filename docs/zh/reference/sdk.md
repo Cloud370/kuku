@@ -66,7 +66,7 @@
 
 `RuntimeLimits.job_foreground_wait_ms` 控制顶层命令和脚本的前台观察窗口。`RuntimeLimits.max_command_seconds` 可为每条命令设置独立的进程截止时间，包括 `run_js` 内启动的命令和作为 Job 运行的命令。默认值为 `None`。
 
-`run_js` 的结果类型为 `kind: "workspace_script_result"`，可以用 `kuku::WorkspaceScriptFacts::from_structured` 解码。结果包含脚本返回的 `value` 及已观察到的宿主 `actions`。每个动作记录 ID、工具、状态、摘要、截断情况及有界结果。动作状态 `unknown` 表示宿主未能确认最终结果。即使脚本失败，也可以结合整次调用的 `timed_out`、`cleanup_incomplete` 和 `not_dispatched` 核对部分完成的工作。见[脚本方法](tools.md#工作区脚本)。
+`run_js` 的结果类型为 `kind: "workspace_script_result"`，可以用 `kuku::WorkspaceScriptFacts::from_structured` 解码。结果包含脚本内联返回的 `value` 及已观察到的宿主 `actions`。完整 JSON 单独保留时，`value` 为空，`output_ref` 提供读取位置。每个动作记录 ID、工具、状态、摘要、截断情况及有界结果。动作状态 `unknown` 表示宿主未能确认最终结果。即使脚本失败，也可以结合整次调用的 `timed_out`、`cleanup_incomplete` 和 `not_dispatched` 核对部分完成的工作。见[脚本方法](tools.md#javascript-组合工具)。
 
 用 `kuku::execution::WorkspaceActionReceipt::from_event` 解码 `workspace.action` 事件，读取日志中脚本内动作的派发和结果事实。在父 `tool_call_id` 内按 `action_id` 关联记录。派发记录缺少对应结果时，副作用仍然未知。
 

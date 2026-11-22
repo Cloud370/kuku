@@ -156,6 +156,8 @@ For a large derived result, take `result.id` from `await tools.create_output({})
 
 An output draft belongs to the current script invocation. See the [authorization rules for draft actions](../how-it-works/permissions.md).
 
+When a script's JSON return exceeds the inline limit, kuku saves the complete value as retained output if it fits the Session's output quota. The result includes an `output_ref`; an Agent with `read_output` access can inspect the saved value by ID without repeating the script.
+
 ## Retained Tool Output
 
 `read_output` reads retained output by ID or the current Agent's named value by exact name. With a running command's output ID, it returns the complete capture frames available at the time of the read. Every call passes host authorization. The limits below apply to the direct tool. For the script reader's schema, see `tools.methods`.

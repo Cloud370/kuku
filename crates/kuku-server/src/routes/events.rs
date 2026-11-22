@@ -657,7 +657,7 @@ mod tests {
                 payload: EventPayload::Unknown(json!({
                     "kind":"runtime.compaction_finished", "agent":"main", "turn":1, "request_id":"compact-1",
                     "status":"completed", "summary":"Retained in rewind", "elapsed_ms":2000,
-                    "before_bytes":10000, "after_bytes":5000, "checkpointed_messages":6,
+                    "estimated_input_tokens_before":10000, "estimated_input_tokens_after":5000, "checkpointed_messages":6,
                 })),
             },
             StoredEvent {

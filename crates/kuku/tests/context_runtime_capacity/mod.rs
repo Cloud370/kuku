@@ -465,8 +465,20 @@ async fn undo_after_reopen_restores_only_the_preceding_checkpoint() {
         } else {
             |request| first_request_for_effect(request, "B_OLD")
         };
+        let (tool, args) = if prompt == "A_OLD" {
+            ("write_file", json!({"path":file,"content":prompt}))
+        } else {
+            (
+                "run_js",
+                json!({"code":r#"
+                await tools.write_file({path:"b.txt", content:"B_OLD\nold line\n"});
+                await tools.read_file({path:"b.txt"});
+                return (await tools.edit_file({path:"b.txt", old_text:"old line", new_text:"new line"})).status;
+            "#}),
+            )
+        };
         let result = json!({"tool_calls":[{"id":call,"type":"function","function":{
-            "name":"write_file","arguments":json!({"path":file,"content":prompt}).to_string()
+            "name":tool,"arguments":args.to_string()
         }}]});
         writes.push(
             server
@@ -497,7 +509,12 @@ async fn undo_after_reopen_restores_only_the_preceding_checkpoint() {
 
     let session = Session::open(config.clone()).await.unwrap();
     let mut selected = agent();
-    selected.tools = Some(vec!["write_file".into()]);
+    selected.tools = Some(
+        ["write_file", "edit_file", "read_file", "run_js"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+    );
     session.create_agent("create", "main", selected).unwrap();
     send_and_settle(&session, KEEP, KEEP).await;
     let mut target = String::new();
@@ -555,9 +572,19 @@ async fn undo_after_reopen_restores_only_the_preceding_checkpoint() {
     let events = EventStore::replay(&journal).unwrap();
     let compactions = facts(&events, "runtime.compaction_finished", "main");
     assert_eq!(2, compactions.len());
-    for (entry, expected) in compactions.iter().zip([FIRST, SECOND]) {
+    for (index, (entry, expected)) in compactions.iter().zip([FIRST, SECOND]).enumerate() {
         assert_eq!("completed", entry["status"]);
-        assert_eq!(expected, entry["summary"]);
+        let summary = entry["summary"].as_str().unwrap();
+        assert!(summary.starts_with(expected), "{summary}");
+        assert!(
+            summary.contains(r#""a.txt" · last write 1 line"#),
+            "{summary}"
+        );
+        assert_eq!(
+            index == 1,
+            summary.contains(r#""b.txt" · edited +1 −1 lines · last write 2 lines"#),
+            "{summary}"
+        );
         assert!(entry["after_bytes"].as_u64().unwrap() < entry["before_bytes"].as_u64().unwrap());
         assert!(entry["after_bytes"].as_u64().unwrap() < WIRE_LIMIT as u64);
     }
@@ -626,7 +653,10 @@ async fn undo_after_reopen_restores_only_the_preceding_checkpoint() {
             && !rewound.contains("A_OLD")
             && !rewound.contains("B_OLD")
     );
-    for (id, path, text) in [("a-write", "a.txt", "A_OLD"), ("b-write", "b.txt", "B_OLD")] {
+    for (id, path, text) in [
+        ("a-write", "a.txt", "A_OLD"),
+        ("b-write", "b.txt", "B_OLD\nnew line\n"),
+    ] {
         assert_eq!(1, events.iter().filter(|event| {
             matches!(&event.payload, EventPayload::ToolResult { tool_call_id, status, .. } if tool_call_id == id && status == "ok")
         }).count());

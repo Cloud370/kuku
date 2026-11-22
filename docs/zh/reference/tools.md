@@ -156,6 +156,8 @@ return {exit_code, duration_ms, entries, output_ref};
 
 输出草稿只在当前脚本调用内有效。见[草稿动作的授权规则](../how-it-works/permissions.md)。
 
+脚本返回的 JSON 超过内联额度时，只要会话还有足够的输出配额，kuku 就把完整值保留为输出。结果中的 `output_ref` 提供读取 ID。有 `read_output` 权限的 Agent 可以按 ID 读取，省去重跑脚本。
+
 ## 保留的工具输出
 
 `read_output` 按输出 ID 或当前 Agent 的准确值名读取 Session 保留数据。使用运行中命令的输出 ID 时，返回读取时已经写完的捕获帧。每次调用都须经过宿主授权。下表是直接工具的限额，脚本读取器的参数定义见 `tools.methods`。

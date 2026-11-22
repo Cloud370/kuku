@@ -32,6 +32,12 @@ pub(crate) struct ScriptCall {
 
 pub(crate) trait ScriptHost: Send + Sync {
     fn methods(&self) -> Vec<ToolDefinition>;
+    fn retain_return(
+        &self,
+        _json: String,
+    ) -> ScriptFuture<'_, crate::Result<Option<crate::OutputReference>>> {
+        Box::pin(async { Ok(None) })
+    }
     fn dispatch(
         &self,
         call: ScriptCall,
@@ -290,8 +296,14 @@ fn selected_facts(structured: &Value) -> Value {
         "reference",
         "change",
         "path",
+        "canonical_path",
         "commit_state",
         "content_hash",
+        "content_hash_before",
+        "content_hash_after",
+        "bytes_written",
+        "bytes_removed",
+        "line_count",
         "offset",
         "next_offset",
         "pages",
@@ -302,6 +314,15 @@ fn selected_facts(structured: &Value) -> Value {
             if bounded_json(value, MAX_ACTION_SUMMARY_BYTES).is_ok() {
                 facts[key] = value.clone();
             }
+        }
+    }
+    if facts.get("change").is_none() {
+        let change = &structured["change"];
+        if let (Some(added), Some(removed)) = (
+            change["added_lines"].as_u64(),
+            change["removed_lines"].as_u64(),
+        ) {
+            facts["change"] = json!({"added_lines":added,"removed_lines":removed});
         }
     }
     if structured["termination"].as_str().is_some() {

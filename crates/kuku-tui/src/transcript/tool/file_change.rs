@@ -4,13 +4,15 @@ use kuku_client::{FileCommitState, FileMutationFacts};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use serde_json::Value;
+use unicode_width::UnicodeWidthStr;
 
 use crate::markup::{file_source, render_diff, render_markdown, wrap_bounded};
-use crate::text::{cap, single_line};
+use crate::text::{cap, shorten, shorten_middle, single_line};
 use crate::theme::{ACCENT, MUTED, WARNING};
 
 use super::{
-    join_details, Row, Tool, ToolDetails, MAX_CHANGE_ROWS, MAX_INSPECTION_ROWS, MAX_PREVIEW_BYTES,
+    join_details, render_rows, Row, Tool, ToolDetails, MAX_CHANGE_ROWS, MAX_INSPECTION_ROWS,
+    MAX_PREVIEW_BYTES,
 };
 
 impl Tool {
@@ -20,6 +22,9 @@ impl Tool {
         width: usize,
         details: ToolDetails,
     ) -> Vec<Row> {
+        if details == ToolDetails::CompactFile {
+            return compact_change_row(change, self.invocation(), width);
+        }
         let frame = crate::theme::CardFrame::new(width);
         let path = self.invocation();
         let status = if change.unconfirmed {
@@ -68,6 +73,7 @@ impl Tool {
 pub(super) struct FileChange {
     tool: &'static str,
     preview: String,
+    preview_line_numbers: Vec<u64>,
     pub(super) stats: String,
     pub(super) unconfirmed: bool,
     diff: bool,
@@ -96,13 +102,18 @@ impl FileChange {
                 } else {
                     format!("+{added} −{removed}")
                 };
-                Some(Self::new(
+                let mut edit = Self::new(
                     "edit_file",
                     change["preview"].as_str(),
                     stats,
                     true,
                     change["preview_truncated"].as_bool().unwrap_or(false),
-                ))
+                );
+                edit.preview_line_numbers = change["preview_line_numbers"]
+                    .as_array()
+                    .and_then(|values| values.iter().map(Value::as_u64).collect())
+                    .unwrap_or_default();
+                Some(edit)
             }
             "file_remove" => {
                 let stats = result["bytes_removed"].as_u64().map_or_else(
@@ -141,7 +152,7 @@ impl FileChange {
         let mut lines = if text.is_empty() {
             Vec::new()
         } else if self.diff {
-            render_diff(text)
+            numbered_diff(text, &self.preview_line_numbers, width)
         } else if language.eq_ignore_ascii_case("md") || language.eq_ignore_ascii_case("markdown") {
             let mut lines = render_markdown(text, width, limit);
             if lines.last().is_some_and(|line| line.spans.is_empty()) {
@@ -171,6 +182,7 @@ impl FileChange {
         Self {
             tool,
             preview: head.to_owned(),
+            preview_line_numbers: Vec::new(),
             stats,
             unconfirmed: false,
             diff,
@@ -185,4 +197,52 @@ fn plural(count: u64, one: &'static str, many: &'static str) -> &'static str {
     } else {
         many
     }
+}
+
+fn numbered_diff(text: &str, numbers: &[u64], width: usize) -> Vec<Line<'static>> {
+    let mut lines = render_diff(text);
+    let digits = numbers.iter().copied().max().unwrap_or(0).to_string().len();
+    if numbers.is_empty() || width <= digits + 5 {
+        return lines;
+    }
+    let both = width > 2 * digits + 10;
+    for (line, number) in lines.iter_mut().zip(numbers) {
+        let marker = line
+            .spans
+            .first()
+            .and_then(|span| span.content.chars().next());
+        let label = match marker {
+            Some('-') if both => format!("{number:>digits$} {:digits$} │ ", ""),
+            Some('+') if both => format!("{:digits$} {number:>digits$} │ ", ""),
+            Some('-' | '+') => format!("{number:>digits$} │ "),
+            _ => continue,
+        };
+        line.spans
+            .insert(0, Span::styled(label, Style::new().fg(MUTED)));
+    }
+    lines
+}
+
+fn compact_change_row(change: &FileChange, path: &str, width: usize) -> Vec<Row> {
+    let action = match change.tool {
+        "write_file" => "Write",
+        "remove_file" => "Remove",
+        _ => "Edit",
+    };
+    let action = format!("▸ {action} ");
+    let stats = format!(" · {}", change.stats);
+    let stats = shorten(
+        &stats,
+        width.saturating_sub(action.width() + 2).min(width / 2),
+    );
+    let path = shorten_middle(
+        &single_line(path),
+        width.saturating_sub(action.width() + stats.width()),
+    );
+    let line = Line::from(vec![
+        Span::styled(action, Style::new().fg(ACCENT)),
+        Span::raw(path),
+        Span::styled(stats, Style::new().fg(MUTED)),
+    ]);
+    render_rows(vec![line], width, 1, 0).collect()
 }

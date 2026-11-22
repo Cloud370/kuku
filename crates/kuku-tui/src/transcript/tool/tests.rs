@@ -267,7 +267,7 @@ fn file_cards_preview_saved_content_and_diff_without_using_requested_text_as_evi
             "edit_file",
             "notes.txt",
             json!({"old_text":"sentinel old", "new_text":"sentinel new"}),
-            json!({"status":"ok", "structured":{"kind":"file_edit", "path":"notes.txt", "replacement_count":1, "raw_text_after":"new line", "change":{"added_lines":1,"removed_lines":2,"preview":"-first\n-second\n+new line"}}}),
+            json!({"status":"ok", "structured":{"kind":"file_edit", "path":"notes.txt", "replacement_count":1, "raw_text_after":"new line", "change":{"added_lines":1,"removed_lines":2,"preview":"-first\n-second\n+new line","preview_line_numbers":[17,18,17]}}}),
         ),
         (
             "write_file",
@@ -292,7 +292,25 @@ fn file_cards_preview_saved_content_and_diff_without_using_requested_text_as_evi
             );
         }
     }
-    let view = transcript.project(90, 32);
+    let compact = transcript.project(72, 32);
+    let rows: Vec<_> = compact.lines.iter().map(ToString::to_string).collect();
+    let write_row = rows
+        .iter()
+        .position(|line| line.contains("Write notes.txt · 2 lines written"))
+        .unwrap();
+    let edit_row = rows
+        .iter()
+        .position(|line| line.contains("Edit notes.txt · +1 −2"))
+        .unwrap();
+    assert!(write_row < edit_row);
+    let compact_text = rows.join("\n");
+    assert!(!compact_text.contains("-first") && !compact_text.contains("sentinel"));
+    let write_key = transcript.detail_at(write_row).unwrap().clone();
+    let edit_key = transcript.detail_at(edit_row).unwrap().clone();
+    assert!(transcript.toggle_detail(&write_key));
+    assert!(transcript.toggle_detail(&edit_key));
+
+    let view = transcript.project(90, 40);
     let rendered = view
         .lines
         .iter()
@@ -305,19 +323,15 @@ fn file_cards_preview_saved_content_and_diff_without_using_requested_text_as_evi
         "actual␛line",
         "2 lines written",
         "Edit file · ok · notes.txt",
-        "-first",
-        "-second",
-        "+new line",
+        "17    │ -first",
+        "18    │ -second",
+        "   17 │ +new line",
         "+1 −2",
         "No permission for failed.txt",
     ] {
         assert!(rendered.contains(fact), "missing {fact}\n{rendered}");
     }
-    assert!(
-        !rendered.contains("sentinel")
-            && !rendered.contains("incorrect preview")
-            && !rendered.contains("3 lines written")
-    );
+    assert!(!rendered.contains("incorrect preview") && !rendered.contains("3 lines written"));
     let edit_header = view
         .lines
         .iter()
@@ -326,12 +340,7 @@ fn file_cards_preview_saved_content_and_diff_without_using_requested_text_as_evi
     assert!(view.lines[edit_header]
         .to_string()
         .starts_with("╭─ Edit file"));
-    assert!(view.lines[edit_header..edit_header + 7]
-        .iter()
-        .all(|line| line.width() == 90));
-    assert!(view.lines[edit_header + 6].to_string().contains("╰─ +1 −2"));
-    let key = transcript.detail_at(edit_header).unwrap().clone();
-    assert!(transcript.toggle_detail(&key));
+    assert!(rendered.contains("╰─ +1 −2"));
     let inspected = transcript
         .project(90, 40)
         .lines

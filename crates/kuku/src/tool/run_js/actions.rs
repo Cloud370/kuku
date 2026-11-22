@@ -4,11 +4,12 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use super::{ScriptExecution, ScriptOperation};
-use crate::session::runtime::OutputReservation;
+use crate::session::runtime::{command_output_id, OutputReservation};
 use crate::tool::builtin;
-use crate::tool::builtin::run_command::{output::OutputLimits, run_command_to, CommandCapture};
+use crate::tool::builtin::run_command::output::{OutputLimits, OutputWriter, MAX_FRAME_BYTES};
+use crate::tool::builtin::run_command::{run_command_to, CommandCapture};
 use crate::tool::ToolResultEnvelope;
-use crate::{Result, Session};
+use crate::{Error, OutputReference, OutputStream, Result, Session};
 
 pub(crate) struct WorkspaceActions {
     pub(crate) session: Session,
@@ -24,6 +25,51 @@ impl WorkspaceActions {
     pub(super) fn reserve_output(&self, id: &str) -> Result<OutputReservation> {
         self.session
             .reserve_output(&self.agent, self.original_turn, &self.tool_call_id, id)
+    }
+
+    pub(crate) async fn retain_script_return(&self, json: String) -> Result<OutputReference> {
+        let id = command_output_id(
+            &self.agent,
+            self.original_turn,
+            &format!("{}:return", self.tool_call_id),
+        );
+        let mut reservation = self.reserve_output(&id)?;
+        reservation.discard_on_drop();
+        if json.len() as u64 > reservation.max_bytes() {
+            return Err(Error::InvalidArgument(
+                "the complete JSON exceeds available retained output capacity".into(),
+            ));
+        }
+        let dir = self
+            .session
+            .events_path()
+            .parent()
+            .expect("session parent")
+            .join("outputs");
+        let mut writer = OutputWriter::create(
+            &dir,
+            &id,
+            OutputLimits {
+                max_output_bytes: reservation.max_bytes(),
+                max_preview_bytes: 0,
+            },
+        )
+        .await?;
+        for frame in json.as_bytes().chunks(MAX_FRAME_BYTES) {
+            writer.write(OutputStream::Stdout, frame).await?;
+        }
+        let metadata = writer.finish(false).await?;
+        if !metadata.complete || metadata.stored_bytes != json.len() as u64 {
+            return Err(Error::InvalidArgument(
+                "the complete JSON could not be retained".into(),
+            ));
+        }
+        reservation.keep();
+        Ok(OutputReference {
+            id,
+            offset: 0,
+            bytes: metadata.stored_bytes,
+        })
     }
 
     pub(crate) async fn execute(

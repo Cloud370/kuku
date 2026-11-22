@@ -5,7 +5,7 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
 use crate::markup::render_literal;
-use crate::text::{shorten, single_line};
+use crate::text::{compact_token_count, shorten, single_line};
 use crate::theme::{ACCENT, MUTED, SUCCESS, WARNING};
 
 use super::{capped, message, render_record, Row, MAX_BODY_BYTES};
@@ -19,8 +19,7 @@ pub(super) enum Compaction {
     },
     Completed {
         elapsed_ms: u64,
-        before: u64,
-        after: u64,
+        input_tokens: (u64, u64),
         messages: u64,
         summary: String,
     },
@@ -53,8 +52,10 @@ impl Compaction {
             },
             "completed" => Self::Completed {
                 elapsed_ms: field("elapsed_ms").as_u64()?,
-                before: field("before_bytes").as_u64()?,
-                after: field("after_bytes").as_u64()?,
+                input_tokens: (
+                    field("estimated_input_tokens_before").as_u64()?,
+                    field("estimated_input_tokens_after").as_u64()?,
+                ),
                 messages: field("checkpointed_messages").as_u64()?,
                 summary: capped(entry.text.as_deref(), MAX_BODY_BYTES),
             },
@@ -137,16 +138,15 @@ impl Compaction {
             ),
             Self::Completed {
                 elapsed_ms,
-                before,
-                after,
+                input_tokens,
                 messages,
                 summary,
             } => {
                 let stats = format!(
-                    "{} · {} → {}\n{messages} messages summarized",
+                    "{} · ~{} → ~{} input tokens\n{messages} messages summarized",
                     duration(*elapsed_ms),
-                    size(*before),
-                    size(*after)
+                    compact_token_count(input_tokens.0),
+                    compact_token_count(input_tokens.1),
                 );
                 if open {
                     return message::render_markdown_record(
@@ -218,12 +218,4 @@ impl Compaction {
 
 fn duration(ms: u64) -> String {
     format!("{:.1}s", ms as f64 / 1000.0)
-}
-
-fn size(bytes: u64) -> String {
-    if bytes < 1024 {
-        format!("{bytes} B")
-    } else {
-        format!("{:.1} KiB", bytes as f64 / 1024.0)
-    }
 }

@@ -394,7 +394,8 @@ fn context_batch(
             "capabilities":context.segment.capabilities,"route_selectors":context.segment.route_selectors,
             "system_prompt":context.segment.system_prompt,"prelude":context.segment.prelude,"tools":context.segment.tools,"catalog":context.segment.catalog,
             "behavior":context.segment.behavior,"identity_slot":context.segment.identity_slot,"handoff_prelude":context.segment.handoff_prelude,"workspace":context.segment.workspace,
-            "project_instruction_sources":context.segment.project_instruction_sources})));
+            "project_instruction_sources":context.segment.project_instruction_sources,
+            "checkpoint_files":context.segment.checkpoint_files})));
     }
     let frozen_head = context.prefix_context_head;
     let expected_frozen_head = if context.new_segment {
@@ -529,6 +530,7 @@ fn initial_segment(
             .collect(),
         identity_slot: slot,
         handoff_prelude: None,
+        checkpoint_files: Default::default(),
         workspace: pending.workspace.to_string_lossy().into_owned(),
     })
 }
@@ -877,6 +879,7 @@ mod snapshot_tests {
             identity_slot: 1,
             project_instruction_sources: Vec::new(),
             handoff_prelude: None,
+            checkpoint_files: Default::default(),
             workspace: String::new(),
         };
         (segment, resolved, selectors)

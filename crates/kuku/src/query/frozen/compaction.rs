@@ -1,8 +1,9 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::{model_history, ContextCommit, MessageOrigin, OwnedRequestBase};
 use crate::context::runtime::AdmittedMessage;
 use crate::context::{CanonicalMessage, MessageBlock};
+use crate::event::{EventPayload, EventStore};
 use crate::query::request::estimated_message_tokens;
 use crate::query::types::PendingRun;
 use crate::Result;
@@ -134,6 +135,70 @@ impl ContextCommit {
             || (!closed_turn
                 && (index == self.current_input
                     || (entry.turn == turn && entry.origin == MessageOrigin::Input)))
+    }
+
+    pub(in crate::query) fn record_checkpoint_files(
+        &mut self,
+        cut: usize,
+        pending: &PendingRun,
+        closed_turn: bool,
+    ) -> Result<()> {
+        let mut response = 0;
+        let mut first = u64::MAX;
+        let mut last = 0;
+        let mut sources = HashMap::<_, Vec<_>>::new();
+        for (index, entry) in self.messages[..cut].iter().enumerate() {
+            if entry.origin == MessageOrigin::Response {
+                response = entry.admitted_at;
+            }
+            if self.preserved_by_checkpoint(index, entry, pending.turn, closed_turn) {
+                continue;
+            }
+            for block in &entry.message.blocks {
+                if let MessageBlock::ToolResult(result) = block {
+                    sources
+                        .entry((entry.turn, result.tool_call_id.as_str()))
+                        .or_default()
+                        .push(response..=entry.admitted_at);
+                    first = first.min(response);
+                    last = last.max(entry.admitted_at);
+                }
+            }
+        }
+        if sources.is_empty() {
+            return Ok(());
+        }
+
+        let agent = pending.conversation.as_str();
+        let files = &mut self.segment.checkpoint_files;
+        EventStore::visit_committed(&pending.events_path, first.saturating_sub(1), |event| {
+            if event.id > last {
+                return Ok(false);
+            }
+            if let EventPayload::ToolResult {
+                turn,
+                conversation,
+                tool_call_id,
+                status,
+                structured: Some(facts),
+                ..
+            } = &event.payload
+            {
+                if conversation.as_deref().unwrap_or("main") == agent
+                    && sources
+                        .get(&(*turn, tool_call_id.as_str()))
+                        .is_some_and(|ranges| ranges.iter().any(|range| range.contains(&event.id)))
+                {
+                    files.record_result(status, facts);
+                }
+            }
+            Ok(true)
+        })?;
+        Ok(())
+    }
+
+    pub(in crate::query) fn summary_with_files(&self, summary: &str) -> String {
+        self.segment.checkpoint_files.append_to(summary)
     }
 
     pub(in crate::query) fn apply_checkpoint(

@@ -108,7 +108,8 @@ pub(super) async fn compact(
     };
     let mut candidate = context.clone();
     let mut next = task.clone();
-    let empty_checkpoint = task.render_checkpoint("")?;
+    candidate.record_checkpoint_files(cut, pending, closed_turn)?;
+    let empty_checkpoint = task.render_checkpoint(&candidate.summary_with_files(""))?;
     candidate.apply_checkpoint(&mut next, cut, pending.turn, empty_checkpoint, closed_turn);
     let reserve = if manual || must_fit {
         0
@@ -233,10 +234,12 @@ pub(super) async fn compact(
     let mut finish = json!({
         "kind":"runtime.compaction_finished", "ts":now_timestamp()?, "agent":agent, "turn":pending.turn,
         "request_id":request_id, "elapsed_ms":elapsed_us/1000, "before_bytes":before_bytes,
+        "estimated_input_tokens_before":context.estimated_input_tokens,
         "stop_reason":summary.stop.as_ref(),
     });
     if completed && !waiting_for_input && summary.usable() {
-        let text = next.render_checkpoint(summary.text.trim())?;
+        let summary_with_files = candidate.summary_with_files(summary.text.trim());
+        let text = next.render_checkpoint(&summary_with_files)?;
         candidate.fill_checkpoint(&mut next, pending.turn, text);
         if let Ok(body) = prepare_request(pending, resolved, correlation, &next) {
             let bytes = body.body.as_bytes().len();
@@ -252,7 +255,7 @@ pub(super) async fn compact(
                 finish["after_bytes"] = bytes.into();
                 finish["estimated_input_tokens_after"] = after_tokens.into();
                 finish["checkpointed_messages"] = candidate.checkpointed_messages().into();
-                finish["summary"] = summary.text.trim().into();
+                finish["summary"] = summary_with_files.into();
                 if let Err(error) = candidate.record_checkpoint(pending, finish.clone()) {
                     if matches!(error, crate::Error::ExecutionNotActive(current) if current == execution)
                     {

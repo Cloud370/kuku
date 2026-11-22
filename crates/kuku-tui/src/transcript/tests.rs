@@ -56,7 +56,8 @@ fn compaction_progress_updates_the_same_card_and_reveals_the_checkpoint_on_reque
     let completed = serde_json::from_value(json!({
         "id": 5, "agent": "main", "turn": 1, "type": "compaction",
         "request_id": "compact-1", "status": "completed", "elapsed_ms": 2120,
-        "before_bytes": 16384, "after_bytes": 8192, "checkpointed_messages": 7,
+        "estimated_input_tokens_before": 16000, "estimated_input_tokens_after": 8000,
+        "checkpointed_messages": 7,
         "text": "Earlier work verified.\n\nInspect the parser at parse_range.",
     }))
     .unwrap();
@@ -65,7 +66,8 @@ fn compaction_progress_updates_the_same_card_and_reveals_the_checkpoint_on_reque
     assert!(!preview.contains("Compacting context"));
     assert!(preview.contains("Context compacted") && preview.contains("2.1s"));
     let preview_words = preview.split_whitespace().collect::<Vec<_>>().join(" ");
-    assert!(preview_words.contains("16.0 KiB → 8.0 KiB"));
+    assert!(preview_words.contains("~16K → ~8K input tokens"));
+    assert!(!preview_words.contains("KiB"));
     assert!(preview_words.contains("7 messages summarized"), "{preview}");
     assert!(preview.contains("Earlier work verified.") && !preview.contains("parse_range"));
     let (detail, _, _) = transcript

@@ -115,7 +115,7 @@
 
 带 `progress=true` 的快照可以包含所选 Agent 的 `reply_preview`，其中有 `execution_id`、`turn`、可选的 `turn_number`、`phase`、`text` 和 `truncated`。阶段为 `thinking`、`streaming` 或 `tool_arguments`。文本是活动请求的可见回复 UTF-8 前缀，最多 64 KiB。`truncated` 表示回复已经超过保留前缀的上限。所选 Agent 的可选字段 `reasoning_preview` 保存服务方公开的思考文字或摘要的有界前缀。Responses 可通过流或最终输出中带类型的思考和摘要文本提供这些内容。不透明思考状态仅用于报告活动，并留在 provider 重放记录中。实时 `reasoning_preview` 事件追加文本，已提交的助手条目也可包含此字段。
 
-重试进度投影支持持久化的 `runtime.model_retry` 和 `model.recovery` 记录。此分支不包含扩展 `runtime.model_retry` 格式的核心生产端更新，因此当前运行时事件仍使用旧格式。旧记录缺少 `phase` 时按 `started` 处理；旧记录缺少 `will_retry` 时沿用 started 事件语义。扩展格式仅以 `will_retry` 表示是否会发送下一请求。`delay_ms` 仅在 `phase:"waiting"` 时表示策略等待时长；客户端可结合该事件的 `ts` 推导剩余时间，不得从供应商响应头推断等待时间。
+重试进度来自持久化的 `runtime.model_retry` 和 `model.recovery` 记录。`will_retry` 指明是否还会发送下一次请求。旧记录省略 `phase` 时按 `started` 处理，省略 `will_retry` 时沿用 `started` 的含义。`delay_ms` 只在 `phase:"waiting"` 时表示等待时长。客户端可以根据该事件的 `ts` 计算剩余时间。
 
 在同一快照游标处，`agents` 中其他 Agent 的条目也可包含 `progress.phase`。`streaming` 条目的 `progress.preview` 包含该 Agent 当前回复开头的 UTF-8 文本，最多 512 字节。`thinking` 与 `tool_arguments` 仅报告活动。
 

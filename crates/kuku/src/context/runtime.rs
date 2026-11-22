@@ -11,7 +11,9 @@ use crate::prompt::PromptCatalog;
 use crate::provider::types::ProviderCapabilities;
 use crate::{Error, Result};
 
+mod file_changes;
 mod startup;
+use file_changes::CheckpointFileChanges;
 #[cfg(test)]
 use startup::read_agent_events;
 pub(crate) use startup::StartupCache;
@@ -52,6 +54,8 @@ pub(crate) struct FrozenSegment {
     pub(crate) workspace: String,
     #[serde(default)]
     pub(crate) project_instruction_sources: Vec<crate::context::FileSource>,
+    #[serde(default)]
+    pub(crate) checkpoint_files: CheckpointFileChanges,
 }
 
 fn route_selectors_changed(segment: Option<&FrozenSegment>, config: &serde_json::Value) -> bool {

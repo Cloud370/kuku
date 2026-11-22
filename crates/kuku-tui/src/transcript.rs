@@ -104,6 +104,7 @@ enum ToolDetails {
     Expanded,
     Collapsed,
     GroupMember,
+    CompactFile,
     Inspection,
 }
 

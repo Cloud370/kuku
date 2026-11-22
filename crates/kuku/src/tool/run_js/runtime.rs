@@ -13,7 +13,7 @@ use tokio::task::JoinSet;
 use crate::session::runtime::WorkspaceWorkerPermit;
 use crate::tool::builtin::common::ExecutorObservation;
 use crate::tool::{ToolDefinition, ToolFaults, ToolResultEnvelope};
-use crate::WorkspaceExecutionHost;
+use crate::{OutputReference, WorkspaceExecutionHost};
 
 use super::host::{bound_action_facts, bounded_json, cap_str};
 use super::recovery::command_program;
@@ -71,7 +71,27 @@ pub(crate) async fn execute(
             )
         }
     };
-    let finish = worker.drive(host, execution.clone(), cancelling).await;
+    let finish = worker
+        .drive(host.clone(), execution.clone(), cancelling.as_mut())
+        .await;
+    let finish = if let Finish::OversizedReturn(json) = finish {
+        let max_bytes = execution.limits.result_bytes;
+        let error = format!("script result exceeds {max_bytes} bytes");
+        let retained = tokio::select! {
+            biased;
+            _ = &mut cancelling => return result(Finish::Cancelled, &execution, can_read_output),
+            retained = host.retain_return(json) => retained,
+        };
+        match retained {
+            Ok(Some(output)) => Finish::RetainedReturn(output),
+            Ok(None) => Finish::Failed(format!(
+                "{error}; return a small value or retain derived output"
+            )),
+            Err(failure) => Finish::Failed(format!("{error}; could not retain it: {failure}")),
+        }
+    } else {
+        finish
+    };
     result(finish, &execution, can_read_output)
 }
 
@@ -181,6 +201,8 @@ struct HostReply<'a> {
 
 enum Finish {
     Returned(Value),
+    OversizedReturn(String),
+    RetainedReturn(OutputReference),
     Failed(String),
     Blocked(String),
     Cancelled,
@@ -311,6 +333,7 @@ fn vm_finish(result: Result<Result<Value, vm::Failure>, oneshot::error::RecvErro
     match result {
         Ok(Ok(value)) => Finish::Returned(value),
         Ok(Err(vm::Failure::Error(error))) => Finish::Failed(error),
+        Ok(Err(vm::Failure::OversizedReturn(json))) => Finish::OversizedReturn(json),
         Ok(Err(vm::Failure::TimedOut)) => Finish::TimedOut,
         Ok(Err(vm::Failure::Stopped)) => Finish::HostStopped,
         Err(_) => Finish::Failed("JavaScript worker exited before returning a result".into()),
@@ -337,6 +360,7 @@ fn result(
         cleanup_incomplete: execution.cleanup_incomplete.load(Ordering::Acquire),
     };
     let timed_out = matches!(finish, Finish::TimedOut);
+    let mut output_ref = None;
     let outcome = match finish {
         Finish::Returned(value) => {
             let model_content = serde_json::to_string(&value).expect("script result is JSON");
@@ -347,6 +371,23 @@ fn result(
                 model_content,
                 value,
             )
+        }
+        Finish::RetainedReturn(output) => {
+            let hint = if can_read_output {
+                "Read the complete JSON with read_output({id, offset, limit})."
+            } else {
+                "The complete JSON is available to the Session owner."
+            };
+            let model_content = serde_json::json!({"output_ref":output,"hint":hint}).to_string();
+            output_ref = Some(output);
+            ToolResultEnvelope::ok(
+                format!("run_js saved its JSON return after {dispatched} host actions ({failures} unsuccessful)"),
+                model_content,
+                Value::Null,
+            )
+        }
+        Finish::OversizedReturn(_) => {
+            unreachable!("oversized returns are settled before the result")
         }
         Finish::Failed(error) => ToolResultEnvelope::error("run_js failed", error),
         Finish::Blocked(error) => ToolResultEnvelope::blocked("run_js capacity unavailable", error),
@@ -385,6 +426,7 @@ fn result(
     let facts = WorkspaceScriptFacts {
         kind: WorkspaceScriptResultKind::WorkspaceScriptResult,
         value,
+        output_ref,
         actions,
         timed_out,
         cleanup_incomplete: faults.cleanup_incomplete,

@@ -417,6 +417,7 @@ impl Window {
             rewind_groups,
             ..
         } = self;
+        let compact_files = compact_file_rows(window_records);
         let mut spans = groups(window_records)
             .into_iter()
             .map(|span| {
@@ -498,6 +499,8 @@ impl Window {
                     });
                 let mode = if grouped {
                     ToolDetails::GroupMember
+                } else if compact_files[index] && layout.tools == ToolDetails::Expanded {
+                    ToolDetails::CompactFile
                 } else {
                     layout.tools
                 };
@@ -879,4 +882,34 @@ impl Block<'_> {
 
 fn execution_matches(left: Option<u64>, right: Option<u64>) -> bool {
     left.is_none() || right.is_none() || left == right
+}
+
+fn compact_file_rows(records: &[Record]) -> Vec<bool> {
+    let mut compact = vec![false; records.len()];
+    let mut start = 0;
+    while start < records.len() {
+        let first = &records[start];
+        let eligible = |record: &&Record| {
+            first.turn.is_some()
+                && record.turn == first.turn
+                && record.owner == first.owner
+                && record
+                    .tool()
+                    .is_some_and(|tool| tool.compact_file_change() || tool.group_name().is_some())
+        };
+        let length = records[start..].iter().take_while(eligible).count();
+        let run = &records[start..start + length];
+        let changes = || {
+            run.iter()
+                .map(|record| record.tool().is_some_and(|tool| tool.compact_file_change()))
+        };
+        let multiple_changes = changes().filter(|&changed| changed).nth(1).is_some();
+        if length >= 3 || multiple_changes {
+            for (slot, changed) in compact[start..start + length].iter_mut().zip(changes()) {
+                *slot = changed;
+            }
+        }
+        start += length.max(1);
+    }
+    compact
 }

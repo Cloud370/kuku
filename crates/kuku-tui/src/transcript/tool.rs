@@ -597,6 +597,13 @@ impl Tool {
         ));
     }
 
+    pub(super) fn compact_file_change(&self) -> bool {
+        self.state
+            .outcome()
+            .is_some_and(|outcome| outcome.status == "ok" && !outcome.attention)
+            && self.file_change().is_some_and(|change| !change.unconfirmed)
+    }
+
     fn file_change(&self) -> Option<&FileChange> {
         let State::Recorded(outcome) = &self.state else {
             return None;

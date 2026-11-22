@@ -101,7 +101,8 @@ impl ScriptPreview {
 
     pub(super) fn outputs(&self) -> Vec<ToolView> {
         let mut seen = HashSet::new();
-        self.facts
+        let mut outputs = self
+            .facts
             .actions
             .iter()
             .enumerate()
@@ -131,7 +132,16 @@ impl ScriptPreview {
                     ..ToolView::default()
                 })
             })
-            .collect()
+            .collect::<Vec<_>>();
+        if let Some(output) = &self.facts.output_ref {
+            outputs.push(ToolView {
+                name: "Script return".into(),
+                summary: format!("Saved JSON · {} bytes", output.bytes),
+                output_id: Some(output.id.clone()),
+                ..ToolView::default()
+            });
+        }
+        outputs
     }
 
     fn notes(&self, status: &str) -> Vec<String> {
@@ -154,7 +164,9 @@ impl ScriptPreview {
     }
 
     fn returned_value(&self) -> String {
-        if self.facts.value.is_null() {
+        if let Some(output) = &self.facts.output_ref {
+            format!("JSON return saved · {} bytes", output.bytes)
+        } else if self.facts.value.is_null() {
             String::new()
         } else {
             format!("Script returned {}", arguments_json(&self.facts.value))
@@ -182,9 +194,15 @@ impl Tool {
         for note in script.notes(status) {
             rows.extend(render_preview(&note, WARNING, width, 1, inset));
         }
-        if status != "ok" && !self.summary().is_empty() {
+        if status != "ok" {
+            let reason = self
+                .state
+                .outcome()
+                .and_then(|outcome| outcome.content.lines().find(|line| !line.trim().is_empty()))
+                .filter(|line| !line.starts_with("Host action results observed:"))
+                .unwrap_or_else(|| self.summary());
             rows.extend(render_preview(
-                self.summary(),
+                reason,
                 WARNING,
                 width,
                 MAX_WARNING_ROWS,
@@ -221,8 +239,8 @@ impl Tool {
                 inset,
             ));
         }
-        if !actions.is_empty() {
-            let hint = if actions.iter().any(has_output) {
+        if !actions.is_empty() || script.facts.output_ref.is_some() {
+            let hint = if script.facts.output_ref.is_some() || actions.iter().any(has_output) {
                 "Actions and saved output · Messages"
             } else {
                 "Actions · Messages"

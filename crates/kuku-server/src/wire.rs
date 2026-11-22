@@ -349,8 +349,8 @@ pub(crate) fn history_entry_for_agent(
                 "continues_with_previous_context":value["continues_with_previous_context"],
                 "provider_limit":value["rejected_request_id"].is_string(),
                 "elapsed_ms":value["elapsed_ms"],
-                "before_bytes":value["before_bytes"],
-                "after_bytes":value["after_bytes"],
+                "estimated_input_tokens_before":value["estimated_input_tokens_before"],
+                "estimated_input_tokens_after":value["estimated_input_tokens_after"],
                 "checkpointed_messages":value["checkpointed_messages"],
                 "text":value["summary"],
             })

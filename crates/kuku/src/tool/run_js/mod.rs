@@ -44,7 +44,7 @@ pub struct WorkspaceScriptLimits {
     pub timeout_ms: u64,
     /// Maximum UTF-8 bytes in one script function body.
     pub source_bytes: usize,
-    /// Maximum serialized bytes in the returned model evidence.
+    /// Maximum serialized bytes returned inline. Larger JSON can be retained by the Session.
     pub result_bytes: usize,
     /// Maximum serialized bytes in one host request or response.
     pub host_bytes: usize,
@@ -168,6 +168,7 @@ pub(crate) fn describe_selected_tools(tools: &mut [ToolDefinition]) {
         description.push_str("Example: `const r = await tools.run_command({program:'git',args:['status','--porcelain']}); return {exit_code:r.exit_code, output_ref:r.output_ref, lines:r.exit_code === 0 && r.capture_complete ? (await r.stdout.text()).split('\\n').filter(Boolean).length : null};`.\n");
     }
     description.push_str("Other host methods return {status,result,truncated,error?}. Check status === 'ok' before reading result. ");
+    description.push_str("A JSON return above the inline limit is saved when output quota allows. Read its output_ref by ID if you need the full value. ");
     for op in ScriptOperation::ALL {
         let contract = method_result(op);
         if !contract.is_empty() && methods.iter().any(|method| method.name == op.name()) {
