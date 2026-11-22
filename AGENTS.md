@@ -10,6 +10,8 @@ kuku — a Rust SDK for file-native agent execution. SDK (`crates/kuku/`), CLI (
 
 Read [Core Direction](docs/en/architecture/core-direction.md) ([中文](docs/zh/architecture/core-direction.md)) before core design or implementation. It is the concise target baseline, not a claim of shipped behavior. Read one language, then only task-relevant code and sections of [Evolution](docs/en/architecture/evolution.md); do not require full-history or full-docs onboarding. Keep settled decisions in that baseline and design rationale in the owning page. Follow [Development](docs/en/contributing/development.md) for task tracking and fresh-session handoff, and [Testing](docs/en/contributing/testing.md) for acceptance evidence; do not append progress history to architecture docs. Preserve the external Prompt assets and explicit Prompt/context/provider boundaries; a core rewrite is not permission to discard them. Branch/worktree creation and implementation remain separate actions from documentation planning.
 
+**Before the first stable release, support only the current public APIs and Session format.** Replace superseded SDK APIs, CLI commands, HTTP and streaming contracts, and Session formats directly. Update in-tree callers and tests in the same change. See [Delivery and engineering choices](docs/en/architecture/core-direction.md#delivery-and-engineering-choices).
+
 ## Project map
 
 Full document map: [docs/en/index.md](docs/en/index.md). Key: [start](docs/en/start/index.md) · [guides](docs/en/guides/index.md) · [how-it-works](docs/en/how-it-works/index.md) · [reference](docs/en/reference/index.md) · [architecture](docs/en/architecture/index.md) · [contributing](docs/en/contributing/index.md).

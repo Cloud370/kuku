@@ -5,7 +5,7 @@
 > A file-native Rust agent SDK. Sessions, Memory, Skills, and config stay on disk as readable files.
 
 > [!WARNING]
-> kuku is in testing. APIs and file formats may change.
+> kuku is in testing. Until the first stable release, compatibility support covers only the current SDK, CLI, server API, and Session format. Updates may break existing integrations or make older Sessions unreadable.
 
 Open `kuku` for interactive work in your terminal or use `kuku run` for scripts. The server keeps accepted work running while you switch terminals or open the browser. Embed the same runtime directly with the [Rust SDK](docs/en/reference/sdk.md).
 

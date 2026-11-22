@@ -2,6 +2,8 @@
 
 kuku 是处于测试阶段的文件原生 Rust Agent SDK。在工作区运行 `kuku` 即可从终端开始任务，也可以从浏览器回到同一个 Session。[安装](start/install.md) · [第一个任务](start/quickstart.md) · [运行服务](guides/run-the-server.md)
 
+**首次正式发布前，kuku 只支持当前版本的公开 API 和 Session 格式。** 更新可能影响既有的 SDK、CLI、HTTP 或流式协议集成，也可能导致旧 Session 无法打开。
+
 Linux 空闲服务端实测约 **16 MiB RSS**。SDK 从日志内嵌的检查点重开已封存的 Session。[性能实测](how-it-works/performance.md)
 
 ## 栏目
