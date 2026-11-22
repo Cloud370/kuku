@@ -141,7 +141,7 @@ pub(crate) struct ContextCursor {
     pub(crate) configured: u64,
     configurations: BTreeMap<u64, RouteSelectors>,
     pub(crate) handoff: Option<StoredEvent>,
-    pub(crate) input_tokens: Option<u32>,
+    pub(crate) measured_input: Option<(usize, u32)>,
     pub(crate) events_read: u64,
     latest_turn: Option<u64>,
     tail: Vec<StoredEvent>,
@@ -260,6 +260,7 @@ impl ContextCursor {
                 if self.pending_admissions.is_empty() {
                     self.pending_source_head = None;
                 }
+                self.measured_input = None;
                 self.recount_after_rewind()?;
                 return Ok(());
             }
@@ -312,6 +313,7 @@ impl ContextCursor {
                             self.catalog = Some(segment.catalog.clone());
                             self.segment = Some(segment);
                             self.admitted.clear();
+                            self.measured_input = None;
                             self.tail.clear();
                             self.pending_admissions.clear();
                             self.pending_source_head = None;
@@ -375,12 +377,13 @@ impl ContextCursor {
         if let EventPayload::ModelResponse {
             conversation,
             turn,
-            input_tokens_total: Some(tokens),
+            input_tokens_total,
             ..
         } = &event.payload
         {
             if belongs(conversation.as_deref(), *turn, agent, self.latest_turn) {
-                self.input_tokens = Some((*tokens).min(u64::from(u32::MAX)) as u32);
+                self.measured_input = input_tokens_total
+                    .map(|tokens| (self.admitted.len(), tokens.min(u64::from(u32::MAX)) as u32));
             }
         }
         if let Some(event) = project_source(event, agent, self.latest_turn) {
@@ -504,6 +507,7 @@ impl ContextCursor {
             Error::InvalidEventStream("new context is shorter than the committed prefix".into())
         })?;
         if !reused {
+            self.measured_input = None;
             self.admitted_encoding = PrefixEncoding::default();
         }
         for message in suffix {

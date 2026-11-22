@@ -66,7 +66,7 @@ pub(super) async fn dispatch_provider_step(
     let mut recover_context = frozen_context.is_some() && pending.config.handoff().enabled;
     if let Some(context) = frozen_context
         .as_mut()
-        .filter(|context| compaction::needed(&pending, context, initial_bytes))
+        .filter(|context| compaction::needed(&pending, context, &resolved_config))
     {
         match Box::pin(compaction::compact(
             &mut pending,
@@ -98,9 +98,9 @@ pub(super) async fn dispatch_provider_step(
     let (request_id, outcome) = loop {
         let request_id = format!("req_{}", pending.request_num);
         let request_bytes = prepared.body.as_bytes().len();
-        if request_bytes > max_request_bytes {
+        if let Some(limit) = max_request_bytes.filter(|limit| request_bytes > *limit) {
             return Err(crate::Error::InvalidArgument(format!(
-                "prepared model request exceeds the configured byte limit ({request_bytes} bytes, limit {max_request_bytes} bytes)"
+                "prepared model request exceeds the configured byte limit ({request_bytes} bytes, limit {limit} bytes)"
             )));
         }
         crate::query::budget::reserve(&pending.query)?;
@@ -384,7 +384,11 @@ pub(super) fn prepare_request(
             resolved,
             &request,
             correlation,
-            pending.query.runtime_limits.max_request_bytes,
+            pending
+                .query
+                .runtime_limits
+                .max_request_bytes
+                .unwrap_or(usize::MAX),
             |image| {
                 super::super::runtime_tools::runtime_session(pending)?
                     .read_model_image(pending.conversation.as_str(), image)

@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use super::{model_history, ContextCommit, MessageOrigin, OwnedRequestBase};
 use crate::context::runtime::AdmittedMessage;
 use crate::context::{CanonicalMessage, MessageBlock};
+use crate::query::request::estimated_message_tokens;
 use crate::query::types::PendingRun;
 use crate::Result;
 
@@ -29,9 +30,9 @@ impl ContextCommit {
     pub(in crate::query) fn checkpoint_cut(
         &self,
         turn: u64,
-        recent_bytes: usize,
+        recent_tokens: u32,
         compact_only: bool,
-    ) -> Result<Option<usize>> {
+    ) -> Option<usize> {
         let newest_work = if compact_only {
             self.messages.len()
         } else {
@@ -60,13 +61,13 @@ impl ContextCommit {
                 match block {
                     MessageBlock::ToolUse(call) => {
                         if !open_calls.insert(call.id.as_str()) {
-                            return Ok(None);
+                            return None;
                         }
                     }
                     MessageBlock::ToolResult(result)
                         if !open_calls.remove(result.tool_call_id.as_str()) =>
                     {
-                        return Ok(None)
+                        return None
                     }
                     _ => {}
                 }
@@ -80,24 +81,25 @@ impl ContextCommit {
             }
         }
         if !open_calls.is_empty() {
-            return Ok(None);
+            return None;
         }
         if boundaries.is_empty() {
-            return Ok((compact_only && settled_response).then_some(self.messages.len()));
+            return (compact_only && settled_response).then_some(self.messages.len());
         }
-        let mut tail_bytes = 0usize;
+        let mut tail_tokens = 0u32;
         let mut cut = *boundaries.last().expect("at least one balanced cut");
         for (index, entry) in self.messages.iter().enumerate().rev() {
-            tail_bytes = tail_bytes.saturating_add(serde_json::to_vec(&entry.message)?.len());
+            tail_tokens = tail_tokens
+                .saturating_add(estimated_message_tokens(std::iter::once(&entry.message)));
             if boundaries.last() == Some(&index) {
                 cut = index;
                 boundaries.pop();
             }
-            if tail_bytes >= recent_bytes || boundaries.is_empty() {
+            if tail_tokens >= recent_tokens || boundaries.is_empty() {
                 break;
             }
         }
-        Ok(Some(cut))
+        Some(cut)
     }
 
     pub(in crate::query) fn checkpoint_source(
@@ -108,21 +110,17 @@ impl ContextCommit {
         model_history(&self.messages[..cut], turn)
     }
 
-    pub(in crate::query) fn new_checkpoint_material_bytes(
-        &self,
-        cut: usize,
-        turn: u64,
-    ) -> Result<usize> {
-        self.messages[..cut]
-            .iter()
-            .enumerate()
-            .filter(|(index, entry)| {
-                entry.origin != MessageOrigin::Checkpoint
-                    && !self.preserved_by_checkpoint(*index, entry, turn, false)
-            })
-            .try_fold(0usize, |bytes, (_, entry)| {
-                Ok(bytes.saturating_add(serde_json::to_vec(&entry.message)?.len()))
-            })
+    pub(in crate::query) fn new_checkpoint_material_tokens(&self, cut: usize, turn: u64) -> u32 {
+        estimated_message_tokens(
+            self.messages[..cut]
+                .iter()
+                .enumerate()
+                .filter(|(index, entry)| {
+                    entry.origin != MessageOrigin::Checkpoint
+                        && !self.preserved_by_checkpoint(*index, entry, turn, false)
+                })
+                .map(|(_, entry)| &entry.message),
+        )
     }
 
     fn preserved_by_checkpoint(

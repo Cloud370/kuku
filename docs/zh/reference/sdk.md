@@ -94,7 +94,7 @@ cargo run -p kuku --example session_task -- \
 
 ## 限额与用量
 
-默认限额允许 64 个 Agent、每 Agent 128 条待处理输入、65,536 输入字节、每次已准备请求 512 KiB、四个模型流、每 Agent 八个工具、每份保留输出 8 MiB、首次预览 8 KiB 和 128 条临时观察。预览至少 1 KiB，以保留完整引用和标志。
+默认限额允许 64 个 Agent、每 Agent 128 条待处理输入、65,536 输入字节、四个模型流、每 Agent 八个工具、每份保留输出 8 MiB、首次预览 8 KiB 和 128 条临时观察。宿主需要限制传输大小时，可通过 `RuntimeLimits::max_request_bytes` 设置序列化请求上限。预览至少 1 KiB，以保留完整引用和标志。
 
 `RuntimeLimits.max_requests_per_open` 可限制所有 Agent Turn 的总尝试数，重开后重置。`RuntimeLimits.max_output_tokens_per_request` 可为宿主上的每次响应设置生成上限。两者默认都是 `None`。Agent 显式设置的输出上限优先于 tier 配置，宿主上限适用于每个 Agent。Rust 的 `TierConfig.max_output_tokens`、`AgentSelection.max_output_tokens` 和 `ModelSelection.max_output_tokens` 类型均为 `Option<u32>`。协议允许时，省略有效值就由供应商选择默认行为。请求准备记录给出本次请求采用的值。`session_task --max-output-tokens N` 同时设置宿主和主 Agent 的上限。详见[模型配置](config.md#modelname)。
 
@@ -125,6 +125,6 @@ cargo run -p kuku --example session_orchestrate -- \
   --data-dir /path/to/session-data --output /path/to/result.json
 ```
 
-宿主用 `Activation::Enqueue` 投递前两个输入，分别显式推进接收者，再通过带关联的 `InputSource::External("timer")` 投递定时器输入。每次投递都有稳定的命令 ID，并核对相同重试的回执。示例固定持有两个 Agent，禁用模型创建 Agent 和原生 Skill，分别限制两次打开期间的模型请求总数。重开会续用宿主新授权的请求额度。输出和上下文默认值为 32,768 和 131,072 tokens。省略 `--max-request-bytes` 时继承 SDK 的请求字节上限。
+宿主用 `Activation::Enqueue` 投递前两个输入，分别显式推进接收者，再通过带关联的 `InputSource::External("timer")` 投递定时器输入。每次投递都有稳定的命令 ID，并核对相同重试的回执。示例固定持有两个 Agent，禁用模型创建 Agent 和原生 Skill，分别限制两次打开期间的模型请求总数。重开会续用宿主新授权的请求额度。输出和上下文默认值为 32,768 和 131,072 tokens。使用 `--max-request-bytes` 可设置宿主请求字节上限。
 
 宿主负责定时器的生命周期，并在重开后启动它；Session 持久化已投递的输入。观察者在执行稳定后才消费事件，因此观察订阅不会驱动工作。JSON 结果保留逐轮回执与快照、provider 和工具事实、有界的保留命令输出、休眠请求计数，以及关闭和重开证据。`runtime_completed` 要求三轮都稳定为空闲、没有待处理输入，并成功完成持久化关闭；任务产物仍需独立验证。等待中的 Agent 会报告为未完成。

@@ -135,10 +135,10 @@ Any other string config value whose first character is `$` is treated as an envi
 | Field | Type | Default |
 |---|---|---|
 | `enabled` | bool | `true` |
-| `threshold` | float | `0.7` |
+| `threshold` | float | `0.95` |
 | `keep_turns` | integer | `2` |
 
-In a Session, `enabled` controls automatic context compaction. It can run when measured token usage crosses `threshold` or the request approaches its byte limit. The runtime checks that enough older material can be summarized and commits a successor only when it has usable savings. Manual `/compact` remains available. For a standalone SDK `Query`, `keep_turns` controls how many preceding turns remain after a model-generated handoff.
+In a Session, `enabled` controls automatic context compaction. Set `threshold` between `0.0` and `1.0` to choose the share of the available input token budget that triggers compaction. The runtime sets aside room for output before applying this ratio. The runtime checks that enough older material can be summarized and commits a successor only when it has usable savings. Manual `/compact` remains available. For a standalone SDK `Query`, `keep_turns` controls how many preceding turns remain after a model-generated handoff.
 
 ## `logs`
 

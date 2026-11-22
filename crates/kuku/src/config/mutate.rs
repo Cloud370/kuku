@@ -3,7 +3,7 @@ use std::path::Path;
 use std::str::FromStr;
 
 use super::resolve::parse_config_text;
-use crate::config::types::{ConfigFile, ThinkLevel};
+use crate::config::types::{ConfigFile, HandoffConfig, ThinkLevel};
 use crate::error::{Error, Result};
 
 /// Generate a default config file content as a TOML string.
@@ -54,9 +54,10 @@ fn inject_handoff_section(doc: &mut toml_edit::DocumentMut) {
         "\n\n# Context handoff: inject summary when context usage exceeds threshold.\n",
         "",
     );
-    section["enabled"] = toml_edit::value(true);
-    section["threshold"] = toml_edit::value(0.7);
-    section["keep_turns"] = toml_edit::value(2);
+    let defaults = HandoffConfig::default();
+    section["enabled"] = toml_edit::value(defaults.enabled);
+    section["threshold"] = toml_edit::value(defaults.threshold);
+    section["keep_turns"] = toml_edit::value(defaults.keep_turns as i64);
 
     doc["handoff"] = toml_edit::Item::Table(section);
 }

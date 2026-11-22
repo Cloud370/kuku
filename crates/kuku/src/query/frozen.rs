@@ -18,7 +18,7 @@ use super::helpers::{
     current_date_string, load_memory_sources, load_project_instruction_sources, now_timestamp,
     platform_label,
 };
-use super::request::OwnedRequestBase;
+use super::request::{estimated_message_tokens, OwnedRequestBase};
 use super::types::PendingRun;
 
 mod admission;
@@ -42,7 +42,7 @@ pub(super) struct ContextCommit {
     new_segment: bool,
     reason: &'static str,
     checkpointed_messages: usize,
-    pub(in crate::query) token_pressure: bool,
+    pub(in crate::query) estimated_input_tokens: u32,
     context_prepare_us: u64,
     events_read: u64,
     input_skills: Vec<String>,
@@ -68,7 +68,7 @@ pub(super) fn prepare(pending: &mut PendingRun, compact_only: bool) -> Result<Pr
     cursor.refresh(
         &pending.events_path,
         pending.conversation.as_str(),
-        pending.query.runtime_limits.max_request_bytes,
+        pending.query.runtime_limits.context_replay_bytes(),
     )?;
     let route_selectors = RouteSelectors {
         query_connection: pending.query.connection.clone(),
@@ -221,18 +221,6 @@ pub(super) fn prepare(pending: &mut PendingRun, compact_only: bool) -> Result<Pr
         }
     }
     let input_skills = append_input_skills(pending, &mut messages)?;
-    let input_tokens = if handoff_changed || route_changed || workspace_changed {
-        None
-    } else {
-        cursor.input_tokens
-    };
-    let headroom = crate::notice::compute_context_headroom(
-        resolved.max_context_tokens,
-        resolved.max_output_tokens,
-        input_tokens,
-    );
-    let token_pressure =
-        super::provider::should_trigger_handoff(&headroom, pending.config.handoff().threshold);
     append_dynamic(
         pending,
         &mut messages,
@@ -317,6 +305,16 @@ pub(super) fn prepare(pending: &mut PendingRun, compact_only: bool) -> Result<Pr
         resolved.thinking.clone(),
         current_input,
     )?;
+    let measured = cursor.measured_input.filter(|_| !new_segment);
+    let estimated_input_tokens = measured
+        .and_then(|(head, tokens)| {
+            messages.get(head..).map(|suffix| {
+                tokens.saturating_add(estimated_message_tokens(
+                    suffix.iter().map(|entry| &entry.message),
+                ))
+            })
+        })
+        .unwrap_or_else(|| request.estimated_input_tokens());
     let commit = ContextCommit {
         segment,
         runtime_date_index: messages.iter().rposition(|entry| {
@@ -332,7 +330,7 @@ pub(super) fn prepare(pending: &mut PendingRun, compact_only: bool) -> Result<Pr
         },
         new_segment,
         checkpointed_messages: 0,
-        token_pressure,
+        estimated_input_tokens,
         reason: if previous.is_none() {
             "initial"
         } else if handoff_changed {

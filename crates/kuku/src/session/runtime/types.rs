@@ -7,6 +7,7 @@ use crate::config::Config;
 use crate::execution::{CommandExecutionFacts, CommandTermination};
 use crate::permission::{ToolAuthorizer, TrustedLocal};
 use crate::tool::ToolResultEnvelope;
+use crate::{Error, Result};
 
 /// Durable status of a command or workspace script transferred to a Session Job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -186,8 +187,9 @@ pub struct RuntimeLimits {
     pub max_pending_inputs: usize,
     /// Maximum UTF-8 bytes in one input.
     pub max_input_bytes: usize,
-    /// Maximum serialized bytes in one prepared model request.
-    pub max_request_bytes: usize,
+    /// Optional host limit for serialized bytes in one prepared model request.
+    #[serde(default)]
+    pub max_request_bytes: Option<usize>,
     /// Maximum simultaneous model streams across the session.
     pub max_model_requests: usize,
     /// Optional total model attempts shared by all agents and turns until this runtime closes.
@@ -221,6 +223,54 @@ pub struct RuntimeLimits {
     pub observation_capacity: usize,
 }
 
+impl RuntimeLimits {
+    pub(super) fn validate(&self) -> Result<()> {
+        self.workspace_script
+            .validate()
+            .map_err(Error::InvalidArgument)?;
+        if self.max_requests_per_open == Some(0) || self.max_output_tokens_per_request == Some(0) {
+            return Err(Error::InvalidArgument(
+                "optional model request and output-token limits must be positive".into(),
+            ));
+        }
+        if self
+            .max_request_bytes
+            .is_some_and(|bytes| !(4096..=16 * 1024 * 1024).contains(&bytes))
+            || self.max_preview_bytes < 1024
+        {
+            return Err(Error::InvalidArgument("model request byte limit must be 4096..=16777216 and output preview must retain at least 1024 bytes".into()));
+        }
+        if self.max_agents == 0
+            || self.max_agents > 4096
+            || self.max_pending_inputs == 0
+            || self.max_pending_inputs > 4096
+            || self.max_input_bytes == 0
+            || self.max_input_bytes > 262_144
+            || self.max_model_requests == 0
+            || self.max_model_requests > 256
+            || self.max_tools_per_agent == 0
+            || self.max_tools_per_agent > 128
+            || self.max_output_bytes < 4096
+            || self.max_output_bytes > 1024 * 1024 * 1024
+            || self.max_retained_output_bytes < 4096
+            || self.max_named_values > 4096
+            || self.max_preview_bytes == 0
+            || self.max_preview_bytes > 65_536
+            || self.observation_capacity == 0
+            || self.observation_capacity > 4096
+        {
+            return Err(Error::InvalidArgument(
+                "runtime limits are zero or outside the supported bounds".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn context_replay_bytes(&self) -> usize {
+        self.max_request_bytes.unwrap_or(16 * 1024 * 1024)
+    }
+}
+
 impl Default for RuntimeLimits {
     fn default() -> Self {
         Self {
@@ -228,7 +278,7 @@ impl Default for RuntimeLimits {
             max_agents: 64,
             max_pending_inputs: 128,
             max_input_bytes: 65_536,
-            max_request_bytes: 512 * 1024,
+            max_request_bytes: None,
             max_model_requests: 4,
             max_requests_per_open: None,
             retry_transient_provider_errors: default_provider_retry(),

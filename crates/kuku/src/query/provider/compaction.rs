@@ -14,14 +14,13 @@ use crate::provider::types::{
 use crate::provider::ProviderChunkStream;
 use crate::query::frozen::ContextCommit;
 use crate::query::helpers::now_timestamp;
+use crate::query::request::OwnedRequestBase;
 use crate::query::types::PendingRun;
 use crate::Result;
 
 use super::dispatch::prepare_request;
 
-const SUMMARY_OUTPUT_LIMIT: u32 = 4096;
-const SUMMARY_BYTES: usize = 16 * 1024;
-const CHECKPOINT_HEADROOM_BYTES: usize = 2048;
+const CHECKPOINT_HEADROOM_TOKENS: u32 = 512;
 
 pub(super) enum Outcome {
     Keep,
@@ -38,10 +37,32 @@ pub(super) enum Trigger<'a> {
     Manual { closed_turn: bool },
 }
 
-pub(super) fn needed(pending: &PendingRun, context: &ContextCommit, request_bytes: usize) -> bool {
-    let limit = pending.query.runtime_limits.max_request_bytes;
-    pending.config.handoff().enabled
-        && (context.token_pressure || request_bytes >= limit - limit / 8)
+pub(super) fn needed(
+    pending: &PendingRun,
+    context: &ContextCommit,
+    resolved: &ResolvedProvider,
+) -> bool {
+    let handoff = pending.config.handoff();
+    let budget = input_budget(resolved);
+    handoff.enabled
+        && budget > 0
+        && f64::from(context.estimated_input_tokens) >= f64::from(budget) * handoff.threshold
+}
+
+fn input_budget(resolved: &ResolvedProvider) -> u32 {
+    let headroom = crate::notice::compute_context_headroom(
+        resolved.max_context_tokens,
+        resolved.max_output_tokens,
+        None,
+    );
+    resolved
+        .max_context_tokens
+        .saturating_sub(
+            resolved
+                .max_output_tokens
+                .unwrap_or(headroom.reserved_output_tokens),
+        )
+        .saturating_sub(headroom.reserved_margin_tokens)
 }
 
 pub(super) async fn compact(
@@ -58,31 +79,30 @@ pub(super) async fn compact(
         Trigger::ProviderOverflow { rejected_request } => Some(rejected_request),
         _ => None,
     };
-    let limit = pending.query.runtime_limits.max_request_bytes;
-    let recent_bytes = if rejected_request.is_some() {
-        limit.min(before_bytes) / 4
-    } else {
-        limit / 4
-    };
-    let Some(cut) = context.checkpoint_cut(pending.turn, recent_bytes, closed_turn)? else {
-        return Ok(Outcome::Keep);
-    };
-    let must_fit = before_bytes > limit || rejected_request.is_some();
-    let minimum_savings = if manual || must_fit {
-        before_bytes.saturating_sub(limit).max(1)
-    } else {
-        (before_bytes / 10).max(2048)
-    };
-    if !manual
-        && !must_fit
-        && context.new_checkpoint_material_bytes(cut, pending.turn)? < minimum_savings
-    {
-        return Ok(Outcome::Keep);
-    }
+    let wire_limit = pending.query.runtime_limits.max_request_bytes;
     let task = pending
         .request_base
         .as_ref()
         .expect("prepared task request");
+    let context_limit = task.context_limit(resolved);
+    let budget = input_budget(resolved);
+    let before_tokens = task.estimated_input_tokens();
+    let recent_tokens = budget.min(context.estimated_input_tokens) / 4;
+    let Some(cut) = context.checkpoint_cut(pending.turn, recent_tokens, closed_turn) else {
+        return Ok(Outcome::Keep);
+    };
+    let must_fit = context.estimated_input_tokens >= budget || rejected_request.is_some();
+    let minimum_savings = if manual || must_fit {
+        1
+    } else {
+        (before_tokens / 10).max(CHECKPOINT_HEADROOM_TOKENS)
+    };
+    if !manual
+        && !must_fit
+        && context.new_checkpoint_material_tokens(cut, pending.turn) < minimum_savings
+    {
+        return Ok(Outcome::Keep);
+    }
     let Some(instruction) = task.checkpoint_instruction().map(str::to_owned) else {
         return Ok(Outcome::Keep);
     };
@@ -90,53 +110,58 @@ pub(super) async fn compact(
     let mut next = task.clone();
     let empty_checkpoint = task.render_checkpoint("")?;
     candidate.apply_checkpoint(&mut next, cut, pending.turn, empty_checkpoint, closed_turn);
-    let Ok(skeleton) = prepare_request(pending, resolved, correlation, &next) else {
-        return Ok(Outcome::Keep);
-    };
     let reserve = if manual || must_fit {
         0
     } else {
-        CHECKPOINT_HEADROOM_BYTES
+        CHECKPOINT_HEADROOM_TOKENS
     };
-    if before_bytes.saturating_sub(skeleton.body.as_bytes().len()) < minimum_savings + reserve {
+    if before_tokens.saturating_sub(next.estimated_input_tokens()) < minimum_savings + reserve {
         return Ok(Outcome::Keep);
     }
-    let mut source = context.checkpoint_source(cut, pending.turn);
-    let summary_limit = if rejected_request.is_some() {
-        limit.min(before_bytes.saturating_sub((before_bytes / 32).max(1)))
-    } else {
-        limit
-    };
-    let warm = task.checkpoint_request(
-        source.clone(),
-        instruction.clone(),
-        true,
-        SUMMARY_OUTPUT_LIMIT,
-    );
-    let prepared = match prepare_request(pending, resolved, correlation, &warm) {
-        Ok(prepared) if prepared.body.as_bytes().len() <= summary_limit => prepared,
-        _ => {
-            for message in &mut source {
-                message.blocks.retain(|block| {
-                    !matches!(
-                        block,
-                        MessageBlock::Thinking(_) | MessageBlock::ProviderReplay { .. }
-                    )
-                });
+
+    let prepared = {
+        let mut source = context.checkpoint_source(cut, pending.turn);
+        let max_summary_input = if rejected_request.is_some() {
+            context_limit.min(before_tokens.saturating_sub((before_tokens / 32).max(1)))
+        } else {
+            context_limit
+        };
+        let prepare_summary = |mut checkpoint: OwnedRequestBase| {
+            let estimated_input = checkpoint.estimated_input_tokens();
+            if estimated_input >= max_summary_input {
+                return None;
             }
-            let text = format!(
-                "<checkpoint_source>\n{}\n</checkpoint_source>",
-                serde_json::to_string(&source)?
-            );
-            let isolated = task.checkpoint_request(
-                vec![CanonicalMessage::user_text(text)],
-                instruction,
-                false,
-                SUMMARY_OUTPUT_LIMIT,
-            );
-            match prepare_request(pending, resolved, correlation, &isolated) {
-                Ok(prepared) if prepared.body.as_bytes().len() <= summary_limit => prepared,
-                _ => return Ok(Outcome::Keep),
+            checkpoint.limit_checkpoint_output(context_limit - estimated_input);
+            let prepared = prepare_request(pending, resolved, correlation, &checkpoint).ok()?;
+            wire_limit
+                .is_none_or(|limit| prepared.body.as_bytes().len() <= limit)
+                .then_some(prepared)
+        };
+        let warm = task.checkpoint_request(source.clone(), instruction.clone(), true);
+        match prepare_summary(warm) {
+            Some(prepared) => prepared,
+            None => {
+                for message in &mut source {
+                    message.blocks.retain(|block| {
+                        !matches!(
+                            block,
+                            MessageBlock::Thinking(_) | MessageBlock::ProviderReplay { .. }
+                        )
+                    });
+                }
+                let text = format!(
+                    "<checkpoint_source>\n{}\n</checkpoint_source>",
+                    serde_json::to_string(&source)?
+                );
+                let isolated = task.checkpoint_request(
+                    vec![CanonicalMessage::user_text(text)],
+                    instruction,
+                    false,
+                );
+                let Some(prepared) = prepare_summary(isolated) else {
+                    return Ok(Outcome::Keep);
+                };
+                prepared
             }
         }
     };
@@ -166,6 +191,12 @@ pub(super) async fn compact(
         "turn":pending.turn, "request_id":request_id, "before_bytes":before_bytes,
         "request_bytes":prepared.body.as_bytes().len(), "source_head":context.checkpoint_source_head(),
         "connection":prepared.connection_name, "model":prepared.model, "manual":manual,
+        "trigger":match trigger {
+            Trigger::Pressure => "token_budget",
+            Trigger::ProviderOverflow { .. } => "provider_overflow",
+            Trigger::Manual { .. } => "manual",
+        },
+        "estimated_input_tokens":context.estimated_input_tokens, "input_token_budget":budget,
         "rejected_request_id":rejected_request,
         "request_hash":format!("{:x}", Sha256::digest(prepared.body.as_bytes())),
     }))])?;
@@ -202,18 +233,24 @@ pub(super) async fn compact(
     let mut finish = json!({
         "kind":"runtime.compaction_finished", "ts":now_timestamp()?, "agent":agent, "turn":pending.turn,
         "request_id":request_id, "elapsed_ms":elapsed_us/1000, "before_bytes":before_bytes,
+        "stop_reason":summary.stop.as_ref(),
     });
     if completed && !waiting_for_input && summary.usable() {
         let text = next.render_checkpoint(summary.text.trim())?;
         candidate.fill_checkpoint(&mut next, pending.turn, text);
         if let Ok(body) = prepare_request(pending, resolved, correlation, &next) {
             let bytes = body.body.as_bytes().len();
-            if bytes <= limit && before_bytes.saturating_sub(bytes) >= minimum_savings {
+            let after_tokens = next.estimated_input_tokens();
+            if wire_limit.is_none_or(|limit| bytes <= limit)
+                && after_tokens <= budget
+                && before_tokens.saturating_sub(after_tokens) >= minimum_savings
+            {
                 finish["elapsed_ms"] = u64::try_from(started.elapsed().as_millis())
                     .unwrap_or(u64::MAX)
                     .into();
                 finish["status"] = "completed".into();
                 finish["after_bytes"] = bytes.into();
+                finish["estimated_input_tokens_after"] = after_tokens.into();
                 finish["checkpointed_messages"] = candidate.checkpointed_messages().into();
                 finish["summary"] = summary.text.trim().into();
                 if let Err(error) = candidate.record_checkpoint(pending, finish.clone()) {
@@ -252,6 +289,11 @@ pub(super) async fn compact(
         .into();
     finish["status"] = status.into();
     finish["reason"] = reason.into();
+    if status == "failed" {
+        finish["continues_with_previous_context"] = (matches!(trigger, Trigger::Pressure)
+            && wire_limit.is_none_or(|limit| before_bytes <= limit))
+        .into();
+    }
     session.commit_compaction_accounting(&agent, execution, EventPayload::Unknown(finish))?;
     Ok(outcome)
 }
@@ -271,9 +313,7 @@ impl Summary {
         while let Some(chunk) = stream.next().await {
             match chunk {
                 Ok(ProviderChunk::TextDelta { text }) => {
-                    if self.text.len().saturating_add(text.len()) > SUMMARY_BYTES {
-                        self.problem = Some("The checkpoint exceeded its output size limit".into());
-                    } else if self.problem.is_none() {
+                    if self.problem.is_none() {
                         self.text.push_str(&text);
                     }
                 }
@@ -334,9 +374,12 @@ impl Summary {
     fn failure(self) -> String {
         if self.usable() {
             "The checkpoint did not make the context small enough".into()
+        } else if let Some(problem) = self.problem {
+            problem
+        } else if self.stop == Some(ModelStopReason::Length) {
+            "The model reached its output limit before completing the checkpoint".into()
         } else {
-            self.problem
-                .unwrap_or_else(|| "The model did not finish a usable checkpoint".into())
+            "The model did not finish a usable checkpoint".into()
         }
     }
 }

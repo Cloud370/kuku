@@ -715,11 +715,13 @@ class SessionFacts:
         limits = report.get("limits", {})
         max_requests, max_steps = limits.get("max_requests"), limits.get("max_steps")
         max_output_tokens = limits.get("max_output_tokens")
+        max_request_bytes = limits.get("max_request_bytes")
         retries = limits.get("automatic_retries")
         require(("max_requests" in limits or max_steps is not None)
                 and (max_requests is None or type(max_requests) is int and max_requests > 0)
                 and (max_steps is None or type(max_steps) is int and max_steps > 0)
-                and type(limits.get("max_request_bytes")) is int and limits["max_request_bytes"] >= 4096
+                and "max_request_bytes" in limits
+                and (max_request_bytes is None or type(max_request_bytes) is int and max_request_bytes >= 4096)
                 and "max_output_tokens" in limits
                 and (max_output_tokens is None or type(max_output_tokens) is int and max_output_tokens > 0)
                 and type(retries) is int and retries >= 0, "SDK report has invalid request/retry limits")

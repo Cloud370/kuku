@@ -135,10 +135,10 @@ Messages 默认使用 `x-api-key` 认证；OpenRouter 三种协议都使用 Bear
 | Field | Type | Default |
 |---|---|---|
 | `enabled` | bool | `true` |
-| `threshold` | float | `0.7` |
+| `threshold` | float | `0.95` |
 | `keep_turns` | integer | `2` |
 
-在 Session 中，`enabled` 控制自动上下文压缩。实测 token 使用量跨过 `threshold`，或请求接近字节上限时，可以触发压缩。运行时检查可摘要的历史量，只在能腾出有效空间时提交后继段。手动 `/compact` 仍然可用。对于独立 SDK `Query`，`keep_turns` 决定模型生成交接后保留多少个此前轮次。
+在 Session 中，`enabled` 控制自动上下文压缩。`threshold` 取值为 `0.0` 到 `1.0`，设置触发压缩时已用的可用输入 token 预算比例。运行时先为输出留出空间，再计算该比例。运行时检查可摘要的历史量，只在能腾出有效空间时提交后继段。手动 `/compact` 仍然可用。对于独立 SDK `Query`，`keep_turns` 决定模型生成交接后保留多少个此前轮次。
 
 ## `logs`
 

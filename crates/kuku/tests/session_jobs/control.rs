@@ -62,7 +62,7 @@ return (await command.stdout.text()).repeat(2000);"#,
         ),
     ] {
         let mut fixture = Fixture::new(&server, route, 20_000);
-        fixture.options.limits.max_request_bytes = PREPARED_LIMIT;
+        fixture.options.limits.max_request_bytes = Some(PREPARED_LIMIT);
         let path = format!("{route}/chat/completions");
         let responses = [
             tool_response(CALL, tool, args),
