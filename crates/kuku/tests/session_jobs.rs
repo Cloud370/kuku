@@ -828,6 +828,7 @@ fn check_first_request(body: &Value) {
     for contract in [
         "tools.run_command(",
         "Set background:true on the outer run_js call",
+        "Set title on the outer run_js call",
         "The host controls process deadlines.",
         "exit_code",
         "stdout",

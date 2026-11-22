@@ -281,6 +281,33 @@ async fn complete_readers_reject_oversized_text_and_lines() {
 }
 
 #[test]
+fn nested_command_title_rejection_points_to_the_outer_tool_call() {
+    let workspace = tempfile::tempdir().unwrap();
+    let direct = crate::tool::registry::run_command_definition(&[], true);
+    let methods = super::super::method_definitions(|op| {
+        (op == ScriptOperation::RunCommand).then(|| direct.clone())
+    });
+    let command = methods
+        .iter()
+        .find(|tool| tool.name == "run_command")
+        .unwrap();
+    let mut args = json!({"program":"python3", "title":"Check fixture"});
+    let rejected = crate::tool::builtin::run_command::prepare_command_args(
+        &mut args,
+        workspace.path(),
+        command,
+    )
+    .unwrap_err();
+    assert!(rejected.model_content.contains("run_js({title, code})"));
+    assert!(command
+        .description
+        .contains("Set title on the outer run_js call"));
+    crate::tool::builtin::run_command::prepare_command_args(&mut args, workspace.path(), &direct)
+        .unwrap();
+    assert_eq!("Check fixture", args["title"]);
+}
+
+#[test]
 fn model_definition_advertises_only_selected_script_methods() {
     let mut tools = crate::tool::builtin_registry(false, false);
     tools.retain(|tool| tool.name == "read_file");

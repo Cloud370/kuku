@@ -16,6 +16,7 @@ const COMMAND_SIGNATURE: &str = concat!(
     "tools.run_command({program,args?,cwd?}) ",
     "returns {exit_code,duration_ms,capture_complete,output_ref,stdout,stderr}. ",
     "It waits for the process inside the script. Set background:true on the outer run_js call to detach it. ",
+    "Set title on the outer run_js call to label the script. ",
     "The host controls process deadlines. ",
     "A process exit resolves with its code. Launch errors, denial, timeout and cancellation throw. "
 );

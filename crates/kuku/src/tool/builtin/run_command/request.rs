@@ -98,6 +98,11 @@ fn apply_command_defaults(
                 "Set background on the outer run_js call or a direct Session run_command call.",
             ));
         }
+        if field == "title" {
+            return Err(invalid(
+                "Set title on the outer run_js({title, code}) call or on a direct Session run_command call.",
+            ));
+        }
         if field == "timeout" {
             return Err(invalid(
                 "run_command does not accept \"timeout\". Omit it. The host controls process deadlines.",
