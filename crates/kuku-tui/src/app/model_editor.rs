@@ -7,7 +7,17 @@ use crate::setup::{ModelEditor, ModelEditorAction, SavedModelSetting, SetupInten
 use super::{App, Modal};
 
 impl App {
+    pub(super) fn need_model_setup(&mut self) {
+        self.connecting = false;
+        self.setup_required = true;
+        self.connection_problem = None;
+    }
+
     pub(crate) fn open_models(&mut self) {
+        if self.setup_required {
+            self.open_model_editor(SetupIntent::Default);
+            return;
+        }
         self.clear_model_default_if_closed();
         let save_default = self.model_default_choice();
         self.picker(
@@ -82,7 +92,7 @@ Agent requests image · built-in adapter supports text",
             self.problem("Open kuku init on the service host to change model settings.");
             return;
         }
-        if !self.require_service() {
+        if !self.setup_required && !self.require_service() {
             return;
         }
         let picker = self.picker(PickerKind::ModelActions, Vec::new());
@@ -99,7 +109,9 @@ Agent requests image · built-in adapter supports text",
         match editor.handle(event) {
             ModelEditorAction::None => {}
             ModelEditorAction::Cancel => {
-                self.open_models();
+                if !self.setup_required {
+                    self.open_models();
+                }
                 return;
             }
             ModelEditorAction::Save => {
@@ -128,7 +140,11 @@ Agent requests image · built-in adapter supports text",
                 self.model_editor = Some(editor);
             }
             Err(error) => {
-                self.open_models();
+                if self.setup_required {
+                    self.modal = None;
+                } else {
+                    self.open_models();
+                }
                 self.problem(error);
             }
         }
@@ -142,6 +158,12 @@ Agent requests image · built-in adapter supports text",
     ) {
         let current = self.model_editor_current(ticket);
         match result {
+            Ok(_) if editor.is_first_run() => {
+                if current {
+                    self.modal = None;
+                }
+                self.reconnect();
+            }
             Ok(applied) => {
                 if current {
                     self.open_models();

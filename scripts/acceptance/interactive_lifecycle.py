@@ -111,50 +111,28 @@ def first_run_credential_repair(binary, bridge, directory):
     login = directory / "login"
     project = login / "project"
     project.mkdir(parents=True)
-    env = {**instance.env, "HOME": str(login)}
-    env.pop("OPENROUTER_API_KEY", None)
+    environment = {**instance.env, "HOME": str(login)}
+    environment.pop("OPENROUTER_API_KEY", None)
     if os.name == "nt":
-        env["KUKU_HOME"] = str(login / ".kuku")
+        environment["KUKU_HOME"] = str(login / ".kuku")
     else:
-        env.pop("KUKU_HOME")
-    for args, available in [((), False), (("--workspace", str(project)), True)]:
-        with Terminal(bridge, binary, login, env, args) as terminal:
-            terminal.expect("Find and test models")
+        environment.pop("KUKU_HOME")
+    for workspace in (login, project):
+        with Terminal(bridge, binary, workspace, environment) as terminal:
+            terminal.expect("New session")
             terminal.request("resize", rows=20, cols=60)
-            terminal.expect("Find and test models", rows=20)
+            terminal.expect("Set up a model", rows=20)
+            terminal.open_first_model_settings()
             terminal.press("\r")
             terminal.expect("Choose a provider")
             terminal.press("\x1b[A")
             terminal.expect("› Preset · OpenRouter")
             terminal.press("\r\r\r")
-            if available:
-                terminal.expect("Paste your API key")
-                terminal.press("\x1b")
-                terminal.expect("› Paste API key (save locally)")
-                terminal.press("\r")
-                terminal.expect("Paste your API key")
-            else:
-                for index, selected in enumerate((
-                    "Use a trial workspace", "Use an environment variable", "Use a trial workspace"
-                )):
-                    if index:
-                        terminal.press("\x1b[B")
-                    explanation = (
-                        "Pasting here would put keys inside the workspace."
-                        if selected == "Use a trial workspace"
-                        else "Key variable · OPENROUTER_API_KEY"
-                    )
-                    view = terminal.expect("Try kuku", also=(
-                        f"› {selected}", explanation, "kuku --workspace /path/to/project",
-                    ))["screen"]
-                    assert view.count(explanation) == 1, view
-                assert not (login / ".kuku" / "trial-workspace").exists()
-                terminal.press("\r")
-                terminal.expect("Paste your API key")
-                assert (login / ".kuku" / "trial-workspace").is_dir()
-            terminal.exit_cleanly("\x03")
-        assert not (login / ".kuku" / "credentials").exists()
-        assert not (login / ".kuku" / "config.toml").exists()
+            terminal.expect("Paste your API key")
+            terminal.press("\x03")
+            terminal.expect("New session", also=("/model", "Set up a model"))
+            terminal.exit_cleanly()
+    assert not (login / ".kuku" / "config.toml").exists()
 
     key = "fixture-repaired-credential"
     authenticated = []
@@ -180,15 +158,18 @@ def first_run_credential_repair(binary, bridge, directory):
         config.write_text(config.read_text().replace(
             'api_key = "test-key"', 'api_key = "$KUKU_ACCEPTANCE_MISSING_KEY"'
         ))
-        workspace = client.home / "trial-workspace"
+        workspace = client.directory
         prompt = "Verify the repaired first-run settings"
-        with client.terminal(client.directory) as terminal:
+        with client.terminal(workspace) as terminal:
+            terminal.open_first_model_settings()
             terminal.expect("Find and test models", also=("may cost money",))
             client.provider.assert_idle()
             terminal.press("\r")
             terminal.expect("Choose a provider", also=("Existing · test-anthropic",))
             terminal.press("\r\r\r")
-            missing = terminal.expect("Try kuku", also=("› Use a trial workspace",))["screen"]
+            terminal.expect("Paste your API key")
+            terminal.press("\x1b")
+            missing = terminal.expect("API key source", also=("not detected", "› Paste API key"))["screen"]
             client.provider.assert_idle()
             terminal.press("\r")
             terminal.expect("Paste your API key")
@@ -219,6 +200,19 @@ def first_run_credential_repair(binary, bridge, directory):
             terminal.exit_cleanly()
         assert authenticated == [True]
         assert client.session(workspace)
+        with client.terminal(workspace) as terminal:
+            terminal.resume(prompt)
+            terminal.expect("First reply used the repaired settings.")
+            terminal.exit_cleanly()
+        with client.terminal(client.workspace("another-workspace")) as terminal:
+            terminal.expect("claude-sonnet-4-6", state="Ready")
+            terminal.submit("Use the configured model in another workspace")
+            shared = client.provider.next("Use the configured model in another workspace")
+            assert shared.request["model"] == call.request["model"]
+            shared.text("Same model and credential.")
+            terminal.expect("Same model and credential.", state="Finished")
+            terminal.exit_cleanly()
+        assert authenticated == [True, True]
         assert key not in config.read_text()
         credential_files = list((client.home / "credentials").iterdir())
         assert len(credential_files) == 1
@@ -509,6 +503,7 @@ def setup_probe_progress(binary, bridge, directory):
             endpoint = re.search(r'base_url = "(http://127\.0\.0\.1:[0-9]+)"', config.read_text())[1]
             config.write_text("")
             with client.terminal(client.workspace("work-probe-progress")) as terminal:
+                terminal.open_first_model_settings()
                 terminal.expect("Find and test models", also=("Edit config file", "may cost money"))
                 terminal.press("\x1b[B\r")
                 terminal.expect("Manual configuration", also=("config.toml",))

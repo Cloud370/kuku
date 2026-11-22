@@ -938,7 +938,7 @@ async fn staged_key_is_removed_when_publication_sync_fails() {
 }
 
 #[tokio::test]
-async fn stored_keys_are_refused_when_data_directory_is_inside_workspace() {
+async fn stored_keys_are_private_when_data_directory_is_inside_workspace() {
     let directory = tempfile::tempdir().unwrap();
     let workspace = directory.path().join("workspace");
     fs::create_dir_all(&workspace).unwrap();
@@ -956,10 +956,21 @@ async fn stored_keys_are_refused_when_data_directory_is_inside_workspace() {
         .stored_key
         .set_text("fixture-only-not-a-real-key".into());
 
-    let error = save(&settings, &state).unwrap_err();
-    assert!(error.to_string().contains("inside the workspace"));
-    assert!(!settings.credentials_dir.exists());
-    assert!(!settings.config_path.exists());
+    assert!(settings.can_store_key());
+    let config = save(&settings, &state).unwrap();
+    let provider = &config.providers[&config.tiers[&config.default_tier].provider];
+    let ApiKey::File(path) = &provider.api_key else {
+        panic!("expected a private credential reference");
+    };
+    assert_eq!(path.parent(), Some(settings.credentials_dir.as_path()));
+    assert!(kuku::util::is_valid_private_key(path));
+    assert_eq!(
+        "fixture-only-not-a-real-key",
+        fs::read_to_string(path).unwrap()
+    );
+    assert!(!fs::read_to_string(&settings.config_path)
+        .unwrap()
+        .contains("fixture-only-not-a-real-key"));
 }
 
 #[cfg(unix)]

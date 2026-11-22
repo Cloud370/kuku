@@ -18,7 +18,7 @@ use super::{Finish, SetupMode};
 pub(crate) struct ModelEditor {
     settings: Settings,
     state: SetupState,
-    service: ServiceIdentity,
+    service: Option<ServiceIdentity>,
 }
 
 pub(crate) enum ModelEditorAction {
@@ -55,7 +55,16 @@ impl ModelEditor {
         connection: Option<&Connection>,
         intent: SetupIntent,
     ) -> Result<Self, String> {
-        let (service, settings) = active_settings(options, connection).await?;
+        let (service, settings) = if connection.is_some() {
+            let (service, settings) = active_settings(options, connection).await?;
+            (Some(service), settings)
+        } else {
+            let settings = Settings::load_for_first_run(options.clone())
+                .await
+                .map_err(|error| error.to_string())?
+                .ok_or("Local service or configuration changed. Use Ctrl+R to reconnect.")?;
+            (None, settings)
+        };
         if matches!(&intent, SetupIntent::Edit(route) if settings.resolved.tier(route).is_none()) {
             return Err("The model route changed. Reopen /model.".into());
         }
@@ -67,17 +76,31 @@ impl ModelEditor {
         })
     }
 
+    pub(crate) fn is_first_run(&self) -> bool {
+        self.service.is_none()
+    }
+
+    fn mode(&self) -> SetupMode {
+        if self.is_first_run() {
+            SetupMode::FirstRun
+        } else {
+            SetupMode::Session
+        }
+    }
+
     pub(crate) fn handle(&mut self, event: Event) -> ModelEditorAction {
-        self.state.handle(event, &self.settings, SetupMode::Session);
+        let mode = self.mode();
+        self.state.handle(event, &self.settings, mode);
         match self.state.finish.take() {
             Some(Finish::Cancel) => ModelEditorAction::Cancel,
             Some(Finish::SaveAndContinue | Finish::SaveAndExit) => ModelEditorAction::Save,
-            Some(Finish::UseTrialWorkspace) | None => ModelEditorAction::None,
+            None => ModelEditorAction::None,
         }
     }
 
     pub(crate) fn render(&mut self, frame: &mut Frame<'_>) {
-        super::ui::render(frame, &self.settings, &mut self.state, SetupMode::Session);
+        let mode = self.mode();
+        super::ui::render(frame, &self.settings, &mut self.state, mode);
     }
 
     pub(crate) fn probe_deadline(&self) -> Option<std::time::Instant> {
@@ -85,7 +108,8 @@ impl ModelEditor {
     }
 
     pub(crate) fn poll_probes(&mut self) -> bool {
-        self.state.poll_probes(&self.settings, SetupMode::Session)
+        let mode = self.mode();
+        self.state.poll_probes(&self.settings, mode)
     }
 
     pub(crate) fn failed(&mut self, problem: String) {
@@ -97,8 +121,15 @@ impl ModelEditor {
         options: &ConnectionOptions,
         connection: Option<&Connection>,
     ) -> Result<bool, String> {
+        let Some(service) = &self.service else {
+            if !super::first_run_service_is_idle(options).await {
+                return Err("Local service changed. Use Ctrl+R to reconnect.".into());
+            }
+            config::save(&self.settings, &self.state).map_err(|error| error.to_string())?;
+            return Ok(true);
+        };
         let current = active_service(options, connection).await?;
-        ensure_same_service(&self.service, &current)?;
+        ensure_same_service(service, &current)?;
         let config =
             config::save(&self.settings, &self.state).map_err(|error| error.to_string())?;
         Ok(wait_for_catalog(connection, &config).await)

@@ -346,10 +346,12 @@ async fn blank_paste_stays_on_credential_input_and_ready_sources_continue() {
 async fn unsafe_storage_shows_environment_guidance_and_never_defaults_to_save() {
     let directory = tempfile::tempdir().unwrap();
     let workspace = directory.path().join("workspace");
-    fs::create_dir_all(&workspace).unwrap();
+    let data = workspace.join("data");
+    fs::create_dir_all(&data).unwrap();
+    fs::write(data.join("credentials"), "").unwrap();
     let options = ConnectionOptions {
-        workspace: Some(workspace.clone()),
-        data_dir: Some(workspace.join("data")),
+        workspace: Some(workspace),
+        data_dir: Some(data),
         ..ConnectionOptions::default()
     };
     let settings = Settings::load(options).await.unwrap();

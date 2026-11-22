@@ -28,7 +28,7 @@ const MIN_HEIGHT: u16 = 20;
 const MAX_CONTENT_WIDTH: u16 = 88;
 
 pub(super) async fn run(
-    settings: &mut Settings,
+    settings: &Settings,
     state: &mut SetupState,
     mode: SetupMode,
 ) -> io::Result<Finish> {
@@ -44,16 +44,6 @@ pub(super) async fn run(
             }
             let size = terminal.size()?;
             if usable(size.width, size.height) {
-                if finish == Finish::UseTrialWorkspace {
-                    match settings.use_trial_workspace() {
-                        Ok(()) => state.trial_workspace_opened(settings),
-                        Err(error) => {
-                            state.problem = Some(format!("Trial workspace unavailable. {error}"))
-                        }
-                    }
-                    state.finish = None;
-                    continue;
-                }
                 return Ok(finish);
             }
             state.finish = None;
@@ -247,61 +237,6 @@ fn render_step(
                 MUTED,
             );
         }
-        SetupStep::CredentialSource if SetupState::offers_trial_workspace(settings, mode) => {
-            line(frame, area, &mut row, "Try kuku", ACCENT);
-            let trial_selected = state.trial_workspace_selected;
-            for (selected, label) in [
-                (trial_selected, "Use a trial workspace"),
-                (!trial_selected, "Use an environment variable"),
-            ] {
-                let (marker, color) = if selected {
-                    ("› ", ACCENT)
-                } else {
-                    ("  ", MUTED)
-                };
-                line(frame, area, &mut row, &format!("{marker}{label}"), color);
-            }
-            row += 1;
-            if trial_selected {
-                line(
-                    frame,
-                    area,
-                    &mut row,
-                    "Paste a key and open kuku in trial-workspace.",
-                    MUTED,
-                );
-                line(
-                    frame,
-                    area,
-                    &mut row,
-                    "Pasting here would put keys inside the workspace.",
-                    MUTED,
-                );
-            } else {
-                line(
-                    frame,
-                    area,
-                    &mut row,
-                    &format!("Key variable · {}", state.environment.text().trim()),
-                    MUTED,
-                );
-            }
-            row += 1;
-            line(
-                frame,
-                area,
-                &mut row,
-                "Existing project? Exit and run:",
-                MUTED,
-            );
-            line(
-                frame,
-                area,
-                &mut row,
-                "  kuku --workspace /path/to/project",
-                MUTED,
-            );
-        }
         SetupStep::CredentialSource => {
             line(frame, area, &mut row, "API key source", ACCENT);
             let environment_status = if state.environment_set() {
@@ -309,7 +244,6 @@ fn render_step(
             } else {
                 "not detected"
             };
-            let can_paste = settings.can_store_key();
             for (source, label) in [
                 (
                     CredentialSource::Environment,
@@ -320,19 +254,13 @@ fn render_step(
                 ),
                 (
                     CredentialSource::StoredKey,
-                    if can_paste {
-                        "Paste API key (save locally)".into()
-                    } else {
-                        "Paste API key · unavailable".into()
-                    },
+                    "Paste API key (save locally)".into(),
                 ),
             ] {
-                let selected = source == state.credential_source && !state.trial_workspace_selected;
+                let selected = source == state.credential_source;
                 let marker = if selected { "› " } else { "  " };
                 let style = if selected {
                     Style::default().add_modifier(Modifier::BOLD)
-                } else if source == CredentialSource::StoredKey && !can_paste {
-                    Style::default().fg(MUTED)
                 } else {
                     Style::default()
                 };
@@ -343,34 +271,15 @@ fn render_step(
                     Line::styled(format!("{marker}{label}"), style),
                 );
             }
-            if !can_paste {
-                for instruction in settings.storage_problem().lines() {
-                    line(frame, area, &mut row, instruction, WARNING);
-                }
-                if settings.key_store_inside_workspace() {
-                    line(
-                        frame,
-                        area,
-                        &mut row,
-                        "For an existing project, exit and run:",
-                        MUTED,
-                    );
-                    line(
-                        frame,
-                        area,
-                        &mut row,
-                        "  kuku --workspace /path/to/project",
-                        MUTED,
-                    );
-                }
-            } else {
-                line(
-                    frame,
-                    area,
-                    &mut row,
-                    "Keys are tested after you choose a model.",
-                    MUTED,
-                );
+            line(
+                frame,
+                area,
+                &mut row,
+                "Keys are tested after you choose a model.",
+                MUTED,
+            );
+            if !settings.can_store_key() {
+                line(frame, area, &mut row, settings.storage_problem(), WARNING);
             }
         }
         SetupStep::Credential => {

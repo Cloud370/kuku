@@ -73,7 +73,7 @@ Chat 和 Responses 省略 `max_output_tokens` 时使用上游默认值。Anthrop
 | `routing` | table | OpenRouter 上游路由选项 |
 | `prompt_cache_scope` | `workspace`\|`session`\|`off` | Responses 提示缓存键范围，默认为 `workspace` |
 
-`api_key = "$NAME"` 只选择该环境变量。`api_key = "file:/absolute/path"` 只选择该文件；不接受相对文件引用，在请求时校验并读取文件，且两个来源之间不会自动回退。`file:` 是路径引用，不是 URL。`kuku config show` 只显示引用，不读取密钥。设置流程保存的密钥以未加密明文形式保存在 `<data-dir>/credentials/` 下的私有文件中；该目录必须位于工作区外。Unix 权限和 Windows ACL 要求见[文件布局](file-layout.md)。已有密钥文件不会自动删除。
+`api_key = "$NAME"` 只选择该环境变量。`api_key = "file:/absolute/path"` 只选择该文件；不接受相对文件引用，在请求时校验并读取文件，且两个来源之间不会自动回退。`file:` 是路径引用，不是 URL。`kuku config show` 只显示引用，不读取密钥。设置流程保存的密钥以未加密明文形式保存在 `<data-dir>/credentials/` 下的私有文件中；使用同一数据目录的工作区共享对应的凭据目录。Unix 权限和 Windows ACL 要求见[文件布局](file-layout.md)。已有密钥文件不会自动删除。
 
 内置 `openai` 连接的 `base_url` 是 `https://api.openai.com/v1`，Responses 适配器会在末尾加上 `/responses`。使用网关时，填写该网关提供的 API 基础地址。[OpenAI Responses API](https://developers.openai.com/api/reference/resources/responses/methods/create)
 

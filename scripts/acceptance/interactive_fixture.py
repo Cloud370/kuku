@@ -643,6 +643,11 @@ class Terminal:
         except AssertionError as error:
             raise AssertionError(f"{error}\nLast terminal screen:\n{viewport.get('screen', '')}") from error
 
+    def open_first_model_settings(self):
+        self.expect("New session", also=("/model", "Set up a model"))
+        self.submit("/model")
+        self.expect("Find and test models")
+
     def exit_cleanly(self, keys="/quit\r"):
         self.press(keys)
 

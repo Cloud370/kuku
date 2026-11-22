@@ -189,7 +189,14 @@ pub(super) fn render_welcome(frame: &mut Frame<'_>, area: Rect, app: &App, show_
     if let Some(notice) = empty_notice(app, width, show_problem).into_iter().next() {
         lines.push(notice);
     }
-    let actions = welcome_actions(width, height.saturating_sub(lines.len()));
+    let actions = if app.setup_required && lines.len() < height {
+        vec![Line::from(vec![
+            Span::styled("/model", emphasis(ACCENT)),
+            Span::styled("  Set up a model", Style::default().fg(MUTED)),
+        ])]
+    } else {
+        welcome_actions(width, height.saturating_sub(lines.len()))
+    };
     let remaining = height.saturating_sub(lines.len() + actions.len());
     let separated = spacious && remaining >= 4;
     let details_rows = remaining.saturating_sub(2 * usize::from(separated));
@@ -219,6 +226,9 @@ fn welcome_details(app: &App, width: usize, rows: usize, separated: bool) -> Vec
         "Workspace",
         Line::raw(shorten_middle(&workspace, content_width)),
     )];
+    if app.setup_required {
+        return details;
+    }
     let pane = app.pane();
     let model = pane
         .effective_model_identity()

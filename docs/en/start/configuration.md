@@ -18,7 +18,7 @@ The local service uses the selected data directory's `config.toml` by default. C
 
 ## First-run TUI setup
 
-When you start interactive `kuku` without a local config file, with an empty file, or its existing config has a missing, unreadable, or empty credential for the effective default tier's provider, the TUI offers shared settings before opening the session. It preserves and pre-fills an existing config, and checks only that default-route provider using the normal environment, file, or plaintext credential resolver; it does not test authentication. A readable, non-empty existing default credential skips setup, and malformed config is reported rather than overwritten. The same settings flow is available as `kuku init` (or `kuku-cli init`) for local connections; it requires a TTY and makes no writes when run without one. It honors `--data-dir`, `KUKU_HOME`, and `--config`. For `kuku init` with a live managed service, setup uses its authenticated active config path; a conflicting explicit `--config` is an error. First-run onboarding is not opened for a live service, a service whose status cannot be checked, or a remote connection; it never starts or restarts a service just to configure it.
+Interactive `kuku` opens the main TUI in the selected workspace. With a missing or empty config, or an unavailable credential for the default model, the welcome view directs you to `/model` to configure the first route. Settings preserve an existing config and use the normal environment, file or plaintext credential resolver. The local service starts after a usable model configuration is saved. An active service keeps its existing startup and settings flow. A malformed config is reported without replacing it. Use `kuku init` to open the same settings directly from an interactive terminal.
 
 Choose **Find and test models** once to allow model discovery and short text or image tests during setup. Each test request may use your API balance and has an output limit of 4096 tokens and a timeout of 30 seconds. **Edit config file** opens the config path with zero provider requests.
 
@@ -42,8 +42,6 @@ The default config defines two providers:
 - `provider.openai` with `api_key = "$OPENAI_API_KEY"`
 
 Use an explicit `api_key = "$VARIABLE_NAME"` reference or `api_key = "file:<absolute-path>"`. The interactive settings flow stores new pasted keys under the service data directory and writes only the absolute file reference to TOML. These files are plaintext, not encrypted. See [Config](../reference/config.md) and [File layout](../reference/file-layout.md).
-
-When your login directory contains the key store, choose **Use a trial workspace** to paste a key and open kuku in the data directory's `trial-workspace/` subdirectory. The key store stays outside that workspace. You can continue with the Environment source or exit and run `kuku --workspace /path/to/project` for a project you already have. To return to the trial workspace later, pass its path to `--workspace`.
 
 Set the environment for the server process. If you change a key in your terminal after the managed service starts, run `kuku server restart` from that terminal when the service is idle. For a remote connection, configure the key on the server machine. After validating a change to the active config file, the service uses the new configuration when it opens Sessions.
 

@@ -11,18 +11,17 @@ use kuku::config::{
     ProviderProfile, RequestedOutput, ThinkLevel,
 };
 use kuku::session::AgentConfig;
-use kuku::util::{is_valid_private_key, sync_private_file};
+use kuku::util::{is_valid_private_key, private_directory, sync_private_file};
 use kuku_client::ConnectionOptions;
 use tempfile::Builder;
 use toml_edit::{value, DocumentMut, InlineTable, Item, Table, Value};
 
-type EnvironmentLookup<'a> = &'a dyn Fn(&str) -> Result<String, VarError>;
+type EnvironmentLookup<'a> = &'a (dyn Fn(&str) -> Result<String, VarError> + Sync);
 
 pub(super) struct Settings {
     pub(super) config_path: PathBuf,
     pub(super) data_dir: PathBuf,
     pub(super) credentials_dir: PathBuf,
-    pub(super) workspace: PathBuf,
     pub(super) document: DocumentMut,
     pub(super) original_bytes: Option<Vec<u8>>,
     pub(super) original_permissions: Option<fs::Permissions>,
@@ -30,7 +29,7 @@ pub(super) struct Settings {
     pub(super) resolved: Config,
     pub(super) default_tier: String,
     pub(super) existing: bool,
-    pub(super) storage_error: Option<&'static str>,
+    storage_error: Option<&'static str>,
 }
 
 impl Settings {
@@ -107,9 +106,6 @@ impl Settings {
         }
         let config_path = active_config.unwrap_or_else(|| service.config_path().to_owned());
         let data_dir = service.data_dir().to_owned();
-        let workspace = options
-            .workspace()
-            .map_err(|_| invalid_config("cannot resolve the workspace path"))?;
         let credentials_dir = data_dir.join("credentials");
         let loaded = load_document(&config_path, &data_dir, environment)?;
         let default_tier = loaded.resolved.default_tier.clone();
@@ -117,7 +113,6 @@ impl Settings {
             config_path,
             data_dir,
             credentials_dir,
-            workspace,
             document: loaded.document,
             original_bytes: loaded.original_bytes,
             original_permissions: loaded.original_permissions,
@@ -127,13 +122,9 @@ impl Settings {
             existing: loaded.existing,
             storage_error: None,
         };
-        settings.storage_error = if settings.key_store_inside_workspace() {
-            Some("The key store is inside the workspace.")
-        } else {
-            settings.check_storage(false).err().map(|_| {
-                "The credentials directory is unsafe or inaccessible.\nUse Environment or choose a different --data-dir."
-            })
-        };
+        settings.storage_error = settings.check_storage(false).err().map(|_| {
+            "Stored keys are unavailable because the credentials directory is not safe; use Environment or a different --data-dir."
+        });
         Ok(settings)
     }
 
@@ -279,14 +270,12 @@ impl Settings {
         if !self.can_store_key() {
             return false;
         }
-        let (Ok(path), Ok(credentials), Ok(workspace)) = (
-            path.canonicalize(),
-            self.credentials_dir.canonicalize(),
-            self.workspace.canonicalize(),
-        ) else {
+        let (Ok(path), Ok(credentials)) =
+            (path.canonicalize(), self.credentials_dir.canonicalize())
+        else {
             return false;
         };
-        path.parent() == Some(credentials.as_path()) && !path.starts_with(workspace)
+        path.parent() == Some(credentials.as_path())
     }
 
     pub(super) fn key_for(&self, choice: &ConnectionChoice) -> Option<&ApiKey> {
@@ -296,6 +285,29 @@ impl Settings {
             }
             ConnectionChoice::Preset(_) | ConnectionChoice::Custom => None,
         }
+    }
+
+    pub(super) fn can_store_key(&self) -> bool {
+        self.storage_error.is_none()
+    }
+
+    pub(super) fn storage_problem(&self) -> &'static str {
+        self.storage_error
+            .unwrap_or("Stored keys are unavailable; use the Environment source instead.")
+    }
+
+    fn check_storage(&self, create: bool) -> io::Result<()> {
+        let candidate = &self.credentials_dir;
+        match fs::symlink_metadata(candidate) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                if !create {
+                    return Ok(());
+                }
+            }
+            _ => return Err(unsafe_storage()),
+        }
+        private_directory(candidate).map_err(|_| unsafe_storage())
     }
 }
 
@@ -931,7 +943,7 @@ fn write_config(
     )
 }
 
-pub(super) fn unsafe_storage() -> io::Error {
+fn unsafe_storage() -> io::Error {
     io::Error::new(
         io::ErrorKind::PermissionDenied,
         "credential storage is not a safe private directory",

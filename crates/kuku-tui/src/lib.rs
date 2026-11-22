@@ -30,21 +30,18 @@ mod transcript;
 mod ui;
 
 /// Run the interactive Session client using the supplied connection and workspace selection.
-pub async fn run(mut options: ConnectionOptions, build: &'static str) -> io::Result<()> {
+pub async fn run(options: ConnectionOptions, build: &'static str) -> io::Result<()> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "Interactive kuku needs a terminal. Use `kuku run` for scripts.",
         ));
     }
-    if !onboarding::run_if_needed(&mut options).await? {
-        return Ok(());
-    }
     terminal::run(options, build).await
 }
 
 /// Open shared provider and credential settings from the CLI.
-pub async fn setup(mut options: ConnectionOptions) -> io::Result<()> {
+pub async fn setup(options: ConnectionOptions) -> io::Result<()> {
     let config = options
         .config
         .clone()
@@ -61,9 +58,7 @@ pub async fn setup(mut options: ConnectionOptions) -> io::Result<()> {
         io::stdin().is_terminal() && io::stdout().is_terminal(),
         &guidance,
     )?;
-    setup::run(&mut options, setup::SetupMode::Init)
-        .await
-        .map(|_| ())
+    setup::run(options).await.map(|_| ())
 }
 
 /// Open an HTTP or HTTPS URL in the user's browser.

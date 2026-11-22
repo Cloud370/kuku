@@ -47,12 +47,12 @@ async fn existing_config_and_remote_or_token_options_skip_first_run_setup() {
     let contents = kuku::config::generate_default()
         .replace("$ANTHROPIC_API_KEY", "fixture-only-not-a-real-key");
     fs::write(&config, contents).unwrap();
-    let mut options = ConnectionOptions {
+    let options = ConnectionOptions {
         data_dir: Some(directory.path().join("data")),
         config: Some(config.clone()),
         ..ConnectionOptions::default()
     };
-    assert!(super::run_if_needed(&mut options).await.unwrap());
+    assert!(!super::required(&options).await.unwrap());
     assert!(!options
         .data_dir
         .as_ref()
@@ -60,20 +60,20 @@ async fn existing_config_and_remote_or_token_options_skip_first_run_setup() {
         .join("credentials")
         .exists());
 
-    let mut remote = ConnectionOptions {
+    let remote = ConnectionOptions {
         remote: Some("https://service.invalid".into()),
         data_dir: Some(directory.path().join("remote-data")),
         ..ConnectionOptions::default()
     };
-    assert!(super::run_if_needed(&mut remote).await.unwrap());
+    assert!(!super::required(&remote).await.unwrap());
     assert!(!remote.data_dir.as_ref().unwrap().exists());
 
-    let mut token = ConnectionOptions {
+    let token = ConnectionOptions {
         token: Some("not-a-real-token".into()),
         data_dir: Some(directory.path().join("token-data")),
         ..ConnectionOptions::default()
     };
-    assert!(super::run_if_needed(&mut token).await.unwrap());
+    assert!(!super::required(&token).await.unwrap());
     assert!(!token.data_dir.as_ref().unwrap().exists());
 }
 
