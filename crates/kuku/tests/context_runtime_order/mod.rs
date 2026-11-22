@@ -184,3 +184,88 @@ async fn reopening_a_legacy_segment_preserves_its_recorded_policy_first_prefix()
         prepared[1]["prefix_context_head"]
     );
 }
+
+#[tokio::test]
+async fn workspace_override_is_recorded_and_keeps_the_frozen_prefix_on_reopen() {
+    let server = MockServer::start_async().await;
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let root = workspace.path().canonicalize().unwrap();
+    let override_path = root.join("AGENTS.override.md");
+    fs::write(root.join("AGENTS.md"), "BASE_AGENTS").unwrap();
+    fs::write(root.join("CLAUDE.md"), "BASE_CLAUDE").unwrap();
+    fs::write(root.join(".gitignore"), "AGENTS.override.md\n").unwrap();
+    fs::write(&override_path, "FIRST_OVERRIDE").unwrap();
+    let expected = json!([{
+        "path": override_path,
+        "hash": format!("sha256:{:x}", Sha256::digest(b"FIRST_OVERRIDE")),
+    }]);
+    let (options, path) = options(&server, &root, data.path());
+    let model = server
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path(&path)
+                .matches(common::capture_http_request);
+            then.status(200)
+                .body(response(json!({"content":"done"}), "stop"));
+        })
+        .await;
+    kuku::query("standalone")
+        .session("standalone-override")
+        .workspace(&root)
+        .kuku_home(data.path())
+        .config(options.config.clone())
+        .run()
+        .await
+        .unwrap();
+    let journal_path =
+        kuku::session::session_events_path(data.path(), &root, "standalone-override").unwrap();
+    let journal = kuku::event::EventStore::replay(&journal_path).unwrap();
+    assert!(journal.iter().any(|event| matches!(
+        &event.payload,
+        kuku::event::EventPayload::ContextSources { project_instruction_sources, .. }
+            if json!(project_instruction_sources) == expected
+    )));
+
+    let session = Session::open(options.clone()).await.unwrap();
+    session.create_agent("create", "main", agent()).unwrap();
+    session.send(Input::new("first", "main", "first")).unwrap();
+    idle(&session, "main").await;
+    let mut reopen = options.clone();
+    reopen.session_id = Some(session.id().into());
+    session.close().await.unwrap();
+
+    fs::write(&override_path, "UPDATED_OVERRIDE").unwrap();
+    let reopened = Session::open(reopen).await.unwrap();
+    reopened
+        .send(Input::new("second", "main", "second"))
+        .unwrap();
+    idle(&reopened, "main").await;
+    let events = reopened.events(0, 256).unwrap();
+    let segments = facts(&events, "runtime.context_segment", "main");
+    assert_eq!(segments.len(), 1);
+    assert_eq!(segments[0]["project_instruction_sources"], expected);
+    reopened.close().await.unwrap();
+
+    let fresh = Session::open(options).await.unwrap();
+    fresh.create_agent("create", "main", agent()).unwrap();
+    fresh.send(Input::new("fresh", "main", "fresh")).unwrap();
+    idle(&fresh, "main").await;
+    fresh.close().await.unwrap();
+
+    model.assert_hits_async(4).await;
+    let bodies = common::take_http_requests(&path);
+    for (body, source) in bodies.iter().zip([
+        "FIRST_OVERRIDE",
+        "FIRST_OVERRIDE",
+        "FIRST_OVERRIDE",
+        "UPDATED_OVERRIDE",
+    ]) {
+        let encoded = body.to_string();
+        assert!(encoded.contains(source), "{encoded}");
+        assert!(!encoded.contains("BASE_AGENTS") && !encoded.contains("BASE_CLAUDE"));
+    }
+    let before = bodies[1]["messages"].as_array().unwrap();
+    let after = bodies[2]["messages"].as_array().unwrap();
+    assert_eq!(before, &after[..before.len()]);
+}
