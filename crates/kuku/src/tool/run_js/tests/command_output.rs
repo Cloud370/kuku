@@ -249,12 +249,55 @@ fn model_definition_advertises_only_selected_script_methods() {
         .contains("create_output({}) returns result.id"));
     assert!(!script.description.contains("run_command"));
     assert!(!script.description.contains("output_lines"));
+    assert!(!script.description.contains("output_text"));
     assert!(!script.description.contains("search_output"));
     assert!(!script.description.contains("write_file"));
     assert_eq!(
         "boolean",
         script.input_schema["properties"]["background"]["type"]
     );
+}
+
+#[tokio::test]
+async fn complete_retained_text_rejects_growing_lossy_and_oversized_captures() {
+    for (case, expected) in [
+        ("growing", "capture is incomplete"),
+        ("lossy", "could not be decoded losslessly"),
+        ("oversized", "text exceeds 1048576 bytes"),
+    ] {
+        let result = run(
+            r#"return await tools.output_text({id:"capture"});"#,
+            TestHost {
+                operations: vec![ScriptOperation::ReadOutput],
+                callback: move |_, _| async move {
+                    match case {
+                        "growing" => {
+                            let mut page = output_page(0, 1, &[("stdout", b"x")]);
+                            page.structured.as_mut().unwrap()["complete"] = json!(false);
+                            page
+                        }
+                        "lossy" => output_page(0, 1, &[("stdout", b"\xff")]),
+                        _ => {
+                            let bytes = crate::tool::run_js::MAX_OUTPUT_TEXT_BYTES + 1;
+                            ToolResultEnvelope::ok("read retained output", "", json!({
+                                "output_id":"capture", "offset":0,"next_offset":bytes,"total_bytes":bytes,
+                                "complete":true,"has_more":false,
+                                "segments":[{"stream":"stdout","offset":0,"text":"x".repeat(bytes)}],
+                            }))
+                        }
+                    }
+                },
+            },
+            WorkspaceScriptLimits::default(),
+        )
+        .await;
+        assert_eq!("error", result.status);
+        assert!(
+            result.model_content.contains(expected),
+            "{}",
+            result.model_content
+        );
+    }
 }
 
 fn command(stdout: u64, stderr: u64, complete: bool, inline: Value) -> ToolResultEnvelope {

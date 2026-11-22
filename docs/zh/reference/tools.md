@@ -142,6 +142,8 @@ return {exit_code, duration_ms, entries, output_ref};
 
 `output_chunks({id, offset?, limit?, search?})` 逐页读取有界输出页，其中包含原始流片段和字节。默认扫描窗口为 65,536 字节，每次请求最多 80,000 字节。`output_lines({id, stream?, offset?, limit?})` 从未过滤的输出页逐行读取去掉末尾换行符的解码文本。两个迭代器都可用 `name` 代替 `id`，解析名称后继续使用同一输出 ID。每行携带流标识、字节偏移和完整性标记。脚本宿主方法独立于脚本返回值报告拒绝、失败和取消。
 
+`await tools.output_text({id, stream?})` 从一个保留流读取最多 1 MiB 的完整无损文本。它接受 `name` 代替 `id`，默认读取 `stdout`。下载正文和命名值也保存在这个流中。它与迭代器使用相同的 `read_output` 授权。处理 JSON 响应时，可用 `JSON.parse(await tools.output_text({id}))` 来解析正文，再返回模型下一步所需的字段。
+
 `await tools.search_output({id, text, stream?, offset?, limit?})` 在保留输出中匹配 UTF-8 原始字节。可以用 `name` 代替 `id`，并沿用 `read_output` 授权。每次请求在 Rust 中扫描最多 8 MiB 的新保留字节，默认最多返回 32 条匹配，上限为 128 条。先检查 `status` 再使用 `result`。只要 `result.has_more` 为真，就传入 `result.output_id` 和 `result.next_offset` 续查，空页也一样。
 
 匹配按结束位置排列。每条匹配包含流标识 `stream`、起始偏移 `offset` 和不包含末尾的 `end_offset`，偏移采用合流字节坐标。同一流的匹配可以跨帧，回读交错范围时应按 `stream` 筛选。`capture_complete` 描述原始捕获是否完整，扫描是否还有下一页由 `has_more` 表示。

@@ -221,7 +221,14 @@ impl<'js> Worker<'js> {
         let encode = Function::new(self.ctx.clone(), encode_text)?;
         let decode = Function::new(self.ctx.clone(), decode_line)?;
         let install: Function = self.ctx.eval(TOOLS_INSTALLER)?;
-        install.call((tools, definitions, encode, decode, MAX_OUTPUT_LINE_BYTES))
+        install.call((
+            tools,
+            definitions,
+            encode,
+            decode,
+            MAX_OUTPUT_LINE_BYTES,
+            super::MAX_OUTPUT_TEXT_BYTES,
+        ))
     }
 
     fn complete(&self, promise: Promise<'js>) -> Result<JsValue<'js>, Failure> {

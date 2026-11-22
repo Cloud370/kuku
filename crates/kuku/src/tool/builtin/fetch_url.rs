@@ -13,6 +13,7 @@ use crate::{OutputReference, OutputStream};
 use super::run_command::output::{
     framed_bytes, OutputDraft, OutputLimits, OutputWriter, MAX_FRAME_BYTES,
 };
+use super::run_command::ModelOutputAccess;
 
 const MAX_DOWNLOAD_BYTES: u64 = 50 * 1024 * 1024;
 const MAX_URL_BYTES: usize = 8192;
@@ -22,6 +23,7 @@ pub(crate) struct FetchRetention<'a> {
     pub(crate) dir: &'a Path,
     pub(crate) id: &'a str,
     pub(crate) limits: OutputLimits,
+    pub(crate) access: ModelOutputAccess,
 }
 
 pub(crate) async fn fetch_url(
@@ -250,6 +252,9 @@ async fn download(
     let quota = retained
         .as_ref()
         .map(|retained| retained.limits.max_output_bytes);
+    let access = retained
+        .as_ref()
+        .map_or(ModelOutputAccess::Unavailable, |retained| retained.access);
     if let Some(size) = response.content_length() {
         check_size(size, quota)?;
     }
@@ -263,7 +268,7 @@ async fn download(
         }
     };
     let location = output.finish(cancel).await?;
-    Ok(render_download(url, headers, digest, location))
+    Ok(render_download(url, headers, digest, location, access))
 }
 
 async fn transfer(
@@ -326,6 +331,7 @@ fn render_download(
     headers: DownloadHeaders,
     digest: DownloadDigest,
     location: DownloadLocation,
+    access: ModelOutputAccess,
 ) -> ToolResultEnvelope {
     let mut facts = json!({
         "kind": "fetch_url", "url": url, "status": headers.status,
@@ -339,9 +345,9 @@ fn render_download(
     };
     let (summary, content) = match location {
         DownloadLocation::Retained(reference) => {
-            let selector = json!({"id": reference.id});
+            let retrieval = retained_body_hint(access, &headers, digest.size, &reference.id);
             let content = format!(
-                "HTTP {} returned {} bytes with Content-Type {}{suffix}. SHA-256 {}. Read the body with read_output({selector}). Use next_offset while has_more. Optional search filters text by a literal. Segments include raw_bytes when display text differs.",
+                "HTTP {} returned {} bytes with Content-Type {}{suffix}. SHA-256 {}. {retrieval}",
                 headers.status, digest.size, headers.content_type, digest.sha256,
             );
             facts["output_ref"] = json!(reference);
@@ -366,6 +372,41 @@ fn render_download(
     } else {
         ToolResultEnvelope::ok(summary, content, facts)
     }
+}
+
+fn retained_body_hint(
+    access: ModelOutputAccess,
+    headers: &DownloadHeaders,
+    bytes: u64,
+    output_id: &str,
+) -> String {
+    if access == ModelOutputAccess::Unavailable {
+        return format!("The body is retained with output ID {output_id}.");
+    }
+    let selector = json!({"id": output_id});
+    let raw = format!("Read the body with read_output({selector}). Use next_offset while has_more. Optional search filters text by a literal. Segments include raw_bytes when display text differs.");
+    if access != ModelOutputAccess::Script
+        || headers.content_type_truncated
+        || bytes > crate::tool::run_js::MAX_OUTPUT_TEXT_BYTES as u64
+    {
+        return raw;
+    }
+    let media_type = headers
+        .content_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if media_type == "application/json"
+        || (media_type.starts_with("application/") && media_type.ends_with("+json"))
+    {
+        return format!("To extract fields in run_js, use JSON.parse(await tools.output_text({selector})) and return the needed values. {raw}");
+    }
+    if media_type.starts_with("text/") && bytes > MAX_FRAME_BYTES as u64 {
+        return format!("To process the text in run_js, use await tools.output_text({selector}) and return the needed excerpt. {raw}");
+    }
+    raw
 }
 
 async fn until_cancelled<T>(

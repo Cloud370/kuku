@@ -1,4 +1,4 @@
-(function install(tools, methods, encode, decode, lineLimit) {
+(function install(tools, methods, encode, decode, lineLimit, textLimit) {
     for (const {name} of methods) {
         const call = tools[name];
         tools[name] = async (args = {}) => call(args);
@@ -7,7 +7,6 @@
     const read = tools.read_output;
     const readSchema = methods.find(({name}) => name === "read_output")?.input_schema;
     const defaultLimit = readSchema?.properties?.limit?.default ?? 8192;
-    const textLimit = 1024 * 1024;
 
     if (tools.run_command) {
         const run = tools.run_command;
@@ -58,6 +57,43 @@
         yield* linesFromChunks(output_chunks({...source, offset}), stream, offset);
     }
 
+    async function output_text({stream = "stdout", id, name, ...extra}) {
+        if (Object.keys(extra).length !== 0 || (stream !== "stdout" && stream !== "stderr")) {
+            throw new TypeError("output_text requires id or name and an optional stdout or stderr stream");
+        }
+        let total;
+        let bytes;
+        let nextOffset = 0;
+        let written = 0;
+        function failure(reason) {
+            throw new Error(`output_text: ${reason}`);
+        }
+        for await (const chunk of output_chunks({id, name})) {
+            if (!chunk.complete || chunk.capture_truncated || chunk.cleanup_incomplete || chunk.filtered) {
+                failure("capture is incomplete. Use tools.output_chunks for retained bytes.");
+            }
+            if (total === undefined) {
+                total = chunk.total_bytes;
+                bytes = new Uint8Array(Math.min(total, textLimit));
+            }
+            if (chunk.total_bytes !== total || chunk.offset !== nextOffset) {
+                failure("retained output changed while reading");
+            }
+            nextOffset = chunk.next_offset;
+            for (const segment of chunk.segments) {
+                if (segment.stream !== stream) continue;
+                const raw = segmentBytes(segment);
+                if (written + raw.length > textLimit) {
+                    failure(`text exceeds ${textLimit} bytes. Use tools.output_lines.`);
+                }
+                bytes.set(raw, written);
+                written += raw.length;
+            }
+        }
+        if (!bytes || nextOffset !== total) failure("retained output ended early");
+        return decodeCompleteText(bytes.subarray(0, written), failure, " Use tools.output_chunks for raw bytes.");
+    }
+
     async function* linesFromChunks(chunks, stream, offset, checkLength) {
         const pending = new Map();
         let lastChunk;
@@ -103,6 +139,12 @@
 
     function segmentBytes(segment) {
         return segment.raw_bytes ? Uint8Array.from(segment.raw_bytes) : encode(segment.text);
+    }
+
+    function decodeCompleteText(bytes, failure, rawHint) {
+        const value = decode(bytes, true, true);
+        if (value.lossy_utf8) failure(`output could not be decoded losslessly.${rawHint}`);
+        return value.text;
     }
 
     function commandStream(stream, size, reference, captureComplete, inline) {
@@ -159,9 +201,7 @@
                 }
             }
             if (written !== size) failure("retained output size differs from the command result");
-            const value = decode(bytes, true, true);
-            if (value.lossy_utf8) failure(`output could not be decoded losslessly.${rawHint}`);
-            return value.text;
+            return decodeCompleteText(bytes, failure, rawHint);
         }
 
         async function json() {
@@ -206,6 +246,7 @@
     if (read) {
         tools.output_chunks = output_chunks;
         tools.output_lines = output_lines;
+        tools.output_text = output_text;
     }
     return Object.freeze(tools);
 })

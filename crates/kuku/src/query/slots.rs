@@ -485,6 +485,7 @@ fn spawn_fetch_slot(args: SlotDispatchArgs) -> ExecSlot {
                 dir: &output.dir,
                 id: &output.id,
                 limits: output.limits,
+                access: output.access,
             });
         let result =
             crate::tool::builtin::fetch_url(&args, &workspace, retention, &fetch_cancel).await;
