@@ -11,7 +11,7 @@ use crate::permission::GateDecisionKind;
 use crate::query::helpers::{display_summary, now_timestamp, permission_candidate};
 use crate::query::types::{PendingRun, PermissionRequest, QueuedToolCall};
 use crate::tool::builtin::common::{prepare_file_target, ExecutorObservation};
-use crate::tool::run_js::{ScriptCall, ScriptExecution, ScriptOperation};
+use crate::tool::run_js::{append_recovery_evidence, ScriptCall, ScriptExecution, ScriptOperation};
 use crate::tool::{ToolDefinition, ToolResultEnvelope};
 use crate::{Error, Result, WorkspaceScriptActionStatus, WorkspaceScriptFacts};
 
@@ -162,17 +162,21 @@ pub(super) fn load(pending: &PendingRun, id: &str) -> Result<Option<Continuation
 }
 
 impl Continuation {
-    pub(super) fn decline(self) -> ToolResultEnvelope {
-        self.complete(ToolResultEnvelope::blocked(
-            "host denied prepared workspace action",
-            "the prepared operation was not dispatched",
-        ))
+    pub(super) fn decline(self, can_read_output: bool) -> ToolResultEnvelope {
+        self.complete(
+            ToolResultEnvelope::blocked(
+                "host denied prepared workspace action",
+                "the prepared operation was not dispatched",
+            ),
+            can_read_output,
+        )
     }
 
-    pub(super) fn cancel(self) -> ToolResultEnvelope {
-        self.complete(ToolResultEnvelope::cancelled(
-            "prepared action cancelled before dispatch",
-        ))
+    pub(super) fn cancel(self, can_read_output: bool) -> ToolResultEnvelope {
+        self.complete(
+            ToolResultEnvelope::cancelled("prepared action cancelled before dispatch"),
+            can_read_output,
+        )
     }
 
     pub(super) async fn resume(
@@ -195,7 +199,11 @@ impl Continuation {
             ToolResultEnvelope::error("prepared action failed", err.to_string())
         });
         watcher.abort();
-        self.complete(result)
+        let can_read_output = host
+            .methods
+            .iter()
+            .any(|method| method.name == ScriptOperation::ReadOutput.name());
+        self.complete(result, can_read_output)
     }
 
     async fn run(
@@ -273,7 +281,7 @@ impl Continuation {
         .await
     }
 
-    fn complete(mut self, result: ToolResultEnvelope) -> ToolResultEnvelope {
+    fn complete(mut self, result: ToolResultEnvelope, can_read_output: bool) -> ToolResultEnvelope {
         let status = match result.status.as_str() {
             "ok" => WorkspaceScriptActionStatus::Ok,
             "blocked" => WorkspaceScriptActionStatus::Blocked,
@@ -316,8 +324,17 @@ impl Continuation {
             boundary -= 1;
         }
         content.truncate(boundary);
-        ToolResultEnvelope { status:result.status, summary:summary.clone(),truncated:result.truncated,
-            model_content:format!("{summary}\n{content}\nThe script stopped for approval. Continue from the recorded actions."),
-            structured:Some(json!(self.facts)),faults:result.faults,supplied_full_write:false }
+        let mut model_content =
+            format!("{summary}\n{content}\nThe script stopped for approval. Continue from the recorded actions.");
+        append_recovery_evidence(&mut model_content, &self.facts.actions, can_read_output);
+        ToolResultEnvelope {
+            status: result.status,
+            summary: summary.clone(),
+            truncated: result.truncated,
+            model_content,
+            structured: Some(json!(self.facts)),
+            faults: result.faults,
+            supplied_full_write: false,
+        }
     }
 }

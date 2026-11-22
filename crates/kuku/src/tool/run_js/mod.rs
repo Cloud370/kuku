@@ -2,6 +2,7 @@ mod actions;
 mod facts;
 mod host;
 mod outputs;
+mod recovery;
 mod runtime;
 #[cfg(test)]
 mod tests;
@@ -19,6 +20,7 @@ pub use facts::{
     WorkspaceScriptOperation, WorkspaceScriptResultKind,
 };
 pub(crate) use host::{ScriptCall, ScriptExecution, ScriptFuture, ScriptHost};
+pub(crate) use recovery::append_recovery_evidence;
 pub(crate) use runtime::execute;
 
 const MAX_SCRIPT_ACTIONS: usize = 2048;

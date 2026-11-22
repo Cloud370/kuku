@@ -126,6 +126,46 @@ async fn script_runtime_errors_locate_submitted_code_and_preserve_awaited_action
 }
 
 #[tokio::test]
+async fn oversized_script_result_preserves_nonzero_exit_and_the_partial_capture_reference() {
+    for can_read_output in [false, true] {
+        let mut operations = vec![ScriptOperation::RunCommand];
+        if can_read_output {
+            operations.push(ScriptOperation::ReadOutput);
+        }
+        let output = run(
+            "await tools.run_command({program:'fixture'}); return 'x'.repeat(2000);",
+            TestHost {
+                operations,
+                callback: |call: ScriptCall, _| async move {
+                    assert_eq!(ScriptOperation::RunCommand, call.op);
+                    ToolResultEnvelope::ok("command exited 7", "", json!({
+                        "termination":"exited","started":true,"exit_code":7,
+                        "capture_complete":false,"output_ref":{"id":"known-capture","offset":0,"bytes":33},
+                        "inline_pipes":{"stderr":"raw payload must stay in the capture"}
+                    }))
+                },
+            },
+            WorkspaceScriptLimits { result_bytes: 256, ..Default::default() },
+        ).await;
+        assert_eq!("error", output.status, "{}", output.model_content);
+        assert!(output
+            .model_content
+            .contains("script result exceeds 256 bytes"));
+        assert!(output.model_content.contains("\"exit_code\":7"));
+        assert!(output.model_content.contains("\"capture_complete\":false"));
+        assert!(output.model_content.contains("\"id\":\"known-capture\""));
+        assert!(!output.model_content.contains("raw payload"));
+        assert_eq!(
+            can_read_output,
+            output
+                .model_content
+                .contains("read_output({id, offset, limit})")
+        );
+        assert_eq!(1, facts(&output).actions.len());
+    }
+}
+
+#[tokio::test]
 async fn script_exposes_only_the_named_methods_and_supports_standard_async_javascript() {
     let host = TestHost {
         operations: vec![ScriptOperation::ReadFile],

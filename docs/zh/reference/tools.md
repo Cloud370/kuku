@@ -118,7 +118,7 @@ Session 的默认预览上限为 8 KiB，包含摘要和保留输出引用。即
 
 `run_js({code})` 在一次性的嵌入式 QuickJS worker 中运行 JavaScript 异步函数体，支持顶层 `await`。给外层工具调用传入 `background: true` 可启动 [Session Job](#session-job)。可以使用标准 JavaScript，包括 `JSON`、正则表达式及用于独立操作的 `Promise.all`。后一动作的参数能由前一结果直接计算时，使用 `await` 在脚本内连续执行。下一步需要模型判断时，返回简短的观察结果。`tools` 提供该 Agent 可在脚本中调用的方法。`tools.methods` 列出宿主方法和参数 schema。
 
-语法错误和运行错误在引擎能定位时会给出行号和列号，坐标对应提交的 `code`。
+语法错误和运行错误在引擎能定位时会给出行号和列号，坐标对应提交的 `code`。如果已有宿主动作执行，结果还会提供有界的已观察结果，包括命令终止状态和保留输出引用、已发布的文件变更及其提交状态，以及已保存的输出。可以根据这些事实从已完成的工作继续。`read_output` 可用时，按返回的 ID 和字节偏移读取保留内容，仍需经过正常授权。
 
 大多数宿主方法返回 `{status, result, truncated}`。确认 `status: "ok"` 后，从 `result` 读取结构化数据。动作失败时会附带 `error`。将列表或分页当作完整结果之前，检查 `truncated`。例如，`tools.read_file({path})` 提供原始 `result.raw_text`、SHA-256 `content_hash`，以及从 `start_byte` 到 `end_byte` 的左闭右开字节范围。脚本可用已观察的范围继续编辑，无需把文件内容返回给模型。同一文件版本的读取覆盖全文后，还可以覆盖或移除该文件。在同一次调用中，脚本也可以编辑或覆盖由自身写入完整内容且已确认成功的确切版本。动作仍需经过宿主授权与版本检查。
 

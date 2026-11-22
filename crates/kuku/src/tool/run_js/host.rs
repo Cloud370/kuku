@@ -161,10 +161,7 @@ impl ScriptExecution {
             }
             combined.push(fact.clone());
         }
-        let dispatched = facts.len();
-        drop(facts);
-        bound_action_facts(&mut combined);
-        (combined, dispatched)
+        (combined, facts.len())
     }
 
     async fn dispatch(
@@ -283,6 +280,8 @@ fn selected_facts(structured: &Value) -> Value {
         "kind",
         "exit_code",
         "termination",
+        "started",
+        "signal",
         "capture_complete",
         "cleanup_incomplete",
         "output_id",
@@ -291,6 +290,7 @@ fn selected_facts(structured: &Value) -> Value {
         "reference",
         "change",
         "path",
+        "commit_state",
         "content_hash",
         "offset",
         "next_offset",
@@ -307,7 +307,7 @@ fn selected_facts(structured: &Value) -> Value {
     facts
 }
 
-fn bound_action_facts(actions: &mut [WorkspaceScriptActionFacts]) {
+pub(super) fn bound_action_facts(actions: &mut [WorkspaceScriptActionFacts]) {
     let mut available_bytes = MAX_SCRIPT_FACT_BYTES - actions.len() * MIN_ACTION_RECORD_BYTES;
     for action in actions {
         let limit = available_bytes + MIN_ACTION_RECORD_BYTES;

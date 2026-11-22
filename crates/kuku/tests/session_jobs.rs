@@ -372,7 +372,7 @@ fn job_completed_event(payload: &EventPayload, job_id: &str) -> bool {
         && value["record"]["operation"] == "job_finished" && value["record"]["job_id"] == job_id)
 }
 
-fn assert_one_completion(session: &Session, job_id: &str) {
+fn assert_one_completion(session: &Session, job_id: &str) -> String {
     let events = session.events(0, 512).unwrap();
     let matches: Vec<_> = events
         .iter()
@@ -387,6 +387,7 @@ fn assert_one_completion(session: &Session, job_id: &str) {
     assert_eq!(1, events.iter().filter(|event| matches!(
         &event.payload, EventPayload::ToolResult { tool_call_id, .. } if tool_call_id == CALL
     )).count());
+    value["record"]["delivery"]["text"].as_str().unwrap().into()
 }
 
 fn submit(session: &Session) {
@@ -972,7 +973,14 @@ await tools.write_file({{path:"later.txt",content:"do not dispatch"}});
     assert!(!fixture.workspace.join("guarded.txt").exists());
     assert!(!fixture.workspace.join("later.txt").exists());
     assert!(session.agent(AGENT).unwrap().permission.is_none());
-    assert_one_completion(&session, id);
+    let delivery = assert_one_completion(&session, id);
+    assert!(delivery.contains("\"path\":\"prior.txt\""), "{delivery}");
+    assert!(delivery.contains("\"exit_code\":7"), "{delivery}");
+    assert!(
+        delivery.contains("read_output({id, offset, limit})"),
+        "{delivery}"
+    );
+    assert!(!delivery.contains("\"path\":\"guarded.txt\""), "{delivery}");
     session.close().await.unwrap();
     start.assert_hits_async(1).await;
     wire_requests(route);

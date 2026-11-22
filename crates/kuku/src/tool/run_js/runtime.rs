@@ -12,14 +12,15 @@ use tokio::task::JoinSet;
 
 use crate::session::runtime::WorkspaceWorkerPermit;
 use crate::tool::builtin::common::ExecutorObservation;
-use crate::tool::{ToolFaults, ToolResultEnvelope};
+use crate::tool::{ToolDefinition, ToolFaults, ToolResultEnvelope};
 use crate::WorkspaceExecutionHost;
 
-use super::host::{bounded_json, cap_str};
+use super::host::{bound_action_facts, bounded_json, cap_str};
 use super::vm::{self, BufferedResponse, Reply, Request};
 use super::{
-    ScriptExecution, ScriptHost, ScriptOperation, WorkspaceScriptActionStatus,
-    WorkspaceScriptFacts, WorkspaceScriptLimits, WorkspaceScriptResultKind,
+    append_recovery_evidence, ScriptExecution, ScriptHost, ScriptOperation,
+    WorkspaceScriptActionStatus, WorkspaceScriptFacts, WorkspaceScriptLimits,
+    WorkspaceScriptResultKind,
 };
 
 const HOST_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -47,25 +48,30 @@ pub(crate) async fn execute(
     let execution = Arc::new(ScriptExecution::new(limits, host_capacity.operations()));
     let admission = tokio::select! {
         biased;
-        _ = &mut cancelling => return result(Finish::Cancelled, &execution),
+        _ = &mut cancelling => return result(Finish::Cancelled, &execution, false),
         permit = host_capacity.acquire_worker() => permit,
     };
     let permit = match admission {
         Ok(permit) => permit,
-        Err(error) => return result(Finish::Blocked(error.to_string()), &execution),
+        Err(error) => return result(Finish::Blocked(error.to_string()), &execution, false),
     };
     let _stop_on_drop = StopOnDrop(execution.clone());
-    let worker = match Worker::start(code, host.as_ref(), execution.clone(), permit) {
+    let methods = host.methods();
+    let can_read_output = methods
+        .iter()
+        .any(|method| method.name == ScriptOperation::ReadOutput.name());
+    let worker = match Worker::start(code, methods, execution.clone(), permit) {
         Ok(worker) => worker,
         Err(error) => {
             return result(
                 Finish::Failed(format!("could not start JavaScript worker: {error}")),
                 &execution,
+                false,
             )
         }
     };
     let finish = worker.drive(host, execution.clone(), cancelling).await;
-    result(finish, &execution)
+    result(finish, &execution, can_read_output)
 }
 
 struct Worker {
@@ -77,7 +83,7 @@ struct Worker {
 impl Worker {
     fn start(
         code: String,
-        host: &dyn ScriptHost,
+        methods: Vec<ToolDefinition>,
         execution: Arc<ScriptExecution>,
         permit: WorkspaceWorkerPermit,
     ) -> std::io::Result<Self> {
@@ -85,7 +91,6 @@ impl Worker {
         let (replies, reply_rx) = thread_channel::channel();
         let (finish_tx, finished) = oneshot::channel();
         let native_stack = NATIVE_STACK_HEADROOM + execution.limits.stack_bytes;
-        let methods = host.methods();
         let _worker = thread::Builder::new()
             .name("kuku-workspace-script".into())
             .stack_size(native_stack)
@@ -297,8 +302,12 @@ fn vm_finish(result: Result<Result<Value, vm::Failure>, oneshot::error::RecvErro
     }
 }
 
-fn result(finish: Finish, execution: &ScriptExecution) -> ToolResultEnvelope {
-    let (actions, dispatched) = execution.facts();
+fn result(
+    finish: Finish,
+    execution: &ScriptExecution,
+    can_read_output: bool,
+) -> ToolResultEnvelope {
+    let (mut actions, dispatched) = execution.facts();
     let failures = actions
         .iter()
         .filter(|action| {
@@ -357,7 +366,9 @@ fn result(finish: Finish, execution: &ScriptExecution) -> ToolResultEnvelope {
     }
     if result.status != "ok" && dispatched != 0 {
         result.model_content.push_str(&format!("\nHost action results observed: {dispatched} requested actions ({failures} unsuccessful)."));
+        append_recovery_evidence(&mut result.model_content, &actions, can_read_output);
     }
+    bound_action_facts(&mut actions);
     let facts = WorkspaceScriptFacts {
         kind: WorkspaceScriptResultKind::WorkspaceScriptResult,
         value,

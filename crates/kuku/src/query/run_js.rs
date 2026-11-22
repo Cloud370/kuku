@@ -510,11 +510,13 @@ impl WorkspaceHost {
 }
 
 pub(super) fn declined(pending: &PendingRun, id: &str) -> Result<Option<ToolResultEnvelope>> {
-    Ok(deferred::load(pending, id)?.map(deferred::Continuation::decline))
+    let can_read_output =
+        super::run::find_tool_definition(pending, ScriptOperation::ReadOutput.name()).is_some();
+    Ok(deferred::load(pending, id)?.map(|action| action.decline(can_read_output)))
 }
 
 pub(crate) fn cancelled_deferred_script(continuation: Value) -> Result<ToolResultEnvelope> {
-    Ok(serde_json::from_value::<deferred::Continuation>(continuation)?.cancel())
+    Ok(serde_json::from_value::<deferred::Continuation>(continuation)?.cancel(false))
 }
 
 pub(super) fn cancelled_permission(
@@ -522,7 +524,12 @@ pub(super) fn cancelled_permission(
 ) -> Result<ToolResultEnvelope> {
     if waiting.request.source == "run_js" {
         if let Some(action) = deferred::load(&waiting.pending, &waiting.request.tool_call_id)? {
-            return Ok(action.cancel());
+            let can_read_output = super::run::find_tool_definition(
+                &waiting.pending,
+                ScriptOperation::ReadOutput.name(),
+            )
+            .is_some();
+            return Ok(action.cancel(can_read_output));
         }
     }
     Ok(ToolResultEnvelope::cancelled(
