@@ -489,17 +489,23 @@ def run_benchmark(args, directory, record, secrets):
     spec = manifest["source"]
     source = prepare_source(manifest, directory, case) / spec.get("task_root", "") / case["id"]
     frontier = args.suite == "frontier"
-    image = f"kuku-acceptance/{case['id']}:{spec['revision'][:12]}"
+    published_image = case.get("published_image")
+    image = published_image or f"kuku-acceptance/{case['id']}:{spec['revision'][:12]}"
     record["benchmark"] = {"suite": args.suite, "source": spec, "case": case,
                            "task_files_sha256": file_hashes(source), "image_tag": image}
-    image_id_file = directory / "image-id.txt"
-    build = ["docker", "build", "--force-rm", "--tag", image]
-    if frontier:
-        build += ["--iidfile", str(image_id_file)]
-    require_success(capture([*build, str(source / "environment")],
-                            directory, "image-build", timeout=600))
-    inspected = require_success(capture(["docker", "image", "inspect", "--format", "{{.Id}}",
-                                         image_id_file.read_text().strip() if frontier else image],
+    image_ref = image
+    if published_image:
+        require_success(capture(["docker", "pull", published_image], directory, "image-pull", timeout=600))
+    else:
+        image_id_file = directory / "image-id.txt"
+        build = ["docker", "build", "--force-rm", "--tag", image]
+        if frontier:
+            build += ["--iidfile", str(image_id_file)]
+        require_success(capture([*build, str(source / "environment")],
+                                directory, "image-build", timeout=600))
+        if frontier:
+            image_ref = image_id_file.read_text().strip()
+    inspected = require_success(capture(["docker", "image", "inspect", "--format", "{{.Id}}", image_ref],
                                         directory, "image-inspect"))
     image_id = record["benchmark"]["image_id"] = Path(inspected["log"]).read_text().strip()
     if frontier and args.mode == "live":

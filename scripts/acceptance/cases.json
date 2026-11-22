@@ -63,7 +63,9 @@
         "count-dataset-tokens",
         "multi-source-data-merger",
         "query-optimize",
-        "fix-ocaml-gc"
+        "fix-ocaml-gc",
+        "fix-git",
+        "sqlite-db-truncate"
       ],
       "additional_cases": [
         {
@@ -163,6 +165,21 @@
           "workspace": "/app",
           "artifacts": ["/app/ocaml/runtime/shared_heap.c"],
           "timeout_sec": 3600
+        },
+        {
+          "id": "fix-git",
+          "role": "locate lost changes in a local Git repository and verify their merge",
+          "workspace": "/app/personal-site",
+          "artifacts": [],
+          "published_image": "alexgshaw/fix-git@sha256:389b9c8247610c2c5be080b1ac00429007c2c69bf57f7f26c79f0f75ba2d5c74",
+          "timeout_sec": 900
+        },
+        {
+          "id": "sqlite-db-truncate",
+          "role": "diagnose a truncated SQLite database and verify recovered records",
+          "workspace": "/app",
+          "artifacts": ["/app/recover.json"],
+          "timeout_sec": 900
         }
       ]
     }

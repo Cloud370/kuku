@@ -396,11 +396,13 @@ class AcceptanceTests(unittest.TestCase):
             "nginx-request-logging", "sqlite-with-gcov", "kv-store-grpc", "gcode-to-text", "pypi-server",
             "schemelike-metacircular-eval", "code-from-image", "db-wal-recovery", "adaptive-rejection-sampler",
             "count-dataset-tokens", "multi-source-data-merger", "query-optimize", "fix-ocaml-gc",
+            "fix-git", "sqlite-db-truncate",
         ])
         self.assertEqual(case["artifacts"], ["/app/apply_macros.vim"])
         for case_id, artifact in (("db-wal-recovery", "/app/recovered.json"),
                                   ("adaptive-rejection-sampler", "/app/ars.R"),
-                                  ("count-dataset-tokens", "/app/answer.txt")):
+                                  ("count-dataset-tokens", "/app/answer.txt"),
+                                  ("sqlite-db-truncate", "/app/recover.json")):
             _, holdout = ACCEPTANCE.manifest_case(case_id, "frontier")
             self.assertEqual((holdout["workspace"], holdout["artifacts"], holdout["timeout_sec"]),
                              ("/app", [artifact], 900))
@@ -416,6 +418,10 @@ class AcceptanceTests(unittest.TestCase):
         _, compiler = ACCEPTANCE.manifest_case("fix-ocaml-gc", "frontier")
         self.assertEqual((compiler["workspace"], compiler["artifacts"], compiler["timeout_sec"]),
                          ("/app", ["/app/ocaml/runtime/shared_heap.c"], 3600))
+        _, git_recovery = ACCEPTANCE.manifest_case("fix-git", "frontier")
+        self.assertEqual((git_recovery["workspace"], git_recovery["artifacts"], git_recovery["timeout_sec"]),
+                         ("/app/personal-site", [], 900))
+        self.assertRegex(git_recovery["published_image"], r"^alexgshaw/fix-git@sha256:[a-f0-9]{64}$")
         _, package_server = ACCEPTANCE.manifest_case("pypi-server", "frontier")
         self.assertEqual((package_server["workspace"], package_server["artifacts"], package_server["timeout_sec"]),
                          ("/app", [], 900))

@@ -224,7 +224,7 @@ tmux attach-session -t kuku-benchmark
 
 ## FrontierHarness 公开小样本
 
-[题目清单](../../../scripts/acceptance/cases.json)将 `frontier` 套件固定到 FrontierHarness Eval v1.1.0 收录的 Terminal-Bench 2.1 题目。历史小样本覆盖日志汇总、异步取消、正则表达式和 Vim 大文件编辑。本地套件还覆盖服务配置、迭代构建、文件转换、可解释自身的解释器，以及从图像复原代码。每题使用上游题面、镜像构建上下文和原始判分器。在有 Git、Docker、Python 3.10+ 和仓库指定 Rust 工具链的 Linux 上，先用空提交确认判分器能识别失败。构建和评分依赖需要网络，这一步没有模型费用。[数据集来源](https://hub.harborframework.com/datasets/frontier-harness-eval/frontier-harness-eval)
+[题目清单](../../../scripts/acceptance/cases.json)将 `frontier` 套件固定到 FrontierHarness Eval v1.1.0 收录的 Terminal-Bench 2.1 题目。历史小样本覆盖日志汇总、异步取消、正则表达式和 Vim 大文件编辑。本地套件还覆盖服务配置、迭代构建、Git 和数据库恢复，以及从图像复原代码。每题使用上游题面和判分器，环境使用原始构建上下文或按摘要固定的上游发布镜像。在有 Git、Docker、Python 3.10+ 和仓库指定 Rust 工具链的 Linux 上，先用空提交确认判分器能识别失败。获取镜像和评分依赖需要网络，这一步没有模型费用。[数据集来源](https://hub.harborframework.com/datasets/frontier-harness-eval/frontier-harness-eval)
 
 ```sh
 cargo build --locked -p kuku --example session_task
