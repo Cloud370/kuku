@@ -330,6 +330,8 @@ npm install --prefix "$codex_ref" --registry=https://registry.npmjs.org --save-e
 
 直连 DeepSeek 实跑时，可用 `--reasoning-effort high` 测试不同的推理强度，默认值为 `max`。使用 `benchmark_compare.py --compare-effort --baseline RUN_DIRECTORY --candidate RUN_DIRECTORY` 对照两次 Kuku 试跑。导出要求模型版本、SDK 二进制、运行时包、Prompt 和其他运行设置一致。结合原判定器结果查看费用、耗时和请求次数。
 
+使用 `benchmark_compare.py --compare-sdk --baseline RUN_DIRECTORY --candidate RUN_DIRECTORY` 对照两份 SDK 构建。导出要求二进制和运行时包哈希各不相同，模型版本记录、题目、运行限额和外部 Prompt 覆盖一致。嵌入的 Prompt 随 SDK 构建一起比较。单独验证措辞时使用上面的 Prompt 对照流程。
+
 测试宿主进程期限时，可给 Frontier SDK 真实试跑传入 `--max-command-seconds N`。它设置每条命令的 SDK 进程期限，覆盖 `run_js` 启动的命令和转为 Job 的命令。整场 Agent 的期限与原判定器各自独立。选择器会核对 SDK 报告中的实际期限，对照导出要求双方使用相同的进程期限。省略时沿用 SDK 默认值，即不设单条命令期限。
 
 ## 资源测量

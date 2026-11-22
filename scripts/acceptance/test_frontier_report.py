@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from benchmark_compare import artifact_observation, compare, compare_effort, compare_prompts
+from benchmark_compare import artifact_observation, compare, compare_effort, compare_prompts, compare_sdk
 from benchmark_resources import CASE_RESOURCE_LIMITS
 from frontier_report import (CASES, DATASET, DELAYED_RECEIPTS, MODEL_ID, PRIVATE_RECEIPTS,
                             SDK_REQUEST_BYTES_ERROR, TASK_COMMIT, EvidenceError, build_report, cohort_efficiency, main, official_report,
@@ -128,6 +128,29 @@ class PairedReportTests(unittest.TestCase):
         with patch('benchmark_compare.attempt', side_effect=[left, right]):
             with self.assertRaisesRegex(EvidenceError, 'same SDK binary and packaged runtime'):
                 compare_prompts(Path('old'), Path('new'))
+
+    def test_sdk_pair_checks_distinct_builds_and_matching_run_settings(self):
+        shared = {'case': 'regex-log', 'provider': {'model_version': MODEL_ID}, 'case_cap_usd': 0.75}
+        before = {'kuku_binary_sha256': SDK_SHA, 'kuku_runtime_sha256': '2' * 64, 'prompt_overrides_sha256': None}
+        after = {**before, 'kuku_binary_sha256': '3' * 64, 'kuku_runtime_sha256': '4' * 64}
+        left = (shared, {'provenance': before})
+        right = (shared, {'provenance': after})
+        paths = (Path('old'), Path('new'))
+        with patch('benchmark_compare.attempt', side_effect=[left, right]):
+            report = compare_sdk(*paths)
+        self.assertEqual([arm['arm'] for arm in report['attempts']], ['baseline', 'candidate'])
+        self.assertEqual(report['configuration'], shared)
+        unknown = {**shared, 'provider': {'model_version': None}}
+        for pair, error in (
+            ([left, left], 'distinct SDK binaries'),
+            ([left, (shared, {'provenance': {**after, 'kuku_binary_sha256': None}})], 'distinct SDK binaries'),
+            ([left, (shared, {'provenance': {**after, 'prompt_overrides_sha256': '5' * 64}})], 'same external Prompt'),
+            ([(unknown, left[1]), (unknown, right[1])], 'recorded model version'),
+            ([left, ({**shared, 'case_cap_usd': 1.50}, right[1])], 'configuration differs in case_cap_usd'),
+        ):
+            with self.subTest(error=error), patch('benchmark_compare.attempt', side_effect=pair):
+                with self.assertRaisesRegex(EvidenceError, error):
+                    compare_sdk(*paths)
 
     def test_exports_matched_evidence_even_for_verifier_failure(self):
         case = 'regex-log'

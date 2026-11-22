@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export a matched Frontier harness, Prompt, or reasoning comparison as shareable JSON."""
+"""Export a matched Frontier harness, SDK, Prompt, or reasoning comparison as shareable JSON."""
 
 import argparse
 from collections import Counter
@@ -265,6 +265,22 @@ def compare_prompts(baseline, candidate):
             'attempts': [{'arm': 'baseline', **left}, {'arm': 'candidate', **right}]}
 
 
+def compare_sdk(baseline, candidate):
+    shared, left = attempt(baseline, 'kuku')
+    other, right = attempt(candidate, 'kuku')
+    require_matching(shared, other)
+    before, after = left['provenance'], right['provenance']
+    if not shared['provider']['model_version']:
+        raise EvidenceError('SDK comparison requires a recorded model version')
+    if before['prompt_overrides_sha256'] != after['prompt_overrides_sha256']:
+        raise EvidenceError('SDK comparison requires the same external Prompt overrides')
+    for key in ('kuku_binary_sha256', 'kuku_runtime_sha256'):
+        if not before[key] or not after[key] or before[key] == after[key]:
+            raise EvidenceError('SDK comparison requires distinct SDK binaries and packaged runtimes')
+    return {'schema_version': 1, 'configuration': shared,
+            'attempts': [{'arm': 'baseline', **left}, {'arm': 'candidate', **right}]}
+
+
 def compare_effort(baseline, candidate):
     shared, left = attempt(baseline, 'kuku')
     other, right = attempt(candidate, 'kuku')
@@ -285,14 +301,23 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('kuku', 'pi', 'codex', 'baseline', 'candidate'):
         parser.add_argument(f'--{name}', type=Path, metavar='RUN_DIRECTORY')
-    parser.add_argument('--compare-effort', action='store_true',
-                        help='compare two SDK attempts with different reasoning efforts and the same Prompt')
+    comparison = parser.add_mutually_exclusive_group()
+    comparison.add_argument('--compare-effort', action='store_true',
+                            help='compare two SDK attempts with different reasoning efforts and the same Prompt')
+    comparison.add_argument('--compare-sdk', action='store_true',
+                            help='compare distinct SDK builds with matching run settings and external Prompt overrides')
     args = parser.parse_args()
     try:
-        if args.kuku and bool(args.pi) != bool(args.codex) and not (args.baseline or args.candidate or args.compare_effort):
+        if (args.kuku and bool(args.pi) != bool(args.codex)
+                and not (args.baseline or args.candidate or args.compare_effort or args.compare_sdk)):
             report = compare(args.kuku, args.pi or args.codex, 'pi' if args.pi else 'codex')
         elif args.baseline and args.candidate and not (args.kuku or args.pi or args.codex):
-            comparator = compare_effort if args.compare_effort else compare_prompts
+            if args.compare_sdk:
+                comparator = compare_sdk
+            elif args.compare_effort:
+                comparator = compare_effort
+            else:
+                comparator = compare_prompts
             report = comparator(args.baseline, args.candidate)
         else:
             parser.error('provide --kuku and one reference (--pi or --codex), or --baseline and --candidate')
