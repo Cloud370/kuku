@@ -13,7 +13,7 @@ The default source build includes the terminal interface, script commands, and H
 
 ## Install a published release
 
-For a tagged release, choose its `latest.json` asset from the release list. From a checkout, pass its URL to `sh scripts/install.sh --source MANIFEST_URL` on x86-64 Linux or Apple Silicon macOS, or to `.\scripts\install.ps1 -Source MANIFEST_URL` on x86-64 Windows. The default installer URL selects a stable release. Use Cargo above to try the development tree. [Releases](https://github.com/Cloud370/kuku/releases) · [Unix installer](../../../scripts/install.sh) · [Windows installer](../../../scripts/install.ps1) · [Update manifest](../reference/update-manifest.md)
+For a tagged release, choose its `latest.json` asset from the release list. From a checkout, pass its URL to `sh scripts/install.sh --source MANIFEST_URL` on x86-64 or ARM64 Linux and on Apple Silicon macOS. On x86-64 Windows, use `.\scripts\install.ps1 -Source MANIFEST_URL`. The default installer URL selects a stable release. Use Cargo above to try the development tree. [Releases](https://github.com/Cloud370/kuku/releases) · [Unix installer](../../../scripts/install.sh) · [Windows installer](../../../scripts/install.ps1) · [Update manifest](../reference/update-manifest.md)
 
 The installer shows the download size when available, displays progress in interactive terminals, and retries transient download failures. A reinstall can reuse a cached archive that matches the release checksum. [Download and installation measurements](../how-it-works/performance.md#download-and-installation)
 

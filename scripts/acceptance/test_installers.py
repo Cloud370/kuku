@@ -18,6 +18,8 @@ SCRIPTS = Path(__file__).resolve().parents[1]
 PAYLOAD = b"kuku installer fixture\n"
 TARGETS = {
     ("Linux", "x86_64"): "linux-x86_64",
+    ("Linux", "aarch64"): "linux-aarch64",
+    ("Linux", "arm64"): "linux-aarch64",
     ("Darwin", "arm64"): "darwin-aarch64",
     ("Windows", "AMD64"): "windows-x86_64",
 }

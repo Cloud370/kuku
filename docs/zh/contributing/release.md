@@ -42,12 +42,14 @@ v0.MINOR.PATCH
 
 Release 工作流会先上传安装包和清单，再公开发布。首次发布时，它把对应版本的摘要放在 GitHub Release 页面开头，再附上 GitHub 生成的变更列表。找不到对应段落时会发布生成的变更列表。重跑可以继续发布已有草稿，并保留草稿中已填写的说明。
 
+需要下载尚未打 tag 的候选包时，在对应分支运行 Release 工作流并将 tag 字段留空。安装包可以从该次工作流的产物中下载。
+
 ## Build paths
 
 - `make build` 构建正常的本地 Linux 发布 target。
-- `make release-linux` 构建可移植的 musl 发布产物。
+- `make release-linux` 构建可移植的 x86-64 musl 发布产物。
 
-musl 路径用于发布打包，而不是日常开发。
+Linux 发布包含 x86-64 和 ARM64 的静态 musl 包。CI 构建两种架构，并在原生 Linux ARM64 runner 上验证 ARM64 包。日常开发使用宿主机 target，需要测试设备时可在本地交叉编译 `aarch64-unknown-linux-musl`。
 
 release profile 使用 `opt-level = 2` 优先优化运行性能。构建去除符号，保留 Thin LTO、4 个 codegen unit 和 panic abort。比较二进制大小时，必须保持 target、feature 和源码版本一致。开发／测试可执行文件保留调试信息，不作为发行产物。
 

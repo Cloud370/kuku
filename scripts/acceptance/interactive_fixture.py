@@ -9,6 +9,7 @@ from itertools import count
 import json
 import os
 from pathlib import Path, PureWindowsPath
+from platform import machine
 import queue
 import re
 import shutil
@@ -878,6 +879,8 @@ class InstalledClient:
 def install(archive, home, env):
     platform = "windows-x86_64" if os.name == "nt" else (
         "darwin-aarch64" if sys.platform == "darwin" else "linux-x86_64")
+    if sys.platform == "linux" and machine() in ("aarch64", "arm64"):
+        platform = "linux-aarch64"
     with archive.open("rb") as source:
         digest = hashlib.sha256()
         for block in iter(lambda: source.read(1 << 20), b""):
