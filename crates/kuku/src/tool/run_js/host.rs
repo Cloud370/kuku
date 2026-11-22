@@ -228,7 +228,7 @@ pub(super) fn cap_str(text: &str, max_bytes: usize) -> &str {
 }
 
 fn not_dispatched() -> ToolResultEnvelope {
-    ToolResultEnvelope::cancelled("workspace script stopped before dispatch")
+    ToolResultEnvelope::cancelled("run_js stopped before dispatch")
 }
 
 fn action_id(ordinal: usize) -> String {

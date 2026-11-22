@@ -76,6 +76,7 @@ async fn script_syntax_errors_locate_user_code_before_any_host_action() {
         )
         .await;
         assert_eq!("error", output.status);
+        assert_eq!("run_js failed", output.summary);
         assert!(
             output.model_content.contains(location),
             "{}",
