@@ -12,7 +12,9 @@ use crate::execution::{
 use crate::tool::ToolResultEnvelope;
 
 use super::encoding::display_text;
-use super::output::{read_stderr, CaptureMetadata, FinishedCapture, OutputChunk, OutputSegment};
+use super::output::{
+    read_output_tails, CaptureMetadata, FinishedCapture, OutputChunk, OutputSegment,
+};
 use super::summary::Summary;
 use super::{
     output_error, read_output, CommandCapture, CommandOutcome, CommandRequest, CommandView,
@@ -20,11 +22,14 @@ use super::{
 };
 
 const MAX_OUTPUT_PREVIEW_BYTES: usize = 2048;
+const MAX_MIXED_STDOUT_TAIL_BYTES: usize = 384;
 const SHORT_OUTPUT_LINES: u64 = 40;
 const SHAPE_SAMPLE_BYTES: usize = 96;
 const SHAPE_FIELDS: usize = 6;
 const SHAPE_FIELD_BYTES: usize = 24;
 const MIN_UNQUOTED_SAMPLE_COLUMNS: usize = 3;
+const STDOUT_TAIL_HEADING: &str = "End of captured stdout:\n";
+const STDERR_TAIL_HEADING: &str = "End of captured stderr:\n";
 
 #[derive(Debug, PartialEq, Eq)]
 enum LineFormat {
@@ -157,44 +162,33 @@ fn render_model(
     let show_end = failed
         && facts.capture_complete
         && (abbreviated || metadata.stored_bytes > output.limits.max_preview_bytes as u64);
-    let show_stderr = show_end && facts.stderr_bytes > 0;
-    let read_limit = if show_end {
-        output_preview_limit.min(output.limits.max_preview_bytes / 2)
-    } else if filtered || abbreviated {
+    if show_end {
+        return render_failure_tail(
+            status,
+            summary,
+            facts,
+            metadata,
+            output,
+            abbreviated.then_some(access),
+            filtered,
+        );
+    }
+    let read_limit = if filtered || abbreviated {
         output_preview_limit
     } else {
         output.limits.max_preview_bytes
     }
     .max(1);
-    let source_bytes = if show_stderr {
-        facts.stderr_bytes
-    } else {
-        metadata.stored_bytes
-    };
     let request = OutputRead {
-        offset: if show_end {
-            source_bytes.saturating_sub(read_limit as u64)
-        } else {
-            0
-        },
+        offset: 0,
         limit: read_limit,
         search: None,
     };
-    let result = if show_stderr {
-        read_stderr(output.dir, output.id, request)
-    } else {
-        read_output(output.dir, output.id, request)
-    };
-    let chunk = match result {
+    let chunk = match read_output(output.dir, output.id, request) {
         Ok(chunk) => chunk,
         Err(error) => return output_error("read", error, metadata.cleanup_incomplete),
     };
-    let rendered = render_streams(&chunk.segments);
-    let raw_preview = if show_end {
-        &rendered[rendered.ceil_char_boundary(rendered.len().saturating_sub(read_limit))..]
-    } else {
-        rendered.as_str()
-    };
+    let raw_preview = render_streams(&chunk.segments);
     let mut output_preview = if chunk
         .segments
         .iter()
@@ -202,24 +196,20 @@ fn render_model(
     {
         raw_preview
             .strip_prefix("stdout:\n")
-            .unwrap_or(raw_preview)
+            .unwrap_or(&raw_preview)
             .to_string()
     } else {
         raw_preview.to_owned()
     };
-    let output_preview_truncated =
-        show_end || chunk.has_more || output_preview.len() > output_preview_limit;
+    let output_preview_truncated = chunk.has_more || output_preview.len() > output_preview_limit;
     truncate_utf8(&mut output_preview, output_preview_limit);
     let mut body = String::new();
-    let include_raw = show_end || (!filtered && !abbreviated);
-    if show_end {
-        let source = if show_stderr { "stderr" } else { "output" };
-        body.push_str(&format!("\n\nEnd of captured {source}:\n{raw_preview}"));
-    } else if include_raw {
+    let include_raw = !filtered && !abbreviated;
+    if include_raw {
         let text = if raw_preview.is_empty() {
             "(command produced no output)"
         } else {
-            raw_preview
+            &raw_preview
         };
         body.push_str("\n\n");
         body.push_str(text);
@@ -228,18 +218,10 @@ fn render_model(
         append_output_shape(&mut body, &chunk, &facts, access);
     }
     if filtered {
-        let excerpt = if show_end { raw_preview } else { "" };
-        let evidence = report_evidence(&metadata.summary, &facts.reported_tests, excerpt);
-        if !evidence.is_empty() {
-            body.push_str("\n\nBuild/test summary (selected lines):\n");
-            body.push_str(&evidence);
-        }
+        append_report_evidence(&mut body, metadata, &facts, "");
     }
     if abbreviated {
-        body.push_str("\nRead the relevant range with read_output({id, offset, limit}) using the Output ID below.");
-        if access == ModelOutputAccess::Script {
-            body.push_str("\nTo locate a known literal first, call tools.search_output({id, text}) in run_js.");
-        }
+        append_read_guidance(&mut body, access);
     }
     if !facts.capture_complete {
         summary.push_str(", capture incomplete");
@@ -251,7 +233,7 @@ fn render_model(
         chunk.lossy_utf8 && include_raw,
     );
     let preview_truncated = abbreviated
-        || (include_raw && (show_end || chunk.has_more))
+        || (include_raw && chunk.has_more)
         || summary.len() + body.len() + reference.len() > output.limits.max_preview_bytes;
     if preview_truncated {
         summary.push_str(", preview truncated");
@@ -271,6 +253,123 @@ fn render_model(
     facts.output_preview = output_preview;
     facts.output_preview_truncated = output_preview_truncated;
     ToolResultEnvelope::command(status, summary, model_content, truncated, facts)
+}
+
+fn render_failure_tail(
+    status: &str,
+    mut summary: String,
+    mut facts: CommandExecutionFacts,
+    metadata: &CaptureMetadata,
+    output: CommandCapture<'_>,
+    guidance: Option<ModelOutputAccess>,
+    filtered: bool,
+) -> ToolResultEnvelope {
+    summary.push_str(", preview truncated");
+    let limit = output.limits.max_preview_bytes;
+    let tail_budget = |reference: &str| {
+        MAX_OUTPUT_PREVIEW_BYTES
+            .min(limit / 2)
+            .min(limit.saturating_sub(summary.len() + reference.len() + 2))
+    };
+    let mut reference = render_reference(output.id, metadata, filtered, false);
+    let (stdout_limit, stderr_limit) = failure_tail_limits(metadata, tail_budget(&reference));
+    let [stdout, stderr] =
+        match read_output_tails(output.dir, output.id, stdout_limit, stderr_limit) {
+            Ok(tails) => tails,
+            Err(error) => return output_error("read", error, metadata.cleanup_incomplete),
+        };
+    let decoded_lossy = stdout.lossy_utf8 || stderr.lossy_utf8;
+    if decoded_lossy {
+        reference = render_reference(output.id, metadata, filtered, true);
+    }
+    let (stdout_limit, stderr_limit) = failure_tail_limits(metadata, tail_budget(&reference));
+    let mut preview = String::new();
+    for (heading, tail, budget) in [
+        (STDERR_TAIL_HEADING, stderr, stderr_limit),
+        (STDOUT_TAIL_HEADING, stdout, stdout_limit),
+    ] {
+        if budget == 0 || tail.text.is_empty() {
+            continue;
+        }
+        if !preview.is_empty() {
+            preview.push_str("\n\n");
+        }
+        preview.push_str(heading);
+        let start = tail
+            .text
+            .ceil_char_boundary(tail.text.len().saturating_sub(budget));
+        preview.push_str(&tail.text[start..]);
+    }
+    let mut model_content = summary.clone();
+    if !preview.is_empty() {
+        model_content.push_str("\n\n");
+        model_content.push_str(&preview);
+    }
+    if filtered {
+        append_report_evidence(&mut model_content, metadata, &facts, &preview);
+    }
+    if let Some(access) = guidance {
+        append_read_guidance(&mut model_content, access);
+    }
+    facts.lossy_utf8 = decoded_lossy && preview.contains(char::REPLACEMENT_CHARACTER);
+    if decoded_lossy && !facts.lossy_utf8 {
+        reference = render_reference(output.id, metadata, filtered, false);
+    }
+    fit_content(&mut model_content, &reference, limit);
+    facts.output_filtered = filtered;
+    facts.preview_truncated = true;
+    facts.output_preview = preview;
+    facts.output_preview_truncated = true;
+    ToolResultEnvelope::command(status, summary, model_content, true, facts)
+}
+
+fn failure_tail_limits(metadata: &CaptureMetadata, budget: usize) -> (usize, usize) {
+    let both_headings = STDOUT_TAIL_HEADING.len() + STDERR_TAIL_HEADING.len() + 2;
+    let stdout = metadata.stdout_bytes as usize;
+    let stderr = metadata.stderr_bytes as usize;
+    match (stdout, stderr) {
+        (_, 0) => (
+            stdout.min(budget.saturating_sub(STDOUT_TAIL_HEADING.len())),
+            0,
+        ),
+        (0, _) => (
+            0,
+            stderr.min(budget.saturating_sub(STDERR_TAIL_HEADING.len())),
+        ),
+        (_, _) if budget < both_headings + 2 => (
+            0,
+            stderr.min(budget.saturating_sub(STDERR_TAIL_HEADING.len())),
+        ),
+        (_, _) => {
+            let bytes = budget - both_headings;
+            let stdout_cap = stdout.min(MAX_MIXED_STDOUT_TAIL_BYTES);
+            let stdout_share = stdout_cap.min((bytes / 3).max(1));
+            let stderr_share = stderr.min(bytes - stdout_share);
+            (stdout_cap.min(bytes - stderr_share), stderr_share)
+        }
+    }
+}
+
+fn append_read_guidance(body: &mut String, access: ModelOutputAccess) {
+    body.push_str("\nRead the relevant range with read_output({id, offset, limit}) using the Output ID below.");
+    if access == ModelOutputAccess::Script {
+        body.push_str(
+            "\nTo locate a known literal first, call tools.search_output({id, text}) in run_js.",
+        );
+    }
+}
+
+fn append_report_evidence(
+    body: &mut String,
+    metadata: &CaptureMetadata,
+    facts: &CommandExecutionFacts,
+    excerpt: &str,
+) {
+    let evidence = report_evidence(&metadata.summary, &facts.reported_tests, excerpt);
+    if !evidence.is_empty() {
+        body.push_str("\n\nBuild/test summary (selected lines):\n");
+        body.push_str(&evidence);
+    }
 }
 
 fn render_rule(

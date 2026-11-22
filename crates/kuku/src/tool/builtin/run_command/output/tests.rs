@@ -52,6 +52,9 @@ async fn output_round_trip_preserves_stream_order_and_byte_ranges() {
     let last = read_output(dir.path(), "call-1", request(chunk.next_offset, 5)).unwrap();
     assert_eq!("!\n", text(&last));
     assert!(!last.has_more);
+    let [stdout, stderr] = read_output_tails(dir.path(), "call-1", 3, 4).unwrap();
+    assert_eq!(" !\n", stdout.text);
+    assert_eq!("orld", stderr.text);
 }
 
 #[tokio::test]

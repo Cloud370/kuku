@@ -426,11 +426,28 @@ pub(crate) fn framed_bytes(payload: u64) -> u64 {
 }
 
 pub(crate) fn read_open_output(
-    file: fs::File,
+    mut file: fs::File,
     output_id: &str,
     request: OutputRead,
 ) -> io::Result<OutputChunk> {
-    read_open_output_view(file, output_id, request, None)
+    validate_read(&request)?;
+    let metadata = decode_header(&mut file)?;
+    let mut window = OutputWindow::default();
+    let captured_bytes = scan_output_frames(
+        &mut file,
+        &metadata,
+        |file, stream, offset, frame_bytes, payload| {
+            window.read_frame(file, stream, offset, frame_bytes, payload, &request)
+        },
+    )?;
+    render_chunk(
+        output_id,
+        request,
+        metadata,
+        window,
+        captured_bytes,
+        &mut file,
+    )
 }
 
 pub(crate) fn read_complete_stdout_bytes(
@@ -466,33 +483,74 @@ pub(crate) fn read_complete_stdout_bytes(
     Ok(bytes)
 }
 
-pub(super) fn read_stderr(
-    output_dir: &Path,
-    output_id: &str,
-    request: OutputRead,
-) -> io::Result<OutputChunk> {
-    read_open_output_view(
-        open_output(output_dir, output_id)?,
-        output_id,
-        request,
-        Some(OutputStream::Stderr),
-    )
+pub(super) struct OutputTail {
+    pub(super) text: String,
+    pub(super) lossy_utf8: bool,
 }
 
-fn read_open_output_view(
-    mut file: fs::File,
+pub(super) fn read_output_tails(
+    output_dir: &Path,
     output_id: &str,
-    request: OutputRead,
-    selected_stream: Option<OutputStream>,
-) -> io::Result<OutputChunk> {
-    validate_read(&request)?;
+    stdout_limit: usize,
+    stderr_limit: usize,
+) -> io::Result<[OutputTail; 2]> {
+    let mut file = open_output(output_dir, output_id)?;
     let metadata = decode_header(&mut file)?;
-    let mut window = OutputWindow::default();
+    if !metadata.complete || metadata.quota_truncated || metadata.cleanup_incomplete {
+        return Err(invalid_output(
+            "cannot read the end of an incomplete command capture",
+        ));
+    }
+    let stream_bytes = [metadata.stdout_bytes, metadata.stderr_bytes];
+    let limits = [stdout_limit, stderr_limit];
+    let requests: [OutputRead; 2] = std::array::from_fn(|slot| {
+        let limit = limits[slot];
+        OutputRead {
+            offset: stream_bytes[slot].saturating_sub(limit as u64),
+            limit,
+            search: None,
+        }
+    });
+    let mut windows = [OutputWindow::default(), OutputWindow::default()];
+    let mut offsets = [0, 0];
+    scan_output_frames(
+        &mut file,
+        &metadata,
+        |file, stream, _, frame_bytes, payload| {
+            let slot = stream as usize;
+            windows[slot].read_frame(
+                file,
+                stream,
+                offsets[slot],
+                frame_bytes,
+                payload,
+                &requests[slot],
+            )?;
+            offsets[slot] += frame_bytes as u64;
+            Ok(())
+        },
+    )?;
+    if offsets != stream_bytes {
+        return Err(invalid_output(
+            "output streams disagree with committed metadata",
+        ));
+    }
+    let [stdout, stderr] = windows;
+    Ok([
+        stdout.render_tail(&mut file)?,
+        stderr.render_tail(&mut file)?,
+    ])
+}
+
+fn scan_output_frames(
+    file: &mut fs::File,
+    metadata: &CaptureMetadata,
+    mut visit: impl FnMut(&mut fs::File, OutputStream, u64, usize, u64) -> io::Result<()>,
+) -> io::Result<u64> {
     let mut captured_bytes = 0;
-    let mut selected_bytes = 0;
     let file_bytes = file.metadata()?.len();
     while file.stream_position()? < file_bytes {
-        let Some((stream, frame_bytes)) = read_frame_header(&mut file, &metadata)? else {
+        let Some((stream, frame_bytes)) = read_frame_header(file, metadata)? else {
             break;
         };
         let payload = file.stream_position()?;
@@ -502,34 +560,15 @@ fn read_open_output_view(
             }
             break;
         }
+        visit(file, stream, captured_bytes, frame_bytes, payload)?;
         captured_bytes += frame_bytes as u64;
-        if selected_stream.is_some_and(|selected| selected != stream) {
-            file.seek(SeekFrom::Current(frame_bytes as i64))?;
-            continue;
-        }
-        window.read_frame(
-            &mut file,
-            stream,
-            selected_bytes,
-            frame_bytes,
-            payload,
-            &request,
-        )?;
-        selected_bytes += frame_bytes as u64;
     }
     if metadata.complete && captured_bytes != metadata.stored_bytes {
         return Err(invalid_output(
             "output length disagrees with committed metadata",
         ));
     }
-    render_chunk(
-        output_id,
-        request,
-        metadata,
-        window,
-        selected_bytes,
-        &mut file,
-    )
+    Ok(captured_bytes)
 }
 
 #[derive(Default)]
@@ -563,6 +602,18 @@ impl OutputSpan {
 }
 
 impl OutputWindow {
+    fn render_tail(self, file: &mut fs::File) -> io::Result<OutputTail> {
+        let starts_line = match self.spans.first() {
+            Some(span) => span.starts_line(file, &self.bytes)?,
+            None => true,
+        };
+        let (text, lossy_utf8) = display_text(&self.bytes, starts_line, true);
+        Ok(OutputTail {
+            text: text.into_owned(),
+            lossy_utf8,
+        })
+    }
+
     fn read_frame(
         &mut self,
         file: &mut fs::File,

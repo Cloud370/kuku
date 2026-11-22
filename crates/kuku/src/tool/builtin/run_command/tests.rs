@@ -666,10 +666,11 @@ async fn long_failed_command_shows_final_diagnostic_within_preview_bound() {
     let dir = workspace();
     let outputs = dir.path().join("outputs");
     let diagnostic = "configure terminated: missing required option";
+    let stdout_tail = "build cleanup finished";
     let result = run_command_with_output(
         &serde_json::json!({
             "shell": shell_name(), "cwd": ".", "timeout": 5, "brief": "fixture build",
-            "command": format!("printf '{diagnostic}\\n' >&2; head -c 16384 /dev/zero | tr '\\0' x; exit 7"),
+            "command": format!("printf '{diagnostic}\\n' >&2; head -c 16384 /dev/zero | tr '\\0' x; printf '\\n{stdout_tail}\\n'; exit 7"),
         }),
         dir.path(), None, None, &outputs, "failed-build",
         OutputLimits { max_output_bytes: 32_768, max_preview_bytes: 512 },
@@ -685,6 +686,9 @@ async fn long_failed_command_shows_final_diagnostic_within_preview_bound() {
         result.model_content
     );
     assert!(facts.output_preview.contains(diagnostic));
+    assert!(facts.output_preview.contains(stdout_tail));
+    assert!(result.model_content.contains(stdout_tail));
+    assert!(result.model_content.contains("Output: failed-build"));
     assert!(facts.preview_truncated);
     assert!(result.model_content.starts_with(&result.summary));
     assert!(result.summary.contains("preview truncated"));
@@ -694,13 +698,14 @@ async fn long_failed_command_shows_final_diagnostic_within_preview_bound() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn failed_command_keeps_stderr_diagnosis_alongside_program_test_counts() {
+async fn failed_command_keeps_stdout_diagnosis_alongside_stderr_and_test_counts() {
     let dir = workspace();
     let outputs = dir.path().join("outputs");
     let diagnostic = "post-test packaging failed to open the destination";
+    let warning = "wrapper: using the default staging directory";
     let result = run_command_with_output(
         &serde_json::json!({"shell": shell_name(), "cwd": ".", "timeout": 5,
-            "command": format!("head -c 4096 /dev/zero | tr '\\0' x; printf '\\ntest result: ok. 13 passed; 0 failed; 0 ignored\\n'; printf '{diagnostic}\\n' >&2; exit 7")}),
+            "command": format!("head -c 4096 /dev/zero | tr '\\0' x; printf '\\ntest result: ok. 13 passed; 0 failed; 0 ignored\\n{diagnostic}\\n'; printf '{warning}\\n' >&2; exit 7")}),
         dir.path(), None, None, &outputs, "tests-and-wrapper", OutputLimits { max_output_bytes: 16_384, max_preview_bytes: 1024 },
     ).await;
     let facts =
@@ -710,6 +715,7 @@ async fn failed_command_keeps_stderr_diagnosis_alongside_program_test_counts() {
     assert!(facts.capture_complete);
     assert!(facts.output_preview.contains(diagnostic));
     assert!(result.model_content.contains(diagnostic));
+    assert!(result.model_content.contains(warning));
     assert!(result.model_content.contains("13 passed"));
     assert!(result.model_content.len() <= 1024);
 }
