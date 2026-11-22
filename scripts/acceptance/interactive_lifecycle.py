@@ -7,7 +7,8 @@ import threading
 import time
 from urllib.parse import urlencode
 
-from interactive_fixture import is_composer_heading, InstalledClient, Response, TOOL_BRIEF, TOOL_OUTPUT, eventually, json_response, run_cases
+from interactive_fixture import is_composer_heading, InstalledClient, Response, TOOL_OUTPUT, TOOL_PROGRAM, eventually, json_response, run_cases
+from interactive_history import paginated_rewind, rewind_files
 from interactive_model_recovery import assert_live_elapsed, assert_testing_navigation, assert_wide_setup, recovery_cases
 from interactive_rendering import has_selected_queued_input
 
@@ -25,6 +26,7 @@ def lifecycle_cases(binary, bridge, directory):
                      ("keyboard-queue", keyboard_queue_withdrawal),
                      ("rewind", readonly_rewind),
                      ("rewind-history", paginated_rewind),
+                     ("rewind-files", rewind_files),
                  ))
     cases.append(("model-setup", lambda: shared_model_editor(binary, bridge, directory / "model-setup")))
     cases.append(("setup-probe-progress", lambda: setup_probe_progress(binary, bridge, directory / "probe-progress")))
@@ -38,21 +40,21 @@ def verify_restored_tool(terminal, job, history):
         terminal.press("\x0f")
         terminal.expect("Ctrl+O show")
         terminal.press("\x1b[5~")
-        screen = terminal.expect(TOOL_BRIEF, also=("started in background", "Background job",
+        screen = terminal.expect(TOOL_PROGRAM, also=("started in background", "Background job",
                                                  f"{job['id']} · Completed"))["screen"]
-        assert screen.count(f"╭─ {TOOL_BRIEF}") == 1 and screen.count("Background job") == 1, screen
+        assert screen.count(f"╭─ {TOOL_PROGRAM}") == 1 and screen.count("Background job") == 1, screen
         terminal.press("\x1b[6~")
         terminal.press("\x0f")
         terminal.expect(TOOL_OUTPUT)
         return
-    screen = terminal.expect(TOOL_BRIEF)["screen"]
-    assert screen.count(f"╭─ {TOOL_BRIEF}") == 1 and "╰─ ok" in screen, f"{screen}\nCommitted tool: {history}"
+    screen = terminal.expect(TOOL_PROGRAM)["screen"]
+    assert screen.count(f"╭─ {TOOL_PROGRAM}") == 1 and "╰─ ok" in screen, f"{screen}\nCommitted tool: {history}"
     assert "--gated-tool" in screen and TOOL_OUTPUT in screen
     terminal.press("\x0f")
     collapsed = terminal.expect("Ctrl+O show")["screen"]
-    assert "Saved output" not in collapsed and "--gated-tool" not in collapsed
+    assert "Saved output" not in collapsed and "--gated-tool" in collapsed, collapsed
     terminal.press("\x0f")
-    terminal.expect(TOOL_BRIEF, also=(TOOL_OUTPUT,))
+    terminal.expect(TOOL_PROGRAM, also=(TOOL_OUTPUT,))
 
 
 def background_job_recovery(client, *, explicit=False):
@@ -682,15 +684,16 @@ def readonly_rewind(client):
             client.provider.next(prompt).text(reply)
             terminal.expect(reply, state="Finished")
         session = client.session(workspace)
-        terminal.press("\x1b")
-        terminal.expect("Press Esc again")
-        terminal.press("\x1b")
-        terminal.expect("Rewind to message", also=(discarded_prompt,))
-        terminal.press("\r")
-        terminal.expect("Enter commits", also=(discarded_prompt,))
-        terminal.press("\r")
-        terminal.expect("Rewound content · read-only", also=(discarded_prompt,))
-        terminal.press("\x03")
+        query = urlencode({"workspace": workspace, "agent": "main"})
+        history = client.request("GET", f"/sessions/{session}/history?{query}").as_json()
+        discarded = next(entry for entry in history["entries"] if entry.get("text") == discarded_prompt)
+        rewind = client.request("POST", f"/sessions/{session}/commands", payload={
+            "type": "rewind_message", "workspace": str(workspace), "agent": "main",
+            "command_id": "readonly-fixture-rewind", "target_event_id": discarded["id"],
+            "text": discarded_prompt,
+        }).as_json()
+        assert rewind["ok"], rewind
+        terminal.expect("Rewound content · read-only", absent=(discarded_reply,))
         terminal.type("Continue from the active anchor")
         screen = terminal.expect("Rewound content · read-only")["screen"]
         terminal.click_text(screen, "Messages" if "Messages" in screen else "Msg")
@@ -797,7 +800,7 @@ def keyboard_queue_withdrawal(client):
 
             selected = eventually("Up to select the newest exact queued input", selected_input)
             terminal.press("\x1b[3~")
-            restored = terminal.expect(withdrawn, state="Draft", also=(kept, "Input withdrawn"))["screen"]
+            restored = terminal.expect(withdrawn, state="Draft", also=(kept, "Removed from queue"))["screen"]
             def remaining_input():
                 value = pending_inputs()
                 return value if [entry["receipt"]["command_id"] for entry in value] == [ids[kept]] else None
@@ -824,81 +827,6 @@ def keyboard_queue_withdrawal(client):
         "withdrawn_input_in_request": withdrawn in messages,
     }, ensure_ascii=False, indent=2), encoding="utf-8")
     print("Keyboard Up/Delete withdrew the exact input, restored its draft and kept the other input queued.")
-
-
-def paginated_rewind(client):
-    workspace = client.workspace("work-rewind-history")
-    prompts = [f"HISTORY-PAGE-USER-{index:02d}" for index in range(1, 27)]
-    replies = [f"HISTORY-PAGE-ANSWER-{index:02d}" for index in range(1, 27)]
-    query = {"workspace": workspace, "agent": "main", "limit": 48}
-
-    def history():
-        return client.request("GET", f"/sessions/{session}/history?{urlencode(query)}").as_json()
-
-    def oldest_message(terminal):
-        terminal.press("\x1b")
-        terminal.expect("Press Esc again")
-        terminal.press("\x1b")
-        terminal.expect("Rewind to message", also=(
-            prompts[-1], "↑ at the top loads earlier messages",
-        ))
-        for turn in range(len(prompts) - 1, 0, -1):
-            terminal.press("\x1b[A")
-            screen = terminal.expect(f"› Turn {turn} ", also=(prompts[turn - 1],),
-                                     absent=("Loading earlier messages…",))["screen"]
-        return len(prompts) - 1, screen
-
-    with client.terminal(workspace) as terminal:
-        terminal.expect("New session", state="Ready")
-        first_id = None
-        for prompt, reply in zip(prompts, replies):
-            terminal.submit(prompt)
-            client.provider.next(prompt).text(reply)
-            terminal.expect(reply, state="Finished")
-            if first_id is None:
-                session = client.session(workspace)
-                first_id = next(entry["id"] for entry in history()["entries"]
-                                if entry["type"] == "user" and entry["text"] == prompt)
-        terminal.exit_cleanly()
-    before = history()
-    assert before["next_before"] is not None
-    assert all(entry["id"] != first_id for entry in before["entries"])
-    with client.terminal(workspace) as terminal:
-        terminal.resume(prompts[0])
-        terminal.expect(replies[-1], state="Finished")
-        cancelled_steps, cancelled = oldest_message(terminal)
-        assert cancelled_steps > 0
-        terminal.press("\x1b")
-        terminal.expect("Finished", absent=("Rewind to message",))
-        assert history() == before, "Browsing and cancelling rewind changed durable history"
-        client.provider.assert_idle()
-        confirmed_steps, selected = oldest_message(terminal)
-        terminal.press("\r")
-        confirmation = terminal.expect("Rewind to message · Turn 1", also=(prompts[0], "Enter commits"))["screen"]
-        terminal.press("\r")
-        terminal.expect("Rewound content · read-only", also=(prompts[0],))
-        rewound = history()
-        assert [group["target_event_id"] for group in rewound["rewind_groups"]] == [first_id]
-        assert not any(entry["type"] == "user" for entry in rewound["entries"])
-        terminal.press("\x03")
-        terminal.submit("Continue after the earliest paginated rewind")
-        call = client.provider.next("Continue after the earliest paginated rewind")
-        context = json.dumps(call.request["messages"])
-        assert all(text not in context for text in prompts + replies)
-        call.text("The earliest message was selected across history pages.")
-        terminal.press("\x1b[1;5F")
-        terminal.expect("The earliest message was selected across history pages.", state="Finished")
-        terminal.exit_cleanly()
-    client.provider.assert_idle()
-    (client.directory / "rewind-history.json").write_text(json.dumps({
-        "session": session, "committed_messages": len(prompts) + len(replies),
-        "initial_next_before": before["next_before"], "target_event_id": first_id,
-        "cancelled_page_steps": cancelled_steps, "confirmed_page_steps": confirmed_steps,
-        "cancelled_selection_screen": cancelled, "confirmed_selection_screen": selected,
-        "confirmation_screen": confirmation, "rewind_groups": rewound["rewind_groups"],
-        "discarded_content_in_next_request": any(text in context for text in prompts + replies),
-    }, ensure_ascii=False, indent=2), encoding="utf-8")
-    print("Rewind loaded beyond 48 committed messages, cancelled safely and confirmed the exact earliest event.")
 
 
 def runtime_credential_repair(binary, bridge, directory):

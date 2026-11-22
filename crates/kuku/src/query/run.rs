@@ -19,11 +19,11 @@ use super::helpers::{
     append_permission_decision, append_turn_cancelled, display_summary, now_timestamp,
     permission_candidate,
 };
-use super::slots::requires_workspace_ordering;
+use super::slots::query_workspace_access;
 use super::tool_exec::{execute_tool_call, run_tool_pre_hooks};
 use super::types::{
     ModelPhase, PendingPermission, PendingRun, PendingStep, PermissionChoice, QueuedToolCall, Run,
-    RunState, StreamingChunkState, UiEvent,
+    RunState, StreamingChunkState, UiEvent, WorkspaceAccess,
 };
 
 impl Drop for Run {
@@ -39,8 +39,15 @@ impl Drop for Run {
 }
 
 impl Run {
-    fn has_active_workspace_ordered_slot(&self) -> bool {
-        self.holds_job() || self.slots.values().any(|slot| slot.workspace_ordered)
+    fn active_workspace_access(&self) -> WorkspaceAccess {
+        if self.holds_job() {
+            return WorkspaceAccess::Exclusive;
+        }
+        self.slots
+            .values()
+            .map(|slot| slot.workspace_access)
+            .max()
+            .unwrap_or(WorkspaceAccess::Independent)
     }
 
     /// The session ID for this run.
@@ -123,9 +130,6 @@ impl Run {
         let event = loop {
             self.persist_deferred_runtime_logs();
 
-            if let Some(event) = self.promote_explicit_job()? {
-                break event;
-            }
             if matches!(&self.state, RunState::Pending(_)) {
                 if let Some(event) = self.try_process_queued_call().await? {
                     break self.defer_runtime_log_if_needed(event);
@@ -177,12 +181,12 @@ impl Run {
         &mut self,
         id: &str,
         envelope: ToolResultEnvelope,
-        job_wait: bool,
+        job_control: bool,
     ) -> Result<UiEvent> {
         let slot = self.slots.remove(id).expect("slot must exist");
         self.state.record_tool_completion(&envelope.status);
         let job_session = match &self.state {
-            RunState::Pending(pending) if job_wait => {
+            RunState::Pending(pending) if job_control => {
                 Some(super::runtime_tools::runtime_session(pending)?)
             }
             _ => None,
@@ -717,7 +721,7 @@ impl Run {
                 )));
             }
         };
-        let result = super::workspace_script::cancelled_permission(waiting)?;
+        let result = super::run_js::cancelled_permission(waiting)?;
         let mut store = EventStore::open(&waiting.pending.events_path)?;
         store.append(EventPayload::ToolResult {
             turn: waiting.pending.turn,
@@ -757,15 +761,12 @@ impl Run {
             .queued_tool_calls
             .pop_front()
             .expect("PendingPermission implies a queued tool call");
-        let QueuedToolCall {
-            tool_call,
-            display_summary: queued_summary,
-        } = queued;
+        let tool_call = &queued.tool_call;
         if pending.query.runtime.is_some() {
             super::provider::ensure_resolved(&mut pending)?;
-            super::runtime_tools::validate_prepared(&pending, &tool_call)?;
+            super::runtime_tools::validate_prepared(&pending, &queued)?;
         }
-        let (granted_tool, candidate) = if waiting.request.source == "workspace_script" {
+        let (granted_tool, candidate) = if waiting.request.source == "run_js" {
             (
                 waiting.request.tool.clone(),
                 waiting.request.candidate.clone(),
@@ -794,10 +795,6 @@ impl Run {
             &rule,
         )?;
         if pending.query.runtime.is_some() {
-            let queued = QueuedToolCall {
-                tool_call,
-                display_summary: queued_summary,
-            };
             let step = if matches!(choice, PermissionChoice::Deny) {
                 super::runtime_tools::reject(pending, queued)?
             } else {
@@ -811,6 +808,11 @@ impl Run {
             };
             return self.apply_pending_step(step).await;
         }
+        let QueuedToolCall {
+            tool_call,
+            display_summary: queued_summary,
+            ..
+        } = queued;
         let prior_events = EventStore::replay(&pending.events_path)?;
         if matches!(choice, PermissionChoice::Deny) {
             pending.record_tool_denied(&tool_call.name);
@@ -829,12 +831,10 @@ impl Run {
                 result: result.structured,
             }));
         }
-        if requires_workspace_ordering(&tool_call.name) && self.has_active_workspace_ordered_slot()
-        {
-            pending.queued_tool_calls.push_front(QueuedToolCall {
-                tool_call,
-                display_summary: queued_summary,
-            });
+        if query_workspace_access(&tool_call.name).conflicts_with(self.active_workspace_access()) {
+            pending
+                .queued_tool_calls
+                .push_front(QueuedToolCall::new(tool_call, queued_summary));
             self.state = RunState::Pending(Box::new(pending));
             return Ok(None);
         }
@@ -867,6 +867,8 @@ impl Run {
         pending.record_tool_call(&tool_call.name);
         let (slot, tool_kind) = super::slots::dispatch_tool_slot(super::slots::SlotDispatchArgs {
             capacity: crate::WorkspaceExecutionHost::default(),
+            workspace_access: query_workspace_access(&tool_call.name),
+            preview_bytes: pending.query.runtime_limits.max_preview_bytes,
             output: None,
             tool_name: tool_call.name.clone(),
             tool_id: tool_call.id.clone(),

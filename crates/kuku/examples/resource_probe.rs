@@ -4,6 +4,8 @@
     reason = "this caller reuses the integration SSE and configuration fixtures"
 )]
 mod common;
+#[path = "resource_probe/long_session.rs"]
+mod long_session;
 #[path = "resource_probe/workspace.rs"]
 mod workspace_probe;
 
@@ -30,12 +32,21 @@ async fn main() -> Result<(), AnyError> {
     if let Some(checks) = args.get("emit-checks") {
         return workspace_probe::emit_checks(checks.parse()?);
     }
+    if let Some(records) = args.get("emit-ingestion-log") {
+        return long_session::emit_log(records.parse()?);
+    }
     if let Some(milliseconds) = args.get("hold-process") {
         std::thread::sleep(Duration::from_millis(milliseconds.parse()?));
         return Ok(());
     }
     let output = PathBuf::from(required(&args, "output")?);
-    let report = probe(&args).await?;
+    let report = match args.get("long-session").map(String::as_str) {
+        Some("generate") => long_session::generate(&args).await?,
+        Some("prepare") => long_session::prepare(&args).await?,
+        Some("measure") => long_session::measure(&args).await?,
+        Some(_) => return Err("expected generate, prepare or measure for --long-session".into()),
+        None => probe(&args).await?,
+    };
     if let Some(parent) = output.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -426,7 +437,7 @@ fn tool_response(id: &str, name: &str, arguments: &Value) -> String {
 fn native_call(flag: &str, number: usize) -> Result<Value, AnyError> {
     let exe = std::env::current_exe()?;
     let program = exe.to_str().ok_or("resource probe path is not UTF-8")?;
-    Ok(json!({"program":program,"args":[flag,number.to_string()],"cwd":".","timeout":30}))
+    Ok(json!({"program":program,"args":[flag,number.to_string()],"cwd":"."}))
 }
 
 fn no_tool_results(request: &httpmock::prelude::HttpMockRequest) -> bool {
@@ -518,7 +529,11 @@ fn arguments() -> Result<BTreeMap<String, String>, AnyError> {
                 | "pressure-rounds"
                 | "emit-output"
                 | "emit-checks"
+                | "emit-ingestion-log"
                 | "hold-process"
+                | "long-session"
+                | "long-session-mib"
+                | "fixture"
         ) {
             return Err(format!("unknown argument {flag}").into());
         }

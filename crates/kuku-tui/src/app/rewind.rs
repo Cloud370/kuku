@@ -6,6 +6,9 @@ use crate::menu::{Choice, ChoiceKind, PickerKind, RewindHistory, RewindLoad, Tic
 use crate::text::{shorten, single_line};
 use crate::transcript::{HistoryRequest, MAX_BODY_BYTES, MAX_RECORDS};
 
+pub(crate) const REWIND_PAGE: usize = 12;
+const PREFETCH_UP_ROWS: usize = 2;
+
 pub(super) enum RewindWindow {
     Recent,
     Earlier,
@@ -26,6 +29,7 @@ impl App {
         if window_limited {
             next_before = choices.first().and_then(rewind_event_id);
         }
+        let preload = self.pane().exists && choices.len() < REWIND_PAGE && next_before.is_some();
         let picker = self.picker(PickerKind::Rewind, choices);
         picker.rewind_history = Some(RewindHistory {
             selection,
@@ -34,7 +38,10 @@ impl App {
             window_limited,
         });
         picker.selected = picker.choice_count().saturating_sub(1);
-        picker.header = rewind_history_header(next_before, false, window_limited);
+        picker.header = rewind_history_header(&picker.kind, next_before, false, window_limited);
+        if preload {
+            self.load_rewind_history(0);
+        }
     }
 
     pub(crate) fn rewind_picker_current(&mut self, ticket: u64) -> bool {
@@ -42,7 +49,9 @@ impl App {
         let Some(super::Modal::Picker(picker)) = &self.modal else {
             return false;
         };
-        if !matches!(picker.kind, PickerKind::Rewind) || picker.ticket.id != ticket {
+        if !matches!(picker.kind, PickerKind::Rewind | PickerKind::HistoryJump)
+            || picker.ticket.id != ticket
+        {
             return false;
         }
         let current = picker
@@ -61,7 +70,7 @@ impl App {
         let Some(super::Modal::Picker(picker)) = &self.modal else {
             return false;
         };
-        if !matches!(picker.kind, PickerKind::Rewind) {
+        if !matches!(picker.kind, PickerKind::Rewind | PickerKind::HistoryJump) {
             return false;
         }
         if !self.rewind_picker_current(picker.ticket.id) {
@@ -77,9 +86,25 @@ impl App {
         {
             return true;
         }
+        let pending_up = amount
+            .unsigned_abs()
+            .saturating_sub(picker.selected)
+            .min(REWIND_PAGE);
+        if amount > 0 {
+            if let Some(RewindHistory {
+                load: RewindLoad::Page { pending_up, .. },
+                ..
+            }) = &mut picker.rewind_history
+            {
+                *pending_up = 0;
+            }
+        }
         picker.move_by(amount);
-        if amount < 0 && picker.selected == 0 {
-            self.load_rewind_history();
+        if amount < 0
+            && (picker.selected == 0
+                || picker.selected <= PREFETCH_UP_ROWS && picker.problem.is_none())
+        {
+            self.load_rewind_history(pending_up);
         }
         true
     }
@@ -142,20 +167,28 @@ impl App {
         match result {
             Ok(text) => self.confirm_rewind_message(event_id, turn, text),
             Err(error) => {
-                picker.header =
-                    rewind_history_header(history.next_before, false, history.window_limited);
+                picker.header = rewind_history_header(
+                    &picker.kind,
+                    history.next_before,
+                    false,
+                    history.window_limited,
+                );
                 picker.problem = Some(format!("Message · {error} · Enter retries"));
             }
         }
     }
 
-    pub(crate) fn refresh_rewind_history(&mut self) {
+    pub(crate) fn refresh_rewind_history(&mut self, commit: u64) {
         if !self.require_service() {
             return;
         }
         let request = HistoryRequest::Recent;
         let selection = self.selection();
         let pane = self.pane_mut();
+        if commit <= pane.last_history_change {
+            return;
+        }
+        pane.last_history_change = commit;
         pane.transcript.invalidate_after_rewind();
         if pane.history_in_flight.is_some() {
             pane.history_invalidated = true;
@@ -166,35 +199,66 @@ impl App {
         self.effects.push(Job::History(selection, request));
     }
 
+    pub(super) fn restore_rewind_draft(&mut self, draft: &mut RewindDraft) -> bool {
+        *draft.restored.get_or_insert_with(|| {
+            let Some(pane) = self.panes.get_mut(&draft.address) else {
+                return false;
+            };
+            if pane.draft_revision != draft.revision
+                || !pane.draft.text().is_empty()
+                || !pane.value_attachments.is_empty()
+            {
+                return false;
+            }
+            pane.draft.set_text(draft.text.clone());
+            pane.draft_revision = pane.draft_revision.wrapping_add(1);
+            true
+        })
+    }
+
     pub(crate) fn rewind_message(&mut self, event_id: u64, text: String, restore_files: bool) {
-        if !self.require_service() {
+        if !self.pane().draft.text().is_empty() || !self.pane().value_attachments.is_empty() {
+            self.problem("Clear the draft before editing a past message");
             return;
         }
-        self.pane_mut().draft.remember(&text);
-        if self.rewind_drafts.len() >= super::pending::MAX_REWIND_DRAFTS {
-            if let Some(oldest) = self.rewind_drafts.keys().next().cloned() {
-                self.rewind_drafts.remove(&oldest);
-            }
+        self.issue_history_change(
+            Action::RewindMessage {
+                target_event_id: event_id,
+                text: text.clone(),
+                restore_files,
+            },
+            Some(text),
+        );
+    }
+
+    pub(super) fn issue_history_change(&mut self, action: Action, draft: Option<String>) {
+        if !self.require_service() {
+            return;
         }
         let address = self.active.clone();
         let command = Command {
             target: self.target(&address),
             command_id: new_id(),
-            action: Action::RewindMessage {
-                target_event_id: event_id,
-                text: text.clone(),
-                restore_files,
-            },
+            action,
         };
         let id = command.command_id.clone();
-        self.rewind_drafts.insert(
-            id.clone(),
-            RewindDraft {
-                address: address.clone(),
-                text,
-                revision: self.pane().draft_revision,
-            },
-        );
+        if let Some(text) = draft {
+            self.pane_mut().draft.remember(&text);
+            if self.rewind_drafts.len() >= super::pending::MAX_REWIND_DRAFTS {
+                if let Some(oldest) = self.rewind_drafts.keys().next().cloned() {
+                    self.rewind_drafts.remove(&oldest);
+                }
+            }
+            self.rewind_drafts.insert(
+                id.clone(),
+                RewindDraft {
+                    address,
+                    text,
+                    revision: self.pane().draft_revision,
+                    restored: None,
+                },
+            );
+        }
         self.pending.insert(
             id.clone(),
             PendingItem {
@@ -207,7 +271,7 @@ impl App {
         self.effects.push(Job::Save(command));
     }
 
-    fn load_rewind_history(&mut self) {
+    fn load_rewind_history(&mut self, pending_up: usize) {
         if !self.require_service() {
             return;
         }
@@ -217,26 +281,42 @@ impl App {
         let Some(history) = &mut picker.rewind_history else {
             return;
         };
-        if history.load != RewindLoad::Idle {
-            return;
+        match &mut history.load {
+            RewindLoad::Page {
+                pending_up: queued, ..
+            } => {
+                *queued = (*queued).max(pending_up);
+                return;
+            }
+            RewindLoad::Source { .. } => return,
+            RewindLoad::Idle => {}
         }
         let Some(before) = history.next_before else {
             return;
         };
-        history.load = RewindLoad::Page(before);
+        history.load = RewindLoad::Page {
+            before: Some(before),
+            pending_up,
+        };
         let selection = history.selection.clone();
         let window_limited = history.window_limited;
+        let selected = picker.selected;
         let ticket = picker.begin_search();
-        picker.header = rewind_history_header(Some(before), true, window_limited);
-        self.effects
-            .push(Job::RewindHistory(selection, ticket, before));
+        picker.selected = selected;
+        picker.header = rewind_history_header(&picker.kind, Some(before), true, window_limited);
+        let job = if picker.kind == PickerKind::HistoryJump {
+            Job::HistoryJump(selection, ticket, Some(before))
+        } else {
+            Job::RewindHistory(selection, ticket, before)
+        };
+        self.effects.push(job);
     }
 }
 
 pub(super) fn rewind_choice(event_id: u64, turn: u64, text: String) -> Choice {
     Choice::new(
         format!("Turn {turn}"),
-        shorten(&single_line(&text), 96),
+        shorten(&single_line(&text), 160),
         ChoiceKind::RewindMessage {
             event_id,
             turn,
@@ -246,21 +326,27 @@ pub(super) fn rewind_choice(event_id: u64, turn: u64, text: String) -> Choice {
 }
 
 pub(super) fn rewind_history_header(
+    kind: &PickerKind,
     next_before: Option<u64>,
     loading: bool,
     window_limited: bool,
 ) -> String {
-    let status = if loading {
-        "Loading earlier messages…"
-    } else if next_before.is_some() {
-        "↑ at the top loads earlier messages"
+    let items = if *kind == PickerKind::HistoryJump {
+        "turns"
     } else {
-        "All earlier messages loaded"
+        "messages"
+    };
+    let status = if loading {
+        format!("Loading earlier {items}…")
+    } else if next_before.is_some() {
+        format!("↑ at the top loads earlier {items}")
+    } else {
+        format!("All earlier {items} loaded")
     };
     if window_limited {
-        format!("{status}\nHistory window limit reached · reopen rewind for recent messages")
+        format!("{status}\nHistory window limit reached · reopen rewind for recent {items}")
     } else {
-        status.into()
+        status
     }
 }
 
@@ -285,9 +371,10 @@ pub(super) fn bound_rewind_choices(
     limited
 }
 
-fn rewind_event_id(choice: &Choice) -> Option<u64> {
-    match choice.kind {
-        ChoiceKind::RewindMessage { event_id, .. } => Some(event_id),
+pub(super) fn rewind_event_id(choice: &Choice) -> Option<u64> {
+    match &choice.kind {
+        ChoiceKind::RewindMessage { event_id, .. } => Some(*event_id),
+        ChoiceKind::HistoryJumpReview(destination) => Some(destination.point.event_id),
         _ => None,
     }
 }

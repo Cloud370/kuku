@@ -1,5 +1,5 @@
-use crossterm::event::KeyCode;
-use kuku_client::{Action, Error, HistoryEntry, HistoryKind, HistoryPage};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use kuku_client::{Action, Error, HistoryDestinations, HistoryEntry, HistoryKind, HistoryPage};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 
@@ -39,6 +39,163 @@ fn app() -> App {
         .replace_recent(page(&[100, 101, 102], Some(100)));
     app.open_rewind_picker();
     app
+}
+
+#[test]
+fn all_turns_opens_at_the_bottom_and_loads_older_turns_above_the_selection() {
+    let mut app = app();
+    app.pane_mut().exists = true;
+    press(&mut app, KeyCode::Esc);
+    app.key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
+    let (selection, ticket, before) = app
+        .effects
+        .iter()
+        .find_map(|job| match job {
+            Job::HistoryJump(selection, ticket, before) => {
+                Some((selection.clone(), *ticket, *before))
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(None, before);
+    app.update(Update::HistoryJump(
+        selection,
+        ticket,
+        before,
+        Ok(turn_page(&[102, 101, 100], Some(100))),
+    ));
+
+    let visible = |app: &App| -> Vec<u64> {
+        picker(app)
+            .visible_choices()
+            .into_iter()
+            .filter_map(|choice| match &choice.kind {
+                ChoiceKind::HistoryJumpReview(destination) => Some(destination.point.number),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!([100, 101, 102], visible(&app).as_slice());
+    assert_eq!(2, picker(&app).selected);
+
+    app.effects.clear();
+    app.modal_page = 3;
+    press(&mut app, KeyCode::PageUp);
+    let (selection, ticket, before) = app
+        .effects
+        .iter()
+        .find_map(|job| match job {
+            Job::HistoryJump(selection, ticket, before) => {
+                Some((selection.clone(), *ticket, *before))
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(Some(100), before);
+    app.update(Update::HistoryJump(
+        selection,
+        ticket,
+        before,
+        Ok(turn_page(&[99, 98, 97], None)),
+    ));
+    assert_eq!([97, 98, 99, 100, 101, 102], visible(&app).as_slice());
+    assert_eq!(99, visible(&app)[picker(&app).selected]);
+    press(&mut app, KeyCode::Down);
+    assert_eq!(100, visible(&app)[picker(&app).selected]);
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
+        if matches!(&prompt.kind, PromptKind::HistoryJump(review)
+            if review.destination.point.number == 100)));
+    let draft = "original prompt\nwith the full text";
+    let selection = app
+        .effects
+        .iter()
+        .find_map(|job| match job {
+            Job::HistoryJumpDraft(selection, _, 90) => Some(selection.clone()),
+            _ => None,
+        })
+        .unwrap();
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(100, visible(&app)[picker(&app).selected]);
+    app.effects.clear();
+    press(&mut app, KeyCode::Enter);
+    let ticket = app
+        .effects
+        .iter()
+        .find_map(|job| match job {
+            Job::HistoryJumpDraft(_, ticket, 90) => Some(*ticket),
+            _ => None,
+        })
+        .unwrap();
+    app.update(Update::HistoryJumpDraft(
+        selection.clone(),
+        ticket,
+        Ok(draft.into()),
+    ));
+    press(&mut app, KeyCode::Char(' '));
+    let ticket = app
+        .effects
+        .iter()
+        .find_map(|job| match job {
+            Job::FileRewindPreview(_, ticket, 100) => Some(*ticket),
+            _ => None,
+        })
+        .unwrap();
+    press(&mut app, KeyCode::Enter);
+    assert!(!app.effects.iter().any(|job| matches!(job, Job::Save(_))));
+    app.update(Update::FileRewindPreview(
+        selection,
+        ticket,
+        Ok(kuku_client::FileRewindPreview {
+            fingerprint: "approved".into(),
+            changes: vec![kuku_client::FileRewindChange {
+                path: "log.txt".into(),
+                remove: false,
+                lines: Some((1, 2)),
+            }],
+            skipped: vec![],
+        }),
+    ));
+    press(&mut app, KeyCode::Char(' '));
+    press(&mut app, KeyCode::Enter);
+    let command = app
+        .effects
+        .iter()
+        .find_map(|job| match job {
+            Job::Save(command) => Some(command),
+            _ => None,
+        })
+        .unwrap();
+    assert!(matches!(
+        command.action,
+        Action::HistoryJump {
+            target_event_id: 100,
+            file_restore: None
+        }
+    ));
+    assert_eq!(
+        app.rewind_drafts.get(&command.command_id).unwrap().text,
+        draft
+    );
+}
+
+fn turn_page(ids: &[u64], next_before: Option<u64>) -> HistoryDestinations {
+    let points: Vec<_> = ids
+        .iter()
+        .map(|id| {
+            serde_json::json!({
+                "event_id": id,
+            "can_continue": true,
+                "turn": id,
+                "number": id,
+                "preview": format!("message {id}"),
+            "current_branch": *id != 102,
+            "prompt_event_id": (*id == 100).then_some(90),
+            })
+        })
+        .collect();
+    serde_json::from_value(serde_json::json!({ "points": points, "next_before": next_before }))
+        .unwrap()
 }
 
 fn picker(app: &App) -> &Picker {
@@ -117,6 +274,12 @@ fn earliest(app: &mut App) {
     }
 }
 
+fn land_on_loaded_top(app: &mut App) {
+    for _ in 0..picker(app).selected {
+        press(app, KeyCode::Up);
+    }
+}
+
 fn retained_text_bytes(app: &App) -> usize {
     picker(app)
         .visible_choices()
@@ -146,13 +309,13 @@ fn render(app: &mut App) -> String {
     terminal
         .draw(|frame| crate::ui::render(frame, app))
         .unwrap();
-    terminal
-        .backend()
-        .buffer()
+    let buffer = terminal.backend().buffer();
+    buffer
         .content
-        .iter()
-        .map(|cell| cell.symbol())
-        .collect()
+        .chunks(usize::from(buffer.area.width))
+        .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[test]
@@ -191,7 +354,7 @@ fn boundary_loads_one_page_and_preserves_selection_through_two_older_pages() {
     );
     assert_eq!(3, app.pane().transcript.rewind_messages("main").len());
 
-    top(&mut app);
+    land_on_loaded_top(&mut app);
     let second = request(&mut app);
     assert_eq!(80, second.2);
     reply(&mut app, second, Ok(page(&[20, 40, 60], None)));
@@ -205,6 +368,36 @@ fn boundary_loads_one_page_and_preserves_selection_through_two_older_pages() {
     press(&mut app, KeyCode::Down);
     assert_eq!(40, selected(&app));
     assert!(app.effects.is_empty());
+}
+
+#[test]
+fn up_prefetches_and_resumes_a_single_blocked_step_when_the_page_arrives() {
+    let mut app = app();
+    press(&mut app, KeyCode::Up);
+    assert_eq!(101, selected(&app));
+    let loading = request(&mut app);
+    assert_eq!(100, loading.2);
+    press(&mut app, KeyCode::Up);
+    assert_eq!(100, selected(&app));
+    press(&mut app, KeyCode::Up);
+    press(&mut app, KeyCode::Up);
+    assert_eq!(100, selected(&app));
+    assert!(app.effects.is_empty());
+    reply(&mut app, loading, Ok(page(&[10, 20, 30], None)));
+    assert_eq!(30, selected(&app));
+    press(&mut app, KeyCode::Up);
+    assert_eq!(20, selected(&app));
+}
+
+#[test]
+fn page_up_carries_unused_steps_into_the_earlier_page() {
+    let mut app = app();
+    app.modal_page = 6;
+    top(&mut app);
+    assert_eq!(100, selected(&app));
+    let loading = request(&mut app);
+    reply(&mut app, loading, Ok(page(&[10, 20, 30, 40, 50, 60], None)));
+    assert_eq!(30, selected(&app));
 }
 
 #[test]
@@ -250,7 +443,7 @@ fn a_bounded_message_window_keeps_the_selection_and_can_reach_the_oldest_page() 
     app.open_rewind_picker();
     let mut before = 1000u64;
     for _ in 0..24 {
-        earliest(&mut app);
+        land_on_loaded_top(&mut app);
         let anchor = selected(&app);
         let loading = request(&mut app);
         assert_eq!(before, loading.2);
@@ -302,7 +495,7 @@ fn a_bounded_text_window_preserves_full_bodies_and_still_loads_earlier_messages(
     let mut before = 100;
     let mut oldest_body = String::new();
     for index in 0..12 {
-        earliest(&mut app);
+        land_on_loaded_top(&mut app);
         let anchor = selected(&app);
         let loading = request(&mut app);
         assert_eq!(before, loading.2);
@@ -336,7 +529,7 @@ fn a_bounded_text_window_preserves_full_bodies_and_still_loads_earlier_messages(
     press(&mut app, KeyCode::Enter);
     finish_source(&mut app, &oldest_body);
     assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
-        if matches!(&prompt.kind, PromptKind::RewindMessage { event_id, text }
+        if matches!(&prompt.kind, PromptKind::RewindMessage { event_id, text, .. }
             if *event_id == before && text == &oldest_body)));
 }
 
@@ -387,7 +580,7 @@ fn failed_pages_retry_with_a_new_ticket_and_old_retry_responses_are_ignored() {
     assert_eq!(vec![100, 101, 102], ids(&app));
     reply(&mut app, retry, Ok(page(&[70], None)));
     assert_eq!(vec![70, 100, 101, 102], ids(&app));
-    assert_eq!(100, selected(&app));
+    assert_eq!(70, selected(&app));
     assert!(picker(&app).problem.is_none());
 }
 
@@ -519,9 +712,8 @@ fn an_older_loaded_message_enters_confirmation_and_commits_its_exact_event() {
     press(&mut app, KeyCode::Enter);
     finish_source(&mut app, "message 1");
     assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
-        if matches!(&prompt.kind, PromptKind::RewindMessage { event_id: 1, text } if text == "message 1")
-            && prompt.title.contains("Turn 1")
-            && prompt.instructions.contains("[ ] Restore recorded file changes")));
+        if matches!(&prompt.kind, PromptKind::RewindMessage { event_id: 1, text, restore_files: false } if text == "message 1")
+            && prompt.title.contains("Turn 1")));
     assert!(app.pending.is_empty());
     press(&mut app, KeyCode::Enter);
     assert!(app.effects.iter().any(|job| matches!(job, Job::Save(command)
@@ -557,11 +749,36 @@ fn a_current_display_preview_loads_the_original_before_confirming_and_saving() {
     assert_eq!(17, request.2);
     source_reply(&mut app, request, Ok(full.clone()));
     assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
-        if matches!(&prompt.kind, PromptKind::RewindMessage { event_id: 17, text } if text == &full)));
+        if matches!(&prompt.kind, PromptKind::RewindMessage { event_id: 17, text, .. } if text == &full)));
     assert!(app.pending.is_empty());
     press(&mut app, KeyCode::Enter);
     assert!(app.effects.iter().any(|job| matches!(job, Job::Save(command)
         if matches!(&command.action, Action::RewindMessage { target_event_id: 17, text, restore_files: false } if text == &full))));
+}
+
+#[test]
+fn rewind_confirmation_keeps_file_effects_visible_while_scrolling_the_message() {
+    let mut app = connected_app();
+    let text = (1..=40)
+        .map(|line| format!("original message line {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    app.confirm_rewind_message(17, 4, text);
+    let initial = render(&mut app);
+    assert!(initial.contains("Files   Keep current files"));
+    assert!(initial.contains("Enter Edit this message"));
+    press(&mut app, KeyCode::PageDown);
+    press(&mut app, KeyCode::Char(' '));
+    let restoring = render(&mut app);
+    assert!(restoring.contains("Files   Restore from journal"));
+    assert!(restoring.contains("remove files recorded as created"));
+    assert!(restoring.contains("write_file and edit_file"));
+    assert!(restoring.contains("Script and shell changes"));
+    assert!(restoring.contains("Enter Edit and restore files"));
+    assert!(!restoring
+        .lines()
+        .any(|line| line.trim_end().ends_with("original message line 1")));
+    assert!(app.pending.is_empty());
 }
 
 #[test]
@@ -647,4 +864,19 @@ fn original_source_from_a_previous_agent_cannot_open_confirmation() {
     assert!(app.modal.is_none());
     assert!(app.pending.is_empty());
     assert!(!app.effects.iter().any(|job| matches!(job, Job::Save(_))));
+}
+
+#[test]
+fn rewind_command_opens_the_picker_without_dispatching_a_rewind() {
+    let mut app = connected_app();
+    app.pane_mut().exists = true;
+    app.pane_mut().transcript.replace_recent(page(&[17], None));
+    for character in "/rewind".chars() {
+        press(&mut app, KeyCode::Char(character));
+    }
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+        if matches!(picker.kind, PickerKind::HistoryJump) && picker.loading));
+    assert!(app.pending.is_empty());
+    assert!(app.pane().draft.text().is_empty());
 }

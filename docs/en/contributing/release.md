@@ -47,7 +47,7 @@ Example progression:
 
 Use the musl path for release packaging, not normal development.
 
-The release profile optimizes for size (`opt-level = "s"`), with stripped symbols, Thin LTO, four codegen units and aborting panics. Compare binary sizes using the same target, features and source revision. Development/test executables retain debug information and are not distribution artifacts.
+The release profile uses `opt-level = 2` for runtime performance, with stripped symbols, Thin LTO, four codegen units and aborting panics. Compare binary sizes using the same target, features and source revision. Development/test executables retain debug information and are not distribution artifacts.
 
 Release archives bundle the Web UI in the `kuku` executable. Use the acceptance selector's `interactive --archive` mode on the corresponding platform to verify an archive outside the source tree. [Installed client acceptance](testing.md#installed-client-acceptance)
 

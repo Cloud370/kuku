@@ -99,7 +99,7 @@ impl Session {
     ) -> Result<AgentSelection> {
         let config = self.resolve_defaults(address, config)?;
         let resolved = self.resolve_model(&config)?;
-        let tools = crate::tool::to_tool_schemas(&self.selected_tools(&config)?);
+        let tools = crate::tool::to_tool_schemas(&self.selected_tools(&config, &resolved)?);
         Ok(AgentSelection {
             request_url: crate::provider::prepare::request_url(&resolved)
                 .map_err(|failure| Error::InvalidArgument(failure.message))?,
@@ -136,7 +136,11 @@ impl Session {
         })
     }
 
-    pub(super) fn selected_tools(&self, config: &AgentConfig) -> Result<Vec<ToolDefinition>> {
+    pub(super) fn selected_tools(
+        &self,
+        config: &AgentConfig,
+        resolved: &ResolvedProvider,
+    ) -> Result<Vec<ToolDefinition>> {
         let disabled_collaboration_tool = |name: &str| {
             config.no_agents && matches!(name, "create_agent" | "send_message" | "list_agents")
         };
@@ -151,6 +155,13 @@ impl Session {
             )
             .filter(|tool| !matches!(tool.name.as_str(), "agent" | "fetch_web"))
             .filter(|tool| !disabled_collaboration_tool(tool.name.as_str()))
+            .filter(|tool| {
+                crate::query::runtime_tool_supported(
+                    resolved,
+                    self.inner.options.model_adapter.is_none(),
+                    &tool.name,
+                )
+            })
             .collect::<Vec<_>>();
         let mut selected_tools = if let Some(selected) = &config.tools {
             for name in selected {
@@ -172,7 +183,7 @@ impl Session {
         } else {
             available
         };
-        crate::tool::workspace_script::describe_selected_tools(&mut selected_tools);
+        crate::tool::run_js::describe_selected_tools(&mut selected_tools);
         Ok(selected_tools)
     }
 
@@ -225,8 +236,8 @@ impl Session {
             std::fs::canonicalize(workspace)
                 .map_err(|_| Error::InvalidWorkspacePath(workspace.display().to_string()))?;
         }
-        self.resolve_model(config)?;
-        self.selected_tools(config)?;
+        let resolved = self.resolve_model(config)?;
+        self.selected_tools(config, &resolved)?;
         Ok(())
     }
 }

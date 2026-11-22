@@ -8,6 +8,7 @@ Use this section to understand public behavior and the mental model behind kuku.
 - [File-Native Model](file-native-model.md)
 - [Agent Loop](agent-loop.md)
 - [Sessions](sessions.md)
+- [Performance](performance.md)
 - [Memory](memory.md)
 - [Agents and Skills](agents-and-skills.md)
 - [Permissions](permissions.md)

@@ -2,7 +2,8 @@ use crate::execution::OutputReference;
 use crate::tool::builtin::run_command::output::validate_output_id;
 use crate::{Error, Result};
 
-use super::record::{fingerprint, validate_address, validate_key};
+use super::jobs::JOB_DELIVERY_PREFIX;
+use super::record::fingerprint;
 use super::{AgentConfig, Input, InputSource, Receipt, Session, MAX_INPUT_VALUES};
 
 impl Session {
@@ -173,6 +174,34 @@ fn validate_reply(command_id: &str, address: &str, request_id: &str) -> Result<(
         return Err(Error::InvalidArgument(
             "request identity is empty or exceeds its supported byte limit".into(),
         ));
+    }
+    Ok(())
+}
+
+pub(super) fn validate_key(key: &str) -> Result<()> {
+    if key.is_empty() || key.len() > 128 {
+        return Err(Error::InvalidArgument(
+            "command identity must contain 1..=128 bytes".into(),
+        ));
+    }
+    if key.starts_with(JOB_DELIVERY_PREFIX) {
+        return Err(Error::InvalidArgument(
+            "command identity is reserved for Job completion".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn validate_address(address: &str) -> Result<()> {
+    if address.is_empty()
+        || address.len() > 64
+        || !address
+            .bytes()
+            .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_'))
+    {
+        return Err(Error::InvalidArgument(format!(
+            "agent address '{address}' must be flat and contain 1..=64 lowercase ASCII letters, digits, '-' or '_'"
+        )));
     }
     Ok(())
 }

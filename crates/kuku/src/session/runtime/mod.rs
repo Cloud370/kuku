@@ -1,13 +1,17 @@
 //! Session-owned execution, durable input delivery, and resumable observations.
 
 mod boundary;
+mod compaction;
 mod controls;
 mod creation;
 mod driver;
+mod history;
 mod jobs;
+mod media;
 mod observe;
 mod receipts;
 mod record;
+mod recovery;
 mod retention;
 mod selection;
 mod turns;
@@ -19,7 +23,7 @@ mod workspace_host;
 pub(crate) use workspace_host::WorkspaceWorkerPermit;
 pub use workspace_host::{WorkspaceExecutionHost, WorkspaceExecutionMetrics};
 
-pub(crate) use jobs::JobRequest;
+pub(crate) use jobs::{JobControl, JobRequest};
 pub(crate) use retention::{command_output_id, OutputReservation};
 pub(crate) use selection::resolve_agent_model;
 pub(crate) use values::OutputSelector;
@@ -31,6 +35,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::{broadcast, watch, Semaphore};
 use tokio::task::JoinHandle;
 
+use crate::event::store::JournalSummary;
 use crate::event::{EventStore, StoredEvent};
 use crate::execution::OutputReference;
 use crate::{Error, Result};
@@ -38,8 +43,11 @@ use crate::{Error, Result};
 pub use crate::tool::builtin::run_command::output::{
     OutputChunk, OutputRead, OutputSegment, OutputStream,
 };
+pub use history::{
+    FileRewindChange, FileRewindPreview, MessageRewind, SessionHistory, UserMessagePreview,
+};
 pub use observe::{Observation, ReplyPreview, ReplyPreviews, SessionObserver};
-pub use turns::TurnIndex;
+pub use turns::{HistoryPoint, TurnIndex};
 pub use types::{
     Activation, AgentConfig, AgentSnapshot, AgentStatus, AgentView, CacheWarning, CostTotals,
     Input, InputSource, InputStatus, InputTiming, JobResult, JobSnapshot, JobStatus,
@@ -50,7 +58,8 @@ pub use values::{
     NamedValue, NamedValueKind, NamedValueSource, MAX_INPUT_VALUES, MAX_VALUE_NAME_BYTES,
 };
 
-use record::{fingerprint, validate_address, validate_key, Command, Record, State};
+use receipts::{validate_address, validate_key};
+use record::{fingerprint, Command, Record, State};
 
 type WorkerOutcome = std::result::Result<(), String>;
 type CleanupOutcome = Option<WorkerOutcome>;
@@ -61,6 +70,7 @@ pub(crate) struct SessionInner {
     events_path: PathBuf,
     writer: Mutex<Option<EventStore>>,
     state: Mutex<State>,
+    startup: Mutex<crate::context::runtime::StartupCache>,
     value_writes: tokio::sync::Mutex<()>,
     workers: Mutex<HashMap<u64, Worker>>,
     worker_outcomes: Mutex<HashMap<String, (u64, WorkerOutcome)>>,
@@ -150,14 +160,16 @@ impl Session {
             }
         }
         let lease = SessionLease::acquire(events_path.clone())?;
-        let mut writer = EventStore::open(&events_path)?;
         let output_dir = retention::output_dir(&events_path)?;
-        let mut state = State {
-            outputs: retention::OutputStore::recover(&output_dir)?,
-            ..State::default()
-        };
-        let mut job_replay = jobs::JobReplay::default();
-        writer.visit(|event| reduce_event(&mut state, &mut job_replay, event))?;
+        let (mut writer, checkpoint) = recovery::open(
+            &events_path,
+            &output_dir,
+            &id,
+            options.limits.max_request_bytes,
+        )?;
+        let recovery::Projection {
+            mut state, startup, ..
+        } = checkpoint;
         creation::prepare_journal(
             &mut writer,
             &mut state,
@@ -168,11 +180,12 @@ impl Session {
         if let Some(claim) = &state.creation {
             options.prompts_dir = claim.prompts_dir.clone();
         }
+        usage::recover_compaction(&mut writer, &mut state)?;
         state.mark_interrupted();
         state.outputs.collect(
             &output_dir,
             options.limits.output_retention_secs,
-            &state.values.pinned_outputs(),
+            &state.pinned_outputs(),
         )?;
         let (live, _) = broadcast::channel(options.limits.observation_capacity);
         let model_capacity = Arc::new(Semaphore::new(options.limits.max_model_requests));
@@ -187,6 +200,7 @@ impl Session {
                 events_path,
                 writer: Mutex::new(Some(writer)),
                 state: Mutex::new(state),
+                startup: Mutex::new(startup),
                 value_writes: tokio::sync::Mutex::new(()),
                 workers: Mutex::new(HashMap::new()),
                 worker_outcomes: Mutex::new(HashMap::new()),
@@ -202,6 +216,14 @@ impl Session {
         };
         session.recover_jobs()?;
         Ok(session)
+    }
+
+    pub(crate) fn read_agent_events(&self, address: &str) -> Result<Vec<StoredEvent>> {
+        self.inner
+            .startup
+            .lock()
+            .unwrap()
+            .read(self.events_path(), address)
     }
 
     pub(crate) fn workspace_execution_host(&self) -> WorkspaceExecutionHost {
@@ -536,8 +558,38 @@ impl Session {
 
     /// Reconstruct retained agent snapshots without opening model or runtime resources.
     pub fn read_agents(events_path: &Path) -> Result<Vec<AgentSnapshot>> {
-        let (state, _) = load_state(events_path)?;
-        Ok(state.snapshots())
+        Self::read_agents_with_cursor(events_path).map(|(agents, _)| agents)
+    }
+
+    /// Read retained Agent snapshots and their committed cursor in one pass.
+    pub fn read_agents_with_cursor(events_path: &Path) -> Result<(Vec<AgentSnapshot>, u64)> {
+        let (state, cursor) = load_state(events_path)?;
+        Ok((state.snapshots(), cursor))
+    }
+
+    pub(super) fn listing(
+        events_path: &Path,
+        open: Option<&Session>,
+    ) -> Result<(JournalSummary, Vec<AgentSnapshot>, Option<String>)> {
+        fn details(
+            state: &State,
+            summary: JournalSummary,
+        ) -> (JournalSummary, Vec<AgentSnapshot>, Option<String>) {
+            let pending_title = summary
+                .title
+                .as_ref()
+                .is_none_or(String::is_empty)
+                .then(|| state.first_queued_text().map(str::to_owned))
+                .flatten();
+            (summary, state.snapshots(), pending_title)
+        }
+
+        if let Some(session) = open.filter(|session| session.inner.events_path == events_path) {
+            let state = session.inner.state.lock().unwrap();
+            return Ok(details(&state, EventStore::journal_summary(events_path)?));
+        }
+        let (state, summary) = recovery::read_listing(events_path)?;
+        Ok(details(&state, summary))
     }
 
     /// Read retained output as a trusted host by bounded range, search, or incremental cursor.
@@ -718,6 +770,11 @@ impl Session {
         Ok(request)
     }
 
+    pub(crate) fn question_requested_in_turn(&self, address: &str, turn: u64) -> Result<bool> {
+        let state = self.inner.state.lock().unwrap();
+        Ok(state.agent(address)?.last_question_turn == Some(turn))
+    }
+
     /// Await all cleanup and durable writes before releasing the session writer.
     pub async fn close(&self) -> Result<()> {
         let mut result = {
@@ -784,18 +841,52 @@ impl Session {
                 }
             }
         }
-        let _values = self.inner.value_writes.lock().await;
-        let mut state = self.inner.state.lock().unwrap();
-        if let Some(message) = state.cleanup_failures.values().next() {
-            failure.get_or_insert_with(|| Error::InvalidEventStream(message.clone()));
-        }
-        if let Err(error) = self.commit(&mut state, Record::SessionClosed) {
-            failure.get_or_insert(error);
-        }
-        state.closed = true;
-        if let Some(writer) = self.inner.writer.lock().unwrap().take() {
-            state.closed_cursor = writer.last_id();
-            writer.changed().notify_waiters();
+        let writer = {
+            let _values = self.inner.value_writes.lock().await;
+            let mut state = self.inner.state.lock().unwrap();
+            if let Some(message) = state.cleanup_failures.values().next() {
+                failure.get_or_insert_with(|| Error::InvalidEventStream(message.clone()));
+            }
+            if let Err(error) = self.commit(&mut state, Record::SessionClosed) {
+                failure.get_or_insert(error);
+            }
+            state.closed = true;
+            let writer = self.inner.writer.lock().unwrap().take();
+            if let Some(writer) = &writer {
+                state.closed_cursor = writer.last_id();
+                writer.changed().notify_waiters();
+            }
+            self.inner.startup.lock().unwrap().clear();
+            writer
+        };
+        if let Some(writer) = writer {
+            if failure.is_none()
+                && self.inner.settlement_failure.get().is_none()
+                && writer.needs_packing()
+            {
+                let id = self.id().to_owned();
+                let max_bytes = self.inner.options.limits.max_request_bytes;
+                let events = self.events_path().to_owned();
+                let pack = tokio::task::spawn_blocking(move || {
+                    recovery::pack(writer, &events, &id, max_bytes)
+                })
+                .await;
+                match pack {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => recovery::report_pack_failure(
+                        &self.inner.options.data_dir,
+                        self.id(),
+                        error,
+                    ),
+                    Err(error) => recovery::report_pack_failure(
+                        &self.inner.options.data_dir,
+                        self.id(),
+                        error,
+                    ),
+                }
+            } else {
+                drop(writer);
+            }
         }
         self.inner.lease.lock().unwrap().take();
         match (
@@ -843,13 +934,8 @@ fn load_state(events_path: &Path) -> Result<(State, u64)> {
     replay_state(events_path, State::default())
 }
 
-fn replay_state(events_path: &Path, mut state: State) -> Result<(State, u64)> {
-    let mut job_replay = jobs::JobReplay::default();
-    let cursor = EventStore::visit_path(events_path, |event| {
-        reduce_event(&mut state, &mut job_replay, event)
-    })?;
-    state.mark_interrupted();
-    Ok((state, cursor))
+fn replay_state(events_path: &Path, state: State) -> Result<(State, u64)> {
+    recovery::read_state(events_path, state)
 }
 
 fn reduce_event(

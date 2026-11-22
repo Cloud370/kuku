@@ -1,0 +1,79 @@
+schema_version = 1
+
+[filters.cargo-humans]
+description = "Cargo build, check, clippy, and libtest human output"
+match_command = '^cargo(?: \+[^ ]+)? (?:build|check|clippy|test)(?: |$)'
+strip_ansi = true
+strip_lines_matching = [
+  '^\s*(Compiling|Checking|Downloaded|Downloading|Updating|Fresh)\s+\S',
+  '^test .+ \.\.\. (ok|ignored(?:, .*)?)$',
+]
+head_lines = 16
+tail_lines = 12
+max_lines = 30
+
+[[tests.cargo-humans]]
+name = "Compiler location and progress"
+input = """
+    Checking sample v0.1.0
+\u001B[1merror[E0308]\u001B[0m: mismatched types
+ --> src/lib.rs:1:1
+"""
+expected = """
+error[E0308]: mismatched types
+ --> src/lib.rs:1:1"""
+
+[[tests.cargo-humans]]
+name = "Failing test and report"
+input = """
+test reads ... ok
+test validates ... FAILED
+test result: FAILED. 1 passed; 1 failed; 0 ignored
+"""
+expected = """
+test validates ... FAILED
+test result: FAILED. 1 passed; 1 failed; 0 ignored"""
+
+[filters.pytest-human]
+description = "Pytest's built-in progress, diagnostic, and result output"
+match_command = '^(?:pytest|(?:python(?:3(?:\.[0-9]+)?)?|py) -m pytest)(?: |$)'
+strip_ansi = true
+strip_lines_matching = ['^\S.*::.+ PASSED\s+\[\s*[0-9]+%\]\s*$']
+head_lines = 24
+tail_lines = 12
+max_lines = 37
+
+[[tests.pytest-human]]
+name = "Verbose progress with a failing assertion"
+input = """
+test_checkout.py::test_checkout[0] \u001B[31mFAILED\u001B[0m [  1%]
+test_checkout.py::test_checkout[1] \u001B[32mPASSED\u001B[0m [  2%]
+E       AssertionError: minimum checkout amount
+test_checkout.py:5: AssertionError
+========================= 1 failed, 84 passed in 0.06s =========================
+"""
+expected = """
+test_checkout.py::test_checkout[0] FAILED [  1%]
+E       AssertionError: minimum checkout amount
+test_checkout.py:5: AssertionError
+========================= 1 failed, 84 passed in 0.06s ========================="""
+
+[filters.tsc-diagnostics]
+description = "Repeated TypeScript compiler diagnostics in the plain reporter"
+match_command = '^tsc(?: |$)'
+strip_ansi = true
+
+[filters.go-test-human]
+description = "Go test package results and plain diagnostics"
+match_command = '^go test(?: |$)'
+strip_ansi = true
+
+[filters.node-test-spec]
+description = "Node.js spec test totals and diagnostics"
+match_command = '^node(?:js)? --test(?: |$)'
+strip_ansi = true
+
+[filters.git-status]
+description = "Line-oriented Git short or porcelain v1 status"
+match_command = '^git status(?: |$)'
+strip_ansi = true

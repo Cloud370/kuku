@@ -8,6 +8,7 @@ use std::time::Duration;
 use httpmock::prelude::{HttpMockRequest, MockServer, POST};
 use httpmock::Mock;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use kuku::config::{ProviderFormat, ProviderProfile, ThinkLevel};
 use kuku::event::{EventPayload, EventStore, ModelStopReason, StoredEvent};
@@ -139,6 +140,35 @@ fn responses_continuation(request: &HttpMockRequest) -> bool {
 }
 
 #[cfg(target_os = "linux")]
+const SEED_INSPECTION: &str =
+    r#"ls -la && echo "---" && sha256sum seed.txt && echo "---" && xxd seed.txt | head -5"#;
+
+#[cfg(target_os = "linux")]
+fn chat_with_native_command() -> String {
+    let args = json!({"program":"sh","args":["-c", SEED_INSPECTION]}).to_string();
+    let mut remaining = args.as_str();
+    let mut replay = String::with_capacity(CHAT.len());
+    for line in CHAT.split_inclusive('\n') {
+        if let Some(data) = line
+            .strip_prefix("data: ")
+            .filter(|line| line.contains("\"arguments\""))
+        {
+            let mut event: Value = serde_json::from_str(data).unwrap();
+            let chunk = &mut event["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"];
+            let bytes = remaining.len().min(chunk.as_str().unwrap().len());
+            let (prefix, suffix) = remaining.split_at(bytes);
+            *chunk = json!(prefix);
+            remaining = suffix;
+            replay.push_str(&format!("data: {event}\n"));
+        } else {
+            replay.push_str(line);
+        }
+    }
+    assert!(remaining.is_empty());
+    replay
+}
+
+#[cfg(target_os = "linux")]
 fn chat_continuation(request: &HttpMockRequest) -> bool {
     let body = body(request);
     let messages = body["messages"].as_array().unwrap();
@@ -154,10 +184,17 @@ fn chat_continuation(request: &HttpMockRequest) -> bool {
     calls.len() == 1
         && calls[0]["id"] == "gateway_2"
         && calls[0]["function"]["name"] == "run_command"
-        && calls[0]["function"]["arguments"].as_str().and_then(|args| serde_json::from_str::<Value>(args).ok()).is_some_and(|args| args["shell"] == "sh" && args["cwd"] == "." && args["command"] == "ls -la && echo \"---\" && sha256sum seed.txt && echo \"---\" && xxd seed.txt | head -5" && args["timeout"] == 30)
+        && calls[0]["function"]["arguments"]
+            .as_str()
+            .and_then(|args| serde_json::from_str::<Value>(args).ok())
+            .is_some_and(|args| {
+                args["program"] == "sh" && args["args"] == json!(["-c", SEED_INSPECTION])
+            })
         && results.len() == 1
         && results[0]["tool_call_id"] == "gateway_2"
-        && results[0]["content"].as_str().is_some_and(|output| output.contains("seed.txt") && output.contains("gateway seed con"))
+        && results[0]["content"].as_str().is_some_and(|output| {
+            output.contains("seed.txt") && output.contains("gateway seed con")
+        })
 }
 
 fn completion(format: ProviderFormat) -> String {
@@ -401,6 +438,19 @@ async fn transient_provider_retry_sends_identical_request_body_bytes() {
     assert_eq!(bodies[0], bodies[1]);
 
     let events = EventStore::replay(session.events_path()).unwrap();
+    let prepared = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::Unknown(value) if value["kind"] == "runtime.step_prepared" => Some(value),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(1, prepared.len());
+    assert_eq!(prepared[0]["request_bytes"], json!(bodies[0].len()));
+    assert_eq!(
+        prepared[0]["body_hash"],
+        format!("{:x}", Sha256::digest(&bodies[0]))
+    );
     assert!(events.iter().any(|event| matches!(
         &event.payload,
         EventPayload::Unknown(value) if value["kind"] == "runtime.model_retry"
@@ -772,7 +822,8 @@ async fn recorded_openrouter_chat_duplicate_finish_dispatches_command_and_contin
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     std::fs::write(workspace.path().join("seed.txt"), SEED).unwrap();
-    let first = mock(&server, "/chat/completions", initial, CHAT).await;
+    let chat = chat_with_native_command();
+    let first = mock(&server, "/chat/completions", initial, &chat).await;
     let second = mock(
         &server,
         "/chat/completions",

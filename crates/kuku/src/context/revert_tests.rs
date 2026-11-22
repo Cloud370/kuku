@@ -33,6 +33,7 @@ fn ui(id: u64, turn: u64, text: &str) -> StoredEvent {
             text: text.into(),
             from: None,
             via_tool_call_id: None,
+            job_delivery: false,
         },
     }
 }
@@ -229,6 +230,7 @@ fn message_user(id: u64, conversation: &str, turn: u64, text: &str) -> StoredEve
             text: text.into(),
             from: None,
             via_tool_call_id: None,
+            job_delivery: false,
         },
     }
 }

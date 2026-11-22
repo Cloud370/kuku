@@ -128,24 +128,30 @@ jobs:
           PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
           BASE="https://github.com/${{ github.repository }}/releases/download/${TAG}"
           LINUX_SHA="$(sha256sum kuku-linux-x86_64.tar.gz | awk '{print $1}')"
+          LINUX_SIZE="$(wc -c < kuku-linux-x86_64.tar.gz)"
           DARWIN_SHA="$(sha256sum kuku-darwin-aarch64.tar.gz | awk '{print $1}')"
+          DARWIN_SIZE="$(wc -c < kuku-darwin-aarch64.tar.gz)"
           WINDOWS_SHA="$(sha256sum kuku-windows-x86_64.zip | awk '{print $1}')"
+          WINDOWS_SIZE="$(wc -c < kuku-windows-x86_64.zip)"
           jq -n \
             --arg v "$VERSION" \
             --arg n "$NOTES" \
             --arg d "$PUB_DATE" \
             --arg b "$BASE" \
-            --arg ls "$LINUX_SHA" \
-            --arg ds "$DARWIN_SHA" \
-            --arg ws "$WINDOWS_SHA" \
+            --arg linux_sha "$LINUX_SHA" \
+            --argjson linux_size "$LINUX_SIZE" \
+            --arg darwin_sha "$DARWIN_SHA" \
+            --argjson darwin_size "$DARWIN_SIZE" \
+            --arg windows_sha "$WINDOWS_SHA" \
+            --argjson windows_size "$WINDOWS_SIZE" \
             '{
               version: $v,
               notes: $n,
               pub_date: $d,
               platforms: {
-                "linux-x86_64":   { url: ($b + "/kuku-linux-x86_64.tar.gz"),   sha256: $ls },
-                "darwin-aarch64": { url: ($b + "/kuku-darwin-aarch64.tar.gz"), sha256: $ds },
-                "windows-x86_64": { url: ($b + "/kuku-windows-x86_64.zip"),    sha256: $ws }
+                "linux-x86_64":   { url: ($b + "/kuku-linux-x86_64.tar.gz"),   sha256: $linux_sha, size: $linux_size },
+                "darwin-aarch64": { url: ($b + "/kuku-darwin-aarch64.tar.gz"), sha256: $darwin_sha, size: $darwin_size },
+                "windows-x86_64": { url: ($b + "/kuku-windows-x86_64.zip"),    sha256: $windows_sha, size: $windows_size }
               },
               desktop: {}
             }' > latest.json

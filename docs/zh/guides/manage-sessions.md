@@ -1,8 +1,10 @@
 # 管理 Session
 
-每个 Session 在 kuku home 下拥有一个目录和一份账本。
+用 `/resume` 重开当前工作区里的对话。用 `/agents` 选择下条消息发给谁。每个窗口各自保留草稿。[终端命令](../reference/cli.md#终端界面)
 
-在终端界面用 `/resume` 查找当前工作区的 Session，用 `/agents` 切换接收者。各窗口保留各自的草稿。一个客户端回复问题或授权后，观察该 Agent 的其他客户端可以看到结果。[终端界面命令](../reference/cli.md#终端界面)
+## 从过去的对话继续
+
+Agent 空闲时按 Ctrl+G 打开对话历史。比如从第 100 轮回到第 90 轮继续聊，之后再打开同一个列表，选已保存的第 100 轮，就能回到原来的对话。两边都保存在同一个 Session 里。[终端操作](../reference/cli.md#编辑过去的消息或接着聊)
 
 ## 列出 Session
 
@@ -68,9 +70,7 @@ kuku events <session-id> --agent review
 ```
 
 - `kuku show` 读取一个 Agent 的最后持久响应。
-- `kuku events` 读取持久账本事实。
-- 省略 `--agent` 检查完整账本。
-- 使用 `--after <id> --limit <n> --json` 读取有界持久页，默认上限为 100 条。
+- `kuku events` 默认显示最近 40 条已提交事件。用 `--agent` 或 `--kind` 找指定事件，用 `--all --json` 导出完整日志。[事件查询](../reference/cli.md#kuku-events)
 - Session 位于其他位置时，检查命令接受 `--workspace` 和 `--data-dir`。
 
 ## 保存和复用值

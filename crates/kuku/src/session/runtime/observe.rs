@@ -8,7 +8,8 @@ use crate::event::{EventStore, StoredEvent};
 use crate::query::{ModelPhase, UiEvent};
 use crate::Result;
 
-use super::record::{validate_key, State};
+use super::receipts::validate_key;
+use super::record::State;
 use super::{
     load_state, AgentSnapshot, AgentStatus, AgentView, InputStatus, PendingInput, Receipt, Session,
     TurnSummary,
@@ -177,6 +178,21 @@ impl Session {
         self.inner.state.lock().unwrap().turns.number(address, turn)
     }
 
+    /// Return the Agent's conversation points across all branches, newest first.
+    pub fn history_points(
+        &self,
+        address: &str,
+        before: u64,
+        limit: usize,
+    ) -> Vec<super::HistoryPoint> {
+        self.inner
+            .state
+            .lock()
+            .unwrap()
+            .turns
+            .history_points(address, before, limit)
+    }
+
     /// Return the durable first-admission time for a specific Agent Turn.
     pub fn turn_started_at_ms(&self, address: &str, turn: u64) -> Option<u64> {
         self.inner
@@ -245,6 +261,17 @@ impl Session {
             self.current_cursor()?
         };
         Ok((state.snapshot(address)?, cursor))
+    }
+
+    /// Return retained Agent snapshots and their committed cursor under one state lock.
+    pub fn agents_with_cursor(&self) -> Result<(Vec<AgentSnapshot>, u64)> {
+        let state = self.inner.state.lock().unwrap();
+        let cursor = if state.closed {
+            state.closed_cursor
+        } else {
+            self.current_cursor()?
+        };
+        Ok((state.snapshots(), cursor))
     }
 
     /// Read a closed session's selected snapshot and pending inputs without opening runtime resources.

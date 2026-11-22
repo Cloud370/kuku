@@ -5,10 +5,10 @@ Each Session writes one `events.jsonl` journal. Stored rows have a Session-local
 ## Reading a page
 
 ```bash
-kuku events SESSION_ID --after 0 --limit 100 --json
+kuku events SESSION_ID --limit 20 --json
 ```
 
-The CLI writes one JSON record per line to stdout and the next cursor to stderr. Pass that cursor to `--after` to read the next page. Add `--agent reviewer` to filter the current page. The cursor advances across all scanned records even if the filter produced an empty page. [CLI](cli.md#kuku-events) · [Server API](server-api.md)
+The CLI writes one JSON record per line to stdout. It prints the continuation argument to stderr. Pass `--before` to continue toward older records or select `--after` to start a forward scan. Add `--agent reviewer` or `--kind tool.result` to find matching facts. Use `--file <path> --all --json` to export a local journal, including sealed history. [CLI](cli.md#kuku-events) · [Server API](server-api.md)
 
 ## Facts recorded by the public Session SDK
 
@@ -16,7 +16,7 @@ The CLI writes one JSON record per line to stdout and the next cursor to stderr.
 |---|---|
 | `session.created`, `conversation.opened` | Session metadata and the opening of an Agent's conversation stream. |
 | `runtime.operation` | `record.operation` selects the state change. Examples include `session_claimed`, `agent_created`, `agent_configured`, `input_delivered`, `inputs_accepted`, `input_withdrawal` and `turn_settled`. `execution_started`, `agent_stopped` and `agent_resumed` track targeted execution control. Pending requests and their replies are also Session operations. |
-| `turn.started`, `message.user`, `model.response`, `model.error` | Input and provider outcomes for a Turn; model responses retain their normalized terminal state. `turn.completed`, `turn.interrupted` and `turn.cancelled` describe terminal outcomes. |
+| `turn.started`, `message.user`, `model.response`, `model.error` | Input and provider outcomes for a Turn. A `message.user` with `job_delivery: true` carries background execution feedback. Model responses retain their normalized terminal state. `turn.completed`, `turn.interrupted` and `turn.cancelled` describe terminal outcomes. |
 | `model.recovery` | A one-time output-limit retry for a direct `Query` or child-Agent query, with the failed and retry request IDs and recovery-notice provenance. |
 | `runtime.context_segment`, `runtime.context_admitted`, `runtime.step_prepared` | Static context, newly admitted messages and the prepared Step confirming their bounds. `body_hash` identifies the encoded request. |
 | `runtime.provider_report`, `runtime.model_usage`, `runtime.provider_replay` | Provider-reported metadata, token counters or protocol-native continuation data when available. |

@@ -1,8 +1,10 @@
 # Manage Sessions
 
-Each session is stored as one directory and one ledger under kuku home.
+Use `/resume` to reopen a conversation in your current workspace. Use `/agents` to choose who receives your next message. Each window keeps its own draft. [Terminal commands](../reference/cli.md#terminal-interface)
 
-In the terminal interface, use `/resume` to find a Session in the current workspace and `/agents` to switch recipients. Each window keeps its own draft. An accepted question or authorization reply becomes visible to other clients observing that Agent. [Terminal commands](../reference/cli.md#terminal-interface)
+## Pick up an earlier conversation
+
+In the terminal, press Ctrl+G when the Agent is idle to open conversation history. If you go back from Turn 100 to Turn 90 and continue there, open the same list later and choose the saved Turn 100 to return. Both conversations are saved in the same Session. [Terminal controls](../reference/cli.md#edit-a-past-message-or-continue-from-history)
 
 ## List Sessions
 
@@ -68,9 +70,7 @@ kuku events <session-id> --agent review
 ```
 
 - `kuku show` reads the last durable response for one Agent.
-- `kuku events` reads the persisted ledger facts.
-- omit `--agent` for full-ledger inspection.
-- use `--after <id> --limit <n> --json` for a bounded durable event page; the default limit is 100.
+- `kuku events` shows the latest 40 committed records. Use `--agent` or `--kind` to find specific events. Use `--all --json` to export the ledger. [Event inspection](../reference/cli.md#kuku-events)
 - inspection accepts `--workspace` and `--data-dir` when the Session lives elsewhere.
 
 ## Save and reuse a value
@@ -84,8 +84,6 @@ kuku delete <session-id>
 ```
 
 If the session belongs to another workspace, add `--workspace`.
-
-Closing a Session preserves its committed context and pending requests. While an input is queued, the interactive client can withdraw it. After model acceptance, the admitted context is immutable. [Sessions](../how-it-works/sessions.md)
 
 ## Related Pages
 

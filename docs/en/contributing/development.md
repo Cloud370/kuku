@@ -38,6 +38,8 @@ Credential loading and local evidence locations belong to [Testing](testing.md#c
 4. Review the actual diff against the task and evidence. Fix failures, or record the precise missing validation; a skipped live test is not a passing live test.
 5. Commit the logical result and update its task. A PR states the problem, resulting behavior, relevant checks actually run, and material limitations. Reference unfinished parent work without claiming the whole rewrite is complete.
 
+For interactive TUI changes, the [optional tmux workflow](testing.md#watch-a-tui-run-together-optional) lets a developer and coding Agent compare the original and rebuilt interfaces in separate windows.
+
 ## Workflow deliverables for the rewrite
 
 Use these checks to verify changes to the SDK and its hosts. The [runtime stages](../architecture/evolution.md#delivery-plan-public-sdk-execution-slice) explain the contracts behind them.

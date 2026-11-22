@@ -1,9 +1,13 @@
+use std::collections::VecDeque;
 use std::path::Path;
 
 use serde_json::{json, Value};
 
+use crate::context::revert::RewindVisibility;
 use crate::conversation::address::ConversationAddress;
-use crate::event::{EventPayload, EventStore};
+use crate::event::history::{event_conversation, event_turn};
+use crate::event::store::HistoryMarks;
+use crate::event::{EventPayload, EventStore, StoredEvent};
 use crate::tool::ToolResultEnvelope;
 
 const MAX_RESULT_CHARS: usize = 8_000;
@@ -58,159 +62,188 @@ fn run_query(
     args: &Value,
     events_path: &Path,
 ) -> Result<(String, usize, bool), crate::error::Error> {
-    let all_events = EventStore::replay(events_path)?;
-    if all_events.is_empty() {
-        return Ok(("[]".to_string(), 0, false));
-    }
+    let filters = QueryFilters::new(args);
+    let history = EventStore::history_marks(events_path, filters.conversation.is_some())?;
+    let visibility = RewindVisibility::new(&history.controls);
+    let legacy_target = active_main_turn_rollback_target(&history.controls);
+    let mut result = Matches::default();
+    let mut position = None;
+    let mut seen = false;
+    let mut turn = 0usize;
+    let mut seen_turn_end = false;
 
-    let skip_rolled_back = args
-        .get("skip_rolled_back")
-        .and_then(Value::as_bool)
-        .unwrap_or(true);
-
-    let filtered_refs;
-    let events: &[&crate::event::StoredEvent] = if skip_rolled_back {
-        filtered_refs = queryable_filtered_events(&all_events);
-        &filtered_refs
-    } else {
-        &[]
-    };
-
-    let kind_filter = args.get("kind").and_then(Value::as_str);
-    let conversation_filter = args.get("conversation").and_then(Value::as_str);
-    let after = args.get("after").and_then(Value::as_u64).unwrap_or(0);
-    let search = args.get("search").and_then(Value::as_str);
-    let from_turn = args.get("from_turn").and_then(Value::as_u64).unwrap_or(0) as usize;
-    let to_turn = args
-        .get("to_turn")
-        .and_then(Value::as_u64)
-        .map(|v| v as usize);
-    let limit = args
-        .get("limit")
-        .and_then(Value::as_u64)
-        .unwrap_or(DEFAULT_LIMIT as u64) as usize;
-
-    let turn_map = if skip_rolled_back {
-        build_turn_map_from_filtered(events)
-    } else {
-        build_turn_map_from_events(&all_events)
-    };
-    let turn_conversations = build_turn_conversations(&all_events);
-
-    let iter: Box<dyn Iterator<Item = &crate::event::StoredEvent>> = if skip_rolled_back {
-        Box::new(events.iter().rev().copied())
-    } else {
-        Box::new(all_events.iter().rev())
-    };
-
-    let mut matched = Vec::new();
-    for event in iter {
-        if matched.len() >= limit {
+    'history: loop {
+        let page = EventStore::read_page_before(events_path, position, 256)?;
+        let Some(first) = page.first() else {
             break;
-        }
-
-        if event.id <= after {
-            continue;
-        }
-
-        if kind_filter.is_none() && !include_in_default_results(&event.payload) {
-            continue;
-        }
-
-        let Some(&turn_idx) = turn_map.get(&event.id) else {
-            continue;
         };
-        if turn_idx < from_turn {
-            continue;
-        }
-        if let Some(to) = to_turn {
-            if turn_idx > to {
+        seen = true;
+        position = Some(first.id);
+        for event in page.iter().rev() {
+            if event.id <= filters.after || result.count >= filters.limit {
+                break 'history;
+            }
+            if filters.skip_rolled_back
+                && !visible_event(event, &history, &visibility, legacy_target)
+            {
                 continue;
             }
-        }
-
-        if let Some(filter) = kind_filter {
-            if !event_type_matches(&event.payload, filter) {
-                continue;
+            let age = turn;
+            if matches!(
+                event.payload,
+                EventPayload::TurnCompleted { .. }
+                    | EventPayload::TurnCancelled { .. }
+                    | EventPayload::TurnInterrupted { .. }
+            ) {
+                turn += usize::from(seen_turn_end);
+                seen_turn_end = true;
+            }
+            if filters.to_turn.is_some_and(|maximum| age > maximum) {
+                break 'history;
+            }
+            if age >= filters.from_turn && filters.matches(&event.payload, &history) {
+                result.push(format_event(event));
             }
         }
-
-        if let Some(conversation) = conversation_filter {
-            if !event_matches_conversation(&event.payload, conversation, &turn_conversations) {
-                continue;
-            }
-        }
-
-        if let Some(query) = search {
-            let serialized = serde_json::to_string(&event.payload).unwrap_or_default();
-            if !serialized.to_lowercase().contains(&query.to_lowercase()) {
-                continue;
-            }
-        }
-
-        matched.push(event);
     }
-
-    matched.reverse();
-
-    let mut output = String::from("[\n");
-    let mut total_chars = 2;
-    let mut truncated = false;
-    for (i, event) in matched.iter().enumerate() {
-        let entry = format_event(event);
-        let entry_chars = entry.chars().count();
-        if total_chars + entry_chars + 4 > MAX_RESULT_CHARS && i > 0 {
-            output.push_str("\n... (truncated, total output cap reached)");
-            truncated = true;
-            break;
-        }
-        if i > 0 {
-            output.push_str(",\n");
-        }
-        output.push_str(&entry);
-        total_chars += entry_chars + 2;
+    if seen {
+        Ok(result.render())
+    } else {
+        Ok(("[]".into(), 0, false))
     }
-    output.push_str("\n]");
-    Ok((output, matched.len(), truncated))
 }
 
-fn queryable_filtered_events(
-    all_events: &[crate::event::StoredEvent],
-) -> Vec<&crate::event::StoredEvent> {
-    let target_turn = active_main_turn_rollback_target(all_events);
-    crate::context::revert::filter_rolled_back_events(all_events)
-        .into_iter()
-        .filter(|event| {
-            let Some(target_turn) = target_turn else {
-                return true;
-            };
-            match &event.payload {
-                EventPayload::TurnStarted { turn, .. }
-                | EventPayload::MessageUser { turn, .. }
-                | EventPayload::ModelResponse { turn, .. }
-                | EventPayload::ModelError { turn, .. }
-                | EventPayload::ToolCall {
-                    turn,
-                    conversation: None,
-                    ..
-                }
-                | EventPayload::ToolResult {
-                    turn,
-                    conversation: None,
-                    ..
-                }
-                | EventPayload::PermissionAllow { turn, .. }
-                | EventPayload::PermissionRequested { turn, .. }
-                | EventPayload::PermissionDeny { turn, .. }
-                | EventPayload::ContextSources { turn, .. }
-                | EventPayload::Handoff { turn, .. }
-                | EventPayload::TurnCompleted { turn, .. }
-                | EventPayload::TurnCancelled { turn, .. }
-                | EventPayload::TurnInterrupted { turn, .. } => *turn < target_turn,
-                _ => true,
-            }
+struct QueryFilters<'a> {
+    kind: Option<&'a str>,
+    conversation: Option<&'a str>,
+    search: Option<String>,
+    skip_rolled_back: bool,
+    after: u64,
+    from_turn: usize,
+    to_turn: Option<usize>,
+    limit: usize,
+}
+
+impl<'a> QueryFilters<'a> {
+    fn new(args: &'a Value) -> Self {
+        Self {
+            kind: args["kind"].as_str(),
+            conversation: args["conversation"].as_str(),
+            search: args["search"].as_str().map(str::to_lowercase),
+            skip_rolled_back: args["skip_rolled_back"].as_bool().unwrap_or(true),
+            after: args["after"].as_u64().unwrap_or_default(),
+            from_turn: args["from_turn"].as_u64().unwrap_or_default() as usize,
+            to_turn: args["to_turn"].as_u64().map(|turn| turn as usize),
+            limit: args["limit"].as_u64().unwrap_or(DEFAULT_LIMIT as u64) as usize,
+        }
+    }
+
+    fn matches(&self, payload: &EventPayload, history: &HistoryMarks) -> bool {
+        self.kind.map_or_else(
+            || !matches!(payload, EventPayload::ContextSkills { .. }),
+            |kind| payload.kind_name() == kind,
+        ) && self.conversation.is_none_or(|conversation| {
+            let owner = event_conversation(payload).or_else(|| {
+                event_turn(payload)
+                    .and_then(|turn| history.turn_owners.get(&turn))
+                    .map(|owners| owners.first.as_str())
+            });
+            owner.map_or_else(
+                || {
+                    conversation == ConversationAddress::MAIN.as_str()
+                        && unscoped_main_event(payload)
+                },
+                |owner| owner == conversation,
+            )
+        }) && self.search.as_ref().is_none_or(|query| {
+            serde_json::to_string(payload)
+                .unwrap_or_default()
+                .to_lowercase()
+                .contains(query)
         })
-        .collect()
+    }
+}
+
+#[derive(Default)]
+struct Matches {
+    entries: VecDeque<(String, usize)>,
+    size: usize,
+    count: usize,
+    truncated: bool,
+}
+
+impl Matches {
+    fn push(&mut self, display: String) {
+        let size = display.chars().count() + 2;
+        self.entries.push_front((display, size));
+        self.size += size;
+        self.count += 1;
+        while self.entries.len() > 1 && self.size + 4 > MAX_RESULT_CHARS {
+            self.size -= self.entries.pop_back().unwrap().1;
+            self.truncated = true;
+        }
+    }
+
+    fn render(self) -> (String, usize, bool) {
+        let mut output = String::from("[\n");
+        for (index, (entry, _)) in self.entries.iter().enumerate() {
+            if index > 0 {
+                output.push_str(",\n");
+            }
+            output.push_str(entry);
+        }
+        if self.truncated {
+            output.push_str("\n... (truncated, total output cap reached)");
+        }
+        output.push_str("\n]");
+        (output, self.count, self.truncated)
+    }
+}
+
+fn visible_event(
+    event: &StoredEvent,
+    history: &HistoryMarks,
+    visibility: &RewindVisibility,
+    legacy_target: Option<u64>,
+) -> bool {
+    let owner = event_conversation(&event.payload)
+        .or_else(|| match &event.payload {
+            EventPayload::Unknown(value) => value["record"]["address"]
+                .as_str()
+                .or_else(|| value["agent"].as_str()),
+            _ => None,
+        })
+        .or_else(|| {
+            event_turn(&event.payload)
+                .and_then(|turn| history.turn_owners.get(&turn))
+                .map(|owners| owners.last.as_str())
+        });
+    visibility.includes(event, owner)
+        && legacy_target.is_none_or(|target| match &event.payload {
+            EventPayload::TurnStarted { turn, .. }
+            | EventPayload::MessageUser { turn, .. }
+            | EventPayload::ModelResponse { turn, .. }
+            | EventPayload::ModelError { turn, .. }
+            | EventPayload::ToolCall {
+                turn,
+                conversation: None,
+                ..
+            }
+            | EventPayload::ToolResult {
+                turn,
+                conversation: None,
+                ..
+            }
+            | EventPayload::PermissionAllow { turn, .. }
+            | EventPayload::PermissionRequested { turn, .. }
+            | EventPayload::PermissionDeny { turn, .. }
+            | EventPayload::ContextSources { turn, .. }
+            | EventPayload::Handoff { turn, .. }
+            | EventPayload::TurnCompleted { turn, .. }
+            | EventPayload::TurnCancelled { turn, .. }
+            | EventPayload::TurnInterrupted { turn, .. } => *turn < target,
+            _ => true,
+        })
 }
 
 fn active_main_turn_rollback_target(all_events: &[crate::event::StoredEvent]) -> Option<u64> {
@@ -245,119 +278,6 @@ fn active_main_turn_rollback_target(all_events: &[crate::event::StoredEvent]) ->
         })
 }
 
-fn build_turn_map_from_events(
-    events: &[crate::event::StoredEvent],
-) -> std::collections::HashMap<u64, usize> {
-    let mut map = std::collections::HashMap::new();
-    let mut current_turn: usize = 0;
-    let mut seen_turn_end = false;
-
-    for event in events.iter().rev() {
-        map.insert(event.id, current_turn);
-        if matches!(
-            event.payload,
-            EventPayload::TurnCompleted { .. }
-                | EventPayload::TurnCancelled { .. }
-                | EventPayload::TurnInterrupted { .. }
-        ) {
-            if seen_turn_end {
-                current_turn += 1;
-            }
-            seen_turn_end = true;
-        }
-    }
-    map
-}
-
-fn build_turn_map_from_filtered(
-    events: &[&crate::event::StoredEvent],
-) -> std::collections::HashMap<u64, usize> {
-    let mut map = std::collections::HashMap::new();
-    let mut current_turn: usize = 0;
-    let mut seen_turn_end = false;
-
-    for event in events.iter().rev() {
-        map.insert(event.id, current_turn);
-        if matches!(
-            event.payload,
-            EventPayload::TurnCompleted { .. }
-                | EventPayload::TurnCancelled { .. }
-                | EventPayload::TurnInterrupted { .. }
-        ) {
-            if seen_turn_end {
-                current_turn += 1;
-            }
-            seen_turn_end = true;
-        }
-    }
-
-    map
-}
-
-fn event_type_matches(payload: &EventPayload, filter: &str) -> bool {
-    payload.kind_name() == filter
-}
-
-fn build_turn_conversations(
-    events: &[crate::event::StoredEvent],
-) -> std::collections::HashMap<u64, String> {
-    let mut map = std::collections::HashMap::new();
-    for event in events {
-        if let (Some(turn), Some(conversation)) = (
-            event_turn(&event.payload),
-            event_conversation(&event.payload),
-        ) {
-            map.entry(turn).or_insert_with(|| conversation.to_string());
-        }
-    }
-    map
-}
-
-fn event_matches_conversation(
-    payload: &EventPayload,
-    conversation: &str,
-    turn_conversations: &std::collections::HashMap<u64, String>,
-) -> bool {
-    if let Some(value) = event_conversation(payload) {
-        return value == conversation;
-    }
-    if let Some(turn) = event_turn(payload) {
-        if let Some(value) = turn_conversations.get(&turn) {
-            return value == conversation;
-        }
-    }
-    conversation == ConversationAddress::MAIN.as_str() && unscoped_main_event(payload)
-}
-
-fn event_turn(payload: &EventPayload) -> Option<u64> {
-    match payload {
-        EventPayload::ContextSources { turn, .. }
-        | EventPayload::ContextSkills { turn, .. }
-        | EventPayload::ModelResponse { turn, .. }
-        | EventPayload::ModelError { turn, .. }
-        | EventPayload::ModelRecovery { turn, .. }
-        | EventPayload::ToolCall { turn, .. }
-        | EventPayload::PermissionRequested { turn, .. }
-        | EventPayload::PermissionAllow { turn, .. }
-        | EventPayload::PermissionDeny { turn, .. }
-        | EventPayload::ToolResult { turn, .. }
-        | EventPayload::Handoff { turn, .. }
-        | EventPayload::PromptSnapshot { turn, .. }
-        | EventPayload::MessageUser { turn, .. }
-        | EventPayload::MessageAssistant { turn, .. }
-        | EventPayload::TurnStarted { turn, .. }
-        | EventPayload::TurnCompleted { turn, .. }
-        | EventPayload::TurnCancelled { turn, .. }
-        | EventPayload::TurnInterrupted { turn, .. } => Some(*turn),
-        EventPayload::SessionCreated { .. }
-        | EventPayload::ConversationOpened { .. }
-        | EventPayload::ConversationBound { .. }
-        | EventPayload::ConversationRollback { .. }
-        | EventPayload::ConversationRollbackUndone { .. }
-        | EventPayload::Unknown(_) => None,
-    }
-}
-
 fn unscoped_main_event(payload: &EventPayload) -> bool {
     matches!(
         payload,
@@ -381,10 +301,6 @@ fn unscoped_main_event(payload: &EventPayload) -> bool {
     )
 }
 
-fn include_in_default_results(payload: &EventPayload) -> bool {
-    !matches!(payload, EventPayload::ContextSkills { .. })
-}
-
 fn format_event(event: &crate::event::StoredEvent) -> String {
     let mut json = serde_json::json!({
         "id": event.id,
@@ -399,27 +315,6 @@ fn format_event(event: &crate::event::StoredEvent) -> String {
         }
     }
     truncate_json_string(&serde_json::to_string(&json).unwrap_or_default())
-}
-
-fn event_conversation(payload: &EventPayload) -> Option<&str> {
-    match payload {
-        EventPayload::ToolCall { conversation, .. }
-        | EventPayload::ToolResult { conversation, .. } => conversation.as_deref(),
-        EventPayload::ConversationOpened { conversation, .. }
-        | EventPayload::ConversationBound { conversation, .. }
-        | EventPayload::PromptSnapshot { conversation, .. }
-        | EventPayload::MessageUser { conversation, .. }
-        | EventPayload::MessageAssistant { conversation, .. }
-        | EventPayload::TurnStarted { conversation, .. }
-        | EventPayload::TurnCompleted { conversation, .. }
-        | EventPayload::TurnCancelled { conversation, .. }
-        | EventPayload::TurnInterrupted { conversation, .. }
-        | EventPayload::ConversationRollback { conversation, .. }
-        | EventPayload::ConversationRollbackUndone { conversation, .. }
-        | EventPayload::ContextSkills { conversation, .. } => Some(conversation.as_str()),
-        EventPayload::ModelRecovery { conversation, .. } => Some(conversation.as_str()),
-        _ => None,
-    }
 }
 
 fn truncate_value(key: &str, value: &Value) -> Value {

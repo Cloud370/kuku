@@ -120,6 +120,7 @@ async fn conversation_rollback_is_scoped() {
             text: "main-1".to_string(),
             from: None,
             via_tool_call_id: None,
+            job_delivery: false,
         })
         .unwrap();
     store
@@ -130,6 +131,7 @@ async fn conversation_rollback_is_scoped() {
             text: "review-1".to_string(),
             from: None,
             via_tool_call_id: None,
+            job_delivery: false,
         })
         .unwrap();
     store
@@ -140,6 +142,7 @@ async fn conversation_rollback_is_scoped() {
             text: "review-2".to_string(),
             from: None,
             via_tool_call_id: None,
+            job_delivery: false,
         })
         .unwrap();
     let rollback = store
@@ -159,6 +162,7 @@ async fn conversation_rollback_is_scoped() {
             text: "main-2".to_string(),
             from: None,
             via_tool_call_id: None,
+            job_delivery: false,
         })
         .unwrap();
     store
@@ -454,6 +458,7 @@ async fn resume_marks_unterminated_main_turn_interrupted() {
             text: "first".to_string(),
             from: None,
             via_tool_call_id: None,
+            job_delivery: false,
         })
         .unwrap();
     drop(store);

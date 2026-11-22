@@ -1,3 +1,4 @@
+mod compaction;
 mod dispatch;
 mod resolve;
 pub(super) use resolve::usable_model_routes;
@@ -42,7 +43,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
     let resolved_config = resolved.config.clone();
     let registry = resolved.registry.clone();
     if pending.query.runtime.is_some() {
-        let context = super::frozen::prepare(&mut pending)?;
+        let context = super::frozen::prepare(&mut pending, false)?;
         pending.request_base = Some(context.request);
         return dispatch_provider_step(pending, resolved_config, Vec::new(), Some(context.commit))
             .await;
@@ -465,6 +466,52 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
     pending.request_base = Some(request_base);
 
     dispatch_provider_step(pending, resolved_config, existing_events, None).await
+}
+
+pub(super) async fn compact_context(mut pending: PendingRun, closed_turn: bool) -> Result<()> {
+    ensure_resolved(&mut pending)?;
+    let resolved = pending
+        .resolved
+        .as_ref()
+        .expect("resolved runtime exists")
+        .config
+        .clone();
+    let capacity = pending
+        .query
+        .model_capacity
+        .clone()
+        .expect("Session model capacity");
+    let _permit = tokio::select! {
+        biased;
+        _ = pending.cancel_token.notified() => return Ok(()),
+        permit = capacity.acquire_owned() => permit.map_err(|_| crate::Error::InvalidArgument("session model capacity is closed".into()))?,
+    };
+    let mut context = super::frozen::prepare(&mut pending, true)?;
+    let correlation = crate::provider::types::ProviderCorrelation {
+        session_id: pending.session_id.clone(),
+        agent_address: pending.conversation.as_str().into(),
+        connection_name: resolved.connection_name.clone(),
+        workspace: pending.workspace.clone(),
+    };
+    let before = dispatch::prepare_request(&pending, &resolved, &correlation, &context.request)?;
+    pending.request_base = Some(context.request);
+    if matches!(
+        Box::pin(compaction::compact(
+            &mut pending,
+            &mut context.commit,
+            &resolved,
+            &correlation,
+            before.body.as_bytes().len(),
+            compaction::Trigger::Manual { closed_turn }
+        ))
+        .await?,
+        compaction::Outcome::Keep
+    ) {
+        return Err(crate::Error::InvalidArgument(
+            "this context could not be made smaller within the available limits".into(),
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn require_runtime_execution(pending: &PendingRun) -> Result<()> {

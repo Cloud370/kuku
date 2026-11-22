@@ -283,6 +283,23 @@ fn render_activity(app: &App, width: usize, frame: ActivityFrame) -> Line<'stati
         line.push_span(Span::styled(format!("{metric:<METER_SLOT$}"), muted));
     }
 
+    if let Some(jobs) = app
+        .pane()
+        .snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.agent.running_jobs)
+        .filter(|jobs| *jobs > 0)
+    {
+        let label = if jobs == 1 { "job" } else { "jobs" };
+        let summary = format!(" · {jobs} {label}");
+        if left_width.saturating_sub(line.width()) >= summary.width() {
+            line.push_span(Span::styled(summary, muted));
+            if left_width.saturating_sub(line.width()) >= " · /jobs".width() {
+                line.push_span(Span::styled(" · /jobs", muted));
+            }
+        }
+    }
+
     let key = Shortcut::CYCLE_THINKING.label;
     let action = " think";
     let key_width = 2 + key.width() + action.width();

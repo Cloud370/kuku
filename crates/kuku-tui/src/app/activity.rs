@@ -405,7 +405,7 @@ impl SubmissionStatus {
             Self::Discarding => "Discarding send",
             Self::Queued => "Input queued",
             Self::Accepted => "Input accepted",
-            Self::Withdrawn => "Input withdrawn",
+            Self::Withdrawn => "Removed from queue",
             Self::Confirmed => "Receipt confirmed",
         }
     }
@@ -443,15 +443,26 @@ impl App {
     pub(super) fn observe(&mut self, event: Observation) {
         let active_address = self.active.clone();
         let active_agent = active_address.agent.clone();
-        if matches!(
-            &event,
-            Observation::Committed {
-                agent: Some(agent),
-                operation: Some(operation),
-                ..
-            } if agent == &active_agent && operation == "message_rewind"
-        ) {
-            self.refresh_rewind_history();
+        if let Observation::Committed {
+            id,
+            agent: Some(agent),
+            operation: Some(operation),
+            rewind_command_id,
+            ..
+        } = &event
+        {
+            if agent == &active_agent
+                && matches!(operation.as_str(), "message_rewind" | "history_jump")
+                && *id > self.pane().last_event
+            {
+                if let Some(command) = rewind_command_id {
+                    if let Some(mut draft) = self.rewind_drafts.remove(command) {
+                        self.restore_rewind_draft(&mut draft);
+                        self.rewind_drafts.insert(command.clone(), draft);
+                    }
+                }
+                self.refresh_rewind_history(*id);
+            }
         }
         self.related_agents.observe(&event, &active_agent);
         let pane = self.pane_mut();
@@ -674,9 +685,12 @@ impl Pane {
             return false;
         }
         self.live_floor = id;
-        let execution_started = operation == Some("execution_started");
+        let execution_started = matches!(
+            operation,
+            Some("execution_started" | "compaction_requested")
+        );
         match operation {
-            Some("execution_started") => {
+            Some("execution_started" | "compaction_requested") => {
                 if self.execution != Some(id) {
                     self.progress = ExecutionProgress::default();
                 }
@@ -687,7 +701,7 @@ impl Pane {
                 );
                 self.live_floor = id;
             }
-            Some("turn_settled") => {
+            Some("turn_settled" | "compaction_settled") => {
                 self.execution = None;
                 if !self.progress.preserve_reply_preview_on_settle() {
                     self.transcript.clear_preview();

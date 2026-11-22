@@ -96,6 +96,7 @@ pub(super) fn make_test_pending(
         runtime_log_writer: crate::log::BufferedLogWriter::new(dir.join("runtime.jsonl")),
         request_base: None,
         recovery_count: 0,
+        tool_argument_retries: 0,
     }
 }
 
@@ -209,6 +210,7 @@ fn make_waiting_run(
             index: 0,
         },
         display_summary: "print hi".to_string(),
+        preparation: None,
     });
     let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);
     Run {
@@ -285,6 +287,7 @@ fn assert_prepared_handoff_after_rewind(target_before_handoff: bool, expect_summ
                     text: "rewound target input".into(),
                     from: None,
                     via_tool_call_id: None,
+                    job_delivery: false,
                 })
                 .unwrap(),
         )
@@ -318,6 +321,7 @@ fn assert_prepared_handoff_after_rewind(target_before_handoff: bool, expect_summ
                     text: "rewound target input".into(),
                     from: None,
                     via_tool_call_id: None,
+                    job_delivery: false,
                 })
                 .unwrap()
         }
@@ -362,6 +366,7 @@ fn assert_prepared_handoff_after_rewind(target_before_handoff: bool, expect_summ
             text: "new input after rewind".into(),
             from: None,
             via_tool_call_id: None,
+            job_delivery: false,
         })
         .unwrap();
     drop(writer);
@@ -385,7 +390,7 @@ fn assert_prepared_handoff_after_rewind(target_before_handoff: bool, expect_summ
     pending.turn = 3;
     pending.resolved = Some(test_resolved_runtime());
     pending.context_cursor = Some(Box::new(cursor));
-    let prepared = crate::query::frozen::prepare(&mut pending).unwrap();
+    let prepared = crate::query::frozen::prepare(&mut pending, false).unwrap();
     let request = prepared.request.request();
     let has_text = |messages: &[crate::context::CanonicalMessage], text: &str| {
         messages.iter().any(|message| {
@@ -430,6 +435,7 @@ fn make_queued_run(events_path: std::path::PathBuf, dir: &std::path::Path) -> Ru
             index: 0,
         },
         display_summary: "print hi".to_string(),
+        preparation: None,
     });
     let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);
     Run {
@@ -492,6 +498,7 @@ fn make_skill_queued_run(
             index: 0,
         },
         display_summary: "review".to_string(),
+        preparation: None,
     });
     let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);
     Run {

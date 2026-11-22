@@ -195,6 +195,32 @@ fn remediation_thinking_from_source_opens_only_the_selected_reply_notes() {
 }
 
 #[test]
+fn completed_job_opens_retained_output_from_its_message() {
+    let mut app = connected_app();
+    for event in [
+        json!({"id":70,"agent":"main","turn":3,"type":"job_finished","job_id":"job-1",
+            "status":"failed","summary":"command exited 7","output_id":"saved-job-output"}),
+        json!({"id":71,"agent":"main","turn":3,"type":"job_finished","job_id":"job-2",
+            "status":"interrupted","summary":"capture unavailable"}),
+    ] {
+        app.pane_mut()
+            .transcript
+            .apply(serde_json::from_value(event).unwrap(), None);
+    }
+    open_message_actions(&mut app, MessageId::Event(71));
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+        if !picker.visible_choices().iter().any(|choice| choice.label == "Full output")));
+
+    app.modal = None;
+    open_message_actions(&mut app, MessageId::Event(70));
+    choose_message_action(&mut app, MessageAction::FullOutput);
+    assert!(matches!(&app.modal, Some(Modal::Output(viewer))
+        if viewer.tool.name == "job-1" && viewer.tool.summary.contains("command exited 7")));
+    assert!(app.effects.iter().any(|effect| matches!(effect,
+        Job::Output(selection, _, id, 0) if selection == &app.selection() && id == "saved-job-output")));
+}
+
+#[test]
 fn tool_actions_expand_the_selected_call_and_open_saved_or_complete_inline_output() {
     let mut app = connected_app();
     for event in [
@@ -290,7 +316,7 @@ fn script_message_selects_retained_action_output_and_saves_its_reference() {
     app.pane_mut().transcript.apply(
         serde_json::from_value(json!({
             "id":78,"agent":"main","turn":7,"type":"tool_result",
-            "tool":"workspace_script","tool_call_id":"script-outputs","status":"ok",
+            "tool":"run_js","tool_call_id":"script-outputs","status":"ok",
             "summary":"Script completed","model_content":"Bounded script summary","truncated":true,
             "structured":{
                 "kind":"workspace_script_result","value":null,
@@ -619,6 +645,7 @@ fn mouse_opens_messages_selects_entry_and_runs_action_without_losing_draft() {
 #[test]
 fn message_and_rewind_picker_footers_name_their_distinct_modes() {
     let mut app = connected_app();
+    app.pane_mut().exists = true;
     app.open_messages_picker();
     let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
     let screen = draw(&mut app, &mut terminal);
@@ -628,9 +655,9 @@ fn message_and_rewind_picker_footers_name_their_distinct_modes() {
     press(&mut app, KeyCode::Esc);
     press(&mut app, KeyCode::Esc);
     assert!(matches!(&app.modal, Some(Modal::Picker(picker))
-        if matches!(picker.kind, PickerKind::Rewind)));
+        if matches!(picker.kind, PickerKind::HistoryJump)));
     let screen = draw(&mut app, &mut terminal);
-    let _ = screen_position(&screen, "Rewind ·");
+    let _ = screen_position(&screen, "Enter Review");
 }
 
 #[test]

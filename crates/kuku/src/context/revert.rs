@@ -8,6 +8,9 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
 use crate::conversation::address::ConversationAddress;
+use crate::event::history::{
+    event_conversation as conversation_event_conversation, event_turn as conversation_event_turn,
+};
 use crate::event::{EventPayload, EventStore, RollbackScope, StoredEvent};
 
 #[path = "revert_apply.rs"]
@@ -15,9 +18,17 @@ mod apply;
 #[path = "revert_message_rewind.rs"]
 mod message_rewind;
 
-pub(crate) use apply::{apply_message_rewind_files, FileRevertTransaction};
+#[cfg(test)]
+pub(crate) use apply::apply_message_rewind_files;
+pub(crate) use apply::{apply_verified_file_rewind, FileRevertTransaction};
+pub(crate) use message_rewind::event_owner_with;
 pub use message_rewind::event_owners;
 use message_rewind::{event_owner, event_turn_owners};
+#[path = "revert_message_plan.rs"]
+mod message_plan;
+pub use message_plan::compute_message_rewind_plan;
+pub(crate) use message_plan::plan_file_rewind;
+pub use message_plan::{FileRewindChange, FileRewindPreview};
 
 const REVERTABLE_KINDS: &[&str] = &["file_edit", "file_write", "memory_write", "forget_memory"];
 
@@ -63,78 +74,49 @@ enum FileStateAt {
 
 /// Filter events to exclude turns that have been rolled back (conversation scope).
 pub fn filter_rolled_back_events(events: &[StoredEvent]) -> Vec<&StoredEvent> {
-    let conversation_rollbacks = active_conversation_rollbacks(events);
-    let message_rewinds: Vec<_> = events.iter().filter_map(message_rewind).collect();
+    let visibility = RewindVisibility::new(events);
     let turn_owners = event_turn_owners(events);
-
     events
         .iter()
-        .filter(|event| {
-            if message_rewinds
-                .iter()
-                .any(|(rewind_id, address, target_id)| {
-                    event_owner(event, &turn_owners) == Some(*address)
-                        && event.id >= *target_id
-                        && event.id < *rewind_id
-                })
-            {
-                return false;
-            }
-            if let Some(conversation) = event_conversation_key(&event.payload) {
-                if conversation_rollbacks
-                    .get(conversation)
-                    .is_some_and(|rollback| {
-                        event_hidden_by_rollback(&event.payload, event.id, rollback)
-                    })
-                {
-                    return false;
-                }
-            }
-
-            match &event.payload {
-                EventPayload::SessionCreated { .. }
-                | EventPayload::ConversationOpened { .. }
-                | EventPayload::ConversationBound { .. }
-                | EventPayload::PromptSnapshot { .. }
-                | EventPayload::MessageUser { .. }
-                | EventPayload::MessageAssistant { .. }
-                | EventPayload::TurnStarted { .. }
-                | EventPayload::TurnCompleted { .. }
-                | EventPayload::TurnCancelled { .. }
-                | EventPayload::TurnInterrupted { .. }
-                | EventPayload::ConversationRollback { .. }
-                | EventPayload::ConversationRollbackUndone { .. } => true,
-                EventPayload::ModelResponse { .. }
-                | EventPayload::ToolCall { .. }
-                | EventPayload::ToolResult { .. }
-                | EventPayload::ModelError { .. }
-                | EventPayload::ModelRecovery { .. }
-                | EventPayload::PermissionRequested { .. }
-                | EventPayload::PermissionAllow { .. }
-                | EventPayload::PermissionDeny { .. }
-                | EventPayload::ContextSources { .. }
-                | EventPayload::ContextSkills { .. }
-                | EventPayload::Handoff { .. }
-                | EventPayload::Unknown(_) => true,
-            }
-        })
+        .filter(|event| visibility.includes(event, event_owner(event, &turn_owners)))
         .collect()
 }
 
-fn message_rewind(event: &StoredEvent) -> Option<(u64, &str, u64)> {
-    let EventPayload::Unknown(value) = &event.payload else {
-        return None;
-    };
-    let record = &value["record"];
-    (value["kind"] == "runtime.operation" && record["operation"] == "message_rewind").then(
-        || {
-            Some((
-                event.id,
-                record["address"].as_str()?,
-                record["target_event_id"].as_u64()?,
-            ))
-        },
-    )?
+pub(crate) struct RewindVisibility {
+    rollbacks: HashMap<String, ActiveRollback>,
+    hidden: HashMap<String, Vec<std::ops::Range<u64>>>,
+}
+
+impl RewindVisibility {
+    pub(crate) fn new(controls: &[StoredEvent]) -> Self {
+        use crate::event::history::{hidden_history, history_cut};
+        let addresses: HashSet<_> = controls
+            .iter()
+            .filter_map(|event| history_cut(event).map(|(agent, _)| agent))
+            .collect();
+        Self {
+            rollbacks: active_conversation_rollbacks(controls),
+            hidden: addresses
+                .into_iter()
+                .map(|agent| (agent.to_owned(), hidden_history(controls.iter(), agent)))
+                .collect(),
+        }
+    }
+
+    pub(crate) fn hidden_start(&self, agent: &str, id: u64) -> Option<u64> {
+        crate::event::history::hidden_range(self.hidden.get(agent)?, id).map(|range| range.start)
+    }
+
+    pub(crate) fn includes(&self, event: &StoredEvent, owner: Option<&str>) -> bool {
+        owner
+            .and_then(|owner| self.hidden_start(owner, event.id))
+            .is_none()
+            && !event_conversation_key(&event.payload)
+                .and_then(|conversation| self.rollbacks.get(conversation))
+                .is_some_and(|rollback| {
+                    event_hidden_by_rollback(&event.payload, event.id, rollback)
+                })
+    }
 }
 
 fn active_conversation_rollbacks(events: &[StoredEvent]) -> HashMap<String, ActiveRollback> {
@@ -192,58 +174,6 @@ fn event_hidden_by_rollback(
         return turn >= rollback.to_turn;
     }
     event_id > rollback.to_event_id
-}
-
-fn conversation_event_turn(payload: &EventPayload) -> Option<u64> {
-    match payload {
-        EventPayload::PromptSnapshot { turn, .. }
-        | EventPayload::MessageUser { turn, .. }
-        | EventPayload::MessageAssistant { turn, .. }
-        | EventPayload::TurnStarted { turn, .. }
-        | EventPayload::TurnCompleted { turn, .. }
-        | EventPayload::TurnCancelled { turn, .. }
-        | EventPayload::TurnInterrupted { turn, .. }
-        | EventPayload::ModelResponse { turn, .. }
-        | EventPayload::ModelError { turn, .. }
-        | EventPayload::ModelRecovery { turn, .. }
-        | EventPayload::ToolCall { turn, .. }
-        | EventPayload::PermissionAllow { turn, .. }
-        | EventPayload::PermissionRequested { turn, .. }
-        | EventPayload::PermissionDeny { turn, .. }
-        | EventPayload::ToolResult { turn, .. }
-        | EventPayload::Handoff { turn, .. }
-        | EventPayload::ContextSources { turn, .. }
-        | EventPayload::ContextSkills { turn, .. } => Some(*turn),
-        EventPayload::ConversationOpened { .. }
-        | EventPayload::ConversationBound { .. }
-        | EventPayload::ConversationRollback { .. }
-        | EventPayload::ConversationRollbackUndone { .. }
-        | EventPayload::SessionCreated { .. }
-        | EventPayload::Unknown(_) => None,
-    }
-}
-
-fn conversation_event_conversation(payload: &EventPayload) -> Option<&str> {
-    match payload {
-        EventPayload::ConversationOpened { conversation, .. }
-        | EventPayload::ConversationBound { conversation, .. }
-        | EventPayload::PromptSnapshot { conversation, .. }
-        | EventPayload::ContextSkills { conversation, .. }
-        | EventPayload::MessageUser { conversation, .. }
-        | EventPayload::MessageAssistant { conversation, .. }
-        | EventPayload::TurnStarted { conversation, .. }
-        | EventPayload::TurnCompleted { conversation, .. }
-        | EventPayload::TurnCancelled { conversation, .. }
-        | EventPayload::TurnInterrupted { conversation, .. }
-        | EventPayload::ConversationRollback { conversation, .. }
-        | EventPayload::ConversationRollbackUndone { conversation, .. } => {
-            Some(conversation.as_str())
-        }
-        EventPayload::ModelRecovery { conversation, .. } => Some(conversation.as_str()),
-        EventPayload::ToolCall { conversation, .. }
-        | EventPayload::ToolResult { conversation, .. } => conversation.as_deref(),
-        _ => None,
-    }
 }
 
 fn event_conversation_key(payload: &EventPayload) -> Option<&str> {
@@ -378,102 +308,6 @@ pub fn compute_file_revert_plan(
         unrecoverable,
         sensitive_files,
     }
-}
-
-pub fn compute_message_rewind_plan(
-    events: &[StoredEvent],
-    conversation: &str,
-    target_event_id: u64,
-    workspace: &Path,
-) -> crate::Result<RevertPlan> {
-    let canonical_workspace = workspace.canonicalize().map_err(crate::Error::Io)?;
-    let target_pos = events
-        .iter()
-        .position(|event| event.id == target_event_id)
-        .ok_or_else(|| {
-            crate::Error::InvalidArgument("rewind target is no longer available".into())
-        })?;
-    let visible: HashSet<_> = filter_rolled_back_events(events)
-        .into_iter()
-        .map(|event| event.id)
-        .collect();
-    let mut modified = HashMap::new();
-    let turn_owners = event_turn_owners(events);
-    for event in events.iter().skip(target_pos) {
-        if !visible.contains(&event.id) || event_owner(event, &turn_owners) != Some(conversation) {
-            continue;
-        }
-        if let Some(path) = revertable_path(event) {
-            modified
-                .entry(message_rewind_path(&canonical_workspace, &path)?)
-                .or_insert((path, event.id, message_rewind::is_created_file_write(event)));
-        }
-    }
-
-    for event in events.iter().skip(target_pos) {
-        if event_owner(event, &turn_owners) == Some(conversation) {
-            continue;
-        }
-        if let Some(path) = revertable_path(event) {
-            let resolved = message_rewind_comparison_path(&path)?;
-            if modified.contains_key(&resolved) {
-                return Err(crate::Error::InvalidArgument(format!(
-                    "cannot restore {} because another Agent recorded a later change",
-                    path
-                )));
-            }
-        }
-    }
-
-    let mut restores = Vec::new();
-    let mut deletes = Vec::new();
-    let mut unrecoverable = Vec::new();
-    let mut sensitive_files = Vec::new();
-    for (path, (_, first_mutation_id, first_mutation_created)) in modified {
-        reject_symlink_components(&canonical_workspace, &path)?;
-        let target_state = if first_mutation_created {
-            FileStateAt::NotExists
-        } else {
-            let before_mutation: Vec<_> = events
-                .iter()
-                .filter(|event| event.id < first_mutation_id && visible.contains(&event.id))
-                .cloned()
-                .collect();
-            message_rewind::file_state_at(&before_mutation, &path, &canonical_workspace)
-        };
-        let file_name = path.file_name().unwrap_or_default().to_string_lossy();
-        if crate::util::path::is_sensitive_file_name(&file_name) {
-            sensitive_files.push(path.clone());
-        }
-        match target_state {
-            FileStateAt::Exists(old_content) => {
-                let new_content = std::fs::read_to_string(&path).map_err(crate::Error::Io)?;
-                if old_content != new_content {
-                    let old_hash =
-                        crate::tool::builtin::common::content_hash(old_content.as_bytes());
-                    restores.push(FileRestore {
-                        path,
-                        old_content,
-                        old_hash,
-                        new_content_on_plan: new_content,
-                    });
-                }
-            }
-            FileStateAt::NotExists => {
-                if path.exists() {
-                    deletes.push(path);
-                }
-            }
-            FileStateAt::Unrecoverable => unrecoverable.push(path),
-        }
-    }
-
-    Ok(RevertPlan {
-        restores,
-        deletes,
-        unrecoverable,
-        sensitive_files,
-    })
 }
 
 fn revertable_path(event: &StoredEvent) -> Option<String> {

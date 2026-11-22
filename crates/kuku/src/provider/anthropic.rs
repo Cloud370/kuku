@@ -169,7 +169,7 @@ pub(crate) async fn stream_prepared(
     let parser = Arc::new(Mutex::new(AnthropicSseParser::new(
         config.capabilities.profile == ProviderProfile::Anthropic,
         config.capabilities.profile == ProviderProfile::DeepSeek
-            || (prepared.body["thinking"]["display"] == "summarized"
+            || (prepared.body.as_json()["thinking"]["display"] == "summarized"
                 && config.capabilities.profile == ProviderProfile::Anthropic),
     )));
     let frame_parser = Arc::clone(&parser);

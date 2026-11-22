@@ -107,7 +107,7 @@ pub(super) fn reduce_lifecycle(events: &[StoredEvent]) -> LifecycleState {
                             ConversationAddress::parse(value).unwrap_or(ConversationAddress::MAIN)
                         })
                         .unwrap_or(ConversationAddress::MAIN);
-                    if source == "workspace_script" {
+                    if source == "run_js" {
                         lifecycle.was_dispatched = false;
                         lifecycle.permission_allowed = false;
                         lifecycle.permission_denied = false;

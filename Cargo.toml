@@ -28,7 +28,7 @@ arc-swap = "1"
 home = "0.5.12"
 
 [profile.release]
-opt-level = "s"
+opt-level = 2
 strip = true
 lto = "thin"
 codegen-units = 4

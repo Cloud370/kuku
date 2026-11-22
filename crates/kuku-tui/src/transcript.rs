@@ -11,6 +11,7 @@ use crate::theme::{ACCENT, MIN_TRANSCRIPT_INDENT_WIDTH, MUTED, TRANSCRIPT_INDENT
 
 mod agent;
 mod body;
+mod compaction;
 mod details;
 mod history;
 mod job;
@@ -33,7 +34,7 @@ use self::agent::AgentCards;
 use self::body::Body;
 pub(crate) use self::details::DetailKey;
 use self::details::{DetailRecord, Details};
-use self::job::job_notice;
+use self::job::JobNotice;
 use self::message::{render_assistant_source, render_record, render_user};
 pub(crate) use self::messages::{MessageId, MessageInfo, MessageKind, SelectedMessage};
 use self::rewound::RewindGroupState;
@@ -54,6 +55,7 @@ const DISPLAY_LIMIT_NOTICE: &str = "\n… Display limit reached";
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Key {
     Event(u64),
+    Compaction(String),
     Preview(u64),
     RewindGroup(u64),
     Tool { turn: Option<u64>, id: String },
@@ -209,7 +211,9 @@ impl Transcript {
         let Some(record) = record else { return };
         if let Some(reading) = &mut self.reading {
             reading.unseen = true;
-            if matches!(record.key, Key::Tool { .. }) && reading.window.contains(&record.key) {
+            if matches!(record.key, Key::Tool { .. } | Key::Compaction(_))
+                && reading.window.contains(&record.key)
+            {
                 reading.window.insert(record.clone());
             }
         }
@@ -478,7 +482,7 @@ impl Record {
                 }
                 Body::Tool(Box::new(Tool::from_entry(&entry)))
             }
-            HistoryKind::JobFinished => job_notice(&entry),
+            HistoryKind::JobFinished => Body::Job(JobNotice::from_entry(&entry)),
             HistoryKind::Question => Body::Notice("Question", text, WARNING),
             HistoryKind::Permission => Body::Notice("Permission", text, WARNING),
             HistoryKind::QuestionReply => Body::Notice("Answer", text, ACCENT),
@@ -507,6 +511,10 @@ impl Record {
             }
             HistoryKind::Error => retry::error_body(&entry, text),
             HistoryKind::Retry => retry::retry_body(&entry),
+            HistoryKind::Compaction => {
+                key = Key::Compaction(entry.details.get("request_id")?.as_str()?.to_owned());
+                Body::Compaction(compaction::Compaction::from_entry(&entry)?)
+            }
             HistoryKind::TurnSummary if entry.turn_summary.is_some() => Body::TurnSummary,
             HistoryKind::TurnSummary => return None,
             HistoryKind::Other => return None,
@@ -537,15 +545,17 @@ impl Record {
             self.turn_summary = record.turn_summary;
             self.rendered = RenderCache::default();
         }
-        if let (Body::Tool(tool), Body::Tool(incoming)) = (&mut self.body, record.body) {
-            tool.merge(*incoming);
-            self.position = match (self.position, record.position) {
-                (Some(current), Some(incoming)) => Some(current.min(incoming)),
-                (None, Some(incoming)) => Some(incoming),
-                (current, None) => current,
-            };
-            self.rendered = RenderCache::default();
+        match (&mut self.body, record.body) {
+            (Body::Tool(tool), Body::Tool(incoming)) => tool.merge(*incoming),
+            (Body::Compaction(current), Body::Compaction(incoming)) => current.update(incoming),
+            _ => return,
         }
+        self.position = match (self.position, record.position) {
+            (Some(current), Some(incoming)) => Some(current.min(incoming)),
+            (None, Some(incoming)) => Some(incoming),
+            (current, None) => current,
+        };
+        self.rendered = RenderCache::default();
     }
 
     fn reasoning_only(&self) -> bool {
@@ -567,8 +577,10 @@ impl Record {
             | Body::Assistant(_)
             | Body::Interrupted(_)
             | Body::Notice(..)
+            | Body::Job(_)
             | Body::ModelError { .. }
             | Body::Retry { .. }
+            | Body::Compaction(_)
             | Body::TurnSummary => None,
         }
     }
@@ -632,10 +644,16 @@ impl Record {
                 );
                 (card, mode, facts)
             }
+            Body::Compaction(_) => (
+                None,
+                items.tool_mode(&self.key, ToolDetails::Expanded),
+                None,
+            ),
             Body::User { .. }
             | Body::Assistant(_)
             | Body::Interrupted(_)
             | Body::Notice(..)
+            | Body::Job(_)
             | Body::ModelError { .. }
             | Body::Retry { .. }
             | Body::TurnSummary => (None, ToolDetails::Expanded, None),
@@ -648,6 +666,10 @@ impl Record {
             retry_heading,
             retry_end,
             user_turn,
+            elapsed_seconds: match &self.body {
+                Body::Compaction(entry) => entry.elapsed_seconds(),
+                _ => None,
+            },
         };
         if self
             .rendered
@@ -694,10 +716,22 @@ impl Record {
                     width,
                     0,
                 ),
+                Body::Job(job) => render_record(
+                    "Background job",
+                    job.color,
+                    render_literal(&job.text, Style::default()),
+                    width,
+                    0,
+                ),
                 Body::ModelError { .. } | Body::Retry { .. } => {
                     retry::render(&self.body, width, retry_heading, retry_end)
                         .expect("retry history or error body")
                 }
+                Body::Compaction(entry) => entry.render(
+                    width,
+                    mode == ToolDetails::Inspection,
+                    cache_key.elapsed_seconds,
+                ),
                 Body::TurnSummary => Vec::new(),
                 Body::Tool(tool) => card.as_ref().map_or_else(
                     || tool.render(width, mode, cache_key.in_timeline),
@@ -714,6 +748,12 @@ impl Record {
             &self.rendered.preview.as_ref().expect("rendered record").1,
             card.map(DetailRecord::Agent)
                 .or_else(|| self.tool().map(DetailRecord::Tool))
+                .or_else(|| match &self.body {
+                    Body::Compaction(entry) => entry.summary().map(|summary| {
+                        DetailRecord::Compaction(summary, mode == ToolDetails::Inspection)
+                    }),
+                    _ => None,
+                })
                 .or_else(|| {
                     (!self.reasoning_preview.is_empty())
                         .then_some(DetailRecord::Reasoning(&self.reasoning_preview))
@@ -731,6 +771,7 @@ struct PreviewLayout {
     retry_heading: bool,
     retry_end: bool,
     user_turn: Option<window::TurnHeading>,
+    elapsed_seconds: Option<u64>,
 }
 
 fn body_inset(width: usize) -> u16 {

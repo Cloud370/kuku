@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::event::{EventPayload, StoredEvent};
-use crate::execution::OutputReference;
+use crate::execution::{ModelImage, OutputReference};
 use crate::{Error, Result};
 
 use super::jobs::{JobCompletion, JobIndex, JOB_DELIVERY_PREFIX};
@@ -15,7 +15,7 @@ use super::types::{
     AgentConfig, AgentSnapshot, AgentStatus, AgentView, Input, InputStatus, PendingInput,
     QuestionRequest, Receipt, UsageTotals,
 };
-use super::usage::AgentUsage;
+use super::usage::{AgentUsage, SummaryRequest};
 use super::values::{NamedBinding, ValueState};
 use super::TurnIndex;
 
@@ -82,6 +82,11 @@ pub(super) enum Record {
         agent: String,
         binding: NamedBinding,
     },
+    ModelImageSaved {
+        agent: String,
+        turn: u64,
+        image: ModelImage,
+    },
     OutputsPinned {
         agent: String,
         turn: u64,
@@ -110,8 +115,33 @@ pub(super) enum Record {
         #[serde(default)]
         warnings: Vec<String>,
     },
+    HistoryJump {
+        command: Command,
+        address: String,
+        target_event_id: u64,
+        target_turn: u64,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        restore_files: bool,
+    },
     ExecutionStarted {
         address: String,
+    },
+    CompactionRequested {
+        command: Command,
+        address: String,
+        turn: u64,
+    },
+    CompactionSettled {
+        address: String,
+        execution: u64,
+        status: AgentStatus,
+        cancelled: bool,
+        error: Option<String>,
+    },
+    CompactionReverted {
+        command: Command,
+        address: String,
+        segment: u64,
     },
     StepConfigured {
         address: String,
@@ -170,6 +200,8 @@ pub(super) enum Record {
         turn: u64,
         result: super::JobResult,
         status: super::JobStatus,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        elapsed_ms: Option<u64>,
         delivery: Box<Input>,
     },
     QuestionRequested {
@@ -204,7 +236,7 @@ impl Record {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(super) struct QueuedDelivery {
     pub(super) queued_at: u64,
     pub(super) receipt: Receipt,
@@ -213,17 +245,29 @@ pub(super) struct QueuedDelivery {
     pub(super) accepted_turn: Option<u64>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(super) struct ManualCompaction {
+    pub(super) execution: u64,
+    pub(super) previous_status: AgentStatus,
+    pub(super) finished: bool,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(super) struct AgentState {
     pub(super) snapshot: AgentSnapshot,
     pub(super) inbox: VecDeque<QueuedDelivery>,
     pub(super) accepted: Vec<QueuedDelivery>,
+    pub(super) last_question_turn: Option<u64>,
     question_replies: HashSet<String>,
+    #[serde(skip)]
     pub(super) reply_preview: Option<ReplyPreview>,
     pub(super) permission_reply: Option<(String, bool)>,
+    #[serde(skip)]
     pub(super) active_epoch: Option<u64>,
     pub(super) stopped_at: Option<u64>,
     pub(super) model_usage: AgentUsage,
+    pub(super) manual_compaction: Option<ManualCompaction>,
+    pub(super) summary_request: Option<SummaryRequest>,
 }
 
 impl AgentState {
@@ -249,7 +293,7 @@ impl AgentState {
         self.snapshot.config = config;
     }
 
-    fn set_active_config(&mut self, config: Option<AgentConfig>) {
+    pub(super) fn set_active_config(&mut self, config: Option<AgentConfig>) {
         let requested = &self.snapshot.config;
         if self.snapshot.active_config.as_ref().unwrap_or(requested)
             != config.as_ref().unwrap_or(requested)
@@ -266,6 +310,7 @@ impl AgentState {
             .iter()
             .rev()
             .filter(|entry| !self.question_replies.contains(&entry.input.command_id))
+            .filter(|entry| !entry.input.source.is_job_delivery())
             .find_map(|entry| task_preview(&entry.input.text));
     }
 
@@ -279,7 +324,7 @@ impl AgentState {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct State {
     pub(super) agents: BTreeMap<String, AgentState>,
     pub(super) turns: TurnIndex,
@@ -294,10 +339,29 @@ pub(super) struct State {
     pub(super) cleanup_failures: BTreeMap<String, String>,
     pub(super) outputs: OutputStore,
     pub(super) values: ValueState,
+    pub(super) model_images: HashMap<String, RetainedModelImage>,
     pub(super) jobs: JobIndex,
 }
 
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(super) struct RetainedModelImage {
+    pub(super) agent: String,
+    pub(super) turn: u64,
+    pub(super) image: ModelImage,
+}
+
 impl State {
+    pub(super) fn pinned_outputs(&self) -> HashSet<String> {
+        let mut pinned = self.values.pinned_outputs();
+        pinned.extend(self.model_images.iter().filter_map(|(id, retained)| {
+            let current = self.agents.get(&retained.agent)?.snapshot.turn?;
+            (current == retained.turn
+                || self.turns.previous(&retained.agent, current) == Some(retained.turn))
+            .then(|| id.clone())
+        }));
+        pinned
+    }
+
     pub(super) fn acknowledge_job_result(&mut self, agent: &str, job_id: &str) -> Result<()> {
         let command_id = format!("{JOB_DELIVERY_PREFIX}{job_id}");
         let agent = self.agent_mut(agent)?;
@@ -332,6 +396,7 @@ impl State {
                             active_config: None,
                             status: AgentStatus::Idle,
                             pending_inputs: 0,
+                            running_jobs: 0,
                             admitted_task: None,
                             queued_task: None,
                             turn: None,
@@ -347,12 +412,15 @@ impl State {
                         },
                         inbox: VecDeque::new(),
                         accepted: Vec::new(),
+                        last_question_turn: None,
                         question_replies: HashSet::new(),
                         reply_preview: None,
                         permission_reply: None,
                         active_epoch: None,
                         stopped_at: None,
                         model_usage: AgentUsage::default(),
+                        manual_compaction: None,
+                        summary_request: None,
                     },
                 );
             }
@@ -393,6 +461,12 @@ impl State {
             Record::NamedValueSaved { agent, binding } => {
                 self.outputs.claim(&agent, &binding.value.reference.id);
                 self.values.save(agent, binding);
+            }
+            Record::ModelImageSaved { agent, turn, image } => {
+                let id = image.output.id.clone();
+                self.outputs.claim(&agent, &id);
+                self.model_images
+                    .insert(id, RetainedModelImage { agent, turn, image });
             }
             Record::OutputsPinned { agent, turn, ids } => {
                 self.pin_current_turn(agent, turn, ids)?;
@@ -491,6 +565,19 @@ impl State {
                     .insert(command.command_id.clone(), warnings);
                 self.remember_command(command, event_id, address);
             }
+            Record::HistoryJump {
+                command,
+                address,
+                target_turn,
+                ..
+            } => {
+                let snapshot = &mut self.agent_mut(&address)?.snapshot;
+                snapshot.turn = Some(target_turn);
+                snapshot.last_output = None;
+                snapshot.last_error = None;
+                snapshot.admitted_task = None;
+                self.remember_command(command, event_id, address);
+            }
             Record::ExecutionStarted { address } => {
                 let agent = self.agent_mut(&address)?;
                 agent.reply_preview = None;
@@ -501,6 +588,25 @@ impl State {
                 snapshot.execution_id = Some(event_id);
                 snapshot.status = AgentStatus::Running;
                 snapshot.last_error = None;
+            }
+            Record::CompactionRequested {
+                command, address, ..
+            } => {
+                self.compaction_requested(event_id, command, address)?;
+            }
+            Record::CompactionSettled {
+                address,
+                status,
+                error,
+                ..
+            } => {
+                self.compaction_settled(&address, status, error)?;
+            }
+            Record::CompactionReverted {
+                command, address, ..
+            } => {
+                self.agent_mut(&address)?.snapshot.usage.latest_request = None;
+                self.remember_command(command, event_id, address);
             }
             Record::StepConfigured { address, config } => {
                 self.agent_mut(&address)?.set_active_config(Some(config));
@@ -520,6 +626,7 @@ impl State {
                     self.deliveries.insert(id.clone(), InputStatus::Accepted);
                 }
                 let agent = self.agent_mut(&address)?;
+                let mut turn_preview = None;
                 for id in input_ids {
                     let index = agent
                         .inbox
@@ -536,8 +643,12 @@ impl State {
                     } else {
                         input.accepted_turn.get_or_insert(admitted_turn);
                     }
-                    if !agent.question_replies.remove(&id) {
+                    let question_reply = agent.question_replies.remove(&id);
+                    if !question_reply && !input.input.source.is_job_delivery() {
                         if let Some(preview) = task_preview(&input.input.text) {
+                            if turn_preview.is_none() {
+                                turn_preview = Some(preview.clone());
+                            }
                             agent.snapshot.admitted_task = Some(preview);
                         }
                     }
@@ -551,6 +662,9 @@ impl State {
                     agent.snapshot.active_config = Some(agent.snapshot.config.clone());
                 }
                 agent.snapshot.last_error = None;
+                if let Some(preview) = turn_preview {
+                    self.turns.preview(&address, admitted_turn, &preview);
+                }
             }
             Record::TurnSettled {
                 address,
@@ -666,6 +780,7 @@ impl State {
                 turn: _,
                 result,
                 status,
+                elapsed_ms,
                 delivery,
             } => {
                 self.jobs.finish(JobCompletion {
@@ -674,6 +789,7 @@ impl State {
                     job_id: &job_id,
                     result: &result,
                     status,
+                    elapsed_ms,
                 })?;
                 self.deliver(event_id, String::new(), *delivery, Vec::new())?;
             }
@@ -682,7 +798,9 @@ impl State {
                 self.cleanup_failures.insert(address, message);
             }
             Record::QuestionRequested { address, request } => {
-                self.agent_mut(&address)?.snapshot.question = Some(request);
+                let agent = self.agent_mut(&address)?;
+                agent.last_question_turn = Some(request.turn);
+                agent.snapshot.question = Some(request);
             }
             Record::QuestionReplied {
                 fingerprint,
@@ -749,6 +867,15 @@ impl State {
             .collect())
     }
 
+    pub(super) fn first_queued_text(&self) -> Option<&str> {
+        self.agents.values().find_map(|agent| {
+            agent.inbox.iter().find_map(|entry| {
+                (self.deliveries.get(&entry.input.command_id) == Some(&InputStatus::Queued))
+                    .then_some(entry.input.text.as_str())
+            })
+        })
+    }
+
     pub(super) fn view(&self, address: &str, cursor: u64) -> Result<AgentView> {
         Ok(AgentView {
             snapshot: self.snapshot(address)?,
@@ -772,6 +899,7 @@ impl State {
     fn timed_snapshot(&self, current: &AgentSnapshot) -> AgentSnapshot {
         let mut snapshot = current.clone();
         self.turns.time_snapshot(&mut snapshot);
+        snapshot.running_jobs = self.jobs.running_count(&snapshot.address);
         snapshot
     }
 
@@ -829,7 +957,7 @@ impl State {
         Ok(())
     }
 
-    fn remember_command(&mut self, command: Command, event_id: u64, address: String) {
+    pub(super) fn remember_command(&mut self, command: Command, event_id: u64, address: String) {
         self.remember(command.command_id, command.fingerprint, event_id, address);
     }
 
@@ -865,30 +993,4 @@ pub(super) fn fingerprint(value: &impl Serialize) -> Result<String> {
 
 pub(super) fn timestamp() -> Result<String> {
     Ok(time::OffsetDateTime::now_utc().format(&time::format_description::well_known::Rfc3339)?)
-}
-
-pub(super) fn validate_key(key: &str) -> Result<()> {
-    if key.is_empty() || key.len() > 128 {
-        return Err(Error::InvalidArgument(
-            "command identity must contain 1..=128 bytes".into(),
-        ));
-    }
-    if key.starts_with(JOB_DELIVERY_PREFIX) {
-        return Err(Error::InvalidArgument(
-            "command identity is reserved for Job completion".into(),
-        ));
-    }
-    Ok(())
-}
-
-pub(super) fn validate_address(address: &str) -> Result<()> {
-    if address.is_empty()
-        || address.len() > 64
-        || !address
-            .bytes()
-            .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_'))
-    {
-        return Err(Error::InvalidArgument(format!("agent address '{address}' must be flat and contain 1..=64 lowercase ASCII letters, digits, '-' or '_'")));
-    }
-    Ok(())
 }

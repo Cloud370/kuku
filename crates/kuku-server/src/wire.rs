@@ -67,6 +67,12 @@ pub(crate) enum Command {
         #[serde(default)]
         restore_files: bool,
     },
+    HistoryJump {
+        target_event_id: u64,
+        file_restore: Option<String>,
+    },
+    Compact,
+    RestoreContext,
     Advance,
     Cancel {
         execution_id: u64,
@@ -166,37 +172,7 @@ pub fn serialize_event(event: &UiEvent) -> Option<String> {
 }
 
 pub(crate) fn event_agent(payload: &EventPayload) -> Option<&str> {
-    match payload {
-        EventPayload::ModelResponse { conversation, .. }
-        | EventPayload::ModelError { conversation, .. }
-        | EventPayload::ToolCall { conversation, .. }
-        | EventPayload::ToolResult { conversation, .. } => conversation.as_deref(),
-        EventPayload::ConversationOpened { conversation, .. }
-        | EventPayload::ConversationBound { conversation, .. }
-        | EventPayload::PromptSnapshot { conversation, .. }
-        | EventPayload::MessageUser { conversation, .. }
-        | EventPayload::MessageAssistant { conversation, .. }
-        | EventPayload::TurnStarted { conversation, .. }
-        | EventPayload::TurnCompleted { conversation, .. }
-        | EventPayload::TurnCancelled { conversation, .. }
-        | EventPayload::TurnInterrupted { conversation, .. }
-        | EventPayload::ConversationRollback { conversation, .. }
-        | EventPayload::ConversationRollbackUndone { conversation, .. }
-        | EventPayload::ModelRecovery { conversation, .. }
-        | EventPayload::ContextSkills { conversation, .. } => Some(conversation),
-        EventPayload::Unknown(value)
-            if value["kind"] == "runtime.operation"
-                && value["record"]["operation"] == "job_finished" =>
-        {
-            value["record"]["agent"].as_str()
-        }
-        EventPayload::Unknown(value) => value["agent"]
-            .as_str()
-            .or_else(|| value["conversation"].as_str())
-            .or_else(|| value["record"]["address"].as_str())
-            .or_else(|| value["record"]["input"]["target"].as_str()),
-        _ => None,
-    }
+    payload.agent_address()
 }
 
 pub(crate) fn agent_summary(agent: &AgentSnapshot) -> Value {
@@ -216,11 +192,22 @@ pub(crate) fn agent_summary(agent: &AgentSnapshot) -> Value {
 }
 
 pub(crate) fn history_entry(event: &StoredEvent, turns: &TurnLookup) -> Option<Value> {
-    let agent = event_agent(&event.payload).unwrap_or("main");
+    history_entry_for_agent(event, turns, event_agent(&event.payload).unwrap_or("main"))
+}
+
+pub(crate) fn history_entry_for_agent(
+    event: &StoredEvent,
+    turns: &TurnLookup,
+    agent: &str,
+) -> Option<Value> {
     let mut summary = None;
     let mut entry = match &event.payload {
         EventPayload::MessageUser {
-            turn, text, from, ..
+            turn,
+            text,
+            from,
+            job_delivery: false,
+            ..
         } => {
             json!({"type":"user","turn":turn,"text":text,"from":from})
         }
@@ -309,6 +296,22 @@ pub(crate) fn history_entry(event: &StoredEvent, turns: &TurnLookup) -> Option<V
                     summary = Some(turns.summary_at(event.id)?);
                     json!({"type":"turn_summary"})
                 }
+                "compaction_reverted" => json!({
+                    "type":"compaction", "status":"restored", "request_id":format!("restore_{}", event.id),
+                }),
+                "compaction_requested" => json!({
+                    "type":"compaction", "status":"queued", "turn":record["turn"],
+                    "request_id":format!("compact_{}", event.id),
+                }),
+                "compaction_settled"
+                    if record["error"].is_string() || record["cancelled"] == true =>
+                {
+                    json!({
+                        "type":"compaction", "status":if record["cancelled"] == true { "cancelled" } else { "failed" },
+                        "request_id":format!("compact_{}", record["execution"].as_u64()?),
+                        "reason":record["error"],
+                    })
+                }
                 "agent_stopped" => {
                     summary = turns.summary_at(event.id);
                     interaction_entry(record)?
@@ -321,6 +324,27 @@ pub(crate) fn history_entry(event: &StoredEvent, turns: &TurnLookup) -> Option<V
             "turn":value["turn"],
             "retry":retry_metadata(&event.payload)?,
         }),
+        EventPayload::Unknown(value)
+            if matches!(
+                value["kind"].as_str(),
+                Some("runtime.compaction_started" | "runtime.compaction_finished")
+            ) =>
+        {
+            json!({
+                "type":"compaction",
+                "turn":value["turn"],
+                "request_id":value["request_id"],
+                "ts":value["ts"],
+                "status":value["status"].as_str().unwrap_or("running"),
+                "reason":value["reason"],
+                "provider_limit":value["rejected_request_id"].is_string(),
+                "elapsed_ms":value["elapsed_ms"],
+                "before_bytes":value["before_bytes"],
+                "after_bytes":value["after_bytes"],
+                "checkpointed_messages":value["checkpointed_messages"],
+                "text":value["summary"],
+            })
+        }
         _ => return None,
     };
     entry["id"] = json!(event.id);
@@ -334,21 +358,6 @@ pub(crate) fn history_entry(event: &StoredEvent, turns: &TurnLookup) -> Option<V
         .and_then(|turn| turns.number(agent, turn))
     {
         entry["turn_number"] = json!(number);
-    }
-    Some(entry)
-}
-
-pub(crate) fn history_entry_for_agent(
-    event: &StoredEvent,
-    turns: &TurnLookup,
-    agent: &str,
-) -> Option<Value> {
-    let mut entry = history_entry(event, turns)?;
-    entry["agent"] = json!(agent);
-    if let Some(turn) = entry["turn"].as_u64() {
-        entry["turn_number"] = turns
-            .number(agent, turn)
-            .map_or(Value::Null, |number| json!(number));
     }
     Some(entry)
 }
@@ -450,6 +459,9 @@ pub(crate) fn committed_frame(
             value["operation"] = record["operation"].clone();
             if matches {
                 match record["operation"].as_str() {
+                    Some("message_rewind" | "history_jump") => {
+                        value["rewind_command_id"] = record["command"]["command_id"].clone();
+                    }
                     Some("inputs_accepted") => {
                         value["delivery"] =
                             json!({"status":"accepted","input_ids":record["input_ids"]});
@@ -659,10 +671,34 @@ fn event_value(event: &UiEvent) -> Option<Value> {
 
 #[cfg(test)]
 mod retry_tests {
-    use kuku::event::EventPayload;
+    use std::sync::Arc;
+
+    use kuku::event::{EventPayload, StoredEvent};
     use serde_json::json;
 
-    use super::retry_metadata;
+    use super::{history_entry, retry_metadata, TurnLookup};
+
+    #[test]
+    fn history_projects_human_input_and_omits_internal_job_wakes() {
+        let turns = TurnLookup::Closed(Arc::default());
+        let message = |job_delivery| StoredEvent {
+            id: 9,
+            payload: EventPayload::MessageUser {
+                ts: "2026-01-01T00:00:00Z".into(),
+                conversation: "main".into(),
+                turn: 7,
+                text: "Input to the model".into(),
+                from: None,
+                via_tool_call_id: None,
+                job_delivery,
+            },
+        };
+        assert_eq!(
+            "user",
+            history_entry(&message(false), &turns).unwrap()["type"]
+        );
+        assert!(history_entry(&message(true), &turns).is_none());
+    }
 
     #[test]
     fn legacy_retry_projection_defaults_to_started_and_preserves_metadata() {

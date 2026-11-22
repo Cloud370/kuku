@@ -106,7 +106,7 @@ output = 2.0
 cache_read = 0.1
 ```
 
-模型能力分别保存在 `discovered` 和 `manual` 下。字段包括 `reasoning_efforts`、`reasoning_default`、`input_modalities`、`output_modalities` 和 `interfaces`。`protocols` 可声明特定协议的字段，例如 `anthropic_messages.system_prompt_update`。解析结果标注来源，未声明的值保持未知，刷新时保留手工值。模型声明支持图像输出或输出能力未知时，Agent 可以保存图像输出设置。内置适配器支持文本，并在发送请求前拒绝执行图像输出。[DeepSeek 模型列表](https://api-docs.deepseek.com/api/list-models/) · [OpenRouter 模型列表](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties)
+模型能力分别保存在 `discovered` 和 `manual` 下。字段包括 `reasoning_efforts`、`reasoning_default`、`input_modalities`、`output_modalities` 和 `interfaces`。`protocols` 可声明特定协议的字段，例如 `anthropic_messages.system_prompt_update`。解析结果标注来源，未声明的值保持未知，刷新时保留手工值。支持图像输入的路由可以提供[图像查看](tools.md)。模型声明支持图像输出或输出能力未知时，Agent 可以保存图像输出设置。内置适配器生成文本，并在发送图像输出请求前报告能力错误。[DeepSeek 模型列表](https://api-docs.deepseek.com/api/list-models/) · [OpenRouter 模型列表](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties)
 
 `prompt_cache_scope` 只影响 Responses 请求。`workspace` 将规范化的绝对工作区身份与连接、端点和模型一起哈希，因此同一工作区中的 Agent 和 Session 可以共享缓存键，同时不会发送工作区路径。`session` 使用与传输关联相同的 Session、Agent 地址和连接身份派生独立键，并纳入端点和模型以隔离路由。`off` 不发送 `prompt_cache_key`。缺少关联上下文时，适配器不会生成缓存键。这些设置都不会改变传输关联或 OpenRouter 的 `session_id`。
 
@@ -138,7 +138,7 @@ Messages 默认使用 `x-api-key` 认证；OpenRouter 三种协议都使用 Bear
 | `threshold` | float | `0.7` |
 | `keep_turns` | integer | `2` |
 
-当估算的上下文使用量超过 `threshold` 时，kuku 会注入 handoff 指令。只有当模型返回 handoff 文档时，摘要才会被持久化；之后的上下文会在该边界前只保留最近的 `keep_turns` 轮。
+在 Session 中，`enabled` 控制自动上下文压缩。实测 token 使用量跨过 `threshold`，或请求接近字节上限时，可以触发压缩。运行时检查可摘要的历史量，只在能腾出有效空间时提交后继段。手动 `/compact` 仍然可用。对于独立 SDK `Query`，`keep_turns` 决定模型生成交接后保留多少个此前轮次。
 
 ## `logs`
 

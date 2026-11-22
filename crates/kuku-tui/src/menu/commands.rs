@@ -4,8 +4,10 @@ use crate::keys::Shortcut;
 pub(crate) enum CommandMenu {
     New,
     Resume,
+    Rewind,
     Agents,
     Jobs,
+    Compact,
     Model,
     Thinking,
     StatusLine,
@@ -14,6 +16,7 @@ pub(crate) enum CommandMenu {
     Server,
     Restart,
     Web,
+    Help,
     Quit,
 }
 
@@ -21,8 +24,10 @@ impl CommandMenu {
     pub(crate) const ALL: &[Self] = &[
         Self::New,
         Self::Resume,
+        Self::Rewind,
         Self::Agents,
         Self::Jobs,
+        Self::Compact,
         Self::Model,
         Self::Thinking,
         Self::StatusLine,
@@ -31,6 +36,7 @@ impl CommandMenu {
         Self::Server,
         Self::Restart,
         Self::Web,
+        Self::Help,
         Self::Quit,
     ];
 
@@ -75,8 +81,30 @@ impl CommandMenu {
                 "Find a Session in this workspace",
                 None,
             ),
-            Self::Agents => ("agents", &["agent"], "Choose or create an Agent", None),
-            Self::Jobs => ("jobs", &["job"], "List jobs · /jobs cancel <id>", None),
+            Self::Rewind => (
+                "rewind",
+                &["backtrack", "jump"],
+                "Edit a past message or return to a branch",
+                Some(Shortcut::REWIND),
+            ),
+            Self::Agents => (
+                "agents",
+                &["agent", "subagents"],
+                "Choose or create an Agent",
+                None,
+            ),
+            Self::Jobs => (
+                "jobs",
+                &["job", "ps"],
+                "List jobs · /jobs cancel <id>",
+                None,
+            ),
+            Self::Compact => (
+                "compact",
+                &["compress", "summarize"],
+                "Summarize earlier context",
+                None,
+            ),
             Self::Model => (
                 "model",
                 &["models"],
@@ -115,6 +143,7 @@ impl CommandMenu {
                 None,
             ),
             Self::Web => ("web", &["browser"], "Open in the browser", None),
+            Self::Help => ("help", &["hotkeys"], "Show keyboard shortcuts", None),
             Self::Quit => ("quit", &["exit", "q"], "Leave the terminal", None),
         }
     }

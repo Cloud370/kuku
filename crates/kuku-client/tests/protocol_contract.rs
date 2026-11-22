@@ -40,6 +40,7 @@ async fn ledger_events_decode_known_and_unknown_payloads_from_the_server_envelop
             {"id":9,"payload":EventPayload::MessageUser {
                 ts:"2026-11-20T00:00:00Z".into(),conversation:"main".into(),turn:7,
                 text:"retained input".into(),from:None,via_tool_call_id:None,
+                job_delivery: false,
             }},
             {"id":10,"payload":EventPayload::Unknown(json!({
                 "id":10,"kind":"runtime.step_prepared","agent":"main","turn":7,

@@ -31,7 +31,6 @@ fn with_rewound_group() -> App {
             target_event_id: 0,
             agent: "main".into(),
             turn_number: Some(1),
-            entry_count: 24,
         }],
         next_before: None,
     });
@@ -129,7 +128,6 @@ fn f2_messages_separates_rewound_choices_and_preserves_restored_draft() {
             target_event_id: 0,
             agent: "main".into(),
             turn_number: Some(1),
-            entry_count: 4,
         }],
         next_before: None,
     });
@@ -167,7 +165,7 @@ fn f2_messages_separates_rewound_choices_and_preserves_restored_draft() {
     press(&mut app, KeyCode::Esc);
     assert!(app.composer_focused());
     assert!(!app.pane().contextual_focus.active);
-    assert_eq!(None, app.escape_armed_at);
+    assert!(!app.rewind_armed);
     assert_eq!(draft, app.pane().draft.text());
     assert_eq!(cursor, app.pane().draft.cursor());
 }
@@ -182,7 +180,6 @@ fn messages_with_only_rewound_groups_selects_the_toggle_not_the_section() {
             target_event_id: 0,
             agent: "main".into(),
             turn_number: Some(1),
-            entry_count: 2,
         }],
         next_before: None,
     });
@@ -209,24 +206,27 @@ fn messages_with_only_rewound_groups_selects_the_toggle_not_the_section() {
 #[test]
 fn messages_and_group_escape_do_not_arm_rewind_until_composer_escapes() {
     let mut app = with_rewound_group();
+    app.pane_mut().exists = true;
     open_messages_with_f2(&mut app);
     press(&mut app, KeyCode::Esc);
     assert!(app.modal.is_none());
     assert!(app.composer_focused());
-    assert_eq!(None, app.escape_armed_at);
+    assert!(!app.rewind_armed);
 
     open_messages_with_f2(&mut app);
     choose_group_action(&mut app, RewindGroupAction::Toggle);
     press(&mut app, KeyCode::Esc);
     assert!(app.modal.is_none());
     assert!(app.composer_focused());
-    assert_eq!(None, app.escape_armed_at);
+    assert!(!app.rewind_armed);
 
     press(&mut app, KeyCode::Esc);
     assert!(app.modal.is_none());
-    assert!(app.escape_armed_at.is_some());
+    assert!(app.rewind_armed);
     press(&mut app, KeyCode::Esc);
-    assert!(app.modal.is_some());
+    assert!(
+        matches!(&app.modal, Some(Modal::Picker(picker)) if picker.kind == PickerKind::HistoryJump)
+    );
 }
 
 #[test]

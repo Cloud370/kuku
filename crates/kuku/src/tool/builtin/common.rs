@@ -11,6 +11,7 @@ use crate::util::path::{is_blocked_relative_path, normalize_path_sep};
 mod file_io;
 mod snapshot;
 
+pub(super) use file_io::WorkspaceCommitError;
 pub(crate) use file_io::{
     content_hash, ensure_active, file_read_error, file_version, format_content_hash,
     mutation_preview, publish_file, read_file_as_utf8, remove_observed_file, write_atomically,
@@ -30,7 +31,7 @@ pub(super) struct ResolvedPath {
     pub(super) relative: String,
 }
 
-pub(crate) fn prepare_workspace_path(
+fn prepare_workspace_path(
     tool: &str,
     args: &Value,
     workspace: &Path,
@@ -38,13 +39,46 @@ pub(crate) fn prepare_workspace_path(
     let optional_path = args.get("path").and_then(Value::as_str);
     let resolved = match tool {
         "find_files" | "search_text" => resolve_path(workspace, optional_path.unwrap_or(".")),
-        "read_file" | "edit_file" => resolve_path(workspace, required_path(tool, args)?),
-        "write_file" => resolve_write_path(workspace, required_path(tool, args)?),
-        "stat_file" => resolve_stat_path(workspace, required_path(tool, args)?),
+        "read_file" | "edit_file" | "view_image" => {
+            resolve_path(workspace, required_path(tool, args)?)
+        }
+        "write_file" | "stat_file" => resolve_stat_path(workspace, required_path(tool, args)?),
         "remove_file" => resolve_remove_path(workspace, required_path(tool, args)?),
         _ => return Ok(None),
     }?;
     Ok(Some(resolved.path))
+}
+
+pub(crate) fn prepare_file_target(
+    name: &str,
+    args: &mut Value,
+    workspace: &Path,
+) -> Result<(), ToolResultEnvelope> {
+    if let Some(path) = prepare_workspace_path(name, args, workspace)? {
+        let relative = path.strip_prefix(workspace).unwrap_or(&path);
+        let target = relative.to_str().ok_or_else(|| {
+            ToolResultEnvelope::error("invalid file path", "target must be valid Unicode")
+        })?;
+        args["path"] = if target.is_empty() { "." } else { target }.into();
+    }
+    Ok(())
+}
+
+pub(crate) fn changed_file_target(
+    name: &str,
+    args: &Value,
+    workspace: &Path,
+) -> Option<ToolResultEnvelope> {
+    let mut current = args.clone();
+    if let Err(result) = prepare_file_target(name, &mut current, workspace) {
+        return Some(result);
+    }
+    (current != *args).then(|| {
+        ToolResultEnvelope::blocked(
+            "workspace target changed after preparation",
+            "read the new target before requesting another action",
+        )
+    })
 }
 
 pub(super) fn required_path<'a>(
@@ -65,20 +99,6 @@ pub(super) fn resolve_path(
         .canonicalize()
         .map_err(|error| path_error(path, error))?;
     checked_resolved_path(workspace, resolved, path)
-}
-
-pub(super) fn resolve_write_path(
-    workspace: &Path,
-    path: &str,
-) -> Result<ResolvedPath, ToolResultEnvelope> {
-    let resolved = resolve_stat_path(workspace, path)?;
-    if resolved.path != resolved.workspace && !resolved.path.parent().is_some_and(Path::is_dir) {
-        return Err(ToolResultEnvelope::error(
-            format!("failed: parent path not found: {path}"),
-            format!("parent directory does not exist: {path}"),
-        ));
-    }
-    Ok(resolved)
 }
 
 pub(super) fn resolve_stat_path(

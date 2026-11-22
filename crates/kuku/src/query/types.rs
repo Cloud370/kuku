@@ -283,11 +283,26 @@ pub struct Run {
     pub(crate) deferred_runtime_logs: VecDeque<LogRecord>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum WorkspaceAccess {
+    Independent,
+    Read,
+    Exclusive,
+}
+
+impl WorkspaceAccess {
+    pub(super) fn conflicts_with(self, other: Self) -> bool {
+        self != Self::Independent
+            && other != Self::Independent
+            && self.max(other) == Self::Exclusive
+    }
+}
+
 pub(crate) struct ExecSlot {
     pub(crate) tool_call_id: String,
     pub(crate) conversation: Option<ConversationAddress>,
     pub(crate) kind: ToolKind,
-    pub(crate) workspace_ordered: bool,
+    pub(crate) workspace_access: WorkspaceAccess,
     pub(crate) label: String,
     pub(crate) cancel: Arc<tokio::sync::Notify>,
     pub(super) job: Option<Box<super::job_slots::ForegroundJob>>,
@@ -300,7 +315,7 @@ impl std::fmt::Debug for ExecSlot {
         f.debug_struct("ExecSlot")
             .field("tool_call_id", &self.tool_call_id)
             .field("kind", &self.kind)
-            .field("workspace_ordered", &self.workspace_ordered)
+            .field("workspace_access", &self.workspace_access)
             .field("label", &self.label)
             .finish_non_exhaustive()
     }
@@ -308,10 +323,10 @@ impl std::fmt::Debug for ExecSlot {
 
 #[derive(Debug)]
 pub(crate) enum SlotEvent {
-    WorkspacePermission(Box<super::workspace_script::AwaitingAction>),
+    WorkspacePermission(Box<super::run_js::AwaitingAction>),
     Output(ToolEvent),
     Done(crate::tool::ToolResultEnvelope),
-    JobWaitDone(crate::tool::ToolResultEnvelope),
+    JobControlDone(crate::tool::ToolResultEnvelope),
 }
 
 #[derive(Debug)]
@@ -412,6 +427,7 @@ pub(super) struct PendingRun {
     pub(super) runtime_log_writer: crate::log::BufferedLogWriter,
     pub(super) request_base: Option<super::request::OwnedRequestBase>,
     pub(super) recovery_count: u8,
+    pub(super) tool_argument_retries: u8,
     pub(super) context_cursor: Option<Box<crate::context::runtime::ContextCursor>>,
 }
 
@@ -482,10 +498,27 @@ pub(super) struct ResolvedRuntime {
     pub(super) registry: Vec<ToolDefinition>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) struct QueuedToolCall {
     pub(super) tool_call: ProviderToolCall,
     pub(super) display_summary: String,
+    pub(super) preparation: Option<ToolPreparation>,
+}
+
+impl QueuedToolCall {
+    pub(super) fn new(tool_call: ProviderToolCall, display_summary: String) -> Self {
+        Self {
+            tool_call,
+            display_summary,
+            preparation: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct ToolPreparation {
+    pub(super) args: serde_json::Value,
+    pub(super) definition: serde_json::Value,
 }
 
 #[derive(Debug)]

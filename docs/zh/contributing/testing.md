@@ -77,7 +77,7 @@ python3 scripts/acceptance/run.py interactive --desktop --archive PATH_TO_WINDOW
 
 终端场景在 Linux 和 macOS 通过 Unix PTY 驱动安装好的 `kuku`，在 Windows 使用 ConPTY。公共终端模拟器在 DEC 同步刷新期间保留上一帧，提交后才提供新帧；[协议测试](../../../apps/kuku/tests/terminal_state.rs)覆盖分片更新、调整大小和光标报告。用带内嵌资源的二进制和 `--browser` 选项可加入 Chromium 场景。按 [CI 浏览器准备步骤](../../../.github/workflows/ci.yml) 安装 Playwright Python 包和 Chromium。场景使用可控的本地模型端点，实际运行客户端和服务，无需模型凭据或付费请求。各层需要验证的行为见[交互客户端计划](../architecture/interactive-clients.md#开发时如何测试)。场景通过原生终端操作 Ctrl+C 和菜单补全，分别保持模型请求与工具处于运行中以核对显示状态，并在服务断开时检查连接指示。本地模型端点报告已知的输入、缓存读取和输出 token 数，供安装后的终端核对上下文占用、累计 token 和缓存命中率，并检查实测 TPS、Agent 地址与工作目录。
 
-维护中的生命周期场景从缺失凭据修复走到首个已认证回复，保存默认模型并检查新建和重开 Session 实际使用的模型，以及用键盘 ↑/Delete 撤回精确排队输入，同时保留其草稿和另一条排队输入。场景也会重开只读回退内容并核对下一次 provider 请求不含被排除的内容，跨过最近 48 条已提交消息选择精确回退目标，并用受控的 401 验证遮蔽凭据更新和安全服务重启。认证修复场景确认只有显式 Continue 才会用替换凭据重试保留的原输入，且仅重试一次。键盘覆盖与现有鼠标撤回检查并存。
+维护中的生命周期场景从缺失凭据修复走到首个已认证回复，保存默认模型并检查新建和重开 Session 实际使用的模型，以及用键盘 ↑/Delete 撤回精确排队输入，同时保留其草稿和另一条排队输入。场景也会重开只读回退内容并核对下一次 provider 请求不含被排除的内容，跨过最近 48 条已提交消息选择精确回退目标，并用受控的 401 验证遮蔽凭据更新和安全服务重启。认证修复场景确认只有显式 Continue 才会用替换凭据重试保留的原输入，且仅重试一次。键盘覆盖与现有鼠标撤回检查并存。文件恢复场景验证空预览仍可提交对话切换，并验证应用非空预览时会保留脚本和命令的改动。
 
 原生冒烟场景在 60 和 120 列下验证输入框操作，包括斜杠补全、Ctrl+T、Agent 与模型的思考设置，以及服务请求仍在运行时的内联退出确认。用 `interactive --native-smoke --binary PATH_TO_BINARY` 或 `--archive PATH_TO_PLATFORM_ARCHIVE` 在目标平台检查候选版本。终端画面保存在 `installed-interactive.log`。[输入框场景](../../../scripts/acceptance/interactive_composer.py)
 
@@ -143,6 +143,21 @@ python3 scripts/acceptance/run.py --run-id WORKSPACE_OPENROUTER_RUN workspace \
 
 `workspace/result.json` 记录任务检查、费用、发送的模型和思考档，以及路由证据。无法核实时，`workspace` 选择器允许 `upstream_confirmed: null`。OpenRouter 未返回生成回执时，只能报告请求已固定到哪个端点，实际上游仍未知。思考档同样按请求值报告，除非 provider 回报实际值。确认路由不一致会使本次验收失败。见[凭据与运行产物](#凭据与运行产物)。
 
+### 命令输出与长任务验收
+
+以[命令输出提案](../architecture/workspace-execution.md#命令输出处理提案)为行为契约。复用现有工具、Session 和安装客户端夹具。固定 provider 验证模型实际能看到什么，真实 provider 验证模型实际怎么选。
+
+| 检查 | 必要证据 |
+|---|---|
+| 原生调用 | 默认命令 schema 接受字面程序参数。用原生 Linux 和 Windows 验证空格、引号与 Unicode，单独记录 macOS 覆盖。核对实际授权的调用、运行结果与 TUI 标题。 |
+| 短、长和失败输出 | 核对首条送给 provider 的结果与实际捕获。短结果直接显示。长结果的形态和方法提示足以在下一 Step 取到需要的内容。失败时保住决定性诊断和独立的捕获完整性标志。 |
+| 原生搜索和规则覆盖 | 用字节级夹具验证跨帧匹配、授权、取消和截断。按每条诊断引用读回原始捕获。每个启用的规则族覆盖成功、失败和格式不匹配，并验证通用回退以及重开后原先接纳的精确视图。 |
+| 后台和长任务 | 覆盖快速完成、一秒边界、取消和单次终态。观察持续有进展的慢 Job，以及安静且存在具体阻碍的 Job。验证结果已经明确时可以立即收束，同时仅观察到安静时，有用的工作仍可继续。 |
+
+真实对照固定模型、思考档、工具、预算和原环境及 verifier。覆盖短程直接操作、适合 `run_js` 的任务，以及包含 Job 或昂贵验证的长流程。至少保留两个结构不同的任务用于独立验证，调 Prompt 时不使用。先固定输出视图比较 Prompt 选型，再固定 Prompt 比较提取提示，最后验收组合效果。
+
+记录工具和脚本首次调用的正确性、适用任务中的 `run_js` 选用率、探索性补读、重试和重复检查。记录原 verifier 结果、墙钟耗时、provider 累计输入与缓存用量、峰值 RSS 和保留磁盘字节。用通用有界预览作为摘要字节数基线，用 provider 用量支持 token 结论。结果已明确，或具体阻碍让继续执行失去验证价值时，结束当次运行并保存观察与原因。实际执行用时和最长运行上限分别记录。
+
 ## 测试归属与证据
 
 单元测试保留在 `#[cfg(test)] mod tests`；集成测试按领域位于 `tests/` 下，共用 helper 位于 `tests/common/mod.rs`。复用已有调用程序与固定输入。重构应提供一个持续维护的入口或小型 case 清单，选择契约、重放、真实调用及 benchmark 检查，不另建评测平台。
@@ -170,15 +185,50 @@ Linux／Docker 预检将固定源码检出到已忽略的 `benchmarks/sources/`�
 
 原 reward、收集／通过／失败测试数、SDK 退出状态与清理结果分别记录。预期任务产物在判定前保存，每个上限 32 MiB；证据缺失或过大不能通过真实验收记录。SDK 检查器流式读取原始 `events.jsonl`，要求已提交游标有序、准备请求与响应对应、工具调用／结果配对、已接纳结果视图不变，以及 `KUKUOUT1` 输出引用的帧和字节数有效并已完成写入。SDK 统计／设置／报告必须匹配这些事实，运行时与持久关闭屏障均须成功。请求与费用按 Agent、Turn 和请求标识关联，后续 Turn 可以复用 `req_1`。整个 Session 的用量与所选 Agent 的快照分别记录。任务成功仍由原 benchmark 判定器决定。
 
+SDK 执行选定的 Agent 期限。Docker 监督进程留出独立窗口来完成取消、清理和报告。超时后，如果保存的 SDK 报告与持久 Session 日志能证实清理完成，入口仍可对保留下来的工作区执行原判定器。报告分别记录 Agent 期限触发、监督进程超时及原判定结果。
+
 检查器每个事件最多读取 1 MiB，累计最多 100,000 个事件，SDK 报告上限 4 MiB；只保留有界 hash／元数据，不复制上下文历史。诊断上限为 4,096 个准备请求及 8,192 个工具调用／provider 报告。未确认的上下文后缀跨 segment 最多保留 16,384 个工具块指纹，只有匹配的准备请求头才确认其中的工具视图。重试会替换候选后缀，已确认的前缀及持久调用／结果匹配仍严格校验。无需再次调用模型即可复核已有证据：`inspect --sdk-result PATH --session-data DIR --container-data /kuku/data --connection NAME`；报告使用宿主路径时省略 `--container-data`。此只读选择不要求凭据或费用预留。
+
+工具参数格式错误会产生 `invalid_response`，并丢弃整批工具调用。检查器核对该响应未接纳任何工具调用，并确认同一 Agent 和 Turn 准备了替代请求。两次准备请求的用量均计入总量。
 
 调用程序报告 `streaming` 时，检查器核对计数、首次观察时间及持久请求／模型字节数的上界。这些数据来自同一个 SDK 订阅，不是可重放的线路计时。所选协议检查要求非空模型输出且没有丢弃更新时，可对 `inspect`、`live` 或真实 benchmark 增加 `--require-streaming`。旧调用程序明确保持未报告。模型的 `no_agents` 设置禁用其协作工具，不禁止宿主在同一 Session 创建其他独立 Agent。
 
 SDK 运行时，入口分别采样 SDK RSS／RSS 高水位、CPU 时间和线程数，以及整个容器的 CPU、内存、进程数和 I/O。采样与输出日志均有界；未采样值保持 `null`，不把整容器数据归因于 SDK。下方专门的资源调用程序测量其余生命周期边界。
 
+### 共同观察 TUI 运行（可选）
+
+一起调试 TUI 时，开发者和编码 Agent 可以接入同一个命名 tmux 会话，共同复现、修改和验证交互。在待测 checkout 或 worktree 中运行：
+
+```sh
+cargo build --locked -p kuku-app --bin kuku
+tmux new-session -d -s kuku-review -c "$PWD" \
+  "$PWD/target/debug/kuku" --workspace "$PWD"
+tmux set-option -t kuku-review mouse on
+tmux capture-pane -p -t kuku-review
+```
+
+等界面显示 `Ready`，进到要验收的页面，抓一张当前画面确认状态。例如验收恢复会话时，先打开 `/resume` 并停在选择页。普通终端用 `tmux attach -t kuku-review` 接入，已经在 tmux 里则用 `tmux switch-client -t kuku-review`。在 TUI 中用滚轮或 Page Up 和 Page Down 翻页，按 Ctrl+End 回到最新输出。
+
+开发者操作复现，Agent 抓取同一个窗格的画面并核对对应事件。在编码会话里讨论并修改，从修改后的 checkout 重新构建。新版本在另一个 tmux 窗口启动，使用自己的测试数据副本和数据目录。保留原窗口，双方可以来回对照同一个操作，再继续迭代。共享窗格里的键盘输入由双方轮流操作。
+
+给对照窗口命名，方便双方定位到同一个版本。按 `Ctrl+b` 再按 `w` 选择窗口，或按 `Ctrl+b` 再按窗口编号直接切换。例如新版窗口名为 `after` 时，Agent 可以用 `tmux capture-pane -p -t kuku-review:after` 抓取该窗口的画面，开发者可继续操作其他窗口。
+
+每个并发案例用独立的会话名。不同 worktree 或不同版本做并排对照时，各自指定 `--data-dir` 和 `--config` 来隔离受管服务。查任务进度、工具结果或请求边界时，沿用相同连接和工作区选项，先用 `kuku events SESSION_ID --limit 40` 读取一小段事件。需要核对界面时用 `capture-pane`，相关画面随验收证据留存。测试选择器方向键时准备至少两个可选项。颜色丢失时，检查启动环境的 `TERM` 和 `NO_COLOR`，用 `infocmp` 确认终端能力。
+
+跑上游 benchmark 时，将 kuku 服务放在固定的任务容器里。若容器内已可运行且已配置 kuku，可以用宿主机的 tmux 接入容器内的 TUI。将 `benchmark_container` 设为正在运行的任务容器的名称：
+
+```sh
+tmux new-session -d -s kuku-benchmark \
+  docker exec -it "$benchmark_container" kuku --workspace /app
+tmux set-option -t kuku-benchmark mouse on
+tmux attach-session -t kuku-benchmark
+```
+
+宿主机上的 TUI 也可用 `--remote` 连到容器服务，并用 `--workspace` 指定容器内的路径。粘贴原题面，等 Agent 和 Job 都结束后再运行原 verifier。判分隔离和验收证据沿用上面的原始 benchmark 流程。[终端操作](../reference/cli.md#终端界面) · [远程连接](../guides/run-the-server.md#显式启动服务)
+
 ## FrontierHarness 公开小样本
 
-`frontier` 套件在[题目清单](../../../scripts/acceptance/cases.json)中固定 FrontierHarness Eval v1.1.0 的四道题，覆盖日志汇总、异步取消、正则表达式和 Vim 大文件编辑。每题使用上游题面、镜像构建上下文和原始判分器。在有 Git、Docker、Python 3.10+ 和仓库指定 Rust 工具链的 Linux 上，先用空提交确认判分器能识别失败。构建和评分依赖需要网络，这一步没有模型费用。[数据集来源](https://hub.harborframework.com/datasets/frontier-harness-eval/frontier-harness-eval)
+[题目清单](../../../scripts/acceptance/cases.json)将 `frontier` 套件固定到 FrontierHarness Eval v1.1.0 收录的 Terminal-Bench 2.1 题目。历史小样本覆盖日志汇总、异步取消、正则表达式和 Vim 大文件编辑。本地套件还覆盖服务配置、迭代构建、Git 和数据库恢复，以及从图像复原代码。每题使用上游题面和判分器，环境使用原始构建上下文或按摘要固定的上游发布镜像。在有 Git、Docker、Python 3.10+ 和仓库指定 Rust 工具链的 Linux 上，先用空提交确认判分器能识别失败。获取镜像和评分依赖需要网络，这一步没有模型费用。[数据集来源](https://hub.harborframework.com/datasets/frontier-harness-eval/frontier-harness-eval)
 
 ```sh
 cargo build --locked -p kuku --example session_task
@@ -202,7 +252,13 @@ printf '%s\n' log-summary-date-ranges cancel-async-tasks regex-log large-scale-t
 
 如果账户的数据策略排除了所选上游，可以使用与策略兼容的固定端点（如 `--upstream baseten`）另起一轮，并记录路由变化。OpenRouter 可能在流结束时已返回费用，而 generation 回执稍后才可用。给下方报告命令加上 `--refresh-receipts "$keys"` 可查询这些试验已有的回执。之后可离线复用已核对的回执，每笔费用只统计一次。
 
-下载官方快照生成可分享的报告。每题按时间顺序传入历次运行，保留所有失败。结果分别给出上游评分、SDK 完成状态、模型成本和判分耗时。Pi 官方数据使用同一模型版本，每题四次，经过审计，使用 Runta 和 Baseten。对比缓存时同时查看实际服务商、输入 token 中已缓存的比例、用量覆盖情况和首个请求。报告只导出允许公开的字段，原始 Session 与私有凭据保存在本机。[官方结果](https://frontierharness.org/live/) · [OpenRouter 路由](https://openrouter.ai/docs/guides/routing/provider-selection)
+对照直连 DeepSeek 时，使用 `--provider deepseek` 和含 `KUKU_TEST_DEEPSEEK_API_KEY` 的私有文件。默认模型为 `deepseek-flash`。要在同一题目和判分器下测试 Pro，使用 `--model deepseek-v4-pro`。计量程序会记录所选模型，并在启动前校验价格和额度。
+
+题目运行中可读取 `meter-progress.json` 查看最近一次上游请求。连接阶段、最后收到的流行以及最后一次模型输出增量分别记录。运行中的快照只保存字节数、事件数和计时信息。`meter.json` 保存已结算的请求和费用。
+
+SDK 直连 DeepSeek 默认走 Chat Completions。可使用 `--wire openai-responses` 选择官方 Responses API，沿用同一个模型、账本和原始判分器。对照 harness 时固定协议。计量程序记录官方用量并按公开的 token 单价估算费用。[DeepSeek Responses API](https://api-docs.deepseek.com/guides/responses_api/)
+
+下载官方快照生成可分享的报告。每题按时间顺序传入历次运行，保留所有失败。结果分别给出上游评分、SDK 完成状态、模型成本和判分耗时。Pi 官方数据使用同一模型版本，每题四次，经过审计，使用 Runta 和 Baseten。官方每通过一次的耗时，用所有计分运行的 Agent 与判分总耗时除以审计后的通过次数。失败和超时的耗时也计入总耗时。对比缓存时同时查看实际服务商、输入 token 中已缓存的比例、用量覆盖情况和首个请求。报告只导出允许公开的字段，原始 Session 与私有凭据保存在本机。[官方结果](https://frontierharness.org/live/) · [OpenRouter 路由](https://openrouter.ai/docs/guides/routing/provider-selection)
 
 ```sh
 mkdir -p benchmarks/acceptance/public
@@ -218,6 +274,79 @@ python3 scripts/acceptance/frontier_report.py --official-live benchmarks/accepta
 SDK 在写入结果前采集 Linux `getrusage(RUSAGE_SELF)`，得到本进程峰值 RSS、CPU 时间、文件系统输入和输出块计数。宿主采样器按相邻样本的时间间隔估算平均 RSS，并报告覆盖窗口。最后一次 Linux `/proc/PID/io` 读数可能包含已等待结束的子进程，分别记录逻辑读写量、系统调用数和存储字节。容器快照还包含工具进程。判分在 SDK 采样结束后进行。计量程序分开记录到首个有效流式输出的时间与供应商原生指标，并给出 TPS 与缓存命中统计的分母。
 
 [小样本结果与 Session 诊断](../../../scripts/acceptance/results/frontier-sample.md)保留探索阶段的各次尝试及统一配置下的复测。
+
+### 严格的本地 Kuku–Pi 对照
+
+每道入选题先跑一个 Pi 对照。优先选能拉开 harness 差异的题，再用工作负载不同的第二题检验改动能否泛化。快速收集反馈时，只要宿主机和供应商有余量，两道题的 Kuku 和 Pi 共四次试验可以并发。启动负载较高时，可以把各次启动间隔几秒。每次使用唯一的运行 ID，四次共用费用台账。SQLite 构建这类 CPU 密集任务可以在同一道题的两家运行中都加 `--cpus 2`。报告会校验 CPU 限额一致。结果需注明是否并发及 CPU 限额。正式比较耗时和 CPU 时，两家在同一台空闲机器上依次运行。复测时交替先跑的一方，保留每次结果，包括失败。下面的对照使用无界面入口。TUI 观察另记一轮。
+
+使用支持 cgroup v2 和 `memory.peak` 的 Linux Docker，以及与 Pi 兼容的 Linux Node.js 可执行文件（Pi 1.5.2 要求 22.19 或更高）。每次从原题固定镜像启动新容器。两家使用原始题面和判分器、直连 DeepSeek Chat Completions 的 `deepseek-flash` 和 `max` 推理档，以及相同的请求、时间和费用上限。严格模式默认 1 CPU、2 GiB 内存，关闭 swap。资源验收要求内核限额符合配置，能采集 harness RSS，且 agent 执行阶段没有 cgroup OOM 事件。
+
+将对照版本装进 Git 忽略目录，用 release 模式构建 Kuku runner。保留 npm lockfile，之后可以用 `npm ci` 复现依赖树。将 `KUKU_TEST_DEEPSEEK_API_KEY=...` 放进 `keys` 所指的私有文件，付费执行前用已授权的总额初始化台账。
+
+```sh
+pi_ref="$PWD/benchmarks/tools/pi-1.5.2"
+npm install --prefix "$pi_ref" --registry=https://registry.npmjs.org --save-exact \
+  --ignore-scripts --no-audit --no-fund @earendil-works/pi-coding-agent@1.5.2
+cargo build --release --locked -p kuku --example session_task
+
+ledger="$PWD/benchmarks/acceptance/paired-budget.json"
+keys="$HOME/.config/kuku/frontier.env"
+case_id=large-scale-text-editing
+python3 scripts/acceptance/run.py budget init --ledger "$ledger" \
+  --authorization local-paired-frontier --limit-usd 1.50
+
+paired_run() {
+  run_id="$1"
+  shift
+  python3 scripts/acceptance/run.py --run-id "$run_id" benchmark \
+    --suite frontier --case "$case_id" --mode live --provider deepseek --require-resource-evidence \
+    --max-output-tokens 131072 --case-cap-usd 0.75 --ledger "$ledger" --secrets "$keys" "$@"
+}
+paired_run vim-kuku --sdk-binary target/release/examples/session_task || test "$?" -eq 1
+paired_run vim-pi --pi-prefix "$pi_ref" || test "$?" -eq 1
+
+python3 scripts/acceptance/benchmark_compare.py \
+  --kuku benchmarks/acceptance/vim-kuku --pi benchmarks/acceptance/vim-pi \
+  > benchmarks/acceptance/vim-comparison.json
+```
+
+导出工具先核对题目文件摘要、Docker 镜像 ID、模型路由和运行限额。对照报告包含原始评分和测试数、agent 与判分耗时、模型请求数与 token 用量、估算美元费用，以及资源验收、harness RSS、容器内存峰值、CPU 秒数和 OOM 事件。容器内存峰值取启动到判分前的内核高水位，覆盖计入 cgroup 的 harness、工具子进程和采样开销。harness RSS 统计主进程的驻留页面，包含共享映射。CPU 秒数取 agent 执行前后两次内核读数的差值。分享对照 JSON 时附上轮次、主机和构建模式。需要精确复现依赖树时附上 Pi lockfile。凭据、原始 Prompt、工具输出和 Session 文件留在本机。
+
+严格模式还会把 `nr_periods`、`nr_throttled` 和 `throttled_usec` 写入对照 JSON 的 `container_cpu_throttling`。这些值取判分前同一对内核读数的差值，反映容器自身的 CPU 配额节流。采样缺失或不一致时记为 `null`，实测计数没有增加时记为零。结合配置的配额、实际 CPU 用量和这些计数解读墙钟耗时。[Linux cgroup v2 CPU 接口](https://docs.kernel.org/admin-guide/cgroup-v2.html#cpu-interface-files)
+
+对照报告累计宿主计量代理接纳的所有请求的转发耗时和序列化请求体字节数，也计入已发起的重试。转发耗时涵盖上游连接和响应传输。有任一请求缺少相应读数时，该项总量留空。首个输出时间的中位数按已观测的请求计算，并附样本数。对耗时最长的已观测请求，报告记录总耗时，以及观测到的首个输出、首段文本和首个工具参数的时间。上游提供推理 token 数时也一并记录。计量代理拒绝的请求中，因单题预算被拒绝的请求会单独计数。
+
+计量代理也会统计完整模型回复发出的函数及自定义工具调用。对照报告给出已观测的回复数和批量分布，并保留运行器独立记录的派发证据。流缺少完整证据时，该项留空。
+
+### 本地严格 Kuku–Codex 对照
+
+在独立目录安装固定版本的 Codex npm 包。把 DeepSeek 官方模型目录中的 `deepseek-flash` 条目单独保存在安装目录的 `deepseek-flash-models.json` 中。[官方 Codex 模型目录](https://api-docs.deepseek.com/quick_start/agent_integrations/codex/#option-2-edit-the-configuration-file-manually)
+
+```sh
+codex_ref="$PWD/benchmarks/tools/codex-0.164.0"
+npm install --prefix "$codex_ref" --registry=https://registry.npmjs.org --save-exact \
+  --ignore-scripts --no-audit --no-fund @openai/codex@0.164.0
+```
+
+沿用 Pi 示例中的共同参数，并给两次运行都加上 `--wire openai-responses`。Kuku 使用 `--sdk-binary`，Codex 使用 `--codex-prefix "$codex_ref"`。Codex 在容器内使用独立配置和轨迹文件，关闭网页搜索和子 Agent 工具，并接收局部计量代理的令牌。客户端省略输出上限时，代理补上两组共用的上限。用 `benchmark_compare.py --kuku RUN_DIRECTORY --codex RUN_DIRECTORY` 导出同配置的运行。报告记录 Codex 原生二进制、npm 锁文件和模型目录的哈希。FrontierHarness 公布的 Codex 版本使用 Baseten 模型目录和 Runta 运行环境。[官方运行配置](https://github.com/frontier-harness-eval/eval/tree/release/v1.1)
+
+运行器有逐条响应的工具调用记录时，对照报告会分别统计零次、一次和多次调用的响应数。这项指标衡量模型如何组批。SDK 验证失败时，导出工具可以从保存的 Session 日志统计观察到的调用次数，并注明来源。实际执行是否重叠需另用工具开始和结算记录核对。
+
+Kuku 的对照导出也统计 `run_js` 调用数及其终态回执中的宿主动作数，包括已结束的 Job。脚本回执缺失时，宿主动作数保持未知。
+
+原判定器通过时，对照报告可将持久化文件变更的哈希与保留的 Kuku 产物匹配，包括 Agent 已达到运行期限的情况。报告记录匹配覆盖率，并用 Session 日志时间戳计算从第一个模型请求准备完成到所有最终哈希均已出现，以及到最后一个已完成 Turn 的时间。日志区间超出 Agent 实测运行时间时，报告保留匹配数并标注时钟差异。原判定器仍在试跑结束时执行。
+
+对照 Prompt 版本时复用同一份 release `session_task`，给每条 Frontier 真实试跑传入包含覆盖文件的 `--prompts-dir`。选择器为 Prompt 资源留存快照，在试跑记录中写入 SHA-256 摘要，并以只读方式挂载快照。缺少的资源由 SDK 提供嵌入的默认版本。使用 `benchmark_compare.py --baseline RUN_DIRECTORY --candidate RUN_DIRECTORY` 核对 SDK 二进制、运行时包、两份不同的 Prompt 快照，以及双方一致的题目、provider 设置和资源限额。
+
+直连 DeepSeek 实跑时，可用 `--reasoning-effort high` 测试不同的推理强度，默认值为 `max`。使用 `benchmark_compare.py --compare-effort --baseline RUN_DIRECTORY --candidate RUN_DIRECTORY` 对照两次 Kuku 试跑。导出要求模型版本、SDK 二进制、运行时包、Prompt 和其他运行设置一致。结合原判定器结果查看费用、耗时和请求次数。
+
+使用 `benchmark_compare.py --compare-sdk --baseline RUN_DIRECTORY --candidate RUN_DIRECTORY` 对照两份 SDK 构建。导出要求二进制和运行时包哈希各不相同，模型版本记录、题目、运行限额和外部 Prompt 覆盖一致。嵌入的 Prompt 随 SDK 构建一起比较。单独验证措辞时使用上面的 Prompt 对照流程。
+
+测试宿主进程期限时，可给 Frontier SDK 真实试跑传入 `--max-command-seconds N`。它设置每条命令的 SDK 进程期限，覆盖 `run_js` 启动的命令和转为 Job 的命令。整场 Agent 的期限与原判定器各自独立。选择器会核对 SDK 报告中的实际期限，对照导出要求双方使用相同的进程期限。省略时沿用 SDK 默认值，即不设单条命令期限。
+
+使用 `--max-request-bytes 524288` 可在 Frontier 真跑中检验 Session 默认的请求字节预算。局部计量代理和 Kuku runner 共用所选上限，选择器会核对 SDK 报告。省略参数时保持原 benchmark 的 4 MiB 上限。配对时两组使用相同的字节上限。
+
+配对报告统计已提交的容量切换，以及其中用范围引用表示的早期输出页数。准备好的请求引用后继段时，该次切换计入一次。这样可以区分实际触发容量恢复与顺利在上限内完成的试跑。
 
 ## 资源测量
 
@@ -238,6 +367,16 @@ Linux `/proc` 和 Windows 进程 API 分别采样 SDK 调用进程和工具后�
 在 Linux 上，`--cpu-count` 限定调用进程及其后代可用的 CPU。`--address-space-mib` 限定各个进程的虚拟地址空间。Rust 调用程序可以跨平台运行。此选择器当前在 Linux 和 Windows 提供进程采样。
 
 用 `--pressure-rounds 3` 可以在同一个调用进程里对比多轮峰值和空闲阶段。在 Linux 上，如果能读取 `/proc/<pid>/smaps_rollup`，选择器也会记录匿名内存与文件映射内存。
+
+### 大型会话压测
+
+```bash
+python3 scripts/acceptance/run.py metrics --profile release --long-session-mib 500
+```
+
+需主动选择该负载。它生成事件日志至少为 500 MiB 的会话。固定模型适配器通过公开 SDK 执行批量工具调用、推理输出、命令捕获、文件读取和上下文压缩。全部数据为合成数据，模型网络请求为零。可用较小尺寸快速检查负载和测试入口。生成的事件日志和保留输出会留在被 Git 忽略的运行目录里，开始大规模测试前应检查可用磁盘空间。
+
+`fixture.json` 记录日志的逻辑大小、磁盘大小、保留输出字节数、检查点数量、事件类型配比和正常关闭耗时。生成时用合成 token 用量在字节上限前触发检查点。验证沿用同一请求上限，复用内嵌检查点，并关闭自动生成新检查点，以便检查已记录历史的撤销与回退。新进程验证重开、历史分页和保留输出读取、首轮及后续轮次、撤销压缩与消息回退。`caller.json` 记录耗时、可用的进程 CPU 与 I/O 增量、实测 RSS 峰值，以及每次受测请求的准备时间和序列化字节数。重开沿用操作系统页面缓存。比较不同运行时应使用相同的负载尺寸、发布构建模式和进程限制。
 
 ## 真实协议验收
 

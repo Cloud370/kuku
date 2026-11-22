@@ -1,14 +1,21 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+use sha2::{Digest, Sha256};
+
 use crate::context::{CanonicalMessage, MessageBlock, Role, ToolSchema};
 use crate::conversation::address::ConversationAddress;
+pub(crate) use crate::event::store::RouteSelectors;
 use crate::event::{EventPayload, EventStore, StoredEvent};
 use crate::prompt::PromptCatalog;
 use crate::provider::types::ProviderCapabilities;
 use crate::{Error, Result};
 
-const PAGE_RECORDS: usize = 256;
+mod startup;
+#[cfg(test)]
+use startup::read_agent_events;
+pub(crate) use startup::StartupCache;
+
 const MAX_SELECTION_BYTES_FACTOR: usize = 4;
 const MAX_CACHED_FILE_SNAPSHOTS: usize = 128;
 
@@ -45,23 +52,11 @@ pub(crate) struct FrozenSegment {
     pub(crate) workspace: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct RouteSelectors {
-    pub(crate) query_connection: Option<String>,
-    pub(crate) query_model: Option<String>,
-    pub(crate) query_tier: Option<String>,
-}
-
 fn route_selectors_changed(segment: Option<&FrozenSegment>, config: &serde_json::Value) -> bool {
     let Some(recorded) = segment.and_then(|segment| segment.route_selectors.as_ref()) else {
         return false;
     };
-    let selectors = RouteSelectors {
-        query_connection: config["connection"].as_str().map(str::to_owned),
-        query_model: config["model"].as_str().map(str::to_owned),
-        query_tier: config["tier"].as_str().map(str::to_owned),
-    };
-    recorded != &selectors
+    recorded != &RouteSelectors::from_agent_config(config)
 }
 
 fn identity_slot() -> usize {
@@ -75,6 +70,7 @@ pub(crate) enum MessageOrigin {
     Response,
     ToolResults,
     Runtime,
+    Checkpoint,
 }
 
 impl MessageOrigin {
@@ -101,6 +97,38 @@ pub(crate) struct AdmittedMessage {
     pub(crate) admitted_at: u64,
 }
 
+#[derive(Debug, Clone)]
+struct PrefixEncoding {
+    hasher: Sha256,
+    bytes: usize,
+}
+
+impl Default for PrefixEncoding {
+    fn default() -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(b"[");
+        Self { hasher, bytes: 0 }
+    }
+}
+
+impl PrefixEncoding {
+    fn append(&mut self, message: &CanonicalMessage) -> Result<()> {
+        let encoded = serde_json::to_vec(message)?;
+        if self.bytes != 0 {
+            self.hasher.update(b",");
+        }
+        self.hasher.update(&encoded);
+        self.bytes = self.bytes.saturating_add(encoded.len());
+        Ok(())
+    }
+
+    fn fingerprint(&self) -> String {
+        let mut hasher = self.hasher.clone();
+        hasher.update(b"]");
+        format!("{:x}", hasher.finalize())
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct ContextCursor {
     pub(crate) after: u64,
@@ -117,21 +145,17 @@ pub(crate) struct ContextCursor {
     tail: Vec<StoredEvent>,
     pending_admissions: Vec<StoredEvent>,
     pending_source_head: Option<u64>,
-    retained_bytes: usize,
+    admitted_encoding: PrefixEncoding,
+    tail_bytes: usize,
+    pending_bytes: usize,
     approved_segment: u64,
 }
 
 impl ContextCursor {
     fn observe_configuration(&mut self, event_id: u64, config: &serde_json::Value) {
         self.configuration = event_id;
-        self.configurations.insert(
-            event_id,
-            RouteSelectors {
-                query_connection: config["connection"].as_str().map(str::to_owned),
-                query_model: config["model"].as_str().map(str::to_owned),
-                query_tier: config["tier"].as_str().map(str::to_owned),
-            },
-        );
+        self.configurations
+            .insert(event_id, RouteSelectors::from_agent_config(config));
     }
 
     pub(crate) fn select_configuration(&mut self, selectors: &RouteSelectors) {
@@ -154,97 +178,45 @@ impl ContextCursor {
         }
     }
 
-    fn read_assets(&mut self, path: &Path, agent: &str) -> Result<()> {
-        let mut candidate = None;
-        self.after = scan(path, self.after, |event| {
-            if let EventPayload::Unknown(value) = event.payload {
-                if value["agent"] == agent {
-                    if value["kind"] == "runtime.context_segment" {
-                        candidate = Some((event.id, value.get("catalog").cloned()));
-                    } else if value["kind"] == "runtime.step_prepared" {
-                        if let Some((_, catalog)) =
-                            candidate.as_ref().filter(|(id, _)| value["segment"] == *id)
-                        {
-                            self.catalog = catalog
-                                .as_ref()
-                                .filter(|value| !value.is_null())
-                                .map(|value| serde_json::from_value(value.clone()))
-                                .transpose()?;
-                        }
-                    }
-                }
-            }
-            Ok(())
-        })?;
-        Ok(())
-    }
-
     pub(crate) fn refresh(&mut self, path: &Path, agent: &str, max_bytes: usize) -> Result<()> {
+        let mut hidden = Vec::new();
         if self.after == 0 {
-            let mut latest = None;
-            let mut candidate = None;
-            let mut latest_turn = None;
-            let mut segment_turn = None;
-            let mut seen = 0;
-            scan(path, 0, |event| {
-                seen += 1;
-                if let EventPayload::TurnStarted {
-                    turn, conversation, ..
-                } = &event.payload
-                {
-                    if conversation == agent {
-                        latest_turn = Some(*turn);
-                    }
-                }
-                if let EventPayload::Unknown(value) = &event.payload {
-                    if value["kind"] == "runtime.operation" {
-                        let record = &value["record"];
-                        match record["operation"].as_str() {
-                            Some("agent_created") if record["address"] == agent => {
-                                self.observe_configuration(event.id, &record["config"]);
-                            }
-                            Some("agent_configured") if record["address"] == agent => {
-                                self.observe_configuration(event.id, &record["config"]);
-                            }
-                            Some("input_delivered")
-                                if record["input"]["target"] == agent
-                                    && record["config"].is_object() =>
-                            {
-                                self.observe_configuration(event.id, &record["config"]);
-                            }
-                            _ => {}
-                        }
-                    }
-                    if value["agent"] == agent {
-                        if value["kind"] == "runtime.context_segment" {
-                            candidate = Some((event.clone(), latest_turn));
-                        }
-                        if value["kind"] == "runtime.step_prepared" {
-                            if let Some((segment, turn)) = candidate
-                                .as_ref()
-                                .filter(|(segment, _)| value["segment"] == segment.id)
-                            {
-                                segment_turn = *turn;
-                                latest = Some(segment.clone());
-                            }
-                        }
-                    }
-                }
-                Ok(())
-            })?;
-            self.events_read += seen;
-            if let Some(event) = latest {
-                self.after = event.id;
-                self.approved_segment = event.id;
-                self.latest_turn = segment_turn;
-                self.observe(event, agent, max_bytes)?;
+            let marks = EventStore::context_marks(path, agent)?;
+            self.configuration = marks
+                .configurations
+                .last_key_value()
+                .map_or(0, |(id, _)| *id);
+            self.configurations = marks.configurations;
+            hidden = marks.hidden;
+            if let Some(segment) = marks.segment {
+                self.after = segment.id;
+                self.approved_segment = segment.id;
+                self.latest_turn = segment.turn;
+                self.observe(read_indexed_event(path, segment.id)?, agent, max_bytes)?;
+                self.events_read += 1;
             }
         }
+        let mut after = self.after;
         let mut seen = 0;
-        self.after = scan(path, self.after, |event| {
+        let mut observe = |event| {
             seen += 1;
             self.observe(event, agent, max_bytes)
-        })?;
+        };
+        for range in hidden {
+            if after >= range.end.saturating_sub(1) {
+                continue;
+            }
+            if after < range.start.saturating_sub(1) {
+                EventStore::visit_committed(path, after, |event| {
+                    if event.id >= range.start {
+                        return Ok(false);
+                    }
+                    observe(event).map(|()| true)
+                })?;
+            }
+            after = range.end - 1;
+        }
+        self.after = EventStore::visit_after_path(path, after, observe)?;
         self.events_read += seen;
         Ok(())
     }
@@ -261,9 +233,7 @@ impl ContextCursor {
                 && record["operation"] == "message_rewind"
                 && record["address"] == agent
             {
-                let target_event_id = record["target_event_id"].as_u64().ok_or_else(|| {
-                    Error::InvalidEventStream("message rewind has no target event".into())
-                })?;
+                let target_event_id = rewind_target(record)?;
                 self.admitted.retain(|message| {
                     message.admitted_at < target_event_id || message.admitted_at >= event.id
                 });
@@ -288,7 +258,7 @@ impl ContextCursor {
                 if self.pending_admissions.is_empty() {
                     self.pending_source_head = None;
                 }
-                self.recount()?;
+                self.recount_after_rewind()?;
                 return Ok(());
             }
         }
@@ -343,7 +313,9 @@ impl ContextCursor {
                             self.tail.clear();
                             self.pending_admissions.clear();
                             self.pending_source_head = None;
-                            self.retained_bytes = 0;
+                            self.admitted_encoding = PrefixEncoding::default();
+                            self.tail_bytes = 0;
+                            self.pending_bytes = 0;
                         }
                         return Ok(());
                     }
@@ -374,18 +346,19 @@ impl ContextCursor {
                             })
                         {
                             self.pending_admissions.clear();
+                            self.pending_bytes = 0;
                             self.pending_source_head = source_head;
-                            self.recount()?;
                         }
-                        self.reserve(&event, max_bytes)?;
+                        self.pending_bytes += self.charge_event(&event, max_bytes)?;
                         self.pending_admissions.push(event);
                         return Ok(());
                     }
-                    Some("runtime.step_prepared") if value["segment"] == self.approved_segment => {
+                    _ if context_confirmation(value)
+                        && value["segment"] == self.approved_segment =>
+                    {
                         self.confirm_admissions(value)?;
                         let source_head = value["source_head"].as_u64().unwrap_or(event.id);
-                        self.tail.retain(|event| event.id > source_head);
-                        self.recount()?;
+                        self.drop_consumed_tail(source_head)?;
                         return Ok(());
                     }
                     Some(_) | None => {}
@@ -409,7 +382,7 @@ impl ContextCursor {
             }
         }
         if let Some(event) = project_source(event, agent, self.latest_turn) {
-            self.reserve(&event, max_bytes)?;
+            self.tail_bytes += self.charge_event(&event, max_bytes)?;
             self.tail.push(event);
         }
         Ok(())
@@ -476,6 +449,7 @@ impl ContextCursor {
                 ));
             }
         }
+        self.pending_bytes = 0;
         for event in std::mem::take(&mut self.pending_admissions)
             .into_iter()
             .take(count)
@@ -496,6 +470,7 @@ impl ContextCursor {
                 .map(serde_json::from_value)
                 .transpose()?
                 .unwrap_or_else(|| MessageOrigin::of(&message));
+            self.admitted_encoding.append(&message)?;
             self.admitted.push(AdmittedMessage {
                 turn: value["turn"].as_u64().or(self.latest_turn).unwrap_or(0),
                 origin,
@@ -518,58 +493,100 @@ impl ContextCursor {
         admitted: Vec<AdmittedMessage>,
         source_head: u64,
     ) -> Result<()> {
+        let reused = self
+            .segment
+            .as_ref()
+            .is_some_and(|active| active.id == segment.id);
+        let prefix_len = if reused { self.admitted.len() } else { 0 };
+        let suffix = admitted.get(prefix_len..).ok_or_else(|| {
+            Error::InvalidEventStream("new context is shorter than the committed prefix".into())
+        })?;
+        if !reused {
+            self.admitted_encoding = PrefixEncoding::default();
+        }
+        for message in suffix {
+            self.admitted_encoding.append(&message.message)?;
+        }
         self.approved_segment = segment.id;
         self.catalog = Some(segment.catalog.clone());
         self.segment = Some(segment);
         self.admitted = admitted;
         self.pending_admissions.clear();
+        self.pending_bytes = 0;
         self.pending_source_head = None;
-        self.tail.retain(|event| event.id > source_head);
-        self.recount()
+        self.drop_consumed_tail(source_head)
     }
 
-    fn reserve(&mut self, value: &impl serde::Serialize, max_bytes: usize) -> Result<()> {
-        self.retained_bytes = self
-            .retained_bytes
-            .saturating_add(serde_json::to_vec(value)?.len());
-        if self.retained_bytes > max_bytes.saturating_mul(MAX_SELECTION_BYTES_FACTOR) {
+    pub(crate) fn history_prefix_hash(&self, head: usize) -> String {
+        if head == 0 {
+            return PrefixEncoding::default().fingerprint();
+        }
+        debug_assert_eq!(self.admitted.len(), head);
+        self.admitted_encoding.fingerprint()
+    }
+
+    fn retained_bytes(&self) -> usize {
+        self.admitted_encoding
+            .bytes
+            .saturating_add(self.tail_bytes)
+            .saturating_add(self.pending_bytes)
+    }
+
+    fn charge_event(&self, event: &StoredEvent, max_bytes: usize) -> Result<usize> {
+        let bytes = serde_json::to_vec(event)?.len();
+        if self.retained_bytes().saturating_add(bytes)
+            > max_bytes.saturating_mul(MAX_SELECTION_BYTES_FACTOR)
+        {
             return Err(Error::InvalidArgument(
                 "active context selection exceeds its request-byte budget".into(),
             ));
         }
+        Ok(bytes)
+    }
+
+    fn drop_consumed_tail(&mut self, source_head: u64) -> Result<()> {
+        self.tail.retain(|event| event.id > source_head);
+        self.tail_bytes = encoded_events_size(&self.tail)?;
         Ok(())
     }
 
-    fn recount(&mut self) -> Result<()> {
-        self.retained_bytes = 0;
+    fn recount_after_rewind(&mut self) -> Result<()> {
+        self.admitted_encoding = PrefixEncoding::default();
         for admitted in &self.admitted {
-            self.retained_bytes += serde_json::to_vec(&admitted.message)?.len();
+            self.admitted_encoding.append(&admitted.message)?;
         }
-        for event in &self.tail {
-            self.retained_bytes += serde_json::to_vec(event)?.len();
-        }
-        for event in &self.pending_admissions {
-            self.retained_bytes += serde_json::to_vec(event)?.len();
-        }
+        self.tail_bytes = encoded_events_size(&self.tail)?;
+        self.pending_bytes = encoded_events_size(&self.pending_admissions)?;
         Ok(())
     }
 }
 
-fn scan(
-    path: &Path,
-    mut after: u64,
-    mut visit: impl FnMut(StoredEvent) -> Result<()>,
-) -> Result<u64> {
-    loop {
-        let page = EventStore::read_page(path, after, PAGE_RECORDS)?;
-        if page.is_empty() {
-            return Ok(after);
-        }
-        for event in page {
-            after = event.id;
-            visit(event)?;
-        }
-    }
+fn encoded_events_size(events: &[StoredEvent]) -> Result<usize> {
+    events.iter().try_fold(0usize, |bytes, event| {
+        Ok(bytes.saturating_add(serde_json::to_vec(event)?.len()))
+    })
+}
+
+pub(crate) fn latest_checkpoint_segment(path: &Path, agent: &str) -> Result<Option<u64>> {
+    Ok(EventStore::context_marks(path, agent)?.checkpoint)
+}
+
+fn read_indexed_event(path: &Path, id: u64) -> Result<StoredEvent> {
+    EventStore::read_page(path, id - 1, 1)?
+        .pop()
+        .filter(|event| event.id == id)
+        .ok_or_else(|| Error::InvalidEventStream(format!("indexed context event {id} is missing")))
+}
+
+fn context_confirmation(value: &serde_json::Value) -> bool {
+    value["kind"] == "runtime.step_prepared"
+        || (value["kind"] == "runtime.compaction_finished" && value["status"] == "completed")
+}
+
+fn rewind_target(record: &serde_json::Value) -> Result<u64> {
+    record["target_event_id"]
+        .as_u64()
+        .ok_or_else(|| Error::InvalidEventStream("message rewind has no target event".into()))
 }
 
 fn belongs(conversation: Option<&str>, turn: u64, agent: &str, latest_turn: Option<u64>) -> bool {
@@ -636,7 +653,10 @@ fn project_source(
         ..
     } = &mut event.payload
     {
-        *structured = None;
+        *structured = structured
+            .as_ref()
+            .and_then(crate::execution::ModelImage::from_tool_result)
+            .map(|image| image.model_facts());
         files_read.clear();
         files_changed.clear();
         commands_run.clear();
@@ -646,25 +666,42 @@ fn project_source(
 }
 
 pub(crate) fn read_frozen_catalog(path: &Path, agent: &str) -> Result<Option<PromptCatalog>> {
-    let mut cursor = ContextCursor::default();
-    cursor.read_assets(path, agent)?;
-    Ok(cursor.catalog)
+    let Some(segment) = EventStore::context_marks(path, agent)?.segment else {
+        return Ok(None);
+    };
+    let EventPayload::Unknown(value) = read_indexed_event(path, segment.id)?.payload else {
+        return Ok(None);
+    };
+    value
+        .get("catalog")
+        .filter(|catalog| !catalog.is_null())
+        .map(|catalog| serde_json::from_value(catalog.clone()).map_err(Error::from))
+        .transpose()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 enum SnapshotKey {
     Read(String, u64),
     Write(u64, String),
 }
 
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 struct SnapshotCache {
-    entries: BTreeMap<SnapshotKey, (u64, StoredEvent)>,
+    #[serde(with = "crate::event::checkpoint_map")]
+    entries: BTreeMap<SnapshotKey, FileSnapshot>,
     visible_writes: BTreeSet<u64>,
     segment: Option<u64>,
     pending: Option<WriteAdmissions>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct FileSnapshot {
+    accessed: u64,
+    event: StoredEvent,
+    event_bytes: usize,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
 struct WriteAdmissions {
     segment: u64,
     source_head: u64,
@@ -693,10 +730,10 @@ impl SnapshotCache {
                 }) {
                     self.visible_writes.extend(batch.receipts);
                 }
-                self.entries.retain(|key, (_, event)| {
+                self.entries.retain(|key, snapshot| {
                     matches!(key, SnapshotKey::Read(..))
-                        || event.id > source_head
-                        || self.visible_writes.contains(&event.id)
+                        || snapshot.event.id > source_head
+                        || self.visible_writes.contains(&snapshot.event.id)
                 });
             }
             _ => {}
@@ -733,12 +770,12 @@ impl SnapshotCache {
             else {
                 continue;
             };
-            if let Some((_, event)) = self
+            if let Some(snapshot) = self
                 .entries
                 .get(&SnapshotKey::Write(turn, call.into()))
-                .filter(|(_, event)| event.id <= source_head)
+                .filter(|snapshot| snapshot.event.id <= source_head)
             {
-                batch.receipts.insert(event.id);
+                batch.receipts.insert(snapshot.event.id);
             }
         }
     }
@@ -748,7 +785,7 @@ impl SnapshotCache {
         event: &mut StoredEvent,
         agent: &str,
         latest_turn: Option<u64>,
-    ) -> bool {
+    ) -> Result<bool> {
         let EventPayload::ToolResult {
             conversation,
             turn,
@@ -760,21 +797,21 @@ impl SnapshotCache {
             ..
         } = &mut event.payload
         else {
-            return false;
+            return Ok(false);
         };
         if status != "ok" || !belongs(conversation.as_deref(), *turn, agent, latest_turn) {
-            return false;
+            return Ok(false);
         }
         let key = if value["kind"] == "file_content" {
             let Some(path) = value["canonical_path"].as_str() else {
-                return false;
+                return Ok(false);
             };
             let key = SnapshotKey::Read(path.into(), value["start_line"].as_u64().unwrap_or(1));
             if value["cached"] == true {
-                if let Some((accessed, _)) = self.entries.get_mut(&key) {
-                    *accessed = event.id;
+                if let Some(snapshot) = self.entries.get_mut(&key) {
+                    snapshot.accessed = event.id;
                 }
-                return true;
+                return Ok(true);
             }
             key
         } else if let Some((path, hash)) = super::replay::supplied_file_version(value) {
@@ -786,245 +823,39 @@ impl SnapshotCache {
             model_content.clear();
             SnapshotKey::Write(*turn, tool_call_id.clone())
         } else {
-            return false;
+            return Ok(false);
         };
         *conversation = Some(agent.into());
-        self.entries.insert(key, (event.id, event.clone()));
+        self.entries.insert(
+            key,
+            FileSnapshot {
+                accessed: event.id,
+                event_bytes: serde_json::to_vec(event)?.len(),
+                event: event.clone(),
+            },
+        );
         if self.entries.len() > MAX_CACHED_FILE_SNAPSHOTS {
             self.remove_oldest();
         }
-        true
+        Ok(true)
     }
 
     fn remove_oldest(&mut self) -> bool {
         let Some(key) = self
             .entries
             .iter()
-            .min_by_key(|(_, (accessed, _))| *accessed)
+            .min_by_key(|(_, snapshot)| snapshot.accessed)
             .map(|(key, _)| key.clone())
         else {
             return false;
         };
-        let (_, event) = self.entries.remove(&key).expect("oldest snapshot exists");
-        self.visible_writes.remove(&event.id);
+        let snapshot = self.entries.remove(&key).expect("oldest snapshot exists");
+        self.visible_writes.remove(&snapshot.event.id);
         if let Some(batch) = self.pending.as_mut() {
-            batch.receipts.remove(&event.id);
+            batch.receipts.remove(&snapshot.event.id);
         }
         true
     }
-
-    fn into_events(self) -> impl Iterator<Item = StoredEvent> {
-        self.entries
-            .into_iter()
-            .filter_map(move |(key, (_, event))| {
-                (matches!(key, SnapshotKey::Read(..)) || self.visible_writes.contains(&event.id))
-                    .then_some(event)
-            })
-    }
-}
-
-pub(crate) fn read_agent_events(
-    path: &Path,
-    agent: &str,
-    max_bytes: usize,
-) -> Result<Vec<StoredEvent>> {
-    let mut latest_turn = None;
-    let mut metadata = BTreeMap::<String, StoredEvent>::new();
-    let mut current = Vec::<StoredEvent>::new();
-    let mut skills = Vec::<StoredEvent>::new();
-    let mut snapshots = SnapshotCache::default();
-    scan(path, 0, |mut event| {
-        let mut changed = false;
-        let key = match &event.payload {
-            EventPayload::SessionCreated { .. } => Some("session".into()),
-            EventPayload::ConversationOpened { conversation, .. } if conversation == agent => {
-                Some("opened".into())
-            }
-            EventPayload::ConversationBound { conversation, .. } if conversation == agent => {
-                Some("bound".into())
-            }
-            EventPayload::PromptSnapshot { conversation, .. } if conversation == agent => {
-                Some("prompt".into())
-            }
-            EventPayload::Unknown(value)
-                if value["kind"] == "runtime.operation"
-                    && value["record"]["address"] == agent
-                    && matches!(
-                        value["record"]["operation"].as_str(),
-                        Some("agent_created" | "agent_configured")
-                    ) =>
-            {
-                value["record"]["operation"].as_str().map(str::to_string)
-            }
-            _ => None,
-        };
-        if let Some(key) = key {
-            metadata.insert(key, event);
-            return Ok(());
-        }
-        if let EventPayload::ContextSkills { conversation, .. } = &event.payload {
-            if conversation == agent {
-                if skills.len() == 2 {
-                    skills.remove(0);
-                }
-                skills.push(event);
-            }
-            return Ok(());
-        }
-        if let EventPayload::TurnStarted {
-            turn, conversation, ..
-        } = &event.payload
-        {
-            if conversation == agent {
-                latest_turn = Some(*turn);
-                current.clear();
-                current.push(event);
-            }
-            return Ok(());
-        }
-        if let EventPayload::Unknown(value) = &event.payload {
-            if value["agent"] == agent {
-                snapshots.observe_context(value);
-            }
-        }
-        changed |= snapshots.observe_result(&mut event, agent, latest_turn);
-        let turn = match &event.payload {
-            EventPayload::ModelResponse {
-                turn, conversation, ..
-            }
-            | EventPayload::ModelError {
-                turn, conversation, ..
-            }
-            | EventPayload::ToolCall {
-                turn, conversation, ..
-            }
-            | EventPayload::ToolResult {
-                turn, conversation, ..
-            } if belongs(conversation.as_deref(), *turn, agent, latest_turn) => Some(*turn),
-            EventPayload::PermissionRequested { turn, .. }
-            | EventPayload::PermissionAllow { turn, .. }
-            | EventPayload::PermissionDeny { turn, .. } => Some(*turn),
-            EventPayload::ModelRecovery {
-                turn, conversation, ..
-            } if conversation == agent => Some(*turn),
-            EventPayload::TurnCompleted {
-                turn, conversation, ..
-            }
-            | EventPayload::TurnCancelled {
-                turn, conversation, ..
-            }
-            | EventPayload::TurnInterrupted {
-                turn, conversation, ..
-            }
-            | EventPayload::MessageUser {
-                turn, conversation, ..
-            } if conversation == agent => Some(*turn),
-            EventPayload::Unknown(value)
-                if value["agent"] == agent
-                    && matches!(
-                        value["kind"].as_str(),
-                        Some("runtime.tool_prepared" | "runtime.tool_dispatched")
-                    ) =>
-            {
-                value["turn"].as_u64()
-            }
-            _ => None,
-        };
-        if turn.is_some() && turn == latest_turn {
-            match &mut event.payload {
-                EventPayload::ModelResponse {
-                    conversation,
-                    text,
-                    thinking,
-                    ..
-                } => {
-                    *conversation = Some(agent.into());
-                    text.clear();
-                    *thinking = None;
-                }
-                EventPayload::ModelError {
-                    conversation,
-                    message,
-                    ..
-                } => {
-                    *conversation = Some(agent.into());
-                    message.clear();
-                }
-                EventPayload::ToolCall { conversation, .. }
-                | EventPayload::ToolResult { conversation, .. } => {
-                    *conversation = Some(agent.into());
-                }
-                _ => {}
-            }
-            if let EventPayload::ToolResult {
-                model_content,
-                summary,
-                structured,
-                files_read,
-                files_changed,
-                commands_run,
-                memory_changed,
-                ..
-            } = &mut event.payload
-            {
-                model_content.clear();
-                summary.clear();
-                *structured = None;
-                files_read.clear();
-                files_changed.clear();
-                commands_run.clear();
-                *memory_changed = None;
-            }
-            current.push(event);
-            changed = true;
-        }
-        if !changed {
-            return Ok(());
-        }
-        trim_snapshot_cache(&metadata, &current, &skills, &mut snapshots, max_bytes)?;
-        Ok(())
-    })?;
-    trim_snapshot_cache(&metadata, &current, &skills, &mut snapshots, max_bytes)?;
-    let selected = metadata
-        .into_values()
-        .chain(current)
-        .chain(skills)
-        .chain(snapshots.into_events())
-        .map(|event| (event.id, event))
-        .collect::<BTreeMap<_, _>>();
-    let result = selected.into_values().collect::<Vec<_>>();
-    if serde_json::to_vec(&result)?.len() > max_bytes.saturating_mul(MAX_SELECTION_BYTES_FACTOR) {
-        return Err(Error::InvalidArgument(
-            "agent startup facts exceed the context selection byte limit".into(),
-        ));
-    }
-    Ok(result)
-}
-
-fn trim_snapshot_cache(
-    metadata: &BTreeMap<String, StoredEvent>,
-    current: &[StoredEvent],
-    skills: &[StoredEvent],
-    snapshots: &mut SnapshotCache,
-    max_bytes: usize,
-) -> Result<()> {
-    let budget = max_bytes.saturating_mul(MAX_SELECTION_BYTES_FACTOR);
-    while serde_json::to_vec(&(
-        metadata,
-        current,
-        skills,
-        snapshots.entries.values().collect::<Vec<_>>(),
-    ))?
-    .len()
-        > budget
-    {
-        if !snapshots.remove_oldest() {
-            return Err(Error::InvalidArgument(
-                "agent startup facts exceed the context selection byte limit".into(),
-            ));
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

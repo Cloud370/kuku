@@ -1,8 +1,7 @@
 use kuku_client::{JobSnapshot, JobStatus};
 
-use crate::jobs::{job_status_label, Job, Search};
+use crate::jobs::{job_detail, Job, Search};
 use crate::menu::{Choice, ChoiceKind, PickerKind};
-use crate::text::single_line;
 use crate::transcript::ToolView;
 
 use super::App;
@@ -24,6 +23,7 @@ impl App {
     }
 
     pub(crate) fn open_background_job(&mut self, job: JobSnapshot) {
+        let header = format!("{} · {}", job.id, job_detail(&job));
         let mut choices = Vec::new();
         if job.status == JobStatus::Running {
             choices.push(Choice::new(
@@ -31,9 +31,14 @@ impl App {
                 &job.id,
                 ChoiceKind::CancelBackground(job.id.clone()),
             ));
-        } else if let Some(output_id) = job.output_id {
+        }
+        if let Some(output_id) = job.output_id {
             choices.push(Choice::new(
-                "Read saved output",
+                if job.status == JobStatus::Running {
+                    "Read output"
+                } else {
+                    "Read saved output"
+                },
                 &job.id,
                 ChoiceKind::Tool(ToolView {
                     name: job.id.clone(),
@@ -43,12 +48,7 @@ impl App {
                 }),
             ));
         }
-        self.picker(PickerKind::JobActions, choices).header = format!(
-            "{} · {} · {}",
-            job.id,
-            job_status_label(job.status),
-            single_line(&job.summary)
-        );
+        self.picker(PickerKind::JobActions, choices).header = header;
     }
 
     pub(crate) fn cancel_background_job(&mut self, id: String) {

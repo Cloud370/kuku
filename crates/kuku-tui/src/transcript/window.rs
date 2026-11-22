@@ -276,7 +276,7 @@ impl Window {
     ) -> &mut Record {
         let execution_id = match &key {
             Key::Preview(execution_id) => Some(*execution_id),
-            Key::Event(_) | Key::RewindGroup(_) | Key::Tool { .. } => None,
+            Key::Event(_) | Key::Compaction(_) | Key::RewindGroup(_) | Key::Tool { .. } => None,
         };
         if let Some(index) = self.records.iter().position(|record| record.key == key) {
             let record = &mut self.records[index];

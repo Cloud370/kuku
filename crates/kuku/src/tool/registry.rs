@@ -27,16 +27,21 @@ pub(crate) fn session_registry(skills_enabled: bool) -> Vec<ToolDefinition> {
 }
 
 fn registry(agent_enabled: bool, skills_enabled: bool, session: bool) -> Vec<ToolDefinition> {
+    let shells = if session {
+        Vec::new()
+    } else {
+        builtin::run_command::available_shells()
+    };
     let mut tools = vec![
         tool(
             "find_files",
-            "Browse the file tree — prefer this over shell commands for listing files. Directories shown with trailing /. Use pattern to filter, max_depth to limit recursion. Excludes build/dependency directories by default.",
+            "List immediate directory entries or find files recursively with a glob pattern. Directories end in /. Common build and dependency directories are skipped.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "Search root relative to the workspace. Defaults to the workspace root."},
                     "pattern": {"type": "string", "description": "File glob pattern, e.g. *.md or docs/**/*.md."},
-                    "max_depth": {"type": "integer", "description": "Maximum recursion depth (default: unlimited)."}
+                    "max_depth": {"type": "integer", "minimum": 0, "description": "How many levels below the selected directory to search. Defaults to 0 for a directory listing and unlimited with a pattern."}
                 }
             }),
             true,
@@ -45,23 +50,23 @@ fn registry(agent_enabled: bool, skills_enabled: bool, session: bool) -> Vec<Too
         ),
         tool(
             "read_file",
-            "Read a file from the workspace with line numbers. Use offset and limit for pagination.",
+            "Read a bounded page of a workspace file with line numbers. Use the returned offset to continue, or search_text to locate specific lines.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "File path relative to the workspace."},
-                    "offset": {"type": "integer", "description": "Start line for pagination."},
-                    "limit": {"type": "integer", "description": "Number of lines to read."}
+                    "offset": {"type": "integer", "minimum": 1, "description": "Starting line, counted from 1. Defaults to 1."},
+                    "limit": {"type": "integer", "minimum": 1, "description": "Maximum number of lines to return."}
                 },
                 "required": ["path"]
             }),
             true,
-            80_000,
+            65_536,
             "read",
         ),
         tool(
             "search_text",
-            "Search file contents with a regex pattern. Use view=files, lines, or count.",
+            "Search file contents with a regex. Use view=files, lines, or count. Use the returned offset to continue a bounded page.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -70,13 +75,13 @@ fn registry(agent_enabled: bool, skills_enabled: bool, session: bool) -> Vec<Too
                     "include": {"type": "string", "description": "File-name glob filter."},
                     "view": {"type": "string", "enum": ["files", "lines", "count"], "description": "Result view. Defaults to files."},
                     "offset": {"type": "integer", "description": "Skip the first N matches (default: 0)."},
-                    "limit": {"type": "integer", "description": "Maximum matches to return (default: 100)."},
-                    "context": {"type": "integer", "description": "Show N lines before and after each match (view=lines only, default: 0)."}
+                    "limit": {"type": "integer", "minimum": 1, "description": "Maximum matches to return (default: 100)."},
+                    "context": {"type": "integer", "description": "Nearby lines before and after each match, as space allows (view=lines only, default: 0)."}
                 },
                 "required": ["pattern"]
             }),
             true,
-            80_000,
+            65_536,
             "read",
         ),
         tool(
@@ -115,7 +120,7 @@ fn registry(agent_enabled: bool, skills_enabled: bool, session: bool) -> Vec<Too
         ),
         tool(
             "write_file",
-            "Write a complete file. Overwrite an existing file after a full read or your own confirmed full write of the same version.",
+            "Write a complete file, creating missing parent directories. Overwrite an existing file after a full read or your own confirmed full write of the same version.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -137,7 +142,7 @@ fn registry(agent_enabled: bool, skills_enabled: bool, session: bool) -> Vec<Too
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "Path of the regular file inside the workspace."},
-                    "expected_version": {"type": "string", "description": "Optional content_hash from stat_file(version=true) or read_file."},
+                    "expected_version": {"type": "string", "description": "Pass content_hash from stat_file({path, version: true}) or read_file. May be omitted after a full read of the current version."},
                     "brief": {"type": "string", "description": "Why this file is being removed, in 3-5 words."}
                 },
                 "required": ["path"]
@@ -177,7 +182,7 @@ fn registry(agent_enabled: bool, skills_enabled: bool, session: bool) -> Vec<Too
             20_000,
             "edit",
         ),
-        run_command_definition(&builtin::run_command::available_shells(), session),
+        run_command_definition(&shells, session),
         tool(
             "fetch_url",
             "Download an HTTP(S) response and return its metadata. In a Session, use read_output with the returned output ID to read its body. Standalone queries receive a temporary file path.",
@@ -252,11 +257,31 @@ pub(crate) fn run_command_definition(shells: &[CommandShell], session: bool) -> 
         "properties": {
             "program": {"type": "string", "description": "Executable name or path. Prefix a path relative to cwd with './'."},
             "args": {"type": "array", "items": {"type": "string"}, "default": [], "description": "Literal arguments to program."},
-            "cwd": {"type": "string", "default": ".", "description": "Optional absolute or workspace-relative working directory."},
-            "timeout": {"type": "integer", "minimum": 1, "maximum": u32::MAX, "description": "Optional execution deadline in seconds. Omit to run until completion or cancellation."},
-            "brief": {"type": "string", "description": "Optional short description of the action."}
+            "cwd": {"type": "string", "default": ".", "description": "Optional absolute or workspace-relative working directory."}
         },
         "required": ["program"]
+    });
+    if session {
+        schema["properties"]["background"] = serde_json::json!({
+            "type":"boolean",
+            "description":"Return a Job handle if the command is still running after one second."
+        });
+        schema["properties"]["title"] = action_title_schema();
+        return tool(
+            "run_command",
+            r#"Run a program with literal arguments, for example {"program":"git","args":["status"]}. To run a shell script, specify its interpreter as program. The host controls process deadlines. Returns exit status, elapsed time and output evidence. Long captures are available through read_output."#,
+            schema,
+            false,
+            80_000,
+            "command",
+        );
+    }
+    schema["properties"]["timeout"] = serde_json::json!({
+        "type":"integer","minimum":1,"maximum":u32::MAX,
+        "description":"Optional process deadline in seconds."
+    });
+    schema["properties"]["brief"] = serde_json::json!({
+        "type":"string","description":"Optional short description of the action."
     });
     if !shells.is_empty() {
         let platform_shell = if cfg!(windows) {
@@ -282,7 +307,7 @@ pub(crate) fn run_command_definition(shells: &[CommandShell], session: bool) -> 
             description.push_str(" Use shell='cmd' for .bat or .cmd files.");
         }
         schema["properties"]["command"] = serde_json::json!({
-            "type": "string", "description": "Original shell text evaluated by the selected interpreter."
+            "type": "string", "description": "Shell text evaluated by the selected interpreter. The result reports the outer shell's exit code."
         });
         schema.as_object_mut().unwrap().remove("required");
         schema["oneOf"] = serde_json::json!([
@@ -290,11 +315,7 @@ pub(crate) fn run_command_definition(shells: &[CommandShell], session: bool) -> 
             {"required": command_fields, "not": {"required": ["program"]}, "properties": {"args": {"maxItems": 0}}}
         ]);
     }
-    description.push_str(r#" For literal arguments use {"program":"git","args":["status"]}. Prefix a workspace-relative program with './'. Reports the exit code, a stdout/stderr preview and the retained output ID."#);
-    if session {
-        schema["properties"]["background"] = serde_json::json!({"type":"boolean","description":"Return a Job handle immediately to continue independent work."});
-        description.push_str(" Read more with read_output({id: output_id}). Slow calls return a Job handle and deliver completion automatically. Set background:true to continue independent work immediately.");
-    }
+    description.push_str(r#" For literal arguments use {"program":"git","args":["status"]}. Prefix a workspace-relative program with './'. Reports exit status, elapsed time and the retained output ID."#);
     tool(
         "run_command",
         &description,
@@ -303,6 +324,14 @@ pub(crate) fn run_command_definition(shells: &[CommandShell], session: bool) -> 
         80_000,
         "command",
     )
+}
+
+pub(crate) fn action_title_schema() -> Value {
+    serde_json::json!({
+        "type":"string",
+        "maxLength":80,
+        "description":"Optional short purpose shown to the user. Omit when the action is self-explanatory."
+    })
 }
 
 fn tool(
@@ -345,11 +374,33 @@ mod tests {
             command_permission_candidate(&json!({"program":"git","args":[],"cwd":"."}))
         );
         let mut background = json!({"program":"git","background":true});
-        assert!(prepare_command_args(&mut background, workspace.path(), &standalone).is_err());
+        let error =
+            prepare_command_args(&mut background, workspace.path(), &standalone).unwrap_err();
+        assert!(error
+            .model_content
+            .contains("background on the outer run_js call"));
         let session = run_command_definition(&[], true);
         assert!(prepare_command_args(&mut background, workspace.path(), &session).is_ok());
         background["background"] = json!("yes");
         assert!(prepare_command_args(&mut background, workspace.path(), &session).is_err());
+        for (field, value) in [
+            ("command", json!("git status")),
+            ("shell", json!("sh")),
+            ("timeout", json!(1)),
+            ("brief", json!("Git status")),
+        ] {
+            let mut args = minimal.clone();
+            args[field] = value;
+            let result = prepare_command_args(&mut args, workspace.path(), &session).unwrap_err();
+            assert!(result
+                .model_content
+                .contains(&format!("does not accept {field:?}")));
+            if field == "timeout" {
+                assert!(result
+                    .model_content
+                    .contains("The host controls process deadlines."));
+            }
+        }
     }
 
     #[test]

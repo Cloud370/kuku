@@ -8,11 +8,10 @@ use crate::tool::ToolResultEnvelope;
 
 use super::common::{
     bounded_lines, ensure_active, file_read_error, glob_match, is_default_excluded_dir,
-    join_bounded_strings, relative_path, resolve_path, verify_directory, workspace_path_blocked,
-    FileCancellation,
+    relative_path, resolve_path, verify_directory, workspace_path_blocked, FileCancellation,
 };
 
-const FIND_FILES_MAX_CHARS: usize = 8_000;
+const FIND_FILES_MAX_BYTES: usize = 8_000;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum EntryKind {
@@ -31,7 +30,7 @@ impl Listing {
         let depth = path.bytes().filter(|byte| *byte == b'/').count();
         self.count += 1;
         self.first.push((kind, depth, path));
-        if self.first.len() > FIND_FILES_MAX_CHARS {
+        if self.first.len() > FIND_FILES_MAX_BYTES {
             self.first.pop();
         }
     }
@@ -48,7 +47,7 @@ pub(crate) fn find_files(
         .get("max_depth")
         .and_then(Value::as_u64)
         .map(|v| u32::try_from(v).unwrap_or(u32::MAX))
-        .unwrap_or(u32::MAX);
+        .unwrap_or_else(|| pattern.map_or(0, |_| u32::MAX));
     let root = match resolve_path(workspace, path) {
         Ok(root) => root,
         Err(result) => return result,
@@ -73,11 +72,25 @@ pub(crate) fn find_files(
         .into_iter()
         .map(|(_, _, path)| path)
         .collect();
-    let (model_content, truncated) = join_bounded_strings(
-        &entries,
-        FIND_FILES_MAX_CHARS,
-        "(Showing shallowest entries first. Use pattern or max_depth to focus.)",
-    );
+    let mut visible = bounded_lines(&entries, FIND_FILES_MAX_BYTES);
+    let truncated = visible.len() < entry_count;
+    let model_content = if truncated {
+        let scope = if max_depth == 0 {
+            "direct entries"
+        } else {
+            "entries in the search"
+        };
+        let hint =
+            format!("Found {entry_count} {scope}. Listing shortened. Narrow the path or pattern.");
+        visible = bounded_lines(&entries, FIND_FILES_MAX_BYTES - hint.len() - 1);
+        if visible.is_empty() {
+            hint
+        } else {
+            format!("{}\n{hint}", visible.join("\n"))
+        }
+    } else {
+        visible.join("\n")
+    };
     let summary = if truncated {
         format!("found {entry_count} entries under {path}, results truncated")
     } else {
@@ -88,7 +101,7 @@ pub(crate) fn find_files(
         "path": path,
         "pattern": pattern,
         "entry_count": entry_count,
-        "entries": bounded_lines(&entries, FIND_FILES_MAX_CHARS),
+        "entries": visible,
     });
 
     if truncated {
@@ -149,7 +162,7 @@ fn collect_entries(
             if add_dir {
                 listing.push(format!("{relative}/"), EntryKind::Directory);
             }
-            if recurse {
+            if recurse && depth < max_depth {
                 collect_entries(
                     &path,
                     workspace,
@@ -219,7 +232,7 @@ mod tests {
     }
 
     #[test]
-    fn find_files_returns_depth_sorted_entries_with_dirs_first() {
+    fn find_files_defaults_to_immediate_entries_with_dirs_first() {
         let dir = workspace();
         let result = find_files(&serde_json::json!({"path": "."}), dir.path());
 
@@ -227,15 +240,14 @@ mod tests {
         let lines: Vec<_> = result.model_content.lines().collect();
         assert!(lines.contains(&"docs/"), "dirs with trailing /: {lines:?}");
         assert!(lines.contains(&"README.md"));
-        assert!(lines.contains(&"docs/tools.md"));
-        assert!(lines.contains(&"src/main.rs"));
+        assert!(lines
+            .iter()
+            .all(|entry| !entry.trim_end_matches('/').contains('/')));
         assert!(!result.model_content.contains(".git"));
         let structured = result.structured.unwrap();
-        assert!(structured["entry_count"].as_u64().unwrap() >= 3);
-        assert!(structured["entries"]
-            .as_array()
-            .unwrap()
-            .contains(&"docs/tools.md".into()));
+        assert_eq!(structured["entry_count"], lines.len());
+        let nested = find_files(&serde_json::json!({"path": "docs"}), dir.path());
+        assert_eq!(nested.model_content, "docs/tools.md");
     }
 
     #[test]
@@ -300,7 +312,10 @@ mod tests {
         std::fs::write(dir.path().join("node_modules/pkg/index.js"), "js").unwrap();
         std::fs::write(dir.path().join("src/main.rs"), "fn main() {}").unwrap();
 
-        let result = find_files(&serde_json::json!({"path": "."}), dir.path());
+        let result = find_files(
+            &serde_json::json!({"path": ".", "max_depth": 2}),
+            dir.path(),
+        );
         assert!(!result.model_content.contains("target"));
         assert!(!result.model_content.contains("node_modules"));
         assert!(result.model_content.contains("src/main.rs"));
@@ -312,8 +327,35 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("target/debug")).unwrap();
         std::fs::write(dir.path().join("target/debug/build.txt"), "build").unwrap();
 
-        let result = find_files(&serde_json::json!({"path": "target"}), dir.path());
+        let result = find_files(
+            &serde_json::json!({"path": "target", "max_depth": 1}),
+            dir.path(),
+        );
         assert!(result.model_content.contains("debug/"));
         assert!(result.model_content.contains("build.txt"));
+    }
+
+    #[test]
+    fn oversized_listing_keeps_its_count_and_narrowing_hint_inside_the_result_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..180 {
+            fs::write(
+                dir.path().join(format!("{i:03}-{}.txt", "a".repeat(64))),
+                "",
+            )
+            .unwrap();
+        }
+        let result = find_files(&serde_json::json!({}), dir.path());
+        assert!(result.truncated);
+        assert!(result.model_content.len() <= FIND_FILES_MAX_BYTES);
+        assert!(result
+            .model_content
+            .ends_with("Found 180 direct entries. Listing shortened. Narrow the path or pattern."));
+        let data = result.structured.unwrap();
+        assert_eq!(data["entry_count"], 180);
+        assert_eq!(
+            data["entries"].as_array().unwrap().len() + 1,
+            result.model_content.lines().count()
+        );
     }
 }

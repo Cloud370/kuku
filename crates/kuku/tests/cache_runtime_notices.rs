@@ -212,6 +212,7 @@ fn seed_session_with_completed_explore_turn(events_path: &std::path::Path, sessi
             text: "bootstrap main".into(),
             from: None,
             via_tool_call_id: None,
+            job_delivery: false,
         })
         .unwrap();
     store
@@ -242,6 +243,7 @@ fn seed_session_with_completed_explore_turn(events_path: &std::path::Path, sessi
             text: "previous explore task".into(),
             from: Some("main".into()),
             via_tool_call_id: Some("toolu_previous".into()),
+            job_delivery: false,
         })
         .unwrap();
     store

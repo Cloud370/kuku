@@ -18,14 +18,15 @@ impl App {
             self.text_selection.cancel_drag();
         }
         if !Shortcut::ESCAPE.matches(key) {
-            self.escape_armed_at = None;
+            self.rewind_armed = false;
         }
         if Shortcut::ESCAPE.matches(key) {
             if key.kind == KeyEventKind::Repeat
                 || self.back_from_thinking_confirmation()
                 || self.back_from_agent_setup()
+                || self.back_from_history_jump()
             {
-                self.escape_armed_at = None;
+                self.rewind_armed = false;
                 return;
             }
             let selected_message = match &self.modal {
@@ -45,13 +46,13 @@ impl App {
             };
             if let Some(message) = selected_message {
                 self.back_to_messages(message);
-                self.escape_armed_at = None;
+                self.rewind_armed = false;
                 return;
             }
             if self.modal.is_none() && self.pane().transcript.focused_rewind_group().is_some() {
                 self.deactivate_context_focus();
                 self.focus_composer();
-                self.escape_armed_at = None;
+                self.rewind_armed = false;
                 return;
             }
             let messages_picker = matches!(
@@ -73,12 +74,11 @@ impl App {
                     self.deactivate_context_focus();
                     self.focus_composer();
                 }
-                self.rewind_restore_files = false;
-                self.escape_armed_at = None;
+                self.rewind_armed = false;
                 return;
             }
             if self.pane_mut().transcript.close_notes() {
-                self.escape_armed_at = None;
+                self.rewind_armed = false;
                 return;
             }
             self.rewind_escape();
@@ -112,7 +112,7 @@ impl App {
         } else {
             self.text_selection.cancel_drag();
         }
-        self.escape_armed_at = None;
+        self.rewind_armed = false;
         if matches!(&self.modal, Some(Modal::Help)) {
             return;
         }

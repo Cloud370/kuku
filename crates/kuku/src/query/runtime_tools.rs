@@ -1,11 +1,14 @@
 mod agent_status;
 pub(super) mod jobs;
+mod media;
 pub(crate) mod output;
 pub(crate) mod values;
 
 use crate::context::ToolSchema;
 use crate::event::{EventPayload, EventStore};
-use crate::permission::{AuthorizationDecision, GateDecisionKind};
+use crate::permission::{authorize_action, ActionAuthorization};
+use crate::session::runtime::JobControl;
+use crate::tool::builtin::common::{changed_file_target, prepare_file_target};
 use crate::tool::{ToolDefinition, ToolResultEnvelope};
 use crate::{Error, Result};
 
@@ -18,7 +21,7 @@ use super::run::find_tool_definition;
 use super::tool_exec::{execute_tool_call, run_tool_pre_hooks};
 use super::types::{
     ExecSlot, PendingPermission, PendingRun, PendingStep, PermissionChoice, PermissionRequest,
-    QueuedToolCall, SlotEvent, ToolKind, UiEvent,
+    QueuedToolCall, SlotEvent, ToolKind, ToolPreparation, UiEvent, WorkspaceAccess,
 };
 
 pub(super) async fn advance(
@@ -29,10 +32,13 @@ pub(super) async fn advance(
 ) -> Result<PendingStep> {
     super::provider::ensure_resolved(&mut pending)?;
     let Some(definition) = find_tool_definition(&pending, &queued.tool_call.name).cloned() else {
-        let result = ToolResultEnvelope::error(
-            "unknown tool",
-            format!("unknown tool: {}", queued.tool_call.name),
-        );
+        let name = &queued.tool_call.name;
+        let mut message = format!("unknown tool: {name}");
+        if let Some(hint) = super::run_js::method_hint(&pending, name) {
+            message.push_str(". ");
+            message.push_str(&hint);
+        }
+        let result = ToolResultEnvelope::error("unknown tool", message);
         return finish_inline(pending, queued, result);
     };
     match prepare(&mut pending, &mut queued, &definition).await {
@@ -91,9 +97,9 @@ pub(super) async fn advance(
         workspace,
     };
     let policy = crate::permission::load_project_policy(&pending.policy_path)?;
-    let decision = match authorize(
+    let decision = match authorize_action(
         &policy,
-        &definition,
+        &definition.risk,
         &candidate,
         pending
             .query
@@ -115,7 +121,7 @@ pub(super) async fn advance(
         }
     };
     match decision {
-        AuthorizationDecision::Defer => {
+        ActionAuthorization::Defer => {
             if active > 0 {
                 pending.queued_tool_calls.push_front(queued);
                 return Ok(PendingStep::Pending {
@@ -147,13 +153,13 @@ pub(super) async fn advance(
                 request,
             })))
         }
-        AuthorizationDecision::Deny => {
+        ActionAuthorization::Deny { source, reason } => {
             append_permission_decision(
                 &pending.events_path,
                 pending.turn,
                 &queued.tool_call.id,
                 PermissionChoice::Deny,
-                "host",
+                source,
                 &candidate,
             )?;
             pending.record_tool_denied(&queued.tool_call.name);
@@ -161,12 +167,12 @@ pub(super) async fn advance(
                 pending,
                 queued,
                 ToolResultEnvelope::blocked(
-                    "host denied tool action",
-                    "the action was not dispatched",
+                    reason,
+                    format!("The action was not dispatched because {reason}."),
                 ),
             )
         }
-        AuthorizationDecision::Allow => {
+        ActionAuthorization::Allow => {
             append_permission_decision(
                 &pending.events_path,
                 pending.turn,
@@ -191,7 +197,7 @@ pub(super) async fn dispatch(
     event_tx: tokio::sync::mpsc::Sender<(String, SlotEvent)>,
     active: usize,
 ) -> Result<PendingStep> {
-    if let Some(result) = super::workspace_script::changed_file_target(
+    if let Some(result) = changed_file_target(
         &queued.tool_call.name,
         &queued.tool_call.args,
         &pending.workspace,
@@ -238,23 +244,26 @@ pub(super) async fn dispatch(
         let slot = super::adapters::spawn_tool(registered, action, output, event_tx);
         return start_slot(pending, queued, slot);
     }
-    if matches!(queued.tool_call.name.as_str(), "wait_job" | "cancel_job") {
+    if let Some(control) = JobControl::for_tool(&queued.tool_call.name) {
         let session = runtime_session(&pending)?;
         mark_dispatched(&pending, &queued)?;
-        let slot = super::slots::spawn_job_control(session, &pending, &queued, event_tx);
+        let slot = super::slots::spawn_job_control(session, &pending, &queued, control, event_tx);
         return start_slot(pending, queued, slot);
     }
-    if matches!(
-        queued.tool_call.name.as_str(),
-        "run_command" | "workspace_script"
-    ) {
+    if matches!(queued.tool_call.name.as_str(), "run_command" | "run_js") {
         return start_job_capable_slot(pending, queued, event_tx, active);
     }
-    let prior_events = crate::context::runtime::read_agent_events(
-        &pending.events_path,
-        pending.conversation.as_str(),
-        pending.query.runtime_limits.max_request_bytes,
-    )?;
+    if queued.tool_call.name == "view_image" {
+        let session = runtime_session(&pending)?;
+        mark_dispatched(&pending, &queued)?;
+        let slot = media::spawn(session, &pending, &queued, event_tx);
+        return start_slot(pending, queued, slot);
+    }
+    let prior_events = if crate::tool::dispatch::uses_prior_events(&queued.tool_call.name) {
+        runtime_session(&pending)?.read_agent_events(pending.conversation.as_str())?
+    } else {
+        Vec::new()
+    };
     let output = if queued.tool_call.name == "fetch_url" {
         match output_spec(&pending, &queued.tool_call.id) {
             Ok(output) => Some(output),
@@ -266,6 +275,8 @@ pub(super) async fn dispatch(
     mark_dispatched(&pending, &queued)?;
     let (slot, _) = super::slots::dispatch_tool_slot(super::slots::SlotDispatchArgs {
         capacity: runtime_session(&pending)?.workspace_execution_host(),
+        workspace_access: workspace_access(&pending, &queued.tool_call.name),
+        preview_bytes: pending.query.runtime_limits.max_preview_bytes,
         output,
         tool_name: queued.tool_call.name.clone(),
         tool_id: queued.tool_call.id.clone(),
@@ -317,7 +328,7 @@ fn start_job_capable_slot(
         )
     } else {
         mark_dispatched(&pending, &queued)?;
-        super::workspace_script::spawn(&pending, &queued, ForegroundJob::start(&pending, &queued))?
+        super::run_js::spawn(&pending, &queued, ForegroundJob::start(&pending, &queued))?
     };
     start_slot(pending, queued, slot)
 }
@@ -342,20 +353,8 @@ fn start_slot(
 }
 
 pub(super) fn should_yield(pending: &PendingRun) -> Result<bool> {
-    let mut after = pending.turn.saturating_sub(1);
-    loop {
-        let events = EventStore::read_page(&pending.events_path, after, 64)?;
-        if events.is_empty() {
-            return Ok(false);
-        }
-        for event in events {
-            after = event.id;
-            if matches!(&event.payload, EventPayload::Unknown(value) if value["kind"] == "runtime.operation" && value["record"]["operation"] == "question_requested" && value["record"]["address"] == pending.conversation.as_str() && value["record"]["request"]["turn"] == pending.turn)
-            {
-                return Ok(true);
-            }
-        }
-    }
+    runtime_session(pending)?
+        .question_requested_in_turn(pending.conversation.as_str(), pending.turn)
 }
 
 pub(super) fn yield_step(pending: PendingRun) -> Result<PendingStep> {
@@ -396,13 +395,11 @@ pub(super) fn yield_step(pending: PendingRun) -> Result<PendingStep> {
     Ok(PendingStep::Done(output, usage, pending.turn))
 }
 
-pub(super) fn requires_workspace_ordering(pending: &PendingRun, name: &str) -> bool {
-    pending
-        .query
-        .tool_adapters
-        .get(name)
-        .is_some_and(|tool| tool.spec.access != crate::ToolAccess::Read)
-        || super::slots::requires_workspace_ordering(name)
+pub(super) fn workspace_access(pending: &PendingRun, name: &str) -> WorkspaceAccess {
+    pending.query.tool_adapters.get(name).map_or_else(
+        || super::slots::workspace_access(name),
+        |tool| super::adapters::workspace_access(tool.spec.access),
+    )
 }
 
 pub(super) fn is_inline(name: &str) -> bool {
@@ -420,8 +417,8 @@ pub(super) fn is_inline(name: &str) -> bool {
 }
 
 pub(super) fn reject(pending: PendingRun, queued: QueuedToolCall) -> Result<PendingStep> {
-    if queued.tool_call.name == "workspace_script" {
-        if let Some(result) = super::workspace_script::declined(&pending, &queued.tool_call.id)? {
+    if queued.tool_call.name == "run_js" {
+        if let Some(result) = super::run_js::declined(&pending, &queued.tool_call.id)? {
             return finish_inline(pending, queued, result);
         }
     }
@@ -433,6 +430,8 @@ pub(super) fn reject(pending: PendingRun, queued: QueuedToolCall) -> Result<Pend
 }
 
 fn output_spec(pending: &PendingRun, id: &str) -> Result<super::slots::RetainedOutputSpec> {
+    use crate::tool::builtin::run_command::ModelOutputAccess;
+
     let agent = pending.conversation.as_str();
     let output_id = crate::session::runtime::command_output_id(agent, pending.turn, id);
     let mut retention =
@@ -449,6 +448,15 @@ fn output_spec(pending: &PendingRun, id: &str) -> Result<super::slots::RetainedO
             max_output_bytes: retention.max_bytes(),
             max_preview_bytes: pending.query.runtime_limits.max_preview_bytes,
         },
+        access: match (
+            find_tool_definition(pending, "read_output"),
+            find_tool_definition(pending, "run_js"),
+        ) {
+            (Some(_), Some(_)) => ModelOutputAccess::Script,
+            (Some(_), None) => ModelOutputAccess::Read,
+            (None, _) => ModelOutputAccess::Unavailable,
+        },
+        max_command_seconds: pending.query.runtime_limits.max_command_seconds,
         retention,
     })
 }
@@ -468,9 +476,21 @@ fn output_admission_failed(
     )
 }
 
+pub(crate) fn supported(
+    config: &crate::provider::types::ResolvedProvider,
+    builtin_adapter: bool,
+    name: &str,
+) -> bool {
+    name != "view_image"
+        || (builtin_adapter
+            && config.capabilities.media_adapter
+                == crate::config::MediaAdapterSupport::ResponsesImageToolResults)
+}
+
 pub(crate) fn definitions() -> Vec<ToolDefinition> {
     vec![
-        crate::tool::workspace_script::definition(),
+        crate::tool::run_js::definition(),
+        crate::tool::builtin::view_image_definition(),
         output::definition(),
         values::save_definition(),
         values::list_definition(),
@@ -692,17 +712,15 @@ fn normalize_create_agent_args(args: &mut serde_json::Value) {
     }
 }
 
-pub(super) fn validate_prepared(
-    pending: &PendingRun,
-    call: &crate::provider::types::ProviderToolCall,
-) -> Result<()> {
+pub(super) fn validate_prepared(pending: &PendingRun, queued: &QueuedToolCall) -> Result<()> {
+    let call = &queued.tool_call;
     let definition = find_tool_definition(pending, &call.name).ok_or_else(|| {
         Error::InvalidArgument(format!("tool '{}' is no longer available", call.name))
     })?;
-    let prepared = prepared_record(pending, &call.id)?.ok_or_else(|| {
+    let prepared = queued.preparation.as_ref().ok_or_else(|| {
         Error::InvalidEventStream("pending action has no durable prepared arguments".into())
     })?;
-    if prepared["args"] != call.args || prepared["definition"] != schema_value(definition) {
+    if prepared.args != call.args || prepared.definition != schema_value(definition) {
         return Err(Error::InvalidArgument(
             "pending action no longer matches its authorized tool definition and arguments".into(),
         ));
@@ -715,13 +733,13 @@ async fn prepare(
     queued: &mut QueuedToolCall,
     definition: &ToolDefinition,
 ) -> Result<Option<String>> {
-    if let Some(prepared) = prepared_record(pending, &queued.tool_call.id)? {
-        if prepared["definition"] != schema_value(definition) {
+    if let Some(prepared) = &queued.preparation {
+        if prepared.definition != schema_value(definition) {
             return Err(Error::InvalidArgument(
                 "prepared tool definition changed before dispatch".into(),
             ));
         }
-        queued.tool_call.args = prepared["args"].clone();
+        queued.tool_call.args.clone_from(&prepared.args);
         return Ok(None);
     }
     let result = run_tool_pre_hooks(
@@ -735,7 +753,7 @@ async fn prepare(
         return Ok(Some(block.reason));
     }
     queued.tool_call.args = result.args;
-    super::workspace_script::prepare_file_target(
+    prepare_file_target(
         &queued.tool_call.name,
         &mut queued.tool_call.args,
         &pending.workspace,
@@ -752,7 +770,7 @@ async fn prepare(
         )
         .map_err(|result| Error::InvalidArgument(result.model_content))?;
     }
-    if queued.tool_call.name == "workspace_script"
+    if queued.tool_call.name == "run_js"
         && queued
             .tool_call
             .args
@@ -786,30 +804,17 @@ async fn prepare(
         )?,
         _ => {}
     }
-    EventStore::open(&pending.events_path)?.append(EventPayload::Unknown(serde_json::json!({"kind":"runtime.tool_prepared","ts":now_timestamp()?,"agent":pending.conversation.as_str(),"turn":pending.turn,"tool_call_id":queued.tool_call.id,"args":queued.tool_call.args,"definition":schema_value(definition)})))?;
+    let preparation = ToolPreparation {
+        args: queued.tool_call.args.clone(),
+        definition: schema_value(definition),
+    };
+    EventStore::open(&pending.events_path)?.append(EventPayload::Unknown(serde_json::json!({
+        "kind":"runtime.tool_prepared", "ts":now_timestamp()?, "agent":pending.conversation.as_str(),
+        "turn":pending.turn, "tool_call_id":queued.tool_call.id,
+        "args":preparation.args, "definition":preparation.definition,
+    })))?;
+    queued.preparation = Some(preparation);
     Ok(None)
-}
-
-fn prepared_record(pending: &PendingRun, id: &str) -> Result<Option<serde_json::Value>> {
-    let mut after = pending.turn.saturating_sub(1);
-    loop {
-        let events = EventStore::read_page(&pending.events_path, after, 64)?;
-        if events.is_empty() {
-            return Ok(None);
-        }
-        for event in events {
-            after = event.id;
-            if let EventPayload::Unknown(value) = event.payload {
-                if value["kind"] == "runtime.tool_prepared"
-                    && value["agent"] == pending.conversation.as_str()
-                    && value["turn"] == pending.turn
-                    && value["tool_call_id"] == id
-                {
-                    return Ok(Some(value));
-                }
-            }
-        }
-    }
 }
 
 fn mark_dispatched(pending: &PendingRun, queued: &QueuedToolCall) -> Result<()> {
@@ -872,26 +877,6 @@ fn finish_inline_event(
         slot: None,
         event: Some(event),
     })
-}
-
-pub(super) fn authorize(
-    policy: &crate::permission::PermissionPolicy,
-    definition: &ToolDefinition,
-    candidate: &str,
-    authority: &dyn crate::permission::ToolAuthorizer,
-    action: &crate::permission::ToolAuthorization,
-) -> Result<AuthorizationDecision> {
-    let guard = crate::permission::decide_tool_call(
-        &definition.name,
-        &definition.risk,
-        candidate,
-        policy,
-        &[],
-    );
-    if guard.kind == GateDecisionKind::Deny {
-        return Ok(AuthorizationDecision::Deny);
-    }
-    authority.authorize(action)
 }
 
 pub(super) fn schema(definition: &ToolDefinition) -> ToolSchema {

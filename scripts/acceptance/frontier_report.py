@@ -15,7 +15,9 @@ from statistics import median
 import sys
 from urllib.parse import urlencode
 
-from benchmark_resources import EXTERNAL_PROCESS_IO, FINAL_PROCESS_IO, complete_process_io, peak_rss_kib
+from benchmark_resources import (CPU_THROTTLING_FIELDS, EXTERNAL_PROCESS_IO, FINAL_PROCESS_IO,
+                                 complete_process_io, peak_rss_kib)
+from evidence import SessionCapacityEvidence, session_events, session_journal
 from paid_model import upstream_json, usd
 from run import load_secrets, locked, write_json
 
@@ -31,7 +33,8 @@ PROVIDERS = {'deepseek': 'DeepSeek', 'baseten': 'Baseten', 'api.deepseek.com': '
 EFFORTS = {'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'}
 FINISH_REASONS = {'stop', 'length', 'tool_calls', 'function_call', 'content_filter', 'error',
                   'response.completed', 'response.incomplete', 'response.failed', 'insufficient_system_resource'}
-FAILURE_KINDS = {'runtime', 'infrastructure', 'sdk_evidence', 'artifact_retention', 'agent_task', 'cleanup', 'provider_boundary'}
+FAILURE_KINDS = {'runtime', 'infrastructure', 'sdk_evidence', 'artifact_retention', 'agent_task', 'cleanup',
+                 'provider_boundary', 'resource_evidence', 'agent_evidence'}
 TOOL_STATUSES = {'ok', 'error', 'blocked', 'cancelled'}
 TURN_EVENTS = {'turn.completed', 'turn.interrupted', 'turn.cancelled'}
 PROVIDER_ERROR_KINDS = {'authentication', 'rate_limited', 'context_too_large', 'invalid_request',
@@ -51,6 +54,7 @@ USAGE_FIELDS = {
 }
 SETTLED_STATUSES = {'idle', 'running', 'waiting', 'stopped', 'interrupted'}
 SDK_REQUEST_BYTES_ERROR = 'invalid argument: prepared model request exceeds the configured byte limit'
+SDK_REQUEST_BYTES_PATTERN = re.compile(re.escape(SDK_REQUEST_BYTES_ERROR) + r'(?: \([0-9]+ bytes, limit [0-9]+ bytes\))?')
 TEST_FIELDS = ('tests', 'passed', 'failed', 'skipped', 'pending', 'other')
 MEMORY_FIELDS = ('peak_rss_kib', 'mean_rss_kib', 'samples', 'observed_seconds', 'window_seconds', 'coverage_ratio')
 SELF_USAGE_FIELDS = ('user_cpu_seconds', 'system_cpu_seconds', 'peak_rss_kib', 'input_blocks', 'output_blocks')
@@ -162,6 +166,7 @@ def cohort_efficiency(rows):
     costs = [number(row['cost_usd']) for row in scored]
     seconds = [number(row['run_seconds']) for row in scored]
     complete_cost = bool(scored) and all(value is not None for value in costs)
+    complete_time = bool(scored) and all(value is not None for value in seconds)
     return {
         **counts,
         'mean_inference_cost_usd': average(costs),
@@ -169,6 +174,7 @@ def cohort_efficiency(rows):
         'priced_attempts': sum(value is not None for value in costs),
         'median_agent_verifier_seconds': middle(seconds),
         'mean_agent_verifier_seconds': average(seconds),
+        'agent_verifier_seconds_per_pass': round(sum(seconds) / counts['passes'], 8) if complete_time and counts['passes'] else None,
         'timed_attempts': sum(value is not None for value in seconds),
     }
 
@@ -605,6 +611,11 @@ def meter_summary(meter, rows, delayed):
     }
 
 
+def script_action_count(receipt):
+    actions = receipt.get('actions')
+    return len(actions) if receipt.get('kind') == 'workspace_script_result' and isinstance(actions, list) else None
+
+
 def session_summary(live, sdk):
     facts = object_value(sdk.get('facts'))
     tools = {**{key: count(facts.get(key)) for key in ('tool_calls', 'tool_results', 'tool_errors')},
@@ -612,85 +623,98 @@ def session_summary(live, sdk):
              'workspace_script_calls': None, 'workspace_script_host_actions': None}
     terminal = 'turn.completed' if (count(facts.get('turns_completed')) or 0) > 0 else None
     result = {'terminal_event': terminal, 'interrupt_reason': None, 'durable_turn_settled': None,
-              'settled_status': None, 'sdk_error_kind': None, 'sdk_error_detail': None}
-    session_root = live / 'session-data'
-    resolved_session_root = session_root.resolve()
-    if resolved_session_root != live.resolve() / 'session-data':
-        return tools, result
-    candidates = sorted(session_root.glob('p/*/sessions/*/events.jsonl'))
-    if len(candidates) != 1:
-        return tools, result
-    candidate = candidates[0]
-    if candidate.resolve() != resolved_session_root / candidate.relative_to(session_root):
+              'settled_status': None, 'sdk_error_kind': None, 'sdk_error_detail': None, 'context_capacity': None}
+    journal = session_journal(live, sdk)
+    if journal is None:
         return tools, result
     statuses = Counter()
     calls = 0
     script_calls = script_actions = 0
     pending_scripts = set()
+    pending_script_jobs = set()
     script_evidence_complete = True
     observed = {**result, 'durable_turn_settled': False}
     agent = sdk.get('agent') or 'main'
+    capacity = SessionCapacityEvidence(agent)
     provider_error_turn, provider_error_kind = None, None
     try:
-        with candidates[0].open(encoding='utf-8') as source:
-            for line in source:
-                event = object_value(json.loads(line))
-                event_agent = event.get('conversation') or event.get('agent') or 'main'
-                if event.get('kind') == 'tool.call':
-                    calls += 1
-                    if event.get('tool') == 'workspace_script':
-                        script_calls += 1
-                        call_id = event.get('tool_call_id')
-                        if isinstance(call_id, str) and call_id:
-                            call = (event_agent, event.get('turn'), call_id)
-                            if call in pending_scripts:
-                                script_evidence_complete = False
-                            pending_scripts.add(call)
-                        else:
+        for event in session_events(journal, sdk.get('events_sha256')):
+            capacity.observe(event)
+            event_agent = event.get('conversation') or event.get('agent') or 'main'
+            if event.get('kind') == 'tool.call':
+                calls += 1
+                if event.get('tool') in ('run_js', 'workspace_script'):
+                    script_calls += 1
+                    call_id = event.get('tool_call_id')
+                    if isinstance(call_id, str) and call_id:
+                        call = (event_agent, event.get('turn'), call_id)
+                        if call in pending_scripts:
                             script_evidence_complete = False
-                if event.get('kind') == 'tool.result':
-                    statuses[allowed(event.get('status'), TOOL_STATUSES) or 'unknown'] += 1
-                    call = (event_agent, event.get('turn'), event.get('tool_call_id'))
-                    if call in pending_scripts:
-                        pending_scripts.remove(call)
-                        receipt = object_value(event.get('structured'))
-                        if receipt.get('kind') == 'workspace_script_result' and isinstance(receipt.get('actions'), list):
-                            script_actions += len(receipt['actions'])
-                        else:
+                        pending_scripts.add(call)
+                    else:
+                        script_evidence_complete = False
+            if event.get('kind') == 'tool.result':
+                statuses[allowed(event.get('status'), TOOL_STATUSES) or 'unknown'] += 1
+                call = (event_agent, event.get('turn'), event.get('tool_call_id'))
+                if call in pending_scripts:
+                    pending_scripts.remove(call)
+                    receipt = object_value(event.get('structured'))
+                    action_count = script_action_count(receipt)
+                    job_id = receipt.get('job_id')
+                    if action_count is not None:
+                        script_actions += action_count
+                    elif receipt.get('kind') == 'job' and isinstance(job_id, str) and job_id:
+                        job = (event_agent, job_id)
+                        if job in pending_script_jobs:
                             script_evidence_complete = False
-                if event_agent == agent:
-                    kind = allowed(event.get('kind'), TURN_EVENTS)
-                    if kind is not None:
-                        observed.update(terminal_event=kind, interrupt_reason=None)
-                        if kind == 'turn.interrupted':
-                            observed['interrupt_reason'] = allowed(event.get('reason'), INTERRUPT_REASONS) or 'other'
-                    if event.get('kind') == 'model.error':
-                        provider_error_turn = count(event.get('turn'))
-                        provider_error_kind = allowed(event.get('error_kind'), PROVIDER_ERROR_KINDS)
-                    elif kind == 'turn.interrupted' and observed['interrupt_reason'] in PROVIDER_ERROR_KINDS:
-                        provider_error_turn = count(event.get('turn'))
-                        provider_error_kind = observed['interrupt_reason']
-                operation = object_value(event.get('record')) if event.get('kind') == 'runtime.operation' else {}
-                if operation.get('operation') == 'turn_settled' and operation.get('address') == agent:
-                    error = operation.get('error')
-                    error_kind = None
-                    if isinstance(error, str):
-                        error_kind = 'invalid_argument' if error.startswith('invalid argument: ') else 'other'
-                        if (error.startswith('provider error: ') and provider_error_turn is not None
-                                and provider_error_turn == count(operation.get('turn'))):
-                            error_kind = provider_error_kind or 'other'
-                    observed.update(durable_turn_settled=True,
-                                    settled_status=allowed(operation.get('status'), SETTLED_STATUSES),
-                                    sdk_error_kind=error_kind,
-                                    sdk_error_detail='request_bytes_limit' if error == SDK_REQUEST_BYTES_ERROR else None)
+                        pending_script_jobs.add(job)
+                    else:
+                        script_evidence_complete = False
+            if event_agent == agent:
+                kind = allowed(event.get('kind'), TURN_EVENTS)
+                if kind is not None:
+                    observed.update(terminal_event=kind, interrupt_reason=None)
+                    if kind == 'turn.interrupted':
+                        observed['interrupt_reason'] = allowed(event.get('reason'), INTERRUPT_REASONS) or 'other'
+                if event.get('kind') == 'model.error':
+                    provider_error_turn = count(event.get('turn'))
+                    provider_error_kind = allowed(event.get('error_kind'), PROVIDER_ERROR_KINDS)
+                elif kind == 'turn.interrupted' and observed['interrupt_reason'] in PROVIDER_ERROR_KINDS:
+                    provider_error_turn = count(event.get('turn'))
+                    provider_error_kind = observed['interrupt_reason']
+            operation = object_value(event.get('record')) if event.get('kind') == 'runtime.operation' else {}
+            if operation.get('operation') == 'job_finished':
+                job = (operation.get('agent'), operation.get('job_id'))
+                if job in pending_script_jobs:
+                    pending_script_jobs.remove(job)
+                    receipt = object_value(object_value(operation.get('result')).get('structured'))
+                    action_count = script_action_count(receipt)
+                    if action_count is None:
+                        script_evidence_complete = False
+                    else:
+                        script_actions += action_count
+            if operation.get('operation') == 'turn_settled' and operation.get('address') == agent:
+                error = operation.get('error')
+                error_kind = None
+                if isinstance(error, str):
+                    error_kind = 'invalid_argument' if error.startswith('invalid argument: ') else 'other'
+                    if (error.startswith('provider error: ') and provider_error_turn is not None
+                            and provider_error_turn == count(operation.get('turn'))):
+                        error_kind = provider_error_kind or 'other'
+                observed.update(durable_turn_settled=True,
+                                settled_status=allowed(operation.get('status'), SETTLED_STATUSES),
+                                sdk_error_kind=error_kind,
+                                sdk_error_detail='request_bytes_limit' if isinstance(error, str)
+                                and SDK_REQUEST_BYTES_PATTERN.fullmatch(error) else None)
     except (OSError, UnicodeError, ValueError, TypeError):
         return tools, result
     results = sum(statuses.values())
     tools = {'tool_calls': calls, 'tool_results': results, 'tool_errors': statuses['error'],
              'non_ok_results': results - statuses['ok'] if not statuses['unknown'] else None,
              'workspace_script_calls': script_calls,
-             'workspace_script_host_actions': script_actions if script_evidence_complete and not pending_scripts else None}
-    return tools, observed
+             'workspace_script_host_actions': script_actions
+             if script_evidence_complete and not pending_scripts and not pending_script_jobs else None}
+    return tools, {**observed, 'context_capacity': capacity.summary()}
 
 
 def selector_summary(directory, case):
@@ -734,7 +758,13 @@ def latest_container_block_io(snapshots):
     return None
 
 
-def resource_summary(source):
+def cpu_throttling_summary(evidence):
+    raw = object_value(object_value(evidence).get('cpu_throttling'))
+    counters = {field: count(raw.get(field)) for field in CPU_THROTTLING_FIELDS}
+    return counters if all(value is not None for value in counters.values()) else None
+
+
+def resource_summary(source, evidence=None):
     resources = object_value(source)
     memory = object_value(resources.get('harness_memory')).copy()
     memory['peak_rss_kib'] = peak_rss_kib(memory.get('peak_rss_kib'), resources.get('sdk_peak_rss_kib'),
@@ -759,6 +789,7 @@ def resource_summary(source):
         },
         'process_including_waited_children': process,
         'container': {
+            'cpu_throttling': cpu_throttling_summary(evidence),
             'samples': count(resources.get('container_samples')),
             'retained_snapshot_count': len(snapshots) if isinstance(snapshots, list) else None,
             'capture_incomplete': capture_incomplete,
@@ -774,6 +805,8 @@ def local_attempt(case, directory, ordinal, label, receipt_key=None):
         raise EvidenceError('invalid round label; use first, rerun, round-N, guidance, guarded, outputNk or contextNk')
     live = directory.resolve() / 'live'
     result = read_object(live / 'result.json', 'local live result')
+    if result.get('harness', 'kuku') != 'kuku':
+        raise EvidenceError('historical report expects Kuku evidence; use benchmark_compare.py for the paired run')
     meter, raw_meter = load_object(directory / 'meter.json', 'local meter')
     if result.get('mode') != 'live' or meter.get('case', case) != case:
         raise EvidenceError('local attempt evidence does not match its declared case or mode')
@@ -853,7 +886,7 @@ def local_attempt(case, directory, ordinal, label, receipt_key=None):
             'tests': {key: count(verifier.get(key)) for key in TEST_FIELDS} if verifier else None,
         },
         'tools': tools,
-        'resources': resource_summary(result.get('resources')),
+        'resources': resource_summary(result.get('resources'), result.get('resource_evidence')),
         **measure,
     }
 
@@ -875,7 +908,8 @@ def build_report(feed, attempts, official_live_sha256=None, *, receipt_key=None)
             'comparison': 'The historical official Runta/Baseten baseline and local kuku observations come from different environments.',
             'ordering': 'For each case, the first supplied attempt is first and each later attempt is a rerun.',
             'official_scoring': 'Flagged passes score as failures. Infrastructure outcomes are excluded.',
-            'official_time': 'Agent plus verifier time, excluding queue wait, across scored attempts with timing.',
+            'official_time': ('Agent plus verifier time, excluding queue wait. Time per pass divides total time across all '
+                              'scored attempts by audited passes. It requires timing on every scored attempt.'),
             'official_cost': 'Mean inference USD from the official feed. Sandbox charges are excluded.',
             'local_time': 'SDK execution inside the container and verifier wall times are measured separately.',
             'local_performance': ('Proxy timing starts before the outbound connection. First output is the first nonempty text, '

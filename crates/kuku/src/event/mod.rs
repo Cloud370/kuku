@@ -1,6 +1,7 @@
+pub(crate) mod checkpoint_map;
+pub(crate) mod history;
 mod json;
 mod model_stop_reason;
-pub(crate) mod scan;
 pub mod store;
 mod stored_event;
 pub mod types;

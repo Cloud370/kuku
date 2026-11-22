@@ -117,7 +117,7 @@ pub(super) fn lines(app: &App, width: usize, limit: u16) -> DeliveryView {
     }
     if app.has_queued_input() {
         title.push_str(&format!(
-            " · {} select · Enter edit · Del withdraw",
+            " · {} select · Enter edit · Del remove",
             Shortcut::UP.label
         ));
     }
@@ -184,11 +184,11 @@ fn message(
 ) -> Vec<Line<'static>> {
     let label = if let Some(status) = row.withdrawal {
         match status {
-            SubmissionStatus::Saving | SubmissionStatus::AwaitingReceipt => "Withdrawing",
-            SubmissionStatus::CheckingReceipt => "Checking withdrawal",
-            SubmissionStatus::ReceiptUnconfirmed => "Withdrawal unconfirmed",
-            SubmissionStatus::ReceiptMissing => "No withdrawal receipt",
-            SubmissionStatus::Rejected => "Withdrawal rejected",
+            SubmissionStatus::Saving | SubmissionStatus::AwaitingReceipt => "Removing from queue",
+            SubmissionStatus::CheckingReceipt => "Checking if removed",
+            SubmissionStatus::ReceiptUnconfirmed => "Removal unconfirmed",
+            SubmissionStatus::ReceiptMissing => "No removal receipt",
+            SubmissionStatus::Rejected => "Could not remove",
             status => status.label(),
         }
     } else {

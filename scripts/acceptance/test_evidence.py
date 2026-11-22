@@ -1,14 +1,67 @@
 import copy
+import gzip
 import hashlib
 import json
 from pathlib import Path, PureWindowsPath
+import struct
 import subprocess
 import sys
 import tempfile
 import unittest
+import zlib
 from unittest.mock import patch
 
-from evidence import comparison_path, inspect_sdk, SessionFacts
+from benchmark_pi import inspect_pi
+from evidence import comparison_path, inspect_sdk, session_events, SessionFacts
+
+
+class SessionArchiveEvidenceTests(unittest.TestCase):
+    def test_logical_digest_covers_split_frames_and_plain_tail(self):
+        history = b'{"id":1}\n{"id":2}\n'
+        tail = b'{"id":3}\n'
+        blocks = [history[:6], history[6:]]
+        encoded = [gzip.compress(block) for block in blocks]
+        table = b"".join(struct.pack("<II", len(block), len(frame)) for block, frame in zip(blocks, encoded))
+        header = struct.pack("<8sIIQQ", b"KUKUJNL1", len(blocks), 0, 2, 0)
+        prefix = header + struct.pack("<I", zlib.crc32(table, zlib.crc32(header))) + table
+        digest = hashlib.sha256(history + tail).hexdigest()
+        with tempfile.TemporaryDirectory() as directory:
+            journal = Path(directory) / "events.jsonl"
+            journal.write_bytes(prefix + b"".join(encoded) + tail)
+            self.assertEqual(list(session_events(journal, digest)), [{"id": 1}, {"id": 2}, {"id": 3}])
+            broken = bytearray(encoded[0])
+            broken[-8] ^= 1
+            journal.write_bytes(prefix + broken + encoded[1] + tail)
+            with self.assertRaisesRegex(ValueError, "damaged Session archive frame"):
+                list(session_events(journal))
+
+
+class PiEvidenceTests(unittest.TestCase):
+    def test_original_prompt_and_completed_tool_continuation_are_required(self):
+        messages = [
+            {"role": "user", "content": [{"type": "text", "text": "original prompt"}]},
+            {"role": "assistant", "content": [{"type": "toolCall", "id": "fixture"},
+                                               {"type": "toolCall", "id": "other"}], "stopReason": "toolUse"},
+            {"role": "toolResult", "toolCallId": "fixture"},
+            {"role": "toolResult", "toolCallId": "other"},
+            {"role": "assistant", "content": [], "stopReason": "stop"},
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            data = Path(temporary)
+            session = data / "sessions" / "fixture.jsonl"
+            session.parent.mkdir()
+
+            def write(entries):
+                session.write_text("".join(json.dumps({"type": "message", "message": entry}) + "\n" for entry in entries))
+
+            write(messages)
+            report = inspect_pi(data, "original prompt")
+            self.assertTrue(report["passed"])
+            self.assertEqual(report["tool_batches"],
+                             {"without_tools": 1, "single_call": 0, "multiple_calls": 1, "max_calls": 2})
+            self.assertFalse(inspect_pi(data, "different prompt")["passed"])
+            write(messages[:2] + messages[3:])
+            self.assertFalse(inspect_pi(data, "original prompt")["passed"])
 
 
 class Fixture:
@@ -158,16 +211,39 @@ class Fixture:
 
 
 class EvidenceTests(unittest.TestCase):
-    def test_metered_limits_can_declare_no_count_limit_and_one_retry(self):
+    def test_request_byte_limit_must_match_the_selected_sdk_setting(self):
+        limits = self.fixture.report["limits"]
+        for reported in (None, True, 65535):
+            with self.subTest(reported=reported):
+                limits["max_request_bytes"] = reported
+                evidence = self.fixture.inspect(expected_max_request_bytes=65536)
+                self.assertFalse(evidence["passed"])
+                self.assertIn("selected request byte limit", evidence["error"])
+        limits["max_request_bytes"] = 65536
+        self.assertTrue(self.fixture.inspect(expected_max_request_bytes=65536)["passed"])
+
+    def test_command_deadline_must_match_the_selected_sdk_setting(self):
+        for setting in (None, True, 59):
+            with self.subTest(setting=setting):
+                self.fixture.report["limits"]["max_command_seconds"] = setting
+                evidence = self.fixture.inspect(expected_max_command_seconds=60)
+                self.assertFalse(evidence["passed"])
+                self.assertIn("selected command deadline", evidence["error"])
+        self.fixture.report["limits"]["max_command_seconds"] = 60
+        self.assertTrue(self.fixture.inspect(expected_max_command_seconds=60)["passed"])
+
+    def test_metered_limits_allow_declared_automatic_retries(self):
         limits = self.fixture.report["limits"]
         limits.pop("max_steps")
-        limits.update(max_requests=None, automatic_retries=1)
-        evidence = self.fixture.inspect()
-        self.assertTrue(evidence["passed"], evidence.get("error"))
-        self.assertIsNone(evidence["limits"]["max_requests"])
-        self.assertEqual(evidence["limits"]["max_request_bytes"], 65536)
-        self.assertEqual(evidence["limits"]["max_context_tokens"], 131072)
-        self.assertEqual(evidence["limits"]["automatic_retries"], 1)
+        limits["max_requests"] = None
+        for retries in (1, 5):
+            limits["automatic_retries"] = retries
+            evidence = self.fixture.inspect()
+            self.assertTrue(evidence["passed"], evidence.get("error"))
+            self.assertIsNone(evidence["limits"]["max_requests"])
+            self.assertEqual(evidence["limits"]["max_request_bytes"], 65536)
+            self.assertEqual(evidence["limits"]["max_context_tokens"], 131072)
+            self.assertEqual(evidence["limits"]["automatic_retries"], retries)
         self.assertFalse(self.fixture.inspect(require_fixed_limits=True)["passed"])
         limits["max_requests"] = 22
         self.assertFalse(self.fixture.inspect(require_fixed_limits=True)["passed"])
@@ -360,6 +436,8 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(result["usage"]["input_tokens"], 200)
         self.assertEqual(result["session_usage"]["input_tokens"], 250)
         self.assertEqual(result["other_agents"], ["reviewer"])
+        self.assertEqual(result["tool_batches"],
+                         {"without_tools": 1, "single_call": 1, "multiple_calls": 0, "max_calls": 1})
 
     def streaming(self):
         self.fixture.report["elapsed_ms"] = 10
@@ -456,8 +534,8 @@ class EvidenceTests(unittest.TestCase):
         fixture = self.fixture
         index = next(i for i, event in enumerate(fixture.records) if event["kind"] == "runtime.model_usage")
         retry = {"kind": "runtime.model_retry", "agent": "main", "turn": fixture.turn,
-                 "request_id": "request-1", "attempt": 2}
-        fixture.records[index:index] = [retry, dict(retry)]
+                 "request_id": "request-1", "attempt": 2, "failed_attempt": 1, "max_attempts": 6, "will_retry": True}
+        fixture.records[index:index] = [{**retry, "phase": "waiting"}, {**retry, "phase": "started"}]
         fixture.renumber()
         fixture.report["limits"]["automatic_retries"] = 1
         fixture.totals.update(model_requests=3, unreported_requests=1)
@@ -469,6 +547,110 @@ class EvidenceTests(unittest.TestCase):
             self.assertEqual(1, usage["unreported_requests"])
             self.assertIsNone(usage["input_tokens"])
             self.assertEqual(200, usage["reported_partial"]["input_tokens"])
+
+    def test_terminal_first_attempt_has_a_valid_stop_fact_before_or_after_usage(self):
+        fixture = self.fixture
+        fixture.report["runtime_completed"] = False
+        original = copy.deepcopy(fixture.records)
+        usage = next(i for i, event in enumerate(original) if event["kind"] == "runtime.model_usage")
+        for already_reported in (False, True):
+            with self.subTest(already_reported=already_reported):
+                stop = {"kind": "runtime.model_retry", "agent": "main", "turn": fixture.turn,
+                        "request_id": "request-1", "attempt": 1, "failed_attempt": 1, "max_attempts": 6,
+                        "phase": "stopped", "will_retry": False}
+                index = usage + int(already_reported)
+                fixture.records = copy.deepcopy(original)
+                fixture.records[index:index] = [stop]
+                fixture.renumber()
+                evidence = fixture.inspect()
+                self.assertFalse(evidence["passed"])
+                self.assertEqual("SDK runtime did not complete successfully", evidence["error"])
+
+    def test_closed_timeout_reports_cleanup_independent_of_runtime_success(self):
+        fixture = self.fixture
+        fixture.report.update(runtime_completed=False, error="task exceeded 1s")
+        fixture.report["agent"]["status"] = "stopped"
+        settled = next(e["record"] for e in fixture.records if e.get("record", {}).get("operation") == "turn_settled")
+        settled["status"] = "stopped"
+        evidence = fixture.inspect()
+        self.assertFalse(evidence["passed"])
+        self.assertTrue(evidence["durable_cleanup_closed"])
+        fixture.add("diagnostic.after_close")
+        fixture.renumber()
+        evidence = fixture.inspect()
+        self.assertFalse(evidence["durable_cleanup_closed"])
+
+    def test_completed_tool_argument_regeneration_counts_attempts_in_each_step(self):
+        fixture = self.fixture
+        for request, retries in (("request-2", 1), ("request-1", 2)):
+            index = next(i for i, event in enumerate(fixture.records)
+                         if event["kind"] == "runtime.step_prepared" and event["request_id"] == request)
+            rejected_records = []
+            for failed_attempt in range(1, retries + 1):
+                rejected = f"{request}-rejected-{failed_attempt}"
+                prepared, usage, response = [{**event, "request_id": rejected} for event in fixture.records[index:index + 3]]
+                response["stop_reason"] = "invalid_response"
+                retry = {"kind": "runtime.model_retry", "agent": "main", "turn": fixture.turn, "request_id": rejected,
+                         "recovery": "regenerate_tool_arguments", "will_retry": True, "failed_kind": "invalid_response",
+                         "provider_stop_reason": "tool_use", "attempt": failed_attempt + 1,
+                         "failed_attempt": failed_attempt, "max_attempts": 6}
+                rejected_records.extend((prepared, usage, response, retry))
+            fixture.records[index:index] = rejected_records
+        fixture.renumber()
+        fixture.report["provider_settings"] = [event for event in fixture.records if event["kind"] == "runtime.step_prepared"]
+        fixture.report["facts"].update(prepared_steps=5, model_responses=5)
+        fixture.report["limits"]["automatic_retries"] = 1
+        fixture.totals.update(model_requests=5, input_tokens=500, output_tokens=100, cache_read_input_tokens=50)
+        result = fixture.inspect()
+        self.assertTrue(result["passed"], result)
+        for accounting in (result["usage"], result["session_usage"]):
+            self.assertEqual(5, accounting["requests"])
+            self.assertEqual(0, accounting["unreported_requests"])
+            self.assertEqual(500, accounting["input_tokens"])
+
+        response["stop_reason"] = "end_turn"
+        self.assertIn("no eligible rejected response", fixture.inspect()["error"])
+        response["stop_reason"] = "invalid_response"
+        call = next(event for event in fixture.records if event["kind"] == "tool.call")
+        call["request_id"] = rejected
+        self.assertIn("discarded model response admitted a tool call", fixture.inspect()["error"])
+
+    def test_context_rejection_and_checkpoint_preserve_missing_usage(self):
+        fixture = self.fixture
+        index = next(i for i, event in enumerate(fixture.records) if event["kind"] == "runtime.step_prepared")
+        source = "request-overflow"
+        checkpoint = "compact-overflow"
+        tags = dict(agent="main", turn=fixture.turn)
+        rejected = dict(fixture.records[index], request_id=source)
+        rejection = dict(tags, kind="runtime.model_rejected", request_id=source,
+                         reason="context_too_large", attempt=1)
+        start = dict(tags, kind="runtime.compaction_started", request_id=checkpoint,
+                     rejected_request_id=source, connection="fixture", model="fixture-model")
+        usage = dict(tags, kind="runtime.model_usage", request_id=checkpoint,
+                     usage={"input_tokens": 30, "output_tokens": 4, "cache_read_input_tokens": 5,
+                            "cache_creation_input_tokens": 0})
+        segment = dict(tags, kind="runtime.context_segment")
+        admitted = copy.deepcopy(fixture.records[index - 1])
+        finished = dict(tags, kind="runtime.compaction_finished", request_id=checkpoint,
+                        status="completed", context_head=1, after_bytes=4096)
+        fixture.records[index:index] = [rejected, rejection, start, usage, segment, admitted, finished]
+        fixture.renumber()
+        for event in fixture.records[fixture.records.index(admitted):]:
+            if "segment" in event or event is finished:
+                event["segment"] = segment["id"]
+        fixture.report["facts"].update(prepared_steps=3)
+        fixture.report["provider_settings"].insert(0, rejected)
+        fixture.totals.update(model_requests=4, unreported_requests=1, input_tokens=230,
+                              output_tokens=44, cache_read_input_tokens=25)
+        evidence = fixture.inspect()
+        self.assertTrue(evidence["passed"], evidence)
+        for totals in (evidence["usage"], evidence["session_usage"]):
+            self.assertEqual(4, totals["requests"])
+            self.assertEqual(1, totals["unreported_requests"])
+            self.assertIsNone(totals["input_tokens"])
+            self.assertEqual(230, totals["reported_partial"]["input_tokens"])
+        start["rejected_request_id"] = "other-request"
+        self.assertIn("unique rejected request", fixture.inspect()["error"])
 
     def test_zero_usage_for_nonempty_requests_does_not_establish_free_work(self):
         for event in self.fixture.records:

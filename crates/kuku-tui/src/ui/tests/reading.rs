@@ -53,7 +53,7 @@ fn escape_closes_thinking_notes_before_running_interrupt_or_idle_rewind() {
     assert!(!running.effects.iter().any(|job| matches!(job,
         Job::Save(command) if matches!(command.action, Action::Cancel { .. })
     )));
-    assert!(running.escape_armed_at.is_none());
+    assert!(!running.rewind_armed);
 
     key(&mut running, KeyCode::Esc, KeyModifiers::NONE);
     assert!(running.effects.iter().any(|job| matches!(job,
@@ -67,5 +67,5 @@ fn escape_closes_thinking_notes_before_running_interrupt_or_idle_rewind() {
     key(&mut idle, KeyCode::Esc, KeyModifiers::NONE);
     assert!(!idle.pane().transcript.note_is_open(&idle_notes));
     assert!(idle.effects.is_empty());
-    assert!(idle.escape_armed_at.is_none());
+    assert!(!idle.rewind_armed);
 }

@@ -1,4 +1,5 @@
 use std::io;
+use std::num::NonZeroU32;
 use std::path::Path;
 use std::process::{ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -32,6 +33,7 @@ mod render;
 mod reports;
 mod request;
 mod shell;
+mod summary;
 
 #[cfg(all(test, windows))]
 mod windows_tests;
@@ -58,16 +60,61 @@ struct CommandOutcome {
     dropped_events: u64,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ModelOutputAccess {
+    Unavailable,
+    Read,
+    Script,
+}
+
 enum CommandView {
-    Model,
+    Model(ModelOutputAccess),
     Script { host_bytes: usize },
 }
 
-struct CommandCapture<'a> {
+pub(crate) struct CommandCapture<'a> {
     dir: &'a Path,
     id: &'a str,
     limits: OutputLimits,
     view: CommandView,
+    max_seconds: Option<NonZeroU32>,
+}
+
+impl<'a> CommandCapture<'a> {
+    pub(crate) fn model(
+        dir: &'a Path,
+        id: &'a str,
+        limits: OutputLimits,
+        access: ModelOutputAccess,
+    ) -> Self {
+        Self {
+            dir,
+            id,
+            limits,
+            view: CommandView::Model(access),
+            max_seconds: None,
+        }
+    }
+
+    pub(crate) fn script(
+        dir: &'a Path,
+        id: &'a str,
+        limits: OutputLimits,
+        host_bytes: usize,
+    ) -> Self {
+        Self {
+            dir,
+            id,
+            limits,
+            view: CommandView::Script { host_bytes },
+            max_seconds: None,
+        }
+    }
+
+    pub(crate) fn with_time_limit(mut self, max_seconds: Option<NonZeroU32>) -> Self {
+        self.max_seconds = max_seconds;
+        self
+    }
 }
 
 pub(crate) async fn run_command(
@@ -113,41 +160,17 @@ pub(crate) async fn run_command_with_output(
         workspace,
         event_tx,
         cancel,
-        CommandCapture {
-            dir: output_dir,
-            id: output_id,
+        CommandCapture::model(
+            output_dir,
+            output_id,
             limits,
-            view: CommandView::Model,
-        },
+            ModelOutputAccess::Unavailable,
+        ),
     )
     .await
 }
 
-pub(crate) async fn run_command_for_script(
-    args: &Value,
-    workspace: &Path,
-    cancel: Arc<Notify>,
-    output_dir: &Path,
-    output_id: &str,
-    limits: OutputLimits,
-    host_bytes: usize,
-) -> ToolResultEnvelope {
-    run_command_to(
-        args,
-        workspace,
-        None,
-        Some(cancel),
-        CommandCapture {
-            dir: output_dir,
-            id: output_id,
-            limits,
-            view: CommandView::Script { host_bytes },
-        },
-    )
-    .await
-}
-
-async fn run_command_to(
+pub(crate) async fn run_command_to(
     args: &Value,
     workspace: &Path,
     event_tx: Option<mpsc::Sender<CommandEvent>>,
@@ -158,10 +181,17 @@ async fn run_command_to(
     let cancelled = cancel.notified();
     tokio::pin!(cancelled);
     cancelled.as_mut().enable();
-    let request = match run_command_request(args, workspace) {
+    let mut request = match run_command_request(args, workspace) {
         Ok(request) => request,
         Err(result) => return result,
     };
+    if let Some(seconds) = output.max_seconds.map(NonZeroU32::get) {
+        request.timeout_seconds = Some(
+            request
+                .timeout_seconds
+                .map_or(seconds, |limit| limit.min(seconds)),
+        );
+    }
     if let Some(reason) = blocked_command_reason(&request.invocation) {
         return ToolResultEnvelope::blocked(
             format!("blocked by command hard guard: {reason}"),
@@ -169,18 +199,24 @@ async fn run_command_to(
         );
     }
     let started = Instant::now();
-    let mut writer = match OutputWriter::create_command(output.dir, output.id, output.limits).await
-    {
-        Ok(writer) => writer,
-        Err(error) => {
-            return ToolResultEnvelope::error(
-                format!("failed: output create: {error}"),
-                format!(
+    let collector = match output.view {
+        CommandView::Model(ModelOutputAccess::Read | ModelOutputAccess::Script) => {
+            summary::Collector::new(&request.invocation)
+        }
+        _ => None,
+    };
+    let mut writer =
+        match OutputWriter::create_command(output.dir, output.id, output.limits, collector).await {
+            Ok(writer) => writer,
+            Err(error) => {
+                return ToolResultEnvelope::error(
+                    format!("failed: output create: {error}"),
+                    format!(
                     "command output create failed: {error}; no output reference was acknowledged"
                 ),
-            )
-        }
-    };
+                )
+            }
+        };
     let already_cancelled = tokio::select! {
         biased;
         _ = cancelled.as_mut() => true,
@@ -197,7 +233,15 @@ async fn run_command_to(
             Err(result) => return result,
         }
     };
-    let capture = match writer.finish_command(outcome.cleanup_incomplete).await {
+    let exit_code = if outcome.cancelled || outcome.timed_out {
+        None
+    } else {
+        outcome.exit_status.and_then(|status| status.code())
+    };
+    let capture = match writer
+        .finish_command(outcome.cleanup_incomplete, exit_code)
+        .await
+    {
         Ok(result) => result,
         Err(error) => return output_error("sync", error, outcome.cleanup_incomplete),
     };

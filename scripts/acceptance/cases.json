@@ -50,7 +50,22 @@
         "log-summary-date-ranges",
         "cancel-async-tasks",
         "regex-log",
-        "large-scale-text-editing"
+        "large-scale-text-editing",
+        "nginx-request-logging",
+        "sqlite-with-gcov",
+        "kv-store-grpc",
+        "gcode-to-text",
+        "pypi-server",
+        "schemelike-metacircular-eval",
+        "code-from-image",
+        "db-wal-recovery",
+        "adaptive-rejection-sampler",
+        "count-dataset-tokens",
+        "multi-source-data-merger",
+        "query-optimize",
+        "fix-ocaml-gc",
+        "fix-git",
+        "sqlite-db-truncate"
       ],
       "additional_cases": [
         {
@@ -59,6 +74,112 @@
           "workspace": "/app",
           "artifacts": ["/app/apply_macros.vim"],
           "timeout_sec": 1200
+        },
+        {
+          "id": "nginx-request-logging",
+          "role": "configure a local service and verify its behavior after startup",
+          "workspace": "/app",
+          "artifacts": ["/etc/nginx/nginx.conf", "/etc/nginx/conf.d/benchmark-site.conf"],
+          "timeout_sec": 900
+        },
+        {
+          "id": "sqlite-with-gcov",
+          "role": "build and verify a local CLI from vendored source with coverage instrumentation",
+          "workspace": "/app",
+          "artifacts": [],
+          "timeout_sec": 900
+        },
+        {
+          "id": "kv-store-grpc",
+          "role": "generate a gRPC service and keep it running for independent verification",
+          "workspace": "/app",
+          "artifacts": ["/app/kv-store.proto", "/app/server.py"],
+          "timeout_sec": 900
+        },
+        {
+          "id": "gcode-to-text",
+          "role": "inspect and transform printer toolpaths with a checked text artifact",
+          "workspace": "/app",
+          "artifacts": ["/app/out.txt"],
+          "timeout_sec": 900
+        },
+        {
+          "id": "pypi-server",
+          "role": "build a Python package and serve it from a working local package index",
+          "workspace": "/app",
+          "artifacts": [],
+          "timeout_sec": 900
+        },
+        {
+          "id": "schemelike-metacircular-eval",
+          "role": "implement and test a Scheme evaluator that can also interpret itself",
+          "workspace": "/app",
+          "artifacts": ["/app/eval.scm"],
+          "timeout_sec": 2400
+        },
+        {
+          "id": "code-from-image",
+          "role": "interpret a source image, implement its logic and verify exact output",
+          "workspace": "/app",
+          "artifacts": ["/app/output.txt"],
+          "timeout_sec": 1200
+        },
+        {
+          "id": "db-wal-recovery",
+          "role": "diagnose a SQLite write-ahead log and recover verified records",
+          "workspace": "/app",
+          "artifacts": ["/app/recovered.json"],
+          "timeout_sec": 900
+        },
+        {
+          "id": "adaptive-rejection-sampler",
+          "role": "implement and verify a numerical sampler under input and distribution constraints",
+          "workspace": "/app",
+          "artifacts": ["/app/ars.R"],
+          "timeout_sec": 900
+        },
+        {
+          "id": "count-dataset-tokens",
+          "role": "process a public dataset with a specified tokenizer and verify the aggregate",
+          "workspace": "/app",
+          "artifacts": ["/app/answer.txt"],
+          "timeout_sec": 900
+        },
+        {
+          "id": "multi-source-data-merger",
+          "role": "reconcile data across JSON, CSV and Parquet and verify both result artifacts",
+          "workspace": "/app",
+          "artifacts": ["/app/merged_users.parquet", "/app/conflicts.json"],
+          "timeout_sec": 900
+        },
+        {
+          "id": "query-optimize",
+          "role": "improve SQLite query performance while preserving its exact result",
+          "workspace": "/app",
+          "artifacts": ["/app/sol.sql"],
+          "timeout_sec": 900
+        },
+        {
+          "id": "fix-ocaml-gc",
+          "role": "diagnose a compiler bootstrap failure and verify the repair with the basic test suite",
+          "workspace": "/app",
+          "artifacts": ["/app/ocaml/runtime/shared_heap.c"],
+          "timeout_sec": 3600
+        },
+        {
+          "id": "fix-git",
+          "role": "locate lost changes in a local Git repository and verify their merge",
+          "workspace": "/app/personal-site",
+          "artifacts": [],
+          "published_image": "alexgshaw/fix-git@sha256:389b9c8247610c2c5be080b1ac00429007c2c69bf57f7f26c79f0f75ba2d5c74",
+          "timeout_sec": 900
+        },
+        {
+          "id": "sqlite-db-truncate",
+          "role": "diagnose a truncated SQLite database and verify recovered records",
+          "workspace": "/app",
+          "artifacts": ["/app/recover.json"],
+          "timeout_sec": 900
         }
       ]
     }

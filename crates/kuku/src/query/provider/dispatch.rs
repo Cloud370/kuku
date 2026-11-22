@@ -3,11 +3,15 @@ use std::time::{Duration, Instant};
 use crate::error::Result;
 use crate::event::{EventPayload, EventStore};
 use crate::log::LogLevel;
-use crate::provider::types::{PreparedProviderRequest, ProviderFailure, ResolvedProvider};
+use crate::provider::types::{
+    PreparedProviderRequest, ProviderCorrelation, ProviderFailure, ProviderFailureKind,
+    ResolvedProvider,
+};
 use crate::query::helpers::{append_model_error, append_turn_interrupted, now_timestamp};
 use crate::query::tool_exec::record_plugin_hooks;
 use crate::query::types::{PendingRun, PendingStep, RequestTiming, StreamingChunkState, UiEvent};
 
+use super::compaction::{self, Outcome as CompactionOutcome};
 use super::retry::{
     preflight_stream, record_retry_event, retry_stop_reason, scheduled_retry_delay, PreflightError,
     RetryEvent, RetryPhase, RetryStopReason,
@@ -23,6 +27,10 @@ struct ProviderAttempt {
 enum DispatchOutcome {
     Attempt(ProviderAttempt),
     Failure(ProviderFailure),
+    ContextRejected {
+        failure: ProviderFailure,
+        attempt: u8,
+    },
     Cancelled,
 }
 
@@ -30,76 +38,16 @@ pub(super) async fn dispatch_provider_step(
     mut pending: PendingRun,
     resolved_config: ResolvedProvider,
     existing_events: Vec<crate::event::StoredEvent>,
-    frozen_context: Option<crate::query::frozen::ContextCommit>,
+    mut frozen_context: Option<crate::query::frozen::ContextCommit>,
 ) -> Result<PendingStep> {
     run_model_pre_request_hooks(&mut pending).await?;
-    let request_id = format!("req_{}", pending.request_num);
-    let provider_trace = Some(crate::provider::trace::ProviderTraceMetadata {
-        kuku_home: pending.kuku_home.clone(),
-        session_id: pending.session_id.clone(),
-        turn: pending.turn,
-        request_id: request_id.clone(),
-    });
-
-    let mut lead_events = Vec::new();
-    let provider_name = resolved_config.kind.as_str().to_string();
-    let model_name = resolved_config.model.clone();
-    emit_runtime_log(
-        &mut pending,
-        LogLevel::Info,
-        "runtime.model_request",
-        format!("requesting {provider_name} model {model_name}"),
-        Some(serde_json::json!({
-            "provider": provider_name,
-            "model": model_name,
-            "request_id": request_id,
-        })),
-    )?;
-    lead_events.extend(pending.pending_events.drain(..));
-    lead_events.push(UiEvent::ModelRequest {
-        model: model_name,
-        provider: provider_name,
-        conversation: pending.conversation.clone(),
-        turn: pending.turn,
-        request_id: request_id.clone(),
-        request_ordinal: pending.model_request_count + 1,
-    });
-    if pending.request_num == 1 {
-        lead_events.push(UiEvent::TurnStart { turn: pending.turn });
-    }
-
     let handoff_active = pending.handoff_triggered;
-    let request = pending
-        .request_base
-        .as_ref()
-        .expect("request base captured")
-        .request();
-    let correlation = crate::provider::types::ProviderCorrelation {
+    let correlation = ProviderCorrelation {
         session_id: pending.session_id.clone(),
         agent_address: pending.conversation.as_str().into(),
         connection_name: resolved_config.connection_name.clone(),
         workspace: pending.workspace.clone(),
     };
-    let prepare_started = Instant::now();
-    let prepared =
-        crate::provider::prepare_provider_request(&resolved_config, &request, Some(&correlation))
-            .map_err(|failure| crate::Error::Provider {
-            kind: failure.kind,
-            message: failure.message,
-            provider: Some(resolved_config.connection_name.clone()),
-            model: Some(resolved_config.model.clone()),
-        })?;
-    let request_bytes = serde_json::to_vec(&prepared.body)?.len();
-    let max_request_bytes = pending.query.runtime_limits.max_request_bytes;
-    if request_bytes > max_request_bytes {
-        return Err(crate::Error::InvalidArgument(format!(
-            "prepared model request exceeds the configured byte limit ({request_bytes} bytes, limit {max_request_bytes} bytes)"
-        )));
-    }
-    let request_prepare_us = prepare_started
-        .elapsed()
-        .as_micros()
-        .min(u128::from(u64::MAX)) as u64;
     let capacity = match &pending.query.model_capacity {
         Some(capacity) => Some(capacity.clone().acquire_owned().await.map_err(|_| {
             crate::Error::InvalidArgument("session model capacity is closed".into())
@@ -107,25 +55,150 @@ pub(super) async fn dispatch_provider_step(
         None => None,
     };
     super::require_runtime_execution(&pending)?;
-    crate::query::budget::reserve(&pending.query)?;
-    if let Some(context) = frozen_context {
-        crate::query::frozen::record_prepared(
-            &mut pending,
-            &request_id,
-            &prepared,
-            context,
-            request_prepare_us,
-        )?;
-    }
-    match dispatch_prepared(
-        &mut pending,
-        &resolved_config,
-        &prepared,
-        &request_id,
-        provider_trace,
-    )
-    .await?
+    let prepare_started = Instant::now();
+    let max_request_bytes = pending.query.runtime_limits.max_request_bytes;
+    let mut prepared = prepare_body(&pending, &resolved_config, &correlation)?;
+    let request_prepare_us = prepare_started
+        .elapsed()
+        .as_micros()
+        .min(u128::from(u64::MAX)) as u64;
+    let initial_bytes = prepared.body.as_bytes().len();
+    let mut recover_context = frozen_context.is_some() && pending.config.handoff().enabled;
+    if let Some(context) = frozen_context
+        .as_mut()
+        .filter(|context| compaction::needed(&pending, context, initial_bytes))
     {
+        match Box::pin(compaction::compact(
+            &mut pending,
+            context,
+            &resolved_config,
+            &correlation,
+            initial_bytes,
+            compaction::Trigger::Pressure,
+        ))
+        .await?
+        {
+            CompactionOutcome::Keep => {}
+            CompactionOutcome::Failed => recover_context = false,
+            CompactionOutcome::Replace(body) => {
+                recover_context = false;
+                prepared = *body;
+            }
+            CompactionOutcome::Cancelled => return super::super::step::cancellation_step(pending),
+            CompactionOutcome::NewInput => {
+                return Ok(PendingStep::Pending {
+                    pending: Box::new(pending),
+                    slot: None,
+                    event: None,
+                });
+            }
+        }
+    }
+    let mut lead_events = Vec::new();
+    let (request_id, outcome) = loop {
+        let request_id = format!("req_{}", pending.request_num);
+        let request_bytes = prepared.body.as_bytes().len();
+        if request_bytes > max_request_bytes {
+            return Err(crate::Error::InvalidArgument(format!(
+                "prepared model request exceeds the configured byte limit ({request_bytes} bytes, limit {max_request_bytes} bytes)"
+            )));
+        }
+        crate::query::budget::reserve(&pending.query)?;
+        if let Some(context) = frozen_context.take() {
+            crate::query::frozen::record_prepared(
+                &mut pending,
+                &request_id,
+                &prepared,
+                context,
+                request_prepare_us,
+            )?;
+        }
+        announce_request(
+            &mut pending,
+            &resolved_config,
+            &request_id,
+            &mut lead_events,
+        )?;
+        let provider_trace = Some(crate::provider::trace::ProviderTraceMetadata {
+            kuku_home: pending.kuku_home.clone(),
+            session_id: pending.session_id.clone(),
+            turn: pending.turn,
+            request_id: request_id.clone(),
+        });
+
+        let outcome = dispatch_prepared(
+            &mut pending,
+            &resolved_config,
+            &prepared,
+            &request_id,
+            provider_trace,
+            recover_context,
+        )
+        .await?;
+        let DispatchOutcome::ContextRejected { failure, attempt } = outcome else {
+            break (request_id, outcome);
+        };
+
+        let execution = pending
+            .query
+            .runtime_execution
+            .expect("context rejection belongs to a Session");
+        let session = super::runtime_session(&pending, execution)?;
+        session.commit_model_facts(pending.conversation.as_str(), execution, [EventPayload::Unknown(serde_json::json!({
+            "kind": "runtime.model_rejected", "ts": now_timestamp()?, "agent": pending.conversation.as_str(),
+            "turn": pending.turn, "request_id": request_id, "attempt": attempt, "status": failure.status,
+            "reason": failure.kind.as_event_kind(),
+        }))])?;
+        pending.model_request_count += 1;
+        let selection = crate::query::frozen::prepare(&mut pending, false)?;
+        pending.request_base = Some(selection.request);
+        let mut context = selection.commit;
+        match Box::pin(compaction::compact(
+            &mut pending,
+            &mut context,
+            &resolved_config,
+            &correlation,
+            request_bytes,
+            compaction::Trigger::ProviderOverflow {
+                rejected_request: &request_id,
+            },
+        ))
+        .await?
+        {
+            CompactionOutcome::Replace(body) => {
+                recover_context = false;
+                prepared = *body;
+                frozen_context = Some(context);
+                pending.request_num += 1;
+            }
+            CompactionOutcome::Keep | CompactionOutcome::Failed => {
+                record_retry_event(
+                    &pending,
+                    RetryEvent {
+                        request_id: &request_id,
+                        failure: &failure,
+                        phase: RetryPhase::Stopped,
+                        attempt,
+                        failed_attempt: attempt,
+                        delay: Duration::ZERO,
+                        stop_reason: Some(RetryStopReason::NonRetryable),
+                    },
+                )?;
+                break (request_id, DispatchOutcome::Failure(failure));
+            }
+            CompactionOutcome::Cancelled => return super::super::step::cancellation_step(pending),
+            CompactionOutcome::NewInput => {
+                pending.pending_events.extend(lead_events);
+                return Ok(PendingStep::Pending {
+                    pending: Box::new(pending),
+                    slot: None,
+                    event: None,
+                });
+            }
+        }
+    };
+
+    match outcome {
         DispatchOutcome::Attempt(ProviderAttempt {
             stream,
             started,
@@ -176,12 +249,11 @@ pub(super) async fn dispatch_provider_step(
                 model_permit: capacity,
             })))
         }
+        DispatchOutcome::ContextRejected { .. } => unreachable!(),
         DispatchOutcome::Cancelled => super::super::step::cancellation_step(pending),
         DispatchOutcome::Failure(failure)
-            if matches!(
-                failure.kind,
-                crate::provider::types::ProviderFailureKind::ContextTooLarge
-            ) =>
+            if matches!(failure.kind, ProviderFailureKind::ContextTooLarge)
+                && pending.query.runtime.is_none() =>
         {
             let user_input = existing_events
                 .iter()
@@ -256,18 +328,96 @@ pub(super) async fn dispatch_provider_step(
     }
 }
 
+fn announce_request(
+    pending: &mut PendingRun,
+    resolved: &ResolvedProvider,
+    request_id: &str,
+    lead_events: &mut Vec<UiEvent>,
+) -> Result<()> {
+    let provider = resolved.kind.as_str().to_owned();
+    let model = resolved.model.clone();
+    emit_runtime_log(
+        pending,
+        LogLevel::Info,
+        "runtime.model_request",
+        format!("requesting {provider} model {model}"),
+        Some(serde_json::json!({"provider": provider, "model": model, "request_id": request_id})),
+    )?;
+    lead_events.extend(pending.pending_events.drain(..));
+    lead_events.push(UiEvent::ModelRequest {
+        model,
+        provider,
+        conversation: pending.conversation.clone(),
+        turn: pending.turn,
+        request_id: request_id.into(),
+        request_ordinal: pending.model_request_count + 1,
+    });
+    if pending.request_num == 1 {
+        lead_events.push(UiEvent::TurnStart { turn: pending.turn });
+    }
+    Ok(())
+}
+
+fn prepare_body(
+    pending: &PendingRun,
+    resolved: &ResolvedProvider,
+    correlation: &ProviderCorrelation,
+) -> Result<PreparedProviderRequest> {
+    let request = pending
+        .request_base
+        .as_ref()
+        .expect("request base captured");
+    prepare_request(pending, resolved, correlation, request)
+}
+
+pub(super) fn prepare_request(
+    pending: &PendingRun,
+    resolved: &ResolvedProvider,
+    correlation: &ProviderCorrelation,
+    request: &crate::query::request::OwnedRequestBase,
+) -> Result<PreparedProviderRequest> {
+    let request = request.request();
+    if pending.query.runtime_execution.is_some() && pending.query.model_adapter.is_none() {
+        crate::provider::prepare::prepare_provider_request_with_media(
+            resolved,
+            &request,
+            correlation,
+            pending.query.runtime_limits.max_request_bytes,
+            |image| {
+                super::super::runtime_tools::runtime_session(pending)?
+                    .read_model_image(pending.conversation.as_str(), image)
+            },
+        )
+    } else {
+        crate::provider::prepare::prepare_provider_request(resolved, &request, Some(correlation))
+    }
+    .map_err(|failure| crate::Error::Provider {
+        kind: failure.kind,
+        message: failure.message,
+        provider: Some(resolved.connection_name.clone()),
+        model: Some(resolved.model.clone()),
+    })
+}
+
 async fn dispatch_prepared(
     pending: &mut PendingRun,
     resolved: &ResolvedProvider,
     prepared: &PreparedProviderRequest,
     request_id: &str,
     trace: Option<crate::provider::trace::ProviderTraceMetadata>,
+    recover_context: bool,
 ) -> Result<DispatchOutcome> {
     super::require_runtime_execution(pending)?;
     let mut failed_attempt = 1;
     let mut started = Instant::now();
-    let mut result =
-        crate::query::adapters::model_stream(pending, resolved, prepared, trace.clone()).await;
+    let mut result = crate::query::adapters::model_stream(
+        pending,
+        request_id,
+        resolved,
+        prepared,
+        trace.clone(),
+    )
+    .await;
     loop {
         let failure = match result {
             Ok(stream) => match preflight_stream(stream, &pending.cancel_token).await {
@@ -283,6 +433,12 @@ async fn dispatch_prepared(
             },
             Err(failure) => failure,
         };
+        if recover_context && failure.kind == ProviderFailureKind::ContextTooLarge {
+            return Ok(DispatchOutcome::ContextRejected {
+                failure,
+                attempt: failed_attempt,
+            });
+        }
         if pending.query.runtime.is_none() {
             return Ok(DispatchOutcome::Failure(failure));
         }
@@ -353,8 +509,14 @@ async fn dispatch_prepared(
         )?;
         failed_attempt = next_attempt;
         started = Instant::now();
-        result =
-            crate::query::adapters::model_stream(pending, resolved, prepared, trace.clone()).await;
+        result = crate::query::adapters::model_stream(
+            pending,
+            request_id,
+            resolved,
+            prepared,
+            trace.clone(),
+        )
+        .await;
     }
 }
 

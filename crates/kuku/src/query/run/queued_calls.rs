@@ -6,23 +6,33 @@ use crate::query::helpers::{
     append_permission_decision, append_permission_request, display_summary, is_inline_skill_tool,
     permission_candidate, permission_rule, resolved_tool_available,
 };
-use crate::query::slots::requires_workspace_ordering;
+use crate::query::slots::query_workspace_access;
 use crate::query::tool_exec::run_tool_pre_hooks;
 use crate::query::types::{
     PendingPermission, PermissionChoice, PermissionRequest, QueuedToolCall, Run, RunState, UiEvent,
+    WorkspaceAccess,
 };
+
+fn ready_after(barrier: &mut WorkspaceAccess, access: WorkspaceAccess) -> bool {
+    if barrier.conflicts_with(access) {
+        *barrier = (*barrier).max(access);
+        return false;
+    }
+    true
+}
 
 impl Run {
     pub(super) async fn try_process_queued_call(&mut self) -> Result<Option<UiEvent>> {
-        let has_active_workspace_ordered_slot = self.has_active_workspace_ordered_slot();
+        let active = self.active_workspace_access();
         if let RunState::Pending(pending) = &self.state {
             if pending.query.runtime.is_some() {
+                let mut barrier = active;
                 let index = pending.queued_tool_calls.iter().position(|queued| {
-                    !has_active_workspace_ordered_slot
-                        || !crate::query::runtime_tools::requires_workspace_ordering(
-                            pending,
-                            &queued.tool_call.name,
-                        )
+                    let access = crate::query::runtime_tools::workspace_access(
+                        pending,
+                        &queued.tool_call.name,
+                    );
+                    ready_after(&mut barrier, access)
                 });
                 let Some(index) = index else { return Ok(None) };
                 if self.slots.len() >= pending.query.runtime_limits.max_tools_per_agent {
@@ -43,17 +53,18 @@ impl Run {
         }
         let (queue_index, tool_call_id, tool_name) = match &self.state {
             RunState::Pending(pending) => {
-                let queue_index = if has_active_workspace_ordered_slot
+                let queue_index = if active != WorkspaceAccess::Independent
                     && pending.resumed_permission_requests.is_empty()
                 {
+                    let mut barrier = active;
                     pending.queued_tool_calls.iter().position(|queued| {
                         let name = queued.tool_call.name.as_str();
-                        !requires_workspace_ordering(name)
+                        ready_after(&mut barrier, query_workspace_access(name))
                             && name != "agent"
                             && !(is_inline_skill_tool(name)
                                 && resolved_tool_available(pending, name))
                     })
-                } else if !has_active_workspace_ordered_slot {
+                } else if active == WorkspaceAccess::Independent {
                     (!pending.queued_tool_calls.is_empty()).then_some(0)
                 } else {
                     None
@@ -89,7 +100,7 @@ impl Run {
             RunState::Pending(p) => p.as_mut(),
             _ => return Ok(None),
         };
-        if requires_workspace_ordering(&tool_name) && has_active_workspace_ordered_slot {
+        if query_workspace_access(&tool_name).conflicts_with(active) {
             return Ok(None);
         }
         if tool_name == "agent"
@@ -156,6 +167,7 @@ impl Run {
                 let QueuedToolCall {
                     tool_call,
                     display_summary,
+                    ..
                 } = pending.queued_tool_calls.remove(queue_index).unwrap();
                 let hook_result = run_tool_pre_hooks(
                     &mut *pending,
@@ -185,6 +197,8 @@ impl Run {
                 let (slot, tool_kind) = crate::query::slots::dispatch_tool_slot(
                     crate::query::slots::SlotDispatchArgs {
                         capacity: crate::WorkspaceExecutionHost::default(),
+                        workspace_access: query_workspace_access(&tool_call.name),
+                        preview_bytes: pending.query.runtime_limits.max_preview_bytes,
                         output: None,
                         tool_name: tool_call.name.clone(),
                         tool_id: tool_call.id.clone(),
@@ -287,6 +301,7 @@ mod tests {
                 index: 0,
             },
             display_summary: "read visible.txt".to_string(),
+            preparation: None,
         });
         pending.queued_tool_calls.push_back(QueuedToolCall {
             tool_call: ProviderToolCall {
@@ -296,6 +311,7 @@ mod tests {
                 index: 1,
             },
             display_summary: "find files".to_string(),
+            preparation: None,
         });
         pending
             .resumed_permission_requests
@@ -319,7 +335,7 @@ mod tests {
                 tool_call_id: "tool_active_command".to_string(),
                 conversation: None,
                 kind: ToolKind::Command { pid: None },
-                workspace_ordered: true,
+                workspace_access: WorkspaceAccess::Exclusive,
                 job: None,
                 label: "active command".to_string(),
                 cancel: std::sync::Arc::new(tokio::sync::Notify::new()),

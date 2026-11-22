@@ -1,17 +1,21 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::context::revert::RewindVisibility;
 use crate::event::{EventPayload, EventStore, StoredEvent};
 use crate::{Error, Result};
 
 use super::jobs::await_job_cleanup;
+use super::receipts::{validate_address, validate_key};
 use super::record::{
-    fingerprint, timestamp, validate_address, validate_key, AgentState, Command,
-    InterruptedExecution, Record, State,
+    fingerprint, timestamp, AgentState, Command, InterruptedExecution, Record, State,
 };
 use super::{ensure_open, AgentStatus, InputStatus, Receipt, Session, Withdrawal};
 
 impl Session {
     /// Hide a committed user message and the following visible history for one Agent.
+    ///
+    /// Optional file restoration requires verified built-in write_file and edit_file records.
+    /// Use a settled Turn preview for explicit review of the file plan before applying it.
     pub fn rewind_message(
         &self,
         command_id: &str,
@@ -43,35 +47,19 @@ impl Session {
                     .unwrap_or_default(),
             ));
         }
-        let events = EventStore::replay(&self.inner.events_path)?;
-        let agent = state.agent(address)?;
-        let removed_input_ids = rewind_input_ids(&events, address, target_event_id);
-        if rewind_blocked_except(agent, &removed_input_ids) {
-            return Err(Error::InvalidArgument(
-                "cannot rewind while this Agent is executing or has pending input".into(),
-            ));
-        }
-        if restore_files
-            && state.agents.iter().any(|(candidate, agent)| {
-                if candidate == address {
-                    rewind_blocked_except(agent, &removed_input_ids)
-                } else {
-                    rewind_blocked(agent)
-                }
-            })
-        {
-            return Err(Error::InvalidArgument(
-                "cannot restore files while any Session Agent is active".into(),
-            ));
-        }
-        let target = events
-            .iter()
+        let store = EventStore::open(self.events_path())?;
+        let (after, controls) = store.rewind_facts(address, target_event_id)?;
+        let visibility = RewindVisibility::new(&controls);
+        let target = store
+            .read_after(target_event_id.saturating_sub(1), 1)?
+            .into_iter()
             .find(|event| event.id == target_event_id)
             .ok_or_else(|| Error::InvalidArgument("rewind target is no longer available".into()))?;
         let EventPayload::MessageUser {
             conversation,
             turn,
             text,
+            job_delivery: false,
             ..
         } = &target.payload
         else {
@@ -81,53 +69,73 @@ impl Session {
         };
         if conversation != address
             || text != expected_text
-            || !crate::context::revert::filter_rolled_back_events(&events)
-                .iter()
-                .any(|event| event.id == target_event_id)
+            || !visibility.includes(&target, Some(address))
         {
             return Err(Error::InvalidArgument(
                 "rewind target belongs to another Agent or is no longer visible".into(),
             ));
         }
+
+        let agent = state.agent(address)?;
+        let mut inputs = RewindInputs::default();
+        if !agent.accepted.is_empty() {
+            EventStore::visit_after_path(self.events_path(), after, |event| {
+                inputs.observe(&event, address, target_event_id, &visibility);
+                Ok(())
+            })?;
+        }
+        let removed_input_ids = agent
+            .accepted
+            .iter()
+            .map(|entry| &entry.input.command_id)
+            .filter(|id| inputs.removed.contains(*id))
+            .cloned()
+            .collect();
+        if rewind_blocked_except(agent, &removed_input_ids) {
+            return Err(Error::InvalidArgument(
+                "cannot rewind while this Agent is executing or has pending input".into(),
+            ));
+        }
+        if restore_files
+            && (state.jobs.has_active()
+                || state.agents.iter().any(|(candidate, agent)| {
+                    if candidate == address {
+                        rewind_blocked_except(agent, &removed_input_ids)
+                    } else {
+                        rewind_blocked(agent)
+                    }
+                }))
+        {
+            return Err(Error::InvalidArgument(
+                "Wait for Session Agents and jobs to settle before restoring files".into(),
+            ));
+        }
         let mut warnings = Vec::new();
         let mut file_revert = None;
         if restore_files {
-            let plan = crate::context::revert::compute_message_rewind_plan(
-                &events,
+            let workspace = &self.inner.options.workspace;
+            let files = crate::context::revert::plan_file_rewind(
+                self.events_path(),
+                workspace,
                 address,
                 target_event_id,
-                &self.inner.options.workspace,
             )?;
-            if !plan.unrecoverable.is_empty() {
-                return Err(Error::InvalidArgument(format!(
-                    "file restore preflight could not recover recorded state for {}",
-                    plan.unrecoverable
-                        .iter()
-                        .map(|path| path.display().to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )));
-            }
             let session_dir = self.inner.events_path.parent().ok_or_else(|| {
                 Error::InvalidArgument("events path has no session directory".into())
             })?;
-            let rollback_event_id = events.last().map_or(1, |event| event.id.saturating_add(1));
-            let (transaction, restore_warnings) =
-                crate::context::revert::apply_message_rewind_files(
-                    &plan,
-                    &self.inner.options.workspace,
-                    session_dir,
-                    rollback_event_id,
-                )?;
-            file_revert = Some(transaction);
-            warnings = restore_warnings;
-            warnings.push(
-                "Only recorded in-workspace file changes were restored; shell and external side effects remain.".into(),
-            );
+            file_revert = Some(crate::context::revert::apply_verified_file_rewind(
+                &files.plan,
+                workspace,
+                session_dir,
+                store.next_id(),
+                &files.expected,
+            )?);
             warnings.extend(
-                plan.sensitive_files
-                    .iter()
-                    .map(|path| format!("Sensitive file restored: {}", path.display())),
+                files
+                    .preview
+                    .skipped
+                    .into_iter()
+                    .map(|path| format!("Skipped {path}: file version could not be verified")),
             );
         }
         commit_with_file_revert(file_revert, || {
@@ -409,7 +417,9 @@ impl Session {
             writer.append(cancelled_tool_result(address, turn, id, result)?)?;
         }
         if let Some(id) = open.intersection(&dispatched).next() {
-            return Err(Error::InterruptedOpenTool(format!("agent '{address}' tool call '{id}' from turn {turn} has no confirmed result after cancellation")));
+            return Err(Error::InterruptedOpenTool(format!(
+                "agent '{address}' tool call '{id}' from turn {turn} has no confirmed result after cancellation"
+            )));
         }
         if started && !terminal {
             writer.append(EventPayload::TurnCancelled {
@@ -562,59 +572,49 @@ impl Session {
     }
 }
 
-fn rewind_blocked(agent: &AgentState) -> bool {
+pub(super) fn rewind_blocked(agent: &AgentState) -> bool {
     rewind_blocked_except(agent, &BTreeSet::new())
 }
 
-fn rewind_input_ids(
-    events: &[StoredEvent],
-    address: &str,
-    target_event_id: u64,
-) -> BTreeSet<String> {
-    let hidden_messages: Vec<_> = crate::context::revert::filter_rolled_back_events(events)
-        .into_iter()
-        .filter(|event| event.id >= target_event_id)
-        .filter_map(|event| match &event.payload {
+#[derive(Default)]
+struct RewindInputs {
+    last_accepted: BTreeSet<String>,
+    removed: BTreeSet<String>,
+}
+
+impl RewindInputs {
+    fn observe(
+        &mut self,
+        event: &StoredEvent,
+        address: &str,
+        target: u64,
+        visibility: &RewindVisibility,
+    ) {
+        match &event.payload {
             EventPayload::MessageUser { conversation, .. } if conversation == address => {
-                Some(event.id)
-            }
-            _ => None,
-        })
-        .collect();
-    let mut input_ids = BTreeSet::new();
-    for message_id in hidden_messages {
-        let previous_message_id = events
-            .iter()
-            .filter(|event| event.id < message_id)
-            .filter_map(|event| match &event.payload {
-                EventPayload::MessageUser { conversation, .. } if conversation == address => {
-                    Some(event.id)
+                if event.id >= target && visibility.includes(event, Some(address)) {
+                    self.removed.append(&mut self.last_accepted);
+                } else {
+                    self.last_accepted.clear();
                 }
-                _ => None,
-            })
-            .max()
-            .unwrap_or_default();
-        let accepted = events.iter().rev().find(|event| {
-            if event.id <= previous_message_id || event.id >= message_id {
-                return false;
             }
-            let EventPayload::Unknown(value) = &event.payload else {
-                return false;
-            };
-            value["kind"] == "runtime.operation"
-                && value["record"]["operation"] == "inputs_accepted"
-                && value["record"]["address"] == address
-        });
-        if let Some(accepted) = accepted {
-            let EventPayload::Unknown(value) = &accepted.payload else {
-                unreachable!();
-            };
-            if let Some(ids) = value["record"]["input_ids"].as_array() {
-                input_ids.extend(ids.iter().filter_map(|id| id.as_str().map(str::to_owned)));
+            EventPayload::Unknown(value) => {
+                let record = &value["record"];
+                if value["kind"] == "runtime.operation"
+                    && record["operation"] == "inputs_accepted"
+                    && record["address"] == address
+                {
+                    self.last_accepted = record["input_ids"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|id| id.as_str().map(str::to_owned))
+                        .collect();
+                }
             }
+            _ => {}
         }
     }
-    input_ids
 }
 
 fn rewind_blocked_except(agent: &AgentState, allowed_input_ids: &BTreeSet<String>) -> bool {
@@ -634,7 +634,7 @@ fn rewind_blocked_except(agent: &AgentState, allowed_input_ids: &BTreeSet<String
             .any(|delivery| !allowed_input_ids.contains(&delivery.input.command_id))
 }
 
-fn commit_with_file_revert<T>(
+pub(super) fn commit_with_file_revert<T>(
     transaction: Option<crate::context::revert::FileRevertTransaction>,
     commit: impl FnOnce() -> Result<T>,
 ) -> Result<T> {
@@ -676,7 +676,11 @@ fn cancelled_tool_result(
     })
 }
 
-fn command(command_id: &str, address: &str, intent: &impl serde::Serialize) -> Result<Command> {
+pub(super) fn command(
+    command_id: &str,
+    address: &str,
+    intent: &impl serde::Serialize,
+) -> Result<Command> {
     validate_key(command_id)?;
     validate_address(address)?;
     Ok(Command {
@@ -876,10 +880,16 @@ mod rewind_guard_tests {
                     text: "same prompt".into(),
                     from: None,
                     via_tool_call_id: None,
+                    job_delivery: false,
                 },
             },
         ];
-        let removed = rewind_input_ids(&events, "main", 2);
+        let mut inputs = RewindInputs::default();
+        let visibility = RewindVisibility::new(&events);
+        for event in &events {
+            inputs.observe(event, "main", 2, &visibility);
+        }
+        let removed = inputs.removed;
         assert_eq!(BTreeSet::from(["rewound".into()]), removed);
 
         let make_delivery = |id: &str, accepted_turn: Option<u64>| QueuedDelivery {

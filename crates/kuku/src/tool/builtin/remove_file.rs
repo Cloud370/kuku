@@ -10,7 +10,7 @@ use crate::tool::ToolResultEnvelope;
 use super::common::{
     expected_version, file_read_error, file_version, remove_observed_file, require_version,
     required_path, resolve_remove_path, snapshot_stale_error, ExecutorObservation,
-    FileCancellation, WriteEvidence, WriteSnapshotLookup,
+    FileCancellation, WorkspaceCommitError, WriteEvidence, WriteSnapshotLookup,
 };
 
 pub(crate) fn remove_file(
@@ -63,7 +63,7 @@ fn remove_file_with_evidence(
         Err(error) => return file_read_error(Path::new(&resolved.relative), error),
     };
     if let Err(result) = require_version(&resolved.relative, expected, Some(&before)) {
-        return result;
+        return stale_remove(result, &evidence);
     }
     if expected.is_none() {
         if let Err(result) =
@@ -74,6 +74,9 @@ fn remove_file_with_evidence(
     }
     let publication = match remove_observed_file(&resolved.path, &before, cancelled) {
         Ok(publication) => publication,
+        Err(err @ WorkspaceCommitError::Conflict) => {
+            return stale_remove(err.result(&resolved.relative), &evidence);
+        }
         Err(error) => return error.result(&resolved.relative),
     };
     let summary = format!("removed {}", resolved.relative);
@@ -101,12 +104,37 @@ fn require_remove_read(
 ) -> Result<(), ToolResultEnvelope> {
     match evidence.find_full_read(path, version) {
         WriteSnapshotLookup::Found(snapshot) if snapshot.content_hash == version => Ok(()),
-        WriteSnapshotLookup::Found(snapshot) => Err(snapshot_stale_error(relative, snapshot.event_id)),
+        WriteSnapshotLookup::Found(snapshot) => Err(stale_remove(
+            snapshot_stale_error(relative, snapshot.event_id),
+            evidence,
+        )),
         WriteSnapshotLookup::Rejected(reason) => Err(ToolResultEnvelope::error_with_reason(
-            format!("failed: fully read {relative} before removing"),
-            format!("provide an expected_version from stat_file or a prior full read_file snapshot for {relative}"),
+            format!("failed: current version of {relative} required for removal"),
+            format!(
+                "{} A full read of the current file also supplies version evidence.",
+                remove_version_hint(evidence)
+            ),
             reason,
         )),
+    }
+}
+
+fn stale_remove(
+    mut result: ToolResultEnvelope,
+    evidence: &WriteEvidence<'_>,
+) -> ToolResultEnvelope {
+    result.model_content = format!(
+        "The target no longer matches the observed version. Confirm removal is still intended before retrying. {}",
+        remove_version_hint(evidence),
+    );
+    result
+}
+
+fn remove_version_hint(evidence: &WriteEvidence<'_>) -> &'static str {
+    if evidence.is_model() {
+        "Use stat_file({path, version: true}) on the same path. Pass the returned content_hash as expected_version to remove_file."
+    } else {
+        "Use tools.stat_file({path, version: true}) on the same path. If result.content_hash is present, pass it as expected_version to tools.remove_file."
     }
 }
 
@@ -131,6 +159,12 @@ mod tests {
         assert_eq!(3, cheap["size_bytes"]);
         assert!(cheap.get("content_hash").is_none());
         let no_observation = remove_file_for_executor(&args, workspace.path(), &[], &|| false);
+        assert!(no_observation
+            .model_content
+            .contains("tools.stat_file({path, version: true})"));
+        assert!(no_observation
+            .model_content
+            .contains("pass it as expected_version to tools.remove_file"));
         assert_eq!(
             "snapshot_required",
             no_observation.structured.unwrap()["reason_code"]
@@ -151,6 +185,9 @@ mod tests {
 
         std::fs::write(&path, b"\xff\x00").unwrap();
         let stale = remove_file_for_executor(&pinned, workspace.path(), &[], &|| false);
+        assert!(stale
+            .model_content
+            .contains("Confirm removal is still intended before retrying."));
         assert_eq!("snapshot_stale", stale.structured.unwrap()["reason_code"]);
         let stale_bare = remove_file_for_executor(&bare, workspace.path(), &[], &|| false);
         assert_eq!(
@@ -174,5 +211,26 @@ mod tests {
             .unwrap();
         assert_eq!("missing", absent["entry_kind"]);
         assert_eq!(false, absent["exists"]);
+    }
+
+    #[test]
+    fn direct_removal_error_points_to_the_versioned_stat_call() {
+        let workspace = tempfile::tempdir().unwrap();
+        let path = workspace.path().join("scratch.bin");
+        std::fs::write(&path, b"\xff\0").unwrap();
+        let result = remove_file(
+            &serde_json::json!({"path":"scratch.bin"}),
+            workspace.path(),
+            &ConversationAddress::parse("main").unwrap(),
+            &[],
+            &|| false,
+        );
+        assert!(result
+            .model_content
+            .starts_with("Use stat_file({path, version: true})"));
+        assert!(result
+            .model_content
+            .contains("content_hash as expected_version"));
+        assert_eq!(b"\xff\0", std::fs::read(path).unwrap().as_slice());
     }
 }

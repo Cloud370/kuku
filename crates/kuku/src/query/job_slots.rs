@@ -13,9 +13,12 @@ use crate::Result;
 use super::runtime_tools;
 use super::types::{PendingRun, QueuedToolCall, Run, RunState, SlotEvent, UiEvent};
 
+const BACKGROUND_OBSERVATION: Duration = Duration::from_secs(1);
+
 pub(super) struct ForegroundJob {
     tool: String,
     background: bool,
+    started: Instant,
     deadline: Instant,
     completion: Option<oneshot::Receiver<SlotEvent>>,
     detached: Arc<AtomicBool>,
@@ -27,11 +30,18 @@ impl ForegroundJob {
         queued: &QueuedToolCall,
     ) -> (Box<Self>, oneshot::Sender<SlotEvent>) {
         let (sender, receiver) = oneshot::channel();
+        let background = queued.tool_call.args["background"] == true;
+        let observation = if background {
+            BACKGROUND_OBSERVATION
+        } else {
+            Duration::from_millis(pending.query.runtime_limits.job_foreground_wait_ms)
+        };
+        let started = Instant::now();
         let job = Self {
             tool: queued.tool_call.name.clone(),
-            background: queued.tool_call.args["background"] == true,
-            deadline: Instant::now()
-                + Duration::from_millis(pending.query.runtime_limits.job_foreground_wait_ms),
+            background,
+            started,
+            deadline: started + observation,
             completion: Some(receiver),
             detached: Arc::new(AtomicBool::new(false)),
         };
@@ -85,7 +95,7 @@ impl Run {
         id: &str,
         event: SlotEvent,
     ) -> Result<Option<(UiEvent, ToolFaults)>> {
-        let job_wait = matches!(&event, SlotEvent::JobWaitDone(_));
+        let job_control = matches!(&event, SlotEvent::JobControlDone(_));
         let event = match event {
             SlotEvent::Output(event) => UiEvent::ToolOutput {
                 id: id.into(),
@@ -110,9 +120,9 @@ impl Run {
                 }
                 self.finish_slot(id, action.partial, false)?
             }
-            SlotEvent::Done(result) | SlotEvent::JobWaitDone(result) => {
+            SlotEvent::Done(result) | SlotEvent::JobControlDone(result) => {
                 let faults = result.faults;
-                let event = self.finish_slot(id, result, job_wait)?;
+                let event = self.finish_slot(id, result, job_control)?;
                 if faults.output_persistence_failed || faults.cleanup_incomplete {
                     self.cancel();
                 }
@@ -133,19 +143,6 @@ impl Run {
             return runtime_tools::should_yield(pending).map(|yield_turn| !yield_turn);
         }
         Ok(true)
-    }
-
-    pub(super) fn promote_explicit_job(&mut self) -> Result<Option<UiEvent>> {
-        if !matches!(self.state, RunState::Pending(_)) {
-            return Ok(None);
-        }
-        let id = self.slots.values().find_map(|slot| {
-            slot.job
-                .as_ref()
-                .filter(|job| job.background)
-                .map(|_| slot.tool_call_id.clone())
-        });
-        id.map(|id| self.promote_job(&id)).transpose()
     }
 
     async fn wait_for_slot(&mut self, wait_for_input: bool) -> Result<SlotProgress> {
@@ -224,6 +221,8 @@ impl Run {
                 tool_call_id: id.to_owned(),
                 tool: job.tool.clone(),
                 summary: slot.label.clone(),
+                started: job.started,
+                wait_tool_available: super::helpers::resolved_tool_available(pending, "wait_job"),
             },
             slot.cancel.clone(),
             || {
@@ -233,7 +232,7 @@ impl Run {
                     match receiver.await.unwrap_or_else(|_| worker_exited()) {
                         SlotEvent::Done(result) => result,
                         SlotEvent::WorkspacePermission(action) => action.blocked_job(),
-                        SlotEvent::Output(_) | SlotEvent::JobWaitDone(_) => {
+                        SlotEvent::Output(_) | SlotEvent::JobControlDone(_) => {
                             unreachable!("unexpected Job completion event")
                         }
                     }

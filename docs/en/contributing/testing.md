@@ -77,7 +77,7 @@ To test a package upgrade, provide two platform archives with different executab
 
 The terminal scenarios drive an installed `kuku` on Linux and macOS through a Unix PTY, and on Windows through ConPTY. The shared terminal emulator preserves the previous frame during DEC synchronized updates and exposes the new frame only after commit; [protocol tests](../../../apps/kuku/tests/terminal_state.rs) cover fragmented updates, resize and cursor reports. Use `--browser` with an asset-enabled binary to add the Chromium scenario. Install the Playwright Python package and its Chromium browser as configured in the [CI browser preparation](../../../.github/workflows/ci.yml). The scenarios use a controlled local model endpoint and exercise real clients and the real service without provider credentials or paid requests. The [interactive client plan](../architecture/interactive-clients.md#testing-during-development) lists the behaviors to verify at each layer. It drives Ctrl+C and menu completion through the terminal, holds a model request and a tool open to inspect their distinct states, and checks the connection indicator when the service disconnects. A controlled provider reports input, cache reads and output so the installed terminal can be checked against a known context percentage, cumulative usage and cache hit rate, alongside measured throughput and the selected Agent and directory.
 
-The maintained lifecycle scenarios repair a missing credential through the first authenticated reply, save a model default and inspect the actual model used by new and reopened Sessions, and withdraw an exact queued input with keyboard Up/Delete while preserving its draft and another queued input. They also reopen read-only rewound content and verify that it is absent from the next provider request, select an exact rewind target beyond the latest 48 committed messages, and recover from a controlled 401 through a masked credential update and safe service restart. The latter verifies that only an explicit Continue retries the retained input, once, using the replacement credential. Keyboard coverage complements the existing pointer withdrawal checks.
+The maintained lifecycle scenarios repair a missing credential through the first authenticated reply, save a model default and inspect the actual model used by new and reopened Sessions, and withdraw an exact queued input with keyboard Up/Delete while preserving its draft and another queued input. They also reopen read-only rewound content and verify that it is absent from the next provider request, select an exact rewind target beyond the latest 48 committed messages, and recover from a controlled 401 through a masked credential update and safe service restart. The latter verifies that only an explicit Continue retries the retained input, once, using the replacement credential. Keyboard coverage complements the existing pointer withdrawal checks. File restoration verifies that an empty preview still allows a conversation switch and that applying a nonempty preview preserves script and command changes.
 
 The native smoke scenario checks composer actions at 60 and 120 columns, including slash completion, Ctrl+T, the Agent and model thinking settings, and the inline exit confirmation while a service request remains active. Use `interactive --native-smoke --binary PATH_TO_BINARY` or `--archive PATH_TO_PLATFORM_ARCHIVE` to check a candidate on the host platform. The terminal frames appear in `installed-interactive.log`. [Composer scenario](../../../scripts/acceptance/interactive_composer.py)
 
@@ -143,6 +143,21 @@ python3 scripts/acceptance/run.py --run-id WORKSPACE_OPENROUTER_RUN workspace \
 
 `workspace/result.json` records task checks, accounting, the model and reasoning effort sent, and route evidence. The `workspace` selector allows `upstream_confirmed: null` when confirmation is unavailable. If OpenRouter returns no generation receipt, report the requested endpoint pin and keep the actual upstream unknown. Report the reasoning effort as requested unless the provider reports it. A confirmed route mismatch fails the run. [Credentials and run artifacts](#credentials-and-run-artifacts)
 
+### Command output and long-task acceptance
+
+Use the [command output proposal](../architecture/workspace-execution.md#proposed-command-output-path) as the behavioral contract. Reuse the current tool, Session and installed-client fixtures. A fixed provider can prove what is available to a model. Use a real provider to evaluate what the model actually chooses.
+
+| Check | Required evidence |
+|---|---|
+| Native invocation | The default command schema admits literal program arguments. Run fixtures with spaces, quotes and Unicode on native Linux and Windows. Record macOS coverage separately. Compare the granted invocation, actual results and TUI title. |
+| Short, long and failed output | Compare the first provider-visible response with the capture. Small results fit directly. A large result includes enough observed shape and a valid method hint to retrieve the target on the next Step. Failure retains decisive diagnostics and separate capture-completeness flags. |
+| Native search and rule coverage | Use byte-level fixtures for matches spanning frames, authorization, cancellation and truncated captures. Read each diagnostic reference back from the original capture. Exercise success, failure and a format mismatch for every enabled rule family. Confirm generic fallback and the exact admitted view after reopen. |
+| Background and long work | Cover fast completion, the one-second boundary, cancellation and one terminal result. Observe both a slow job that makes progress and a quiet job with a concrete blocker. Check that a definitive outcome can finish a run promptly and that observed silence alone leaves useful work eligible to continue. |
+
+For real comparisons, keep the model, reasoning, tools, budgets, original environment and verifier fixed. Include short direct work, a task suited to `run_js`, and a long workflow that includes a Job or expensive verification. Reserve at least two structurally different tasks from Prompt tuning. Compare Prompt selection with the output view fixed, and compare extraction hints with the Prompt fixed before evaluating the combined change.
+
+Record first-attempt tool and script correctness, `run_js` selection among eligible tasks, exploratory reads, retries and repeated checks. Record original verifier results, wall time, cumulative provider input and cache usage, peak RSS, and retained disk bytes. Compare summary bytes with the generic bounded preview. Use provider usage for token claims. Stop a run when the outcome is definitive or a concrete blocker makes further work uninformative. Keep the observation and reason in the run evidence. Record execution duration independently of the maximum runtime.
+
 ## Test ownership and evidence
 
 Unit tests remain in `#[cfg(test)] mod tests`; integration tests stay under `tests/` by domain, with shared helpers in `tests/common/mod.rs`. Reuse existing callers and fixtures. The rewrite should provide one maintained entrypoint or small case manifest for selecting contract, replay, live, and benchmark checks, without building an evaluation platform.
@@ -170,15 +185,50 @@ For a live attempt, build the public `session_task` example, then select `benchm
 
 The original reward, collected/passed/failed test counts, SDK exit status, and cleanup result are recorded separately. Expected task artifacts are retained before grading, up to 32 MiB each; missing or oversized evidence cannot pass the live acceptance record. The SDK inspector streams original `events.jsonl`, requiring ordered committed cursors, matching prepared requests/responses, paired tool calls/results, unchanged admitted result views, and finalized `KUKUOUT1` output references with valid frames and byte counts. SDK counters/settings/reports must match those facts, and both the runtime and durable close barrier must report completion. Requests and billing are keyed by Agent, Turn and request identity, so a later Turn can reuse `req_1`. Session-wide usage remains separate from the selected Agent's snapshot. The original benchmark verifier still determines task success.
 
+The SDK enforces the selected Agent deadline. Its Docker supervisor allows a separate window to finish cancellation, cleanup and reporting. After a timeout, the selector can grade the preserved workspace when the saved SDK report and durable Session journal establish cleanup. The report records the Agent deadline, the supervisor timeout and the original verifier outcome separately.
+
 The inspector reads at most 1 MiB per event, 100,000 events and a 4 MiB SDK report, retaining bounded hashes/metadata rather than duplicating context history. Diagnostic limits are 4,096 prepared requests and 8,192 tool calls/provider reports. Unconfirmed context suffixes retain at most 16,384 tool-block fingerprints across segments; only the matching prepared head confirms their tool views. A retry replaces the candidate suffix, while confirmed prefixes and durable call/result matching remain strict. Recheck existing evidence without another model request using `inspect --sdk-result PATH --session-data DIR --container-data /kuku/data --connection NAME`; omit `--container-data` for a report written with host paths. This read-only selection needs neither credentials nor a budget reservation.
+
+Regeneration after malformed tool arguments follows an `invalid_response` and a discarded batch. The inspector checks that no tool call was admitted from that response and that the same Agent and turn prepared a replacement request. Usage from both prepared requests remains in the totals.
 
 When the caller reports `streaming`, the inspector validates its counters, first-observation times and durable request/model-byte bounds. These are observations through the same SDK subscription, not replayable wire timings. Add `--require-streaming` to `inspect`, `live`, or a live benchmark when the selected protocol check requires nonempty model output without lagged updates. Older callers remain explicitly unreported. A model's `no_agents` setting disables its collaboration tools; it does not prevent the host from creating other independent Agents in the Session.
 
 While the SDK runs, the selector samples SDK RSS/high-water RSS, CPU time and thread count separately from aggregate container CPU, memory, processes and I/O. Samples and output logs are bounded. Unsampled values stay `null`; do not attribute whole-container measurements to the SDK. The focused resource caller below measures the other lifecycle boundaries.
 
+### Watch a TUI run together (optional)
+
+For collaborative TUI debugging, a named tmux session gives the developer and coding Agent the same terminal to reproduce, change, and verify an interaction together. Run from the checkout or worktree under test:
+
+```sh
+cargo build --locked -p kuku-app --bin kuku
+tmux new-session -d -s kuku-review -c "$PWD" \
+  "$PWD/target/debug/kuku" --workspace "$PWD"
+tmux set-option -t kuku-review mouse on
+tmux capture-pane -p -t kuku-review
+```
+
+Wait for `Ready`, navigate to the screen under review, and capture the pane once to verify it. For a resume check, open `/resume` and leave the picker ready. Share `tmux attach -t kuku-review` for a regular shell, or `tmux switch-client -t kuku-review` for a shell already inside tmux. Use the mouse wheel or Page Up and Page Down to scroll in the TUI, and Ctrl+End to return to the latest output.
+
+Let the developer drive the reproduction while the Agent captures the same pane and checks the corresponding events. Discuss the change in the coding session, then rebuild from the edited checkout. Start the new build in another tmux window with its own fixture copy and data directory. Keep the original window available so both can compare the same interaction and iterate. Take turns sending keystrokes to a shared pane.
+
+Name the comparison windows so both participants can target the same build. Press `Ctrl+b` then `w` to choose a window, or `Ctrl+b` then its window number to switch directly. For a window named `after`, capture it with `tmux capture-pane -p -t kuku-review:after` even while the developer is working in another window.
+
+Use one session name per concurrent case. To isolate worktrees or compare builds side by side, also use a separate `--data-dir` and an explicit `--config` for each managed service. For progress, tool results, and request boundaries, use a bounded `kuku events SESSION_ID --limit 40` query with the same connection and workspace options. Switch to `capture-pane` to check the actual presentation and keep relevant captures with the evidence. When checking picker navigation, prepare at least two choices. If colors are missing, check the launcher's `TERM` and `NO_COLOR` and confirm the terminal's capabilities with `infocmp`.
+
+For an upstream benchmark, run the kuku service in the pinned task container. If kuku is already available and configured in that container, run the TUI there through the host's tmux. Set `benchmark_container` to the running task container's name:
+
+```sh
+tmux new-session -d -s kuku-benchmark \
+  docker exec -it "$benchmark_container" kuku --workspace /app
+tmux set-option -t kuku-benchmark mouse on
+tmux attach-session -t kuku-benchmark
+```
+
+A TUI on the host can also connect to the container service with `--remote` and the container's path as `--workspace`. Paste the original instructions, then run the original verifier after the Agent and its Jobs settle. Use the original benchmark procedure above for verifier isolation and evidence. [Terminal controls](../reference/cli.md#terminal-interface) · [Remote connection](../guides/run-the-server.md#start-an-explicit-server)
+
 ## FrontierHarness public sample
 
-The `frontier` suite pins four tasks from FrontierHarness Eval v1.1.0 in the [case manifest](../../../scripts/acceptance/cases.json). They cover log aggregation, async cancellation, regular expressions and large-file Vim editing. Each task uses the upstream prompt, image build context and grader. On Linux with Git, Docker, Python 3.10+ and the repository's Rust toolchain, first check that an empty submission fails the original grader. This step requires network access for build and grader dependencies and uses no model credits. [Dataset provenance](https://hub.harborframework.com/datasets/frontier-harness-eval/frontier-harness-eval)
+The [case manifest](../../../scripts/acceptance/cases.json) pins the `frontier` suite to Terminal-Bench 2.1 tasks included in FrontierHarness Eval v1.1.0. The historical sample covers log aggregation, async cancellation, regular expressions and large-file Vim editing. The local suite also covers service setup, iterative builds, Git and database recovery, and reconstruction from an image. Each task uses the upstream prompt and grader, along with the original build context or the digest of the published task image. On Linux with Git, Docker, Python 3.10+ and the repository's Rust toolchain, first check that an empty submission fails the original grader. This step requires network access for images and grader dependencies and uses no model credits. [Dataset provenance](https://hub.harborframework.com/datasets/frontier-harness-eval/frontier-harness-eval)
 
 ```sh
 cargo build --locked -p kuku --example session_task
@@ -202,7 +252,13 @@ printf '%s\n' log-summary-date-ranges cancel-async-tasks regex-log large-scale-t
 
 If account data policy excludes the requested provider, use a separately named trial with a compatible pinned endpoint such as `--upstream baseten`. Record the route change alongside the result. OpenRouter may report cost in the completed stream before the generation receipt becomes available. Add `--refresh-receipts "$keys"` to the report command below to fetch available generation receipts for those attempts. The report reuses verified receipts offline and counts each charge once.
 
-Download the official snapshot and generate a shareable report. Supply each case's attempts in chronological order, including every failure. Each local result separates the upstream reward, SDK completion, model cost and verifier duration. Pi's official figures use the same model version and include four trials per task, audited scoring, Runta and Baseten. For cache comparisons use the recorded service provider and observed cached input divided by observed total input, with coverage and the initial request identified. Private session files, credentials and raw request payloads stay out of the public report. [Official results](https://frontierharness.org/live/) · [OpenRouter routing](https://openrouter.ai/docs/guides/routing/provider-selection)
+For a direct DeepSeek comparison, use `--provider deepseek` and a private file containing `KUKU_TEST_DEEPSEEK_API_KEY`. The default is `deepseek-flash`. Use `--model deepseek-v4-pro` to test Pro under the same task and verifier. The meter records the selected model and prices it before starting the run.
+
+While a case is active, read its `meter-progress.json` for the latest upstream request. It records the connection phase, last received stream line, and last model output delta as separate facts. Live progress samples contain byte and event counts. `meter.json` records settled requests and accounting.
+
+The SDK defaults to Chat Completions on direct DeepSeek. Use `--wire openai-responses` to select the official Responses API with the same model, ledger and original verifier. Keep the wire format fixed when comparing harnesses. The meter records native usage and estimates cost from the published token prices. [DeepSeek Responses API](https://api-docs.deepseek.com/guides/responses_api/)
+
+Download the official snapshot and generate a shareable report. Supply each case's attempts in chronological order, including every failure. Each local result separates the upstream reward, SDK completion, model cost and verifier duration. Pi's official figures use the same model version and include four trials per task, audited scoring, Runta and Baseten. Official time per pass divides total agent and verifier time across scored attempts by the number of audited passes. Failed and timed-out attempts contribute to that total. For cache comparisons use the recorded service provider and observed cached input divided by observed total input, with coverage and the initial request identified. Private session files, credentials and raw request payloads stay out of the public report. [Official results](https://frontierharness.org/live/) · [OpenRouter routing](https://openrouter.ai/docs/guides/routing/provider-selection)
 
 ```sh
 mkdir -p benchmarks/acceptance/public
@@ -218,6 +274,79 @@ python3 scripts/acceptance/frontier_report.py --official-live benchmarks/accepta
 The SDK samples its own Linux `getrusage(RUSAGE_SELF)` immediately before writing its result, including process peak RSS, CPU time and filesystem block input/output counts. The parent sampler estimates mean RSS by time-weighting adjacent SDK samples and reports its observed window. The last Linux `/proc/PID/io` reading can include waited-for children. It distinguishes logical characters and system calls from storage bytes. Container-wide snapshots include the tool processes. Verifier time and resources are outside the SDK sampling window. The meter distinguishes its time to the first content-bearing stream delta from native provider metrics and reports denominators for TPS and cache comparisons.
 
 The [sample results and session findings](../../../scripts/acceptance/results/frontier-sample.md) include the exploratory attempts and the shared-protocol rerun.
+
+### Strict local Kuku–Pi comparison
+
+Use one Pi reference run per selected task. Start with a task that distinguishes the harnesses, and use a second task with a different workload to check whether a proposed improvement generalizes. For rapid feedback, start both harnesses for both tasks concurrently when the host and provider have capacity. Space launches a few seconds apart if the startup load is high. Give all four trials unique run IDs and use the same spend ledger. Add `--cpus 2` to both runs for a task when gathering feedback on CPU-heavy work such as the SQLite build. The report requires matching CPU quotas. Identify concurrent runs and their quotas in the results. For wall-time and CPU comparisons, run each attempt on the same idle host. For repeats, alternate which harness goes first and retain every attempt, including failures. Use the headless commands below for comparison and record TUI observation runs separately.
+
+Use Linux Docker with cgroup v2 and `memory.peak`, and a Linux Node.js executable compatible with Pi (22.19 or newer for Pi 1.5.2). Each run starts a fresh container from the original pinned task. Both harnesses use the original prompt and verifier, direct DeepSeek Chat Completions, `deepseek-flash` at `max`, and identical request, time and spend ceilings. The strict defaults are one CPU, 2 GiB of memory and no swap. Resource acceptance requires matching kernel limits, a harness RSS observation and zero cgroup OOM events during the agent phase.
+
+Install the reference in an ignored directory and build the Kuku runner in release mode. Keep the npm lockfile to reproduce that dependency tree with `npm ci`. Put `KUKU_TEST_DEEPSEEK_API_KEY=...` in the private file referenced by `keys`, and initialize the ledger with your authorized total before a paid run.
+
+```sh
+pi_ref="$PWD/benchmarks/tools/pi-1.5.2"
+npm install --prefix "$pi_ref" --registry=https://registry.npmjs.org --save-exact \
+  --ignore-scripts --no-audit --no-fund @earendil-works/pi-coding-agent@1.5.2
+cargo build --release --locked -p kuku --example session_task
+
+ledger="$PWD/benchmarks/acceptance/paired-budget.json"
+keys="$HOME/.config/kuku/frontier.env"
+case_id=large-scale-text-editing
+python3 scripts/acceptance/run.py budget init --ledger "$ledger" \
+  --authorization local-paired-frontier --limit-usd 1.50
+
+paired_run() {
+  run_id="$1"
+  shift
+  python3 scripts/acceptance/run.py --run-id "$run_id" benchmark \
+    --suite frontier --case "$case_id" --mode live --provider deepseek --require-resource-evidence \
+    --max-output-tokens 131072 --case-cap-usd 0.75 --ledger "$ledger" --secrets "$keys" "$@"
+}
+paired_run vim-kuku --sdk-binary target/release/examples/session_task || test "$?" -eq 1
+paired_run vim-pi --pi-prefix "$pi_ref" || test "$?" -eq 1
+
+python3 scripts/acceptance/benchmark_compare.py \
+  --kuku benchmarks/acceptance/vim-kuku --pi benchmarks/acceptance/vim-pi \
+  > benchmarks/acceptance/vim-comparison.json
+```
+
+The exporter checks the task file digest, Docker image ID, model route and limits before pairing the attempts. Compare verifier reward and tests, agent and verifier wall time, model requests, token counts and estimated USD, then resource acceptance, harness RSS, container peak memory, CPU seconds and OOM events. Container peak is the kernel high-water mark from startup to the pre-verifier snapshot and includes memory charged to the cgroup for the harness, tool subprocesses and measurement overhead. Harness RSS covers the primary process's resident pages, including shared mappings. CPU seconds are the delta between snapshots around agent execution. Share the comparison JSON together with the rounds, host and build profile used for the test. Include the Pi lockfile if readers need to reproduce the exact dependency tree. Keep credentials, raw prompts, tool output and Session files private.
+
+Strict runs also export `nr_periods`, `nr_throttled`, and `throttled_usec` as `container_cpu_throttling` in the paired JSON. These are differences between the same two pre-verifier snapshots, based on the container’s own CPU quota. A missing or inconsistent sample yields `null`. A recorded zero represents an observed counter that did not increase. Use the counters to diagnose elapsed time alongside the configured quota and actual CPU use. [Linux cgroup v2 CPU interface](https://docs.kernel.org/admin-guide/cgroup-v2.html#cpu-interface-files)
+
+The paired report includes the sum of host meter relay time and serialized request body bytes across all admitted attempts, including retries that started. Relay time covers outbound connection and response transfer. The report leaves either total empty when an attempt is missing the corresponding measurement. Median time to first output uses the measured requests and includes its sample count. The slowest measured request reports its duration, first output, first text and first tool arguments when observed, plus the reasoning token count when reported. Meter rejections include a separate count for the case spend cap.
+
+The meter also counts function and custom calls emitted in complete model replies. The paired report gives the number of observed replies and their batch distribution alongside the separate runner dispatch evidence. A stream with missing or partial evidence adds no observation.
+
+### Strict local Kuku–Codex comparison
+
+Pin an isolated Codex npm install and put the single `deepseek-flash` entry from DeepSeek's documented model catalog in `deepseek-flash-models.json` inside that install prefix. [Official Codex model catalog](https://api-docs.deepseek.com/quick_start/agent_integrations/codex/#option-2-edit-the-configuration-file-manually)
+
+```sh
+codex_ref="$PWD/benchmarks/tools/codex-0.164.0"
+npm install --prefix "$codex_ref" --registry=https://registry.npmjs.org --save-exact \
+  --ignore-scripts --no-audit --no-fund @openai/codex@0.164.0
+```
+
+Use the same shared flags as in the Pi example, plus `--wire openai-responses` on both trials. Select `--sdk-binary` for Kuku and `--codex-prefix "$codex_ref"` for Codex. The Codex process uses its own config and rollout files inside the container with web search and subagent tools disabled. It receives the loopback meter token. The meter supplies the shared output ceiling if the client omits it. Use `benchmark_compare.py --kuku RUN_DIRECTORY --codex RUN_DIRECTORY` to export matching runs. The report records the native Codex binary, npm lock and model catalog hashes. FrontierHarness's published Codex version uses a Baseten catalog and Runta runtimes. [Published suite](https://github.com/frontier-harness-eval/eval/tree/release/v1.1)
+
+When the runner's inspection recorded tool calls per response, the paired export reports how many responses contained zero, one, or multiple calls. This describes the model's batches. If SDK validation failed, the exporter can report the observed tool-call count from the saved Session journal and identifies that source. Measure actual execution overlap separately with tool start and settlement evidence.
+
+For Kuku, the paired export also counts `run_js` calls and host actions from their final receipts, including completed Jobs. Missing script receipts leave the host-action count unknown.
+
+When the original verifier passes, the paired report can match durable file mutation hashes to the retained Kuku artifacts. This also covers an Agent that reached its runtime deadline. The report records matching artifact coverage and uses Session journal timestamps for the interval from the first prepared request to the final hashes and then to the last completed Turn. If the journal interval exceeds the measured Agent duration, the report keeps the match counts and flags the clock discrepancy. The verifier still runs at the end of the attempt.
+
+To compare Prompt variants, reuse the same release `session_task` and give each live Frontier attempt a `--prompts-dir` containing its overrides. The selector snapshots the Prompt assets, records their SHA-256 digests in the attempt, and mounts the snapshot read-only. The SDK supplies embedded defaults for missing assets. Use `benchmark_compare.py --baseline RUN_DIRECTORY --candidate RUN_DIRECTORY` to check the SDK binary, runtime bundle, distinct Prompt snapshots, and matching task, provider settings and resource limits.
+
+Use `--reasoning-effort high` on a live direct DeepSeek attempt to test a different reasoning setting. The default is `max`. Compare two Kuku attempts with `benchmark_compare.py --compare-effort --baseline RUN_DIRECTORY --candidate RUN_DIRECTORY`. The exporter requires the same model version, SDK binary, packaged runtime, Prompt and other run settings. Compare original verifier outcomes alongside cost, time and request counts.
+
+To compare SDK builds, use `benchmark_compare.py --compare-sdk --baseline RUN_DIRECTORY --candidate RUN_DIRECTORY`. The exporter requires distinct binaries and runtime bundle hashes, the same recorded model version, matching case and limits, and matching external Prompt overrides. Treat embedded Prompt changes as part of the SDK build. Use the Prompt comparison above to isolate wording changes.
+
+For a host deadline experiment, use `--max-command-seconds N` on a live Frontier SDK attempt. This sets the SDK process deadline for each command, including commands launched from `run_js` and commands that become Jobs. The task's whole-agent deadline and verifier are separate. The selector checks the applied limit in the SDK report, and paired exports require a matching process deadline. Omit the option for the SDK default of no per-command deadline.
+
+Use `--max-request-bytes 524288` to exercise the default Session request budget in a live Frontier run. The relay and Kuku runner use the selected limit, and the selector checks the SDK report. An omitted option preserves the 4 MiB benchmark limit. Pair trials with the same byte limit.
+
+The paired report counts committed capacity rollovers and the earlier output pages replaced by range references. A rollover counts once when a prepared request references its successor segment. This distinguishes exercising capacity recovery from passing a run under the selected limit.
 
 ## Resource measurements
 
@@ -238,6 +367,16 @@ Linux `/proc` and Windows process APIs sample the SDK caller and its tool descen
 On Linux, `--cpu-count` applies CPU affinity to the caller and descendants. `--address-space-mib` limits each process's virtual address space. The Rust caller is portable. Process sampling in this selector is currently available on Linux and Windows.
 
 Use `--pressure-rounds 3` to compare several peak and idle phases in one caller. On Linux, the selector also records the anonymous and file-backed memory reported by `/proc/<pid>/smaps_rollup` when available.
+
+### Long Session profile
+
+```bash
+python3 scripts/acceptance/run.py metrics --profile release --long-session-mib 500
+```
+
+This opt-in workload builds a Session of at least 500 MiB of committed events. The fixed model adapter drives batched tool calls, reasoning, command capture, file reads and real context checkpoints through the public SDK. It uses synthetic data and makes zero network model requests. Use a smaller size to check the fixture and selector quickly. The selector retains the generated journal and output captures in the ignored run directory, so check available disk space before a large run.
+
+`fixture.json` reports logical and on-disk journal bytes, retained-output bytes, checkpoint count, the record mix and clean-close time. Generation uses synthetic token counts to trigger checkpoints below the byte limit. Verification uses the same request limit and reuses the inline checkpoint. It disables new automatic checkpoints so the undo and rewind probes exercise the recorded history. A fresh process verifies reopen, paginated history and retained output, first and subsequent turns, checkpoint undo, and message rewind. `caller.json` records wall time, available process CPU and I/O deltas, observed peak RSS, and the preparation times and serialized bytes for each measured request. Reopen uses the existing OS page cache. Compare runs at the same size, release profile and process limits.
 
 ## Live protocol acceptance
 

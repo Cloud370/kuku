@@ -75,6 +75,60 @@ impl OwnedRequestBase {
         }
     }
 
+    pub(super) fn replace_checkpoint_history(
+        &mut self,
+        history: Vec<crate::context::CanonicalMessage>,
+        current_user_index: usize,
+    ) {
+        self.assembly.history = history;
+        self.current_user_index = current_user_index;
+        self.current_input.parts = vec![self.assembly.history[current_user_index].clone()];
+    }
+
+    pub(super) fn checkpoint_request(
+        &self,
+        mut history: Vec<crate::context::CanonicalMessage>,
+        instruction: String,
+        reuse_prefix: bool,
+        output_limit: u32,
+    ) -> Self {
+        let mut request = self.clone();
+        if !reuse_prefix {
+            request.assembly.tools.clear();
+            request.assembly.prelude_messages.clear();
+            request.assembly.system_prompt.clear();
+        }
+        request.max_output_tokens = Some(
+            self.max_output_tokens
+                .unwrap_or(output_limit)
+                .min(output_limit),
+        );
+        request.current_user_index = history.len();
+        let instruction = crate::context::CanonicalMessage::user_text(instruction);
+        history.push(instruction.clone());
+        request.assembly.history = history;
+        request.current_input.parts = vec![instruction];
+        request
+    }
+
+    pub(super) fn checkpoint_instruction(&self) -> Option<&str> {
+        self.catalog
+            .runtime
+            .get("compaction-instruction")
+            .map(|asset| asset.text.as_str())
+    }
+
+    pub(super) fn render_checkpoint(&self, summary: &str) -> crate::Result<String> {
+        let template = self
+            .catalog
+            .runtime
+            .get("compaction-context")
+            .ok_or_else(|| {
+                crate::Error::PromptRender("missing runtime/compaction-context template".into())
+            })?;
+        Ok(template.text.replace("{{checkpoint}}", summary))
+    }
+
     pub(super) fn recovery_request(&self) -> crate::error::Result<RecoveredRequest> {
         let mut assembly = self.assembly.clone();
         let message = assembly

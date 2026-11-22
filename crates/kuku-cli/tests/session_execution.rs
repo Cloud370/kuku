@@ -307,7 +307,7 @@ async fn cli_persists_file_and_command_results_then_reopens_same_agent() {
     mock_round(
         &mock,
         2,
-        json!([{"type":"tool_use","id":"verify","name":"run_command","input":{"program": "git", "args": ["diff", "--no-index", "--exit-code", "expected.txt", "answer.txt"], "cwd": ".","timeout":10,"brief":"verify actual file"}}]),
+        json!([{"type":"tool_use","id":"verify","name":"run_command","input":{"program": "git", "args": ["diff", "--no-index", "--exit-code", "expected.txt", "answer.txt"],"title":"Verify actual file"}}]),
         "tool_use",
     );
     mock_round(
@@ -442,7 +442,19 @@ async fn cli_persists_file_and_command_results_then_reopens_same_agent() {
         .unwrap();
     assert!(events.status.success());
     assert!(events.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&events.stderr).contains("next event cursor: 1"));
+    assert!(String::from_utf8_lossy(&events.stderr).contains("next page: --before 1"));
+    let listing = Command::new(env!("CARGO_BIN_EXE_kuku-cli"))
+        .current_dir(workspace.path())
+        .env("KUKU_HOME", home.path())
+        .args(["list", "--json"])
+        .output()
+        .unwrap();
+    assert!(listing.status.success());
+    let sessions: Vec<Value> = serde_json::from_slice(&listing.stdout).unwrap();
+    assert!(sessions
+        .iter()
+        .any(|entry| entry["session_id"] == session_id));
+
     stop_managed(home.path()).await;
 }
 
@@ -720,4 +732,61 @@ async fn cli_disconnect_keeps_server_work_running_and_replay_does_not_restart_it
     assert_eq!("idle", continued["status"]);
     model.assert_hits(2);
     stop_managed(home.path()).await;
+}
+
+#[test]
+fn events_inspect_a_copied_file_without_a_service() {
+    let home = tempfile::tempdir().unwrap();
+    let journal = home.path().join("copied-session");
+    let rows = (1..=100)
+        .map(|id| {
+            let kind = if id % 2 == 0 {
+                "runtime.match"
+            } else {
+                "runtime.no_match"
+            };
+            format!(
+                "{}\n",
+                json!({"id":id,"kind":kind,"text":format!("INPUT {id}")})
+            )
+        })
+        .collect::<String>();
+    std::fs::write(&journal, rows).unwrap();
+    let inspect = |flags: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_kuku-cli"))
+            .current_dir(home.path())
+            .arg("events")
+            .arg("--file")
+            .arg(&journal)
+            .arg("--json")
+            .args(flags)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let ids = String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .map(|line| {
+                serde_json::from_str::<Value>(line).unwrap()["id"]
+                    .as_u64()
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        (ids, String::from_utf8(output.stderr).unwrap())
+    };
+    assert_eq!(inspect(&["--limit", "2"]).0, [100, 99]);
+    assert_eq!(
+        inspect(&["--before", "100", "--kind", "runtime.match", "--limit", "2"]).0,
+        [98, 96]
+    );
+    assert_eq!(inspect(&["--after", "97", "--limit", "2"]).0, [98, 99]);
+    assert_eq!(inspect(&["--search", "input 11"]).0, [11]);
+    let (ids, stderr) = inspect(&["--all", "--after", "97"]);
+    assert_eq!(ids, [98, 99, 100]);
+    assert!(stderr.is_empty());
+    assert!(!home.path().join("copied-session.lock").exists());
 }

@@ -54,6 +54,26 @@ impl CommandPreview {
         self.facts.exit_code.map(i64::from)
     }
 
+    pub(super) fn exit_label(&self) -> &'static str {
+        match self.facts.invocation {
+            CommandInvocation::Program { .. } => "exit",
+            CommandInvocation::Shell { .. } => "shell exit",
+        }
+    }
+
+    pub(super) fn elapsed(&self) -> String {
+        let ms = self.facts.duration_ms;
+        if ms < 1_000 {
+            format!("{ms}ms")
+        } else {
+            format!("{:.1}s", ms as f64 / 1_000.0)
+        }
+    }
+
+    pub(super) fn has_stderr(&self) -> bool {
+        self.facts.stderr_bytes > 0
+    }
+
     pub(super) fn signal(&self) -> Option<i32> {
         self.facts.signal
     }
@@ -71,7 +91,7 @@ impl CommandPreview {
             && self
                 .facts
                 .exit_code
-                .is_some_and(|code| code != 0 || !self.attention())
+                .is_some_and(|code| code != 0 || !(self.attention() || self.has_stderr()))
             && self.notes().is_empty()
             && self.facts.reported_tests.is_empty()
     }
@@ -100,7 +120,9 @@ impl CommandPreview {
         if self.facts.cleanup_incomplete {
             notes.push("Process or pipe cleanup incomplete");
         }
-        if self.facts.output_preview_truncated {
+        if self.facts.output_summary.is_some() {
+            notes.push("Raw output retained");
+        } else if self.facts.output_preview_truncated {
             notes.push("Output preview truncated");
         }
         if self.facts.lossy_utf8 {
@@ -137,7 +159,6 @@ impl CommandPreview {
     fn attention(&self) -> bool {
         !self.facts.capture_complete
             || self.facts.cleanup_incomplete
-            || self.facts.stderr_lines > 0
             || self
                 .facts
                 .reported_tests
@@ -147,13 +168,22 @@ impl CommandPreview {
 }
 
 impl Tool {
-    pub(super) fn command_heading(&self, frame: &CardFrame) -> Row {
-        let title = if self.start_summary.is_empty() {
-            "Run command"
-        } else {
+    pub(super) fn command_title(&self) -> &str {
+        if !self.request_title.is_empty() {
+            return &self.request_title;
+        }
+        let invocation = self.invocation();
+        if !invocation.is_empty() && invocation != self.arguments {
+            invocation
+        } else if !self.start_summary.is_empty() {
             &self.start_summary
-        };
-        Row::plain(frame.title(&single_line(title), SURFACE_TEXT))
+        } else {
+            "Run command"
+        }
+    }
+
+    pub(super) fn command_heading(&self, frame: &CardFrame) -> Row {
+        Row::plain(frame.title(&single_line(self.command_title()), SURFACE_TEXT))
     }
 }
 

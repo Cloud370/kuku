@@ -28,6 +28,7 @@ mod background_jobs;
 mod contextual;
 mod delivery;
 mod history;
+pub(crate) mod history_jump;
 mod model_default;
 mod model_editor;
 mod navigation;
@@ -35,6 +36,7 @@ mod notice;
 mod pending;
 mod reading;
 mod rewind;
+pub(crate) use rewind::REWIND_PAGE;
 mod thinking;
 mod timing;
 mod values;
@@ -148,6 +150,7 @@ pub(crate) struct Pane {
     cleanup_at: Option<Instant>,
     history_in_flight: Option<HistoryRequest>,
     history_invalidated: bool,
+    last_history_change: u64,
 }
 
 impl Pane {
@@ -382,8 +385,7 @@ pub(crate) struct App {
     resolved_workspace: bool,
     cached: VecDeque<Address>,
     navigation: AgentNavigation,
-    pub(crate) escape_armed_at: Option<Instant>,
-    pub(crate) rewind_restore_files: bool,
+    pub(crate) rewind_armed: bool,
 }
 
 #[derive(Debug, Default)]
@@ -399,6 +401,7 @@ pub(crate) struct RewindDraft {
     pub(crate) address: Address,
     pub(crate) text: String,
     pub(crate) revision: u64,
+    pub(crate) restored: Option<bool>,
 }
 
 impl App {
@@ -456,8 +459,7 @@ impl App {
             quit_after_save: false,
             resolved_workspace: false,
             navigation: AgentNavigation::default(),
-            escape_armed_at: None,
-            rewind_restore_files: false,
+            rewind_armed: false,
         }
     }
 
@@ -663,6 +665,15 @@ impl App {
             }
             Update::RewindSource(selection, ticket, event_id, result) => {
                 self.apply_rewind_source_update(selection, ticket, event_id, result);
+            }
+            Update::HistoryJump(selection, ticket, before, result) => {
+                self.apply_history_jump(selection, ticket, before, result);
+            }
+            Update::HistoryJumpDraft(selection, ticket, result) => {
+                self.history_jump_draft(selection, ticket, result);
+            }
+            Update::FileRewindPreview(selection, ticket, result) => {
+                self.history_jump_files(selection, ticket, result);
             }
             Update::RewindGroupHistory(selection, request, result) => {
                 self.apply_rewind_group_history_update(selection, request, result);

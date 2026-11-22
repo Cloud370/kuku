@@ -93,7 +93,7 @@ impl ReportCollector {
     }
 }
 
-fn rust_report(line: &str) -> Option<ReportedTests> {
+pub(super) fn rust_report(line: &str) -> Option<ReportedTests> {
     if !line.starts_with("test result: ") {
         return None;
     }
@@ -115,7 +115,7 @@ fn rust_report(line: &str) -> Option<ReportedTests> {
     Some(report)
 }
 
-fn pytest_report(line: &str) -> Option<ReportedTests> {
+pub(super) fn pytest_report(line: &str) -> Option<ReportedTests> {
     let decorated = line.starts_with('=');
     if decorated != line.ends_with('=') {
         return None;

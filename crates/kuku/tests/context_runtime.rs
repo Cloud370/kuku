@@ -2,6 +2,8 @@ mod common;
 
 #[path = "context_runtime_order/mod.rs"]
 mod prelude_order;
+#[path = "context_runtime_capacity/mod.rs"]
+mod request_capacity;
 
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -239,6 +241,17 @@ async fn reopen_replays_frozen_assets_and_exact_admitted_inputs_after_source_cha
         assert_eq!(
             format!("{:x}", Sha256::digest(serde_json::to_vec(body).unwrap())),
             step["body_hash"]
+        );
+        let prefix = admitted
+            .iter()
+            .take(step["prefix_context_head"].as_u64().unwrap() as usize)
+            .map(|value| {
+                serde_json::from_value::<CanonicalMessage>(value["message"].clone()).unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            format!("{:x}", Sha256::digest(serde_json::to_vec(&prefix).unwrap())),
+            step["history_prefix_hash"]
         );
         let mut messages = vec![json!({"role":"system","content":segments[0]["system_prompt"]})];
         let prelude: Vec<CanonicalMessage> =
@@ -488,6 +501,7 @@ async fn unconfirmed_runtime_suffix_can_be_replaced_before_a_retried_preparation
                 text: "retry-input".into(),
                 from: None,
                 via_tool_call_id: None,
+                job_delivery: false,
             })
             .unwrap()
             .id;
@@ -705,103 +719,6 @@ async fn tool_result_first_view_is_frozen_and_continued_steps_read_only_new_fact
     }
     let steps = facts(&events, "runtime.step_prepared", "main");
     assert!(steps[1]["context_events_read"].as_u64().unwrap() < events.len() as u64);
-}
-
-#[tokio::test]
-async fn a_handoff_selects_its_agents_turns_and_does_not_change_another_prefix() {
-    let server = MockServer::start_async().await;
-    let workspace = tempfile::tempdir().unwrap();
-    let data = tempfile::tempdir().unwrap();
-    let (mut original, path) = options(&server, workspace.path(), data.path());
-    original.config.handoff.enabled = true;
-    original.config.handoff.threshold = 0.001;
-    original.config.handoff.keep_turns = 1;
-    let model = server
-        .mock_async(|when, then| {
-            when.method(POST)
-                .path(&path)
-                .matches(common::capture_http_request)
-                .matches(|request| {
-                    !request
-                        .body
-                        .as_ref()
-                        .unwrap()
-                        .windows(b"MAIN_HANDOFF".len())
-                        .any(|window| window == b"MAIN_HANDOFF")
-                });
-            then.status(200)
-                .body(response(json!({"content":"answer"}), "stop"));
-        })
-        .await;
-    let summary = server
-        .mock_async(|when, then| {
-            when.method(POST)
-                .path(&path)
-                .matches(common::capture_http_request)
-                .body_contains("MAIN_HANDOFF");
-            then.status(200).body(response(
-                json!({"content":"<kuku_handoff>MAIN_SUMMARY</kuku_handoff>"}),
-                "stop",
-            ));
-        })
-        .await;
-    let session = Session::open(original).await.unwrap();
-    session
-        .create_agent("create-main", "main", agent())
-        .unwrap();
-    session
-        .create_agent("create-reviewer", "reviewer", agent())
-        .unwrap();
-    for (command, target, text) in [
-        ("main-first", "main", "MAIN_OLD"),
-        ("review-first", "reviewer", "REVIEW_OLD"),
-        ("main-handoff", "main", "MAIN_HANDOFF"),
-        ("review-next", "reviewer", "REVIEW_NEXT"),
-        ("main-next", "main", "MAIN_NEXT"),
-    ] {
-        session.send(Input::new(command, target, text)).unwrap();
-        idle(&session, target).await;
-    }
-    let events = session.events(0, 256).unwrap();
-    session.close().await.unwrap();
-    model.assert_hits_async(3).await;
-    summary.assert_hits_async(2).await;
-    let bodies = common::take_http_requests(&path);
-    assert_eq!(5, bodies.len());
-    assert!(bodies[3]["messages"]
-        .as_array()
-        .unwrap()
-        .starts_with(bodies[1]["messages"].as_array().unwrap()));
-    assert!(!bodies[3].to_string().contains("MAIN_SUMMARY"));
-    assert!(!bodies[4].to_string().contains("MAIN_OLD"));
-    assert!(bodies[4].to_string().contains("MAIN_SUMMARY"));
-    assert!(bodies[4].to_string().contains("MAIN_HANDOFF"));
-    assert_eq!(
-        1,
-        bodies[0].to_string().matches("<kuku_runtime_date>").count()
-    );
-    assert_eq!(
-        1,
-        bodies[4].to_string().matches("<kuku_runtime_date>").count()
-    );
-    let main_date_admissions = facts(&events, "runtime.context_admitted", "main")
-        .iter()
-        .filter(|event| event["origin"] == "runtime")
-        .filter_map(|event| {
-            serde_json::from_value::<CanonicalMessage>(event["message"].clone()).ok()
-        })
-        .filter(|message| {
-            text_message(message)["content"]
-                .as_str()
-                .is_some_and(|text| text.contains("<kuku_runtime_date>"))
-        })
-        .count();
-    assert_eq!(2, main_date_admissions);
-    assert_eq!(
-        1,
-        facts(&events, "runtime.context_segment", "reviewer").len()
-    );
-    assert_eq!(2, facts(&events, "runtime.context_segment", "main").len());
 }
 
 #[tokio::test]

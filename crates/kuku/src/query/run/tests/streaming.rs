@@ -128,8 +128,12 @@ async fn malformed_tool_json_is_classified_after_model_response_persists() {
     )
     .await;
 
-    assert!(matches!(step, Ok(PendingStep::Failed(_))));
-    assert_rejected_tool_response(&events_path, crate::event::ModelStopReason::ToolUse);
+    assert!(matches!(
+        step,
+        Ok(PendingStep::Failed(crate::Error::Provider { message, .. }))
+            if message == "The model sent tool arguments that were not a valid JSON object."
+    ));
+    assert_rejected_tool_response(&events_path, crate::event::ModelStopReason::InvalidResponse);
 }
 
 #[tokio::test]
@@ -202,7 +206,7 @@ async fn duplicate_tool_ids_and_indices_are_rejected_before_calls_are_persisted(
         let step = finish_tool_stream(events_path.clone(), dir.path(), chunks).await;
 
         assert!(matches!(step, Ok(PendingStep::Failed(_))));
-        assert_rejected_tool_response(&events_path, crate::event::ModelStopReason::ToolUse);
+        assert_rejected_tool_response(&events_path, crate::event::ModelStopReason::InvalidResponse);
     }
 }
 
@@ -244,7 +248,7 @@ async fn orphaned_deltas_and_missing_completions_are_rejected_before_calls_are_p
         let step = finish_tool_stream(events_path.clone(), dir.path(), chunks).await;
 
         assert!(matches!(step, Ok(PendingStep::Failed(_))));
-        assert_rejected_tool_response(&events_path, crate::event::ModelStopReason::ToolUse);
+        assert_rejected_tool_response(&events_path, crate::event::ModelStopReason::InvalidResponse);
     }
 }
 
@@ -283,7 +287,7 @@ async fn missing_argument_buffers_are_rejected_before_calls_are_persisted() {
     let step = crate::query::step::finish_streaming(state).await;
 
     assert!(matches!(step, Ok(PendingStep::Failed(_))));
-    assert_rejected_tool_response(&events_path, crate::event::ModelStopReason::ToolUse);
+    assert_rejected_tool_response(&events_path, crate::event::ModelStopReason::InvalidResponse);
 }
 
 #[tokio::test]
@@ -341,7 +345,7 @@ async fn empty_tool_names_and_non_object_arguments_are_rejected_before_calls_are
         let step = finish_tool_stream(events_path.clone(), dir.path(), chunks).await;
 
         assert!(matches!(step, Ok(PendingStep::Failed(_))));
-        assert_rejected_tool_response(&events_path, crate::event::ModelStopReason::ToolUse);
+        assert_rejected_tool_response(&events_path, crate::event::ModelStopReason::InvalidResponse);
     }
 }
 
@@ -807,7 +811,7 @@ async fn duplicate_completion_for_single_tool_call_is_rejected() {
     .await;
 
     assert!(matches!(step, Ok(PendingStep::Failed(_))));
-    assert_rejected_tool_response(&events_path, crate::event::ModelStopReason::ToolUse);
+    assert_rejected_tool_response(&events_path, crate::event::ModelStopReason::InvalidResponse);
 }
 
 #[tokio::test]
@@ -828,7 +832,7 @@ async fn tool_completion_without_start_is_rejected() {
     .await;
 
     assert!(matches!(step, Ok(PendingStep::Failed(_))));
-    assert_rejected_tool_response(&events_path, crate::event::ModelStopReason::ToolUse);
+    assert_rejected_tool_response(&events_path, crate::event::ModelStopReason::InvalidResponse);
 }
 
 #[tokio::test]
@@ -858,7 +862,7 @@ async fn tool_delta_after_completion_is_rejected() {
     .await;
 
     assert!(matches!(step, Ok(PendingStep::Failed(_))));
-    assert_rejected_tool_response(&events_path, crate::event::ModelStopReason::ToolUse);
+    assert_rejected_tool_response(&events_path, crate::event::ModelStopReason::InvalidResponse);
 }
 
 #[tokio::test]
@@ -884,7 +888,7 @@ async fn whitespace_tool_call_id_is_rejected() {
     .await;
 
     assert!(matches!(step, Ok(PendingStep::Failed(_))));
-    assert_rejected_tool_response(&events_path, crate::event::ModelStopReason::ToolUse);
+    assert_rejected_tool_response(&events_path, crate::event::ModelStopReason::InvalidResponse);
 }
 
 #[tokio::test]

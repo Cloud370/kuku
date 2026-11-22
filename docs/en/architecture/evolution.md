@@ -71,9 +71,17 @@ Independent initialization supplies only the material the caller selected. Reusi
 
 Retain Prompt assets and the prepared provider-visible content needed for faithful reconstruction. Store admitted content and tool-result views once, with references and request boundaries rather than a full transcript copy on each Step. Historical replay does not re-read mutable workspace files or re-render today's Prompt templates. A context handoff records its predecessor and selected material and commits the successor before switching. If handoff fails, preserve the previous explainable state.
 
+Keep each submitted prefix stable while its segment is active. Bound and reference large results on first admission. Under measured byte or token pressure, choose a cut before a complete tool batch or user input. A bounded summary request checkpoints earlier work. Preserve the current user input, recent complete batches and their provider-native replay. Use the unchanged cached prefix for the summary when it fits. Validate the replacement request before committing a successor. The original journal and retained bytes stay available under the existing retention and authorization rules. A failed summary leaves the submitted segment authoritative.
+
+A provider can reject a prepared request before streaming content even when local pressure was below the threshold. When automatic compaction is enabled, allow one checkpoint and a smaller replacement at this boundary. Journal the rejected attempt separately and retain the current input. Leave any later stream failure to the existing terminal response handling.
+
+Keep a finished user turn together or record its outcome in the checkpoint, including replies already delivered. Preserve the original input of work that is still open. Use one short, optional correction section in the checkpoint. Each entry ties an observed failure or explicit correction to evidence and a concrete change for the remaining work. Preserve the smallest verified lookup for decisive evidence, such as a path and symbol or an output ID and byte range. Omit weak inferences. The resumed Agent can check uncertain conclusions against the retained evidence. Rewinding across the summarized work invalidates its checkpoint and restores the surviving history.
+
 ## Persistence, effects, and durable waiting
 
 Start with one authoritative append-only log and one writer per Session, with cross-process exclusion and stale-owner fencing. Bounded record sizes and external output permit streaming recovery. Small disposable indexes can serve Agent lookup, command deduplication, or event positions; choose additional persisted indexes/checkpoints against actual recovery and lookup measurements.
+
+Sessions keep one authoritative journal. On eligible clean closes, the same file can be published with an inline recovery checkpoint and independently decodable gzip frames for committed history. Subsequent records append to its plain tail. Frame and checkpoint metadata live in the journal. A damaged or unusable recovery projection can be rebuilt from readable facts, and reads verify the history frames they open.
 
 Define the commit unit and acknowledgement barriers explicitly. Referenced output must exist durably before its confirmed reference; an action's dispatch intent precedes the effect, and settlement precedes confirmation. Recover only identifiable incomplete tails; reject corruption of committed history. A required write failure stops dependent execution.
 

@@ -10,7 +10,12 @@ pub async fn run(args: ListArgs, target: &ConnectionArgs) -> CliResult {
     let client = target.client().await?;
     if let Some(session_id) = args.session_id.as_deref() {
         let workspace = client.workspace(options.workspace()?).await?;
-        return render_agents(client.agents(&workspace, session_id).await?);
+        let agents = client.agents(&workspace, session_id).await?;
+        if args.json {
+            println!("{}", serde_json::to_string(&agents)?);
+            return Ok(());
+        }
+        return render_agents(agents);
     }
     let show_workspace_col = args.all && target.workspace.is_none();
     let workspace = if show_workspace_col {
@@ -20,6 +25,10 @@ pub async fn run(args: ListArgs, target: &ConnectionArgs) -> CliResult {
     };
     let sessions = client.sessions(workspace.as_deref(), None).await?;
 
+    if args.json {
+        println!("{}", serde_json::to_string(&sessions)?);
+        return Ok(());
+    }
     if sessions.is_empty() {
         println!("no sessions found");
         return Ok(());
@@ -97,7 +106,9 @@ fn render_agents(agents: Vec<AgentSummary>) -> CliResult {
         println!(
             "{:<24} {:<16} {}",
             agent.address,
-            serde_json::to_value(agent.status)?,
+            serde_json::to_value(agent.status)?
+                .as_str()
+                .unwrap_or_default(),
             agent.pending_inputs
         );
     }

@@ -64,18 +64,22 @@ async fn send(
         prepared.model.clone(),
     );
     if let Some(trace) = &trace {
+        let mut body = prepared.body.as_json().clone();
+        if prepared.kind == ProviderKind::OpenAiResponses {
+            super::openai_responses::redact_tool_images(&mut body);
+        }
         trace.record(
             ProviderTraceDirection::Request,
             Some(&prepared.url),
             Some(&headers),
-            json!({"body": prepared.body}),
+            json!({"body": body}),
         );
     }
     let mut request = super::http_client::api_client(&config.options.proxy)
         .map_err(|error| invalid_request(&error.to_string()))?
         .post(&prepared.url)
         .headers(headers)
-        .json(&prepared.body);
+        .body(prepared.body.as_bytes().clone());
     if trial_error_body.is_some() {
         request = request.redirect(wreq::redirect::Policy::none());
     }
@@ -195,7 +199,7 @@ async fn read_error_body(response: wreq::Response) -> String {
 mod tests {
     use super::*;
     use crate::config::ProviderProfile;
-    use crate::provider::types::SecretString;
+    use crate::provider::types::{PreparedBody, SecretString};
 
     fn prepared(config: &ResolvedProvider) -> PreparedProviderRequest {
         PreparedProviderRequest {
@@ -203,7 +207,7 @@ mod tests {
             connection_name: config.connection_name.clone(),
             model: config.model.clone(),
             url: "http://localhost/v1/messages".into(),
-            body: json!({}),
+            body: PreparedBody::from_json(json!({})),
             settings: Default::default(),
             correlation_id: None,
         }

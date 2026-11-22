@@ -5,10 +5,10 @@
 ## 读取一页
 
 ```bash
-kuku events SESSION_ID --after 0 --limit 100 --json
+kuku events SESSION_ID --limit 20 --json
 ```
 
-CLI 在标准输出中逐行写出 JSON，在标准错误中给出下一游标。将该游标传给 `--after` 读取下一页。加上 `--agent reviewer` 可以过滤当前页。即使过滤后这一页为空，游标也按实际扫描过的日志前移。[CLI](cli.md#kuku-events) · [Server API](server-api.md)
+CLI 将每条 JSON 事件写到 stdout，把续页参数写到 stderr。用 `--before` 继续向旧记录翻页，或用 `--after` 从指定游标向新记录读。可用 `--agent reviewer` 或 `--kind tool.result` 查找相关事件。`--file <path> --all --json` 可导出本地日志，包括已封存的历史。[CLI](cli.md#kuku-events) · [服务 API](server-api.md)
 
 ## 公开 Session SDK 记录的事实
 
@@ -16,7 +16,7 @@ CLI 在标准输出中逐行写出 JSON，在标准错误中给出下一游标�
 |---|---|
 | `session.created`、`conversation.opened` | Session 元数据，以及打开某个 Agent 的对话流。 |
 | `runtime.operation` | 状态变化由 `record.operation` 指定。例如 `session_claimed`、`agent_created`、`agent_configured`、`input_delivered`、`inputs_accepted`、`input_withdrawal` 和 `turn_settled`。`execution_started`、`agent_stopped` 和 `agent_resumed` 记录定向执行控制。待决请求和关联回复也通过 Session 操作记录。 |
-| `turn.started`、`message.user`、`model.response`、`model.error` | Turn 的输入和模型服务结果；模型响应会保留归一化后的终止状态。`turn.completed`、`turn.interrupted`、`turn.cancelled` 记录终止状态。 |
+| `turn.started`、`message.user`、`model.response`、`model.error` | Turn 的输入和模型服务结果。带有 `job_delivery: true` 的 `message.user` 承载后台执行反馈。模型响应保留归一化后的终止状态。`turn.completed`、`turn.interrupted`、`turn.cancelled` 记录终止状态。 |
 | `model.recovery` | 直接 `Query` 或子 Agent 查询遇到输出上限后的一次重试，记录失败和重试请求 ID 及恢复通知来源。 |
 | `runtime.context_segment`、`runtime.context_admitted`、`runtime.step_prepared` | 静态上下文、新接纳的消息，以及确认消息边界的 Step 准备记录。`body_hash` 标识编码后的请求。 |
 | `runtime.provider_report`、`runtime.model_usage`、`runtime.provider_replay` | 模型服务实际回报的元数据、token 用量或可用的协议原生续接数据。 |

@@ -24,7 +24,7 @@ impl ToolProfile {
         match self {
             Self::None => &[],
             Self::Read => &[
-                "workspace_script",
+                "run_js",
                 "list_jobs",
                 "wait_job",
                 "cancel_job",
@@ -38,7 +38,7 @@ impl ToolProfile {
                 "fetch_web",
             ],
             Self::ReadWrite => &[
-                "workspace_script",
+                "run_js",
                 "list_jobs",
                 "wait_job",
                 "cancel_job",

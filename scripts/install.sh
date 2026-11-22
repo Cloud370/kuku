@@ -35,9 +35,24 @@ BIN_DIR="${KUKU_HOME}/bin"
 CACHE_DIR="${KUKU_HOME}/cache"
 mkdir -p "$BIN_DIR" "$CACHE_DIR"
 
+download() {
+  if [ -t 2 ]; then
+    curl -fL --progress-bar --connect-timeout 15 --retry 2 --retry-max-time 30 "$@"
+  else
+    curl -fsSL --connect-timeout 15 --retry 2 --retry-max-time 30 "$@"
+  fi
+}
+
+valid_checksum() {
+  [ "${#1}" -eq 64 ] && case "$1" in
+    *[!0-9a-fA-F]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
 # ── Fetch manifest ──
 echo "Fetching latest release info..."
-MANIFEST=$(curl -fsSL "$SOURCE_URL")
+MANIFEST=$(curl -fsSL --connect-timeout 15 --retry 2 --retry-max-time 30 -- "$SOURCE_URL")
 MANIFEST_VERSION=$(echo "$MANIFEST" | grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
 
 if [ -n "$VERSION" ] && [ "$MANIFEST_VERSION" != "$VERSION" ]; then
@@ -57,52 +72,79 @@ else
   echo "Installing kuku $MANIFEST_VERSION"
 fi
 
-# ── Extract download URL and sha256 for platform ──
+# ── Select a package before downloading ──
 if command -v jq >/dev/null 2>&1; then
-  URL=$(echo "$MANIFEST" | jq -r ".platforms.\"$PLATFORM\".url")
-  SHA256=$(echo "$MANIFEST" | jq -r ".platforms.\"$PLATFORM\".sha256")
+  PLATFORM_INFO=$(printf '%s\n' "$MANIFEST" | jq -c --arg platform "$PLATFORM" '.platforms[$platform]')
+  package_field() {
+    printf '%s\n' "$PLATFORM_INFO" | jq -r --arg field "$1" '.[$field] // empty'
+  }
 else
-  URL=$(echo "$MANIFEST" | grep -A5 "\"$PLATFORM\"" | grep '"url"' | sed 's/.*"url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
-  SHA256=$(echo "$MANIFEST" | grep -A5 "\"$PLATFORM\"" | grep '"sha256"' | sed 's/.*"sha256"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+  PLATFORM_INFO=$(printf '%s\n' "$MANIFEST" | sed -n '/^[[:space:]]*"'"$PLATFORM"'"[[:space:]]*:[[:space:]]*{[[:space:]]*$/,/^[[:space:]]*}/p')
+  package_field() {
+    printf '%s\n' "$PLATFORM_INFO" |
+      sed -n 's/^[[:space:]]*"'"$1"'"[[:space:]]*:[[:space:]]*"\([^"]*\)"[,]\{0,1\}[[:space:]]*$/\1/p;
+              s/^[[:space:]]*"'"$1"'"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\)[,]\{0,1\}[[:space:]]*$/\1/p'
+  }
 fi
 
-if [ -z "$URL" ]; then
-  echo "No download URL found for platform $PLATFORM"
+STAGE=$(mktemp -d "$BIN_DIR/.install.XXXXXXXX")
+trap 'rm -rf "$STAGE"' EXIT
+
+ARCHIVE_NAME="kuku-${PLATFORM}.tar.gz"
+URL=$(package_field url)
+SHA256=$(package_field sha256)
+SIZE=$(package_field size)
+
+if [ -z "$URL" ] || ! valid_checksum "$SHA256"; then
+  echo "Missing download URL or SHA-256 checksum for $PLATFORM" >&2
   exit 1
 fi
 
-# ── Download ──
-ARCHIVE_NAME="kuku-${PLATFORM}.tar.gz"
-STAGE=$(mktemp -d "$BIN_DIR/.install.XXXXXXXX")
-trap 'rm -rf "$STAGE"' EXIT
-CACHE_FILE="$STAGE/$ARCHIVE_NAME"
-echo "Downloading $URL ..."
-curl -fsSL "$URL" -o "$CACHE_FILE"
+if command -v sha256sum >/dev/null 2>&1; then
+  digest() { sha256sum < "$1" | awk '{print $1}'; }
+elif command -v shasum >/dev/null 2>&1; then
+  digest() { shasum -a 256 < "$1" | awk '{print $1}'; }
+else
+  echo "Cannot verify the download without sha256sum or shasum." >&2
+  exit 1
+fi
 
-# ── Verify SHA256 ──
-if [ -n "$SHA256" ]; then
-  echo "Verifying checksum..."
-  if command -v sha256sum >/dev/null 2>&1; then
-    ACTUAL=$(sha256sum "$CACHE_FILE" | awk '{print $1}')
-  elif command -v shasum >/dev/null 2>&1; then
-    ACTUAL=$(shasum -a 256 "$CACHE_FILE" | awk '{print $1}')
-  else
-    echo "Warning: no sha256 tool found, skipping verification"
-    ACTUAL="$SHA256"
-  fi
-  if [ "$ACTUAL" != "$SHA256" ]; then
-    echo "Checksum mismatch: expected $SHA256, got $ACTUAL"
+CACHE_FILE="$STAGE/$ARCHIVE_NAME"
+CACHED="$CACHE_DIR/$ARCHIVE_NAME"
+SHA256=$(printf '%s' "$SHA256" | tr 'A-F' 'a-f')
+if [ -f "$CACHED" ]; then
+  cp "$CACHED" "$CACHE_FILE"
+  if [ "$(digest "$CACHE_FILE")" != "$SHA256" ]; then
     rm -f "$CACHE_FILE"
+  fi
+fi
+
+CACHED_PACKAGE=0
+if [ -f "$CACHE_FILE" ]; then
+  echo "Using verified cached $ARCHIVE_NAME."
+  CACHED_PACKAGE=1
+else
+  echo "Downloading $ARCHIVE_NAME${SIZE:+ ($SIZE bytes)} ..."
+  download -o "$CACHE_FILE" -- "$URL"
+  echo "Verifying checksum..."
+  ACTUAL=$(digest "$CACHE_FILE")
+  if [ "$ACTUAL" != "$SHA256" ]; then
+    echo "Checksum mismatch: expected $SHA256, got $ACTUAL" >&2
     exit 1
   fi
 fi
 
-# ── Extract ──
 echo "Installing in $BIN_DIR..."
-tar xzf "$CACHE_FILE" -C "$STAGE" kuku
+tar -xzOf "$CACHE_FILE" kuku > "$STAGE/kuku"
+if [ ! -s "$STAGE/kuku" ]; then
+  echo "Archive is missing an executable kuku" >&2
+  exit 1
+fi
 chmod +x "$STAGE/kuku"
 mv -f "$STAGE/kuku" "$BIN_DIR/kuku"
-mv -f "$CACHE_FILE" "$CACHE_DIR/$ARCHIVE_NAME"
+if [ "$CACHED_PACKAGE" -eq 0 ]; then
+  mv -f "$CACHE_FILE" "$CACHED"
+fi
 
 # ── PATH check ──
 case ":$PATH:" in

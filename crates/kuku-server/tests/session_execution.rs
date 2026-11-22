@@ -452,7 +452,7 @@ async fn jobs_are_scoped_cancellable_and_readable_after_server_restart() {
             "job-call",
             json!({
                 "program":program,"args":["--ignored","--exact","gated_command_fixture","--nocapture"],
-                "cwd":".","timeout":TOOL_TIMEOUT.as_secs(),"brief":"wait for the fixture",
+                "title":"Wait for the fixture",
                 "background":true,
             }),
         ));
@@ -527,10 +527,13 @@ async fn jobs_are_scoped_cancellable_and_readable_after_server_restart() {
         work.as_str()
             .is_some_and(|label| label.starts_with(&busy_job))
     }));
-    assert_eq!(
-        (200, job.clone()),
-        job_request(&server, get.clone(), id, &path, "reviewer").await
-    );
+    let (status, mut observed) = job_request(&server, get.clone(), id, &path, "reviewer").await;
+    assert_eq!(200, status, "{observed}");
+    let first_elapsed = job["elapsed_ms"].as_u64().unwrap();
+    let latest_elapsed = observed["elapsed_ms"].as_u64().unwrap();
+    assert!(latest_elapsed >= first_elapsed);
+    observed["elapsed_ms"] = first_elapsed.into();
+    assert_eq!(job, observed);
     assert_eq!(
         (200, json!({"jobs":[]})),
         job_request(&server, get.clone(), id, "jobs", "main").await
@@ -549,6 +552,7 @@ async fn jobs_are_scoped_cancellable_and_readable_after_server_restart() {
     .expect("cancellation should await process cleanup");
     assert_eq!(200, status, "{cancelled}");
     assert_eq!("cancelled", cancelled["status"]);
+    assert!(cancelled["elapsed_ms"].as_u64().unwrap() >= latest_elapsed);
     assert_eq!(false, cancelled["result"]["cleanup_incomplete"]);
     let cursor = cancelled["finished_at"].as_u64().unwrap();
     let after = (cursor - 1).to_string();
@@ -631,7 +635,7 @@ async fn a_later_steer_reaches_the_current_turn_after_a_real_tool_boundary() {
                     {"type":"text","text":"Running the gate."},
                     {"type":"tool_use","id":"gated-tool","name":"run_command","input":{
                         "program":program,"args":["--ignored","--exact","gated_command_fixture","--nocapture"],
-                        "cwd":".","timeout":TOOL_TIMEOUT.as_secs(),"brief":"wait for a file"
+                        "title":"Wait for a file"
                     }}
                 ],
                 "stop_reason":"tool_use",

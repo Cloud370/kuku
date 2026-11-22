@@ -21,7 +21,8 @@ use super::helpers::{
     next_turn, now_timestamp, validate_existing_session,
 };
 use super::types::{
-    PendingPermission, PendingRun, Query, QueuedToolCall, Run, RunOutput, RunState, UiEvent,
+    PendingPermission, PendingRun, Query, QueuedToolCall, Run, RunOutput, RunState,
+    ToolPreparation, UiEvent,
 };
 
 struct StartupLockGuard {
@@ -74,14 +75,35 @@ fn synthetic_builder_config() -> crate::config::Config {
 
 impl Query {
     pub async fn start(self) -> Result<Run> {
-        self.start_session_with_lock(true).await
+        self.start_session_with_lock(true, false).await
     }
 
     pub(crate) async fn start_nested(self) -> Result<Run> {
-        self.start_session_with_lock(false).await
+        self.start_session_with_lock(false, false).await
     }
 
-    async fn start_session_with_lock(mut self, acquire_lock: bool) -> Result<Run> {
+    pub(crate) async fn compact_context(
+        self,
+        closed_turn: bool,
+        cancel: std::sync::Arc<tokio::sync::Notify>,
+    ) -> Result<()> {
+        let mut run = self.start_session_with_lock(false, true).await?;
+        let RunState::Pending(mut pending) =
+            std::mem::replace(&mut run.state, RunState::Done(None))
+        else {
+            return Err(Error::InvalidArgument(
+                "this Agent has work that must settle before compaction".into(),
+            ));
+        };
+        pending.cancel_token = cancel;
+        super::provider::compact_context(*pending, closed_turn).await
+    }
+
+    async fn start_session_with_lock(
+        mut self,
+        acquire_lock: bool,
+        compact_only: bool,
+    ) -> Result<Run> {
         self.validate()?;
 
         let kuku_home = match self.captured_kuku_home.take() {
@@ -132,12 +154,13 @@ impl Query {
             None => session_events_path(&kuku_home, &workspace, &session_id)?,
         };
         let policy_path = project_policy_path(&kuku_home, &workspace)?;
-        let existing_events = if self.runtime.is_some() {
-            crate::context::runtime::read_agent_events(
-                &events_path,
-                self.conversation.as_str(),
-                self.runtime_limits.max_request_bytes,
-            )?
+        let existing_events = if let Some(runtime) = &self.runtime {
+            crate::Session {
+                inner: runtime
+                    .upgrade()
+                    .ok_or_else(|| Error::InvalidArgument("session resources are closed".into()))?,
+            }
+            .read_agent_events(self.conversation.as_str())?
         } else {
             EventStore::replay(&events_path)?
         };
@@ -211,7 +234,7 @@ impl Query {
         let agent_registry = self.agent_registry.clone();
         let tool_registry_override = self.tool_registry_override.clone();
 
-        let plugin_registry_opt = if config.plugin.enabled {
+        let plugin_registry_opt = if config.plugin.enabled && !compact_only {
             Some(
                 crate::plugin::PluginRegistry::builder()
                     .load_packages(&kuku_home, &workspace)?
@@ -221,7 +244,7 @@ impl Query {
             None
         };
 
-        if resumed_permission.is_none() {
+        if resumed_permission.is_none() && !compact_only {
             append_interrupted_active_turn(
                 &events_path,
                 &existing_events,
@@ -240,6 +263,7 @@ impl Query {
                         .map(ConversationAddress::as_str)
                         .or_else(|| self.input_source.agent_address()),
                     self.via_tool_call_id.as_deref(),
+                    &self.input_source,
                 )?;
             }
 
@@ -261,7 +285,7 @@ impl Query {
 
         let previous_skill_snapshot =
             previous_snapshot_before_turn(&existing_events, conversation.as_str(), turn);
-        let (skill_registry, previous_skill_registry) = if self.disable_skills {
+        let (skill_registry, previous_skill_registry) = if self.disable_skills || compact_only {
             (None, None)
         } else if let Some(snapshot) =
             restore_turn_snapshot(&existing_events, conversation.as_str(), turn)
@@ -383,19 +407,21 @@ impl Query {
                 .iter()
                 .filter(|open| is_undispatched_batch_call(open, &conversation, turn))
             {
-                resumed_state.queued_tool_calls.push_back(QueuedToolCall {
-                    display_summary: super::helpers::display_summary(
-                        &open.tool_call.name,
-                        &open.tool_call.args,
-                        None,
-                    ),
-                    tool_call: open.tool_call.clone(),
-                });
+                resumed_state
+                    .queued_tool_calls
+                    .push_back(QueuedToolCall::new(
+                        open.tool_call.clone(),
+                        super::helpers::display_summary(
+                            &open.tool_call.name,
+                            &open.tool_call.args,
+                            None,
+                        ),
+                    ));
             }
         }
         if self.runtime.is_some() {
             for queued in &mut resumed_state.queued_tool_calls {
-                if let Some(args) =
+                if let Some(preparation) =
                     existing_events
                         .iter()
                         .rev()
@@ -406,12 +432,16 @@ impl Query {
                                     && value["turn"] == turn
                                     && value["tool_call_id"] == queued.tool_call.id =>
                             {
-                                Some(value["args"].clone())
+                                Some(ToolPreparation {
+                                    args: value["args"].clone(),
+                                    definition: value["definition"].clone(),
+                                })
                             }
                             _ => None,
                         })
                 {
-                    queued.tool_call.args = args;
+                    queued.tool_call.args.clone_from(&preparation.args);
+                    queued.preparation = Some(preparation);
                 }
             }
         }
@@ -466,6 +496,11 @@ impl Query {
             runtime_log_writer,
             request_base: None,
             recovery_count: 0,
+            tool_argument_retries: super::tool_response::resumed_tool_argument_retries(
+                &existing_events,
+                turn,
+                conversation.as_str(),
+            ),
         };
 
         let state = if let Some(request) = resumed_state.first_request {
@@ -489,7 +524,7 @@ impl Query {
     }
 
     pub async fn run(self) -> Result<RunOutput> {
-        let mut run = self.start_session_with_lock(true).await?;
+        let mut run = self.start_session_with_lock(true, false).await?;
         loop {
             match run.next().await? {
                 Some(UiEvent::PermissionRequested { .. }) => {
@@ -500,7 +535,7 @@ impl Query {
                 None => {
                     return Err(Error::InvalidEventStream(
                         "run ended without producing Done".to_string(),
-                    ))
+                    ));
                 }
             }
         }
@@ -510,7 +545,7 @@ impl Query {
         self,
         choice: super::types::PermissionChoice,
     ) -> Result<RunOutput> {
-        let mut run = self.start_session_with_lock(true).await?;
+        let mut run = self.start_session_with_lock(true, false).await?;
         loop {
             match run.next().await? {
                 Some(UiEvent::PermissionRequested { request }) => {
@@ -521,7 +556,7 @@ impl Query {
                 None => {
                     return Err(Error::InvalidEventStream(
                         "run ended without producing Done".to_string(),
-                    ))
+                    ));
                 }
             }
         }
@@ -594,10 +629,10 @@ fn resumed_state(lifecycle: Option<&super::lifecycle::LifecycleState>, turn: u64
         } else {
             resumed_permission_requests.push_back(pending.request.clone());
         }
-        queued_tool_calls.push_back(QueuedToolCall {
-            tool_call: pending.tool_call.clone(),
-            display_summary: pending.request.summary.clone(),
-        });
+        queued_tool_calls.push_back(QueuedToolCall::new(
+            pending.tool_call.clone(),
+            pending.request.summary.clone(),
+        ));
     }
 
     ResumedState {
@@ -674,6 +709,17 @@ fn resumed_model_request_count(
             {
                 request_ids.insert(to_request_id.as_str());
             }
+            EventPayload::Unknown(value)
+                if matches!(
+                    value["kind"].as_str(),
+                    Some("runtime.compaction_started" | "runtime.model_rejected")
+                ) && value["agent"] == conversation.as_str()
+                    && value["turn"] == turn =>
+            {
+                if let Some(id) = value["request_id"].as_str() {
+                    request_ids.insert(id);
+                }
+            }
             _ => {}
         }
     }
@@ -740,6 +786,13 @@ fn resumed_request_num(
                 && event_matches_conversation(Some(event_conversation), conversation) =>
             {
                 Some(request_num_from_id(request_id))
+            }
+            EventPayload::Unknown(value)
+                if value["kind"] == "runtime.model_rejected"
+                    && value["agent"] == conversation.as_str()
+                    && value["turn"] == turn =>
+            {
+                value["request_id"].as_str().map(request_num_from_id)
             }
             _ => None,
         })

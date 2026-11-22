@@ -16,9 +16,9 @@ Current docs use this manifest for release install scripts and update-channel co
   "notes": "...",
   "pub_date": "2026-05-31T00:00:00.000Z",
   "platforms": {
-    "linux-x86_64": { "url": "...", "sha256": "..." },
-    "darwin-aarch64": { "url": "...", "sha256": "..." },
-    "windows-x86_64": { "url": "...", "sha256": "..." }
+    "linux-x86_64": { "url": "...", "sha256": "...", "size": 12345678 },
+    "darwin-aarch64": { "url": "...", "sha256": "...", "size": 12345678 },
+    "windows-x86_64": { "url": "...", "sha256": "...", "size": 12345678 }
   },
   "desktop": {}
 }
@@ -43,6 +43,7 @@ Each platform entry contains:
 |---|---|
 | `url` | Download URL |
 | `sha256` | SHA-256 checksum |
+| `size` | Optional archive size in bytes, used by the installer to show the download size |
 
 ## Config Link
 

@@ -105,8 +105,7 @@ def drive_mock(provider, turn, evidence):
     assert REQUIRED_WORKSPACE_TOOLS <= set(names), names
     evidence["offered_tools"] = names
     if turn == 0:
-        call.tool("run_command", "ingest-replay", program=PROGRAM, args=ARGS, cwd=".", timeout=15,
-                  brief="Run ingestion replay")
+        call.tool("run_command", "ingest-replay", program=PROGRAM, args=ARGS)
         call = provider.next("ingest-replay")
         result = mock_result(call, "ingest-replay")
         output_id = re.search(r"^Output: ([\w-]+)", result, re.MULTILINE)
@@ -115,7 +114,7 @@ def drive_mock(provider, turn, evidence):
         source = f"""
 let records = 0, errors = 0, first = null, last = null;
 const codes = {{}};
-for await (const {{text}} of workspace.output_lines({{id:{output_id}, stream:"stdout"}})) {{
+for await (const {{text}} of tools.output_lines({{id:{output_id}, stream:"stdout"}})) {{
     const row = JSON.parse(text);
     records++;
     if (row.level !== "ERROR") continue;
@@ -126,10 +125,10 @@ for await (const {{text}} of workspace.output_lines({{id:{output_id}, stream:"st
     first ??= last;
 }}
 const report = {{records, errors, codes, first, last}};
-const write = await workspace.write_file({{path:{json.dumps(REPORT)}, content:JSON.stringify(report)+"\\n"}});
+const write = await tools.write_file({{path:{json.dumps(REPORT)}, content:JSON.stringify(report)+"\\n"}});
 return {{report, status:write.status}};
 """
-        call.tool("workspace_script", "analyze-replay", code=source)
+        call.tool("run_js", "analyze-replay", code=source)
         call = provider.next("analyze-replay")
         report = json.loads(mock_result(call, "analyze-replay"))
         assert report.get("report") == EXPECTED and report.get("status") == "ok", report
@@ -441,7 +440,7 @@ def script_failures(tools):
                                if action["status"] == "ok"],
          "later_successful_calls": [later["name"] for later in tools[index + 1:] if later["status"] == "ok"]}
         for index, entry in enumerate(tools)
-        if entry["name"] == "workspace_script" and entry["status"] not in (None, "ok")
+        if entry["name"] == "run_js" and entry["status"] not in (None, "ok")
     ]
 
 
@@ -451,7 +450,7 @@ def verify_analysis(turn, workspace, evidence):
     commands = [action["result"] for action in actions if isinstance(action["result"], dict)
                 and action["result"].get("kind") == "command_result"]
     replay = [row for row in commands if row["invocation"]["mode"] == "program" and is_replay(row)]
-    scripts = [tool for tool in tools if tool["name"] == "workspace_script"]
+    scripts = [tool for tool in tools if tool["name"] == "run_js"]
     named_reference = saved_report_reference(turn)
     named = [action["result"] for action in actions if action.get("name", action.get("tool")) == "save_value"
              and action["status"] == "ok" and action["result"].get("name") == VALUE_NAME]
@@ -492,7 +491,7 @@ def saved_report_reads(tools, reference):
         result = tool["result"]
         direct = (tool["name"] == "read_output" and tool["status"] == "ok" and tool["args"].get("name") == VALUE_NAME
                   and result.get("output_id") == reference["id"] and report_from_chunk(result) == EXPECTED)
-        scripted = tool["name"] == "workspace_script" and read_all_captured_output(tool, reference)
+        scripted = tool["name"] == "run_js" and read_all_captured_output(tool, reference)
         if direct or scripted:
             reads.append({"tool": tool["name"], "call_id": tool["call_id"], "reference": reference})
     return reads
@@ -559,7 +558,7 @@ def read_shared_report(tools, reference, seed):
         (tool["name"] == "read_output" and tool["status"] == "ok"
          and tool["args"].get("id") == reference["id"] and tool["result"].get("output_id") == reference["id"]
          and report_from_chunk(tool["result"]) == seed)
-        or (tool["name"] == "workspace_script" and read_all_captured_output(tool, reference))
+        or (tool["name"] == "run_js" and read_all_captured_output(tool, reference))
         for tool in tools
     )
 

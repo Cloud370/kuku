@@ -178,8 +178,10 @@ async fn three_protocols_preserve_tool_batches_native_replay_and_multiturn_prefi
             super::provider::prepare_provider_request(&config, &request, Some(&correlation))
                 .unwrap();
         assert_eq!(first.correlation_id, second.correlation_id);
-        assert!(wire_messages(&second.body).starts_with(wire_messages(&first.body)));
-        assert_tool_continuation(protocol, profile, &second.body);
+        assert!(
+            wire_messages(second.body.as_json()).starts_with(wire_messages(first.body.as_json()))
+        );
+        assert_tool_continuation(protocol, profile, second.body.as_json());
         let second_mock = mock_request(&server, &second, &fixture(protocol, profile, 2, model));
         let (assistant, calls, _) = collect_response(&config, &second).await;
         assert!(calls.is_empty());
@@ -196,9 +198,11 @@ async fn three_protocols_preserve_tool_batches_native_replay_and_multiturn_prefi
             super::provider::prepare_provider_request(&config, &request, Some(&correlation))
                 .unwrap();
         assert_eq!(first.correlation_id, third.correlation_id);
-        assert!(wire_messages(&third.body).starts_with(wire_messages(&second.body)));
+        assert!(
+            wire_messages(third.body.as_json()).starts_with(wire_messages(second.body.as_json()))
+        );
         if profile == ProviderProfile::DeepSeek && protocol == ProviderFormat::OpenAiChat {
-            assert!(wire_messages(&third.body).iter().any(|message| {
+            assert!(wire_messages(third.body.as_json()).iter().any(|message| {
                 message["role"] == "assistant"
                     && message["content"] == "sum=7"
                     && message["reasoning_content"] == "fixture reasoning for the second response"
@@ -208,7 +212,7 @@ async fn three_protocols_preserve_tool_batches_native_replay_and_multiturn_prefi
             let plain =
                 super::provider::prepare_provider_request(&config, &no_tools, Some(&correlation))
                     .unwrap();
-            assert!(wire_messages(&plain.body)
+            assert!(wire_messages(plain.body.as_json())
                 .iter()
                 .all(|message| message.get("reasoning_content").is_none()));
         }
@@ -233,7 +237,7 @@ fn mock_request<'a>(
     server.mock(|when, then| {
         when.method(POST)
             .path(url::Url::parse(&request.url).unwrap().path())
-            .json_body(request.body.clone());
+            .json_body(request.body.as_json().clone());
         then.status(200)
             .header("content-type", "text/event-stream")
             .body(response);

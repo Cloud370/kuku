@@ -3,6 +3,7 @@ mod common;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,6 +15,7 @@ use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 
 use kuku::event::{EventPayload, ModelStopReason};
+use kuku::permission::{AuthorizationDecision, ToolAuthorization, ToolAuthorizer};
 use kuku::{
     query, AdapterFuture, AgentConfig, AgentStatus, Error, Input, ModelAdapter, ModelEvent,
     ModelRequest, ModelStream, OutputRead, Provider, Session, SessionOptions, UiEvent,
@@ -147,12 +149,126 @@ fn outputs(session: &Session) -> PathBuf {
     session.events_path().parent().unwrap().join("outputs")
 }
 
+#[derive(Debug, Default)]
+struct FetchReadPolicy(AtomicBool);
+
+impl ToolAuthorizer for FetchReadPolicy {
+    fn authorize(&self, action: &ToolAuthorization) -> kuku::Result<AuthorizationDecision> {
+        Ok(
+            if action.tool.name == "read_output" && self.0.load(Ordering::Acquire) {
+                AuthorizationDecision::Deny
+            } else {
+                AuthorizationDecision::Allow
+            },
+        )
+    }
+}
+
+#[tokio::test]
+async fn download_hint_supports_local_json_extraction_under_read_output_authority() {
+    let server = MockServer::start_async().await;
+    let prefix = r#"{"count":7,"padding":""#;
+    let payload = format!(
+        "{prefix}{}中{TEXT_MARKER}\"}}",
+        "x".repeat(65535 - prefix.len())
+    );
+    let download = server
+        .mock_async(|when, then| {
+            when.method(GET).path("/sample.json");
+            then.status(200)
+                .header(
+                    "content-type",
+                    "application/vnd.fixture+json; charset=utf-8",
+                )
+                .body(&payload);
+        })
+        .await;
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let (mut options, mut calls) = options(workspace.path(), data.path());
+    let policy = Arc::new(FetchReadPolicy::default());
+    options.authorizer = policy.clone();
+    let session = open(options).await;
+    let fetch = json!({"url":server.url("/sample.json")});
+    next_call(&mut calls)
+        .await
+        .tools(&[("download", "fetch_url", fetch.clone())]);
+
+    let script_step = next_call(&mut calls).await;
+    let (_, receipt, facts) = tool_result(&session, "download");
+    let output_id = &facts["output_ref"]["id"];
+    let selector = json!({"id":output_id});
+    assert!(receipt.contains(&format!("JSON.parse(await tools.output_text({selector}))")));
+    assert!(!script_step.request.body.to_string().contains(TEXT_MARKER));
+    let code = format!(
+        "const body = JSON.parse(await tools.output_text({selector})); return {{ count: body.count, suffix: body.padding.slice(-{}) === '中{TEXT_MARKER}' }};",
+        TEXT_MARKER.len() + 1
+    );
+    script_step.tools(&[("extract", "run_js", json!({"code":code}))]);
+    let final_step = next_call(&mut calls).await;
+    let (status, _, extraction) = tool_result(&session, "extract");
+    assert_eq!("ok", status);
+    assert_eq!(json!({"count":7,"suffix":true}), extraction["value"]);
+    assert_eq!(2, extraction["actions"][0]["result"]["pages"]);
+    final_step.done();
+    idle(&session).await;
+
+    policy.0.store(true, Ordering::Release);
+    session
+        .send(Input::new(
+            "restrict",
+            "main",
+            "verify the scoped output read",
+        ))
+        .unwrap();
+    next_call(&mut calls)
+        .await
+        .tools(&[("denied", "run_js", json!({"code":code}))]);
+    let final_step = next_call(&mut calls).await;
+    let (status, denied, result) = tool_result(&session, "denied");
+    assert_eq!("error", status);
+    assert_eq!("blocked", result["actions"][0]["status"]);
+    assert!(!denied.contains(TEXT_MARKER));
+    final_step.done();
+    idle(&session).await;
+
+    session
+        .configure_agent(
+            "deselect",
+            "main",
+            AgentConfig {
+                tools: Some(vec!["fetch_url".into(), "run_js".into()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    session
+        .send(Input::new(
+            "metadata-only",
+            "main",
+            "download metadata only",
+        ))
+        .unwrap();
+    next_call(&mut calls)
+        .await
+        .tools(&[("metadata", "fetch_url", fetch)]);
+    let final_step = next_call(&mut calls).await;
+    let (status, metadata, _) = tool_result(&session, "metadata");
+    assert_eq!("ok", status);
+    assert!(metadata.contains("retained with output ID"));
+    assert!(!metadata.contains("tools.output_text") && !metadata.contains("read_output"));
+    final_step.done();
+    idle(&session).await;
+    session.close().await.unwrap();
+    download.assert_hits_async(2).await;
+}
+
 #[tokio::test]
 async fn fetch_body_is_model_readable_and_agent_scoped_after_reopen() {
     let server = MockServer::start_async().await;
     let text = format!(
         "first page\n{}\n{TEXT_MARKER}\n",
-        "fixture line\n".repeat(480)
+        "fixture line\n".repeat(700)
     );
     let txt = server
         .mock_async(|when, then| {
@@ -210,11 +326,12 @@ async fn fetch_body_is_model_readable_and_agent_scoped_after_reopen() {
     assert_ne!(text_id, binary_id);
     assert!(second.request.body.to_string().contains(&text_id));
     assert!(!second.request.body.to_string().contains(TEXT_MARKER));
-    second.tools(&[("first", "read_output", json!({"id":text_id,"limit":4096}))]);
+    second.tools(&[("first", "read_output", json!({"id":text_id,"limit":32_768}))]);
     let third = next_call(&mut calls).await;
     let (status, _, first) = tool_result(&session, "first");
     assert_eq!("ok", status);
     assert_eq!(true, first["has_more"]);
+    assert_eq!(8192, first["next_offset"]);
     assert!(first["segments"][0]["text"]
         .as_str()
         .unwrap()

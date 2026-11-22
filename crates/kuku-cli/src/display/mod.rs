@@ -3,6 +3,7 @@ mod json;
 pub mod text;
 pub mod util;
 
+pub(crate) use event::event_conversation;
 pub use event::{
     derive_final_output, derive_final_output_for_conversation, filter_events_for_conversation,
     render_event_brief,

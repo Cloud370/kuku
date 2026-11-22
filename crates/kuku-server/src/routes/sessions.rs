@@ -8,7 +8,7 @@ use axum::Json;
 use kuku::adapter::inspect_model;
 use kuku::event::{EventPayload, EventStore};
 use kuku::query::ModelPhase;
-use kuku::session::{AgentSnapshot, AgentStatus, ReplyPreviews, Session, SessionStatus};
+use kuku::session::{AgentSnapshot, AgentStatus, ReplyPreviews, Session};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -49,37 +49,27 @@ pub(super) async fn list(
     let search = query.search.unwrap_or_default().to_lowercase();
     let manager = manager(&state).await;
     let mut sessions = Vec::new();
-    for summary in kuku::list_sessions(&home, workspace.as_deref())? {
-        let path =
-            kuku::session::session_events_path(&home, &summary.workspace, &summary.session_id)?;
-        let agents = if let Some(session) = manager.open_session(&path) {
-            session.agents()
-        } else {
-            Session::read_agents(&path)?
-        };
-        let title = title(&summary.title, &path, &agents)?;
-        let status = session_status(&agents, summary.status);
+    for file in kuku::session::session_files(&home, workspace.as_deref())? {
+        let open = manager.open_session(file.events_path());
+        let listing = file.listing(open.as_ref())?;
+        let summary = listing.summary;
+        let title = summary.title.chars().take(TITLE_CHARS).collect::<String>();
         if !search.is_empty()
             && !title.to_lowercase().contains(&search)
             && !summary.session_id.to_lowercase().contains(&search)
         {
             continue;
         }
-        let waiting_agents = agents
-            .iter()
-            .filter(|agent| agent.status == AgentStatus::Waiting)
-            .map(|agent| &agent.address)
-            .collect::<Vec<_>>();
         sessions.push(json!({
             "session_id":summary.session_id,
             "workspace":summary.workspace,
             "title":title,
             "created_at":summary.created_at,
             "turn_count":summary.turn_count,
-            "status":status,
+            "status":summary.status,
             "mtime":summary.mtime,
             "size":summary.size,
-            "waiting_agents":waiting_agents,
+            "waiting_agents":listing.waiting_agents,
         }));
     }
     Ok(Json(json!({"ok":true,"sessions":sessions})))
@@ -106,20 +96,10 @@ pub(super) async fn agents(
 ) -> Result<Json<Value>> {
     let target = SessionTarget::new(&state, &query.workspace, &id)?;
     target.require_exists()?;
-    let initial_cursor = EventStore::read_head(&target.path)?;
     let open = manager(&state).await.open_session(&target.path);
-    let agents = match &open {
-        Some(session) => session.agents(),
-        None => Session::read_agents(&target.path)?,
-    };
-    let (agents, cursor) = if let Some(first) = agents.first() {
-        let view = match &open {
-            Some(session) => session.agent_view(&first.address)?,
-            None => Session::read_view(&target.path, &first.address)?,
-        };
-        (view.agents, view.cursor)
-    } else {
-        (agents, initial_cursor)
+    let (agents, cursor) = match &open {
+        Some(session) => session.agents_with_cursor()?,
+        None => Session::read_agents_with_cursor(&target.path)?,
     };
     let agents: Vec<_> = agents.iter().map(agent_summary).collect();
     Ok(Json(
@@ -425,39 +405,6 @@ fn agent_error(error: kuku::Error) -> ApiError {
     }
 }
 
-fn session_status(agents: &[AgentSnapshot], fallback: SessionStatus) -> SessionStatus {
-    if agents
-        .iter()
-        .any(|agent| agent.status == AgentStatus::Running)
-    {
-        SessionStatus::Active
-    } else if agents.iter().any(|agent| {
-        matches!(
-            agent.status,
-            AgentStatus::Interrupted | AgentStatus::Stopped
-        )
-    }) {
-        SessionStatus::Interrupted
-    } else if agents.iter().any(|agent| agent.turn.is_some()) {
-        SessionStatus::Done
-    } else {
-        fallback
-    }
-}
-
-fn title(admitted: &str, path: &FsPath, agents: &[AgentSnapshot]) -> Result<String> {
-    if !admitted.is_empty() {
-        return Ok(admitted.chars().take(TITLE_CHARS).collect());
-    }
-    if let Some(agent) = agents.iter().find(|agent| agent.pending_inputs > 0) {
-        let view = Session::read_view(path, &agent.address)?;
-        if let Some(first) = view.pending_inputs.first() {
-            return Ok(first.input.text.chars().take(TITLE_CHARS).collect());
-        }
-    }
-    Ok(String::new())
-}
-
 #[cfg(test)]
 mod retry_progress_tests {
     use kuku::event::{EventPayload, EventStore};
@@ -510,6 +457,7 @@ mod retry_progress_tests {
             active_config: None,
             status: AgentStatus::Interrupted,
             pending_inputs: 0,
+            running_jobs: 0,
             admitted_task: None,
             queued_task: None,
             turn: Some(3),

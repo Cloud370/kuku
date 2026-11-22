@@ -21,6 +21,7 @@
 | `advance_command(command_id, address)` | 幂等的显式推进 |
 | `reply_permission_receipt(...)` / `reply_question_receipt(...)` | 校验既有回复回执，不恢复执行 |
 | `events(after, limit)` / `observe(after)` | 有界分页与可续接观察 |
+| `history_points(address, before, limit)` / `jump_history(command_id, address, target_event_id)` | 列出轮次，从已结算的位置继续并保留当前文件 |
 | `read_output(output_id, &OutputRead)` | 有界范围、字面搜索、增量输出 |
 | `reply_permission(command_id, address, request_id, allow)` | 精确待决动作回复 |
 | `reply_question(command_id, address, request_id, text)` | 以关联输入投递精确问题回复 |
@@ -41,6 +42,10 @@
 
 `Session::read_agents` 从日志重建离线恢复状态，将没有终结事实的 `Running` 映射为 `Interrupted`，即使另一个运行时仍然活跃。查询当前活状态应使用已打开 Session 的 `agent` 或 `agents`。
 
+`SessionHistory::read_with_turns(events_path)` 一次读取历史可见性、Turn 编号和对应的已提交游标。用 `page_before` 分页读取事件，用 `includes` 判断事件是否属于当前历史，用 `rewind_page` 分页查看一次消息回退的内容。`Session::agents_with_cursor` 和 `Session::read_agents_with_cursor` 一次返回 Agent 列表和游标。`session_files` 从文件系统发现日志，`SessionFile::listing` 读取会话选择器需要的标题、状态和等待中的 Agent。
+
+用 `Session::jump_history` 切换到已结束的一轮并保留当前文件。目标在当前历史中时，`Session::preview_file_rewind` 返回工作区相对路径、可用的增删行数、跳过的文件和指纹。用户确认预览后，将指纹传给 `Session::jump_history_with_file_restore`。如果方案已经变化，SDK 会在应用前拒绝。恢复只使用直接调用内置 `write_file` 和 `edit_file` 产生的可核验记录。脚本和 Shell 的改动不在恢复范围内。[Session 行为](../how-it-works/sessions.md#消息回退)
+
 ## 宿主适配器
 
 用 `SessionOptions.model_adapter` 设置 `Arc<dyn ModelAdapter>`，并向 `SessionOptions.tools` 添加 `Arc<dyn ToolAdapter>`。这些工具进入公开 SDK 的同一执行链；[外部调用测试](../../../crates/kuku/tests/adapter_runtime.rs) 覆盖实际文件动作、宿主拒绝、保留输出，以及取消时等待清理。
@@ -55,13 +60,13 @@
 
 ## 工作区执行
 
-模型通过 Session 选定的工具调用 [`run_command` 或 `workspace_script`](tools.md#运行本机程序)。嵌入宿主通过 `Session::events` 或 `Session::observe` 读取 `kuku::event::EventPayload::ToolResult` 的 `structured` 字段，可以用 `kuku::execution::CommandExecutionFacts::from_structured` 解码命令结果。`invocation` 保留程序名及参数边界，或解释器及命令文本。`started`、`termination`、`exit_code` 和 `signal` 描述宿主观察到的进程结果。`capture_complete`、`cleanup_incomplete` 和 `output_ref` 描述保留证据与清理情况。可信宿主可将 `output_ref.id` 交给 `Session::read_output` 分页读取，再用 `OutputSegment::as_bytes()` 获取原始字节。`reported_tests` 包含从程序输出获得的统计。任意外部程序造成的文件变更可能仍然未知。
+模型通过 Session 选定的工具调用 [`run_command` 或 `run_js`](tools.md#运行本机程序)。嵌入宿主通过 `Session::events` 或 `Session::observe` 读取 `kuku::event::EventPayload::ToolResult` 的 `structured` 字段，可以用 `kuku::execution::CommandExecutionFacts::from_structured` 解码命令结果。`invocation` 保留程序名及参数边界，或解释器及命令文本。`started`、`termination`、`exit_code` 和 `signal` 描述宿主观察到的进程结果。`capture_complete`、`cleanup_incomplete` 和 `output_ref` 描述保留证据与清理情况。可信宿主可将 `output_ref.id` 交给 `Session::read_output` 分页读取，再用 `OutputSegment::as_bytes()` 获取原始字节。`reported_tests` 包含从程序输出获得的统计。任意外部程序造成的文件变更可能仍然未知。
 
 工具返回 [Session Job](tools.md#session-job) 时，用 `Session::jobs(agent)` 列出最近及正在运行的 Job，或用 `Session::job(agent, job_id)` 查询单个 Job。调用 `Session::wait_job(agent, job_id).await` 等待最终结果，或调用 `Session::cancel_job(agent, job_id).await` 请求取消并等待清理。Job 状态包括 `running`、`completed`、`failed`、`cancelled` 和 `interrupted`。终态的 `JobSnapshot.result` 包含该动作的结构化结果。命令捕获完成后，可将其 `output_id` 传给同一个输出读取器，`output_ref` 提供所捕获的字节范围。
 
-`RuntimeLimits.job_foreground_wait_ms` 控制顶层命令和脚本的前台观察窗口。
+`RuntimeLimits.job_foreground_wait_ms` 控制顶层命令和脚本的前台观察窗口。`RuntimeLimits.max_command_seconds` 可为每条命令设置独立的进程截止时间，包括 `run_js` 内启动的命令和作为 Job 运行的命令。默认值为 `None`。
 
-`workspace_script` 的结果类型为 `kind: "workspace_script_result"`，可以用 `kuku::WorkspaceScriptFacts::from_structured` 解码。结果包含脚本返回的 `value` 及已观察到的宿主 `actions`。每个动作记录 ID、工具、状态、摘要、截断情况及有界结果。动作状态 `unknown` 表示宿主未能确认最终结果。即使脚本失败，也可以结合整次调用的 `timed_out`、`cleanup_incomplete` 和 `not_dispatched` 核对部分完成的工作。见[脚本方法](tools.md#工作区脚本)。
+`run_js` 的结果类型为 `kind: "workspace_script_result"`，可以用 `kuku::WorkspaceScriptFacts::from_structured` 解码。结果包含脚本返回的 `value` 及已观察到的宿主 `actions`。每个动作记录 ID、工具、状态、摘要、截断情况及有界结果。动作状态 `unknown` 表示宿主未能确认最终结果。即使脚本失败，也可以结合整次调用的 `timed_out`、`cleanup_incomplete` 和 `not_dispatched` 核对部分完成的工作。见[脚本方法](tools.md#工作区脚本)。
 
 用 `kuku::execution::WorkspaceActionReceipt::from_event` 解码 `workspace.action` 事件，读取日志中脚本内动作的派发和结果事实。在父 `tool_call_id` 内按 `action_id` 关联记录。派发记录缺少对应结果时，副作用仍然未知。
 
@@ -89,11 +94,13 @@ cargo run -p kuku --example session_task -- \
 
 ## 限额与用量
 
-默认限额允许 64 个 Agent、每 Agent 128 条待处理输入、65,536 输入字节、每次已准备请求 512 KiB、四个模型流、每 Agent 八个工具、每份保留输出 8 MiB、首次预览 16 KiB 和 128 条临时观察。预览至少 1 KiB，以保留完整引用和标志。
+默认限额允许 64 个 Agent、每 Agent 128 条待处理输入、65,536 输入字节、每次已准备请求 512 KiB、四个模型流、每 Agent 八个工具、每份保留输出 8 MiB、首次预览 8 KiB 和 128 条临时观察。预览至少 1 KiB，以保留完整引用和标志。
 
 `RuntimeLimits.max_requests_per_open` 可限制所有 Agent Turn 的总尝试数，重开后重置。`RuntimeLimits.max_output_tokens_per_request` 可为宿主上的每次响应设置生成上限。两者默认都是 `None`。Agent 显式设置的输出上限优先于 tier 配置，宿主上限适用于每个 Agent。Rust 的 `TierConfig.max_output_tokens`、`AgentSelection.max_output_tokens` 和 `ModelSelection.max_output_tokens` 类型均为 `Option<u32>`。协议允许时，省略有效值就由供应商选择默认行为。请求准备记录给出本次请求采用的值。`session_task --max-output-tokens N` 同时设置宿主和主 Agent 的上限。详见[模型配置](config.md#modelname)。
 
-`RuntimeLimits.retry_transient_provider_errors` 默认为 true。最多进行六次尝试（五次重试），所有可重试的 provider 故障共用 2/4/8/16/32 秒指数退避，并加 0–25% 抖动。有效且不超过 30 秒的 `Retry-After` 可延长等待；缺失、无效或更长的提示不会禁用重试，超过 30 秒的提示会被忽略。明确的认证、权限、额度、上下文、请求和无效响应错误不会重试。首个流内容前的错误可以重试；输出开始后发生的可重试错误会结束本次尝试，以免重复已发出或持久化的副作用。每次重试沿用已准备请求，只有实际派发的尝试计入调用方请求预算。可将此选项设为 false 或使用 `session_task --no-provider-retry` 关闭重试。示例在 `limits.automatic_retries` 中报告五次允许的重试（禁用时为零）。
+`RuntimeLimits.retry_transient_provider_errors` 默认为 true。最多进行六次尝试（五次重试），所有可重试的 provider 故障共用 2/4/8/16/32 秒指数退避，并加 0–25% 抖动。有效且不超过 30 秒的 `Retry-After` 可延长等待；缺失、无效或更长的提示不会禁用重试，超过 30 秒的提示会被忽略。传输层将明确的认证、权限、额度、上下文、请求和无效响应错误视为终止条件。首个流内容前的错误可以重试；输出开始后发生的可重试错误会结束本次尝试，以免重复已发出或持久化的副作用。每次重试沿用已准备请求，只有实际派发的尝试计入调用方请求预算。可将此选项设为 false 或使用 `session_task --no-provider-retry` 关闭重试。示例在 `limits.automatic_retries` 中报告五次允许的重试（禁用时为零）。
+
+开启 provider 重试时，如果一次完整的工具调用响应包含无效 JSON 参数，Session 可以请求模型重新生成响应。整批调用会在派发之前丢弃，重生成使用已经接纳的上下文。每步最多重生成五次，重开 Session 后也沿用这个计数。每接纳一批工具调用就进入新一步。每次重生成计入调用方的模型请求预算。日志记录失败类别、工具调用索引、可识别的已注册工具名和当前步骤的尝试次数，省去被拒绝的参数原文。
 
 日志每记录最多 1 MiB。分页最多 256 条，达到 1 MiB 目标停止，单条超出时整页小于 2 MiB。输出读取最多 80,000 字节。保留输出配额含捕获帧及元信息。达到配额时运行时继续排空管道，并将保留结果标记为不完整。Session 默认保留总计 128 MiB 的数据与 64 个命名绑定。没有引用的普通输出保留 24 小时后可被回收。可通过 `RuntimeLimits` 中的 `max_retained_output_bytes`、`max_named_values` 和 `output_retention_secs` 调整这些限额。
 

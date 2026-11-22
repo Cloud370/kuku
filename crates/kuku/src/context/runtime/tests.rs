@@ -6,6 +6,33 @@ use crate::context::{CanonicalMessage, MessageBlock, ToolResult};
 use crate::conversation::address::ConversationAddress;
 use crate::event::{EventPayload, EventStore, StoredEvent};
 use serde_json::json;
+use sha2::{Digest, Sha256};
+
+fn assert_cursor_accounting(cursor: &ContextCursor) {
+    let messages = cursor
+        .admitted
+        .iter()
+        .map(|value| &value.message)
+        .collect::<Vec<_>>();
+    let expected = messages
+        .iter()
+        .map(|message| serde_json::to_vec(message).unwrap().len())
+        .sum::<usize>()
+        + cursor
+            .tail
+            .iter()
+            .chain(&cursor.pending_admissions)
+            .map(|event| serde_json::to_vec(event).unwrap().len())
+            .sum::<usize>();
+    assert_eq!(expected, cursor.retained_bytes());
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&messages).unwrap())
+        ),
+        cursor.history_prefix_hash(messages.len())
+    );
+}
 
 fn rendered_provider_body(
     history: Vec<CanonicalMessage>,
@@ -220,6 +247,7 @@ fn rewind_prunes_persisted_admissions_by_canonical_replay_provenance_after_reope
             text: "steering input".into(),
             from: None,
             via_tool_call_id: None,
+            job_delivery: false,
         })
         .unwrap()
         .id;
@@ -254,6 +282,9 @@ fn rewind_prunes_persisted_admissions_by_canonical_replay_provenance_after_reope
             })))
             .unwrap();
     }
+    cursor.refresh(&path, "main", 1024 * 1024).unwrap();
+    assert_eq!(admissions.len(), cursor.pending_admissions.len());
+    assert_cursor_accounting(&cursor);
     writer
         .append(EventPayload::Unknown(json!({
             "kind":"runtime.step_prepared", "agent":"main", "segment":segment,
@@ -262,6 +293,7 @@ fn rewind_prunes_persisted_admissions_by_canonical_replay_provenance_after_reope
         .unwrap();
     cursor.refresh(&path, "main", 1024 * 1024).unwrap();
     assert_eq!(4, cursor.admitted.len());
+    assert_cursor_accounting(&cursor);
 
     writer
         .append(EventPayload::Unknown(json!({
@@ -273,6 +305,7 @@ fn rewind_prunes_persisted_admissions_by_canonical_replay_provenance_after_reope
     drop(writer);
 
     let assert_provider_body = |cursor: &ContextCursor| {
+        assert_cursor_accounting(cursor);
         let history = cursor.history(&ConversationAddress::MAIN);
         let body = serde_json::to_string(&rendered_provider_body(
             history
@@ -446,6 +479,7 @@ fn reopened_cursor_preserves_handoff_summary_before_rewind_target() {
             text: "rewound second-turn input".into(),
             from: None,
             via_tool_call_id: None,
+            job_delivery: false,
         })
         .unwrap()
         .id;
@@ -594,6 +628,7 @@ fn active_cursor_selects_one_prepared_segment_and_incrementally_reads_new_facts(
             text: "input".into(),
             from: None,
             via_tool_call_id: None,
+            job_delivery: false,
         })
         .unwrap();
     let first = writer
@@ -646,7 +681,7 @@ fn active_cursor_selects_one_prepared_segment_and_incrementally_reads_new_facts(
         Some(first.id),
         cursor.segment.as_ref().map(|segment| segment.id)
     );
-    assert!(cursor.retained_bytes < 4096);
+    assert!(cursor.retained_bytes() < 4096);
     let conversation = ConversationAddress::parse("reviewer").unwrap();
     let history = cursor.history(&conversation);
     assert_eq!(2, history.len());
@@ -676,6 +711,7 @@ fn active_cursor_selects_one_prepared_segment_and_incrementally_reads_new_facts(
     cursor.refresh(&path, "reviewer", 16 * 1024).unwrap();
     assert_eq!(2, cursor.events_read - read);
     assert_eq!(3, cursor.history(&conversation).len());
+    assert_cursor_accounting(&cursor);
     let read = cursor.events_read;
     cursor.refresh(&path, "reviewer", 16 * 1024).unwrap();
     assert_eq!(read, cursor.events_read);

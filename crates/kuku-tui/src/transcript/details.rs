@@ -66,6 +66,7 @@ impl DetailKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DetailKind {
     Agent,
+    Compaction,
     Group,
     Reasoning,
     RewindGroup,
@@ -183,6 +184,22 @@ impl VisibleDetail {
                 ),
                 false,
             ),
+            DetailRecord::Compaction(summary, open) => Self::new(
+                rows,
+                key,
+                DetailKind::Compaction,
+                if open {
+                    "Collapse checkpoint"
+                } else {
+                    "Expand checkpoint"
+                }
+                .into(),
+                shorten(
+                    &crate::text::single_line(crate::text::cap(summary, 256)),
+                    66,
+                ),
+                open,
+            ),
             DetailRecord::Agent(agent) => {
                 let mut item = Self::new(
                     rows,
@@ -229,6 +246,7 @@ impl VisibleDetail {
 
 pub(super) enum DetailRecord<'a> {
     Reasoning(&'a str),
+    Compaction(&'a str, bool),
     Agent(AgentCard<'a>),
     Tool(&'a Tool),
 }
@@ -252,6 +270,9 @@ impl Transcript {
             })
             .map(|item| item.key.clone())
             .or_else(|| match &record.body {
+                super::Body::Compaction(compaction) => compaction
+                    .summary()
+                    .map(|_| DetailKey::message_action(DetailKind::Compaction, &record.key)),
                 super::Body::Tool(tool) => Some(DetailKey::message_action(
                     if tool.agent_card().is_some() {
                         DetailKind::Agent
@@ -384,6 +405,7 @@ impl Transcript {
             let opening = match key.kind {
                 DetailKind::Agent => self.agent_cards.is_open(&key.record),
                 DetailKind::Group => self.detail_items.groups.contains(&key.record),
+                DetailKind::Compaction => self.detail_items.inspections.contains(&key.record),
                 _ => false,
             };
             let reveal = self
@@ -431,7 +453,7 @@ impl Transcript {
                     self.toggle_agent_record(&key.record)
                 }
             }
-            DetailKind::Tool if in_window => {
+            DetailKind::Tool | DetailKind::Compaction if in_window => {
                 let group_was_collapsed = self.open_containing_group(&key.record);
                 if group_was_collapsed {
                     if !self.detail_items.inspections.contains(&key.record) {
@@ -452,6 +474,7 @@ impl Transcript {
                 true
             }
             DetailKind::Tool
+            | DetailKind::Compaction
             | DetailKind::Reasoning
             | DetailKind::RewindGroup
             | DetailKind::RewindGroupMore

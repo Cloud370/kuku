@@ -23,6 +23,20 @@ mod event {
     pub use kuku::event::ModelStopReason;
 }
 
+mod execution {
+    pub use kuku::execution::OutputReference;
+
+    #[allow(dead_code)]
+    mod media {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/execution/media.rs"
+        ));
+    }
+
+    pub(crate) use media::{ImageMime, ModelImage, MAX_MODEL_IMAGE_BYTES};
+}
+
 mod prompt {
     pub use kuku::prompt::{builtin_prompt_catalog, PromptCatalog};
 }

@@ -17,6 +17,7 @@ mod commands;
 mod events;
 mod jobs;
 mod models;
+mod rewind_files;
 mod rewind_history;
 mod sessions;
 mod values;
@@ -31,6 +32,14 @@ pub(crate) fn interactive() -> Router<Arc<AppState>> {
         .route("/sessions/{id}/agents", get(sessions::agents))
         .route("/sessions/{id}/snapshot", get(sessions::snapshot))
         .route("/sessions/{id}/history", get(events::history))
+        .route(
+            "/sessions/{id}/history/destinations",
+            get(events::history_destinations),
+        )
+        .route(
+            "/sessions/{id}/history/destinations/{event_id}/files",
+            get(rewind_files::preview),
+        )
         .route(
             "/sessions/{id}/history/rewinds/{rewind_event_id}",
             get(rewind_history::history),

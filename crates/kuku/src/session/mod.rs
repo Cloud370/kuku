@@ -22,16 +22,17 @@ pub mod paths;
 pub mod runtime;
 
 pub use runtime::{
-    Activation, AgentConfig, AgentSnapshot, AgentStatus, AgentView, Input, InputSource,
-    InputStatus, InputTiming, JobResult, JobSnapshot, JobStatus, ModelUsageSample, NamedValue,
-    NamedValueKind, NamedValueSource, Observation, OutputChunk, OutputRead, OutputSegment,
-    OutputStream, PendingInput, QuestionRequest, Receipt, ReplyPreview, ReplyPreviews,
-    RuntimeLimits, Session, SessionObserver, SessionOptions, TurnIndex, TurnSummary, UsageTotals,
-    Withdrawal, MAX_INPUT_VALUES, MAX_VALUE_NAME_BYTES,
+    Activation, AgentConfig, AgentSnapshot, AgentStatus, AgentView, FileRewindChange,
+    FileRewindPreview, HistoryPoint, Input, InputSource, InputStatus, InputTiming, JobResult,
+    JobSnapshot, JobStatus, MessageRewind, ModelUsageSample, NamedValue, NamedValueKind,
+    NamedValueSource, Observation, OutputChunk, OutputRead, OutputSegment, OutputStream,
+    PendingInput, QuestionRequest, Receipt, ReplyPreview, ReplyPreviews, RuntimeLimits, Session,
+    SessionHistory, SessionObserver, SessionOptions, TurnIndex, TurnSummary, UsageTotals,
+    UserMessagePreview, Withdrawal, MAX_INPUT_VALUES, MAX_VALUE_NAME_BYTES,
 };
 
 pub use id::{new_session_id, validate_session_id};
-pub use list::{list_sessions, SessionSummary};
+pub use list::{list_sessions, session_files, SessionFile, SessionListing, SessionSummary};
 pub use paths::{
     current_workspace, global_memory_path, host_log_path, kuku_home, project_home,
     project_memory_path, project_policy_path, runtime_log_path, session_events_path,

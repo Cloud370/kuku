@@ -14,6 +14,9 @@ import unittest
 from unittest import mock
 import zipfile
 
+from benchmark_runtime import bundle_prompts
+from benchmark_codex import inspect_codex
+
 
 SPEC = importlib.util.spec_from_file_location("acceptance", Path(__file__).with_name("run.py"))
 ACCEPTANCE = importlib.util.module_from_spec(SPEC)
@@ -32,6 +35,30 @@ class AcceptanceTests(unittest.TestCase):
         budget = ACCEPTANCE.Budget(self.directory / "budget.json")
         budget.initialize("test-only authorization", limit, 0)
         return budget
+
+    def test_codex_rollout_inspection_requires_exact_input_paired_calls_and_completion(self):
+        session = self.directory / "sessions/2026/11/22"
+        session.mkdir(parents=True)
+        journal = session / "rollout-local.jsonl"
+        instruction = "Write two files.\n"
+        def entry(kind, **payload):
+            return {"type": kind, "payload": payload}
+        turns = [
+            entry("session_meta", id="fixture"),
+            entry("turn_context", cwd="/app"),
+            entry("response_item", type="message", role="user", content=[{"type": "input_text", "text": instruction}]),
+            entry("response_item", type="function_call", call_id="exec"),
+            entry("response_item", type="custom_tool_call", call_id="patch"),
+            entry("response_item", type="function_call_output", call_id="exec"),
+            entry("response_item", type="custom_tool_call_output", call_id="patch"),
+            entry("event_msg", type="task_complete", last_agent_message="Finished."),
+        ]
+        for end in (len(turns), len(turns) - 2):
+            journal.write_text("".join(json.dumps(row) + "\n" for row in turns[:end]), encoding="utf-8")
+            result = inspect_codex(self.directory, instruction)
+            self.assertEqual(end == len(turns), result["passed"])
+            self.assertEqual(2, result["tool_calls"])
+            self.assertFalse(inspect_codex(self.directory, instruction.rstrip())["passed"])
 
     def test_unsettled_and_failed_runs_keep_their_full_reservation(self):
         budget = self.budget()
@@ -187,9 +214,9 @@ class AcceptanceTests(unittest.TestCase):
         page = {"output_id": reference["id"], "offset": 0, "next_offset": 8,
                 "complete": True, "capture_truncated": False}
         action = {"tool": "read_output", "status": "ok", "result": page}
-        tool = {"name": "workspace_script", "status": "ok", "call_id": "script-read",
+        tool = {"name": "run_js", "status": "ok", "call_id": "script-read",
                 "args": {"code": "return 1"}, "result": {"actions": [action]}}
-        expected = [{"tool": "workspace_script", "call_id": "script-read", "reference": reference}]
+        expected = [{"tool": "run_js", "call_id": "script-read", "reference": reference}]
         self.assertEqual(saved_report_reads([tool], reference), expected)
         tool["status"] = "error"
         self.assertEqual(saved_report_reads([tool], reference), expected)
@@ -230,6 +257,20 @@ class AcceptanceTests(unittest.TestCase):
     def test_missing_ca_bundle_fails_before_starting_a_paid_container(self):
         with self.assertRaises(ValueError):
             ACCEPTANCE.bundle_ca(self.directory, self.directory / "missing.pem")
+
+    def test_prompt_bundle_snapshots_only_catalog_assets(self):
+        source = self.directory / "source"
+        (source / "blocks").mkdir(parents=True)
+        (source / "notes").mkdir()
+        guidance = source / "blocks" / "tool-guidance.md"
+        guidance.write_bytes(b"Plain guidance.\n")
+        (source / "notes" / "scratch.md").write_bytes(b"irrelevant")
+        (source / "blocks" / "scratch.txt").write_bytes(b"irrelevant")
+        target = self.directory / "snapshot"
+        digest = hashlib.sha256(guidance.read_bytes()).hexdigest()
+        self.assertEqual(bundle_prompts(source, target), {str(Path("blocks") / "tool-guidance.md"): digest})
+        guidance.write_bytes(b"Changed after snapshot.\n")
+        self.assertEqual((target / "blocks" / "tool-guidance.md").read_bytes(), b"Plain guidance.\n")
 
     def test_log_is_bounded_and_redacts_secrets_across_the_retained_boundary(self):
         secret = "test-secret-" + "z" * 80
@@ -352,8 +393,44 @@ class AcceptanceTests(unittest.TestCase):
         manifest, case = ACCEPTANCE.manifest_case("large-scale-text-editing", "frontier")
         self.assertEqual([item["id"] for item in manifest["cases"]], [
             "log-summary-date-ranges", "cancel-async-tasks", "regex-log", "large-scale-text-editing",
+            "nginx-request-logging", "sqlite-with-gcov", "kv-store-grpc", "gcode-to-text", "pypi-server",
+            "schemelike-metacircular-eval", "code-from-image", "db-wal-recovery", "adaptive-rejection-sampler",
+            "count-dataset-tokens", "multi-source-data-merger", "query-optimize", "fix-ocaml-gc",
+            "fix-git", "sqlite-db-truncate",
         ])
         self.assertEqual(case["artifacts"], ["/app/apply_macros.vim"])
+        for case_id, artifact in (("db-wal-recovery", "/app/recovered.json"),
+                                  ("adaptive-rejection-sampler", "/app/ars.R"),
+                                  ("count-dataset-tokens", "/app/answer.txt"),
+                                  ("sqlite-db-truncate", "/app/recover.json")):
+            _, holdout = ACCEPTANCE.manifest_case(case_id, "frontier")
+            self.assertEqual((holdout["workspace"], holdout["artifacts"], holdout["timeout_sec"]),
+                             ("/app", [artifact], 900))
+        _, gcode = ACCEPTANCE.manifest_case("gcode-to-text", "frontier")
+        self.assertEqual((gcode["workspace"], gcode["artifacts"], gcode["timeout_sec"]),
+                         ("/app", ["/app/out.txt"], 900))
+        _, merger = ACCEPTANCE.manifest_case("multi-source-data-merger", "frontier")
+        self.assertEqual((merger["workspace"], merger["artifacts"], merger["timeout_sec"]),
+                         ("/app", ["/app/merged_users.parquet", "/app/conflicts.json"], 900))
+        _, query = ACCEPTANCE.manifest_case("query-optimize", "frontier")
+        self.assertEqual((query["workspace"], query["artifacts"], query["timeout_sec"]),
+                         ("/app", ["/app/sol.sql"], 900))
+        _, compiler = ACCEPTANCE.manifest_case("fix-ocaml-gc", "frontier")
+        self.assertEqual((compiler["workspace"], compiler["artifacts"], compiler["timeout_sec"]),
+                         ("/app", ["/app/ocaml/runtime/shared_heap.c"], 3600))
+        _, git_recovery = ACCEPTANCE.manifest_case("fix-git", "frontier")
+        self.assertEqual((git_recovery["workspace"], git_recovery["artifacts"], git_recovery["timeout_sec"]),
+                         ("/app/personal-site", [], 900))
+        self.assertRegex(git_recovery["published_image"], r"^alexgshaw/fix-git@sha256:[a-f0-9]{64}$")
+        _, package_server = ACCEPTANCE.manifest_case("pypi-server", "frontier")
+        self.assertEqual((package_server["workspace"], package_server["artifacts"], package_server["timeout_sec"]),
+                         ("/app", [], 900))
+        _, scheme = ACCEPTANCE.manifest_case("schemelike-metacircular-eval", "frontier")
+        self.assertEqual((scheme["workspace"], scheme["artifacts"], scheme["timeout_sec"]),
+                         ("/app", ["/app/eval.scm"], 2400))
+        _, image = ACCEPTANCE.manifest_case("code-from-image", "frontier")
+        self.assertEqual((image["workspace"], image["artifacts"], image["timeout_sec"]),
+                         ("/app", ["/app/output.txt"], 1200))
         legacy, legacy_case = ACCEPTANCE.manifest_case("cancel-async-tasks")
         frontier, frontier_case = ACCEPTANCE.manifest_case("cancel-async-tasks", "frontier")
         self.assertEqual(legacy_case, frontier_case)
@@ -361,6 +438,43 @@ class AcceptanceTests(unittest.TestCase):
         for case_id, suite in (("large-scale-text-editing", "legacy"), ("openssl-selfsigned-cert", "frontier")):
             with self.assertRaisesRegex(ValueError, "unknown benchmark case"):
                 ACCEPTANCE.manifest_case(case_id, suite)
+
+    def test_runner_grades_timed_out_sdk_only_after_verified_cleanup(self):
+        args = SimpleNamespace(sdk_binary=self.directory / "session_task", config=self.directory / "config.toml",
+                               connection="fixture", require_streaming=False, sdk_args=[], suite="frontier")
+        case = {"workspace": "/app", "artifacts": [], "timeout_sec": 20}
+        summary = {"tests": 1, "passed": 1, "failed": 0, "skipped": 0, "pending": 0, "other": 0}
+        sampler = mock.Mock()
+        sampler.finish.return_value = {}
+
+        def capture(_command, _directory, label, **_options):
+            if label == "sdk":
+                return {"exit_code": 1 if sdk_deadline else -9, "timed_out": not sdk_deadline}
+            return {"exit_code": 0, "timed_out": False}
+
+        for sdk_deadline, closed in ((False, False), (False, True), (True, False), (True, True)):
+            with self.subTest(sdk_deadline=sdk_deadline, closed=closed), mock.patch.multiple(
+                ACCEPTANCE,
+                bundle_ca=mock.Mock(return_value={"sha256": "", "runtime_path": "/kuku/runtime/ca.crt"}),
+                ResourceSampler=mock.Mock(return_value=sampler),
+                include_final_process_usage=mock.Mock(),
+                inspect_sdk=mock.Mock(return_value={"passed": False, "durable_cleanup_closed": closed,
+                                                    "task_deadline_elapsed": sdk_deadline}),
+                reward=mock.Mock(return_value=1.0),
+                verifier_summary=mock.Mock(return_value=summary),
+            ), mock.patch("benchmark_runtime.bundle_binary", return_value=(["/kuku/runtime/session_task"], {})), \
+                    mock.patch.object(ACCEPTANCE, "capture", side_effect=capture) as calls:
+                result = ACCEPTANCE.benchmark_attempt(args, case, self.directory, "fixture", self.directory / f"{sdk_deadline}-{closed}",
+                                                      "live", {}, sdk_timeout_sec=1)
+                self.assertEqual(not sdk_deadline, result["execution"]["timed_out"])
+                self.assertFalse(result["passed"])
+                self.assertEqual("runtime", result["failure_kind"])
+                self.assertEqual(closed, any(call.args[2] == "verifier" for call in calls.call_args_list))
+                if closed:
+                    self.assertTrue(result["original_verifier_passed"])
+                    self.assertFalse(result["task_passed"])
+                else:
+                    self.assertIn("skipped", result["verification"])
 
     def test_benchmark_parser_selects_frontier_route_and_preserves_legacy_default(self):
         parser = ACCEPTANCE.parser()
@@ -374,6 +488,8 @@ class AcceptanceTests(unittest.TestCase):
             args = parser.parse_args([*base, "--suite", "frontier", "--mode", "live", *flags])
             self.assertEqual((args.provider, args.upstream), expected)
             self.assertIsNone(args.max_requests)
+            self.assertIsNone(args.model)
+            self.assertIsNone(args.reasoning_effort)
         for limit in (22, 48):
             args = parser.parse_args([*base, "--suite", "frontier", "--max-requests", str(limit)])
             self.assertEqual(args.max_requests, limit)
@@ -399,16 +515,21 @@ class AcceptanceTests(unittest.TestCase):
         spec = {"repository": upstream.as_uri(), "revision": git("rev-parse", "HEAD"),
                 "cache_key": "frontier-fixture", "task_root": "tasks"}
 
-        def prepare(case_id):
-            return prepare_source(self.directory, {"source": spec}, self.directory / "logs" / case_id, {"id": case_id})
+        def prepare(case_id, attempt=0):
+            logs = self.directory / "logs" / f"{case_id}-{attempt}"
+            return prepare_source(self.directory, {"source": spec}, logs, {"id": case_id})
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            first, second = executor.map(prepare, ("one", "two"))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [executor.submit(prepare, case_id, attempt) for case_id in ("one", "two") for attempt in (1, 2)]
+            first, first_peer, second, second_peer = [future.result() for future in futures]
+        self.assertEqual(first, first_peer)
+        self.assertEqual(second, second_peer)
         self.assertNotEqual(first, second)
         self.assertFalse((first / "tasks" / "two").exists())
         self.assertFalse((first / "tasks" / "one" / "solution").exists())
         self.assertTrue((second / "tasks" / "two" / "tests" / "test.sh").is_file())
-        self.assertEqual(prepare("one"), first)
+        with ACCEPTANCE.locked(first.with_suffix(".lock")):
+            self.assertEqual(prepare("one"), first)
         (first / "tasks" / "one" / "instruction.md").write_text("edited")
         with self.assertRaisesRegex(ValueError, "benchmark source is modified"):
             prepare("one")
@@ -419,7 +540,9 @@ class AcceptanceTests(unittest.TestCase):
         creds = {"KUKU_TEST_KEY": "fixture"}
         image = "sha256:fixture-image"
         args = ["run.py", "--output", str(self.directory), "benchmark", "--suite", "frontier",
-                "--mode", "live", "--case", "large-scale-text-editing", "--sdk-binary", "/fixture/sdk"]
+                "--mode", "live", "--case", "large-scale-text-editing", "--sdk-binary", "/fixture/sdk",
+                "--provider", "deepseek", "--model", "deepseek-flash", "--reasoning-effort", "high",
+                "--max-request-bytes", "524288"]
 
         def capture(command, directory, label, **kwargs):
             if label == "image-build":
@@ -438,11 +561,47 @@ class AcceptanceTests(unittest.TestCase):
         budget.assert_not_called()
         parsed, case, source, built, directory, secrets = fake.call_args.args
         self.assertEqual(parsed.run_id, directory.name)
-        self.assertEqual((parsed.provider, parsed.upstream), ("openrouter", None))
+        self.assertEqual((parsed.provider, parsed.model, parsed.upstream), ("deepseek", "deepseek-flash", None))
+        self.assertEqual(parsed.reasoning_effort, "high")
+        self.assertEqual(parsed.max_request_bytes, 524288)
         self.assertEqual((parsed.case_cap_usd, parsed.max_output_tokens, parsed.max_requests), (0.75, None, None))
         self.assertEqual(parsed.agent_timeout_sec, 1200)
         self.assertEqual(source, self.directory / "source" / "tasks" / case["id"])
         self.assertEqual((built, secrets), (image, creds))
+
+    def test_benchmark_model_and_effort_overrides_require_live_direct_deepseek(self):
+        base = ["run.py", "benchmark", "--case", "regex-log"]
+        for flags in (
+            ["--suite", "frontier", "--provider", "deepseek"],
+            ["--suite", "frontier", "--mode", "live", "--provider", "openrouter"],
+            ["--mode", "live", "--provider", "deepseek"],
+        ):
+            for option in (("--model", "deepseek-v4-pro"), ("--reasoning-effort", "high")):
+                with self.subTest(flags=flags, option=option), \
+                        mock.patch.object(sys, "argv", [*base, *flags, *option]):
+                    with self.assertRaisesRegex(ValueError, f"{option[0]} selects a direct DeepSeek"):
+                        ACCEPTANCE.main()
+
+    def test_benchmark_request_byte_limit_requires_live_frontier_and_valid_bounds(self):
+        baseline = ["run.py", "benchmark", "--case", "regex-log", "--suite", "frontier"]
+        for flags, error in ((["--max-request-bytes", "524288"], "selects a request budget for Frontier live"),
+                             (["--mode", "live", "--max-request-bytes", "4095"], "between 4096 and 4194304"),
+                             (["--mode", "live", "--max-request-bytes", "4194305"], "between 4096 and 4194304")):
+            with self.subTest(flags=flags), mock.patch.object(sys, "argv", [*baseline, *flags]):
+                with self.assertRaisesRegex(ValueError, error):
+                    ACCEPTANCE.main()
+
+    def test_benchmark_deadline_requires_live_sdk_and_positive_seconds(self):
+        base = ["run.py", "benchmark", "--suite", "frontier", "--case", "regex-log"]
+        for context, seconds, error in (
+            (["--sdk-binary", "/fixture/sdk"], "60", "requires a live Frontier SDK runner"),
+            (["--mode", "live", "--sdk-binary", "/fixture/sdk"], "0", "positive 32-bit integer"),
+            (["--mode", "live", "--sdk-binary", "/fixture/sdk"], "4294967296", "positive 32-bit integer"),
+        ):
+            with self.subTest(context=context, seconds=seconds), \
+                    mock.patch.object(sys, "argv", [*base, *context, "--max-command-seconds", seconds]):
+                with self.assertRaisesRegex(ValueError, error):
+                    ACCEPTANCE.main()
 
     def test_legacy_paid_benchmark_keeps_finite_request_and_output_limits_and_disables_retries(self):
         config = self.directory / "config.toml"

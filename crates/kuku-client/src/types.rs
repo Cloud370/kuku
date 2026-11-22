@@ -116,6 +116,18 @@ pub enum Action {
         /// Explicit opt-in to restore supported recorded file changes.
         restore_files: bool,
     },
+    /// Continue after a settled Turn on any retained branch of this Agent.
+    HistoryJump {
+        /// Durable Turn settlement cursor.
+        target_event_id: u64,
+        /// Exact file plan fingerprint when the caller opts in to restoring files.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file_restore: Option<String>,
+    },
+    /// Compact the selected idle Agent's conversation without creating a turn.
+    Compact,
+    /// Restore context before the selected Agent's latest active compaction.
+    RestoreContext,
     /// Explicitly let an Agent advance eligible work.
     Advance,
     /// Interrupt the specific execution the client observed.
@@ -483,6 +495,8 @@ pub enum HistoryKind {
     Error,
     /// A durable provider retry or model recovery decision.
     Retry,
+    /// Progress or a terminal outcome of context compaction.
+    Compaction,
     /// A display role introduced by a later service build.
     #[serde(other)]
     Other,
@@ -500,6 +514,27 @@ pub struct HistoryPage {
     pub next_before: Option<u64>,
 }
 
+/// A continuation point and its membership in the current conversation branch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryDestination {
+    /// The finished Turn to continue from.
+    #[serde(flatten)]
+    pub point: kuku::session::HistoryPoint,
+    /// Whether the Turn is already part of the active conversation.
+    pub current_branch: bool,
+    /// Exact source of the original user prompt, including on saved branches.
+    pub prompt_event_id: Option<u64>,
+}
+
+/// A page of continuation points, newest first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryDestinations {
+    /// Turns with continuation or editing actions available to this Agent.
+    pub points: Vec<HistoryDestination>,
+    /// Exclusive cursor for the next older page.
+    pub next_before: Option<u64>,
+}
+
 /// A read-only history group created by a committed message rewind.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RewindGroup {
@@ -511,8 +546,6 @@ pub struct RewindGroup {
     pub agent: String,
     /// Display turn number of the selected user message, when available.
     pub turn_number: Option<u64>,
-    /// Number of displayable entries available when this page was built.
-    pub entry_count: usize,
 }
 
 /// One bounded page of displayable entries inside a read-only rewind group.
@@ -532,6 +565,9 @@ pub struct EventPage {
     pub events: Vec<StoredEvent>,
     /// Exclusive cursor for the next page, including scanned events excluded by filters.
     pub next_after: u64,
+    /// Exclusive cursor for the next older page when reading in reverse.
+    #[serde(default)]
+    pub next_before: Option<u64>,
 }
 
 fn deserialize_ledger_events<'de, D>(deserializer: D) -> Result<Vec<StoredEvent>, D::Error>
@@ -565,7 +601,7 @@ where
 }
 
 /// The overall state visible in session listings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
     /// The service has an active session.
@@ -580,7 +616,7 @@ pub enum SessionStatus {
 }
 
 /// A readable summary used to pick a stored Session.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionSummary {
     /// Stable Session identity.
     pub session_id: String,

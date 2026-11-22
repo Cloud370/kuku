@@ -6,6 +6,7 @@ use std::sync::Arc;
 use serde_json::json;
 use tokio::sync::{watch, Notify};
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
 
 use crate::event::{EventPayload, EventStore, StoredEvent};
 use crate::tool::{ToolFaults, ToolResultEnvelope};
@@ -21,6 +22,40 @@ pub(super) const JOB_DELIVERY_PREFIX: &str = "job-completion:";
 const MAX_JOB_SUMMARY_BYTES: usize = 1024;
 const RECENT_JOB_COUNT: usize = 64;
 
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub(crate) enum JobControl {
+    Wait,
+    Cancel,
+}
+
+impl JobControl {
+    pub(crate) fn for_tool(name: &str) -> Option<Self> {
+        match name {
+            "wait_job" => Some(Self::Wait),
+            "cancel_job" => Some(Self::Cancel),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn result_kind(self) -> &'static str {
+        match self {
+            Self::Wait => "job_wait_result",
+            Self::Cancel => "job_cancel_result",
+        }
+    }
+
+    pub(crate) fn is_result(data: &serde_json::Value) -> bool {
+        [Self::Wait, Self::Cancel]
+            .into_iter()
+            .any(|control| data["kind"] == control.result_kind())
+    }
+}
+
+pub(crate) struct JobObservation {
+    pub(crate) snapshot: JobSnapshot,
+    pub(crate) model_content: Option<String>,
+}
+
 pub(crate) struct JobRequest {
     pub(crate) agent: String,
     pub(crate) execution_id: u64,
@@ -28,6 +63,8 @@ pub(crate) struct JobRequest {
     pub(crate) tool_call_id: String,
     pub(crate) tool: String,
     pub(crate) summary: String,
+    pub(crate) started: Instant,
+    pub(crate) wait_tool_available: bool,
 }
 
 pub(super) struct JobWorker {
@@ -37,29 +74,34 @@ pub(super) struct JobWorker {
     pub(super) join: JoinHandle<Result<()>>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct JobIndex {
     sequence: u64,
     agents: HashMap<String, AgentJobs>,
+    #[serde(skip)]
+    active_since: HashMap<u64, Instant>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 struct AgentJobs {
     running: BTreeSet<u64>,
     jobs: BTreeMap<u64, JobSnapshot>,
 }
 
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct JobReplay {
+    #[serde(with = "crate::event::checkpoint_map")]
     calls: HashMap<(String, u64, String), JobCall>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 enum JobCall {
     Execution {
-        tool: &'static str,
+        tool: String,
         dispatched: bool,
     },
-    Wait {
+    Control {
+        control: JobControl,
         job_id: Option<String>,
         dispatched: bool,
     },
@@ -71,6 +113,7 @@ pub(super) struct JobCompletion<'a> {
     pub(super) job_id: &'a str,
     pub(super) result: &'a JobResult,
     pub(super) status: JobStatus,
+    pub(super) elapsed_ms: Option<u64>,
 }
 
 impl JobReplay {
@@ -84,19 +127,20 @@ impl JobReplay {
                 ..
             } => {
                 let call = match tool.as_str() {
-                    "run_command" => JobCall::Execution {
-                        tool: "run_command",
+                    "run_command" | "run_js" => JobCall::Execution {
+                        tool: tool.clone(),
                         dispatched: false,
                     },
-                    "workspace_script" => JobCall::Execution {
-                        tool: "workspace_script",
-                        dispatched: false,
-                    },
-                    "wait_job" => JobCall::Wait {
-                        job_id: None,
-                        dispatched: false,
-                    },
-                    _ => return Ok(()),
+                    name => {
+                        let Some(control) = JobControl::for_tool(name) else {
+                            return Ok(());
+                        };
+                        JobCall::Control {
+                            control,
+                            job_id: None,
+                            dispatched: false,
+                        }
+                    }
                 };
                 self.calls
                     .insert((agent.clone(), *turn, tool_call_id.clone()), call);
@@ -156,11 +200,11 @@ impl JobReplay {
         };
         if data["kind"] == "runtime.tool_dispatched" {
             match call {
-                JobCall::Execution { dispatched, .. } | JobCall::Wait { dispatched, .. } => {
+                JobCall::Execution { dispatched, .. } | JobCall::Control { dispatched, .. } => {
                     *dispatched = true;
                 }
             }
-        } else if let JobCall::Wait { job_id, .. } = call {
+        } else if let JobCall::Control { job_id, .. } = call {
             *job_id = data["args"]["job_id"].as_str().map(str::to_owned);
         }
     }
@@ -179,9 +223,13 @@ impl JobReplay {
                     state.jobs.register(event)?;
                 }
             }
-            JobCall::Wait { job_id, dispatched } => {
+            JobCall::Control {
+                control,
+                job_id,
+                dispatched,
+            } => {
                 if let Some(id) = job_id {
-                    if dispatched && data["kind"] == "job_wait_result" && data["id"] == id {
+                    if dispatched && data["kind"] == control.result_kind() && data["id"] == id {
                         state.acknowledge_job_result(agent, &id)?;
                     }
                 }
@@ -229,12 +277,7 @@ impl Session {
 
     /// Read one Job's status and terminal facts for its owning Agent.
     pub fn job(&self, agent: &str, job_id: &str) -> Result<JobSnapshot> {
-        let snapshot = {
-            let state = self.inner.state.lock().unwrap();
-            state.agent(agent)?;
-            state.jobs.get(agent, job_id)?.clone()
-        };
-        hydrate_job(self.events_path(), snapshot)
+        Ok(self.observe_job(agent, job_id)?.snapshot)
     }
 
     /// Read recent Job summaries from an offline Session without acquiring its runtime lease.
@@ -254,11 +297,19 @@ impl Session {
         let (state, _) = load_state(events_path)?;
         state.agent(agent)?;
         let snapshot = state.jobs.get(agent, job_id)?.clone();
-        hydrate_job(events_path, offline_snapshot(snapshot))
+        Ok(hydrate_job(events_path, offline_snapshot(snapshot))?.snapshot)
     }
 
     /// Wait for a Job's terminal state without changing its lifetime.
     pub async fn wait_job(&self, agent: &str, job_id: &str) -> Result<JobSnapshot> {
+        Ok(self.wait_job_observation(agent, job_id).await?.snapshot)
+    }
+
+    pub(crate) async fn wait_job_observation(
+        &self,
+        agent: &str,
+        job_id: &str,
+    ) -> Result<JobObservation> {
         let changed = self
             .inner
             .writer
@@ -284,6 +335,14 @@ impl Session {
 
     /// Request cancellation of one owned Job and await its terminal cleanup.
     pub async fn cancel_job(&self, agent: &str, job_id: &str) -> Result<JobSnapshot> {
+        Ok(self.cancel_job_observation(agent, job_id).await?.snapshot)
+    }
+
+    pub(crate) async fn cancel_job_observation(
+        &self,
+        agent: &str,
+        job_id: &str,
+    ) -> Result<JobObservation> {
         let done = {
             let state = self.inner.state.lock().unwrap();
             state.agent(agent)?;
@@ -302,19 +361,14 @@ impl Session {
         if let Some(done) = done {
             await_job_cleanup(done).await?;
         }
-        self.job(agent, job_id)
+        self.observe_job(agent, job_id)
     }
 
     pub(crate) fn active_jobs(&self, agent: &str) -> usize {
-        let state = self.inner.state.lock().unwrap();
-        state
-            .jobs
-            .agents
-            .get(agent)
-            .map_or(0, |jobs| jobs.running.len())
+        self.inner.state.lock().unwrap().jobs.running_count(agent)
     }
 
-    pub(crate) fn append_job_wait_result(&self, payload: EventPayload) -> Result<StoredEvent> {
+    pub(crate) fn append_job_control_result(&self, payload: EventPayload) -> Result<StoredEvent> {
         let EventPayload::ToolResult {
             conversation: Some(agent),
             status,
@@ -322,12 +376,14 @@ impl Session {
             ..
         } = &payload
         else {
-            return Err(Error::InvalidEventStream("invalid Job wait result".into()));
+            return Err(Error::InvalidEventStream(
+                "invalid Job control result".into(),
+            ));
         };
         let id = data["id"]
             .as_str()
-            .filter(|_| status == "ok" && data["kind"] == "job_wait_result")
-            .ok_or_else(|| Error::InvalidEventStream("invalid Job wait identity".into()))?;
+            .filter(|_| status == "ok" && JobControl::is_result(data))
+            .ok_or_else(|| Error::InvalidEventStream("invalid Job control identity".into()))?;
         let mut state = self.inner.state.lock().unwrap();
         if state.jobs.get(agent, id)?.status == JobStatus::Running {
             return Err(Error::InvalidEventStream(format!(
@@ -402,6 +458,7 @@ impl Session {
         let worker_id = id.clone();
         let worker_agent = request.agent.clone();
         let session = self.clone();
+        let started = request.started;
         let (complete, done) = watch::channel(None);
         let completion = completion();
         let join = tokio::spawn(async move {
@@ -411,7 +468,8 @@ impl Session {
                     unconfirmed_result(format!("Job worker ended before confirmation: {error}"))
                 }
             };
-            let result = session.finish_job(&worker_agent, &worker_id, outcome);
+            let result =
+                session.finish_job(&worker_agent, &worker_id, outcome, elapsed_ms(started));
             let _ = complete.send(Some(
                 result.as_ref().map(|_| ()).map_err(ToString::to_string),
             ));
@@ -435,7 +493,7 @@ impl Session {
         let mut state = self.inner.state.lock().unwrap();
         for job in state.jobs.unsettled() {
             let summary = "Job interrupted before a durable terminal outcome; inspect side effects before rerunning";
-            let result = JobResult {
+            let mut result = JobResult {
                 status: "interrupted".into(),
                 summary: summary.into(),
                 structured: None,
@@ -443,7 +501,7 @@ impl Session {
                 output_persistence_failed: false,
                 cleanup_incomplete: true,
             };
-            let delivery = self.job_delivery(&job, &result, "");
+            let delivery = self.job_delivery(&job, JobStatus::Interrupted, &mut result, "", None);
             self.commit(
                 &mut state,
                 Record::JobFinished {
@@ -452,6 +510,7 @@ impl Session {
                     turn: job.turn,
                     result,
                     status: JobStatus::Interrupted,
+                    elapsed_ms: None,
                     delivery: Box::new(delivery),
                 },
             )?;
@@ -482,18 +541,26 @@ impl Session {
         let id = job_id(sequence);
         let output_id = (request.tool == "run_command")
             .then(|| command_output_id(&request.agent, request.turn, &request.tool_call_id));
-        let summary = format!(
-            "{id} running: {}",
-            bounded(&request.summary, MAX_JOB_SUMMARY_BYTES)
-        );
+        let title = bounded(&request.summary, MAX_JOB_SUMMARY_BYTES);
+        let summary = format!("{id} running: {title}");
         let facts = json!({
             "kind": "job",
             "job_id": id,
             "status": JobStatus::Running,
+            "on_session_close": "cancel",
             "tool": request.tool,
+            "title": title,
+            "elapsed_ms": elapsed_ms(request.started),
             "output_id": output_id,
         });
-        let envelope = ToolResultEnvelope::ok(&summary, serde_json::to_string(&facts)?, facts);
+        let mut model_view = facts.clone();
+        if request.wait_tool_available {
+            let args = json!({"job_id": id});
+            model_view["guidance"] = json!(format!(
+                "Call wait_job({args}) when the next step needs this Job's finished result."
+            ));
+        }
+        let envelope = ToolResultEnvelope::ok(&summary, serde_json::to_string(&model_view)?, facts);
         let mut writer = self.inner.writer.lock().unwrap();
         let writer = writer
             .as_mut()
@@ -514,21 +581,20 @@ impl Session {
             structured: envelope.structured.clone(),
         })?;
         state.jobs.register(&event)?;
+        state.jobs.active_since.insert(sequence, request.started);
         Ok(envelope)
     }
 
-    fn finish_job(&self, agent: &str, job_id: &str, outcome: ToolResultEnvelope) -> Result<()> {
+    fn finish_job(
+        &self,
+        agent: &str,
+        job_id: &str,
+        outcome: ToolResultEnvelope,
+        elapsed_ms: u64,
+    ) -> Result<()> {
         let mut state = self.inner.state.lock().unwrap();
         let job = state.jobs.get(agent, job_id)?;
-        let status = if outcome.faults.cleanup_incomplete {
-            JobStatus::Interrupted
-        } else {
-            match outcome.status.as_str() {
-                "ok" => JobStatus::Completed,
-                "cancelled" => JobStatus::Cancelled,
-                _ => JobStatus::Failed,
-            }
-        };
+        let status = JobStatus::for_result(&outcome);
         let failure =
             if outcome.faults.output_persistence_failed || outcome.faults.cleanup_incomplete {
                 Some(
@@ -540,7 +606,7 @@ impl Session {
             } else {
                 None
             };
-        let result = JobResult {
+        let mut result = JobResult {
             status: outcome.status,
             summary: outcome.summary,
             structured: outcome.structured,
@@ -548,7 +614,13 @@ impl Session {
             output_persistence_failed: outcome.faults.output_persistence_failed,
             cleanup_incomplete: outcome.faults.cleanup_incomplete,
         };
-        let delivery = self.job_delivery(job, &result, &outcome.model_content);
+        let delivery = self.job_delivery(
+            job,
+            status,
+            &mut result,
+            &outcome.model_content,
+            Some(elapsed_ms),
+        );
         let turn = job.turn;
         if let Err(error) = self.commit(
             &mut state,
@@ -558,6 +630,7 @@ impl Session {
                 turn,
                 result,
                 status,
+                elapsed_ms: Some(elapsed_ms),
                 delivery: Box::new(delivery),
             },
         ) {
@@ -576,14 +649,31 @@ impl Session {
         Ok(())
     }
 
-    fn job_delivery(&self, job: &JobSnapshot, result: &JobResult, model_content: &str) -> Input {
+    fn job_delivery(
+        &self,
+        job: &JobSnapshot,
+        status: JobStatus,
+        result: &mut JobResult,
+        model_content: &str,
+        elapsed_ms: Option<u64>,
+    ) -> Input {
         let mut text = format!(
-            "Job {} ({}): {}. {}",
-            job.id, job.tool, result.status, result.summary
+            "Job {} ({}): {status:?}. {}",
+            job.id, job.tool, result.summary
         );
-        if !model_content.is_empty() {
+        if let Some(ms) = elapsed_ms {
+            text.push_str(&format!("\nElapsed {ms} ms."));
+        }
+        let body = model_content
+            .strip_prefix(result.summary.as_str())
+            .and_then(|rest| {
+                rest.strip_prefix('\n')
+                    .or_else(|| rest.is_empty().then_some(rest))
+            })
+            .unwrap_or(model_content);
+        if !body.is_empty() {
             text.push('\n');
-            text.push_str(model_content);
+            text.push_str(body);
         }
         let limit = self
             .inner
@@ -591,10 +681,19 @@ impl Session {
             .limits
             .max_input_bytes
             .min(self.inner.options.limits.max_preview_bytes);
-        text.truncate(text.floor_char_boundary(limit.min(text.len())));
+        if text.len() > limit {
+            result.truncated = true;
+            let mut suffix = "\n\nJob preview truncated.".to_string();
+            if let Some(id) = result.output_id() {
+                suffix.push_str(&format!("\nOutput: {id} (read more with read_output)."));
+            }
+            let suffix = bounded(&suffix, limit);
+            text.truncate(text.floor_char_boundary(limit - suffix.len()));
+            text.push_str(suffix);
+        }
         Input {
             command_id: format!("{JOB_DELIVERY_PREFIX}{}", job.id),
-            source: InputSource::External("session_job".into()),
+            source: InputSource::session_job(),
             target: job.agent.clone(),
             text,
             activation: Activation::Wake,
@@ -604,7 +703,16 @@ impl Session {
         }
     }
 
-    fn wait_outcome(&self, agent: &str, job_id: &str) -> Result<Option<JobSnapshot>> {
+    fn observe_job(&self, agent: &str, job_id: &str) -> Result<JobObservation> {
+        let snapshot = {
+            let state = self.inner.state.lock().unwrap();
+            state.agent(agent)?;
+            state.jobs.observe_snapshot(state.jobs.get(agent, job_id)?)
+        };
+        hydrate_job(self.events_path(), snapshot)
+    }
+
+    fn wait_outcome(&self, agent: &str, job_id: &str) -> Result<Option<JobObservation>> {
         let (snapshot, closed) = {
             let state = self.inner.state.lock().unwrap();
             state.agent(agent)?;
@@ -624,6 +732,10 @@ impl Session {
 }
 
 impl JobIndex {
+    pub(super) fn running_count(&self, agent: &str) -> usize {
+        self.agents.get(agent).map_or(0, |jobs| jobs.running.len())
+    }
+
     fn register(&mut self, event: &StoredEvent) -> Result<()> {
         let EventPayload::ToolResult {
             turn,
@@ -659,7 +771,13 @@ impl JobIndex {
                 tool_call_id: tool_call_id.clone(),
                 tool: tool.into(),
                 status: JobStatus::Running,
+                title: bounded(
+                    data["title"].as_str().unwrap_or(tool),
+                    MAX_JOB_SUMMARY_BYTES,
+                )
+                .into(),
                 summary: bounded(summary, MAX_JOB_SUMMARY_BYTES).into(),
+                elapsed_ms: None,
                 output_id: data["output_id"].as_str().map(str::to_owned),
                 started_at: event.id,
                 finished_at: None,
@@ -683,15 +801,12 @@ impl JobIndex {
             return Err(error());
         }
         snapshot.status = completion.status;
+        snapshot.elapsed_ms = completion.elapsed_ms;
         snapshot.summary = bounded(&completion.result.summary, MAX_JOB_SUMMARY_BYTES).into();
-        snapshot.output_id = completion
-            .result
-            .structured
-            .as_ref()
-            .and_then(|value| value["output_ref"]["id"].as_str())
-            .map(str::to_owned);
+        snapshot.output_id = completion.result.output_id().map(str::to_owned);
         snapshot.finished_at = Some(completion.event_id);
         jobs.running.remove(&sequence);
+        self.active_since.remove(&sequence);
         Ok(())
     }
 
@@ -716,7 +831,7 @@ impl JobIndex {
         selected
             .into_iter()
             .rev()
-            .map(|sequence| jobs.jobs[sequence].clone())
+            .map(|sequence| self.observe_snapshot(&jobs.jobs[sequence]))
             .collect()
     }
 
@@ -727,8 +842,18 @@ impl JobIndex {
             .flat_map(|jobs| jobs.jobs.values().rev())
             .skip_while(|job| before.is_some_and(|before| job.started_at >= before))
             .take(limit)
-            .cloned()
+            .map(|snapshot| self.observe_snapshot(snapshot))
             .collect()
+    }
+
+    fn observe_snapshot(&self, snapshot: &JobSnapshot) -> JobSnapshot {
+        let mut snapshot = snapshot.clone();
+        if let Some(started) =
+            job_sequence(&snapshot.id).and_then(|sequence| self.active_since.get(&sequence))
+        {
+            snapshot.elapsed_ms = Some(elapsed_ms(*started));
+        }
+        snapshot
     }
 
     fn unsettled(&self) -> Vec<JobSnapshot> {
@@ -788,19 +913,28 @@ fn interrupted_job(id: &str) -> Error {
     ))
 }
 
-fn hydrate_job(events_path: &Path, mut snapshot: JobSnapshot) -> Result<JobSnapshot> {
-    if let Some(cursor) = snapshot.finished_at {
+fn hydrate_job(events_path: &Path, mut snapshot: JobSnapshot) -> Result<JobObservation> {
+    let model_content = if let Some(cursor) = snapshot.finished_at {
         let events = EventStore::read_page(events_path, cursor - 1, 1)?;
         let event = events
             .first()
             .filter(|event| event.id == cursor)
             .ok_or_else(|| missing_job_result(&snapshot.id))?;
-        let Some(Record::JobFinished { result, .. }) = Record::from_event(event)? else {
+        let Some(Record::JobFinished {
+            result, delivery, ..
+        }) = Record::from_event(event)?
+        else {
             return Err(missing_job_result(&snapshot.id));
         };
         snapshot.result = Some(result);
-    }
-    Ok(snapshot)
+        Some(delivery.text)
+    } else {
+        None
+    };
+    Ok(JobObservation {
+        snapshot,
+        model_content,
+    })
 }
 
 fn offline_snapshot(mut snapshot: JobSnapshot) -> JobSnapshot {
@@ -816,6 +950,10 @@ fn bounded(text: &str, max_bytes: usize) -> &str {
     &text[..text.floor_char_boundary(text.len().min(max_bytes))]
 }
 
+fn elapsed_ms(started: Instant) -> u64 {
+    started.elapsed().as_millis().min(u64::MAX as u128) as u64
+}
+
 fn unconfirmed_result(summary: String) -> ToolResultEnvelope {
     ToolResultEnvelope {
         faults: ToolFaults {
@@ -827,164 +965,4 @@ fn unconfirmed_result(summary: String) -> ToolResultEnvelope {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use crate::config::{
-        Config, DiscoveryConfig, HandoffConfig, LogsConfig, PluginConfig, UpdateConfig,
-    };
-
-    use super::super::{AgentConfig, SessionOptions};
-    use super::*;
-
-    fn dispatch_recorded_call(path: &Path, tool: &str, id: &str, turn: u64) -> EventStore {
-        let mut store = EventStore::open(path).unwrap();
-        store
-            .append(EventPayload::ToolCall {
-                turn,
-                ts: timestamp().unwrap(),
-                conversation: Some("main".into()),
-                tool_call_id: id.into(),
-                request_id: "req_1".into(),
-                index: 0,
-                tool: tool.into(),
-                args: json!({}),
-            })
-            .unwrap();
-        store
-            .append(EventPayload::Unknown(json!({
-                "kind": "runtime.tool_dispatched", "ts": timestamp().unwrap(), "agent": "main",
-                "turn": turn, "tool_call_id": id,
-            })))
-            .unwrap();
-        store
-    }
-
-    #[tokio::test]
-    async fn reopening_settles_an_unconfirmed_job_once_without_dispatch() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = Config {
-            tiers: BTreeMap::new(),
-            providers: BTreeMap::new(),
-            default_tier: String::new(),
-            discovery: DiscoveryConfig::default(),
-            handoff: HandoffConfig::default(),
-            logs: LogsConfig::default(),
-            plugin: PluginConfig::default(),
-            update: UpdateConfig::default(),
-        };
-        let mut options = SessionOptions::new(dir.path(), dir.path().join("data"), config);
-        options.session_id = Some("job-recovery".into());
-        let session = Session::open(options.clone()).await.unwrap();
-        let path = session.events_path().to_owned();
-        {
-            let mut state = session.inner.state.lock().unwrap();
-            session
-                .commit(
-                    &mut state,
-                    Record::AgentCreated {
-                        command_id: "fixture-agent".into(),
-                        fingerprint: String::new(),
-                        address: "main".into(),
-                        config: AgentConfig::default(),
-                    },
-                )
-                .unwrap();
-            let mut store = dispatch_recorded_call(&path, "custom", "unrelated", 3);
-            store
-                .append(EventPayload::ToolResult {
-                    turn: 3,
-                    ts: timestamp().unwrap(),
-                    conversation: Some("main".into()),
-                    tool_call_id: "unrelated".into(),
-                    status: "ok".into(),
-                    summary: "unrelated output".into(),
-                    model_content: String::new(),
-                    truncated: false,
-                    files_read: Vec::new(),
-                    files_changed: Vec::new(),
-                    commands_run: Vec::new(),
-                    memory_changed: None,
-                    structured: Some(
-                        json!({"kind": "job", "job_id": "job-42", "tool": "run_command"}),
-                    ),
-                })
-                .unwrap();
-            dispatch_recorded_call(&path, "run_command", "fixture-command", 3);
-            session
-                .register_job(
-                    &mut state,
-                    &JobRequest {
-                        agent: "main".into(),
-                        execution_id: 2,
-                        turn: 3,
-                        tool_call_id: "fixture-command".into(),
-                        tool: "run_command".into(),
-                        summary: "interrupted command".into(),
-                    },
-                )
-                .unwrap();
-        }
-        assert!(session.job("main", "job-1").unwrap().output_id.is_some());
-        {
-            let waiting = session.wait_job("main", "job-1");
-            tokio::pin!(waiting);
-            tokio::select! {
-                biased;
-                result = &mut waiting => panic!("unconfirmed job settled before close: {result:?}"),
-                _ = tokio::task::yield_now() => {}
-            }
-            session.close().await.unwrap();
-            let result = tokio::time::timeout(Duration::from_secs(1), waiting)
-                .await
-                .unwrap();
-            assert!(matches!(result, Err(Error::InterruptedOpenTool(_))));
-        }
-        assert!(matches!(
-            session.wait_job("main", "job-1").await,
-            Err(Error::InterruptedOpenTool(_))
-        ));
-        let failure = "fixture settlement failure";
-        session
-            .inner
-            .settlement_failure
-            .set(failure.into())
-            .unwrap();
-        assert!(matches!(
-            session.wait_job("main", "job-1").await,
-            Err(Error::InvalidEventStream(message)) if message == failure
-        ));
-        drop(session);
-
-        let offline = Session::read_job(&path, "main", "job-1").unwrap();
-        assert_eq!(JobStatus::Interrupted, offline.status);
-        assert_eq!(None, offline.finished_at);
-        assert_eq!(None, offline.result);
-        assert_eq!(None, offline.output_id);
-        assert_eq!(vec![offline], Session::read_jobs(&path, "main").unwrap());
-
-        let session = Session::open(options.clone()).await.unwrap();
-        assert_eq!(1, session.jobs("main").unwrap().len());
-        let terminal = session.job("main", "job-1").unwrap();
-        assert_eq!(JobStatus::Interrupted, terminal.status);
-        assert!(terminal.result.as_ref().unwrap().cleanup_incomplete);
-        let cursor = terminal.finished_at.unwrap();
-        assert_eq!(1, session.agent("main").unwrap().pending_inputs);
-        assert_eq!(
-            crate::AgentStatus::Idle,
-            session.agent("main").unwrap().status
-        );
-        assert!(session.inner.job_workers.lock().unwrap().is_empty());
-        session.close().await.unwrap();
-        assert_eq!(terminal, session.wait_job("main", "job-1").await.unwrap());
-
-        let session = Session::open(options).await.unwrap();
-        assert_eq!(
-            Some(cursor),
-            session.job("main", "job-1").unwrap().finished_at
-        );
-        assert_eq!(1, session.agent("main").unwrap().pending_inputs);
-        assert!(session.inner.job_workers.lock().unwrap().is_empty());
-        session.close().await.unwrap();
-    }
-}
+mod tests;

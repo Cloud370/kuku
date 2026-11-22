@@ -158,7 +158,7 @@ async fn cancelled_run_persists_tool_result_for_finished_active_slot() {
             tool_call_id: "tool_cancelled".to_string(),
             conversation: None,
             kind: ToolKind::Command { pid: None },
-            workspace_ordered: false,
+            workspace_access: crate::query::types::WorkspaceAccess::Independent,
             job: None,
             label: "print hi".to_string(),
             cancel: std::sync::Arc::new(tokio::sync::Notify::new()),
@@ -243,6 +243,7 @@ async fn resume_after_cancel_includes_turn_end_in_history() {
                 text: "hello".to_string(),
                 from: None,
                 via_tool_call_id: None,
+                job_delivery: false,
             })
             .unwrap();
         store

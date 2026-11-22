@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -22,25 +21,34 @@ use super::helpers::{
 use super::request::OwnedRequestBase;
 use super::types::PendingRun;
 
+mod admission;
+mod compaction;
+
+use admission::{append_input_skills, model_history, select_turns};
+
 pub(super) struct PreparedContext {
     pub(super) request: OwnedRequestBase,
     pub(super) commit: ContextCommit,
 }
 
+#[derive(Clone)]
 pub(super) struct ContextCommit {
     segment: FrozenSegment,
     messages: Vec<AdmittedMessage>,
     source_head: u64,
     current_input: usize,
+    runtime_date_index: Option<usize>,
     prefix_context_head: usize,
     new_segment: bool,
     reason: &'static str,
+    checkpointed_messages: usize,
+    pub(in crate::query) token_pressure: bool,
     context_prepare_us: u64,
     events_read: u64,
     input_skills: Vec<String>,
 }
 
-pub(super) fn prepare(pending: &mut PendingRun) -> Result<PreparedContext> {
+pub(super) fn prepare(pending: &mut PendingRun, compact_only: bool) -> Result<PreparedContext> {
     let started = Instant::now();
     let resolved = pending
         .resolved
@@ -213,24 +221,34 @@ pub(super) fn prepare(pending: &mut PendingRun) -> Result<PreparedContext> {
         }
     }
     let input_skills = append_input_skills(pending, &mut messages)?;
+    let input_tokens = if handoff_changed || route_changed || workspace_changed {
+        None
+    } else {
+        cursor.input_tokens
+    };
+    let headroom = crate::notice::compute_context_headroom(
+        resolved.max_context_tokens,
+        resolved.max_output_tokens,
+        input_tokens,
+    );
+    let token_pressure =
+        super::provider::should_trigger_handoff(&headroom, pending.config.handoff().threshold);
     append_dynamic(
         pending,
         &mut messages,
         &catalog,
         (!date_already_admitted).then_some(&date_message),
-        if handoff_changed || route_changed || workspace_changed {
-            None
-        } else {
-            cursor.input_tokens
-        },
-        &resolved,
         if new_segment {
             0
         } else {
             cursor.admitted.len()
         },
     )?;
-    let current_input = if pending.query.skip_user_message {
+    let current_input = if compact_only {
+        messages
+            .iter()
+            .rposition(|entry| entry.origin == MessageOrigin::Input)
+    } else if pending.query.skip_user_message {
         let source_turn = pending.query.resume_input_turn.unwrap_or(pending.turn);
         let input_is_present = messages.iter().any(|admitted| {
             admitted.origin == MessageOrigin::Input
@@ -239,24 +257,22 @@ pub(super) fn prepare(pending: &mut PendingRun) -> Result<PreparedContext> {
         let admitted_at = if input_is_present {
             0
         } else {
-            EventStore::replay(&pending.events_path)?
-                .into_iter()
-                .find_map(|event| {
-                    let EventPayload::MessageUser {
-                        turn,
-                        conversation,
-                        text,
-                        ..
-                    } = &event.payload
-                    else {
-                        return None;
-                    };
-                    (*turn == source_turn
-                        && conversation == pending.conversation.as_str()
-                        && text == &pending.query.prompt)
-                        .then_some(event.id)
-                })
-                .unwrap_or(cursor.after)
+            let mut admitted_at = None;
+            EventStore::visit_after_path(
+                &pending.events_path,
+                source_turn.saturating_sub(1),
+                |event| {
+                    if admitted_at.is_none()
+                        && matches!(&event.payload, EventPayload::MessageUser { turn, conversation, text, .. }
+                            if *turn == source_turn && conversation == pending.conversation.as_str()
+                                && text == &pending.query.prompt)
+                    {
+                        admitted_at = Some(event.id);
+                    }
+                    Ok(())
+                },
+            )?;
+            admitted_at.unwrap_or(cursor.after)
         };
         resumed_current_input(
             &mut messages,
@@ -271,15 +287,16 @@ pub(super) fn prepare(pending: &mut PendingRun) -> Result<PreparedContext> {
         })
     }
     .ok_or_else(|| {
-        Error::InvalidEventStream("prepared context has no admitted current input".into())
+        if compact_only {
+            Error::InvalidArgument("there is no remaining conversation history to compact".into())
+        } else {
+            Error::InvalidEventStream("prepared context has no admitted current input".into())
+        }
     })?;
     let assembly = ContextAssembly {
         system_prompt: segment.system_prompt.clone(),
         prelude_messages: segment.prelude.clone(),
-        history: messages
-            .iter()
-            .map(|admitted| admitted.message.clone())
-            .collect(),
+        history: model_history(&messages, pending.turn),
         tools: segment.tools.clone(),
         prompt_asset_sources: Vec::new(),
         project_instruction_sources: Vec::new(),
@@ -302,6 +319,9 @@ pub(super) fn prepare(pending: &mut PendingRun) -> Result<PreparedContext> {
     )?;
     let commit = ContextCommit {
         segment,
+        runtime_date_index: messages.iter().rposition(|entry| {
+            entry.origin == MessageOrigin::Runtime && entry.message == date_message
+        }),
         messages,
         source_head: cursor.after,
         current_input,
@@ -311,6 +331,8 @@ pub(super) fn prepare(pending: &mut PendingRun) -> Result<PreparedContext> {
             cursor.admitted.len()
         },
         new_segment,
+        checkpointed_messages: 0,
+        token_pressure,
         reason: if previous.is_none() {
             "initial"
         } else if handoff_changed {
@@ -330,27 +352,50 @@ pub(super) fn record_prepared(
     pending: &mut PendingRun,
     request_id: &str,
     prepared: &PreparedProviderRequest,
-    mut context: ContextCommit,
+    context: ContextCommit,
     request_prepare_us: u64,
 ) -> Result<()> {
-    let execution = pending
-        .query
-        .runtime_execution
-        .expect("prepared context belongs to a session execution");
-    let session = super::provider::runtime_session(pending, execution)?;
+    let body = prepared.body.as_json();
+    let wire = prepared.body.as_bytes();
+    let body_hash = format!("{:x}", Sha256::digest(wire));
+    let prefix_hash = segment_prefix_hash(&context.segment)?;
+    let history_prefix_hash = pending
+        .context_cursor
+        .as_ref()
+        .expect("runtime context cursor exists")
+        .history_prefix_hash(context.prefix_context_head);
+    let payload = json!({"kind":"runtime.step_prepared","ts":now_timestamp()?,"agent":pending.conversation.as_str(),"turn":pending.turn,"request_id":request_id,
+        "segment":context.segment.id,"context_head":context.messages.len(),"current_input":context.current_input,"source_head":context.source_head,
+        "connection":prepared.connection_name,"protocol":context.segment.protocol,"model":prepared.model,"url":prepared.url,"settings":prepared.settings,"correlation_id":prepared.correlation_id,
+        "max_output_tokens":body.get("max_output_tokens").or_else(|| body.get("max_tokens")).or_else(|| body.get("max_completion_tokens")),"temperature":body.get("temperature"),
+        "context_window_tokens":pending.resolved.as_ref().map(|runtime| runtime.config.max_context_tokens),"max_request_bytes":pending.query.runtime_limits.max_request_bytes,"request_bytes":wire.len(),
+        "body_hash":body_hash,"prefix_context_head":context.prefix_context_head,"prefix_hash":prefix_hash,"history_prefix_hash":history_prefix_hash,
+        "context_prepare_us":context.context_prepare_us,"request_prepare_us":request_prepare_us,"context_events_read":context.events_read,
+        "input_skills":context.input_skills});
+    commit_context(pending, context, payload)?;
+    Ok(())
+}
+
+fn context_batch(
+    pending: &PendingRun,
+    context: &mut ContextCommit,
+    mut confirmation: serde_json::Value,
+    first_id: u64,
+) -> Result<Vec<EventPayload>> {
     let cursor = pending
         .context_cursor
-        .as_mut()
+        .as_ref()
         .expect("runtime context cursor exists");
-    let mut writer = EventStore::open(&pending.events_path)?;
+    let mut facts = Vec::new();
     let predecessor = cursor.segment.as_ref().map(|segment| segment.id);
     if context.new_segment {
-        context.segment.id = writer.append(EventPayload::Unknown(json!({"kind":"runtime.context_segment","ts":now_timestamp()?,"agent":pending.conversation.as_str(),
-            "signature":context.segment.signature,"predecessor":predecessor,"configuration":context.segment.configuration,"handoff":context.segment.handoff,"reason":context.reason,
+        context.segment.id = first_id;
+        facts.push(EventPayload::Unknown(json!({"kind":"runtime.context_segment","ts":now_timestamp()?,"agent":pending.conversation.as_str(),
+            "signature":context.segment.signature,"predecessor":predecessor,"configuration":context.segment.configuration,"handoff":context.segment.handoff,"reason":context.reason,"checkpointed_messages":context.checkpointed_messages,
             "connection":context.segment.connection,"protocol":context.segment.protocol,"model":context.segment.model,"endpoint":context.segment.endpoint,
             "capabilities":context.segment.capabilities,"route_selectors":context.segment.route_selectors,
             "system_prompt":context.segment.system_prompt,"prelude":context.segment.prelude,"tools":context.segment.tools,"catalog":context.segment.catalog,
-            "behavior":context.segment.behavior,"identity_slot":context.segment.identity_slot,"handoff_prelude":context.segment.handoff_prelude,"workspace":context.segment.workspace})))?.id;
+            "behavior":context.segment.behavior,"identity_slot":context.segment.identity_slot,"handoff_prelude":context.segment.handoff_prelude,"workspace":context.segment.workspace})));
     }
     let frozen_head = context.prefix_context_head;
     let expected_frozen_head = if context.new_segment {
@@ -376,30 +421,36 @@ pub(super) fn record_prepared(
         ));
     }
     for (ordinal, admitted) in context.messages.iter().enumerate().skip(frozen_head) {
-        writer.append(EventPayload::Unknown(json!({"kind":"runtime.context_admitted","ts":now_timestamp()?,"agent":pending.conversation.as_str(),"segment":context.segment.id,
-            "ordinal":ordinal,"turn":admitted.turn,"origin":admitted.origin,"source_head":context.source_head,"admitted_at":admitted.admitted_at,"message":admitted.message})))?;
+        facts.push(EventPayload::Unknown(json!({"kind":"runtime.context_admitted","ts":now_timestamp()?,"agent":pending.conversation.as_str(),"segment":context.segment.id,
+            "ordinal":ordinal,"turn":admitted.turn,"origin":admitted.origin,"source_head":context.source_head,"admitted_at":admitted.admitted_at,"message":admitted.message})));
     }
-    let body_hash = format!("{:x}", Sha256::digest(serde_json::to_vec(&prepared.body)?));
-    let prefix_hash = segment_prefix_hash(&context.segment)?;
-    let history_prefix = context
-        .messages
-        .iter()
-        .take(frozen_head)
-        .map(|admitted| &admitted.message)
-        .collect::<Vec<_>>();
-    let history_prefix_hash = content_hash(&history_prefix)?;
-    let payload = EventPayload::Unknown(
-        json!({"kind":"runtime.step_prepared","ts":now_timestamp()?,"agent":pending.conversation.as_str(),"turn":pending.turn,"request_id":request_id,
-        "segment":context.segment.id,"context_head":context.messages.len(),"current_input":context.current_input,"source_head":context.source_head,
-        "connection":prepared.connection_name,"protocol":context.segment.protocol,"model":prepared.model,"url":prepared.url,"settings":prepared.settings,"correlation_id":prepared.correlation_id,
-        "max_output_tokens":prepared.body.get("max_output_tokens").or_else(|| prepared.body.get("max_tokens")).or_else(|| prepared.body.get("max_completion_tokens")),"temperature":prepared.body.get("temperature"),
-        "context_window_tokens":pending.resolved.as_ref().map(|runtime| runtime.config.max_context_tokens),"max_request_bytes":pending.query.runtime_limits.max_request_bytes,"request_bytes":serde_json::to_vec(&prepared.body)?.len(),
-        "body_hash":body_hash,"prefix_context_head":context.prefix_context_head,"prefix_hash":prefix_hash,"history_prefix_hash":history_prefix_hash,
-        "context_prepare_us":context.context_prepare_us,"request_prepare_us":request_prepare_us,"context_events_read":context.events_read,
-        "input_skills":context.input_skills}),
-    );
-    session.commit_model_facts(pending.conversation.as_str(), execution, [payload])?;
-    cursor.commit(context.segment, context.messages, context.source_head)
+    confirmation["segment"] = context.segment.id.into();
+    confirmation["context_head"] = context.messages.len().into();
+    confirmation["source_head"] = context.source_head.into();
+    facts.push(EventPayload::Unknown(confirmation));
+    Ok(facts)
+}
+
+fn commit_context(
+    pending: &mut PendingRun,
+    mut context: ContextCommit,
+    confirmation: serde_json::Value,
+) -> Result<u64> {
+    let execution = pending
+        .query
+        .runtime_execution
+        .expect("context belongs to a session execution");
+    let session = super::provider::runtime_session(pending, execution)?;
+    session.commit_model_batch(pending.conversation.as_str(), execution, |first| {
+        context_batch(pending, &mut context, confirmation, first)
+    })?;
+    let segment_id = context.segment.id;
+    pending
+        .context_cursor
+        .as_mut()
+        .expect("runtime context cursor exists")
+        .commit(context.segment, context.messages, context.source_head)?;
+    Ok(segment_id)
 }
 
 fn initial_segment(
@@ -652,81 +703,11 @@ fn check_route_snapshot(
     Ok(RouteSnapshot::Current { route_changed })
 }
 
-fn select_turns(messages: &mut Vec<AdmittedMessage>, through: u64, keep: usize) {
-    let retained = messages
-        .iter()
-        .filter(|message| message.turn <= through)
-        .map(|message| message.turn)
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .rev()
-        .take(keep)
-        .collect::<BTreeSet<_>>();
-    messages.retain(|message| message.turn > through || retained.contains(&message.turn));
-}
-
-fn append_input_skills(
-    pending: &mut PendingRun,
-    messages: &mut Vec<AdmittedMessage>,
-) -> Result<Vec<String>> {
-    let admitted_at = messages
-        .iter()
-        .rev()
-        .find(|message| message.turn == pending.turn && message.origin == MessageOrigin::Input)
-        .map_or(0, |message| message.admitted_at);
-    let mut names = std::mem::take(&mut pending.query.input_skills);
-    if names.is_empty() {
-        return Ok(names);
-    }
-    if pending.query.disable_skills {
-        return Err(Error::InvalidArgument(
-            "selected input skill cannot load while skills are disabled".into(),
-        ));
-    }
-    let mut seen = BTreeSet::new();
-    names.retain(|name| seen.insert(name.clone()));
-    let discovered = names
-        .iter()
-        .any(|name| {
-            pending
-                .skill_registry
-                .as_ref()
-                .is_none_or(|registry| registry.get(name).is_none())
-        })
-        .then(|| {
-            crate::skill::session::build_registry_snapshot_for_host(
-                &pending.kuku_home,
-                &pending.workspace,
-                &pending.config,
-            )
-        })
-        .transpose()?;
-    for name in &names {
-        let definition = pending
-            .skill_registry
-            .as_ref()
-            .and_then(|registry| registry.get(name))
-            .or_else(|| discovered.as_ref().and_then(|registry| registry.get(name)))
-            .ok_or_else(|| {
-                Error::InvalidArgument(format!("selected input skill '{name}' was not found"))
-            })?;
-        messages.push(AdmittedMessage {
-            turn: pending.turn,
-            origin: MessageOrigin::Runtime,
-            message: CanonicalMessage::user_text(definition.instructions.clone()),
-            admitted_at,
-        });
-    }
-    Ok(names)
-}
-
 fn append_dynamic(
     pending: &mut PendingRun,
     messages: &mut Vec<AdmittedMessage>,
     catalog: &PromptCatalog,
     date_message: Option<&CanonicalMessage>,
-    input_tokens: Option<u32>,
-    resolved: &ResolvedProvider,
     frozen_head: usize,
 ) -> Result<()> {
     let admitted_at = messages
@@ -768,32 +749,6 @@ fn append_dynamic(
             turn: pending.turn,
             origin: MessageOrigin::Runtime,
             message: CanonicalMessage::user_text(text),
-            admitted_at,
-        });
-    }
-    let headroom = crate::notice::compute_context_headroom(
-        resolved
-            .max_context_tokens
-            .saturating_sub(resolved.think_level.overhead_tokens()),
-        resolved.max_output_tokens,
-        input_tokens,
-    );
-    let config = pending.config.handoff();
-    if !pending.handoff_triggered
-        && config.enabled
-        && super::provider::should_trigger_handoff(&headroom, config.threshold)
-    {
-        pending.handoff_triggered = true;
-        pending.handoff_keep_turns = config.keep_turns;
-        let instruction = catalog.runtime.get("handoff-instruction").ok_or_else(|| {
-            Error::PromptRender("missing frozen handoff-instruction template".into())
-        })?;
-        let prefix = super::provider::append_handoff_instruction(None, &instruction.text, catalog)
-            .unwrap_or_default();
-        messages.push(AdmittedMessage {
-            turn: pending.turn,
-            origin: MessageOrigin::Runtime,
-            message: CanonicalMessage::user_text(prefix),
             admitted_at,
         });
     }

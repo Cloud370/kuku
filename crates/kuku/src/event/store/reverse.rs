@@ -1,4 +1,3 @@
-use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
@@ -9,7 +8,12 @@ use super::{StoredEvent, MAX_PAGE_BYTES, MAX_PAGE_RECORDS, MAX_RECORD_BYTES};
 
 const READ_CHUNK_BYTES: usize = 8192;
 
-pub(super) fn find_page_end(file: &mut File, path: &Path, end: u64, before: u64) -> Result<u64> {
+pub(super) fn find_page_end(
+    file: &mut (impl Read + Seek),
+    path: &Path,
+    end: u64,
+    before: u64,
+) -> Result<u64> {
     let mut low = 0;
     let mut high = end;
     let mut boundary = end;
@@ -35,7 +39,7 @@ pub(super) fn find_page_end(file: &mut File, path: &Path, end: u64, before: u64)
 }
 
 pub(super) fn read_before(
-    file: &mut File,
+    file: &mut (impl Read + Seek),
     path: &Path,
     end: u64,
     before: Option<u64>,
@@ -44,21 +48,41 @@ pub(super) fn read_before(
     if limit == 0 || before.is_some_and(|id| id <= 1) {
         return Ok(Vec::new());
     }
+    let limit = limit.min(MAX_PAGE_RECORDS);
+    let mut events = Vec::new();
+    let mut bytes = 0;
+    visit_before(file, path, end, before, |event, size| {
+        bytes += size;
+        if !events.is_empty() && bytes > MAX_PAGE_BYTES {
+            return Ok(false);
+        }
+        events.push(event);
+        Ok(events.len() < limit)
+    })?;
+    events.reverse();
+    Ok(events)
+}
+
+pub(super) fn visit_before(
+    file: &mut (impl Read + Seek),
+    path: &Path,
+    end: u64,
+    before: Option<u64>,
+    mut visit: impl FnMut(StoredEvent, usize) -> Result<bool>,
+) -> Result<()> {
+    if before.is_some_and(|id| id <= 1) {
+        return Ok(());
+    }
     let mut reader = ReverseReader {
         file,
         chunk: [0; READ_CHUNK_BYTES],
         remaining: 0,
         position: end,
     };
-    let mut events = Vec::new();
     let mut previous = None;
-    let mut bytes = 0;
     let mut line = Vec::new();
     reader.line(None)?;
-    while events.len() < limit.min(MAX_PAGE_RECORDS) {
-        let Some(offset) = reader.line(Some(&mut line))? else {
-            break;
-        };
+    while let Some(offset) = reader.line(Some(&mut line))? {
         if line.len() >= MAX_RECORD_BYTES {
             return Err(invalid_at(
                 path,
@@ -83,24 +107,21 @@ pub(super) fn read_before(
         if before.is_some_and(|id| event.id >= id) {
             continue;
         }
-        bytes += line.len() + 1;
-        if !events.is_empty() && bytes > MAX_PAGE_BYTES {
+        if !visit(event, line.len() + 1)? {
             break;
         }
-        events.push(event);
     }
-    events.reverse();
-    Ok(events)
+    Ok(())
 }
 
-struct ReverseReader<'a> {
-    file: &'a mut File,
+struct ReverseReader<'a, R> {
+    file: &'a mut R,
     chunk: [u8; READ_CHUNK_BYTES],
     remaining: usize,
     position: u64,
 }
 
-impl ReverseReader<'_> {
+impl<R: Read + Seek> ReverseReader<'_, R> {
     fn line(&mut self, mut output: Option<&mut Vec<u8>>) -> Result<Option<u64>> {
         if let Some(output) = &mut output {
             output.clear();

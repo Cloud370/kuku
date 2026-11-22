@@ -104,7 +104,7 @@ output = 2.0
 cache_read = 0.1
 ```
 
-A model capability entry has independent `discovered` and `manual` declarations. The supported fields are `reasoning_efforts`, `reasoning_default`, `input_modalities`, `output_modalities`, and `interfaces`. A `protocols` table can declare protocol-specific fields such as `anthropic_messages.system_prompt_update`. The resolver labels sources, keeps omitted values unknown, and preserves manual values across refreshes. An Agent can request image output when the route declares it or leaves output unknown. The built-in adapters support text and refuse image execution before dispatch. [DeepSeek model list](https://api-docs.deepseek.com/api/list-models/) · [OpenRouter model list](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties)
+A model capability entry has independent `discovered` and `manual` declarations. The supported fields are `reasoning_efforts`, `reasoning_default`, `input_modalities`, `output_modalities`, and `interfaces`. A `protocols` table can declare protocol-specific fields such as `anthropic_messages.system_prompt_update`. The resolver labels sources, keeps omitted values unknown, and preserves manual values across refreshes. A route with image input may offer [image inspection](tools.md). An Agent can save an image output setting when the route declares image output or leaves it unknown. Built-in adapters generate text and report an unsupported output error before dispatching image output requests. [DeepSeek model list](https://api-docs.deepseek.com/api/list-models/) · [OpenRouter model list](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties)
 
 `prompt_cache_scope` only affects Responses requests. `workspace` hashes the normalized absolute workspace identity with the connection, endpoint and model, so Agents and Sessions in that workspace can share a key without sending the path. `session` derives a separate key from the same Session, Agent address and connection identity as transport correlation, adding the endpoint and model to isolate routes. `off` omits `prompt_cache_key`. If correlation context is unavailable, the adapter omits the key. None of these settings changes the transport correlation or OpenRouter `session_id`.
 
@@ -138,7 +138,7 @@ Any other string config value whose first character is `$` is treated as an envi
 | `threshold` | float | `0.7` |
 | `keep_turns` | integer | `2` |
 
-When estimated context usage crosses `threshold`, kuku injects a handoff instruction. The summary is persisted only if the model returns a handoff document; future context then keeps only the most recent `keep_turns` turns before that boundary.
+In a Session, `enabled` controls automatic context compaction. It can run when measured token usage crosses `threshold` or the request approaches its byte limit. The runtime checks that enough older material can be summarized and commits a successor only when it has usable savings. Manual `/compact` remains available. For a standalone SDK `Query`, `keep_turns` controls how many preceding turns remain after a model-generated handoff.
 
 ## `logs`
 

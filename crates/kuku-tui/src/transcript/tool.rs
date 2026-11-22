@@ -56,6 +56,7 @@ pub(super) struct Tool {
     name: String,
     invocation: String,
     arguments: String,
+    request_title: String,
     start_summary: String,
     progress: String,
     state: State,
@@ -92,8 +93,8 @@ impl Tool {
         let invocation = invocation(&name, args);
         let arguments = arguments_json(args);
         let agent_request = AgentRequest::from_call(&name, args);
-        let start_summary = if name == "run_command" {
-            capped(args["brief"].as_str().map(str::trim), MAX_LABEL_BYTES)
+        let request_title = if matches!(name.as_str(), "run_command" | "run_js") {
+            capped(args["title"].as_str().map(str::trim), MAX_LABEL_BYTES)
         } else {
             String::new()
         };
@@ -101,7 +102,7 @@ impl Tool {
             name,
             invocation,
             arguments,
-            start_summary,
+            request_title,
             agent_request,
             ..Self::default()
         }
@@ -116,6 +117,9 @@ impl Tool {
         }
         if !incoming.start_summary.is_empty() {
             self.start_summary = incoming.start_summary;
+        }
+        if !incoming.request_title.is_empty() {
+            self.request_title = incoming.request_title;
         }
         if !incoming.arguments.is_empty() {
             self.arguments = incoming.arguments;
@@ -469,7 +473,11 @@ impl Tool {
             .as_deref()
             .filter(|summary| !summary.is_empty())
             .unwrap_or_else(|| self.summary());
-        if expanded && caption.is_none() && (!inspecting || invocation != self.arguments) {
+        if expanded
+            && caption.is_none()
+            && (frame.is_none() || inspecting || !self.request_title.is_empty())
+            && (!inspecting || invocation != self.arguments)
+        {
             if frame.is_some() && !inspecting && !invocation.is_empty() {
                 let command = shorten(&single_line(cap(invocation, MAX_PREVIEW_BYTES)), width);
                 rows.push(Row::plain(Line::styled(command, Style::new().fg(MUTED))));
@@ -486,7 +494,7 @@ impl Tool {
         if !concise
             && caption.is_none()
             && (!expanded || summary != invocation)
-            && (frame.is_none() || summary != self.start_summary)
+            && (frame.is_none() || summary != self.command_title())
         {
             let limit = if expanded { MAX_SUMMARY_ROWS } else { 1 };
             rows.extend(render_preview(summary, SURFACE_TEXT, width, limit, inset));
@@ -611,7 +619,11 @@ impl Tool {
     }
 
     fn title(&self) -> Cow<'_, str> {
-        tool_title(self.name())
+        if self.name() == "run_js" && !self.request_title.is_empty() {
+            Cow::Owned(single_line(&self.request_title))
+        } else {
+            tool_title(self.name())
+        }
     }
 
     fn name(&self) -> &str {
@@ -624,7 +636,7 @@ impl Tool {
         if outcome.command_preview.is_some() {
             "run_command"
         } else if outcome.script.is_some() {
-            "workspace_script"
+            "run_js"
         } else if let Some(change) = &outcome.change {
             change.tool()
         } else if outcome.file_read.is_some() {
@@ -651,14 +663,19 @@ impl Tool {
         let status = shorten(&single_line(status), 24);
         let mut status = status;
         if let Some(outcome) = self.state.outcome() {
+            let command = outcome.command_preview.as_deref();
             if let Some(exit) = outcome.exit_code {
-                status.push_str(&format!(" · exit {exit}"));
-            } else if let Some(signal) = outcome
-                .command_preview
-                .as_ref()
-                .and_then(|command| command.signal())
-            {
+                let label = command.map_or("exit", command::CommandPreview::exit_label);
+                status.push_str(&format!(" · {label} {exit}"));
+            } else if let Some(signal) = command.and_then(command::CommandPreview::signal) {
                 status.push_str(&format!(" · signal {signal}"));
+            }
+            if let Some(command) = command {
+                if command.has_stderr() {
+                    status.push_str(" · stderr");
+                }
+                status.push_str(" · ");
+                status.push_str(&command.elapsed());
             }
         }
         (status, color)
@@ -789,8 +806,9 @@ pub(super) fn tool_title(name: &str) -> Cow<'_, str> {
         "edit_file" => "Edit file",
         "remove_file" => "Remove file",
         "run_command" => "Run command",
-        "workspace_script" => "Workspace script",
+        "run_js" => "Run JavaScript",
         "read_output" => "Read saved output",
+        "search_output" => "Search saved output",
         "create_output" => "Start output",
         "append_output" => "Append output",
         "finish_output" => "Save output",

@@ -31,6 +31,7 @@ pub(crate) fn dispatch_workspace_file(
     prior_events: &[StoredEvent],
     result_event_id: u64,
     tool_call_id: Option<&str>,
+    preview_bytes: usize,
     cancelled: &builtin::common::FileCancellation<'_>,
 ) -> Option<ToolResultEnvelope> {
     if matches!(name, "edit_file" | "write_file" | "remove_file")
@@ -46,9 +47,10 @@ pub(crate) fn dispatch_workspace_file(
             conversation,
             prior_events,
             result_event_id,
+            preview_bytes,
             cancelled,
         ),
-        "search_text" => builtin::search_text(args, workspace, cancelled),
+        "search_text" => builtin::search_text(args, workspace, preview_bytes, cancelled),
         "stat_file" => builtin::stat_file(args, workspace, cancelled),
         "edit_file" => builtin::edit_file(args, workspace, conversation, prior_events, cancelled),
         "write_file" => builtin::write_file(args, workspace, conversation, prior_events, cancelled),
@@ -63,6 +65,19 @@ pub(crate) fn dispatch_workspace_file(
                 .is_some_and(|content| args["content"].as_str() == Some(content));
     }
     Some(result)
+}
+
+pub(crate) fn uses_prior_events(name: &str) -> bool {
+    matches!(
+        name,
+        "read_file"
+            | "edit_file"
+            | "write_file"
+            | "remove_file"
+            | "remember_memory"
+            | "forget_memory"
+            | "run_command"
+    )
 }
 
 fn supplied_write_content<'a>(
@@ -116,6 +131,7 @@ pub(crate) async fn dispatch(
         prior_events,
         result_event_id,
         tool_call_id,
+        crate::RuntimeLimits::default().max_preview_bytes,
         &|| false,
     ) {
         return result;
@@ -266,6 +282,7 @@ mod tests {
             &[call],
             2,
             Some("write"),
+            crate::RuntimeLimits::default().max_preview_bytes,
             &|| false,
         )
         .unwrap();

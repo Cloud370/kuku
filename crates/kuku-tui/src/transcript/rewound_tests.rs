@@ -52,7 +52,6 @@ fn rewind_group_expands_in_place_without_entering_active_transcript_state() {
         target_event_id: 2,
         agent: "main".into(),
         turn_number: Some(1),
-        entry_count: 4,
     };
     let mut transcript = Transcript::default();
     transcript.replace_recent(HistoryPage {
@@ -246,7 +245,6 @@ fn rewind_group_page_from_before_a_transcript_refresh_is_discarded() {
         target_event_id: 2,
         agent: "main".into(),
         turn_number: None,
-        entry_count: 1,
     };
     let mut transcript = Transcript::default();
     transcript.replace_recent(HistoryPage {
@@ -320,7 +318,6 @@ fn rewind_group_page_state_survives_reading_snapshot_and_show_latest() {
             target_event_id: 2,
             agent: "main".into(),
             turn_number: None,
-            entry_count: 1,
         }],
         next_before: None,
     });
@@ -370,7 +367,6 @@ fn rewind_group_expansion_keeps_the_heading_at_the_viewport_anchor() {
             target_event_id: 2,
             agent: "main".into(),
             turn_number: Some(1),
-            entry_count: 12,
         }],
         next_before: None,
     });
@@ -408,7 +404,6 @@ fn rewind_group_visual_cap_is_explicit() {
         target_event_id: 2,
         agent: "main".into(),
         turn_number: None,
-        entry_count: 1,
     };
     let mut transcript = Transcript::default();
     transcript.replace_recent(HistoryPage {
@@ -458,7 +453,6 @@ fn rewind_group_page_window_is_bounded_and_marks_discarded_newer_entries() {
             target_event_id: 2,
             agent: "main".into(),
             turn_number: None,
-            entry_count: 60,
         }],
         next_before: None,
     });
@@ -523,7 +517,6 @@ fn rewind_group_only_window_can_scroll_with_empty_active_history() {
             target_event_id: 2,
             agent: "main".into(),
             turn_number: None,
-            entry_count: 1,
         }],
         next_before: None,
     });
@@ -562,7 +555,6 @@ fn group_only_history_window_trims_and_can_page_back_to_newer_groups() {
             target_event_id,
             agent: "main".into(),
             turn_number: None,
-            entry_count: 0,
         })
         .collect();
     let mut window = super::Window::from_page(HistoryPage {

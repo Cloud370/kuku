@@ -136,6 +136,14 @@ pub fn builtin_prompt_catalog() -> PromptCatalog {
             m.insert("current-date".into(), p!("runtime", "current-date"));
             m.insert("handoff-context".into(), p!("runtime", "handoff-context"));
             m.insert(
+                "compaction-context".into(),
+                p!("runtime", "compaction-context"),
+            );
+            m.insert(
+                "compaction-instruction".into(),
+                p!("runtime", "compaction-instruction"),
+            );
+            m.insert(
                 "handoff-instruction".into(),
                 p!("runtime", "handoff-instruction"),
             );

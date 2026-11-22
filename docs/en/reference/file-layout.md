@@ -66,6 +66,8 @@ $KUKU_HOME/p/<workspace>/
 
 `events.jsonl` is authoritative. The OS lock protects a single writer, and its file can remain after close. `outputs/` holds bounded framed command captures, derived output and named value contents. The journal records naming and sharing separately from the stored bytes. The public SDK uses flat Agent addresses in the journal, without per-agent directories or hidden Agent aliases. Historical rollback backups can remain in older sessions. The Session API preserves admitted context.
 
+The journal begins as JSON Lines. [Eligible Session closes](../how-it-works/sessions.md#when-the-journal-is-compressed) can seal history into independent gzip frames with an inline recovery checkpoint. New records append to a JSON Lines tail in the same file. Use `kuku events --file <path> --all --json` to stream the complete logical journal in either layout. [Session events](events.md)
+
 See [Sessions](../how-it-works/sessions.md) for ownership and [SDK](sdk.md) for bounded reads and retention limits.
 
 ## Directory Creation Intents

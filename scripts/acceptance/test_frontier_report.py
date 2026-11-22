@@ -7,9 +7,11 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from benchmark_compare import artifact_observation, compare, compare_effort, compare_prompts, compare_sdk
+from benchmark_resources import CASE_RESOURCE_LIMITS
 from frontier_report import (CASES, DATASET, DELAYED_RECEIPTS, MODEL_ID, PRIVATE_RECEIPTS,
-                             SDK_REQUEST_BYTES_ERROR, EvidenceError, build_report, main, official_report, resource_summary,
-                             session_summary)
+                            SDK_REQUEST_BYTES_ERROR, TASK_COMMIT, EvidenceError, build_report, cohort_efficiency, main, official_report,
+                             resource_summary, session_summary)
 
 
 SECRET = 'do-not-publish-local-identity'
@@ -42,6 +44,213 @@ def write_json(path, value):
     path.write_text(json.dumps(value), encoding='utf-8')
 
 
+class PairedReportTests(unittest.TestCase):
+    def test_artifact_observation_uses_complete_matching_mutations(self):
+        digests = {'/app/a': SDK_SHA, '/app/b': '2' * 64}
+        attempt = {'task_passed': True, 'execution': {'seconds': 10}, 'task_artifacts': [
+            {'task_path': path, 'sha256': digest, 'status': 'retained'} for path, digest in digests.items()
+        ]}
+        write_a, write_b = (
+            {'canonical_path': path, 'commit_state': 'committed', 'content_hash_after': 'sha256:' + digest}
+            for path, digest in digests.items()
+        )
+
+        def event(kind, second, **fields):
+            return {'kind': kind, 'ts': f'2026-01-01T00:00:{second:02d}.123456789Z', **fields}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            live = Path(temporary)
+            root = live / 'session-data'
+            journal = root / 'p/app/nested/repo/sessions/fixture/events.jsonl'
+            journal.parent.mkdir(parents=True)
+            prepared = event('runtime.step_prepared', 1)
+            committed = event('tool.result', 3, status='ok', structured=write_a)
+            rejected = event('tool.result', 4, status='error', structured=write_b)
+            scripted = event('tool.result', 7, status='ok', structured={
+                'kind': 'workspace_script_result', 'actions': [{'status': 'ok', 'result': write_b}],
+            })
+            completed = event('turn.completed', 10)
+
+            def write(events):
+                journal.write_text(''.join(json.dumps(row) + '\n' for row in events))
+                attempt['sdk_evidence'] = {
+                    'data_dir': str(root), 'session_id': 'fixture', 'events_path': str(journal),
+                    'events_sha256': sha256(journal.read_bytes()).hexdigest(),
+                }
+
+            write([prepared, committed, rejected, completed])
+            incomplete = artifact_observation(live, attempt, True)
+            self.assertEqual(incomplete['matched_artifacts'], 1)
+            self.assertIsNone(incomplete['seconds_from_first_prepared_request'])
+
+            write([prepared, committed, rejected, scripted, completed])
+            self.assertEqual(artifact_observation(live, attempt, True), {
+                'clock': 'session_journal', 'retained_artifacts': 2, 'matched_artifacts': 2,
+                'clock_within_agent_duration': True,
+                'seconds_from_first_prepared_request': 6.0, 'seconds_to_last_completed_turn': 3.0,
+            })
+            self.assertIsNone(artifact_observation(live, attempt, False))
+
+            write([prepared, committed, rejected, scripted])
+            timed_out = {**attempt, 'task_passed': False, 'execution': {'seconds': 5}}
+            drift = artifact_observation(live, timed_out, True)
+            self.assertEqual(drift['matched_artifacts'], 2)
+            self.assertIs(drift['clock_within_agent_duration'], False)
+            self.assertIsNone(drift['seconds_from_first_prepared_request'])
+
+    def test_effort_pair_checks_model_runtime_and_prompt(self):
+        provider = {'model_version': MODEL_ID, 'effort': 'max'}
+        provenance = {'kuku_binary_sha256': SDK_SHA, 'kuku_runtime_sha256': SDK_SHA,
+                      'prompt_overrides_sha256': None}
+        left = ({'case': 'regex-log', 'provider': provider}, {'provenance': provenance})
+        right = ({'case': 'regex-log', 'provider': {**provider, 'effort': 'high'}},
+                 {'provenance': dict(provenance)})
+        paths = (Path('max'), Path('high'))
+        with patch('benchmark_compare.attempt', side_effect=[left, right]):
+            report = compare_effort(*paths)
+        self.assertEqual(report['configuration']['provider'], {'model_version': MODEL_ID})
+        self.assertEqual([arm['reasoning_effort'] for arm in report['attempts']], ['max', 'high'])
+        for pair, error in (
+            ([left, left], 'recorded model version and distinct efforts'),
+            ([left, ({**right[0], 'provider': {**right[0]['provider'], 'model_version': 'other'}}, right[1])],
+             'configuration differs in provider'),
+            ([left, (right[0], {'provenance': {**provenance, 'prompt_overrides_sha256': '2' * 64}})],
+             'same Prompt'),
+            ([left, (right[0], {'provenance': {**provenance, 'kuku_runtime_sha256': '2' * 64}})],
+             'same SDK binary and packaged runtime'),
+        ):
+            with self.subTest(error=error), patch('benchmark_compare.attempt', side_effect=pair):
+                with self.assertRaisesRegex(EvidenceError, error):
+                    compare_effort(*paths)
+        with patch('benchmark_compare.attempt', side_effect=[left, right]):
+            with self.assertRaisesRegex(EvidenceError, 'configuration differs in provider'):
+                compare_prompts(*paths)
+
+    def test_prompt_pair_requires_unchanged_runtime_and_distinct_snapshots(self):
+        provenance = {'kuku_binary_sha256': SDK_SHA, 'kuku_runtime_sha256': SDK_SHA,
+                      'prompt_overrides_sha256': '2' * 64}
+        left = ({'case': 'regex-log'}, {'provenance': provenance})
+        right = ({'case': 'regex-log'}, {'provenance': {**provenance, 'prompt_overrides_sha256': '3' * 64}})
+        with patch('benchmark_compare.attempt', side_effect=[left, right]):
+            report = compare_prompts(Path('old'), Path('new'))
+        self.assertEqual([arm['arm'] for arm in report['attempts']], ['baseline', 'candidate'])
+        with patch('benchmark_compare.attempt', side_effect=[left, left]):
+            with self.assertRaisesRegex(EvidenceError, 'distinct recorded Prompt'):
+                compare_prompts(Path('old'), Path('new'))
+        right[1]['provenance']['kuku_runtime_sha256'] = '4' * 64
+        with patch('benchmark_compare.attempt', side_effect=[left, right]):
+            with self.assertRaisesRegex(EvidenceError, 'same SDK binary and packaged runtime'):
+                compare_prompts(Path('old'), Path('new'))
+
+    def test_sdk_pair_checks_distinct_builds_and_matching_run_settings(self):
+        shared = {'case': 'regex-log', 'provider': {'model_version': MODEL_ID}, 'case_cap_usd': 0.75}
+        before = {'kuku_binary_sha256': SDK_SHA, 'kuku_runtime_sha256': '2' * 64, 'prompt_overrides_sha256': None}
+        after = {**before, 'kuku_binary_sha256': '3' * 64, 'kuku_runtime_sha256': '4' * 64}
+        left = (shared, {'provenance': before})
+        right = (shared, {'provenance': after})
+        paths = (Path('old'), Path('new'))
+        with patch('benchmark_compare.attempt', side_effect=[left, right]):
+            report = compare_sdk(*paths)
+        self.assertEqual([arm['arm'] for arm in report['attempts']], ['baseline', 'candidate'])
+        self.assertEqual(report['configuration'], shared)
+        unknown = {**shared, 'provider': {'model_version': None}}
+        for pair, error in (
+            ([left, left], 'distinct SDK binaries'),
+            ([left, (shared, {'provenance': {**after, 'kuku_binary_sha256': None}})], 'distinct SDK binaries'),
+            ([left, (shared, {'provenance': {**after, 'prompt_overrides_sha256': '5' * 64}})], 'same external Prompt'),
+            ([(unknown, left[1]), (unknown, right[1])], 'recorded model version'),
+            ([left, ({**shared, 'case_cap_usd': 1.50}, right[1])], 'configuration differs in case_cap_usd'),
+        ):
+            with self.subTest(error=error), patch('benchmark_compare.attempt', side_effect=pair):
+                with self.assertRaisesRegex(EvidenceError, error):
+                    compare_sdk(*paths)
+
+    def test_exports_matched_evidence_even_for_verifier_failure(self):
+        case = 'regex-log'
+        benchmark = {'case': {'id': case}, 'suite': 'frontier', 'source': {'revision': TASK_COMMIT},
+                     'image_id': 'sha256:' + SDK_SHA, 'task_files_sha256': {'instruction.md': SDK_SHA}}
+        meter = {'case': case, 'service': 'deepseek', 'wire': 'openai-chat', 'provider': 'api.deepseek.com',
+                 'model_requested': 'deepseek-flash', 'effort': 'max', 'case_cap_usd': '0.75',
+                 'limits': {'max_request_bytes': 4194304, 'max_output_tokens': 131072, 'agent_timeout_sec': 900,
+                            'provider_context_tokens': 1048576, 'max_requests': None}}
+        with tempfile.TemporaryDirectory() as temporary:
+            kuku, pi = (Path(temporary) / name for name in ('kuku', 'pi'))
+            throttle = {'nr_periods': 3, 'nr_throttled': 2, 'throttled_usec': 10000}
+            for directory in (kuku, pi):
+                resource_evidence = {'cpu_throttling': {**throttle, 'private': SECRET}} if directory == kuku else {}
+                write_json(directory / 'result.json', {'group': 'benchmark', 'benchmark': benchmark,
+                                                        'attempts': [{'harness': directory.name, 'mode': 'live',
+                                                                      'resource_requirements': CASE_RESOURCE_LIMITS,
+                                                                      'resource_evidence': resource_evidence,
+                                                                      'reward': 0, 'session_data': SECRET}]})
+                write_json(directory / 'meter.json', meter)
+            report = compare(kuku, pi)
+            self.assertEqual([result['reward'] for result in report['attempts']], [0, 0])
+            self.assertEqual([result['container_cpu_throttling'] for result in report['attempts']],
+                             [throttle, None])
+            self.assertNotIn(SECRET, json.dumps(report))
+            journal = kuku / 'live' / 'session-data' / 'p' / 'app' / 'sessions' / 'fixture' / 'events.jsonl'
+            journal.parent.mkdir(parents=True)
+            journal.write_text(''.join(json.dumps(event) + '\n' for event in (
+                {'kind': 'tool.call', 'tool': 'read_output', 'args': {'id': SECRET}},
+                {'kind': 'runtime.context_segment', 'agent': 'main', 'id': 7,
+                 'reason': 'request_byte_budget', 'output_pages_referenced': 3},
+                {'kind': 'runtime.step_prepared', 'agent': 'main', 'segment': 7},
+                {'kind': 'runtime.step_prepared', 'agent': 'main', 'segment': 7},
+                {'kind': 'runtime.context_segment', 'agent': 'main', 'id': 8,
+                 'reason': 'request_byte_budget', 'output_pages_referenced': 90},
+                {'kind': 'runtime.step_prepared', 'agent': 'helper', 'segment': 8},
+                {'kind': 'runtime.operation', 'record': {'operation': 'turn_settled', 'address': 'main',
+                 'error': SDK_REQUEST_BYTES_ERROR}},
+            )))
+            rows = [
+                {'seconds': 0.25, 'request_bytes': 40, 'body': SECRET},
+                {'seconds': 1.25, 'request_bytes': 42, 'timing': {'request_to_first_output_delta_seconds': 0.5}},
+                {'request': 3, 'seconds': 2.0, 'request_bytes': 45, 'reasoning_output_tokens': 40,
+                 'timing': {'request_to_first_output_delta_seconds': 1.0,
+                            'request_to_first_tool_argument_delta_seconds': 1.75, 'private': SECRET}},
+            ]
+            write_json(kuku / 'meter.json', {**meter, 'attempts': rows,
+                                           'rejections': [{'reason': 'case USD cap', 'private': SECRET}]})
+            write_json(pi / 'meter.json', {**meter, 'attempts': [{**rows[1], 'seconds': None}]})
+            report = compare(kuku, pi)
+            self.assertEqual(report['attempts'][0]['provider_relay'], {
+                'admitted_attempts': 3, 'timed_attempts': 3, 'elapsed_seconds': 3.5, 'request_body_bytes': 127,
+                'peak_request_body_bytes': 45,
+                'first_output_samples': 2, 'first_output_p50_seconds': 0.75,
+                'slowest_observed_request': {
+                    'request': 3, 'seconds': 2.0, 'request_body_bytes': 45,
+                    'first_output_seconds': 1.0, 'first_text_seconds': None,
+                    'first_tool_arguments_seconds': 1.75, 'reasoning_output_tokens': 40,
+                },
+                'emitted_tool_calls': None, 'emitted_tool_batches': None,
+                'reasoning_output_tokens': None, 'reasoning_usage_samples': 1,
+            })
+            self.assertIsNone(report['attempts'][1]['provider_relay']['elapsed_seconds'])
+            self.assertIsNone(report['attempts'][1]['provider_relay']['slowest_observed_request'])
+            self.assertEqual(report['attempts'][0]['tool_calls'], 1)
+            self.assertEqual(report['attempts'][0]['tool_call_source'], 'session_journal')
+            self.assertEqual(report['attempts'][0]['workspace_script_calls'], 0)
+            self.assertEqual(report['attempts'][0]['workspace_script_host_actions'], 0)
+            self.assertEqual(report['attempts'][0]['sdk_error_detail'], 'request_bytes_limit')
+            self.assertEqual(report['attempts'][0]['context_capacity'], {
+                'committed_rollovers': 1, 'output_pages_referenced': 3,
+            })
+            self.assertIsNone(report['attempts'][1]['context_capacity'])
+            self.assertIsNone(report['attempts'][1]['workspace_script_calls'])
+            self.assertEqual(report['attempts'][0]['case_cap_rejections'], 1)
+            self.assertNotIn(SECRET, json.dumps(report))
+            write_json(pi / 'meter.json', {**meter, 'case_cap_usd': '1.00'})
+            with self.assertRaisesRegex(EvidenceError, 'case_cap_usd'):
+                compare(kuku, pi)
+            write_json(pi / 'meter.json', meter)
+            pi_result = json.loads((pi / 'result.json').read_text())
+            pi_result['attempts'][0]['resource_requirements']['cpus'] = 2
+            write_json(pi / 'result.json', pi_result)
+            with self.assertRaisesRegex(EvidenceError, 'container_limits'):
+                compare(kuku, pi)
+
+
 def local_evidence(directory, passed, *, ledger=False):
     live = directory / 'live'
     write_json(live / 'result.json', {
@@ -51,7 +260,7 @@ def local_evidence(directory, passed, *, ledger=False):
         'execution': {'seconds': 3.2, 'timed_out': False, 'command': [SECRET]},
         'verification': {'seconds': 1.3, 'timed_out': False, 'log': SECRET},
         'verifier_summary': {'tests': 3, 'passed': 3 if passed else 0, 'test_names': [SECRET]},
-        'sdk_evidence': {'events_path': SECRET},
+        'sdk_evidence': {},
     })
     usage = {'prompt_tokens': 15, 'completion_tokens': 7, 'prompt_cache_hit_tokens': 10,
              'prompt_cache_miss_tokens': 5, 'reasoning_tokens': 4}
@@ -110,6 +319,17 @@ def generation_receipt(identifier, **changes):
 
 
 class FrontierReportTests(unittest.TestCase):
+    def test_official_time_per_pass_includes_failed_and_audited_attempts(self):
+        attempts = [
+            dict(outcome='pass', lookup=0, cost_usd=0.1, run_seconds=10),
+            dict(outcome='pass', lookup=1, cost_usd=0.1, run_seconds=20),
+            dict(outcome='timeout', lookup=0, cost_usd=0.1, run_seconds=90),
+            dict(outcome='infra', lookup=0, cost_usd=0.1, run_seconds=80),
+        ]
+        self.assertEqual(cohort_efficiency(attempts)['agent_verifier_seconds_per_pass'], 120)
+        attempts[1]['run_seconds'] = None
+        self.assertIsNone(cohort_efficiency(attempts)['agent_verifier_seconds_per_pass'])
+
     def test_workspace_script_counts_distinguish_local_js_host_actions_and_missing_receipts(self):
         with tempfile.TemporaryDirectory() as temporary:
             live_root = Path(temporary) / 'live'
@@ -141,11 +361,71 @@ class FrontierReportTests(unittest.TestCase):
                 event('tool.result', tool_call_id='a', status='ok',
                       structured={'kind': 'workspace_script_result', 'actions': []})
                 self.assertEqual((1, 0), counts())
-                event('tool.call', tool='workspace_script', tool_call_id='b')
+                event('tool.call', tool='run_js', tool_call_id='b')
                 event('tool.result', tool_call_id='b', status='error',
                       structured={'kind': 'workspace_script_result',
                                   'actions': [{'tool': 'run_command'}, {'tool': 'read_output'}]})
                 self.assertEqual((2, 2), counts())
+                event('tool.call', tool='run_js', tool_call_id='c')
+                event('tool.result', tool_call_id='c', status='ok', structured={'kind': 'job', 'job_id': 'job-1'})
+                self.assertEqual((3, None), counts())
+                receipt = {'structured': {'kind': 'workspace_script_result', 'actions': [{'tool': 'read_file'}]}}
+                event('runtime.operation', record={'operation': 'job_finished', 'agent': 'reviewer',
+                                                   'job_id': 'job-1', 'result': receipt})
+                self.assertEqual((3, None), counts())
+                event('runtime.operation', record={'operation': 'job_finished', 'agent': 'main',
+                                                   'job_id': 'job-1', 'result': receipt})
+                self.assertEqual((3, 3), counts())
+
+    def test_nested_session_uses_the_recorded_journal_and_checks_relocated_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            live = Path(temporary) / 'moved/live'
+            root = live / 'session-data'
+            relative = Path('p/app/nested/repo/sessions/sample/events.jsonl')
+            journal = root / relative
+            journal.parent.mkdir(parents=True)
+            events = [
+                {'kind': 'tool.call', 'tool': 'run_js', 'tool_call_id': 'a'},
+                {'kind': 'tool.result', 'tool_call_id': 'a', 'status': 'ok', 'structured': {
+                    'kind': 'workspace_script_result', 'actions': [{'tool': 'read_file'}, {'tool': 'run_command'}],
+                }},
+            ]
+            raw = ''.join(json.dumps(row) + '\n' for row in events).encode()
+            journal.write_bytes(raw)
+            decoy = root / 'p/app/sessions/sample/events.jsonl'
+            decoy.parent.mkdir(parents=True)
+            decoy.write_text('{"kind":"tool.call","tool":"read_file"}\n')
+            old_root = Path(temporary) / 'original/live/session-data'
+            sdk = {'data_dir': str(old_root), 'events_path': str(old_root / relative),
+                   'session_id': 'sample', 'events_sha256': sha256(raw).hexdigest()}
+
+            def counts(locator):
+                tools, _ = session_summary(live, locator)
+                return tools['workspace_script_calls'], tools['workspace_script_host_actions']
+
+            self.assertEqual((0, 0), counts({}))
+            self.assertEqual((1, 2), counts(sdk))
+            self.assertEqual((1, 2), counts({**sdk, 'data_dir': str(root), 'events_path': str(journal)}))
+            for change in (
+                {'session_id': 'other'},
+                {'events_path': str(old_root.parent / relative)},
+                {'events_path': str(old_root / 'p/../p' / relative)},
+                {'events_sha256': None},
+                {'events_sha256': SDK_SHA},
+            ):
+                with self.subTest(change=change):
+                    self.assertEqual((None, None), counts({**sdk, **change}))
+            journal.write_bytes(raw.replace(b'run_command', b'write_file'))
+            self.assertEqual((None, None), counts(sdk))
+            journal.write_bytes(raw)
+            alias_relative = Path('p/app/alias/sessions/sample/events.jsonl')
+            alias = root / alias_relative
+            alias.parent.mkdir(parents=True)
+            try:
+                alias.symlink_to(journal)
+            except (OSError, NotImplementedError):
+                return
+            self.assertEqual((None, None), counts({**sdk, 'events_path': str(old_root / alias_relative)}))
 
     def test_audit_scoring_cost_and_time(self):
         report = official_report(official_feed())
@@ -346,7 +626,10 @@ class FrontierReportTests(unittest.TestCase):
             local_evidence(directory, False)
             live = directory / 'live'
             result = json.loads((live / 'result.json').read_text())
-            write_json(live / 'result.json', {**result, 'reward': 1.0, 'failure_kind': 'runtime', 'resources': {
+            throttle = {'nr_periods': 3, 'nr_throttled': 0, 'throttled_usec': 0}
+            write_json(live / 'result.json', {**result, 'reward': 1.0, 'failure_kind': 'runtime',
+                                              'resource_evidence': {'cpu_throttling': {**throttle, 'private': SECRET}},
+                                              'resources': {
                 'harness_memory': {'peak_rss_kib': 31415, 'mean_rss_kib': 30000.4, 'samples': 11,
                                    'observed_seconds': 10, 'window_seconds': 12.5, 'coverage_ratio': 0.8},
                 'harness_cpu_seconds': 2.3,
@@ -362,7 +645,7 @@ class FrontierReportTests(unittest.TestCase):
             events = next((live / 'session-data').glob('p/*/sessions/*/events.jsonl'))
             events.write_text(json.dumps({'kind': 'runtime.operation', 'record': {
                 'operation': 'turn_settled', 'address': 'main', 'status': 'interrupted',
-                'error': SDK_REQUEST_BYTES_ERROR, 'output': SECRET,
+                'error': f'{SDK_REQUEST_BYTES_ERROR} (579681 bytes, limit 524288 bytes)', 'output': SECRET,
             }}) + '\n', encoding='utf-8')
             attempt = build_report(official_feed(), [[case, directory]])['local_attempts'][0]
             self.assertFalse(attempt['result']['task_passed'])
@@ -380,6 +663,7 @@ class FrontierReportTests(unittest.TestCase):
             self.assertIsNone(attempt['resources']['process_including_waited_children']['io']['read_bytes'])
             self.assertEqual(attempt['resources']['process_including_waited_children']['sampling_errors'], 3)
             self.assertEqual(attempt['resources']['container']['samples'], 9)
+            self.assertEqual(attempt['resources']['container']['cpu_throttling'], throttle)
             self.assertEqual(attempt['resources']['container']['retained_snapshot_count'], 3)
             self.assertEqual(attempt['resources']['container']['sampling_errors'], 1)
             self.assertEqual(attempt['resources']['container']['block_io'], {

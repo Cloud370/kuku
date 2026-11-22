@@ -101,10 +101,10 @@ impl Workload {
         let workflows = [
             (DIRECT, "run_command", &command, 1),
             (FILE, "read_file", &read, 1),
-            (SCRIPT, "workspace_script", &script, self.repeats + 1),
+            (SCRIPT, "run_js", &script, self.repeats + 1),
             (
                 PRESSURE,
-                "workspace_script",
+                "run_js",
                 &pressure,
                 self.pressure_rounds * (self.workers + 1),
             ),
@@ -779,10 +779,10 @@ async fn fixture<'a>(
 fn analysis_script(command: &Value) -> String {
     format!(
         r#"
-        const command = await workspace.run_command({command});
+        const command = await tools.run_command({command});
         if (command.exit_code !== 0 || !command.capture_complete) throw new Error('Check replay was incomplete or failed');
         let bytes = 0, failures = 0;
-        for await (const chunk of workspace.output_chunks({{id: command.output_ref.id, limit: {OUTPUT_READ_BYTES}}})) {{
+        for await (const chunk of tools.output_chunks({{id: command.output_ref.id, limit: {OUTPUT_READ_BYTES}}})) {{
             for (const part of chunk.segments) {{
                 bytes += part.bytes;
                 failures += (part.text.match(/!/g) ?? []).length;
@@ -798,7 +798,7 @@ fn pressure_script(command: &Value) -> String {
         r#"
         const buffer = new Uint8Array({WORKER_BUFFER_BYTES});
         buffer.fill(17);
-        const results = await Promise.all(Array.from({{length: {OPERATIONS_PER_SCRIPT}}}, () => workspace.run_command({command})));
+        const results = await Promise.all(Array.from({{length: {OPERATIONS_PER_SCRIPT}}}, () => tools.run_command({command})));
         const successful = results.filter(command => command.exit_code === 0 && command.capture_complete).length;
         return {{successful, buffer_bytes: buffer.length * Number(buffer[buffer.length - 1] === 17)}};
     "#

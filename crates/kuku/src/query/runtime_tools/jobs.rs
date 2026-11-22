@@ -3,6 +3,7 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 use tokio::sync::Notify;
 
+use crate::session::runtime::JobControl;
 use crate::tool::{ToolDefinition, ToolResultEnvelope};
 use crate::{Error, Result, Session};
 
@@ -21,7 +22,7 @@ pub(super) fn list_definition() -> ToolDefinition {
 
 pub(super) fn wait_definition() -> ToolDefinition {
     let mut tool = super::definition("wait_job",
-        "Wait for one of your Session Jobs when your next action needs its result. Returns final status, result and output_id. Completions are also delivered automatically.",
+        "Wait for one of your Session Jobs when your next action needs its result. Returns the final status and a bounded completion receipt with retained output references when available.",
         job_schema());
     tool.read_only = true;
     tool
@@ -29,7 +30,7 @@ pub(super) fn wait_definition() -> ToolDefinition {
 
 pub(super) fn cancel_definition() -> ToolDefinition {
     super::definition("cancel_job",
-        "Stop a specific Session Job by job_id. Returns its terminal status and any captured result.",
+        "Stop a specific Session Job by job_id and wait for cleanup. Returns the final status and a bounded completion receipt with retained output references when available.",
         job_schema())
 }
 
@@ -60,24 +61,29 @@ pub(in crate::query) async fn control(
     owner: String,
     args: Value,
     cancel: Arc<Notify>,
-    stop_job: bool,
+    control: JobControl,
 ) -> ToolResultEnvelope {
     let result = async {
         let id = super::required(&args, "job_id")?;
-        let job = if stop_job {
-            session.cancel_job(&owner, id).await?
-        } else {
-            tokio::select! {
+        let observation = match control {
+            JobControl::Cancel => session.cancel_job_observation(&owner, id).await?,
+            JobControl::Wait => tokio::select! {
                 biased;
                 _ = cancel.notified() => return Ok(ToolResultEnvelope::cancelled("Job wait cancelled")),
-                result = session.wait_job(&owner, id) => result?,
-            }
+                result = session.wait_job_observation(&owner, id) => result?,
+            },
         };
+        let mut job = observation.snapshot;
+        let missing = || Error::InvalidEventStream(format!("Job '{id}' has no completion receipt"));
+        let model_content = observation.model_content.ok_or_else(missing)?;
+        let result = job.result.as_mut().ok_or_else(missing)?;
+        let truncated = result.truncated;
+        result.structured = None;
         let mut value = serde_json::to_value(&job)?;
-        if !stop_job {
-            value["kind"] = json!("job_wait_result");
-        }
-        Ok(ToolResultEnvelope::ok(&job.summary, value.to_string(), value))
+        value["kind"] = json!(control.result_kind());
+        let mut envelope = ToolResultEnvelope::ok(job.summary, model_content, value);
+        envelope.truncated = truncated;
+        Ok(envelope)
     }.await;
     result.unwrap_or_else(|err: Error| {
         ToolResultEnvelope::error("Job operation failed", err.to_string())

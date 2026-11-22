@@ -6,6 +6,8 @@ import json
 import math
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
+import struct
+import zlib
 
 
 TOKEN_FIELDS = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
@@ -13,6 +15,34 @@ RESULT_VIEW_FIELDS = ("tool_call_id", "status", "summary", "model_content", "tru
 STREAM_COUNTERS = ("model_text_chunks", "model_thinking_chunks", "tool_output_chunks", "model_text_bytes",
                    "model_thinking_bytes", "tool_output_bytes", "model_request_events", "committed_events", "lagged_updates")
 MAX_STAGED_TOOL_BLOCKS = 16_384
+EVENT_LINE_BYTES = 1024 * 1024
+EVENT_RECORD_LIMIT = 100_000
+
+
+class SessionCapacityEvidence:
+    def __init__(self, agent):
+        self.agent = agent
+        self.pending = {}
+        self.committed = 0
+        self.pages = 0
+
+    def observe(self, event):
+        if event.get("agent") != self.agent:
+            return
+        kind = event.get("kind")
+        if kind == "runtime.context_segment" and event.get("reason") == "request_byte_budget":
+            identity = event.get("id")
+            if type(identity) is int and identity > 0:
+                self.pending[identity] = event.get("output_pages_referenced")
+        segment = event.get("segment")
+        if kind == "runtime.step_prepared" and type(segment) is int and segment in self.pending:
+            self.committed += 1
+            pages = self.pending.pop(segment)
+            if self.pages is not None:
+                self.pages = self.pages + pages if type(pages) is int and pages > 0 else None
+
+    def summary(self):
+        return {"committed_rollovers": self.committed, "output_pages_referenced": self.pages}
 
 
 class FailureSummary:
@@ -122,6 +152,95 @@ def under(directory, path):
     return resolved
 
 
+def session_journal(live, sdk):
+    try:
+        root = live.resolve() / 'session-data'
+        if root.resolve() != root:
+            return None
+        if 'events_path' in sdk:
+            candidate = recorded_session_journal(root, sdk)
+        else:
+            candidates = root.glob('p/*/sessions/*/events.jsonl')
+            candidate = next(candidates, None)
+            if candidate is None or next(candidates, None) is not None:
+                return None
+        return candidate if candidate.resolve() == candidate and candidate.is_file() else None
+    except (OSError, TypeError, ValueError, RuntimeError):
+        return None
+
+
+def recorded_session_journal(root, sdk):
+    reported = sdk['events_path']
+    path_type = PureWindowsPath if PureWindowsPath(reported).is_absolute() else PurePosixPath
+    reported = comparison_path(path_type(reported))
+    current = comparison_path(path_type(str(root)))
+    recorded_root = comparison_path(path_type(sdk.get('data_dir', str(root))))
+    require(reported.is_absolute() and '..' not in reported.parts, 'invalid recorded Session path')
+    base = recorded_root if recorded_root.is_absolute() else current
+    parts = reported.relative_to(base).parts
+    require(len(parts) >= 5 and parts[0] == 'p'
+            and parts[-3:] == ('sessions', sdk.get('session_id'), 'events.jsonl'),
+            'journal does not belong to the recorded Session')
+    if base != current:
+        digest = sdk.get('events_sha256')
+        require(isinstance(digest, str) and re.fullmatch(r'[a-f0-9]{64}', digest),
+                'relocated Session requires a recorded journal digest')
+    candidate = root.joinpath(*parts)
+    require(candidate.relative_to(root).parts == parts, 'invalid retained Session location')
+    return candidate
+
+
+def journal_lines(journal):
+    with journal.open("rb") as source:
+        magic = source.read(8)
+        if magic != b"KUKUJNL1":
+            source.seek(0)
+        else:
+            header = magic + source.read(28)
+            require(len(header) == 36, "truncated Session archive header")
+            count, checkpoint_bytes, head, _, checksum = struct.unpack_from("<IIQQI", header, 8)
+            require(0 < count <= 262_144 and checkpoint_bytes <= 32 * EVENT_LINE_BYTES and head > 0,
+                    "invalid Session archive limits")
+            table = source.read(count * 8)
+            require(len(table) == count * 8 and zlib.crc32(table, zlib.crc32(header[:32])) == checksum,
+                    "damaged Session archive directory")
+            source.seek(checkpoint_bytes, 1)
+            pending = b""
+            for raw_bytes, encoded_bytes in struct.iter_unpack("<II", table):
+                require(0 < raw_bytes <= EVENT_LINE_BYTES and 0 < encoded_bytes <= EVENT_LINE_BYTES + 65_536,
+                        "invalid Session archive frame length")
+                frame = source.read(encoded_bytes)
+                require(len(frame) == encoded_bytes, "truncated Session archive frame")
+                decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+                try:
+                    decoded = decoder.decompress(frame, raw_bytes + 1)
+                except zlib.error as error:
+                    raise ValueError("damaged Session archive frame") from error
+                require(decoder.eof and not decoder.unused_data and len(decoded) == raw_bytes,
+                        "damaged Session archive frame")
+                records = (pending + decoded).split(b"\n")
+                pending = records.pop()
+                require(len(pending) <= EVENT_LINE_BYTES, "oversized Session archive record")
+                for record in records:
+                    yield record + b"\n"
+            require(not pending, "Session archive ends inside an event")
+        yield from iter(lambda: source.readline(EVENT_LINE_BYTES + 1), b"")
+
+
+def session_events(journal, expected_sha256=None):
+    digest = hashlib.sha256() if expected_sha256 is not None else None
+    for index, line in enumerate(journal_lines(journal), 1):
+        require(index <= EVENT_RECORD_LIMIT and len(line) <= EVENT_LINE_BYTES and line.endswith(b'\n'),
+                'saved Session journal exceeds its read bounds or has an incomplete tail')
+        if digest is not None:
+            digest.update(line)
+        event = json.loads(line)
+        require(isinstance(event, dict), 'saved Session journal contains a non-object event')
+        yield event
+    require(digest is None or digest.hexdigest() == expected_sha256,
+            'saved Session journal differs from its SDK evidence digest')
+
+
 def json_file(path):
     require(path.stat().st_size <= 4 * 1024 * 1024, "SDK report exceeds the evidence read limit")
     return json.loads(path.read_text(encoding="utf-8"))
@@ -212,6 +331,12 @@ def usage_summary(requests, usages, reports, session_scope=False):
             "reported_providers": sorted(providers), "cost_ledger_basis": "conservative_upper_bound"}
 
 
+def tool_batch_summary(sizes):
+    return {"without_tools": sizes[0], "single_call": sizes[1],
+            "multiple_calls": sum(count for size, count in sizes.items() if size > 1),
+            "max_calls": max(sizes, default=0)}
+
+
 def streaming_summary(report, requests, records, text_bytes, thinking_bytes):
     source = report.get("streaming")
     if source is None:
@@ -251,6 +376,10 @@ class SessionFacts:
         self.counts = Counter()
         self.steps, self.responses, self.usages = {}, {}, {}
         self.session_steps, self.session_usages, self.session_reports = {}, {}, []
+        self.compactions = {}
+        self.rejected_requests, self.overflow_recoveries = set(), set()
+        self.regenerations = {}
+        self.tool_calls_per_response = Counter()
         self.calls, self.results, self.result_events, self.tool_prepared, self.dispatched = {}, {}, {}, {}, set()
         self.segments, self.admitted_results = {}, set()
         self.context_candidates, self.context_sources, self.staged_tool_blocks = {}, {}, 0
@@ -276,8 +405,9 @@ class SessionFacts:
         owner = event.get("agent", event.get("conversation") or "main")
         require(isinstance(owner, str) and len(owner) <= 64, "event Agent identity exceeds the diagnostic limit")
         request = (event.get("turn"), event.get("request_id"))
-        session_request = (owner, *request)
-        if kind == "runtime.step_prepared":
+        agent_turn = (owner, request[0])
+        session_request = (*agent_turn, request[1])
+        if kind in ("runtime.step_prepared", "runtime.compaction_started"):
             require(isinstance(request[1], str) and len(request[1]) <= 128 and len(self.session_steps) < 4096,
                     "prepared requests exceed the diagnostic identity/count limit")
             require(session_request not in self.session_steps, "Session contains duplicate prepared request identities")
@@ -285,15 +415,19 @@ class SessionFacts:
             require(all(isinstance(metadata[field], str) and len(metadata[field]) <= 512 for field in ("connection", "model")),
                     "prepared request routing metadata is invalid or oversized")
             self.session_steps[session_request] = metadata
+            if kind == "runtime.step_prepared" and agent_turn in self.regenerations:
+                attempt, _ = self.regenerations[agent_turn]
+                self.regenerations[agent_turn] = (attempt, True)
         elif kind == "runtime.model_retry":
-            require(session_request in self.session_steps and session_request not in self.session_usages,
-                    "retry has no active prepared request")
-            attempt = event.get("attempt", 2)
-            require(type(attempt) is int and attempt >= 2, "retry attempt must be an integer of at least two")
+            self.retry(event, agent_turn, session_request)
+        elif kind == "model.response" and session_request in self.session_steps:
+            self.session_steps[session_request]["stop_reason"] = event.get("stop_reason")
+        elif kind == "tool.call" and session_request in self.session_steps:
             step = self.session_steps[session_request]
-            if attempt > step.get("last_attempt", 1):
-                step["last_attempt"] = attempt
-                step["retry_count"] = step.get("retry_count", 0) + 1
+            require(not step.get("regenerated"), "discarded model response admitted a tool call")
+            step["admitted_tools"] = True
+            _, replaced = self.regenerations.pop(agent_turn, (1, True))
+            require(replaced, "tool argument regeneration has no replacement request")
         elif kind in ("runtime.model_usage", "runtime.provider_report"):
             require(session_request in self.session_steps, "Session usage or report has no prepared request")
             if kind == "runtime.model_usage":
@@ -319,6 +453,20 @@ class SessionFacts:
             self.context_used[identity], self.context_pending[identity] = set(), {}
         elif kind == "runtime.context_admitted":
             self.stage_context(event)
+        elif kind == "runtime.compaction_started":
+            self.compactions[request] = {"before_bytes": event.get("before_bytes"),
+                                         "request_bytes": event.get("request_bytes")}
+            if (source := event.get("rejected_request_id")) is not None:
+                rejected = (request[0], source)
+                require(isinstance(source, str) and rejected in self.rejected_requests - self.overflow_recoveries,
+                        "compaction recovery does not name a unique rejected request in the same turn")
+                self.overflow_recoveries.add(rejected)
+        elif kind == "runtime.compaction_finished" and event.get("status") == "completed":
+            require(request in self.compactions and "after_bytes" not in self.compactions[request],
+                    "compaction completion has no matching summary request")
+            self.confirm_context(event)
+            self.compactions[request].update({field: event.get(field) for field in
+                                             ("after_bytes", "checkpointed_messages", "elapsed_ms")})
         elif kind == "runtime.step_prepared":
             require(isinstance(request[1], str) and request not in self.steps, "prepared request identity is missing or duplicated")
             self.confirm_context(event)
@@ -329,8 +477,19 @@ class SessionFacts:
             self.steps[request] = self.session_steps[session_request]
             self.settings.append(fingerprint(event))
             self.counts["prepared_steps"] += 1
+        elif kind == "runtime.model_rejected":
+            require(request in self.steps and request not in self.responses and request not in self.rejected_requests,
+                    "rejected model request has no unique unanswered preparation")
+            require(event.get("reason") == "context_too_large"
+                    and event.get("attempt") == 1 + self.steps[request].get("retry_count", 0),
+                    "rejected model request has an invalid reason or attempt")
+            self.rejected_requests.add(request)
         elif kind in ("model.response", "runtime.model_usage", "runtime.provider_report"):
-            require(request in self.steps and event.get("turn") == self.steps[request].get("turn"),
+            if request in self.compactions and kind != "model.response":
+                self.compactions[request]["usage"] = self.session_usages.get(session_request)
+                return
+            require(request in self.steps and request not in self.rejected_requests
+                    and event.get("turn") == self.steps[request].get("turn"),
                     "model response, usage or report has no matching prepared request")
             if kind == "model.response":
                 require(request not in self.responses, "request has duplicate model responses")
@@ -355,6 +514,7 @@ class SessionFacts:
                                "args_hash": fingerprint(event.get("args")), "event_id": identity,
                                "id_hash": fingerprint(event.get("tool_call_id")), "tool_hash": fingerprint(event.get("tool"))}
             self.counts["tool_calls"] += 1
+            self.tool_calls_per_response[request] += 1
         elif kind == "runtime.tool_prepared":
             require(key in self.calls and key not in self.tool_prepared, "tool preparation has no unique model call")
             require(event.get("definition", {}).get("schema", {}).get("name") == self.calls[key].get("tool"),
@@ -375,6 +535,41 @@ class SessionFacts:
                     self.outputs.append(output_reference(self.events_path, structured))
         elif kind == "turn.completed":
             self.counts["turns_completed"] += 1
+
+    def retry(self, event, agent_turn, session_request):
+        step = self.session_steps.get(session_request)
+        if event.get("recovery") == "regenerate_tool_arguments":
+            prior_attempt, replaced = self.regenerations.get(agent_turn, (1, True))
+            attempt, maximum = event.get("attempt"), event.get("max_attempts")
+            require(step and step.get("stop_reason") == "invalid_response"
+                    and session_request in self.session_usages and not step.get("admitted_tools") and not step.get("regenerated")
+                    and event.get("will_retry") is True and event.get("failed_kind") == "invalid_response"
+                    and event.get("provider_stop_reason") == "tool_use" and replaced
+                    and type(attempt) is int and attempt == prior_attempt + 1
+                    and event.get("failed_attempt") == prior_attempt and type(maximum) is int and attempt <= maximum,
+                    "tool argument regeneration has no eligible rejected response")
+            step["regenerated"] = True
+            self.regenerations[agent_turn] = (attempt, False)
+            return
+        require(step and not step.get("retry_stopped"), "retry has no active prepared request")
+        phase = event.get("phase")
+        retrying = phase in ("waiting", "started")
+        require((retrying or phase == "stopped") and event.get("will_retry") is retrying,
+                "invalid model retry phase")
+        attempt, failed, maximum = (event.get(field) for field in ("attempt", "failed_attempt", "max_attempts"))
+        require(all(type(value) is int and value > 0 for value in (attempt, failed, maximum))
+                and failed == step.get("last_attempt", 1)
+                and attempt == failed + int(retrying) and attempt <= maximum, "invalid model retry attempt")
+        if phase == "stopped":
+            step["retry_stopped"] = True
+            return
+        require(session_request not in self.session_usages, "retry has no active prepared request")
+        if phase == "waiting":
+            step["waiting_attempt"] = attempt
+        else:
+            require(step.pop("waiting_attempt", None) == attempt, "started retry was not scheduled")
+            step["last_attempt"] = attempt
+            step["retry_count"] = step.get("retry_count", 0) + 1
 
     def operation(self, event):
         record = event.get("record", {})
@@ -476,6 +671,17 @@ class SessionFacts:
                 self.admitted_results.add(matches[0])
                 pending.pop(call_id)
 
+    def durable_cleanup_closed(self, report):
+        snapshot = report.get("agent") or {}
+        status = snapshot.get("status")
+        return (report.get("session_id") == self.session_id
+                and report.get("last_event_id") == self.last_id == self.closed_at
+                and report.get("cleanup", {}).get("closed") is True and self.cleanup_failures == 0
+                and self.settled is not None and self.settled[0] < self.closed_at
+                and status in ("idle", "stopped", "interrupted", "waiting")
+                and status == self.settled[1].get("status")
+                and snapshot.get("pending_inputs") == len(self.pending) == 0)
+
     def finish(self, report, require_fixed_limits, require_output_limit):
         snapshot = report.get("agent") or {}
         require(report.get("session_id") == self.session_id, "SDK report names a different durable Session")
@@ -501,8 +707,11 @@ class SessionFacts:
                 "SDK provider settings or reports differ from durable facts")
         require(self.calls.keys() == self.results.keys() and bool(self.dispatched), "SDK tool calls are not fully paired or dispatched")
         require(self.results.keys() <= self.admitted_results, "completed tool results were not admitted for model continuation")
-        require(self.steps.keys() == self.responses.keys() == self.usages.keys(),
-                "prepared requests do not have paired model response and usage facts")
+        require(self.steps.keys() == self.responses.keys() | self.rejected_requests
+                and self.responses.keys() == self.usages.keys()
+                and self.rejected_requests == self.overflow_recoveries,
+                "prepared requests lack a response and usage or a recovered context rejection")
+        require(all(replaced for _, replaced in self.regenerations.values()), "tool argument regeneration has no replacement request")
         limits = report.get("limits", {})
         max_requests, max_steps = limits.get("max_requests"), limits.get("max_steps")
         max_output_tokens = limits.get("max_output_tokens")
@@ -513,7 +722,7 @@ class SessionFacts:
                 and type(limits.get("max_request_bytes")) is int and limits["max_request_bytes"] >= 4096
                 and "max_output_tokens" in limits
                 and (max_output_tokens is None or type(max_output_tokens) is int and max_output_tokens > 0)
-                and type(retries) is int and retries in (0, 1), "SDK report has invalid request/retry limits")
+                and type(retries) is int and retries >= 0, "SDK report has invalid request/retry limits")
         if require_fixed_limits or require_output_limit:
             require(max_output_tokens is not None, "paid SDK evidence requires a finite output token limit")
         if require_fixed_limits:
@@ -522,7 +731,9 @@ class SessionFacts:
         if max_steps is not None:
             require(all(count <= max_steps for count in Counter(step.get("turn") for step in self.steps.values()).values()),
                     "durable model requests exceeded the declared per-turn limit")
-        usage = usage_summary(self.steps, self.usages, self.reports)
+        compaction_requests = {request: self.session_steps[(self.agent, *request)] for request in self.compactions}
+        compaction_usage = {request: facts["usage"] for request, facts in self.compactions.items() if "usage" in facts}
+        usage = usage_summary(self.steps | compaction_requests, self.usages | compaction_usage, self.reports)
         normalized = snapshot.get("usage", {})
         require(normalized.get("model_requests") == usage["requests"]
                 and normalized.get("unreported_requests") == usage["unreported_requests"],
@@ -531,8 +742,10 @@ class SessionFacts:
                 "SDK token totals differ from durable normalized usage")
         return {"passed": True, "agent": self.agent, "session_id": self.session_id,
                 "facts": dict(self.counts), "last_event_id": self.last_id, "cleanup_closed": True,
+                "tool_batches": tool_batch_summary(Counter(self.tool_calls_per_response[key] for key in self.responses)),
                 "output_references": self.outputs, "usage": usage, "usage_scope": "selected_agent",
                 "session_usage": usage_summary(self.session_steps, self.session_usages, self.session_reports, True),
+                "compactions": list(self.compactions.values()),
                 "other_agents": sorted(self.created - {self.agent}), "limits": limits,
                 "streaming": streaming_summary(report, len(self.steps), self.records, self.text_bytes, self.thinking_bytes),
                 "models": sorted({step["model"] for step in self.steps.values()}),
@@ -540,12 +753,24 @@ class SessionFacts:
 
 
 def inspect_sdk(result_path, data_dir, connection=None, container_data=None, session_id=None, require_streaming=False,
-                *, require_fixed_limits=False, require_output_limit=False):
+                *, require_fixed_limits=False, require_output_limit=False, expected_max_command_seconds=None,
+                expected_max_request_bytes=None):
     inspected = {"passed": False, "result_path": str(result_path), "data_dir": str(data_dir)}
     try:
         report = json_file(result_path)
         inspected["runtime_completed"] = report.get("runtime_completed")
         inspected["cleanup_closed"] = report.get("cleanup", {}).get("closed")
+        if "task_deadline_elapsed" in report:
+            require(type(report["task_deadline_elapsed"]) is bool, "invalid SDK task deadline evidence")
+            inspected["task_deadline_elapsed"] = report["task_deadline_elapsed"]
+        if expected_max_command_seconds is not None:
+            limit = (report.get("limits") or {}).get("max_command_seconds")
+            require(type(limit) is int and limit == expected_max_command_seconds,
+                    "SDK report differs from the selected command deadline")
+        if expected_max_request_bytes is not None:
+            limit = (report.get("limits") or {}).get("max_request_bytes")
+            require(type(limit) is int and limit == expected_max_request_bytes,
+                    "SDK report differs from the selected request byte limit")
         reported_path = report.get("events_path")
         require(isinstance(reported_path, str), "SDK report has no durable events path")
         if container_data:
@@ -560,14 +785,14 @@ def inspect_sdk(result_path, data_dir, connection=None, container_data=None, ses
         require(path.name == "events.jsonl" and path.parent.name == report.get("session_id"),
                 "events path does not belong to the reported Session")
         facts, digest, records = SessionFacts(agent, path, connection), hashlib.sha256(), 0
-        with path.open("rb") as handle:
-            while line := handle.readline(1024 * 1024 + 1):
-                require(len(line) <= 1024 * 1024 and line.endswith(b"\n"), "event log has an oversized record or incomplete tail")
-                digest.update(line)
-                if line.strip():
-                    records += 1
-                    require(records <= 100_000, "event log exceeds the diagnostic record limit")
-                    facts.accept(json.loads(line))
+        for line in journal_lines(path):
+            require(len(line) <= EVENT_LINE_BYTES and line.endswith(b"\n"), "event log has an oversized record or incomplete tail")
+            digest.update(line)
+            if line.strip():
+                records += 1
+                require(records <= EVENT_RECORD_LIMIT, "event log exceeds the diagnostic record limit")
+                facts.accept(json.loads(line))
+        inspected["durable_cleanup_closed"] = facts.durable_cleanup_closed(report)
         inspected.update(facts.finish(report, require_fixed_limits, require_output_limit), events_path=str(path),
                          events_sha256=digest.hexdigest(), records=records)
         if require_streaming:

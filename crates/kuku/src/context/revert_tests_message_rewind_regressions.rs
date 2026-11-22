@@ -1,11 +1,11 @@
 use super::{
     apply_file_revert, compute_file_revert_plan, compute_message_rewind_plan,
     filter_rolled_back_events, message_rewind_file_read, message_rewind_file_read_with_flags,
-    message_rewind_file_write, te, tool_result_read_with_flags, tr, ts, ui, FileRestore,
-    RevertPlan,
+    message_rewind_file_write, plan_file_rewind, te, tool_result_read_with_flags, tr, ts, ui,
+    FileRestore, RevertPlan,
 };
 use crate::conversation::address::ConversationAddress;
-use crate::event::{EventPayload, StoredEvent};
+use crate::event::{EventPayload, EventStore, StoredEvent};
 use crate::tool::{builtin, ToolResultEnvelope};
 use serde_json::json;
 use std::collections::HashSet;
@@ -55,6 +55,7 @@ fn assert_real_tool_rewind(workspace_alias: &Path, session_dir: &Path) {
         &conversation,
         &events,
         3,
+        crate::RuntimeLimits::default().max_preview_bytes,
         &never_cancelled,
     );
     assert_eq!(read_before.status, "ok");
@@ -94,6 +95,7 @@ fn assert_real_tool_rewind(workspace_alias: &Path, session_dir: &Path) {
         &conversation,
         &events,
         5,
+        crate::RuntimeLimits::default().max_preview_bytes,
         &never_cancelled,
     );
     assert_eq!(read_after.status, "ok");
@@ -127,7 +129,16 @@ fn assert_real_tool_rewind(workspace_alias: &Path, session_dir: &Path) {
     );
     events.push(tool_result_event(6, 1, &conversation, "edit", edit));
 
-    let plan = compute_message_rewind_plan(&events, "main", 2, workspace_alias).unwrap();
+    let journal = session_dir.join("events.jsonl");
+    let mut store = EventStore::open(&journal).unwrap();
+    store
+        .append_batch(|_| Ok(events.into_iter().map(|event| event.payload).collect()))
+        .unwrap();
+    drop(store);
+    let preview = plan_file_rewind(&journal, workspace_alias, "main", 2).unwrap();
+    assert_eq!(preview.preview.changes[0].lines, Some((1, 1)));
+    assert!(preview.preview.skipped.is_empty());
+    let plan = preview.plan;
     assert_eq!(
         plan.restores.len(),
         1,
@@ -163,6 +174,7 @@ fn assert_real_legacy_file_revert(workspace_alias: &Path, session_dir: &Path) {
         &conversation,
         &events,
         3,
+        crate::RuntimeLimits::default().max_preview_bytes,
         &never_cancelled,
     );
     assert_eq!(read.status, "ok");
@@ -219,6 +231,7 @@ fn assert_real_mutation_backed_rewind(workspace_alias: &Path, session_dir: &Path
         &conversation,
         &events,
         3,
+        crate::RuntimeLimits::default().max_preview_bytes,
         &never_cancelled,
     );
     assert_eq!(read_before.status, "ok");
@@ -254,6 +267,7 @@ fn assert_real_mutation_backed_rewind(workspace_alias: &Path, session_dir: &Path
         &conversation,
         &events,
         5,
+        crate::RuntimeLimits::default().max_preview_bytes,
         &never_cancelled,
     );
     assert_eq!(read_before_edit.status, "ok");
@@ -293,6 +307,7 @@ fn assert_real_mutation_backed_rewind(workspace_alias: &Path, session_dir: &Path
         &conversation,
         &events,
         7,
+        crate::RuntimeLimits::default().max_preview_bytes,
         &never_cancelled,
     );
     assert_eq!(read_after_edit.status, "ok");

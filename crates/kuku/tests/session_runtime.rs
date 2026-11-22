@@ -1,5 +1,7 @@
 #[path = "session_runtime/authorization.rs"]
 mod authorization;
+#[path = "session_runtime/batches.rs"]
+mod batches;
 mod common;
 #[path = "session_runtime/permission_resume.rs"]
 mod permission_resume;
@@ -115,7 +117,13 @@ async fn public_session_executes_real_tools_without_observers_and_reopens() {
     } else {
         "cat answer.txt"
     };
-    let third = fixture(&server, |request| tool_count(request) == 3, json!({"tool_calls":[tool("command", "run_command", json!({"shell":if cfg!(windows) {"cmd"} else {"sh"},"cwd":".","command":command,"timeout":3,"brief":"check result"}))]}), "tool_calls").await;
+    let third = fixture(
+        &server,
+        |request| tool_count(request) == 3,
+        json!({"tool_calls":[tool("command", "run_command", common::shell_args(command))]}),
+        "tool_calls",
+    )
+    .await;
     let last = fixture(
         &server,
         |request| tool_count(request) == 4,
@@ -661,10 +669,9 @@ async fn command_output_failure_after_a_side_effect_stops_model_dispatch() {
         let first = fixture(
             &server,
             |r| tool_count(r) == 0,
-            json!({"tool_calls":[tool("command","run_command",json!({
-                "shell":"sh","cwd":".","command":format!("printf ran > ran.txt && {rename} && printf captured"),
-                "timeout": 5, "brief": "exercise command output recovery",
-            }))]}),
+            json!({"tool_calls":[tool("command","run_command",common::shell_args(&format!(
+                "printf ran > ran.txt && {rename} && printf captured"
+            )))]}),
             "tool_calls",
         )
         .await;
@@ -719,7 +726,7 @@ async fn execution_error_drains_dispatched_command_and_preserves_reported_usage(
     let server = MockServer::start_async().await;
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
-    let _model = fixture(&server, |_| true, json!({"tool_calls":[tool("command", "run_command", json!({"shell":"sh","cwd":".","command":"sleep 0.3; echo escaped > after-close.txt","timeout":3,"brief":"write after delay"})),tool("agents", "list_agents", json!({}))]}), "tool_calls").await;
+    let _model = fixture(&server, |_| true, json!({"tool_calls":[tool("command", "run_command", common::shell_args("sleep 0.3; echo escaped > after-close.txt")),tool("agents", "list_agents", json!({}))]}), "tool_calls").await;
     let mut opts = options(&server, workspace.path(), data.path());
     let policy = kuku::session::project_policy_path(data.path(), workspace.path()).unwrap();
     std::fs::create_dir_all(policy.parent().unwrap()).unwrap();
@@ -753,7 +760,7 @@ async fn dropping_a_polled_close_keeps_cleanup_owned_and_allows_reconnecting() {
     let server = MockServer::start_async().await;
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
-    let _model = fixture(&server, |_| true, json!({"tool_calls":[tool("command", "run_command", json!({"shell":"sh","cwd":".","command":"echo started > started.txt; sleep 1; echo escaped > after-close.txt","timeout":3,"brief":"long owned command"}))]}), "tool_calls").await;
+    let _model = fixture(&server, |_| true, json!({"tool_calls":[tool("command", "run_command", common::shell_args("echo started > started.txt; sleep 1; echo escaped > after-close.txt"))]}), "tool_calls").await;
     let mut reopen = options(&server, workspace.path(), data.path());
     let session = Session::open(reopen.clone()).await.unwrap();
     session

@@ -9,6 +9,7 @@ mod provider;
 mod recovery;
 mod request;
 mod run;
+mod run_js;
 mod runtime_tools;
 pub(crate) mod slots;
 mod start;
@@ -16,10 +17,11 @@ mod step;
 mod tool_exec;
 mod tool_response;
 mod types;
-mod workspace_script;
 
-pub(crate) use runtime_tools::definitions as runtime_tool_definitions;
-pub(crate) use workspace_script::cancelled_deferred_script;
+pub(crate) use run_js::cancelled_deferred_script;
+pub(crate) use runtime_tools::{
+    definitions as runtime_tool_definitions, supported as runtime_tool_supported,
+};
 
 pub use types::{
     ModelPhase, ModelRecoveryInfo, PermissionChoice, PermissionRequest, Query, Run, RunOutput,

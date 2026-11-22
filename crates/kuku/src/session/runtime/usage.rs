@@ -1,15 +1,46 @@
 use std::collections::HashMap;
+use std::time::Instant;
 
 use serde_json::Value;
 
-use crate::event::EventPayload;
+use crate::event::{EventPayload, EventStore};
 use crate::provider::RequestCost;
 use crate::{Error, ProviderUsage, Result};
 
-use super::record::State;
+use super::record::{timestamp, Record, State};
 use super::{CostTotals, ModelUsageSample, Session, UsageTotals};
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(super) struct SummaryRequest {
+    id: String,
+    turn: u64,
+    #[serde(skip)]
+    started: Option<Instant>,
+}
+
+pub(super) enum UnfinishedSummary {
+    Cancelled,
+    Interrupted(&'static str),
+}
+
+impl SummaryRequest {
+    fn terminal(&self, address: &str, end: UnfinishedSummary) -> Result<EventPayload> {
+        let (status, reason) = match end {
+            UnfinishedSummary::Cancelled => ("cancelled", None),
+            UnfinishedSummary::Interrupted(reason) => ("interrupted", Some(reason)),
+        };
+        let elapsed_ms = self
+            .started
+            .and_then(|start| u64::try_from(start.elapsed().as_millis()).ok());
+        Ok(EventPayload::Unknown(serde_json::json!({
+            "kind":"runtime.compaction_finished", "ts": timestamp()?, "agent": address,
+            "turn": self.turn, "request_id": self.id, "status": status, "reason": reason,
+            "elapsed_ms": elapsed_ms,
+        })))
+    }
+}
+
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct AgentUsage {
     turn: Option<u64>,
     settled: bool,
@@ -18,7 +49,7 @@ pub(super) struct AgentUsage {
     totals: UsageTotals,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 struct ModelAttempt {
     context_window_tokens: Option<u32>,
     retry: Option<u64>,
@@ -188,14 +219,58 @@ impl Session {
         execution: u64,
         payloads: impl IntoIterator<Item = EventPayload>,
     ) -> Result<()> {
+        self.commit_model_batch(address, execution, |_| Ok(payloads.into_iter().collect()))
+    }
+
+    pub(crate) fn commit_model_batch(
+        &self,
+        address: &str,
+        execution: u64,
+        build: impl FnOnce(u64) -> Result<Vec<EventPayload>>,
+    ) -> Result<()> {
         let mut state = self.inner.state.lock().unwrap();
         self.executing_agent(&state, address, execution)?;
+        self.append_model_facts(&mut state, address, build)
+    }
+
+    pub(crate) fn commit_compaction_accounting(
+        &self,
+        address: &str,
+        execution: u64,
+        payload: EventPayload,
+    ) -> Result<()> {
+        let mut state = self.inner.state.lock().unwrap();
+        let agent = state.agent(address)?;
+        if agent.active_epoch.is_none() || agent.snapshot.execution_id != Some(execution) {
+            return Err(Error::ExecutionNotActive(execution));
+        }
+        self.append_model_facts(&mut state, address, |_| Ok(vec![payload]))
+    }
+
+    pub(super) fn settle_open_summary(
+        &self,
+        state: &mut State,
+        address: &str,
+        end: UnfinishedSummary,
+    ) -> Result<()> {
+        if let Some(summary) = state.agent(address)?.summary_request.as_ref() {
+            let terminal = summary.terminal(address, end)?;
+            self.append_model_facts(state, address, |_| Ok(vec![terminal]))?;
+        }
+        Ok(())
+    }
+
+    fn append_model_facts(
+        &self,
+        state: &mut State,
+        address: &str,
+        build: impl FnOnce(u64) -> Result<Vec<EventPayload>>,
+    ) -> Result<()> {
         let mut writer = self.inner.writer.lock().unwrap();
         let writer = writer
             .as_mut()
             .ok_or_else(|| Error::InvalidArgument("session resources are closed".into()))?;
-        for payload in payloads {
-            let event = writer.append(payload)?;
+        for event in writer.append_batch(build)? {
             state.turns.observe(&event, None);
             if matches!(
                 event.payload.kind_name(),
@@ -203,7 +278,7 @@ impl Session {
             ) {
                 state.agent_mut(address)?.reply_preview = None;
             }
-            reduce_model_fact(&mut state, &event.payload)?;
+            reduce_model_fact(state, &event.payload)?;
         }
         Ok(())
     }
@@ -213,8 +288,13 @@ pub(super) fn reduce_model_fact(state: &mut State, payload: &EventPayload) -> Re
     let EventPayload::Unknown(value) = payload else {
         return Ok(());
     };
-    let Some(kind @ ("runtime.step_prepared" | "runtime.model_retry" | "runtime.model_usage")) =
-        value.get("kind").and_then(Value::as_str)
+    let Some(
+        kind @ ("runtime.step_prepared"
+        | "runtime.compaction_started"
+        | "runtime.compaction_finished"
+        | "runtime.model_retry"
+        | "runtime.model_usage"),
+    ) = value.get("kind").and_then(Value::as_str)
     else {
         return Ok(());
     };
@@ -228,6 +308,35 @@ pub(super) fn reduce_model_fact(state: &mut State, payload: &EventPayload) -> Re
     let Some(agent) = state.agents.get_mut(address) else {
         return Ok(());
     };
+    match kind {
+        "runtime.compaction_started" => {
+            agent.summary_request = Some(SummaryRequest {
+                id: request.to_owned(),
+                turn,
+                started: agent.active_epoch.map(|_| Instant::now()),
+            })
+        }
+        "runtime.compaction_finished" => {
+            if agent
+                .summary_request
+                .as_ref()
+                .is_some_and(|summary| summary.id == request)
+            {
+                agent.summary_request = None;
+            }
+            if let Some(manual) = &mut agent.manual_compaction {
+                if request
+                    .strip_prefix("compact_")
+                    .and_then(|id| id.parse::<u64>().ok())
+                    == Some(manual.execution)
+                {
+                    manual.finished = true;
+                }
+            }
+            return Ok(());
+        }
+        _ => {}
+    }
     if agent.snapshot.turn != Some(turn) {
         return Ok(());
     }
@@ -243,7 +352,7 @@ pub(super) fn reduce_model_fact(state: &mut State, payload: &EventPayload) -> Re
     }
     let usage = &mut agent.snapshot.usage;
     match kind {
-        "runtime.step_prepared" => ledger.prepare(
+        "runtime.step_prepared" | "runtime.compaction_started" => ledger.prepare(
             request,
             value["context_window_tokens"]
                 .as_u64()
@@ -265,6 +374,44 @@ pub(super) fn reduce_model_fact(state: &mut State, payload: &EventPayload) -> Re
         }
         _ => unreachable!(),
     }
+}
+
+pub(super) fn recover_compaction(writer: &mut EventStore, state: &mut State) -> Result<()> {
+    let interrupted = state
+        .agents
+        .iter()
+        .filter(|(_, agent)| agent.manual_compaction.is_some() || agent.summary_request.is_some())
+        .map(|(address, agent)| {
+            (
+                address.clone(),
+                agent
+                    .manual_compaction
+                    .as_ref()
+                    .map(|manual| (manual.execution, manual.previous_status, manual.finished)),
+                agent.summary_request.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let reason = "Compaction was interrupted before the Session reopened";
+    for (address, manual, summary) in interrupted {
+        if let Some(summary) = summary {
+            let event = writer
+                .append(summary.terminal(&address, UnfinishedSummary::Interrupted(reason))?)?;
+            reduce_model_fact(state, &event.payload)?;
+        }
+        if let Some((execution, status, finished)) = manual {
+            let record = Record::CompactionSettled {
+                address,
+                execution,
+                status,
+                cancelled: false,
+                error: (!finished).then(|| reason.into()),
+            };
+            let event = writer.append(record.payload()?)?;
+            state.reduce(event.id, record)?;
+        }
+    }
+    Ok(())
 }
 
 fn add_totals(total: &mut UsageTotals, delta: &UsageTotals) -> Result<()> {

@@ -78,6 +78,13 @@ pub(in crate::query) fn ensure_resolved(pending: &mut PendingRun) -> Result<()> 
                 )
             });
         }
+        registry.retain(|tool| {
+            crate::query::runtime_tool_supported(
+                &config,
+                pending.query.model_adapter.is_none(),
+                &tool.name,
+            )
+        });
     }
     pending.resolved = Some(ResolvedRuntime { config, registry });
     Ok(())

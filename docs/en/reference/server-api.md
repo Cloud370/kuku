@@ -25,6 +25,8 @@ Authenticated clients send `Authorization: Bearer TOKEN`, including on loopback.
 | `GET` | `/sessions/{id}/agents` | Summarize Agents in the workspace's Session |
 | `GET` | `/sessions/{id}/snapshot` | Current Agent and queue state at a committed cursor |
 | `GET` | `/sessions/{id}/history` | Read conversation entries before a cursor |
+| `GET` | `/sessions/{id}/history/destinations` | List Turns available for editing a message or continuing the conversation |
+| `GET` | `/sessions/{id}/history/destinations/{event_id}/files` | Preview verified workspace changes after a finished Turn |
 | `GET` | `/sessions/{id}/history/rewinds/{rewind_event_id}` | Read one committed rewind group without changing active history |
 | `GET` | `/sessions/{id}/observe` | Follow committed entries and transient progress after a cursor |
 | `GET` | `/sessions/{id}/events` | Page through raw committed facts |
@@ -70,6 +72,9 @@ Use `create: {}` for the configured default settings. Supply initial model setti
 | `reply_permission` | `request_id`, `allow` | Decide the exact pending authorization. |
 | `withdraw` | `input_command_id` | Withdraw a queued input or return its current status. |
 | `replace_queued` | `input_command_id`, `text` | Replace text before admission while preserving the queue position and timing. |
+| `history_jump` | `target_event_id`, optional `file_restore` | Continue the selected Agent's conversation from the finished Turn at this settlement cursor. |
+| `compact` | | Compact earlier context for the selected idle or interrupted Agent. Follow `compaction` history entries for progress and outcome. Use a new command ID to retry a failed attempt. |
+| `restore_context` | | Undo the selected Agent's latest active compaction while keeping its visible messages. |
 | `advance` | | Explicitly resume an Agent. |
 | `cancel` | `execution_id` | Cancel the observed execution and await cleanup. |
 
@@ -88,8 +93,10 @@ Client errors use `{"ok":false,"code":"...","message":"..."}`. Invalid requests 
 ## Snapshot, history and observation
 
 1. Request `/snapshot?workspace=...&agent=...`. The JSON response includes `session_id`, `workspace`, the committed `cursor`, a selected `agent` snapshot, an `agents` summary, `pending` inputs and the model `selection`. A selection failure appears as `selection_error`. Agent state carries the execution identity and pending question or permission where applicable. Each pending item includes its `receipt` and `input`. A missing Agent returns `404` with `agent_not_found`. `/agents?workspace=...` provides all Agent summaries and a cursor without selecting a recipient. Add `progress=true` to request the observed phase at the snapshot cursor. `progress.phase` can be `waiting_for_model`, `thinking`, `streaming`, `tool_arguments`, `running_tools`, `retrying_model`, `retry_stopped` or `retry_decision_unknown`. Retry phases include a `retry` object with the durable attempt, failure kind or recovery reason, request identity and available policy metadata. A stopped retry has `will_retry:false`.
-2. Request `/history?workspace=...&agent=...&before=CURSOR_PLUS_ONE&limit=...` for the most recent page through that snapshot, in ascending order. Use the returned `next_before` for an earlier page. `before` is exclusive. `entries` contains only active conversation history; `rewind_groups` is a separate, default-empty list of summaries with `rewind_event_id`, original-position `target_event_id`, `agent`, optional display `turn_number`, and `entry_count`. Group headers are paginated with active entries at the target's original timeline position and count toward the page's entry and byte bounds. Retry decisions and model recoveries appear as `type:"retry"` entries with a structured `retry` object; completed history does not imply that a retry is still active.
+2. Request `/history?workspace=...&agent=...&before=CURSOR_PLUS_ONE&limit=...` for the most recent page through that snapshot, in ascending order. Use the returned `next_before` for an earlier page. `before` is exclusive. `entries` contains only active conversation history; `rewind_groups` is a separate, default-empty list of summaries with `rewind_event_id`, original-position `target_event_id`, `agent`, and optional display `turn_number`. Group headers are paginated with active entries at the target's original timeline position and count toward the page's entry and byte bounds. Retry decisions and model recoveries appear as `type:"retry"` entries with a structured `retry` object; completed history does not imply that a retry is still active.
 3. Expand a group on demand with `/history/rewinds/{rewind_event_id}?workspace=...&agent=...&before=...&limit=...`. `agent` is required and must match the group. `before` is an optional exclusive cursor; `limit` is bounded like `/history`. The response has `entries` and `next_before`, and reuses the normal display-entry projection. Overlapping ranges assign each entry to the first applicable rewind for the same Agent. These read-only pages never add hidden entries to active history or model context; later rewinds do not make earlier group pages disappear.
+
+Use `/history?user_only=true` for a picker of active user messages. This mode returns message previews of up to 512 characters and an empty `rewind_groups` array. If the journal scan reaches its byte budget, the page may be short and still have a `next_before` cursor. Use the regular history endpoint for the original message text.
 4. Connect to `/observe?workspace=...&agent=...&after=CURSOR` for NDJSON with commits after the snapshot. Add `include_agent_activity=true` with a selected Agent to receive sibling activity in the same subscription. Sibling text deltas and settlement previews are bounded, and sibling tool output is omitted. Agent summaries provide the last output or error preview when reconnecting. Omit `agent` to observe Session-wide. Update your resume cursor from committed records. Reconnect after the last committed cursor on disconnect or lag.
 
 The selected Agent’s `agent.usage` contains cumulative token counts and counts of requests that reported input or output. `cache_measured_input_tokens` and `cache_measured_read_tokens` sum input and cache reads over the same requests with valid paired counts. When available, `latest_request` carries `input_tokens`, `output_tokens`, `context_window_tokens` and `elapsed_us` for one request. Optional measurements may be absent on older records. [Terminal usage fields](cli.md#terminal-interface)
@@ -100,7 +107,11 @@ When available, `agent.turn_started_at_ms` is the latest Turn's first admission 
 
 `committed` lines contain `id` and `kind`, plus an Agent address, conversation entry or state-change indicator when applicable. `live` lines carry `agent`, `execution_id`, `turn`, `cursor` and a transient `event`. Match those identities to the current view and replace previews when committed results arrive. A `lagged` line carries `skipped` transient observations. The stream can also emit `heartbeat` or `error` lines. Durable state remains readable after lag.
 
-When present, a committed frame's `delivery` associates queue changes with command IDs. `accepted` carries `input_ids`, `withdrawn` carries `input_id`, and `replaced` carries `input_id` and `replacement_id`.
+`GET /sessions/{id}/history/destinations` accepts `workspace`, `agent`, and optional `before` and `limit`. It returns `points` newest first and an exclusive `next_before`. Each point gives its `event_id`, durable `turn`, display `number`, input `preview` when available, and `current_branch`. If `can_continue` is true, use `event_id` as the `history_jump` target. `prompt_event_id` identifies the original user message when available. Read that event through the raw events endpoint to retrieve the full text, including for saved Turns. A `history_jump` requires a settled Agent with no pending input.
+
+`GET /sessions/{id}/history/destinations/{event_id}/files` accepts `workspace` and `agent`. It returns `changes`, `skipped` and the plan `fingerprint`. Each change includes `path`, `remove` and `lines` (added and removed, or null). Pass the approved fingerprint as `history_jump.file_restore` to apply the preview. Omitting it keeps the files.
+
+When present, a committed frame's `delivery` associates queue changes with command IDs. `accepted` carries `input_ids`, `withdrawn` carries `input_id`, and `replaced` carries `input_id` and `replacement_id`. `message_rewind` and `history_jump` frames carry `rewind_command_id` so the initiating client can restore the unsent draft on commit.
 
 A snapshot requested with `progress=true` may include `reply_preview` for the selected Agent. It carries `execution_id`, `turn`, optional `turn_number`, `phase`, `text` and `truncated`. The phase is `thinking`, `streaming` or `tool_arguments`. The text is a UTF-8 prefix of the active request's visible reply capped at 64 KiB. `truncated` means the reply has already exceeded the retained prefix. An optional `reasoning_preview` carries a bounded prefix of provider-visible reasoning text or a published summary for the selected Agent. Responses can supply this through typed reasoning or summary text in the stream or final output. Opaque reasoning state contributes activity and stays in provider replay. Live `reasoning_preview` events append to the text. Committed assistant entries can carry the same field.
 
@@ -128,6 +139,8 @@ To answer `ask_user` or a deferred tool authorization, use the request ID from t
 
 `/events?workspace=...&after=0&limit=100` returns `events` and `next_after`. The raw event page is for auditing. Each record has an `id` and `payload`. An optional `agent` filter applies within the scanned page, and `next_after` advances even if that page has no matches. See [Session events](events.md) for the journal schema.
 
+To read older pages, pass `reverse=true` for the latest page or `before=<id>` for records strictly below that ID. Both return the page in ascending event order and report the oldest scanned ID in `next_before`. Use that ID to continue toward earlier history.
+
 Persisted pages may include `model.recovery` for an output-limit retry in a direct or child-Agent query. These records follow the same `agent` filter; see [Session events](events.md) for their meaning.
 
 Read a known tool output by its ID in `/outputs/{output_id}`, passing `workspace` and optionally `agent` (default `main`), `offset` and `max_bytes`. The Agent must own or have received the output. Use `search` for a literal match within the range. The response wraps the chunk in `output`. Pass `output.next_offset` to continue when `output.has_more` is true. [Retained output](tools.md)
@@ -135,6 +148,10 @@ Read a known tool output by its ID in `/outputs/{output_id}`, passing `workspace
 ## Background Jobs
 
 All Job routes require `workspace` and `agent` query parameters. `GET /sessions/{id}/jobs` returns `{ "jobs": [...] }` with metadata for the Agent's recent Jobs and all running Jobs. A Job lookup returns the snapshot directly, including the terminal `result` when available. Use `output_id`, when present, to read the retained command output through the output endpoint. An unknown Job ID or a Job belonging to another Agent returns `404` with `job_not_found`.
+
+The snapshot keeps the original display `title` across status changes. The `summary` describes the current execution state or terminal result.
+
+`elapsed_ms` measures from dispatch. A live lookup shows the elapsed time at observation. A terminal lookup returns the measured duration through settlement when available. `started_at` and `finished_at` are event cursors.
 
 `DELETE /sessions/{id}/jobs/{job_id}` waits for the targeted execution to settle and returns the resulting snapshot. Repeating the request for a terminal Job returns its existing result. Both GET routes can read a closed Session without opening it. A DELETE for an unsettled Job in a Session that this server has not opened returns `409` with `job_not_active`.
 

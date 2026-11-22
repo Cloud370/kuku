@@ -914,8 +914,8 @@ impl App {
                 let message = match ack.status {
                     Some(InputStatus::Accepted) => "Input has already been accepted",
                     Some(InputStatus::Queued) => "Input is still queued",
-                    Some(InputStatus::Withdrawn) => "Input withdrawn",
-                    None => "Withdrawal receipt confirmed",
+                    Some(InputStatus::Withdrawn) => "Removed from queue",
+                    None => "Queue removal confirmed",
                 };
                 self.message(message);
             }
@@ -938,24 +938,18 @@ impl App {
                 pane.deliveries.receipt(&ack, &text, timing, true);
                 self.confirmation(match ack.status {
                     Some(InputStatus::Accepted) => "Replacement accepted",
-                    Some(InputStatus::Withdrawn) => "Replacement withdrawn",
+                    Some(InputStatus::Withdrawn) => "Replacement removed from queue",
                     Some(InputStatus::Queued) | None => "Queued input replaced",
                 });
             }
             Action::RewindMessage { text, .. } => {
-                let draft = self.rewind_drafts.remove(id).unwrap_or(RewindDraft {
+                let mut draft = self.rewind_drafts.remove(id).unwrap_or(RewindDraft {
                     address: address.clone(),
                     text,
                     revision: 0,
+                    restored: None,
                 });
-                let mut restored = false;
-                if let Some(pane) = self.panes.get_mut(&draft.address) {
-                    if pane.draft_revision == draft.revision && pane.draft.text().is_empty() {
-                        pane.draft.set_text(draft.text.clone());
-                        pane.draft_revision = pane.draft_revision.wrapping_add(1);
-                        restored = true;
-                    }
-                }
+                let restored = self.restore_rewind_draft(&mut draft);
                 if ack.warnings.is_empty() {
                     self.confirmation(if restored {
                         "Message rewound · original text restored as an unsent draft"
@@ -969,9 +963,24 @@ impl App {
                     ));
                 }
                 if active {
-                    self.refresh_rewind_history();
+                    self.refresh_rewind_history(ack.receipt.event_id);
                 }
             }
+            Action::HistoryJump { .. } => {
+                let restored = self
+                    .rewind_drafts
+                    .remove(id)
+                    .is_some_and(|mut draft| self.restore_rewind_draft(&mut draft));
+                if active {
+                    self.refresh_rewind_history(ack.receipt.event_id);
+                    self.confirmation(if restored {
+                        "Conversation switched · Original message is in the draft"
+                    } else {
+                        "Conversation switched · Ctrl+G to choose another turn"
+                    });
+                }
+            }
+            Action::Compact | Action::RestoreContext => {}
             Action::Advance => {
                 if active && !self.notice.as_ref().is_some_and(|notice| notice.error) {
                     self.confirmation("Continue request received");

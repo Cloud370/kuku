@@ -5,28 +5,32 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot, Notify};
 
 use crate::event::StoredEvent;
+use crate::session::runtime::JobControl;
 use crate::tool::ToolResultEnvelope;
 
 use super::job_slots::ForegroundJob;
 use super::types::{
     ExecSlot, PendingRun, PermissionChoice, QueuedToolCall, SlotEvent, ToolEvent, ToolKind,
+    WorkspaceAccess,
 };
 use super::UiEvent;
 
-pub(crate) fn requires_workspace_ordering(tool_name: &str) -> bool {
-    matches!(
-        tool_name,
-        "read_file"
-            | "workspace_script"
-            | "stat_file"
-            | "remove_file"
-            | "edit_file"
-            | "write_file"
-            | "remember_memory"
-            | "forget_memory"
-            | "run_command"
-            | "agent"
-    )
+pub(crate) fn workspace_access(tool_name: &str) -> WorkspaceAccess {
+    match tool_name {
+        "read_file" | "stat_file" | "find_files" | "search_text" | "view_image" => {
+            WorkspaceAccess::Read
+        }
+        "run_js" | "remove_file" | "edit_file" | "write_file" | "remember_memory"
+        | "forget_memory" | "run_command" | "agent" => WorkspaceAccess::Exclusive,
+        _ => WorkspaceAccess::Independent,
+    }
+}
+
+pub(crate) fn query_workspace_access(tool_name: &str) -> WorkspaceAccess {
+    match tool_name {
+        "find_files" | "search_text" => WorkspaceAccess::Independent,
+        _ => workspace_access(tool_name),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -44,6 +48,8 @@ pub(crate) fn spawn_simple_slot(
     catalog: crate::prompt::PromptCatalog,
     events_path: PathBuf,
     capacity: crate::WorkspaceExecutionHost,
+    workspace_access: WorkspaceAccess,
+    preview_bytes: usize,
 ) -> ExecSlot {
     let cancel = Arc::new(Notify::new());
     let cancel_clone = cancel.clone();
@@ -52,7 +58,6 @@ pub(crate) fn spawn_simple_slot(
     let dispatch_conversation = conversation
         .clone()
         .unwrap_or(crate::conversation::address::ConversationAddress::MAIN);
-    let workspace_ordered = requires_workspace_ordering(&tool_name);
 
     tokio::spawn(async move {
         let result = if crate::tool::dispatch::is_workspace_file(&tool_name) {
@@ -76,6 +81,7 @@ pub(crate) fn spawn_simple_slot(
                         &prior_events,
                         0,
                         Some(&dispatch_tool_call_id),
+                        preview_bytes,
                         &|| check.load(Ordering::Acquire),
                     )
                     .expect("a known workspace file operation")
@@ -111,7 +117,7 @@ pub(crate) fn spawn_simple_slot(
         tool_call_id,
         conversation,
         kind: ToolKind::Simple,
-        workspace_ordered,
+        workspace_access,
         label: summary,
         cancel,
         job: None,
@@ -245,7 +251,7 @@ pub(crate) fn spawn_agent_slot(
         tool_call_id,
         conversation,
         kind: tool_kind,
-        workspace_ordered: true,
+        workspace_access: WorkspaceAccess::Exclusive,
         label: summary,
         cancel,
         job: None,
@@ -305,14 +311,20 @@ pub(super) fn spawn_command_slot(
 
             let r = match output {
                 Some(mut output) => {
-                    let result = crate::tool::builtin::run_command::run_command_with_output(
+                    use crate::tool::builtin::run_command::{run_command_to, CommandCapture};
+
+                    let result = run_command_to(
                         &args,
                         &workspace,
                         Some(tool_tx),
                         Some(cancel_cmd),
-                        &output.dir,
-                        &output.id,
-                        output.limits,
+                        CommandCapture::model(
+                            &output.dir,
+                            &output.id,
+                            output.limits,
+                            output.access,
+                        )
+                        .with_time_limit(output.max_command_seconds),
                     )
                     .await;
                     if result
@@ -349,7 +361,7 @@ pub(super) fn spawn_command_slot(
         tool_call_id,
         conversation,
         kind: ToolKind::Command { pid: None },
-        workspace_ordered: true,
+        workspace_access: WorkspaceAccess::Exclusive,
         label: summary,
         cancel,
         job,
@@ -359,6 +371,8 @@ pub(super) fn spawn_command_slot(
 
 pub(crate) struct SlotDispatchArgs {
     pub(crate) capacity: crate::WorkspaceExecutionHost,
+    pub(crate) workspace_access: WorkspaceAccess,
+    pub(crate) preview_bytes: usize,
     pub(crate) output: Option<RetainedOutputSpec>,
     pub(crate) tool_name: String,
     pub(crate) tool_id: String,
@@ -378,6 +392,7 @@ pub(super) fn spawn_job_control(
     session: crate::Session,
     pending: &PendingRun,
     queued: &QueuedToolCall,
+    control: JobControl,
     event_tx: mpsc::Sender<(String, SlotEvent)>,
 ) -> ExecSlot {
     let cancel = Arc::new(Notify::new());
@@ -385,12 +400,10 @@ pub(super) fn spawn_job_control(
     let id = queued.tool_call.id.clone();
     let args = queued.tool_call.args.clone();
     let owner = pending.conversation.as_str().to_owned();
-    let stop_job = queued.tool_call.name == "cancel_job";
     tokio::spawn(async move {
-        let result =
-            super::runtime_tools::jobs::control(session, owner, args, stop, stop_job).await;
-        let event = if !stop_job && result.status == "ok" {
-            SlotEvent::JobWaitDone(result)
+        let result = super::runtime_tools::jobs::control(session, owner, args, stop, control).await;
+        let event = if result.status == "ok" {
+            SlotEvent::JobControlDone(result)
         } else {
             SlotEvent::Done(result)
         };
@@ -400,7 +413,7 @@ pub(super) fn spawn_job_control(
         tool_call_id: queued.tool_call.id.clone(),
         conversation: Some(pending.conversation.clone()),
         kind: ToolKind::Simple,
-        workspace_ordered: false,
+        workspace_access: WorkspaceAccess::Independent,
         label: queued.display_summary.clone(),
         cancel,
         job: None,
@@ -412,6 +425,8 @@ pub(crate) struct RetainedOutputSpec {
     pub(crate) dir: PathBuf,
     pub(crate) id: String,
     pub(crate) limits: crate::tool::builtin::run_command::output::OutputLimits,
+    pub(crate) access: crate::tool::builtin::run_command::ModelOutputAccess,
+    pub(crate) max_command_seconds: Option<std::num::NonZeroU32>,
     pub(crate) retention: crate::session::runtime::OutputReservation,
 }
 
@@ -446,6 +461,8 @@ pub(crate) fn dispatch_tool_slot(args: SlotDispatchArgs) -> (ExecSlot, ToolKind)
             args.catalog,
             args.events_path,
             args.capacity,
+            args.workspace_access,
+            args.preview_bytes,
         );
         (slot, ToolKind::Simple)
     }
@@ -472,6 +489,7 @@ fn spawn_fetch_slot(args: SlotDispatchArgs) -> ExecSlot {
                 dir: &output.dir,
                 id: &output.id,
                 limits: output.limits,
+                access: output.access,
             });
         let result =
             crate::tool::builtin::fetch_url(&args, &workspace, retention, &fetch_cancel).await;
@@ -490,7 +508,7 @@ fn spawn_fetch_slot(args: SlotDispatchArgs) -> ExecSlot {
         tool_call_id: tool_id,
         conversation,
         kind: ToolKind::Simple,
-        workspace_ordered: false,
+        workspace_access: WorkspaceAccess::Independent,
         label: summary,
         cancel,
         job: None,
@@ -618,9 +636,15 @@ mod tests {
     }
 
     #[test]
-    fn workspace_ordering_is_limited_to_snapshot_and_mutator_slots() {
+    fn workspace_ordering_separates_reads_writes_and_independent_calls() {
+        for tool_name in ["read_file", "stat_file", "find_files", "search_text"] {
+            assert_eq!(
+                workspace_access(tool_name),
+                WorkspaceAccess::Read,
+                "{tool_name}"
+            );
+        }
         for tool_name in [
-            "read_file",
             "edit_file",
             "write_file",
             "remember_memory",
@@ -628,10 +652,18 @@ mod tests {
             "run_command",
             "agent",
         ] {
-            assert!(requires_workspace_ordering(tool_name), "{tool_name}");
+            assert_eq!(
+                workspace_access(tool_name),
+                WorkspaceAccess::Exclusive,
+                "{tool_name}"
+            );
         }
-        for tool_name in ["find_files", "search_text", "fetch_url", "query_session"] {
-            assert!(!requires_workspace_ordering(tool_name), "{tool_name}");
+        for tool_name in ["fetch_url", "query_session"] {
+            assert_eq!(
+                workspace_access(tool_name),
+                WorkspaceAccess::Independent,
+                "{tool_name}"
+            );
         }
     }
 
@@ -680,6 +712,8 @@ mod tests {
             crate::prompt::builtin_prompt_catalog(),
             dir.path().join("events.jsonl"),
             crate::WorkspaceExecutionHost::default(),
+            WorkspaceAccess::Exclusive,
+            crate::RuntimeLimits::default().max_preview_bytes,
         );
         let (_, denied) = event_rx.recv().await.unwrap();
         let SlotEvent::Done(result) = denied else {
@@ -702,6 +736,8 @@ mod tests {
             crate::prompt::builtin_prompt_catalog(),
             dir.path().join("events.jsonl"),
             crate::WorkspaceExecutionHost::default(),
+            WorkspaceAccess::Exclusive,
+            crate::RuntimeLimits::default().max_preview_bytes,
         );
         let (_, allowed) = event_rx.recv().await.unwrap();
         let SlotEvent::Done(result) = allowed else {

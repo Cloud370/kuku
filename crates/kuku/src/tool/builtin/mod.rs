@@ -1,5 +1,6 @@
 pub(crate) mod common;
 mod edit_file;
+pub(crate) use edit_file::line_change_counts;
 mod fetch_url;
 mod fetch_web;
 mod find_files;
@@ -10,12 +11,12 @@ mod remove_file;
 pub(crate) mod run_command;
 mod search_text;
 mod stat_file;
+mod view_image;
 mod write_file;
 
 #[cfg(test)]
 pub(crate) mod test_helpers;
 
-pub(crate) use common::prepare_workspace_path;
 pub(crate) use edit_file::{edit_file, edit_file_for_executor};
 pub(crate) use fetch_url::{fetch_url, FetchRetention};
 pub(crate) use fetch_web::fetch_web;
@@ -25,8 +26,9 @@ pub(crate) use query_session::query_session;
 pub(crate) use read_file::{read_file, read_file_for_executor};
 pub(crate) use remove_file::{remove_file, remove_file_for_executor};
 pub(crate) use run_command::{run_command, CommandEvent};
-pub(crate) use search_text::search_text;
+pub(crate) use search_text::{search_text, search_text_for_executor};
 pub(crate) use stat_file::stat_file;
+pub(crate) use view_image::{read_image, view_image_definition};
 pub(crate) use write_file::{write_file, write_file_for_executor};
 
 pub(crate) fn agent_definition() -> crate::tool::ToolDefinition {

@@ -482,7 +482,7 @@ fn permission_card_requires_an_explicit_choice_and_stale_requests_do_not_reply()
     waiting.effects.clear();
     key(&mut waiting, KeyCode::Esc, KeyModifiers::NONE);
     assert!(waiting.effects.is_empty());
-    assert!(waiting.escape_armed_at.is_none());
+    assert!(!waiting.rewind_armed);
 
     let deny_state = snapshot(&deny, "waiting", json!(null), permission.clone());
     load(&mut deny, deny_state);

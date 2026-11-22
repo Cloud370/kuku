@@ -8,6 +8,15 @@ use tempfile::TempDir;
 
 use kuku::session::session_events_path;
 
+#[allow(dead_code)]
+pub fn shell_args(command: &str) -> Value {
+    if cfg!(windows) {
+        serde_json::json!({"program":"cmd.exe","args":["/D", "/S", "/C", command]})
+    } else {
+        serde_json::json!({"program":"sh","args":["-c", command]})
+    }
+}
+
 fn captured_http_requests() -> &'static Mutex<BTreeMap<String, Vec<Value>>> {
     static REQUESTS: OnceLock<Mutex<BTreeMap<String, Vec<Value>>>> = OnceLock::new();
     REQUESTS.get_or_init(|| Mutex::new(BTreeMap::new()))

@@ -22,7 +22,7 @@ DEEPSEEK = {
     "deepseek-v4-pro": ("DeepSeek-V4-Pro-0813", "0.044", "1.32", "3.96"),
 }
 KNOWN_EFFORTS = ("minimal", "low", "medium", "high", "xhigh", "max")
-REQUIRED_WORKSPACE_TOOLS = {"run_command", "workspace_script", "read_output", "save_value",
+REQUIRED_WORKSPACE_TOOLS = {"run_command", "run_js", "read_output", "save_value",
                             "read_file", "edit_file", "create_agent"}
 
 
@@ -83,6 +83,8 @@ class Route:
     output_rate: Decimal
     price_source: str
     excluded_upstreams: tuple[str, ...] = ()
+    input_modalities: tuple[str, ...] = ()
+    reasoning_efforts: tuple[str, ...] = ()
 
     def __post_init__(self):
         limit = self.completion_limit
@@ -98,8 +100,12 @@ class Route:
         return self.service == "openrouter"
 
     @property
+    def responses(self):
+        return self.wire == "openai-responses"
+
+    @property
     def path(self):
-        return "/responses" if self.router else "/chat/completions"
+        return "/responses" if self.responses else "/chat/completions"
 
     @property
     def input_ceiling(self):
@@ -121,6 +127,7 @@ class Route:
             "wire": self.wire, "model": self.model, "reasoning_effort": self.effort,
             "upstream": self.upstream, "upstream_provider": self.upstream_name,
             "catalog_upstream_model": self.upstream_model, "provider_context_tokens": self.context,
+            "input_modalities": list(self.input_modalities),
             "max_requests_including_retries": limits.requests, "max_bytes": limits.request_bytes,
             "max_output_tokens": limits.output_tokens, "price_source": self.price_source,
             "price_usd_per_million_tokens": {
@@ -163,13 +170,21 @@ require_parameters = true
 prompt = {float(self.prompt_rate * MILLION)}
 completion = {float(self.output_rate * MILLION)}
 """
+        if self.input_modalities:
+            template += f"""
+[provider.{self.connection}.model_capabilities.{quote(self.model)}.discovered]
+input_modalities = {quote(list(self.input_modalities))}
+reasoning_efforts = {quote(list(self.reasoning_efforts))}
+"""
         return prefix + template + """
 [discovery]
 auto_discover = false
 """
 
 
-def route_for(name, *, model=None, effort="low", upstream=None, key=None, verify_catalog=False):
+def route_for(name, *, model=None, effort="low", upstream=None, key=None, verify_catalog=False, wire=None):
+    if wire is not None and (name != "deepseek" or wire not in ("openai-chat", "openai-responses")):
+        raise ValueError("An explicit OpenAI wire format selects a direct DeepSeek route")
     if name == "deepseek":
         model = model or "deepseek-flash"
         if model not in DEEPSEEK or effort not in ("low", "high", "max") or upstream not in (None, "deepseek"):
@@ -183,9 +198,13 @@ def route_for(name, *, model=None, effort="low", upstream=None, key=None, verify
         levels = selected.get("effort", {}).get("supported_levels", [])
         if effort not in levels:
             raise ValueError(f"Direct DeepSeek did not list {effort!r} for {model!r}")
-        return Route(name, host, "deepseek-chat", "openai-chat", model, effort, "deepseek", "DeepSeek",
+        wire = wire or "openai-chat"
+        connection = "deepseek-responses" if wire == "openai-responses" else "deepseek-chat"
+        return Route(name, host, connection, wire, model, effort, "deepseek", "DeepSeek",
                      version, selected["context_window"], selected.get("max_output_tokens"),
-                     usd(miss) / MILLION, usd(hit) / MILLION, Decimal(0), usd(output) / MILLION, DEEPSEEK_PRICING)
+                     usd(miss) / MILLION, usd(hit) / MILLION, Decimal(0), usd(output) / MILLION, DEEPSEEK_PRICING,
+                     input_modalities=tuple(selected.get("input_modalities") or ()),
+                     reasoning_efforts=tuple(levels))
     if name != "openrouter":
         raise ValueError("Unknown paid acceptance service")
     model = model or "openai/gpt-6-luna"
@@ -261,7 +280,7 @@ class RequestBoundary:
 
     def checked_output(self, payload):
         route = self.route
-        output = payload.get("max_output_tokens") if route.router else payload.get("max_tokens", payload.get("max_completion_tokens"))
+        output = payload.get("max_output_tokens") if route.responses else payload.get("max_tokens", payload.get("max_completion_tokens"))
         if (payload.get("model") != route.model or payload.get("stream") is not True
                 or type(output) is not int or not 0 < output <= self.limits.output_tokens
                 or payload.get("service_tier") not in (None, "default")
@@ -269,9 +288,11 @@ class RequestBoundary:
                 or any(field in payload for field in ("models", "plugins", "web_search_options"))):
             return None
         tools = payload.get("tools", [])
-        if not all(tool.get("type") == "function" for tool in tools):
+        if not all(tool.get("type") == "function"
+                   or (route.responses and not route.router and tool.get("type") == "custom"
+                       and tool.get("name") == "apply_patch") for tool in tools):
             return None
-        names = [(tool if route.router else tool.get("function", {})).get("name") for tool in tools]
+        names = [(tool if route.responses else tool.get("function", {})).get("name") for tool in tools]
         if not all(isinstance(name, str) and name for name in names):
             return None
         if route.router:
@@ -282,6 +303,10 @@ class RequestBoundary:
                     or not 0 < usd(ceiling.get("prompt", 0)) <= route.prompt_rate * MILLION
                     or not 0 < usd(ceiling.get("completion", 0)) <= route.output_rate * MILLION
                     or payload.get("store") is not False or (payload.get("reasoning") or {}).get("effort") != route.effort):
+                return None
+        elif route.responses:
+            if (payload.get("store") is not False
+                    or (payload.get("reasoning") or {}).get("effort") != route.effort):
                 return None
         elif payload.get("thinking") != {"type": "enabled"} or payload.get("reasoning_effort") != route.effort:
             return None
@@ -294,8 +319,9 @@ class RequestBoundary:
             return
         try:
             event = json.loads(line[5:]) if event is None else event
-            if self.route.router:
-                if event.get("type") == "response.output_item.done" and event.get("item", {}).get("type") == "function_call":
+            if self.route.responses:
+                if (event.get("type") == "response.output_item.done"
+                        and event.get("item", {}).get("type") in ("function_call", "custom_tool_call")):
                     attempt.setdefault("streamed_tool_names", []).append(event["item"]["name"])
                 if event.get("type") not in {"response.completed", "response.incomplete"}:
                     return
@@ -316,10 +342,10 @@ class RequestBoundary:
                 return
             attempt["model_received"] = event.get("model")
             attempt["reported_reasoning_effort"] = event.get("reasoning_effort")
-            fields = (("input_tokens", "output_tokens", "cost") if self.route.router
+            fields = (("input_tokens", "output_tokens", "cost") if self.route.responses
                       else ("prompt_tokens", "completion_tokens", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens"))
             attempt["usage"] = {name: usage[name] for name in fields if type(usage.get(name)) in (int, float)}
-            if self.route.router:
+            if self.route.responses:
                 attempt["usage"]["cache_read_input_tokens"] = (usage.get("input_tokens_details") or {}).get("cached_tokens")
                 attempt["reported_upstream"] = event.get("provider")
         except (KeyError, TypeError, ValueError):

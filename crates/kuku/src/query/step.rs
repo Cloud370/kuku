@@ -5,9 +5,11 @@ use super::helpers::{
     resolved_tool_available,
 };
 use super::run::find_tool_definition;
-use super::slots::{dispatch_tool_slot, spawn_agent_slot, SlotDispatchArgs};
+use super::slots::{
+    dispatch_tool_slot, query_workspace_access, spawn_agent_slot, SlotDispatchArgs,
+};
 use super::tool_exec::{execute_tool_call, run_tool_pre_hooks};
-use super::tool_response::validate_tool_calls;
+use super::tool_response::{self, validate_tool_calls, ToolResponseError};
 use super::types::{
     PendingPermission, PendingRun, PendingStep, PermissionChoice, PermissionRequest,
     QueuedToolCall, StreamingChunkState, UiEvent,
@@ -201,7 +203,7 @@ pub(super) async fn finish_streaming(mut state: StreamingChunkState) -> Result<P
         provider_replay,
         accounting,
         stop_reason,
-        tool_calls,
+        mut tool_calls,
         tool_arg_buffers,
         tool_call_completions,
         tool_stream_invalid,
@@ -226,31 +228,49 @@ pub(super) async fn finish_streaming(mut state: StreamingChunkState) -> Result<P
         || tool_stream_invalid;
     let validated_tool_calls = has_streamed_tool_artifacts.then(|| {
         validate_tool_calls(
-            tool_calls,
+            &mut tool_calls,
             tool_arg_buffers,
             tool_call_completions,
             tool_stream_invalid,
             &pending.admitted_tool_call_ids,
         )
     });
-    let final_stop_reason = if terminal_stream_invalid {
-        ModelStopReason::InvalidResponse
-    } else {
-        match (stop_reason, has_streamed_tool_artifacts) {
-            (None, true)
-                if validated_tool_calls
-                    .as_ref()
-                    .is_some_and(|result| result.is_ok()) =>
-            {
-                ModelStopReason::ToolUse
-            }
-            (None, true) => ModelStopReason::InvalidResponse,
-            (None, false) => ModelStopReason::EndTurn,
-            (Some(ModelStopReason::EndTurn), true) => ModelStopReason::InvalidResponse,
-            (Some(ModelStopReason::ToolUse), false) => ModelStopReason::InvalidResponse,
-            (Some(reason), _) => reason,
-        }
+    let declared_tool_use = matches!(stop_reason, Some(ModelStopReason::ToolUse));
+    let tool_error = match (&validated_tool_calls, declared_tool_use) {
+        (Some(Err(error)), _) => Some(*error),
+        (None, true) => Some(ToolResponseError::MissingCalls),
+        _ => None,
     };
+    let argument_rejection = match tool_error {
+        Some(ToolResponseError::InvalidArguments { index, problem })
+            if stream_ended && !terminal_stream_invalid && declared_tool_use =>
+        {
+            let tool = tool_calls
+                .iter()
+                .find(|call| call.index == index)
+                .and_then(|call| {
+                    pending
+                        .resolved
+                        .as_ref()?
+                        .registry
+                        .iter()
+                        .find(|definition| definition.name == call.name)
+                });
+            Some(EventPayload::Unknown(serde_json::json!({
+                "kind": "runtime.tool_arguments_rejected",
+                "ts": now_timestamp()?, "agent": pending.conversation.as_str(), "turn": pending.turn,
+                "request_id": request_id, "tool_index": index, "tool": tool.map(|definition| &definition.name),
+                "problem": problem, "step_attempt": u16::from(pending.tool_argument_retries) + 1,
+            })))
+        }
+        _ => None,
+    };
+    let regenerate = argument_rejection.is_some() && tool_response::can_regenerate(&pending);
+    let final_stop_reason = tool_response::stop_reason(
+        stop_reason,
+        terminal_stream_invalid,
+        validated_tool_calls.as_ref(),
+    );
     let is_success = matches!(
         final_stop_reason,
         ModelStopReason::EndTurn | ModelStopReason::ToolUse
@@ -285,27 +305,18 @@ pub(super) async fn finish_streaming(mut state: StreamingChunkState) -> Result<P
         super::provider::runtime_session(&pending, execution)?.commit_model_facts(
             pending.conversation.as_str(),
             execution,
-            provider_replay.into_iter().chain([measurement, response]),
+            provider_replay
+                .into_iter()
+                .filter(|_| final_stop_reason != ModelStopReason::InvalidResponse)
+                .chain(argument_rejection)
+                .chain([measurement, response]),
         )?;
     } else {
         EventStore::open(&pending.events_path)?.append(response)?;
     }
 
     if let Some(ref u) = usage {
-        let accumulation = (|| -> Result<()> {
-            add_usage_total(&mut pending.cumulative.input_tokens, u.input_tokens)?;
-            add_usage_total(&mut pending.cumulative.output_tokens, u.output_tokens)?;
-            add_usage_total(
-                &mut pending.cumulative.cache_read_input_tokens,
-                u.cache_read_input_tokens,
-            )?;
-            add_usage_total(
-                &mut pending.cumulative.cache_creation_input_tokens,
-                u.cache_creation_input_tokens,
-            )?;
-            Ok(())
-        })();
-        if let Err(error) = accumulation {
+        if let Err(error) = accumulate_usage(&mut pending.cumulative, u) {
             append_turn_interrupted(
                 &pending.events_path,
                 &conversation,
@@ -329,31 +340,22 @@ pub(super) async fn finish_streaming(mut state: StreamingChunkState) -> Result<P
     }
 
     if !is_success {
+        if regenerate {
+            return tool_response::regenerate(pending, &request_id);
+        }
+        let diagnostic = tool_error
+            .filter(|_| final_stop_reason == ModelStopReason::InvalidResponse)
+            .map(ToolResponseError::message);
         let failure = super::provider::record_terminal_stop(
             &mut pending,
             &request_id,
             provider_attempt,
             &final_stop_reason,
+            diagnostic,
         )?;
         return Ok(PendingStep::Failed(failure));
     }
 
-    let tool_calls = if matches!(final_stop_reason, ModelStopReason::ToolUse) {
-        match validated_tool_calls {
-            Some(Ok(tool_calls)) => tool_calls,
-            Some(Err(_)) | None => {
-                let failure = super::provider::record_terminal_stop(
-                    &mut pending,
-                    &request_id,
-                    provider_attempt,
-                    &ModelStopReason::InvalidResponse,
-                )?;
-                return Ok(PendingStep::Failed(failure));
-            }
-        }
-    } else {
-        Vec::new()
-    };
     let has_tool_calls = !tool_calls.is_empty();
     if has_tool_calls {
         pending.tool_rounds += 1;
@@ -507,14 +509,14 @@ pub(super) async fn finish_streaming(mut state: StreamingChunkState) -> Result<P
             }
         }
     }
+    pending.tool_argument_retries = 0;
 
     for tool_call in tool_calls {
         pending.admitted_tool_call_ids.insert(tool_call.id.clone());
         let display = display_summary(&tool_call.name, &tool_call.args, None);
-        pending.queued_tool_calls.push_back(QueuedToolCall {
-            tool_call,
-            display_summary: display,
-        });
+        pending
+            .queued_tool_calls
+            .push_back(QueuedToolCall::new(tool_call, display));
     }
 
     Ok(PendingStep::Pending {
@@ -552,6 +554,22 @@ fn persist_runtime_model_usage_log(
     }));
     let _ = pending.runtime_log_writer.push(record);
     Ok(())
+}
+
+pub(super) fn accumulate_usage(
+    cumulative: &mut super::types::CumulativeUsage,
+    usage: &crate::provider::types::ProviderUsage,
+) -> Result<()> {
+    add_usage_total(&mut cumulative.input_tokens, usage.input_tokens)?;
+    add_usage_total(&mut cumulative.output_tokens, usage.output_tokens)?;
+    add_usage_total(
+        &mut cumulative.cache_read_input_tokens,
+        usage.cache_read_input_tokens,
+    )?;
+    add_usage_total(
+        &mut cumulative.cache_creation_input_tokens,
+        usage.cache_creation_input_tokens,
+    )
 }
 
 fn add_usage_total(total: &mut Option<u64>, value: Option<u64>) -> Result<()> {
@@ -850,6 +868,8 @@ pub(super) async fn advance_pending(
 
                     let (slot, tool_kind) = dispatch_tool_slot(SlotDispatchArgs {
                         capacity: crate::WorkspaceExecutionHost::default(),
+                        workspace_access: query_workspace_access(&queued.tool_call.name),
+                        preview_bytes: pending.query.runtime_limits.max_preview_bytes,
                         output: None,
                         tool_name: queued.tool_call.name.clone(),
                         tool_id: id.clone(),

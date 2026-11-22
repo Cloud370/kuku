@@ -1,5 +1,3 @@
-use std::time::{Duration, Instant};
-
 use crossterm::event::KeyEvent;
 
 use crate::app::{App, Modal};
@@ -8,25 +6,17 @@ use crate::jobs::Job;
 use crate::keys::Shortcut;
 use crate::menu::{Prompt, PromptKind};
 
-pub(super) fn rewind_instructions(text: &str, restore_files: bool) -> String {
-    format!(
-        "This message and all subsequent events for this Agent will leave active context. The journal remains unchanged.\nRestores only recorded workspace file changes; shell commands and external side effects are not reversed.\n\n{}\n\n[{}] Restore recorded file changes · Space toggles\nEnter commits · Esc cancels",
-        text,
-        if restore_files { "x" } else { " " }
-    )
-}
-
 impl App {
     pub(crate) fn confirm_rewind_message(&mut self, event_id: u64, turn: u64, text: String) {
         self.effects.push(Job::ClosePicker);
-        self.rewind_restore_files = false;
         self.modal = Some(Modal::Prompt(Box::new(Prompt {
             kind: PromptKind::RewindMessage {
                 event_id,
-                text: text.clone(),
+                text,
+                restore_files: false,
             },
-            title: format!("Rewind to message · Turn {turn}"),
-            instructions: rewind_instructions(&text, false),
+            title: format!("Edit past message · Turn {turn}"),
+            instructions: String::new(),
             instructions_top: 0,
             editor: Editor::default(),
         })));
@@ -38,6 +28,22 @@ impl App {
         })
     }
 
+    pub(super) fn rewind_from_menu(&mut self) {
+        let pane = self.pane();
+        if !pane.exists {
+            self.problem("Open a Session before rewinding");
+        } else if self.escape_interrupts_running()
+            || pane
+                .snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.agent.status == kuku_client::AgentStatus::Waiting)
+        {
+            self.problem("Wait for the Agent to settle before rewinding");
+        } else {
+            self.open_history_jump();
+        }
+    }
+
     pub(super) fn rewind_escape(&mut self) {
         let status = self
             .pane()
@@ -45,7 +51,7 @@ impl App {
             .as_ref()
             .map(|snapshot| snapshot.agent.status);
         if self.escape_interrupts_running() {
-            self.escape_armed_at = None;
+            self.rewind_armed = false;
             self.interrupt();
             self.deactivate_context_focus();
             self.focus_composer();
@@ -58,7 +64,7 @@ impl App {
                 crate::app::KeyboardFocus::Request | crate::app::KeyboardFocus::Queue
             )
         {
-            self.escape_armed_at = None;
+            self.rewind_armed = false;
             self.deactivate_context_focus();
             self.focus_composer();
             return;
@@ -67,25 +73,21 @@ impl App {
             && self.pane().transcript.is_reading()
             && !self.pane().draft.text().is_empty()
         {
-            self.escape_armed_at = None;
+            self.rewind_armed = false;
             self.deactivate_context_focus();
             self.focus_composer();
             return;
         }
         if !self.pane().draft.text().is_empty() {
-            self.escape_armed_at = None;
+            self.rewind_armed = false;
             return;
         }
-        let now = Instant::now();
-        if self
-            .escape_armed_at
-            .is_some_and(|armed| now.duration_since(armed) <= Duration::from_millis(500))
-        {
-            self.escape_armed_at = None;
-            self.open_rewind_picker();
+        if self.rewind_armed {
+            self.rewind_armed = false;
+            self.rewind_from_menu();
         } else {
-            self.escape_armed_at = Some(now);
-            self.message("Press Esc again within 500 ms to rewind to a message");
+            self.rewind_armed = true;
+            self.confirmation("Press Esc again to open conversation history");
         }
     }
 

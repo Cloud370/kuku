@@ -4,61 +4,138 @@ use std::path::Path;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
+use crate::event::store::Replay;
 use crate::event::{EventPayload, EventStore, StoredEvent};
 use crate::Result;
 
 use super::record::Record;
-use super::{AgentSnapshot, CacheWarning, TurnSummary, UsageTotals};
+use super::{AgentSnapshot, AgentStatus, CacheWarning, TurnSummary, UsageTotals};
 
 mod cache;
 use cache::{CacheHistory, TurnCache};
 
 /// Per-Agent Turn numbering and terminal statistics derived from committed facts.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct TurnIndex {
     by_agent: HashMap<String, Vec<IndexedTurn>>,
     summaries: HashMap<u64, (u64, TurnSummary)>,
     cache: HashMap<String, CacheHistory>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct IndexedTurn {
     id: u64,
     start: Option<u64>,
     tool_calls: u64,
     end: Option<TurnEnd>,
     cache: TurnCache,
+    preview: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct TurnEnd {
     event_id: u64,
     explicit_stop: bool,
+    can_continue: bool,
+}
+
+/// A Turn that can be selected when browsing conversation history.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct HistoryPoint {
+    /// Journal cursor at the end of the Turn, or its admission when still open.
+    pub event_id: u64,
+    /// Whether the Agent can continue after this cursor.
+    pub can_continue: bool,
+    /// Durable Turn identity.
+    pub turn: u64,
+    /// One-based display number within the Agent.
+    pub number: u64,
+    /// Short preview of the input, when available.
+    pub preview: Option<String>,
 }
 
 impl TurnIndex {
     /// Rebuild the Turn index and its source cursor without acquiring a runtime writer.
     pub fn read(events_path: &Path) -> Result<(Self, u64)> {
         let mut index = Self::default();
-        let cursor = EventStore::visit_path(events_path, |event| {
-            let record = if matches!(&event.payload, EventPayload::Unknown(value)
-                if value["kind"] == "runtime.operation" && matches!(value["record"]["operation"].as_str(),
-                    Some("inputs_accepted" | "turn_settled" | "agent_stopped")))
-            {
-                Record::from_event(&event)?
-            } else {
-                None
-            };
-            index.observe(&event, record.as_ref());
-            Ok(())
-        })?;
+        let cursor = EventStore::visit_recovery_path(events_path, |item| index.replay(item))?;
         Ok((index, cursor))
+    }
+
+    pub(super) fn replay(&mut self, item: Replay<'_>) -> Result<bool> {
+        match item {
+            Replay::Checkpoint(raw) => {
+                #[derive(serde::Deserialize)]
+                struct Checkpoint {
+                    state: SavedState,
+                }
+                #[derive(serde::Deserialize)]
+                struct SavedState {
+                    turns: TurnIndex,
+                }
+                let Ok(saved) = serde_json::from_str::<Checkpoint>(raw.get()) else {
+                    return Ok(false);
+                };
+                *self = saved.state.turns;
+            }
+            Replay::Event(event) => {
+                let record = if matches!(&event.payload, EventPayload::Unknown(value)
+                    if value["kind"] == "runtime.operation" && matches!(value["record"]["operation"].as_str(),
+                        Some("inputs_accepted" | "turn_settled" | "agent_stopped")))
+                {
+                    Record::from_event(&event)?
+                } else {
+                    None
+                };
+                self.observe(&event, record.as_ref());
+            }
+        }
+        Ok(true)
     }
 
     /// Return the one-based display number for a known Turn belonging to an Agent.
     pub fn number(&self, address: &str, turn: u64) -> Option<u64> {
         let (position, _) = self.indexed(address, turn)?;
         Some(position as u64 + 1)
+    }
+
+    pub(super) fn can_continue_after(&self, address: &str, event_id: u64) -> Option<u64> {
+        let (turn, _) = self.summaries.get(&event_id)?;
+        let end = self.indexed(address, *turn)?.1.end.as_ref()?;
+        (end.event_id == event_id && end.can_continue).then_some(*turn)
+    }
+
+    /// List conversation points, newest first, from any branch of this Agent.
+    pub fn history_points(&self, address: &str, before: u64, limit: usize) -> Vec<HistoryPoint> {
+        self.by_agent
+            .get(address)
+            .map_or(&[][..], Vec::as_slice)
+            .iter()
+            .enumerate()
+            .rev()
+            .filter_map(|(index, turn)| {
+                let event_id = turn.end.as_ref().map_or(turn.id, |end| end.event_id);
+                let can_continue = turn.end.as_ref().is_some_and(|end| end.can_continue);
+                (event_id < before).then(|| HistoryPoint {
+                    event_id,
+                    can_continue,
+                    turn: turn.id,
+                    number: index as u64 + 1,
+                    preview: turn.preview.clone(),
+                })
+            })
+            .take(limit)
+            .collect()
+    }
+
+    pub(super) fn previous(&self, address: &str, turn: u64) -> Option<u64> {
+        let (position, _) = self.indexed(address, turn)?;
+        Some(
+            self.by_agent
+                .get(address)?
+                .get(position.checked_sub(1)?)?
+                .id,
+        )
     }
 
     /// Return the durable first admission time in Unix milliseconds.
@@ -112,15 +189,17 @@ impl TurnIndex {
                         tool_calls: 0,
                         end: None,
                         cache: TurnCache::default(),
+                        preview: None,
                     });
             }
             Some(Record::TurnSettled {
                 address,
                 turn: Some(turn),
                 usage,
+                status,
                 ..
             }) => {
-                self.finish(address, *turn, event, usage, false);
+                self.finish(address, *turn, event, usage, Some(*status));
             }
             Some(Record::AgentStopped {
                 address,
@@ -128,10 +207,20 @@ impl TurnIndex {
                 ..
             }) => {
                 if let Some(turn) = stopped.turn {
-                    self.finish(address, turn, event, &stopped.usage, true);
+                    self.finish(address, turn, event, &stopped.usage, None);
                 }
             }
             None => {
+                if let EventPayload::MessageUser {
+                    conversation,
+                    turn,
+                    text,
+                    job_delivery: false,
+                    ..
+                } = &event.payload
+                {
+                    self.preview(conversation, *turn, text);
+                }
                 if let EventPayload::Unknown(value) = &event.payload {
                     self.observe_cache(value);
                 }
@@ -181,14 +270,28 @@ impl TurnIndex {
         Some((index, &turns[index]))
     }
 
+    pub(super) fn preview(&mut self, address: &str, turn: u64, text: &str) {
+        if let Some(indexed) = self
+            .by_agent
+            .get_mut(address)
+            .and_then(|turns| turns.last_mut())
+            .filter(|known| known.id == turn)
+        {
+            indexed
+                .preview
+                .get_or_insert_with(|| text.chars().take(160).collect());
+        }
+    }
+
     fn finish(
         &mut self,
         address: &str,
         turn: u64,
         event: &StoredEvent,
         usage: &UsageTotals,
-        explicit_stop: bool,
+        settled: Option<AgentStatus>,
     ) {
+        let explicit_stop = settled.is_none();
         let Some(turns) = self.by_agent.get_mut(address) else {
             return;
         };
@@ -220,6 +323,7 @@ impl TurnIndex {
         known.end = Some(TurnEnd {
             event_id: event.id,
             explicit_stop,
+            can_continue: settled == Some(AgentStatus::Idle),
         });
         self.summaries.insert(event.id, (turn, summary));
     }

@@ -8,11 +8,17 @@ use crate::{Error, Result};
 
 use super::boundary::TurnWork;
 use super::record::{timestamp, Record, State};
+use super::usage::UnfinishedSummary;
 use super::{ensure_open, Activation, AgentStatus, InputSource, Session, Worker};
 
 enum DriveFailure {
     Execution(Error),
     Cleanup(Error),
+}
+
+pub(super) enum Work {
+    Turn,
+    Compaction(Box<crate::Query>, AgentStatus),
 }
 
 impl From<Error> for DriveFailure {
@@ -46,6 +52,17 @@ impl Session {
                 address: address.into(),
             },
         )?;
+        self.spawn_worker(state, address, epoch, runtime, Work::Turn)
+    }
+
+    pub(super) fn spawn_worker(
+        &self,
+        state: &mut State,
+        address: &str,
+        epoch: u64,
+        runtime: tokio::runtime::Handle,
+        work: Work,
+    ) -> Result<()> {
         let agent = state.agent_mut(address)?;
         agent.active_epoch = Some(epoch);
         let mut workers = self.inner.workers.lock().unwrap();
@@ -55,9 +72,16 @@ impl Session {
         let session = self.clone();
         let target = address.to_string();
         let join = runtime.spawn(async move {
-            let result = match session.drive_agent(&target, epoch, receive_cancel).await {
-                Ok(()) => Ok(()),
-                Err(failure) => session.settle_worker_failure(&target, epoch, failure),
+            let result = match work {
+                Work::Turn => match session.drive_agent(&target, epoch, receive_cancel).await {
+                    Ok(()) => Ok(()),
+                    Err(failure) => session.settle_worker_failure(&target, epoch, failure),
+                },
+                Work::Compaction(query, status) => {
+                    session
+                        .drive_compaction(&target, epoch, *query, status, receive_cancel)
+                        .await
+                }
             };
             let outcome = result.as_ref().map(|_| ()).map_err(ToString::to_string);
             session.record_worker_outcome(&target, epoch, outcome.clone());
@@ -322,8 +346,24 @@ impl Session {
     }
 
     fn build_query(&self, address: &str, work: TurnWork) -> Result<crate::Query> {
-        let config = self.resolve_defaults(address, work.config)?;
-        let mut query = crate::query(work.text)
+        let mut query = self.query_for_config(address, work.config, work.text)?;
+        query.input_source = work.source;
+        query.input_skills = work.skills;
+        query.runtime_execution = Some(work.execution);
+        query.turn_override = Some(work.turn);
+        query.skip_user_message = work.skip_user_message;
+        query.resume_input_turn = work.resume_input_turn;
+        Ok(query)
+    }
+
+    pub(super) fn query_for_config(
+        &self,
+        address: &str,
+        config: super::AgentConfig,
+        text: String,
+    ) -> Result<crate::Query> {
+        let config = self.resolve_defaults(address, config)?;
+        let mut query = crate::query(text)
             .session(&self.inner.id)
             .conversation(address)
             .workspace(
@@ -341,17 +381,11 @@ impl Session {
         query.authorizer = Some(self.inner.options.authorizer.clone());
         query.model_adapter = self.inner.options.model_adapter.clone();
         query.tool_adapters = self.inner.tool_adapters.clone();
-        query.input_source = work.source;
-        query.input_skills = work.skills;
         query.runtime_limits = self.inner.options.limits.clone();
         query.model_capacity = Some(self.inner.model_capacity.clone());
         query.model_request_budget = self.inner.model_request_budget.clone();
         query.runtime = Some(Arc::downgrade(&self.inner));
-        query.runtime_execution = Some(work.execution);
-        query.turn_override = Some(work.turn);
         query.events_path_override = Some(self.inner.events_path.clone());
-        query.skip_user_message = work.skip_user_message;
-        query.resume_input_turn = work.resume_input_turn;
         if let Some(model) = &config.model {
             query = query.model(model);
         }
@@ -385,7 +419,8 @@ impl Session {
             query = query.bootstrap_skill(name, definition.instructions.clone());
         }
         query.agent_instructions = config.instructions.clone();
-        query.tool_registry_override = Some(self.selected_tools(&config)?);
+        query.tool_registry_override =
+            Some(self.selected_tools(&config, &self.resolve_model(&config)?)?);
         Ok(query)
     }
 
@@ -394,6 +429,7 @@ impl Session {
         if state.agent_mut(address)?.active_epoch != Some(epoch) {
             return Ok(());
         }
+        self.settle_open_summary(&mut state, address, UnfinishedSummary::Cancelled)?;
         let agent = state.agent(address)?;
         let cancellation_error = if agent.accepted.is_empty() {
             None
@@ -461,6 +497,11 @@ impl Session {
         if let Some(turn) = turn {
             self.interrupt_open_turn(address, turn, error.code())?;
         }
+        self.settle_open_summary(
+            &mut state,
+            address,
+            UnfinishedSummary::Interrupted("Execution ended before compaction settled"),
+        )?;
         self.commit(
             &mut state,
             Record::TurnSettled {

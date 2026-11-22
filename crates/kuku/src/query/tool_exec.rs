@@ -1,10 +1,11 @@
 use crate::error::Result;
 use crate::event::{EventPayload, EventStore};
 use crate::provider::types::ProviderToolCall;
+use crate::session::runtime::JobControl;
 use serde_json::json;
 
 use super::helpers::{is_inline_skill_tool, now_timestamp, resolved_tool_available};
-use super::types::{ExecSlot, PendingRun};
+use super::types::{ExecSlot, PendingRun, WorkspaceAccess};
 
 pub(super) struct HookBlockResult {
     pub(super) reason: String,
@@ -41,18 +42,17 @@ pub(crate) fn write_tool_result(
     result: &crate::tool::ToolResultEnvelope,
     events_path: &std::path::Path,
     turn: u64,
-    job_wait: Option<&crate::Session>,
+    job_control: Option<&crate::Session>,
 ) -> crate::error::Result<Option<serde_json::Value>> {
     let mut store = crate::event::EventStore::open(events_path)?;
     let mut structured = finalize_persisted_tool_result(store.next_id(), result);
-    if let Some(data) = structured
-        .as_mut()
-        .and_then(serde_json::Value::as_object_mut)
-    {
-        if job_wait.is_none()
-            && data.get("kind").and_then(serde_json::Value::as_str) == Some("job_wait_result")
+    if job_control.is_none() {
+        if let Some(fields) = structured
+            .as_mut()
+            .filter(|data| JobControl::is_result(data))
+            .and_then(serde_json::Value::as_object_mut)
         {
-            data.remove("kind");
+            fields.remove("kind");
         }
     }
     let payload = crate::event::EventPayload::ToolResult {
@@ -73,8 +73,8 @@ pub(crate) fn write_tool_result(
         memory_changed: None,
         structured: structured.clone(),
     };
-    let stored = if let Some(session) = job_wait {
-        session.append_job_wait_result(payload)?
+    let stored = if let Some(session) = job_control {
+        session.append_job_control_result(payload)?
     } else {
         store.append(payload)?
     };
@@ -86,11 +86,8 @@ pub(crate) fn write_tool_result(
 
 fn current_skill_events(pending: &PendingRun) -> Result<Vec<crate::event::StoredEvent>> {
     if pending.query.runtime.is_some() {
-        crate::context::runtime::read_agent_events(
-            &pending.events_path,
-            pending.conversation.as_str(),
-            pending.query.runtime_limits.max_request_bytes,
-        )
+        super::runtime_tools::runtime_session(pending)?
+            .read_agent_events(pending.conversation.as_str())
     } else {
         EventStore::replay(&pending.events_path)
     }
@@ -278,7 +275,7 @@ pub(super) async fn execute_tool_call(
                 tool_call_id: tool_call.id.clone(),
                 conversation: Some(pending.conversation.clone()),
                 kind: super::types::ToolKind::Simple,
-                workspace_ordered: false,
+                workspace_access: WorkspaceAccess::Independent,
                 job: None,
                 label: String::new(),
                 cancel: std::sync::Arc::new(tokio::sync::Notify::new()),
@@ -580,6 +577,7 @@ mod tests {
             runtime_log_writer: crate::log::BufferedLogWriter::new(workspace.join("runtime.jsonl")),
             request_base: None,
             recovery_count: 0,
+            tool_argument_retries: 0,
         }
     }
 
@@ -669,7 +667,7 @@ mod tests {
                     .unwrap(),
                 binding_id: "binding:review".to_string(),
             },
-            workspace_ordered: false,
+            workspace_access: WorkspaceAccess::Independent,
             job: None,
             label: "read".to_string(),
             cancel: Arc::new(tokio::sync::Notify::new()),

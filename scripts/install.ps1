@@ -40,33 +40,65 @@ if ((Test-Path $kukuExe) -and -not $Force) {
     Write-Host "Installing kuku $manifestVersion"
 }
 
+function Receive-Package([string]$Url, [string]$Destination) {
+    $curl = Join-Path $env:SystemRoot "System32\curl.exe"
+    if (Test-Path -LiteralPath $curl -PathType Leaf) {
+        $progress = if ([Console]::IsErrorRedirected) { "--silent" } else { "--progress-bar" }
+        & $curl --fail --location --show-error $progress --connect-timeout 15 --retry 2 --retry-max-time 30 --output $Destination -- $Url
+        if ($LASTEXITCODE -ne 0) { throw "Download failed with curl exit code $LASTEXITCODE" }
+        return
+    }
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        try {
+            Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $Destination
+            return
+        } catch {
+            $status = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 }
+            if ($attempt -eq 3 -or $status -notin @(0, 408, 429, 500, 502, 503, 504)) { throw }
+            Start-Sleep -Seconds $attempt
+        }
+    }
+}
+
+function Get-PackageDigest([string]$Path) {
+    $stream = [IO.File]::OpenRead($Path)
+    $digest = [Security.Cryptography.SHA256]::Create()
+    try {
+        return [BitConverter]::ToString($digest.ComputeHash($stream)).Replace("-", "")
+    } finally {
+        $digest.Dispose()
+        $stream.Dispose()
+    }
+}
+
 # ── Download ──
 $platformInfo = $manifest.platforms.$platform
 $url = $platformInfo.url
 $sha256 = $platformInfo.sha256
-
-if (-not $url) {
-    Write-Host "No download URL found for platform $platform"
-    exit 1
+$size = $platformInfo.size
+if (-not $url -or $sha256 -notmatch '^[a-fA-F0-9]{64}$') {
+    throw "Missing download URL or SHA-256 checksum for $platform"
 }
-
 $archiveName = "kuku-$platform.zip"
+$cached = Join-Path $cacheDir $archiveName
 $installId = [guid]::NewGuid().ToString()
 $stage = New-Item -ItemType Directory (Join-Path $binDir ".install-$installId")
 $cacheFile = Join-Path $stage.FullName $archiveName
 try {
-    Write-Host "Downloading $url ..."
-    Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $cacheFile
-    if ($sha256) {
+    $cachedPackage = $false
+    if (Test-Path -LiteralPath $cached -PathType Leaf) {
+        Copy-Item -LiteralPath $cached -Destination $cacheFile
+        $cachedPackage = (Get-PackageDigest $cacheFile) -eq $sha256
+    }
+    if ($cachedPackage) {
+        Write-Host "Using verified cached $archiveName."
+    } else {
+        $sizeLabel = if ($size) { " ($size bytes)" } else { "" }
+        Write-Host "Downloading $archiveName$sizeLabel ..."
+        Receive-Package $url $cacheFile
+
         Write-Host "Verifying checksum..."
-        $stream = [System.IO.File]::OpenRead($cacheFile)
-        $digest = [System.Security.Cryptography.SHA256]::Create()
-        try {
-            $actual = [BitConverter]::ToString($digest.ComputeHash($stream)).Replace("-", "").ToLowerInvariant()
-        } finally {
-            $digest.Dispose()
-            $stream.Dispose()
-        }
+        $actual = Get-PackageDigest $cacheFile
         if ($actual -ne $sha256) {
             throw "Checksum mismatch: expected $sha256, got $actual"
         }
@@ -78,7 +110,7 @@ try {
     $archive = [System.IO.Compression.ZipFile]::OpenRead($cacheFile)
     try {
         $entry = $archive.GetEntry("kuku.exe")
-        if (-not $entry) { throw "Archive is missing kuku.exe" }
+        if (-not $entry -or $entry.Length -eq 0) { throw "Archive is missing kuku.exe" }
         [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $stagedExe)
     } finally {
         $archive.Dispose()
@@ -92,7 +124,9 @@ try {
     # Windows releases a running service's old image after that service exits.
     Get-ChildItem -LiteralPath $binDir -Filter ".kuku-*.retired" -File |
         Remove-Item -Force -ErrorAction SilentlyContinue
-    Move-Item -LiteralPath $cacheFile -Destination (Join-Path $cacheDir $archiveName) -Force
+    if (-not $cachedPackage) {
+        Move-Item -LiteralPath $cacheFile -Destination $cached -Force
+    }
 } finally {
     Remove-Item -LiteralPath $stage.FullName -Recurse -Force
 }
