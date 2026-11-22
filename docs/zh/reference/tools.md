@@ -200,7 +200,7 @@ return {exit_code, duration_ms, entries, output_ref};
 
 ## Notes By Tool
 
-- `find_files` 在有界的 `entries` 中返回相对路径。列表中的目录以 `/` 结尾。扫描会跳过常见构建目录。
+- `find_files` 默认列出直接子项，给出 `pattern` glob 时递归搜索。`max_depth` 可覆盖默认值，`0` 列出直接子项，`1` 再深入一层目录。相对目录路径以 `/` 结尾，扫描跳过常见构建目录。长列表会说明总数和如何缩小查询。
 - `read_file` 返回带行号内容，并支持分页。
 - `stat_file` 返回路径类型（`file`、`directory`、`other` 或 `missing`）、是否存在及可用的文件大小。设置 `version: true` 时会流式读取普通文件的字节并计算 SHA-256 `content_hash`，结果只提供哈希，不包含文件正文。
 - `search_text` 基于正则，支持 `files`、`lines` 和 `count` 视图。结构化 `matches` 提供路径和行号，`lines` 还提供有界文本。通过 `next_offset` 续读。可将匹配的原文用于编辑，也可读取相邻行以补充上下文。

@@ -35,13 +35,13 @@ fn registry(agent_enabled: bool, skills_enabled: bool, session: bool) -> Vec<Too
     let mut tools = vec![
         tool(
             "find_files",
-            "Browse the file tree — prefer this over shell commands for listing files. Directories shown with trailing /. Use pattern to filter, max_depth to limit recursion. Excludes build/dependency directories by default.",
+            "List immediate directory entries or find files recursively with a glob pattern. Directories end in /. Common build and dependency directories are skipped.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "Search root relative to the workspace. Defaults to the workspace root."},
                     "pattern": {"type": "string", "description": "File glob pattern, e.g. *.md or docs/**/*.md."},
-                    "max_depth": {"type": "integer", "description": "Maximum recursion depth (default: unlimited)."}
+                    "max_depth": {"type": "integer", "minimum": 0, "description": "How many levels below the selected directory to search. Defaults to 0 for a directory listing and unlimited with a pattern."}
                 }
             }),
             true,

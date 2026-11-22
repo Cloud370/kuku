@@ -32,7 +32,7 @@ async fn executes_find_files_and_continues_to_final_response() {
                 "id": "msg_final",
                 "type": "message",
                 "role": "assistant",
-                "content": [{"type": "text", "text": "I found README.md and src/main.rs."}],
+                "content": [{"type": "text", "text": "I found README.md and the src directory."}],
                 "stop_reason": "end_turn",
                 "usage": {"input_tokens": 10, "output_tokens": 8}
             })));
@@ -42,7 +42,7 @@ async fn executes_find_files_and_continues_to_final_response() {
 
     tool_mock.assert();
     catch_all.assert();
-    assert_eq!(output.text, "I found README.md and src/main.rs.");
+    assert_eq!(output.text, "I found README.md and the src directory.");
 
     let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
     assert_eq!(
@@ -67,7 +67,7 @@ async fn executes_find_files_and_continues_to_final_response() {
     assert!(events.iter().any(|event| matches!(
         event.payload,
         EventPayload::ToolResult { ref status, ref model_content, .. }
-            if status == "ok" && model_content.contains("README.md") && model_content.contains("src/main.rs")
+            if status == "ok" && model_content.lines().eq(["src/", "README.md"])
     )));
     assert_eq!(
         events

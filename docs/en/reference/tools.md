@@ -200,7 +200,7 @@ Within one advancing Agent, kuku serializes the `read_file`, `stat_file`, `edit_
 
 ## Notes By Tool
 
-- `find_files` returns a bounded `entries` list of relative paths. Directories in the list end in `/`. The scan skips common build directories.
+- `find_files` lists immediate entries by default and searches recursively when given a `pattern` glob. `max_depth` overrides the default, with `0` for immediate entries and `1` to search one directory level below. Relative directory paths end in `/`. The scan skips common build directories. Large listings report the total and suggest a narrower query.
 - `read_file` returns line-numbered content and supports pagination.
 - `stat_file` returns the path type (`file`, `directory`, `other`, or `missing`), existence and available size. With `version: true`, it streams the bytes of a regular file to compute its SHA-256 `content_hash` and returns the hash without the file contents.
 - `search_text` is regex-based and supports `files`, `lines`, and `count` views. Structured `matches` give paths and line numbers. `lines` also gives bounded text. Use `next_offset` to continue. Use the matching text as edit context or read the surrounding lines for more context.

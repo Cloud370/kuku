@@ -74,6 +74,8 @@ Use the actual captured format in every family. A rule borrowed from RTK may dep
 
 ## Output and named data
 
+Directory browsing starts with immediate entries. A file glob or explicit depth enables search below the directory. Keep small listings intact. When a listing exceeds the result budget, include its scope, total and ways to narrow it within the same budget. Native calls and scripts share this behavior. See [tool reference](../reference/tools.md).
+
 Use one bounded reader for direct tools and JS. Offer line iteration and byte chunks for scripts. Preserve stream identity, actual offsets, decoding boundaries, raw bytes and truncation. JSON and regular expressions are native script operations. Multiline CSV needs a record parser. Small structured results may return inline. Large derived data should stream to a fresh Session output and return its reference after it is saved. Original logs remain independently readable. Write a workspace file when the user wants a deliverable.
 
 A URL download returns a Session output reference that the same Agent can inspect with the output reader. Keep the downloaded bytes out of the project tree unless the user requests a file.
