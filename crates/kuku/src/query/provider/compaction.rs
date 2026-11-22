@@ -254,6 +254,9 @@ pub(super) async fn compact(
                 finish["status"] = "completed".into();
                 finish["after_bytes"] = bytes.into();
                 finish["estimated_input_tokens_after"] = after_tokens.into();
+                if let Some(tokens) = summary.usage.as_ref().and_then(|usage| usage.output_tokens) {
+                    finish["summary_output_tokens"] = tokens.into();
+                }
                 finish["checkpointed_messages"] = candidate.checkpointed_messages().into();
                 finish["summary"] = summary_with_files.into();
                 if let Err(error) = candidate.record_checkpoint(pending, finish.clone()) {

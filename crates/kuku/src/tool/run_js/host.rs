@@ -17,6 +17,7 @@ use super::{
 };
 
 const MAX_ACTION_FACT_BYTES: usize = 8192;
+const MAX_WRITTEN_PREVIEW_BYTES: usize = 1024;
 const MAX_ACTION_SUMMARY_BYTES: usize = 512;
 const MAX_SCRIPT_FACT_BYTES: usize = 640 * 1024;
 const MIN_ACTION_RECORD_BYTES: usize = 256;
@@ -179,6 +180,15 @@ impl ScriptExecution {
     ) -> ToolResultEnvelope {
         use WorkspaceScriptActionStatus::{Blocked, Cancelled, Error, Ok, Unknown};
 
+        let written = (op == ScriptOperation::WriteFile)
+            .then(|| args["content"].as_str())
+            .flatten()
+            .map(|text| {
+                (
+                    text.len(),
+                    cap_str(text, MAX_WRITTEN_PREVIEW_BYTES).to_owned(),
+                )
+            });
         let call = ScriptCall {
             id: action_id(ordinal),
             op,
@@ -203,7 +213,7 @@ impl ScriptExecution {
         };
         fact.summary = cap_str(&result.summary, MAX_ACTION_SUMMARY_BYTES).into();
         fact.truncated = result.truncated;
-        fact.result = bounded_fact(result.structured.as_ref());
+        fact.result = bounded_fact(result.structured.as_ref(), written);
         self.facts.lock().unwrap().insert(ordinal, fact);
         self.failed_persistence
             .fetch_or(result.faults.output_persistence_failed, Ordering::AcqRel);
@@ -247,13 +257,22 @@ fn observation_bytes(read: &ExecutorObservation) -> usize {
         + read.content_hash.len()
 }
 
-fn bounded_fact(structured: Option<&Value>) -> Value {
+fn bounded_fact(structured: Option<&Value>, written: Option<(usize, String)>) -> Value {
     let Some(structured) = structured else {
         return Value::Null;
     };
     let json = match structured {
         Value::Object(fields) => {
-            let retained: BTreeMap<_, _> = fields
+            let preview = written
+                .filter(|(bytes, _)| {
+                    structured["kind"] == "file_write"
+                        && structured["bytes_written"].as_u64() == Some(*bytes as u64)
+                })
+                .map(|(bytes, prefix)| {
+                    let truncated = prefix.len() < bytes;
+                    (Value::String(prefix), Value::Bool(truncated))
+                });
+            let mut retained: BTreeMap<_, _> = fields
                 .iter()
                 .filter(|(key, _)| {
                     !matches!(
@@ -267,7 +286,12 @@ fn bounded_fact(structured: Option<&Value>) -> Value {
                             | "text"
                     )
                 })
+                .map(|(key, value)| (key.as_str(), value))
                 .collect();
+            if let Some((text, truncated)) = &preview {
+                retained.insert("raw_text_after", text);
+                retained.insert("raw_text_after_truncated", truncated);
+            }
             bounded_json(&retained, MAX_ACTION_FACT_BYTES)
         }
         value => bounded_json(value, MAX_ACTION_FACT_BYTES),
@@ -303,6 +327,7 @@ fn selected_facts(structured: &Value) -> Value {
         "content_hash_after",
         "bytes_written",
         "bytes_removed",
+        "created",
         "line_count",
         "offset",
         "next_offset",
@@ -318,11 +343,23 @@ fn selected_facts(structured: &Value) -> Value {
     }
     if facts.get("change").is_none() {
         let change = &structured["change"];
-        if let (Some(added), Some(removed)) = (
-            change["added_lines"].as_u64(),
-            change["removed_lines"].as_u64(),
-        ) {
-            facts["change"] = json!({"added_lines":added,"removed_lines":removed});
+        let mut summary = serde_json::Map::new();
+        for field in ["added_lines", "removed_lines"] {
+            if let Some(value) = change[field].as_u64() {
+                summary.insert(field.to_owned(), value.into());
+            }
+        }
+        if let Some(line) = change["first_changed_line"].as_u64().or_else(|| {
+            change["preview_line_numbers"]
+                .as_array()?
+                .iter()
+                .filter_map(Value::as_u64)
+                .find(|line| *line > 0)
+        }) {
+            summary.insert("first_changed_line".into(), line.into());
+        }
+        if !summary.is_empty() {
+            facts["change"] = Value::Object(summary);
         }
     }
     if structured["termination"].as_str().is_some() {
@@ -410,5 +447,20 @@ impl Write for BoundedWriter {
 
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn reduced_action_facts_keep_the_first_changed_line() {
+        let outline = super::selected_facts(&serde_json::json!({
+            "kind": "file_edit",
+            "change": {"preview": "+".to_owned() + &"a".repeat(700), "added_lines": 1,
+                       "removed_lines": 0, "preview_line_numbers": [17]}
+        }));
+        assert_eq!(outline["change"]["first_changed_line"], 17);
+        assert_eq!(outline["change"]["added_lines"], 1);
+        assert!(outline["change"].get("preview").is_none());
     }
 }

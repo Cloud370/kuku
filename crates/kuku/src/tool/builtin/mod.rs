@@ -3,6 +3,7 @@ mod edit_file;
 pub(crate) use edit_file::line_change_counts;
 mod fetch_url;
 mod fetch_web;
+mod file_change;
 mod find_files;
 mod memory;
 pub(crate) mod query_session;

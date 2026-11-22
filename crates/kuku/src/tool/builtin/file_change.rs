@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use serde::Serialize;
 
-const MAX_INPUT_BYTES: usize = 2 * 1024 * 1024;
+pub(super) const MAX_INPUT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_CHANGED_LINES: usize = 256;
 const MAX_PREVIEW_ROWS: usize = 8;
 const MAX_PREVIEW_BYTES: usize = 2048;
@@ -110,6 +110,26 @@ pub(super) fn summarize(before: &str, after: &str) -> Option<Change> {
     })
 }
 
+pub(super) fn facts(before: &str, after: &str) -> serde_json::Value {
+    if let Some(change) = summarize(before, after) {
+        return serde_json::json!(change);
+    }
+    let prefix = before
+        .bytes()
+        .zip(after.bytes())
+        .take_while(|(before, after)| before == after)
+        .count();
+    if prefix == before.len() && prefix == after.len() {
+        return serde_json::Value::Null;
+    }
+    let first_changed_line = before.as_bytes()[..prefix]
+        .iter()
+        .filter(|byte| **byte == b'\n')
+        .count()
+        + 1;
+    serde_json::json!({"first_changed_line": first_changed_line})
+}
+
 fn changed_region<'a>(before: &'a str, after: &'a str) -> (&'a str, &'a str, usize) {
     let matching = |a: &str, b: &str| a == b;
     let (prefix, prefix_lines) = before
@@ -160,6 +180,8 @@ mod tests {
         assert_eq!((1, 1), (change.added_lines, change.removed_lines));
         assert!(change.preview_truncated);
         assert!(change.preview.len() <= super::MAX_PREVIEW_BYTES);
-        assert!(summarize("", &"extra\n".repeat(super::MAX_CHANGED_LINES + 1)).is_none());
+        let after = format!("same\n{}", "extra\n".repeat(super::MAX_CHANGED_LINES + 1));
+        assert!(summarize("same\n", &after).is_none());
+        assert_eq!(super::facts("same\n", &after)["first_changed_line"], 2);
     }
 }

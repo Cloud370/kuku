@@ -115,8 +115,29 @@ pub(crate) fn file_version(
     path: &Path,
     cancelled: &FileCancellation<'_>,
 ) -> io::Result<(String, Metadata)> {
+    scan_file_version(path, cancelled, None).map(|(hash, metadata, _)| (hash, metadata))
+}
+
+pub(crate) fn file_version_with_text(
+    path: &Path,
+    cancelled: &FileCancellation<'_>,
+    text_limit: Option<usize>,
+) -> io::Result<(String, Option<String>)> {
+    scan_file_version(path, cancelled, text_limit)
+        .map(|(hash, _, bytes)| (hash, bytes.and_then(|bytes| String::from_utf8(bytes).ok())))
+}
+
+fn scan_file_version(
+    path: &Path,
+    cancelled: &FileCancellation<'_>,
+    text_limit: Option<usize>,
+) -> io::Result<(String, Metadata, Option<Vec<u8>>)> {
     let mut file = StableFile::open(path, cancelled)?;
     let mut hash = Sha256::new();
+    let mut text = text_limit
+        .zip(usize::try_from(file.opened.len()).ok())
+        .filter(|(limit, len)| len <= limit)
+        .map(|(limit, len)| (limit, Vec::with_capacity(len)));
     let mut buffer = [0; HASH_BUFFER_BYTES];
     loop {
         let count = match file.read(&mut buffer) {
@@ -126,10 +147,22 @@ pub(crate) fn file_version(
         if count == 0 {
             break;
         }
-        hash.update(&buffer[..count]);
+        let chunk = &buffer[..count];
+        hash.update(chunk);
+        if let Some((limit, bytes)) = &mut text {
+            if bytes.len() + chunk.len() <= *limit {
+                bytes.extend_from_slice(chunk);
+            } else {
+                text = None;
+            }
+        }
     }
     file.verify(path)?;
-    Ok((format_content_hash(hash), file.opened))
+    Ok((
+        format_content_hash(hash),
+        file.opened,
+        text.map(|(_, bytes)| bytes),
+    ))
 }
 
 pub(crate) fn file_read_error(path: &Path, error: io::Error) -> ToolResultEnvelope {
