@@ -719,6 +719,11 @@ impl Session {
         Ok(request)
     }
 
+    pub(crate) fn question_requested_in_turn(&self, address: &str, turn: u64) -> Result<bool> {
+        let state = self.inner.state.lock().unwrap();
+        Ok(state.agent(address)?.last_question_turn == Some(turn))
+    }
+
     /// Await all cleanup and durable writes before releasing the session writer.
     pub async fn close(&self) -> Result<()> {
         let mut result = {

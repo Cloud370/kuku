@@ -355,20 +355,8 @@ fn start_slot(
 }
 
 pub(super) fn should_yield(pending: &PendingRun) -> Result<bool> {
-    let mut after = pending.turn.saturating_sub(1);
-    loop {
-        let events = EventStore::read_page(&pending.events_path, after, 64)?;
-        if events.is_empty() {
-            return Ok(false);
-        }
-        for event in events {
-            after = event.id;
-            if matches!(&event.payload, EventPayload::Unknown(value) if value["kind"] == "runtime.operation" && value["record"]["operation"] == "question_requested" && value["record"]["address"] == pending.conversation.as_str() && value["record"]["request"]["turn"] == pending.turn)
-            {
-                return Ok(true);
-            }
-        }
-    }
+    runtime_session(pending)?
+        .question_requested_in_turn(pending.conversation.as_str(), pending.turn)
 }
 
 pub(super) fn yield_step(pending: PendingRun) -> Result<PendingStep> {

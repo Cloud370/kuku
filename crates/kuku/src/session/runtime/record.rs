@@ -225,6 +225,7 @@ pub(super) struct AgentState {
     pub(super) snapshot: AgentSnapshot,
     pub(super) inbox: VecDeque<QueuedDelivery>,
     pub(super) accepted: Vec<QueuedDelivery>,
+    pub(super) last_question_turn: Option<u64>,
     question_replies: HashSet<String>,
     pub(super) reply_preview: Option<ReplyPreview>,
     pub(super) permission_reply: Option<(String, bool)>,
@@ -375,6 +376,7 @@ impl State {
                         },
                         inbox: VecDeque::new(),
                         accepted: Vec::new(),
+                        last_question_turn: None,
                         question_replies: HashSet::new(),
                         reply_preview: None,
                         permission_reply: None,
@@ -719,7 +721,9 @@ impl State {
                 self.cleanup_failures.insert(address, message);
             }
             Record::QuestionRequested { address, request } => {
-                self.agent_mut(&address)?.snapshot.question = Some(request);
+                let agent = self.agent_mut(&address)?;
+                agent.last_question_turn = Some(request.turn);
+                agent.snapshot.question = Some(request);
             }
             Record::QuestionReplied {
                 fingerprint,
