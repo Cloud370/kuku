@@ -198,6 +198,7 @@ impl Run {
                     crate::query::slots::SlotDispatchArgs {
                         capacity: crate::WorkspaceExecutionHost::default(),
                         workspace_access: query_workspace_access(&tool_call.name),
+                        preview_bytes: pending.query.runtime_limits.max_preview_bytes,
                         output: None,
                         tool_name: tool_call.name.clone(),
                         tool_id: tool_call.id.clone(),

@@ -7,6 +7,7 @@ use super::{ReadBy, ReadRequest};
 use crate::tool::builtin::common::{format_content_hash, FileCancellation, StableFile};
 
 const READ_BUFFER_BYTES: usize = 64 * 1024;
+const LINE_SAMPLE_BYTES: usize = 256;
 
 pub(super) struct ReadView {
     pub(super) content_hash: String,
@@ -103,7 +104,15 @@ impl ViewBuilder {
                 let buffer_limit = self.max_bytes.saturating_add(2);
                 if self.line.len().saturating_add(part.len()) > buffer_limit {
                     self.view.truncated = true;
-                    self.line.clear();
+                    if matches!(self.read_by, ReadBy::Model)
+                        && self.view.total_lines + 1 == self.offset
+                    {
+                        let sample_bytes = self.max_bytes.min(LINE_SAMPLE_BYTES);
+                        self.line.truncate(sample_bytes);
+                        let remaining = sample_bytes - self.line.len();
+                        self.line
+                            .extend_from_slice(&part[..part.len().min(remaining)]);
+                    }
                 } else {
                     self.line.extend_from_slice(part);
                 }
@@ -130,10 +139,28 @@ impl ViewBuilder {
             if !self.view.truncated {
                 self.append_line()?;
             }
+            if self.view.truncated
+                && self.view.total_lines + 1 == self.offset
+                && matches!(self.read_by, ReadBy::Model)
+            {
+                self.sample_line()?;
+            }
         }
         self.view.total_lines += 1;
         self.line_start = self.view.size_bytes;
         self.line.clear();
+        Ok(())
+    }
+
+    fn sample_line(&mut self) -> io::Result<()> {
+        use std::fmt::Write;
+
+        let number = self.offset.to_string();
+        let max_prefix = (self.max_bytes - number.len() - 1).min(LINE_SAMPLE_BYTES);
+        let bytes = &self.line[..self.line.len().min(max_prefix)];
+        let prefix = &bytes[..valid_prefix(bytes)?];
+        let line = std::str::from_utf8(prefix).map_err(|_| invalid_utf8())?;
+        let _ = write!(self.view.model_content, "{number}\t{line}");
         Ok(())
     }
 

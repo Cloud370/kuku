@@ -49,6 +49,7 @@ pub(crate) fn spawn_simple_slot(
     events_path: PathBuf,
     capacity: crate::WorkspaceExecutionHost,
     workspace_access: WorkspaceAccess,
+    preview_bytes: usize,
 ) -> ExecSlot {
     let cancel = Arc::new(Notify::new());
     let cancel_clone = cancel.clone();
@@ -80,6 +81,7 @@ pub(crate) fn spawn_simple_slot(
                         &prior_events,
                         0,
                         Some(&dispatch_tool_call_id),
+                        preview_bytes,
                         &|| check.load(Ordering::Acquire),
                     )
                     .expect("a known workspace file operation")
@@ -370,6 +372,7 @@ pub(super) fn spawn_command_slot(
 pub(crate) struct SlotDispatchArgs {
     pub(crate) capacity: crate::WorkspaceExecutionHost,
     pub(crate) workspace_access: WorkspaceAccess,
+    pub(crate) preview_bytes: usize,
     pub(crate) output: Option<RetainedOutputSpec>,
     pub(crate) tool_name: String,
     pub(crate) tool_id: String,
@@ -459,6 +462,7 @@ pub(crate) fn dispatch_tool_slot(args: SlotDispatchArgs) -> (ExecSlot, ToolKind)
             args.events_path,
             args.capacity,
             args.workspace_access,
+            args.preview_bytes,
         );
         (slot, ToolKind::Simple)
     }
@@ -709,6 +713,7 @@ mod tests {
             dir.path().join("events.jsonl"),
             crate::WorkspaceExecutionHost::default(),
             WorkspaceAccess::Exclusive,
+            crate::RuntimeLimits::default().max_preview_bytes,
         );
         let (_, denied) = event_rx.recv().await.unwrap();
         let SlotEvent::Done(result) = denied else {
@@ -732,6 +737,7 @@ mod tests {
             dir.path().join("events.jsonl"),
             crate::WorkspaceExecutionHost::default(),
             WorkspaceAccess::Exclusive,
+            crate::RuntimeLimits::default().max_preview_bytes,
         );
         let (_, allowed) = event_rx.recv().await.unwrap();
         let SlotEvent::Done(result) = allowed else {

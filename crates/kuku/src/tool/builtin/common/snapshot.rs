@@ -293,6 +293,7 @@ pub(crate) fn find_write_snapshot(
     let mut saw_path_snapshot = false;
     let mut stale_snapshot = None;
     let mut current_snapshot: Option<WriteSnapshot> = None;
+    let mut current_pages = Vec::new();
     for event in crate::context::replay::effective_snapshot_events(events, conversation)
         .into_iter()
         .rev()
@@ -320,6 +321,11 @@ pub(crate) fn find_write_snapshot(
                     continue;
                 };
                 saw_path_snapshot = true;
+                if require_full_file && current_content_hash == Some(hash) {
+                    if let Some((range, size)) = model_page_bytes(structured) {
+                        current_pages.push((range, size, event.id));
+                    }
+                }
                 let Some(coverage) = model_coverage(structured, require_full_file, required_text)
                 else {
                     continue;
@@ -352,6 +358,22 @@ pub(crate) fn find_write_snapshot(
             current.extend(new);
         }
     }
+    if let Some((&(_, size, event_id), current_hash)) =
+        current_pages.first().zip(current_content_hash)
+    {
+        let ranges = merged_ranges(
+            current_pages
+                .into_iter()
+                .filter_map(|(range, bytes, _)| (bytes == size).then_some(range)),
+        );
+        if covers_entire_file(&ranges, size) {
+            return WriteSnapshotLookup::Found(WriteSnapshot {
+                event_id,
+                content_hash: current_hash.to_owned(),
+                coverage: ReadCoverage::Full,
+            });
+        }
+    }
     if let Some(snapshot) = current_snapshot.or(stale_snapshot) {
         return WriteSnapshotLookup::Found(snapshot);
     }
@@ -363,6 +385,18 @@ pub(crate) fn find_write_snapshot(
         ToolErrorReason::SnapshotRequired
     };
     WriteSnapshotLookup::Rejected(reason)
+}
+
+fn model_page_bytes(structured: &Value) -> Option<(Range<usize>, usize)> {
+    if structured["kind"] != "file_content" || structured["read_by"] != "model" {
+        return None;
+    }
+    let raw = visible_snapshot_raw_text(structured)?;
+    let start = usize::try_from(structured["start_byte"].as_u64()?).ok()?;
+    let end = usize::try_from(structured["end_byte"].as_u64()?).ok()?;
+    let size = usize::try_from(structured["size_bytes"].as_u64()?).ok()?;
+    (start != end && start.checked_add(raw.len())? == end && end <= size)
+        .then_some((start..end, size))
 }
 
 fn model_coverage(
@@ -422,9 +456,7 @@ fn find_executor_snapshot(
         full |= read.complete;
         read.range.clone()
     }));
-    full |= ranges.first().is_some_and(|range| {
-        range.start == 0 && range.end == head.size_bytes && head.size_bytes != 0
-    });
+    full |= covers_entire_file(&ranges, head.size_bytes);
     if require_full && !full {
         return WriteSnapshotLookup::Rejected(ToolErrorReason::FullSnapshotRequired);
     }
@@ -437,6 +469,12 @@ fn find_executor_snapshot(
             ReadCoverage::Ranges(ranges.into_iter().map(ObservedSpan::Bytes).collect())
         },
     })
+}
+
+fn covers_entire_file(ranges: &[Range<usize>], size: usize) -> bool {
+    ranges
+        .first()
+        .is_some_and(|range| range.start == 0 && range.end == size && size != 0)
 }
 
 fn merged_ranges(ranges: impl Iterator<Item = Range<usize>>) -> Vec<Range<usize>> {

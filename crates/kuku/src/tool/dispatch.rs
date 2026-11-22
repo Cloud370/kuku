@@ -31,6 +31,7 @@ pub(crate) fn dispatch_workspace_file(
     prior_events: &[StoredEvent],
     result_event_id: u64,
     tool_call_id: Option<&str>,
+    preview_bytes: usize,
     cancelled: &builtin::common::FileCancellation<'_>,
 ) -> Option<ToolResultEnvelope> {
     if matches!(name, "edit_file" | "write_file" | "remove_file")
@@ -46,6 +47,7 @@ pub(crate) fn dispatch_workspace_file(
             conversation,
             prior_events,
             result_event_id,
+            preview_bytes,
             cancelled,
         ),
         "search_text" => builtin::search_text(args, workspace, cancelled),
@@ -129,6 +131,7 @@ pub(crate) async fn dispatch(
         prior_events,
         result_event_id,
         tool_call_id,
+        crate::RuntimeLimits::default().max_preview_bytes,
         &|| false,
     ) {
         return result;
@@ -279,6 +282,7 @@ mod tests {
             &[call],
             2,
             Some("write"),
+            crate::RuntimeLimits::default().max_preview_bytes,
             &|| false,
         )
         .unwrap();

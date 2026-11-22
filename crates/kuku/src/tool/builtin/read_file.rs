@@ -14,9 +14,7 @@ use super::common::{
 
 mod scan;
 
-const READ_FILE_MAX_CHARS: usize = 80_000;
-const READ_TRUNCATION: &str =
-    "(Results are truncated. Use offset and limit to read a smaller range.)";
+const PAGE_NOTICE_BYTES: usize = 128;
 
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -37,13 +35,14 @@ pub(crate) fn read_file(
     conversation: &ConversationAddress,
     prior_events: &[StoredEvent],
     read_event_id: u64,
+    preview_bytes: usize,
     cancelled: &FileCancellation<'_>,
 ) -> ToolResultEnvelope {
     read_file_impl(
         args,
         workspace,
         ReadBy::Model,
-        READ_FILE_MAX_CHARS,
+        preview_bytes - PAGE_NOTICE_BYTES,
         Some((prior_events, conversation, read_event_id)),
         cancelled,
     )
@@ -121,6 +120,17 @@ fn read_file_impl(
     let is_full_file_snapshot =
         request.offset == 1 && view.line_count == view.total_lines && !view.truncated;
     let end_byte = view.start_byte + view.raw_text.len();
+    let sampled_line = if matches!(read_by, ReadBy::Model) && view.truncated && view.line_count == 0
+    {
+        Some(request.offset)
+    } else {
+        None
+    };
+    let next_offset = request
+        .offset
+        .saturating_add(view.line_count.max(usize::from(sampled_line.is_some())));
+    let next_offset =
+        (next_offset > request.offset && next_offset <= view.total_lines).then_some(next_offset);
     let mut structured = serde_json::json!({
         "kind": "file_content",
         "path": resolved.relative,
@@ -134,6 +144,8 @@ fn read_file_impl(
         "start_line": request.offset,
         "line_count": view.line_count,
         "total_lines": view.total_lines,
+        "next_offset": next_offset,
+        "sampled_line": sampled_line,
         "line_numbered": matches!(read_by, ReadBy::Model),
         "is_full_file_snapshot": is_full_file_snapshot,
         "cached": prior.is_some(),
@@ -156,10 +168,21 @@ fn read_file_impl(
         })
     } else {
         if view.truncated {
-            if !view.model_content.is_empty() {
-                view.model_content.push('\n');
+            use std::fmt::Write;
+            if let Some(line) = sampled_line {
+                let _ = write!(view.model_content, "\n[Line {line} exceeds the preview limit. This is a prefix. To extract locally, try run_js tools.read_file with offset={line}, limit=1. Check truncated.");
+            } else {
+                let end_line = request.offset + view.line_count - 1;
+                let _ = write!(
+                    view.model_content,
+                    "\n[Showing lines {}-{end_line} of {}.",
+                    request.offset, view.total_lines
+                );
             }
-            view.model_content.push_str(READ_TRUNCATION);
+            if let Some(next) = next_offset {
+                let _ = write!(view.model_content, " Continue with offset={next}.");
+            }
+            view.model_content.push(']');
         }
         None
     };
@@ -209,6 +232,8 @@ mod tests {
     use super::super::test_helpers::{read_snapshot_event, stored_read_event, workspace};
     use super::*;
 
+    const TEST_PREVIEW_BYTES: usize = 1024;
+
     fn read_file(
         args: &Value,
         workspace: &Path,
@@ -221,6 +246,7 @@ mod tests {
             &crate::conversation::address::ConversationAddress::MAIN,
             prior_events,
             read_event_id,
+            TEST_PREVIEW_BYTES,
             &|| false,
         )
     }
@@ -433,7 +459,7 @@ mod tests {
     #[test]
     fn truncated_read_snapshot_ends_at_last_fully_rendered_line() {
         let dir = workspace();
-        let visible_line = "a".repeat(READ_FILE_MAX_CHARS - 2);
+        let visible_line = "a".repeat(TEST_PREVIEW_BYTES - PAGE_NOTICE_BYTES - 2);
         let content = format!("{visible_line}\nhidden tail\n");
         std::fs::write(dir.path().join("README.md"), &content).unwrap();
 
@@ -445,11 +471,105 @@ mod tests {
         );
 
         assert!(result.truncated);
+        assert!(result.model_content.len() <= TEST_PREVIEW_BYTES);
+        assert!(result.model_content.ends_with("Continue with offset=2.]"));
         let structured = result.structured.unwrap();
         assert_eq!(structured["raw_text"], format!("{visible_line}\n"));
         assert_eq!(structured["line_count"], 1);
         assert_eq!(structured["total_lines"], 2);
         assert_eq!(structured["is_full_file_snapshot"], false);
+        assert_eq!(2, structured["next_offset"]);
+        assert_eq!(visible_line.len() + 1, structured["end_byte"]);
+
+        let next = read_file(
+            &serde_json::json!({"path": "README.md", "offset": structured["next_offset"], "limit": 100}),
+            dir.path(),
+            &[],
+            18,
+        );
+        assert!(!next.truncated);
+        assert_eq!("2\thidden tail", next.model_content);
+        let next = next.structured.unwrap();
+        assert_eq!(structured["end_byte"], next["start_byte"]);
+        assert_eq!(content.len(), next["end_byte"]);
+        assert!(next["next_offset"].is_null());
+    }
+
+    #[test]
+    fn oversized_utf8_line_is_sampled_without_granting_file_evidence() {
+        let dir = workspace();
+        let line = "文".repeat(30_000);
+        let content = format!("{line}\r\nnext\r\n");
+        std::fs::write(dir.path().join("sample.txt"), &content).unwrap();
+        let args = serde_json::json!({"path": "sample.txt"});
+        let result = read_file(&args, dir.path(), &[], 1);
+
+        assert!(result.truncated);
+        assert!(result.model_content.len() <= TEST_PREVIEW_BYTES);
+        assert!(result
+            .model_content
+            .starts_with(&format!("1\t{}\n", "文".repeat(85))));
+        assert!(result.model_content.ends_with("Continue with offset=2.]"));
+        let facts = result.structured.unwrap();
+        assert_eq!(1, facts["sampled_line"]);
+        assert_eq!(2, facts["next_offset"]);
+        assert_eq!(0, facts["line_count"]);
+        assert_eq!(facts["start_byte"], facts["end_byte"]);
+        assert_eq!("", facts["raw_text"]);
+        assert_eq!(false, facts["is_full_file_snapshot"]);
+
+        let args = serde_json::json!({"path": "sample.txt", "offset": 1, "limit": 1});
+        let (local, observation) =
+            read_file_for_executor(&args, dir.path(), content.len(), &|| false);
+        assert!(!local.truncated);
+        let observation = observation.unwrap();
+        assert_eq!(0..line.len() + 2, observation.range);
+        assert_eq!(format!("{line}\r\n"), local.structured.unwrap()["raw_text"]);
+    }
+
+    #[test]
+    fn whole_file_writes_require_same_version_pages_without_gaps() {
+        let dir = workspace();
+        let path = dir.path().join("sample.txt");
+        let first = "a".repeat(TEST_PREVIEW_BYTES - PAGE_NOTICE_BYTES - 2);
+        let original = format!("{first}\r\nold tail\r\n");
+        let changed = format!("{first}\r\nnew tail\r\n");
+        let page = |offset, id| {
+            let args = serde_json::json!({"path":"sample.txt", "offset":offset});
+            let result = read_file(&args, dir.path(), &[], id);
+            stored_read_event(id, &result.model_content, result.structured.unwrap())
+        };
+        let write = |events: &[StoredEvent]| {
+            super::super::write_file(
+                &serde_json::json!({"path":"sample.txt", "content":"replacement\n"}),
+                dir.path(),
+                &ConversationAddress::MAIN,
+                events,
+                &|| false,
+            )
+        };
+        std::fs::write(&path, original).unwrap();
+        let old_head = page(1, 1);
+        std::fs::write(&path, &changed).unwrap();
+        let tail = page(2, 2);
+        assert_eq!("error", write(&[old_head, tail.clone()]).status);
+        assert_eq!("error", write(std::slice::from_ref(&tail)).status);
+
+        let head = page(1, 3);
+        let rewind = StoredEvent {
+            id: 4,
+            payload: crate::event::EventPayload::ConversationRollback {
+                ts: "ts".into(),
+                conversation: "main".into(),
+                to_turn: 1,
+                to_event_id: 3,
+                scope: crate::event::RollbackScope::ConversationOnly,
+            },
+        };
+        assert_eq!("error", write(&[tail.clone(), head.clone(), rewind]).status);
+        assert_eq!(changed, std::fs::read_to_string(&path).unwrap());
+        assert_eq!("ok", write(&[tail, head]).status);
+        assert_eq!("replacement\n", std::fs::read_to_string(path).unwrap());
     }
 
     #[test]
@@ -524,6 +644,7 @@ mod tests {
             &crate::conversation::address::ConversationAddress::MAIN,
             std::slice::from_ref(&review_read),
             18,
+            TEST_PREVIEW_BYTES,
             &|| false,
         );
         let review_result = super::read_file(
@@ -532,6 +653,7 @@ mod tests {
             &crate::conversation::address::ConversationAddress::parse("review").unwrap(),
             &[review_read],
             19,
+            TEST_PREVIEW_BYTES,
             &|| false,
         );
 

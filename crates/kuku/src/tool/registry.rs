@@ -50,18 +50,18 @@ fn registry(agent_enabled: bool, skills_enabled: bool, session: bool) -> Vec<Too
         ),
         tool(
             "read_file",
-            "Read a file from the workspace with line numbers. Use offset and limit for pagination.",
+            "Read a bounded page of a workspace file with line numbers. Use the returned offset to continue, or search_text to locate specific lines.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "File path relative to the workspace."},
-                    "offset": {"type": "integer", "description": "Start line for pagination."},
-                    "limit": {"type": "integer", "description": "Number of lines to read."}
+                    "offset": {"type": "integer", "minimum": 1, "description": "Starting line, counted from 1. Defaults to 1."},
+                    "limit": {"type": "integer", "minimum": 1, "description": "Maximum number of lines to return."}
                 },
                 "required": ["path"]
             }),
             true,
-            80_000,
+            65_536,
             "read",
         ),
         tool(
