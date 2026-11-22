@@ -1,5 +1,5 @@
 import concurrent.futures
-from contextlib import closing
+from contextlib import closing, contextmanager
 from dataclasses import replace
 from decimal import Decimal
 from email.message import Message
@@ -83,6 +83,15 @@ class FrontierTests(unittest.TestCase):
         meter.arm()
         return meter
 
+    @contextmanager
+    def serve_meter(self, meter):
+        with serve(meter.handler()) as endpoint:
+            try:
+                yield endpoint
+            finally:
+                meter.stop_admissions()
+                self.assertTrue(meter.drained.wait(3), "meter did not settle its final request")
+
     def test_meter_records_the_selected_direct_model_version(self):
         pro = replace(DIRECT, model="deepseek-v4-pro", upstream_model="DeepSeek-V4-Pro-0813")
         for route, expected in ((DIRECT, DIRECT.upstream_model), (pro, pro.upstream_model),
@@ -103,7 +112,7 @@ class FrontierTests(unittest.TestCase):
             self.assertTrue(release.wait(2))
             return {"status": "completed", "response_ended": True, "http_status": 200}
 
-        with mock.patch.object(meter, "transfer", side_effect=missing_usage) as forward, serve(meter.handler()) as endpoint:
+        with mock.patch.object(meter, "transfer", side_effect=missing_usage) as forward, self.serve_meter(meter) as endpoint:
             with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
                 futures = [executor.submit(request, endpoint, DIRECT, DIRECT_PAYLOAD) for _ in range(3)]
                 self.assertTrue(started.wait(2))
@@ -129,7 +138,7 @@ class FrontierTests(unittest.TestCase):
         for request_limit, last_status in ((None, 200), (48, 403)):
             with self.subTest(request_limit=request_limit):
                 meter = self.meter(requests=request_limit)
-                with mock.patch.object(meter, "transfer", side_effect=transfer), serve(meter.handler()) as endpoint:
+                with mock.patch.object(meter, "transfer", side_effect=transfer), self.serve_meter(meter) as endpoint:
                     self.assertEqual([request(endpoint, DIRECT, DIRECT_PAYLOAD).status for _ in range(49)],
                                      [200] * 48 + [last_status])
                 self.assertEqual(json.loads(meter.evidence.read_text())["limits"]["max_requests"], request_limit)
@@ -144,7 +153,7 @@ class FrontierTests(unittest.TestCase):
                 meter = self.meter()
                 connection = mock.Mock()
                 getattr(connection, failure).side_effect = http.client.RemoteDisconnected("private network detail")
-                with mock.patch("frontier.http.client.HTTPSConnection", return_value=connection), serve(meter.handler()) as endpoint:
+                with mock.patch("frontier.http.client.HTTPSConnection", return_value=connection), self.serve_meter(meter) as endpoint:
                     response = request(endpoint, DIRECT, DIRECT_PAYLOAD)
                 self.assertEqual(response.status, 503)
                 self.assertEqual(response.content_type, "application/json")
@@ -171,7 +180,7 @@ class FrontierTests(unittest.TestCase):
             reply_to_client(client, observation.get("http_status", 502))
             return observation
 
-        with mock.patch.object(meter, "transfer", side_effect=transfer), serve(meter.handler()) as endpoint:
+        with mock.patch.object(meter, "transfer", side_effect=transfer), self.serve_meter(meter) as endpoint:
             self.assertEqual([request(endpoint, DIRECT, DIRECT_PAYLOAD).status for _ in range(4)], [502, 200, 200, 403])
         accounting = meter.accounting()
         self.assertEqual(accounting["upstream_requests"], 2)
@@ -194,7 +203,7 @@ class FrontierTests(unittest.TestCase):
             StreamReply({"type": "response.completed", "response": {**response, "usage": {"input_tokens": 1000}}}),
         ]
         with mock.patch("frontier.http.client.HTTPSConnection", return_value=connection), \
-                mock.patch("paid_model.upstream_json") as lookup, serve(meter.handler()) as endpoint:
+                mock.patch("paid_model.upstream_json") as lookup, self.serve_meter(meter) as endpoint:
             self.assertEqual([request(endpoint, DIRECT_RESPONSES, DIRECT_RESPONSES_PAYLOAD).status for _ in range(3)],
                              [200, 200, 200])
             lookup.assert_not_called()
@@ -228,7 +237,7 @@ class FrontierTests(unittest.TestCase):
         reply.seek(0)
         connection = mock.Mock()
         connection.getresponse.return_value = reply
-        with mock.patch("frontier.http.client.HTTPSConnection", return_value=connection), serve(meter.handler()) as endpoint:
+        with mock.patch("frontier.http.client.HTTPSConnection", return_value=connection), self.serve_meter(meter) as endpoint:
             self.assertEqual(200, request(endpoint, DIRECT, DIRECT_PAYLOAD).status)
         self.assertEqual(2, meter.attempts[0]["emitted_tool_calls"])
 
@@ -243,7 +252,7 @@ class FrontierTests(unittest.TestCase):
             StreamReply({"type": "response.completed", "response": {**complete, "output": [{"type": "message"}]}}),
             StreamReply({"type": "response.incomplete", "response": complete}),
         ]
-        with mock.patch("frontier.http.client.HTTPSConnection", return_value=connection), serve(meter.handler()) as endpoint:
+        with mock.patch("frontier.http.client.HTTPSConnection", return_value=connection), self.serve_meter(meter) as endpoint:
             self.assertEqual([200, 200, 200],
                              [request(endpoint, DIRECT_RESPONSES, DIRECT_RESPONSES_PAYLOAD).status for _ in range(3)])
         self.assertEqual([2, 0, None], [row.get("emitted_tool_calls") for row in meter.attempts])
@@ -277,7 +286,7 @@ class FrontierTests(unittest.TestCase):
             reply_to_client(client, 200)
             return {"status": "connection_failed"}
 
-        with mock.patch.object(meter, "transfer", side_effect=transfer), serve(meter.handler()) as endpoint:
+        with mock.patch.object(meter, "transfer", side_effect=transfer), self.serve_meter(meter) as endpoint:
             self.assertEqual(200, request(endpoint, DIRECT_RESPONSES, no_limit).status)
             self.assertEqual(400, request(endpoint, DIRECT_RESPONSES, {**no_limit, "max_output_tokens": 131073}).status)
         self.assertEqual([131072], observed)
@@ -285,7 +294,7 @@ class FrontierTests(unittest.TestCase):
 
     def test_auth_and_invalid_charge_affecting_fields_never_send(self):
         meter = self.meter()
-        with mock.patch.object(meter, "transfer") as forward, serve(meter.handler()) as endpoint:
+        with mock.patch.object(meter, "transfer") as forward, self.serve_meter(meter) as endpoint:
             self.assertEqual(request(endpoint, DIRECT, DIRECT_PAYLOAD, token="another-run-token").status, 401)
             invalid = (
                 {**DIRECT_PAYLOAD, "max_tokens": 131073},
@@ -321,7 +330,7 @@ class FrontierTests(unittest.TestCase):
                     "model_received": DIRECT.model,
                     "usage": dict(prompt_tokens=1, completion_tokens=1, prompt_cache_hit_tokens=0, prompt_cache_miss_tokens=1)}
 
-        with mock.patch.object(meter, "transfer", side_effect=late_usage), serve(meter.handler()) as endpoint:
+        with mock.patch.object(meter, "transfer", side_effect=late_usage), self.serve_meter(meter) as endpoint:
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(request, endpoint, DIRECT, DIRECT_PAYLOAD)
                 self.assertTrue(started.wait(2))
@@ -332,6 +341,45 @@ class FrontierTests(unittest.TestCase):
         self.assertEqual(meter.attempts[0]["status"], "cancelled")
         self.assertEqual(meter.attempts[0]["basis"], "request_upper_bound")
         self.assertEqual(meter.spent, DIRECT.request_ceiling(131072))
+
+    def test_case_progress_separates_stream_traffic_and_model_output(self):
+        meter = self.meter(DIRECT_RESPONSES)
+        row, reason = meter.admit(300, 131072)
+        self.assertIsNone(reason)
+        observation = {"timing": {}}
+        meter.active_observation = observation
+        meter.publish_progress(observation, "awaiting_headers", 0.1, force=True)
+        waiting = json.loads(meter.progress_evidence.read_text())
+        self.assertEqual(waiting["request"], row["request"])
+        self.assertIsNone(waiting["last_output_delta_seconds"])
+        self.assertIsNone(waiting["last_stream_line_seconds"])
+
+        data = {"type": "response.reasoning_text.delta", "delta": "private progress marker"}
+        meter.observe(observation, b"data: " + json.dumps(data).encode(), arrival=3.1)
+        observation.update(stream_lines=2, stream_bytes=117, last_stream_line_seconds=3.2)
+        meter.publish_progress(observation, "streaming", 3.2)
+        active = json.loads(meter.progress_evidence.read_text())
+        self.assertEqual(active["output_deltas"], 1)
+        self.assertEqual(active["last_output_kind"], "reasoning")
+        self.assertEqual(active["last_output_delta_seconds"], 3.1)
+
+        observation.update(stream_lines=3, stream_bytes=128, last_stream_line_seconds=4.0)
+        meter.publish_progress(observation, "streaming", 4.0)
+        self.assertEqual(active, json.loads(meter.progress_evidence.read_text()))
+        meter.publish_progress(observation, "streaming", 5.3)
+        heartbeat = json.loads(meter.progress_evidence.read_text())
+        self.assertEqual(heartbeat["stream_lines"], 3)
+        self.assertEqual(heartbeat["last_stream_line_seconds"], 4.0)
+        self.assertEqual(heartbeat["last_output_delta_seconds"], 3.1)
+        self.assertNotIn("private progress marker", meter.progress_evidence.read_text())
+
+        meter.observe_direct_responses_usage(observation, "response.completed", {"usage": {
+            "input_tokens": 100, "output_tokens": 25, "input_tokens_details": {"cached_tokens": 12},
+            "output_tokens_details": {"reasoning_tokens": 18},
+        }})
+        meter.account(row, observation)
+        self.assertEqual(relay_summary([row])["reasoning_output_tokens"], 18)
+        self.assertIsNone(relay_summary([row, {}])["reasoning_output_tokens"])
 
     def test_openrouter_receipt_and_stream_timings_stay_sanitized(self):
         meter = self.meter(ROUTER)
@@ -353,7 +401,7 @@ class FrontierTests(unittest.TestCase):
         connection = mock.Mock()
         connection.getresponse.return_value = StreamReply(*events)
         with mock.patch("frontier.http.client.HTTPSConnection", return_value=connection), \
-                mock.patch("paid_model.upstream_json", return_value=(200, receipt)) as lookup, serve(meter.handler()) as endpoint:
+                mock.patch("paid_model.upstream_json", return_value=(200, receipt)) as lookup, self.serve_meter(meter) as endpoint:
             local = request(endpoint, ROUTER, ROUTER_PAYLOAD)
         self.assertEqual(local.status, 200)
         self.assertIn(b"private reply text", local.body)
@@ -364,9 +412,14 @@ class FrontierTests(unittest.TestCase):
         self.assertEqual(json.loads(args[2])["reasoning"]["effort"], "max")
         lookup.assert_called_once_with(ROUTER.host, f"/api/v1/generation?id={generation}", KEY)
         evidence = meter.evidence.read_text()
+        progress = meter.progress_evidence.read_text()
         for private in (KEY, TOKEN, generation, "fixture input text", "private reasoning text", "private tool arguments",
                         "private reply text", str(self.directory)):
             self.assertNotIn(private, evidence)
+            self.assertNotIn(private, progress)
+        observed_progress = json.loads(progress)
+        self.assertEqual(observed_progress["stage"], "response_closed")
+        self.assertEqual(observed_progress["output_deltas"], 3)
         row = meter.attempts[0]
         self.assertTrue(row["receipt_matches_route"])
         self.assertTrue(row["provider_matches_pin"])
@@ -396,7 +449,7 @@ class FrontierTests(unittest.TestCase):
         reply.headers["Content-Type"] = "application/json"
         connection = mock.Mock()
         connection.getresponse.return_value = reply
-        with mock.patch("frontier.http.client.HTTPSConnection", return_value=connection), serve(meter.handler()) as endpoint:
+        with mock.patch("frontier.http.client.HTTPSConnection", return_value=connection), self.serve_meter(meter) as endpoint:
             response = request(endpoint, ROUTER, ROUTER_PAYLOAD)
         self.assertEqual(response.status, 404)
         self.assertNotIn(private_message.encode(), response.body)
@@ -433,7 +486,7 @@ class FrontierTests(unittest.TestCase):
                     reply.headers["Retry-After"] = delay
                 connection = mock.Mock()
                 connection.getresponse.return_value = reply
-                with mock.patch("frontier.http.client.HTTPSConnection", return_value=connection), serve(meter.handler()) as endpoint:
+                with mock.patch("frontier.http.client.HTTPSConnection", return_value=connection), self.serve_meter(meter) as endpoint:
                     address = urlsplit(endpoint)
                     with closing(http.client.HTTPConnection(address.hostname, address.port, timeout=3)) as downstream:
                         downstream.request("POST", ROUTER.path, body=json.dumps(ROUTER_PAYLOAD), headers={
@@ -474,7 +527,7 @@ class FrontierTests(unittest.TestCase):
             {"type": "response.completed", "response": validated},
         ) for _ in range(3)]
         with mock.patch("frontier.http.client.HTTPSConnection", return_value=connection), \
-                mock.patch("paid_model.upstream_json", return_value=(404, None)) as lookup, serve(meter.handler()) as endpoint:
+                mock.patch("paid_model.upstream_json", return_value=(404, None)) as lookup, self.serve_meter(meter) as endpoint:
             self.assertEqual([request(endpoint, ROUTER, ROUTER_PAYLOAD).status for _ in range(3)], [200, 200, 200])
         self.assertEqual(lookup.call_count, 3)
         self.assertEqual(meter.spent, Decimal("0.00072"))
@@ -502,7 +555,7 @@ class FrontierTests(unittest.TestCase):
             }},
         )
         with mock.patch("frontier.http.client.HTTPSConnection", return_value=connection), \
-                mock.patch("paid_model.upstream_json", return_value=(404, None)) as lookup, serve(meter.handler()) as endpoint:
+                mock.patch("paid_model.upstream_json", return_value=(404, None)) as lookup, self.serve_meter(meter) as endpoint:
             self.assertEqual(request(endpoint, ROUTER, ROUTER_PAYLOAD).status, 200)
         lookup.assert_called_once_with(ROUTER.host, f"/api/v1/generation?id={generation_id}", KEY)
         self.assertEqual(meter.attempts[0]["receipt_id_source"], "metadata")
@@ -529,7 +582,7 @@ class FrontierTests(unittest.TestCase):
                 connection.getresponse.return_value = StreamReply({"type": "response.completed" if ended else "response.created",
                                                                     "response": response})
                 with mock.patch("frontier.http.client.HTTPSConnection", return_value=connection), \
-                        mock.patch("paid_model.upstream_json", return_value=lookup_result), serve(meter.handler()) as endpoint:
+                        mock.patch("paid_model.upstream_json", return_value=lookup_result), self.serve_meter(meter) as endpoint:
                     self.assertEqual(request(endpoint, ROUTER, ROUTER_PAYLOAD).status, 200)
                 self.assertEqual(meter.spent, ROUTER.request_ceiling(131072))
                 self.assertEqual(meter.reconciled, not ended)

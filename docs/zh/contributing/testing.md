@@ -250,6 +250,8 @@ printf '%s\n' log-summary-date-ranges cancel-async-tasks regex-log large-scale-t
 
 对照直连 DeepSeek 时，使用 `--provider deepseek` 和含 `KUKU_TEST_DEEPSEEK_API_KEY` 的私有文件。默认模型为 `deepseek-flash`。要在同一题目和判分器下测试 Pro，使用 `--model deepseek-v4-pro`。计量程序会记录所选模型，并在启动前校验价格和额度。
 
+题目运行中可读取 `meter-progress.json` 查看最近一次上游请求。连接阶段、最后收到的流行以及最后一次模型输出增量分别记录。运行中的快照只保存字节数、事件数和计时信息。`meter.json` 保存已结算的请求和费用。
+
 SDK 直连 DeepSeek 默认走 Chat Completions。可使用 `--wire openai-responses` 选择官方 Responses API，沿用同一个模型、账本和原始判分器。对照 harness 时固定协议。计量程序记录官方用量并按公开的 token 单价估算费用。[DeepSeek Responses API](https://api-docs.deepseek.com/guides/responses_api/)
 
 下载官方快照生成可分享的报告。每题按时间顺序传入历次运行，保留所有失败。结果分别给出上游评分、SDK 完成状态、模型成本和判分耗时。Pi 官方数据使用同一模型版本，每题四次，经过审计，使用 Runta 和 Baseten。官方每通过一次的耗时，用所有计分运行的 Agent 与判分总耗时除以审计后的通过次数。失败和超时的耗时也计入总耗时。对比缓存时同时查看实际服务商、输入 token 中已缓存的比例、用量覆盖情况和首个请求。报告只导出允许公开的字段，原始 Session 与私有凭据保存在本机。[官方结果](https://frontierharness.org/live/) · [OpenRouter 路由](https://openrouter.ai/docs/guides/routing/provider-selection)

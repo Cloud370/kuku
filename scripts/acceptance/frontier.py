@@ -28,6 +28,7 @@ from run import Budget, benchmark_attempt, money, write_json
 ROUTER_MODEL_VERSION = "DeepSeek-V4.1-Flash-1017"
 ROUTER_MODEL = "deepseek/deepseek-v4.1-flash-1017"
 WIRE_BYTES = 4 * 1024 * 1024
+PROGRESS_INTERVAL_SECONDS = 2
 SDK_SHUTDOWN_SECONDS = 45
 TOKEN_VARIABLE = "KUKU_INTENT_FIXTURE_TOKEN"
 DEEPSEEK_COUNTS = ("prompt_tokens", "completion_tokens", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens")
@@ -280,6 +281,7 @@ class CaseMeter(RequestBoundary):
         self.cap = cap
         self.timeout = timeout
         self.evidence = evidence
+        self.progress_evidence = evidence.with_name("meter-progress.json")
         self.default_output_limit = default_output_limit
         self.serial = threading.Lock()
         self.closed = threading.Event()
@@ -433,6 +435,8 @@ class CaseMeter(RequestBoundary):
                     timing.setdefault(f"request_to_first_{kind}_delta_seconds", arrival)
                     timing.setdefault("request_to_first_output_delta_seconds", arrival)
                     timing["request_to_last_output_delta_seconds"] = arrival
+                    observation["last_output_kind"] = kind
+                    observation["output_deltas"] = observation.get("output_deltas", 0) + 1
             if self.route.responses:
                 response = event.get("response")
                 if isinstance(response, dict):
@@ -469,13 +473,42 @@ class CaseMeter(RequestBoundary):
                 usage["input_tokens"] - details["cached_tokens"],
             )))
             observation["stream_done"] = True
+            output_details = usage.get("output_tokens_details")
+            reasoning = output_details.get("reasoning_tokens") if isinstance(output_details, dict) else None
+            if type(reasoning) is int and 0 <= reasoning <= usage["output_tokens"]:
+                observation["reasoning_output_tokens"] = reasoning
+
+    def publish_progress(self, observation, stage, elapsed, *, force=False):
+        previous = observation.get("progress_elapsed_seconds")
+        if not force and previous is not None and elapsed - previous < PROGRESS_INTERVAL_SECONDS:
+            return
+        with self.lock:
+            if self.active is None or self.active_observation is not observation:
+                return
+            observation["progress_elapsed_seconds"] = elapsed
+            timing = observation["timing"]
+            sample = {
+                "schema_version": 1, "case": self.phase, "request": self.active["request"], "stage": stage,
+                "updated_unix_seconds": round(time.time(), 3), "elapsed_seconds": round(elapsed, 6),
+                "http_status": observation.get("http_status"), "stream_lines": observation.get("stream_lines", 0),
+                "stream_bytes": observation.get("stream_bytes", 0), "output_deltas": observation.get("output_deltas", 0),
+                "last_stream_line_seconds": observation.get("last_stream_line_seconds"),
+                "last_output_delta_seconds": timing.get("request_to_last_output_delta_seconds"),
+                "last_output_kind": observation.get("last_output_kind"),
+            }
+            with contextlib.suppress(OSError):
+                temporary = self.progress_evidence.with_suffix(".tmp")
+                temporary.write_text(json.dumps(sample, separators=(",", ":")) + "\n", encoding="utf-8")
+                temporary.replace(self.progress_evidence)
 
     def transfer(self, client, body):
         route = self.route
-        observation = {"status": "connection_failed", "response_ended": False, "timing": {}}
+        observation = {"status": "connection_failed", "response_ended": False, "timing": {},
+                       "stream_lines": 0, "stream_bytes": 0, "output_deltas": 0}
         started = time.monotonic()
         with self.lock:
             self.active_observation = observation
+        self.publish_progress(observation, "connecting", 0, force=True)
         with contextlib.closing(http.client.HTTPSConnection(route.host, timeout=75)) as connection:
             try:
                 connection.connect()
@@ -488,6 +521,7 @@ class CaseMeter(RequestBoundary):
                 if route.router:
                     headers["X-OpenRouter-Metadata"] = "enabled"
                 observation["status"] = "transport_error"
+                self.publish_progress(observation, "awaiting_headers", time.monotonic() - started, force=True)
                 connection.request("POST", ("/api/v1" if route.router else "") + route.path, body, headers=headers)
                 with connection.getresponse() as reply:
                     observation["timing"]["request_to_response_headers_seconds"] = round(time.monotonic() - started, 6)
@@ -502,6 +536,7 @@ class CaseMeter(RequestBoundary):
                 with self.lock:
                     self.active_socket = None
                 observation["seconds"] = round(time.monotonic() - started, 4)
+                self.publish_progress(observation, "response_closed", observation["seconds"], force=True)
         if route.router and not self.closed.is_set():
             self.lookup_receipt(observation)
         return observation
@@ -529,6 +564,7 @@ class CaseMeter(RequestBoundary):
 
     def relay(self, client, reply, observation, started):
         observation["http_status"] = reply.status
+        self.publish_progress(observation, "headers_received", time.monotonic() - started, force=True)
         if reply.status != 200:
             observation["status"] = "http_error"
             error = observation["upstream_error"] = upstream_error(reply)
@@ -569,6 +605,10 @@ class CaseMeter(RequestBoundary):
                 observation["status"] = "completed" if downstream_open else "client_disconnected"
                 return
             self.observe(observation, line, arrival=arrival)
+            observation["stream_lines"] = observation.get("stream_lines", 0) + 1
+            observation["stream_bytes"] = observation.get("stream_bytes", 0) + len(line)
+            observation["last_stream_line_seconds"] = arrival
+            self.publish_progress(observation, "streaming", arrival, force=observation["stream_lines"] == 1)
             if downstream_open:
                 try:
                     client.wfile.write(line.replace(key, b"[REDACTED]"))
@@ -583,6 +623,8 @@ class CaseMeter(RequestBoundary):
         row.update({field: observation[field] for field in relay_fields if field in observation})
         if observation.get("response_status") in RESPONSE_STATUS:
             row["response_status"] = observation["response_status"]
+        if "reasoning_output_tokens" in observation:
+            row["reasoning_output_tokens"] = observation["reasoning_output_tokens"]
         ceiling = Decimal(row["reserved_usd"])
         basis = "request_upper_bound"
         charge = ceiling

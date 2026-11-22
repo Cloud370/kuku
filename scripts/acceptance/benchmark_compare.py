@@ -37,6 +37,7 @@ def relay_summary(rows):
     first_output = [value for row in rows if (value := number(object_value(row.get('timing')).get(
         'request_to_first_output_delta_seconds'))) is not None]
     emitted = [value for row in rows if (value := count(row.get('emitted_tool_calls'))) is not None]
+    reasoning = [value for row in rows if (value := count(row.get('reasoning_output_tokens'))) is not None]
     return {
         'admitted_attempts': len(rows),
         'timed_attempts': len(elapsed),
@@ -45,6 +46,8 @@ def relay_summary(rows):
         'first_output_samples': len(first_output),
         'first_output_p50_seconds': middle(first_output),
         'emitted_tool_calls': sum(emitted) if emitted else None,
+        'reasoning_output_tokens': sum(reasoning) if reasoning and len(reasoning) == len(rows) else None,
+        'reasoning_usage_samples': len(reasoning),
         'emitted_tool_batches': {'observed_responses': len(emitted), **tool_batch_summary(Counter(emitted))}
         if emitted else None,
     }
