@@ -6,9 +6,9 @@ use kuku_client::local::BuildPolicy;
 use kuku_client::local::{RestartOutcome, SESSION_PROTOCOL_VERSION};
 use kuku_client::{
     Acknowledgement, AgentConfig, Client, Command, Connection, ConnectionOptions, Error,
-    HistoryKind, HistoryPage, JobSnapshot, JobStatus, ModelCatalog, ModelSelection, NamedValue,
-    NamedValueKind, NamedValueSource, Observation, OutputChunk, RewindGroupPage, SessionStatus,
-    Snapshot, Target,
+    HistoryDestinations, HistoryKind, HistoryPage, JobSnapshot, JobStatus, ModelCatalog,
+    ModelSelection, NamedValue, NamedValueKind, NamedValueSource, Observation, OutputChunk,
+    RewindGroupPage, SessionStatus, Snapshot, Target,
 };
 use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinSet};
@@ -81,6 +81,9 @@ pub(crate) enum Job {
     History(Selection, HistoryRequest),
     RewindHistory(Selection, Ticket, u64),
     RewindSource(Selection, Ticket, u64),
+    HistoryJump(Selection, Ticket, Option<u64>),
+    HistoryJumpDraft(Selection, u64, u64),
+    FileRewindPreview(Selection, u64, u64),
     RewindGroupHistory(Selection, RewindGroupRequest),
     Find(Ticket, Search),
     AgentModels(u64),
@@ -133,6 +136,18 @@ pub(crate) enum Update {
     History(Selection, HistoryRequest, Result<HistoryPage, Error>),
     RewindHistory(Selection, Ticket, u64, Result<HistoryPage, Error>),
     RewindSource(Selection, Ticket, u64, Result<String, Error>),
+    HistoryJump(
+        Selection,
+        Ticket,
+        Option<u64>,
+        Result<HistoryDestinations, Error>,
+    ),
+    HistoryJumpDraft(Selection, u64, Result<String, Error>),
+    FileRewindPreview(
+        Selection,
+        u64,
+        Result<kuku_client::FileRewindPreview, Error>,
+    ),
     RewindGroupHistory(
         Selection,
         RewindGroupRequest,
@@ -278,7 +293,7 @@ impl Jobs {
                 }));
             }
             Job::ClosePicker => Self::abort(&mut self.finder),
-            history @ (Job::RewindHistory(..) | Job::RewindSource(..)) => {
+            history @ (Job::RewindHistory(..) | Job::RewindSource(..) | Job::HistoryJump(..)) => {
                 Self::abort(&mut self.finder);
                 if let Some(connection) = self.connection.clone() {
                     self.finder = Some(self.spawn(run_connected(history, connection)));
@@ -451,13 +466,29 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
         }
         Job::RewindHistory(selection, ticket, before) => {
             let result = client
-                .history(&selection.target, Some(before), HISTORY_PAGE)
+                .user_history(&selection.target, Some(before), crate::app::REWIND_PAGE)
                 .await;
             Update::RewindHistory(selection, ticket, before, result)
         }
         Job::RewindSource(selection, ticket, event_id) => {
             let result = history_text(client, &selection.target, event_id, HistoryKind::User).await;
             Update::RewindSource(selection, ticket, event_id, result)
+        }
+        Job::HistoryJump(selection, ticket, before) => {
+            let result = client
+                .history_destinations(&selection.target, before, 24)
+                .await;
+            Update::HistoryJump(selection, ticket, before, result)
+        }
+        Job::HistoryJumpDraft(selection, ticket, event_id) => {
+            let result = original_user_message(client, &selection.target, event_id).await;
+            Update::HistoryJumpDraft(selection, ticket, result)
+        }
+        Job::FileRewindPreview(selection, ticket, event_id) => {
+            let result = client
+                .file_rewind_preview(&selection.target, event_id)
+                .await;
+            Update::FileRewindPreview(selection, ticket, result)
         }
         Job::RewindGroupHistory(selection, request) => {
             let result = client
@@ -561,6 +592,31 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
         | Job::Restart(_)
         | Job::Copy(_) => unreachable!("job requires service options or terminal"),
     }
+}
+
+async fn original_user_message(client: &Client, target: &Target, id: u64) -> Result<String, Error> {
+    use kuku::event::EventPayload;
+
+    let page = client
+        .events_before(
+            &target.workspace,
+            &target.session_id,
+            Some(id.saturating_add(1)),
+            1,
+        )
+        .await?;
+    page.events
+        .into_iter()
+        .find_map(|event| match event.payload {
+            EventPayload::MessageUser {
+                conversation,
+                text,
+                job_delivery: false,
+                ..
+            } if event.id == id && conversation == target.agent => Some(text),
+            _ => None,
+        })
+        .ok_or_else(|| Error::Protocol("the selected original message is missing".into()))
 }
 
 async fn history_text(

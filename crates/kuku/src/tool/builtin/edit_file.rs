@@ -14,6 +14,10 @@ use super::common::{
 
 mod change;
 
+pub(crate) fn line_change_counts(before: &str, after: &str) -> Option<(usize, usize)> {
+    change::summarize(before, after).map(|change| (change.added_lines, change.removed_lines))
+}
+
 struct EditRequest {
     path: String,
     old_text: String,

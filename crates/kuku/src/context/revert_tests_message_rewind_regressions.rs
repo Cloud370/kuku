@@ -1,8 +1,8 @@
 use super::{
     apply_file_revert, compute_file_revert_plan, compute_message_rewind_plan,
     filter_rolled_back_events, message_rewind_file_read, message_rewind_file_read_with_flags,
-    message_rewind_file_write, plan_journal_rewind, te, tool_result_read_with_flags, tr, ts, ui,
-    FileRestore, RevertPlan, RewindVisibility,
+    message_rewind_file_write, plan_file_rewind, te, tool_result_read_with_flags, tr, ts, ui,
+    FileRestore, RevertPlan,
 };
 use crate::conversation::address::ConversationAddress;
 use crate::event::{EventPayload, EventStore, StoredEvent};
@@ -135,10 +135,10 @@ fn assert_real_tool_rewind(workspace_alias: &Path, session_dir: &Path) {
         .append_batch(|_| Ok(events.into_iter().map(|event| event.payload).collect()))
         .unwrap();
     drop(store);
-    let store = EventStore::open(&journal).unwrap();
-    let (_, controls) = store.rewind_facts("main", 2).unwrap();
-    let visibility = RewindVisibility::new(&controls);
-    let plan = plan_journal_rewind(&store, &visibility, "main", 2, workspace_alias).unwrap();
+    let preview = plan_file_rewind(&journal, workspace_alias, "main", 2).unwrap();
+    assert_eq!(preview.preview.changes[0].lines, Some((1, 1)));
+    assert!(preview.preview.skipped.is_empty());
+    let plan = preview.plan;
     assert_eq!(
         plan.restores.len(),
         1,

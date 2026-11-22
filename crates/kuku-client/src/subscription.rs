@@ -67,6 +67,8 @@ pub enum Observation {
         tool_call_id: Option<String>,
         /// Operation code for a runtime-state fact.
         operation: Option<String>,
+        /// Command identity for a committed conversation rewind.
+        rewind_command_id: Option<String>,
         /// Delivery outcome for the selected Agent, when present.
         delivery: Option<Box<InputDelivery>>,
         /// Durable status and output returned for a settled turn.

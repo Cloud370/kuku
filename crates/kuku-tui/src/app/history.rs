@@ -3,10 +3,12 @@ use std::collections::BTreeMap;
 use kuku_client::{Error, HistoryPage, RewindGroupPage};
 
 use crate::jobs::{Job, Selection};
-use crate::menu::{ChoiceKind, RewindLoad, Ticket};
+use crate::menu::{Choice, ChoiceKind, Picker, RewindLoad, Ticket};
 use crate::transcript::{HistoryRequest, RewindGroupRequest};
 
-use super::rewind::{bound_rewind_choices, rewind_choice, rewind_history_header, RewindWindow};
+use super::rewind::{
+    bound_rewind_choices, rewind_choice, rewind_event_id, rewind_history_header, RewindWindow,
+};
 use super::App;
 
 impl App {
@@ -16,6 +18,41 @@ impl App {
         ticket: Ticket,
         before: u64,
         result: Result<HistoryPage, Error>,
+    ) {
+        let choices = result.map(|page| {
+            let agent = &selection.target.agent;
+            let choices = page
+                .entries
+                .into_iter()
+                .filter(|entry| {
+                    entry.id < before
+                        && &entry.agent == agent
+                        && entry.kind == kuku_client::HistoryKind::User
+                })
+                .filter_map(|entry| {
+                    let turn = entry
+                        .details
+                        .get("turn_number")
+                        .and_then(serde_json::Value::as_u64)
+                        .or(entry.turn)?;
+                    Some(rewind_choice(
+                        entry.id,
+                        turn,
+                        entry.text.unwrap_or_default(),
+                    ))
+                })
+                .collect();
+            (choices, page.next_before)
+        });
+        self.apply_rewind_page(selection, ticket, Some(before), choices);
+    }
+
+    pub(super) fn apply_rewind_page(
+        &mut self,
+        selection: Selection,
+        ticket: Ticket,
+        before: Option<u64>,
+        result: Result<(Vec<Choice>, Option<u64>), Error>,
     ) {
         if selection != self.selection() {
             return;
@@ -29,33 +66,59 @@ impl App {
         let Some(history) = &mut picker.rewind_history else {
             return;
         };
-        if history.selection != selection || history.load != RewindLoad::Page(before) {
+        let RewindLoad::Page {
+            before: expected,
+            pending_up,
+        } = history.load
+        else {
+            return;
+        };
+        if history.selection != selection || expected != before {
             return;
         }
         history.load = RewindLoad::Idle;
         picker.loading = false;
         match result {
-            Ok(page) if page.next_before.is_none_or(|next| next < before) => {
-                history.next_before = page.next_before;
-                let next_before = history.next_before;
+            Ok((choices, next_before))
+                if before.is_none_or(|cursor| next_before.is_none_or(|next| next < cursor)) =>
+            {
+                history.next_before = next_before;
                 picker.problem = None;
-                let limited = merge_rewind_page(picker, page, before, &selection.target.agent);
+                let limited = merge_rewind_choices(picker, choices, pending_up);
                 let history = picker
                     .rewind_history
                     .as_mut()
                     .expect("rewind history exists");
                 history.window_limited |= limited;
-                picker.header = rewind_history_header(next_before, false, history.window_limited);
+                picker.header =
+                    rewind_history_header(&picker.kind, next_before, false, history.window_limited);
             }
             Ok(_) => {
                 picker.problem = Some("History did not advance · ↑ at the top retries".into());
-                picker.header =
-                    rewind_history_header(history.next_before, false, history.window_limited);
+                picker.header = rewind_history_header(
+                    &picker.kind,
+                    history.next_before,
+                    false,
+                    history.window_limited,
+                );
             }
             Err(error) => {
-                picker.problem = Some(format!("History · {error} · ↑ at the top retries"));
-                picker.header =
-                    rewind_history_header(history.next_before, false, history.window_limited);
+                picker.header = rewind_history_header(
+                    &picker.kind,
+                    history.next_before,
+                    false,
+                    history.window_limited,
+                );
+                if before.is_none() {
+                    picker.set_local(vec![Choice::new(
+                        "Retry",
+                        "",
+                        ChoiceKind::HistoryJumpLatest,
+                    )]);
+                    picker.problem = Some(format!("History · {error} · Enter retries"));
+                } else {
+                    picker.problem = Some(format!("History · {error} · ↑ at the top retries"));
+                }
             }
         }
     }
@@ -100,45 +163,32 @@ impl App {
     }
 }
 
-fn merge_rewind_page(
-    picker: &mut crate::menu::Picker,
-    page: HistoryPage,
-    before: u64,
-    agent: &str,
-) -> bool {
-    let selected = match picker.selected_choice() {
-        Some(ChoiceKind::RewindMessage { event_id, .. }) => Some(event_id),
-        _ => None,
-    };
-    let mut choices: BTreeMap<_, _> = picker
-        .visible_choices()
+fn merge_rewind_choices(picker: &mut Picker, earlier: Vec<Choice>, pending_up: usize) -> bool {
+    let visible = picker.visible_choices();
+    let selected = visible
+        .get(picker.selected)
+        .and_then(|choice| rewind_event_id(choice));
+    let mut choices: BTreeMap<_, _> = visible
         .into_iter()
-        .filter_map(|choice| match choice.kind {
-            ChoiceKind::RewindMessage { event_id, .. } => Some((event_id, choice.clone())),
-            _ => None,
-        })
+        .filter_map(|choice| rewind_event_id(choice).map(|id| (id, choice.clone())))
         .collect();
-    for entry in page.entries.into_iter().filter(|entry| {
-        entry.id < before && entry.agent == agent && entry.kind == kuku_client::HistoryKind::User
-    }) {
-        let Some(turn) = entry
-            .details
-            .get("turn_number")
-            .and_then(serde_json::Value::as_u64)
-            .or(entry.turn)
-        else {
-            continue;
-        };
-        choices
-            .entry(entry.id)
-            .or_insert_with(|| rewind_choice(entry.id, turn, entry.text.unwrap_or_default()));
+    for choice in earlier {
+        if let Some(id) = rewind_event_id(&choice) {
+            choices.entry(id).or_insert(choice);
+        }
     }
     let mut choices: Vec<_> = choices.into_values().collect();
     let limited = bound_rewind_choices(&mut choices, selected, RewindWindow::Earlier);
-    let selected = selected
-        .and_then(|selected| choices.iter().position(|choice| matches!(choice.kind, ChoiceKind::RewindMessage { event_id, .. } if event_id == selected)))
+    let anchor = selected
+        .and_then(|selected| {
+            choices
+                .iter()
+                .position(|choice| rewind_event_id(choice) == Some(selected))
+        })
         .unwrap_or_else(|| choices.len().saturating_sub(1));
-    picker.set_local(choices);
-    picker.selected = selected;
+    picker.set_older_choices(choices, anchor);
+    if selected.is_some() && pending_up > 0 {
+        picker.move_by(-(pending_up as isize));
+    }
     limited
 }

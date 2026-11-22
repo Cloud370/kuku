@@ -22,12 +22,13 @@ pub mod paths;
 pub mod runtime;
 
 pub use runtime::{
-    Activation, AgentConfig, AgentSnapshot, AgentStatus, AgentView, Input, InputSource,
-    InputStatus, InputTiming, JobResult, JobSnapshot, JobStatus, MessageRewind, ModelUsageSample,
-    NamedValue, NamedValueKind, NamedValueSource, Observation, OutputChunk, OutputRead,
-    OutputSegment, OutputStream, PendingInput, QuestionRequest, Receipt, ReplyPreview,
-    ReplyPreviews, RuntimeLimits, Session, SessionHistory, SessionObserver, SessionOptions,
-    TurnIndex, TurnSummary, UsageTotals, Withdrawal, MAX_INPUT_VALUES, MAX_VALUE_NAME_BYTES,
+    Activation, AgentConfig, AgentSnapshot, AgentStatus, AgentView, FileRewindChange,
+    FileRewindPreview, HistoryPoint, Input, InputSource, InputStatus, InputTiming, JobResult,
+    JobSnapshot, JobStatus, MessageRewind, ModelUsageSample, NamedValue, NamedValueKind,
+    NamedValueSource, Observation, OutputChunk, OutputRead, OutputSegment, OutputStream,
+    PendingInput, QuestionRequest, Receipt, ReplyPreview, ReplyPreviews, RuntimeLimits, Session,
+    SessionHistory, SessionObserver, SessionOptions, TurnIndex, TurnSummary, UsageTotals,
+    UserMessagePreview, Withdrawal, MAX_INPUT_VALUES, MAX_VALUE_NAME_BYTES,
 };
 
 pub use id::{new_session_id, validate_session_id};

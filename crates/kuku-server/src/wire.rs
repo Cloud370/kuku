@@ -67,6 +67,10 @@ pub(crate) enum Command {
         #[serde(default)]
         restore_files: bool,
     },
+    HistoryJump {
+        target_event_id: u64,
+        file_restore: Option<String>,
+    },
     Compact,
     RestoreContext,
     Advance,
@@ -168,37 +172,7 @@ pub fn serialize_event(event: &UiEvent) -> Option<String> {
 }
 
 pub(crate) fn event_agent(payload: &EventPayload) -> Option<&str> {
-    match payload {
-        EventPayload::ModelResponse { conversation, .. }
-        | EventPayload::ModelError { conversation, .. }
-        | EventPayload::ToolCall { conversation, .. }
-        | EventPayload::ToolResult { conversation, .. } => conversation.as_deref(),
-        EventPayload::ConversationOpened { conversation, .. }
-        | EventPayload::ConversationBound { conversation, .. }
-        | EventPayload::PromptSnapshot { conversation, .. }
-        | EventPayload::MessageUser { conversation, .. }
-        | EventPayload::MessageAssistant { conversation, .. }
-        | EventPayload::TurnStarted { conversation, .. }
-        | EventPayload::TurnCompleted { conversation, .. }
-        | EventPayload::TurnCancelled { conversation, .. }
-        | EventPayload::TurnInterrupted { conversation, .. }
-        | EventPayload::ConversationRollback { conversation, .. }
-        | EventPayload::ConversationRollbackUndone { conversation, .. }
-        | EventPayload::ModelRecovery { conversation, .. }
-        | EventPayload::ContextSkills { conversation, .. } => Some(conversation),
-        EventPayload::Unknown(value)
-            if value["kind"] == "runtime.operation"
-                && value["record"]["operation"] == "job_finished" =>
-        {
-            value["record"]["agent"].as_str()
-        }
-        EventPayload::Unknown(value) => value["agent"]
-            .as_str()
-            .or_else(|| value["conversation"].as_str())
-            .or_else(|| value["record"]["address"].as_str())
-            .or_else(|| value["record"]["input"]["target"].as_str()),
-        _ => None,
-    }
+    payload.agent_address()
 }
 
 pub(crate) fn agent_summary(agent: &AgentSnapshot) -> Value {
@@ -218,7 +192,14 @@ pub(crate) fn agent_summary(agent: &AgentSnapshot) -> Value {
 }
 
 pub(crate) fn history_entry(event: &StoredEvent, turns: &TurnLookup) -> Option<Value> {
-    let agent = event_agent(&event.payload).unwrap_or("main");
+    history_entry_for_agent(event, turns, event_agent(&event.payload).unwrap_or("main"))
+}
+
+pub(crate) fn history_entry_for_agent(
+    event: &StoredEvent,
+    turns: &TurnLookup,
+    agent: &str,
+) -> Option<Value> {
     let mut summary = None;
     let mut entry = match &event.payload {
         EventPayload::MessageUser {
@@ -381,21 +362,6 @@ pub(crate) fn history_entry(event: &StoredEvent, turns: &TurnLookup) -> Option<V
     Some(entry)
 }
 
-pub(crate) fn history_entry_for_agent(
-    event: &StoredEvent,
-    turns: &TurnLookup,
-    agent: &str,
-) -> Option<Value> {
-    let mut entry = history_entry(event, turns)?;
-    entry["agent"] = json!(agent);
-    if let Some(turn) = entry["turn"].as_u64() {
-        entry["turn_number"] = turns
-            .number(agent, turn)
-            .map_or(Value::Null, |number| json!(number));
-    }
-    Some(entry)
-}
-
 pub(crate) fn retry_metadata(payload: &EventPayload) -> Option<Value> {
     match payload {
         EventPayload::Unknown(record) if record["kind"] == "runtime.model_retry" => Some(json!({
@@ -493,6 +459,9 @@ pub(crate) fn committed_frame(
             value["operation"] = record["operation"].clone();
             if matches {
                 match record["operation"].as_str() {
+                    Some("message_rewind" | "history_jump") => {
+                        value["rewind_command_id"] = record["command"]["command_id"].clone();
+                    }
                     Some("inputs_accepted") => {
                         value["delivery"] =
                             json!({"status":"accepted","input_ids":record["input_ids"]});

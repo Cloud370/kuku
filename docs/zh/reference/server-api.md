@@ -25,6 +25,8 @@
 | `GET` | `/sessions/{id}/agents` | 查看工作区内该 Session 的 Agent 摘要 |
 | `GET` | `/sessions/{id}/snapshot` | 与已提交游标对应的 Agent 和队列状态 |
 | `GET` | `/sessions/{id}/history` | 读取游标之前的对话条目 |
+| `GET` | `/sessions/{id}/history/destinations` | 列出可以编辑消息或继续对话的轮次 |
+| `GET` | `/sessions/{id}/history/destinations/{event_id}/files` | 预览已结束的轮次之后可核验的工作区改动 |
 | `GET` | `/sessions/{id}/history/rewinds/{rewind_event_id}` | 只读查看一次已提交的消息回退，不改变活动历史 |
 | `GET` | `/sessions/{id}/observe` | 观察游标之后的已提交条目和临时进度 |
 | `GET` | `/sessions/{id}/events` | 分页读取原始已提交事实 |
@@ -70,6 +72,7 @@
 | `reply_permission` | `request_id`、`allow` | 决定精确的待决授权。 |
 | `withdraw` | `input_command_id` | 撤回排队输入或返回其当前状态。 |
 | `replace_queued` | `input_command_id`、`text` | 在接纳前替换文本，保留队列位置和投递时机。 |
+| `history_jump` | `target_event_id`，可选 `file_restore` | 从该结算游标对应的已结束 Turn 续接所选 Agent 的对话。 |
 | `compact` | | 压缩所选空闲或已中断的 Agent 的较早上下文。通过 `compaction` 历史条目观察进度和结果。重试失败的压缩时使用新的命令 ID。 |
 | `restore_context` | | 撤销所选 Agent 最近一次仍生效的压缩，保留可见消息。 |
 | `advance` | | 显式继续 Agent 的工作。 |
@@ -90,8 +93,10 @@
 ## 快照、历史与观察
 
 1. 请求 `/snapshot?workspace=...&agent=...`。JSON 响应包含 `session_id`、`workspace`、已提交 `cursor`、所选 `agent` 快照、`agents` 摘要、`pending` 输入和模型 `selection`。模型设置解析失败时返回 `selection_error`。Agent 状态包含相应的执行标识以及待决问题或授权。每个待接纳条目都含有 `receipt` 和 `input`。Agent 不存在时返回 `404` 和 `agent_not_found`。`/agents?workspace=...` 可直接取得所有 Agent 摘要及游标。加上 `progress=true` 可请求快照游标处已观察到的执行阶段。`progress.phase` 可以是 `waiting_for_model`、`thinking`、`streaming`、`tool_arguments`、`running_tools`、`retrying_model`、`retry_stopped` 或 `retry_decision_unknown`。重试阶段会带有 `retry` 对象，包含持久化的尝试编号、失败类型或恢复原因、请求标识和可用策略元数据。停止重试时 `will_retry` 为 `false`。
-2. 请求 `/history?workspace=...&agent=...&before=CURSOR_PLUS_ONE&limit=...`，取得截至该快照、按升序排列的最新一页。用返回的 `next_before` 读取上一页。`before` 为排他游标。`entries` 只包含活动对话历史；单独的 `rewind_groups` 默认是空数组，包含 `rewind_event_id`、原始时间线位置 `target_event_id`、`agent`、可选的显示轮次 `turn_number` 和 `entry_count`。组标题按目标消息的原始位置与活动条目共同分页，并计入页面条目数与字节上限。重试决定和模型恢复会以 `type:"retry"` 条目及结构化 `retry` 对象呈现；历史记录不代表重试仍在进行。
+2. 请求 `/history?workspace=...&agent=...&before=CURSOR_PLUS_ONE&limit=...`，取得截至该快照、按升序排列的最新一页。用返回的 `next_before` 读取上一页。`before` 为排他游标。`entries` 只包含活动对话历史；单独的 `rewind_groups` 默认是空数组，包含 `rewind_event_id`、原始时间线位置 `target_event_id`、`agent`、以及可选的显示轮次 `turn_number`。组标题按目标消息的原始位置与活动条目共同分页，并计入页面条目数与字节上限。重试决定和模型恢复会以 `type:"retry"` 条目及结构化 `retry` 对象呈现；历史记录不代表重试仍在进行。
 3. 展开某组时按需请求 `/history/rewinds/{rewind_event_id}?workspace=...&agent=...&before=...&limit=...`。必须提供与该组匹配的 `agent`。`before` 是可选的排他游标，`limit` 与 `/history` 一样有界。响应包含 `entries` 和 `next_before`，并复用普通历史条目的显示投影。重叠范围中的每个条目只归属于同一 Agent 的第一个适用回退。只读分页不会把隐藏条目放回活动历史或模型上下文；后续回退也不会使早期回退组无法查看。
+
+活动用户消息选择器可用 `/history?user_only=true`。该模式返回每条最多 512 个字符的消息预览，`rewind_groups` 为空数组。扫描达到字节预算时，页面可能没有填满，但仍有 `next_before` 可继续。读取完整原文时使用普通历史接口。
 4. 连接 `/observe?workspace=...&agent=...&after=CURSOR`，接收包含快照之后提交记录的 NDJSON。省略 `agent` 可以观察整个 Session。从已提交的条目更新续读游标。断开或落后时，从最后的已提交游标重连。对所选 Agent 设置 `include_agent_activity=true`，同一订阅即可收到其他 Agent 的活动。其增量文本及结算预览有长度上限，工具输出仅在切换到对应 Agent 后提供。重连后，Agent 摘要提供最近的输出或错误预览。
 
 所选 Agent 的 `agent.usage` 包含累计 token 数，以及报告输入或输出量的请求数。`cache_measured_input_tokens` 和 `cache_measured_read_tokens` 分别汇总同一批提供有效成对计数的请求中的输入与缓存读取量。有测量时，`latest_request` 提供同一次请求的 `input_tokens`、`output_tokens`、`context_window_tokens` 和 `elapsed_us`。旧记录可能缺少可选测量字段。[终端用量字段](cli.md#终端界面)
@@ -102,7 +107,11 @@
 
 `committed` 行包含 `id` 和 `kind`，适用时还包含 Agent 地址、对话条目或状态变更标记。`live` 行包含 `agent`、`execution_id`、`turn`、`cursor` 和临时 `event`。核对它们与当前视图的标识，收到正式结果后替换临时预览。`lagged` 行包含跳过的临时观察数 `skipped`。观察流还可以发送 `heartbeat` 或 `error` 行。观察落后后仍可读取持久状态。
 
-已提交帧可通过 `delivery` 将队列变化关联到命令标识。`accepted` 带有 `input_ids`，`withdrawn` 带有 `input_id`，`replaced` 带有 `input_id` 和 `replacement_id`。
+`GET /sessions/{id}/history/destinations` 接受 `workspace`、`agent` 和可选的 `before`、`limit`。响应包含从新到旧排序的 `points` 和排他的 `next_before` 游标。每个位置包含 `event_id`、持久 `turn`、显示轮次 `number`、可用的输入 `preview` 以及 `current_branch`。`can_continue` 为真时，可用 `event_id` 作为 `history_jump` 的目标。可用时，`prompt_event_id` 指向原始用户消息。可通过原始事件接口读取完整文本，包括已保存轮次中的原文。执行 `history_jump` 时，Agent 必须已结算且没有待处理输入。
+
+`GET /sessions/{id}/history/destinations/{event_id}/files` 接受 `workspace` 和 `agent`，返回 `changes`、`skipped` 和方案 `fingerprint`。每项改动包含 `path`、`remove` 和 `lines`（增加、删除的行数，或 null）。将确认过的指纹传给 `history_jump.file_restore` 即可应用预览，省略该字段则保留文件。
+
+已提交帧可通过 `delivery` 将队列变化关联到命令标识。`accepted` 带有 `input_ids`，`withdrawn` 带有 `input_id`，`replaced` 带有 `input_id` 和 `replacement_id`。`message_rewind` 和 `history_jump` 帧带有 `rewind_command_id`，发起回退的客户端可在提交时恢复未发送的草稿。
 
 带 `progress=true` 的快照可以包含所选 Agent 的 `reply_preview`，其中有 `execution_id`、`turn`、可选的 `turn_number`、`phase`、`text` 和 `truncated`。阶段为 `thinking`、`streaming` 或 `tool_arguments`。文本是活动请求的可见回复 UTF-8 前缀，最多 64 KiB。`truncated` 表示回复已经超过保留前缀的上限。所选 Agent 的可选字段 `reasoning_preview` 保存服务方公开的思考文字或摘要的有界前缀。Responses 可通过流或最终输出中带类型的思考和摘要文本提供这些内容。不透明思考状态仅用于报告活动，并留在 provider 重放记录中。实时 `reasoning_preview` 事件追加文本，已提交的助手条目也可包含此字段。
 

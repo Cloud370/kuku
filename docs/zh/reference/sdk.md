@@ -21,6 +21,7 @@
 | `advance_command(command_id, address)` | 幂等的显式推进 |
 | `reply_permission_receipt(...)` / `reply_question_receipt(...)` | 校验既有回复回执，不恢复执行 |
 | `events(after, limit)` / `observe(after)` | 有界分页与可续接观察 |
+| `history_points(address, before, limit)` / `jump_history(command_id, address, target_event_id)` | 列出轮次，从已结算的位置继续并保留当前文件 |
 | `read_output(output_id, &OutputRead)` | 有界范围、字面搜索、增量输出 |
 | `reply_permission(command_id, address, request_id, allow)` | 精确待决动作回复 |
 | `reply_question(command_id, address, request_id, text)` | 以关联输入投递精确问题回复 |
@@ -42,6 +43,8 @@
 `Session::read_agents` 从日志重建离线恢复状态，将没有终结事实的 `Running` 映射为 `Interrupted`，即使另一个运行时仍然活跃。查询当前活状态应使用已打开 Session 的 `agent` 或 `agents`。
 
 `SessionHistory::read_with_turns(events_path)` 一次读取历史可见性、Turn 编号和对应的已提交游标。用 `page_before` 分页读取事件，用 `includes` 判断事件是否属于当前历史，用 `rewind_page` 分页查看一次消息回退的内容。`Session::agents_with_cursor` 和 `Session::read_agents_with_cursor` 一次返回 Agent 列表和游标。`session_files` 从文件系统发现日志，`SessionFile::listing` 读取会话选择器需要的标题、状态和等待中的 Agent。
+
+用 `Session::jump_history` 切换到已结束的一轮并保留当前文件。目标在当前历史中时，`Session::preview_file_rewind` 返回工作区相对路径、可用的增删行数、跳过的文件和指纹。用户确认预览后，将指纹传给 `Session::jump_history_with_file_restore`。如果方案已经变化，SDK 会在应用前拒绝。恢复只使用直接调用内置 `write_file` 和 `edit_file` 产生的可核验记录。脚本和 Shell 的改动不在恢复范围内。[Session 行为](../how-it-works/sessions.md#消息回退)
 
 ## 宿主适配器
 

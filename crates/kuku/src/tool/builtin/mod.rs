@@ -1,5 +1,6 @@
 pub(crate) mod common;
 mod edit_file;
+pub(crate) use edit_file::line_change_counts;
 mod fetch_url;
 mod fetch_web;
 mod find_files;

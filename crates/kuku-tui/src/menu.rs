@@ -42,6 +42,8 @@ pub(crate) enum ChoiceKind {
         turn: u64,
         text: String,
     },
+    HistoryJumpLatest,
+    HistoryJumpReview(kuku_client::HistoryDestination),
     MessageEntry(SelectedMessage),
     MessageAction {
         message: SelectedMessage,
@@ -209,6 +211,7 @@ pub(crate) enum PickerKind {
     ValueActions,
     Server,
     Rewind,
+    HistoryJump,
     Messages,
     MessageActions,
 }
@@ -235,6 +238,7 @@ impl PickerKind {
             Self::ValueActions => "Saved value",
             Self::Server => "Service status",
             Self::Rewind => "Rewind to message",
+            Self::HistoryJump => "Conversation history",
             Self::Messages => "Operate on message",
             Self::MessageActions => "Message actions",
         }
@@ -352,6 +356,14 @@ impl Picker {
     pub(crate) fn set_local(&mut self, choices: Vec<Choice>) {
         self.local = choices;
         self.clamp_selection();
+    }
+
+    pub(crate) fn set_older_choices(&mut self, choices: Vec<Choice>, anchor: usize) {
+        self.top = self
+            .top
+            .saturating_add(anchor.saturating_sub(self.selected));
+        self.set_local(choices);
+        self.selected = anchor;
     }
 
     pub(crate) fn move_by(&mut self, amount: isize) {
@@ -538,18 +550,36 @@ pub(crate) struct RewindHistory {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RewindLoad {
     Idle,
-    Page(u64),
-    Source { event_id: u64, turn: u64 },
+    Page {
+        before: Option<u64>,
+        pending_up: usize,
+    },
+    Source {
+        event_id: u64,
+        turn: u64,
+    },
 }
 
 #[derive(Debug)]
 pub(crate) enum PromptKind {
     Agent,
-    Question { request_id: String, target: Target },
-    QueuedInput { input_command_id: String },
-    RewindMessage { event_id: u64, text: String },
+    Question {
+        request_id: String,
+        target: Target,
+    },
+    QueuedInput {
+        input_command_id: String,
+    },
+    RewindMessage {
+        event_id: u64,
+        text: String,
+        restore_files: bool,
+    },
+    HistoryJump(Box<crate::app::history_jump::HistoryJumpPrompt>),
     SavePaste,
-    SaveValue { output_id: Option<String> },
+    SaveValue {
+        output_id: Option<String>,
+    },
 }
 
 impl PromptKind {

@@ -40,6 +40,116 @@ fn load_snapshot(app: &mut crate::app::App, status: &str, with_input: bool) {
 }
 
 #[test]
+fn history_confirmation_previews_only_verified_file_effects() {
+    let mut app = app();
+    let prompt = "Inspect the import and keep the original evidence for the next report.";
+    app.review_history_jump(
+        serde_json::from_value(json!({
+            "event_id": 80, "can_continue": true, "turn": 41, "number": 42,
+            "preview": prompt, "current_branch": true, "prompt_event_id": 50,
+        }))
+        .unwrap(),
+    );
+    let (selection, ticket) = app
+        .effects
+        .iter()
+        .find_map(|job| match job {
+            Job::HistoryJumpDraft(selection, ticket, 50) => Some((selection.clone(), *ticket)),
+            _ => None,
+        })
+        .unwrap();
+    app.update(Update::HistoryJumpDraft(
+        selection.clone(),
+        ticket,
+        Ok(prompt.into()),
+    ));
+
+    for (width, height) in [(100, 32), (60, 15)] {
+        let rendered = screen(&mut app, width, height);
+        assert!(rendered.contains("Switch to Turn 42"));
+        assert!(rendered.contains("[ ] Restore files changed after this turn"));
+        assert!(rendered.contains("write_file and edit_file"));
+        assert!(rendered.contains("Script and shell changes"));
+        assert!(rendered.contains("Enter Switch"));
+        assert_eq!(1, rendered.matches("Inspect the import").count());
+    }
+    key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+    let ticket = app
+        .effects
+        .iter()
+        .find_map(|job| match job {
+            Job::FileRewindPreview(_, ticket, 80) => Some(*ticket),
+            _ => None,
+        })
+        .unwrap();
+    app.update(Update::FileRewindPreview(
+        selection,
+        ticket,
+        Ok(kuku_client::FileRewindPreview {
+            fingerprint: "approved".into(),
+            changes: vec![kuku_client::FileRewindChange {
+                path: "report.txt".into(),
+                remove: false,
+                lines: Some((1, 2)),
+            }],
+            skipped: vec!["external.txt".into()],
+        }),
+    ));
+    let rendered = screen(&mut app, 100, 32);
+    assert!(rendered.contains("[x] Restore files changed after this turn"));
+    assert!(rendered.contains("report.txt"));
+    assert!(rendered.contains("Restore   +1 −2"));
+    assert!(rendered.contains("external.txt"));
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(app.effects.iter().any(|job| matches!(job, Job::Save(command) if matches!(
+        &command.action, Action::HistoryJump { target_event_id: 80, file_restore: Some(value) } if value == "approved"
+    ))));
+}
+
+#[test]
+fn history_confirmation_with_no_restorable_files_still_switches() {
+    let mut app = app();
+    app.review_history_jump(
+        serde_json::from_value(json!({
+            "event_id": 80, "can_continue": true, "turn": 41, "number": 42,
+            "preview": "Earlier message", "current_branch": true,
+        }))
+        .unwrap(),
+    );
+    key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+    let (selection, ticket) = app
+        .effects
+        .iter()
+        .find_map(|job| match job {
+            Job::FileRewindPreview(selection, ticket, 80) => Some((selection.clone(), *ticket)),
+            _ => None,
+        })
+        .unwrap();
+    app.update(Update::FileRewindPreview(
+        selection,
+        ticket,
+        Ok(kuku_client::FileRewindPreview {
+            fingerprint: "empty-plan".into(),
+            changes: Vec::new(),
+            skipped: vec!["external.txt".into()],
+        }),
+    ));
+    let rendered = screen(&mut app, 100, 32);
+    assert!(rendered.contains("[ ] Restore files changed after this turn"));
+    assert!(rendered.contains("No files to restore"));
+    assert!(rendered.contains("external.txt"));
+    assert!(rendered.contains("Enter Switch"));
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(app.modal.is_none());
+    assert!(app
+        .effects
+        .iter()
+        .any(|job| matches!(job, Job::Save(command) if matches!(
+            &command.action, Action::HistoryJump { target_event_id: 80, file_restore: None }
+        ))));
+}
+
+#[test]
 fn focused_rewind_hint_uses_the_narrow_footer() {
     let mut app = super::app();
     app.pane_mut().transcript.replace_recent(HistoryPage {
@@ -49,7 +159,6 @@ fn focused_rewind_hint_uses_the_narrow_footer() {
             target_event_id: 0,
             agent: "main".into(),
             turn_number: Some(1),
-            entry_count: 2,
         }],
         next_before: None,
     });

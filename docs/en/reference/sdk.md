@@ -21,6 +21,7 @@
 | `advance_command(command_id, address)` | Idempotent explicit advancement |
 | `reply_permission_receipt(...)` / `reply_question_receipt(...)` | Verify an earlier reply acknowledgement without resuming work |
 | `events(after, limit)` / `observe(after)` | Bounded pages and reconnectable observation |
+| `history_points(address, before, limit)` / `jump_history(command_id, address, target_event_id)` | List Turns and continue an Agent from a settled point, keeping the current files |
 | `read_output(output_id, &OutputRead)` | Bounded range, literal search, or incremental output |
 | `reply_permission(command_id, address, request_id, allow)` | Exact pending-action reply |
 | `reply_question(command_id, address, request_id, text)` | Exact question reply delivered as correlated input |
@@ -42,6 +43,8 @@ When exposing retryable creation over a transport, `open_for_creation` checks th
 `Session::read_agents` reconstructs offline recovery state from the journal and maps an unterminated `Running` state to `Interrupted`, even while another runtime is active. Use an open Session's `agent` or `agents` methods for its current live state.
 
 Use `SessionHistory::read_with_turns(events_path)` to get history visibility, Turn numbering, and their committed cursor together. Use `page_before` for bounded event pages, `includes` to test active history, and `rewind_page` to page through a message rewind. Use `Session::agents_with_cursor` or `Session::read_agents_with_cursor` to read the roster and cursor together. `session_files` discovers journals from the filesystem, and `SessionFile::listing` reads the title, status, and waiting Agents for a picker.
+
+Use `Session::jump_history` to switch a finished Turn and keep current files. For a point in the current history, `Session::preview_file_rewind` returns workspace-relative paths, the proposed line additions and removals when available, skipped paths, and a fingerprint. After the user approves the preview, pass its fingerprint to `Session::jump_history_with_file_restore`. The SDK rejects a stale plan before applying it. File restoration uses only verified records from direct calls to the built-in `write_file` and `edit_file`. Script and shell changes are outside its scope. [Session behavior](../how-it-works/sessions.md#message-rewind)
 
 ## Host adapters
 

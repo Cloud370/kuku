@@ -43,9 +43,11 @@ use crate::{Error, Result};
 pub use crate::tool::builtin::run_command::output::{
     OutputChunk, OutputRead, OutputSegment, OutputStream,
 };
-pub use history::{MessageRewind, SessionHistory};
+pub use history::{
+    FileRewindChange, FileRewindPreview, MessageRewind, SessionHistory, UserMessagePreview,
+};
 pub use observe::{Observation, ReplyPreview, ReplyPreviews, SessionObserver};
-pub use turns::TurnIndex;
+pub use turns::{HistoryPoint, TurnIndex};
 pub use types::{
     Activation, AgentConfig, AgentSnapshot, AgentStatus, AgentView, CacheWarning, CostTotals,
     Input, InputSource, InputStatus, InputTiming, JobResult, JobSnapshot, JobStatus,
@@ -56,7 +58,8 @@ pub use values::{
     NamedValue, NamedValueKind, NamedValueSource, MAX_INPUT_VALUES, MAX_VALUE_NAME_BYTES,
 };
 
-use record::{fingerprint, validate_address, validate_key, Command, Record, State};
+use receipts::{validate_address, validate_key};
+use record::{fingerprint, Command, Record, State};
 
 type WorkerOutcome = std::result::Result<(), String>;
 type CleanupOutcome = Option<WorkerOutcome>;

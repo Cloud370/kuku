@@ -405,7 +405,7 @@ impl SubmissionStatus {
             Self::Discarding => "Discarding send",
             Self::Queued => "Input queued",
             Self::Accepted => "Input accepted",
-            Self::Withdrawn => "Input withdrawn",
+            Self::Withdrawn => "Removed from queue",
             Self::Confirmed => "Receipt confirmed",
         }
     }
@@ -443,15 +443,26 @@ impl App {
     pub(super) fn observe(&mut self, event: Observation) {
         let active_address = self.active.clone();
         let active_agent = active_address.agent.clone();
-        if matches!(
-            &event,
-            Observation::Committed {
-                agent: Some(agent),
-                operation: Some(operation),
-                ..
-            } if agent == &active_agent && operation == "message_rewind"
-        ) {
-            self.refresh_rewind_history();
+        if let Observation::Committed {
+            id,
+            agent: Some(agent),
+            operation: Some(operation),
+            rewind_command_id,
+            ..
+        } = &event
+        {
+            if agent == &active_agent
+                && matches!(operation.as_str(), "message_rewind" | "history_jump")
+                && *id > self.pane().last_event
+            {
+                if let Some(command) = rewind_command_id {
+                    if let Some(mut draft) = self.rewind_drafts.remove(command) {
+                        self.restore_rewind_draft(&mut draft);
+                        self.rewind_drafts.insert(command.clone(), draft);
+                    }
+                }
+                self.refresh_rewind_history(*id);
+            }
         }
         self.related_agents.observe(&event, &active_agent);
         let pane = self.pane_mut();

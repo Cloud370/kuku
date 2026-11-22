@@ -9,8 +9,8 @@ const MAX_PREVIEW_BYTES: usize = 2048;
 
 #[derive(Serialize)]
 pub(super) struct Change {
-    added_lines: usize,
-    removed_lines: usize,
+    pub(super) added_lines: usize,
+    pub(super) removed_lines: usize,
     preview: String,
     preview_truncated: bool,
 }

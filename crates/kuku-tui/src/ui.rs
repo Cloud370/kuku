@@ -25,7 +25,7 @@ mod contextual;
 mod delivery;
 mod header;
 mod model_default_confirmation;
-
+mod rewind_picker;
 pub(crate) use activity::{ActivityClock, ActivityFrame};
 
 const MAX_BANNER_ROWS: u16 = 5;
@@ -620,14 +620,17 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Rect
     Some(match app.modal.as_mut()? {
         Modal::Help => composer_panel::render_help(frame, area),
         Modal::Picker(picker) => {
-            let height = match picker.kind {
+            let (width, height) = match picker.kind {
                 PickerKind::Models | PickerKind::Agents => {
                     let rows = picker.choice_count().clamp(4, 8) as u16;
-                    9 + rows * 2
+                    (PICKER_WIDTH, 9 + rows * 2)
                 }
-                _ => PICKER_HEIGHT,
+                PickerKind::Rewind | PickerKind::HistoryJump => {
+                    (rewind_picker::WIDTH, rewind_picker::height(picker))
+                }
+                _ => (PICKER_WIDTH, PICKER_HEIGHT),
             };
-            let area = popup(area, PICKER_WIDTH, height);
+            let area = popup(area, width, height);
             let inner = render_popup(frame, area, picker.kind.title());
             let (width, page, header) = render_picker(frame, inner, picker);
             app.modal_editor_width = width;
@@ -636,6 +639,12 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Rect
             inner
         }
         Modal::Prompt(prompt) => {
+            if matches!(prompt.kind, PromptKind::HistoryJump(_)) {
+                let (inner, page) = rewind_picker::render_history_jump(frame, area, prompt);
+                app.modal_info_rows = page;
+                return Some(inner);
+            }
+            let rewind = matches!(prompt.kind, PromptKind::RewindMessage { .. });
             let height = match prompt.kind {
                 PromptKind::Agent => SHORT_PROMPT_HEIGHT,
                 PromptKind::Question { .. }
@@ -643,10 +652,20 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Rect
                 | PromptKind::RewindMessage { .. }
                 | PromptKind::SavePaste => PICKER_HEIGHT,
                 PromptKind::SaveValue { .. } => SHORT_PROMPT_HEIGHT,
+                PromptKind::HistoryJump(_) => unreachable!("history switch rendered above"),
             };
-            let area = popup(area, PICKER_WIDTH, height);
+            let width = if rewind {
+                rewind_picker::WIDTH
+            } else {
+                PICKER_WIDTH
+            };
+            let area = popup(area, width, height);
             let inner = render_popup(frame, area, &prompt.title);
-            let (width, header) = render_prompt(frame, inner, prompt);
+            let (width, header) = if rewind {
+                rewind_picker::render_review(frame, inner, prompt)
+            } else {
+                render_prompt(frame, inner, prompt)
+            };
             app.modal_editor_width = width;
             app.modal_info_rows = header;
             inner
@@ -669,6 +688,9 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Rect
 }
 
 fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (usize, usize, usize) {
+    if matches!(picker.kind, PickerKind::Rewind | PickerKind::HistoryJump) {
+        return rewind_picker::render(frame, inner, picker);
+    }
     if matches!(picker.kind, PickerKind::ModelDefault)
         && !picker.loading
         && picker.problem.is_none()
@@ -784,7 +806,6 @@ fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (us
         PickerKind::MessageActions => {
             Some("Operate message · ←→/Tab Select · Enter Run · Esc Back")
         }
-        PickerKind::Rewind => Some("Rewind · ↑↓ Select · Enter Rewind · Esc Close"),
         PickerKind::AgentSetup(_) => Some("↑↓ Select · Enter Choose · Esc Back"),
         _ => None,
     } {
@@ -828,38 +849,22 @@ fn picker_line(text: &str, width: usize, selected: bool, style: Style) -> Line<'
 
 fn render_prompt(frame: &mut Frame<'_>, inner: Rect, prompt: &mut Prompt) -> (usize, usize) {
     let width = usize::from(inner.width);
-    let rewind_confirmation = matches!(prompt.kind, PromptKind::RewindMessage { .. });
     let instructions = wrap(
         render_literal(&prompt.instructions, Style::default().fg(MUTED)),
         width,
     );
-    let header_rows = if rewind_confirmation {
-        instructions
-            .len()
-            .min(usize::from(inner.height.saturating_sub(1)))
-    } else {
-        instructions
-            .len()
-            .min(usize::from(inner.height.saturating_sub(3)) / 2)
-    };
+    let header_rows = instructions
+        .len()
+        .min(usize::from(inner.height.saturating_sub(3)) / 2);
     prompt.instructions_top = prompt
         .instructions_top
         .min(instructions.len().saturating_sub(header_rows));
-    let [info, editor, help] = if rewind_confirmation {
-        Layout::vertical([
-            Constraint::Min(0),
-            Constraint::Length(0),
-            Constraint::Length(1),
-        ])
-        .areas(inner)
-    } else {
-        Layout::vertical([
-            Constraint::Length(header_rows as u16),
-            Constraint::Min(0),
-            Constraint::Length(1),
-        ])
-        .areas(inner)
-    };
+    let [info, editor, help] = Layout::vertical([
+        Constraint::Length(header_rows as u16),
+        Constraint::Min(0),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
     frame.render_widget(
         Paragraph::new(
             instructions
@@ -870,27 +875,17 @@ fn render_prompt(frame: &mut Frame<'_>, inner: Rect, prompt: &mut Prompt) -> (us
         ),
         info,
     );
-    if !rewind_confirmation {
-        render_editor(frame, editor, &mut prompt.editor, true, "Type here…");
-    }
+    render_editor(frame, editor, &mut prompt.editor, true, "Type here…");
     frame.render_widget(
         Paragraph::new(Line::styled(
-            if rewind_confirmation {
-                format!(
-                    "{} Commit · Space Toggle file restore · {} Cancel",
-                    Shortcut::ENTER.label,
-                    Shortcut::ESCAPE.label,
-                )
-            } else {
-                format!(
-                    "{} Confirm · {} Clear · {}/{} Details · {} Close",
-                    Shortcut::ENTER.label,
-                    Shortcut::CLEAR.label,
-                    Shortcut::PAGE_UP.label,
-                    Shortcut::PAGE_DOWN.label,
-                    Shortcut::ESCAPE.label,
-                )
-            },
+            format!(
+                "{} Confirm · {} Clear · {}/{} Details · {} Close",
+                Shortcut::ENTER.label,
+                Shortcut::CLEAR.label,
+                Shortcut::PAGE_UP.label,
+                Shortcut::PAGE_DOWN.label,
+                Shortcut::ESCAPE.label,
+            ),
             Style::default().fg(MUTED),
         )),
         help,

@@ -17,6 +17,7 @@ use super::types::{EventPayload, StoredEvent};
 
 mod archive;
 mod codec;
+mod file_history;
 mod index;
 mod packing;
 mod reader;
@@ -26,8 +27,8 @@ mod reverse;
 use archive::Layout;
 use codec::serialize_record;
 use index::JournalIndex;
-pub use index::MessageRewind;
 pub(crate) use index::{ContextMarks, HistoryMarks, JournalSummary, RouteSelectors, TurnOwners};
+pub use index::{MessageRewind, UserMessagePreview};
 use reader::EventReader;
 pub(crate) use recovery::Replay;
 use recovery::{Checkpoint, ReplayVisitor};
@@ -588,6 +589,14 @@ impl EventStore {
         before: Option<u64>,
         mut visit: impl FnMut(StoredEvent) -> Result<bool>,
     ) -> Result<()> {
+        Self::visit_committed_before_with_size(path, before, |event, _| visit(event))
+    }
+
+    pub(crate) fn visit_committed_before_with_size(
+        path: &Path,
+        before: Option<u64>,
+        visit: impl FnMut(StoredEvent, usize) -> Result<bool>,
+    ) -> Result<()> {
         let Some(path) = existing_path(path)? else {
             return Ok(());
         };
@@ -599,17 +608,19 @@ impl EventStore {
             let end = writer.offset_before(before);
             let file = &writer.journal.as_ref().unwrap().file;
             let mut reader = writer.layout.reader(file, writer.committed_len, end);
-            return reverse::visit_before(&mut reader, &path, end, before, |event, _| visit(event));
+            return reverse::visit_before(&mut reader, &path, end, before, visit);
         }
         let journal = LockedJournal::reader(&path)?;
         drop(stores);
         let layout = Layout::read(&journal.file)?;
         let end = layout.logical_len(journal.file.metadata()?.len());
         let mut reader = layout.reader(&journal.file, end, 0);
-        let end = before.map_or(Ok(end), |id| {
-            reverse::find_page_end(&mut reader, &path, end, id)
-        })?;
-        reverse::visit_before(&mut reader, &path, end, before, |event, _| visit(event))
+        let end = before
+            .filter(|id| end != layout.prefix_bytes || *id <= layout.prefix_head)
+            .map_or(Ok(end), |id| {
+                reverse::find_page_end(&mut reader, &path, end, id)
+            })?;
+        reverse::visit_before(&mut reader, &path, end, before, visit)
     }
 
     /// Read the last committed event ID without opening or repairing the writer.
@@ -768,34 +779,6 @@ impl EventStore {
         ))
     }
 
-    pub(crate) fn visit_file_results(
-        &self,
-        after: u64,
-        before: u64,
-        mut visit: impl FnMut(StoredEvent) -> Result<()>,
-    ) -> Result<()> {
-        let mut writer = self.inner.writer.lock().unwrap();
-        writer.ensure_healthy(&self.inner.path)?;
-        let writer = &mut *writer;
-        let facts = &writer.facts.files;
-        let start = facts.partition_point(|fact| fact.location.id <= after);
-        let end = facts.partition_point(|fact| fact.location.id < before);
-        let file = &writer.journal.as_ref().unwrap().file;
-        let mut file = writer.layout.reader(file, writer.committed_len, 0);
-        let mut buffer = Vec::new();
-        for fact in &facts[start..end.max(start)] {
-            file.seek(SeekFrom::Start(fact.location.offset))?;
-            buffer.resize(fact.bytes, 0);
-            file.read_exact(&mut buffer)?;
-            visit(serde_json::from_slice(&buffer)?)?;
-        }
-        Ok(())
-    }
-
-    pub(crate) fn last_turn_owners(&self) -> HashMap<u64, String> {
-        self.inner.writer.lock().unwrap().facts.last_turn_owners()
-    }
-
     pub(crate) fn turn_terminal(&self, address: &str, turn: u64) -> Result<(bool, Option<u64>)> {
         let writer = self.inner.writer.lock().unwrap();
         writer.ensure_healthy(&self.inner.path)?;
@@ -896,16 +879,14 @@ fn read_index(path: &Path, file: &File) -> Result<(JournalIndex, u64)> {
     let (mut facts, start, after) = recovery::load(&layout, file, path)
         .map(|checkpoint| (checkpoint.facts, layout.prefix_bytes, layout.prefix_head))
         .unwrap_or_default();
-    let cursor = visit_events(
-        layout.reader(file, end, start),
-        path,
-        start,
-        after,
-        |event| {
-            facts.observe(&event);
-            Ok(())
-        },
-    )?;
+    let mut cursor = after;
+    let mut reader = EventReader::new(BufReader::new(layout.reader(file, end, start)), path, start);
+    while let Some(record) = reader.next()? {
+        if record.event.id > after {
+            cursor = record.event.id;
+            facts.observe_location(&record.event, record.offset, record.bytes);
+        }
+    }
     Ok((facts, cursor))
 }
 

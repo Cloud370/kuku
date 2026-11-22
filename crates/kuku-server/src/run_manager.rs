@@ -13,7 +13,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::http::StatusCode;
-use kuku::session::{Input, Session, SessionHistory, SessionOptions, TurnIndex, TurnSummary};
+use kuku::session::{
+    HistoryPoint, Input, Session, SessionHistory, SessionOptions, TurnIndex, TurnSummary,
+};
 use tokio::sync::{watch, Mutex as AsyncMutex, OwnedSemaphorePermit, Semaphore};
 
 use crate::error_mapping::{ApiError, Result};
@@ -48,6 +50,18 @@ pub(crate) enum TurnLookup {
 }
 
 impl TurnLookup {
+    pub(crate) fn history_points(
+        &self,
+        agent: &str,
+        before: u64,
+        limit: usize,
+    ) -> Vec<HistoryPoint> {
+        match self {
+            Self::Live(session) => session.history_points(agent, before, limit),
+            Self::Closed(index) => index.history_points(agent, before, limit),
+        }
+    }
+
     pub(crate) fn number(&self, agent: &str, turn: u64) -> Option<u64> {
         match self {
             Self::Live(session) => session.turn_number(agent, turn),
@@ -231,19 +245,23 @@ impl RunManager {
             index: Arc::new(index),
             history: Arc::new(history),
         });
+        Ok(self.cache_history(saved))
+    }
+
+    fn cache_history(&self, saved: Arc<CachedHistory>) -> Arc<CachedHistory> {
         let mut cache = self.inner.closed_history.lock().unwrap();
         if let Some(newer) = cache
             .iter()
-            .find(|item| item.path == path && item.cursor >= cursor)
+            .find(|item| item.path == saved.path && item.cursor >= saved.cursor)
         {
-            return Ok(newer.clone());
+            return newer.clone();
         }
-        if path.is_file() {
-            cache.retain(|item| item.path != path);
+        if saved.path.is_file() {
+            cache.retain(|item| item.path != saved.path);
             cache.push_front(saved.clone());
             cache.truncate(CLOSED_HISTORY_LIMIT);
         }
-        Ok(saved)
+        saved
     }
 
     pub(crate) async fn command(
@@ -392,8 +410,26 @@ impl RunManager {
                 if entry.release_idle_permits() || entry.session.has_active_jobs() {
                     continue;
                 }
+                let history = entry.session.history_snapshot().ok();
                 if let Err(error) = entry.session.close().await {
                     tracing::warn!(%error, session = %slot.session_id, "Session closed with a cleanup error");
+                } else if let Some((history, index)) = history {
+                    // SessionClosed advances the cursor without changing the history projection.
+                    let closed = kuku::event::EventStore::read_page_before(&path, None, 1);
+                    if let Ok(events) = closed {
+                        if let [event] = events.as_slice() {
+                            if event.id == history.cursor().saturating_add(1)
+                                && matches!(&event.payload, kuku::event::EventPayload::Unknown(value) if value["record"]["operation"] == "session_closed")
+                            {
+                                manager.cache_history(Arc::new(CachedHistory {
+                                    path: path.clone(),
+                                    cursor: event.id,
+                                    history: Arc::new(history),
+                                    index: Arc::new(index),
+                                }));
+                            }
+                        }
+                    }
                 }
                 *open = None;
                 *slot.session.lock().unwrap() = None;

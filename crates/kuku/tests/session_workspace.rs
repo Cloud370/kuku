@@ -1,4 +1,6 @@
 mod common;
+#[path = "session_workspace/history_restore.rs"]
+mod history_restore;
 #[path = "session_workspace/media.rs"]
 mod media;
 

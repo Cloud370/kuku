@@ -663,14 +663,15 @@ fn control_c_clears_dialogs_and_exits_only_from_an_empty_composer() {
 #[test]
 fn double_escape_opens_rewind_picker_and_confirmation_is_cancelable_and_opt_in() {
     let mut app = connected_app();
+    app.pane_mut().exists = true;
     press(&mut app, KeyCode::Esc);
     assert!(app.modal.is_none());
     assert!(app.rewind_armed);
 
     press(&mut app, KeyCode::Esc);
     assert!(matches!(&app.modal, Some(Modal::Picker(picker))
-        if matches!(picker.kind, PickerKind::Rewind)
-            && picker.header.contains("All earlier messages loaded")));
+        if matches!(picker.kind, PickerKind::HistoryJump)));
+    app.open_rewind_picker();
     app.choose(
         PickerKind::Rewind,
         ChoiceKind::RewindMessage {
@@ -682,14 +683,13 @@ fn double_escape_opens_rewind_picker_and_confirmation_is_cancelable_and_opt_in()
     );
     finish_rewind_source(&mut app, 17, "original prompt");
     assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
-        if matches!(prompt.kind, PromptKind::RewindMessage { event_id: 17, .. })
-            && prompt.instructions.contains("[ ] Restore recorded file changes")));
+        if matches!(prompt.kind, PromptKind::RewindMessage { event_id: 17, restore_files: false, .. })));
 
     press(&mut app, KeyCode::Char('x'));
     assert!(matches!(&app.modal, Some(Modal::Prompt(prompt)) if prompt.editor.text().is_empty()));
     press(&mut app, KeyCode::Char(' '));
     assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
-        if prompt.instructions.contains("[x] Restore recorded file changes")));
+        if matches!(prompt.kind, PromptKind::RewindMessage { restore_files: true, .. })));
     press(&mut app, KeyCode::Esc);
     assert!(app.modal.is_none());
     assert!(app.pending.is_empty());
@@ -699,8 +699,7 @@ fn double_escape_opens_rewind_picker_and_confirmation_is_cancelable_and_opt_in()
 #[test]
 fn rewind_confirmation_commits_an_unsent_action_without_sending_the_draft() {
     let mut app = connected_app();
-    press(&mut app, KeyCode::Esc);
-    press(&mut app, KeyCode::Esc);
+    app.open_rewind_picker();
     app.choose(
         PickerKind::Rewind,
         ChoiceKind::RewindMessage {
@@ -725,8 +724,7 @@ fn rewind_confirmation_commits_an_unsent_action_without_sending_the_draft() {
 #[test]
 fn rewind_ack_restores_unsent_text_but_never_replaces_a_changed_draft() {
     let mut app = connected_app();
-    press(&mut app, KeyCode::Esc);
-    press(&mut app, KeyCode::Esc);
+    app.open_rewind_picker();
     app.choose(
         PickerKind::Rewind,
         ChoiceKind::RewindMessage {
@@ -743,6 +741,18 @@ fn rewind_ack_restores_unsent_text_but_never_replaces_a_changed_draft() {
         panic!("rewind command is durably saved")
     };
     let id = command.command_id.clone();
+    let event = serde_json::from_value(json!({
+        "type":"committed", "id":32, "agent":"main", "kind":"runtime.operation",
+        "operation":"message_rewind", "rewind_command_id": id,
+    }))
+    .unwrap();
+    app.update(Update::Observation(app.selection(), event));
+    assert_eq!("original text", app.pane().draft.text());
+    let refreshes = app
+        .effects
+        .iter()
+        .filter(|job| matches!(job, Job::History(..)))
+        .count();
     app.update(Update::Sent(
         id.clone(),
         Ok(Acknowledgement {
@@ -757,11 +767,17 @@ fn rewind_ack_restores_unsent_text_but_never_replaces_a_changed_draft() {
         }),
     ));
     assert_eq!("original text", app.pane().draft.text());
+    assert_eq!(
+        refreshes,
+        app.effects
+            .iter()
+            .filter(|job| matches!(job, Job::History(..)))
+            .count()
+    );
     assert!(!app.effects.iter().any(|job| matches!(job, Job::Send(_))));
 
     let mut edited = connected_app();
-    press(&mut edited, KeyCode::Esc);
-    press(&mut edited, KeyCode::Esc);
+    edited.open_rewind_picker();
     edited.choose(
         PickerKind::Rewind,
         ChoiceKind::RewindMessage {
@@ -833,14 +849,9 @@ fn rewind_confirmation_render_shows_file_scope_without_an_editor() {
         .collect::<Vec<_>>()
         .join(" ");
 
-    let compact = |text: &str| {
-        text.chars()
-            .filter(|character| !character.is_whitespace())
-            .collect::<String>()
-    };
-    let warning = "Restores only recorded workspace file changes; shell commands and external side effects are not reversed.";
-    assert!(compact(&rendered).contains(&compact(warning)), "{rendered}");
-    assert!(rendered.contains("Space Toggle file restore"));
+    assert!(rendered.contains("Files Keep current files"), "{rendered}");
+    assert!(rendered.contains("can replace file contents or remove files"));
+    assert!(rendered.contains("Space Change files mode"));
     assert!(!rendered.contains("Type here"));
 }
 

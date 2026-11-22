@@ -115,6 +115,14 @@ pub(super) enum Record {
         #[serde(default)]
         warnings: Vec<String>,
     },
+    HistoryJump {
+        command: Command,
+        address: String,
+        target_event_id: u64,
+        target_turn: u64,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        restore_files: bool,
+    },
     ExecutionStarted {
         address: String,
     },
@@ -557,6 +565,19 @@ impl State {
                     .insert(command.command_id.clone(), warnings);
                 self.remember_command(command, event_id, address);
             }
+            Record::HistoryJump {
+                command,
+                address,
+                target_turn,
+                ..
+            } => {
+                let snapshot = &mut self.agent_mut(&address)?.snapshot;
+                snapshot.turn = Some(target_turn);
+                snapshot.last_output = None;
+                snapshot.last_error = None;
+                snapshot.admitted_task = None;
+                self.remember_command(command, event_id, address);
+            }
             Record::ExecutionStarted { address } => {
                 let agent = self.agent_mut(&address)?;
                 agent.reply_preview = None;
@@ -605,6 +626,7 @@ impl State {
                     self.deliveries.insert(id.clone(), InputStatus::Accepted);
                 }
                 let agent = self.agent_mut(&address)?;
+                let mut turn_preview = None;
                 for id in input_ids {
                     let index = agent
                         .inbox
@@ -624,6 +646,9 @@ impl State {
                     let question_reply = agent.question_replies.remove(&id);
                     if !question_reply && !input.input.source.is_job_delivery() {
                         if let Some(preview) = task_preview(&input.input.text) {
+                            if turn_preview.is_none() {
+                                turn_preview = Some(preview.clone());
+                            }
                             agent.snapshot.admitted_task = Some(preview);
                         }
                     }
@@ -637,6 +662,9 @@ impl State {
                     agent.snapshot.active_config = Some(agent.snapshot.config.clone());
                 }
                 agent.snapshot.last_error = None;
+                if let Some(preview) = turn_preview {
+                    self.turns.preview(&address, admitted_turn, &preview);
+                }
             }
             Record::TurnSettled {
                 address,
@@ -965,32 +993,4 @@ pub(super) fn fingerprint(value: &impl Serialize) -> Result<String> {
 
 pub(super) fn timestamp() -> Result<String> {
     Ok(time::OffsetDateTime::now_utc().format(&time::format_description::well_known::Rfc3339)?)
-}
-
-pub(super) fn validate_key(key: &str) -> Result<()> {
-    if key.is_empty() || key.len() > 128 {
-        return Err(Error::InvalidArgument(
-            "command identity must contain 1..=128 bytes".into(),
-        ));
-    }
-    if key.starts_with(JOB_DELIVERY_PREFIX) {
-        return Err(Error::InvalidArgument(
-            "command identity is reserved for Job completion".into(),
-        ));
-    }
-    Ok(())
-}
-
-pub(super) fn validate_address(address: &str) -> Result<()> {
-    if address.is_empty()
-        || address.len() > 64
-        || !address
-            .bytes()
-            .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_'))
-    {
-        return Err(Error::InvalidArgument(format!(
-            "agent address '{address}' must be flat and contain 1..=64 lowercase ASCII letters, digits, '-' or '_'"
-        )));
-    }
-    Ok(())
 }

@@ -81,7 +81,12 @@ impl CommandMenu {
                 "Find a Session in this workspace",
                 None,
             ),
-            Self::Rewind => ("rewind", &["backtrack"], "Rewind to a user message", None),
+            Self::Rewind => (
+                "rewind",
+                &["backtrack", "jump"],
+                "Edit a past message or return to a branch",
+                Some(Shortcut::REWIND),
+            ),
             Self::Agents => (
                 "agents",
                 &["agent", "subagents"],

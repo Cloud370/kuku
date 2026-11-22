@@ -179,6 +179,7 @@ impl ContextCursor {
     }
 
     pub(crate) fn refresh(&mut self, path: &Path, agent: &str, max_bytes: usize) -> Result<()> {
+        let mut hidden = Vec::new();
         if self.after == 0 {
             let marks = EventStore::context_marks(path, agent)?;
             self.configuration = marks
@@ -186,6 +187,7 @@ impl ContextCursor {
                 .last_key_value()
                 .map_or(0, |(id, _)| *id);
             self.configurations = marks.configurations;
+            hidden = marks.hidden;
             if let Some(segment) = marks.segment {
                 self.after = segment.id;
                 self.approved_segment = segment.id;
@@ -194,11 +196,27 @@ impl ContextCursor {
                 self.events_read += 1;
             }
         }
+        let mut after = self.after;
         let mut seen = 0;
-        self.after = EventStore::visit_after_path(path, self.after, |event| {
+        let mut observe = |event| {
             seen += 1;
             self.observe(event, agent, max_bytes)
-        })?;
+        };
+        for range in hidden {
+            if after >= range.end.saturating_sub(1) {
+                continue;
+            }
+            if after < range.start.saturating_sub(1) {
+                EventStore::visit_committed(path, after, |event| {
+                    if event.id >= range.start {
+                        return Ok(false);
+                    }
+                    observe(event).map(|()| true)
+                })?;
+            }
+            after = range.end - 1;
+        }
+        self.after = EventStore::visit_after_path(path, after, observe)?;
         self.events_read += seen;
         Ok(())
     }

@@ -29,16 +29,8 @@ pub(crate) fn event_owner_with<'a>(
     event: &'a StoredEvent,
     turn_owner: impl FnOnce(u64) -> Option<&'a str>,
 ) -> Option<&'a str> {
-    if let Some(owner) = super::conversation_event_conversation(&event.payload) {
+    if let Some(owner) = event.payload.agent_address() {
         return Some(owner);
-    }
-    if let EventPayload::Unknown(value) = &event.payload {
-        if let Some(owner) = value["record"]["address"]
-            .as_str()
-            .or_else(|| value["agent"].as_str())
-        {
-            return Some(owner);
-        }
     }
     super::conversation_event_turn(&event.payload).and_then(turn_owner)
 }

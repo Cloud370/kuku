@@ -14,20 +14,19 @@ use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use kuku::event::{EventPayload, EventStore};
 use kuku::session::{Observation, OutputRead, Session, SessionHistory};
-use kuku_client::RewindGroup;
+use kuku_client::{HistoryDestination, HistoryDestinations, RewindGroup};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, watch};
 use tokio_stream::wrappers::{ReceiverStream, WatchStream};
 use tokio_stream::Stream;
 
-use super::rewind_history;
 use super::Params;
 use super::{manager, SessionTarget};
 use crate::error_mapping::{ApiError, Result};
 use crate::run_manager::{RunManager, TurnLookup};
 use crate::wire::{
-    agent_activity_frame, committed_frame, event_agent, history_entry, live_frame,
+    agent_activity_frame, committed_frame, event_agent, history_entry_for_agent, live_frame,
     reply_preview_frame,
 };
 use crate::AppState;
@@ -57,6 +56,8 @@ pub(super) struct HistoryQuery {
     agent: Option<String>,
     before: Option<u64>,
     limit: Option<usize>,
+    #[serde(default)]
+    user_only: bool,
 }
 
 #[derive(Deserialize)]
@@ -135,11 +136,85 @@ pub(super) async fn history(
     };
     let (history, turns) = manager(&state).await.history(&target.path, cursor)?;
     let agent = query.agent.as_deref().unwrap_or("main");
+    if query.user_only {
+        let (messages, next_before) = history.user_messages_before(agent, before, limit)?;
+        let entries: Vec<_> = messages
+            .into_iter()
+            .filter_map(|event| {
+                let EventPayload::MessageUser { turn, text, .. } = event.payload else {
+                    return None;
+                };
+                let preview = text
+                    .char_indices()
+                    .nth(512)
+                    .map_or(text.as_str(), |(end, _)| &text[..end]);
+                Some(
+                    json!({"type":"user","id":event.id,"agent":agent,"turn":turn,
+                "turn_number":turns.number(agent, turn),"text":preview}),
+                )
+            })
+            .collect();
+        let response =
+            json!({"ok":true,"entries":entries,"rewind_groups":[],"next_before":next_before});
+        validate_response_bytes(&response)?;
+        return Ok(Json(response));
+    }
     let (entries, rewind_groups, next_before) =
         history_page(agent, before, limit, &turns, &history)?;
     let response = json!({"ok":true,"entries":entries,"rewind_groups":rewind_groups,"next_before":next_before});
     validate_response_bytes(&response)?;
     Ok(Json(response))
+}
+
+pub(super) async fn history_destinations(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Params(query): Params<HistoryQuery>,
+) -> Result<Json<HistoryDestinations>> {
+    let target = SessionTarget::new(&state, &query.workspace, &id)?;
+    target.require_exists()?;
+    let limit = query.limit.unwrap_or(HISTORY_DEFAULT_LIMIT);
+    validate_limit(limit)?;
+    let cursor = EventStore::read_head(&target.path)?;
+    let (history, turns) = manager(&state).await.history(&target.path, cursor)?;
+    let agent = query.agent.as_deref().unwrap_or("main");
+    let end = history.cursor().saturating_add(1);
+    let before = query.before.map_or(end, |before| before.min(end));
+    let mut points = turns.history_points(agent, before, limit + 1);
+    let next_before = (points.len() > limit).then(|| {
+        points.pop();
+        points.last().unwrap().event_id
+    });
+    let points = points
+        .into_iter()
+        .filter_map(|mut point| {
+            let prompt = if point.can_continue {
+                history
+                    .turn_prompt(agent, point.turn, point.event_id)
+                    .cloned()
+            } else {
+                history
+                    .editable_messages(agent, point.turn)
+                    .into_iter()
+                    .next()
+            };
+            if !point.can_continue && prompt.is_none() {
+                return None;
+            }
+            if let Some(message) = &prompt {
+                point.preview = Some(message.text.clone());
+            }
+            Some(HistoryDestination {
+                current_branch: history.includes_cursor(agent, point.event_id),
+                point,
+                prompt_event_id: prompt.map(|message| message.event_id),
+            })
+        })
+        .collect();
+    Ok(Json(HistoryDestinations {
+        points,
+        next_before,
+    }))
 }
 
 pub(super) async fn observe(
@@ -262,6 +337,7 @@ fn history_page(
     let mut items = 0;
     let max_item_bytes = HISTORY_PAGE_BYTES.saturating_sub(HISTORY_RESPONSE_OVERHEAD);
     'pages: loop {
+        before = history.transcript_before(agent, before);
         let page = history.page_before(before, READ_PAGE_SIZE)?;
         if page.is_empty() {
             before = None;
@@ -269,12 +345,17 @@ fn history_page(
         }
         for event in page.into_iter().rev() {
             if let EventPayload::MessageUser { turn, .. } = &event.payload {
-                for rewind in history
-                    .rewinds()
-                    .iter()
-                    .filter(|rewind| rewind.target_event_id == event.id && rewind.agent == agent)
-                {
-                    let group = rewind_history::summary(history, turns, rewind, *turn)?;
+                for rewind in history.rewinds().iter().filter(|rewind| {
+                    rewind.target_event_id == event.id
+                        && rewind.agent == agent
+                        && !history.includes_cursor(agent, event.id)
+                }) {
+                    let group = RewindGroup {
+                        rewind_event_id: rewind.event_id,
+                        target_event_id: rewind.target_event_id,
+                        agent: rewind.agent.clone(),
+                        turn_number: turns.number(agent, *turn),
+                    };
                     let size = serde_json::to_vec(&group).map_err(kuku::Error::from)?.len();
                     if size > max_item_bytes {
                         return Err(ApiError::new(
@@ -295,9 +376,8 @@ fn history_page(
                     }
                 }
             }
-            let entry = (history.includes(&event)
-                && event_agent(&event.payload).unwrap_or("main") == agent)
-                .then(|| history_entry(&event, turns))
+            let entry = (history.agent(&event) == agent && history.includes(&event))
+                .then(|| history_entry_for_agent(&event, turns, agent))
                 .flatten();
             if let Some(entry) = entry {
                 let size = serde_json::to_vec(&entry).map_err(kuku::Error::from)?.len();
@@ -580,9 +660,10 @@ mod tests {
         ];
         let turns = crate::run_manager::TurnLookup::Closed(std::sync::Arc::default());
         let (_root, history) = read_history(&events);
-        let group =
-            super::rewind_history::summary(&history, &turns, &history.rewinds()[0], 1).unwrap();
-        assert_eq!(3, group.entry_count);
+        let (archived, _) = history
+            .rewind_page(&history.rewinds()[0], None, 10)
+            .unwrap();
+        assert_eq!(3, archived.len());
         assert!(!history.includes(&events[1]) && !history.includes(&events[2]));
         let entry = crate::wire::history_entry_for_agent(&events[2], &turns, "main").unwrap();
         assert_eq!(entry["type"], "compaction");

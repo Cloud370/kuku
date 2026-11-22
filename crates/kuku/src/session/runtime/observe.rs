@@ -8,7 +8,8 @@ use crate::event::{EventStore, StoredEvent};
 use crate::query::{ModelPhase, UiEvent};
 use crate::Result;
 
-use super::record::{validate_key, State};
+use super::receipts::validate_key;
+use super::record::State;
 use super::{
     load_state, AgentSnapshot, AgentStatus, AgentView, InputStatus, PendingInput, Receipt, Session,
     TurnSummary,
@@ -175,6 +176,21 @@ impl Session {
     /// Return the one-based display number for a committed Agent Turn identity.
     pub fn turn_number(&self, address: &str, turn: u64) -> Option<u64> {
         self.inner.state.lock().unwrap().turns.number(address, turn)
+    }
+
+    /// Return the Agent's conversation points across all branches, newest first.
+    pub fn history_points(
+        &self,
+        address: &str,
+        before: u64,
+        limit: usize,
+    ) -> Vec<super::HistoryPoint> {
+        self.inner
+            .state
+            .lock()
+            .unwrap()
+            .turns
+            .history_points(address, before, limit)
     }
 
     /// Return the durable first-admission time for a specific Agent Turn.

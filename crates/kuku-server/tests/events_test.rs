@@ -51,7 +51,7 @@ fn write_session_events(home: &std::path::Path, workspace: &std::path::Path, ses
         .unwrap();
     store
         .append(EventPayload::ModelResponse {
-            conversation: None,
+            conversation: Some("main".into()),
             ts: "2026-06-09T00:00:04.500Z".into(),
             turn: 1,
             request_id: "req_main".into(),
@@ -66,7 +66,7 @@ fn write_session_events(home: &std::path::Path, workspace: &std::path::Path, ses
         .append(EventPayload::ToolCall {
             ts: "2026-06-09T00:00:04.600Z".into(),
             turn: 1,
-            conversation: None,
+            conversation: Some("main".into()),
             tool_call_id: "tool_main".into(),
             request_id: "req_main".into(),
             index: 0,
@@ -78,7 +78,7 @@ fn write_session_events(home: &std::path::Path, workspace: &std::path::Path, ses
         .append(EventPayload::ToolResult {
             ts: "2026-06-09T00:00:04.700Z".into(),
             turn: 1,
-            conversation: None,
+            conversation: Some("main".into()),
             tool_call_id: "tool_main".into(),
             status: "ok".into(),
             summary: "read README.md".into(),
@@ -408,6 +408,118 @@ fn append_group_rewind(store: &mut EventStore, agent: &str, target_event_id: u64
 }
 
 #[tokio::test]
+async fn user_history_pages_preview_only_active_messages_for_the_selected_agent() {
+    let mock = mock_provider::start_mock_provider().await;
+    let server = TestServer::start(mock_provider::make_test_config(mock.port())).await;
+    let id = "active-message-previews";
+    write_rewind_group_events(&server, id);
+    let mut store = EventStore::open(server.events_path(id)).unwrap();
+    let earlier = append_group_user(&mut store, "main", 301, "earlier active prompt");
+    append_group_response(&mut store, 301, "active response");
+    append_group_user(&mut store, "reviewer", 302, "other Agent");
+    let latest = append_group_user(&mut store, "main", 303, &"界".repeat(513));
+    drop(store);
+    let page: serde_json::Value = server
+        .session_request(
+            id,
+            "history",
+            &[("agent", "main"), ("user_only", "true"), ("limit", "1")],
+        )
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(latest, page["entries"][0]["id"]);
+    assert_eq!("界".repeat(512), page["entries"][0]["text"]);
+    assert!(page["rewind_groups"].as_array().unwrap().is_empty());
+    let before = page["next_before"].as_u64().unwrap().to_string();
+    let page: serde_json::Value = server
+        .session_request(
+            id,
+            "history",
+            &[
+                ("agent", "main"),
+                ("user_only", "true"),
+                ("before", &before),
+            ],
+        )
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(1, page["entries"].as_array().unwrap().len());
+    assert_eq!(earlier, page["entries"][0]["id"]);
+    assert!(page["next_before"].is_null());
+}
+
+#[tokio::test]
+async fn a_long_rewind_keeps_the_surviving_history_in_the_first_page() {
+    use std::io::Write;
+
+    let mock = mock_provider::start_mock_provider().await;
+    let server = TestServer::start(mock_provider::make_test_config(mock.port())).await;
+    let id = "long-rewind-first-page";
+    let path = server.events_path(id);
+    let mut store = EventStore::open(&path).unwrap();
+    let surviving = append_group_user(&mut store, "main", 89, "surviving prompt");
+    let target = append_group_user(&mut store, "main", 90, "rewound prompt");
+    drop(store);
+    let journal = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap();
+    let mut journal = std::io::BufWriter::new(journal);
+    for event_id in target + 1..=target + 4300 {
+        writeln!(
+            journal,
+            r#"{{"id":{event_id},"kind":"test.hidden","agent":"main"}}"#
+        )
+        .unwrap();
+    }
+    journal.flush().unwrap();
+    drop(journal);
+    let mut store = EventStore::open(&path).unwrap();
+    let unaffected = append_group_user(&mut store, "reviewer", 100, "other Agent’s prompt");
+    let rewind = append_group_rewind(&mut store, "main", target);
+    drop(store);
+
+    for filter in ["false", "true"] {
+        let page: serde_json::Value = server
+            .session_request(id, "history", &[("agent", "main"), ("user_only", filter)])
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(1, page["entries"].as_array().unwrap().len());
+        assert_eq!(surviving, page["entries"][0]["id"]);
+        if filter == "false" {
+            assert_eq!(rewind, page["rewind_groups"][0]["rewind_event_id"]);
+            assert_eq!(target, page["rewind_groups"][0]["target_event_id"]);
+        }
+    }
+    let reviewer: serde_json::Value = server
+        .session_request(id, "history", &[("agent", "reviewer"), ("limit", "1")])
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(unaffected, reviewer["entries"][0]["id"]);
+    assert!(reviewer["rewind_groups"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn rewind_history_pages_keep_active_history_filtered_and_groups_owned_once() {
     let mock = mock_provider::start_mock_provider().await;
     let server = TestServer::start(mock_provider::make_test_config(mock.port())).await;
@@ -429,7 +541,6 @@ async fn rewind_history_pages_keep_active_history_filtered_and_groups_owned_once
     assert_eq!(1, newest["rewind_groups"].as_array().unwrap().len());
     assert_eq!(first_rewind, newest["rewind_groups"][0]["rewind_event_id"]);
     assert_eq!(first_target, newest["rewind_groups"][0]["target_event_id"]);
-    assert_eq!(2, newest["rewind_groups"][0]["entry_count"]);
 
     let before = newest["next_before"].as_u64().unwrap().to_string();
     let older: serde_json::Value = server
@@ -448,7 +559,6 @@ async fn rewind_history_pages_keep_active_history_filtered_and_groups_owned_once
     assert_eq!(1, older["rewind_groups"].as_array().unwrap().len());
     assert_eq!(later_rewind, older["rewind_groups"][0]["rewind_event_id"]);
     assert_eq!(old_target, older["rewind_groups"][0]["target_event_id"]);
-    assert_eq!(3, older["rewind_groups"][0]["entry_count"]);
     let exhausted_cursor = older["next_before"].as_u64().unwrap().to_string();
     let exhausted: serde_json::Value = server
         .session_request(
@@ -548,7 +658,6 @@ async fn rewind_history_pages_keep_active_history_filtered_and_groups_owned_once
         reviewer_target,
         reviewer_history["rewind_groups"][0]["target_event_id"]
     );
-    assert_eq!(2, reviewer_history["rewind_groups"][0]["entry_count"]);
     let reviewer_group: serde_json::Value = server
         .session_request(
             id,

@@ -5,14 +5,17 @@ use crate::event::{EventPayload, EventStore, StoredEvent};
 use crate::{Error, Result};
 
 use super::jobs::await_job_cleanup;
+use super::receipts::{validate_address, validate_key};
 use super::record::{
-    fingerprint, timestamp, validate_address, validate_key, AgentState, Command,
-    InterruptedExecution, Record, State,
+    fingerprint, timestamp, AgentState, Command, InterruptedExecution, Record, State,
 };
 use super::{ensure_open, AgentStatus, InputStatus, Receipt, Session, Withdrawal};
 
 impl Session {
     /// Hide a committed user message and the following visible history for one Agent.
+    ///
+    /// Optional file restoration requires verified built-in write_file and edit_file records.
+    /// Use a settled Turn preview for explicit review of the file plan before applying it.
     pub fn rewind_message(
         &self,
         command_id: &str,
@@ -73,70 +76,66 @@ impl Session {
             ));
         }
 
+        let agent = state.agent(address)?;
         let mut inputs = RewindInputs::default();
-        EventStore::visit_after_path(self.events_path(), after, |event| {
-            inputs.observe(&event, address, target_event_id, &visibility);
-            Ok(())
-        })?;
-        let removed_input_ids = inputs.removed;
-        if rewind_blocked_except(state.agent(address)?, &removed_input_ids) {
+        if !agent.accepted.is_empty() {
+            EventStore::visit_after_path(self.events_path(), after, |event| {
+                inputs.observe(&event, address, target_event_id, &visibility);
+                Ok(())
+            })?;
+        }
+        let removed_input_ids = agent
+            .accepted
+            .iter()
+            .map(|entry| &entry.input.command_id)
+            .filter(|id| inputs.removed.contains(*id))
+            .cloned()
+            .collect();
+        if rewind_blocked_except(agent, &removed_input_ids) {
             return Err(Error::InvalidArgument(
                 "cannot rewind while this Agent is executing or has pending input".into(),
             ));
         }
         if restore_files
-            && state.agents.iter().any(|(candidate, agent)| {
-                if candidate == address {
-                    rewind_blocked_except(agent, &removed_input_ids)
-                } else {
-                    rewind_blocked(agent)
-                }
-            })
+            && (state.jobs.has_active()
+                || state.agents.iter().any(|(candidate, agent)| {
+                    if candidate == address {
+                        rewind_blocked_except(agent, &removed_input_ids)
+                    } else {
+                        rewind_blocked(agent)
+                    }
+                }))
         {
             return Err(Error::InvalidArgument(
-                "cannot restore files while any Session Agent is active".into(),
+                "Wait for Session Agents and jobs to settle before restoring files".into(),
             ));
         }
         let mut warnings = Vec::new();
         let mut file_revert = None;
         if restore_files {
-            let plan = crate::context::revert::plan_journal_rewind(
-                &store,
-                &visibility,
+            let workspace = &self.inner.options.workspace;
+            let files = crate::context::revert::plan_file_rewind(
+                self.events_path(),
+                workspace,
                 address,
                 target_event_id,
-                &self.inner.options.workspace,
             )?;
-            if !plan.unrecoverable.is_empty() {
-                return Err(Error::InvalidArgument(format!(
-                    "file restore preflight could not recover recorded state for {}",
-                    plan.unrecoverable
-                        .iter()
-                        .map(|path| path.display().to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )));
-            }
             let session_dir = self.inner.events_path.parent().ok_or_else(|| {
                 Error::InvalidArgument("events path has no session directory".into())
             })?;
-            let rollback_event_id = store.last_id().saturating_add(1);
-            let (transaction, restore_warnings) =
-                crate::context::revert::apply_message_rewind_files(
-                    &plan,
-                    &self.inner.options.workspace,
-                    session_dir,
-                    rollback_event_id,
-                )?;
-            file_revert = Some(transaction);
-            warnings = restore_warnings;
-            warnings.push(
-                "Only recorded in-workspace file changes were restored; shell and external side effects remain.".into(),
-            );
+            file_revert = Some(crate::context::revert::apply_verified_file_rewind(
+                &files.plan,
+                workspace,
+                session_dir,
+                store.next_id(),
+                &files.expected,
+            )?);
             warnings.extend(
-                plan.sensitive_files
-                    .iter()
-                    .map(|path| format!("Sensitive file restored: {}", path.display())),
+                files
+                    .preview
+                    .skipped
+                    .into_iter()
+                    .map(|path| format!("Skipped {path}: file version could not be verified")),
             );
         }
         commit_with_file_revert(file_revert, || {
@@ -573,7 +572,7 @@ impl Session {
     }
 }
 
-fn rewind_blocked(agent: &AgentState) -> bool {
+pub(super) fn rewind_blocked(agent: &AgentState) -> bool {
     rewind_blocked_except(agent, &BTreeSet::new())
 }
 
@@ -635,7 +634,7 @@ fn rewind_blocked_except(agent: &AgentState, allowed_input_ids: &BTreeSet<String
             .any(|delivery| !allowed_input_ids.contains(&delivery.input.command_id))
 }
 
-fn commit_with_file_revert<T>(
+pub(super) fn commit_with_file_revert<T>(
     transaction: Option<crate::context::revert::FileRevertTransaction>,
     commit: impl FnOnce() -> Result<T>,
 ) -> Result<T> {

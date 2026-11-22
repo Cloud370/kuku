@@ -24,6 +24,7 @@ impl App {
             if key.kind == KeyEventKind::Repeat
                 || self.back_from_thinking_confirmation()
                 || self.back_from_agent_setup()
+                || self.back_from_history_jump()
             {
                 self.rewind_armed = false;
                 return;
@@ -73,7 +74,6 @@ impl App {
                     self.deactivate_context_focus();
                     self.focus_composer();
                 }
-                self.rewind_restore_files = false;
                 self.rewind_armed = false;
                 return;
             }

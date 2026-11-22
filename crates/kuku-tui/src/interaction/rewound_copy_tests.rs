@@ -29,7 +29,6 @@ fn rewind_group_row_inset_preserves_multibyte_copy() {
             target_event_id: 2,
             agent: "main".into(),
             turn_number: None,
-            entry_count: 1,
         }],
         next_before: None,
     });

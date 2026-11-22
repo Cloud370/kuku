@@ -10,9 +10,9 @@ use wreq::{Method, RequestBuilder, Response};
 use crate::local::{LocalError, LocalService, SESSION_PROTOCOL_VERSION};
 use crate::subscription::SubscriptionScope;
 use crate::{
-    Acknowledgement, AgentConfig, AgentSummary, ApiError, Command, EventPage, HistoryPage,
-    JobSnapshot, ModelDefaultPlan, NamedValue, NamedValueSource, OutputChunk, RewindGroupPage,
-    SessionSummary, Snapshot, Subscription, Target,
+    Acknowledgement, AgentConfig, AgentSummary, ApiError, Command, EventPage, HistoryDestinations,
+    HistoryPage, JobSnapshot, ModelDefaultPlan, NamedValue, NamedValueSource, OutputChunk,
+    RewindGroupPage, SessionSummary, Snapshot, Subscription, Target,
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -434,12 +434,34 @@ impl Client {
         before: Option<u64>,
         limit: usize,
     ) -> Result<HistoryPage, Error> {
+        self.history_page(target, before, limit, false).await
+    }
+
+    /// Read previews of active user messages for the selected Agent.
+    pub async fn user_history(
+        &self,
+        target: &Target,
+        before: Option<u64>,
+        limit: usize,
+    ) -> Result<HistoryPage, Error> {
+        self.history_page(target, before, limit, true).await
+    }
+
+    async fn history_page(
+        &self,
+        target: &Target,
+        before: Option<u64>,
+        limit: usize,
+        user_only: bool,
+    ) -> Result<HistoryPage, Error> {
         #[derive(Serialize)]
         struct Query<'a> {
             workspace: &'a Path,
             agent: &'a str,
             before: Option<u64>,
             limit: usize,
+            #[serde(skip_serializing_if = "std::ops::Not::not")]
+            user_only: bool,
         }
         self.get(
             ["sessions", &target.session_id, "history"],
@@ -448,6 +470,61 @@ impl Client {
                 agent: &target.agent,
                 before,
                 limit,
+                user_only,
+            },
+        )
+        .await
+    }
+
+    /// Read settled continuation points from all branches of the selected Agent.
+    pub async fn history_destinations(
+        &self,
+        target: &Target,
+        before: Option<u64>,
+        limit: usize,
+    ) -> Result<HistoryDestinations, Error> {
+        #[derive(Serialize)]
+        struct Query<'a> {
+            workspace: &'a Path,
+            agent: &'a str,
+            before: Option<u64>,
+            limit: usize,
+        }
+        self.get(
+            ["sessions", &target.session_id, "history", "destinations"],
+            &Query {
+                workspace: &target.workspace,
+                agent: &target.agent,
+                before,
+                limit,
+            },
+        )
+        .await
+    }
+
+    /// Preview the verified workspace file changes after a settled Turn.
+    pub async fn file_rewind_preview(
+        &self,
+        target: &Target,
+        event_id: u64,
+    ) -> Result<crate::FileRewindPreview, Error> {
+        #[derive(Serialize)]
+        struct Query<'a> {
+            workspace: &'a Path,
+            agent: &'a str,
+        }
+        self.get(
+            [
+                "sessions",
+                &target.session_id,
+                "history",
+                "destinations",
+                &event_id.to_string(),
+                "files",
+            ],
+            &Query {
+                workspace: &target.workspace,
+                agent: &target.agent,
             },
         )
         .await

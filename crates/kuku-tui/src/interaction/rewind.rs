@@ -6,25 +6,17 @@ use crate::jobs::Job;
 use crate::keys::Shortcut;
 use crate::menu::{Prompt, PromptKind};
 
-pub(super) fn rewind_instructions(text: &str, restore_files: bool) -> String {
-    format!(
-        "This message and all subsequent events for this Agent will leave active context. The journal remains unchanged.\nRestores only recorded workspace file changes; shell commands and external side effects are not reversed.\n\n{}\n\n[{}] Restore recorded file changes · Space toggles\nEnter commits · Esc cancels",
-        text,
-        if restore_files { "x" } else { " " }
-    )
-}
-
 impl App {
     pub(crate) fn confirm_rewind_message(&mut self, event_id: u64, turn: u64, text: String) {
         self.effects.push(Job::ClosePicker);
-        self.rewind_restore_files = false;
         self.modal = Some(Modal::Prompt(Box::new(Prompt {
             kind: PromptKind::RewindMessage {
                 event_id,
-                text: text.clone(),
+                text,
+                restore_files: false,
             },
-            title: format!("Rewind to message · Turn {turn}"),
-            instructions: rewind_instructions(&text, false),
+            title: format!("Edit past message · Turn {turn}"),
+            instructions: String::new(),
             instructions_top: 0,
             editor: Editor::default(),
         })));
@@ -47,10 +39,8 @@ impl App {
                 .is_some_and(|snapshot| snapshot.agent.status == kuku_client::AgentStatus::Waiting)
         {
             self.problem("Wait for the Agent to settle before rewinding");
-        } else if !pane.draft.text().is_empty() || !pane.value_attachments.is_empty() {
-            self.problem("Clear the draft before rewinding");
         } else {
-            self.open_rewind_picker();
+            self.open_history_jump();
         }
     }
 
@@ -94,10 +84,10 @@ impl App {
         }
         if self.rewind_armed {
             self.rewind_armed = false;
-            self.open_rewind_picker();
+            self.rewind_from_menu();
         } else {
             self.rewind_armed = true;
-            self.confirmation("Press Esc again to rewind to a message");
+            self.confirmation("Press Esc again to open conversation history");
         }
     }
 

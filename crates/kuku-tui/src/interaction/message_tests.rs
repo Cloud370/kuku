@@ -645,6 +645,7 @@ fn mouse_opens_messages_selects_entry_and_runs_action_without_losing_draft() {
 #[test]
 fn message_and_rewind_picker_footers_name_their_distinct_modes() {
     let mut app = connected_app();
+    app.pane_mut().exists = true;
     app.open_messages_picker();
     let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
     let screen = draw(&mut app, &mut terminal);
@@ -654,9 +655,9 @@ fn message_and_rewind_picker_footers_name_their_distinct_modes() {
     press(&mut app, KeyCode::Esc);
     press(&mut app, KeyCode::Esc);
     assert!(matches!(&app.modal, Some(Modal::Picker(picker))
-        if matches!(picker.kind, PickerKind::Rewind)));
+        if matches!(picker.kind, PickerKind::HistoryJump)));
     let screen = draw(&mut app, &mut terminal);
-    let _ = screen_position(&screen, "Rewind ·");
+    let _ = screen_position(&screen, "Enter Review");
 }
 
 #[test]

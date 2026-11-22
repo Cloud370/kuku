@@ -98,13 +98,14 @@ pub(super) fn render_help(frame: &mut Frame<'_>, area: Rect) -> Rect {
         Line::raw("Alt+Enter   Send on the next turn"),
         Line::raw("Esc         Close/back; stop active work"),
         Line::raw("↑ / ↓       Edit draft; select queued input"),
-        Line::raw("Delete      Withdraw selected queued input"),
+        Line::raw("Delete      Remove selected input from queue"),
         Line::raw("F2          Focus a pending request"),
         Line::raw(format!(
             "{:<12}Cycle thinking",
             Shortcut::CYCLE_THINKING.label
         )),
         Line::raw("Ctrl+P/F1   Show this help"),
+        Line::raw("Ctrl+G      Rewind to a message"),
         Line::raw("/           Search actions and Skills"),
         Line::default(),
     ];

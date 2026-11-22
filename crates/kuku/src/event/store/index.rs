@@ -1,14 +1,17 @@
 use std::collections::{BTreeMap, HashMap};
+use std::ops::Range;
 
 use serde::{Deserialize, Serialize};
 
 use super::{EventOffset, EventPayload, StoredEvent};
+use crate::event::history::{hidden_history, hidden_range};
 use crate::{Error, Result};
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
 pub(crate) struct SegmentMark {
     pub(crate) id: u64,
     pub(crate) turn: Option<u64>,
+    confirmed: u64,
     checkpoint: bool,
 }
 
@@ -17,6 +20,7 @@ pub(crate) struct ContextMarks {
     pub(crate) segment: Option<SegmentMark>,
     pub(crate) checkpoint: Option<u64>,
     pub(crate) configurations: BTreeMap<u64, RouteSelectors>,
+    pub(crate) hidden: Vec<Range<u64>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -48,6 +52,23 @@ pub(crate) struct HistoryMarks {
     pub(crate) controls: Vec<StoredEvent>,
     pub(crate) turn_owners: HashMap<u64, TurnOwners>,
     pub(crate) message_rewinds: Vec<MessageRewind>,
+    pub(crate) editable: HashMap<String, HashMap<u64, Vec<UserMessagePreview>>>,
+}
+
+/// A user message that can be reopened as a draft.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserMessagePreview {
+    /// Exact committed message event identity.
+    pub event_id: u64,
+    /// Bounded message preview.
+    pub text: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct MessageMark {
+    id: u64,
+    turn: u64,
+    preview: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -123,13 +144,14 @@ pub(super) struct JournalIndex {
 #[derive(Default, Serialize, Deserialize)]
 struct AgentFacts {
     turns: HashMap<u64, (bool, Option<u64>)>,
-    messages: Vec<u64>,
+    messages: Vec<MessageMark>,
     admissions: Vec<u64>,
     turn: Option<u64>,
     #[serde(with = "crate::event::checkpoint_map")]
     configurations: HashMap<RouteSelectors, u64>,
     candidate: Option<SegmentMark>,
-    segments: Vec<SegmentMark>,
+    confirmed_segments: Vec<SegmentMark>,
+    compaction_reverts: Vec<(u64, u64)>,
     invalid_rewind: Option<String>,
 }
 
@@ -194,8 +216,18 @@ impl JournalIndex {
             } => {
                 self.agent(conversation).turns.entry(*turn).or_default().0 = true;
             }
-            EventPayload::MessageUser { conversation, .. } => {
-                self.agent(conversation).messages.push(event.id);
+            EventPayload::MessageUser {
+                conversation,
+                turn,
+                text,
+                job_delivery,
+                ..
+            } => {
+                self.agent(conversation).messages.push(MessageMark {
+                    id: event.id,
+                    turn: *turn,
+                    preview: (!job_delivery).then(|| text.chars().take(160).collect()),
+                });
             }
             EventPayload::ConversationRollback { .. }
             | EventPayload::ConversationRollbackUndone { .. } => self.rewinds.push(event.clone()),
@@ -228,6 +260,9 @@ impl JournalIndex {
                         return None;
                     };
                     let record = &value["record"];
+                    if record["operation"] != "message_rewind" {
+                        return None;
+                    }
                     let agent = record["address"].as_str()?;
                     let target_event_id = record["target_event_id"].as_u64()?;
                     (target_event_id < event.id
@@ -235,13 +270,32 @@ impl JournalIndex {
                             .agents
                             .get(agent)?
                             .messages
-                            .binary_search(&target_event_id)
+                            .binary_search_by_key(&target_event_id, |message| message.id)
                             .is_ok())
                     .then(|| MessageRewind {
                         event_id: event.id,
                         target_event_id,
                         agent: agent.into(),
                     })
+                })
+                .collect(),
+            editable: self
+                .agents
+                .iter()
+                .map(|(address, facts)| {
+                    let mut turns = HashMap::<u64, Vec<UserMessagePreview>>::new();
+                    for message in &facts.messages {
+                        if let Some(text) = &message.preview {
+                            turns
+                                .entry(message.turn)
+                                .or_default()
+                                .push(UserMessagePreview {
+                                    event_id: message.id,
+                                    text: text.clone(),
+                                });
+                        }
+                    }
+                    (address.clone(), turns)
                 })
                 .collect(),
         }
@@ -256,11 +310,16 @@ impl JournalIndex {
                 .last()
                 .copied()
         };
-        last_before(&agent.messages).unwrap_or_default().max(
-            last_before(&agent.admissions)
-                .unwrap_or_default()
-                .saturating_sub(1),
-        )
+        agent.messages[..agent
+            .messages
+            .partition_point(|message| message.id < target)]
+            .last()
+            .map_or(0, |message| message.id)
+            .max(
+                last_before(&agent.admissions)
+                    .unwrap_or_default()
+                    .saturating_sub(1),
+            )
     }
 
     pub(super) fn rewind_controls(&self) -> Vec<StoredEvent> {
@@ -282,14 +341,30 @@ impl JournalIndex {
         if let Some(error) = &agent.invalid_rewind {
             return Err(Error::InvalidEventStream(error.clone()));
         }
+        let hidden = hidden_history(self.rewinds.iter(), address);
+        let mut segments = agent.confirmed_segments.iter().rev().filter(|segment| {
+            hidden_range(&hidden, segment.id).is_none()
+                && hidden_range(&hidden, segment.confirmed).is_none()
+                && !agent.compaction_reverts.iter().any(|&(at, first)| {
+                    first <= segment.id
+                        && segment.confirmed < at
+                        && hidden_range(&hidden, at).is_none()
+                })
+        });
+        let segment = segments.next().copied();
+        let checkpoint = segment
+            .filter(|mark| mark.checkpoint)
+            .or_else(|| segments.find(|mark| mark.checkpoint).copied())
+            .map(|mark| mark.id);
+        // Rewinds can keep admissions recorded later for messages that survived the cut.
+        let jumps = self.rewinds.iter().filter(|event| {
+            matches!(&event.payload, EventPayload::Unknown(value)
+                if value["record"]["operation"] == "history_jump")
+        });
         Ok(ContextMarks {
-            segment: agent.segments.last().copied(),
-            checkpoint: agent
-                .segments
-                .iter()
-                .rev()
-                .find(|segment| segment.checkpoint)
-                .map(|segment| segment.id),
+            segment,
+            checkpoint,
+            hidden: hidden_history(jumps, address),
             configurations: agent
                 .configurations
                 .iter()
@@ -314,6 +389,7 @@ impl JournalIndex {
                     agent.candidate = Some(SegmentMark {
                         id,
                         turn: agent.turn,
+                        confirmed: 0,
                         checkpoint: false,
                     });
                 }
@@ -332,7 +408,8 @@ impl JournalIndex {
                         .filter(|segment| value["segment"] == segment.id)
                     {
                         candidate.checkpoint = checkpoint;
-                        agent.segments.push(candidate);
+                        candidate.confirmed = id;
+                        agent.confirmed_segments.push(candidate);
                         agent.candidate = None;
                     }
                 }
@@ -369,25 +446,29 @@ impl JournalIndex {
                 }
             }
             "inputs_accepted" => self.agent(address).admissions.push(id),
-            "message_rewind" => {
+            "message_rewind" | "history_jump" => {
                 let target = record["target_event_id"].as_u64();
-                self.agent(address)
-                    .rewind(target, "message rewind has no target event");
+                let agent = self.agent(address);
+                agent.discard_candidate(target, "history change has no target event");
                 if let Some(target_event_id) = target {
                     self.rewinds.push(StoredEvent {
                         id,
                         payload: EventPayload::Unknown(serde_json::json!({
                             "id":id,"kind":"runtime.operation","record":{
-                                "operation":"message_rewind","address":address,"target_event_id":target_event_id
+                                "operation":operation,"address":address,"target_event_id":target_event_id
                             }
                         })),
                     });
                 }
             }
-            "compaction_reverted" => self.agent(address).rewind(
-                record["segment"].as_u64(),
-                "compaction rewind has no segment",
-            ),
+            "compaction_reverted" => {
+                let agent = self.agent(address);
+                let target = record["segment"].as_u64();
+                agent.discard_candidate(target, "compaction rewind has no segment");
+                if let Some(target) = target {
+                    agent.compaction_reverts.push((id, target));
+                }
+            }
             _ => {}
         }
     }
@@ -399,13 +480,11 @@ impl AgentFacts {
             .insert(RouteSelectors::from_agent_config(config), id);
     }
 
-    fn rewind(&mut self, target: Option<u64>, error: &'static str) {
+    fn discard_candidate(&mut self, target: Option<u64>, error: &'static str) {
         let Some(target) = target else {
             self.invalid_rewind.get_or_insert_with(|| error.into());
             return;
         };
-        self.segments
-            .truncate(self.segments.partition_point(|segment| segment.id < target));
         if self.candidate.is_some_and(|segment| segment.id >= target) {
             self.candidate = None;
         }

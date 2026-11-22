@@ -105,7 +105,6 @@ impl RewindGroupState {
         if let Some(turn) = self.summary.turn_number {
             title.push_str(&format!(" · Turn {turn}"));
         }
-        title.push_str(&format!(" · {} entries", self.summary.entry_count));
         self.push_text(
             &title,
             width,
@@ -244,7 +243,14 @@ impl RewindGroupState {
             target_event_id: self.summary.target_event_id,
             agent: self.summary.agent.clone(),
             label: GROUP_LABEL.to_owned(),
-            summary: format!("{turn}{} entries{status}", self.summary.entry_count),
+            summary: format!(
+                "{turn}{}{status}",
+                if self.expanded {
+                    "Expanded"
+                } else {
+                    "Collapsed"
+                }
+            ),
             expanded: self.expanded,
             can_load_more: self.expanded
                 && self.next_before.is_some()

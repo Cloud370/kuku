@@ -6,7 +6,6 @@ use crossterm::event::{
 use kuku_client::{Action, AgentConfig, Error, Target, Timing};
 use ratatui::buffer::Buffer;
 
-use self::rewind::rewind_instructions;
 use crate::app::{Address, App, Modal, PendingItem, PendingStage};
 use crate::editor::Editor;
 use crate::jobs::{Job, Search, Selection};
@@ -149,6 +148,10 @@ impl App {
             self.reconnect();
             return;
         }
+        if Shortcut::REWIND.matches(key) {
+            self.rewind_from_menu();
+            return;
+        }
         if self.inline_key(key) {
             return;
         }
@@ -246,13 +249,28 @@ impl App {
             prompt.instructions_top = prompt.instructions_top.saturating_add_signed(amount);
             return;
         }
+        if matches!(prompt.kind, PromptKind::HistoryJump(_)) {
+            if Shortcut::ENTER.matches(key) {
+                self.confirm_history_jump();
+            } else if key.code == KeyCode::Char(' ')
+                && key.modifiers.is_empty()
+                && key.kind == KeyEventKind::Press
+            {
+                self.toggle_history_jump_files();
+            }
+            return;
+        }
         if Shortcut::ENTER.matches(key) {
-            if let PromptKind::RewindMessage { event_id, text, .. } = &prompt.kind {
+            if let PromptKind::RewindMessage {
+                event_id,
+                text,
+                restore_files,
+            } = &prompt.kind
+            {
                 let event_id = *event_id;
                 let text = text.clone();
-                let restore_files = self.rewind_restore_files;
+                let restore_files = *restore_files;
                 self.modal = None;
-                self.rewind_restore_files = false;
                 self.rewind_message(event_id, text, restore_files);
                 return;
             }
@@ -312,16 +330,16 @@ impl App {
                 PromptKind::SaveValue { .. } => unreachable!("saved value handled above"),
                 PromptKind::QueuedInput { .. } => unreachable!("queued input edited above"),
                 PromptKind::RewindMessage { .. } => unreachable!("rewind confirmed above"),
+                PromptKind::HistoryJump(_) => unreachable!("history switch confirmed above"),
             }
-        } else if key.code == KeyCode::Char(' ')
-            && key.modifiers.is_empty()
-            && matches!(prompt.kind, PromptKind::RewindMessage { .. })
-        {
-            self.rewind_restore_files = !self.rewind_restore_files;
-            if let PromptKind::RewindMessage { text, .. } = &prompt.kind {
-                prompt.instructions = rewind_instructions(text, self.rewind_restore_files);
+        } else if let PromptKind::RewindMessage { restore_files, .. } = &mut prompt.kind {
+            if key.code == KeyCode::Char(' ')
+                && key.modifiers.is_empty()
+                && key.kind == KeyEventKind::Press
+            {
+                *restore_files = !*restore_files;
             }
-        } else if !matches!(prompt.kind, PromptKind::RewindMessage { .. }) {
+        } else {
             let multiline = prompt.kind.multiline();
             edit(&mut prompt.editor, key, self.modal_editor_width, multiline);
         }
@@ -415,11 +433,17 @@ impl App {
     }
 
     fn choose(&mut self, picker: PickerKind, choice: ChoiceKind, ticket: u64) {
-        if matches!(picker, PickerKind::Rewind) && !self.rewind_picker_current(ticket) {
+        if matches!(picker, PickerKind::Rewind | PickerKind::HistoryJump)
+            && !self.rewind_picker_current(ticket)
+        {
             return;
         }
         if let ChoiceKind::RewindMessage { event_id, turn, .. } = &choice {
             self.load_rewind_source(ticket, *event_id, *turn);
+            return;
+        }
+        if let ChoiceKind::HistoryJumpReview(destination) = choice {
+            self.review_history_jump(destination);
             return;
         }
         if let ChoiceKind::Command(command) = choice {
@@ -489,6 +513,8 @@ impl App {
             ChoiceKind::RewindMessage { .. } => {
                 unreachable!("rewind messages load their source before confirmation")
             }
+            ChoiceKind::HistoryJumpLatest => self.open_history_jump(),
+            ChoiceKind::HistoryJumpReview(_) => unreachable!("history destination reviewed above"),
             ChoiceKind::MessageEntry(message) => self.open_message_actions(message),
             ChoiceKind::MessageAction { message, action } => {
                 self.execute_message_action(message, action)
@@ -778,9 +804,10 @@ fn pending_label(item: &PendingItem) -> String {
         Action::Configure { .. } => "Change settings".to_owned(),
         Action::ReplyQuestion { .. } => "Answer question".to_owned(),
         Action::ReplyPermission { .. } => "Respond to authorization".to_owned(),
-        Action::Withdraw { .. } => "Withdraw input".to_owned(),
+        Action::Withdraw { .. } => "Remove input from queue".to_owned(),
         Action::Compact => "Compact context".to_owned(),
         Action::RestoreContext => "Restore context".to_owned(),
+        Action::HistoryJump { .. } => "Switch conversation branch".to_owned(),
         Action::Advance => "Continue Agent".to_owned(),
         Action::Cancel { .. } => "Interrupt execution".to_owned(),
     }

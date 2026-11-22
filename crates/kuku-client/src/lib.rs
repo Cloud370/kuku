@@ -19,6 +19,7 @@ pub use kuku::execution::{
 };
 pub use kuku::query::ModelPhase;
 pub use kuku::session::runtime::SessionCostSummary;
+pub use kuku::session::{FileRewindChange, FileRewindPreview};
 pub use kuku::{
     AgentConfig, AgentSelection, AgentSnapshot, AgentStatus, Input, InputSource, InputStatus,
     InputTiming, JobResult, JobSnapshot, JobStatus, NamedValue, NamedValueKind, NamedValueSource,
@@ -31,9 +32,10 @@ pub use pending::PendingStore;
 pub use subscription::{InputDelivery, Observation, Subscription, SubscriptionUpdate};
 pub use types::{
     Acknowledgement, Action, AgentProgress, AgentSettlement, AgentSummary, ApiError, Command,
-    EventPage, HistoryEntry, HistoryKind, HistoryPage, ModelDefaultPlan, ReplyPreview,
-    RetryFailureKind, RetryMetadata, RetryPhase, RetrySource, RetryStopReason, RewindGroup,
-    RewindGroupPage, SessionStatus, SessionSummary, Snapshot, Target, Timing,
+    EventPage, HistoryDestination, HistoryDestinations, HistoryEntry, HistoryKind, HistoryPage,
+    ModelDefaultPlan, ReplyPreview, RetryFailureKind, RetryMetadata, RetryPhase, RetrySource,
+    RetryStopReason, RewindGroup, RewindGroupPage, SessionStatus, SessionSummary, Snapshot, Target,
+    Timing,
 };
 pub use workspace::{ConnectionSummary, ModelCatalog, SkillSummary, TierSummary};
 

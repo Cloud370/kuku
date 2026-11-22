@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use super::{ensure_path_within_workspace, RevertPlan};
@@ -20,6 +21,7 @@ impl FileRevertTransaction {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn apply_message_rewind_files(
     plan: &RevertPlan,
     workspace: &Path,
@@ -29,11 +31,41 @@ pub(crate) fn apply_message_rewind_files(
     apply_message_rewind_files_inner(plan, workspace, session_dir, rewind_event_id, None)
 }
 
+#[cfg(test)]
 pub(super) fn apply_message_rewind_files_inner(
     plan: &RevertPlan,
     workspace: &Path,
     session_dir: &Path,
     rewind_event_id: u64,
+    fail_after: Option<usize>,
+) -> Result<(FileRevertTransaction, Vec<String>), std::io::Error> {
+    apply_files(
+        plan,
+        workspace,
+        session_dir,
+        rewind_event_id,
+        None,
+        fail_after,
+    )
+}
+
+pub(crate) fn apply_verified_file_rewind(
+    plan: &RevertPlan,
+    workspace: &Path,
+    session_dir: &Path,
+    event_id: u64,
+    expected: &BTreeMap<PathBuf, String>,
+) -> Result<FileRevertTransaction, std::io::Error> {
+    apply_files(plan, workspace, session_dir, event_id, Some(expected), None)
+        .map(|(transaction, _)| transaction)
+}
+
+fn apply_files(
+    plan: &RevertPlan,
+    workspace: &Path,
+    session_dir: &Path,
+    rewind_event_id: u64,
+    expected: Option<&BTreeMap<PathBuf, String>>,
     fail_after: Option<usize>,
 ) -> Result<(FileRevertTransaction, Vec<String>), std::io::Error> {
     let canonical_workspace = workspace
@@ -49,6 +81,17 @@ pub(super) fn apply_message_rewind_files_inner(
     for path in paths {
         ensure_path_within_workspace(&canonical_workspace, path)?;
         let original = path.exists().then(|| std::fs::read(path)).transpose()?;
+        if let Some(expected) = expected {
+            let observed = original
+                .as_ref()
+                .map(|bytes| crate::tool::builtin::common::content_hash(bytes));
+            if observed.as_ref() != expected.get(path) {
+                return Err(std::io::Error::other(format!(
+                    "{} changed after the file preview",
+                    path.display()
+                )));
+            }
+        }
         if let (Some(bytes), Ok(relative)) = (&original, path.strip_prefix(&canonical_workspace)) {
             let backup_path = backup_dir.join(relative);
             if let Some(parent) = backup_path.parent() {

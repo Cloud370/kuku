@@ -44,18 +44,34 @@ Put options before the prompt in `kuku run`, because it consumes the remaining w
 
 ## Terminal interface
 
+### Send, edit, or stop
+
+| What you want to do | Where to do it |
+|---|---|
+| Send a message now or as soon as the Agent can take it | Press Enter. If the Agent is busy, it can pick up the message during the current turn. |
+| Have the Agent handle a message on the next turn | Press Alt+Enter to put it in **Pending inputs**. |
+| Change a message still in **Pending inputs** | Click it, or press ↑ from an empty draft. Press Enter to edit it or Delete to remove it from the queue. |
+| Stop the current turn | Press Esc from the main screen while the Agent is working. The conversation so far stays available. |
+
+### Edit a past message or continue from history
+
+Press Ctrl+G while the Agent is idle, or enter `/rewind`. `/jump` opens the same list. Current and saved turns appear in chronological order, with the latest selected at the bottom. Scroll up to load earlier turns.
+
+Choose a finished turn and press Enter to review it. Press Enter again to switch the conversation through that turn, including its replies and tool results. Its original message goes into an empty composer as an unsent draft. An existing draft stays in place. You can return to a turn marked **Saved** from the same list.
+
+Files stay as they are by default. When going back in the current history, press Space in the confirmation to see the files eligible for restoration and their line counts where available. Press Enter to switch the conversation and apply the displayed file changes. If the preview finds no restorable files, Enter switches the conversation and keeps the current files. [What rewind changes](../how-it-works/sessions.md#message-rewind)
+
+### More terminal controls
+
 | Key or action | Behavior |
 |---|---|
 | Ctrl+C | Clear the draft. With an empty draft, exit the TUI. Running work continues on the server. Inside an editor dialog, clear the focused input. |
-| Enter | Send the draft. A busy Agent accepts it at the next safe model-request boundary, or in the next Turn if the current Turn settles first. |
-| Alt+Enter | Queue the draft for the next Turn. |
 | Shift+Enter or Ctrl+J | Insert a newline in the draft. |
-| Esc | Close a panel or dialog, or go back one step in a confirmation. Closing a question editor saves the answer draft by request ID. On the main screen, interrupt Running or cleanup work even with contextual, queue or request focus. In an idle empty composer, press Esc again after the hint to open message rewind. |
+| Esc | Close a panel or dialog, or leave a focused control. Closing a question editor saves its draft. With an idle Agent and an empty draft, press Esc again after the hint to open conversation history. |
 | Ctrl+P or F1 | Show read-only shortcut help. The draft is preserved; Enter and clicks do not run actions from help. |
 | `/` in an empty composer, or after Ctrl+P | Search actions and Skills in a list above the composer. Choosing a Skill inserts an editable `/skill:NAME` prefix for the next send. |
 | `@` or Tab | Complete workspace-relative paths as draft text. |
 | Alt+← or Alt+→ | Switch directly to the previous or next Agent. The order wraps and starts with `main`, followed by the other addresses in sorted order. |
-| Empty draft + ↑, or click an editable Pending inputs row | Select that exact queued input inline. Up/Down changes selection; Enter edits it; Delete withdraws it; Esc returns to the composer unless work is Running or cleaning up, when Esc interrupts. |
 | F2 outside editors | Cycle visible controls in order: request, authentication repair when available, Continue or Stop, pending-delivery recovery, Previous Agent, service actions, then Messages. F2 or click opens a question's answer editor; Esc saves its unsent answer by request ID and preserves the main draft. F2 or click focuses a permission request. Enter activates focused controls; clicks on other side-effect controls only focus them. Esc interrupts Running/cleanup work regardless of focus; otherwise it dismisses that focus. Ctrl+R reconnects. |
 | Permission request card | Choose **Deny** or **Allow once** with Left/Right or a click, then press Enter. F2, Left, Enter is the keyboard Deny path. While Waiting, Esc leaves focus without answering or interrupting. |
 | Ctrl+T | Cycle the selected model's supported thinking levels for this Agent at the next safe request boundary. Keep the draft and reading position. |
@@ -70,9 +86,7 @@ Put options before the prompt in `kuku run`, because it consumes the remaining w
 | Arrow keys, Tab, Enter in a menu | Move the highlight, complete editable text, or activate the selected action, respectively. |
 | `exit` or `quit` | With only that lowercase word, optional surrounding spaces, and no attachments, Enter or Alt+Enter opens **Exit kuku?** beside the draft. Press Y to exit or Esc to keep editing. |
 
-In a selection dialog, click a row to highlight it. A click can switch the viewed Agent or Session, open a model ID editor, or show transcript details and retained output. The Messages header button opens the entry selector, where clicking an entry opens its actions and clicking an action runs it. Applying a tier or reasoning setting, deciding an authorization, withdrawing an input or restarting still requires Enter.
-
-When the Agent is idle and the composer is empty, use `/rewind` to choose a user message. You can also press Esc, wait for the hint, and press Esc again. At the earliest displayed message, Up or Page Up loads earlier history without losing the selected message. The selector shows loading or retry feedback. Its bounded window discards newer unselected messages when full; reopen rewind to return to recent messages. Enter reads the original text before opening confirmation for that exact message. If reading fails, Enter retries. Esc cancels without changing the draft or history. See [message rewind](../how-it-works/sessions.md#message-rewind) for the effect of confirmation and optional recorded-file restoration.
+In a selection dialog, click a row to highlight it. A click can switch the viewed Agent or Session, open a model ID editor, or show transcript details and retained output. The Messages header button opens the entry selector, where clicking an entry opens its actions and clicking an action runs it. Applying a tier or reasoning setting, deciding an authorization or restarting still requires Enter.
 
 Continue acknowledgements appear briefly and do not replace an existing error. Narrow focused-control hints keep the Esc action visible.
 
@@ -84,7 +98,7 @@ Search by the command or any alias. The list shows the canonical spelling. Tab c
 |---|---|---|
 | `/new` | `/new-session` | Open a blank draft and keep the prior Session available. |
 | `/resume` | `/sessions` | Find a retained Session in the workspace. |
-| `/rewind` | `/backtrack` | Select an earlier user message in the current Session and review the rewind before confirming. |
+| `/rewind` | `/backtrack`, `/jump` | Open the conversation history and switch to a selected Turn. |
 | `/compact` | `/compress`, `/summarize` | Summarize earlier context for the selected Agent once its running work settles. The transcript shows progress, elapsed time, request sizes and an expandable checkpoint. Use `/compact retry` after a failure, or `/compact undo` to restore the previous context without removing messages. |
 | `/agents` | `/agent`, `/subagents` | Search the Session's Agents, switch recipients or create an Agent. The selector shows activity, pending requests, queue counts and task excerpts when available. |
 | `/jobs` | `/job`, `/ps` | List the selected Agent's background jobs with their original title and current status. The input area shows the running count when there is room. Select a job to cancel it or read its available output. Use `/jobs cancel <id>` to cancel by ID. A completion entry in `/messages` can also open its retained output. |
@@ -111,7 +125,7 @@ The command card shows the executable and arguments. If a call has a title, the 
 
 A workspace script card shows completed host actions and observed file changes. Expand it for action outcomes, including partial or unknown work. Choose the script in **Messages**, then **Full output**, to open retained captures from individual script actions.
 
-Sent text appears immediately in **Pending inputs**, above the composer. The same input shows its send, receipt, queue or failure state until it is admitted to the transcript. Unconfirmed sends and queued inputs can be recovered on reopen. The action picker does not list `/queue`, `/queued`, `/withdraw`, or `/reply`. Select an ordinary queued input with Up from an empty draft or by clicking its row; the selection stays tied to that input as the list changes. Enter opens an isolated editor and Delete withdraws the selected input. If its receipt arrives before the full details, the TUI retains that action until the matching snapshot arrives; changing the target, focus or draft cancels the wait. Esc interrupts Running or cleanup work; otherwise it returns to the composer. If the input has already left the queue, the TUI reports the stale selection and does not act on another row. A pending question or permission is also shown in a card above the composer without taking focus. F2 or a click focuses it; answering a question uses its request ID, and permissions require an explicit Deny or Allow once choice before Enter. If the Agent admits an input first, its admitted text stays in the transcript.
+Sent messages waiting to be processed appear in **Pending inputs**. Messages move into the transcript when the Agent takes them. Reopening the Session also lets you recover sends awaiting confirmation.
 
 Messages delivered by another Agent show the sender's address, for example `From main`, including when they open a Turn.
 

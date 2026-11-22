@@ -18,14 +18,17 @@ mod apply;
 #[path = "revert_message_rewind.rs"]
 mod message_rewind;
 
-pub(crate) use apply::{apply_message_rewind_files, FileRevertTransaction};
+#[cfg(test)]
+pub(crate) use apply::apply_message_rewind_files;
+pub(crate) use apply::{apply_verified_file_rewind, FileRevertTransaction};
 pub(crate) use message_rewind::event_owner_with;
 pub use message_rewind::event_owners;
 use message_rewind::{event_owner, event_turn_owners};
 #[path = "revert_message_plan.rs"]
 mod message_plan;
 pub use message_plan::compute_message_rewind_plan;
-pub(crate) use message_plan::plan_journal_rewind;
+pub(crate) use message_plan::plan_file_rewind;
+pub use message_plan::{FileRewindChange, FileRewindPreview};
 
 const REVERTABLE_KINDS: &[&str] = &["file_edit", "file_write", "memory_write", "forget_memory"];
 
@@ -81,44 +84,39 @@ pub fn filter_rolled_back_events(events: &[StoredEvent]) -> Vec<&StoredEvent> {
 
 pub(crate) struct RewindVisibility {
     rollbacks: HashMap<String, ActiveRollback>,
-    rewinds: Vec<(u64, String, u64)>,
+    hidden: HashMap<String, Vec<std::ops::Range<u64>>>,
 }
 
 impl RewindVisibility {
     pub(crate) fn new(controls: &[StoredEvent]) -> Self {
+        use crate::event::history::{hidden_history, history_cut};
+        let addresses: HashSet<_> = controls
+            .iter()
+            .filter_map(|event| history_cut(event).map(|(agent, _)| agent))
+            .collect();
         Self {
             rollbacks: active_conversation_rollbacks(controls),
-            rewinds: controls
-                .iter()
-                .filter_map(message_rewind)
-                .map(|(id, agent, target)| (id, agent.to_owned(), target))
+            hidden: addresses
+                .into_iter()
+                .map(|agent| (agent.to_owned(), hidden_history(controls.iter(), agent)))
                 .collect(),
         }
     }
 
-    pub(crate) fn includes(&self, event: &StoredEvent, owner: Option<&str>) -> bool {
-        !self.rewinds.iter().any(|(id, address, target)| {
-            owner == Some(address.as_str()) && event.id >= *target && event.id < *id
-        }) && !event_conversation_key(&event.payload)
-            .and_then(|conversation| self.rollbacks.get(conversation))
-            .is_some_and(|rollback| event_hidden_by_rollback(&event.payload, event.id, rollback))
+    pub(crate) fn hidden_start(&self, agent: &str, id: u64) -> Option<u64> {
+        crate::event::history::hidden_range(self.hidden.get(agent)?, id).map(|range| range.start)
     }
-}
 
-fn message_rewind(event: &StoredEvent) -> Option<(u64, &str, u64)> {
-    let EventPayload::Unknown(value) = &event.payload else {
-        return None;
-    };
-    let record = &value["record"];
-    (value["kind"] == "runtime.operation" && record["operation"] == "message_rewind").then(
-        || {
-            Some((
-                event.id,
-                record["address"].as_str()?,
-                record["target_event_id"].as_u64()?,
-            ))
-        },
-    )?
+    pub(crate) fn includes(&self, event: &StoredEvent, owner: Option<&str>) -> bool {
+        owner
+            .and_then(|owner| self.hidden_start(owner, event.id))
+            .is_none()
+            && !event_conversation_key(&event.payload)
+                .and_then(|conversation| self.rollbacks.get(conversation))
+                .is_some_and(|rollback| {
+                    event_hidden_by_rollback(&event.payload, event.id, rollback)
+                })
+    }
 }
 
 fn active_conversation_rollbacks(events: &[StoredEvent]) -> HashMap<String, ActiveRollback> {

@@ -48,7 +48,6 @@ fn expanding_rewind_group_focuses_history_and_escape_restores_multiline_draft() 
             target_event_id: 2,
             agent: "main".into(),
             turn_number: Some(1),
-            entry_count: 7,
         }],
         next_before: None,
     });

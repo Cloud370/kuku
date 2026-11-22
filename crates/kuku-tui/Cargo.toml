@@ -18,7 +18,7 @@ kuku = { workspace = true }
 kuku-client = { path = "../kuku-client" }
 open = "5"
 pulldown-cmark = { version = "0.13", default-features = false }
-ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
+ratatui = { version = "0.30", default-features = false, features = ["crossterm", "unstable-rendered-line-info"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.10"

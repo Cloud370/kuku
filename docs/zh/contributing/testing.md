@@ -77,7 +77,7 @@ python3 scripts/acceptance/run.py interactive --desktop --archive PATH_TO_WINDOW
 
 终端场景在 Linux 和 macOS 通过 Unix PTY 驱动安装好的 `kuku`，在 Windows 使用 ConPTY。公共终端模拟器在 DEC 同步刷新期间保留上一帧，提交后才提供新帧；[协议测试](../../../apps/kuku/tests/terminal_state.rs)覆盖分片更新、调整大小和光标报告。用带内嵌资源的二进制和 `--browser` 选项可加入 Chromium 场景。按 [CI 浏览器准备步骤](../../../.github/workflows/ci.yml) 安装 Playwright Python 包和 Chromium。场景使用可控的本地模型端点，实际运行客户端和服务，无需模型凭据或付费请求。各层需要验证的行为见[交互客户端计划](../architecture/interactive-clients.md#开发时如何测试)。场景通过原生终端操作 Ctrl+C 和菜单补全，分别保持模型请求与工具处于运行中以核对显示状态，并在服务断开时检查连接指示。本地模型端点报告已知的输入、缓存读取和输出 token 数，供安装后的终端核对上下文占用、累计 token 和缓存命中率，并检查实测 TPS、Agent 地址与工作目录。
 
-维护中的生命周期场景从缺失凭据修复走到首个已认证回复，保存默认模型并检查新建和重开 Session 实际使用的模型，以及用键盘 ↑/Delete 撤回精确排队输入，同时保留其草稿和另一条排队输入。场景也会重开只读回退内容并核对下一次 provider 请求不含被排除的内容，跨过最近 48 条已提交消息选择精确回退目标，并用受控的 401 验证遮蔽凭据更新和安全服务重启。认证修复场景确认只有显式 Continue 才会用替换凭据重试保留的原输入，且仅重试一次。键盘覆盖与现有鼠标撤回检查并存。
+维护中的生命周期场景从缺失凭据修复走到首个已认证回复，保存默认模型并检查新建和重开 Session 实际使用的模型，以及用键盘 ↑/Delete 撤回精确排队输入，同时保留其草稿和另一条排队输入。场景也会重开只读回退内容并核对下一次 provider 请求不含被排除的内容，跨过最近 48 条已提交消息选择精确回退目标，并用受控的 401 验证遮蔽凭据更新和安全服务重启。认证修复场景确认只有显式 Continue 才会用替换凭据重试保留的原输入，且仅重试一次。键盘覆盖与现有鼠标撤回检查并存。文件恢复场景验证空预览仍可提交对话切换，并验证应用非空预览时会保留脚本和命令的改动。
 
 原生冒烟场景在 60 和 120 列下验证输入框操作，包括斜杠补全、Ctrl+T、Agent 与模型的思考设置，以及服务请求仍在运行时的内联退出确认。用 `interactive --native-smoke --binary PATH_TO_BINARY` 或 `--archive PATH_TO_PLATFORM_ARCHIVE` 在目标平台检查候选版本。终端画面保存在 `installed-interactive.log`。[输入框场景](../../../scripts/acceptance/interactive_composer.py)
 
@@ -210,6 +210,8 @@ tmux capture-pane -p -t kuku-review
 等界面显示 `Ready`，进到要验收的页面，抓一张当前画面确认状态。例如验收恢复会话时，先打开 `/resume` 并停在选择页。普通终端用 `tmux attach -t kuku-review` 接入，已经在 tmux 里则用 `tmux switch-client -t kuku-review`。在 TUI 中用滚轮或 Page Up 和 Page Down 翻页，按 Ctrl+End 回到最新输出。
 
 开发者操作复现，Agent 抓取同一个窗格的画面并核对对应事件。在编码会话里讨论并修改，从修改后的 checkout 重新构建。新版本在另一个 tmux 窗口启动，使用自己的测试数据副本和数据目录。保留原窗口，双方可以来回对照同一个操作，再继续迭代。共享窗格里的键盘输入由双方轮流操作。
+
+给对照窗口命名，方便双方定位到同一个版本。按 `Ctrl+b` 再按 `w` 选择窗口，或按 `Ctrl+b` 再按窗口编号直接切换。例如新版窗口名为 `after` 时，Agent 可以用 `tmux capture-pane -p -t kuku-review:after` 抓取该窗口的画面，开发者可继续操作其他窗口。
 
 每个并发案例用独立的会话名。不同 worktree 或不同版本做并排对照时，各自指定 `--data-dir` 和 `--config` 来隔离受管服务。查任务进度、工具结果或请求边界时，沿用相同连接和工作区选项，先用 `kuku events SESSION_ID --limit 40` 读取一小段事件。需要核对界面时用 `capture-pane`，相关画面随验收证据留存。测试选择器方向键时准备至少两个可选项。颜色丢失时，检查启动环境的 `TERM` 和 `NO_COLOR`，用 `infocmp` 确认终端能力。
 

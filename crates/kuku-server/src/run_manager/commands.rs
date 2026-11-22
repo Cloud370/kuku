@@ -115,6 +115,15 @@ impl RunManager {
                 return Ok(CommandResult::new(receipt, replayed, None).with_warnings(warnings));
             }
             Command::Compact => open.session.compact_command(command_id, address),
+            Command::HistoryJump {
+                target_event_id,
+                file_restore,
+            } => open.session.jump_history_with_file_restore(
+                command_id,
+                address,
+                target_event_id,
+                file_restore.as_deref(),
+            ),
             Command::RestoreContext => open.session.restore_context_command(command_id, address),
             Command::Advance => open.session.advance_command(command_id, address),
             Command::Cancel { execution_id } => {
@@ -171,6 +180,7 @@ fn activating(command: &Command, session: &Session, address: &str) -> bool {
         | Command::Withdraw { .. }
         | Command::ReplaceQueued { .. }
         | Command::RewindMessage { .. }
+        | Command::HistoryJump { .. }
         | Command::RestoreContext
         | Command::Cancel { .. } => false,
     }

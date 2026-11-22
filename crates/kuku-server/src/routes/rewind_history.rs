@@ -5,7 +5,6 @@ use axum::http::StatusCode;
 use axum::Json;
 use kuku::event::EventStore;
 use kuku::session::{MessageRewind, SessionHistory};
-use kuku_client::RewindGroup;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -21,34 +20,6 @@ pub(super) struct Query {
     agent: String,
     before: Option<u64>,
     limit: Option<usize>,
-}
-
-pub(super) fn summary(
-    history: &SessionHistory,
-    turns: &TurnLookup,
-    rewind: &MessageRewind,
-    turn: u64,
-) -> Result<RewindGroup> {
-    let mut before = None;
-    let mut entry_count = 0;
-    loop {
-        let (events, next) = history.rewind_page(rewind, before, events::READ_PAGE_SIZE)?;
-        entry_count += events
-            .iter()
-            .filter(|event| history_entry_for_agent(event, turns, &rewind.agent).is_some())
-            .count();
-        before = next;
-        if before.is_none() {
-            break;
-        }
-    }
-    Ok(RewindGroup {
-        rewind_event_id: rewind.event_id,
-        target_event_id: rewind.target_event_id,
-        agent: rewind.agent.clone(),
-        turn_number: turns.number(&rewind.agent, turn),
-        entry_count,
-    })
 }
 
 pub(super) async fn history(
