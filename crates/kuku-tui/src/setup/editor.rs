@@ -72,7 +72,7 @@ impl ModelEditor {
         match self.state.finish.take() {
             Some(Finish::Cancel) => ModelEditorAction::Cancel,
             Some(Finish::SaveAndContinue | Finish::SaveAndExit) => ModelEditorAction::Save,
-            None => ModelEditorAction::None,
+            Some(Finish::UseTrialWorkspace) | None => ModelEditorAction::None,
         }
     }
 

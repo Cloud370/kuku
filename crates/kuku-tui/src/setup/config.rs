@@ -11,7 +11,7 @@ use kuku::config::{
     ProviderProfile, RequestedOutput, ThinkLevel,
 };
 use kuku::session::AgentConfig;
-use kuku::util::{is_valid_private_key, private_directory, sync_private_file};
+use kuku::util::{is_valid_private_key, sync_private_file};
 use kuku_client::ConnectionOptions;
 use tempfile::Builder;
 use toml_edit::{value, DocumentMut, InlineTable, Item, Table, Value};
@@ -30,7 +30,7 @@ pub(super) struct Settings {
     pub(super) resolved: Config,
     pub(super) default_tier: String,
     pub(super) existing: bool,
-    storage_error: Option<&'static str>,
+    pub(super) storage_error: Option<&'static str>,
 }
 
 impl Settings {
@@ -127,11 +127,11 @@ impl Settings {
             existing: loaded.existing,
             storage_error: None,
         };
-        settings.storage_error = if settings.credentials_dir.starts_with(&settings.workspace) {
-            Some("Stored keys are disabled because credentials would be inside the workspace; use a different --data-dir or Environment.")
+        settings.storage_error = if settings.key_store_inside_workspace() {
+            Some("The key store is inside this workspace.")
         } else {
             settings.check_storage(false).err().map(|_| {
-                "Stored keys are unavailable because the credentials directory is not safe; use Environment or a different --data-dir."
+                "The credentials directory is unsafe or inaccessible.\nUse Environment or choose a different --data-dir."
             })
         };
         Ok(settings)
@@ -297,45 +297,6 @@ impl Settings {
             ConnectionChoice::Preset(_) | ConnectionChoice::Custom => None,
         }
     }
-
-    pub(super) fn can_store_key(&self) -> bool {
-        self.storage_error.is_none()
-    }
-
-    pub(super) fn storage_problem(&self) -> &'static str {
-        self.storage_error
-            .unwrap_or("Stored keys are unavailable; use the Environment source instead.")
-    }
-
-    fn check_storage(&self, create: bool) -> io::Result<()> {
-        let candidate = self.credentials_dir.as_path();
-        let canonical_data = self.data_dir.canonicalize()?;
-        let canonical_workspace = self.workspace.canonicalize()?;
-        let resolved_candidate = match fs::symlink_metadata(candidate) {
-            Ok(metadata) => {
-                if metadata.file_type().is_symlink() || !metadata.is_dir() {
-                    return Err(unsafe_storage());
-                }
-                candidate.canonicalize()?
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                canonical_data.join("credentials")
-            }
-            Err(_) => return Err(unsafe_storage()),
-        };
-        if resolved_candidate.starts_with(&canonical_workspace) {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "credential storage must be outside the workspace",
-            ));
-        }
-        if create {
-            private_directory(candidate).map_err(|_| unsafe_storage())?;
-        } else if candidate.is_dir() {
-            private_directory(candidate).map_err(|_| unsafe_storage())?;
-        }
-        Ok(())
-    }
 }
 
 fn preferred_source(
@@ -344,6 +305,7 @@ fn preferred_source(
     can_store_key: bool,
 ) -> CredentialSource {
     match key {
+        _ if !can_store_key => CredentialSource::Environment,
         Some(ApiKey::File(_) | ApiKey::Plaintext(_)) => CredentialSource::StoredKey,
         _ if environment_available => CredentialSource::Environment,
         _ if can_store_key => CredentialSource::StoredKey,
@@ -970,7 +932,7 @@ fn write_config(
     )
 }
 
-fn unsafe_storage() -> io::Error {
+pub(super) fn unsafe_storage() -> io::Error {
     io::Error::new(
         io::ErrorKind::PermissionDenied,
         "credential storage is not a safe private directory",

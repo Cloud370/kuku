@@ -142,13 +142,14 @@ pub(super) struct SetupState {
     pub(super) environment_detected: bool,
     pub(super) stored_key: Editor,
     pub(super) credential_source: CredentialSource,
+    pub(super) trial_workspace_selected: bool,
     pub(super) review_selection: usize,
     pub(super) finish: Option<Finish>,
     pub(super) problem: Option<String>,
     pub(super) recovery_model: Option<String>,
     pub(super) repair: Option<RepairDraft>,
-    saved_key_available: bool,
-    can_store_key: bool,
+    pub(super) saved_key_available: bool,
+    pub(super) can_store_key: bool,
 }
 
 impl SetupState {
@@ -200,6 +201,7 @@ impl SetupState {
             environment_detected: false,
             stored_key: Editor::default(),
             credential_source: CredentialSource::Environment,
+            trial_workspace_selected: false,
             review_selection: 0,
             finish: None,
             problem: None,
@@ -302,6 +304,13 @@ impl SetupState {
             }
             _ => {}
         }
+        if self.step == SetupStep::Credential
+            && matches!(previous, SetupStep::Network | SetupStep::ProxyAddress)
+            && Self::offers_trial_workspace(settings, mode)
+            && !self.environment_set()
+        {
+            self.step = SetupStep::CredentialSource;
+        }
         if self.step == SetupStep::Review
             && !matches!(previous, SetupStep::Review | SetupStep::TrialResults)
         {
@@ -394,29 +403,7 @@ impl SetupState {
             SetupStep::Rates => self.edit_rates(key),
             SetupStep::Advanced => self.choose_advanced(key, settings),
             SetupStep::Override => self.edit_override(key),
-            SetupStep::CredentialSource => match key.code {
-                KeyCode::Up | KeyCode::Left | KeyCode::Down | KeyCode::Right => {
-                    let source = match self.credential_source {
-                        CredentialSource::Environment => CredentialSource::StoredKey,
-                        CredentialSource::StoredKey => CredentialSource::Environment,
-                    };
-                    if source == CredentialSource::StoredKey
-                        && !settings.can_store_key()
-                        && !self.saved_key_available
-                    {
-                        self.problem = Some(settings.storage_problem().to_owned());
-                        return;
-                    }
-                    self.credential_source = source;
-                    if source == CredentialSource::Environment {
-                        self.refresh_environment_detection();
-                    }
-                    self.review_selection = 0;
-                    self.problem = None;
-                }
-                KeyCode::Tab | KeyCode::Enter => self.advance(settings),
-                _ => {}
-            },
+            SetupStep::CredentialSource => self.choose_credential_source(key, settings, mode),
             SetupStep::Credential => self.edit_credential(key, settings),
             SetupStep::Review | SetupStep::ReviewSettings => match key.code {
                 KeyCode::Up | KeyCode::Left => self.move_review(-1, mode),
@@ -503,7 +490,6 @@ impl SetupState {
                 }
             }
             SetupStep::Model => self.advance_from_model(settings),
-            SetupStep::CredentialSource => self.step = SetupStep::Credential,
             SetupStep::Credential => {
                 let valid = match self.credential_source {
                     CredentialSource::Environment => {
@@ -546,6 +532,7 @@ impl SetupState {
                 }
             }
             SetupStep::Consent
+            | SetupStep::CredentialSource
             | SetupStep::ManualConfig
             | SetupStep::Protocol
             | SetupStep::Address
@@ -591,6 +578,7 @@ impl SetupState {
             return;
         }
         self.models.cursor = 0;
+        self.trial_workspace_selected = false;
         self.step = match self.step {
             SetupStep::Consent => return,
             SetupStep::ManualConfig | SetupStep::Connection => SetupStep::Consent,
@@ -684,6 +672,7 @@ impl SetupState {
         let length = self.choices.len() as isize;
         self.selected = (self.selected as isize + direction).rem_euclid(length) as usize;
         self.load_selection(settings);
+        self.trial_workspace_selected = false;
         self.problem = None;
     }
 

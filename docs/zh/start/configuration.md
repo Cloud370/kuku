@@ -43,6 +43,8 @@ $KUKU_HOME/config.toml
 
 使用明确的 `api_key = "$VARIABLE_NAME"` 环境变量引用，或 `api_key = "file:<绝对路径>"`。交互式设置保存的新密钥位于服务数据目录，TOML 只记录绝对路径引用。文件是未加密明文。详见 [Config](../reference/config.md) 和[文件布局](../reference/file-layout.md)。
 
+登录目录包含密钥目录时，可选择 **Use a trial workspace** 粘贴密钥，并在数据目录下的 `trial-workspace/` 子目录中打开 kuku。密钥目录仍在工作区之外。也可以使用环境变量，或退出后运行 `kuku --workspace /path/to/project` 进入已有项目。之后可以通过 `--workspace` 指定试用工作区路径重新进入。
+
 环境变量由服务进程读取。如果在受管服务启动后修改了终端里的密钥，等服务空闲后从该终端运行 `kuku server restart`。使用远程连接时，在服务端机器上设置密钥。生效配置文件的修改通过校验后，服务会在打开 Session 时使用新配置。
 
 其他字符串设置也可以在 `config.toml` 中使用 `$ENV_VAR_NAME`。例如，`base_url = "$KUKU_ANTHROPIC_BASE_URL"` 会在加载配置时解析。

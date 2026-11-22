@@ -43,6 +43,8 @@ The default config defines two providers:
 
 Use an explicit `api_key = "$VARIABLE_NAME"` reference or `api_key = "file:<absolute-path>"`. The interactive settings flow stores new pasted keys under the service data directory and writes only the absolute file reference to TOML. These files are plaintext, not encrypted. See [Config](../reference/config.md) and [File layout](../reference/file-layout.md).
 
+When your login directory contains the key store, choose **Use a trial workspace** to paste a key and open kuku in the data directory's `trial-workspace/` subdirectory. The key store stays outside that workspace. You can continue with the Environment source or exit and run `kuku --workspace /path/to/project` for a project you already have. To return to the trial workspace later, pass its path to `--workspace`.
+
 Set the environment for the server process. If you change a key in your terminal after the managed service starts, run `kuku server restart` from that terminal when the service is idle. For a remote connection, configure the key on the server machine. After validating a change to the active config file, the service uses the new configuration when it opens Sessions.
 
 For other string settings, you can also use `$ENV_VAR_NAME` in `config.toml`. For example, `base_url = "$KUKU_ANTHROPIC_BASE_URL"` resolves during config load.

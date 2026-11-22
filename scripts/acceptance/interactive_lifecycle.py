@@ -2,12 +2,13 @@
 
 import difflib
 import json
+import os
 import re
 import threading
 import time
 from urllib.parse import urlencode
 
-from interactive_fixture import is_composer_heading, InstalledClient, Response, TOOL_OUTPUT, TOOL_PROGRAM, eventually, json_response, run_cases
+from interactive_fixture import is_composer_heading, InstalledClient, Response, TOOL_OUTPUT, TOOL_PROGRAM, Terminal, eventually, json_response, run_cases
 from interactive_history import paginated_rewind, rewind_files
 from interactive_model_recovery import assert_live_elapsed, assert_testing_navigation, assert_wide_setup, recovery_cases
 from interactive_rendering import has_selected_queued_input
@@ -107,6 +108,51 @@ def focus_action(terminal, action):
 
 def first_run_credential_repair(binary, bridge, directory):
     instance = InstalledClient(binary, bridge, directory)
+    login = directory / "login"
+    project = login / "project"
+    project.mkdir(parents=True)
+    env = {**instance.env, "HOME": str(login)}
+    env.pop("OPENROUTER_API_KEY", None)
+    if os.name == "nt":
+        env["KUKU_HOME"] = str(login / ".kuku")
+    else:
+        env.pop("KUKU_HOME")
+    for args, available in [((), False), (("--workspace", str(project)), True)]:
+        with Terminal(bridge, binary, login, env, args) as terminal:
+            terminal.expect("Find and test models")
+            terminal.request("resize", rows=20, cols=60)
+            terminal.press("\r")
+            terminal.expect("Choose a provider")
+            terminal.press("\x1b[A")
+            terminal.expect("› Preset · OpenRouter")
+            terminal.press("\r\r\r")
+            if available:
+                terminal.expect("Paste your API key")
+                terminal.press("\x1b")
+                terminal.expect("› Paste API key (save locally)")
+                terminal.press("\r")
+                terminal.expect("Paste your API key")
+            else:
+                for index, selected in enumerate(("Environment", "Use a trial workspace", "Environment")):
+                    if index:
+                        terminal.press("\x1b[B")
+                    view = terminal.expect("API key source", also=(
+                        f"› {selected}",
+                        "Paste API key · unavailable",
+                        "The key store is inside this workspace.",
+                        "Use trial-workspace in the data directory to paste.",
+                        "kuku --workspace /path/to/project",
+                        "Environment · not detected · OPENROUTER_API_KEY",
+                    ))["screen"]
+                    assert view.count("The key store is inside this workspace.") == 1, view
+                assert not (login / ".kuku" / "trial-workspace").exists()
+                terminal.press("\x1b[B\r")
+                terminal.expect("Paste your API key")
+                assert (login / ".kuku" / "trial-workspace").is_dir()
+            terminal.exit_cleanly("\x03")
+        assert not (login / ".kuku" / "credentials").exists()
+        assert not (login / ".kuku" / "config.toml").exists()
+
     key = "fixture-repaired-credential"
     authenticated = []
     original_dispatch = instance.provider.dispatch
@@ -131,19 +177,17 @@ def first_run_credential_repair(binary, bridge, directory):
         config.write_text(config.read_text().replace(
             'api_key = "test-key"', 'api_key = "$KUKU_ACCEPTANCE_MISSING_KEY"'
         ))
-        workspace = client.workspace("work-first-run")
+        workspace = client.home / "trial-workspace"
         prompt = "Verify the repaired first-run settings"
-        with client.terminal(workspace) as terminal:
+        with client.terminal(client.directory) as terminal:
             terminal.expect("Find and test models", also=("may cost money",))
             client.provider.assert_idle()
             terminal.press("\r")
             terminal.expect("Choose a provider", also=("Existing · test-anthropic",))
             terminal.press("\r\r\r")
-            terminal.expect("Paste your API key")
-            terminal.press("\x1b")
-            missing = terminal.expect("API key source", also=("not detected", "› Paste API key"))["screen"]
+            missing = terminal.expect("API key source", also=("not detected", "Use a trial workspace"))["screen"]
             client.provider.assert_idle()
-            terminal.press("\r")
+            terminal.press("\x1b[B\r")
             terminal.expect("Paste your API key")
             terminal.press(f"\x1b[200~{key}\x1b[201~")
             masked = terminal.expect(f"{key[:7]}{'•' * (len(key) - 12)}{key[-5:]}")["screen"]
@@ -171,6 +215,7 @@ def first_run_credential_repair(binary, bridge, directory):
             reply = terminal.expect("First reply used the repaired settings.", state="Finished")["screen"]
             terminal.exit_cleanly()
         assert authenticated == [True]
+        assert client.session(workspace)
         assert key not in config.read_text()
         credential_files = list((client.home / "credentials").iterdir())
         assert len(credential_files) == 1

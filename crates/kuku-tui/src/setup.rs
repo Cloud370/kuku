@@ -1,5 +1,6 @@
 mod config;
 mod connection_name;
+mod credential;
 mod dashboard;
 mod editor;
 mod models;
@@ -41,6 +42,7 @@ pub(crate) enum SetupMode {
 pub(crate) enum Finish {
     SaveAndContinue,
     SaveAndExit,
+    UseTrialWorkspace,
     Cancel,
 }
 
@@ -138,12 +140,12 @@ pub(crate) enum ConnectionChoice {
     Custom,
 }
 
-pub(crate) async fn run(options: ConnectionOptions, mode: SetupMode) -> io::Result<bool> {
-    let settings = match mode {
+pub(crate) async fn run(options: &mut ConnectionOptions, mode: SetupMode) -> io::Result<bool> {
+    let mut settings = match mode {
         SetupMode::Session => unreachable!("in-session setup uses the active terminal"),
         SetupMode::Init => {
             validate_entry(
-                &options,
+                options,
                 io::stdin().is_terminal() && io::stdout().is_terminal(),
                 "Interactive settings require a terminal; edit config.toml or use `kuku config set`.",
             )?;
@@ -155,7 +157,7 @@ pub(crate) async fn run(options: ConnectionOptions, mode: SetupMode) -> io::Resu
                 return Ok(true);
             };
             validate_entry(
-                &options,
+                options,
                 io::stdin().is_terminal() && io::stdout().is_terminal(),
                 "Interactive settings require a terminal; edit config.toml or use `kuku config set`.",
             )?;
@@ -163,13 +165,21 @@ pub(crate) async fn run(options: ConnectionOptions, mode: SetupMode) -> io::Resu
         }
     };
     let mut state = state::SetupState::new(&settings);
+    let initial_workspace = settings.workspace.clone();
     let finish = loop {
-        let finish = ui::run(&settings, &mut state, mode).await?;
+        let finish = ui::run(&mut settings, &mut state, mode).await?;
         if finish == Finish::Cancel {
-            println!("Setup canceled. No files were changed.");
+            if settings.workspace != initial_workspace {
+                println!(
+                    "Setup canceled. Trial workspace: {}",
+                    settings.workspace.display()
+                );
+            } else {
+                println!("Setup canceled. No settings were saved.");
+            }
             return Ok(false);
         }
-        if mode == SetupMode::FirstRun && !first_run_service_is_idle(&options).await {
+        if mode == SetupMode::FirstRun && !first_run_service_is_idle(options).await {
             state.problem = Some(
                 "Local service is active or unavailable. Open /model in the service's terminal."
                     .into(),
@@ -183,6 +193,10 @@ pub(crate) async fn run(options: ConnectionOptions, mode: SetupMode) -> io::Resu
         state.finish = None;
     };
     println!("Saved settings to {}.", settings.config_path.display());
+    if settings.workspace != initial_workspace {
+        options.workspace = Some(settings.workspace.clone());
+        println!("Trial workspace: {}", settings.workspace.display());
+    }
     match state.credential_source {
         CredentialSource::Environment => {
             if let Some(name) = state

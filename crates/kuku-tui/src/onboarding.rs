@@ -4,11 +4,11 @@ use kuku_client::ConnectionOptions;
 
 use crate::setup::{self, SetupMode};
 
-pub(crate) async fn run_if_needed(options: &ConnectionOptions) -> io::Result<bool> {
+pub(crate) async fn run_if_needed(options: &mut ConnectionOptions) -> io::Result<bool> {
     if options.remote.is_some() || options.token.is_some() {
         return Ok(true);
     }
-    setup::run(options.clone(), SetupMode::FirstRun).await
+    setup::run(options, SetupMode::FirstRun).await
 }
 
 #[cfg(test)]

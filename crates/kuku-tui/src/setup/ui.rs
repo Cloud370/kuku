@@ -28,7 +28,7 @@ const MIN_HEIGHT: u16 = 20;
 const MAX_CONTENT_WIDTH: u16 = 88;
 
 pub(super) async fn run(
-    settings: &Settings,
+    settings: &mut Settings,
     state: &mut SetupState,
     mode: SetupMode,
 ) -> io::Result<Finish> {
@@ -44,6 +44,16 @@ pub(super) async fn run(
             }
             let size = terminal.size()?;
             if usable(size.width, size.height) {
+                if finish == Finish::UseTrialWorkspace {
+                    match settings.use_trial_workspace() {
+                        Ok(()) => state.trial_workspace_opened(settings),
+                        Err(error) => {
+                            state.problem = Some(format!("Trial workspace unavailable. {error}"))
+                        }
+                    }
+                    state.finish = None;
+                    continue;
+                }
                 return Ok(finish);
             }
             state.finish = None;
@@ -244,6 +254,7 @@ fn render_step(
             } else {
                 "not detected"
             };
+            let can_paste = settings.can_store_key();
             for (source, label) in [
                 (
                     CredentialSource::Environment,
@@ -254,13 +265,19 @@ fn render_step(
                 ),
                 (
                     CredentialSource::StoredKey,
-                    "Paste API key (save locally)".into(),
+                    if can_paste {
+                        "Paste API key (save locally)".into()
+                    } else {
+                        "Paste API key · unavailable".into()
+                    },
                 ),
             ] {
-                let selected = source == state.credential_source;
+                let selected = source == state.credential_source && !state.trial_workspace_selected;
                 let marker = if selected { "› " } else { "  " };
                 let style = if selected {
                     Style::default().add_modifier(Modifier::BOLD)
+                } else if source == CredentialSource::StoredKey && !can_paste {
+                    Style::default().fg(MUTED)
                 } else {
                     Style::default()
                 };
@@ -271,15 +288,58 @@ fn render_step(
                     Line::styled(format!("{marker}{label}"), style),
                 );
             }
-            line(
-                frame,
-                area,
-                &mut row,
-                "Keys are tested after you choose a model.",
-                MUTED,
-            );
-            if !settings.can_store_key() {
-                line(frame, area, &mut row, settings.storage_problem(), WARNING);
+            let trial = SetupState::offers_trial_workspace(settings, mode);
+            if trial {
+                let (marker, color) = if state.trial_workspace_selected {
+                    ("› ", ACCENT)
+                } else {
+                    ("  ", MUTED)
+                };
+                line(
+                    frame,
+                    area,
+                    &mut row,
+                    &format!("{marker}Use a trial workspace"),
+                    color,
+                );
+            }
+            if !can_paste {
+                for instruction in settings.storage_problem().lines() {
+                    line(frame, area, &mut row, instruction, WARNING);
+                }
+                if trial {
+                    line(
+                        frame,
+                        area,
+                        &mut row,
+                        "Use trial-workspace in the data directory to paste.",
+                        MUTED,
+                    );
+                }
+                if settings.key_store_inside_workspace() {
+                    line(
+                        frame,
+                        area,
+                        &mut row,
+                        "For an existing project, exit and run:",
+                        MUTED,
+                    );
+                    line(
+                        frame,
+                        area,
+                        &mut row,
+                        "  kuku --workspace /path/to/project",
+                        MUTED,
+                    );
+                }
+            } else {
+                line(
+                    frame,
+                    area,
+                    &mut row,
+                    "Keys are tested after you choose a model.",
+                    MUTED,
+                );
             }
         }
         SetupStep::Credential => {
