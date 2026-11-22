@@ -281,7 +281,7 @@ impl WorkspaceHost {
         }
         if execution.is_cancelled() {
             return Ok(ToolResultEnvelope::cancelled(
-                "workspace script stopped before dispatch",
+                "run_js stopped before dispatch",
             ));
         }
         let mutating = !definition.read_only;

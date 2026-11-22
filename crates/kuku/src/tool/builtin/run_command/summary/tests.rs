@@ -409,7 +409,10 @@ async fn cargo_rule_retains_assertions_and_the_original_output() {
     };
     assert_eq!(rule, "cargo-humans");
     assert!(result.model_content.contains("amount mismatch"));
-    assert!(result.model_content.contains("src/lib.rs:"));
+    assert!(result
+        .model_content
+        .replace('\\', "/")
+        .contains("src/lib.rs:"));
     assert!(result.model_content.contains("read_output({id:"));
     assert!(facts
         .output_preview

@@ -16,6 +16,7 @@ use crate::tool::{ToolDefinition, ToolFaults, ToolResultEnvelope};
 use crate::WorkspaceExecutionHost;
 
 use super::host::{bound_action_facts, bounded_json, cap_str};
+use super::recovery::command_program;
 use super::vm::{self, BufferedResponse, Reply, Request};
 use super::{
     append_recovery_evidence, ScriptExecution, ScriptHost, ScriptOperation,
@@ -35,11 +36,11 @@ pub(crate) async fn execute(
     cancellation: Arc<Notify>,
 ) -> ToolResultEnvelope {
     if let Err(error) = limits.validate() {
-        return ToolResultEnvelope::error("invalid workspace script limits", error);
+        return ToolResultEnvelope::error("invalid run_js limits", error);
     }
     if code.trim().is_empty() || code.len() > limits.source_bytes {
         return ToolResultEnvelope::error(
-            "invalid workspace script",
+            "invalid run_js input",
             format!("code must contain 1–{} UTF-8 bytes", limits.source_bytes),
         );
     }
@@ -234,9 +235,20 @@ async fn buffer_response(
     capacity: Arc<Semaphore>,
 ) -> Result<BufferedResponse, &'static str> {
     if execution.is_cancelled() {
-        return Err("workspace script has stopped");
+        return Err("run_js has stopped");
     }
     if op == ScriptOperation::RunCommand {
+        let launch_program = envelope
+            .structured
+            .as_ref()
+            .filter(|facts| {
+                matches!(
+                    facts["termination"].as_str(),
+                    Some("program_missing" | "start_failed")
+                )
+            })
+            .and_then(command_program)
+            .map(str::to_owned);
         if let Some(Value::Object(facts)) = &mut envelope.structured {
             facts.retain(|key, _| {
                 matches!(
@@ -252,6 +264,9 @@ async fn buffer_response(
                         | "inline_pipes"
                 )
             });
+            if let Some(program) = launch_program {
+                facts.insert("program".into(), Value::String(program));
+            }
         }
     }
     let observation = observation.filter(|_| envelope.status == "ok");
@@ -282,7 +297,7 @@ async fn buffer_response(
     let bytes = u32::try_from(json.len()).expect("validated host reply byte limit");
     let _capacity = tokio::select! {
         biased;
-        _ = execution.cancelled() => return Err("workspace script has stopped"),
+        _ = execution.cancelled() => return Err("run_js has stopped"),
         permit = capacity.acquire_many_owned(bytes) => permit.map_err(|_| "workspace response queue is closed")?,
     };
     Ok(BufferedResponse {
@@ -326,22 +341,20 @@ fn result(
         Finish::Returned(value) => {
             let model_content = serde_json::to_string(&value).expect("script result is JSON");
             ToolResultEnvelope::ok(
-                format!("workspace script returned after {dispatched} host actions ({failures} unsuccessful)"),
+                format!(
+                    "run_js returned after {dispatched} host actions ({failures} unsuccessful)"
+                ),
                 model_content,
                 value,
             )
         }
-        Finish::Failed(error) => ToolResultEnvelope::error("workspace script failed", error),
-        Finish::Blocked(error) => {
-            ToolResultEnvelope::blocked("workspace script capacity unavailable", error)
-        }
-        Finish::Cancelled | Finish::HostStopped => {
-            ToolResultEnvelope::cancelled("workspace script stopped")
-        }
+        Finish::Failed(error) => ToolResultEnvelope::error("run_js failed", error),
+        Finish::Blocked(error) => ToolResultEnvelope::blocked("run_js capacity unavailable", error),
+        Finish::Cancelled | Finish::HostStopped => ToolResultEnvelope::cancelled("run_js stopped"),
         Finish::TimedOut => ToolResultEnvelope::error(
-            "workspace script timed out",
+            "run_js timed out",
             format!(
-                "workspace script exhausted its {} ms JavaScript execution budget",
+                "run_js exhausted its {} ms JavaScript execution budget",
                 execution.limits.timeout_ms
             ),
         ),
@@ -354,15 +367,15 @@ fn result(
     };
     if faults.output_persistence_failed {
         result.status = "error".into();
-        result.summary = "workspace script output persistence failed".into();
+        result.summary = "run_js output persistence failed".into();
         result.model_content = "A host action could not persist its output.".into();
     }
     if faults.cleanup_incomplete {
         result.status = "error".into();
-        result.summary = "workspace script cleanup incomplete".into();
+        result.summary = "run_js cleanup incomplete".into();
         result
             .model_content
-            .push_str("\nWorkspace script cleanup could not be confirmed.");
+            .push_str("\nrun_js cleanup could not be confirmed.");
     }
     if result.status != "ok" && dispatched != 0 {
         result.model_content.push_str(&format!("\nHost action results observed: {dispatched} requested actions ({failures} unsuccessful)."));

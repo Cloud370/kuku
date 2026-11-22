@@ -645,7 +645,13 @@ def run_interactive(args, directory, record):
     record["desktop"] = args.desktop
     if args.native_smoke and any((args.desktop, args.browser, args.live, args.intent, args.upgrade_from)):
         raise ValueError("--native-smoke selects only controlled installed terminal cases")
-    record["scenario"] = "native-smoke" if args.native_smoke else "full"
+    if args.cases is not None and any((args.native_smoke, args.desktop, args.browser,
+                                       args.live, args.intent, args.upgrade_from)):
+        raise ValueError("--cases selects its own controlled installed scenarios")
+    cases = args.cases.split(",") if args.cases is not None else []
+    if cases:
+        record["cases"] = cases
+    record["scenario"] = "selected" if cases else "native-smoke" if args.native_smoke else "full"
     if args.windows_terminal and (not args.desktop or os.name != "nt"):
         raise ValueError("--windows-terminal requires --desktop on a dedicated Windows test desktop")
     if args.desktop and os.name == "nt":
@@ -669,7 +675,7 @@ def run_interactive(args, directory, record):
     if scratch.is_relative_to(ROOT):
         raise ValueError("Interactive acceptance needs a scratch directory outside the source tree")
     scratch.mkdir(parents=True, exist_ok=True)
-    record["browser"] = args.browser or args.live
+    record["browser"] = args.browser or args.live or "browser" in cases
     record["native_pty"] = "conpty" if os.name == "nt" else "unix-pty"
     record["checks"] = []
 
@@ -743,6 +749,8 @@ def run_interactive(args, directory, record):
             command.append("--browser")
         if args.native_smoke:
             command.append("--native-smoke")
+        if args.cases is not None:
+            command.extend(["--cases", args.cases])
         try:
             checked(command, "installed-interactive", timeout=420, cwd=scratch_dir)
         finally:
@@ -781,6 +789,7 @@ def parser():
     interactive.add_argument("--upgrade-from", type=Path, help="replace a previous package during an active tool")
     interactive.add_argument("--scratch-base", type=Path, help="temporary installation and workspaces outside the checkout")
     interactive.add_argument("--browser", action="store_true", help="also exercise the embedded WebUI with Playwright Chromium")
+    interactive.add_argument("--cases", help="run only the comma-separated installed scenarios")
     interactive.add_argument("--native-smoke", action="store_true", help="exercise composer actions, first run, model editing and paste on the native terminal")
     interactive.add_argument("--bridge-cache", type=Path, help="reuse or populate the native PTY helper at this keyed cache path")
     scenario = interactive.add_mutually_exclusive_group()

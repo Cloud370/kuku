@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use crate::execution::{CommandTermination, OutputReference, WorkspaceActionDetails};
 use crate::tool::builtin::run_command::output::validate_output_id;
 
-use super::host::bounded_json;
+use super::host::{bounded_json, cap_str};
 use super::{ScriptOperation, WorkspaceScriptActionFacts, WorkspaceScriptActionStatus};
 
 const MAX_RECOVERY_ROWS: usize = 4;
@@ -95,20 +95,23 @@ fn add_command(row: &mut Value, facts: &Value) -> Option<()> {
     let details = WorkspaceActionDetails::deserialize(facts).ok()?;
     let termination = details.termination?;
     match termination {
-        CommandTermination::Exited => {}
+        CommandTermination::Exited
+        | CommandTermination::ProgramMissing
+        | CommandTermination::StartFailed => {}
         CommandTermination::TimedOut | CommandTermination::Cancelled
             if facts["started"] == true => {}
-        CommandTermination::TimedOut
-        | CommandTermination::Cancelled
-        | CommandTermination::ProgramMissing
-        | CommandTermination::StartFailed => return None,
+        CommandTermination::TimedOut | CommandTermination::Cancelled => return None,
     }
     row["termination"] = json!(termination);
-    if let Some(program) = facts["invocation"]["program"]
-        .as_str()
-        .filter(|program| program.len() <= MAX_PROGRAM_LABEL_BYTES)
-    {
+    if let Some(program) = command_program(facts) {
         row["program"] = json!(program);
+    }
+    if matches!(
+        termination,
+        CommandTermination::ProgramMissing | CommandTermination::StartFailed
+    ) {
+        row["started"] = json!(false);
+        return Some(());
     }
     if let Some(code) = details.exit_code {
         row["exit_code"] = json!(code);
@@ -126,6 +129,13 @@ fn add_command(row: &mut Value, facts: &Value) -> Option<()> {
         }
     }
     Some(())
+}
+
+pub(super) fn command_program(facts: &Value) -> Option<&str> {
+    let program = facts["program"]
+        .as_str()
+        .or_else(|| facts["invocation"]["program"].as_str())?;
+    Some(cap_str(program, MAX_PROGRAM_LABEL_BYTES)).filter(|program| !program.is_empty())
 }
 
 fn output_reference(value: &Value) -> Option<OutputReference> {

@@ -120,7 +120,7 @@ async fn command_failures_throw_and_incomplete_or_invalid_captures_reject_reader
         r#"
         async function errorFor(action) {
             try { await action(); } catch (error) {
-                return {name:error.name, message:error.message, status:error.status, termination:error.termination, id:error.output_ref?.id};
+                return {name:error.name, message:error.message, status:error.status, termination:error.termination, program:error.program, id:error.output_ref?.id};
             }
             throw new Error("expected a rejection");
         }
@@ -142,7 +142,10 @@ async fn command_failures_throw_and_incomplete_or_invalid_captures_reject_reader
                 match call.args["program"].as_str().unwrap() {
                     "missing" => {
                         let mut missing = ToolResultEnvelope::error("program missing", "could not start missing program");
-                        missing.structured = Some(json!({"termination":"program_missing", "output_ref":{"id":"capture","offset":0,"bytes":0}}));
+                        missing.structured = Some(json!({
+                            "termination":"program_missing", "invocation":{"program":"missing"},
+                            "output_ref":{"id":"capture","offset":0,"bytes":0}
+                        }));
                         missing
                     }
                     "cancelled" => {
@@ -164,6 +167,7 @@ async fn command_failures_throw_and_incomplete_or_invalid_captures_reject_reader
     let returned = facts(&result).value;
     assert_eq!("error", returned[0]["status"]);
     assert_eq!("program_missing", returned[0]["termination"]);
+    assert_eq!("missing", returned[0]["program"]);
     assert_eq!("capture", returned[0]["id"]);
     assert!(returned[0]["message"]
         .as_str()
@@ -171,6 +175,7 @@ async fn command_failures_throw_and_incomplete_or_invalid_captures_reject_reader
         .contains("could not start missing program"));
     assert_eq!("cancelled", returned[1]["status"]);
     assert_eq!("cancelled", returned[1]["termination"]);
+    assert!(returned[1].get("program").is_none());
     assert!(returned[1]["message"]
         .as_str()
         .unwrap()
@@ -207,6 +212,42 @@ async fn command_failures_throw_and_incomplete_or_invalid_captures_reject_reader
     }
     assert_eq!("", returned[7]["empty"]);
     assert_eq!(6, facts(&result).actions.len());
+}
+
+#[tokio::test]
+async fn uncaught_start_failure_keeps_its_program_after_compacting_host_facts() {
+    let result = run(
+        "await tools.run_command({program:'fixture-program'});",
+        TestHost {
+            operations: vec![ScriptOperation::RunCommand],
+            callback: |_, _| async {
+                let mut error = ToolResultEnvelope::error("start failed", "program could not start");
+                error.structured = Some(json!({
+                    "termination":"start_failed", "started":false,
+                    "invocation":{"program":"fixture-program", "args":["private-argument".repeat(1024)]},
+                    "output_ref":{"id":"unused-capture","offset":0,"bytes":1}
+                }));
+                error
+            },
+        },
+        WorkspaceScriptLimits::default(),
+    ).await;
+    assert_eq!("error", result.status);
+    let row: Value = result
+        .model_content
+        .lines()
+        .find_map(|line| serde_json::from_str(line).ok())
+        .expect("launch failure recovery evidence");
+    assert_eq!(
+        json!({"action":"action_1","tool":"run_command","program":"fixture-program",
+        "termination":"start_failed","started":false}),
+        row
+    );
+    assert!(!result.model_content.contains("private-argument"));
+    assert_eq!(
+        "fixture-program",
+        facts(&result).actions[0].result["program"]
+    );
 }
 
 #[tokio::test]
@@ -349,7 +390,7 @@ async fn complete_retained_text_rejects_growing_lossy_and_oversized_captures() {
                             page.structured.as_mut().unwrap()["complete"] = json!(false);
                             page
                         }
-                        "lossy" => output_page(0, 1, &[("stdout", b"\xff")]),
+                        "lossy" => output_page(0, 2, &[("stdout", b"\xff\0")]),
                         _ => {
                             let bytes = crate::tool::run_js::MAX_OUTPUT_TEXT_BYTES + 1;
                             ToolResultEnvelope::ok("read retained output", "", json!({
@@ -364,7 +405,7 @@ async fn complete_retained_text_rejects_growing_lossy_and_oversized_captures() {
             WorkspaceScriptLimits::default(),
         )
         .await;
-        assert_eq!("error", result.status);
+        assert_eq!("error", result.status, "{case}: {}", result.model_content);
         assert!(
             result.model_content.contains(expected),
             "{}",

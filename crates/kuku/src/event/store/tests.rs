@@ -292,7 +292,7 @@ fn invalid_batch_publishes_no_prefix_and_preserves_the_next_id() {
             EventPayload::Unknown(serde_json::json!([]))
         ]))
         .is_err());
-    assert!(std::fs::read(&path).unwrap().is_empty());
+    assert_eq!(0, std::fs::metadata(&path).unwrap().len());
     let batch = store
         .append_batch(|first| {
             assert_eq!(1, first);
@@ -656,8 +656,8 @@ fn packed_history_crosses_frames_supports_cursors_and_repairs_only_the_tail() {
             })))
             .unwrap();
     }
-    let original = std::fs::read(&path).unwrap();
-    assert!(original.len() > 2 * 1024 * 1024);
+    let original_len = std::fs::metadata(&path).unwrap().len();
+    assert!(original_len > 2 * 1024 * 1024);
     assert!(store
         .inner
         .writer
@@ -665,7 +665,7 @@ fn packed_history_crosses_frames_supports_cursors_and_repairs_only_the_tail() {
         .unwrap()
         .pack(&path, &"checkpoint")
         .unwrap());
-    assert!(std::fs::metadata(&path).unwrap().len() < original.len() as u64 / 10);
+    assert!(std::fs::metadata(&path).unwrap().len() < original_len / 10);
     assert_eq!(5, store.append(payload()).unwrap().id);
     drop(store);
 

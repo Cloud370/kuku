@@ -228,7 +228,7 @@ pub(super) fn cap_str(text: &str, max_bytes: usize) -> &str {
 }
 
 fn not_dispatched() -> ToolResultEnvelope {
-    ToolResultEnvelope::cancelled("workspace script stopped before dispatch")
+    ToolResultEnvelope::cancelled("run_js stopped before dispatch")
 }
 
 fn action_id(ordinal: usize) -> String {
@@ -302,6 +302,11 @@ fn selected_facts(structured: &Value) -> Value {
             if bounded_json(value, MAX_ACTION_SUMMARY_BYTES).is_ok() {
                 facts[key] = value.clone();
             }
+        }
+    }
+    if structured["termination"].as_str().is_some() {
+        if let Some(program) = super::recovery::command_program(structured) {
+            facts["program"] = json!(program);
         }
     }
     facts
